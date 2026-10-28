@@ -24,7 +24,8 @@ const PULL = { collection: "board", after: 0, limit: 1 };
 const RPC_METHODS = Object.freeze([
   "collectionClear", "collectionDelete", "collectionGet", "collectionHistory", "collectionPull",
   "collectionWrite", "deleteAgent", "disableAgent", "fileChanges", "fileHistory",
-  "fileLeaseAcquire", "fileLeaseRelease", "fileLeaseRenew", "fileList", "fileMkdir",
+  "fileHistoryPurge", "fileLeaseAcquire", "fileLeaseRelease", "fileLeaseRenew", "fileList",
+  "fileMkdir",
   "fileRead", "fileReadChunks", "fileRedact", "fileRemove", "fileRename", "fileRestore",
   "fileStat", "fileSyncCommit", "fileUploadAbort", "fileUploadBegin", "fileUploadChunks",
   "fileUploadCommit", "fileUsage", "fileWrite", "grantList", "grantRevoke", "grantSet",

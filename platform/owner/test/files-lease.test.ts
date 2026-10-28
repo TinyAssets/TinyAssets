@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import { type Entry, INLINE_BYTES, type Lease, sha256Hex, type SyncOp } from "../src/files";
 import { MUSE, rig, type Rig } from "./ledger-support";
-import { failure, fileCounters, sqlIn, text } from "./support";
+import { failure, fileCounters, inFiles, sqlIn, text } from "./support";
 
 const W = "/workspace";
 
@@ -21,10 +21,8 @@ function entryOf(answer: { entry: Entry } | { conflict: Entry | null }): Entry {
 
 const acquire = (r: Rig, holder = "sandbox-1") =>
   r.stub.fileLeaseAcquire(r.bind(null), { holder });
-const sync = (r: Rig, lease: Pick<Lease, "lease_id" | "epoch">, ops: SyncOp[],
-              intent: string | null = null) =>
-  r.stub.fileSyncCommit(r.bind(null), { lease_id: lease.lease_id, epoch: lease.epoch,
-                                        intent_id: intent, ops });
+const sync = (r: Rig, lease: Pick<Lease, "lease_id" | "epoch">, ops: SyncOp[]) =>
+  r.stub.fileSyncCommit(r.bind(null), { lease_id: lease.lease_id, epoch: lease.epoch, ops });
 const write = (r: Rig, path: string, body: string) => r.stub.fileWrite(
   r.bind(null), { path, expected_etag: null, content: text(body) });
 const readText = async (r: Rig, path: string) => new TextDecoder().decode(
@@ -156,18 +154,16 @@ describe("a sync commit", () => {
     expect(await readText(r, `${W}/d/api.txt`)).toBe("written by the API");
   });
 
-  it("commits chunked content from its intent, and releases it", async () => {
+  it("commits chunked content from each write's own intent, and releases it", async () => {
     const r = await rig();
     const lease = await acquire(r);
     const piece = new Uint8Array(INLINE_BYTES + 3).fill(5);
     const sha = sha256Hex(piece);
-    const begun = await r.stub.fileUploadBegin(r.bind(null), { chunks: [{ sha256: sha,
-                                                                          size: piece.length }] });
+    const begun = await r.stub.fileUploadBegin(r.bind(null), { size: piece.length, chunks: [sha] });
     await r.stub.fileUploadChunks(r.bind(null), { intent_id: begun.intent_id,
                                                   chunks: [{ sha256: sha, bytes: piece }] });
     const { outcomes } = await sync(r, lease, [{ op: "write", path: `${W}/big.bin`, base: null,
-                                                 size: piece.length, chunks: [sha] }],
-                                    begun.intent_id);
+                                                 intent_id: begun.intent_id }]);
     expect(outcomes[0]).toMatchObject({ outcome: "committed",
                                         entry: { size: piece.length } });
     expect(await sqlIn(r.stub, "SELECT * FROM file_intents")).toEqual([]);
@@ -175,19 +171,96 @@ describe("a sync commit", () => {
     expect(kept).toEqual(counted);
   });
 
-  it("is refused whole for a bad op, leaving every other op undone", async () => {
+  it("reports an op that cannot land as refused, and lands every other op", async () => {
     const r = await rig();
     const lease = await acquire(r);
-    for (const ops of [
-      [{ op: "mkdir", path: `${W}/ok`, base: null }, { op: "chmod", path: `${W}/x`, base: null }],
-      [{ op: "mkdir", path: `${W}/ok`, base: null }, { op: "mkdir", path: `${W}/ok`, base: null }],
-      [{ op: "mkdir", path: `${W}/ok`, base: null }, { op: "mkdir", path: "/.ta/tmp/x", base: null }],
-      [{ op: "write", path: `${W}/ok`, base: null, inline: new Uint8Array(INLINE_BYTES + 1) }],
-      [{ op: "mkdir", path: `${W}/ok`, base: 0 }],
-      [],
-    ]) {
-      expect((await failure(() => sync(r, lease, ops as SyncOp[]))).name).toBe("Invalid");
+    const never = await r.stub.fileUploadBegin(r.bind(null),
+      { size: INLINE_BYTES + 1, chunks: ["e".repeat(64)] });
+    const { outcomes } = await sync(r, lease, [
+      { op: "mkdir", path: `${W}/ok`, base: null },
+      { op: "chmod", path: `${W}/x`, base: null } as unknown as SyncOp,
+      { op: "mkdir", path: `${W}/ok`, base: null },
+      { op: "mkdir", path: "/.ta/tmp/x", base: null },
+      { op: "write", path: `${W}/big`, base: null, inline: new Uint8Array(INLINE_BYTES + 1) },
+      { op: "mkdir", path: `${W}/zero`, base: 0 },
+      { op: "write", path: `${W}/unsent`, base: null, intent_id: never.intent_id },
+      { op: "write", path: `${W}/also-ok`, base: null, inline: text("fine") },
+    ]);
+    expect(outcomes.map((o) => o.outcome)).toEqual(["committed", "refused", "refused",
+      "refused", "refused", "refused", "refused", "committed"]);
+    expect(outcomes[6]).toMatchObject({
+      reason: "a chunk of this commit was never stored; send its bytes first" });
+    expect((await r.stub.fileList(r.bind(null), { dir: W, limit: 10 })).entries
+      .map((e) => e.path)).toEqual([`${W}/also-ok`, `${W}/ok`]);
+    const [kept, counted] = await fileCounters(r.stub);
+    expect(kept).toEqual(counted);
+  });
+
+  it("refuses an op past a quota alone, and still lands the rest", async () => {
+    const r = await rig();
+    const lease = await acquire(r);
+    await inFiles(r.stub, { max_entries: 1 }, (files) => {
+      const { outcomes } = files.syncCommit({ lease_id: lease.lease_id, epoch: lease.epoch, ops: [
+        { op: "write", path: `${W}/one`, base: null, inline: text("1") },
+        { op: "write", path: `${W}/two`, base: null, inline: text("2") },
+        { op: "remove", path: `${W}/gone`, base: null },
+      ] });
+      expect(outcomes.map((o) => o.outcome)).toEqual(["committed", "refused", "committed"]);
+      expect(outcomes[1]).toMatchObject({ reason: "the owner's file entries are at their quota" });
+    });
+  });
+
+  it("is refused whole only for a lost lease or no ops at all", async () => {
+    const r = await rig();
+    const lease = await acquire(r);
+    for (const ops of [[], "mkdir"]) {
+      expect((await failure(() => sync(r, lease, ops as SyncOp[]))).message)
+        .toBe("a sync commit holds 1 to 1000 ops");
     }
-    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_entries")).toEqual([{ n: 0 }]);
+  });
+
+  it("saves a write under a parent the API made a file beside that parent", async () => {
+    const r = await rig();
+    const lease = await acquire(r);
+    await write(r, `${W}/out`, "the API made out a file");
+    const { outcomes } = await sync(r, lease, [
+      { op: "write", path: `${W}/out/a`, base: null, inline: text("the sandbox's out/a") },
+      { op: "mkdir", path: `${W}/out/sub`, base: null },
+    ]);
+    const copy = `${W}/out.ta-conflict-${lease.epoch}/a`;
+    expect(outcomes[0]).toMatchObject({ outcome: "conflict", copy: { path: copy } });
+    expect(outcomes[1]).toMatchObject({ outcome: "conflict", copy: null });
+    expect(await readText(r, copy)).toBe("the sandbox's out/a");
+    expect(await readText(r, `${W}/out`)).toBe("the API made out a file");
+  });
+
+  it("names copies within 255 bytes, never over another file, and one per conflict", async () => {
+    const r = await rig();
+    const long = `${W}/${"é".repeat(125)}x.md`;
+    const seen = entryOf(await write(r, long, "base"));
+    const lease = await acquire(r);
+    await write(r, long, "the API's");
+    const taken = `${W}/notes.md.ta-conflict-${lease.epoch}`;
+    await write(r, taken, "a file the API made under the copy's name");
+    const notes = entryOf(await write(r, `${W}/notes.md`, "base"));
+    await write(r, `${W}/notes.md`, "the API's notes");
+    const first = await sync(r, lease, [
+      { op: "write", path: long, base: seen.version, inline: text("vm one") },
+      { op: "write", path: `${W}/notes.md`, base: notes.version, inline: text("vm notes") },
+    ]);
+    const second = await sync(r, lease, [
+      { op: "write", path: long, base: seen.version, inline: text("vm two") },
+    ]);
+    const copies = [...first.outcomes, ...second.outcomes].map((o) =>
+      o.outcome === "conflict" ? o.copy!.path : o.outcome);
+    expect(copies[1]).toBe(`${taken}-2`);
+    expect(copies[0]).not.toBe(copies[2]);
+    for (const copy of [copies[0]!, copies[2]!]) {
+      expect(new TextEncoder().encode(copy.slice(W.length + 1)).byteLength).toBeLessThanOrEqual(255);
+      expect(copy).toMatch(/\.ta-conflict-\d+(-2)?$/);
+    }
+    expect(await readText(r, copies[0]!)).toBe("vm one");
+    expect(await readText(r, copies[2]!)).toBe("vm two");
+    expect(await readText(r, taken)).toBe("a file the API made under the copy's name");
   });
 });

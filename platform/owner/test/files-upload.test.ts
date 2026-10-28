@@ -1,7 +1,9 @@
 /**
- * Uploads, chunk reference counts and garbage collection, and history retention (plan
- * §6): an intent records its chunks before any byte is sent, so nothing in the bucket
- * lacks a row and garbage collection never lists it.
+ * Uploads, chunk reference counts and garbage collection, content identity, and history
+ * retention (plan §6): an intent records its chunks before any byte is sent, a chunk is
+ * stored only once the files Worker accepted it, so nothing in the bucket lacks a row,
+ * nothing deduplicates against bytes the bucket lacks, and garbage collection never lists
+ * the bucket.
  */
 import { runDurableObjectAlarm } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -9,7 +11,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   CHUNK_BYTES, type ChunkStore, chunkedId, type Entry, GC_GRACE_S, HOUSEKEEPING_SLACK_S,
-  INLINE_BYTES, INTENT_TTL_S, sha256Hex,
+  INLINE_BYTES, inlineId, INTENT_TTL_S, MAX_HELD_CHUNKS, MAX_INTENT_CHUNKS, MAX_OPEN_INTENTS,
+  sha256Hex,
 } from "../src/files";
 import { MIGRATIONS } from "../src/schema";
 import { rig, type Rig } from "./ledger-support";
@@ -32,20 +35,21 @@ function filled(size: number, seed: number): Uint8Array {
   return bytes;
 }
 
-const ref = (bytes: Uint8Array) => ({ sha256: sha256Hex(bytes), size: bytes.byteLength });
+const sizeOf = (pieces: Uint8Array[]) => pieces.reduce((sum, piece) => sum + piece.byteLength, 0);
+const shas = (pieces: Uint8Array[]) => pieces.map((piece) => sha256Hex(piece));
+const begin = (r: Rig, pieces: Uint8Array[]) =>
+  r.stub.fileUploadBegin(r.bind(null), { size: sizeOf(pieces), chunks: shas(pieces) });
 
+/** Begin, send each missing chunk, commit: what a binder does. */
 async function upload(r: Rig, path: string, pieces: Uint8Array[],
                       expected: string | null = null) {
-  const begun = await r.stub.fileUploadBegin(r.bind(null), { chunks: pieces.map(ref) });
-  const missing = pieces.filter((piece) => begun.missing.includes(sha256Hex(piece)));
-  if (missing.length > 0) {
+  const begun = await begin(r, pieces);
+  for (const piece of pieces.filter((p) => begun.missing.includes(sha256Hex(p)))) {
     await r.stub.fileUploadChunks(r.bind(null), { intent_id: begun.intent_id,
-      chunks: missing.map((piece) => ({ sha256: sha256Hex(piece), bytes: piece })) });
+      chunks: [{ sha256: sha256Hex(piece), bytes: piece }] });
   }
-  const size = pieces.reduce((sum, piece) => sum + piece.byteLength, 0);
   return { begun, committed: await r.stub.fileUploadCommit(r.bind(null), {
-    intent_id: begun.intent_id, path, expected_etag: expected, size,
-    chunks: pieces.map((piece) => sha256Hex(piece)) }) };
+    intent_id: begun.intent_id, path, expected_etag: expected }) };
 }
 
 const chunk = (r: Rig, sha256: string) =>
@@ -60,6 +64,24 @@ const inBucket = async (r: Rig, sha256: string) => {
     return false;
   }
 };
+const read = async (r: Rig, path: string) => {
+  const found = await r.stub.fileRead(r.bind(null), { path });
+  if (found.inline !== undefined) {
+    return found.inline;
+  }
+  const parts = [];
+  for (let first = 0; first < found.chunks!.length; first++) {
+    parts.push(...(await r.stub.fileReadChunks(r.bind(null), { path, version: found.entry.version,
+                                                              first, count: 1 })).chunks);
+  }
+  const out = new Uint8Array(sizeOf(parts));
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.byteLength;
+  }
+  return out;
+};
 
 describe("the schema's file ceilings", () => {
   it("are the manifest's own: the inline bound, the chunk size and the grace", () => {
@@ -71,53 +93,62 @@ describe("the schema's file ceilings", () => {
 });
 
 describe("an upload", () => {
-  it("names the chunks to send, then commits them as one file", async () => {
+  it("declares its file and chunks, sends the missing ones, then commits them as one file",
+     async () => {
     const r = await rig();
     const pieces = [filled(CHUNK_BYTES, 1), filled(10, 2)];
     const { begun, committed } = await upload(r, `${W}/two.bin`, pieces);
-    expect(begun.missing).toEqual(pieces.map((piece) => sha256Hex(piece)));
+    expect(begun.missing).toEqual(shas(pieces));
     expect(begun.expires_at).toBeGreaterThan(Date.now() / 1000 + INTENT_TTL_S - 60);
     expect(entryOf(committed)).toMatchObject({ size: CHUNK_BYTES + 10, kind: "file" });
-    const read = await r.stub.fileRead(r.bind(null), { path: `${W}/two.bin` });
-    expect(read.chunks).toEqual(pieces.map(ref));
-    expect((await r.stub.fileReadChunks(r.bind(null), { path: `${W}/two.bin`,
-      version: read.entry.version, first: 1, count: 1 })).chunks).toEqual([pieces[1]]);
+    expect(sha256Hex(await read(r, `${W}/two.bin`))).toBe(sha256Hex(new Uint8Array([
+      ...pieces[0]!, ...pieces[1]!])));
     expect(await sqlIn(r.stub, "SELECT content_id FROM file_contents"))
-      .toEqual([{ content_id: chunkedId(CHUNK_BYTES + 10, pieces.map((p) => sha256Hex(p))) }]);
+      .toEqual([{ content_id: chunkedId(CHUNK_BYTES + 10, shas(pieces)) }]);
     // The same chunks again send nothing, and dedupe into the same content.
     const again = await upload(r, `${W}/copy.bin`, pieces);
     expect(again.begun.missing).toEqual([]);
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_contents")).toEqual([{ n: 1 }]);
-    expect(await chunk(r, sha256Hex(pieces[1]!))).toMatchObject({ state: "live", refs: 1,
-                                                                   holds: 0 });
+    expect(await chunk(r, sha256Hex(pieces[1]!))).toMatchObject({ state: "live", stored: 1,
+                                                                   refs: 1, holds: 0 });
     const [kept, counted] = await fileCounters(r.stub);
     expect(kept).toEqual(counted);
   });
 
-  it.each([
-    ["a chunk the intent does not hold", (p: Uint8Array[]) => ({ chunks: [sha256Hex(filled(9, 9)),
-      sha256Hex(p[1]!)] }), "a commit names its intent's chunks, one for each 4 MiB of the file"],
-    ["too few chunks", (p: Uint8Array[]) => ({ chunks: [sha256Hex(p[0]!)] }),
-      "a commit names its intent's chunks, one for each 4 MiB of the file"],
-    ["chunks out of order", (p: Uint8Array[]) => ({ chunks: [sha256Hex(p[1]!), sha256Hex(p[0]!)] }),
-      "the chunks do not make up the file's size"],
-    ["a size the chunks do not make", () => ({ size: CHUNK_BYTES + 11 }),
-      "the chunks do not make up the file's size"],
-    ["a file small enough to be inline", () => ({ size: INLINE_BYTES, chunks: [] }),
-      "size is a whole number from 4097 to 9007199254740991"],
-  ])("refuses a commit naming %s, and changes nothing", async (_what, change, message) => {
+  it("refuses a commit of chunks the files Worker never accepted, and dedupes nothing on it",
+     async () => {
     const r = await rig();
-    const pieces = [filled(CHUNK_BYTES, 1), filled(10, 2)];
-    const begun = await r.stub.fileUploadBegin(r.bind(null), { chunks: pieces.map(ref) });
-    await r.stub.fileUploadChunks(r.bind(null), { intent_id: begun.intent_id,
-      chunks: pieces.map((piece) => ({ sha256: sha256Hex(piece), bytes: piece })) });
-    const request = { intent_id: begun.intent_id, path: `${W}/x`, expected_etag: null,
-                      size: CHUNK_BYTES + 10, chunks: pieces.map((p) => sha256Hex(p)),
-                      ...change(pieces) };
-    expect((await failure(() => r.stub.fileUploadCommit(r.bind(null), request))).message)
-      .toBe(message);
-    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_entries")).toEqual([{ n: 0 }]);
-    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_intents")).toEqual([{ n: 1 }]);
+    const real = filled(INLINE_BYTES + 1, 3);
+    // A client begins the upload and commits with no bytes sent.
+    const begun = await begin(r, [real]);
+    expect((await failure(() => r.stub.fileUploadCommit(r.bind(null), {
+      intent_id: begun.intent_id, path: `${W}/claimed`, expected_etag: null }))).message)
+      .toBe("a chunk of this commit was never stored; send its bytes first");
+    expect(await chunk(r, sha256Hex(real))).toMatchObject({ state: "uploading", stored: 0 });
+    expect(await r.stub.fileStat(r.bind(null), { path: `${W}/claimed` })).toEqual({ entry: null });
+    // The owner's own write of the real bytes still sends them, and reads back.
+    await r.stub.fileWrite(r.bind(null), { path: `${W}/real`, expected_etag: null, content: real });
+    expect(await read(r, `${W}/real`)).toEqual(real);
+    expect(await inBucket(r, sha256Hex(real))).toBe(true);
+    // Sent now, the abandoned intent's commit lands too.
+    expect(entryOf(await r.stub.fileUploadCommit(r.bind(null), {
+      intent_id: begun.intent_id, path: `${W}/claimed`, expected_etag: null })).size)
+      .toBe(real.length);
+  });
+
+  it("marks a chunk stored only once the files Worker accepted its put", async () => {
+    const r = await rig();
+    const piece = filled(INLINE_BYTES + 1, 4);
+    const refusing: ChunkStore = {
+      putChunks: async () => { throw new Error("FILES refused the put"); },
+      getChunks: (space, reads) => env.FILES.getChunks(space, reads),
+      deleteChunks: (space, list) => env.FILES.deleteChunks(space, list),
+    };
+    expect((await failure(() => inFiles(r.stub, {}, (files) =>
+      files.write(`${W}/a`, piece, { expected: null, writer: "owner" }), refusing))).message)
+      .toBe("FILES refused the put");
+    expect(await chunk(r, sha256Hex(piece))).toMatchObject({ stored: 0, holds: 0 });
+    expect(await r.stub.fileStat(r.bind(null), { path: `${W}/a` })).toEqual({ entry: null });
   });
 
   it("refuses a commit after its intent was committed, abandoned or expired", async () => {
@@ -125,17 +156,16 @@ describe("an upload", () => {
     const pieces = [filled(INLINE_BYTES + 1, 3)];
     const { begun } = await upload(r, `${W}/a`, pieces);
     const commit = (intent: string) => r.stub.fileUploadCommit(r.bind(null), {
-      intent_id: intent, path: `${W}/b`, expected_etag: null, size: INLINE_BYTES + 1,
-      chunks: [sha256Hex(pieces[0]!)] });
+      intent_id: intent, path: `${W}/b`, expected_etag: null });
     const gone = "no such upload: it was committed, abandoned or has expired";
     expect((await failure(() => commit(begun.intent_id))).message).toBe(gone);
-    const abandoned = await r.stub.fileUploadBegin(r.bind(null), { chunks: pieces.map(ref) });
+    const abandoned = await begin(r, pieces);
     expect(await r.stub.fileUploadAbort(r.bind(null), { intent_id: abandoned.intent_id }))
       .toEqual({ aborted: true });
     expect(await r.stub.fileUploadAbort(r.bind(null), { intent_id: abandoned.intent_id }))
       .toEqual({ aborted: false });
     expect((await failure(() => commit(abandoned.intent_id))).message).toBe(gone);
-    const expired = await r.stub.fileUploadBegin(r.bind(null), { chunks: pieces.map(ref) });
+    const expired = await begin(r, pieces);
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
     expect((await failure(() => commit(expired.intent_id))).message).toBe(gone);
     expect((await failure(() => r.stub.fileUploadChunks(r.bind(null), {
@@ -147,7 +177,7 @@ describe("an upload", () => {
   it("checks each chunk's bytes: its declared size, its intent, and R2's hash check", async () => {
     const r = await rig();
     const piece = filled(INLINE_BYTES + 1, 4);
-    const begun = await r.stub.fileUploadBegin(r.bind(null), { chunks: [ref(piece)] });
+    const begun = await begin(r, [piece]);
     const send = (chunks: { sha256: string; bytes: Uint8Array }[]) =>
       r.stub.fileUploadChunks(r.bind(null), { intent_id: begun.intent_id, chunks });
     expect((await failure(() => send([{ sha256: sha256Hex(piece), bytes: piece.subarray(1) }])))
@@ -158,21 +188,138 @@ describe("an upload", () => {
     forged[0] = forged[0]! ^ 1;
     expect((await failure(() => send([{ sha256: sha256Hex(piece), bytes: forged }]))).message)
       .toBe("the chunk's bytes do not match its sha256");
+    expect(await chunk(r, sha256Hex(piece))).toMatchObject({ stored: 0 });
     expect(await send([{ sha256: sha256Hex(piece), bytes: piece }])).toEqual({ created: 1 });
+    expect(await chunk(r, sha256Hex(piece))).toMatchObject({ stored: 1 });
+  });
+
+  it("sends at most two chunks a call", async () => {
+    const r = await rig();
+    const pieces = [filled(CHUNK_BYTES, 1), filled(CHUNK_BYTES, 2), filled(9, 3)];
+    const begun = await begin(r, pieces);
+    expect((await failure(() => r.stub.fileUploadChunks(r.bind(null), {
+      intent_id: begun.intent_id,
+      chunks: pieces.map((piece) => ({ sha256: sha256Hex(piece), bytes: piece })) }))).message)
+      .toBe(`an upload sends at most ${2 * CHUNK_BYTES} bytes at once`);
   });
 
   it.each([
-    ["no chunks", []],
-    ["a bad hash", [{ sha256: "X".repeat(64), size: 1 }]],
-    ["an empty chunk", [{ sha256: "a".repeat(64), size: 0 }]],
-    ["a chunk past 4 MiB", [{ sha256: "a".repeat(64), size: CHUNK_BYTES + 1 }]],
-    ["one hash with two sizes", [{ sha256: "a".repeat(64), size: 1 },
-                                 { sha256: "a".repeat(64), size: 2 }]],
-  ])("refuses a begin with %s", async (_what, chunks) => {
+    ["a size small enough to be inline", INLINE_BYTES, ["a".repeat(64)]],
+    ["too few chunks for its size", CHUNK_BYTES + 1, ["a".repeat(64)]],
+    ["too many chunks for its size", 5000, ["a".repeat(64), "b".repeat(64)]],
+    ["one-byte chunks", 5000, Array.from({ length: 5000 }, (_, i) => i.toString(16).padStart(64, "0"))],
+    ["a bad hash", 5000, ["X".repeat(64)]],
+    ["one hash for a whole and a part chunk", CHUNK_BYTES + 1, ["a".repeat(64), "a".repeat(64)]],
+    ["no list", 5000, "a".repeat(64)],
+  ])("refuses a begin with %s", async (_what, size, chunks) => {
     const r = await rig();
-    expect((await failure(() => r.stub.fileUploadBegin(r.bind(null), { chunks }))).name)
-      .toBe("Invalid");
+    expect((await failure(() => r.stub.fileUploadBegin(r.bind(null),
+                                                        { size, chunks: chunks as string[] })))
+      .name).toBe("Invalid");
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks")).toEqual([{ n: 0 }]);
+  });
+
+  it("refuses a begin past the file size quota, or past the chunks one intent holds",
+     async () => {
+    const r = await rig();
+    await expect(inFiles(r.stub, { max_file_bytes: CHUNK_BYTES }, (files) =>
+      files.begin(CHUNK_BYTES + 1, ["a".repeat(64), "b".repeat(64)]))).rejects
+      .toThrow("the file is larger than the owner's file size quota");
+    const too = (MAX_INTENT_CHUNKS + 1) * CHUNK_BYTES;
+    await expect(inFiles(r.stub, { max_file_bytes: too }, (files) =>
+      files.begin(too, Array.from({ length: MAX_INTENT_CHUNKS + 1 },
+                                  (_, i) => i.toString(16).padStart(64, "0"))))).rejects
+      .toThrow(`an upload holds at most ${MAX_INTENT_CHUNKS} chunks`);
+  });
+
+  it("bounds the open uploads and the chunks they hold, by counters the schema keeps",
+     async () => {
+    const r = await rig();
+    const reason = "too many uploads are open; commit or abort one first";
+    await inFiles(r.stub, {}, (files) => {
+      for (let i = 0; i < MAX_OPEN_INTENTS; i++) {
+        files.begin(INLINE_BYTES + 1, [i.toString(16).padStart(64, "0")]);
+      }
+      expect(() => files.begin(INLINE_BYTES + 1, ["f".repeat(64)])).toThrow(reason);
+    });
+    expect((await r.stub.fileUsage(r.bind(null))).intents).toBe(MAX_OPEN_INTENTS);
+    await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
+    const [kept, counted] = await fileCounters(r.stub);
+    expect(kept).toEqual(counted);
+    // The held-chunk bound reads its counter: one short of it takes one chunk, not two.
+    await inFiles(r.stub, {}, (files) => {
+      const two = files.begin(CHUNK_BYTES + 1, ["a".repeat(64), "b".repeat(64)]);
+      expect((files.usage()).intent_chunks).toBe(2);
+      files.abort(two.intent_id);
+    });
+    await sqlIn(r.stub, "UPDATE file_space SET intent_chunks = ?", MAX_HELD_CHUNKS - 1);
+    await inFiles(r.stub, {}, (files) => {
+      expect(() => files.begin(CHUNK_BYTES + 1, ["a".repeat(64), "b".repeat(64)]))
+        .toThrow(reason);
+      files.begin(INLINE_BYTES + 1, ["c".repeat(64)]);
+    });
+  });
+});
+
+describe("a content id", () => {
+  // The id the manifest once gave a two-chunk file: what a small file could spell.
+  const big = [filled(CHUNK_BYTES, 1), filled(100, 2)];
+  const oldListPreimage = () => text(`ta-chunks:${CHUNK_BYTES + 100}:${shas(big).join("")}`);
+
+  it.each([["the small file first", true], ["the big file first", false]])(
+    "never lets a small file alias a chunked one, %s", async (_order, smallFirst) => {
+      const r = await rig();
+      const small = oldListPreimage();
+      if (smallFirst) {
+        await r.stub.fileWrite(r.bind(null), { path: `${W}/small`, expected_etag: null,
+                                               content: small });
+      }
+      await upload(r, `${W}/big`, big);
+      if (!smallFirst) {
+        await r.stub.fileWrite(r.bind(null), { path: `${W}/small`, expected_etag: null,
+                                               content: small });
+      }
+      expect(await read(r, `${W}/small`)).toEqual(small);
+      expect((await read(r, `${W}/big`)).byteLength).toBe(CHUNK_BYTES + 100);
+      expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_contents")).toEqual([{ n: 2 }]);
+    });
+
+  it("names the kind and the size of what it names", () => {
+    const one = filled(INLINE_BYTES + 1, 5);
+    expect(new Set([inlineId(text("x")), chunkedId(1, [sha256Hex(text("x"))]),
+                    chunkedId(2, [sha256Hex(text("x"))]), sha256Hex(text("x"))]).size).toBe(4);
+    expect(chunkedId(one.length, [sha256Hex(one)])).not.toBe(sha256Hex(one));
+    expect(chunkedId(10, ["a".repeat(64), "b".repeat(64)]))
+      .not.toBe(chunkedId(11, ["a".repeat(64), "b".repeat(64)]));
+  });
+
+  it.each([
+    ["inline content of another size", (r: Rig) => sqlIn(r.stub,
+      "INSERT INTO file_contents (content_id, size, inline) VALUES (?, 2, X'0102')",
+      inlineId(text("abc")))],
+    ["inline content of other bytes", (r: Rig) => sqlIn(r.stub,
+      "INSERT INTO file_contents (content_id, size, inline) VALUES (?, 3, X'010203')",
+      inlineId(text("abc")))],
+  ])("fails loudly when its id already names %s", async (_what, plant) => {
+    const r = await rig();
+    await plant(r);
+    expect((await failure(() => r.stub.fileWrite(r.bind(null), {
+      path: `${W}/a`, expected_etag: null, content: text("abc") }))).message)
+      .toBe("a content id names other stored content");
+    expect(await r.stub.fileStat(r.bind(null), { path: `${W}/a` })).toEqual({ entry: null });
+  });
+
+  it("fails loudly when a chunked id already names another chunk list", async () => {
+    const r = await rig();
+    const pieces = [filled(CHUNK_BYTES, 7), filled(5, 8)];
+    const id = chunkedId(CHUNK_BYTES + 5, shas(pieces));
+    await sqlIn(r.stub, "INSERT INTO file_contents (content_id, size) VALUES (?, ?)", id,
+                CHUNK_BYTES + 5);
+    await sqlIn(r.stub, "INSERT INTO file_content_chunks VALUES (?, 0, ?), (?, 1, ?)",
+                id, "c".repeat(64), id, "d".repeat(64));
+    expect((await failure(() => upload(r, `${W}/a`, pieces))).message)
+      .toBe("a content id names other stored content");
   });
 });
 
@@ -195,9 +342,8 @@ describe("a chunk", () => {
     expect(revived.begun.missing).toEqual([]);
     expect(await chunk(r, sha)).toMatchObject({ state: "live", refs: 1, gc_after: null });
     await r.stub.fileRemove(r.bind(null), { path: `${W}/b`, expected_etag: null, recursive: false });
-    await inFiles(r.stub, { retention_days: 0 }, async (files) => {
-      await files.collect(Date.now() / 1000);  // the delete's history is not due yet
-    });
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
+    expect(await chunk(r, sha)).toMatchObject({ state: "live" });  // the delete keeps 30 days
     await sqlIn(r.stub, "UPDATE file_history SET prune_after = 1 WHERE prune_after IS NOT NULL");
     await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
     expect(await chunk(r, sha)).toMatchObject({ state: "garbage" });
@@ -210,29 +356,40 @@ describe("a chunk", () => {
     expect(kept).toEqual(counted);
   });
 
-  it("from an upload that never committed is garbage that is sent again, never revived",
+  it("from an upload that never sent it is garbage that is sent again, never revived",
      async () => {
     const r = await rig();
     const piece = filled(INLINE_BYTES + 1, 6);
     const sha = sha256Hex(piece);
-    const begun = await r.stub.fileUploadBegin(r.bind(null), { chunks: [ref(piece)] });
+    const begun = await begin(r, [piece]);
     expect(await chunk(r, sha)).toMatchObject({ state: "uploading", stored: 0, holds: 1 });
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
     await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
     expect(await sqlIn(r.stub, "SELECT * FROM file_intents")).toEqual([]);
     expect(await chunk(r, sha)).toMatchObject({ state: "garbage", stored: 0, holds: 0 });
-    const again = await r.stub.fileUploadBegin(r.bind(null), { chunks: [ref(piece)] });
+    const again = await begin(r, [piece]);
     expect(again.missing).toEqual([sha]);
     expect(again.intent_id).not.toBe(begun.intent_id);
     expect(await chunk(r, sha)).toMatchObject({ state: "uploading", holds: 1, gc_after: null });
   });
 
-  it("being deleted is never held or referenced; its delete is tried again when it fails",
-     async () => {
+  it("sent but never committed is garbage that revives without being sent again", async () => {
+    const r = await rig();
+    const piece = filled(INLINE_BYTES + 1, 9);
+    const sha = sha256Hex(piece);
+    const begun = await begin(r, [piece]);
+    await r.stub.fileUploadChunks(r.bind(null), { intent_id: begun.intent_id,
+                                                  chunks: [{ sha256: sha, bytes: piece }] });
+    await r.stub.fileUploadAbort(r.bind(null), { intent_id: begun.intent_id });
+    expect(await chunk(r, sha)).toMatchObject({ state: "garbage", stored: 1 });
+    expect((await begin(r, [piece])).missing).toEqual([]);
+  });
+
+  it("being deleted is never held; its delete is tried again when it fails", async () => {
     const r = await rig();
     const piece = filled(INLINE_BYTES + 1, 7);
     const sha = sha256Hex(piece);
-    await r.stub.fileUploadBegin(r.bind(null), { chunks: [ref(piece)] });
+    await begin(r, [piece]);
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
     await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
@@ -246,13 +403,12 @@ describe("a chunk", () => {
     const deleting = await chunk(r, sha);
     expect(deleting).toMatchObject({ state: "deleting" });
     expect(deleting!["gc_after"] as number).toBeGreaterThan(Date.now() / 1000);
-    expect((await failure(() => r.stub.fileUploadBegin(r.bind(null), { chunks: [ref(piece)] })))
-      .message).toBe("a chunk of this upload is being deleted; begin again");
+    expect((await failure(() => begin(r, [piece]))).message)
+      .toBe("a chunk of this upload is being deleted; begin again");
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
     await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
     expect(await chunk(r, sha)).toBeUndefined();
-    expect((await r.stub.fileUploadBegin(r.bind(null), { chunks: [ref(piece)] })).missing)
-      .toEqual([sha]);
+    expect((await begin(r, [piece])).missing).toEqual([sha]);
   });
 
   it("is deleted by the object's one alarm, which a change arms", async () => {
@@ -279,6 +435,18 @@ describe("a chunk", () => {
     await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000 + 400 * 86_400));
     expect(await chunk(r, sha256Hex(piece))).toMatchObject({ state: "live", refs: 1 });
     expect(await inBucket(r, sha256Hex(piece))).toBe(true);
+  });
+
+  it("whose content another row still holds keeps its bytes when one version is redacted",
+     async () => {
+    const r = await rig();
+    const piece = filled(INLINE_BYTES + 1, 10);
+    const first = entryOf((await upload(r, `${W}/a`, [piece])).committed);
+    await upload(r, `${W}/b`, [piece]);
+    await r.stub.fileWrite(r.bind(null), { path: `${W}/a`, expected_etag: null, content: text("x") });
+    await r.stub.fileRedact(r.bind(null), { path: `${W}/a`, version: first.version });
+    expect(await chunk(r, sha256Hex(piece))).toMatchObject({ state: "live", refs: 1 });
+    expect(await read(r, `${W}/b`)).toEqual(piece);
   });
 });
 

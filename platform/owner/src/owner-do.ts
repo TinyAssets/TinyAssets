@@ -194,7 +194,9 @@ export interface FileWriteRequest {
 }
 
 export interface UploadBeginRequest {
-  readonly chunks: ChunkRef[];
+  /** The file's size; `chunks` are its 64-hex hashes, one for each 4 MiB. */
+  readonly size: number;
+  readonly chunks: string[];
 }
 
 export interface UploadChunksRequest {
@@ -206,8 +208,6 @@ export interface UploadCommitRequest {
   readonly intent_id: string;
   readonly path: string;
   readonly expected_etag: string | null;
-  readonly size: number;
-  readonly chunks: string[];
   readonly mode?: number;
 }
 
@@ -259,7 +259,6 @@ export interface LeaseRequest {
 }
 
 export interface SyncCommitRequest extends LeaseRequest {
-  readonly intent_id: string | null;
   readonly ops: SyncOp[];
 }
 
@@ -601,15 +600,21 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return { receipts: this.#policy.receipts() };
   }
 
-  /** The owner's write, in its session; with `proposal`, a held card's one apply. */
-  policyWrite(binding: Binding, request: PolicyWriteRequest): Projection {
-    return this.#widening(binding, "write", request, "write its policy", ({ owner }, id) => {
+  /**
+   * The owner's write, in its session; with `proposal`, a held card's one apply. A new
+   * files retention is applied to rows already kept by housekeeping, so the schedule is
+   * rearmed after it.
+   */
+  async policyWrite(binding: Binding, request: PolicyWriteRequest): Promise<Projection> {
+    const written = this.#widening(binding, "write", request, "write its policy",
+                                   ({ owner }, id) => {
       const r = policyFields(request, ["expected_generation", "policy"], ["proposal"]);
-      const written = this.#policy.write(id, r["expected_generation"], r["policy"],
-                                         r["proposal"] ?? null, clock());
-      return { owner, generation: written.generation, digest: written.digest,
-               policy: written.document };
+      const done = this.#policy.write(id, r["expected_generation"], r["policy"],
+                                      r["proposal"] ?? null, clock());
+      return { owner, generation: done.generation, digest: done.digest, policy: done.document };
     });
+    await this.#rearm();
+    return written;
   }
 
   /**
@@ -881,6 +886,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   // -- FILES: the owner's file tree (plan §6) --------------------------------------
+  //
+  // These doors move at most two chunks a call, so no request nears the 32 service calls
+  // one request may make. The HTTP and MCP doors (tasks 2) stream larger files from the
+  // binder to `FILES` itself.
 
   /**
    * A file door's account: the owner's own, or an outside client admitted against its
@@ -891,6 +900,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const account = this.#account(binding);
     this.#scope(account, capability);
     return account;
+  }
+
+  /** A changing file door: its act, then the one schedule rearmed whatever came of it. */
+  async #filing<T>(act: () => T | Promise<T>): Promise<T> {
+    try {
+      return await act();
+    } finally {
+      await this.#rearm();
+    }
   }
 
   fileStat(binding: Binding, request: FileRequest): { entry: Entry | null } {
@@ -922,7 +940,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return shown;
   }
 
-  /** Up to six of a kept version's chunks, from `first`, so a read pins its version. */
+  /** One or two of a kept version's chunks, from `first`, so a read pins its version. */
   async fileReadChunks(binding: Binding, request: FileChunksRequest):
       Promise<{ chunks: Uint8Array[] }> {
     this.#filer(binding, "read_files");
@@ -931,9 +949,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const first = r["first"];
     const many = r["count"];
     if (typeof first !== "number" || typeof many !== "number" || !Number.isSafeInteger(first)
-        || !Number.isSafeInteger(many) || first < 0 || many < 1 || many > 6
+        || !Number.isSafeInteger(many) || first < 0 || many < 1 || many > 2
         || first + many > chunks.length) {
-      throw new Invalid("first and count name 1 to 6 of the version's chunks");
+      throw new Invalid("first and count name 1 or 2 of the version's chunks");
     }
     return { chunks: await this.#files.fetch(chunks.slice(first, first + many)
       .map(({ sha256 }) => ({ sha256 }))) };
@@ -948,25 +966,24 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (!(content instanceof Uint8Array) || content.byteLength > CHUNK_BYTES) {
       throw new Invalid("a written file is bytes, at most 4 MiB; larger ones are uploaded");
     }
-    const written = await fileConflicted(async () => ({
+    return this.#filing(() => fileConflicted(async () => ({
       entry: await this.#files.write(r["path"], content, {
         expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account) }),
-    }));
-    await this.#rearm();
-    return written;
+    })));
   }
 
-  /** Begin an upload: the chunks it will commit, and the ones whose bytes to send. */
+  /**
+   * Begin an upload of one file: its size and chunk hashes, and back the ones whose bytes
+   * to send.
+   */
   async fileUploadBegin(binding: Binding, request: UploadBeginRequest):
       Promise<{ intent_id: string; missing: string[]; expires_at: number }> {
     this.#filer(binding, "write_files");
-    const r = fileFields(request, ["chunks"]);
-    const begun = this.#files.begin(r["chunks"]);
-    await this.#rearm();
-    return begun;
+    const r = fileFields(request, ["size", "chunks"]);
+    return this.#filing(() => this.#files.begin(r["size"], r["chunks"]));
   }
 
-  /** Send an upload's chunk bytes, at most six chunks a call; R2 checks each hash. */
+  /** Send an upload's chunk bytes, at most two chunks a call; R2 checks each hash. */
   async fileUploadChunks(binding: Binding, request: UploadChunksRequest):
       Promise<{ created: number }> {
     this.#filer(binding, "write_files");
@@ -974,62 +991,51 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#files.upload(r["intent_id"], r["chunks"]);
   }
 
+  /** Commit an upload whose chunks are all stored as the file it declared. */
   async fileUploadCommit(binding: Binding, request: UploadCommitRequest):
       Promise<{ entry: Entry } | FileConflicted> {
     const account = this.#filer(binding, "write_files");
-    const r = fileFields(request, ["intent_id", "path", "expected_etag", "size", "chunks"],
-                         ["mode"]);
-    const committed = await fileConflicted(() => ({
+    const r = fileFields(request, ["intent_id", "path", "expected_etag"], ["mode"]);
+    return this.#filing(() => fileConflicted(() => ({
       entry: this.#files.commit(r["intent_id"], r["path"], {
-        expected: r["expected_etag"], size: r["size"], chunks: r["chunks"], mode: r["mode"],
-        writer: fileWriter(account) }),
-    }));
-    await this.#rearm();
-    return committed;
+        expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account) }),
+    })));
   }
 
   async fileUploadAbort(binding: Binding, request: IntentRequest): Promise<{ aborted: boolean }> {
     this.#filer(binding, "write_files");
     const r = fileFields(request, ["intent_id"]);
-    const aborted = this.#files.abort(r["intent_id"]);
-    await this.#rearm();
-    return aborted;
+    return this.#filing(() => this.#files.abort(r["intent_id"]));
   }
 
   async fileMkdir(binding: Binding, request: MkdirRequest):
       Promise<{ entry: Entry } | FileConflicted> {
     const account = this.#filer(binding, "write_files");
     const r = fileFields(request, ["path", "expected_etag"]);
-    const made = await fileConflicted(() => ({
+    return this.#filing(() => fileConflicted(() => ({
       entry: this.#files.mkdir(r["path"], { expected: r["expected_etag"],
                                             writer: fileWriter(account) }),
-    }));
-    await this.#rearm();
-    return made;
+    })));
   }
 
   async fileRemove(binding: Binding, request: RemoveRequest):
       Promise<{ removed: number } | FileConflicted> {
     const account = this.#filer(binding, "write_files");
     const r = fileFields(request, ["path", "expected_etag", "recursive"]);
-    const removed = await fileConflicted(() => this.#files.remove(r["path"], {
+    return this.#filing(() => fileConflicted(() => this.#files.remove(r["path"], {
       expected: r["expected_etag"], recursive: flag(r["recursive"], "recursive"),
-      writer: fileWriter(account) }));
-    await this.#rearm();
-    return removed;
+      writer: fileWriter(account) })));
   }
 
   async fileRename(binding: Binding, request: RenameRequest):
       Promise<{ entry: Entry } | FileConflicted> {
     const account = this.#filer(binding, "write_files");
     const r = fileFields(request, ["from", "to", "expected_etag", "replace"]);
-    const renamed = await fileConflicted(() => ({
+    return this.#filing(() => fileConflicted(() => ({
       entry: this.#files.rename(r["from"], r["to"], {
         expected: r["expected_etag"], replace: flag(r["replace"], "replace"),
         writer: fileWriter(account) }),
-    }));
-    await this.#rearm();
-    return renamed;
+    })));
   }
 
   fileHistory(binding: Binding, request: FileHistoryRequest):
@@ -1043,21 +1049,27 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       Promise<{ entry: Entry } | FileConflicted> {
     const account = this.#filer(binding, "write_files");
     const r = fileFields(request, ["path", "version", "expected_etag"]);
-    const restored = await fileConflicted(() => ({
+    return this.#filing(() => fileConflicted(() => ({
       entry: this.#files.restore(r["path"], r["version"], {
         expected: r["expected_etag"], writer: fileWriter(account) }),
-    }));
-    await this.#rearm();
-    return restored;
+    })));
   }
 
   /** Drop a kept version's content: the owner's own act, never an outside client's. */
   async fileRedact(binding: Binding, request: VersionRequest): Promise<{ redacted: number }> {
     this.#owner(binding, "redact its file history");
     const r = fileFields(request, ["path", "version"]);
-    const redacted = this.#files.redact(r["path"], r["version"]);
-    await this.#rearm();
-    return redacted;
+    return this.#filing(() => this.#files.redact(r["path"], r["version"]));
+  }
+
+  /**
+   * Drop a path's kept versions but its current one: the owner's own act, never an
+   * outside client's, and never refused for a quota.
+   */
+  async fileHistoryPurge(binding: Binding, request: FileRequest): Promise<{ purged: number }> {
+    this.#owner(binding, "purge its file history");
+    const r = fileFields(request, ["path"]);
+    return this.#filing(() => this.#files.purge(r["path"]));
   }
 
   fileChanges(binding: Binding, request: ChangesRequest):
@@ -1096,10 +1108,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async fileSyncCommit(binding: Binding, request: SyncCommitRequest):
       Promise<{ outcomes: SyncOutcome[] }> {
     this.#owner(binding, "hold the file sync lease");
-    const r = fileFields(request, ["lease_id", "epoch", "intent_id", "ops"]);
-    const committed = this.#files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"],
-                                               intent_id: r["intent_id"], ops: r["ops"] });
-    await this.#rearm();
-    return committed;
+    const r = fileFields(request, ["lease_id", "epoch", "ops"]);
+    return this.#filing(() => this.#files.syncCommit({ lease_id: r["lease_id"],
+                                                       epoch: r["epoch"], ops: r["ops"] }));
   }
 }

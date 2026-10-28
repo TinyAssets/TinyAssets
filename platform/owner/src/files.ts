@@ -11,48 +11,69 @@
  *
  * - Versions. Every commit is stamped with the next owner-wide `seq`, and a version is
  *   named by that seq: it never repeats across a delete, a re-create or a history prune,
- *   with no tombstone kept. Each write is a compare-and-swap on the entry's etag (over
- *   its version and content), as on the board (S34): `expected` null writes
- *   unconditionally, `""` only creates, and anything else must be the current etag; a
- *   lost swap is answered with the entry as it stands ({@link FileConflict}).
- * - History. Every change appends a history row (`file_history`), which is also the
- *   change feed. Retention keeps every version younger than the policy's
- *   `retention_days` and each live path's newest `keep_versions`; the temporary area
- *   keeps only its newest. A row is due for pruning (`prune_after`) from the moment it
- *   falls out of what is kept, and the alarm prunes due rows. `restore` writes an old
- *   version as a new one; `redact` drops one old version's content.
- * - Uploads (restic's order: bytes, then index, then snapshot). An upload intent records
- *   its chunks as held before any byte is sent, then the bytes go to `FILES` (R2 checks
- *   each hash), then one transaction commits content and entry. So every object in the
- *   bucket has a row first, and garbage collection never lists the bucket. A chunk whose
- *   references and holds both reach zero becomes garbage, deleted after a 24 h grace on
- *   the owner's one schedule; a stored garbage chunk revives when wanted again, one
- *   whose upload never committed does not, and one being deleted is never referenced.
+ *   with no tombstone kept. Each write is a compare-and-swap on the entry's etag, as on
+ *   the board (S34): `expected` null writes unconditionally, `""` only creates, and
+ *   anything else must be the current etag; a lost swap is answered with the entry as it
+ *   stands ({@link FileConflict}).
+ * - Content. A content id names its kind and size with its bytes (inline, one chunk, or
+ *   a chunk list), so no content of one kind can name another's; content already stored
+ *   under an id is reused only when it is the same content, else the write fails loudly.
+ * - History. Every workspace change appends a history row (`file_history`), which is
+ *   also the change feed; the temporary area keeps none. Retention keeps every version
+ *   younger than the policy's `retention_days` and each live path's newest
+ *   `keep_versions`. A row is due for pruning (`prune_after`) from the moment it falls
+ *   out of what is kept, and housekeeping prunes due rows; a retention change is applied
+ *   to the rows already kept, by housekeeping too. `restore` writes an old version as a
+ *   new one; `redact` drops one old version's content, whose bytes go once no other row
+ *   holds the same content; `purge` drops a path's old versions.
+ * - Uploads (restic's order: bytes, then index, then snapshot). An upload intent
+ *   declares a file's size and its chunks, cut at 4 MiB, and records them as held
+ *   before any byte is sent. A chunk counts as stored only once `FILES` accepted a put
+ *   R2 verified, recorded after the put resolves; a commit refuses any chunk not stored.
+ *   So every object in the bucket has a row first, garbage collection never lists the
+ *   bucket, and a deduplicated chunk is always one the bucket holds. A chunk whose
+ *   references and holds both reach zero becomes garbage, deleted after a 24 h grace; a
+ *   stored garbage chunk revives when wanted again, one never stored is sent again, and
+ *   one being deleted is never held.
  * - Quotas (owner policy, `FILE_DEFAULTS`): chunk bytes live and in history, inline
  *   bytes, entries, history rows and a file's size, each refused loudly at its bound,
- *   with nothing left behind. They read counters the schema's triggers keep.
+ *   with nothing left behind. A change that only removes (a delete, a redaction, a purge,
+ *   housekeeping) is never refused, so an owner at a bound can always make room. They
+ *   read counters the schema's triggers keep, as do the bounds on open uploads.
  * - The sync lease, for the sandbox's sync agent (tasks 6): a random `lease_id` is the
  *   claim token and a rising `epoch` the fencing number, as the ledger's claims are. A
- *   sync commit is refused unless both are the live lease's. API writes never take the
- *   lease. A sync op made against a version that has moved on leaves the API's version
- *   current and saves the sandbox's content beside it as `<path>.ta-conflict-<epoch>`,
- *   reported in the answer: nothing is dropped and nothing is silent.
+ *   sync commit is refused unless both are the live lease's; within it, each op has its
+ *   own outcome and nothing one op does undoes another. API writes never take the
+ *   lease. A sync write made against a version that has moved on, or blocked by what the
+ *   API made of a parent, leaves the API's state in place and saves the sandbox's content
+ *   beside it under a new conflict name, reported in the answer: nothing is dropped and
+ *   nothing is silent.
  *
  * Every change runs in one `transactionSync`, so a refusal or a thrown error leaves
  * nothing behind; only chunk bytes and their deletes cross to `FILES`, between
- * transactions. Watchers in the object (the pi environment's `watch`) hear each
- * committed change.
+ * transactions, at most two chunks a call. Watchers in the object (the pi environment's
+ * `watch`) hear each committed change.
  */
 import { createHash, randomBytes } from "node:crypto";
 
 import { Invalid, Refused } from "./errors";
-import { ancestors, isRoot, nameOf, parentOf, storedPath, TEMP, within, WORKSPACE } from "./paths";
-import { codePoints, isPrintable } from "./text";
+import {
+  ancestors, isRoot, MAX_NAME_BYTES, nameOf, parentOf, storedPath, TEMP, within, WORKSPACE,
+} from "./paths";
+import { codePoints, isPrintable, utf8Bytes } from "./text";
 
 /** A chunk's most bytes: the files Worker's `CHUNK_BYTES` (a test ties the two). */
 export const CHUNK_BYTES = 4 * 1024 * 1024;
-/** The most bytes one `FILES` call moves: the files Worker's `BATCH_BYTES`. */
-export const BATCH_BYTES = 6 * CHUNK_BYTES;
+/**
+ * The most bytes one `FILES` call moves, the files Worker's `BATCH_BYTES`: two chunks, so
+ * no call holds much of the isolate's memory.
+ */
+export const BATCH_BYTES = 2 * CHUNK_BYTES;
+/**
+ * The most bytes one whole-file write moves through the object (four chunks, two `FILES`
+ * calls); larger files go by upload, a chunk at a time.
+ */
+export const WHOLE_BYTES = 4 * CHUNK_BYTES;
 /** Files this size or smaller are kept inline in the object. */
 export const INLINE_BYTES = 4096;
 /** An upload intent's life: past it, its uncommitted chunks become garbage. */
@@ -72,13 +93,20 @@ export const TEMP_TTL_S = 86_400;
 export const HOUSEKEEPING_SLACK_S = 3600;
 /** R2's most keys in one delete, and so the most chunks one alarm run deletes. */
 export const DELETE_BATCH = 1000;
-/** Rows one alarm run prunes or expires per kind. */
+/** Rows one alarm run prunes or expires per kind, and paths it re-marks for retention. */
 export const HOUSEKEEPING_BATCH = 500;
 export const MAX_LIST = 1000;
-/** Chunks one intent may hold: a 40 GiB file. */
+/** Chunks one intent may hold: a 40 GiB file, policy's highest `max_file_bytes`. */
 export const MAX_INTENT_CHUNKS = 10_000;
+/** Open upload intents, and the chunks they hold in all. */
+export const MAX_OPEN_INTENTS = 64;
+export const MAX_HELD_CHUNKS = 20_000;
 /** Ops in one sync commit. */
 export const MAX_SYNC_OPS = 1000;
+/** The most versions policy can keep of a path (`FILE_SETTINGS.keep_versions`). */
+export const KEEP_CEILING = 1000;
+/** Conflict copies of one path one epoch may make. */
+export const MAX_CONFLICT_COPIES = 100;
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const HEX32 = /^[0-9a-f]{32}$/;
@@ -151,6 +179,8 @@ export interface Usage {
   readonly history: number;
   readonly chunk_bytes: number;
   readonly inline_bytes: number;
+  readonly intents: number;
+  readonly intent_chunks: number;
   readonly limits: FileLimits;
 }
 
@@ -165,14 +195,14 @@ export interface Lease {
 /** A sync op: what the sandbox's scan found, against the version it last synced. */
 export type SyncOp =
   | { readonly op: "write"; readonly path: string; readonly base: number | null;
-      readonly mode?: number; readonly inline?: Uint8Array; readonly size?: number;
-      readonly chunks?: string[] }
+      readonly mode?: number; readonly inline?: Uint8Array; readonly intent_id?: string }
   | { readonly op: "mkdir" | "remove"; readonly path: string; readonly base: number | null };
 
 export type SyncOutcome =
   | { readonly path: string; readonly outcome: "committed"; readonly entry: Entry | null }
   | { readonly path: string; readonly outcome: "conflict"; readonly current: Entry | null;
-      readonly copy: Entry | null };
+      readonly copy: Entry | null }
+  | { readonly path: string; readonly outcome: "refused"; readonly reason: string };
 
 /** The expected etag is not the entry's; `current` is the entry as stored, or null. */
 export class FileConflict extends Error {
@@ -212,10 +242,15 @@ type Space = {
   history: number;
   chunk_bytes: number;
   inline_bytes: number;
+  intents: number;
+  intent_chunks: number;
   lease_id: string | null;
   epoch: number;
   holder: string | null;
   lease_expires: number;
+  retained_keep: number;
+  retained_days: number;
+  retain_cursor: string | null;
 };
 
 type Counters = Pick<Space, "entries" | "history" | "chunk_bytes" | "inline_bytes">;
@@ -223,8 +258,22 @@ type Counters = Pick<Space, "entries" | "history" | "chunk_bytes" | "inline_byte
 /** Paths each change touched, for the object's watchers. */
 type Touched = string[];
 
+type Intent = { size: number; chunks: string[] };
+
 export function sha256Hex(bytes: Uint8Array | string): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+/** The content id of small content kept inline: its kind, size and bytes. */
+export function inlineId(bytes: Uint8Array): string {
+  return createHash("sha256").update(`ta-inline\n${bytes.byteLength}\n`).update(bytes)
+    .digest("hex");
+}
+
+/** The content id of chunked content: its kind (one chunk, or a list), size and chunks. */
+export function chunkedId(size: number, shas: readonly string[]): string {
+  return shas.length === 1 ? sha256Hex(`ta-single\n${size}\n${shas[0]}`)
+    : sha256Hex(`ta-list\n${size}\n${shas.join("\n")}`);
 }
 
 function etag(e: { version: number; kind: string; content_id: string | null; mode: number }):
@@ -276,18 +325,17 @@ function count(value: unknown, what: string, low: number, high: number): number 
   return value;
 }
 
-/** A file's chunk hashes and how they cut it. */
+function hashes(packed: string): string[] {
+  return packed.match(/.{64}/g) ?? [];
+}
+
+/** The chunk sizes a file of `size` bytes is cut into. */
 export function chunkPlan(size: number): number[] {
   const sizes: number[] = [];
   for (let at = 0; at < size; at += CHUNK_BYTES) {
     sizes.push(Math.min(CHUNK_BYTES, size - at));
   }
   return sizes;
-}
-
-/** The content id of chunked content: its one chunk's hash, or a hash of the list. */
-export function chunkedId(size: number, shas: readonly string[]): string {
-  return shas.length === 1 ? shas[0]! : sha256Hex(`ta-chunks:${size}:${shas.join("")}`);
 }
 
 /** Bytes cut into 4 MiB chunks, each with its hash. */
@@ -311,6 +359,19 @@ export function batches<T extends { size: number }>(items: readonly T[]): T[][] 
     bytes += item.size;
   }
   return groups;
+}
+
+/**
+ * A conflict copy's name: `name` cut at a code point to leave room, then
+ * `.ta-conflict-<epoch>` and, past the first, `-<n>`, at most 255 bytes in all.
+ */
+export function conflictName(name: string, epoch: number, n: number): string {
+  const suffix = `.ta-conflict-${epoch}${n > 1 ? `-${n}` : ""}`;
+  const points = [...name];
+  while (utf8Bytes(points.join("")) + suffix.length > MAX_NAME_BYTES) {
+    points.pop();
+  }
+  return points.join("") + suffix;
 }
 
 export class Files {
@@ -365,13 +426,18 @@ export class Files {
     }
   }
 
-  /** Run `act` in one transaction, its quotas checked at the end, then tell watchers. */
-  #change<T>(act: (touched: Touched, now: number) => T): T {
+  /**
+   * Run `act` in one transaction, then tell watchers. Its quotas are checked at the end,
+   * unless it only removes (`freeing`): a delete, a redaction, a purge or housekeeping.
+   */
+  #change<T>(act: (touched: Touched, now: number) => T, freeing = false): T {
     const touched: Touched = [];
     const result = this.#storage.transactionSync(() => {
       const before = this.#space();
       const value = act(touched, Date.now() / 1000);
-      this.#bounds(before);
+      if (!freeing) {
+        this.#bounds(before);
+      }
       return value;
     });
     this.#notify(touched);
@@ -508,7 +574,7 @@ export class Files {
     return row;
   }
 
-  /** Chunk bytes in order, fetched from `FILES` in batches it allows. */
+  /** Chunk bytes in order, fetched from `FILES` at most two chunks a call. */
   async fetch(reads: readonly { sha256: string; offset?: number; length?: number }[]):
       Promise<Uint8Array[]> {
     if (reads.length === 0) {
@@ -551,24 +617,31 @@ export class Files {
         "WHERE version > ? AND version <= ? ORDER BY version LIMIT ?", from, space.seq, most,
     ).toArray();
     return {
-      changes: rows.filter((row) => within(row.path, WORKSPACE)),
+      changes: rows,
       cursor: rows.length === most ? rows.at(-1)!.version : space.seq,
       reset: from < space.feed_floor,
     };
   }
 
   usage(): Usage {
-    const { entries, history, chunk_bytes, inline_bytes } = this.#space();
-    return { entries, history, chunk_bytes, inline_bytes, limits: this.#limits() };
+    const { entries, history, chunk_bytes, inline_bytes, intents, intent_chunks } = this.#space();
+    return { entries, history, chunk_bytes, inline_bytes, intents, intent_chunks,
+             limits: this.#limits() };
   }
 
   // -- WRITING ------------------------------------------------------------------
 
-  /** Stamp the next version, append its history row, and return the version. */
+  /**
+   * Stamp the next version and, for a workspace path, append its history row; return
+   * the version. The temporary area keeps no history.
+   */
   #record(path: string, op: string, kind: FileKind | null, contentId: string | null,
           size: number, mode: number, writer: string, now: number): number {
     const version = this.#sql.exec<{ seq: number }>(
       "UPDATE file_space SET seq = seq + 1 RETURNING seq").one().seq;
+    if (within(path, TEMP)) {
+      return version;
+    }
     this.#sql.exec(
       "INSERT INTO file_history (version, path, op, kind, content_id, size, mode, writer, at) " +
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -579,25 +652,37 @@ export class Files {
   }
 
   /**
-   * Mark what retention no longer keeps of `path`: past its newest `keep` versions (none
-   * once it is gone), each row is due `retention_days` after it was written. The
-   * temporary area keeps its newest version only, for no time.
+   * Mark what retention no longer keeps of `path` after a change: past its newest `keep`
+   * versions (none once it is gone), each row is due `retention_days` after it was
+   * written. On a change only the newest rows move in or out of what is kept, so this
+   * looks no further than the most versions policy can keep; a policy change re-marks
+   * every row through housekeeping (`#remark`).
    */
   #retain(path: string, live: boolean): void {
     const limits = this.#limits();
-    const temp = within(path, TEMP);
-    const keep = live ? (temp ? 1 : limits.keep_versions) : 0;
-    const days = temp ? 0 : limits.retention_days * 86_400;
+    const keep = live ? limits.keep_versions : 0;
     const newest = "SELECT version FROM file_history WHERE path = ? ORDER BY version DESC " +
       "LIMIT ? OFFSET ?";
     if (keep > 0) {
       this.#sql.exec(`UPDATE file_history SET prune_after = NULL WHERE prune_after IS NOT NULL ` +
                      `AND version IN (${newest})`, path, keep, 0);
     }
-    // Only a path's newest rows are ever kept, so the rows retention lets go of sit just
-    // past them: at most as many as the most versions policy can keep.
     this.#sql.exec(`UPDATE file_history SET prune_after = at + ? WHERE prune_after IS NULL ` +
-                   `AND version IN (${newest})`, days, path, 1000, keep);
+                   `AND version IN (${newest})`, limits.retention_days * 86_400, path,
+                   KEEP_CEILING, keep);
+  }
+
+  /** Every row of `path` marked as the policy in force keeps it. */
+  #remark(path: string, limits: FileLimits): void {
+    const live = this.#entry(path) !== undefined;
+    const keep = live ? limits.keep_versions : 0;
+    const days = limits.retention_days * 86_400;
+    const newest = "SELECT version FROM file_history WHERE path = ? ORDER BY version DESC LIMIT ?";
+    this.#sql.exec(`UPDATE file_history SET prune_after = NULL WHERE path = ? ` +
+                   `AND prune_after IS NOT NULL AND version IN (${newest})`, path, path, keep);
+    this.#sql.exec(`UPDATE file_history SET prune_after = at + ? WHERE path = ? ` +
+                   `AND version NOT IN (${newest}) AND (prune_after IS NULL ` +
+                   `OR prune_after != at + ?)`, days, path, path, keep, days);
   }
 
   #upsert(path: string, kind: FileKind, version: number, contentId: string | null, size: number,
@@ -672,12 +757,36 @@ export class Files {
     return shown(this.#upsert(path, "file", version, contentId, size, mode, writer, now));
   }
 
+  /**
+   * Content already stored under `contentId` must be this content: the same size and
+   * kind, and the same bytes or chunk list. Anything else fails loudly, never reused.
+   * Returns whether it was there.
+   */
+  #known(contentId: string, size: number, inline: Uint8Array | null,
+         shas: readonly string[] | null): boolean {
+    const row = this.#sql.exec<{ size: number; inline: ArrayBuffer | null }>(
+      "SELECT size, inline FROM file_contents WHERE content_id = ?", contentId).toArray()[0];
+    if (row === undefined) {
+      return false;
+    }
+    const same = row.size === size && (inline === null ? row.inline === null
+      : row.inline !== null && sha256Hex(new Uint8Array(row.inline)) === sha256Hex(inline))
+      && (shas === null || this.#sql.exec<{ sha256: string }>(
+        "SELECT sha256 FROM file_content_chunks WHERE content_id = ? ORDER BY idx", contentId)
+        .toArray().map((r) => r.sha256).join() === shas.join());
+    if (!same) {
+      throw new Error("a content id names other stored content");
+    }
+    return true;
+  }
+
   /** Small content kept inline: its id, the row made when new. */
   #inline(bytes: Uint8Array): string {
-    const contentId = sha256Hex(bytes);
-    this.#sql.exec("INSERT INTO file_contents (content_id, size, inline) VALUES (?, ?, ?) " +
-                     "ON CONFLICT (content_id) DO NOTHING", contentId, bytes.byteLength,
-                   buffer(bytes));
+    const contentId = inlineId(bytes);
+    if (!this.#known(contentId, bytes.byteLength, bytes, null)) {
+      this.#sql.exec("INSERT INTO file_contents (content_id, size, inline) VALUES (?, ?, ?)",
+                     contentId, bytes.byteLength, buffer(bytes));
+    }
     return contentId;
   }
 
@@ -691,9 +800,9 @@ export class Files {
 
   /**
    * Write bytes as `path`: inline, or chunked (intent, bytes to `FILES`, commit), the
-   * object's own writes and the doors' small ones. `prefix` is whole chunks of content
-   * already stored that come first (an append or a truncate keeps them), so only the
-   * chunks after them are cut from `bytes` and sent.
+   * object's own writes and the doors' small ones, at most `WHOLE_BYTES` at once.
+   * `prefix` is whole chunks of content already stored that come first (an append or a
+   * truncate keeps them), so only the chunks after them are cut from `bytes` and sent.
    */
   async write(path: unknown, bytes: unknown, options: { expected: unknown; mode?: unknown;
               writer: string; parents?: boolean; prefix?: readonly ChunkRef[] }):
@@ -701,6 +810,9 @@ export class Files {
     const at = storedPath(path);
     if (!(bytes instanceof Uint8Array)) {
       throw new Invalid("content is bytes");
+    }
+    if (bytes.byteLength > WHOLE_BYTES) {
+      throw new Invalid(`a whole write moves at most ${WHOLE_BYTES} bytes; upload larger files`);
     }
     const expected = expectedEtag(options.expected);
     const mode = modeOf(options.mode);
@@ -713,108 +825,111 @@ export class Files {
     if (size <= INLINE_BYTES) {
       return this.#writeInline(at, bytes, expected, mode, options.writer, parents);
     }
-    if (size > this.#limits().max_file_bytes) {
-      throw new Refused("the file is larger than the owner's file size quota");
-    }
     const tail = cut(bytes);
-    const chunks: ChunkRef[] = [...prefix,
-                                ...tail.map((chunk) => ({ sha256: chunk.sha256, size: chunk.size }))];
-    const { intent_id, missing } = this.begin(chunks);
+    const { intent_id, missing } = this.begin(size, [...prefix, ...tail]
+      .map((chunk) => chunk.sha256));
     try {
       const wanted = new Set(missing);
       const puts = tail.filter((chunk) => wanted.delete(chunk.sha256));
       if (wanted.size > 0) {
         throw new Refused("a kept chunk of this file is gone; write it whole");
       }
-      const ns = this.ns();
       for (const group of batches(puts)) {
-        await this.#store.putChunks(ns, group.map(({ sha256, bytes: piece }) =>
-          ({ sha256, bytes: piece })));
+        await this.#put(group);
       }
-      return this.commit(intent_id, at, { expected, size, mode,
-                                          chunks: chunks.map((chunk) => chunk.sha256),
-                                          writer: options.writer, parents });
+      return this.commit(intent_id, at, { expected, mode, writer: options.writer, parents });
     } catch (error) {
       this.abort(intent_id);
       throw error;
     }
   }
 
+  /** Put chunks through `FILES`, and record them stored once it accepted them. */
+  async #put(chunks: readonly { sha256: string; bytes: Uint8Array }[]): Promise<void> {
+    await this.#store.putChunks(this.ns(), chunks.map(({ sha256, bytes }) => ({ sha256, bytes })));
+    this.#storage.transactionSync(() => {
+      for (const { sha256 } of chunks) {
+        this.#sql.exec("UPDATE file_chunks SET stored = 1 WHERE sha256 = ? AND stored = 0",
+                       sha256);
+      }
+    });
+  }
+
   /**
-   * Record an upload: each chunk held, and the ones whose bytes must be sent. A chunk
-   * already stored is not sent again; one being deleted is refused, to begin again.
+   * Record an upload of a file of `size` bytes made of `chunks`, cut at 4 MiB: each chunk
+   * held, and the ones whose bytes must be sent. A stored chunk is not sent again; one
+   * being deleted is refused, to begin again.
    */
-  begin(chunks: unknown): { intent_id: string; missing: string[]; expires_at: number } {
-    if (!Array.isArray(chunks) || chunks.length === 0) {
-      throw new Invalid("an upload is a list of chunks");
-    }
-    const wanted = new Map<string, number>();
-    for (const chunk of chunks as unknown[]) {
-      const { sha256, size } = (chunk ?? {}) as Record<string, unknown>;
-      if (typeof sha256 !== "string" || !HEX64.test(sha256)) {
-        throw new Invalid("a chunk hash is 64 lowercase hex characters");
-      }
-      const bytes = count(size, "a chunk's size", 1, CHUNK_BYTES);
-      if ((wanted.get(sha256) ?? bytes) !== bytes) {
-        throw new Invalid("a chunk hash names one size");
-      }
-      wanted.set(sha256, bytes);
-    }
-    if (wanted.size > MAX_INTENT_CHUNKS) {
-      throw new Invalid(`an upload holds at most ${MAX_INTENT_CHUNKS} chunks`);
-    }
-    if ([...wanted.values()].reduce((sum, bytes) => sum + bytes, 0)
-        > this.#limits().max_file_bytes) {
+  begin(size: unknown, chunks: unknown): { intent_id: string; missing: string[];
+                                          expires_at: number } {
+    const bytes = count(size, "size", INLINE_BYTES + 1, Number.MAX_SAFE_INTEGER);
+    if (bytes > this.#limits().max_file_bytes) {
       throw new Refused("the file is larger than the owner's file size quota");
     }
+    const plan = chunkPlan(bytes);
+    if (plan.length > MAX_INTENT_CHUNKS) {
+      throw new Invalid(`an upload holds at most ${MAX_INTENT_CHUNKS} chunks`);
+    }
+    if (!Array.isArray(chunks) || chunks.length !== plan.length
+        || chunks.some((sha) => typeof sha !== "string" || !HEX64.test(sha))) {
+      throw new Invalid("an upload names a 64-hex hash for each 4 MiB of the file");
+    }
+    const wanted = new Map<string, number>();
+    (chunks as string[]).forEach((sha256, index) => {
+      if ((wanted.get(sha256) ?? plan[index]) !== plan[index]) {
+        throw new Invalid("a chunk hash names one size");
+      }
+      wanted.set(sha256, plan[index]!);
+    });
     const intentId = randomBytes(16).toString("hex");
     return this.#change((_touched, now) => {
       const sql = this.#sql;
+      const space = this.#space();
+      if (space.intents >= MAX_OPEN_INTENTS || space.intent_chunks + plan.length > MAX_HELD_CHUNKS) {
+        throw new Refused("too many uploads are open; commit or abort one first");
+      }
       const missing: string[] = [];
-      for (const [sha256, size] of wanted) {
+      for (const [sha256, chunkSize] of wanted) {
         const row = sql.exec<{ state: string; stored: number; size: number }>(
           "SELECT state, stored, size FROM file_chunks WHERE sha256 = ?", sha256).toArray()[0];
-        if (row !== undefined && row.size !== size) {
+        if (row !== undefined && row.size !== chunkSize) {
           throw new Invalid("a chunk hash names one size");
         }
         if (row === undefined) {
           sql.exec("INSERT INTO file_chunks (sha256, size, state, stored, holds) " +
-                     "VALUES (?, ?, 'uploading', 0, 1)", sha256, size);
-          missing.push(sha256);
+                     "VALUES (?, ?, 'uploading', 0, 1)", sha256, chunkSize);
         } else if (row.state === "deleting") {
           throw new Refused("a chunk of this upload is being deleted; begin again");
         } else if (row.state === "garbage") {
-          // A stored chunk revives; one whose upload never committed is sent again.
-          sql.exec("UPDATE file_chunks SET state = ?, holds = 1, gc_after = NULL " +
-                     "WHERE sha256 = ?", row.stored ? "live" : "uploading", sha256);
-          if (!row.stored) {
-            missing.push(sha256);
-          }
+          sql.exec("UPDATE file_chunks SET state = 'uploading', holds = 1, gc_after = NULL " +
+                     "WHERE sha256 = ?", sha256);
         } else {
           sql.exec("UPDATE file_chunks SET holds = holds + 1 WHERE sha256 = ?", sha256);
-          if (row.state === "uploading") {
-            missing.push(sha256);
-          }
+        }
+        if (row === undefined || !row.stored) {
+          missing.push(sha256);
         }
       }
       const expiresAt = now + INTENT_TTL_S;
-      sql.exec("INSERT INTO file_intents (intent_id, chunks, expires_at) VALUES (?, ?, ?)",
-               intentId, [...wanted.keys()].join(""), expiresAt);
+      sql.exec("INSERT INTO file_intents (intent_id, size, chunks, expires_at) " +
+                 "VALUES (?, ?, ?, ?)", intentId, bytes, (chunks as string[]).join(""),
+               expiresAt);
       return { intent_id: intentId, missing, expires_at: expiresAt };
     });
   }
 
-  /** A live intent's chunks, or refused. */
-  #intent(intentId: unknown, now: number): Set<string> {
+  /** A live intent, or refused. */
+  #intent(intentId: unknown, now: number): Intent {
     if (typeof intentId !== "string" || !HEX32.test(intentId)) {
       throw new Invalid("an intent id is 32 lowercase hex characters");
     }
-    const row = this.#sql.exec<{ chunks: string; expires_at: number }>(
-      "SELECT chunks, expires_at FROM file_intents WHERE intent_id = ?", intentId).toArray()[0];
+    const row = this.#sql.exec<{ size: number; chunks: string; expires_at: number }>(
+      "SELECT size, chunks, expires_at FROM file_intents WHERE intent_id = ?", intentId)
+      .toArray()[0];
     if (row === undefined || row.expires_at <= now) {
       throw new Refused("no such upload: it was committed, abandoned or has expired");
     }
-    return new Set(row.chunks.match(/.{64}/g) ?? []);
+    return { size: row.size, chunks: hashes(row.chunks) };
   }
 
   /** End an intent: its holds go, and chunks nothing else holds become garbage. */
@@ -822,7 +937,7 @@ export class Files {
     const sql = this.#sql;
     const row = sql.exec<{ chunks: string }>(
       "DELETE FROM file_intents WHERE intent_id = ? RETURNING chunks", intentId).toArray()[0];
-    for (const sha256 of row?.chunks.match(/.{64}/g) ?? []) {
+    for (const sha256 of new Set(hashes(row?.chunks ?? ""))) {
       sql.exec("UPDATE file_chunks SET holds = holds - 1 WHERE sha256 = ?", sha256);
     }
   }
@@ -837,12 +952,15 @@ export class Files {
         .toArray().length > 0;
       this.#release(intentId);
       return { aborted: held };
-    });
+    }, true);
   }
 
-  /** Send bytes for chunks an intent holds, each checked against the size it declared. */
+  /**
+   * Send bytes for chunks an intent holds, at most two chunks a call, each the size the
+   * intent declared; each is stored once `FILES` accepted it.
+   */
   async upload(intentId: unknown, chunks: unknown): Promise<{ created: number }> {
-    const held = this.#intent(intentId, Date.now() / 1000);
+    const held = new Set(this.#intent(intentId, Date.now() / 1000).chunks);
     if (!Array.isArray(chunks) || chunks.length === 0) {
       throw new Invalid("an upload sends a list of chunks");
     }
@@ -861,57 +979,45 @@ export class Files {
     if (puts.reduce((sum, put) => sum + put.size, 0) > BATCH_BYTES) {
       throw new Invalid(`an upload sends at most ${BATCH_BYTES} bytes at once`);
     }
-    return this.#store.putChunks(this.ns(), puts.map(({ sha256, bytes }) => ({ sha256, bytes })));
+    await this.#put(puts);
+    return { created: puts.length };
   }
 
   /**
-   * Chunked content from a live intent, inside the caller's transaction: every chunk the
-   * intent's, cut at 4 MiB, making up `size`. The committer asserts their bytes are
-   * stored (it put them, or they were); a chunk being or already deleted is refused.
+   * The content an intent declared, inside the caller's transaction: every chunk stored,
+   * made live, and the content row made or checked. A chunk `FILES` never accepted is
+   * refused: no commit can claim bytes the bucket does not hold.
    */
-  #chunked(held: Set<string>, size: unknown, shas: unknown): { contentId: string; size: number } {
-    const bytes = count(size, "size", INLINE_BYTES + 1, Number.MAX_SAFE_INTEGER);
-    const plan = chunkPlan(bytes);
-    if (!Array.isArray(shas) || shas.length !== plan.length
-        || shas.some((sha) => typeof sha !== "string" || !held.has(sha))) {
-      throw new Invalid("a commit names its intent's chunks, one for each 4 MiB of the file");
-    }
+  #fromIntent(intent: Intent): { contentId: string; size: number } {
     const sql = this.#sql;
-    (shas as string[]).forEach((sha256, index) => {
-      const row = sql.exec<{ size: number; state: string }>(
-        "SELECT size, state FROM file_chunks WHERE sha256 = ?", sha256).toArray()[0];
-      if (row === undefined || row.state === "garbage" || row.state === "deleting") {
-        throw new Refused("a chunk of this commit is gone; upload it again");
+    for (const sha256 of new Set(intent.chunks)) {
+      const row = sql.exec<{ stored: number }>(
+        "SELECT stored FROM file_chunks WHERE sha256 = ?", sha256).toArray()[0];
+      if (row?.stored !== 1) {
+        throw new Refused("a chunk of this commit was never stored; send its bytes first");
       }
-      if (row.size !== plan[index]) {
-        throw new Invalid("the chunks do not make up the file's size");
-      }
-    });
-    for (const sha256 of new Set(shas as string[])) {
-      sql.exec("UPDATE file_chunks SET state = 'live', stored = 1 WHERE sha256 = ? " +
-                 "AND state = 'uploading'", sha256);
+      sql.exec("UPDATE file_chunks SET state = 'live' WHERE sha256 = ? AND state = 'uploading'",
+               sha256);
     }
-    const contentId = chunkedId(bytes, shas as string[]);
-    const made = sql.exec("INSERT INTO file_contents (content_id, size) VALUES (?, ?) " +
-                            "ON CONFLICT (content_id) DO NOTHING RETURNING content_id",
-                          contentId, bytes).toArray().length > 0;
-    if (made) {
-      (shas as string[]).forEach((sha256, index) => sql.exec(
+    const contentId = chunkedId(intent.size, intent.chunks);
+    if (!this.#known(contentId, intent.size, null, intent.chunks)) {
+      sql.exec("INSERT INTO file_contents (content_id, size) VALUES (?, ?)", contentId,
+               intent.size);
+      intent.chunks.forEach((sha256, index) => sql.exec(
         "INSERT INTO file_content_chunks (content_id, idx, sha256) VALUES (?, ?, ?)",
         contentId, index, sha256));
     }
-    return { contentId, size: bytes };
+    return { contentId, size: intent.size };
   }
 
-  /** Commit an upload as `path`'s next version; the intent ends either way but a refusal. */
-  commit(intentId: unknown, path: unknown, request: { expected: unknown; size: unknown;
-         chunks: unknown; mode?: unknown; writer: string; parents?: boolean }): Entry {
+  /** Commit an upload as `path`'s next version; the intent ends with it. */
+  commit(intentId: unknown, path: unknown, request: { expected: unknown; mode?: unknown;
+         writer: string; parents?: boolean }): Entry {
     const at = storedPath(path);
     const expected = expectedEtag(request.expected);
     const mode = modeOf(request.mode);
     return this.#change((touched, now) => {
-      const held = this.#intent(intentId, now);
-      const { contentId, size } = this.#chunked(held, request.size, request.chunks);
+      const { contentId, size } = this.#fromIntent(this.#intent(intentId, now));
       const entry = this.#commit(at, expected, contentId, size, mode, request.writer, "write",
                                  request.parents ?? true, now, touched);
       this.#release(intentId as string);
@@ -952,13 +1058,16 @@ export class Files {
                               null, 0, 0, writer, now));
   }
 
-  /** Remove a file, or a directory and everything below it (`recursive`). */
+  /**
+   * Remove a file, or a directory and everything below it (`recursive`). Never refused
+   * for a quota: it only frees.
+   */
   remove(path: unknown, options: { expected: unknown; recursive?: boolean; writer: string }):
       { removed: number } {
     const at = storedPath(path);
     const expected = expectedEtag(options.expected);
     return this.#change((touched, now) => this.#remove(at, expected, options.recursive ?? false,
-                                                       options.writer, now, touched));
+                                                       options.writer, now, touched), true);
   }
 
   #remove(path: string, expected: string | null, recursive: boolean, writer: string, now: number,
@@ -995,7 +1104,8 @@ export class Files {
   /**
    * Move a file or a directory with everything below it, in one transaction; no byte
    * moves. `replace` lets a file replace a file, or a directory an empty directory, as
-   * POSIX `rename` does; without it an existing destination is a conflict.
+   * POSIX `rename` does; without it an existing destination is a conflict. A path renamed
+   * onto itself changes nothing.
    */
   rename(from: unknown, to: unknown, options: { expected: unknown; replace: boolean;
          writer: string }): Entry {
@@ -1005,7 +1115,7 @@ export class Files {
     if (isRoot(source) || isRoot(target)) {
       throw new Invalid("a root is never renamed");
     }
-    if (within(target, source)) {
+    if (source !== target && within(target, source)) {
       throw new Invalid("a directory is never moved into itself");
     }
     return this.#change((touched, now) => {
@@ -1016,6 +1126,9 @@ export class Files {
       this.#swap(moving, expected);
       if (moving === undefined) {
         throw new FileFault("not_found", "no such file or directory");
+      }
+      if (source === target) {
+        return shown(moving);
       }
       const parent = this.stat(parentOf(target));
       if (parent === null) {
@@ -1075,7 +1188,9 @@ export class Files {
 
   /**
    * Drop one kept version's content (a secret written by mistake). The current version
-   * is never redacted: write a new one first.
+   * is never redacted: write a new one first. Content is shared by every row that holds
+   * the same bytes, so its bytes go only once no other kept row, the current file's
+   * included, holds them; redact each such version to drop them all.
    */
   redact(path: unknown, version: unknown): { redacted: number } {
     const at = storedPath(path);
@@ -1089,7 +1204,26 @@ export class Files {
       }
       this.#sql.exec("UPDATE file_history SET content_id = NULL WHERE version = ?", row.version);
       return { redacted: row.version };
-    });
+    }, true);
+  }
+
+  /**
+   * Drop every kept version of `path` but its current one: the owner's way out of a full
+   * history, never refused for a quota. A gone path's history goes whole, and the feed's
+   * floor rises past it.
+   */
+  purge(path: unknown): { purged: number } {
+    const at = storedPath(path);
+    return this.#change(() => {
+      const current = this.#entry(at)?.version ?? 0;
+      const gone = this.#sql.exec<{ version: number }>(
+        "DELETE FROM file_history WHERE path = ? AND version != ? RETURNING version", at, current,
+      ).toArray().map((row) => row.version);
+      if (current === 0 && gone.length > 0) {
+        this.#sql.exec("UPDATE file_space SET feed_floor = MAX(feed_floor, ?)", Math.max(...gone));
+      }
+      return { purged: gone.length };
+    }, true);
   }
 
   /** A new temporary directory under `/.ta/tmp`, expired after a day. */
@@ -1114,7 +1248,7 @@ export class Files {
       for (const path of paths) {
         this.#dropTemp(nameOf(path), writer, now, touched);
       }
-    });
+    }, true);
   }
 
   #dropTemp(name: string, writer: string, now: number, touched: Touched): void {
@@ -1180,13 +1314,14 @@ export class Files {
 
   /**
    * The sandbox's sync-out, fenced by the lease, in one transaction with one outcome per
-   * op, in order. An op made against a version that has moved on is a conflict: the
-   * current version stays, and a write's content is saved as `<path>.ta-conflict-<epoch>`.
-   * A directory is removed only once empty (the scan removes its contents first), so a
-   * sync never deletes what the API wrote below it. A refusal (a quota, a bad op) refuses
-   * the whole commit.
+   * op, in order. Each op runs in its own savepoint with its own quota check, so one op
+   * that cannot land is reported `refused` with its reason and undoes nothing else. A
+   * write against a version that moved on, or under a parent the API made a file, is a
+   * conflict: the API's state stays, and the sandbox's content is saved under a new
+   * conflict name (`conflictName`). A directory is removed only once empty (the scan
+   * removes its contents first), so a sync never deletes what the API wrote below it.
    */
-  syncCommit(request: { lease_id: unknown; epoch: unknown; intent_id: unknown; ops: unknown }):
+  syncCommit(request: { lease_id: unknown; epoch: unknown; ops: unknown }):
       { outcomes: SyncOutcome[] } {
     const ops = request.ops;
     if (!Array.isArray(ops) || ops.length === 0 || ops.length > MAX_SYNC_OPS) {
@@ -1194,33 +1329,65 @@ export class Files {
     }
     return this.#change((touched, now) => {
       const { epoch } = this.#fenced(request.lease_id, request.epoch, now);
-      const held = request.intent_id === null ? new Set<string>()
-        : this.#intent(request.intent_id, now);
       const writer = `lease:${epoch}`;
       const seen = new Set<string>();
       const outcomes = (ops as unknown[]).map((raw) => {
-        const op = (raw ?? {}) as Record<string, unknown>;
-        const path = storedPath(op["path"]);
-        if (!within(path, WORKSPACE) || isRoot(path) || seen.has(path)) {
-          throw new Invalid("a sync op names one workspace path, once");
+        const op = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+        const named = typeof op["path"] === "string" ? op["path"] : "";
+        const mark = touched.length;
+        try {
+          return this.#storage.transactionSync(() => {
+            const before = this.#space();
+            const path = storedPath(op["path"]);
+            if (!within(path, WORKSPACE) || isRoot(path) || seen.has(path)) {
+              throw new Invalid("a sync op names one workspace path, once");
+            }
+            seen.add(path);
+            const outcome = this.#syncOp(op, path, epoch, writer, now, touched);
+            if (op["op"] !== "remove") {
+              this.#bounds(before);
+            }
+            return outcome;
+          });
+        } catch (error) {
+          touched.length = mark;
+          if (error instanceof Invalid || error instanceof Refused || error instanceof FileFault
+              || error instanceof FileConflict) {
+            return { path: named, outcome: "refused" as const, reason: error.message };
+          }
+          throw error;
         }
-        seen.add(path);
-        const base = op["base"] === null ? null
-          : count(op["base"], "base", 1, Number.MAX_SAFE_INTEGER);
-        const current = this.#entry(path);
-        const moved = base === null ? current !== undefined : current?.version !== base;
-        return this.#syncOp(op, path, moved, current, held, epoch, writer, now, touched);
       });
-      if (request.intent_id !== null) {
-        this.#release(request.intent_id as string);
-      }
       return { outcomes };
-    });
+    }, true);
   }
 
-  #syncOp(op: Record<string, unknown>, path: string, moved: boolean,
-          current: StoredEntry | undefined, held: Set<string>, epoch: number, writer: string,
-          now: number, touched: Touched): SyncOutcome {
+  /** Whether the API made a file of one of `path`'s ancestors. */
+  #blocked(path: string): string | null {
+    return ancestors(path).find((dir) => this.#entry(dir)?.kind === "file") ?? null;
+  }
+
+  /**
+   * Where a conflicting write's content goes: the blocked ancestor, or else the path,
+   * under the first conflict name nothing holds, so a copy never replaces anything.
+   */
+  #copyPath(path: string, epoch: number): string {
+    const at = this.#blocked(path) ?? path;
+    const rest = path.slice(at.length);
+    for (let n = 1; n <= MAX_CONFLICT_COPIES; n++) {
+      const copy = storedPath(`${parentOf(at)}/${conflictName(nameOf(at), epoch, n)}`);
+      if (this.#entry(copy) === undefined) {
+        return copy + rest;
+      }
+    }
+    throw new Refused("too many conflict copies of this path in this epoch");
+  }
+
+  #syncOp(op: Record<string, unknown>, path: string, epoch: number, writer: string, now: number,
+          touched: Touched): SyncOutcome {
+    const base = op["base"] === null ? null : count(op["base"], "base", 1, Number.MAX_SAFE_INTEGER);
+    const current = this.#entry(path);
+    const moved = base === null ? current !== undefined : current?.version !== base;
     const conflict = (copy: Entry | null): SyncOutcome =>
       ({ path, outcome: "conflict", current: current === undefined ? null : shown(current),
          copy });
@@ -1232,25 +1399,25 @@ export class Files {
         if (op["inline"] !== undefined) {
           const bytes = op["inline"];
           if (!(bytes instanceof Uint8Array) || bytes.byteLength > INLINE_BYTES
-              || op["chunks"] !== undefined) {
+              || op["intent_id"] !== undefined) {
             throw new Invalid("an inline sync write is at most 4096 bytes");
           }
           contentId = this.#inline(bytes);
           size = bytes.byteLength;
         } else {
-          ({ contentId, size } = this.#chunked(held, op["size"], op["chunks"]));
+          ({ contentId, size } = this.#fromIntent(this.#intent(op["intent_id"], now)));
+          this.#release(op["intent_id"] as string);
         }
-        if (moved || current?.kind === "dir") {
-          return conflict(this.#commit(storedPath(`${path}.ta-conflict-${epoch}`), null,
-                                       contentId, size, mode, writer, "conflict", true, now,
-                                       touched));
+        if (moved || current?.kind === "dir" || this.#blocked(path) !== null) {
+          return conflict(this.#commit(this.#copyPath(path, epoch), "", contentId, size, mode,
+                                       writer, "conflict", true, now, touched));
         }
         return { path, outcome: "committed",
                  entry: this.#commit(path, null, contentId, size, mode, writer, "write", true, now,
                                      touched) };
       }
       case "mkdir":
-        if (moved && current?.kind !== "dir") {
+        if ((moved && current?.kind !== "dir") || this.#blocked(path) !== null) {
           return conflict(null);
         }
         return { path, outcome: "committed",
@@ -1270,12 +1437,22 @@ export class Files {
 
   // -- HOUSEKEEPING, ON THE OWNER'S ONE SCHEDULE ---------------------------------------
 
+  /** Whether a retention change is still to be applied to the rows already kept. */
+  #reretaining(space: Space, limits: FileLimits): boolean {
+    return space.retain_cursor !== null || space.retained_keep !== limits.keep_versions
+      || space.retained_days !== limits.retention_days;
+  }
+
   /**
    * When housekeeping is next due, never before `now`, or null: expired intents and
-   * temporary directories, due history prunes, and due chunk deletes. Each due time
-   * carries `HOUSEKEEPING_SLACK_S`, so one run takes an hour's work.
+   * temporary directories, due history prunes, and due chunk deletes, each with
+   * `HOUSEKEEPING_SLACK_S`, so one run takes an hour's work; and at once, a retention
+   * change still to apply.
    */
   nextAlarm(now: number): number | null {
+    if (this.#reretaining(this.#space(), this.#limits())) {
+      return now;
+    }
     const times = [
       "SELECT MIN(expires_at) AS due FROM file_intents",
       "SELECT MIN(expires_at) AS due FROM file_temps",
@@ -1287,14 +1464,16 @@ export class Files {
   }
 
   /**
-   * One housekeeping pass: expire intents and temporary directories, prune due history,
-   * then delete due garbage chunks. A delete marks its chunks `deleting` (never
-   * referenced again) before it asks `FILES`, and removes their rows only after; one that
-   * fails is retried later.
+   * One housekeeping pass, the system's own and never refused for a quota: apply a
+   * retention change to kept rows, expire intents and temporary directories, prune due
+   * history, then delete due garbage chunks. A delete marks its chunks `deleting` (never
+   * held again) before it asks `FILES`, and removes their rows only after; one that fails
+   * is retried later.
    */
   async collect(now: number): Promise<void> {
     const sql = this.#sql;
     this.#change((touched) => {
+      this.#reretain();
       for (const { intent_id: intentId } of sql.exec<{ intent_id: string }>(
              "SELECT intent_id FROM file_intents WHERE expires_at <= ? ORDER BY expires_at " +
                "LIMIT ?", now, HOUSEKEEPING_BATCH).toArray()) {
@@ -1306,7 +1485,7 @@ export class Files {
         this.#dropTemp(name, "system", now, touched);
       }
       this.#prune(now);
-    });
+    }, true);
     const due = sql.exec<{ sha256: string }>(
       "SELECT sha256 FROM file_chunks WHERE gc_after IS NOT NULL AND gc_after <= ? " +
         "ORDER BY gc_after LIMIT ?", now, DELETE_BATCH).toArray().map((row) => row.sha256);
@@ -1328,6 +1507,32 @@ export class Files {
   }
 
   /**
+   * Apply the retention policy in force to rows already kept, a batch of paths a pass,
+   * from where the last pass stopped. A policy change during a pass starts it over.
+   */
+  #reretain(): void {
+    const limits = this.#limits();
+    const space = this.#space();
+    if (!this.#reretaining(space, limits)) {
+      return;
+    }
+    let cursor = space.retain_cursor ?? "";
+    if (space.retained_keep !== limits.keep_versions
+        || space.retained_days !== limits.retention_days) {
+      cursor = "";
+    }
+    const paths = this.#sql.exec<{ path: string }>(
+      "SELECT DISTINCT path FROM file_history WHERE path > ? ORDER BY path LIMIT ?", cursor,
+      HOUSEKEEPING_BATCH).toArray().map((row) => row.path);
+    for (const path of paths) {
+      this.#remark(path, limits);
+    }
+    this.#sql.exec("UPDATE file_space SET retained_keep = ?, retained_days = ?, retain_cursor = ?",
+                   limits.keep_versions, limits.retention_days,
+                   paths.length === HOUSEKEEPING_BATCH ? paths.at(-1)! : null);
+  }
+
+  /**
    * Delete due history rows. A pruned row that was its path's newest (a deleted path's
    * last record) raises the feed's floor, so a reader behind it rescans instead of
    * missing the delete.
@@ -1342,7 +1547,7 @@ export class Files {
       sql.exec("DELETE FROM file_history WHERE version = ?", version);
       const newer = sql.exec("SELECT 1 FROM file_history WHERE path = ? AND version > ? LIMIT 1",
                              path, version).toArray().length > 0;
-      if (!newer && within(path, WORKSPACE)) {
+      if (!newer) {
         floor = Math.max(floor, version);
       }
     }
