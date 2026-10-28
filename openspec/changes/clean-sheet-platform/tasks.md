@@ -164,7 +164,7 @@ account and no deploy.
   per background work outliving its RPC, the 15-minute alarm cut, and whether Worker
   `fetch` reaches names resolving to private addresses (miniflare's limit enforcer is a
   no-op, so only live counts). Its results set `calls.ts`'s budgets or pick the
-  multiplexed gateway channel.
+  multiplexed gateway channel. Built (`cap-probe.yml`, `cap-probe.md`); not yet run live.
 - [x] G1 `platform/gateway`, the Worker, in workerd, nothing deployed. Config: no
   binding, no routes, no workers.dev or preview URL, `secrets.required:
   ["GATEWAY_KEYRING"]` (wrangler's schema shape), flags `nodejs_compat`,
@@ -184,16 +184,23 @@ account and no deploy.
   `getByName`; the platform's module-state and self-reach guards scan `gateway/src`.
   Tested against pi-ai's faux provider and a fake upstream in each provider's wire format
   (Anthropic Messages, OpenAI Responses, Google Generative AI) through pi-ai's own
-  pi-messages client, cancellation reaching the upstream included. Bundle 3,976 KiB,
-  538 KiB gzip (the limit is 64 MiB uncompressed on both plans; local startup 32 ms of
+  pi-messages client, cancellation reaching the upstream included. Bundle 3,980 KiB,
+  539 KiB gzip (the limit is 64 MiB uncompressed on both plans; local startup 32 ms of
   the 1 s limit). Declared differences from the research: Google's adapters refuse a
-  custom fetch, so they are held by the base URL's origin check alone; the clamp also
-  lowers the model's own output limit, since a thinking budget otherwise raises the
-  request's past it; `forward` returns the provider's `Response`, its bytes counted by the
-  binder that streams them, and redacts the secret from its body; `verify` checks the
-  sealed `verify_url` and lists pi-ai's catalog models (no per-provider listing parse);
-  pi-ai's ChatGPT refresh is reached through its statically bundled OAuth flows
-  (`registerBunOAuthFlows`), since its lazy loader's import cannot be bundled.
+  custom fetch, so every model call runs in an `AsyncLocalStorage` scope whose global
+  `fetch` is the call's guard (`egress.ts`, the module-state guard's one pinned exemption),
+  which holds Google to the sealed origin, paths, methods and no redirects like the rest
+  (the security review's key-leak finding); only APIs whose every request goes through
+  fetch run, so Bedrock and the legacy Codex backend are refused; the clamp also lowers
+  the model's own output limit, since a thinking budget otherwise raises the request's
+  past it, and a reasoning call under 2048 tokens is refused (`reservation_too_small`);
+  `forward` returns the provider's `Response`, its bytes counted by the binder that
+  streams them, asks for an unencoded answer and redacts every secret from its headers
+  and body; `verify` checks the sealed `verify_url` and lists pi-ai's catalog models (no
+  per-provider listing parse); sealed URLs must be canonical; pi-ai's own refresh runs
+  only for Sign in with ChatGPT, through its statically bundled OAuth flows
+  (`registerBunOAuthFlows`, since its lazy loader's import cannot be bundled) and inside
+  a scope that reaches only the sealed token endpoint.
 - [ ] G2 The owner side: the gateway joins the owner config guard's `SERVICES` (binding
   nothing, `secrets` allowed); migration for `connections`, `connection_secrets`,
   `connection_flows` and `model_reservations`, and the policy's optional `models` table;

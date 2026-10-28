@@ -19,7 +19,7 @@ import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.l
 import { createProvider } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
-import type { Upstream } from "./credential";
+import { SUPPORTED_APIS, type Upstream } from "./credential";
 import { Failure } from "./failure";
 
 /** The providers the gateway can stream through, by pi-ai provider id. */
@@ -27,10 +27,17 @@ export interface Catalog {
   provider(id: string): Provider | undefined;
 }
 
-/** pi-ai's built-in providers, freshly constructed per call (nothing kept between calls). */
+/**
+ * pi-ai's built-in providers, constructed once per catalog: each call makes its own
+ * catalog, so nothing is kept between calls or shared between owners.
+ */
 export function builtinCatalog(): Catalog {
-  return { provider: (id) => builtinProviders().find((entry) => entry.id === id) };
+  let providers: readonly Provider[] | undefined;
+  return {
+    provider: (id) => (providers ??= builtinProviders()).find((entry) => entry.id === id),
+  };
 }
+
 
 /** No environment variables and no files: the opened credential is the only auth. */
 export const NO_AMBIENT: AuthContext = Object.freeze({
@@ -75,8 +82,14 @@ function customProvider(upstream: Upstream): Provider {
   });
 }
 
-/** The provider for a sealed upstream; `unsupported_source` when pi-ai has none. */
+/**
+ * The provider for a sealed upstream; `unsupported_source` when pi-ai has none, or when
+ * its API is not one the gateway runs.
+ */
 export function providerFor(catalog: Catalog, upstream: Upstream): Provider {
+  if (!SUPPORTED_APIS.includes(upstream.api)) {
+    throw new Failure("unsupported_source");
+  }
   if (upstream.provider === "custom") {
     return customProvider(upstream);
   }

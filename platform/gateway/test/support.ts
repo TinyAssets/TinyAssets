@@ -63,7 +63,7 @@ export const GOOGLE: Source = Object.freeze({
 });
 
 export const FAUX_SOURCE: Source = Object.freeze({
-  upstream: { provider: "faux", api: "faux", base_url: "https://faux.test/v1",
+  upstream: { provider: "faux", api: "openai-completions", base_url: "https://faux.test/v1",
               auth: { header: "authorization", scheme: "Bearer" } },
   endpoints: [{ origin: "https://faux.test", paths: ["/v1/*"], methods: ["POST"] }],
 });
@@ -98,7 +98,7 @@ export function envelopeOf(fields: EnvelopeFields): string {
 /** A faux catalog: pi-ai's faux provider as `faux`, answering `steps` in order. */
 export function fauxCatalog(steps: FauxResponseStep[], tokensPerSecond?: number):
     { catalog: Catalog; faux: ReturnType<typeof fauxProvider> } {
-  const faux = fauxProvider({ provider: "faux", api: "faux", tokenSize: { min: 3, max: 3 },
+  const faux = fauxProvider({ provider: "faux", api: "openai-completions", tokenSize: { min: 3, max: 3 },
                               models: [{ id: "faux-1", maxTokens: 4096, reasoning: true }],
                               ...(tokensPerSecond === undefined ? {} : { tokensPerSecond }) });
   faux.setResponses(steps);

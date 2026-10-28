@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { builtinCatalog } from "../src/catalog";
 import { Failure } from "../src/failure";
 import { forward, redact, verify } from "../src/forward";
+import { seal } from "../src/keyring";
 import { ALICE, ANTHROPIC, OPENAI, ring, rotate, sealed } from "./support";
 
 const SECRET = "sk-alice-forward-0123456789";
@@ -164,6 +165,65 @@ describe("forward", () => {
     expect(JSON.parse(response.headers.get("x-ta-resealed")!)).toMatchObject({ version: 2, kid: "k2" });
   });
 
+  it("redacts the secret from the provider's response headers", async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, OPENAI);
+    const response = await call(blob, new Request("https://egress/v1/models", {
+      headers: { "x-fake-mode": "hdr" } }), env);
+    expect(response.headers.get("x-echo-key")).toBe("[redacted]");
+  });
+
+  it("redacts a JSON-escaped spelling of the secret", async () => {
+    const env = ring("k1");
+    const slashed = "sk-a/b/c-0123456789";
+    const blob = await sealed(env, ALICE, slashed, OPENAI);
+    const response = await call(blob, new Request("https://egress/v1/models", {
+      headers: { "x-fake-mode": "jsonesc" } }), env);
+    expect(await response.text()).toBe('{"k":"[redacted]"}');
+  });
+
+  it("redacts the refresh token and a client secret, not only the access token", async () => {
+    const env = ring("k1");
+    const plaintext = {
+      kind: "oauth2" as const, upstream: OPENAI.upstream, endpoints: OPENAI.endpoints, sealed_at: 1,
+      oauth: { client_id: "c", client_auth: { method: "client_secret_post" as const, secret: "cs-xyz-1" },
+               token_endpoint: "https://auth.test/token", refresh_with: "rfc6749" as const,
+               access: "at-xyz-1", refresh: "rt-xyz-1", expires_at: null },
+    };
+    const blob = (await seal(env, ALICE, plaintext)).blob;
+    for (const said of ["rt-xyz-1", "cs-xyz-1", "at-xyz-1"]) {
+      const response = await call(blob, new Request("https://egress/v1/models", {
+        headers: { "x-fake-mode": "say", "x-fake-say": `got ${said}` } }), env);
+      expect(await response.text()).toBe("got [redacted]");
+    }
+  });
+
+  it("strips a method override, so a sealed POST cannot act as another method", async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, OPENAI);
+    const response = await call(blob, new Request("https://egress/v1/responses", {
+      method: "POST", body: "{}",
+      headers: { "x-fake-mode": "echo", "x-http-method-override": "DELETE",
+                 "x-http-method": "DELETE", "x-method-override": "DELETE" } }), env);
+    const echo = await response.json() as { headers: Record<string, string> };
+    for (const name of ["x-http-method-override", "x-http-method", "x-method-override"]) {
+      expect(echo.headers[name]).toBeUndefined();
+    }
+  });
+
+  it("asks for plain bytes, and drops the content encoding of a body it rewrote", async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, OPENAI);
+    const echoed = await call(blob, new Request("https://egress/v1/models", {
+      headers: { "x-fake-mode": "echo", "accept-encoding": "gzip, br" } }), env);
+    expect(((await echoed.json()) as { headers: Record<string, string> })
+      .headers["accept-encoding"]).toBe("identity");
+    const response = await call(blob, new Request("https://egress/v1/models", {
+      headers: { "x-fake-mode": "decoded" } }), env);
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(await response.text()).toBe("plain text, decoded on the way");
+  });
+
   it("fails loudly with no usable keyring", async () => {
     const blob = await sealed(ring("k1"), ALICE, SECRET, OPENAI);
     const response = await call(blob, new Request("https://egress/v1/models"),
@@ -205,6 +265,12 @@ describe("redact", () => {
       .toBe("[redacted] [redacted] [redacted]x refresh-2");
   });
 
+  it("redacts a shorter secret held back at the very end of the stream", async () => {
+    expect(await through(["head ", "short"], ["a-much-longer-secret-value", "short"]))
+      .toBe("head [redacted]");
+    expect(await through(["short"], ["a-much-longer-secret-value", "short"])).toBe("[redacted]");
+  });
+
   it("passes a body with no secret through unchanged", async () => {
     expect(await through(["plain ", "body"], [])).toBe("plain body");
     expect(await through(["plain ", "body"], ["absent"])).toBe("plain body");
@@ -228,6 +294,15 @@ describe("verify", () => {
     const error = await verify(env, ALICE, blob, builtinCatalog()).catch((caught) => caught);
     expect(error).toBeInstanceOf(Failure);
     expect((error as Failure).message).toBe("upstream_unauthorized");
+  });
+
+  it("never follows a redirect from the setup check", async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, "sk-redirect", ANTHROPIC);
+    const error = await verify(env, ALICE, blob, builtinCatalog()).catch((caught) => caught);
+    expect((error as Failure).message).toBe("upstream_error");
+    const evil = await (await fetch("https://status.test/evil")).json() as unknown[];
+    expect(JSON.stringify(evil)).not.toContain("sk-redirect");
   });
 
   it("refuses a source with no setup check", async () => {

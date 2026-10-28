@@ -55,38 +55,52 @@ describe("source", () => {
   });
 
   const bad = (patch: (record: Record<string, unknown>) => unknown) =>
-    patch(structuredClone(ANTHROPIC) as unknown as Record<string, unknown>);
+    patch(structuredClone(OPENAI) as unknown as Record<string, unknown>);
   it.each([
     ["a base URL off the sealed origins", bad((r) => ({ ...r, upstream: {
       ...(r["upstream"] as object), base_url: "https://evil.test" } }))],
     ["an http base URL", bad((r) => ({ ...r, upstream: {
-      ...(r["upstream"] as object), base_url: "http://api.anthropic.com" } }))],
+      ...(r["upstream"] as object), base_url: "http://api.openai.com" } }))],
     ["an IP-literal base URL", bad(() => ({ upstream: { ...OPENAI.upstream,
       base_url: "https://10.0.0.1" }, endpoints: [{ origin: "https://10.0.0.1", paths: ["/*"],
                                                      methods: ["POST"] }] }))],
     ["an IPv6 origin", bad(() => ({ upstream: { ...OPENAI.upstream, base_url: "https://[::1]" },
       endpoints: [{ origin: "https://[::1]", paths: ["/*"], methods: ["POST"] }] }))],
     ["a base URL with user info", bad((r) => ({ ...r, upstream: {
-      ...(r["upstream"] as object), base_url: "https://u:p@api.anthropic.com" } }))],
+      ...(r["upstream"] as object), base_url: "https://u:p@api.openai.com" } }))],
     ["an origin with a path", bad((r) => ({ ...r, endpoints: [{
-      origin: "https://api.anthropic.com/v1", paths: ["/*"], methods: ["POST"] }] }))],
+      origin: "https://api.openai.com/v1", paths: ["/*"], methods: ["POST"] }] }))],
     ["a wildcard mid-path", bad((r) => ({ ...r, endpoints: [{
-      origin: "https://api.anthropic.com", paths: ["/v1*"], methods: ["POST"] }] }))],
+      origin: "https://api.openai.com", paths: ["/v1*"], methods: ["POST"] }] }))],
     ["a relative path", bad((r) => ({ ...r, endpoints: [{
-      origin: "https://api.anthropic.com", paths: ["v1/messages"], methods: ["POST"] }] }))],
+      origin: "https://api.openai.com", paths: ["v1/messages"], methods: ["POST"] }] }))],
     ["an unknown method", bad((r) => ({ ...r, endpoints: [{
-      origin: "https://api.anthropic.com", paths: ["/v1/messages"], methods: ["CONNECT"] }] }))],
+      origin: "https://api.openai.com", paths: ["/v1/messages"], methods: ["CONNECT"] }] }))],
     ["no endpoints", bad((r) => ({ ...r, endpoints: [] }))],
     ["an auth header with a space", bad((r) => ({ ...r, upstream: {
       ...(r["upstream"] as object), auth: { header: "x api key", scheme: "" } } }))],
     ["a verify URL off the endpoints", bad((r) => ({ ...r, upstream: {
-      ...(r["upstream"] as object), verify_url: "https://api.anthropic.com/v1/files" } }))],
+      ...(r["upstream"] as object), verify_url: "https://api.openai.com/v1/files" } }))],
     ["models on a built-in provider", bad((r) => ({ ...r, upstream: {
       ...(r["upstream"] as object), models: [] } }))],
     ["a custom provider with no models", bad((r) => ({ ...r, upstream: {
       ...(r["upstream"] as object), provider: "custom" } }))],
     ["an extra field", bad((r) => ({ ...r, note: "x" }))],
     ["an OAuth block on a key", bad((r) => ({ ...r, oauth: {} }))],
+    ...[["an empty query", "https://api.openai.com/v1?"], ["an empty fragment", "https://api.openai.com/v1#"],
+        ["a query", "https://api.openai.com/v1?x=1"], ["a fragment", "https://api.openai.com/v1#x"],
+        ["an upper-case host", "https://API.openai.com/v1"], ["a trailing-dot host", "https://api.openai.com./v1"],
+        ["a dot segment", "https://api.openai.com/x/../v1"], ["a default port", "https://api.openai.com:443/v1"],
+        ["an encoded slash", "https://api.openai.com/v1%2Fx"]]
+      .map(([what, base]) => [`a base URL with ${what}`, bad((r) => ({ ...r, upstream: {
+        ...(r["upstream"] as object), base_url: base } }))] as [string, unknown]),
+    ["a trailing-dot host on both the base URL and its origin", bad((r) => ({
+      upstream: { ...(r["upstream"] as object), base_url: "https://api.openai.com./v1" },
+      endpoints: [{ origin: "https://api.openai.com.", paths: ["/*"], methods: ["POST"] }] }))],
+    ["an origin with a trailing slash", bad((r) => ({ ...r, endpoints: [{
+      origin: "https://api.openai.com/", paths: ["/*"], methods: ["POST"] }] }))],
+    ["a verify URL with an empty query", bad((r) => ({ ...r, upstream: {
+      ...(r["upstream"] as object), verify_url: "https://api.openai.com/v1/models?" } }))],
   ])("refuses %s", (_what, record) => {
     expect(() => source(record, false)).toThrow("invalid_source");
   });
@@ -139,6 +153,9 @@ describe("envelope", () => {
     ["a negative generation", { ...fields, policy_generation: -1 }],
     ["a deadline too far ahead", { ...fields, deadline: now + DEADLINE_MAX_MS + 1 }],
     ["a blob that is not text", { ...fields, blob: 1 }],
+    ["a reservation id with a space", { ...fields, reservation: { id: "r 1", max_output_tokens: 1 } }],
+    ["a reservation id starting with a dot", { ...fields, reservation: { id: ".r", max_output_tokens: 1 } }],
+    ["a header over its bound", { ...fields, blob: "b".repeat(96 * 1024) }],
   ])("refuses %s", (_what, value) => {
     expect(() => envelope(encodeEnvelope(value as typeof fields), now)).toThrow("invalid_envelope");
   });

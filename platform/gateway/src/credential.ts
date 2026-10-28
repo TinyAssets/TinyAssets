@@ -98,6 +98,22 @@ export type Credential =
   | (Common & { readonly kind: "api_key"; readonly secret: string })
   | (Common & { readonly kind: "oauth2"; readonly oauth: OAuthGrant });
 
+/**
+ * The pi-ai 1.4.0 APIs the gateway runs: each sends every request through `fetch`, so the
+ * call's endpoint guard sees it, either as `options.fetch` (`anthropic-messages.js:422`,
+ * `openai-responses.js:138`, `openai-completions.js:186`, `mistral-conversations.js:180`,
+ * `azure-openai-responses.js:128`, `pi-messages.js:271`) or, for Google's two, which
+ * refuse a custom fetch, through the global-fetch interposer (`egress.ts`). Every other
+ * API is refused as `unsupported_source`: Bedrock signs with a Node HTTP handler outside
+ * `fetch`, and `openai-codex-responses` is the legacy ChatGPT backend (research §2.6:
+ * Sign in with ChatGPT reaches only `POST /v1/responses`, through `openai-responses`),
+ * with a WebSocket transport and per-session caches kept in module state.
+ */
+export const SUPPORTED_APIS: readonly string[] = Object.freeze([
+  "anthropic-messages", "openai-responses", "openai-completions", "mistral-conversations",
+  "azure-openai-responses", "pi-messages", "google-generative-ai", "google-vertex",
+]);
+
 const ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const HEADER = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const SCHEME = /^(?:[A-Za-z][A-Za-z0-9-]{0,31})?$/;
@@ -167,7 +183,13 @@ function ipLiteral(host: string): boolean {
   return host.startsWith("[") || /^[0-9.]+$/.test(host) || /^0x/i.test(host);
 }
 
-/** An `https:` URL with a hostname, no user info and no fragment, as the parser reads it. */
+/**
+ * An `https:` URL with a hostname (not an IP literal, no trailing dot), no user info and
+ * no fragment, written in its canonical form: exactly as the URL parser writes it back
+ * (`href`), but for a bare origin, which may leave off the root's `/`. So an empty `?` or
+ * `#`, an upper-case host or a dot segment never reaches a seal, and what is sealed is
+ * what every later parse reads.
+ */
 function httpsUrl(value: unknown, query = false): URL {
   if (typeof value !== "string" || value.length > URL_MAX) {
     throw new Failure("invalid_source");
@@ -178,9 +200,11 @@ function httpsUrl(value: unknown, query = false): URL {
   } catch {
     throw new Failure("invalid_source");
   }
-  if (url.protocol !== "https:" || url.username !== "" || url.password !== ""
-      || url.hash !== "" || (!query && url.search !== "") || ipLiteral(url.hostname)
-      || ENCODED.test(url.pathname)) {
+  const canonical = url.href === value || (url.pathname === "/" && url.href === `${value}/`);
+  if (!canonical || url.protocol !== "https:" || url.username !== "" || url.password !== ""
+      || value.includes("#") || (value.includes("?") && (!query || url.search === ""))
+      || ipLiteral(url.hostname)
+      || url.hostname.endsWith(".") || ENCODED.test(url.pathname)) {
     throw new Failure("invalid_source");
   }
   return url;
@@ -245,6 +269,14 @@ function customModel(value: unknown): CustomModel {
   });
 }
 
+/** An API id the gateway runs; any other is refused when it is sealed. */
+function supported(api: string): string {
+  if (!SUPPORTED_APIS.includes(api)) {
+    throw new Failure("invalid_source");
+  }
+  return api;
+}
+
 function upstream(value: unknown, endpoints: readonly Endpoint[]): Upstream {
   const fields = shape(value, ["provider", "api", "base_url", "auth"], ["verify_url", "models"]);
   const auth = shape(fields["auth"], ["header", "scheme"]);
@@ -263,7 +295,7 @@ function upstream(value: unknown, endpoints: readonly Endpoint[]): Upstream {
   }
   return Object.freeze({
     provider,
-    api: text(fields["api"], ID),
+    api: supported(text(fields["api"], ID)),
     base_url: fields["base_url"] as string,
     auth: Object.freeze({ header: text(auth["header"], HEADER), scheme: text(auth["scheme"], SCHEME) }),
     ...(verify === undefined ? {} : { verify_url: verify as string }),
@@ -283,12 +315,27 @@ function clientAuth(value: unknown): ClientAuth {
   throw new Failure("invalid_source");
 }
 
+/**
+ * The sources whose OAuth refresh runs through pi-ai's own provider flow, by pi-ai
+ * provider id, each with the token endpoint that flow posts to: only Sign in with
+ * ChatGPT (research §2.6), whose refresh pi-ai keeps by OpenAI's rotation rules.
+ * Consumer subscriptions (Claude Pro and Max, Copilot and the rest) never enter the
+ * gateway, so no other provider's OAuth flow is ever run here.
+ */
+export const PROVIDER_REFRESH: Readonly<Record<string, string>> = Object.freeze({
+  openai: "https://auth.openai.com/api/accounts/oauth/token",
+});
+
 const CLIENT_KEYS = Object.freeze(["client_id", "client_auth", "token_endpoint", "refresh_with"]);
 const CLIENT_OPTIONAL = Object.freeze(["revocation_endpoint", "resource"]);
 
-function oauthClient(fields: Record<string, unknown>): OAuthClient {
+function oauthClient(fields: Record<string, unknown>, sealed: Upstream): OAuthClient {
   const refreshWith = fields["refresh_with"];
   if (refreshWith !== "provider" && refreshWith !== "rfc6749") {
+    throw new Failure("invalid_source");
+  }
+  if (refreshWith === "provider" && (!Object.hasOwn(PROVIDER_REFRESH, sealed.provider)
+      || fields["token_endpoint"] !== PROVIDER_REFRESH[sealed.provider])) {
     throw new Failure("invalid_source");
   }
   const revocation = fields["revocation_endpoint"];
@@ -303,14 +350,14 @@ function oauthClient(fields: Record<string, unknown>): OAuthClient {
   };
 }
 
-function grant(value: unknown): OAuthGrant {
+function grant(value: unknown, sealed: Upstream): OAuthGrant {
   const fields = shape(value, [...CLIENT_KEYS, "access", "expires_at"],
                        [...CLIENT_OPTIONAL, "refresh", "scope"]);
   const expires = fields["expires_at"];
   const refresh = fields["refresh"];
   const scope = fields["scope"];
   return Object.freeze({
-    ...oauthClient(fields),
+    ...oauthClient(fields, sealed),
     access: text(fields["access"], TOKEN, SECRET_MAX),
     expires_at: expires === null ? null : count(expires, 0),
     ...(refresh === undefined ? {} : { refresh: text(refresh, TOKEN, SECRET_MAX) }),
@@ -328,7 +375,8 @@ export function source(value: unknown, oauth: boolean): Source {
   }
   return Object.freeze({
     ...checked,
-    oauth: Object.freeze(oauthClient(shape(fields["oauth"], CLIENT_KEYS, CLIENT_OPTIONAL))),
+    oauth: Object.freeze(oauthClient(shape(fields["oauth"], CLIENT_KEYS, CLIENT_OPTIONAL),
+                                     checked.upstream)),
   });
 }
 
@@ -352,7 +400,7 @@ export function credential(value: unknown): Credential {
       return Object.freeze({ ...common, kind: "api_key", secret: secret(fields["secret"]) });
     }
     if (fields["kind"] === "oauth2" && fields["secret"] === undefined) {
-      return Object.freeze({ ...common, kind: "oauth2", oauth: grant(fields["oauth"]) });
+      return Object.freeze({ ...common, kind: "oauth2", oauth: grant(fields["oauth"], common.upstream) });
     }
   } catch {
     // Falls through to the one refusal below.

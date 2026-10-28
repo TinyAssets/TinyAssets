@@ -19,6 +19,7 @@
 import { type Catalog, modelIds } from "./catalog";
 import { allows, bearer, type Credential } from "./credential";
 import { type Code, codeOf, Failure, failureResponse, upstreamCode } from "./failure";
+import { nativeFetch } from "./egress";
 import { type Binding, type KeyringEnv, open, type Opened, type Resealed } from "./keyring";
 
 /** The longest one forwarded request may run (§6: a policy write's bound on a stream). */
@@ -31,6 +32,8 @@ const VERIFY_DEADLINE_MS = 15 * 1000;
 const CREDENTIAL_HEADERS: readonly string[] = Object.freeze([
   "authorization", "proxy-authorization", "x-api-key", "api-key", "x-goog-api-key", "cookie",
   "host", "forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip",
+  // A method override would let a sealed `POST` act as a method that is not sealed.
+  "x-http-method-override", "x-http-method", "x-method-override",
 ]);
 /** Query parameters that carry an API key (Google's `key` among them). */
 const CREDENTIAL_PARAMS: readonly string[] = Object.freeze(["key", "api_key", "access_token"]);
@@ -50,20 +53,41 @@ export function authValue(credential: Credential): string {
   return scheme === "" ? bearer(credential) : `${scheme} ${bearer(credential)}`;
 }
 
+const REDACTED = "[redacted]";
+
 /**
- * Replaces every occurrence of each of `secrets` in a byte stream with `[redacted]`,
- * across chunk boundaries: it holds back the last `longest - 1` bytes of each chunk until
- * the next one shows whether they start a secret.
+ * Each secret as the provider could write it back: as it is, and JSON-escaped (a JSON
+ * writer may escape `/` as `\/`).
+ */
+function spellings(secrets: readonly string[]): string[] {
+  const all = secrets.filter((secret) => secret.length > 0).flatMap((secret) => [
+    secret, secret.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/\//g, "\\/"),
+  ]);
+  return [...new Set(all)].sort((a, b) => b.length - a.length);
+}
+
+/** `value` with every spelling of each of `secrets` replaced by `[redacted]`. */
+export function redactText(value: string, secrets: readonly string[]): string {
+  let out = value;
+  for (const spelling of spellings(secrets)) {
+    out = out.split(spelling).join(REDACTED);
+  }
+  return out;
+}
+
+/**
+ * Replaces every occurrence of each spelling of each of `secrets` in a byte stream with
+ * `[redacted]`, across chunk boundaries: it holds back the last `longest - 1` bytes of
+ * each chunk until the next one shows whether they start a secret.
  */
 export function redact(body: ReadableStream<Uint8Array>,
                        secrets: readonly string[]): ReadableStream<Uint8Array> {
-  const needles = secrets.filter((secret) => secret.length > 0)
-    .map((secret) => new TextEncoder().encode(secret));
+  const needles = spellings(secrets).map((secret) => new TextEncoder().encode(secret));
   const longest = Math.max(0, ...needles.map((needle) => needle.byteLength));
   if (longest === 0) {
     return body;
   }
-  const mark = new TextEncoder().encode("[redacted]");
+  const mark = new TextEncoder().encode(REDACTED);
   let held = new Uint8Array(0);
   const scrub = (bytes: Uint8Array, final: boolean): Uint8Array[] => {
     const out: Uint8Array[] = [];
@@ -159,11 +183,13 @@ export async function forward(env: KeyringEnv, bound: Binding, blob: unknown,
   }
   // `set` replaces every value the request sent under the sealed header's name.
   headers.set(credential.upstream.auth.header, authValue(credential));
+  // Plain bytes back, so the redaction reads what the provider wrote.
+  headers.set("accept-encoding", "identity");
   const deadline = AbortSignal.timeout(deadlineMs);
   const signal = AbortSignal.any([request.signal, deadline]);
   let upstream: Response;
   try {
-    upstream = await fetch(target, {
+    upstream = await nativeFetch(target, {
       method: request.method,
       headers,
       body: request.method === "GET" || request.method === "HEAD" ? null : request.body,
@@ -174,9 +200,10 @@ export async function forward(env: KeyringEnv, bound: Binding, blob: unknown,
     return refusal(deadline.aborted ? "deadline" : "upstream_unreachable", resealed);
   }
   const answer = new Headers();
+  const secrets = secretsOf(credential);
   for (const [name, value] of upstream.headers) {
     if (!HOP_HEADERS.includes(name) && !internal(name)) {
-      answer.append(name, value);
+      answer.append(name, redactText(value, secrets));
     }
   }
   // The body is rewritten when redacted, so its encoding headers no longer describe it.
@@ -184,7 +211,7 @@ export async function forward(env: KeyringEnv, bound: Binding, blob: unknown,
   if (resealed !== undefined) {
     answer.set("x-ta-resealed", JSON.stringify(resealed));
   }
-  const body = upstream.body === null ? null : redact(upstream.body, secretsOf(credential));
+  const body = upstream.body === null ? null : redact(upstream.body, secrets);
   return new Response(body, { status: upstream.status, statusText: upstream.statusText,
                               headers: answer });
 }
@@ -208,13 +235,11 @@ export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
   if (url === undefined) {
     throw new Failure("unsupported_source");
   }
+  // A sealed `verify_url` is one of the endpoints (`credential.ts`, on every open).
   const target = new URL(url);
-  if (!allows(credential.endpoints, "GET", target)) {
-    throw new Failure("endpoint_refused");
-  }
   let answer: Response;
   try {
-    answer = await fetch(target, {
+    answer = await nativeFetch(target, {
       method: "GET",
       headers: new Headers([[credential.upstream.auth.header, authValue(credential)],
                             ["accept", "application/json"]]),

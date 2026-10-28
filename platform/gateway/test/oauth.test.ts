@@ -9,7 +9,7 @@ import { builtinCatalog } from "../src/catalog";
 import type { Credential, OAuthGrant, Source } from "../src/credential";
 import { Failure } from "../src/failure";
 import { open, seal } from "../src/keyring";
-import { exchange, refresh, revokeAtProvider } from "../src/oauth";
+import { exchange, refresh, revokeAtProvider, tokenGuard } from "../src/oauth";
 import { ALICE, OPENAI, ring, sealed } from "./support";
 
 const VERIFIER = "v".repeat(43);
@@ -39,6 +39,11 @@ async function code(run: () => Promise<unknown>): Promise<string> {
   const error = await run().then(() => undefined, (caught: unknown) => caught);
   expect(error).toBeInstanceOf(Failure);
   return (error as Failure).message;
+}
+
+/** Everything the fake's `evil.test` has received. */
+async function evil(): Promise<unknown[]> {
+  return (await (await fetch("https://status.test/evil")).json()) as unknown[];
 }
 
 function oauthOf(credential: Credential): OAuthGrant {
@@ -94,6 +99,53 @@ describe("exchange", () => {
     expect(await code(() => exchange(ring("k1"), ALICE, GRANT,
                                      oauthSource({ token_endpoint: "http://auth.test/token" }))))
       .toBe("invalid_source");
+  });
+});
+
+describe("the token endpoint's answer", () => {
+  it("never follows a redirect from the token endpoint", async () => {
+    const env = ring("k1");
+    expect(await code(() => exchange(env, ALICE, { ...GRANT, code: "redirect-code" }, oauthSource())))
+      .toBe("oauth_rejected");
+    expect(JSON.stringify(await evil())).not.toContain("redirect-code");
+  });
+
+  it("refuses a token that is not a bearer token", async () => {
+    expect(await code(() => exchange(ring("k1"), ALICE, { ...GRANT, code: "mac-code" }, oauthSource())))
+      .toBe("oauth_malformed");
+  });
+
+  it("reads no more of an answer than its bound", async () => {
+    expect(await code(() => exchange(ring("k1"), ALICE, { ...GRANT, code: "huge-code" }, oauthSource())))
+      .toBe("oauth_malformed");
+  });
+});
+
+describe("the scope pi-ai's own refresh runs in", () => {
+  it("sends only a POST to the sealed token endpoint, never following a redirect", async () => {
+    const guard = tokenGuard("https://auth.test/token");
+    await expect(guard("https://auth.test/other", { method: "POST" })).rejects.toThrow("endpoint_refused");
+    await expect(guard("https://evil.test/token", { method: "POST" })).rejects.toThrow("endpoint_refused");
+    await expect(guard("https://auth.test/token", { method: "GET" })).rejects.toThrow("endpoint_refused");
+    const answer = await guard("https://auth.test/token", {
+      method: "POST", body: new URLSearchParams({ grant_type: "authorization_code",
+                                                  code: "redirect-code", code_verifier: VERIFIER }) });
+    expect(answer.status).toBe(307);
+    expect(JSON.stringify(await evil())).not.toContain("/token");
+  });
+});
+
+describe("pi-ai's own refresh, for Sign in with ChatGPT alone", () => {
+  it.each([
+    ["Anthropic's subscription", "anthropic", "https://console.anthropic.com/v1/oauth/token"],
+    ["GitHub Copilot", "github-copilot", "https://github.com/login/oauth/access_token"],
+    ["the legacy Codex source", "openai-codex", "https://auth.openai.com/oauth/token"],
+    ["OpenAI with another token endpoint", "openai", "https://auth.test/token"],
+  ])("refuses %s", async (_what, provider, endpoint) => {
+    const record = oauthSource({ token_endpoint: endpoint, refresh_with: "provider" });
+    const upstream = { ...record, upstream: { ...record.upstream, provider } };
+    expect(await code(() => exchange(ring("k1"), ALICE, GRANT, upstream))).toBe("invalid_source");
+    await expect(sealedGrant(ring("k1"), {}, upstream)).rejects.toThrow("credential_refused");
   });
 });
 
@@ -197,6 +249,13 @@ describe("revokeAtProvider", () => {
     const { revocation_endpoint: _r, ...client } = record.oauth!;
     const blob = await sealedGrant(env, {}, { ...record, oauth: client });
     expect(await revokeAtProvider(env, ALICE, blob)).toEqual({ revoked: false });
+  });
+
+  it("never follows a redirect from the revocation endpoint", async () => {
+    const env = ring("k1");
+    const blob = await sealedGrant(env, { refresh: "rt-redirect" });
+    expect(await code(() => revokeAtProvider(env, ALICE, blob))).toBe("oauth_rejected");
+    expect(JSON.stringify(await evil())).not.toContain("rt-redirect");
   });
 
   it("answers a revocation endpoint that is down with a fixed code", async () => {

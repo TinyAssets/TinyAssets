@@ -19,11 +19,14 @@
  * never followed; an answer's body is read only as the token response it must be, and
  * nothing from it reaches an error (`failure.ts`).
  */
-import type { OAuthCredential } from "@earendil-works/pi-ai";
+import type { FetchFunction, OAuthCredential } from "@earendil-works/pi-ai";
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 
 import { type Catalog, providerFor } from "./catalog";
-import { type Credential, type OAuthClient, type OAuthGrant, type Source, source } from "./credential";
+import {
+  type Credential, type OAuthClient, type OAuthGrant, PROVIDER_REFRESH, type Source, source,
+} from "./credential";
+import { nativeFetch, within } from "./egress";
 import { type Code, Failure } from "./failure";
 import { type Binding, type KeyringEnv, open, reseal, type Resealed, seal, type Sealed } from "./keyring";
 
@@ -59,6 +62,9 @@ interface TokenAnswer {
   readonly scope?: string;
 }
 
+/** The most of a token endpoint's answer the gateway reads. */
+const ANSWER_MAX = 64 * 1024;
+
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -69,19 +75,47 @@ function basic(id: string, secret: string): string {
   return `Basic ${btoa(`${encode(id)}:${encode(secret)}`)}`;
 }
 
+/** An answer's body as JSON, read up to `ANSWER_MAX` bytes; `undefined` past it or unparsed. */
+async function boundedJson(answer: Response): Promise<unknown> {
+  if (answer.body === null) {
+    return undefined;
+  }
+  const reader = answer.body.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    size += value.byteLength;
+    if (size > ANSWER_MAX) {
+      await reader.cancel();
+      return undefined;
+    }
+    parts.push(value);
+  }
+  const whole = new Uint8Array(size);
+  let at = 0;
+  for (const part of parts) {
+    whole.set(part, at);
+    at += part.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(whole));
+  } catch {
+    return undefined;
+  }
+}
+
 /** The code for a token endpoint's refusal: `invalid_grant` is the grant, else the call. */
 async function refused(answer: Response): Promise<Code> {
   if (answer.status >= 500) {
     await answer.body?.cancel();
     return "oauth_unavailable";
   }
-  let error: unknown;
-  try {
-    const body: unknown = await answer.json();
-    error = object(body) ? body["error"] : undefined;
-  } catch {
-    error = undefined;
-  }
+  const body = await boundedJson(answer);
+  const error = object(body) ? body["error"] : undefined;
   return error === "invalid_grant" ? "oauth_invalid_grant" : "oauth_rejected";
 }
 
@@ -102,8 +136,8 @@ async function post(client: OAuthClient, url: string, params: Record<string, str
     }
   }
   try {
-    return await fetch(url, { method: "POST", headers, body, redirect: "manual",
-                              signal: AbortSignal.timeout(TOKEN_DEADLINE_MS) });
+    return await nativeFetch(url, { method: "POST", headers, body, redirect: "manual",
+                                    signal: AbortSignal.timeout(TOKEN_DEADLINE_MS) });
   } catch {
     throw new Failure("oauth_unreachable");
   }
@@ -118,12 +152,7 @@ async function token(client: OAuthClient, params: Record<string, string>): Promi
     throw new Failure(answer.status >= 300 && answer.status < 400
       ? "oauth_rejected" : await refused(answer));
   }
-  let body: unknown;
-  try {
-    body = await answer.json();
-  } catch {
-    throw new Failure("oauth_malformed");
-  }
+  const body = await boundedJson(answer);
   if (!object(body)) {
     throw new Failure("oauth_malformed");
   }
@@ -180,9 +209,26 @@ export async function exchange(env: KeyringEnv, bound: Binding, grant: unknown,
                          ...(answer.scope === undefined ? {} : { scope: answer.scope }) });
 }
 
+/** A fetch that sends only `POST` to `endpoint`, and never follows a redirect. */
+export function tokenGuard(endpoint: string): FetchFunction {
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = new Request(input, init);
+    if (request.method !== "POST" || request.url !== endpoint) {
+      throw new Failure("endpoint_refused");
+    }
+    return nativeFetch(request, { redirect: "manual" });
+  };
+}
+
 /** pi-ai's own refresh for the credential's provider (`refresh_with: "provider"`). */
 async function providerRefresh(catalog: Catalog, credential: Extract<Credential, { kind: "oauth2" }>):
     Promise<TokenAnswer> {
+  const endpoint = credential.oauth.token_endpoint;
+  // Sealed only for Sign in with ChatGPT (`credential.ts`), and checked again here.
+  if (!Object.hasOwn(PROVIDER_REFRESH, credential.upstream.provider)
+      || PROVIDER_REFRESH[credential.upstream.provider] !== endpoint) {
+    throw new Failure("not_refreshable");
+  }
   const auth = providerFor(catalog, credential.upstream).auth.oauth;
   const refresh = credential.oauth.refresh;
   if (auth === undefined || refresh === undefined) {
@@ -199,7 +245,10 @@ async function providerRefresh(catalog: Catalog, credential: Extract<Credential,
   };
   let next: OAuthCredential;
   try {
-    next = await auth.refresh(current, AbortSignal.timeout(TOKEN_DEADLINE_MS));
+    // pi-ai's flow posts with the global fetch: inside this scope it reaches only the
+    // sealed token endpoint, and never follows a redirect.
+    next = await within(tokenGuard(endpoint),
+                        () => auth.refresh(current, AbortSignal.timeout(TOKEN_DEADLINE_MS)));
   } catch {
     // pi-ai's message quotes the provider's body; only the fixed code goes on.
     throw new Failure("oauth_rejected");

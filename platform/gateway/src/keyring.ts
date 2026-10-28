@@ -117,7 +117,7 @@ function ring(env: KeyringEnv): Ring {
     throw new Failure("keyring_unavailable");
   }
   const entries = Object.entries(keys);
-  if (entries.length === 0 || entries.length > KIDS_MAX) {
+  if (entries.length > KIDS_MAX) {
     throw new Failure("keyring_unavailable");
   }
   const decoded = new Map<string, Uint8Array>();

@@ -21,7 +21,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { builtinCatalog } from "./catalog";
 import { type Credential, secret, source } from "./credential";
-import { codeOf, Failure, failureResponse } from "./failure";
+import { codeOf, failureResponse, guarded } from "./failure";
 import { forward, type Verified, verify } from "./forward";
 import { binding, type KeyringEnv, open, reseal, type Resealed, seal, type Sealed } from "./keyring";
 import { messages } from "./messages";
@@ -31,14 +31,6 @@ import { type Exchanged, exchange, type Refreshed, refresh, type Revoked,
 /** The gateway's one binding: its keyring secret (`wrangler.jsonc`). */
 export type GatewayEnv = KeyringEnv;
 
-/** Runs an RPC method, letting only a fixed code out of it. */
-async function guarded<T>(run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (error) {
-    throw new Failure(codeOf(error, "internal"));
-  }
-}
 
 export default class Gateway extends WorkerEntrypoint<GatewayEnv> {
   override async fetch(request: Request): Promise<Response> {

@@ -22,6 +22,7 @@ const STATUS = Object.freeze({
   endpoint_refused: 403,
   unknown_model: 404,
   unsupported_source: 422,
+  reservation_too_small: 422,
   not_refreshable: 409,
   deadline: 504,
   keyring_unavailable: 500,
@@ -60,6 +61,15 @@ export class Failure extends Error {
 /** The code of a failure, or `fallback` for anything else (whose text is never shown). */
 export function codeOf(error: unknown, fallback: Code): Code {
   return error instanceof Failure ? error.code : fallback;
+}
+
+/** Runs an RPC method, letting only a fixed code out of it. */
+export async function guarded<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    throw new Failure(codeOf(error, "internal"));
+  }
 }
 
 /** The HTTP answer for a code: pi-messages' error body shape, and nothing from upstream. */

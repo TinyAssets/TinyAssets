@@ -9,10 +9,10 @@ import {
 } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 
-import { builtinCatalog } from "../src/catalog";
-import type { Source } from "../src/credential";
+import { builtinCatalog, providerFor } from "../src/catalog";
+import { type Source, source } from "../src/credential";
 import { encode, frame } from "../src/encode";
-import { BODY_MAX, guardedFetch } from "../src/messages";
+import { BODY_MAX, guardedFetch, REASONING_MIN_TOKENS } from "../src/messages";
 import {
   ALICE, ANTHROPIC, ask, client, drain, envelopeOf, FAUX_SOURCE, fauxAssistantMessage,
   fauxCatalog, gatewayHandler, GOOGLE, OPENAI, replay, ring, rotate, sealed, USER,
@@ -311,8 +311,10 @@ describe("against a fake upstream, through pi-ai's real adapters", () => {
     const model = catalogModel("anthropic", "anthropic-messages");
     const owner = client(gatewayHandler(env), envelopeOf({ blob }), model.id);
     const { message } = await drain(owner.stream(ask("cmd:redirect")));
-    // Followed, it would have reached evil.test, which the fake answers 599.
+    // Followed, it would have reached evil.test, which records what it receives.
     expect(message.errorMessage).toBe("upstream_error");
+    const evil = await (await fetch("https://status.test/evil")).json() as unknown[];
+    expect(JSON.stringify(evil)).not.toContain(SECRET);
   });
 
   it("refuses an adapter request to a path the credential is not sealed for", async () => {
@@ -443,6 +445,70 @@ describe("refusals before the stream", () => {
     expect(response.status).toBe(500);
     expect(await response.text()).toBe(JSON.stringify(
       { error: { code: "internal", message: "internal" } }));
+  });
+
+  it.each([
+    ["Bedrock, which signs outside fetch", "amazon-bedrock", "bedrock-converse-stream"],
+    ["the legacy Codex backend", "openai-codex", "openai-codex-responses"],
+    ["an API pi-ai does not have", "anthropic", "no-such-api"],
+  ])("refuses %s when it is sealed, and in the catalog", async (_what, provider, api) => {
+    const upstream = { ...ANTHROPIC.upstream, provider, api };
+    expect(() => source({ ...ANTHROPIC, upstream }, false)).toThrow("invalid_source");
+    expect(() => providerFor(builtinCatalog(), upstream)).toThrow("unsupported_source");
+  });
+
+  it("refuses a model whose API is not the sealed one", async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, {
+      ...ANTHROPIC, upstream: { ...ANTHROPIC.upstream, api: "openai-responses" } });
+    expect((await answer(envelopeOf({ blob }), { model: model(), context: USER }, env)).body
+      .error.code).toBe("unsupported_source");
+  });
+
+  it("refuses a tool choice pi-ai's simple options do not take", async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, ANTHROPIC);
+    expect((await answer(envelopeOf({ blob }), { model: model(), context: USER,
+                                                 options: { toolChoice: "required" } }, env))
+      .body.error.code).toBe("invalid_request");
+  });
+
+  it("refuses a reasoning call whose reservation leaves no room for a thinking budget", async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, ANTHROPIC);
+    const reasoning = catalogModel("anthropic", "anthropic-messages", (entry) => entry.reasoning).id;
+    const small = await answer(envelopeOf({ blob, cap: REASONING_MIN_TOKENS - 1 }),
+                               { model: reasoning, context: USER, options: { reasoning: "high" } }, env);
+    expect(small).toEqual({ status: 422, body: { error: { code: "reservation_too_small",
+                                                          message: "reservation_too_small" } } });
+    const enough = await gatewayHandler(env)(new Request("https://g/v1/messages", {
+      method: "POST", headers: { "x-ta-envelope": envelopeOf({ blob, cap: REASONING_MIN_TOKENS }) },
+      body: JSON.stringify({ model: reasoning, context: USER, options: { reasoning: "high" } }),
+    }));
+    expect(enough.status).toBe(200);
+    await enough.body?.cancel();
+  });
+
+  it("refuses a streamed body over the bound that declares no length", async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, ANTHROPIC);
+    const chunk = new Uint8Array(1024 * 1024).fill(32);
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent > BODY_MAX) {
+          controller.close();
+          return;
+        }
+        sent += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+    });
+    const request = new Request("https://g/v1/messages", {
+      method: "POST", headers: { "x-ta-envelope": envelopeOf({ blob }) }, body,
+    });
+    expect(request.headers.get("content-length")).toBeNull();
+    expect((await gatewayHandler(env)(request)).status).toBe(413);
   });
 
   it("refuses a source pi-ai has no provider for", async () => {

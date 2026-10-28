@@ -11,8 +11,11 @@
  *    seal and every open, a credential whose base URL is off its endpoints.
  * 4. Clamp `maxTokens` to the reservation, on the request and on the model, so no
  *    adapter (a thinking budget among them) can ask for more.
- * 5. Run pi-ai's `streamSimple` with the opened secret, through a `fetch` that sends
- *    only to the sealed endpoints, with redirects never followed.
+ * 5. Run pi-ai's `streamSimple` with the opened secret, every request it makes going
+ *    through a guard that sends only to the sealed endpoints and never follows a
+ *    redirect: as `options.fetch`, and as the global fetch inside the call's scope
+ *    (`egress.ts`) for the adapters that take no custom fetch. Only the APIs whose every
+ *    request goes through fetch run at all (`catalog.ts`, `SUPPORTED_APIS`).
  * 6. Re-encode each event as pi-messages (`encode.ts`), `done` carrying pi-ai's `Usage`.
  *
  * Failures before the stream are answered with a fixed code (`failure.ts`); after it
@@ -33,16 +36,21 @@ import { allows, bearer, type Endpoint } from "./credential";
 import { encode, encodeError, frame } from "./encode";
 import { ENVELOPE_HEADER, envelope } from "./envelope";
 import { type Code, codeOf, Failure, failureResponse, upstreamCode } from "./failure";
+import { nativeFetch, within } from "./egress";
 import { type KeyringEnv, open } from "./keyring";
 
 /** A request body's bound: a context with images can be large, a whole one never this. */
 export const BODY_MAX = 16 * 1024 * 1024;
 
 /**
- * The pi-ai 1.4.0 APIs whose adapters refuse a custom `fetch`
- * (`google-generative-ai.js:36-38`, `google-vertex.js:40`): their SDK takes no fetch.
- * They are sent with the global fetch, held only by the base URL's origin check (step 3).
+ * The smallest reservation a reasoning call may have: pi-ai keeps 1024 tokens for the
+ * answer beside a thinking budget (`MIN_ANSWER_TOKENS`, `simple-options.js`), and the
+ * smallest budget providers take is 1024, so a smaller cap would push the budget below
+ * what the upstream accepts. Refused up front as `reservation_too_small`.
  */
+export const REASONING_MIN_TOKENS = 2048;
+
+/** The supported APIs whose adapters refuse `options.fetch` (held by `egress.ts`). */
 const GLOBAL_FETCH_APIS: readonly string[] = Object.freeze(["google-generative-ai", "google-vertex"]);
 
 const THINKING: readonly string[] = Object.freeze(["minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -165,7 +173,7 @@ export function guardedFetch(endpoints: readonly Endpoint[], observed: Observed)
     }
     let response: Response;
     try {
-      response = await fetch(request, { redirect: "manual" });
+      response = await nativeFetch(request, { redirect: "manual" });
     } catch (error) {
       if (!request.signal.aborted) {
         observed.unreachable = true;
@@ -222,6 +230,9 @@ async function serve(request: Request, env: KeyringEnv, catalog: Catalog): Promi
     throw new Failure("unsupported_source");
   }
   const cap = sent.reservation.max_output_tokens;
+  if (body.options.reasoning !== undefined && found.reasoning && cap < REASONING_MIN_TOKENS) {
+    throw new Failure("reservation_too_small");
+  }
   const model = { ...found, baseUrl: upstream.base_url, maxTokens: Math.min(found.maxTokens, cap) };
   const maxTokens = Math.min(body.options.maxTokens ?? cap, cap);
 
@@ -233,14 +244,15 @@ async function serve(request: Request, env: KeyringEnv, catalog: Catalog): Promi
   models.setProvider(provider);
   let events: AsyncIterator<AssistantMessageEvent>;
   try {
-    events = models.streamSimple(model, body.context, {
+    const guard = guardedFetch(endpoints, observed);
+    const takesFetch = !GLOBAL_FETCH_APIS.includes(upstream.api);
+    events = within(guard, () => models.streamSimple(model, body.context, {
       ...body.options,
       maxTokens,
       apiKey: bearer(opened.credential),
       signal,
-      ...(GLOBAL_FETCH_APIS.includes(upstream.api)
-        ? {} : { fetch: guardedFetch(endpoints, observed) }),
-    })[Symbol.asyncIterator]();
+      ...(takesFetch ? { fetch: guard } : {}),
+    }))[Symbol.asyncIterator]();
   } catch {
     // pi-ai normalizes the transcript before the stream exists; a malformed one throws.
     throw new Failure("invalid_request");

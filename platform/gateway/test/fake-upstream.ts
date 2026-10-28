@@ -14,11 +14,17 @@
  *   under `<id>`, read back from `https://status.test/cancelled?id=<id>`.
  * - `cmd:tool`: a tool call (Anthropic).
  *
- * `x-fake-mode` drives the raw passthrough tests (`echo`, `quote`, `hang`), and
- * `auth.test` and `auth.openai.com` are token endpoints. It is test code: its module
- * state (the cancel registry) is the fake's, never the gateway's.
+ * - `cmd:redirect307`: a 307 to another host.
+ *
+ * `x-fake-mode` drives the raw passthrough tests (`echo`, `quote`, `hang`, `redirect`,
+ * `say`, `decoded`, `hdr`, `jsonesc`); `auth.test` and `auth.openai.com` are token
+ * endpoints; `evil.test` records everything it receives, read back from
+ * `https://status.test/evil`, so a test sees whether a redirect was followed. It is test
+ * code: its module state (the cancel registry, the evil log) is the fake's, never the
+ * gateway's.
  */
 const cancelled = new Map<string, boolean>();
+const evil: unknown[] = [];
 const USAGE = { input: 11, output: 7 };
 
 function sse(frames: readonly (readonly [string | null, unknown])[]): string {
@@ -107,6 +113,9 @@ async function model(request: Request, format: Format): Promise<Response> {
     return Response.json({ error: { type: "fake", message: `bad key ${credential}` } },
                          { status: Number(failing[1]) });
   }
+  if (cmd === "redirect307") {
+    return new Response(null, { status: 307, headers: { location: "https://evil.test/steal" } });
+  }
   if (cmd === "redirect") {
     return new Response(null, { status: 302, headers: { location: "https://evil.test/steal" } });
   }
@@ -188,6 +197,16 @@ async function token(request: Request): Promise<Response> {
       : `none:${form.get("client_id")}`;
   const grant = form.get("grant_type");
   if (grant === "authorization_code") {
+    if (form.get("code") === "redirect-code") {
+      return new Response(null, { status: 307, headers: { location: "https://evil.test/token" } });
+    }
+    if (form.get("code") === "mac-code") {
+      return Response.json({ access_token: "at-mac", token_type: "mac", expires_in: 60 });
+    }
+    if (form.get("code") === "huge-code") {
+      return Response.json({ access_token: "at-huge", token_type: "Bearer",
+                             padding: "x".repeat(70 * 1024) });
+    }
     if (form.get("code") !== "good-code" || form.get("code_verifier") === null) {
       return Response.json({ error: "invalid_grant",
                              error_description: `code ${form.get("code")} is not valid` },
@@ -226,6 +245,21 @@ async function forwardEcho(request: Request): Promise<Response> {
   if (mode === "redirect") {
     return new Response(null, { status: 307, headers: { location: "https://evil.test/steal" } });
   }
+  if (mode === "say") {
+    return new Response(request.headers.get("x-fake-say") ?? "", { status: 200 });
+  }
+  if (mode === "decoded") {
+    // A body the runtime has already decoded keeps its Content-Encoding header.
+    return new Response("plain text, decoded on the way", {
+      headers: { "content-encoding": "gzip", "content-type": "text/plain" },
+    });
+  }
+  if (mode === "hdr") {
+    return new Response("{}", { status: 200, headers: { "x-echo-key": credentialOf(request) } });
+  }
+  if (mode === "jsonesc") {
+    return new Response('{"k":"' + credentialOf(request).replace("Bearer ", "").split("/").join("\\/") + '"}', { status: 200 });
+  }
   if (mode === "quote") {
     const secret = credentialOf(request);
     const encoder = new TextEncoder();
@@ -259,12 +293,22 @@ async function forwardEcho(request: Request): Promise<Response> {
 export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (url.hostname === "evil.test") {
+      evil.push({ url: request.url, headers: Object.fromEntries(request.headers) });
+      return new Response("stolen", { status: 200 });
+    }
+    if (url.hostname === "status.test" && url.pathname === "/evil") {
+      return Response.json(evil);
+    }
     if (url.hostname === "status.test") {
       return Response.json({ cancelled: cancelled.get(url.searchParams.get("id") ?? "") ?? null });
     }
     if (url.hostname === "auth.test" || url.hostname === "auth.openai.com") {
       if (url.pathname === "/revoke") {
         const form = new URLSearchParams(new TextDecoder().decode(await request.arrayBuffer()));
+        if (form.get("token") === "rt-redirect") {
+          return new Response(null, { status: 307, headers: { location: "https://evil.test/revoke" } });
+        }
         return form.get("token") === "rt-down" ? new Response("down", { status: 503 })
           : new Response(null, { status: 200,
                                  headers: { "x-revoked": `${form.get("token")}:${form.get("token_type_hint")}` } });
@@ -275,6 +319,9 @@ export default {
       return forwardEcho(request);
     }
     if (url.hostname === "api.anthropic.com" && url.pathname === "/v1/models") {
+      if (request.headers.get("x-api-key") === "sk-redirect") {
+        return new Response(null, { status: 307, headers: { location: "https://evil.test/models" } });
+      }
       return request.headers.get("x-api-key") === "sk-good"
         ? Response.json({ data: [] }) : Response.json({ error: "no" }, { status: 401 });
     }

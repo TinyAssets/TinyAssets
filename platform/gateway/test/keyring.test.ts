@@ -173,6 +173,9 @@ describe("the keyring", () => {
     ["with a kid holding a dot", JSON.stringify({ active: "k.1", keys: { "k.1": key } })],
     ["with an extra field", JSON.stringify({ active: "k1", keys: { k1: key }, note: "x" })],
     ["with keys as a list", JSON.stringify({ active: "k1", keys: [key] })],
+    // Well-formed but past the 5 KB a Worker secret may hold.
+    ["over its size bound", JSON.stringify({ active: "k1", keys: { k1: key } }, null, 2)
+      .replace("{", `{${" ".repeat(5 * 1024)}`)],
   ])("fails loudly when it is %s", async (_what, value) => {
     const env = { GATEWAY_KEYRING: value };
     await refused(() => seal(env, ALICE, apiKey("sk", ANTHROPIC)), "keyring_unavailable");

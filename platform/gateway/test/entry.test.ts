@@ -7,6 +7,7 @@ import { exports } from "cloudflare:workers";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { Failure, guarded } from "../src/failure";
 import type Gateway from "../src/index";
 import { open } from "../src/keyring";
 import { ALICE, ANTHROPIC, envelopeOf, OPENAI, sealed } from "./support";
@@ -18,6 +19,20 @@ async function rejected(run: () => Promise<unknown>): Promise<string> {
   expect(error).toBeInstanceOf(Error);
   return (error as Error).message;
 }
+
+describe("guarded", () => {
+  it("lets only a fixed code out of an RPC method, never a raw error's text", async () => {
+    const error = await guarded(async () => {
+      throw new TypeError("provider prose quoting sk-raw-0123");
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Failure);
+    expect((error as Error).message).toBe("internal");
+    const refused = await guarded(async () => {
+      throw new Failure("endpoint_refused");
+    }).catch((caught: unknown) => caught);
+    expect((refused as Error).message).toBe("endpoint_refused");
+  });
+});
 
 describe("the gateway Worker", () => {
   it("seals a pasted key over RPC, bound to the owner, connection and version", async () => {
