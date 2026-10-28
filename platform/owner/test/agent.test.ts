@@ -254,7 +254,8 @@ describe("a package pi refuses to install", () => {
       expect(await runInDurableObject(env.MALFORMED.getByName(name),
                                       (_instance: MalformedOwnerDO, state) => state.abort("gone"))
         .then(() => "alive", (error: Error) => error.message)).toBe("gone");
-      await runInDurableObject(env.MALFORMED.getByName(name), async (instance: MalformedOwnerDO) => {
+      await runInDurableObject(env.MALFORMED.getByName(name),
+                               async (instance: MalformedOwnerDO) => {
         await instance.agent.harness.pi();
       });
     }

@@ -567,8 +567,8 @@ describe("a chunk between a pass's units", () => {
   /** A stored chunk no content holds, due for its delete now. */
   async function dueGarbage(r: Rig, piece: Uint8Array): Promise<void> {
     const begun = await begin(r, [piece]);
-    await r.stub.fileUploadChunks(r.bind(null), { intent_id: begun.intent_id,
-                                                  chunks: [{ sha256: sha256Hex(piece), bytes: piece }] });
+    await r.stub.fileUploadChunks(r.bind(null), {
+      intent_id: begun.intent_id, chunks: [{ sha256: sha256Hex(piece), bytes: piece }] });
     await r.stub.fileUploadAbort(r.bind(null), { intent_id: begun.intent_id });
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
   }
