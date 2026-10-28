@@ -1,10 +1,10 @@
 /** The owner object: its schema migrates on wake, and it serves its own owner only. */
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
-import { env } from "cloudflare:workers";
+import { DurableObject, env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { LIMITS } from "../src/collections";
-import type { OwnerDO } from "../src/owner-do";
+import { OwnerDO } from "../src/owner-do";
 import { MIGRATIONS, migrate } from "../src/schema";
 import { failure, ownerObject } from "./support";
 
@@ -14,6 +14,18 @@ function version(state: DurableObjectState): number {
 }
 
 const PULL = { collection: "board", after: 0, limit: 1 };
+
+/**
+ * Every public method of the class is an RPC any binding can call, so this list is the
+ * object's whole surface: its collection and ledger doors. `alarm` is the runtime's, and
+ * refused over RPC. Claiming, marking and settling a wake have no door: only the alarm
+ * runs them, in process, with the doorbell's sender. The list only grows by a door.
+ */
+const RPC_METHODS = Object.freeze([
+  "collectionClear", "collectionDelete", "collectionGet", "collectionHistory", "collectionPull",
+  "collectionWrite", "deleteAgent", "disableAgent", "mailboxAck", "mailboxRead",
+  "mailboxSubscriber", "outsideAgents", "registerAgent", "roomPost", "setWakeLimits",
+]);
 
 describe("schema migration on wake", () => {
   it("applies every migration before the first call", async () => {
@@ -174,6 +186,24 @@ describe("the object's stored owner", () => {
     expect((await failure(() => stub.collectionPull(as(name), {
       ...PULL, limit: 0,
     }))).name).toBe("Invalid");
+  });
+});
+
+describe("the object's RPC surface", () => {
+  it("is exactly its doors: nothing claims, marks or settles a wake", async () => {
+    const methods = Object.getOwnPropertyNames(OwnerDO.prototype)
+      .filter((method) => method !== "constructor" && method !== "alarm").sort();
+    expect(methods).toEqual(RPC_METHODS);
+    expect(Object.getOwnPropertyNames(DurableObject.prototype)).toEqual(["constructor"]);
+    const { stub, name } = ownerObject();
+    const call = (method: string) => (stub as unknown as
+      Record<string, (...args: unknown[]) => Promise<unknown>>)[method]!(
+      { owner: name, caller: name, origin: null }, {});
+    for (const method of ["claimWake", "markWake", "settleWake", "dueWakes", "wakeSender"]) {
+      expect((await failure(() => call(method))).message)
+        .toBe(`The RPC receiver does not implement "${method}".`);
+    }
+    expect((await failure(() => call("alarm"))).message).toMatch(/reserved method/);
   });
 });
 

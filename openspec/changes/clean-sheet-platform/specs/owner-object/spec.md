@@ -81,3 +81,53 @@ Rows and payload bytes, history included, SHALL be bounded per writer, per colle
 #### Scenario: A writer past its share
 - **WHEN** a caller other than the owner would create more rows, or hold more bytes, than its share of a collection
 - **THEN** the write is refused and nothing changes
+
+### Requirement: The ledger's mailboxes are reserved inside its ceilings
+The ledger SHALL bound each mailbox's unacked messages and bytes, the owner's and each enabled agent's, by trigger-kept counters. The bounds for the most enabled agents allowed SHALL fit inside the ledger's ceilings, so unacked mail never fills it and eviction always finds a message no recipient holds. A post SHALL be refused only when its own mailbox, or its sender's share of the owner's, is full.
+
+#### Scenario: An agent that never acks
+- **WHEN** the owner's mail to one agent fills that agent's mailbox
+- **THEN** the owner's next post to that agent is refused and posts to every other mailbox still succeed
+
+### Requirement: A disabled agent holds no mail, and only the owner deletes one
+Disabling an agent SHALL release its unacked mail, so it no longer holds the ledger; the owner may disable any agent and an outside caller only its own. Only the owner, in its own session, SHALL delete an agent, which purges its mail with their bodies, its cursor, wakes, rings and receipts. While a revoke of its callbacks is pending its row SHALL stay as a tombstone that the registry bound counts, gone when the revoke settles. The enabled-agent bound SHALL count enabled agents only.
+
+#### Scenario: A disabled agent's unread mail
+- **WHEN** an agent holding unacked mail is disabled
+- **THEN** its mail no longer holds the ledger, and later posts evict it as they need room
+
+### Requirement: A resend is deduplicated while its message is held
+A post with a sender's client message id and body hash the ledger holds SHALL return the original message, and another hash, room or parent SHALL be a conflict. The window SHALL be the held message's life: a message is evicted only once every recipient has acked it and the ledger is at a ceiling, after which the same client message id is a new message. No tombstone of evicted ids is kept.
+
+#### Scenario: A resend after eviction
+- **WHEN** a message every recipient acked has been evicted and its sender resends it
+- **THEN** the ledger records it as a new message
+
+#### Scenario: A retried ack
+- **WHEN** a reader acks at or behind its cursor, even after its acked mail was evicted
+- **THEN** the ack succeeds and changes nothing
+
+### Requirement: Only the object's alarm claims and settles wakes
+Wakes, and revokes of an agent's callbacks, SHALL be rows on the object's one schedule. No RPC method SHALL claim, mark or settle one; the alarm SHALL, in process, with the doorbell's sender. Each run SHALL first recover lapsed claims by their own index, then, with a sender, claim due open rows. The alarm SHALL never be set in the past, and SHALL arm for open rows only with a sender, so without one they stay pending and arm nothing.
+
+#### Scenario: A lapsed claim behind due wakes
+- **WHEN** a claim's lease has lapsed behind more due open wakes than one pass takes, and the object has no sender
+- **THEN** one alarm run recovers it and the alarm is left unset
+
+#### Scenario: A door names a wake claim
+- **WHEN** a binding calls a claim, mark or settle method on the object
+- **THEN** the call fails because the object has no such method
+
+### Requirement: Wake limits are owner policy
+An agent's wake limits SHALL be stored per agent, 12 wakes an hour and a 60 s batch window by default, and changed only by the owner in its own session. A registration SHALL never carry or reset them.
+
+#### Scenario: An agent registers again
+- **WHEN** the owner has set an agent's limits and the agent registers again
+- **THEN** its limits stay the owner's, and a registration that names a limit is refused
+
+### Requirement: A revoke is fenced by the subscription generation
+Each `mailbox.message` subscribe SHALL open the agent's next subscription generation, which tags the doorbell's callback. Disabling an agent, moving it off `mcp_event` or deleting it SHALL schedule a revoke only when the agent has subscribed since its last revoke, carrying the newest generation, with at most one open per agent. The doorbell SHALL erase only callbacks at or before a revoke's generation.
+
+#### Scenario: An agent re-enabled before its revoke runs
+- **WHEN** a subscribed agent is disabled, registers again and subscribes again before the alarm runs its revoke
+- **THEN** the revoke erases the old callback only, and the agent's new callback still rings
