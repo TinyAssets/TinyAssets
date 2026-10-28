@@ -317,8 +317,15 @@ The binder is the trust root: the HTTP door's binder MAY read an owner's namespa
 - **THEN** it reads Alice's namespace from Alice's object and the chunk keys it asks for are under that namespace only
 
 ### Requirement: One pi environment over the manifest
-The owner's pi `ExecutionEnv` SHALL serve its file methods from the manifest and the files Worker, never waking a sandbox, and SHALL pass pi-durable 1.4.0's conformance cases other than `exec`'s, with symbolic links off. A write to a path the environment read SHALL fail with `changed since read` when anything else committed there since; a whole-file read or write SHALL move at most 16 MiB; `exec` SHALL answer `shell_unavailable` until the sandbox lands.
+The owner's pi `ExecutionEnv` SHALL serve its file methods from the manifest and the files Worker, never waking a sandbox, and SHALL pass pi-durable 1.4.0's conformance cases other than `exec`'s, with symbolic links off. A write to a path the environment read SHALL fail with `changed since read` when anything else committed there since; `exec` SHALL answer `shell_unavailable` until the sandbox lands.
 
 #### Scenario: An edit raced by another writer
 - **WHEN** one environment reads `notes.md`, another writes it, and the first writes its edit
 - **THEN** the first write fails with `changed since read` and the other's content stays
+
+### Requirement: The environment stays inside a request's limits and keeps bytes verbatim
+A whole-file read or write by the environment SHALL move at most 16 MiB, and one environment, built per tool call, SHALL make at most 24 calls to the files Worker, each refused as `not_supported` before it is made. `readTextFile` SHALL keep a byte-order mark.
+
+#### Scenario: pi's edit of a file with a BOM
+- **WHEN** pi's `edit` changes one line of a CRLF file that starts with a BOM
+- **THEN** the file holds the BOM, the CRLF endings and the edit, and nothing else changed

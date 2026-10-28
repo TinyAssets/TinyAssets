@@ -9,16 +9,17 @@ import { env } from "cloudflare:workers";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { createEnvConformance, createExpectAssertions } from "@earendil-works/pi-durable/testing";
+import { createEditTool } from "@earendil-works/pi-durable/tools";
 import { describe, expect, it } from "vitest";
 
 import {
   BATCH_BYTES as WORKER_BATCH_BYTES, CHUNK_BYTES as WORKER_CHUNK_BYTES,
 } from "../../files/src/keys";
-import { BATCH_BYTES, CHUNK_BYTES, type ChunkStore, Files, sha256Hex } from "../src/files";
-import { ignored, ignoreRules, OwnerFilesEnv } from "../src/files-env";
+import { BATCH_BYTES, CHUNK_BYTES, type ChunkStore, Files, INLINE_BYTES, sha256Hex } from "../src/files";
+import { FILES_CALLS, ignored, ignoreRules, OwnerFilesEnv } from "../src/files-env";
 import type { OwnerDO } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
-import { ownerObject } from "./support";
+import { lostContent, ownerObject, sqlIn } from "./support";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -267,14 +268,14 @@ describe("the owner's environment", () => {
       gets.length = 0;
       for (const read of [await fs.readBinaryFile("huge.txt", context),
                           await fs.readTextFile("huge.txt", context)]) {
-        expect(read.ok ? null : read.error.code).toBe("invalid");
+        expect(read.ok ? null : read.error.code).toBe("not_supported");
       }
       const grown = await fs.truncateFile("huge.txt", 2 * size, context);
-      expect(grown.ok ? null : grown.error.code).toBe("invalid");
+      expect(grown.ok ? null : grown.error.code).toBe("not_supported");
       expect(gets).toEqual([]);
       const reader = getOrThrow(await fs.openBinaryReader("huge.txt", undefined, context));
       const tooMuch = await reader.read(0, size, context);
-      expect(tooMuch.ok ? null : tooMuch.error.code).toBe("invalid");
+      expect(tooMuch.ok ? null : tooMuch.error.code).toBe("not_supported");
       expect(getOrThrow(await reader.read(CHUNK_BYTES - 1, 2, context))).toEqual(
         new Uint8Array([65, 65]));
       expect(gets).toHaveLength(1);
@@ -287,6 +288,66 @@ describe("the owner's environment", () => {
       expect(gets.map((call) => call.length)).toEqual([2, 2, 1]);
     });
   }, 30_000);
+
+  it("keeps a file written by the atomic-write idiom: a temporary file renamed into place",
+     async () => {
+    const r = ownerObject();
+    const big = new Uint8Array(INLINE_BYTES + 100).fill(66);
+    await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
+      const files = new Files(state.storage, env.FILES, () => FILE_DEFAULTS);
+      const fs = new OwnerFilesEnv({ files });
+      for (const [name, body] of [["small.txt", "small"], ["big.bin", big]] as const) {
+        const spill = getOrThrow(await fs.createTempFile({ prefix: "spill-" }, context));
+        getOrThrow(await fs.writeFile(spill, body, context));
+        getOrThrow(await fs.renameFile(spill, name, context));
+      }
+      await fs.cleanup(context);
+      expect(getOrThrow(await fs.readTextFile("small.txt", context))).toBe("small");
+      expect(getOrThrow(await fs.readBinaryFile("big.bin", context))).toEqual(big);
+    });
+    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1 WHERE gc_after IS NOT NULL");
+    await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
+      const files = new Files(state.storage, env.FILES, () => FILE_DEFAULTS);
+      await files.collect(Date.now() / 1000);
+      const fs = new OwnerFilesEnv({ files });
+      expect(getOrThrow(await fs.readBinaryFile("big.bin", context))).toEqual(big);
+    });
+    expect(await lostContent(r.stub)).toEqual([]);
+  });
+
+  it("keeps a BOM through pi's own edit, byte for byte", async () => {
+    await inOwner(async (files) => {
+      const fs = new OwnerFilesEnv({ files });
+      const bytes = new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode("one\r\ntwo\r\n")]);
+      getOrThrow(await fs.writeFile("bom.txt", bytes, context));
+      const edit = createEditTool();
+      await edit.execute({ path: "bom.txt", edits: [{ oldText: "two", newText: "three" }] },
+                         { env: fs } as never, context);
+      expect(getOrThrow(await fs.readBinaryFile("bom.txt", context))).toEqual(
+        new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode("one\r\nthree\r\n")]));
+    });
+  });
+
+  it("refuses a tool call's file-store call past its budget, before making it", async () => {
+    await runInDurableObject(ownerObject().stub, async (_instance: OwnerDO, state) => {
+      const { store, gets } = counting();
+      const files = new Files(state.storage, store, () => FILE_DEFAULTS);
+      await files.write("/workspace/two.bin", new Uint8Array(2 * CHUNK_BYTES).fill(1),
+                        { expected: null, writer: "owner" });
+      const fs = new OwnerFilesEnv({ files });
+      gets.length = 0;
+      for (let i = 0; i < FILES_CALLS; i++) {
+        getOrThrow(await fs.readBinaryFile("two.bin", context));
+      }
+      const over = await fs.readBinaryFile("two.bin", context);
+      expect(over.ok ? null : [over.error.code, over.error.message]).toEqual(["not_supported",
+        `one tool call makes at most ${FILES_CALLS} file-store calls; read a smaller range, ` +
+        "or fewer files at once"]);
+      expect(gets).toHaveLength(FILES_CALLS);
+      // The next tool call's environment has its own budget.
+      getOrThrow(await new OwnerFilesEnv({ files }).readBinaryFile("two.bin", context));
+    });
+  });
 
   it("keeps a temporary file under /.ta/tmp until cleanup, and refuses writes outside one",
      async () => {
