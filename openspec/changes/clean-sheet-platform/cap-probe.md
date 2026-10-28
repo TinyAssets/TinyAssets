@@ -3,7 +3,7 @@
 For `tasks.md` §6 (the probe before the agent runs a turn on the object). Code:
 `scripts/probes/capprobe/`. Workflow: `.github/workflows/cap-probe.yml` (manual only).
 
-## Found (run 1, Workers Free)
+## Found (run 1 on Workers Free, run B on Workers Paid)
 
 - **The cap that bites is subrequests per invocation: 50 on this account.** The 32 the
   probe was designed around never bit: 40 sequential service-binding calls passed in one
@@ -17,8 +17,21 @@ For `tasks.md` §6 (the probe before the agent runs a turn on the object). Code:
   per-async-context attribution that `calls.ts` assumes, a counter that never resets, and
   charging to the oldest invocation.
 - **An alarm is cut at 15.0 minutes, even while it awaits I/O, and is then retried (M10).**
-- The account is almost certainly on Workers Free, because 50 is Free's subrequest limit.
-  Whether the documented 32 bites on Workers Paid still needs a Paid run ("Next" below).
+- Run 1's account was on Workers Free: 50 is Free's subrequest limit. The founder has since
+  moved it to Workers Paid.
+- **On Workers Paid at the default limit, nothing capped at 32 or 50, up to 120 calls in one
+  invocation (run B).** The documented 32 does not bite. Run B made:
+  - 60 sequential RPC calls in one Worker request;
+  - 120 calls in one alarm;
+  - 130 calls on one object across two concurrent RPCs.
+
+  Nothing failed.
+- **A Worker with `global_fetch_strictly_public` cannot reach private addresses (M11, run B).**
+  The edge refused:
+  - the IP literals and `localhost` with 403, error 1003 (direct IP access);
+  - the `nip.io` names with 530, error 1016 (origin DNS).
+- **Decision: run A is not needed.** The agent research deleted `calls.ts`, so attribution
+  no longer drives any design. Run 1 already narrowed it to newest-or-reset.
 
 The probe was designed for a cap of 32, but the cap was 50. So several cases stayed under
 it and did not discriminate. The results table marks each of those cases "no".
@@ -215,8 +228,9 @@ the run if one is not.
 | Run | Date | Plan | Commit | N | Hold |
 |---|---|---|---|---|---|
 | 40701631460 | 2026-10-28 | Free by inference (billing API 403; CPU burn survived, inconclusive) | 816950be | 40 | 16 min |
+| 40741034491 (run B) | 2026-10-28 | Paid (the founder's upgrade; billing API still 403), default limit | 33fbf2d17 | 60 | 0 (M10 skipped) |
 
-Both Workers were absent before the deploy (404) and deleted after the run (200).
+**Run 1.** Both Workers were absent before the deploy (404) and deleted after the run (200).
 C = 50. The error text was "Too many subrequests by single Worker invocation. To configure
 this limit, refer to …/wrangler/configuration/#limits".
 
@@ -235,6 +249,28 @@ this limit, refer to …/wrangler/configuration/#limits".
 | M10 | retried 15.0 min after the first start; the first attempt's last beat at 15.0 min | yes | an alarm is cut at 15 minutes, even while it awaits I/O, and is retried |
 | M11 | 7 targets done | — | the per-target detail was only in the job summary's JSON; the driver now prints it to the log and the summary |
 | M12 | `m12Order` ok. Phase 1: A 16/16, B 16/16. Phase 2: A 17/24, B 17/24 (34 combined, both failing at call 17). Phase 3: A 0/10, failing at call 0 | partly: per invocation and uncapped both predict 48, 10 | B's 16 + 34 = C, then 0: newest-or-reset (34, 0). Rules out per invocation and uncapped (48, 10) and never reset or oldest (18, 0) |
+
+**Run B.** Both Workers were deleted after the run (each delete returned 200). Every
+burst completed, and M5 reported "not reached by 120 calls". At the default C = 10,000 no
+case discriminates attribution, because every rule predicts the uncapped outcome. What run B
+shows is that no cap at or below 120 calls applies per invocation on Paid, the documented
+32 included.
+
+| # | Result |
+|---|---|
+| M1 | rpc 60/60 |
+| M2 | fetch 60/60 |
+| M3 | 30/30 + 30/30 |
+| M4 | workerPre 16/16; the DO's rpc 60/60 |
+| M5 | armPre 8/8; alarm rpc 60/60, then fetch 60/60: 120 calls in one alarm |
+| M6 | startPre 8/8; loop 60/60 |
+| M6a | startPre 8/8, alarmPre 4/4, loop 60/60; `m6aOrder` ok |
+| M7 | peer 60/60 |
+| M8 | public 60/60 |
+| M9 | rpc1 30/30, rpc2 30/30 |
+| M10 | not run (hold 0); run 1's 15-minute cut stands |
+| M11 | 127.0.0.1, 10.0.0.1, 169.254.169.254 and `localhost`: 403, error 1003 (direct IP access not allowed). The three `nip.io` names: 530, error 1016 (origin DNS). Run 1 on Free gave 502 for all seven |
+| M12 | `m12Order` ok. A 24/24, 36/36, 10/10; B 24/24, 36/36: 130 calls on one object, no error |
 
 **What it means for the platform.** The budget is not per async context. Every service
 call an object makes counts against its newest event. Under either form of the rule

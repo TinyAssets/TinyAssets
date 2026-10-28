@@ -412,7 +412,9 @@ account and no deploy.
   async context started it, as the scope does.
   Method, cases M1–M12, reading key and results table: `cap-probe.md`; run by the manual
   `cap-probe.yml` (gateway G0), which has run live (results in `cap-probe.md`).
-- [ ] The cap probe ran once, on Workers Free (run 40701631460, `cap-probe.md`). The cap
+- [x] Done (`cap-probe.md`). Run B on Paid (40741034491) found no cap up to 120 calls per
+  invocation, and private addresses refused. Run A is not needed: `calls.ts` is gone.
+  Run 1 on Workers Free (run 40701631460) found this: the cap
   that bit was 50 subrequests per invocation, not the documented 32. A DO RPC and an
   alarm each start fresh, and calls are charged to the object's current event (its newest
   invocation, or a counter each event resets; one rule for `calls.ts`: work in flight
