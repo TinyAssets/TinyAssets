@@ -63,6 +63,7 @@ function params(url, run) {
     waitMs: num("waitMs", 30 * 1000),
     settleMs: num("settleMs", 2000),
     timeoutMs: num("timeoutMs", 8000),
+    fetchTimeoutMs: num("fetchTimeoutMs", 5000),
   };
 }
 
@@ -143,7 +144,10 @@ function calls(env) {
   };
 }
 
-/** M11: what a Worker `fetch` does with each private target. No body is kept. */
+/**
+ * M11: what a Worker `fetch` does with each private target. No body is kept. Each fetch
+ * gets `fetchTimeoutMs` (5 s), so all 7 fit inside the driver's 45 s request timeout.
+ */
 async function addressChecks(timeoutMs) {
   const out = [];
   for (const url of PRIVATE_TARGETS) {
@@ -176,7 +180,7 @@ async function workerCase(id, env, p) {
     const half = Math.floor(p.n / 2);
     return { rpc: await burst("rpc", half, c.rpc), fetch: await burst("fetch", p.n - half, c.fetch) };
   }
-  return { targets: await addressChecks(p.timeoutMs) };
+  return { targets: await addressChecks(p.fetchTimeoutMs) };
 }
 
 /**
@@ -258,8 +262,9 @@ export class Probe extends DurableObject {
   /** M6 and M6a: the background loop, which outlives the RPC that started it. */
   #loop = null;
   #running = false;
-  /** M6a: whether the alarm is awaiting the loop right now. */
+  /** M6a: whether the alarm is awaiting the loop right now, and its ready signal. */
   #inAlarm = false;
+  #alarmReady = null;
   /** M12: the two invocations' rendezvous points, by run and name. */
   #gates = new Map();
 
@@ -319,9 +324,12 @@ export class Probe extends DurableObject {
     };
     result.startPre = await burst("rpc", PRE.start, calls(this.env).rpc);
     await this.record(result, p);
+    // M6a's loop waits (at most `waitMs`) for the alarm to have spent its calls and be
+    // awaiting, so every loop call runs inside the alarm's wait (the driver's m6aOrder).
+    this.#alarmReady = id === "M6a" ? deferred() : null;
     if (id === "M6a") {
       await this.ctx.storage.put("pending", { id, p });
-      await this.ctx.storage.setAlarm(Date.now() + Math.floor(p.intervalMs / 4));
+      await this.ctx.storage.setAlarm(Date.now() + Math.min(100, Math.floor(p.intervalMs / 4)));
     }
     this.#loop = this.#background(result, p);
     return { case: id, status: "started" };
@@ -330,6 +338,9 @@ export class Probe extends DurableObject {
   async #background(result, p) {
     try {
       const ping = calls(this.env).rpc;
+      if (this.#alarmReady) {
+        result.waitedForAlarm = await this.#wait(this.#alarmReady, p.waitMs);
+      }
       for (let i = 0; i < p.n; i += 1) {
         await sleep(p.intervalMs);
         const at = Date.now();
@@ -465,6 +476,7 @@ export class Probe extends DurableObject {
     this.#inAlarm = true;
     try {
       note.alarmPre = await burst("rpc", PRE.alarm, calls(this.env).rpc);
+      this.#alarmReady?.resolve();
       if (this.#loop) {
         await this.#loop;
       }

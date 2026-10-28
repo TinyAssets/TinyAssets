@@ -108,12 +108,14 @@ The alarm's fetch burst then repeats M3's question inside an alarm.
 | fewer, with a non-cap error or calls that stop | the object was evicted mid-loop: read the times |
 
 **M6a** (j = 8 in the RPC; the alarm spends k = 4, then awaits the loop; each call
-records `inAlarmBefore` and `inAlarmAfter`):
+records `inAlarmBefore` and `inAlarmAfter`). The loop waits, for at most 30 s, until the
+alarm has spent its k and is awaiting. The run's M6a is void unless that wait was met and
+every loop call has `inAlarmBefore` true (the driver's `m6aOrder`, which the summary prints):
 
 | loop ok | rule |
 |---|---|
-| 24 (32 − j) | charged to the RPC that started the loop |
-| 28 (32 − k) | charged to the alarm awaiting it: the newest invocation, or a counter reset when the alarm started (M12 separates these two) |
+| 24 (32 − j) | charged to the RPC that started the loop; or to the oldest live invocation, if the returned RPC still counts as live |
+| 28 (32 − k) | charged to the alarm awaiting it: the newest invocation, a counter reset when the alarm started, or the oldest live invocation once only the alarm is live (M12 separates these) |
 | 20 (32 − j − k) | one counter for the object, never reset |
 | 32 | the loop has a fresh budget of its own |
 | 40 | uncapped |
@@ -144,18 +146,22 @@ beat. Alarms are at-least-once, so any retry alone means nothing.
 **M11** applies only to Workers that set `global_fetch_strictly_public`, as the probe and
 the gateway do. A Worker without the flag must be probed separately.
 
-**M12** (B started after A's 16, checked by `B.startedAt > A.startedAt + A.phase1.totalMs`;
-both waits met):
+**M12.** The run's M12 is void unless the driver's `m12Order` holds: B started after A's
+16 (`B.startedAt > A.startedAt + A.phase1.totalMs`), and all three waits were met (A for
+B's phase 1, A for B's end, B for A's phase 1). The summary prints the check and each wait.
 
 | A phase 1 | B phase 1 | A + B phase 2 | A phase 3 | rule |
 |---|---|---|---|---|
 | 16 | 16 | 32 (16 each) | 0 | per invocation: each RPC counts its own calls |
-| 16 | 16 | 0 | 0 | one counter for the object, never reset (or charged to the oldest invocation) |
-| 16 | 16 | 16 combined | 10 | charged to the newest invocation: once B ends, A's own counter (16 used) is current again |
-| 16 | 16 | 16 combined | 0 | one counter for the object, reset on each incoming event |
+| 16 | 16 | 0 | 0 | one counter for the object, never reset, or charged to the oldest live invocation: M6a tells them apart (20 means never reset; 24 or 28 means oldest) |
+| 16 | 16 | 16 combined | ≥ 1 (typically 9–10) | charged to the newest invocation: once B ends, A's own counter (16 used) is current again |
+| 16 | 16 | 16 combined | 0 | one counter for the object, reset on each incoming event; or the newest invocation with B still current |
 | 16 | 16 | 48 | 10 | uncapped |
 
-If the order check failed, or a wait was not met, the run's M12 is void.
+Phase 3 under the newest-invocation rule is "at least 1", not exactly 10. B can stay the
+current request until A's settle-sleep timer fires, and that races A's first phase-3 call.
+So a phase 3 of 0 after "16 combined" means either a reset on each event, or the newest
+invocation with B still current. Neither reading pins it alone.
 
 ## Running it
 

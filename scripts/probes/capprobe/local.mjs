@@ -96,8 +96,10 @@ function checkFirstRun(report, parsed) {
   expect(r.M6?.result?.calls?.every((c) => !c.inAlarmBefore && !c.inAlarmAfter), "M6: a call in an alarm");
   const m6a = r.M6a;
   expect(m6a?.alarm?.loopPresent && m6a.alarm.alarmPre?.n === 4, `M6a alarm: ${show(m6a?.alarm)}`);
-  expect(m6a?.result?.calls?.slice(-30).every((c) => c.inAlarmBefore && c.inAlarmAfter),
-         "M6a: the alarm was not awaiting the loop's later calls");
+  expect(m6a?.result?.calls?.length === m6a?.result?.params?.n
+         && m6a.result.calls.every((c) => c.inAlarmBefore && c.inAlarmAfter),
+         "M6a: the alarm was not awaiting every loop call");
+  expect(report.checks.m6aOrder?.ok, `M6a order: ${show(report.checks.m6aOrder)}`);
   const ws = r.M9?.result;
   expect(ws?.open === "ok" && ws.bridgeEcho && ws.rpc1?.n === 20 && ws.rpc2?.n === 20
          && ws.echoesBefore === PARAMS.messages && ws.echoesAfter === PARAMS.messages, `M9: ${show(ws)}`);

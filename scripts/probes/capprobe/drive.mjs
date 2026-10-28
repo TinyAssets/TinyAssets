@@ -54,7 +54,7 @@ export function worstCaseMs(params = {}, timing = {}) {
     + (BACKGROUND.length + ALARMS.length) * r // starts and arms
     + t.m12DelayMs + r // M12
     + t.alarmsFirstReadMs + t.alarmsGraceMs + r // alarm reads
-    + p.n * p.intervalMs + t.backgroundSlackMs + t.backgroundGraceMs + r // background reads
+    + p.waitMs + p.n * p.intervalMs + t.backgroundSlackMs + t.backgroundGraceMs + r // background
     + r + p.holdMs + t.m10FirstReadMs + t.m10GraceMs + r // M10
     + r; // the final read
 }
@@ -233,17 +233,18 @@ export async function drive({ request, runId, params = {}, timing = {}, log = ()
     await sleep(Math.max(0, alarmsArmed + t.alarmsFirstReadMs - Date.now()));
     await pollUntil([...ALARMS, "M12"], t.alarmsGraceMs);
     const { A, B } = report.results.M12 ?? {};
-    report.checks.m12Order = A?.phase1 && B?.startedAt
-      ? { ok: B.startedAt > A.startedAt + A.phase1.totalMs, aStartedAt: A.startedAt,
-          aPhase1Ms: A.phase1.totalMs, bStartedAt: B.startedAt }
-      : { ok: false, why: "M12 has no fresh A and B records" };
+    report.checks.m12Order = m12Order(A, B);
     if (!report.checks.m12Order.ok) {
-      report.notes.push("M12: B did not start after A's first phase ended; its reading is void");
+      report.notes.push("M12: B did not start after A's first phase, or a wait was not met; its reading is void");
     }
     phase("alarm cases and M12");
 
     await sleep(Math.max(0, backgroundStarted + p.n * p.intervalMs + t.backgroundSlackMs - Date.now()));
     await pollUntil(BACKGROUND, t.backgroundGraceMs);
+    report.checks.m6aOrder = m6aOrder(report.results.M6a?.result);
+    if (!report.checks.m6aOrder.ok) {
+      report.notes.push("M6a: a loop call ran before the alarm was awaiting it; its reading is void");
+    }
     phase("background cases");
 
     if (p.holdMs > 0) {
@@ -257,6 +258,27 @@ export async function drive({ request, runId, params = {}, timing = {}, log = ()
       report.notes.push("M10 skipped (hold 0)");
     }
   }
+}
+
+/** M12 reads only if B started after A's first phase ended and every wait was met. */
+export function m12Order(A, B) {
+  if (!A?.phase1 || !B?.startedAt) {
+    return { ok: false, why: "M12 has no fresh A and B records" };
+  }
+  const waits = { aWaitedForB: A.waitedForB?.met === true, aWaitedForBEnd: A.waitedForBEnd?.met === true,
+                  bWaitedForA: B.waitedForA?.met === true };
+  const bAfterA = B.startedAt > A.startedAt + A.phase1.totalMs;
+  return { ok: bAfterA && Object.values(waits).every(Boolean), bAfterA, ...waits,
+           aStartedAt: A.startedAt, aPhase1Ms: A.phase1.totalMs, bStartedAt: B.startedAt };
+}
+
+/** M6a reads only if the alarm was awaiting the loop before every one of its calls. */
+export function m6aOrder(loop) {
+  const calls = loop?.calls ?? [];
+  const early = calls.filter((c) => !c.inAlarmBefore).map((c) => c.i);
+  const waited = loop?.waitedForAlarm?.met === true;
+  return { ok: calls.length > 0 && early.length === 0 && waited, calls: calls.length,
+           beforeAlarm: early, waitedForAlarm: waited };
 }
 
 const minutes = (ms) => (typeof ms === "number" ? `${(ms / MINUTE).toFixed(1)} min` : "unknown");
@@ -298,8 +320,11 @@ export function summarize(report) {
       if (id === "M12") {
         const other = label === "A" ? stored.B : stored.A;
         const order = other?.startedAt ? (result.startedAt < other.startedAt ? "1st" : "2nd") : "?";
-        const met = label === "A" ? result.waitedForB?.met : result.waitedForA?.met;
-        name = `${label} (arrived ${order}; met ${met ? "yes" : "no"})`;
+        const yes = (wait) => (wait?.met ? "yes" : "no");
+        const waits = label === "A"
+          ? `waited for B's phase 1: ${yes(result.waitedForB)}; for B's end: ${yes(result.waitedForBEnd)}`
+          : `waited for A's phase 1: ${yes(result.waitedForA)}`;
+        name = `${label} (arrived ${order}; ${waits})`;
       }
       const bursts = [];
       for (const holder of [result, id === "M6a" ? stored?.alarm : null]) {
@@ -333,7 +358,9 @@ export function summarize(report) {
   const plan = report.plan ? `${report.plan.reading} (status ${report.plan.status})` : "not read";
   return [
     `Run \`${report.runId}\`, phase: ${report.phase}. Plan check: ${plan}.`,
-    `M12 order check: ${report.checks.m12Order ? (report.checks.m12Order.ok ? "ok" : "FAILED") : "not reached"}.`, "",
+    ...["m12Order", "m6aOrder"].map((check) => `${check}: ${report.checks[check]
+      ? (report.checks[check].ok ? "ok" : `FAILED (void) ${JSON.stringify(report.checks[check])}`)
+      : "not reached"}.`), "",
     "| case | part | ok | status | first error |", "|---|---|---|---|---|", ...rows, "",
     ...errors, ...report.notes.map((note) => `- ${note}`),
   ].join("\n");

@@ -47,10 +47,8 @@ jobs:
         env:
           HOLD_MINUTES: ${{ inputs.hold_minutes }}
         run: |
-          case "${HOLD_MINUTES}" in
-            ''|*[!0-9]*) echo "::error::hold_minutes must be a whole number from 0 to 20"; exit 1 ;;
-          esac
-          if [ "${HOLD_MINUTES}" -gt 20 ]; then
+          # One or two digits first, so a huge or odd value fails before any compare.
+          if ! [[ "${HOLD_MINUTES}" =~ ^[0-9]{1,2}$ ]] || [ "$((10#${HOLD_MINUTES}))" -gt 20 ]; then
             echo "::error::hold_minutes must be a whole number from 0 to 20"
             exit 1
           fi
@@ -167,7 +165,7 @@ jobs:
           "${WRANGLER}" deploy --config scripts/probes/capprobe/callee.wrangler.jsonc --secrets-file "${callee}"
           "${WRANGLER}" deploy --config scripts/probes/capprobe/caller.wrangler.jsonc --secrets-file "${caller}"
 
-      # 55 minutes: drive.mjs's worstCaseMs at the 20-minute hold cap is 49.8
+      # 55 minutes: drive.mjs's worstCaseMs at the 20-minute hold cap is 50.3
       # (every wait at its bound, every request at its 45 s timeout), and
       # local.mjs fails if it outgrows this. The driver rewrites the results
       # after each phase, so a step killed here still leaves what it had.
