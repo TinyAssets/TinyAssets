@@ -20,12 +20,12 @@
  *   only the rest, each against the version it read in the same call.
  * - Bytes come from `FILES` two chunks a call. A whole-file read, and a write, moves at
  *   most `WHOLE_BYTES` (16 MiB) through the object; a larger file is read by range or
- *   by line, and sent by upload. Every `FILES` call draws from the budget of the
- *   invocation the tool call runs in (`calls.ts`: the alarm a pi turn's Lifecycle job runs
- *   in, shared by all its tool calls), read from the object's scope, so the factory that
- *   builds an environment takes none; a call is refused loudly before it would cross the
- *   cap: a budget on the calls themselves, not a proxy in bytes, so any mix of methods in
- *   any number of tool calls stays inside it. A refused size or budget is `not_supported`.
+ *   by line, and sent by upload. The calls are the platform's to count: subrequests per
+ *   invocation, whose own error is the loud failure (`unknown`, with its message).
+ * - Every change is a unit of the object's write gate (`gate.ts`): a tool call runs
+ *   between the object's events, so a write it made directly could land inside a pi
+ *   commit and be rolled back with it. `Files` opens the units of the changes that cross
+ *   to `FILES`; this environment opens one for each change it makes itself.
  * - `readTextFile` keeps a BOM: it is the file's bytes, which pi's `edit` writes back.
  * - `renameFile` of a directory is one transaction over its subtree; no byte moves.
  * - `watch` hears every commit in the object at once (`native`).
@@ -45,7 +45,6 @@ import {
   StreamDecoder, type TextLine, type TextLineReader, type WatchChange, type WatchTarget,
 } from "@earendil-works/pi-durable/env";
 
-import { CallsSpent } from "./calls";
 import { Invalid, Refused } from "./errors";
 import {
   BATCH_BYTES, CHUNK_BYTES, type ChunkRef, type Content, type Entry, type FaultCode,
@@ -80,10 +79,6 @@ function fault(error: unknown, path?: string): FileError {
     return error;
   }
   const cause = error instanceof Error ? error : new Error(String(error));
-  if (error instanceof CallsSpent) {
-    // pi's `edit` shows only the code: the operation is what this tool call cannot do.
-    return new FileError("not_supported", error.message, path, cause);
-  }
   if (error instanceof FileFault) {
     return new FileError(FAULTS[error.code], error.message, path, cause);
   }
@@ -556,7 +551,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
     }
   }
 
-  /** Chunk bytes, each `FILES` call the manifest makes for them drawn from the invocation's. */
+  /** Chunk bytes, from `FILES` through the manifest. */
   readonly #load: Load = (reads) => this.#files.fetch(reads);
 
   /** The current content of a file, its etag remembered for this environment's writes. */
@@ -728,8 +723,8 @@ export class OwnerFilesEnv implements ExecutionEnv {
         this.#files.open(from);
         return;
       }
-      const entry = this.#files.rename(from, to, { expected: null, replace: true,
-                                                   writer: this.#writer });
+      const entry = await this.#files.unit(() => this.#files.rename(from, to, {
+        expected: null, replace: true, writer: this.#writer }));
       this.#moved(from);
       this.#moved(to, entry);
       await this.#rearm();
@@ -918,7 +913,8 @@ export class OwnerFilesEnv implements ExecutionEnv {
       if (!recursive && this.#files.stat(at) !== null) {
         throw new FileFault("exists", "already exists");
       }
-      this.#files.mkdir(at, { expected: null, parents: recursive, writer: this.#writer });
+      await this.#files.unit(() => this.#files.mkdir(at, { expected: null, parents: recursive,
+                                                          writer: this.#writer }));
       await this.#rearm();
     });
   }
@@ -928,8 +924,8 @@ export class OwnerFilesEnv implements ExecutionEnv {
     return this.#run(context, path, async () => {
       const at = this.#where(path, true);
       try {
-        this.#files.remove(at, { expected: null, recursive: options?.recursive ?? false,
-                                 writer: this.#writer });
+        await this.#files.unit(() => this.#files.remove(at, {
+          expected: null, recursive: options?.recursive ?? false, writer: this.#writer }));
       } catch (error) {
         if (!(options?.force && error instanceof FileFault && error.code === "not_found")) {
           throw error;
@@ -943,7 +939,8 @@ export class OwnerFilesEnv implements ExecutionEnv {
   async createTempDir(prefix: string | undefined, context: Context):
       Promise<Result<string, FileError>> {
     return this.#run(context, undefined, async () => {
-      const dir = this.#files.tempDir(prefix ?? "tmp-", this.#writer);
+      const dir = await this.#files.unit(() => this.#files.tempDir(prefix ?? "tmp-",
+                                                                   this.#writer));
       this.#temps.add(dir);
       await this.#rearm();
       return dir;
@@ -977,7 +974,8 @@ export class OwnerFilesEnv implements ExecutionEnv {
   /** Remove this environment's temporary directories. */
   async cleanup(_context: Context): Promise<void> {
     if (this.#temps.size > 0) {
-      this.#files.dropTemps([...this.#temps], this.#writer);
+      const temps = [...this.#temps];
+      await this.#files.unit(() => this.#files.dropTemps(temps, this.#writer));
       this.#temps.clear();
       await this.#rearm();
     }

@@ -24,6 +24,7 @@
  */
 import { digest } from "./collections";
 import { Invalid, Refused } from "./errors";
+import type { OwnerStorage } from "./gate";
 import type { Stamp, StandingReader } from "./scheduled";
 import { codePoints } from "./text";
 
@@ -76,18 +77,18 @@ function token(bytes: number): string {
 }
 
 export class Registrations {
-  readonly #storage: DurableObjectStorage;
+  readonly #storage: OwnerStorage;
   readonly #grants: StandingReader;
   readonly #limits: CardLimits;
 
-  constructor(storage: DurableObjectStorage, grants: StandingReader,
+  constructor(storage: OwnerStorage, grants: StandingReader,
               limits: CardLimits = CARD_LIMITS) {
     this.#storage = storage;
     this.#grants = grants;
     this.#limits = limits;
   }
 
-  get #sql(): SqlStorage {
+  get #sql(): OwnerStorage["sql"] {
     return this.#storage.sql;
   }
 

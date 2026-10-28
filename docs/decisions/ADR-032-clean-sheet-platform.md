@@ -149,11 +149,12 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
    - **The files Worker** holds the only bucket binding, takes hex and bytes
      only, never sees a path or chooses an owner, and verifies every put with
      R2's `put` SHA-256 check (not S3 checksum headers, which R2 lists as
-     composite only). A call moves at most two chunks' bytes, and a request may
-     make at most 32 service-binding calls: the object keeps one ambient budget per
-     platform invocation (the alarm's, or each RPC door's), which `FILES` draws from up
-     to 24 and the gateway and hooks will draw from too. The binder, the trust root, may
-     stream chunks to it with a namespace read from the owner's object.
+     composite only). A call moves at most two chunks' bytes. Subrequests are limited
+     per invocation (50 on Free, 10,000 by default on Paid; `limits.subrequests` is set
+     explicitly), and an object's calls count against its newest incoming event (the
+     cap probe's M12). The platform's own error is the loud failure; there is no budget
+     of ours. The binder, the trust root, may stream chunks to it with a namespace read
+     from the owner's object.
    - **Versions and GC:** each live path's last 10 versions, and its versions
      of the last 30 days up to 20 in all, as owner policy; every entry and kept
      history row holds its content, in every root; chunks are

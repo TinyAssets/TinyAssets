@@ -2,8 +2,8 @@
  * The owner object's one schedule, on the Agents SDK Lifecycle job queue (ADR-032, tasks 3.6).
  *
  * Lifecycle (`agents/lifecycle`, agents 0.31.0) owns the Durable Object's queue of durable
- * jobs and its single physical alarm, and PiHarness, once installed, keeps its own wake job
- * on the same queue. So no source here sets, reads or clears the alarm (the alarm guard):
+ * jobs and its single physical alarm, and PiHarness (`agent.ts`) keeps its own wake job on
+ * the same queue. So no source here sets, reads or clears the alarm (the alarm guard):
  * every queue change re-arms it from the queue, and `OwnerDO.alarm` only hands the
  * runtime's alarm to Lifecycle, which drives the due jobs and re-arms.
  *
@@ -37,8 +37,9 @@
  *   (the work hand-off's `WORK_HANDOFF_MS`, each doorbell send's and revoke's
  *   `WAKE_SEND_MS`, which the lane holds itself, a chunk delete's remaining budget, never
  *   begun with less than `DELETE_FLOOR_MS` left), so a pass ends before an overlapping alarm
- *   may run it again. A pass draws on its alarm's call budget (`calls.ts`), which every
- *   job that alarm drives shares; a pi task's budget is its starting context's (tasks 5).
+ *   may run it again. A pass writes its rows through the object's write gate a unit at a
+ *   time (`gate.ts`), and so does each job set here: Lifecycle's job row is pushed inside
+ *   a unit, so it never lands in a pi commit that could roll it back.
  * - Each lane fences its own work in its rows (a wake's claim lease and may-have-sent
  *   mark, a chunk's `deleting` state, a work row's claim), so a run Lifecycle repeats
  *   takes nothing the first took, and unknown work is never replayed.
@@ -62,7 +63,7 @@ import {
   type LifecycleJob, LifecycleCapability, type LifecycleJobContext, type LifecycleJobOutcome,
 } from "agents/lifecycle";
 
-import type { CallScope } from "./calls";
+import type { Write } from "./gate";
 
 /** The schedule's Lifecycle capability id, and the prefix of its job ids. */
 export const SCHEDULE = "owner-schedule";
@@ -104,8 +105,8 @@ export interface Lane {
   /**
    * One short, bounded pass over what is due at `now`, taking no new row once the wall
    * clock (`Date.now()`, ms) reaches `until`. Each outside call's failure is kept in its
-   * own row, backed off there; a throw is a bug, and fails the whole pass. Its
-   * service-binding calls draw on the alarm's budget, read from the object's scope.
+   * own row, backed off there; a throw is a bug, and fails the whole pass. Each of its
+   * writes is a unit of the object's write gate.
    */
   run(now: number, until: number): Promise<unknown>;
 }
@@ -121,16 +122,16 @@ function setFor(job: LifecycleJob): number {
 export class Schedule extends LifecycleCapability {
   readonly #lanes: ReadonlyMap<string, Lane>;
   readonly #clock: () => number;
-  /** The object's invocations: a job runs only inside one (`CallScope.current` throws outside). */
-  readonly #scope: CallScope;
+  /** The object's write gate, which every job set goes through. */
+  readonly #write: Write;
   readonly #passMs: number;
 
-  constructor(lanes: Readonly<Record<string, Lane>>, clock: () => number, scope: CallScope,
+  constructor(lanes: Readonly<Record<string, Lane>>, clock: () => number, write: Write,
               passMs: number = LANE_PASS_S * 1000) {
     super(SCHEDULE);
     this.#lanes = new Map(Object.entries(lanes));
     this.#clock = clock;
-    this.#scope = scope;
+    this.#write = write;
     this.#passMs = passMs;
   }
 
@@ -146,42 +147,40 @@ export class Schedule extends LifecycleCapability {
    * run's own word: `undefined` for a door, which keeps a job in place or held later
    * (unless the rows now have earlier work); null for a pass that ended, which always
    * writes (its drive result would otherwise complete and delete the job) and clears any
-   * hold; a time for a pass that failed, held until then.
+   * hold; a time for a pass that failed, held until then. The rows are read and the job
+   * row written in one unit of the write gate; Lifecycle re-arms the alarm after it.
    */
   async #set(name: string, hold: number | null | undefined): Promise<void> {
     const jobs = this.lifecycle.jobs;
     const id = laneJob(name);
-    const job = jobs.get(id);
-    const next = this.#lanes.get(name)!.next(this.#clock());
-    if (next === null) {
-      if (job !== undefined) {
-        await jobs.cancel(id);
+    const [rearmed] = await this.#write((): [Promise<unknown>] | [] => {
+      const job = jobs.get(id);
+      const next = this.#lanes.get(name)!.next(this.#clock());
+      if (next === null) {
+        return job === undefined ? [] : [jobs.cancel(id)];
       }
-      return;
-    }
-    const due = Math.ceil(next * 1000);
-    const time = hold === null || hold === undefined ? due : Math.max(due, Math.ceil(hold * 1000));
-    if (hold === undefined && job !== undefined) {
-      const was = setFor(job);
-      if ((job.time === time && was === due) || (job.time > due && due >= was)) {
-        return;  // in place, or held later with no earlier work
+      const due = Math.ceil(next * 1000);
+      const time = hold === null || hold === undefined ? due
+        : Math.max(due, Math.ceil(hold * 1000));
+      if (hold === undefined && job !== undefined) {
+        const was = setFor(job);
+        if ((job.time === time && was === due) || (job.time > due && due >= was)) {
+          return [];  // in place, or held later with no earlier work
+        }
       }
-    }
-    await jobs.push({ id, fn: name, time, payload: { due }, singleflight: true,
-                      hungTimeoutSeconds: LANE_HUNG_S });
+      // Lifecycle writes the job row before it returns; the re-arm follows the unit.
+      return [jobs.push({ id, fn: name, time, payload: { due }, singleflight: true,
+                          hungTimeoutSeconds: LANE_HUNG_S })];
+    });
+    await rearmed;
   }
 
-  /**
-   * A lane's job is due: one bounded pass, then its job set from the rows as they stand.
-   * It runs only inside an invocation's scope (the object's alarm enters one): a job driven
-   * outside any fails before its pass, loudly, rather than make calls no budget counts.
-   */
+  /** A lane's job is due: one bounded pass, then its job set from the rows as they stand. */
   async onJob({ job }: LifecycleJobContext): Promise<LifecycleJobOutcome> {
     const lane = this.#lanes.get(job.fn);
     if (lane === undefined || job.id !== laneJob(job.fn)) {
       return undefined;  // no lane of this code's: done
     }
-    this.#scope.current();
     await lane.run(this.#clock(), Date.now() + this.#passMs);
     await this.#set(job.fn, null);
     return undefined;  // superseded by the set above

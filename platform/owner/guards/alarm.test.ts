@@ -13,20 +13,23 @@
  *   module by a name computed at run time;
  * - never installs Lifecycle's runtime handlers (`Lifecycle.install`, `installHandlers`),
  *   which would add a `fetch` and WebSocket handlers to the object's surface;
- * - has one `alarm`, the hand-off `await this.#calls.run(() => this.#lifecycle.alarm());`,
- *   Lifecycle's alarm inside the object's invocation scope (`calls.ts`).
+ * - has one `alarm`, the hand-off `await this.#lifecycle.alarm();`.
  * Lifecycle's and PiHarness's own tables (`cf_agents_*`, `pi_*`) are named by no source
  * (the policy-boundary guard). The guard is a tripwire for our own code's mistakes, not
  * proof against a source written to evade it.
  *
- * `agents/lifecycle` is the one Agents SDK module the object loads, pinned here by version
- * and lockfile integrity (agents 0.31.0, source-read 2026-10-28). Its module-level state,
- * which objects sharing an isolate share, holds no owner's data: `WeakMap`s keyed by each
- * Lifecycle or capability instance (event sinks, route transports, host invokers, bound
- * services), one `AsyncLocalStorage` whose store lives only for the invocation that set it
- * (`current-agent.ts`), and `node:diagnostics_channel` channels, which publish only to
- * subscribers and this Worker has none. Its `nanoid` pool is never drawn on, since every
- * job id here is given. It never reads `env` or `exports`.
+ * `agents/lifecycle` and `agents/harness/pi` are the Agents SDK modules the object loads,
+ * pinned here by version and lockfile integrity (agents 0.31.0, source-read 2026-10-28).
+ * Their module-level state, which objects sharing an isolate share, holds no owner's data:
+ * `WeakMap`s keyed by each Lifecycle, capability or PiHarness instance (event sinks, route
+ * transports, host invokers, bound services, each harness's private fields), one
+ * `AsyncLocalStorage` whose store lives only for the invocation that set it
+ * (`current-agent.ts`), constants (PiHarness's wake timings and job id), and
+ * `node:diagnostics_channel` channels, which publish only to subscribers and this Worker
+ * has none. Lifecycle's `nanoid` pool is never drawn on, since every job id here is given.
+ * Neither reads `env` or `exports`. PiHarness opens pi over `ctx.storage` through chord's
+ * adapter, whose one queue per storage object (a `WeakMap` keyed by that object) is the
+ * write gate's (`gate.ts`); pi's own versions are the pi pin guard's.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -38,9 +41,9 @@ import { parse, PLATFORM, reporter, workerSources } from "./sources";
 
 const BANNED: ReadonlySet<string> = new Set(["setAlarm", "deleteAlarm", "getAlarm",
                                              "disableAlarms", "deleteAll"]);
-/** What a source may import from the Agents SDK: Lifecycle and its capability base. */
-const AGENTS_IMPORTS: ReadonlySet<string> = new Set(["agents/lifecycle"]);
-const HAND_OFF = "await this.#calls.run(() => this.#lifecycle.alarm());";
+/** What a source may import from the Agents SDK: Lifecycle, and PiHarness on it. */
+const AGENTS_IMPORTS: ReadonlySet<string> = new Set(["agents/lifecycle", "agents/harness/pi"]);
+const HAND_OFF = "await this.#lifecycle.alarm();";
 /** The pinned Agents SDK, as the lockfile resolves it. */
 const AGENTS = Object.freeze({
   version: "0.31.0",
@@ -106,7 +109,7 @@ export function alarmReach(fileName: string, source: string): string[] {
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
         && node.moduleSpecifier !== undefined && agentsModule(node.moduleSpecifier)
         && !AGENTS_IMPORTS.has(node.moduleSpecifier.text)) {
-      report(node, `imports ${node.moduleSpecifier.text}, not Lifecycle`);
+      report(node, `imports ${node.moduleSpecifier.text}, not Lifecycle or PiHarness`);
     }
     if ((ts.isCallExpression(node) && node.arguments.some(agentsModule))
         || (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)
@@ -171,8 +174,9 @@ describe("alarm guard", () => {
     "export function f(s: DurableObjectStorage) { return s[`getAlarm`](); }",
     "export function f(s: DurableObjectStorage) { return Reflect.get(s, 'setAlarm'); }",
     "import { Agent } from 'agents';",
-    "import { PiHarness } from 'agents/harness/pi';",
+    "import { skills } from 'agents/harness/pi/skills';",
     "import { Schedule } from 'agents/schedule';",
+    "import { createAI } from 'agents/models/pi-ai';",
     "export * from 'agents';",
     "export async function f() { return import('agents'); }",
     "type A = typeof import('agents');",
@@ -182,10 +186,8 @@ describe("alarm guard", () => {
     "export class O { async alarm() { await this.#lifecycle.alarm(); await this.more(); } }",
     "export class O { alarm = async () => { await this.#lifecycle.alarm(); }; }",
     "export class O { async alarm() {} }",
-    // Lifecycle's alarm outside the invocation scope: its jobs would draw on no budget.
-    "export class O { async alarm() { await this.#lifecycle.alarm(); } }",
-    "export class O { async alarm() { await this.#calls.run(() => this.#lifecycle.alarm()); " +
-      "await this.more(); } }",
+    "export class O { async alarm() { await this.#lifecycle.start(); " +
+      "await this.#lifecycle.alarm(); } }",
     "export const handlers = { alarm: () => undefined };",
     // Slice 5's review N4: each bypass the first guard let through.
     "export function f(s: DurableObjectStorage) { return s['set' + 'Alarm'](1); }",
@@ -210,9 +212,9 @@ describe("alarm guard", () => {
     "import { Lifecycle } from 'agents/lifecycle';",
     "import { LifecycleCapability, type LifecycleJob } from 'agents/lifecycle';",
     "import type { LifecycleJobContext } from 'agents/lifecycle';",
+    "import { PiHarness } from 'agents/harness/pi';",
     "export class O { readonly #lifecycle = new Lifecycle(this); " +
-      "override async alarm(): Promise<void> { " +
-      "await this.#calls.run(() => this.#lifecycle.alarm()); } }",
+      "override async alarm(): Promise<void> { await this.#lifecycle.alarm(); } }",
     "export function f(lane: { nextDue(n: number): number }) { return lane.nextDue(0); }",
     "import { x } from 'agentsmith';",
     "export function f(npm: { install(): void }) { npm.install(); }",
@@ -226,48 +228,3 @@ describe("alarm guard", () => {
   });
 });
 
-/**
- * Each door of `source`'s `OwnerDO` (a public method taking the binding) whose body is not
- * one `return this.#door(...)`: a door outside its own invocation's scope (`calls.ts`).
- */
-export function unscopedDoors(source: string): string[] {
-  const file = parse("owner-do.ts", source);
-  const found: string[] = [];
-  const visit = (node: ts.Node): void => {
-    if (ts.isClassDeclaration(node) && node.name?.text === "OwnerDO") {
-      for (const member of node.members) {
-        if (!ts.isMethodDeclaration(member) || ts.isPrivateIdentifier(member.name)
-            || member.parameters[0]?.type?.getText(file) !== "Binding") {
-          continue;
-        }
-        const [only, ...rest] = member.body?.statements ?? [];
-        const scoped = only !== undefined && rest.length === 0 && ts.isReturnStatement(only)
-          && only.expression !== undefined && ts.isCallExpression(only.expression)
-          && only.expression.expression.getText(file) === "this.#door";
-        if (!scoped) {
-          found.push(member.name.getText(file));
-        }
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(file);
-  return found;
-}
-
-describe("invocation scope guard", () => {
-  it("finds every door of the object its own invocation", () => {
-    const source = workerSources().get("owner/src/owner-do.ts")!;
-    expect(unscopedDoors(source)).toEqual([]);
-    expect(source.match(/return this\.#door\(/g)?.length).toBeGreaterThan(50);
-  });
-
-  it.each([
-    "export class OwnerDO { fileRead(binding: Binding) { return this.#files.read(); } }",
-    "export class OwnerDO { fileRead(binding: Binding) { this.#check(); " +
-      "return this.#door(() => 1); } }",
-    "export class OwnerDO { fileRead(binding: Binding) { return this.#other(() => 1); } }",
-  ])("sees %s", (source) => {
-    expect(unscopedDoors(source)).toEqual(["fileRead"]);
-  });
-});

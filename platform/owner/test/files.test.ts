@@ -7,7 +7,6 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { Calls, FILES_CALLS } from "../src/calls";
 import { CHUNK_BYTES, type Entry, INLINE_BYTES, sha256Hex } from "../src/files";
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
@@ -194,22 +193,23 @@ describe("a file write", () => {
       .toBe("first and count name 1 or 2 of the version's chunks");
   });
 
-  it("gives each door call its own call budget, one after another or at once", async () => {
+  it("serves door reads and writes that interleave at their FILES calls", async () => {
     const r = await rig();
     const version = entryOf(await write(r, `${W}/one.bin`,
                                         new Uint8Array(INLINE_BYTES + 1).fill(6))).version;
     const read = () => r.stub.fileReadChunks(r.bind(null), { path: `${W}/one.bin`, version,
                                                              first: 0, count: 1 });
-    // More door reads than one budget holds, each its own entry: none draws on another's.
-    for (let i = 0; i <= FILES_CALLS; i++) {
-      expect((await read()).chunks[0]!.byteLength).toBe(INLINE_BYTES + 1);
-    }
-    const together = await Promise.all(Array.from({ length: FILES_CALLS + 1 }, read));
-    expect(together.every((answer) => answer.chunks[0]!.byteLength === INLINE_BYTES + 1))
-      .toBe(true);
-    for (let i = 0; i <= FILES_CALLS; i++) {
-      await write(r, `${W}/w${i}.bin`, new Uint8Array(INLINE_BYTES + 1).fill(i));
-    }
+    // Each door's account is a unit of its own, and its FILES calls run between units, so
+    // doors at once never wait on each other's calls.
+    const together = await Promise.all([
+      ...Array.from({ length: 8 }, read),
+      ...Array.from({ length: 8 }, (_, i) => write(r, `${W}/w${i}.bin`,
+                                                   new Uint8Array(INLINE_BYTES + 1).fill(i))),
+    ]);
+    expect(together.slice(0, 8).every((answer) =>
+      "chunks" in answer && answer.chunks[0]!.byteLength === INLINE_BYTES + 1)).toBe(true);
+    expect(together.slice(8).map((answer) => entryOf(answer as never).size))
+      .toEqual(Array(8).fill(INLINE_BYTES + 1));
   });
 
   it("keeps the mode it had when an overwrite names none", async () => {

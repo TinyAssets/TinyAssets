@@ -245,7 +245,8 @@ wait, which is PiHarness's shape. An incoming RPC during a turn takes that budge
 - its split is 32/24/8, while the cap was 50 here and is 10,000 by default on Paid;
 - it attributes per async context.
 
-Per §6 it is reworked after the two runs in "Next". `calls.ts` is not changed yet.
+The agent slice deleted it (tasks §5, A0): the object keeps no budget of its own, and the
+owner Worker sets `limits.subrequests: 10000`, the platform's error being the loud failure.
 
 ## Next
 
@@ -280,4 +281,5 @@ Every rule predicts the uncapped outcome, and `local.mjs` asserts that. The run 
 other question: whether the documented 32 Worker invocations, or any other cap at or below
 60, bites on Paid. M1 stopping at 32 would mean it does.
 
-Then rework `calls.ts` from both runs (tasks §6).
+`calls.ts` is gone (tasks §5, A0). The runs still settle the cap the platform applies, and
+whether a Free account refuses or clamps `limits.subrequests: 10000`.

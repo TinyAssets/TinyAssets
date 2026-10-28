@@ -5,7 +5,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { Calls } from "../src/calls";
 import { type Entry, type Files, INLINE_BYTES } from "../src/files";
 import { rig, type Rig } from "./ledger-support";
 import { failure, fileCounters, inFiles, sqlIn, text } from "./support";

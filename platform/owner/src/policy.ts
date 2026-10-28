@@ -59,6 +59,7 @@
 import { createHash } from "node:crypto";
 
 import { Invalid, Refused } from "./errors";
+import type { OwnerStorage } from "./gate";
 import { CHUNK_BYTES, KEEP_CEILING, MAX_INTENT_CHUNKS } from "./files";
 import { codePoints } from "./text";
 
@@ -408,15 +409,15 @@ function expected(value: unknown): number {
 }
 
 export class Policy {
-  readonly #storage: DurableObjectStorage;
+  readonly #storage: OwnerStorage;
   readonly #limits: PolicyLimits;
 
-  constructor(storage: DurableObjectStorage, limits: PolicyLimits = POLICY_LIMITS) {
+  constructor(storage: OwnerStorage, limits: PolicyLimits = POLICY_LIMITS) {
     this.#storage = storage;
     this.#limits = limits;
   }
 
-  get #sql(): SqlStorage {
+  get #sql(): OwnerStorage["sql"] {
     return this.#storage.sql;
   }
 

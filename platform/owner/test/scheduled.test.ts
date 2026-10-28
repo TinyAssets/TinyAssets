@@ -6,6 +6,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { type Write, WriteGate } from "../src/gate";
 import { GRANT_LIMITS, Grants } from "../src/grants";
 import { clock, type Origin } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
@@ -29,7 +30,7 @@ class ScriptedRunner implements WorkRunner {
   readonly answers: ("handed" | "failed" | "crash" | "early" | "slow" | "stall")[] = [];
   slowMs = 200;
 
-  async handOff(target: WorkTarget, mark: () => void) {
+  async handOff(target: WorkTarget, mark: () => Promise<void>) {
     const answer = this.answers.shift() ?? "handed";
     if (answer === "early") {
       throw new Error("died before the work began");
@@ -37,7 +38,7 @@ class ScriptedRunner implements WorkRunner {
     if (answer === "stall") {  // stalls before its mark, then hands it over
       await new Promise((resolve) => setTimeout(resolve, this.slowMs));
     }
-    mark();  // throws when the claim lapsed: the runner stops before any effect
+    await mark();  // rejects when the claim lapsed: the runner stops before any effect
     this.ran.push(target);
     if (answer === "slow") {
       await new Promise((resolve) => setTimeout(resolve, this.slowMs));
@@ -54,6 +55,8 @@ interface Parts {
   readonly grants: Grants;
   readonly work: Scheduled;
   readonly state: DurableObjectState;
+  /** A write gate over the object's storage, as the object's lane writes through. */
+  readonly write: Write;
 }
 
 /** The object's own grants and scheduled work, with some bounds changed. */
@@ -63,8 +66,8 @@ function inWork<R>(r: Rig, act: (parts: Parts) => R | Promise<R>,
   return runInDurableObject(r.stub, (_i: OwnerDO, state) => {
     const grants = new Grants(state.storage, new Policy(state.storage),
                               { ...GRANT_LIMITS, ...grantLimits });
-    return act({ grants, state, work: new Scheduled(state.storage, grants,
-                                                    { ...WORK_LIMITS, ...limits }) });
+    return act({ grants, state, write: new WriteGate(state.storage).write,
+                 work: new Scheduled(state.storage, grants, { ...WORK_LIMITS, ...limits }) });
   });
 }
 
@@ -102,7 +105,7 @@ describe("stamped scheduled work", () => {
   it("is made only under authority that stands, or the owner's own", async () => {
     const r = await rig();
     const stamp = await admitted(r, CHATGPT);
-    const out = await inWork(r, ({ work }) => {
+    const out = await inWork(r, ({ work, write }) => {
       const tried = (made: unknown) => {
         try {
           return work.add("turn", clock() + 60, TURN, made, clock()).work_id.slice(0, 5);
@@ -126,7 +129,7 @@ describe("stamped scheduled work", () => {
     const r = await rig();
     const stamp = await admitted(r, CHATGPT);
     const runner = new ScriptedRunner();
-    await inWork(r, ({ work }) => work.add("turn", clock() - 1, TURN, stamp, clock()));
+    await inWork(r, ({ work, write }) => work.add("turn", clock() - 1, TURN, stamp, clock()));
     expect((await r.stub.grantList(r.bind(null))).clients[0]!.held).toBe(1);
     const [kept, counted] = await counters(r);
     expect(kept).toEqual(counted);  // a held row is not free
@@ -141,7 +144,7 @@ describe("stamped scheduled work", () => {
       .toEqual([CHATGPT.client, MUSE.client].sort());
     await expect(r.sql("DELETE FROM outside_clients WHERE client = ?", CHATGPT.client))
       .rejects.toThrow(/never deleted/);
-    expect(await inWork(r, ({ work }) => runWork(work, runner, clock))).toBe(1);
+    expect(await inWork(r, ({ work, write }) => runWork(work, runner, clock, write))).toBe(1);
     expect(runner.ran.map((t) => [t.kind, t.payload, t.stamp])).toEqual([["turn", TURN, stamp]]);
     expect(await states(r)).toEqual([{ state: "handed", attempts: 1, marked: 1 }]);
     expect(await held(r, CHATGPT)).toBe(0);  // settled: the row is free again
@@ -154,13 +157,13 @@ describe("stamped scheduled work", () => {
     const r = await rig();
     const stamp = await admitted(r, CHATGPT, 100);
     const runner = new ScriptedRunner();
-    await inWork(r, ({ work }) => {
+    await inWork(r, ({ work, write }) => {
       work.add("turn", clock() - 1, TURN, stamp, clock());
       work.add("turn", clock() - 1, TURN, null, clock());  // the owner's own: no stamp
     });
     // A grant change made around the object's doors, so only the run's recheck sees it.
     await inWork(r, ({ grants }) => grants.revoke(CHATGPT.client, clock()));
-    expect(await inWork(r, ({ work }) => runWork(work, runner, clock))).toBe(1);
+    expect(await inWork(r, ({ work, write }) => runWork(work, runner, clock, write))).toBe(1);
     expect(runner.ran.map((t) => t.stamp)).toEqual([null]);
     expect((await states(r)).map((row) => row["state"]).sort()).toEqual(["handed", "refused"]);
     expect(await held(r, CHATGPT)).toBe(0);
@@ -170,7 +173,7 @@ describe("stamped scheduled work", () => {
      async () => {
     const r = await rig();
     const stamp = await admitted(r, CHATGPT);
-    await inWork(r, ({ work }) => work.add("turn", clock() + 600, TURN, stamp, clock()));
+    await inWork(r, ({ work, write }) => work.add("turn", clock() + 600, TURN, stamp, clock()));
     await r.stub.grantRevoke(r.bind(null), { client: CHATGPT.client });
     expect(await states(r)).toEqual([{ state: "refused", attempts: 0, marked: 0 }]);
     expect(await held(r, CHATGPT)).toBe(0);
@@ -184,23 +187,23 @@ describe("stamped scheduled work", () => {
     const runner = new ScriptedRunner();
     runner.answers.push("crash", "early", "early", "early");
     const t = clock();
-    await inWork(r, ({ work }) => {
+    await inWork(r, ({ work, write }) => {
       work.add("turn", t - 10, { n: 1 }, null, t);
     });
-    await inWork(r, ({ work }) => runWork(work, runner, () => t));
+    await inWork(r, ({ work, write }) => runWork(work, runner, () => t, write));
     expect(await states(r)).toEqual([{ state: "running", attempts: 1, marked: 1 }]);
     // Past its lease: marked, so unknown, and never handed to the runner again.
-    await inWork(r, ({ work }) => runWork(work, runner, () => t + WORK_LEASE_S));
+    await inWork(r, ({ work, write }) => runWork(work, runner, () => t + WORK_LEASE_S, write));
     expect(await states(r)).toEqual([{ state: "unknown", attempts: 1, marked: 1 }]);
     expect(runner.ran).toHaveLength(1);
     // A run that died before its mark is due again, until it has used its attempts.
-    await inWork(r, ({ work }) => work.add("turn", t - 10, { n: 2 }, null, t + 1));
+    await inWork(r, ({ work, write }) => work.add("turn", t - 10, { n: 2 }, null, t + 1));
     for (let pass = 1; pass <= WORK_LIMITS.attempts; pass++) {
       const at = t + pass * (WORK_LEASE_S + 1);
-      await inWork(r, ({ work }) => runWork(work, runner, () => at));
+      await inWork(r, ({ work, write }) => runWork(work, runner, () => at, write));
     }
     const last = t + (WORK_LIMITS.attempts + 1) * (WORK_LEASE_S + 1);
-    await inWork(r, ({ work }) => runWork(work, runner, () => last));
+    await inWork(r, ({ work, write }) => runWork(work, runner, () => last, write));
     expect((await states(r))[1]).toEqual({ state: "failed", attempts: WORK_LIMITS.attempts,
                                            marked: 0 });
     expect(runner.ran).toHaveLength(1);
@@ -208,7 +211,7 @@ describe("stamped scheduled work", () => {
 
   it("settles only from the claim that holds it", async () => {
     const r = await rig();
-    const out = await inWork(r, ({ work }) => {
+    const out = await inWork(r, ({ work, write }) => {
       const t = clock();
       const { work_id: id } = work.add("turn", t - 1, TURN, null, t);
       const claim = work.claim(id, t);
@@ -233,7 +236,7 @@ describe("stamped scheduled work", () => {
   it("is bounded per owner and per client, and keeps its stamp", async () => {
     const r = await rig();
     const stamp = await admitted(r, CHATGPT);
-    const out = await inWork(r, ({ work }) => {
+    const out = await inWork(r, ({ work, write }) => {
       const tried = (made: Stamp | null, payload: unknown = TURN) => {
         try {
           work.add("turn", clock() + 60, payload, made, clock());
@@ -259,13 +262,13 @@ describe("stamped scheduled work", () => {
     const r = await rig();
     const runner = new ScriptedRunner();
     const t = clock();
-    await inWork(r, async ({ work }) => {
+    await inWork(r, async ({ work, write }) => {
       for (let n = 0; n < 3; n++) {
         work.add("turn", t - 1, { n }, null, t);
       }
-      await runWork(work, runner, () => t);
+      await runWork(work, runner, () => t, write);
       work.add("turn", t - 1, { n: 3 }, null, t);
-      await runWork(work, runner, () => t + WORK_LIMITS.settledRetentionS + 1);
+      await runWork(work, runner, () => t + WORK_LIMITS.settledRetentionS + 1, write);
     }, { maxSettled: 2 });
     expect((await r.sql("SELECT payload FROM scheduled_work")).map((row) => row["payload"]))
       .toEqual(['{"n":3}']);
@@ -275,9 +278,9 @@ describe("stamped scheduled work", () => {
 describe("a work pass (slice 5's review L1, L2, N8)", () => {
   it("claims nothing without a runner", async () => {
     const r = await rig();
-    await inWork(r, async ({ work }) => {
+    await inWork(r, async ({ work, write }) => {
       work.add("turn", clock() - 1, TURN, null, clock());
-      expect(await runWork(work, null, clock)).toBe(0);
+      expect(await runWork(work, null, clock, write)).toBe(0);
     });
     expect(await states(r)).toEqual([{ state: "pending", attempts: 0, marked: 0 }]);
   });
@@ -286,7 +289,7 @@ describe("a work pass (slice 5's review L1, L2, N8)", () => {
     const r = await rig();
     const runner = new ScriptedRunner();
     const t = clock();
-    await inWork(r, async ({ work, state }) => {
+    await inWork(r, async ({ work, state, write }) => {
       const { work_id: id } = work.add("turn", t - 1, TURN, null, t);
       // The claim lapses and is taken again while the first runner is handed its target.
       const lapsing: WorkRunner = {
@@ -296,7 +299,7 @@ describe("a work pass (slice 5's review L1, L2, N8)", () => {
           return runner.handOff(target, mark);
         },
       };
-      expect(await runWork(work, lapsing, () => t)).toBe(0);
+      expect(await runWork(work, lapsing, () => t, write)).toBe(0);
     });
     expect(runner.ran).toEqual([]);  // it never got past its mark
     expect(await states(r)).toEqual([{ state: "running", attempts: 1, marked: 0 }]);
@@ -307,14 +310,15 @@ describe("a work pass (slice 5's review L1, L2, N8)", () => {
     const runner = new ScriptedRunner();
     runner.answers.push("slow");
     const t = clock();
-    await inWork(r, async ({ work }) => {
+    await inWork(r, async ({ work, write }) => {
       work.add("turn", t - 2, TURN, null, t);
       work.add("turn", t - 1, { n: 2 }, null, t + 0.001);
-      expect(await runWork(work, runner, () => t, 16, 20)).toBe(1);  // the next still runs
+      // The next still runs.
+      expect(await runWork(work, runner, () => t, write, 16, 20)).toBe(1);
     });
     expect((await states(r)).map((row) => [row["state"], row["marked"]]))
       .toEqual([["running", 1], ["handed", 1]]);
-    await inWork(r, ({ work }) => runWork(work, runner, () => t + WORK_LEASE_S));
+    await inWork(r, ({ work, write }) => runWork(work, runner, () => t + WORK_LEASE_S, write));
     expect((await states(r))[0]!["state"]).toBe("unknown");  // never handed again
     expect(runner.ran).toHaveLength(2);
   });
@@ -325,12 +329,12 @@ describe("a work pass (slice 5's review L1, L2, N8)", () => {
     const runner = new ScriptedRunner();
     runner.answers.push("stall");
     const t = clock();
-    await inWork(r, async ({ work }) => {
+    await inWork(r, async ({ work, write }) => {
       work.add("turn", t - 1, TURN, null, t);
-      expect(await runWork(work, runner, () => t, 16, 20)).toBe(0);
+      expect(await runWork(work, runner, () => t, write, 16, 20)).toBe(0);
     });
     expect(await states(r)).toEqual([{ state: "running", attempts: 1, marked: 1 }]);
-    await inWork(r, ({ work }) => runWork(work, runner, () => t + WORK_LEASE_S));
+    await inWork(r, ({ work, write }) => runWork(work, runner, () => t + WORK_LEASE_S, write));
     expect((await states(r))[0]!["state"]).toBe("unknown");
   });
 
@@ -341,12 +345,14 @@ describe("a work pass (slice 5's review L1, L2, N8)", () => {
     runner.answers.push("slow");
     runner.slowMs = 50;
     const t = clock();
-    await inWork(r, async ({ work }) => {
+    await inWork(r, async ({ work, write }) => {
       work.add("turn", t - 2, TURN, null, t);
       work.add("turn", t - 1, { n: 2 }, null, t + 0.001);
-      expect(await runWork(work, runner, () => t, 16, WORK_HANDOFF_MS, Date.now() + 20))
+      expect(await runWork(work, runner, () => t, write, 16, WORK_HANDOFF_MS,
+                           Date.now() + 20))
         .toBe(1);
-      const late = await runWork(work, runner, () => t, 16, WORK_HANDOFF_MS, Date.now() - 1);
+      const late = await runWork(work, runner, () => t, write, 16, WORK_HANDOFF_MS,
+                                 Date.now() - 1);
       expect(late).toBe(0);
     });
     expect((await states(r)).map((row) => row["state"])).toEqual(["handed", "pending"]);
@@ -357,14 +363,14 @@ describe("a work pass (slice 5's review L1, L2, N8)", () => {
     const r = await rig();
     const t = clock();
     const at = t + WORK_LEASE_S;
-    const due = await inWork(r, async ({ work, state }) => {
+    const due = await inWork(r, async ({ work, state, write }) => {
       const { work_id: id } = work.add("turn", t - 1, TURN, null, t);
       expect(work.claim(id, t).outcome).toBe("claimed");
       work.defer(id, t + 1);  // a defer never moves a row earlier, its lease included
       expect(work.nextDue(t, false)).toBe(at);
       state.storage.sql.exec("CREATE TRIGGER probe_recover BEFORE UPDATE OF state ON " +
                              "scheduled_work BEGIN SELECT RAISE(ABORT, 'probe'); END");
-      await runWork(work, null, () => at);
+      await runWork(work, null, () => at, write);
       state.storage.sql.exec("DROP TRIGGER probe_recover");
       return work.nextDue(at, false);
     });
@@ -373,7 +379,7 @@ describe("a work pass (slice 5's review L1, L2, N8)", () => {
 
   it("takes only a hand-off's two answers, never the old 'done' (review L3)", async () => {
     const r = await rig();
-    const out = await inWork(r, ({ work }) => {
+    const out = await inWork(r, ({ work, write }) => {
       const t = clock();
       const { work_id: id } = work.add("turn", t - 1, TURN, null, t);
       const claim = work.claim(id, t);
@@ -395,18 +401,18 @@ describe("a work pass (slice 5's review L1, L2, N8)", () => {
     const broken: WorkRunner = {
       handOff: async () => ({ state: "sent" as never }),  // an answer settle refuses
     };
-    await inWork(r, async ({ work }) => {
+    await inWork(r, async ({ work, write }) => {
       work.add("turn", t - 1, TURN, null, t);
-      expect(await runWork(work, broken, () => t)).toBe(0);
+      expect(await runWork(work, broken, () => t, write)).toBe(0);
     });
     const [row] = await r.sql("SELECT state, due FROM scheduled_work");
     expect(row).toEqual({ state: "running", due: t + WORK_LEASE_S });
     // A pending row whose claim fails is held back too.
     await r.sql("UPDATE scheduled_work SET state = 'pending', claim_id = NULL, due = ?", t - 1);
-    await inWork(r, async ({ work, state }) => {
+    await inWork(r, async ({ work, state, write }) => {
       state.storage.sql.exec("CREATE TRIGGER probe_claim BEFORE UPDATE OF claim_id ON " +
                              "scheduled_work BEGIN SELECT RAISE(ABORT, 'probe'); END");
-      expect(await runWork(work, new ScriptedRunner(), () => t)).toBe(0);
+      expect(await runWork(work, new ScriptedRunner(), () => t, write)).toBe(0);
       state.storage.sql.exec("DROP TRIGGER probe_claim");
       expect(work.nextDue(t, true)).toBe(t + WORK_RETRY_S);
     });
@@ -416,7 +422,7 @@ describe("a work pass (slice 5's review L1, L2, N8)", () => {
     const r = await rig();
     const stamp = await admitted(r, CHATGPT);
     const t = clock();
-    await inWork(r, ({ work }) => {
+    await inWork(r, ({ work, write }) => {
       const { work_id: id } = work.add("turn", t - 1, TURN, stamp, t);
       work.add("turn", t + 600, TURN, stamp, t + 0.001);
       expect(work.claim(id, t).outcome).toBe("claimed");
@@ -430,17 +436,17 @@ describe("the work lane", () => {
   it("has no job for pending work without a runner, and one for a claim's lease",
      async () => {
     const r = await rig();
-    await inWork(r, ({ work }) => work.add("turn", clock() - 1, TURN, null, clock()));
+    await inWork(r, ({ work, write }) => work.add("turn", clock() - 1, TURN, null, clock()));
     await r.stub.grantRevoke(r.bind(null), { client: CHATGPT.client });  // any change syncs
     expect(await laneAt(r.stub, "work")).toBeNull();
     const t = clock();
-    await inWork(r, ({ work }) => {
+    await inWork(r, ({ work, write }) => {
       const [id] = work.dueOpen(t, 1);
       expect(work.claim(id!, t).outcome).toBe("claimed");
     });
     await r.stub.grantRevoke(r.bind(null), { client: CHATGPT.client });
     expect(await laneAt(r.stub, "work")).toBe(Math.ceil((t + WORK_LEASE_S) * 1000) / 1000);
-    expect(await inWork(r, ({ work }) => [work.nextDue(t, false), work.nextDue(t, true),
+    expect(await inWork(r, ({ work, write }) => [work.nextDue(t, false), work.nextDue(t, true),
                                           work.nextDue(t + WORK_LEASE_S + 5, false)]))
       .toEqual([t + WORK_LEASE_S, t + WORK_LEASE_S, t + WORK_LEASE_S + 5]);
   });

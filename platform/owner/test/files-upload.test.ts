@@ -8,7 +8,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { FILES_CALLS } from "../src/calls";
 import {
   CHUNK_BYTES, type ChunkStore, chunkedId, DELETE_FLOOR_MS, type Entry, GC_GRACE_S,
   HOUSEKEEPING_SLACK_S, INLINE_BYTES, inlineId, INTENT_TTL_S, MAX_HELD_CHUNKS, MAX_INTENT_CHUNKS,
@@ -435,23 +434,26 @@ describe("a chunk", () => {
     expect(await chunk(r, sha)).toMatchObject({ state: "uploading", holds: 1, gc_after: null });
   });
 
-  it("is sent on the invocation's call budget, refused before the put when it is spent",
+  it("is recorded stored only once FILES took it, so a put that fails records nothing",
      async () => {
     const r = await rig();
     const piece = filled(INLINE_BYTES + 1, 11);
     const sha = sha256Hex(piece);
     const begun = await begin(r, [piece]);
-    expect((await failure(() => inFiles(r.stub, {}, (files, _state, calls) => {
-      calls.draw("files", FILES_CALLS);
-      return files.upload(begun.intent_id, [{ sha256: sha, bytes: piece }]);
-    }))).name).toBe("CallsSpent");
+    const refusing: ChunkStore = {
+      putChunks: async () => { throw new Error("FILES is down"); },
+      getChunks: (space, reads) => env.FILES.getChunks(space, reads),
+      deleteChunks: (space, shas) => env.FILES.deleteChunks(space, shas),
+    };
+    expect((await failure(() => inFiles(r.stub, {}, (files) =>
+      files.upload(begun.intent_id, [{ sha256: sha, bytes: piece }]), refusing))).message)
+      .toBe("FILES is down");
     expect(await chunk(r, sha)).toMatchObject({ stored: 0 });
     expect(await inBucket(r, sha)).toBe(false);
-    // Each door call is its own entry: more uploads than one budget holds all land.
-    for (let i = 0; i <= FILES_CALLS; i++) {
-      const { committed } = await upload(r, `${W}/u${i}.bin`, [filled(INLINE_BYTES + 1, i)]);
-      expect(entryOf(committed).size).toBe(INLINE_BYTES + 1);
-    }
+    await r.stub.fileUploadChunks(r.bind(null), { intent_id: begun.intent_id,
+                                                  chunks: [{ sha256: sha, bytes: piece }] });
+    expect(await chunk(r, sha)).toMatchObject({ stored: 1 });
+    expect(await inBucket(r, sha)).toBe(true);
   });
 
   it("sent but never committed is garbage that revives without being sent again", async () => {
@@ -508,15 +510,7 @@ describe("a chunk", () => {
       expect(await chunk(r, sha)).toMatchObject({ state: "deleting", gc_after: 1 });
     }
     expect(asked).toEqual([]);
-    // The delete is drawn from the alarm's call budget first: a spent one is refused before
-    // the chunk is marked or FILES asked, a bug the lane backs off.
     await sqlIn(r.stub, "UPDATE file_chunks SET state = 'garbage', gc_after = 1");
-    expect((await failure(() => inFiles(r.stub, {}, (files, _state, calls) => {
-      calls.draw("files", FILES_CALLS);
-      return files.collect(Date.now() / 1000);
-    }, recording))).name).toBe("CallsSpent");
-    expect([asked, await chunk(r, sha)]).toEqual([[], expect.objectContaining({
-      state: "garbage", gc_after: 1 })]);
     await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
     expect(await chunk(r, sha)).toBeUndefined();
     expect((await begin(r, [piece])).missing).toEqual([sha]);
