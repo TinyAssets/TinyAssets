@@ -18,7 +18,12 @@
  *   files' methods that cross to `FILES`, the pi environment, the schedule's job sets, the
  *   agent's notices), each call of a write (`WRITES`) sits inside a unit: an arrow handed
  *   to `write`, `#write`, `unit` or a door's gate. A synchronous method is itself a unit's
- *   body, so its calls are the view's to check.
+ *   body, so its calls are the view's to check;
+ * - in an async function of any of the object's modules, no value read straight from SQL
+ *   outside a unit is used inside one: what a unit decides on, it reads itself, since
+ *   another unit may land between (the chunk GC's due list once was such a read). Reads
+ *   through a module's own methods are not traced; a unit that acts on one re-checks its
+ *   row in its own statement (a claim id, a state), as the lanes' units do.
  * The guard is a tripwire for our own code's mistakes, as the alarm guard is.
  */
 import ts from "typescript";
@@ -77,6 +82,55 @@ export function ungatedWrites(fileName: string, source: string,
             break;  // a synchronous method or function: a unit's body, the view's to check
           }
         }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return problems;
+}
+
+/** The function `node` is in, if any. */
+function enclosing(node: ts.Node): ts.Node | undefined {
+  for (let up = node.parent; up !== undefined; up = up.parent) {
+    if (ts.isFunctionLike(up)) {
+      return up;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Each value an async function of `source` reads straight from SQL (a `.exec(` of its own,
+ * outside any unit) and then uses inside a unit, as `file:line: what`.
+ */
+export function staleReads(fileName: string, source: string): string[] {
+  const file = parse(fileName, source);
+  const problems: string[] = [];
+  const report = reporter(file, problems);
+  const within = (node: ts.Node, test: (n: ts.Node) => boolean): boolean =>
+    test(node) || (ts.forEachChild(node, (n) => within(n, test) || undefined) ?? false);
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
+        && node.initializer !== undefined) {
+      const fn = enclosing(node);
+      const name = node.name.text;
+      const read = fn !== undefined && isAsync(fn) && within(node.initializer, (n) =>
+        ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)
+        && n.expression.name.text === "exec" && enclosing(n) === fn);
+      const used = read && within(fn!, (n) => {
+        if (!ts.isIdentifier(n) || n.text !== name || n === node.name) {
+          return false;
+        }
+        for (let up = enclosing(n); up !== undefined && up !== fn; up = enclosing(up)) {
+          if (unitArgument(up, file)) {
+            return true;
+          }
+        }
+        return false;
+      });
+      if (used) {
+        report(node, `${name} is read outside a unit and used inside one`);
       }
     }
     ts.forEachChild(node, visit);
@@ -230,6 +284,30 @@ describe("write-gate guard", () => {
     [GATE, "export class G { write = (u: U) => this.#db.transaction(async () => u()); }"],
   ])("sees a reach past the gate in %s: %s", (path, source) => {
     expect(storageReach(new Map([[path, source]]))).toHaveLength(1);
+  });
+
+  it("lets no awaiting function act in a unit on a read made outside it", () => {
+    const owner = [...sources].filter(([path]) => path.startsWith("owner/src/"));
+    expect(owner.length).toBeGreaterThan(10);
+    expect(owner.flatMap(([path, source]) => staleReads(path, source))).toEqual([]);
+  });
+
+  it.each([
+    "export class F { async c() { const due = sql.exec('SELECT 1').toArray(); " +
+      "await this.#write(() => { for (const d of due) { sql.exec('UPDATE x'); } }); } }",
+    "export async function f(write: W) { const n = s.sql.exec('SELECT 1').one(); " +
+      "await write(() => t.transactionSync(() => n)); }",
+  ])("sees a unit acting on a read made outside it: %s", (source) => {
+    expect(staleReads("probe.ts", source)).toHaveLength(1);
+  });
+
+  it.each([
+    "export class F { async c() { const due = await this.#write(() => " +
+      "sql.exec('SELECT 1').toArray()); for (const d of due) { await f(d); } } }",
+    "export class F { async c() { const n = sql.exec('SELECT 1').one(); await f(n); } }",
+    "export class F { c() { const n = sql.exec('SELECT 1').one(); return write(() => n); } }",
+  ])("allows a read made in its unit, or used outside any: %s", (source) => {
+    expect(staleReads("probe.ts", source)).toEqual([]);
   });
 
   it.each([

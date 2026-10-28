@@ -5,7 +5,9 @@
  * nothing deduplicates against bytes the bucket lacks, and garbage collection never lists
  * the bucket.
  */
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { DurableObjectSqliteDatabase } from "@earendil-works/chord/sqlite/cloudflare";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -13,10 +15,13 @@ import {
   HOUSEKEEPING_SLACK_S, INLINE_BYTES, inlineId, INTENT_TTL_S, MAX_HELD_CHUNKS, MAX_INTENT_CHUNKS,
   MAX_OPEN_INTENTS, sha256Hex, WHOLE_BYTES,
 } from "../src/files";
+import { WriteGate } from "../src/gate";
+import type { OwnerDO } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";
 import { rig, type Rig } from "./ledger-support";
 import {
-  alarmOf, drainDue, failure, fileCounters, inFiles, laneAt, lostContent, sqlIn, text,
+  alarmOf, drainDue, failure, faulty, fileCounters, filesOn, inFiles, laneAt, lostContent, sqlIn,
+  STORAGE_FAULT, text,
 } from "./support";
 
 const W = "/workspace";
@@ -555,6 +560,99 @@ describe("a chunk", () => {
     await r.stub.fileRedact(r.bind(null), { path: `${W}/a`, version: first.version });
     expect(await chunk(r, sha256Hex(piece))).toMatchObject({ state: "live", refs: 1 });
     expect(await read(r, `${W}/b`)).toEqual(piece);
+  });
+});
+
+describe("a chunk between a pass's units", () => {
+  /** A stored chunk no content holds, due for its delete now. */
+  async function dueGarbage(r: Rig, piece: Uint8Array): Promise<void> {
+    const begun = await begin(r, [piece]);
+    await r.stub.fileUploadChunks(r.bind(null), { intent_id: begun.intent_id,
+                                                  chunks: [{ sha256: sha256Hex(piece), bytes: piece }] });
+    await r.stub.fileUploadAbort(r.bind(null), { intent_id: begun.intent_id });
+    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
+  }
+
+  it("held again by an upload while the pass waits on the queue is never deleted under it",
+     async () => {
+    const r = await rig();
+    const piece = filled(INLINE_BYTES + 1, 12);
+    const sha = sha256Hex(piece);
+    await dueGarbage(r, piece);
+    const missing = await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
+      const gate = new WriteGate(state.storage);
+      const files = filesOn(gate.storage, gate.write);
+      // A pi commit holds the queue; the pass queues behind it, an upload's begin after it.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      const commit = new DurableObjectSqliteDatabase(state.storage).transaction(() => held);
+      const pass = files.collect(Date.now() / 1000 + 10);
+      const again = gate.write(() => files.begin(piece.byteLength, [sha]));
+      release();
+      const begun = await again;
+      await gate.write(() => files.commit(begun.intent_id, `${W}/kept.bin`,
+                                          { expected: null, writer: "owner" }));
+      await Promise.all([commit, pass]);
+      return begun.missing;
+    });
+    expect(missing).toEqual([]);  // revived, its bytes not sent again
+    expect(await chunk(r, sha)).toMatchObject({ state: "live", refs: 1 });
+    expect(await read(r, `${W}/kept.bin`)).toEqual(piece);
+    expect(await lostContent(r.stub)).toEqual([]);
+  });
+
+  it("fails the pass when a unit cannot be written, and never deletes bytes not marked first",
+     async () => {
+    // A pass's units: its housekeeping, the chunks' deleting mark, then their rows' delete.
+    for (const [unit, state, asked] of [[1, "garbage", 0], [2, "garbage", 0],
+                                        [3, "deleting", 1]] as const) {
+      const r = await rig();
+      const piece = filled(INLINE_BYTES + 1, 13);
+      await dueGarbage(r, piece);
+      const deletes: string[][] = [];
+      const recording: ChunkStore = {
+        putChunks: (space, chunks) => env.FILES.putChunks(space, chunks),
+        getChunks: (space, reads) => env.FILES.getChunks(space, reads),
+        deleteChunks: async (space, shas) => {
+          deletes.push(shas);
+          return env.FILES.deleteChunks(space, shas);
+        },
+      };
+      const failed = await runInDurableObject(r.stub, async (_instance: OwnerDO, storage) => {
+        const gate = new WriteGate(storage.storage);
+        const files = filesOn(gate.storage, faulty(gate.write, (n) => n === unit), recording);
+        return failure(() => files.collect(Date.now() / 1000 + 10));
+      });
+      expect([unit, failed.message, deletes.length]).toEqual([unit, STORAGE_FAULT, asked]);
+      expect(await chunk(r, sha256Hex(piece))).toMatchObject({ state });
+    }
+  });
+
+  it("fails an upload whose stored mark cannot be written", async () => {
+    const r = await rig();
+    const piece = filled(INLINE_BYTES + 1, 14);
+    const sha = sha256Hex(piece);
+    const begun = await begin(r, [piece]);
+    const failed = await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
+      const gate = new WriteGate(state.storage);
+      const files = filesOn(gate.storage, faulty(gate.write, () => true));
+      return failure(() => files.upload(begun.intent_id, [{ sha256: sha, bytes: piece }]));
+    });
+    expect(failed.message).toBe(STORAGE_FAULT);
+    expect(await chunk(r, sha)).toMatchObject({ stored: 0 });
+  });
+
+  it("ends a whole write's intent when its commit is refused", async () => {
+    const r = await rig();
+    await r.stub.fileWrite(r.bind(null), { path: `${W}/a.bin`, expected_etag: null,
+                                           content: text("a") });
+    const refused = await failure(() => inFiles(r.stub, {}, (files) =>
+      files.write(`${W}/a.bin`, filled(INLINE_BYTES + 1, 15),
+                  { expected: "", writer: "owner" })));
+    expect(refused.name).toBe("FileConflict");
+    expect(await sqlIn(r.stub, "SELECT intent_id FROM file_intents")).toEqual([]);
+    expect(await chunk(r, sha256Hex(filled(INLINE_BYTES + 1, 15))))
+      .toMatchObject({ state: "garbage", holds: 0 });
   });
 });
 

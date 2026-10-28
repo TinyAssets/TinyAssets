@@ -910,11 +910,13 @@ export class OwnerFilesEnv implements ExecutionEnv {
     return this.#run(context, path, async () => {
       const at = this.#where(path, true);
       const recursive = options?.recursive ?? true;
-      if (!recursive && this.#files.stat(at) !== null) {
-        throw new FileFault("exists", "already exists");
-      }
-      await this.#files.unit(() => this.#files.mkdir(at, { expected: null, parents: recursive,
-                                                          writer: this.#writer }));
+      await this.#files.unit(() => {
+        if (!recursive && this.#files.stat(at) !== null) {
+          throw new FileFault("exists", "already exists");
+        }
+        return this.#files.mkdir(at, { expected: null, parents: recursive,
+                                       writer: this.#writer });
+      });
       await this.#rearm();
     });
   }

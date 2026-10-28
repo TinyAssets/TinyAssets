@@ -44,6 +44,20 @@ export class Notices {
     });
   }
 
+  /**
+   * Keep a notice of a standing condition (an extension pi refuses, met at every open)
+   * once: none is added while one of the same type and detail is kept, so it never pushes
+   * other notices out.
+   */
+  once(type: string, detail: string, at: number): void {
+    const kept = this.#storage.sql.exec(
+      "SELECT 1 FROM owner_notices WHERE type = ? AND detail = ? LIMIT 1",
+      type.slice(0, 64), [...detail].slice(0, NOTICE_DETAIL).join("")).toArray().length > 0;
+    if (!kept) {
+      this.add(type, detail, at);
+    }
+  }
+
   /** Every kept notice, newest first. */
   list(): Notice[] {
     return this.#storage.sql.exec<{ seq: number; at: number; type: string; detail: string }>(

@@ -5,6 +5,7 @@
  */
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { DurableObjectSqliteDatabase } from "@earendil-works/chord/sqlite/cloudflare";
 import { describe, expect, it } from "vitest";
 
 import { CHUNK_BYTES, type Entry, INLINE_BYTES, sha256Hex } from "../src/files";
@@ -12,7 +13,7 @@ import type { Binding, OwnerDO } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
 import { apiKeyOrigin } from "../src/ledger";
 import { MUSE, rig, type Rig } from "./ledger-support";
-import { failure, fileCounters, inFiles, ownerObject, sqlIn, text } from "./support";
+import { failure, fileCounters, inFiles, laneAt, ownerObject, sqlIn, text } from "./support";
 
 const W = "/workspace";
 
@@ -390,6 +391,45 @@ describe("every file door", () => {
     await r.register(MUSE);
     expect(entryOf(await write(r, `${W}/a.txt`, "x", null, r.bind(MUSE))).writer)
       .toBe(`client:${MUSE.client}`);
+  });
+
+  it("checks a writer's authority in the unit that writes, not only where its door began",
+     async () => {
+    const r = await rig();
+    await r.register(MUSE);
+    const [row] = (await r.stub.grantList(r.bind(null))).clients;
+    const answer = await runInDurableObject(r.stub, async (instance: OwnerDO, state) => {
+      // A pi commit holds the queue: the write's door queues its check, then the owner's
+      // narrowing of the client's grant queues behind it, before the write itself.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      const commit = new DurableObjectSqliteDatabase(state.storage).transaction(() => held);
+      const writing = instance.fileWrite(r.bind(MUSE), {
+        path: `${W}/a.txt`, expected_etag: null, content: text("x") })
+        .then(() => "written", (error: Error) => error.message);
+      const narrowing = instance.grantSet(r.session(null), {
+        client: MUSE.client, source: "mcp", mode: "scoped",
+        scopes: [{ universe: "alpha", agent: "main", capability: "read_files" }],
+        expected_generation: row!.generation, name: "" });
+      release();
+      await Promise.all([commit, narrowing]);
+      return writing;
+    });
+    expect(answer).toBe("outside client capability not granted");
+    expect(await sqlIn(r.stub, "SELECT name FROM file_entries WHERE name = 'a.txt'"))
+      .toEqual([]);
+  });
+
+  it("sets the files lane's job from the rows after a whole write, as every file door does",
+     async () => {
+    const r = await rig();
+    // An open upload: the lane's job waits for its expiry, which the rows then bring due.
+    await r.stub.fileUploadBegin(r.bind(null), { size: INLINE_BYTES + 1,
+                                                 chunks: [sha256Hex(text("x"))] });
+    expect(await laneAt(r.stub, "files")).toBeGreaterThan(Date.now() / 1000 + 60);
+    await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
+    await write(r, `${W}/b`, "1");
+    expect(await laneAt(r.stub, "files")).toBeLessThanOrEqual(Date.now() / 1000);
   });
 
   it("refuses a request with a field it does not take", async () => {

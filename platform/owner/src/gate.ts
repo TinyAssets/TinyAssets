@@ -51,8 +51,8 @@ export interface OwnerStorage {
 /** Run one synchronous write unit through the gate; resolves with what it returned. */
 export type Write = <T>(unit: () => T) => Promise<T>;
 
-/** A statement the view lets through outside a unit: a read. */
-const READ = /^\s*SELECT\b/i;
+/** A statement the view lets through outside a unit: one read, and no statement after it. */
+const READ = /^\s*SELECT\b[^;]*;?\s*$/i;
 
 export const OUTSIDE_GATE = "an owner write outside the write gate; run it as a gate unit";
 export const NESTED_UNIT = "a write unit inside another; the outer unit writes it";

@@ -29,6 +29,8 @@ describe("the write gate", () => {
       return "done";
     })).toBe("done");
     expect(rows(state)).toEqual([1]);
+    expect(await gate.write(() => null)).toBeNull();  // no value is a promise
+    expect(await gate.write(() => undefined)).toBeUndefined();
   }));
 
   it("keeps a unit's atomicity its own: what it wrote before it threw stands, its " +
@@ -60,9 +62,12 @@ describe("the write gate", () => {
      () => withGate(async (gate, state) => {
     expect(gate.storage.sql.exec("SELECT COUNT(*) AS n FROM gate_probe").one()).toEqual({ n: 0 });
     expect(gate.storage.sql.exec("  select 1 AS one").one()).toEqual({ one: 1 });
+    expect(gate.storage.sql.exec("SELECT 2 AS two;  ").one()).toEqual({ two: 2 });
     for (const statement of ["INSERT INTO gate_probe VALUES (4)", "UPDATE gate_probe SET n = 5",
                              "DELETE FROM gate_probe", "CREATE TABLE gate_other (n INTEGER)",
-                             "WITH x AS (SELECT 1) INSERT INTO gate_probe SELECT * FROM x"]) {
+                             "WITH x AS (SELECT 1) INSERT INTO gate_probe SELECT * FROM x",
+                             "SELECT 1; INSERT INTO gate_probe VALUES (6)",
+                             "SELECT 1;DELETE FROM gate_probe"]) {
       expect(() => gate.storage.sql.exec(statement)).toThrow(OUTSIDE_GATE);
     }
     expect(() => gate.storage.transactionSync(() => 1)).toThrow(OUTSIDE_GATE);

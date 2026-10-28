@@ -232,6 +232,18 @@ describe("a package pi refuses to install", () => {
       .toContainEqual(["extension_skipped", "pkg"]);
     expect(notices.find((notice) => notice.type === "extension_skipped")!.detail)
       .toMatch(/^pkg:broken: Extension pkg:broken has two tools named twice/);
+    // pi opens again in every new instance (and after any pi failure): the package is
+    // refused each time, and noticed once while that notice is kept.
+    for (let open = 0; open < 2; open++) {
+      expect(await runInDurableObject(env.MALFORMED.getByName(name),
+                                      (_instance: MalformedOwnerDO, state) => state.abort("gone"))
+        .then(() => "alive", (error: Error) => error.message)).toBe("gone");
+      await runInDurableObject(env.MALFORMED.getByName(name), async (instance: MalformedOwnerDO) => {
+        await instance.agent.harness.pi();
+      });
+    }
+    const kept = (await env.MALFORMED.getByName(name).noticeList(as())).notices;
+    expect(kept.filter((notice) => notice.type === "extension_skipped")).toHaveLength(1);
   });
 });
 

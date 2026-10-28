@@ -16,12 +16,14 @@ import {
   clock, HOUR_S, type Ledger, type Outcome, outcome, retryAfter, WAKE_LEASE_S, type WakeTarget,
 } from "../src/ledger";
 import { LANE_HUNG_S, LANE_PASS_S } from "../src/schedule";
-import { runWakes, WAKE_RETRY_S, WAKE_SEND_MS, WAKES_PER_ALARM } from "../src/wakes";
+import {
+  runWakes, WAKE_RETRY_S, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM,
+} from "../src/wakes";
 import type { OwnerDO } from "../src/owner-do";
 import {
   DOT, FakeSender, ledgerOn, MCP, MUSE, origin, rig, type Rig, wakeReceipts,
 } from "./ledger-support";
-import { drainDue, failure, laneJobs } from "./support";
+import { drainDue, failure, faulty, laneJobs } from "./support";
 
 const RINGS = { command_center_id: "alpha", display_name: "Muse", delivery_method: "mcp_event",
                 recipe_id: null };
@@ -360,6 +362,42 @@ describe("a claim settles only by its holder", () => {
         .toBe(false);
     });
     expect(await wakeStates(r)).toEqual(["sent", "pending"]);
+  });
+
+  it("stops a sender whose mark fails, before its first byte", async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
+    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    const now = clock() + 1;
+    const accepted = await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
+      // The claim lapses and is taken again while the sender is handed its target.
+      const lapsing: WakeSender = {
+        send: (target, mark) => {
+          state.storage.sql.exec("UPDATE ledger_wakes SET claim_id = 'claim_other' " +
+                                 "WHERE wake_id = ?", target.wake_id);
+          return r.sender.send(target, mark);
+        },
+        revoke: (agentId, generation) => r.sender.revoke(agentId, generation),
+      };
+      return runWakes(ledgerOn(state.storage), lapsing, () => now, gateOf(state));
+    });
+    expect([accepted, r.sender.sent]).toEqual([0, []]);  // it never got past its mark
+    expect((await wakes(r)).map((w) => [w["state"], w["marked"]])).toEqual([["sending", 0]]);
+  });
+
+  it("counts no send whose settle cannot be written, and backs its row off", async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
+    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    const now = clock() + 1;
+    // The pass's units: the claim, the mark, then the settle, which fails.
+    const accepted = await runInDurableObject(r.stub, (_i: OwnerDO, state) =>
+      runWakes(ledgerOn(state.storage), r.sender, () => now,
+               faulty(gateOf(state), (n) => n === 3)));
+    expect([accepted, r.sender.sent.length]).toEqual([0, 1]);
+    const [wake] = await wakes(r);
+    expect([wake!["state"], wake!["marked"], wake!["due"]])
+      .toEqual(["sending", 1, now + WAKE_RETRY_S]);
   });
 
   it("lets a stale claim neither mark nor settle after a lapse and a new claim", async () => {
