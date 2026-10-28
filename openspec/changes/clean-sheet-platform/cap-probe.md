@@ -19,19 +19,17 @@ For `tasks.md` §6 (the probe before the agent runs a turn on the object). Code:
 - **An alarm is cut at 15.0 minutes, even while it awaits I/O, and is then retried (M10).**
 - Run 1's account was on Workers Free: 50 is Free's subrequest limit. The founder has since
   moved it to Workers Paid.
-- **On Workers Paid at the default limit, nothing capped at 32 or 50, up to 120 calls in one
-  invocation (run B).** The documented 32 does not bite. Run B made:
-  - 60 sequential RPC calls in one Worker request;
-  - 120 calls in one alarm;
-  - 130 calls on one object across two concurrent RPCs.
-
-  Nothing failed.
-- **A Worker with `global_fetch_strictly_public` cannot reach private addresses (M11, run B).**
-  The edge refused:
-  - the IP literals and `localhost` with 403, error 1003 (direct IP access);
-  - the `nip.io` names with 530, error 1016 (origin DNS).
-- **Decision: run A is not needed.** The agent research deleted `calls.ts`, so attribution
-  no longer drives any design. Run 1 already narrowed it to newest-or-reset.
+- **On Workers Paid at the default limit, no cap bit within what run B tested.** That is up
+  to 60 calls per Worker request or DO RPC, and up to 120 in one alarm. The documented 32
+  does not bite.
+- **A Worker with `global_fetch_strictly_public` cannot reach the private addresses tested
+  (M11, run B).** The targets were loopback (127.0.0.1), one 10/8 address (10.0.0.1), the
+  metadata address (169.254.169.254) and `localhost`. All four were refused with 403, error
+  1003 (direct IP access). The `nip.io` names of the three addresses were refused with 530,
+  error 1016 (origin DNS).
+- **Decision: run A is not needed.** `calls.ts` is deleted by agent A0
+  (`platform-agent-a0`), so attribution no longer drives any design. Run 1 already narrowed
+  it to newest-or-reset.
 
 The probe was designed for a cap of 32, but the cap was 50. So several cases stayed under
 it and did not discriminate. The results table marks each of those cases "no".
@@ -125,7 +123,8 @@ or above N cannot show, so each case says when it discriminates.
 
 `rulePredictions(C, N)` in `drive.mjs` is this key as code, and `discrimination(C, N)`
 grades each case as full, partial or none. The report carries both for a run that sets the
-limit, and `local.mjs` asserts the grades for run 1 and for the plan in "Next".
+limit, and `local.mjs` asserts the grades for run 1 and for C = 50, N = 60 (run A's plan,
+not needed now).
 
 **M1–M3.** M1 and M2 stop at min(N, C). M3: with one counter for both kinds, the fetch
 burst stops at C − h; with separate counters, at min(N − h, C). These discriminate only
@@ -253,8 +252,8 @@ this limit, refer to …/wrangler/configuration/#limits".
 **Run B.** Both Workers were deleted after the run (each delete returned 200). Every
 burst completed, and M5 reported "not reached by 120 calls". At the default C = 10,000 no
 case discriminates attribution, because every rule predicts the uncapped outcome. What run B
-shows is that no cap at or below 120 calls applies per invocation on Paid, the documented
-32 included.
+shows is that no cap applied within what it tested: 60 calls per Worker request or DO RPC,
+and 120 in one alarm. The documented 32 does not bite.
 
 | # | Result |
 |---|---|
@@ -269,7 +268,7 @@ shows is that no cap at or below 120 calls applies per invocation on Paid, the d
 | M8 | public 60/60 |
 | M9 | rpc1 30/30, rpc2 30/30 |
 | M10 | not run (hold 0); run 1's 15-minute cut stands |
-| M11 | 127.0.0.1, 10.0.0.1, 169.254.169.254 and `localhost`: 403, error 1003 (direct IP access not allowed). The three `nip.io` names: 530, error 1016 (origin DNS). Run 1 on Free gave 502 for all seven |
+| M11 | Loopback (127.0.0.1), one 10/8 address (10.0.0.1), the metadata address (169.254.169.254) and `localhost`: 403, error 1003 (direct IP access not allowed). The `nip.io` names of the three addresses: 530, error 1016 (origin DNS) |
 | M12 | `m12Order` ok. A 24/24, 36/36, 10/10; B 24/24, 36/36: 130 calls on one object, no error |
 
 **What it means for the platform.** The budget is not per async context. Every service
@@ -281,39 +280,5 @@ wait, which is PiHarness's shape. An incoming RPC during a turn takes that budge
 - its split is 32/24/8, while the cap was 50 here and is 10,000 by default on Paid;
 - it attributes per async context.
 
-Per §6 it is reworked after the two runs in "Next". `calls.ts` is not changed yet.
-
-## Next
-
-Two dispatches answer everything this probe asks, and each needs the founder's approval.
-Only run B needs Workers Paid.
-
-**Run A: `subrequests_limit=50`, `burst=60` (C = 50, N = 60), on the current Free
-account.** 50 is Free's maximum and its default, so pinning it only makes the limit
-explicit. If Free refuses the `limits` key, the deploy fails loudly, and the run is
-dispatched again with the limit empty. At this C and N every case separates all the rules
-it has, and M12 separates its four (newest and reset stay one rule). `local.mjs` asserts
-this from `rulePredictions`.
-
-| # | What each rule predicts at C = 50, N = 60 |
-|---|---|
-| M1, M2 | capped 50; uncapped 60 |
-| M3 | one counter 30 + 20; two counters 30 + 30 |
-| M4 | fresh 50; shared, stub not counted 34; shared, stub counted 33; uncapped 60 |
-| M5 (RPC + fetch) | fresh 50; continues from `arm()` 42; uncapped 120 |
-| M6 | charged to the starting RPC or one object counter 42; fresh 50; uncapped 60 |
-| M6a | never reset 38; starting RPC 42; alarm (newest-or-reset) 46; fresh 50; uncapped 60 |
-| M7, M8 | counted like a service call 50; not counted 60 |
-| M9 (rpc1 + rpc2) | socket counted once 49; socket not counted 50; a message refreshes 60 |
-| M12 (phase 2 combined, A's phase 3) | per invocation 52, 0; never reset or oldest 2, 0; newest-or-reset 26, 0; uncapped 72, 10 |
-
-M5 stopping at 50 (fresh) or 42 (continues from `arm()`) is a rule's result. Only a stop
-that matches no M5 rule means the limit did not apply as configured, and the driver notes
-that case alone.
-
-**Run B: the default limit, `burst=60`, on Workers Paid.** At C = 10,000 no case discriminates attribution.
-Every rule predicts the uncapped outcome, and `local.mjs` asserts that. The run answers the
-other question: whether the documented 32 Worker invocations, or any other cap at or below
-60, bites on Paid. M1 stopping at 32 would mean it does.
-
-Then rework `calls.ts` from both runs (tasks §6).
+Run A is not needed. Attribution no longer drives any design: `calls.ts` is deleted by
+agent A0 (`platform-agent-a0`), and run 1 already narrowed attribution to newest-or-reset.
