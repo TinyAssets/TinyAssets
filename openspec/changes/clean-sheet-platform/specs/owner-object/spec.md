@@ -144,11 +144,18 @@ A lane's pass SHALL keep each outside call's failure, and each row's failed step
 - **WHEN** a chunk delete to the files Worker fails during the `files` lane's pass
 - **THEN** the pass completes, the chunks wait in their rows to be tried again, and no later job on the object is starved
 
+### Requirement: A lane's pass fits its hung timeout
+A lane's pass SHALL end within its job's single-flight hung timeout by wall clock, not by batch size: it SHALL take no new row once its pass budget, under the hung timeout, has passed, and each row's outside call SHALL be bounded by the rest.
+
+#### Scenario: A pass runs long
+- **WHEN** a lane's pass reaches its wall-clock budget with due rows left
+- **THEN** it takes no more of them, ends before its job's hung timeout, and its job brings the rest at once
+
 ### Requirement: Only Lifecycle touches the object's alarm
 Lifecycle SHALL own the object's single physical alarm, which PiHarness's wake job shares. No source SHALL set, read or clear the alarm itself, import any part of the `agents` package but `agents/lifecycle` (so the object never extends the SDK's `Agent`), or install Lifecycle's runtime `fetch` and WebSocket handlers. The object's `alarm` SHALL only hand the runtime's alarm to Lifecycle.
 
 #### Scenario: Source sets the alarm
-- **WHEN** a Worker source names `setAlarm`, `deleteAlarm`, `getAlarm`, `disableAlarms` or `deleteAll`, spells one in pieces, reaches a storage or a Lifecycle by a computed name, imports any part of the `agents` package but `agents/lifecycle`, installs Lifecycle's handlers, or names a Lifecycle or pi table
+- **WHEN** a Worker source names `setAlarm`, `deleteAlarm`, `getAlarm`, `disableAlarms` or `deleteAll`, spells one in pieces through a string, reaches a storage or a Lifecycle by a computed name, imports any part of the `agents` package but `agents/lifecycle`, installs Lifecycle's handlers, or names a Lifecycle or pi table
 - **THEN** the alarm guard or the policy-boundary guard fails CI
 
 #### Scenario: A binding fetches the object

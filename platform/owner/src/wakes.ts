@@ -47,13 +47,15 @@ export interface WakeSender {
  *
  * First the recover pass: each claim past its lease, by its own index, whether or not
  * there is a sender, so open work ahead of it can never starve it. Then, with a sender,
- * the claim pass: each due open row once, a wake sent or a revoke carried out. One
+ * the claim pass: each due open row once, a wake sent or a revoke carried out, taking
+ * none once the wall clock reaches `until` (`schedule.ts`, `LANE_PASS_S`). One
  * failing row (the sender's call, or the row's own step) is logged and backed off
  * `WAKE_RETRY_S` in its row, so it never stops the others, never makes the pass throw and
  * never loops the alarm. Only a failure to write that backoff, a storage fault, throws.
  */
 export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock: () => number,
-                               limit: number = WAKES_PER_ALARM): Promise<number> {
+                               limit: number = WAKES_PER_ALARM,
+                               until: number = Infinity): Promise<number> {
   for (const lapsed of ledger.lapsedClaims(clock(), limit)) {
     try {
       ledger.recover(lapsed.wake_id, clock());
@@ -67,6 +69,9 @@ export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock:
   }
   let accepted = 0;
   for (const wake of ledger.dueOpen(clock(), limit)) {
+    if (Date.now() >= until) {
+      break;  // the rest wait for the lane's next pass, which the job's set brings at once
+    }
     try {
       const claim = ledger.claim(wake.wake_id, clock());
       if (claim.outcome === "revoke") {

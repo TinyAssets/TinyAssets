@@ -633,6 +633,40 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
     expect(await fence(r)).toBe(0);
   });
 
+  it("keeps the fence at the newest revoke forgotten, and never lowers it (review L1)",
+     async () => {
+    const r = await rig();
+    const t = Math.floor(clock());
+    for (const origin of [CHATGPT, CLAUDE]) {
+      await r.stub.outsideAgents(r.bind(origin, { authenticated_at: t - 10 * DAY }));
+    }
+    await revokedAt(r, CHATGPT, t - 2 * DAY);
+    await revokedAt(r, CLAUDE, t - DAY);
+    // Newer first: forgetting the older revoke leaves the fence where the newer put it.
+    expect((await forgetRevoked(r, [CLAUDE.client])).mcp_fence).toBe(t - DAY);
+    expect((await forgetRevoked(r, [CHATGPT.client])).mcp_fence).toBe(t - DAY);
+    await expect(r.sql("UPDATE grant_fences SET mcp_through = ?", t - 2 * DAY))
+      .rejects.toThrow(/only ever rises/);
+    await expect(r.sql("DELETE FROM grant_fences")).rejects.toThrow(/only ever rises/);
+    expect(await fence(r)).toBe(t - DAY);
+    // The margin's edge is before the fence; a second past it is after.
+    const edge = t - DAY + GRANT_LIMITS.revokeClockMarginS;
+    expect((await failure(() => r.stub.outsideAgents(r.bind(DOT, { authenticated_at: edge }))))
+      .message).toBe("a fresh sign-in is required after a revoke");
+    await r.stub.outsideAgents(r.bind(DOT, { authenticated_at: edge + 1 }));
+    expect((await clients(r)).map((c) => c.client)).toEqual([DOT.client]);
+  });
+
+  it("forgets at most 100 distinct clients at once (review L3)", async () => {
+    const r = await rig();
+    const many = Array.from({ length: 101 }, (_, i) => i.toString(16).padStart(64, "0"));
+    const refusal = "forget names 1 to 100 distinct outside clients";
+    expect((await failure(() => forgetRevoked(r, many))).message).toBe(refusal);
+    expect(await forgetRevoked(r, many.slice(0, 100))).toEqual({ forgotten: [], mcp_fence: 0 });
+    expect((await failure(() => forgetRevoked(r, [DOT.client, DOT.client]))).message)
+      .toBe(refusal);
+  });
+
   it("moves the fence on any delete of a revoked MCP row, even around the module",
      async () => {
     const r = await rig();

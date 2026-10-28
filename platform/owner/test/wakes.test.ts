@@ -588,6 +588,19 @@ describe("the wakes lane of the object's one schedule", () => {
     expect(due).toBe(t + WAKE_LEASE_S);
   });
 
+  it("takes no wake past its pass's budget (review N2)", async () => {
+    const r = await rig();
+    const t = clock();
+    const open = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
+      const ledger = ledgerOn(state.storage);
+      const muse = ringing(ledger);
+      ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
+      expect(await runWakes(ledger, r.sender, () => t, 16, Date.now() - 1)).toBe(0);
+      return ledger.dueOpen(t, 16).length;
+    });
+    expect(open).toBe(1);
+  });
+
   it("backs a row whose step fails off in its own row, never in a loop (review N8)",
      async () => {
     const r = await rig();

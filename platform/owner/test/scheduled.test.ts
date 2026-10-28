@@ -11,8 +11,8 @@ import { clock, type Origin } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
 import {
-  runWork, Scheduled, type Stamp, WORK_LEASE_S, WORK_LIMITS, WORK_RETRY_S, type WorkLimits,
-  type WorkRunner, type WorkTarget,
+  runWork, Scheduled, type Stamp, WORK_HANDOFF_MS, WORK_LEASE_S, WORK_LIMITS, WORK_RETRY_S,
+  type WorkLimits, type WorkRunner, type WorkTarget,
 } from "../src/scheduled";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import { laneAt } from "./support";
@@ -332,6 +332,61 @@ describe("a work pass (slice 5's review L1, L2, N8)", () => {
     expect(await states(r)).toEqual([{ state: "running", attempts: 1, marked: 1 }]);
     await inWork(r, ({ work }) => runWork(work, runner, () => t + WORK_LEASE_S));
     expect((await states(r))[0]!["state"]).toBe("unknown");
+  });
+
+  it("takes no row past its pass's budget, and leaves the rest for the next pass (N2)",
+     async () => {
+    const r = await rig();
+    const runner = new ScriptedRunner();
+    runner.answers.push("slow");
+    runner.slowMs = 50;
+    const t = clock();
+    await inWork(r, async ({ work }) => {
+      work.add("turn", t - 2, TURN, null, t);
+      work.add("turn", t - 1, { n: 2 }, null, t + 0.001);
+      expect(await runWork(work, runner, () => t, 16, WORK_HANDOFF_MS, Date.now() + 20))
+        .toBe(1);
+      const late = await runWork(work, runner, () => t, 16, WORK_HANDOFF_MS, Date.now() - 1);
+      expect(late).toBe(0);
+    });
+    expect((await states(r)).map((row) => row["state"])).toEqual(["handed", "pending"]);
+  });
+
+  it("backs off a lapsed claim whose recovery fails, in its own row (review L3)",
+     async () => {
+    const r = await rig();
+    const t = clock();
+    const at = t + WORK_LEASE_S;
+    const due = await inWork(r, async ({ work, state }) => {
+      const { work_id: id } = work.add("turn", t - 1, TURN, null, t);
+      expect(work.claim(id, t).outcome).toBe("claimed");
+      work.defer(id, t + 1);  // a defer never moves a row earlier, its lease included
+      expect(work.nextDue(t, false)).toBe(at);
+      state.storage.sql.exec("CREATE TRIGGER probe_recover BEFORE UPDATE OF state ON " +
+                             "scheduled_work BEGIN SELECT RAISE(ABORT, 'probe'); END");
+      await runWork(work, null, () => at);
+      state.storage.sql.exec("DROP TRIGGER probe_recover");
+      return work.nextDue(at, false);
+    });
+    expect(due).toBe(at + WORK_RETRY_S);
+  });
+
+  it("takes only a hand-off's two answers, never the old 'done' (review L3)", async () => {
+    const r = await rig();
+    const out = await inWork(r, ({ work }) => {
+      const t = clock();
+      const { work_id: id } = work.add("turn", t - 1, TURN, null, t);
+      const claim = work.claim(id, t);
+      if (claim.outcome !== "claimed") {
+        throw new Error("expected a claim");
+      }
+      try {
+        return work.settle(id, claim.target.claim_id, { state: "done" as never }, t);
+      } catch (error) {
+        return (error as Error).message;
+      }
+    });
+    expect(out).toBe("invalid work answer");
   });
 
   it("backs a failing row off in its own row, never in a loop", async () => {

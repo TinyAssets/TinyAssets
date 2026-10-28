@@ -6,7 +6,7 @@
  * that set, read or cleared the alarm itself would overwrite theirs. So a Worker source:
  * - never names `setAlarm`, `deleteAlarm`, `getAlarm`, Lifecycle's `disableAlarms` or the
  *   storage's `deleteAll` (which takes the queue with it), as an identifier, a property or
- *   a string, and holds no string with `Alarm` in it, so no name is spelled in pieces;
+ *   a string, and holds no string with `Alarm` in it, so the obvious split spellings fail;
  * - reads `ctx.storage` and a Lifecycle only by literal names, never by a computed one,
  *   and gives no class or object member a computed name but a literal;
  * - imports from the `agents` package only what `AGENTS_IMPORTS` lists, and loads no
@@ -15,7 +15,8 @@
  *   which would add a `fetch` and WebSocket handlers to the object's surface;
  * - has one `alarm`, the hand-off `await this.#lifecycle.alarm();`.
  * Lifecycle's and PiHarness's own tables (`cf_agents_*`, `pi_*`) are named by no source
- * (the policy-boundary guard).
+ * (the policy-boundary guard). The guard is a tripwire for our own code's mistakes, not
+ * proof against a source written to evade it.
  *
  * `agents/lifecycle` is the one Agents SDK module the object loads, pinned here by version
  * and lockfile integrity (agents 0.31.0, source-read 2026-10-28). Its module-level state,

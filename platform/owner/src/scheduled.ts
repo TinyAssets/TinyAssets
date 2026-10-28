@@ -35,6 +35,7 @@
  * `settledRetentionS`, at most `maxSettled`.
  */
 import { Invalid, Refused } from "./errors";
+import { inTime } from "./schedule";
 import { codePoints } from "./text";
 
 export const WORK_KINDS: readonly string[] = Object.freeze(["turn"]);
@@ -100,7 +101,9 @@ export interface WorkAnswer {
  * What hands a due piece of work to pi: the agent's, from tasks 5. It never runs the turn
  * inline: it calls `mark()`, which throws if the claim lapsed (then it stops), hands the
  * turn to pi's durable submit, and returns within `WORK_HANDOFF_MS`. A throw leaves the
- * row to its lease.
+ * row to its lease. The submit's `operationId` is the row's `work_id`, always: a second
+ * hand-off of the same work (a late one, a lease's) is pi's duplicate, deduped, and the
+ * turn's receipts are found by `work_id`.
  */
 export interface WorkRunner {
   handOff(target: WorkTarget, mark: () => void): Promise<WorkAnswer>;
@@ -372,28 +375,17 @@ export class Scheduled {
   }
 }
 
-/** What a hand-off came to within its bound: its answer, or that it ran late. */
-async function bounded(run: Promise<WorkAnswer>, ms: number): Promise<WorkAnswer | "late"> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<"late">((resolve) => {
-    timer = setTimeout(() => resolve("late"), ms);
-  });
-  try {
-    return await Promise.race([run, late]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 /**
  * One `work` lane pass; how many hand-offs finished. First the recover pass, whether or
- * not there is a runner; then, with one, each due pending row once. A row's failure is
- * kept in its row (`WORK_RETRY_S`); a hand-off past `handoffMs` is reported and left to
- * its lease, marked.
+ * not there is a runner; then, with one, each due pending row once, taking none once the
+ * wall clock reaches `until` (`schedule.ts`, `LANE_PASS_S`). A row's failure is kept in
+ * its row (`WORK_RETRY_S`); a hand-off past `handoffMs` is reported and left to its lease,
+ * marked.
  */
 export async function runWork(work: Scheduled, runner: WorkRunner | null, clock: () => number,
                               limit: number = WORK_PER_PASS,
-                              handoffMs: number = WORK_HANDOFF_MS): Promise<number> {
+                              handoffMs: number = WORK_HANDOFF_MS,
+                              until: number = Infinity): Promise<number> {
   for (const workId of work.lapsed(clock(), limit)) {
     try {
       work.recover(workId, clock());
@@ -407,6 +399,9 @@ export async function runWork(work: Scheduled, runner: WorkRunner | null, clock:
   }
   let finished = 0;
   for (const workId of work.dueOpen(clock(), limit)) {
+    if (Date.now() >= until) {
+      break;  // the rest wait for the lane's next pass, which the job's set brings at once
+    }
     try {
       const claim = work.claim(workId, clock());
       if (claim.outcome !== "claimed") {
@@ -418,7 +413,7 @@ export async function runWork(work: Scheduled, runner: WorkRunner | null, clock:
           throw new Error("the work's claim lapsed before its hand-off");
         }
       });
-      const answer = await bounded(handing, handoffMs);
+      const answer = await inTime(handing, handoffMs);
       if (answer === "late") {
         // It may yet hand the work over: never hand it again, and let its lease decide.
         handing.catch(() => undefined);

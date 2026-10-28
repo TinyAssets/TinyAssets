@@ -417,7 +417,15 @@ describe("a chunk", () => {
     expect(deleting!["gc_after"] as number).toBeGreaterThan(Date.now() / 1000);
     expect((await failure(() => begin(r, [piece]))).message)
       .toBe("a chunk of this upload is being deleted; begin again");
+    // A delete that outlasts its pass's budget is tried again, as a failed one is, and a
+    // pass already past its budget takes none.
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
+    const hung: ChunkStore = { ...failing, deleteChunks: () => new Promise(() => undefined) };
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000, Date.now() + 20), hung);
+    expect((await chunk(r, sha))!["gc_after"] as number).toBeGreaterThan(Date.now() / 1000);
+    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000, Date.now() - 1));
+    expect(await chunk(r, sha)).toMatchObject({ state: "deleting", gc_after: 1 });
     await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
     expect(await chunk(r, sha)).toBeUndefined();
     expect((await begin(r, [piece])).missing).toEqual([sha]);

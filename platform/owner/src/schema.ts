@@ -367,10 +367,16 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "BEGIN SELECT RAISE(ABORT, 'an outside client grant the owner set or an agent holds is " +
       "never deleted while it stands or holds'); END",
     // The latest MCP revoke ever forgotten: an MCP client with no row is admitted only
-    // from a sign-in after it. Every path that drops a revoked MCP row moves it.
+    // from a sign-in after it. Every path that drops a revoked MCP row moves it, and it
+    // only ever rises: lowering it, or dropping its row, is refused.
     "CREATE TABLE grant_fences (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "mcp_through REAL NOT NULL CHECK (mcp_through >= 0))",
     "INSERT INTO grant_fences VALUES (1, 0)",
+    "CREATE TRIGGER grant_fences_rise BEFORE UPDATE ON grant_fences " +
+      "WHEN NEW.mcp_through < OLD.mcp_through OR NEW.only != OLD.only " +
+      "BEGIN SELECT RAISE(ABORT, 'the revoke fence only ever rises'); END",
+    "CREATE TRIGGER grant_fences_kept BEFORE DELETE ON grant_fences " +
+      "BEGIN SELECT RAISE(ABORT, 'the revoke fence only ever rises'); END",
     "CREATE TRIGGER outside_clients_forgotten AFTER DELETE ON outside_clients " +
       "WHEN OLD.source = 'mcp' AND OLD.revoked_at IS NOT NULL BEGIN " +
       "UPDATE grant_fences SET mcp_through = MAX(mcp_through, OLD.revoked_at); END",

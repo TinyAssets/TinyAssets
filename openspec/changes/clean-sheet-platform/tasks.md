@@ -42,7 +42,9 @@ live acceptance is still owed says so.
   an agent for an API key it holds; an MCP client's agent registers through the card the
   client files on its own call (`registerPropose`), which the owner's UI shows
   (`registerProposal`) and applies by id and digest. Every outside call
-  carries its verified `source` and, when known, `authenticated_at`. The outside kill switch
+  carries its verified `source`. Every MCP call carries `authenticated_at`: the grant's
+  original interactive sign-in, which a token refresh never moves; after a revoke, and
+  once any MCP revoke is forgotten, an MCP call without it is refused. The outside kill switch
   (`TINYASSETS_OUTSIDE_DENY`) refuses every outside call at the binder, from the
   directory: the object has no env. A key's mint writes its grant (`grantSet`,
   source `api_key`), a key's revoke calls `grantRevoke` first, and the binder calls
@@ -112,10 +114,14 @@ live acceptance is still owed says so.
   memory-limit breaker's backoff) unless the rows have earlier work. A pass is short:
   it keeps each outside call's failure and each row's failed step in that row, backed
   off there, throws only for a bug (then its lane holds back `LANE_RETRY_S`), and hands
-  long work off. The alarm and policy-boundary guards keep every source off `setAlarm`,
-  `deleteAlarm`, `getAlarm`, `disableAlarms` and `deleteAll` (spelled whole or in
-  pieces), off computed access to a storage or a Lifecycle, off every `agents` import
-  but `agents/lifecycle`, off Lifecycle's handlers, and off Lifecycle's and pi's tables.
+  long work off. It fits its single-flight hung timeout (`LANE_HUNG_S`, 60 s) by wall
+  clock, not by batch size: it takes no new row once `LANE_PASS_S` (45 s) has passed,
+  and each row's outside call is bounded by the rest. The alarm and policy-boundary
+  guards are a tripwire for our own code, not proof against deliberate evasion: they
+  keep sources off `setAlarm`, `deleteAlarm`, `getAlarm`, `disableAlarms` and
+  `deleteAll` (the plain spellings and the obvious split ones), off computed access to a
+  storage or a Lifecycle, off every `agents` import but `agents/lifecycle`, off
+  Lifecycle's handlers, and off Lifecycle's and pi's tables.
   Stamped work (owed by 3.5): a scheduled turn or automation carries the outside
   authority it was made under (client, grant generation, sign-in time), rechecked with
   `Grants.standing` when made and before it is handed to pi; a grant change refuses the
@@ -165,7 +171,9 @@ live acceptance is still owed says so.
   document then; an agent run, launch or extension call made for an outside client
   stamps that client's authority and is rechecked with `Grants.standing` before each
   step; the `WorkRunner` the `work` lane calls marks a scheduled turn, hands it to pi's
-  durable submit and returns (its status is pi's receipts), and the door that schedules
+  durable submit with `operationId` set to the row's `work_id` (so a second hand-off is
+  pi's duplicate, deduped) and returns (its status is pi's receipts, found by
+  `work_id`), and the door that schedules
   one stamps the caller's authority; a policy write ends the owner's in-flight turns and
   streams, and a grant change ends that client's (the Python's stream cancellation and
   `_end_outside_streams`). PiHarness installs with `lifecycle.use` beside the schedule;
@@ -182,7 +190,8 @@ live acceptance is still owed says so.
   owner's object (migration 4: paths, versions and history, chunk references, upload
   intents, quotas, the change feed, the sync lease with fencing and conflict copies;
   `files.ts`, `paths.ts`), the `file*` RPC doors admitted through the binding, file
-  housekeeping on the object's one schedule (`#rearm`, also re-marking history in
+  housekeeping on the Lifecycle `files` lane of the object's one schedule (every changing
+  door syncs it; `OwnerFilesEnv` requires it as `rearm`; also re-marking history in
   passes of 500 paths after a retention change), the files Worker (`platform/files`:
   the only R2 binding, verified create-once chunk puts, gets and deletes of at most two
   chunks' bytes a call, keys built by `keys.ts` alone), and the owner's one `FILES`
@@ -235,6 +244,9 @@ live acceptance is still owed says so.
 - [ ] The doorbell: a `WakeSender` the object constructs and its alarm calls in process
   (ChatGPT MCP Events, then Claude `/fire`); it consumes the schedule's open wakes and
   revokes, and a send finishes inside the 60 s claim lease or its outcome is `unknown`.
+  Each send has its own timeout of at most `LANE_HUNG_S - LANE_PASS_S` (15 s), and the
+  pass takes no new row past `LANE_PASS_S`, so a pass ends inside its lane's hung
+  timeout whatever the batch.
   The subscribe door tags each callback with the generation `mailboxSubscriber`
   returns, and a revoke erases only callbacks at or before its generation. The door
   stores the callback in the same object transaction as `mailboxSubscriber`, or the

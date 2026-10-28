@@ -31,7 +31,11 @@
  * - Passes are inline in Lifecycle's drive loop, which awaits each job in turn, so a pass
  *   is short: it hands long work off (a turn to pi's durable submit, `scheduled.ts`) and
  *   returns. Its job is single-flight, so an overlapping alarm (the deadman wake, a
- *   platform re-fire) skips it while it runs, for up to `LANE_HUNG_S`.
+ *   platform re-fire) skips it while it runs, for up to `LANE_HUNG_S`. Every pass fits
+ *   that by wall clock, not by a batch size: it takes no new row once `LANE_PASS_S` has
+ *   passed, and each outside call a row makes is bounded by `LANE_HUNG_S - LANE_PASS_S`
+ *   (the work hand-off's `WORK_HANDOFF_MS`, the doorbell's per-send timeout, a chunk
+ *   delete's remaining budget), so a pass ends before an overlapping alarm may run it again.
  * - Each lane fences its own work in its rows (a wake's claim lease and may-have-sent
  *   mark, a chunk's `deleting` state, a work row's claim), so a run Lifecycle repeats
  *   takes nothing the first took, and unknown work is never replayed.
@@ -61,6 +65,27 @@ export const SCHEDULE = "owner-schedule";
 export const LANE_RETRY_S = 300;
 /** How long a lane's pass may run before an overlapping alarm treats it as hung. */
 export const LANE_HUNG_S = 60;
+/** How long a pass takes new rows; a row's own outside call then ends within the rest. */
+export const LANE_PASS_S = 45;
+
+/**
+ * `run`'s result if it settles within `ms`, else "late": how a pass bounds a row's outside
+ * call. `run` is never cancelled, so a late caller keeps the row fenced (a mark, a state).
+ */
+export async function inTime<T>(run: Promise<T>, ms: number): Promise<T | "late"> {
+  if (ms === Infinity) {
+    return run;  // unbounded: a timer would read Infinity as no wait at all
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<"late">((resolve) => {
+    timer = setTimeout(() => resolve("late"), Math.max(0, ms));
+  });
+  try {
+    return await Promise.race([run, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** A lane's Lifecycle job id. */
 export function laneJob(name: string): string {
@@ -72,10 +97,11 @@ export interface Lane {
   /** When the lane next has work it can do, never before `now`; null for none. */
   next(now: number): number | null;
   /**
-   * One short, bounded pass over what is due at `now`. Each outside call's failure is
-   * kept in its own row, backed off there; a throw is a bug, and fails the whole pass.
+   * One short, bounded pass over what is due at `now`, taking no new row once the wall
+   * clock (`Date.now()`, ms) reaches `until`. Each outside call's failure is kept in its
+   * own row, backed off there; a throw is a bug, and fails the whole pass.
    */
-  run(now: number): Promise<unknown>;
+  run(now: number, until: number): Promise<unknown>;
 }
 
 /** The lane's work time, in ms, that a job was set for: its payload's, else its own time. */
@@ -89,11 +115,14 @@ function setFor(job: LifecycleJob): number {
 export class Schedule extends LifecycleCapability {
   readonly #lanes: ReadonlyMap<string, Lane>;
   readonly #clock: () => number;
+  readonly #passMs: number;
 
-  constructor(lanes: Readonly<Record<string, Lane>>, clock: () => number) {
+  constructor(lanes: Readonly<Record<string, Lane>>, clock: () => number,
+              passMs: number = LANE_PASS_S * 1000) {
     super(SCHEDULE);
     this.#lanes = new Map(Object.entries(lanes));
     this.#clock = clock;
+    this.#passMs = passMs;
   }
 
   /** Point every lane's job at its next work, or cancel it. */
@@ -139,7 +168,7 @@ export class Schedule extends LifecycleCapability {
     if (lane === undefined || job.id !== laneJob(job.fn)) {
       return undefined;  // no lane of this code's: done
     }
-    await lane.run(this.#clock());
+    await lane.run(this.#clock(), Date.now() + this.#passMs);
     await this.#set(job.fn, null);
     return undefined;  // superseded by the set above
   }

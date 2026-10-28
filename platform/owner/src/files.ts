@@ -57,6 +57,7 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import { Invalid, Refused } from "./errors";
+import { inTime } from "./schedule";
 import {
   ancestors, isRoot, MAX_NAME_BYTES, nameOf, parentOf, storedPath, TEMP, within, WORKSPACE,
 } from "./paths";
@@ -1474,7 +1475,7 @@ export class Files {
    * stays in those rows, retried after `GC_RETRY_S`, and never fails the pass (the `files`
    * lane's contract: an outside call's failure is its rows', a throw is a bug).
    */
-  async collect(now: number): Promise<void> {
+  async collect(now: number, until: number = Infinity): Promise<void> {
     const sql = this.#sql;
     this.#change((touched) => {
       this.#reretain();
@@ -1493,7 +1494,7 @@ export class Files {
     const due = sql.exec<{ sha256: string }>(
       "SELECT sha256 FROM file_chunks WHERE gc_after IS NOT NULL AND gc_after <= ? " +
         "ORDER BY gc_after LIMIT ?", now, DELETE_BATCH).toArray().map((row) => row.sha256);
-    if (due.length === 0) {
+    if (due.length === 0 || Date.now() >= until) {
       return;
     }
     this.#storage.transactionSync(() => {
@@ -1503,7 +1504,11 @@ export class Files {
       }
     });
     try {
-      await this.#store.deleteChunks(this.ns(), due);
+      // Bounded by the pass's budget: a late delete is tried again, as a failed one is.
+      if (await inTime(this.#store.deleteChunks(this.ns(), due), until - Date.now())
+          === "late") {
+        throw new Error("the chunk delete ran past its pass");
+      }
     } catch {
       console.error("chunk delete failed; it is tried again later");  // no hashes in the log
       return;

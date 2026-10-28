@@ -62,7 +62,9 @@ import {
 } from "./policy";
 import { type Card, Registrations } from "./registrations";
 import { Schedule } from "./schedule";
-import { runWork, Scheduled, type WorkRunner } from "./scheduled";
+import {
+  runWork, Scheduled, WORK_HANDOFF_MS, WORK_PER_PASS, type WorkRunner,
+} from "./scheduled";
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
 import { principal } from "./text";
@@ -84,7 +86,10 @@ export interface Binding {
   readonly source?: Source;
   /**
    * When the credential was signed in, in whole seconds: an outside client's, which a
-   * revoke fences, or the owner's interactive sign-in, which opens a session.
+   * revoke fences, or the owner's interactive sign-in, which opens a session. Every MCP
+   * call carries it: the grant's original interactive sign-in, which a token refresh never
+   * moves. A revoke, and once any MCP revoke is forgotten the owner-wide fence, refuses an
+   * MCP call without it.
    */
   readonly authenticated_at?: number;
   /** The owner's protected-session cookie, as the browser presented it. */
@@ -459,12 +464,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#schedule = new Schedule({
       // Lapsed claims, then due wakes and revokes; open rows count only with a doorbell.
       wakes: { next: (now) => this.#ledger.nextDue(now, this.#sender !== null),
-               run: () => runWakes(this.#ledger, this.#sender, clock, WAKES_PER_ALARM) },
-      files: { next: (now) => this.#files.nextAlarm(now), run: (now) => this.#files.collect(now) },
+               run: (_now, until) => runWakes(this.#ledger, this.#sender, clock,
+                                              WAKES_PER_ALARM, until) },
+      files: { next: (now) => this.#files.nextAlarm(now),
+               run: (now, until) => this.#files.collect(now, until) },
       // Stamped scheduled work: lapsed claims, then, with a runner, due work rechecked
       // against the authority it was made under.
       work: { next: (now) => this.#work.nextDue(now, this.#runner !== null),
-              run: () => runWork(this.#work, this.#runner, clock) },
+              run: (_now, until) => runWork(this.#work, this.#runner, clock, WORK_PER_PASS,
+                                            WORK_HANDOFF_MS, until) },
     }, clock);
     this.#lifecycle = new Lifecycle<OwnerEnv>(this).use(this.#schedule);
     void ctx.blockConcurrencyWhile(async () => {

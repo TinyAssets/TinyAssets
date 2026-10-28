@@ -12,7 +12,10 @@ import { Lifecycle, LifecycleCapability } from "agents/lifecycle";
 import { describe, expect, it } from "vitest";
 
 import type { OwnerDO } from "../src/owner-do";
-import { type Lane, LANE_RETRY_S, laneJob, Schedule, SCHEDULE } from "../src/schedule";
+import {
+  inTime, type Lane, LANE_HUNG_S, LANE_PASS_S, LANE_RETRY_S, laneJob, Schedule, SCHEDULE,
+} from "../src/schedule";
+import { WORK_HANDOFF_MS } from "../src/scheduled";
 import { MUSE, rig } from "./ledger-support";
 import { alarmOf, failure, laneJobs, ownerObject, sqlIn } from "./support";
 
@@ -33,12 +36,15 @@ class ScriptedLane implements Lane {
   sleepMs = 0;
   #running = 0;
   mostAtOnce = 0;
+  /** The wall-clock budget each run was given, in ms. */
+  readonly untils: number[] = [];
 
   next(now: number): number | null {
     return this.due === null ? null : this.fixed ? this.due : Math.max(this.due, now);
   }
 
-  async run(): Promise<void> {
+  async run(_now: number, until: number): Promise<void> {
+    this.untils.push(until);
     this.runs++;
     this.#running++;
     this.mostAtOnce = Math.max(this.mostAtOnce, this.#running);
@@ -74,6 +80,8 @@ interface Probe {
   jobs(): Record<string, { time: number; due: unknown }>;
   /** A statement on the object's own storage, as a direct change would make. */
   sql(statement: string, ...params: SqlStorageValue[]): void;
+  /** Rows read from the object's own storage. */
+  read(statement: string, ...params: SqlStorageValue[]): Record<string, SqlStorageValue>[];
 }
 
 /** A Schedule of scripted lanes `names`, installed on a Lifecycle over `state`'s storage. */
@@ -96,6 +104,7 @@ function probe(state: DurableObjectState, names: string[]): Probe {
   const p: Probe = {
     alarms, lanes, now: Date.now() / 1000,
     sql: (statement, ...params) => void state.storage.sql.exec(statement, ...params).toArray(),
+    read: (statement, ...params) => state.storage.sql.exec(statement, ...params).toArray(),
     schedule: undefined as unknown as Schedule,
     lifecycle: undefined as unknown as Lifecycle,
     jobs: () => Object.fromEntries(state.storage.sql.exec<{ id: string; time: number;
@@ -244,6 +253,26 @@ describe("a lane's run", () => {
     await p.schedule.sync();
     await Promise.all([p.lifecycle.alarm(), p.lifecycle.alarm()]);
     expect([a.runs, a.mostAtOnce]).toEqual([1, 1]);
+  }));
+
+  it("gives each pass a wall-clock budget its single-flight hung timeout covers (review N2)",
+     () => withProbe(["a"], async (p) => {
+    const a = p.lanes["a"]!;
+    a.due = p.now - 10;
+    await p.schedule.sync();
+    const [job] = p.read("SELECT singleflight, hung_timeout_seconds FROM cf_agents_jobs " +
+                         "WHERE id = ?", laneJob("a"));
+    expect([Boolean(job!["singleflight"]), job!["hung_timeout_seconds"]]).toEqual([true, 60]);
+    const before = Date.now();
+    await p.lifecycle.alarm();
+    expect(a.untils).toHaveLength(1);
+    expect(a.untils[0]!).toBeGreaterThanOrEqual(before + LANE_PASS_S * 1000);
+    expect(a.untils[0]!).toBeLessThanOrEqual(Date.now() + LANE_PASS_S * 1000);
+    // A row's outside call fits in what the budget leaves of the hung timeout.
+    expect(LANE_HUNG_S).toBe(60);
+    expect(WORK_HANDOFF_MS).toBeLessThanOrEqual((LANE_HUNG_S - LANE_PASS_S) * 1000);
+    expect(await inTime(new Promise(() => undefined), 10)).toBe("late");
+    expect(await inTime(Promise.resolve("done"), Infinity)).toBe("done");
   }));
 
   it("that fails through Lifecycle's retries backs its lane off, and a door honours it",
