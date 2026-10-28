@@ -45,12 +45,13 @@ const HISTORY_USAGE = (entry: string, sign: string) =>
   ON_USAGE;
 
 /**
- * Whether a grant row is forgettable: revoked, held by nothing, and no credential signed in
- * before the revoke can still exist (an API key the binder deleted, or an MCP revoke older
- * than the longest sign-in our OAuth server issues). `now` is SQLite's clock.
+ * Whether a revoked grant row fences nothing: no credential signed in before the revoke can
+ * still exist (an API key the binder deleted, or an MCP revoke older than the longest
+ * sign-in our OAuth server issues). `now` is SQLite's clock. What holds a row is the kept
+ * trigger's own check.
  */
 const FORGETTABLE = (row: string, now: string) =>
-  `(${row}.mode = 'revoked' AND ${row}.agents = 0 AND ${row}.held = 0 AND ` +
+  `(${row}.mode = 'revoked' AND ` +
   `(${row}.source = 'api_key' OR ${row}.revoked_at <= ${now} - ${MCP_SIGN_IN_LIFETIME_S}))`;
 /**
  * Move a grant row's class, times `sign`: set by the owner (counted against the owner's

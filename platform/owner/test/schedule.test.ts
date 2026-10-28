@@ -122,10 +122,14 @@ describe("a lane's job", () => {
     expect(p.alarms.at(-1)).toBeNull();  // no job: the alarm is cleared
   }));
 
-  it("is never set before now", () => withProbe(["a"], async (p) => {
+  it("is never set before now, nor before the lane's work", () => withProbe(["a"], async (p) => {
     p.lanes["a"]!.due = p.now - 600;
     await p.schedule.sync();
     expect(p.jobs()["a"]!.time).toBe(ms(p.now));
+    const due = Math.floor(p.now) + 100.0004;  // work due part-way through a millisecond
+    p.lanes["a"]!.due = due;
+    await p.schedule.sync();
+    expect(p.jobs()["a"]!.time / 1000).toBeGreaterThanOrEqual(due);
   }));
 });
 

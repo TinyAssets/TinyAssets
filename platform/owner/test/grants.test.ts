@@ -571,10 +571,17 @@ describe("a revoked grant is forgotten once it fences nothing (slice 3's review 
     for (const origin of [CHATGPT, CLAUDE, MUSE]) {
       await r.stub.outsideAgents(r.bind(origin));
     }
+    const key = apiKeyOrigin("0123456789abcdef").client;
     const out = await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const grants = new Grants(state.storage, new Policy(state.storage),
-                                { ...GRANT_LIMITS, maxOwnerClients: 2 });
       const now = clock();
+      // A key revoked longest ago: only the binder's `grantForget` drops it.
+      new Grants(state.storage, new Policy(state.storage)).set("session", {
+        client: key, source: "api_key", mode: "full", scopes: [], expected_generation: 0,
+        name: "" }, now);
+      new Grants(state.storage, new Policy(state.storage))
+        .revoke(key, now - 2 * MCP_SIGN_IN_LIFETIME_S);
+      const grants = new Grants(state.storage, new Policy(state.storage),
+                                { ...GRANT_LIMITS, maxOwnerClients: 3 });
       grants.revoke(CHATGPT.client, now - MCP_SIGN_IN_LIFETIME_S - 60);  // fences nothing
       grants.revoke(CLAUDE.client, now - 60);  // still fences
       const set = (client: string, expected = 1) => {
@@ -589,7 +596,7 @@ describe("a revoked grant is forgotten once it fences nothing (slice 3's review 
               grants.list().map((c) => c.client).sort()];
     });
     expect(out).toEqual(["full", "the owner's managed outside clients are at their limit",
-                         [CLAUDE.client, MUSE.client].sort()]);
+                         [CLAUDE.client, MUSE.client, key].sort()]);
   });
 });
 

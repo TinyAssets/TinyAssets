@@ -72,11 +72,13 @@ const held = async (r: Rig, origin: Origin) => (await r.sql(
 
 /** Every counter the work's bounds read, and the same numbers counted from the rows. */
 async function counters(r: Rig) {
-  const [kept] = await r.sql("SELECT open_work, settled_work, (SELECT json_group_object(" +
-    "client, held) FROM (SELECT * FROM outside_clients ORDER BY client)) AS held " +
-    "FROM policy_usage");
+  const [kept] = await r.sql("SELECT open_work, settled_work, free_clients, " +
+    "(SELECT json_group_object(client, held) FROM (SELECT * FROM outside_clients " +
+    "ORDER BY client)) AS held FROM policy_usage");
   const [counted] = await r.sql(
     "SELECT (SELECT COUNT(*) FROM scheduled_work WHERE settled_at IS NULL) AS open_work, " +
+      "(SELECT COUNT(*) FROM outside_clients WHERE owner_set = 0 AND agents = 0 " +
+      "AND held = 0) AS free_clients, " +
       "(SELECT COUNT(*) FROM scheduled_work WHERE settled_at IS NOT NULL) AS settled_work, " +
       "(SELECT json_group_object(client, n) FROM (SELECT c.client, (SELECT COUNT(*) FROM " +
       "scheduled_work w WHERE w.client = c.client AND w.settled_at IS NULL) + (SELECT " +
@@ -115,8 +117,14 @@ describe("stamped scheduled work", () => {
     const runner = new ScriptedRunner();
     await inWork(r, ({ work }) => work.add("turn", clock() - 1, TURN, stamp, clock()));
     expect((await r.stub.grantList(r.bind(null))).clients[0]!.held).toBe(1);
+    const [kept, counted] = await counters(r);
+    expect(kept).toEqual(counted);  // a held row is not free
+    // A free row seen after CHATGPT's: at one free row, the new client takes its place,
+    // never the older row the work holds.
+    const DOT_LATER = { client: "d".repeat(64), family: "e".repeat(64) };
     await inWork(r, ({ grants }) => {
-      grants.admit(MUSE.client, "mcp", null, clock());  // one free row only: CHATGPT's stays
+      grants.admit(DOT_LATER.client, "mcp", null, clock() + 1);
+      grants.admit(MUSE.client, "mcp", null, clock() + 2);
     }, {}, { maxFreeClients: 1 });
     expect((await r.stub.grantList(r.bind(null))).clients.map((c) => c.client).sort())
       .toEqual([CHATGPT.client, MUSE.client].sort());
@@ -126,8 +134,8 @@ describe("stamped scheduled work", () => {
     expect(runner.ran.map((t) => [t.kind, t.payload, t.stamp])).toEqual([["turn", TURN, stamp]]);
     expect(await states(r)).toEqual([{ state: "done", attempts: 1, marked: 1 }]);
     expect(await held(r, CHATGPT)).toBe(0);  // settled: the row is free again
-    const [kept, counted] = await counters(r);
-    expect(kept).toEqual(counted);
+    const [after, recount] = await counters(r);
+    expect(after).toEqual(recount);
   });
 
   it("is rechecked with standing before it runs, and refused once the grant moved",
