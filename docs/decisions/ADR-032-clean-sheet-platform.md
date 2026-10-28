@@ -44,11 +44,13 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
    metadata and sealed credentials, subscriptions, the session event log, one
    schedule driven by one alarm, and hibernating app WebSockets. The runtime
    keeps each object's storage private. The object's code has no way to another
-   owner's object: its Worker binds nothing, the `disable_ctx_exports` flag
-   keeps the runtime from handing it its own namespaces as `ctx.exports`, and
-   its source never imports `env`. No module keeps mutable state at top level
-   or writes through the global object, since objects of one class can share an
-   isolate.
+   owner's object: its Worker binds nothing but service bindings to Workers
+   that themselves bind no Durable Object and no service (today the files
+   Worker; the gateway with its slice), checked against the bound Worker's own
+   config; the `disable_ctx_exports` flag keeps the runtime from handing it its
+   own namespaces as `ctx.exports`; and its source never imports `env`. No
+   module keeps mutable state at top level or writes through the global object,
+   since objects of one class can share an isolate.
 2. **Stateless edge Workers are the only binder.** Only they turn a verified
    credential (OAuth, `/api` key hash, inbound signature) into an owner, and
    reach that owner's object by `getByName(owner)`. The object serves only the
@@ -103,7 +105,33 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
    unreleased main already removes `retryTask`, which agents 0.31.0 calls.
 5. **Owner files live in versioned per-owner object storage** behind a
    trusted file API. A Firecracker microVM sandbox (E2B first, self-hostable
-   later) is woken only for `bash`; its disk is a warm cache.
+   later) is woken only for `bash`; its disk is a warm cache. How they are
+   stored (decided from research, 2026-10-28):
+   - **Bytes:** one R2 bucket of immutable 4 MiB chunks named by SHA-256,
+     under `o/<ns>/c/<sha256>`, where `ns` is a random 128-bit value made on
+     first use and held only in the owner's object. A path never becomes a key:
+     R2 NFC-normalizes keys, and uploads are verbatim (Fact 9). The bucket is
+     shared by all owners; its bytes are content, reachable only through an
+     owner's manifest and namespace.
+   - **Manifest:** in the owner's object: paths, versions, history, chunk
+     references, quotas, the change feed and the sync lease, with the board's
+     compare-and-swap and never-repeating seq (a second store of the same rules,
+     declared in the revision-primitive guard). Files of 4 KiB or less are
+     inline.
+   - **The files Worker** holds the only bucket binding, takes hex and bytes
+     only, never sees a path or chooses an owner, and verifies every put with
+     R2's `put` SHA-256 check (not S3 checksum headers, which R2 lists as
+     composite only). Its calls are batched: a request may make at most 32
+     service-binding calls.
+   - **Versions and GC:** 30 days plus each live path's last 10 versions, as
+     owner policy; chunks are reference-counted, recorded before any byte is
+     sent, and deleted after a 24 h grace on the object's one schedule, so GC
+     never lists the bucket. Quotas, also owner policy, refuse loudly.
+   - **Sync:** a lease of a random id (the claim token) and a rising epoch
+     (fencing). API writes never take it; when both sides changed a file the
+     API's version stays and the sandbox's is saved as a reported conflict copy.
+   - **pi's `ExecutionEnv`** maps onto the manifest and the files Worker and
+     passes pi-durable 1.4.0's own conformance suite but for `exec`.
 6. **The trusted side is TypeScript on Workers.** The Python logic is ported,
    never imported, and its tests become acceptance tests. The new stack is
    built beside production and moved to in one cutover window after a full

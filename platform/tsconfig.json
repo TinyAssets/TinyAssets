@@ -15,5 +15,6 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["owner/src/**/*.ts", "owner/test/**/*.ts", "owner/guards/**/*.ts", "owner/*.ts"]
+  "include": ["owner/src/**/*.ts", "owner/test/**/*.ts", "owner/guards/**/*.ts", "owner/*.ts",
+              "files/src/**/*.ts", "files/test/**/*.ts", "files/guards/**/*.ts", "files/*.ts"]
 }

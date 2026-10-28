@@ -85,7 +85,12 @@ live acceptance is still owed says so.
 - [ ] 3.6 The schedule: one table, one self-rearming alarm. Owed by 3.5: a scheduled
   turn or automation stamps the outside authority it was made under (client, grant
   generation, sign-in time) and is rechecked with `Grants.standing` before it runs; a
-  changed or revoked grant refuses it (the Python's `outside_standing`).
+  changed or revoked grant refuses it (the Python's `outside_standing`). Owed by 6.1:
+  the Agents SDK Lifecycle queue owns the object's single physical alarm once
+  PiHarness is installed, so the wakes' and the files' housekeeping due times (expired
+  uploads and temporary directories, history prunes, chunk deletes: `Files.nextAlarm`,
+  `Files.collect`) move onto Lifecycle jobs together, from the one `#rearm` path that
+  carries both now; no second alarm path is added before then.
 - [ ] 3.7 The owner's action decision, from `broker/policy.py` and
   `broker/authority_gate.py` (#5333): `decide` with spend reservations,
   once-approvals, standing grants and declared operation kinds, which the gateway's
@@ -123,8 +128,45 @@ live acceptance is still owed says so.
 
 ## 6. Files and sandbox
 
-- [ ] Per-owner object storage with the file API; the E2B sandbox through our
-  proxy; a sync agent with a single-writer lease.
+- [x] 6.1 The trusted file plane, in workerd, nothing deployed: the manifest in the
+  owner's object (migration 4: paths, versions and history, chunk references, upload
+  intents, quotas, the change feed, the sync lease with fencing and conflict copies;
+  `files.ts`, `paths.ts`), the `file*` RPC doors admitted through the binding, file
+  housekeeping on the object's one schedule, the files Worker (`platform/files`: the
+  only R2 binding, verified create-once batched chunk puts, gets and deletes, keys built
+  by `keys.ts` alone), the owner's one `FILES` service binding, and the pi
+  `ExecutionEnv` (`files-env.ts`) passing pi-durable 1.4.0's conformance suite but for
+  `exec`, symlinks off. Quotas and retention are owner policy (the document's optional
+  `files` table over `FILE_DEFAULTS`). Declared differences from the research: a
+  version is named by the owner-wide seq (a dense per-path counter would repeat once a
+  deleted path's history ages out); content refs count history rows only (a live
+  entry's content is always its newest row's); a whole-file SHA-256 is not stored (the
+  content id is checked from the chunk hashes R2 verified); the RPC chunk doors move
+  bytes through the object, so the namespace never leaves it.
+- [ ] Doors (with tasks 2): the HTTP `/api/files` door and MCP file tools over the
+  `file*` RPC doors, the scoped-grant capabilities `read_files` and `write_files` named
+  as those tools are, and sandbox lease tokens in the owner directory (a 256-bit bearer
+  bound to owner, lease id and expiry, resolved by the binder as the owner). Decide
+  with the HTTP door whether the binder streams chunks to `FILES` itself, which needs
+  the namespace to leave the object, or keeps the object's chunk doors (`fileReadChunks`,
+  `fileUploadChunks`); the binder computes and serves the whole-file digest
+  (`Repr-Digest`) as it streams.
+- [ ] The sandbox: the E2B sandbox through our proxy; the in-VM sync agent (sync in from
+  the change feed, sync out as one fenced `fileSyncCommit`, a 20 s lease heartbeat and
+  15 s checkpoints, `/proc` open-file deferral and SQLite file groups, the cold-create
+  size cap); `exec` in the environment (wake, sync in, run, sync out, report conflicts
+  and a fenced sync-out in its result); symbolic links in the manifest and the
+  conformance suite's `exec` and symlink cases; and the sync-ignore defaults, which are
+  the owner's file `/workspace/.ta/sync-ignore` (`node_modules`, `.venv`, `__pycache__`,
+  `.cache`, build output), shown to the founder first since they decide what survives a
+  lost sandbox.
+- [ ] Probe, before the agent (5) runs a turn on the object: the 32-service-binding-calls
+  per request cap (`FILES`, the gateway, hooks) and the 15-minute alarm wall time,
+  against one pi turn, including whether the cap applies per Durable Object event.
+- [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
+  probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
+  does not emulate it); the manifest tables in the nightly export; each droplet volume
+  imported into the manifest and bucket in the cutover window (9).
 
 ## 7. Wakes and outside agents
 

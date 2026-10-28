@@ -11,6 +11,13 @@ Each owner's trusted state SHALL live in exactly one SQLite-backed Durable Objec
 - **WHEN** Alice's object refuses a write because her collections are full
 - **THEN** a write to Bob's object under the same bounds succeeds
 
+### Requirement: File bytes sit in a shared bucket behind the owner's manifest
+An owner's file bytes are content, not trusted state: they SHALL sit as immutable chunks in one bucket shared by all owners, reachable only through that owner's manifest and its random namespace, both held in the owner's object.
+
+#### Scenario: Two owners store the same file
+- **WHEN** Alice and Bob each write the same bytes as `/workspace/a.bin`
+- **THEN** each object's manifest names its own chunks under its own namespace, and neither object holds the other's namespace
+
 ### Requirement: An object is named by its owner and serves only that owner
 An edge Worker (the binder) SHALL reach an owner's object only by `getByName(owner)`, with the owner taken from a verified credential. The object SHALL serve a call only when the binding's owner equals the name it was reached by (`ctx.id.name`), and SHALL refuse every call when it has no name. It SHALL also store its owner on first use and refuse any call whose owner differs from the stored one. The caller SHALL reach the object only as a typed RPC argument, never as a request field.
 
@@ -35,19 +42,27 @@ An edge Worker (the binder) SHALL reach an owner's object only by `getByName(own
 - **THEN** it is refused as an invalid request and the binding's caller stays the only caller
 
 ### Requirement: An owner's object cannot reach another owner's object
-The owner Worker's config SHALL bind nothing, at top level and in every environment, its keys drawn from an allow-list with no binding key, and its flags SHALL include `disable_ctx_exports`. It SHALL be the Worker's only wrangler config. Its source SHALL never name `exports`, SHALL import from `cloudflare:workers` only the classes it extends, and SHALL keep no module-level mutable state nor write through the global object.
+The owner Worker's config SHALL bind nothing but the service bindings the next requirement allows, at top level and in every environment; its other keys SHALL be drawn from an allow-list with no binding key, and its flags SHALL include `disable_ctx_exports`. It SHALL be the Worker's only wrangler config. Its source SHALL never name `exports`, SHALL import from `cloudflare:workers` only the classes it extends, and SHALL keep no module-level mutable state nor write through the global object.
 
 #### Scenario: The object looks for its own namespace
 - **WHEN** code inside the object reads `ctx.exports`
 - **THEN** it is undefined, so no stub to another owner's object can be made
 
 #### Scenario: A binding is added to the config
-- **WHEN** a Durable Object, service, var or any other binding key is added at top level or inside an environment, or a second wrangler config file appears
+- **WHEN** a Durable Object, var or any other binding key, or a service binding the allow-list does not name, is added at top level or inside an environment, or a second wrangler config file appears
 - **THEN** the config guard fails CI
+
 
 #### Scenario: Source reaches for exports or env
 - **WHEN** a source reads `ctx.exports`, imports `exports` or `env` from `cloudflare:workers`, or writes through `globalThis`, `self` or `global`
 - **THEN** a source guard fails CI, for every script extension under `src`
+
+### Requirement: The owner Worker binds only Workers that reach nothing
+A service binding the owner Worker holds SHALL be only to a Worker whose own config binds no Durable Object namespace and no service, each named in the config guard's allow-list (today only `FILES`, the files Worker) and checked against the bound Worker's own config.
+
+#### Scenario: The bound Worker gains a way on
+- **WHEN** the files Worker's config binds a Durable Object namespace or a service, at top level or in an environment
+- **THEN** the config guard refuses the owner Worker's `FILES` binding
 
 ### Requirement: The object migrates its schema on wake
 The object SHALL apply every schema migration past its stored version before it serves its first call after a wake, each migration in its own transaction with its version bump. A failed migration SHALL leave the version where it was and nothing of the migration behind. A stored version newer than the code's SHALL stop the object loudly. A deployed migration SHALL never change; a new shape is a new migration at the end.
@@ -192,3 +207,64 @@ Each `mailbox.message` subscribe SHALL open the agent's next subscription genera
 #### Scenario: An agent re-enabled before its revoke runs
 - **WHEN** a subscribed agent is disabled, registers again and subscribes again before the alarm runs its revoke
 - **THEN** the revoke erases the old callback only, and the agent's new callback still rings
+
+### Requirement: The owner's file manifest keeps the revision rules on file entries
+Each file change SHALL be a compare-and-swap on the entry's etag (null writes unconditionally, empty only creates), stamped with the next owner-wide seq, which names the version and never repeats across a delete, a re-create or a history prune; a lost swap SHALL be answered with the entry as it stands. Paths SHALL be stored verbatim, never normalized, and SHALL never become a bucket key. Files of 4 KiB or less SHALL be kept inline in the object.
+
+#### Scenario: A file deleted and made again
+- **WHEN** the owner writes `/workspace/a`, removes it and writes it again
+- **THEN** the three history rows carry three rising versions and the new etag matches no earlier one
+
+#### Scenario: Two names Unicode treats as one
+- **WHEN** `café` is written with a composed and with a decomposed `é`
+- **THEN** the manifest holds two files with their own contents
+
+### Requirement: Chunks are recorded before their bytes and collected without listing the bucket
+An upload SHALL record its chunks as held before any byte is sent, and its commit SHALL reference only chunks its intent holds. A chunk nothing references or holds SHALL become garbage, deleted on the owner's one schedule after a 24 h grace, without listing the bucket. A stored garbage chunk MAY revive; one whose upload never committed SHALL be sent again; one being deleted SHALL never be held or referenced.
+
+#### Scenario: An upload that never commits
+- **WHEN** an intent expires with a chunk it never committed
+- **THEN** the chunk becomes garbage that a later upload sends again, and its key is deleted after the grace
+
+#### Scenario: A chunk still referenced
+- **WHEN** the alarm runs with a chunk that a kept version's content is made of
+- **THEN** the chunk stays, whatever its age
+
+### Requirement: History is kept by owner policy, never dropped to make room
+History SHALL keep every version younger than the policy's retention and each live path's newest versions. A version MAY be restored as a new one, or have its content redacted unless it is current.
+
+#### Scenario: A path written twelve times
+- **WHEN** a path is written twelve times under the default policy
+- **THEN** its newest ten versions are kept whatever their age, and the two older ones only for 30 days
+
+### Requirement: File quotas are owner policy, refused loudly
+Chunk bytes, inline bytes, entries, history rows and a single file's size SHALL each be bounded by owner policy (the document's optional `files` table over the defaults), read from counters the schema's triggers keep. A change that takes a counter past its bound SHALL be refused with nothing left behind; one that leaves every counter no higher SHALL pass a lowered bound.
+
+#### Scenario: The owner's entries at their quota
+- **WHEN** a write would add an entry past `max_entries`
+- **THEN** it is refused, and no parent directory, history row or content of it is kept
+
+### Requirement: The sync lease fences the sandbox's commits
+The sync lease SHALL be a random lease id and a rising epoch, held by one holder until it lapses or is released. A sync commit SHALL be refused unless both are the live lease's. API writes SHALL never take the lease. A sync op made against a version that has moved on SHALL leave the current version in place, save a write's content as `<path>.ta-conflict-<epoch>`, and report the conflict; a directory SHALL be removed by sync only once empty.
+
+#### Scenario: A sandbox and the API edit one file
+- **WHEN** the API writes `notes.md` after the sandbox last synced it, and the sandbox then commits its own edit
+- **THEN** `notes.md` keeps the API's content and the sandbox's is saved as `notes.md.ta-conflict-<epoch>`, reported in the answer
+
+#### Scenario: A sandbox that lost its lease
+- **WHEN** a sync commit carries an earlier epoch or another lease id
+- **THEN** it is refused and nothing changes
+
+### Requirement: The files Worker moves bytes and never sees a path
+The files Worker SHALL hold the platform's only bucket binding and bind nothing else, serve no URL, and take only hex namespaces, chunk hashes and bytes. Its keys SHALL be only `o/<ns>/c/<sha256>`, built by one function. A put SHALL be create-once and verified by R2's SHA-256 check; an existing key SHALL count as stored only when it holds those bytes.
+
+#### Scenario: Bytes that miss their hash
+- **WHEN** a put names a hash its bytes do not have
+- **THEN** it is refused and nothing is stored
+
+### Requirement: One pi environment over the manifest
+The owner's pi `ExecutionEnv` SHALL serve its file methods from the manifest and the files Worker, never waking a sandbox, and SHALL pass pi-durable 1.4.0's conformance cases other than `exec`'s, with symbolic links off. A write to a path the environment read SHALL fail with `changed since read` when anything else committed there since; `exec` SHALL answer `shell_unavailable` until the sandbox lands.
+
+#### Scenario: An edit raced by another writer
+- **WHEN** one environment reads `notes.md`, another writes it, and the first writes its edit
+- **THEN** the first write fails with `changed since read` and the other's content stays

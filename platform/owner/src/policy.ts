@@ -21,6 +21,10 @@
  *   pending ones are never evicted, and a full pending set refuses more.
  * - A refused owner-session call leaves a `refusal` receipt with the digest of what was
  *   asked, never the session proof, written after the refused change rolled back.
+ * - The document's optional `files` table sets the owner's file quotas and history
+ *   retention (`FILE_DEFAULTS`, plan §6); what it leaves out keeps the defaults. It is
+ *   ours, with no Python counterpart, so the default document leaves it out and keeps
+ *   its digest.
  *
  * Owed by later slices, each written into its task: the Python closed the owner's
  * public egress tunnels before a write committed and cancelled its live streams after;
@@ -123,8 +127,46 @@ export interface PolicyEntry {
   readonly values: { readonly [key: string]: string | number | boolean | null };
 }
 
+/**
+ * Owner files policy (plan §6): quotas and history retention. Each is an owner-editable
+ * default: the document's optional `files` table sets any of them, and the rest keep
+ * these values. Quotas are refused loudly at the bound and never make room by dropping
+ * history. `max_bytes` counts unique chunk bytes, live and in history; `max_inline_bytes`
+ * the small files kept in the object itself, whose 10 GB the high bound protects.
+ * Retention keeps every version younger than `retention_days` and each live path's last
+ * `keep_versions`. The sync agent's exclude list is not here: it is the owner's file
+ * `/workspace/.ta/sync-ignore`, whose defaults come with the sync agent (tasks 6).
+ */
+export const FILE_DEFAULTS = Object.freeze({
+  max_bytes: 1024 ** 3,
+  max_inline_bytes: 256 * 1024 ** 2,
+  max_entries: 200_000,
+  max_file_bytes: 5 * 1024 ** 3,
+  max_history: 1_000_000,
+  retention_days: 30,
+  keep_versions: 10,
+});
+export type FileSettings = { readonly [K in keyof typeof FILE_DEFAULTS]: number };
+/** The range each setting may take. */
+export const FILE_SETTINGS: { readonly [K in keyof FileSettings]: readonly [number, number] } =
+  Object.freeze({
+    max_bytes: Object.freeze([0, 1024 ** 4] as const),
+    max_inline_bytes: Object.freeze([0, 1024 ** 3] as const),
+    max_entries: Object.freeze([0, 1_000_000] as const),
+    max_file_bytes: Object.freeze([0, 1024 ** 4] as const),
+    max_history: Object.freeze([0, 5_000_000] as const),
+    retention_days: Object.freeze([0, 3650] as const),
+    keep_versions: Object.freeze([1, 1000] as const),
+  });
+
+/** The files settings a document leaves in force: its own, and the defaults for the rest. */
+export function fileSettings(document: PolicyDocument): FileSettings {
+  return { ...FILE_DEFAULTS, ...document.files };
+}
+
 /** The document as `validate` leaves it. */
 export interface PolicyDocument {
+  readonly files?: Partial<FileSettings>;
   readonly entries: PolicyEntry[];
   readonly egress: { readonly mode: string;
                      readonly destinations: { readonly host: string; readonly port: number }[] };
@@ -274,8 +316,16 @@ function destination(entry: unknown): void {
 /** `_validate`: the whole document, or a refusal naming its first fault. */
 export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS):
     PolicyDocument {
-  if (!plain(document) || !keys(document, ["entries", "spend", "egress"])) {
+  if (!plain(document) || !keys(document, Object.hasOwn(document, "files")
+    ? ["entries", "spend", "egress", "files"] : ["entries", "spend", "egress"])) {
     throw new Invalid("invalid policy document");
+  }
+  const files = document["files"];
+  if (files !== undefined && (!plain(files) || Object.entries(files).some(([key, value]) =>
+    !Object.hasOwn(FILE_SETTINGS, key) || !whole(value)
+    || value < FILE_SETTINGS[key as keyof FileSettings][0]
+    || value > FILE_SETTINGS[key as keyof FileSettings][1]))) {
+    throw new Invalid("invalid files policy");
   }
   const egress = document["egress"];
   if (!plain(egress) || !keys(egress, ["mode", "destinations"])

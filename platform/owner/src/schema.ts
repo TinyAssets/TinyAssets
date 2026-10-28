@@ -8,13 +8,14 @@
  * loudly: code older than its data never runs against it.
  *
  * A migration is append-only. Once deployed it never changes; a new shape is a new
- * entry at the end. Nothing is deployed yet, so migrations 1 to 3 are still edited in
+ * entry at the end. Nothing is deployed yet, so migrations 1 to 4 are still edited in
  * place.
  *
  * The `CHECK` on a row body is the store's fixed ceiling of 65,536 characters. The
  * primitive's own bound is `LIMITS.maxRow`, which may be lower but never higher (a
  * test ties the two); raising the ceiling is a new migration.
  */
+import { GC_GRACE_S } from "./files";
 import { DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON } from "./policy";
 
 export type Migration = readonly string[];
@@ -54,6 +55,12 @@ const SHARE = (row: string, sign: string) => sign === "+"
     "pending = pending + 1;"
   : `UPDATE proposal_shares SET pending = pending - 1 WHERE proposer = ${row}.proposer ` +
     `AND ${row}.applied_at IS NULL;`;
+
+/** The chunk states whose bytes count against the owner's quota. */
+const COUNTED = "('uploading', 'live')";
+/** Move `file_space.chunk_bytes` by a chunk row's size, when its state counts. */
+const CHUNK_USAGE = (sign: string, row: string) =>
+  `chunk_bytes = chunk_bytes ${sign} ${row}.size * (${row}.state IN ${COUNTED});`;
 
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // 1: the owner this object serves, and the one revision primitive (S34, ADR-032).
@@ -395,6 +402,122 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "UPDATE policy_usage SET owner_receipts = owner_receipts - (OLD.bucket = 'owner'), " +
       "agent_receipts = agent_receipts - (OLD.bucket = 'agent'), " +
       "refusal_receipts = refusal_receipts - (OLD.bucket = 'refusal'); END",
+  ]),
+  // 4: owner files (plan §6; files.ts): the manifest of paths, versions and history,
+  // which chunks make which content, chunk reference counts, upload intents, quotas, the
+  // change feed and the sync lease. The bytes are chunks in the files Worker's bucket.
+  //
+  // Every index and trigger write is a billed row written, so there are only the ones a
+  // query or a bound needs. Tables keyed by text are WITHOUT ROWID (the key is the table,
+  // no second index), and an entry is keyed by (parent, name), which serves a lookup, a
+  // directory listing and a subtree's range alike. A small file's overwrite writes about
+  // ten rows: the seq, the content and its inline-bytes counter, the entry, the history
+  // row with its path index, the history counter and the content's reference, and the
+  // row retention lets go of with its due index.
+  //
+  // Counters only triggers write: `file_space`'s entries, history rows, chunk bytes
+  // (chunks uploading or live) and inline bytes, which the quotas read; a content's
+  // `refs` (its history rows: a live entry's content is always its newest row's) and a
+  // chunk's `refs` (contents made of it). A content no row refers to goes, with its chunk
+  // list; a chunk no content refers to and no upload holds becomes garbage, deleted by
+  // the alarm after `GC_GRACE_S` (24 h, SQLite's clock: the schedule compares it with the
+  // object's, and a day's grace does not mind which). A history row never changes but
+  // for its prune time and a redaction of its content.
+  Object.freeze([
+    "CREATE TABLE file_space (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      // The owner's chunk namespace, made on first use (files.ts `ns`).
+      "ns TEXT CHECK (ns IS NULL OR (length(ns) = 32 AND ns NOT GLOB '*[^0-9a-f]*')), " +
+      "seq INTEGER NOT NULL, feed_floor INTEGER NOT NULL, " +
+      "entries INTEGER NOT NULL CHECK (entries >= 0), " +
+      "history INTEGER NOT NULL CHECK (history >= 0), " +
+      "chunk_bytes INTEGER NOT NULL CHECK (chunk_bytes >= 0), " +
+      "inline_bytes INTEGER NOT NULL CHECK (inline_bytes >= 0), " +
+      // The sync lease: its claim token, fencing epoch (only rising), holder and expiry.
+      "lease_id TEXT, epoch INTEGER NOT NULL CHECK (epoch >= 0), holder TEXT, " +
+      "lease_expires REAL NOT NULL)",
+    "INSERT INTO file_space VALUES (1, NULL, 0, 0, 0, 0, 0, 0, NULL, 0, NULL, 0)",
+    "CREATE TRIGGER file_epoch_rises BEFORE UPDATE OF epoch ON file_space " +
+      "WHEN NEW.epoch < OLD.epoch BEGIN SELECT RAISE(ABORT, 'the lease epoch only rises'); END",
+    "CREATE TRIGGER file_seq_rises BEFORE UPDATE OF seq ON file_space " +
+      "WHEN NEW.seq <= OLD.seq BEGIN SELECT RAISE(ABORT, 'a file version never repeats'); END",
+    "CREATE TABLE file_entries (parent TEXT NOT NULL, name TEXT NOT NULL, " +
+      "kind TEXT NOT NULL CHECK (kind IN ('file', 'dir')), version INTEGER NOT NULL, " +
+      "content_id TEXT, size INTEGER NOT NULL CHECK (size >= 0), " +
+      "mode INTEGER NOT NULL CHECK (mode IN (0, 1)), mtime_ms INTEGER NOT NULL, " +
+      "writer TEXT NOT NULL, CHECK ((kind = 'file') = (content_id IS NOT NULL)), " +
+      "PRIMARY KEY (parent, name)) WITHOUT ROWID",
+    "CREATE TABLE file_contents (content_id TEXT PRIMARY KEY, size INTEGER NOT NULL, " +
+      "inline BLOB, refs INTEGER NOT NULL DEFAULT 0 CHECK (refs >= 0), " +
+      "CHECK ((inline IS NOT NULL) = (size <= 4096)), " +
+      "CHECK (inline IS NULL OR length(inline) = size)) WITHOUT ROWID",
+    "CREATE TABLE file_content_chunks (content_id TEXT NOT NULL, idx INTEGER NOT NULL, " +
+      "sha256 TEXT NOT NULL, PRIMARY KEY (content_id, idx)) WITHOUT ROWID",
+    // `stored`: R2 holds the bytes (a commit made it live); an upload that never committed
+    // is garbage that is never revived.
+    "CREATE TABLE file_chunks (sha256 TEXT PRIMARY KEY CHECK (length(sha256) = 64), " +
+      "size INTEGER NOT NULL CHECK (size BETWEEN 1 AND 4194304), " +
+      "state TEXT NOT NULL CHECK (state IN ('uploading', 'live', 'garbage', 'deleting')), " +
+      "stored INTEGER NOT NULL CHECK (stored IN (0, 1)), " +
+      "refs INTEGER NOT NULL DEFAULT 0 CHECK (refs >= 0), " +
+      "holds INTEGER NOT NULL DEFAULT 0 CHECK (holds >= 0), gc_after REAL, " +
+      "CHECK ((gc_after IS NOT NULL) = (state IN ('garbage', 'deleting'))), " +
+      "CHECK (state != 'live' OR stored = 1)) WITHOUT ROWID",
+    "CREATE INDEX file_chunks_due ON file_chunks (gc_after) WHERE gc_after IS NOT NULL",
+    "CREATE TABLE file_intents (intent_id TEXT PRIMARY KEY, chunks TEXT NOT NULL, " +
+      "expires_at REAL NOT NULL) WITHOUT ROWID",
+    "CREATE INDEX file_intents_due ON file_intents (expires_at)",
+    // The version is the rowid: the feed reads a key range.
+    "CREATE TABLE file_history (version INTEGER PRIMARY KEY, path TEXT NOT NULL, " +
+      "op TEXT NOT NULL CHECK (op IN ('write', 'mkdir', 'delete', 'rename_from', " +
+      "'rename_to', 'restore', 'conflict')), " +
+      "kind TEXT CHECK (kind IS NULL OR kind IN ('file', 'dir')), content_id TEXT, " +
+      "size INTEGER NOT NULL, mode INTEGER NOT NULL, writer TEXT NOT NULL, at REAL NOT NULL, " +
+      "prune_after REAL)",
+    "CREATE INDEX file_history_paths ON file_history (path, version)",
+    "CREATE INDEX file_history_due ON file_history (prune_after) WHERE prune_after IS NOT NULL",
+    "CREATE TABLE file_temps (name TEXT PRIMARY KEY, expires_at REAL NOT NULL) WITHOUT ROWID",
+    "CREATE INDEX file_temps_due ON file_temps (expires_at)",
+    "CREATE TRIGGER file_entries_added AFTER INSERT ON file_entries BEGIN " +
+      "UPDATE file_space SET entries = entries + 1; END",
+    "CREATE TRIGGER file_entries_removed AFTER DELETE ON file_entries BEGIN " +
+      "UPDATE file_space SET entries = entries - 1; END",
+    "CREATE TRIGGER file_history_added AFTER INSERT ON file_history BEGIN " +
+      "UPDATE file_space SET history = history + 1; " +
+      "UPDATE file_contents SET refs = refs + 1 WHERE content_id = NEW.content_id; END",
+    "CREATE TRIGGER file_history_removed AFTER DELETE ON file_history BEGIN " +
+      "UPDATE file_space SET history = history - 1; " +
+      "UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
+    "CREATE TRIGGER file_history_kept BEFORE UPDATE OF version, path, op, kind, size, mode, " +
+      "writer, at ON file_history BEGIN " +
+      "SELECT RAISE(ABORT, 'a file history row is never changed'); END",
+    "CREATE TRIGGER file_history_redacted BEFORE UPDATE OF content_id ON file_history " +
+      "WHEN NEW.content_id IS NOT NULL BEGIN " +
+      "SELECT RAISE(ABORT, 'a file history row is never changed'); END",
+    "CREATE TRIGGER file_history_released AFTER UPDATE OF content_id ON file_history BEGIN " +
+      "UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
+    "CREATE TRIGGER file_contents_added AFTER INSERT ON file_contents BEGIN " +
+      "UPDATE file_space SET inline_bytes = inline_bytes + coalesce(length(NEW.inline), 0); END",
+    "CREATE TRIGGER file_contents_unreferenced AFTER UPDATE OF refs ON file_contents " +
+      "WHEN NEW.refs = 0 BEGIN DELETE FROM file_contents WHERE content_id = NEW.content_id; END",
+    "CREATE TRIGGER file_contents_removed AFTER DELETE ON file_contents BEGIN " +
+      "UPDATE file_space SET inline_bytes = inline_bytes - coalesce(length(OLD.inline), 0); " +
+      "DELETE FROM file_content_chunks WHERE content_id = OLD.content_id; END",
+    "CREATE TRIGGER file_content_chunks_added AFTER INSERT ON file_content_chunks BEGIN " +
+      "UPDATE file_chunks SET refs = refs + 1 WHERE sha256 = NEW.sha256; END",
+    "CREATE TRIGGER file_content_chunks_removed AFTER DELETE ON file_content_chunks BEGIN " +
+      "UPDATE file_chunks SET refs = refs - 1 WHERE sha256 = OLD.sha256; END",
+    `CREATE TRIGGER file_chunks_added AFTER INSERT ON file_chunks BEGIN UPDATE file_space SET ${
+      CHUNK_USAGE("+", "NEW")} END`,
+    `CREATE TRIGGER file_chunks_removed AFTER DELETE ON file_chunks BEGIN UPDATE file_space SET ${
+      CHUNK_USAGE("-", "OLD")} END`,
+    "CREATE TRIGGER file_chunks_moved AFTER UPDATE OF state ON file_chunks " +
+      `WHEN (OLD.state IN ${COUNTED}) != (NEW.state IN ${COUNTED}) BEGIN ` +
+      `UPDATE file_space SET ${CHUNK_USAGE("+", "NEW")} UPDATE file_space SET ${
+        CHUNK_USAGE("-", "OLD")} END`,
+    "CREATE TRIGGER file_chunks_released AFTER UPDATE OF refs, holds ON file_chunks " +
+      "WHEN NEW.refs = 0 AND NEW.holds = 0 AND NEW.state IN ('uploading', 'live') BEGIN " +
+      "UPDATE file_chunks SET state = 'garbage', stored = (NEW.state = 'live'), " +
+      `gc_after = unixepoch('subsec') + ${GC_GRACE_S} WHERE sha256 = NEW.sha256; END`,
   ]),
 ]);
 

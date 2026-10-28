@@ -1,0 +1,16 @@
+// The files Worker: owner file bytes as content-addressed chunks in one R2 bucket
+// (ADR-032, plan §6). Not deployed yet: no workflow deploys platform/, and the bucket is
+// not created. It binds the bucket and nothing else, and serves no URL; owner objects
+// reach it only by their `FILES` service binding (guards/config.test.ts).
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "tinyassets-files",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-23",
+  "compatibility_flags": ["disable_ctx_exports"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "r2_buckets": [
+    { "binding": "BLOBS", "bucket_name": "tinyassets-files" }
+  ]
+}
