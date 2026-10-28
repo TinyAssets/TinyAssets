@@ -18,7 +18,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { CASES, MAX_HOLD_MINUTES, drive, finished, summarize, worstCaseMs } from "./drive.mjs";
+import { CASES, MAX_BURST, MAX_HOLD_MINUTES, drive, finished, summarize, worstCaseMs } from "./drive.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PLATFORM = join(HERE, "..", "..", "..", "platform");
@@ -122,6 +122,14 @@ function checkSecondRun(report, firstRunId) {
     expect(finished(id, report.results[id]), `run 2: ${id} did not finish after M2 failed`);
   }
   expect(report.phase === "done", `run 2 ended in phase ${report.phase}`);
+  // Run 2 uses N = 60: every burst and M12's and M9's splits scale with it.
+  const r = report.results;
+  const { A, B } = r.M12 ?? {};
+  expect(r.M1?.result?.rpc?.n === 60 && r.M1.result.rpc.ok === 60, `run 2: M1 at N = 60: ${show(r.M1)}`);
+  expect(A?.phase1?.n === 24 && A?.phase2?.n === 36 && B?.phase2?.n === 36 && A?.phase3?.n === 10,
+         `run 2: M12's phases at N = 60: ${show({ A, B })}`);
+  expect(r.M9?.result?.rpc1?.n === 30 && r.M9.result.rpc2?.n === 30, `run 2: M9 at N = 60`);
+  expect(r.M6a?.result?.calls?.length === 60 && report.checks.m6aOrder?.ok, "run 2: M6a at N = 60");
 }
 
 const mf = new Miniflare(convertV4MiniflareOptions({
@@ -157,14 +165,15 @@ try {
   const failing = (path, init) => (path.startsWith("/run/M2?")
     ? Promise.resolve(new Response("error code: 1101", { status: 500 }))
     : request(path, init));
-  const second = await drive({ request: failing, runId: "local-2", params: { ...PARAMS, holdMs: 0 },
-                               timing: TIMING });
+  const second = await drive({ request: failing, runId: "local-2",
+                               params: { ...PARAMS, holdMs: 0, n: 60 }, timing: TIMING });
   checkSecondRun(second, "local-1");
 
-  const worst = worstCaseMs({ holdMs: MAX_HOLD_MINUTES * 60_000 });
+  const worst = worstCaseMs({ holdMs: MAX_HOLD_MINUTES * 60_000, n: MAX_BURST });
   expect(worst < STEP_TIMEOUT_MINUTES * 60_000,
          `the driver's worst case (${(worst / 60_000).toFixed(1)} min) does not fit the step timeout`);
-  console.log(`driver worst case at a ${MAX_HOLD_MINUTES}-minute hold: ${(worst / 60_000).toFixed(1)} min`);
+  console.log(`driver worst case at a ${MAX_HOLD_MINUTES}-minute hold and N = ${MAX_BURST}: `
+              + `${(worst / 60_000).toFixed(1)} min`);
 
   const out = process.argv.indexOf("--out");
   if (out > 0) {

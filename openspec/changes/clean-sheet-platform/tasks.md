@@ -264,7 +264,14 @@ live acceptance is still owed says so.
   door), and answers whether workerd attributes a service call to the invocation whose
   async context started it, as the scope does.
   Method, cases M1–M12, reading key and results table: `cap-probe.md`; run by the manual
-  `cap-probe.yml` (gateway G0), built and not yet run live.
+  `cap-probe.yml` (gateway G0).
+- [ ] The cap probe ran once, on Workers Free (run 40701631460, `cap-probe.md`). The cap
+  that bit was 50 subrequests per invocation, not the documented 32. A DO RPC and an
+  alarm each start fresh, and calls are charged to the object's current event (its newest
+  invocation, or a counter each event resets), not to the async context that made them.
+  An alarm is cut at 15 minutes. Re-run on Workers Paid, both at the default limit and with
+  a low `limits.subrequests` so the attribution cases discriminate. Then rework `calls.ts`,
+  whose 32/24/8 split and per-async-context attribution match neither plan.
 - [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
   probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
   does not emulate it); a live probe of the files Worker's create-once put, which

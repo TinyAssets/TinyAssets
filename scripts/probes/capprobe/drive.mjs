@@ -6,7 +6,7 @@
  *
  *   PROBE_KEY=... node drive.mjs --base https://ta-capprobe.<sub>.workers.dev \
  *       --run-id <id> --out results.json --summary summary.md \
- *       [--hold-minutes 16] [--redact <text>]
+ *       [--hold-minutes 16] [--burst 40] [--redact <text>]
  *
  * Order: the Worker cases and M4; M6 and M6a (background loops) and the alarm cases M5,
  * M7, M8, M9; M12's two invocations, B started after A's first phase; M10 (the 16-minute
@@ -27,6 +27,12 @@ const ALARMS = Object.freeze(["M5", "M7", "M8", "M9"]);
 const BACKGROUND = Object.freeze(["M6", "M6a"]);
 /** M10's alarm may await at most this long, so the step's timeout bounds the run. */
 export const MAX_HOLD_MINUTES = 20;
+/**
+ * N, the calls per burst. M12 needs at least 25 (its first phase is 40% of N, and A's
+ * last phase adds 10), and the step timeout is sized at `MAX_BURST` (local.mjs checks).
+ */
+export const MIN_BURST = 25;
+export const MAX_BURST = 120;
 const MINUTE = 60_000;
 
 export const LIVE_TIMING = Object.freeze({
@@ -201,8 +207,10 @@ export async function drive({ request, runId, params = {}, timing = {}, log = ()
       const text = await planResponse.text();
       report.plan = {
         status: planResponse.status, survivedCpuBurn: planResponse.ok,
+        // Isolates tolerate an infrequent run over the CPU limit, so one burn that
+        // survives says nothing (run 40701631460 survived on Free); a refusal does.
         reading: planResponse.ok
-          ? "the Worker ran well past 10 ms of CPU: not the Free plan's limit"
+          ? "the CPU burn survived: inconclusive, since an isolate tolerates an infrequent overrun"
           : "the CPU burn was refused: the Free plan's 10 ms CPU limit is likely",
         body: text.slice(0, 200), cfError: /error code: (\d+)/.exec(text)?.[1] ?? null,
       };
@@ -343,7 +351,9 @@ export function summarize(report) {
         continue;
       }
       if (!bursts.length) {
-        const what = result.open ?? (result.targets ? `${result.targets.length} targets` : "");
+        const target = (x) => `${x.url} ${x.error ? `error ${x.error}` : `${x.status}${x.cfError ? ` (${x.cfError})` : ""}`}`;
+        const what = result.open ?? (result.targets
+          ? result.targets.map(target).join("; ").replaceAll("|", "/") : "");
         rows.push(`| ${id} | ${name} | ${what} | ${result.status} | ${result.error ?? ""} |`);
       }
       for (const [kind, burst] of bursts) {
@@ -382,11 +392,15 @@ function parseArgs(argv) {
 async function main(args, needles) {
   const key = process.env.PROBE_KEY;
   if (!args.base || !args["run-id"] || !key) {
-    throw new Error("usage: PROBE_KEY=... drive.mjs --base URL --run-id ID [--out F] [--summary F] [--hold-minutes M]");
+    throw new Error("usage: PROBE_KEY=... drive.mjs --base URL --run-id ID [--out F] [--summary F] [--hold-minutes M] [--burst N]");
   }
   const holdMinutes = Number(args["hold-minutes"] ?? 16);
   if (!Number.isInteger(holdMinutes) || holdMinutes < 0 || holdMinutes > MAX_HOLD_MINUTES) {
     throw new Error(`--hold-minutes must be a whole number from 0 to ${MAX_HOLD_MINUTES}`);
+  }
+  const n = Number(args.burst ?? LIVE_PARAMS.n);
+  if (!Number.isInteger(n) || n < MIN_BURST || n > MAX_BURST) {
+    throw new Error(`--burst must be a whole number from ${MIN_BURST} to ${MAX_BURST}`);
   }
   const base = args.base.replace(/\/$/, "");
   const request = (path, init) => fetch(`${base}${path}`, {
@@ -401,10 +415,14 @@ async function main(args, needles) {
     }
   };
   const report = await drive({
-    request, runId: args["run-id"], params: { holdMs: holdMinutes * MINUTE }, onPhase: write,
+    request, runId: args["run-id"], params: { holdMs: holdMinutes * MINUTE, n }, onPhase: write,
     log: (line) => console.log(`[${new Date().toISOString()}] ${redact(line, needles)}`),
   });
   console.log(redact(summarize(report), needles));
+  // The whole report in the step log too: the job summary is not readable through the API.
+  console.log("::group::results JSON");
+  console.log(redact(JSON.stringify(report, null, 2), needles));
+  console.log("::endgroup::");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
