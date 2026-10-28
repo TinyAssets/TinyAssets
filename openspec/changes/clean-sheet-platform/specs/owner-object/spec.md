@@ -90,7 +90,7 @@ The ledger SHALL bound each mailbox's unacked messages and bytes, the owner's an
 - **THEN** the owner's next post to that agent is refused and posts to every other mailbox still succeed
 
 ### Requirement: A disabled agent holds no mail, and only the owner deletes one
-Disabling an agent SHALL release its unacked mail, so it no longer holds the ledger; the owner may disable any agent and an outside caller only its own. Only the owner, in its own session, SHALL delete an agent, which purges its mail with their bodies, its cursor, wakes, rings and receipts. While a revoke of its callbacks is pending its row SHALL stay as a tombstone that the registry bound counts, gone when the revoke settles. The enabled-agent bound SHALL count enabled agents only.
+Disabling an agent SHALL release its unacked mail, so it no longer holds the ledger; the owner may disable any agent, and the ledger an outside caller only its own. Only the owner, in its own session, SHALL delete an agent, which purges its mail with their bodies, its cursor, wakes, rings and receipts. While a revoke of its callbacks is pending its row SHALL stay as a tombstone that the registry bound counts, gone when the revoke settles. The enabled-agent bound SHALL count enabled agents only.
 
 #### Scenario: A disabled agent's unread mail
 - **WHEN** an agent holding unacked mail is disabled
@@ -119,11 +119,72 @@ Wakes, and revokes of an agent's callbacks, SHALL be rows on the object's one sc
 - **THEN** the call fails because the object has no such method
 
 ### Requirement: Wake limits are owner policy
-An agent's wake limits SHALL be stored per agent, 12 wakes an hour and a 60 s batch window by default, and changed only by the owner in its own session. A registration SHALL never carry or reset them.
+An agent's wake limits SHALL be stored per agent, 12 wakes an hour and a 60 s batch window by default, and changed only by the owner in its own session, as a policy write: against the policy generation, which the change bumps, and receipted. A registration SHALL never carry or reset them.
 
 #### Scenario: An agent registers again
 - **WHEN** the owner has set an agent's limits and the agent registers again
 - **THEN** its limits stay the owner's, and a registration that names a limit is refused
+
+#### Scenario: A wake-limits change against a stale generation
+- **WHEN** the owner changes an agent's limits naming a policy generation that has moved on
+- **THEN** the change is refused, the agent's limits are unchanged, and a refusal receipt is left
+
+### Requirement: The object checks the owner's session itself
+An agent's register, disable or delete, a policy write, a wake-limits change and a grant change SHALL be served only when the binding's session cookie opens a live session row in the object's own store. The object SHALL mint each session's cookie, keep only its hash, and open a session only for the owner itself from a verified sign-in at most 600 s old. A stored hash, another owner's cookie or an expired or closed session SHALL never be a proof.
+
+#### Scenario: A session that has expired
+- **WHEN** the owner writes its policy with the cookie of a session whose row has expired
+- **THEN** the write is refused with "interactive owner session required" and the generation is unchanged
+
+#### Scenario: The stored hash offered as the proof
+- **WHEN** a call presents the hash of the owner's live cookie as its session
+- **THEN** it is refused as having no session
+
+### Requirement: A refused widening leaves a refusal receipt
+A widening refused after its call reached the owner's account SHALL leave a `refusal` receipt in the policy receipts, holding the digest of what was asked and never the session proof, written after the refused change rolled back. Owner changes, agent proposals and refusals SHALL be kept and listed in buckets apart.
+
+#### Scenario: An agent's register without the owner's session
+- **WHEN** an outside client registers an agent with no live owner session
+- **THEN** the call is refused, no agent is registered, and one refusal receipt is kept
+
+### Requirement: Owner policy is one document written against its generation
+The owner's policy SHALL be one validated document whose digest is rechecked on every read; a write SHALL name the generation it was made against and bump it. An agent's held proposal SHALL be applied at most once, only by the owner's write that names the card and the digest it was shown.
+
+#### Scenario: Two writes from the same view
+- **WHEN** the owner writes twice naming the same generation
+- **THEN** the first commits with one receipt and the second is refused with "policy generation changed"
+
+### Requirement: Every outside call is admitted against its client's grant
+The object SHALL admit each call from an outside client against that client's grant before any door acts: an MCP client's first verified call records it `full`, an API key with no grant is refused, a revoked client is refused, and after a revoke only a sign-in made after it is admitted. Only the owner in its session SHALL change a grant; the owner's account MAY revoke one without a session.
+
+#### Scenario: A grant revoked and granted again
+- **WHEN** the owner revokes a client's grant and then grants it `full` again
+- **THEN** a call from a credential signed in before the revoke is refused, and one signed in after it is admitted
+
+#### Scenario: A scoped client at a collection door
+- **WHEN** a client scoped to `read_graph` writes a board row through the owner's account
+- **THEN** the write is refused with "outside client capability not granted" and a pull by it is served
+
+### Requirement: An outside client's call never carries the owner's session
+A call from an outside client that also carries the owner's session cookie SHALL be refused before any grant is recorded, at every door but an agent's registration, where the owner's browser names the API key or verified MCP client the agent is.
+
+#### Scenario: An outside client presents the owner's cookie
+- **WHEN** an outside client reads its mailbox with the owner's live session cookie in its binding
+- **THEN** the call is refused with "an outside client's call never carries the owner's session" and no receipt or grant is written
+
+### Requirement: Grant rows stay bounded without forgetting a fence
+A grant row the owner set or revoked, or one an agent is registered from, SHALL never be deleted. Any other row SHALL be forgotten, least recently seen first, to make room, so a new client's verified call is never refused for the bound. The rows the owner sets SHALL be bounded at the owner's own grant change; a revoke SHALL never be refused for a bound.
+
+#### Scenario: A new client at the cap
+- **WHEN** the free grant rows are at their bound and the owner has revoked one client
+- **THEN** a new client is admitted `full`, the least recently seen free row is gone, and the revoked row is kept
+
+### Requirement: A grant change ends its client's wakes
+A grant change SHALL suppress the client's agents' open wakes and schedule the revoke of their callbacks in the same transaction, and a claim SHALL suppress a wake whose client's grant no longer stands.
+
+#### Scenario: A grant revoked while a wake is open
+- **WHEN** an agent's client is revoked while its wake is pending and its callback subscribed
+- **THEN** the wake is suppressed, its callback is revoked on the next alarm, and nothing is sent
 
 ### Requirement: A revoke is fenced by the subscription generation
 Each `mailbox.message` subscribe SHALL open the agent's next subscription generation, which tags the doorbell's callback. Disabling an agent, moving it off `mcp_event` or deleting it SHALL schedule a revoke only when the agent has subscribed since its last revoke, carrying the newest generation, with at most one open per agent. The doorbell SHALL erase only callbacks at or before a revoke's generation.

@@ -9,6 +9,16 @@
  * other, so a binder bug that reaches the wrong object fails loudly instead of acting
  * there.
  *
+ * What the binder verified, the object takes as typed binding fields: the outside
+ * client a call comes through (`origin`, `source`, `authenticated_at`) and the owner's
+ * session cookie (`session`). What it decides from them, it decides itself, from its
+ * own rows: every outside call, at every door, is admitted against that client's grant
+ * and held to its scopes (`grants.ts`), and every widening checks the owner's live
+ * session row (`sessions.ts`), a refused one leaving a refusal receipt in the policy
+ * receipts (`policy.ts`). An outside client's call never carries the owner's session,
+ * with one pinned exception: the owner's browser registering an agent for that client
+ * (`registerAgent`). Every other door refuses the pair.
+ *
  * Its code cannot reach another owner's object: the Worker binds nothing, the runtime
  * hands it no `ctx.exports` (`disable_ctx_exports`), and its source never names
  * `exports` or imports `env` (the config and self-reach guards). The module keeps no
@@ -24,35 +34,40 @@ import { DurableObject } from "cloudflare:workers";
 
 import { Collections, Conflict, type HistoryEntry, type Page, type Row } from "./collections";
 import { Invalid, Refused } from "./errors";
+import { type Client, type Grant, Grants, holds, type Scope } from "./grants";
 import {
   type Agent, clock, Ledger, type MailPage, type Origin, outsideOrigin, type Posted,
-  type Source,
+  registrant, type Source,
 } from "./ledger";
+import {
+  type Change, Policy, type PolicyDocument, type Projection, type Receipt,
+} from "./policy";
 import { migrate } from "./schema";
+import { Sessions } from "./sessions";
 import { principal } from "./text";
 import { runWakes, type WakeSender, WAKES_PER_ALARM } from "./wakes";
 
-/** Whose object this is, and who is asking: set by the binder from a verified credential. */
+/**
+ * Whose object this is, who is asking and through what: set by the binder from a
+ * verified credential, the one binding every door takes. `caller` is the owner's own
+ * account, or, at the collection doors alone, another owner visiting (origin null).
+ * `origin` is the verified outside client the owner's account acts through (an outside
+ * agent), or null. The object takes every sender and reader from here, never from a
+ * request field.
+ */
 export interface Binding {
   readonly owner: string;
   readonly caller: string;
-}
-
-/**
- * A ledger call's binding. The caller is the owner's own account; `origin` is the
- * verified outside client it acts through (an outside agent), or null for the owner.
- * The ledger takes every sender and reader from here, never from a request field.
- */
-export interface LedgerBinding extends Binding {
   readonly origin: Origin | null;
-  /** How the binder verified `origin`: needed to register an agent. */
+  /** How the binder verified `origin`: an MCP client or an API key. Every outside call. */
   readonly source?: Source;
   /**
-   * The binder checked the owner's protected interactive session on this request. A
-   * declared difference from the Python, which checked the live session row itself: the
-   * object checks it once sessions are ported into it (tasks 3.5).
+   * When the credential was signed in, in whole seconds: an outside client's, which a
+   * revoke fences, or the owner's interactive sign-in, which opens a session.
    */
-  readonly interactive?: boolean;
+  readonly authenticated_at?: number;
+  /** The owner's protected-session cookie, as the browser presented it. */
+  readonly session?: string;
 }
 
 export type { Origin, Source, WakeSender };
@@ -77,6 +92,35 @@ export interface WakeLimitsRequest {
   readonly agent_id: string;
   readonly max_wakes_per_hour: number;
   readonly batch_window_s: number;
+  readonly expected_generation: number;
+}
+
+export interface PolicyWriteRequest {
+  readonly expected_generation: number;
+  readonly policy: PolicyDocument;
+  readonly proposal?: { readonly request_id: string; readonly digest: string };
+}
+
+export interface ProposeRequest {
+  readonly change: Change;
+  readonly request_id?: string;
+}
+
+export interface CardRequest {
+  readonly request_id: string;
+}
+
+export interface GrantRequest {
+  readonly client: string;
+  readonly source: string;
+  readonly mode: string;
+  readonly scopes: Scope[];
+  readonly expected_generation: number;
+  readonly name: string;
+}
+
+export interface ClientRequest {
+  readonly client: string;
 }
 
 export interface PostRequest {
@@ -140,6 +184,26 @@ export interface Conflicted {
   readonly conflict: Row | null;
 }
 
+/** What a call is bound to: its owner and caller, its outside client and that client's grant. */
+interface Account {
+  readonly owner: string;
+  readonly caller: string;
+  readonly origin: Origin | null;
+  readonly grant: Grant | null;
+}
+
+/**
+ * Who else an account door serves. `visitors`: another owner may call, as itself (the
+ * collection doors). `registering`: an outside origin may come with the owner's session
+ * (the owner's browser registering an agent for that client).
+ */
+interface Serves {
+  readonly visitors?: boolean;
+  readonly registering?: boolean;
+}
+
+export const OUTSIDE_SESSION = "an outside client's call never carries the owner's session";
+
 /**
  * The request's fields are exactly `required`, plus any of `optional`, and none is
  * `undefined`: a field sent is a value, as the Python door refused `None`.
@@ -166,6 +230,11 @@ function ledgerFields(request: unknown, required: readonly string[],
   return fields(request, required, optional, "invalid ledger request");
 }
 
+function policyFields(request: unknown, required: readonly string[],
+                      optional: readonly string[] = []): Record<string, unknown> {
+  return fields(request, required, optional, "invalid policy request");
+}
+
 function conflicted<T>(act: () => T): T | Conflicted {
   try {
     return act();
@@ -179,6 +248,9 @@ function conflicted<T>(act: () => T): T | Conflicted {
 
 export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #collections: Collections;
+  readonly #policy: Policy;
+  readonly #grants: Grants;
+  readonly #sessions: Sessions;
   readonly #ledger: Ledger;
   /**
    * What rings outside agents' doorbells, called in process by the alarm. None until the
@@ -190,7 +262,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     super(ctx, env);
     this.#collections = new Collections(ctx.storage);
-    this.#ledger = new Ledger(ctx.storage);
+    this.#policy = new Policy(ctx.storage);
+    this.#grants = new Grants(ctx.storage, this.#policy);
+    this.#sessions = new Sessions(ctx.storage);
+    this.#ledger = new Ledger(ctx.storage, this.#grants);
     void ctx.blockConcurrencyWhile(async () => {
       migrate(ctx.storage);
       // The schedule as stored, for this code's sender: a deploy that adds a doorbell
@@ -220,116 +295,324 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * A ledger call's owner, reader and origin. The ledger is its owner's own: the caller
-   * must be the owner's account, acting itself (`origin` null) or through a verified
-   * outside client.
+   * An account call's owner, origin and grant. The account is its owner's own: the
+   * caller must be the owner's account, acting itself (`origin` null) or through a
+   * verified outside client, which is admitted here against its grant (P0-3) before any
+   * door acts. A refusal here leaves no receipt: the call never reached the account.
    */
-  #bindLedger(binding: LedgerBinding): { origin: Origin | null; interactive: boolean } {
+  #account(binding: Binding, serves: Serves = {}): Account {
     const { owner, caller } = this.#bind(binding);
-    if (caller !== owner) {
-      throw new Refused("the ledger answers its owner's own accounts only");
-    }
     if (!("origin" in binding)) {
       throw new Invalid("invalid outside origin");
     }
-    const interactive = binding.interactive ?? false;
-    if (typeof interactive !== "boolean") {
-      throw new Invalid("interactive is a boolean");
+    const origin = outsideOrigin(binding.origin);
+    if (caller !== owner && !(serves.visitors === true && origin === null)) {
+      throw new Refused("the account answers its owner's own callers only");
     }
-    return { origin: outsideOrigin(binding.origin), interactive };
+    const signedIn = binding.authenticated_at ?? null;
+    if (signedIn !== null && (typeof signedIn !== "number" || !Number.isSafeInteger(signedIn)
+                              || signedIn < 0)) {
+      throw new Invalid("authenticated_at is a time in whole seconds");
+    }
+    if (origin === null) {
+      return { owner, caller, origin, grant: null };
+    }
+    // The owner's cookie rides only the owner's own browser requests (tasks 2); an
+    // outside client's call carrying it is a binder bug or a replay, refused before any
+    // grant is recorded.
+    if (binding.session !== undefined && serves.registering !== true) {
+      throw new Refused(OUTSIDE_SESSION);
+    }
+    const source = registrant(binding.source, origin);
+    return { owner, caller, origin,
+             grant: this.#grants.admit(origin.client, source.kind, signedIn, clock()) };
   }
 
-  /** Registering or disabling an agent needs the owner's protected session (S30). */
-  #interactive(binding: LedgerBinding): Origin | null {
-    const { origin, interactive } = this.#bindLedger(binding);
-    if (!interactive) {
-      throw new Refused("interactive owner session required");
+  /** The owner itself, on its own account, never an outside client. */
+  #owner(binding: Binding, action: string): Account {
+    const account = this.#account(binding);
+    if (account.origin !== null) {
+      throw new Refused(`only the owner may ${action}`);
     }
-    return origin;
+    return account;
   }
 
-  /** Owner policy and deletion: the owner itself, in its protected session, alone. */
-  #ownerSession(binding: LedgerBinding): void {
-    if (this.#interactive(binding) !== null) {
-      throw new Refused("only the owner may change its agents' policy");
+  /**
+   * A widening: the owner's live session, checked against the object's own session row
+   * (S30, N10). `owner` names what only the owner itself, never an outside client, may
+   * do in it. A refusal after the account is bound leaves a refusal receipt of what was
+   * asked, written once the refused change has rolled back.
+   */
+  #widening<T>(binding: Binding, action: string, request: unknown, owner: string | null,
+               act: (account: Account, sessionId: string) => T, serves: Serves = {}): T {
+    const account = this.#account(binding, serves);
+    try {
+      // An outside client holds no owner session, so what only the owner may do is
+      // refused as that before the session is looked for.
+      if (owner !== null && account.origin !== null) {
+        throw new Refused(`only the owner may ${owner}`);
+      }
+      return act(account, this.#sessions.live(binding.session, clock()));
+    } catch (error) {
+      if (error instanceof Refused || error instanceof Invalid) {
+        try {
+          this.#policy.refusal(action, { request, origin: account.origin }, clock());
+        } catch {
+          console.error("owner-session refusal receipt unavailable");  // refuse regardless
+        }
+      }
+      throw error;
     }
+  }
+
+  /**
+   * A scoped outside client reaches its own mailbox only with `capability` granted, as
+   * the `main` agent, in `center` (default: the command center its one enabled agent is
+   * registered in). `full` and the owner pass.
+   */
+  #scope(account: Account, capability: string, center?: unknown): void {
+    if (account.grant?.mode !== "scoped") {
+      return;
+    }
+    let universe = center;
+    if (universe === undefined) {
+      const mine = this.#ledger.agents(account.origin)
+        .filter((agent) => agent.disabled_reason === null);
+      if (mine.length !== 1) {
+        throw new Refused("this outside identity is not one enabled agent");
+      }
+      universe = mine[0]!.command_center_id;
+    }
+    if (typeof universe !== "string"
+        || !holds(account.grant, { universe, agent: "main", capability })) {
+      throw new Refused("outside client capability not granted");
+    }
+  }
+
+  // -- SESSIONS: the owner's protected interactive sessions ---------------------
+
+  /** A verified interactive sign-in opens a session; its cookie is returned once. */
+  sessionOpen(binding: Binding): { session: string; expires_at: number } {
+    this.#owner(binding, "open its session");
+    return this.#sessions.open(binding.authenticated_at, clock());
+  }
+
+  sessionExtend(binding: Binding): { expires_at: number } {
+    this.#owner(binding, "renew its session");
+    return this.#sessions.extend(binding.session, clock());
+  }
+
+  sessionClose(binding: Binding): { closed: number } {
+    this.#owner(binding, "sign out");
+    return this.#sessions.close(binding.session);
+  }
+
+  /** Every session signed out: account revocation and deletion (`revoke_owner`). */
+  sessionCloseAll(binding: Binding): { closed: number } {
+    this.#owner(binding, "sign out");
+    return this.#sessions.closeAll();
+  }
+
+  // -- OWNER_POLICY ------------------------------------------------------------
+
+  policyRead(binding: Binding): Projection {
+    const { owner } = this.#owner(binding, "read its policy");
+    return this.#policy.projection(owner);
+  }
+
+  policyReceipts(binding: Binding): { receipts: Receipt[] } {
+    this.#owner(binding, "read its policy");
+    return { receipts: this.#policy.receipts() };
+  }
+
+  /** The owner's write, in its session; with `proposal`, a held card's one apply. */
+  policyWrite(binding: Binding, request: PolicyWriteRequest): Projection {
+    return this.#widening(binding, "write", request, "write its policy", ({ owner }, id) => {
+      const r = policyFields(request, ["expected_generation", "policy"], ["proposal"]);
+      const written = this.#policy.write(id, r["expected_generation"], r["policy"],
+                                         r["proposal"] ?? null, clock());
+      return { owner, generation: written.generation, digest: written.digest,
+               policy: written.document };
+    });
+  }
+
+  /**
+   * An agent's proposal, the owner's or an admitted outside client's; never applied. A
+   * scoped client proposes only with `propose_policy` granted where its agent is.
+   */
+  policyPropose(binding: Binding, request: ProposeRequest):
+      { request_digest: string; generation: number } {
+    const account = this.#account(binding);
+    const r = policyFields(request, ["change"], ["request_id"]);
+    this.#scope(account, "propose_policy");
+    return this.#policy.propose(r["change"], r["request_id"] ?? null,
+                                account.origin?.client ?? "owner", clock());
+  }
+
+  /** The pending card the owner is shown, and the digest its apply must name. */
+  policyProposal(binding: Binding, request: CardRequest):
+      { change: Change; digest: string } {
+    this.#owner(binding, "read its policy");
+    const r = policyFields(request, ["request_id"]);
+    const held = this.#policy.held(r["request_id"], clock());
+    if (held === null) {
+      throw new Refused("no pending proposal for this card");
+    }
+    return held;
+  }
+
+  /**
+   * Owner policy (W3): an agent's hourly wake cap and batch window, kept on its registry
+   * row where the ledger reads them, and changed like any policy write: in the owner's
+   * session, against the policy generation, receipted.
+   */
+  policyWakeLimits(binding: Binding, request: WakeLimitsRequest):
+      { agent: Agent; generation: number } {
+    return this.#widening(binding, "wake_limits", request, "change its agents' policy",
+                          (_account, id) => {
+      const r = policyFields(request, ["agent_id", "max_wakes_per_hour", "batch_window_s",
+                                       "expected_generation"]);
+      return this.ctx.storage.transactionSync(() => {
+        const agent = this.#ledger.setWakeLimits(r["agent_id"], r["max_wakes_per_hour"],
+                                                 r["batch_window_s"]);
+        const limits = { agent_id: agent.agent_id, max_wakes_per_hour: agent.max_wakes_per_hour,
+                         batch_window_s: agent.batch_window_s };
+        const generation = this.#policy.changed(id, r["expected_generation"], "wake_limits",
+                                                limits, agent.agent_id, clock());
+        return { agent, generation };
+      });
+    });
+  }
+
+  // -- OUTSIDE_CLIENTS: grants (P0-3) ---------------------------------------------
+
+  grantList(binding: Binding): { clients: Client[] } {
+    this.#owner(binding, "read its outside clients");
+    return { clients: this.#grants.list() };
+  }
+
+  /** The owner's widening, in its session; the client's agents' wakes end with it. */
+  async grantSet(binding: Binding, request: GrantRequest):
+      Promise<{ client: string; mode: string; scopes: Scope[]; generation: number }> {
+    const set = this.#widening(binding, "outside_set", request,
+                               "change an outside client's grant", (_account, id) => {
+      const r = policyFields(request, ["client", "source", "mode", "scopes",
+                                       "expected_generation", "name"]);
+      return this.ctx.storage.transactionSync(() => {
+        const changed = this.#grants.set(id, r as unknown as GrantRequest, clock());
+        this.#ledger.suppressClient(changed.client, clock());
+        return changed;
+      });
+    });
+    await this.#rearm();
+    return set;
+  }
+
+  /** A narrowing the owner's account makes without a session, as a key's revoke does. */
+  async grantRevoke(binding: Binding, request: ClientRequest):
+      Promise<{ client: string; revoked: boolean; generation: number }> {
+    this.#owner(binding, "revoke an outside client's grant");
+    const r = policyFields(request, ["client"]);
+    const revoked = this.ctx.storage.transactionSync(() => {
+      const result = this.#grants.revoke(r["client"], clock());
+      this.#ledger.suppressClient(result.client, clock());
+      return result;
+    });
+    await this.#rearm();
+    return revoked;
   }
 
   // -- OUTSIDE_AGENTS ---------------------------------------------------------
 
   /** The owner sees every agent; an outside caller only its own identity's. */
-  outsideAgents(binding: LedgerBinding): { agents: Agent[] } {
-    const { origin } = this.#bindLedger(binding);
+  outsideAgents(binding: Binding): { agents: Agent[] } {
+    const { origin } = this.#account(binding);
     return { agents: this.#ledger.agents(origin) };
   }
 
-  async registerAgent(binding: LedgerBinding, request: RegisterRequest): Promise<Agent> {
-    const origin = this.#interactive(binding);
-    const r = ledgerFields(request, ["command_center_id", "display_name", "delivery_method",
-                                     "recipe_id"]);
-    const agent = this.#ledger.register(origin, binding.source, r as unknown as RegisterRequest);
+  /**
+   * Registering an agent needs the owner's protected session (S30): the owner's browser
+   * names the identity the agent is (`origin`), an API key the owner holds or a
+   * verified MCP client, so this is the one door an outside origin reaches together
+   * with the owner's session.
+   */
+  async registerAgent(binding: Binding, request: RegisterRequest): Promise<Agent> {
+    const agent = this.#widening(binding, "OUTSIDE_AGENTS.register", request, null,
+                                 ({ origin }) => {
+      const r = ledgerFields(request, ["command_center_id", "display_name", "delivery_method",
+                                       "recipe_id"]);
+      return this.#ledger.register(origin, binding.source, r as unknown as RegisterRequest);
+    }, { registering: true });
     await this.#rearm();
     return agent;
   }
 
-  async disableAgent(binding: LedgerBinding, request: DisableRequest): Promise<Agent> {
-    const origin = this.#interactive(binding);
-    const r = ledgerFields(request, ["agent_id", "reason"]);
-    const agent = this.#ledger.disable(r["agent_id"], r["reason"], origin);
+  /**
+   * The owner disables any agent in its session. An outside client cannot reach it: it
+   * holds no owner session, and its call never carries one.
+   */
+  async disableAgent(binding: Binding, request: DisableRequest): Promise<Agent> {
+    const agent = this.#widening(binding, "OUTSIDE_AGENTS.disable", request, null,
+                                 ({ origin }) => {
+      const r = ledgerFields(request, ["agent_id", "reason"]);
+      return this.#ledger.disable(r["agent_id"], r["reason"], origin);
+    });
     await this.#rearm();
     return agent;
   }
 
-  async deleteAgent(binding: LedgerBinding, request: AgentRequest):
+  /** Only the owner itself, in its session, deletes an agent. */
+  async deleteAgent(binding: Binding, request: AgentRequest):
       Promise<{ agent_id: string; messages: number }> {
-    this.#ownerSession(binding);
-    const r = ledgerFields(request, ["agent_id"]);
-    const deleted = this.#ledger.remove(r["agent_id"]);
+    const deleted = this.#widening(binding, "OUTSIDE_AGENTS.delete", request,
+                                   "change its agents' policy", () => {
+      const r = ledgerFields(request, ["agent_id"]);
+      return this.#ledger.remove(r["agent_id"]);
+    });
     await this.#rearm();
     return deleted;
   }
 
-  /** Owner policy (W3): an agent's hourly wake cap and batch window. */
-  setWakeLimits(binding: LedgerBinding, request: WakeLimitsRequest): Agent {
-    this.#ownerSession(binding);
-    const r = ledgerFields(request, ["agent_id", "max_wakes_per_hour", "batch_window_s"]);
-    return this.#ledger.setWakeLimits(r["agent_id"], r["max_wakes_per_hour"],
-                                      r["batch_window_s"]);
-  }
-
   // -- ROOM_POST and MAILBOX_RECEIPT -------------------------------------------
 
-  async roomPost(binding: LedgerBinding, request: PostRequest): Promise<Posted> {
-    const { origin } = this.#bindLedger(binding);
+  async roomPost(binding: Binding, request: PostRequest): Promise<Posted> {
+    const account = this.#account(binding);
     const r = ledgerFields(request, ["room_id", "client_message_id", "body", "parent_id"]);
-    const posted = this.#ledger.post(origin, r["room_id"], r["client_message_id"], r["body"],
-                                     r["parent_id"]);
+    this.#scope(account, "write_graph");
+    const posted = this.#ledger.post(account.origin, r["room_id"], r["client_message_id"],
+                                     r["body"], r["parent_id"]);
     await this.#rearm();
     return posted;
   }
 
-  mailboxRead(binding: LedgerBinding, request: ReadRequest): MailPage {
-    const { origin } = this.#bindLedger(binding);
+  mailboxRead(binding: Binding, request: ReadRequest): MailPage {
+    const account = this.#account(binding);
     const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes"]);
-    return this.#ledger.read(origin, r["limit"], r["max_bytes"] ?? null, r["pad_bytes"] ?? 0);
+    this.#scope(account, "read_graph");
+    return this.#ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null,
+                             r["pad_bytes"] ?? 0);
   }
 
-  mailboxAck(binding: LedgerBinding, request: AckRequest): { reader: string; through: number } {
-    const { origin } = this.#bindLedger(binding);
+  mailboxAck(binding: Binding, request: AckRequest): { reader: string; through: number } {
+    const account = this.#account(binding);
     const r = ledgerFields(request, ["through"]);
-    return this.#ledger.ack(origin, r["through"]);
+    this.#scope(account, "write_graph");
+    return this.#ledger.ack(account.origin, r["through"]);
   }
 
   /**
-   * W4: a `mailbox.message` subscribe must name the caller's own ringing agent. The
-   * answer's `generation` tags the callback the subscribe door stores, so a revoke made
-   * before it never erases it.
+   * W4: a `mailbox.message` subscribe must name the caller's own ringing agent, and a
+   * scoped client needs `read_graph` in that command center. The answer's `generation`
+   * tags the callback the subscribe door stores, so a revoke made before it never
+   * erases it.
    */
-  mailboxSubscriber(binding: LedgerBinding, request: SubscriberRequest):
+  mailboxSubscriber(binding: Binding, request: SubscriberRequest):
       { agent_id: string; generation: number } {
-    const { origin } = this.#bindLedger(binding);
+    const account = this.#account(binding);
     const r = ledgerFields(request, ["command_center_id", "agent_id"]);
-    const generation = this.#ledger.subscriber(origin, r["command_center_id"], r["agent_id"]);
+    this.#scope(account, "read_graph", r["command_center_id"]);
+    const generation = this.#ledger.subscriber(account.origin, r["command_center_id"],
+                                               r["agent_id"]);
     return { agent_id: r["agent_id"] as string, generation };
   }
 
@@ -366,8 +649,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
   }
 
+  /**
+   * A collection door's caller: the owner, a visiting owner, or an outside client the
+   * owner's account acts through, admitted against its grant and held to `capability`.
+   */
+  #collector(binding: Binding, capability: string): { owner: string; caller: string } {
+    const account = this.#account(binding, { visitors: true });
+    this.#scope(account, capability);
+    return account;
+  }
+
   collectionWrite(binding: Binding, request: WriteRequest): { row: Row } | Conflicted {
-    const { owner, caller } = this.#bind(binding);
+    const { owner, caller } = this.#collector(binding, "write_graph");
     const r = fields(request, ["collection", "row_id", "body", "expected_etag", "private"],
                      ["history_op"]);
     return conflicted(() => ({
@@ -378,25 +671,25 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   collectionPull(binding: Binding, request: PullRequest): Page {
-    const { caller } = this.#bind(binding);
+    const { caller } = this.#collector(binding, "read_graph");
     const r = fields(request, ["collection", "after", "limit"]);
     return this.#collections.pull(caller, r["collection"] as string, r["after"], r["limit"]);
   }
 
   collectionGet(binding: Binding, request: KeyRequest): { row: Row | null } {
-    const { caller } = this.#bind(binding);
+    const { caller } = this.#collector(binding, "read_graph");
     const r = fields(request, ["collection", "row_id"]);
     return this.#collections.get(caller, r["collection"] as string, r["row_id"] as string);
   }
 
   collectionHistory(binding: Binding, request: KeyRequest): { entries: HistoryEntry[] } {
-    const { caller } = this.#bind(binding);
+    const { caller } = this.#collector(binding, "read_graph");
     const r = fields(request, ["collection", "row_id"]);
     return this.#collections.history(caller, r["collection"] as string, r["row_id"] as string);
   }
 
   collectionDelete(binding: Binding, request: DeleteRequest): { deleted: number } | Conflicted {
-    const { owner, caller } = this.#bind(binding);
+    const { owner, caller } = this.#collector(binding, "write_graph");
     this.#ownerOnly(owner, caller, "delete");
     const r = fields(request, ["collection", "row_id", "expected_etag"]);
     return conflicted(() => this.#collections.delete(
@@ -405,7 +698,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   collectionClear(binding: Binding, request: ClearRequest): { deleted: number } {
-    const { owner, caller } = this.#bind(binding);
+    const { owner, caller } = this.#collector(binding, "write_graph");
     this.#ownerOnly(owner, caller, "clear");
     const r = fields(request, ["collection", "writer"]);
     return this.#collections.clear(caller, r["collection"] as string, r["writer"]);

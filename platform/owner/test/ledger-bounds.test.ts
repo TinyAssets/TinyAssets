@@ -51,7 +51,7 @@ describe("the ledger's limits", () => {
   });
 
   it("refuses to build a ledger over limits whose mailboxes do not fit", async () => {
-    const r = rig();
+    const r = await rig();
     const refused = await failure(() => r.inLedger({ maxMessages: 9_999 }, () => "built"));
     expect(refused.message).toMatch(/invalid ledger limits: the mailboxes' messages exceed/);
     expect(await r.inLedger({}, () => "built")).toBe("built");
@@ -61,7 +61,7 @@ describe("the ledger's limits", () => {
 describe("the ledger's bounds", () => {
   it("refuses a full mailbox's posts only, and evicts the oldest acked message",
      async () => {
-    const r = rig();
+    const r = await rig();
     const seqs = await r.inLedger(tight(1, 2, 1), (ledger: Ledger) => {
       const room = `dm:${ledger.register(MUSE, MCP, PULL).agent_id}`;
       ledger.post(null, room, "c1", "body 1", null);
@@ -87,7 +87,7 @@ describe("the ledger's bounds", () => {
 
   it("evicts an acked message past an older one still unread, never the unread one",
      async () => {
-    const r = rig();
+    const r = await rig();
     const bodies = await r.inLedger(tight(1, 2, 1), (ledger: Ledger) => {
       const room = `dm:${ledger.register(MUSE, MCP, PULL).agent_id}`;
       ledger.post(null, room, "c1", "unread, and oldest", null);
@@ -103,7 +103,7 @@ describe("the ledger's bounds", () => {
   });
 
   it("holds one agent to its share of the owner's mailbox in bytes too", async () => {
-    const r = rig();
+    const r = await rig();
     await r.inLedger({ maxSenderUnackedBytes: 10 }, (ledger: Ledger) => {
       const room = `dm:${ledger.register(MUSE, MCP, PULL).agent_id}`;
       ledger.post(MUSE, room, "m1", "x".repeat(6), null);
@@ -118,7 +118,7 @@ describe("the ledger's bounds", () => {
   });
 
   it("evicts by body bytes too", async () => {
-    const r = rig();
+    const r = await rig();
     await r.inLedger({ maxBodyBytes: 10, maxAgents: 1, maxAgentUnackedBytes: 10,
                        maxOwnerUnackedBytes: 0 }, (ledger: Ledger) => {
       const room = `dm:${ledger.register(MUSE, MCP, PULL).agent_id}`;
@@ -136,7 +136,7 @@ describe("the ledger's bounds", () => {
   });
 
   it("holds one agent to its share of the owner's mailbox", async () => {
-    const r = rig();
+    const r = await rig();
     const left = await r.inLedger({ maxSenderUnacked: 2, maxOwnerUnacked: 3 },
                                   (ledger: Ledger) => {
       const muse = ledger.register(MUSE, MCP, PULL).agent_id;
@@ -163,7 +163,7 @@ describe("the ledger's bounds", () => {
 
   it("releases a disabled agent's unacked mail, so it no longer holds the ledger",
      async () => {
-    const r = rig();
+    const r = await rig();
     const [muse, dot] = await r.inLedger({ ...tight(1, 3, 1), maxSenderUnacked: 1 },
                                          (ledger: Ledger) => {
       const a = ledger.register(MUSE, MCP, PULL).agent_id;
@@ -192,7 +192,7 @@ describe("the ledger's bounds", () => {
   });
 
   it("deletes an agent with its mail, wakes, rings and receipts", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     const dot = await r.register(DOT, "Dot");
     await r.subscribe(MUSE, muse);
@@ -236,7 +236,7 @@ describe("the ledger's bounds", () => {
 
   it("bounds pending revokes by the registry: a deleted agent's tombstone counts",
      async () => {
-    const r = rig();
+    const r = await rig();
     const people = Array.from({ length: 30 }, (_, n) => origin(n));
     const [ids, refused] = await r.inLedger({ maxAgents: 3, maxAgentRows: 3 },
                                             (ledger: Ledger) => {
@@ -249,7 +249,10 @@ describe("the ledger's bounds", () => {
           ledger.remove(id);
           made.push(id);
         } catch (error) {
-          expect((error as Error).message).toBe("the owner's agent registry is full");
+          // N1: the refusal names the tombstones that hold the registry.
+          expect((error as Error).message).toBe(
+            "the owner's agent registry is full (3 of its rows are deleted agents waiting " +
+            "on a pending callback revoke)");
           full++;
         }
       }
@@ -280,7 +283,7 @@ describe("the ledger's bounds", () => {
   });
 
   it("schedules no revoke for an agent that never subscribed, and leaves no row", async () => {
-    const r = rig();
+    const r = await rig();
     await r.inLedger({}, (ledger: Ledger) => {
       const muse = ledger.register(MUSE, MCP, RINGS).agent_id;
       ledger.disable(muse, "paused");
@@ -292,7 +295,7 @@ describe("the ledger's bounds", () => {
   });
 
   it("caps enabled agents, and registry rows until the owner deletes one", async () => {
-    const r = rig();
+    const r = await rig();
     await r.inLedger({ maxAgents: 1, maxAgentRows: 2 }, (ledger: Ledger) => {
       const muse = ledger.register(MUSE, MCP, PULL).agent_id;
       expect(refusal(() => ledger.register(DOT, MCP, PULL)))
@@ -304,7 +307,8 @@ describe("the ledger's bounds", () => {
         .toBe("the owner's enabled agents are at their limit");  // re-enabling counts
       ledger.disable(dot, "paused");
       expect(refusal(() => ledger.register(origin(3), MCP, PULL)))
-        .toBe("the owner's agent registry is full");
+        .toBe("the owner's agent registry is full (0 of its rows are deleted agents " +
+              "waiting on a pending callback revoke)");
       ledger.remove(muse);
       ledger.register(origin(3), MCP, PULL);
     });
@@ -314,7 +318,7 @@ describe("the ledger's bounds", () => {
 
   it("answers a retried ack after its mail was evicted, and dedupes only what it holds",
      async () => {
-    const r = rig();
+    const r = await rig();
     await r.inLedger({ ...tight(1, 1, 1), maxSenderUnacked: 1 }, (ledger: Ledger) => {
       const room = `dm:${ledger.register(MUSE, MCP, PULL).agent_id}`;
       const sent = ledger.post(null, room, "c1", "hello", null);
@@ -330,7 +334,7 @@ describe("the ledger's bounds", () => {
   });
 
   it("keeps the newest receipts only", async () => {
-    const r = rig();
+    const r = await rig();
     await r.inLedger({ maxReceipts: 3 }, (ledger: Ledger) => {
       const room = `dm:${ledger.register(MUSE, MCP, PULL).agent_id}`;
       for (const n of [1, 2, 3, 4]) {
@@ -345,7 +349,7 @@ describe("the ledger's bounds", () => {
   });
 
   it("keeps settled wakes for their retention and at most the ceiling", async () => {
-    const r = rig();
+    const r = await rig();
     const now = clock();
     await r.inLedger({ maxSettledWakes: 2 }, (ledger: Ledger) => {
       const muse = ledger.register(MUSE, MCP, RINGS).agent_id;
@@ -376,7 +380,7 @@ describe("the ledger's bounds", () => {
   });
 
   it("keeps every counter equal to its rows through a busy exchange", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     const dot = await r.register(DOT, "Dot");
     for (const n of [1, 2, 3, 4, 5]) {
@@ -401,7 +405,7 @@ describe("the ledger's bounds", () => {
   });
 
   it("always finds room by eviction through a long random exchange", async () => {
-    const r = rig();
+    const r = await rig();
     const limits = { ...tight(3, 2, 4), maxSenderUnacked: 2, maxAgentRows: 4,
                      maxBodyBytes: 3 * 40 + 60, maxAgentUnackedBytes: 40,
                      maxOwnerUnackedBytes: 60, maxSenderUnackedBytes: 40 };
@@ -447,7 +451,7 @@ describe("the ledger's bounds", () => {
             ledger.remove(idOf(who));
           }
         } catch (error) {
-          const message = (error as Error).message;
+          const message = (error as Error).message.replace(/ [(].*[)]$/, "");  // its count
           if (!allowed.has(message)) {
             throw error;  // the invariant's own loud error among them
           }

@@ -4,18 +4,19 @@
  * Ported from `tests/test_message_ledger.py` and the ledger parts of
  * `tests/test_mailbox_door.py` (origin/main 8b415f569), test for test. Where the Python
  * went through the router's owner channel with an `origin`, this goes through the
- * object's RPC door with a {@link LedgerBinding}. The Python's account erasure, policy
+ * object's RPC door with a {@link Binding}. The Python's account erasure, policy
  * bootstrap and racing-open tests have no counterpart: the object is the account.
  */
 import { describe, expect, it } from "vitest";
 
 import { apiKeyOrigin, displayName, OWNER } from "../src/ledger";
-import { DOT, MCP, MUSE, rig } from "./ledger-support";
+import { policyDigest } from "../src/policy";
+import { DOT, MCP, MUSE, origin, rig } from "./ledger-support";
 import { failure } from "./support";
 
 describe("the sender is the verified identity", () => {
   it("attributes, chains, receipts the reply and moves recipient states", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE);
     const first = await r.post(null, `dm:${muse}`, { body: '{"sender": "owner"}' });
     expect(first).toEqual({ message_id: first.message_id, recipients: [muse], held: false,
@@ -57,7 +58,7 @@ describe("the sender is the verified identity", () => {
   });
 
   it("returns the original on a resend and refuses another hash as a conflict", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE);
     const sent = await r.post(null, `dm:${muse}`, { body: "one" });
     expect(await r.post(null, `dm:${muse}`, { body: "one" })).toEqual(sent);
@@ -75,7 +76,7 @@ describe("the sender is the verified identity", () => {
   });
 
   it("keeps dm room and parent rules", async () => {
-    const r = rig();
+    const r = await rig();
     const [muse, dot] = [await r.register(MUSE), await r.register(DOT, "Dot")];
     const own = await r.post(MUSE, `dm:${muse}`, { cmid: "m1" });
     const toDot = await r.post(null, `dm:${dot}`, { cmid: "d1" });
@@ -98,7 +99,7 @@ describe("the sender is the verified identity", () => {
   });
 
   it("refuses a disabled agent's room, post and read, and re-enables it as itself", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE);
     await r.post(null, `dm:${muse}`);
     const disabled = await r.stub.disableAgent(r.session(null),
@@ -114,7 +115,7 @@ describe("the sender is the verified identity", () => {
   });
 
   it("validates fields and keeps a body verbatim", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE);
     for (const [fields, reason] of [
       [{ body: "" }, "a message body is 1 to 16384 characters"],
@@ -134,7 +135,7 @@ describe("the sender is the verified identity", () => {
 
 describe("a reader sees only its own mail", () => {
   it("withholds and flags a tampered or missing body", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE);
     await r.post(null, `dm:${muse}`, { body: "pay the invoice" });
     await r.post(null, `dm:${muse}`, { body: "second", cmid: "c2" });
@@ -146,7 +147,7 @@ describe("a reader sees only its own mail", () => {
 
   it("isolates readers, keeps a cursor per reader and finds nothing new after an ack",
      async () => {
-    const r = rig();
+    const r = await rig();
     const [muse, dot] = [await r.register(MUSE), await r.register(DOT, "Dot")];
     await r.post(null, `dm:${muse}`, { body: "for muse" });
     await r.post(null, `dm:${dot}`, { body: "for dot", cmid: "c2" });
@@ -171,7 +172,7 @@ describe("a reader sees only its own mail", () => {
 
   it("holds a message back whole, without a read receipt, until a read returns it",
      async () => {
-    const r = rig();
+    const r = await rig();
     await r.register(MUSE);
     const room = `dm:${(await r.stub.outsideAgents(r.bind(null))).agents[0]!.agent_id}`;
     const sent: string[] = [];
@@ -213,7 +214,7 @@ describe("a reader sees only its own mail", () => {
   });
 
   it("bounds an ack by the reader's own mail and reveals no count", async () => {
-    const r = rig();
+    const r = await rig();
     const [muse, dot] = [await r.register(MUSE), await r.register(DOT, "Dot")];
     await r.post(null, `dm:${muse}`, { cmid: "m1" });
     for (const n of [0, 1, 2]) {  // later mail to another reader raises the ledger's seq
@@ -234,7 +235,7 @@ describe("a reader sees only its own mail", () => {
     // test_a_read_pages_whole_bodies_under_the_ceiling_and_loses_none: the door's
     // read_graph ceilings, less its headroom, as the ledger's max_bytes.
     for (const [budget, pages] of [[24576 - 1024, 5], [40000 - 1024, 3], [4096 - 1024, 5]]) {
-      const r = rig();
+      const r = await rig();
       const room = `dm:${await r.register(MUSE)}`;
       const sent: string[] = [];
       for (const n of [0, 1, 2, 3, 4]) {
@@ -266,7 +267,7 @@ describe("a reader sees only its own mail", () => {
 
 describe("outside agents register from a verified identity", () => {
   it("is one enabled agent per outside identity", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE);
     const twice = await failure(() => r.register(MUSE, "Muse", "pull",
                                                  { command_center_id: "beta" }));
@@ -283,18 +284,19 @@ describe("outside agents register from a verified identity", () => {
     expect(moved.command_center_id).toBe("beta");
   });
 
-  it("needs the owner's interactive session and a verified source", async () => {
-    const r = rig();
+  it("needs the owner's live session and a verified source", async () => {
+    const r = await rig();
     const request = { command_center_id: "alpha", display_name: "Muse",
                       delivery_method: "pull", recipe_id: null };
     for (const [binding, name, reason] of [
       [r.bind(MUSE, { source: MCP }), "Refused", "interactive owner session required"],
-      [r.bind(MUSE, { source: MCP, interactive: false }), "Refused",
+      [r.bind(MUSE, { source: MCP, session: "x".repeat(43) }), "Refused",
         "interactive owner session required"],
-      [r.bind(null, { source: MCP, interactive: true }), "Refused",
+      [r.bind(null, { source: MCP, session: r.cookie }), "Refused",
         "an agent registers only from its verified outside identity"],
-      [r.bind(MUSE, { interactive: true }), "Invalid", "source is api_key or mcp"],
-      [r.bind(MUSE, { interactive: true, source: { kind: "oauth", ref: "x" } as never }),
+      [{ ...r.bind(MUSE, { session: r.cookie }), source: undefined } as never, "Invalid",
+        "source is api_key or mcp"],
+      [r.bind(MUSE, { session: r.cookie, source: { kind: "oauth", ref: "x" } as never }),
         "Invalid", "source is api_key or mcp"],
     ] as const) {
       const refused = await failure(() => r.stub.registerAgent(binding, request));
@@ -310,12 +312,13 @@ describe("outside agents register from a verified identity", () => {
   });
 
   it("takes an API-key agent's identity from its key, and only for pull", async () => {
-    const r = rig();
+    const r = await rig();
     const key = "0123456789abcdef";
     const origin = apiKeyOrigin(key);
     const source = { kind: "api_key", ref: key } as const;
     const request = { command_center_id: "alpha", display_name: "Night Agent",
                       delivery_method: "pull", recipe_id: null };
+    await r.keyed(key);
     for (const [binding, fields, reason] of [
       [r.session(MUSE, source), {}, "the origin is not this API key's"],
       [r.session(apiKeyOrigin("fedcba9876543210"), source), {}, "the origin is not this API key's"],
@@ -334,7 +337,7 @@ describe("outside agents register from a verified identity", () => {
   });
 
   it("admits pull and mcp_event delivery only, with W3's defaults and bounds", async () => {
-    const r = rig();
+    const r = await rig();
     for (const method of ["routine_fire", "webhook", "a2a"]) {
       const refused = await failure(() => r.register(MUSE, "Muse", method));
       expect([refused.name, refused.message])
@@ -344,8 +347,9 @@ describe("outside agents register from a verified identity", () => {
       .toBe("unknown delivery method");
     const agent = await r.registered(MUSE, "Muse", "mcp_event");
     expect([agent.max_wakes_per_hour, agent.batch_window_s, agent.revision]).toEqual([12, 60, 1]);
-    const limits = (extra: object) => r.stub.setWakeLimits(r.session(null), {
-      agent_id: agent.agent_id, max_wakes_per_hour: 12, batch_window_s: 60, ...extra });
+    const limits = async (extra: object) => (await r.stub.policyWakeLimits(r.session(null), {
+      agent_id: agent.agent_id, max_wakes_per_hour: 12, batch_window_s: 60,
+      expected_generation: (await r.stub.policyRead(r.bind(null))).generation, ...extra })).agent;
     for (const [extra, reason] of [
       [{ max_wakes_per_hour: 0 }, "max_wakes_per_hour is 1 to 60"],
       [{ max_wakes_per_hour: 61 }, "max_wakes_per_hour is 1 to 60"],
@@ -366,30 +370,79 @@ describe("outside agents register from a verified identity", () => {
     expect(carried.message).toBe("invalid ledger request");
   });
 
-  it("lets an outside caller disable its own agent only; the owner disables any",
+  it("lets the owner disable any agent; an outside caller never reaches the door",
      async () => {
-    const r = rig();
+    const r = await rig();
     const [muse, dot] = [await r.register(MUSE), await r.register(DOT, "Dot")];
-    const refused = await failure(() => r.stub.disableAgent(r.session(MUSE),
-                                                            { agent_id: dot, reason: "x" }));
-    expect([refused.name, refused.message])
-      .toEqual(["Refused", "an outside caller disables only its own agent"]);
-    expect((await r.stub.disableAgent(r.session(MUSE), { agent_id: muse, reason: "done" }))
-      .disabled_reason).toBe("done");
+    for (const [binding, reason] of [
+      [r.session(MUSE), "an outside client's call never carries the owner's session"],
+      [r.bind(MUSE), "interactive owner session required"],
+    ] as const) {
+      const refused = await failure(() => r.stub.disableAgent(binding,
+                                                              { agent_id: muse, reason: "x" }));
+      expect([refused.name, refused.message]).toEqual(["Refused", reason]);
+    }
     expect((await r.stub.disableAgent(r.session(null), { agent_id: dot, reason: "owner" }))
       .disabled_reason).toBe("owner");
+    // The ledger's own rule, for an in-process caller acting as an outside agent.
+    expect(await r.inLedger({}, (ledger) => {
+      try {
+        ledger.disable(dot, "x", MUSE);
+        return "disabled";
+      } catch (error) {
+        return (error as Error).message;
+      }
+    })).toBe("an outside caller disables only its own agent");
+    expect((await r.inLedger({}, (ledger) => ledger.disable(muse, "done", MUSE)))
+      .disabled_reason).toBe("done");
+  });
+
+  it("refuses an outside client's call carrying the owner's session at every door but "
+     + "an agent's registration", async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE);
+    const outside = r.session(DOT);
+    for (const call of [
+      () => r.stub.outsideAgents(outside),
+      () => r.stub.roomPost(outside, { room_id: `dm:${muse}`, client_message_id: "c",
+                                       body: "x", parent_id: null }),
+      () => r.stub.mailboxRead(outside, { limit: 1 }),
+      () => r.stub.mailboxAck(outside, { through: 0 }),
+      () => r.stub.mailboxSubscriber(outside, { command_center_id: "alpha", agent_id: muse }),
+      () => r.stub.disableAgent(outside, { agent_id: muse, reason: "x" }),
+      () => r.stub.deleteAgent(outside, { agent_id: muse }),
+      () => r.stub.policyRead(outside),
+      () => r.stub.policyPropose(outside, { change: {} }),
+      () => r.stub.policyWrite(outside, { expected_generation: 1, policy: {} as never }),
+      () => r.stub.grantList(outside),
+      () => r.stub.sessionExtend(outside),
+      () => r.stub.collectionPull(outside, { collection: "board", after: 0, limit: 1 }),
+    ]) {
+      const refused = await failure(call);
+      expect([refused.name, refused.message])
+        .toEqual(["Refused", "an outside client's call never carries the owner's session"]);
+    }
+    // Refused before any grant is recorded, and before any receipt.
+    expect((await r.stub.grantList(r.bind(null))).clients.map((c) => c.client))
+      .toEqual([MUSE.client]);
+    expect(await r.table("policy_receipts")).toEqual([]);
+    expect((await r.stub.registerAgent(outside, { command_center_id: "alpha",
+                                                  display_name: "Dot", delivery_method: "pull",
+                                                  recipe_id: null })).outside_client)
+      .toBe(DOT.client);
   });
 
   it("lets only the owner, in its session, set wake limits or delete an agent", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE);
-    const policy = { agent_id: muse, max_wakes_per_hour: 60, batch_window_s: 0 };
+    const policy = { agent_id: muse, max_wakes_per_hour: 60, batch_window_s: 0,
+                     expected_generation: 1 };
     for (const [binding, reason] of [
-      [r.session(MUSE), "only the owner may change its agents' policy"],
+      [r.session(MUSE), "an outside client's call never carries the owner's session"],
       [r.bind(null), "interactive owner session required"],
-      [r.bind(MUSE), "interactive owner session required"],
+      [r.bind(MUSE), "only the owner may change its agents' policy"],
     ] as const) {
-      for (const call of [() => r.stub.setWakeLimits(binding, policy),
+      for (const call of [() => r.stub.policyWakeLimits(binding, policy),
                           () => r.stub.deleteAgent(binding, { agent_id: muse })]) {
         expect((await failure(call)).message).toBe(reason);
       }
@@ -412,11 +465,11 @@ describe("outside agents register from a verified identity", () => {
 
 describe("the ledger's binding", () => {
   it("answers only the object's owner's own accounts, with a well-formed origin", async () => {
-    const r = rig();
+    const r = await rig();
     const visitor = await failure(() => r.stub.outsideAgents({ owner: r.owner, caller: "bob",
                                                                origin: null }));
     expect([visitor.name, visitor.message])
-      .toEqual(["Refused", "the ledger answers its owner's own accounts only"]);
+      .toEqual(["Refused", "the account answers its owner's own callers only"]);
     for (const origin of [{ client: "a", family: "b" }, { client: "a".repeat(64) },
                           { ...MUSE, extra: "x" }, "owner"]) {
       const refused = await failure(() => r.stub.outsideAgents(r.bind(origin as never)));
@@ -428,7 +481,7 @@ describe("the ledger's binding", () => {
   });
 
   it("lists every agent to the owner, and an outside caller only its own", async () => {
-    const r = rig();
+    const r = await rig();
     const muse = await r.register(MUSE);
     await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "moved" });
     const moved = await r.register(MUSE, "Muse", "pull", { command_center_id: "beta" });
@@ -442,7 +495,7 @@ describe("the ledger's binding", () => {
   });
 
   it("migrates the ledger tables with zeroed counters", async () => {
-    const r = rig();
+    const r = await rig();
     await r.stub.outsideAgents(r.bind(null));
     const tables = (await r.sql("SELECT name FROM sqlite_master WHERE type = 'table'"))
       .map((t) => t["name"]);
@@ -452,6 +505,120 @@ describe("the ledger's binding", () => {
       expect(tables).toContain(table);
     }
     expect(await r.table("ledger_usage")).toEqual([
-      { only: 1, agents: 0, enabled_agents: 0, messages: 0, body_bytes: 0, settled_wakes: 0 }]);
+      { only: 1, agents: 0, enabled_agents: 0, messages: 0, body_bytes: 0, settled_wakes: 0,
+        tombstones: 0 }]);
+  });
+});
+
+describe("a refused widening's receipt", () => {
+  it("is left for each refused register, disable or delete, and never holds the cookie",
+     async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE);
+    const request = { command_center_id: "alpha", display_name: "Dot",
+                      delivery_method: "pull", recipe_id: null };
+    for (const call of [
+      () => r.stub.registerAgent(r.bind(DOT), request),  // no session
+      () => r.stub.registerAgent(r.session(DOT), { ...request, delivery_method: "a2a" }),
+      () => r.stub.disableAgent(r.bind(DOT), { agent_id: muse, reason: "x" }),
+      () => r.stub.deleteAgent(r.bind(MUSE), { agent_id: muse }),
+      () => r.stub.deleteAgent(r.session(null), { agent_id: "agent_x" }),
+      () => r.stub.deleteAgent(r.session(null), { agent_id: muse, extra: 1 } as never),
+    ]) {
+      await failure(call);
+    }
+    // A call that never reached the account (another caller, a malformed origin) is no
+    // owner's widening, and leaves nothing.
+    await failure(() => r.stub.registerAgent({ owner: r.owner, caller: "bob", origin: DOT,
+                                               source: MCP, session: r.cookie }, request));
+    await failure(() => r.stub.disableAgent(r.bind({ client: "a" } as never,
+                                                   { session: r.cookie }),
+                                            { agent_id: muse, reason: "x" }));
+    await failure(() => r.stub.disableAgent(r.session(DOT), { agent_id: muse, reason: "x" }));
+    const refusals = (await r.table("policy_receipts"))
+      .filter((row) => row["kind"] === "refusal");
+    expect(refusals).toHaveLength(6);
+    expect(refusals.map((row) => [row["rule"], row["decision"], row["outcome"],
+                                  row["session_id"]]))
+      .toEqual(Array(6).fill(["interactive_owner_session", "deny", "refused", null]));
+    expect(refusals[0]!["request_digest"]).toBe(policyDigest({
+      action: "OUTSIDE_AGENTS.register", request: { request, origin: DOT } }));
+    expect(refusals[3]!["request_digest"]).toBe(policyDigest({
+      action: "OUTSIDE_AGENTS.delete", request: { request: { agent_id: muse },
+                                                  origin: MUSE } }));
+    expect(JSON.stringify(refusals)).not.toContain(r.cookie);
+    expect((await r.stub.outsideAgents(r.bind(null))).agents.map((a) => a.agent_id))
+      .toEqual([muse]);
+  });
+
+  it("is kept even when the refused change wrote first and rolled back", async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    const stale = await failure(() => r.stub.policyWakeLimits(r.session(null), {
+      agent_id: muse, max_wakes_per_hour: 1, batch_window_s: 0, expected_generation: 7 }));
+    expect(stale.message).toBe("policy generation changed");
+    const [agent] = (await r.stub.outsideAgents(r.bind(null))).agents;
+    expect([agent!.max_wakes_per_hour, agent!.revision]).toEqual([12, 1]);
+    expect((await r.table("policy_receipts")).map((row) => row["kind"])).toEqual(["refusal"]);
+  });
+});
+
+describe("the policy store's counters", () => {
+  it("equal a recount of their rows after any sequence", async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE);  // a row its agent holds
+    const fresh = await r.stub.sessionOpen(r.bind(null, {
+      authenticated_at: Math.floor(Date.now() / 1000) }));
+    await r.stub.sessionClose(r.bind(null, { session: r.cookie }));
+    await r.stub.outsideAgents(r.bind(DOT));
+    await r.stub.outsideAgents(r.bind(origin(7)));  // a free row
+    await r.stub.grantRevoke(r.bind(null), { client: DOT.client });  // a row the owner set
+    const change = { type: "policy_proposal", expected_generation: 1, policy: {} };
+    await r.stub.policyPropose(r.bind(MUSE), { change, request_id: "a" });
+    await r.stub.policyPropose(r.bind(MUSE), { change: { ...change, n: 3 }, request_id: "c" });
+    await r.stub.policyPropose(r.bind(null), { change: { ...change, n: 2 }, request_id: "b" });
+    await r.stub.policyPropose(r.bind(null), { change });
+    await failure(() => r.stub.policyWrite(r.bind(null), { expected_generation: 1,
+                                                          policy: {} as never }));
+    await r.sql("UPDATE policy_proposals SET applied_at = 5 WHERE request_id = 'a'");
+    const recount = async () => {
+      const [usage] = await r.sql(
+        "SELECT sessions, owner_clients, free_clients, pending_proposals, applied_proposals, " +
+          "owner_receipts, agent_receipts, refusal_receipts, (SELECT json_group_object(" +
+          "proposer, pending) FROM (SELECT * FROM proposal_shares ORDER BY proposer)) AS shares, " +
+          "(SELECT json_group_object(client, agents) FROM (SELECT * FROM outside_clients " +
+          "ORDER BY client)) AS held FROM policy_usage");
+      const [actual] = await r.sql(
+        "SELECT (SELECT COUNT(*) FROM owner_sessions) AS sessions, " +
+          "(SELECT COUNT(*) FROM outside_clients WHERE owner_set = 1) AS owner_clients, " +
+          "(SELECT COUNT(*) FROM outside_clients WHERE owner_set = 0 AND agents = 0) " +
+          "AS free_clients, " +
+          "(SELECT COUNT(*) FROM policy_proposals WHERE applied_at IS NULL) " +
+          "AS pending_proposals, " +
+          "(SELECT COUNT(*) FROM policy_proposals WHERE applied_at IS NOT NULL) " +
+          "AS applied_proposals, " +
+          "(SELECT COUNT(*) FROM policy_receipts WHERE bucket = 'owner') AS owner_receipts, " +
+          "(SELECT COUNT(*) FROM policy_receipts WHERE bucket = 'agent') AS agent_receipts, " +
+          "(SELECT COUNT(*) FROM policy_receipts WHERE bucket = 'refusal') AS refusal_receipts, " +
+          "(SELECT json_group_object(proposer, n) FROM (SELECT proposer, COUNT(*) AS n " +
+          "FROM policy_proposals WHERE applied_at IS NULL GROUP BY proposer " +
+          "ORDER BY proposer)) AS shares, " +
+          "(SELECT json_group_object(c.client, (SELECT COUNT(*) FROM outside_agents a " +
+          "WHERE a.outside_client = c.client)) FROM (SELECT * FROM outside_clients " +
+          "ORDER BY client) c) AS held");
+      return [usage, actual];
+    };
+    const [usage, actual] = await recount();
+    expect(usage).toEqual(actual);
+    expect(usage).toMatchObject({ sessions: 1, owner_clients: 1, free_clients: 1,
+                                  pending_proposals: 2, applied_proposals: 1,
+                                  owner_receipts: 1, agent_receipts: 4, refusal_receipts: 1 });
+    expect(JSON.parse(usage!["shares"] as string)).toEqual({ owner: 1, [MUSE.client]: 1 });
+    await r.stub.deleteAgent(r.bind(null, { session: fresh.session }), { agent_id: muse });
+    await r.sql("DELETE FROM policy_proposals");
+    const [after, recounted] = await recount();
+    expect(after).toEqual(recounted);
+    expect(after).toMatchObject({ free_clients: 2, pending_proposals: 0, applied_proposals: 0,
+                                  shares: "{}" });
   });
 });

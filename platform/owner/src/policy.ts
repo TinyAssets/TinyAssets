@@ -1,0 +1,559 @@
+/**
+ * Owner policy (N10), in the owner's own object (ADR-032): one document of action rules,
+ * egress and spend, its generation, the owner's receipts, and the agents' held proposals.
+ *
+ * Ported from `PolicyStore` in `tinyassets/broker/policy.py` (origin/main 1fd430857):
+ * `read`, `write` (with a held proposal's one apply), `receipts`, `receipt_proposal`,
+ * `proposal`, `receipt_refusal` and `_validate`, whose rules it keeps. Only the owner,
+ * in its own protected session (`sessions.ts`), writes policy; the object checks that
+ * session itself before any write here runs.
+ *
+ * - The document is `{entries, egress, spend}`, validated whole on every write and every
+ *   read; its digest is `sha256:` over its canonical JSON and is rechecked on read, so a
+ *   row changed around this module fails loudly. Every owner policy change, a per-agent
+ *   wake-limit change included (`changed`), bumps the generation, which a write must
+ *   name (`expected_generation`), so a change made against a stale view is refused.
+ * - A fresh object starts from the default document at generation 1, put there by its
+ *   migration: the Python's bootstrap, legacy upgrade and per-owner failure isolation
+ *   have no counterpart, since the object is the account.
+ * - An agent's proposal is receipted, and with a card id held for the owner, who
+ *   applies it at most once through a write that names it. A held card never changes;
+ *   pending ones are never evicted, and a full pending set refuses more.
+ * - A refused owner-session call leaves a `refusal` receipt with the digest of what was
+ *   asked, never the session proof, written after the refused change rolled back.
+ *
+ * Owed by later slices, each written into its task: the Python closed the owner's
+ * public egress tunnels before a write committed and cancelled its live streams after;
+ * here the gateway (4) reads the policy generation on every call, and a policy write
+ * ends the owner's in-flight turns and streams once the agent (5) has any.
+ *
+ * Declared differences from the Python:
+ * - An egress destination whose host the WHATWG URL parser reads as an IP address
+ *   (`8.8.8.8`, `0x7f000001`, `0x7f.1`, `[::1]`) is refused until the gateway's address
+ *   check lands (tasks 4); the Python accepted a public one. A host no URL can carry
+ *   (a name ending in a number, a malformed `xn--` label) is invalid. Every other DNS
+ *   name the Python accepted is accepted here, and what a name resolves to is the
+ *   gateway's to check at each call.
+ * - The document is bounded (`maxDocument`), and receipts are kept per bucket
+ *   (`receiptsPerBucket`): owner changes, agent proposals and refusals each apart, so
+ *   neither an agent nor a refused stranger can push the owner's changes out. The
+ *   Python kept every receipt and listed two buckets.
+ * - A held proposal applies only as a `policy_proposal` card, which the Python's apply
+ *   path checked and its write did not.
+ * - One outside client holds at most `pendingPerClient` of the pending proposals, so it
+ *   cannot fill the set the owner's agents propose into; the Python had one set.
+ * - An entry's values are flat (strings, numbers, booleans, null), as every value the
+ *   Python wrote is; it took any JSON there.
+ * - The digest is this object's own (numbers as JavaScript prints them), so the cutover
+ *   recomputes it for each imported document.
+ * - The decision itself (`decide`, spend reservations, once-approvals, standing grants,
+ *   declared operation kinds) is the binding gate's at OPEN and comes with the gateway
+ *   (tasks 3.7): its request digest and connection facts are the gateway's.
+ *
+ * Every change runs in one `transactionSync`, so a refusal leaves nothing behind.
+ */
+import { createHash } from "node:crypto";
+
+import { Invalid, Refused } from "./errors";
+import { codePoints } from "./text";
+
+export const BEHAVIOURS: readonly string[] =
+  Object.freeze(["do", "do_if_preapproved", "ask_first", "hand_off"]);
+export const DEFAULT_RULES: Readonly<Record<string, string>> = Object.freeze({
+  "workspace.files": "do", "workspace.shell": "do", "workspace.workflows": "do",
+  "shell.egress": "do", "app.read": "do", "app.write": "do",
+  "people.message": "ask_first", "commons.publish": "ask_first", "share": "ask_first",
+  "browser.action": "ask_first", "spend": "ask_first", "money.move": "hand_off",
+  "security.change": "hand_off", "access.grant": "hand_off",
+});
+export const OPERATION_KINDS: Readonly<Record<string, string>> = Object.freeze({
+  read: "app.read", write: "app.write", delete: "app.write", message: "people.message",
+  payment: "money.move", security: "security.change", access: "access.grant",
+});
+const TABLES: readonly string[] =
+  Object.freeze(["rules", "approval_grants", "operation_kinds", "review_on", "review_off"]);
+const EGRESS_MODES: readonly string[] = Object.freeze(["open", "allowlist", "ask"]);
+const CAPS: readonly string[] = Object.freeze(["daily", "monthly", "transaction", "ask_above"]);
+/** `normalize_destination`'s DNS label: underscores allowed, hyphens interior. */
+const LABEL = /^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$/;
+/** A host the URL parser turned into an IPv4 address. */
+const IPV4 = /^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/;
+
+/** The default document as stored, and its digest (a test recomputes both). */
+export const DEFAULT_POLICY_JSON =
+  '{"egress":{"destinations":[],"mode":"open"},"entries":[],"spend":{"ask_above":null,' +
+  '"daily":null,"monthly":null,"source_ceilings":{},"transaction":null}}';
+export const DEFAULT_POLICY_DIGEST =
+  "sha256:b8a7d8f3763ebeadaace95e5a634ffa3954f88b9a75061b061e21e65222d151c";
+
+/**
+ * How large policy state may grow. The document's 64 KiB is room for hundreds of rules
+ * (a rule is under 200 bytes); a change is the Python's 16,000 characters. Proposals
+ * keep the Python's 30 days and 200 pending, and the 200 most recently applied; one
+ * outside client holds at most a quarter of the pending ones. Each
+ * receipt bucket keeps its newest 5,000 rows (about a megabyte) and lists its last 50.
+ */
+export interface PolicyLimits {
+  readonly maxDocument: number;
+  readonly maxChange: number;
+  readonly proposalTtlS: number;
+  readonly pendingProposals: number;
+  /** Pending proposals one outside client may hold. */
+  readonly pendingPerClient: number;
+  readonly appliedProposals: number;
+  readonly receiptsPerBucket: number;
+  readonly receiptsListed: number;
+}
+
+export const POLICY_LIMITS: PolicyLimits = Object.freeze({
+  maxDocument: 65_536,
+  maxChange: 16_000,
+  proposalTtlS: 30 * 86_400,
+  pendingProposals: 200,
+  pendingPerClient: 50,
+  appliedProposals: 200,
+  receiptsPerBucket: 5_000,
+  receiptsListed: 50,
+});
+
+/** A rule, review setting, grant or declared operation: its values are flat. */
+export interface PolicyEntry {
+  readonly scope: string;
+  readonly table: string;
+  readonly values: { readonly [key: string]: string | number | boolean | null };
+}
+
+/** The document as `validate` leaves it. */
+export interface PolicyDocument {
+  readonly entries: PolicyEntry[];
+  readonly egress: { readonly mode: string;
+                     readonly destinations: { readonly host: string; readonly port: number }[] };
+  readonly spend: {
+    readonly daily: number | null;
+    readonly monthly: number | null;
+    readonly transaction: number | null;
+    readonly ask_above: number | null;
+    readonly source_ceilings: { readonly [source: string]: number };
+  };
+}
+
+/** A held proposal's change: the JSON object an agent filed. */
+export type Change = { readonly [key: string]: string | number | boolean | null | object };
+
+export interface PolicyState {
+  readonly generation: number;
+  readonly digest: string;
+  readonly document: PolicyDocument;
+}
+
+/** What `read` shows the owner: the Python's `OwnerPolicy.projection()`. */
+export interface Projection {
+  readonly owner: string;
+  readonly generation: number;
+  readonly digest: string;
+  readonly policy: PolicyDocument;
+}
+
+export type ReceiptKind = "write" | "wake_limits" | "outside_grant" | "proposal" | "refusal";
+
+export interface ReceiptFields {
+  readonly session_id?: string | null;
+  readonly old_digest?: string | null;
+  readonly new_digest?: string | null;
+  readonly request_digest?: string | null;
+  readonly generation?: number;
+  readonly rule?: string | null;
+  readonly decision?: string | null;
+  readonly outcome?: string | null;
+}
+
+export type Receipt = {
+  readonly at: number;
+  readonly kind: string;
+  readonly old_digest: string | null;
+  readonly new_digest: string | null;
+  readonly request_digest: string | null;
+  readonly generation: number;
+  readonly rule: string | null;
+  readonly decision: string | null;
+  readonly outcome: string | null;
+};
+
+/** A held card the owner applies: its id and the digest of what the owner was shown. */
+export interface ProposalApply {
+  readonly request_id: string;
+  readonly digest: string;
+}
+
+type Usage = {
+  pending_proposals: number;
+  applied_proposals: number;
+  owner_receipts: number;
+  agent_receipts: number;
+  refusal_receipts: number;
+};
+
+const BUCKETS = Object.freeze(["owner", "agent", "refusal"] as const);
+type Bucket = (typeof BUCKETS)[number];
+
+function bucket(kind: ReceiptKind): Bucket {
+  return kind === "proposal" ? "agent" : kind === "refusal" ? "refusal" : "owner";
+}
+
+/** A JSON object: not an array, not null, not a class instance. */
+export function plain(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function keys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const own = Object.keys(value);
+  return own.length === expected.length && expected.every((key) => Object.hasOwn(value, key));
+}
+
+/**
+ * The Python's `json.dumps(value, sort_keys=True, separators=(",", ":"),
+ * ensure_ascii=False)`, for the JSON values a request carries.
+ */
+export function canonical(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => (item === undefined ? "null" : canonical(item))).join(",")}]`;
+  }
+  if (plain(value)) {
+    return `{${Object.keys(value).filter((key) => value[key] !== undefined).sort()
+      .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/** `_digest`: `sha256:` over the canonical JSON. */
+export function policyDigest(value: unknown): string {
+  return "sha256:" + createHash("sha256").update(canonical(value), "utf8").digest("hex");
+}
+
+/** A non-negative whole number the store can hold exactly: the Python's `type(v) is int`. */
+function whole(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+/**
+ * `normalize_destination(host, port) == entry`, for a hostname: lowercase ASCII DNS
+ * labels with no trailing dot, as the Python's IDNA fast path leaves them. An IP literal
+ * waits for the gateway's address check.
+ */
+function destination(entry: unknown): void {
+  if (!plain(entry) || !keys(entry, ["host", "port"])) {
+    throw new Invalid("invalid egress destination");
+  }
+  const { host, port } = entry;
+  if (typeof host !== "string" || !whole(port) || port < 1 || port > 65_535) {
+    throw new Invalid("invalid egress destination");
+  }
+  if (host.includes(":") || host.startsWith("[")) {
+    throw new Refused("an egress IP literal waits for the gateway's address check");
+  }
+  if (!host || host.length > 253 || !host.split(".").every((label) => LABEL.test(label))) {
+    throw new Invalid("invalid egress destination");
+  }
+  // The host as a URL reads it: any spelling of an IPv4 address (decimal, hex, octal,
+  // short forms) comes back dotted, and a name ending in a number is no host at all.
+  let parsed: string;
+  try {
+    parsed = new URL(`https://${host}/`).hostname;
+  } catch {
+    throw new Invalid("invalid egress destination");
+  }
+  if (IPV4.test(parsed)) {
+    throw new Refused("an egress IP literal waits for the gateway's address check");
+  }
+}
+
+/** `_validate`: the whole document, or a refusal naming its first fault. */
+export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS):
+    PolicyDocument {
+  if (!plain(document) || !keys(document, ["entries", "spend", "egress"])) {
+    throw new Invalid("invalid policy document");
+  }
+  const egress = document["egress"];
+  if (!plain(egress) || !keys(egress, ["mode", "destinations"])
+      || !EGRESS_MODES.includes(egress["mode"] as string)
+      || !Array.isArray(egress["destinations"])) {
+    throw new Invalid("invalid egress policy");
+  }
+  for (const entry of egress["destinations"]) {
+    destination(entry);
+  }
+  const entries = document["entries"];
+  if (!Array.isArray(entries)) {
+    throw new Invalid("invalid policy entries");
+  }
+  for (const entry of entries) {
+    if (!plain(entry) || !keys(entry, ["scope", "table", "values"])
+        || entry["scope"] !== "account" || !TABLES.includes(entry["table"] as string)
+        || !plain(entry["values"]) || Object.values(entry["values"]).some((value) =>
+          value !== null && !["string", "number", "boolean"].includes(typeof value))) {
+      throw new Invalid("invalid scoped policy entry");
+    }
+    const values = entry["values"];
+    const action = values["action_class"];
+    if (entry["table"] === "rules" && (!BEHAVIOURS.includes(values["behaviour"] as string)
+        || typeof action !== "string" || !Object.hasOwn(DEFAULT_RULES, action))) {
+      throw new Invalid("invalid approval rule");
+    }
+    const kind = values["kind"];
+    if (entry["table"] === "operation_kinds"
+        && (typeof kind !== "string" || !Object.hasOwn(OPERATION_KINDS, kind))) {
+      throw new Invalid("invalid declared operation");
+    }
+  }
+  const spend = document["spend"];
+  if (!plain(spend) || !keys(spend, [...CAPS, "source_ceilings"])) {
+    throw new Invalid("invalid spend policy");
+  }
+  if (CAPS.some((cap) => spend[cap] !== null && !whole(spend[cap]))) {
+    throw new Invalid("invalid spend cap");
+  }
+  const ceilings = spend["source_ceilings"];
+  if (!plain(ceilings) || Object.values(ceilings).some((value) => !whole(value))) {
+    throw new Invalid("invalid source ceiling");
+  }
+  if (codePoints(canonical(document)) > limits.maxDocument) {
+    throw new Refused("the policy document is too large");
+  }
+  return document as unknown as PolicyDocument;
+}
+
+/** A card id: 1 to 128 characters, as the Python's. */
+function cardId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && codePoints(value) <= 128;
+}
+
+/** `expected_generation`: the policy generation the owner's change was made against. */
+function expected(value: unknown): number {
+  if (!whole(value) || value < 1) {
+    throw new Invalid("expected policy generation required");
+  }
+  return value;
+}
+
+export class Policy {
+  readonly #storage: DurableObjectStorage;
+  readonly #limits: PolicyLimits;
+
+  constructor(storage: DurableObjectStorage, limits: PolicyLimits = POLICY_LIMITS) {
+    this.#storage = storage;
+    this.#limits = limits;
+  }
+
+  get #sql(): SqlStorage {
+    return this.#storage.sql;
+  }
+
+  #usage(): Usage {
+    return this.#sql.exec<Usage>(
+      "SELECT pending_proposals, applied_proposals, owner_receipts, agent_receipts, " +
+        "refusal_receipts FROM policy_usage",
+    ).one();
+  }
+
+  #generation(): number {
+    return this.#sql.exec<{ generation: number }>("SELECT generation FROM owner_policy").one()
+      .generation;
+  }
+
+  #stored(): { generation: number; digest: string; document: string } {
+    return this.#sql.exec<{ generation: number; digest: string; document: string }>(
+      "SELECT generation, digest, document FROM owner_policy",
+    ).one();
+  }
+
+  /** The policy as stored, its digest and its document rechecked. */
+  read(): PolicyState {
+    const row = this.#stored();
+    const document: unknown = JSON.parse(row.document);
+    if (policyDigest(document) !== row.digest) {
+      throw new Error("policy digest mismatch");
+    }
+    return { generation: row.generation, digest: row.digest,
+             document: validate(document, this.#limits) };
+  }
+
+  projection(owner: string): Projection {
+    const { generation, digest, document } = this.read();
+    return { owner, generation, digest, policy: document };
+  }
+
+  /** One receipt; each bucket keeps its newest `receiptsPerBucket`. */
+  receipt(kind: ReceiptKind, fields: ReceiptFields, now: number): void {
+    const sql = this.#sql;
+    const into = bucket(kind);
+    sql.exec(
+      "INSERT INTO policy_receipts (bucket, kind, at, session_id, old_digest, new_digest, " +
+        "request_digest, generation, rule, decision, outcome) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      into, kind, now, fields.session_id ?? null, fields.old_digest ?? null,
+      fields.new_digest ?? null, fields.request_digest ?? null,
+      fields.generation ?? this.#generation(), fields.rule ?? null,
+      fields.decision ?? null, fields.outcome ?? null,
+    );
+    const over = this.#usage()[`${into}_receipts`] - this.#limits.receiptsPerBucket;
+    if (over > 0) {
+      sql.exec("DELETE FROM policy_receipts WHERE seq IN (SELECT seq FROM policy_receipts " +
+                 "WHERE bucket = ? ORDER BY seq LIMIT ?)", into, over);
+    }
+  }
+
+  /** The last `receiptsListed` of each bucket, newest first; never a session id. */
+  receipts(): Receipt[] {
+    const listed = BUCKETS.flatMap((from) => this.#sql.exec<Receipt & { seq: number }>(
+      "SELECT seq, at, kind, old_digest, new_digest, request_digest, generation, rule, " +
+        "decision, outcome FROM policy_receipts WHERE bucket = ? ORDER BY seq DESC LIMIT ?",
+      from, this.#limits.receiptsListed,
+    ).toArray());
+    return listed.sort((a, b) => b.seq - a.seq).map(({ seq: _seq, ...receipt }) => receipt);
+  }
+
+  /**
+   * The owner's write; with `proposal`, only as that held card's one apply. The held
+   * proposal must be pending, unexpired, a `policy_proposal` of exactly this document
+   * and generation with the digest the owner was shown, and is marked applied in the
+   * same transaction.
+   */
+  write(sessionId: string, expectedGeneration: unknown, document: unknown,
+        proposal: unknown, now: number): PolicyState {
+    validate(document, this.#limits);
+    const generation = expected(expectedGeneration);
+    if (proposal !== null && (!plain(proposal) || !keys(proposal, ["request_id", "digest"])
+                              || !cardId(proposal["request_id"])
+                              || !cardId(proposal["digest"]))) {
+      throw new Invalid("invalid proposal apply");
+    }
+    const sql = this.#sql;
+    return this.#storage.transactionSync(() => {
+      const row = this.#stored();
+      if (row.generation !== generation) {
+        throw new Refused("policy generation changed");
+      }
+      if (proposal !== null) {
+        const held = sql.exec<{ digest: string; document: string }>(
+          "SELECT digest, document FROM policy_proposals WHERE request_id = ? " +
+            "AND applied_at IS NULL AND at > ?",
+          proposal["request_id"] as string, now - this.#limits.proposalTtlS,
+        ).toArray()[0];
+        const change: unknown = held === undefined ? {} : JSON.parse(held.document);
+        if (held === undefined || held.digest !== proposal["digest"] || !plain(change)
+            || change["type"] !== "policy_proposal"
+            || canonical(change["policy"]) !== canonical(document)
+            || change["expected_generation"] !== generation) {
+          throw new Refused("proposal is not the pending card shown");
+        }
+        sql.exec("UPDATE policy_proposals SET applied_at = ? WHERE request_id = ?", now,
+                 proposal["request_id"] as string);
+      }
+      const digest = policyDigest(document);
+      sql.exec("UPDATE owner_policy SET generation = ?, digest = ?, document = ?",
+               generation + 1, digest, canonical(document));
+      this.receipt("write", { session_id: sessionId, old_digest: row.digest, new_digest: digest,
+                              generation: generation + 1, outcome: "committed" }, now);
+      return { generation: generation + 1, digest, document: document as PolicyDocument };
+    });
+  }
+
+  /**
+   * An owner policy change kept outside the document (an agent's wake limits, stored on
+   * its registry row where the ledger reads them): it bumps the generation and is
+   * receipted like a write. Run inside the caller's transaction with the change itself.
+   */
+  changed(sessionId: string, expectedGeneration: unknown, kind: ReceiptKind,
+          request: unknown, rule: string, now: number): number {
+    const generation = expected(expectedGeneration);
+    return this.#storage.transactionSync(() => {
+      const row = this.#stored();
+      if (row.generation !== generation) {
+        throw new Refused("policy generation changed");
+      }
+      this.#sql.exec("UPDATE owner_policy SET generation = ?", generation + 1);
+      this.receipt(kind, { session_id: sessionId, old_digest: row.digest,
+                           new_digest: row.digest, request_digest: policyDigest(request),
+                           generation: generation + 1, rule, decision: "set",
+                           outcome: "committed" }, now);
+      return generation + 1;
+    });
+  }
+
+  /**
+   * An agent's proposal, receipted; with its card's id, held for the owner. Refiling a
+   * held card with another change is refused (the same change again is a no-op);
+   * expired proposals and all but the newest applied ones are pruned first.
+   */
+  propose(change: unknown, requestId: unknown, proposer: string, now: number):
+      { request_digest: string; generation: number } {
+    if (!plain(change) || codePoints(canonical(change)) > this.#limits.maxChange) {
+      throw new Invalid("invalid policy proposal");
+    }
+    if (requestId !== null && !cardId(requestId)) {
+      throw new Invalid("invalid policy proposal");
+    }
+    const generation = this.#generation();
+    const digest = policyDigest(change);
+    const sql = this.#sql;
+    return this.#storage.transactionSync(() => {
+      if (requestId !== null) {
+        sql.exec("DELETE FROM policy_proposals WHERE at < ?", now - this.#limits.proposalTtlS);
+        const over = this.#usage().applied_proposals - this.#limits.appliedProposals;
+        if (over > 0) {
+          sql.exec("DELETE FROM policy_proposals WHERE request_id IN (SELECT request_id " +
+                     "FROM policy_proposals WHERE applied_at IS NOT NULL " +
+                     "ORDER BY applied_at LIMIT ?)", over);
+        }
+        const held = sql.exec<{ digest: string }>(
+          "SELECT digest FROM policy_proposals WHERE request_id = ?", requestId,
+        ).toArray()[0];
+        if (held !== undefined && held.digest !== digest) {
+          throw new Refused("a proposal is already held for this card");
+        }
+        if (held === undefined) {
+          if (this.#usage().pending_proposals >= this.#limits.pendingProposals) {
+            throw new Refused("too many pending policy proposals");
+          }
+          const share = sql.exec<{ pending: number }>(
+            "SELECT pending FROM proposal_shares WHERE proposer = ?", proposer,
+          ).toArray()[0]?.pending ?? 0;
+          if (proposer !== "owner" && share >= this.#limits.pendingPerClient) {
+            throw new Refused("this client's pending policy proposals are at their limit");
+          }
+          sql.exec("INSERT INTO policy_proposals (request_id, digest, document, at, proposer) " +
+                     "VALUES (?, ?, ?, ?, ?)", requestId, digest, canonical(change), now,
+                   proposer);
+        }
+      }
+      this.receipt("proposal", { request_digest: digest, generation, rule: "owner_policy",
+                                 decision: "ask", outcome: "requested" }, now);
+      return { request_digest: digest, generation };
+    });
+  }
+
+  /** The pending, unexpired proposal held under a card id, and its digest, or null. */
+  held(requestId: unknown, now: number): { change: Change; digest: string } | null {
+    if (!cardId(requestId)) {
+      return null;
+    }
+    const row = this.#sql.exec<{ digest: string; document: string }>(
+      "SELECT digest, document FROM policy_proposals WHERE request_id = ? " +
+        "AND applied_at IS NULL AND at > ?", requestId, now - this.#limits.proposalTtlS,
+    ).toArray()[0];
+    return row === undefined ? null
+      : { change: JSON.parse(row.document) as Change, digest: row.digest };
+  }
+
+  /** `receipt_refusal`: a denied owner-session call, by the digest of what was asked. */
+  refusal(action: string, request: unknown, now: number): void {
+    this.#storage.transactionSync(() => this.receipt("refusal", {
+      request_digest: policyDigest({ action, request }), rule: "interactive_owner_session",
+      decision: "deny", outcome: "refused",
+    }, now));
+  }
+}

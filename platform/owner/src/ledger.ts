@@ -38,13 +38,15 @@
  *   whose revoke has not run stays as a tombstone in the registry (so the registry bound
  *   bounds pending revokes) until its revoke settles.
  *
- * Every change runs in one `transactionSync`, so a refusal leaves nothing behind. The
- * object is its owner, so the Python's `owner` columns are gone.
+ * - A wake is sent only while its agent's outside client still holds a grant
+ *   (`GrantReader.live`), and a changed or revoked grant ends the client's agents' open
+ *   wakes and revokes their callbacks (`suppressClient`, P0-3's M3).
  *
- * Two Python behaviours wait for the policy and sessions port (tasks 3.5): the binder's
- * `interactive` flag stands in for the Python's check of the live session row, and a
- * refused register or disable leaves no refusal receipt yet (the Python wrote it to the
- * policy store's receipts, which that port brings).
+ * Every change runs in one `transactionSync`, so a refusal leaves nothing behind. The
+ * object is its owner, so the Python's `owner` columns are gone. The owner's session
+ * check and the refusal receipt of a refused register, disable or delete are the
+ * object's (`owner-do.ts`, `sessions.ts`, `policy.ts`), as the Python's router op ran
+ * them around the ledger.
  */
 import { digest } from "./collections";
 import { Invalid, Refused } from "./errors";
@@ -81,7 +83,7 @@ const LONE_SURROGATE = /\p{Cs}/u;
 
 /**
  * Per-agent wake limits (W3): owner policy, stored per agent with the codespec's
- * defaults and changed only by the owner (`setWakeLimits`). The plan of record ("Doors,
+ * defaults and changed only by the owner (`policyWakeLimits`). The plan of record ("Doors,
  * wakes and outside agents") has owner policy set per-agent caps and batching, 12 an
  * hour by default: Claude's scheduled-task fire allows 30 an hour per task, and a woken
  * assistant pulls its whole mailbox anyway, so a minute's batch costs nothing and folds
@@ -326,6 +328,7 @@ type Usage = {
   messages: number;
   body_bytes: number;
   settled_wakes: number;
+  tombstones: number;
 };
 
 type StoredMessage = {
@@ -435,7 +438,7 @@ export function outsideOrigin(value: unknown): Origin | null {
  * alone holds the key store, checked the key is the owner's live key, and the object
  * re-derives the origin from the key id so the two can never disagree.
  */
-function registrant(source: unknown, origin: Origin | null): Source {
+export function registrant(source: unknown, origin: Origin | null): Source {
   if (typeof source !== "object" || source === null || Array.isArray(source)
       || Object.keys(source).sort().join() !== "kind,ref") {
     throw new Invalid("source is api_key or mcp");
@@ -484,12 +487,20 @@ export function retryAfter(value: number | null | undefined): number {
   return Math.min(Math.max(seconds, RETRY_AFTER.low), RETRY_AFTER.high);
 }
 
+/** Whether an outside client's grant still stands: the object's grants (`grants.ts`). */
+export interface GrantReader {
+  live(client: string): boolean;
+}
+
 export class Ledger {
   readonly #storage: DurableObjectStorage;
+  readonly #grants: GrantReader;
   readonly #limits: LedgerLimits;
 
-  constructor(storage: DurableObjectStorage, limits: LedgerLimits = LEDGER_LIMITS) {
+  constructor(storage: DurableObjectStorage, grants: GrantReader,
+              limits: LedgerLimits = LEDGER_LIMITS) {
     this.#storage = storage;
+    this.#grants = grants;
     this.#limits = checkLimits(limits);
   }
 
@@ -500,7 +511,8 @@ export class Ledger {
   /** The owner-wide counters; only migration 2's triggers write them. */
   #usage(): Usage {
     return this.#sql.exec<Usage>(
-      "SELECT agents, enabled_agents, messages, body_bytes, settled_wakes FROM ledger_usage",
+      "SELECT agents, enabled_agents, messages, body_bytes, settled_wakes, tombstones " +
+        "FROM ledger_usage",
     ).one();
   }
 
@@ -566,12 +578,14 @@ export class Ledger {
           && usage.enabled_agents >= limits.maxAgents) {
         throw new Refused("the owner's enabled agents are at their limit");
       }
-      // A registration never sets wake limits: they are owner policy (`setWakeLimits`).
+      // A registration never sets wake limits: they are owner policy (`policyWakeLimits`).
       const fields = [verified.kind, verified.ref, name, method, recipe];
       let agentId: string;
       if (row === undefined) {
         if (usage.agents >= limits.maxAgentRows) {
-          throw new Refused("the owner's agent registry is full");
+          // A deleted agent's tombstone holds its row until its callback revoke settles.
+          throw new Refused(`the owner's agent registry is full (${usage.tombstones} of its ` +
+                            "rows are deleted agents waiting on a pending callback revoke)");
         }
         agentId = "agent_" + token(8);
         sql.exec(
@@ -1016,6 +1030,24 @@ export class Ledger {
     return rows[0]!.subscription;
   }
 
+  /**
+   * A changed or revoked grant (P0-3's M3): every agent of that outside client has its
+   * open wakes suppressed and its callbacks revoked, so it subscribes again under the
+   * new grant. Its ids; an index range of the client's agents.
+   */
+  suppressClient(client: string, now: number): string[] {
+    return this.#storage.transactionSync(() => {
+      const agents = this.#sql.exec<Agent>(
+        "SELECT * FROM outside_agents WHERE outside_client = ? AND deleted_at IS NULL", client,
+      ).toArray();
+      for (const agent of agents) {
+        this.#suppress(agent.agent_id, "grant", now);
+        this.#revokeSubscribed(agent, now);
+      }
+      return agents.map((agent) => agent.agent_id);
+    });
+  }
+
   // -- the schedule: wakes and revokes (S3b, W3) ------------------------------
 
   #suppress(agentId: string, reason: string, now: number): void {
@@ -1123,8 +1155,9 @@ export class Ledger {
                                               generation: wake.generation! } };
       }
       const agent = this.#agent(wake.agent_id);
-      if (agent === undefined || !rings(agent)) {
-        this.#suppress(wake.agent_id, "agent", now);
+      const live = agent !== undefined && rings(agent);
+      if (!live || !this.#grants.live(agent.outside_client)) {
+        this.#suppress(wake.agent_id, live ? "grant" : "agent", now);
         if (agent !== undefined) {
           this.#revokeSubscribed(agent, now);
         }

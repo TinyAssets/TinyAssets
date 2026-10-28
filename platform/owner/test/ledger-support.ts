@@ -1,11 +1,13 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
+import { Grants } from "../src/grants";
 import {
-  clock, Ledger, LEDGER_LIMITS, type LedgerLimits, type Origin, type Outcome, type Source,
-  type WakeTarget,
+  apiKeyOrigin, clock, Ledger, LEDGER_LIMITS, type LedgerLimits, type Origin, type Outcome,
+  type Source, type WakeTarget,
 } from "../src/ledger";
-import type { LedgerBinding, OwnerDO } from "../src/owner-do";
+import type { Binding, OwnerDO } from "../src/owner-do";
+import { Policy } from "../src/policy";
 import { runWakes, type WakeSender } from "../src/wakes";
 
 export const MUSE: Origin = Object.freeze({ client: "a".repeat(64), family: "b".repeat(64) });
@@ -60,16 +62,43 @@ export interface Post {
 }
 
 /**
- * One owner's object, by that owner's own name, and the calls a binder would make on it.
- * Each test gets a fresh owner, so no test sees another's ledger.
+ * The ledger on an object's own storage, reading that object's own grants. A test that
+ * registers on it directly first admits the agent's outside client, as the object's door
+ * admits every outside call before any act: an MCP client is recorded `full`.
  */
-export function rig() {
+export function ledgerOn(storage: DurableObjectStorage,
+                         limits: Partial<LedgerLimits> = {}): Ledger {
+  const grants = new Grants(storage, new Policy(storage));
+  return new (class extends Ledger {
+    override register(origin: Origin | null, source: unknown,
+                      request: Parameters<Ledger["register"]>[2], now?: number) {
+      if (origin !== null) {
+        grants.admit(origin.client, (source as Source).kind, null, clock());
+      }
+      return super.register(origin, source, request, now);
+    }
+  })(storage, grants, { ...LEDGER_LIMITS, ...limits });
+}
+
+/** Now, in the whole seconds a binder reports a sign-in at. */
+export function signedIn(): number {
+  return Math.floor(clock());
+}
+
+/**
+ * One owner's object, by that owner's own name, and the calls a binder would make on it.
+ * Each test gets a fresh owner, so no test sees another's ledger. The owner has signed in
+ * once, so `session` carries a live protected-session cookie the object minted.
+ */
+export async function rig() {
   const owner = `owner-${crypto.randomUUID()}`;
   const stub: DurableObjectStub<OwnerDO> = env.OWNER.getByName(owner);
-  const bind = (origin: Origin | null, extra: Partial<LedgerBinding> = {}): LedgerBinding =>
-    ({ owner, caller: owner, origin, ...extra });
-  const session = (origin: Origin | null, source: Source = MCP): LedgerBinding =>
-    bind(origin, { interactive: true, source });
+  /** A binder's binding; an outside origin comes through an MCP client unless named. */
+  const bind = (origin: Origin | null, extra: Partial<Binding> = {}): Binding =>
+    ({ owner, caller: owner, origin, ...(origin === null ? {} : { source: MCP }), ...extra });
+  const { session: cookie } = await stub.sessionOpen(bind(null, { authenticated_at: signedIn() }));
+  const session = (origin: Origin | null, source: Source = MCP): Binding =>
+    bind(origin, { session: cookie, source });
   const sender = new FakeSender();
 
   /**
@@ -87,14 +116,25 @@ export function rig() {
     if (perHour === undefined && batch === undefined) {
       return agent;
     }
-    return stub.setWakeLimits(session(null), {
+    const { generation } = await stub.policyRead(bind(null));
+    return (await stub.policyWakeLimits(session(null), {
       agent_id: agent.agent_id, max_wakes_per_hour: perHour ?? agent.max_wakes_per_hour,
-      batch_window_s: batch ?? agent.batch_window_s,
+      batch_window_s: batch ?? agent.batch_window_s, expected_generation: generation,
+    })).agent;
+  };
+
+  /** An API key's grant, as the directory's mint writes it with the key: full. */
+  const keyed = async (keyId: string) => {
+    const origin = apiKeyOrigin(keyId);
+    await stub.grantSet(session(null), {
+      client: origin.client, source: "api_key", mode: "full", scopes: [],
+      expected_generation: 0, name: "",
     });
+    return { origin, source: { kind: "api_key", ref: keyId } as const };
   };
 
   return {
-    owner, stub, bind, session, sender,
+    owner, stub, bind, session, cookie, sender, keyed,
     registered,
     register: async (...args: Parameters<typeof registered>) =>
       (await registered(...args)).agent_id,
@@ -122,12 +162,11 @@ export function rig() {
         state.storage.sql.exec<Row>(statement, ...params).toArray()),
     /** The ledger on this object's own storage, with some bounds changed. */
     inLedger: <R>(limits: Partial<LedgerLimits>, act: (ledger: Ledger) => R): Promise<R> =>
-      runInDurableObject(stub, (_i: OwnerDO, state) =>
-        act(new Ledger(state.storage, { ...LEDGER_LIMITS, ...limits }))),
+      runInDurableObject(stub, (_i: OwnerDO, state) => act(ledgerOn(state.storage, limits))),
     /** One alarm pass at `now`, with the scripted doorbell. */
     tick: (now: number = clock()): Promise<number> =>
       runInDurableObject(stub, (_i: OwnerDO, state) =>
-        runWakes(new Ledger(state.storage), sender, () => now)),
+        runWakes(ledgerOn(state.storage), sender, () => now)),
     /** The object's alarm time in seconds, or null when it is not set. */
     alarmAt: (): Promise<number | null> => runInDurableObject(stub, async (_i: OwnerDO, state) => {
       const at = await state.storage.getAlarm();
@@ -136,7 +175,7 @@ export function rig() {
   };
 }
 
-export type Rig = ReturnType<typeof rig>;
+export type Rig = Awaited<ReturnType<typeof rig>>;
 
 /** Receipt kinds other than reads, replies and acks, oldest first. */
 export async function wakeReceipts(r: Rig): Promise<string[]> {
@@ -147,7 +186,7 @@ export async function wakeReceipts(r: Rig): Promise<string[]> {
 /** Every counter the ledger's bounds read, and the same numbers counted from the rows. */
 export async function counters(r: Rig): Promise<[Row, Row]> {
   const [usage] = await r.sql(
-    "SELECT agents, enabled_agents, messages, body_bytes, settled_wakes, " +
+    "SELECT agents, enabled_agents, messages, body_bytes, settled_wakes, tombstones, " +
       "(SELECT json_group_object(reader, unacked || '/' || unacked_bytes) FROM " +
       "(SELECT * FROM ledger_readers WHERE unacked > 0 ORDER BY reader)) AS mailboxes, " +
       "(SELECT json_group_object(agent_id, unacked_to_owner || '/' || unacked_to_owner_bytes) " +
@@ -163,6 +202,7 @@ export async function counters(r: Rig): Promise<[Row, Row]> {
       "(SELECT COUNT(*) FROM ledger_messages) AS messages, " +
       "(SELECT COALESCE(SUM(length(CAST(body AS BLOB))), 0) FROM message_bodies) AS body_bytes, " +
       "(SELECT COUNT(*) FROM ledger_wakes WHERE settled_at IS NOT NULL) AS settled_wakes, " +
+      "(SELECT COUNT(*) FROM outside_agents WHERE deleted_at IS NOT NULL) AS tombstones, " +
       "(SELECT json_group_object(agent_id, n || '/' || b) FROM (SELECT r.agent_id, " +
       "COUNT(*) AS n, SUM(m.body_bytes) AS b FROM ledger_recipients r JOIN ledger_messages m " +
       "USING (message_id) WHERE r.unacked = 1 GROUP BY r.agent_id ORDER BY r.agent_id)) " +

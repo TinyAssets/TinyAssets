@@ -20,7 +20,7 @@ export function ownerObject(): Owner {
   return {
     name,
     stub: env.OWNER.getByName(name),
-    as: (caller, owner = name) => ({ owner, caller }),
+    as: (caller, owner = name) => ({ owner, caller, origin: null }),
   };
 }
 
