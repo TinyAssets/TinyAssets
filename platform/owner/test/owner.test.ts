@@ -135,7 +135,7 @@ describe("the object's name", () => {
 
   it("refuses every call on an object with no name", async () => {
     const unnamed = env.OWNER.get(env.OWNER.newUniqueId());
-    const refused = await failure(() => unnamed.collectionPull({ owner: "alice", caller: "alice" },
+    const refused = await failure(() => unnamed.collectionPull({ owner: "alice", caller: "alice", origin: null },
                                                                 PULL));
     expect([refused.name, refused.message])
       .toEqual(["Refused", "this object is not named by an owner"]);
@@ -173,7 +173,7 @@ describe("the object's stored owner", () => {
     for (const binding of [{ owner: "", caller: "bob" }, { owner: " alice", caller: "bob" },
                            { owner: "alice", caller: "bo\nb" },
                            { owner: "a".repeat(513), caller: "bob" }]) {
-      expect((await failure(() => stub.collectionPull(binding, PULL))).message)
+      expect((await failure(() => stub.collectionPull({ ...binding, origin: null }, PULL))).message)
         .toBe("invalid owner principal");
     }
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {

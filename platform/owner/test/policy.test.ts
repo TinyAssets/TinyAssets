@@ -103,7 +103,8 @@ describe("an owner write", () => {
       [r.bind(null, { session: "an-agent-token-" + "x".repeat(32) }),
         "interactive owner session required"],
       [r.bind(null), "interactive owner session required"],
-      [r.session(MUSE), "only the owner may write its policy"],
+      [r.bind(MUSE), "only the owner may write its policy"],
+      [r.session(MUSE), "an outside client's call never carries the owner's session"],
     ] as const) {
       const refused = await failure(() => r.stub.policyWrite(binding, {
         expected_generation: 1, policy: changed as never }));
@@ -171,10 +172,13 @@ describe("an owner write", () => {
         { host: "a..b", port: 443 }, { host: "", port: 443 }, { host: "café.fr", port: 443 },
         { host: "x.com", port: 0 }, { host: "x.com", port: 65_536 }, { host: "x.com", port: 1.5 },
         { host: "x.com", port: "443" }, { host: "x.com" }, { host: "x.com", port: 1, more: 1 },
-        { host: `${"a".repeat(63)}.`.repeat(4) + "com", port: 443 }]
+        { host: `${"a".repeat(63)}.`.repeat(4) + "com", port: 443 },
+        { host: "example.123", port: 443 }]
       .map((entry) => [{ ...defaults(), egress: { mode: "allowlist", destinations: [entry] } },
                        "Invalid", "invalid egress destination"] as const),
-    ...["203.0.113.7", "8.8.8.8", "2001:db8::1", "::1", "12345"]
+    // Every spelling the URL parser reads as an address: hex, octal, short forms.
+    ...["203.0.113.7", "8.8.8.8", "2001:db8::1", "::1", "[::1]", "12345", "0x7f000001",
+        "0x7f.1", "127.1", "1.2.3.04", "0177.0.0.1"]
       .map((host) => [{ ...defaults(), egress: { mode: "allowlist", destinations: [
         { host, port: 443 }] } }, "Refused",
         "an egress IP literal waits for the gateway's address check"] as const),
@@ -319,18 +323,18 @@ describe("an agent's proposal", () => {
     await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
       const policy = new Policy(state.storage, limits);
       const now = clock();
-      policy.propose(change(1), "a", now);
-      policy.propose(change(2), "b", now);
+      policy.propose(change(1), "a", "owner", now);
+      policy.propose(change(2), "b", "owner", now);
       // A pending one is never evicted: a full set refuses.
-      expect(() => policy.propose(change(3), "c", now))
+      expect(() => policy.propose(change(3), "c", "owner", now))
         .toThrow("too many pending policy proposals");
       expect(policy.held("a", now + limits.proposalTtlS - 1)).not.toBeNull();
       expect(policy.held("a", now + limits.proposalTtlS + 1)).toBeNull();  // expired
       // An expired one is pruned at the next filing, which makes room.
       const later = now + limits.proposalTtlS + 1;
-      policy.propose(change(3), "c", later);
-      policy.propose(change(4), "d", later);
-      expect(() => policy.propose(change(5), "e", later))
+      policy.propose(change(3), "c", "owner", later);
+      policy.propose(change(4), "d", "owner", later);
+      expect(() => policy.propose(change(5), "e", "owner", later))
         .toThrow("too many pending policy proposals");
     });
     expect((await r.table("policy_proposals")).map((row) => row["request_id"]).sort())
@@ -345,11 +349,11 @@ describe("an agent's proposal", () => {
       const now = clock();
       for (const [n, id] of ["a", "b", "c"].entries()) {
         const generation = policy.read().generation;
-        policy.propose(change(generation), id, now + n);
+        policy.propose(change(generation), id, "owner", now + n);
         const { digest } = policy.held(id, now + n)!;
         policy.write("session", generation, defaults(), { request_id: id, digest }, now + n);
       }
-      policy.propose(change(9), "d", now + 5);
+      policy.propose(change(9), "d", "owner", now + 5);
     });
     expect((await r.table("policy_proposals")).map((row) => [row["request_id"],
                                                              row["applied_at"] !== null]))

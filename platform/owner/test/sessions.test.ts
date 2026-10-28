@@ -98,20 +98,26 @@ describe("a session's life", () => {
     const opened = await r.stub.sessionOpen(r.bind(null, {
       authenticated_at: signedIn() - SESSION_LIMITS.signInMaxAgeS + 2 }));
     expect(opened.expires_at - clock()).toBeGreaterThan(SESSION_LIMITS.ttlS - 5);
+    expect(opened.expires_at).toBeLessThanOrEqual(clock() + SESSION_LIMITS.ttlS);
     expect((await write(r, opened.session)).generation).toBe(2);
   });
 
   it("slides while its browser renews, and not once it has lapsed", async () => {
     const r = await rig();
-    await r.sql("UPDATE owner_sessions SET expires_at = ?", clock() + 10);
+    const other = await r.stub.sessionOpen(r.bind(null, { authenticated_at: signedIn() }));
+    const soon = clock() + 10;
+    await r.sql("UPDATE owner_sessions SET expires_at = ?", soon);
     const { expires_at: renewed } = await r.stub.sessionExtend(r.bind(null, { session: r.cookie }));
     expect(renewed - clock()).toBeGreaterThan(SESSION_LIMITS.ttlS - 5);
-    const [row] = await r.table("owner_sessions");
-    expect(row!["expires_at"]).toBe(renewed);
+    expect(renewed).toBeLessThanOrEqual(clock() + SESSION_LIMITS.ttlS);
+    // Only the renewing session slides; the owner's other one keeps its own expiry.
+    expect(Object.fromEntries((await r.table("owner_sessions")).map((row) =>
+      [row["session_hash"], row["expires_at"]])))
+      .toEqual({ [hashed(r.cookie)]: renewed, [hashed(other.session)]: soon });
     await r.sql("UPDATE owner_sessions SET expires_at = ?", clock() - 1);
     const lapsed = await failure(() => r.stub.sessionExtend(r.bind(null, { session: r.cookie })));
     expect(lapsed.message).toBe("interactive owner session required");
-    const outside = await failure(() => r.stub.sessionExtend(r.bind(MUSE, { session: r.cookie })));
+    const outside = await failure(() => r.stub.sessionExtend(r.bind(MUSE)));
     expect(outside.message).toBe("only the owner may renew its session");
   });
 

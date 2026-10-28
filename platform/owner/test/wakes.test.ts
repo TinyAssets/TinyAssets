@@ -696,10 +696,15 @@ describe("the registry's quieter rules", () => {
     const muse = await r.register(MUSE);
     for (const from of [{ client: MUSE.client, family: DOT.family },
                         { client: DOT.client, family: MUSE.family }]) {
-      const refused = await failure(() => r.stub.disableAgent(r.session(from),
-                                                              { agent_id: muse, reason: "x" }));
-      expect([refused.name, refused.message])
-        .toEqual(["Refused", "an outside caller disables only its own agent"]);
+      const refused = await r.inLedger({}, (ledger) => {
+        try {
+          ledger.disable(muse, "x", from);
+          return "disabled";
+        } catch (error) {
+          return (error as Error).message;
+        }
+      });
+      expect(refused).toBe("an outside caller disables only its own agent");
     }
     const [agent] = (await r.stub.outsideAgents(r.bind(null))).agents;
     expect(agent!.disabled_reason).toBeNull();

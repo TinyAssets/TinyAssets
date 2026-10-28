@@ -12,9 +12,12 @@
  * What the binder verified, the object takes as typed binding fields: the outside
  * client a call comes through (`origin`, `source`, `authenticated_at`) and the owner's
  * session cookie (`session`). What it decides from them, it decides itself, from its
- * own rows: every outside call is admitted against that client's grant (`grants.ts`),
- * and every widening checks the owner's live session row (`sessions.ts`), a refused one
- * leaving a refusal receipt in the policy receipts (`policy.ts`).
+ * own rows: every outside call, at every door, is admitted against that client's grant
+ * and held to its scopes (`grants.ts`), and every widening checks the owner's live
+ * session row (`sessions.ts`), a refused one leaving a refusal receipt in the policy
+ * receipts (`policy.ts`). An outside client's call never carries the owner's session,
+ * with one pinned exception: the owner's browser registering an agent for that client
+ * (`registerAgent`). Every other door refuses the pair.
  *
  * Its code cannot reach another owner's object: the Worker binds nothing, the runtime
  * hands it no `ctx.exports` (`disable_ctx_exports`), and its source never names
@@ -44,19 +47,17 @@ import { Sessions } from "./sessions";
 import { principal } from "./text";
 import { runWakes, type WakeSender, WAKES_PER_ALARM } from "./wakes";
 
-/** Whose object this is, and who is asking: set by the binder from a verified credential. */
+/**
+ * Whose object this is, who is asking and through what: set by the binder from a
+ * verified credential, the one binding every door takes. `caller` is the owner's own
+ * account, or, at the collection doors alone, another owner visiting (origin null).
+ * `origin` is the verified outside client the owner's account acts through (an outside
+ * agent), or null. The object takes every sender and reader from here, never from a
+ * request field.
+ */
 export interface Binding {
   readonly owner: string;
   readonly caller: string;
-}
-
-/**
- * A call on the owner's own account: the ledger, policy, grants and sessions. The caller
- * is the owner's account; `origin` is the verified outside client it acts through (an
- * outside agent), or null for the owner. The object takes every sender and reader from
- * here, never from a request field.
- */
-export interface AccountBinding extends Binding {
   readonly origin: Origin | null;
   /** How the binder verified `origin`: an MCP client or an API key. Every outside call. */
   readonly source?: Source;
@@ -183,12 +184,25 @@ export interface Conflicted {
   readonly conflict: Row | null;
 }
 
-/** What an account call is bound to: its outside client and that client's grant. */
+/** What a call is bound to: its owner and caller, its outside client and that client's grant. */
 interface Account {
   readonly owner: string;
+  readonly caller: string;
   readonly origin: Origin | null;
   readonly grant: Grant | null;
 }
+
+/**
+ * Who else an account door serves. `visitors`: another owner may call, as itself (the
+ * collection doors). `registering`: an outside origin may come with the owner's session
+ * (the owner's browser registering an agent for that client).
+ */
+interface Serves {
+  readonly visitors?: boolean;
+  readonly registering?: boolean;
+}
+
+export const OUTSIDE_SESSION = "an outside client's call never carries the owner's session";
 
 /**
  * The request's fields are exactly `required`, plus any of `optional`, and none is
@@ -286,30 +300,36 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * verified outside client, which is admitted here against its grant (P0-3) before any
    * door acts. A refusal here leaves no receipt: the call never reached the account.
    */
-  #account(binding: AccountBinding): Account {
+  #account(binding: Binding, serves: Serves = {}): Account {
     const { owner, caller } = this.#bind(binding);
-    if (caller !== owner) {
-      throw new Refused("the account answers its owner's own callers only");
-    }
     if (!("origin" in binding)) {
       throw new Invalid("invalid outside origin");
     }
     const origin = outsideOrigin(binding.origin);
+    if (caller !== owner && !(serves.visitors === true && origin === null)) {
+      throw new Refused("the account answers its owner's own callers only");
+    }
     const signedIn = binding.authenticated_at ?? null;
     if (signedIn !== null && (typeof signedIn !== "number" || !Number.isSafeInteger(signedIn)
                               || signedIn < 0)) {
       throw new Invalid("authenticated_at is a time in whole seconds");
     }
     if (origin === null) {
-      return { owner, origin, grant: null };
+      return { owner, caller, origin, grant: null };
+    }
+    // The owner's cookie rides only the owner's own browser requests (tasks 2); an
+    // outside client's call carrying it is a binder bug or a replay, refused before any
+    // grant is recorded.
+    if (binding.session !== undefined && serves.registering !== true) {
+      throw new Refused(OUTSIDE_SESSION);
     }
     const source = registrant(binding.source, origin);
-    return { owner, origin,
+    return { owner, caller, origin,
              grant: this.#grants.admit(origin.client, source.kind, signedIn, clock()) };
   }
 
   /** The owner itself, on its own account, never an outside client. */
-  #owner(binding: AccountBinding, action: string): Account {
+  #owner(binding: Binding, action: string): Account {
     const account = this.#account(binding);
     if (account.origin !== null) {
       throw new Refused(`only the owner may ${action}`);
@@ -323,15 +343,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * do in it. A refusal after the account is bound leaves a refusal receipt of what was
    * asked, written once the refused change has rolled back.
    */
-  #widening<T>(binding: AccountBinding, action: string, request: unknown, owner: string | null,
-               act: (account: Account, sessionId: string) => T): T {
-    const account = this.#account(binding);
+  #widening<T>(binding: Binding, action: string, request: unknown, owner: string | null,
+               act: (account: Account, sessionId: string) => T, serves: Serves = {}): T {
+    const account = this.#account(binding, serves);
     try {
-      const sessionId = this.#sessions.live(binding.session, clock());
+      // An outside client holds no owner session, so what only the owner may do is
+      // refused as that before the session is looked for.
       if (owner !== null && account.origin !== null) {
         throw new Refused(`only the owner may ${owner}`);
       }
-      return act(account, sessionId);
+      return act(account, this.#sessions.live(binding.session, clock()));
     } catch (error) {
       if (error instanceof Refused || error instanceof Invalid) {
         try {
@@ -371,41 +392,41 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   // -- SESSIONS: the owner's protected interactive sessions ---------------------
 
   /** A verified interactive sign-in opens a session; its cookie is returned once. */
-  sessionOpen(binding: AccountBinding): { session: string; expires_at: number } {
+  sessionOpen(binding: Binding): { session: string; expires_at: number } {
     this.#owner(binding, "open its session");
     return this.#sessions.open(binding.authenticated_at, clock());
   }
 
-  sessionExtend(binding: AccountBinding): { expires_at: number } {
+  sessionExtend(binding: Binding): { expires_at: number } {
     this.#owner(binding, "renew its session");
     return this.#sessions.extend(binding.session, clock());
   }
 
-  sessionClose(binding: AccountBinding): { closed: number } {
+  sessionClose(binding: Binding): { closed: number } {
     this.#owner(binding, "sign out");
     return this.#sessions.close(binding.session);
   }
 
   /** Every session signed out: account revocation and deletion (`revoke_owner`). */
-  sessionCloseAll(binding: AccountBinding): { closed: number } {
+  sessionCloseAll(binding: Binding): { closed: number } {
     this.#owner(binding, "sign out");
     return this.#sessions.closeAll();
   }
 
   // -- OWNER_POLICY ------------------------------------------------------------
 
-  policyRead(binding: AccountBinding): Projection {
+  policyRead(binding: Binding): Projection {
     const { owner } = this.#owner(binding, "read its policy");
     return this.#policy.projection(owner);
   }
 
-  policyReceipts(binding: AccountBinding): { receipts: Receipt[] } {
+  policyReceipts(binding: Binding): { receipts: Receipt[] } {
     this.#owner(binding, "read its policy");
     return { receipts: this.#policy.receipts() };
   }
 
   /** The owner's write, in its session; with `proposal`, a held card's one apply. */
-  policyWrite(binding: AccountBinding, request: PolicyWriteRequest): Projection {
+  policyWrite(binding: Binding, request: PolicyWriteRequest): Projection {
     return this.#widening(binding, "write", request, "write its policy", ({ owner }, id) => {
       const r = policyFields(request, ["expected_generation", "policy"], ["proposal"]);
       const written = this.#policy.write(id, r["expected_generation"], r["policy"],
@@ -415,16 +436,21 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
   }
 
-  /** An agent's proposal, the owner's or an admitted outside client's; never applied. */
-  policyPropose(binding: AccountBinding, request: ProposeRequest):
+  /**
+   * An agent's proposal, the owner's or an admitted outside client's; never applied. A
+   * scoped client proposes only with `propose_policy` granted where its agent is.
+   */
+  policyPropose(binding: Binding, request: ProposeRequest):
       { request_digest: string; generation: number } {
-    this.#account(binding);
+    const account = this.#account(binding);
     const r = policyFields(request, ["change"], ["request_id"]);
-    return this.#policy.propose(r["change"], r["request_id"] ?? null, clock());
+    this.#scope(account, "propose_policy");
+    return this.#policy.propose(r["change"], r["request_id"] ?? null,
+                                account.origin?.client ?? "owner", clock());
   }
 
   /** The pending card the owner is shown, and the digest its apply must name. */
-  policyProposal(binding: AccountBinding, request: CardRequest):
+  policyProposal(binding: Binding, request: CardRequest):
       { change: Change; digest: string } {
     this.#owner(binding, "read its policy");
     const r = policyFields(request, ["request_id"]);
@@ -440,7 +466,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * row where the ledger reads them, and changed like any policy write: in the owner's
    * session, against the policy generation, receipted.
    */
-  policyWakeLimits(binding: AccountBinding, request: WakeLimitsRequest):
+  policyWakeLimits(binding: Binding, request: WakeLimitsRequest):
       { agent: Agent; generation: number } {
     return this.#widening(binding, "wake_limits", request, "change its agents' policy",
                           (_account, id) => {
@@ -460,13 +486,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   // -- OUTSIDE_CLIENTS: grants (P0-3) ---------------------------------------------
 
-  grantList(binding: AccountBinding): { clients: Client[] } {
+  grantList(binding: Binding): { clients: Client[] } {
     this.#owner(binding, "read its outside clients");
     return { clients: this.#grants.list() };
   }
 
   /** The owner's widening, in its session; the client's agents' wakes end with it. */
-  async grantSet(binding: AccountBinding, request: GrantRequest):
+  async grantSet(binding: Binding, request: GrantRequest):
       Promise<{ client: string; mode: string; scopes: Scope[]; generation: number }> {
     const set = this.#widening(binding, "outside_set", request,
                                "change an outside client's grant", (_account, id) => {
@@ -483,7 +509,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /** A narrowing the owner's account makes without a session, as a key's revoke does. */
-  async grantRevoke(binding: AccountBinding, request: ClientRequest):
+  async grantRevoke(binding: Binding, request: ClientRequest):
       Promise<{ client: string; revoked: boolean; generation: number }> {
     this.#owner(binding, "revoke an outside client's grant");
     const r = policyFields(request, ["client"]);
@@ -499,25 +525,33 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   // -- OUTSIDE_AGENTS ---------------------------------------------------------
 
   /** The owner sees every agent; an outside caller only its own identity's. */
-  outsideAgents(binding: AccountBinding): { agents: Agent[] } {
+  outsideAgents(binding: Binding): { agents: Agent[] } {
     const { origin } = this.#account(binding);
     return { agents: this.#ledger.agents(origin) };
   }
 
-  /** Registering an agent needs the owner's protected session (S30). */
-  async registerAgent(binding: AccountBinding, request: RegisterRequest): Promise<Agent> {
+  /**
+   * Registering an agent needs the owner's protected session (S30): the owner's browser
+   * names the identity the agent is (`origin`), an API key the owner holds or a
+   * verified MCP client, so this is the one door an outside origin reaches together
+   * with the owner's session.
+   */
+  async registerAgent(binding: Binding, request: RegisterRequest): Promise<Agent> {
     const agent = this.#widening(binding, "OUTSIDE_AGENTS.register", request, null,
                                  ({ origin }) => {
       const r = ledgerFields(request, ["command_center_id", "display_name", "delivery_method",
                                        "recipe_id"]);
       return this.#ledger.register(origin, binding.source, r as unknown as RegisterRequest);
-    });
+    }, { registering: true });
     await this.#rearm();
     return agent;
   }
 
-  /** The owner disables any agent in its session; an outside caller only its own. */
-  async disableAgent(binding: AccountBinding, request: DisableRequest): Promise<Agent> {
+  /**
+   * The owner disables any agent in its session. An outside client cannot reach it: it
+   * holds no owner session, and its call never carries one.
+   */
+  async disableAgent(binding: Binding, request: DisableRequest): Promise<Agent> {
     const agent = this.#widening(binding, "OUTSIDE_AGENTS.disable", request, null,
                                  ({ origin }) => {
       const r = ledgerFields(request, ["agent_id", "reason"]);
@@ -528,7 +562,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /** Only the owner itself, in its session, deletes an agent. */
-  async deleteAgent(binding: AccountBinding, request: AgentRequest):
+  async deleteAgent(binding: Binding, request: AgentRequest):
       Promise<{ agent_id: string; messages: number }> {
     const deleted = this.#widening(binding, "OUTSIDE_AGENTS.delete", request,
                                    "change its agents' policy", () => {
@@ -541,7 +575,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   // -- ROOM_POST and MAILBOX_RECEIPT -------------------------------------------
 
-  async roomPost(binding: AccountBinding, request: PostRequest): Promise<Posted> {
+  async roomPost(binding: Binding, request: PostRequest): Promise<Posted> {
     const account = this.#account(binding);
     const r = ledgerFields(request, ["room_id", "client_message_id", "body", "parent_id"]);
     this.#scope(account, "write_graph");
@@ -551,7 +585,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return posted;
   }
 
-  mailboxRead(binding: AccountBinding, request: ReadRequest): MailPage {
+  mailboxRead(binding: Binding, request: ReadRequest): MailPage {
     const account = this.#account(binding);
     const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes"]);
     this.#scope(account, "read_graph");
@@ -559,7 +593,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                              r["pad_bytes"] ?? 0);
   }
 
-  mailboxAck(binding: AccountBinding, request: AckRequest): { reader: string; through: number } {
+  mailboxAck(binding: Binding, request: AckRequest): { reader: string; through: number } {
     const account = this.#account(binding);
     const r = ledgerFields(request, ["through"]);
     this.#scope(account, "write_graph");
@@ -572,7 +606,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * tags the callback the subscribe door stores, so a revoke made before it never
    * erases it.
    */
-  mailboxSubscriber(binding: AccountBinding, request: SubscriberRequest):
+  mailboxSubscriber(binding: Binding, request: SubscriberRequest):
       { agent_id: string; generation: number } {
     const account = this.#account(binding);
     const r = ledgerFields(request, ["command_center_id", "agent_id"]);
@@ -615,8 +649,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
   }
 
+  /**
+   * A collection door's caller: the owner, a visiting owner, or an outside client the
+   * owner's account acts through, admitted against its grant and held to `capability`.
+   */
+  #collector(binding: Binding, capability: string): { owner: string; caller: string } {
+    const account = this.#account(binding, { visitors: true });
+    this.#scope(account, capability);
+    return account;
+  }
+
   collectionWrite(binding: Binding, request: WriteRequest): { row: Row } | Conflicted {
-    const { owner, caller } = this.#bind(binding);
+    const { owner, caller } = this.#collector(binding, "write_graph");
     const r = fields(request, ["collection", "row_id", "body", "expected_etag", "private"],
                      ["history_op"]);
     return conflicted(() => ({
@@ -627,25 +671,25 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   collectionPull(binding: Binding, request: PullRequest): Page {
-    const { caller } = this.#bind(binding);
+    const { caller } = this.#collector(binding, "read_graph");
     const r = fields(request, ["collection", "after", "limit"]);
     return this.#collections.pull(caller, r["collection"] as string, r["after"], r["limit"]);
   }
 
   collectionGet(binding: Binding, request: KeyRequest): { row: Row | null } {
-    const { caller } = this.#bind(binding);
+    const { caller } = this.#collector(binding, "read_graph");
     const r = fields(request, ["collection", "row_id"]);
     return this.#collections.get(caller, r["collection"] as string, r["row_id"] as string);
   }
 
   collectionHistory(binding: Binding, request: KeyRequest): { entries: HistoryEntry[] } {
-    const { caller } = this.#bind(binding);
+    const { caller } = this.#collector(binding, "read_graph");
     const r = fields(request, ["collection", "row_id"]);
     return this.#collections.history(caller, r["collection"] as string, r["row_id"] as string);
   }
 
   collectionDelete(binding: Binding, request: DeleteRequest): { deleted: number } | Conflicted {
-    const { owner, caller } = this.#bind(binding);
+    const { owner, caller } = this.#collector(binding, "write_graph");
     this.#ownerOnly(owner, caller, "delete");
     const r = fields(request, ["collection", "row_id", "expected_etag"]);
     return conflicted(() => this.#collections.delete(
@@ -654,7 +698,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   collectionClear(binding: Binding, request: ClearRequest): { deleted: number } {
-    const { owner, caller } = this.#bind(binding);
+    const { owner, caller } = this.#collector(binding, "write_graph");
     this.#ownerOnly(owner, caller, "clear");
     const r = fields(request, ["collection", "writer"]);
     return this.#collections.clear(caller, r["collection"] as string, r["writer"]);

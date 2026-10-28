@@ -22,16 +22,26 @@
  * - A refused owner-session call leaves a `refusal` receipt with the digest of what was
  *   asked, never the session proof, written after the refused change rolled back.
  *
+ * Owed by later slices, each written into its task: the Python closed the owner's
+ * public egress tunnels before a write committed and cancelled its live streams after;
+ * here the gateway (4) reads the policy generation on every call, and a policy write
+ * ends the owner's in-flight turns and streams once the agent (5) has any.
+ *
  * Declared differences from the Python:
- * - An IP-literal egress destination (and any all-numeric host) is refused until the
- *   gateway's address check lands (tasks 4); the Python accepted a public one. Every
- *   hostname the Python accepted is accepted here.
+ * - An egress destination whose host the WHATWG URL parser reads as an IP address
+ *   (`8.8.8.8`, `0x7f000001`, `0x7f.1`, `[::1]`) is refused until the gateway's address
+ *   check lands (tasks 4); the Python accepted a public one. A host no URL can carry
+ *   (a name ending in a number, a malformed `xn--` label) is invalid. Every other DNS
+ *   name the Python accepted is accepted here, and what a name resolves to is the
+ *   gateway's to check at each call.
  * - The document is bounded (`maxDocument`), and receipts are kept per bucket
  *   (`receiptsPerBucket`): owner changes, agent proposals and refusals each apart, so
  *   neither an agent nor a refused stranger can push the owner's changes out. The
  *   Python kept every receipt and listed two buckets.
  * - A held proposal applies only as a `policy_proposal` card, which the Python's apply
  *   path checked and its write did not.
+ * - One outside client holds at most `pendingPerClient` of the pending proposals, so it
+ *   cannot fill the set the owner's agents propose into; the Python had one set.
  * - An entry's values are flat (strings, numbers, booleans, null), as every value the
  *   Python wrote is; it took any JSON there.
  * - The digest is this object's own (numbers as JavaScript prints them), so the cutover
@@ -66,7 +76,8 @@ const EGRESS_MODES: readonly string[] = Object.freeze(["open", "allowlist", "ask
 const CAPS: readonly string[] = Object.freeze(["daily", "monthly", "transaction", "ask_above"]);
 /** `normalize_destination`'s DNS label: underscores allowed, hyphens interior. */
 const LABEL = /^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$/;
-const DIGITS = /^[0-9]+$/;
+/** A host the URL parser turned into an IPv4 address. */
+const IPV4 = /^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/;
 
 /** The default document as stored, and its digest (a test recomputes both). */
 export const DEFAULT_POLICY_JSON =
@@ -78,7 +89,8 @@ export const DEFAULT_POLICY_DIGEST =
 /**
  * How large policy state may grow. The document's 64 KiB is room for hundreds of rules
  * (a rule is under 200 bytes); a change is the Python's 16,000 characters. Proposals
- * keep the Python's 30 days and 200 pending, and the 200 most recently applied. Each
+ * keep the Python's 30 days and 200 pending, and the 200 most recently applied; one
+ * outside client holds at most a quarter of the pending ones. Each
  * receipt bucket keeps its newest 5,000 rows (about a megabyte) and lists its last 50.
  */
 export interface PolicyLimits {
@@ -86,6 +98,8 @@ export interface PolicyLimits {
   readonly maxChange: number;
   readonly proposalTtlS: number;
   readonly pendingProposals: number;
+  /** Pending proposals one outside client may hold. */
+  readonly pendingPerClient: number;
   readonly appliedProposals: number;
   readonly receiptsPerBucket: number;
   readonly receiptsListed: number;
@@ -96,6 +110,7 @@ export const POLICY_LIMITS: PolicyLimits = Object.freeze({
   maxChange: 16_000,
   proposalTtlS: 30 * 86_400,
   pendingProposals: 200,
+  pendingPerClient: 50,
   appliedProposals: 200,
   receiptsPerBucket: 5_000,
   receiptsListed: 50,
@@ -237,12 +252,22 @@ function destination(entry: unknown): void {
   if (typeof host !== "string" || !whole(port) || port < 1 || port > 65_535) {
     throw new Invalid("invalid egress destination");
   }
-  const labels = host.split(".");
-  if (host.includes(":") || labels.every((label) => DIGITS.test(label))) {
+  if (host.includes(":") || host.startsWith("[")) {
     throw new Refused("an egress IP literal waits for the gateway's address check");
   }
-  if (!host || host.length > 253 || !labels.every((label) => LABEL.test(label))) {
+  if (!host || host.length > 253 || !host.split(".").every((label) => LABEL.test(label))) {
     throw new Invalid("invalid egress destination");
+  }
+  // The host as a URL reads it: any spelling of an IPv4 address (decimal, hex, octal,
+  // short forms) comes back dotted, and a name ending in a number is no host at all.
+  let parsed: string;
+  try {
+    parsed = new URL(`https://${host}/`).hostname;
+  } catch {
+    throw new Invalid("invalid egress destination");
+  }
+  if (IPV4.test(parsed)) {
+    throw new Refused("an egress IP literal waits for the gateway's address check");
   }
 }
 
@@ -334,6 +359,11 @@ export class Policy {
     ).one();
   }
 
+  #generation(): number {
+    return this.#sql.exec<{ generation: number }>("SELECT generation FROM owner_policy").one()
+      .generation;
+  }
+
   #stored(): { generation: number; digest: string; document: string } {
     return this.#sql.exec<{ generation: number; digest: string; document: string }>(
       "SELECT generation, digest, document FROM owner_policy",
@@ -366,7 +396,7 @@ export class Policy {
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       into, kind, now, fields.session_id ?? null, fields.old_digest ?? null,
       fields.new_digest ?? null, fields.request_digest ?? null,
-      fields.generation ?? this.#stored().generation, fields.rule ?? null,
+      fields.generation ?? this.#generation(), fields.rule ?? null,
       fields.decision ?? null, fields.outcome ?? null,
     );
     const over = this.#usage()[`${into}_receipts`] - this.#limits.receiptsPerBucket;
@@ -459,7 +489,7 @@ export class Policy {
    * held card with another change is refused (the same change again is a no-op);
    * expired proposals and all but the newest applied ones are pruned first.
    */
-  propose(change: unknown, requestId: unknown, now: number):
+  propose(change: unknown, requestId: unknown, proposer: string, now: number):
       { request_digest: string; generation: number } {
     if (!plain(change) || codePoints(canonical(change)) > this.#limits.maxChange) {
       throw new Invalid("invalid policy proposal");
@@ -467,7 +497,7 @@ export class Policy {
     if (requestId !== null && !cardId(requestId)) {
       throw new Invalid("invalid policy proposal");
     }
-    const { generation } = this.read();
+    const generation = this.#generation();
     const digest = policyDigest(change);
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
@@ -489,8 +519,15 @@ export class Policy {
           if (this.#usage().pending_proposals >= this.#limits.pendingProposals) {
             throw new Refused("too many pending policy proposals");
           }
-          sql.exec("INSERT INTO policy_proposals (request_id, digest, document, at) " +
-                     "VALUES (?, ?, ?, ?)", requestId, digest, canonical(change), now);
+          const share = sql.exec<{ pending: number }>(
+            "SELECT pending FROM proposal_shares WHERE proposer = ?", proposer,
+          ).toArray()[0]?.pending ?? 0;
+          if (proposer !== "owner" && share >= this.#limits.pendingPerClient) {
+            throw new Refused("this client's pending policy proposals are at their limit");
+          }
+          sql.exec("INSERT INTO policy_proposals (request_id, digest, document, at, proposer) " +
+                     "VALUES (?, ?, ?, ?, ?)", requestId, digest, canonical(change), now,
+                   proposer);
         }
       }
       this.receipt("proposal", { request_digest: digest, generation, rule: "owner_policy",

@@ -13,6 +13,14 @@
  * browser-bound callback) and calls `open` with the verified sign-in's time; the object
  * opens a session only for a sign-in at most `signInMaxAgeS` old, mints the cookie, and
  * keeps only its SHA-256. A session lives 8 hours and slides while its browser renews.
+ * The cookie names no owner: the binder takes the owner from its own verified
+ * credential, and attaches the cookie only to the browser's same-origin requests
+ * (tasks 2); the object refuses an outside client's call that carries one at every
+ * door but an agent's registration (`owner-do.ts`).
+ *
+ * Owed by a later slice: the Python's `revoke_owner` also cancelled the owner's open
+ * hosted-model, connection-OAuth and inline model flows; `closeAll` signs every
+ * session out now, and the connection-flow task (4) cancels those flows with it.
  *
  * Declared differences from the Python:
  * - The proof is the cookie only. The Python also took its hash (`session_hash`), which
