@@ -322,6 +322,7 @@ describe("a lane's run", () => {
   it("runs no pass outside an invocation: a job driven with no scope fails before it",
      () => withProbe(["a"], async (p) => {
     const a = p.lanes["a"]!;
+    a.scope = null;  // a pass that would make no call of its own: only the job stops it
     a.due = p.now - 10;
     await p.schedule.sync();
     await p.lifecycle.alarm();  // not through the object's alarm: no scope entered
