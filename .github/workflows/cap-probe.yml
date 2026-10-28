@@ -1,0 +1,225 @@
+name: Cap probe
+
+# The live probe of Cloudflare's 32 service-binding calls per request
+# (openspec/changes/clean-sheet-platform/cap-probe.md has the method, the cases
+# and the results table). Manual only: it deploys two throwaway Workers to
+# workers.dev (ta-capprobe, ta-capprobe-callee), drives every case, prints the
+# results into the job summary and deletes both Workers whatever happened.
+# Nothing in the product is deployed or touched; no route, zone or DNS record.
+#
+# Token scope (the CLOUDFLARE_API_TOKEN repo secret deploy-worker.yml uses):
+#   Account -> Workers Scripts: Edit   upload, DO class migrations, the
+#                                      workers.dev route, delete, and reading
+#                                      the workers.dev subdomain
+#   Account -> Billing: Read           optional: names the account's plan; without
+#                                      it the plan is read from a CPU burn instead
+#
+# The run takes about 25 minutes: M10 holds one Durable Object alarm for 16.
+
+on:
+  workflow_dispatch:
+    inputs:
+      hold_minutes:
+        description: 'M10: minutes the alarm awaits one call (0 skips M10)'
+        required: false
+        default: '16'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # One run at a time: every run deploys the same two script names.
+  group: cap-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+      WRANGLER: ${{ github.workspace }}/platform/node_modules/.bin/wrangler
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+
+      # The platform lockfile pins wrangler (4.154.0) and miniflare; the probe
+      # borrows them rather than keeping a toolchain of its own.
+      - name: Install the pinned toolchain
+        working-directory: platform
+        run: npm ci --no-audit --no-fund
+
+      - name: Harness check in miniflare (proves the harness, not the cap)
+        run: node scripts/probes/capprobe/local.mjs
+
+      - name: Check the account
+        id: account
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID_SECRET: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN secret is not set (needs Account: Workers Scripts: Edit)."
+            exit 1
+          fi
+          api() {
+            curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -o "${RUNNER_TEMP}/api.json" -w '%{http_code}' "https://api.cloudflare.com/client/v4$1"
+          }
+
+          account_id="${CLOUDFLARE_ACCOUNT_ID_SECRET}"
+          if [ -z "${account_id}" ]; then
+            echo "CLOUDFLARE_ACCOUNT_ID secret is not set; resolving from the tinyassets.io zone."
+            api "/zones?name=tinyassets.io" > /dev/null
+            account_id="$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])).get("result") or []; print(((r[0].get("account") or {}).get("id") or "") if r else "")' "${RUNNER_TEMP}/api.json")"
+          fi
+          if [ -z "${account_id}" ]; then
+            echo "::error::Could not resolve the Cloudflare account id."
+            exit 1
+          fi
+          echo "::add-mask::${account_id}"
+          echo "CLOUDFLARE_ACCOUNT_ID=${account_id}" >> "${GITHUB_ENV}"
+
+          # The workers.dev subdomain: the probe lives only there.
+          status="$(api "/accounts/${account_id}/workers/subdomain")"
+          subdomain="$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("result") or {}).get("subdomain") or "")' "${RUNNER_TEMP}/api.json" || true)"
+          if [ "${status}" != "200" ] || [ -z "${subdomain}" ]; then
+            echo "::error::No workers.dev subdomain on this account (HTTP ${status}). Creating one is account configuration: the founder picks it in the dashboard (Workers & Pages, then Subdomain)."
+            exit 1
+          fi
+          echo "::add-mask::${subdomain}"
+          echo "PROBE_SUBDOMAIN=${subdomain}" >> "${GITHUB_ENV}"
+          echo "workers.dev subdomain: present"
+
+          # The Workers plan. The Free plan's limits (50 subrequests, 10 ms CPU)
+          # can mask the cap, so a Free or unknown plan is reported loudly; the
+          # probe still runs, and the CPU-burn check in the drive step reads it too.
+          status="$(api "/accounts/${account_id}/subscriptions")"
+          plan="$(python3 - "${RUNNER_TEMP}/api.json" "${status}" <<'PY'
+          import json, sys
+          path, status = sys.argv[1], sys.argv[2]
+          if status != "200":
+              print(f"unknown (HTTP {status}: the token cannot read billing)")
+              sys.exit()
+          subs = json.load(open(path)).get("result") or []
+          names = []
+          for sub in subs:
+              plan = sub.get("rate_plan") or {}
+              name = plan.get("public_name") or plan.get("id") or "?"
+              names.append(name)
+          workers = [n for n in names if "worker" in n.lower()]
+          if workers:
+              print("Workers: " + ", ".join(workers))
+          else:
+              print("Free (no Workers subscription among: " + (", ".join(names) or "none") + ")")
+          PY
+          )"
+          echo "Workers plan: ${plan}"
+          echo "plan=${plan}" >> "${GITHUB_OUTPUT}"
+          case "${plan}" in
+            Workers:*Paid*|Workers:*paid*|Workers:*Standard*|Workers:*standard*) ;;
+            *)
+              echo "::warning title=Workers plan::The plan reads as '${plan}'. On Free, the 50-subrequest and 10 ms CPU limits can mask the 32-call cap; read every result with that in mind." ;;
+          esac
+
+          # A fresh key per run guards the throwaway Worker's routes.
+          key="$(openssl rand -hex 24)"
+          echo "::add-mask::${key}"
+          echo "PROBE_KEY=${key}" >> "${GITHUB_ENV}"
+
+      - name: Deploy both Workers to workers.dev
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The per-run key and the callee URL go up as Worker secrets, never printed.
+          runfile="${RUNNER_TEMP}/capprobe-run.json"
+          trap 'rm -f "${runfile}"' EXIT
+          python3 -c 'import json,os,sys; json.dump({"RUN_KEY": os.environ["PROBE_KEY"], "CALLEE_URL": "https://ta-capprobe-callee." + os.environ["PROBE_SUBDOMAIN"] + ".workers.dev"}, open(sys.argv[1], "w"))' "${runfile}"
+          # The callee first: the caller binds its Peer class by script_name.
+          "${WRANGLER}" deploy --config scripts/probes/capprobe/callee.wrangler.jsonc
+          "${WRANGLER}" deploy --config scripts/probes/capprobe/caller.wrangler.jsonc --secrets-file "${runfile}"
+
+      - name: Run every case
+        timeout-minutes: 35
+        env:
+          HOLD_MINUTES: ${{ inputs.hold_minutes }}
+        run: |
+          set -euo pipefail
+          case "${HOLD_MINUTES}" in
+            ''|*[!0-9]*) echo "::error::hold_minutes must be a whole number"; exit 1 ;;
+          esac
+          node scripts/probes/capprobe/drive.mjs \
+            --base "https://ta-capprobe.${PROBE_SUBDOMAIN}.workers.dev" \
+            --out "${RUNNER_TEMP}/capprobe.json" --summary "${RUNNER_TEMP}/capprobe.md" \
+            --hold-minutes "${HOLD_MINUTES}" --redact "${PROBE_SUBDOMAIN}"
+
+      - name: Results into the job summary
+        if: always()
+        env:
+          PLAN: ${{ steps.account.outputs.plan }}
+        run: |
+          {
+            echo "### Cap probe"
+            echo ""
+            echo "- **Workers plan (API):** ${PLAN:-not read}"
+            echo "- **sha:** \`${GITHUB_SHA}\`"
+            echo ""
+            if [ -f "${RUNNER_TEMP}/capprobe.md" ]; then
+              cat "${RUNNER_TEMP}/capprobe.md"
+              echo ""
+              echo "<details><summary>results JSON</summary>"
+              echo ""
+              echo '```json'
+              cat "${RUNNER_TEMP}/capprobe.json"
+              echo '```'
+              echo "</details>"
+            else
+              echo "No results: the run stopped before the cases finished."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Delete both Workers
+        if: always()
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "The account step never resolved an account, so nothing was deployed."
+            exit 0
+          fi
+          failed=0
+          # The caller first: it binds the callee's service and Durable Object class.
+          for name in ta-capprobe ta-capprobe-callee; do
+            url="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${name}"
+            # force=true deletes the script's Durable Object namespaces with it.
+            status="$(curl -sS -X DELETE -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -o "${RUNNER_TEMP}/delete.json" -w '%{http_code}' "${url}?force=true")" || status="curl failed"
+            check="$(curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -o /dev/null -w '%{http_code}' "${url}")" || check="curl failed"
+            if [ "${check}" = "404" ]; then
+              echo "${name}: gone (delete HTTP ${status})"
+            else
+              errors="$(python3 -c 'import json,sys; print([e.get("message") for e in json.load(open(sys.argv[1])).get("errors") or []])' "${RUNNER_TEMP}/delete.json" 2>/dev/null || true)"
+              echo "::error::${name} is still deployed (delete HTTP ${status} ${errors}; check HTTP ${check}). Delete it by hand: Workers & Pages, ${name}, Settings, Delete."
+              failed=1
+            fi
+          done
+          {
+            echo ""
+            if [ "${failed}" = "0" ]; then
+              echo "- **cleanup:** both Workers deleted"
+            else
+              echo "- **cleanup:** FAILED; a probe Worker is still deployed (see the step log)"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+          exit "${failed}"

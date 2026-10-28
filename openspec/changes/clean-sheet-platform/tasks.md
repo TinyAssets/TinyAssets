@@ -233,6 +233,8 @@ live acceptance is still owed says so.
 - [ ] Probe, before the agent (5) runs a turn on the object: the 32-service-binding-calls
   per request cap (`FILES`, the gateway, hooks) and the 15-minute alarm wall time,
   against one pi turn, including whether the cap applies per Durable Object event.
+  Method, cases M1–M12 and the results table: `cap-probe.md`; run by the manual
+  `cap-probe.yml` (gateway G0), built and not yet run live.
 - [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
   probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
   does not emulate it); a live probe of the files Worker's create-once put, which
