@@ -232,13 +232,15 @@ adapter for the source; sandbox egress is passed through raw under the sealed en
 the owner object reserves and settles spend. Six slices, G1 to G3 with no spending, no
 account and no deploy.
 
-- [ ] G0 The 32-call cap probe (with 6's probe item): two throwaway workers.dev Workers
+- [x] G0 The 32-call cap probe (with 6's probe item): two throwaway workers.dev Workers
   through a `workflow_dispatch` workflow, measuring service-binding RPC, `fetch`,
   Durable Object stub and public-URL calls per Worker request, per DO RPC, per alarm and
   per background work outliving its RPC, the 15-minute alarm cut, and whether Worker
   `fetch` reaches names resolving to private addresses (miniflare's limit enforcer is a
-  no-op, so only live counts). Its results set `calls.ts`'s budgets or pick the
-  multiplexed gateway channel. Built (`cap-probe.yml`, `cap-probe.md`); not yet run live.
+  no-op, so only live counts). It ran live (`cap-probe.yml`; the results are in
+  `cap-probe.md`, and the follow-up runs are 6's probe item). The platform's subrequest
+  limit (`limits.subrequests`) is the only cap on gateway calls: no per-kind budget is
+  kept beside it.
 - [x] G1 `platform/gateway`, the Worker, in workerd, nothing deployed. Config: no
   binding, no routes, no workers.dev or preview URL, `secrets.required:
   ["GATEWAY_KEYRING"]` (wrangler's schema shape), flags `nodejs_compat`,
@@ -283,7 +285,8 @@ account and no deploy.
   `unknown`, per-turn and per-source caps, ported from `request_budget.py` with its
   tests); `gateway-provider.ts` (pi-ai `createProvider` over pi-messages: reserve, stamp
   the envelope with the policy generation read in the same transaction, `GATEWAY.fetch`
-  drawing `calls.current().draw("gateway", 1)`, settle from `done`'s usage; the `auto`
+  under the platform's subrequest limit (`limits.subrequests`, the only cap), settle from
+  `done`'s usage; the `auto`
   router to the strongest connected source; the live-delta tee). Owed by 3.5: account
   revocation (`sessionCloseAll`) cancels every open flow with the sessions, as the
   Python's `revoke_owner` did; the gateway sees the owner's policy generation on every
@@ -408,7 +411,7 @@ account and no deploy.
   door), and answers whether workerd attributes a service call to the invocation whose
   async context started it, as the scope does.
   Method, cases M1–M12, reading key and results table: `cap-probe.md`; run by the manual
-  `cap-probe.yml` (gateway G0).
+  `cap-probe.yml` (gateway G0), which has run live (results in `cap-probe.md`).
 - [ ] The cap probe ran once, on Workers Free (run 40701631460, `cap-probe.md`). The cap
   that bit was 50 subrequests per invocation, not the documented 32. A DO RPC and an
   alarm each start fresh, and calls are charged to the object's current event (its newest
