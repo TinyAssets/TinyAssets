@@ -168,6 +168,10 @@ describe("the owner's environment", () => {
       getOrThrow(await one.writeFile("a.txt", "mine again", context));
       getOrThrow(await one.appendFile("a.txt", "!", context));
       expect(getOrThrow(await other.readTextFile("a.txt", context))).toBe("mine again!");
+      // Having read it, its own writes follow one another: each is the version it saw.
+      getOrThrow(await other.writeFile("a.txt", "theirs, edited", context));
+      getOrThrow(await other.writeFile("a.txt", "theirs, edited twice", context));
+      expect(getOrThrow(await one.readTextFile("a.txt", context))).toBe("theirs, edited twice");
     });
   });
 
@@ -274,6 +278,10 @@ describe("the owner's environment", () => {
       expect(getOrThrow(await reader.read(CHUNK_BYTES - 1, 2, context))).toEqual(
         new Uint8Array([65, 65]));
       expect(gets).toHaveLength(1);
+      // A read past the end is cut at it, and one wholly past it is empty.
+      expect(getOrThrow(await reader.read(size - 1, 100, context))).toEqual(new Uint8Array([10]));
+      expect(getOrThrow(await reader.read(size + 5, 1, context))).toEqual(new Uint8Array(0));
+      expect(gets).toHaveLength(2);
       gets.length = 0;
       getOrThrow(await reader.scanLines({ startLine: 1 }, context));
       expect(gets.map((call) => call.length)).toEqual([2, 2, 1]);
