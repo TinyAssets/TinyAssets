@@ -14,14 +14,19 @@
  * `exports` or imports `env` (the config and self-reach guards). The module keeps no
  * mutable state at top level (the module-state guard), since objects of one class can
  * share an isolate.
+ *
+ * Every public method is an RPC any binding can call, so the class has no public method
+ * but its doors (`RPC_METHODS` in the tests pins the list). Claiming and settling wakes
+ * is the alarm's own, in process, with the doorbell's {@link WakeSender}; no door
+ * reaches it.
  */
 import { DurableObject } from "cloudflare:workers";
 
 import { Collections, Conflict, type HistoryEntry, type Page, type Row } from "./collections";
 import { Invalid, Refused } from "./errors";
 import {
-  type Agent, type Claim, clock, Ledger, type MailPage, type Origin, outcome, outsideOrigin,
-  type Posted, type Source, type Wake,
+  type Agent, clock, Ledger, type MailPage, type Origin, outsideOrigin, type Posted,
+  type Source,
 } from "./ledger";
 import { migrate } from "./schema";
 import { principal } from "./text";
@@ -42,7 +47,11 @@ export interface LedgerBinding extends Binding {
   readonly origin: Origin | null;
   /** How the binder verified `origin`: needed to register an agent. */
   readonly source?: Source;
-  /** The binder checked the owner's protected interactive session on this request. */
+  /**
+   * The binder checked the owner's protected interactive session on this request. A
+   * declared difference from the Python, which checked the live session row itself: the
+   * object checks it once sessions are ported into it (tasks 3.5).
+   */
   readonly interactive?: boolean;
 }
 
@@ -53,13 +62,21 @@ export interface RegisterRequest {
   readonly display_name: string;
   readonly delivery_method: string;
   readonly recipe_id: string | null;
-  readonly max_wakes_per_hour?: number;
-  readonly batch_window_s?: number;
 }
 
 export interface DisableRequest {
   readonly agent_id: string;
   readonly reason: string;
+}
+
+export interface AgentRequest {
+  readonly agent_id: string;
+}
+
+export interface WakeLimitsRequest {
+  readonly agent_id: string;
+  readonly max_wakes_per_hour: number;
+  readonly batch_window_s: number;
 }
 
 export interface PostRequest {
@@ -82,12 +99,6 @@ export interface AckRequest {
 export interface SubscriberRequest {
   readonly command_center_id: string;
   readonly agent_id: string;
-}
-
-export interface SettleRequest {
-  readonly wake_id: string;
-  readonly claim_id: string;
-  readonly outcome: unknown;
 }
 
 /** The object's environment: no bindings, and never one to its own namespace. */
@@ -169,6 +180,12 @@ function conflicted<T>(act: () => T): T | Conflicted {
 export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #collections: Collections;
   readonly #ledger: Ledger;
+  /**
+   * What rings outside agents' doorbells, called in process by the alarm. None until the
+   * doorbell slice (tasks 7) constructs one here; until then the alarm only recovers
+   * lapsed claims, and open wakes and revokes stay pending without arming it.
+   */
+  readonly #sender: WakeSender | null = null;
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     super(ctx, env);
@@ -176,30 +193,25 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#ledger = new Ledger(ctx.storage);
     void ctx.blockConcurrencyWhile(async () => {
       migrate(ctx.storage);
+      // The schedule as stored, for this code's sender: a deploy that adds a doorbell
+      // arms the wakes held while there was none.
+      await this.#rearm();
     });
   }
 
   /**
-   * What rings outside agents' doorbells. None until the doorbell slice supplies one;
-   * until then the alarm recovers lapsed claims and open wakes stay pending.
-   */
-  protected wakeSender(): WakeSender | null {
-    return null;
-  }
-
-  /**
-   * The object's one alarm: due wakes, lapsed claims, then rearm at the next due time.
-   * There is no global tick; each owner's object schedules only itself.
+   * The object's one alarm: lapsed claims, then due wakes and revokes, then rearm at the
+   * next time there is work it can do. There is no global tick; each owner's object
+   * schedules only itself.
    */
   override async alarm(): Promise<void> {
-    const sender = this.wakeSender();
-    await runWakes(this.#ledger, sender, clock, WAKES_PER_ALARM);
-    await this.#rearm(sender !== null);
+    await runWakes(this.#ledger, this.#sender, clock, WAKES_PER_ALARM);
+    await this.#rearm();
   }
 
-  /** Point the one alarm at the earliest live wake, or clear it when there is none. */
-  async #rearm(dueOpen = true): Promise<void> {
-    const next = this.#ledger.nextAlarm(clock(), dueOpen);
+  /** Point the one alarm at the next work it can do, never in the past, or clear it. */
+  async #rearm(): Promise<void> {
+    const next = this.#ledger.nextAlarm(clock(), this.#sender !== null);
     if (next === null) {
       await this.ctx.storage.deleteAlarm();
     } else {
@@ -236,24 +248,25 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return origin;
   }
 
-  /** Wakes are the owner's own doorbell's to claim and settle, never an outside agent's. */
-  #doorbell(binding: LedgerBinding): void {
-    if (this.#bindLedger(binding).origin !== null) {
-      throw new Refused("only the owner's doorbell claims and settles wakes");
+  /** Owner policy and deletion: the owner itself, in its protected session, alone. */
+  #ownerSession(binding: LedgerBinding): void {
+    if (this.#interactive(binding) !== null) {
+      throw new Refused("only the owner may change its agents' policy");
     }
   }
 
   // -- OUTSIDE_AGENTS ---------------------------------------------------------
 
+  /** The owner sees every agent; an outside caller only its own identity's. */
   outsideAgents(binding: LedgerBinding): { agents: Agent[] } {
-    this.#bindLedger(binding);
-    return { agents: this.#ledger.agents() };
+    const { origin } = this.#bindLedger(binding);
+    return { agents: this.#ledger.agents(origin) };
   }
 
   async registerAgent(binding: LedgerBinding, request: RegisterRequest): Promise<Agent> {
     const origin = this.#interactive(binding);
     const r = ledgerFields(request, ["command_center_id", "display_name", "delivery_method",
-                                     "recipe_id"], ["max_wakes_per_hour", "batch_window_s"]);
+                                     "recipe_id"]);
     const agent = this.#ledger.register(origin, binding.source, r as unknown as RegisterRequest);
     await this.#rearm();
     return agent;
@@ -265,6 +278,23 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const agent = this.#ledger.disable(r["agent_id"], r["reason"]);
     await this.#rearm();
     return agent;
+  }
+
+  async deleteAgent(binding: LedgerBinding, request: AgentRequest):
+      Promise<{ agent_id: string; messages: number }> {
+    this.#ownerSession(binding);
+    const r = ledgerFields(request, ["agent_id"]);
+    const deleted = this.#ledger.remove(r["agent_id"]);
+    await this.#rearm();
+    return deleted;
+  }
+
+  /** Owner policy (W3): an agent's hourly wake cap and batch window. */
+  setWakeLimits(binding: LedgerBinding, request: WakeLimitsRequest): Agent {
+    this.#ownerSession(binding);
+    const r = ledgerFields(request, ["agent_id", "max_wakes_per_hour", "batch_window_s"]);
+    return this.#ledger.setWakeLimits(r["agent_id"], r["max_wakes_per_hour"],
+                                      r["batch_window_s"]);
   }
 
   // -- ROOM_POST and MAILBOX_RECEIPT -------------------------------------------
@@ -296,42 +326,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const r = ledgerFields(request, ["command_center_id", "agent_id"]);
     this.#ledger.subscriber(origin, r["command_center_id"], r["agent_id"]);
     return { agent_id: r["agent_id"] as string };
-  }
-
-  // -- wakes ------------------------------------------------------------------
-
-  dueWakes(binding: LedgerBinding, request: { limit: number }): { wakes: Wake[] } {
-    this.#doorbell(binding);
-    const r = ledgerFields(request, ["limit"]);
-    const limit = r["limit"];
-    if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 1
-        || limit > WAKES_PER_ALARM) {
-      throw new Invalid(`limit is 1 to ${WAKES_PER_ALARM}`);
-    }
-    return { wakes: this.#ledger.dueWakes(clock(), limit) };
-  }
-
-  /**
-   * Claim one due wake under a lease. A claim over RPC is marked may-have-sent at once:
-   * the object cannot see when the caller's first byte leaves, so a lapsed one is
-   * `unknown` and never replayed.
-   */
-  async claimWake(binding: LedgerBinding, request: { wake_id: string }): Promise<Claim> {
-    this.#doorbell(binding);
-    const r = ledgerFields(request, ["wake_id"]);
-    const claim = this.#ledger.claim(r["wake_id"], clock(), true);
-    await this.#rearm();
-    return claim;
-  }
-
-  /** Settle a claimed wake from the doorbell's answer; only the claim's holder can. */
-  async settleWake(binding: LedgerBinding, request: SettleRequest): Promise<{ settled: boolean }> {
-    this.#doorbell(binding);
-    const r = ledgerFields(request, ["wake_id", "claim_id", "outcome"]);
-    const settled = this.#ledger.settle(r["wake_id"], r["claim_id"], outcome(r["outcome"]),
-                                        clock());
-    await this.#rearm();
-    return { settled };
   }
 
   /**

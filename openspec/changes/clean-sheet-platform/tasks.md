@@ -36,8 +36,17 @@ live acceptance is still owed says so.
 - [x] 3.3 The one revision primitive (S34) ported from `broker/conversations.py`
   (`s5b-board`), with history and every bound; the Python tests ported. The
   bounds read per-scope counters kept by triggers in each write's transaction.
-- [ ] 3.4 The ledger, receipts and bodies; the mailbox.
-- [ ] 3.5 Policy, grants and sessions.
+- [x] 3.4 The ledger, receipts and bodies; the mailbox (S30, S3a, S3b), ported from
+  `broker/message_ledger.py` with its tests. Unacked mail is reserved per mailbox inside
+  the ceilings, so eviction always makes progress; a disabled agent's mail is released
+  and an owner-deleted agent's purged. Wake limits are owner policy (an owner-only
+  setter until 3.5). Wakes and revokes sit on the object's one schedule; only its alarm
+  claims and settles them, in process, so no RPC reaches a claim.
+- [ ] 3.5 Policy, grants and sessions. Owed by 3.4: the object checks the owner's live
+  session row itself for an agent register, disable or delete and a wake-limits write
+  (3.4 takes the binder's `interactive` flag), and a refused one leaves the Python's
+  refusal receipt in the policy store's receipts; the wake-limits setter becomes part of
+  owner policy.
 - [ ] 3.6 The schedule: one table, one self-rearming alarm.
 
 ## 4. Gateway
@@ -64,6 +73,12 @@ live acceptance is still owed says so.
 ## 7. Wakes and outside agents
 
 - [ ] Alarms, doorbells for ChatGPT and Claude, the board with the W8 decisions.
+- [ ] The doorbell: a `WakeSender` the object constructs and its alarm calls in process
+  (ChatGPT MCP Events, then Claude `/fire`); it consumes the schedule's open wakes and
+  revokes, and a send finishes inside the 60 s claim lease or its outcome is `unknown`.
+  Deferred from 3.4, as the Python's tick had them: no wake is claimed while the outside
+  kill switch (`TINYASSETS_OUTSIDE_DENY`) is off or the owner is not admitted
+  (`require_work`), and both reach the alarm from the owner directory (2).
 
 ## 8. Founder live test
 

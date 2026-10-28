@@ -86,6 +86,11 @@ describe("the sender is the verified identity", () => {
       [null, `dm:${muse}`, toDot.message_id, "parent is not a message to this sender in this room"],
       [MUSE, `dm:${muse}`, own.message_id, "parent is not a message to this sender in this room"],
       [MUSE, `dm:${muse}`, "msg_missing", "parent is not a message to this sender in this room"],
+      // Each half of Muse's identity alone is not Muse.
+      [{ client: MUSE.client, family: DOT.family }, `dm:${muse}`, null,
+        "an outside agent posts only in its own dm room"],
+      [{ client: DOT.client, family: MUSE.family }, `dm:${muse}`, null,
+        "an outside agent posts only in its own dm room"],
     ] as const) {
       const refused = await failure(() => r.post(origin, room, { cmid: "z", parent }));
       expect([refused.name, refused.message]).toEqual(["Refused", reason]);
@@ -156,6 +161,7 @@ describe("a reader sees only its own mail", () => {
     expect((await r.ack(MUSE, through)).through).toBe(through);
     expect((await r.read(MUSE)).messages).toEqual([]);  // W3-R5: a retried session
     expect((await r.ack(MUSE, 0)).through).toBe(through);  // never moves back
+    expect((await r.ack(MUSE, through)).through).toBe(through);  // a retry: a no-op
     const past = await failure(() => r.ack(MUSE, through + 10));
     expect(past.message).toBe("ack is past this reader's mail");
     expect((await r.read(DOT)).messages).toHaveLength(1);  // Muse's cursor is Muse's alone
@@ -336,19 +342,46 @@ describe("outside agents register from a verified identity", () => {
     }
     expect((await failure(() => r.register(MUSE, "Muse", "carrier pigeon"))).message)
       .toBe("unknown delivery method");
+    const agent = await r.registered(MUSE, "Muse", "mcp_event");
+    expect([agent.max_wakes_per_hour, agent.batch_window_s, agent.revision]).toEqual([12, 60, 1]);
+    const limits = (extra: object) => r.stub.setWakeLimits(r.session(null), {
+      agent_id: agent.agent_id, max_wakes_per_hour: 12, batch_window_s: 60, ...extra });
     for (const [extra, reason] of [
       [{ max_wakes_per_hour: 0 }, "max_wakes_per_hour is 1 to 60"],
       [{ max_wakes_per_hour: 61 }, "max_wakes_per_hour is 1 to 60"],
       [{ batch_window_s: -1 }, "batch_window_s is 0 to 3600"],
       [{ batch_window_s: 1.5 }, "batch_window_s is 0 to 3600"],
+      [{ agent_id: "agent_x" }, "agent not found"],
     ] as const) {
-      expect((await failure(() => r.register(MUSE, "Muse", "pull", extra))).message).toBe(reason);
+      expect((await failure(() => limits(extra))).message).toBe(reason);
     }
-    const agent = await r.registered(MUSE, "Muse", "mcp_event");
-    expect([agent.max_wakes_per_hour, agent.batch_window_s, agent.revision]).toEqual([12, 60, 1]);
-    const tuned = await r.registered(MUSE, "Muse", "mcp_event",
-                                     { max_wakes_per_hour: 2, batch_window_s: 0 });
+    const tuned = await limits({ max_wakes_per_hour: 2, batch_window_s: 0 });
     expect([tuned.max_wakes_per_hour, tuned.batch_window_s, tuned.revision]).toEqual([2, 0, 2]);
+    // A re-registration keeps the owner's policy; it cannot carry its own.
+    const again = await r.registered(MUSE, "Muse", "mcp_event");
+    expect([again.max_wakes_per_hour, again.batch_window_s, again.revision]).toEqual([2, 0, 3]);
+    const carried = await failure(() => r.stub.registerAgent(r.session(MUSE), {
+      command_center_id: "alpha", display_name: "Muse", delivery_method: "mcp_event",
+      recipe_id: null, max_wakes_per_hour: 60 } as never));
+    expect(carried.message).toBe("invalid ledger request");
+  });
+
+  it("lets only the owner, in its session, set wake limits or delete an agent", async () => {
+    const r = rig();
+    const muse = await r.register(MUSE);
+    const policy = { agent_id: muse, max_wakes_per_hour: 60, batch_window_s: 0 };
+    for (const [binding, reason] of [
+      [r.session(MUSE), "only the owner may change its agents' policy"],
+      [r.bind(null), "interactive owner session required"],
+      [r.bind(MUSE), "interactive owner session required"],
+    ] as const) {
+      for (const call of [() => r.stub.setWakeLimits(binding, policy),
+                          () => r.stub.deleteAgent(binding, { agent_id: muse })]) {
+        expect((await failure(call)).message).toBe(reason);
+      }
+    }
+    const [agent] = (await r.stub.outsideAgents(r.bind(null))).agents;
+    expect([agent!.max_wakes_per_hour, agent!.revision]).toEqual([12, 1]);
   });
 
   it("keeps a display name to letters, digits, spaces, dots and dashes, and no secret",
@@ -380,17 +413,31 @@ describe("the ledger's binding", () => {
     expect((await r.stub.outsideAgents(r.bind(MUSE))).agents).toEqual([]);
   });
 
+  it("lists every agent to the owner, and an outside caller only its own", async () => {
+    const r = rig();
+    const muse = await r.register(MUSE);
+    await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "moved" });
+    const moved = await r.register(MUSE, "Muse", "pull", { command_center_id: "beta" });
+    const dot = await r.register(DOT, "Dot");
+    const ids = async (from: typeof MUSE | null) =>
+      new Set((await r.stub.outsideAgents(r.bind(from))).agents.map((a) => a.agent_id));
+    expect(await ids(null)).toEqual(new Set([muse, moved, dot]));
+    expect(await ids(MUSE)).toEqual(new Set([muse, moved]));
+    expect(await ids(DOT)).toEqual(new Set([dot]));
+    expect(await ids({ client: MUSE.client, family: DOT.family })).toEqual(new Set());
+  });
+
   it("migrates the ledger tables with zeroed counters", async () => {
     const r = rig();
     await r.stub.outsideAgents(r.bind(null));
     const tables = (await r.sql("SELECT name FROM sqlite_master WHERE type = 'table'"))
       .map((t) => t["name"]);
     for (const table of ["outside_agents", "ledger_messages", "ledger_recipients",
-                         "ledger_receipts", "ledger_cursors", "ledger_wakes", "ledger_rings",
+                         "ledger_receipts", "ledger_readers", "ledger_wakes", "ledger_rings",
                          "message_bodies", "ledger_usage"]) {
       expect(tables).toContain(table);
     }
     expect(await r.table("ledger_usage")).toEqual([
-      { only: 1, agents: 0, messages: 0, body_bytes: 0, settled_wakes: 0 }]);
+      { only: 1, agents: 0, enabled_agents: 0, messages: 0, body_bytes: 0, settled_wakes: 0 }]);
   });
 });

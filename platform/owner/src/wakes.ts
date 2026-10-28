@@ -13,12 +13,13 @@
  * next wake); an unmarked one is provably unsent and due again.
  *
  * The doorbell itself (the signed MCP event POST through the owner's egress) is a later
- * slice: it implements {@link WakeSender}. Until then the alarm recovers lapsed claims and
- * leaves open wakes pending, held, not lost.
+ * slice (tasks 7): it implements {@link WakeSender}, which the object calls in process,
+ * so no wake can be claimed or settled over RPC. Until then the alarm only recovers
+ * lapsed claims, and open wakes and revokes stay pending, held, not lost.
  */
 import { type Ledger, type Outcome, outcome, type WakeTarget } from "./ledger";
 
-/** At most this many wakes per alarm run; a run with more due rearms at once. */
+/** At most this many rows per pass per alarm run; a run with more due rearms at once. */
 export const WAKES_PER_ALARM = 16;
 
 /** What rings an outside agent's doorbell. IDs only: a target never holds a body (S31). */
@@ -29,30 +30,38 @@ export interface WakeSender {
    * refused before any connection is `failed` with reason `not_sent`.
    */
   send(target: WakeTarget, mark: () => void): Promise<Outcome>;
-  /** Erase the agent's callbacks: its wake was suppressed (disabled, or off mcp_event). */
+  /** Erase the agent's callbacks: it was disabled, moved off mcp_event or deleted. */
   revoke(agentId: string): Promise<void>;
 }
 
 /**
- * Send each due wake once, and recover each lapsed claim; return how many were accepted.
+ * One alarm pass; returns how many wakes were accepted.
  *
- * One failing wake is logged and left to its ledger state; it never stops the others.
+ * First the recover pass: each claim past its lease, by its own index, whether or not
+ * there is a sender, so open work ahead of it can never starve it. Then, with a sender,
+ * the claim pass: each due open row once, a wake sent or a revoke carried out. One
+ * failing row is logged and left to its ledger state; it never stops the others.
  */
 export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock: () => number,
                                limit: number = WAKES_PER_ALARM): Promise<number> {
-  let accepted = 0;
-  for (const wake of ledger.dueWakes(clock(), limit)) {
+  for (const lapsed of ledger.lapsedClaims(clock(), limit)) {
     try {
-      if (wake.state === "sending") {
-        ledger.recover(wake.wake_id, clock());
+      ledger.recover(lapsed.wake_id, clock());
+    } catch {
+      console.error("outside-agent wake recovery failed");  // no ids, URL or body in the log
+    }
+  }
+  if (sender === null) {
+    return 0;
+  }
+  let accepted = 0;
+  for (const wake of ledger.dueOpen(clock(), limit)) {
+    try {
+      const claim = ledger.claim(wake.wake_id, clock());
+      if (claim.outcome === "revoke") {
+        await sender.revoke(claim.target.agent_id);
+        ledger.settle(claim.target.wake_id, claim.target.claim_id, { state: "sent" }, clock());
         continue;
-      }
-      if (sender === null) {
-        continue;
-      }
-      const claim = ledger.claim(wake.wake_id, clock(), false);
-      if (claim.outcome === "suppressed") {
-        await sender.revoke(claim.agent_id);
       }
       if (claim.outcome !== "claimed") {
         continue;

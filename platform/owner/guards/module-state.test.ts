@@ -10,8 +10,11 @@
  * class field, a statement that runs at load) is refused.
  *
  * The global object is shared the same way, so nothing anywhere in a source, at top
- * level or inside a body, writes through it (`globalWrites`). Every script extension a
- * bundler takes is scanned, not only `.ts`.
+ * level or inside a body, writes through it (`globalWrites`), nor through a built-in
+ * global it holds (`Math`, `console`, `Object.prototype`, `crypto`, `JSON` and the rest):
+ * a member written, or a built-in handed to a call that changes it
+ * (`Object.defineProperty(Math, ...)`). Every script extension a bundler takes is
+ * scanned, not only `.ts`.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -90,6 +93,28 @@ const DECLARATIONS = new Set([
 /** The isolate's global object, by each name a Worker can reach it. */
 const GLOBALS = new Set(["globalThis", "self", "global"]);
 
+/**
+ * The built-in globals every owner's code shares in an isolate. Reading them and calling
+ * their methods is allowed; writing a member of one, or naming one as a value an alias
+ * could write through, is a write to the global object.
+ */
+const BUILTINS = new Set([
+  "Array", "ArrayBuffer", "Atomics", "BigInt", "Boolean", "DataView", "Date", "Error",
+  "Function", "Intl", "JSON", "Map", "Math", "Number", "Object", "Promise", "Proxy", "Reflect",
+  "RegExp", "Set", "String", "Symbol", "TextDecoder", "TextEncoder", "URL", "URLSearchParams",
+  "Uint8Array", "WeakMap", "WeakRef", "WeakSet", "WebAssembly", "caches", "console", "crypto",
+  "fetch", "navigator", "performance", "scheduler", "structuredClone", "Headers", "Request",
+  "Response",
+]);
+
+/** The built-in calls that change their first argument. */
+const MUTATORS = new Set([
+  "Object.assign", "Object.defineProperty", "Object.defineProperties", "Object.setPrototypeOf",
+  "Object.freeze", "Object.seal", "Object.preventExtensions", "Reflect.set",
+  "Reflect.defineProperty", "Reflect.deleteProperty", "Reflect.setPrototypeOf",
+  "Reflect.preventExtensions",
+]);
+
 function wrapper(node: ts.Node): node is ts.Expression & { expression: ts.Expression } {
   return ts.isParenthesizedExpression(node) || ts.isAsExpression(node)
     || ts.isSatisfiesExpression(node) || ts.isNonNullExpression(node)
@@ -120,35 +145,82 @@ function assigned(node: ts.Node): boolean {
   return (ts.isForOfStatement(up) || ts.isForInStatement(up)) && up.initializer === node;
 }
 
+/** The member chain `node` heads (`Math.x.y`), through any parentheses or casts. */
+function chainTop(node: ts.Node): ts.Node {
+  let top = node;
+  while (((ts.isPropertyAccessExpression(top.parent) || ts.isElementAccessExpression(top.parent))
+          && top.parent.expression === top) || wrapper(top.parent)) {
+    top = top.parent;
+  }
+  return top;
+}
+
+/** The identifier a member chain is rooted at (`Object` for `Object.prototype.x`). */
+function chainRoot(node: ts.Expression): ts.Identifier | undefined {
+  let current: ts.Expression = node;
+  for (;;) {
+    if (wrapper(current) || ts.isPropertyAccessExpression(current)
+        || ts.isElementAccessExpression(current)) {
+      current = current.expression;
+    } else {
+      return ts.isIdentifier(current) ? current : undefined;
+    }
+  }
+}
+
+/** How the chain `top` is written: an assignment, `++` or `--`, or `delete`; else null. */
+function writeOf(top: ts.Node): string | null {
+  const up = top.parent;
+  if (assigned(top)) {
+    return "an assignment";
+  }
+  if ((ts.isPrefixUnaryExpression(up) || ts.isPostfixUnaryExpression(up))
+      && (up.operator === ts.SyntaxKind.PlusPlusToken
+          || up.operator === ts.SyntaxKind.MinusMinusToken)) {
+    return "an update";
+  }
+  return ts.isDeleteExpression(up) ? "a delete" : null;
+}
+
+/** Whether a bare built-in is used only as itself: called, extended, tested or typed. */
+function usedInPlace(node: ts.Node): boolean {
+  const up = node.parent;
+  return ((ts.isCallExpression(up) || ts.isNewExpression(up)) && up.expression === node)
+    || ((ts.isCallExpression(up) || ts.isNewExpression(up))
+        && (up.arguments ?? []).some((argument) => argument === node))
+    || (ts.isExpressionWithTypeArguments(up) && ts.isHeritageClause(up.parent))
+    || (ts.isBinaryExpression(up) && up.right === node
+        && up.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword)
+    || ts.isTypeOfExpression(up);
+}
+
 /**
  * Each write through the global object anywhere in `file`: an assignment, `++`, `--`
  * or `delete` on a member chain rooted at `globalThis`, `self` or `global`; a call
  * through such a chain or handed one; and the global object named as a value, which
- * would let an alias write through it. Reading a member is allowed.
+ * would let an alias write through it. Reading a member is allowed. A built-in global
+ * counts the same for a write to a member, a call that changes it, and a bare built-in
+ * named as a value; calling its methods is allowed.
  */
 function globalWrites(file: ts.SourceFile, report: (node: ts.Node, what: string) => void) {
   const visit = (node: ts.Node): void => {
-    if (ts.isIdentifier(node) && GLOBALS.has(node.text) && !inType(node)) {
+    const global = ts.isIdentifier(node) && GLOBALS.has(node.text);
+    const builtin = ts.isIdentifier(node) && BUILTINS.has(node.text);
+    if ((global || builtin) && !inType(node)) {
       const parent = node.parent;
       const named = "name" in parent && (parent as { name?: ts.Node }).name === node
         && !ts.isShorthandPropertyAssignment(parent);
       if (!named && !(ts.isPropertyAccessExpression(parent) && parent.name === node)) {
-        let top: ts.Node = node;
-        while (((ts.isPropertyAccessExpression(top.parent)
-                 || ts.isElementAccessExpression(top.parent)) && top.parent.expression === top)
-               || wrapper(top.parent)) {
-          top = top.parent;
-        }
+        const top = chainTop(node);
         const up = top.parent;
-        const what = `writes through ${node.text}`;
-        if (assigned(top)) {
-          report(top, `${what}: an assignment`);
-        } else if ((ts.isPrefixUnaryExpression(up) || ts.isPostfixUnaryExpression(up))
-                   && (up.operator === ts.SyntaxKind.PlusPlusToken
-                       || up.operator === ts.SyntaxKind.MinusMinusToken)) {
-          report(top, `${what}: an update`);
-        } else if (ts.isDeleteExpression(up)) {
-          report(top, `${what}: a delete`);
+        const what = `writes through ${(node as ts.Identifier).text}`;
+        const write = writeOf(top);
+        if (write !== null) {
+          report(top, `${what}: ${write}`);
+        } else if (builtin) {
+          if (top === node && !usedInPlace(node)) {
+            report(top, `${what}: named as a value`);
+          }
         } else if ((ts.isCallExpression(up) || ts.isNewExpression(up)) && up.expression === top) {
           report(top, `${what}: a call`);
         } else if ((ts.isCallExpression(up) || ts.isNewExpression(up))
@@ -157,6 +229,13 @@ function globalWrites(file: ts.SourceFile, report: (node: ts.Node, what: string)
         } else if (top === node && !ts.isTypeOfExpression(up)) {
           report(top, `${what}: named as a value`);
         }
+      }
+    }
+    if (ts.isCallExpression(node) && MUTATORS.has(node.expression.getText(file).replace(/\s/g, ""))
+        && node.arguments[0] !== undefined) {
+      const root = chainRoot(node.arguments[0]);
+      if (root !== undefined && BUILTINS.has(root.text)) {
+        report(node, `writes through ${root.text}: a call that changes it`);
       }
     }
     ts.forEachChild(node, visit);
@@ -266,6 +345,30 @@ describe("module-state guard", () => {
   });
 
   it.each([
+    "export function f() { Math.owner = 'alice'; }",
+    "export function f() { console.log = () => undefined; }",
+    "export function f() { Object.prototype.owner = 'alice'; }",
+    "export function f() { crypto.cache = new Map(); }",
+    "export function f() { JSON.last = 1; }",
+    "export function f() { Array.prototype['last'] = 1; }",
+    "export function f() { delete (Math as any).PI; }",
+    "export function f() { (Date as any).calls++; }",
+    "export function f() { ({ a: Math.owner } = { a: 1 }); }",
+    "export function f() { Object.defineProperty(globalThis, 'owner', { value: 1 }); }",
+    "export function f() { Object.defineProperty(Math, 'owner', { value: 1 }); }",
+    "export function f() { Object.defineProperties(Object.prototype, {}); }",
+    "export function f() { Object.assign(console, { owner: 1 }); }",
+    "export function f() { Reflect.set(Date, 'now', () => 0); }",
+    "export function f() { Object.freeze(JSON); }",
+    "export function f() { Object . setPrototypeOf(crypto, null); }",
+    "export function f() { const m = Math; return m; }",
+    "export function f() { return { Math }; }",
+  ])("sees a write through a built-in global: %s", (source) => {
+    expect(moduleState("probe.ts", source)).toEqual(
+      [expect.stringMatching(/^probe\.ts:1: writes through \w+: /)]);
+  });
+
+  it.each([
     // The reviewer's second miss: a source the bundler takes that is not `.ts`.
     ["probe.js", "export let current = null;"],
     ["probe.mjs", "export function f() { globalThis.owner = 1; }"],
@@ -307,6 +410,16 @@ describe("module-state guard", () => {
     "export function f() { return globalThis.crypto.randomUUID === undefined; }",
     "export function f(x: { self: number }) { return x.self + 1; }",
     "type G = typeof globalThis;",
+    "export function f(n: number) { return Math.max(n, 0) + Number.parseInt('1', 10); }",
+    "export class Refused extends Error {}",
+    "export function f(x: unknown) { return x instanceof Map ? new Map() : JSON.stringify(x); }",
+    "export function f() { crypto.getRandomValues(new Uint8Array(8)); return crypto.randomUUID(); }",
+    "export function f(x: string[]) { return x.map(Number); }",
+    "export function f() { console.error('failed'); }",
+    "export const LIST = Object.freeze(['a', 'b']);",
+    "export const KEYS = Object.freeze({ Math: 1, console: 2 });",
+    "export function f(o: { Math: number }) { return o.Math + typeof Math; }",
+    "export function f(x: object) { return Object.freeze({ ...x }); }",
   ])("allows %s", (source) => {
     expect(moduleState("probe.ts", source)).toEqual([]);
   });

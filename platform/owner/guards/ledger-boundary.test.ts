@@ -16,7 +16,7 @@ const LEDGER = "owner/src/ledger.ts";
 const IMPORTERS = new Set(["owner/src/owner-do.ts", "owner/src/wakes.ts"]);
 const NAMERS = new Set([LEDGER, "owner/src/schema.ts"]);
 const TABLES = Object.freeze(["outside_agents", "ledger_messages", "ledger_recipients",
-  "ledger_receipts", "ledger_cursors", "ledger_wakes", "ledger_rings", "ledger_usage",
+  "ledger_receipts", "ledger_readers", "ledger_wakes", "ledger_rings", "ledger_usage",
   "message_bodies"]);
 /** A static import or export from, or a dynamic import of, the ledger module. */
 const IMPORT = /(?:\bfrom\s*|\bimport\s*\(?\s*)["'][^"']*\/ledger(?:\.[cm]?[jt]s)?["']/;
