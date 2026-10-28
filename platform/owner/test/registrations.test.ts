@@ -143,6 +143,43 @@ describe("an MCP client's agent registration", () => {
     expect(await held(r, MUSE)).toEqual({ agents: 0, held: 0 });
   });
 
+  it("prunes expired cards at a filing, and files only under the filer's own stamp",
+     async () => {
+    const r = await rig();
+    await r.stub.outsideAgents(r.bind(MUSE));
+    await r.stub.outsideAgents(r.bind(DOT));
+    const out = await inCards(r, {}, (registry) => {
+      const t = clock();
+      const by = (origin: Origin) => ({ client: origin.client, generation: 1,
+                                        authenticated_at: null });
+      registry.file(MUSE, "conn", by(MUSE), REQUEST, t);
+      registry.file(DOT, "conn", by(DOT), REQUEST, t + CARD_TTL_S + 1);  // MUSE's has expired
+      const mismatched = (() => {
+        try {
+          registry.file(DOT, "conn", by(MUSE), REQUEST, t);
+          return "filed";
+        } catch (error) {
+          return (error as Error).message;
+        }
+      })();
+      return mismatched;
+    });
+    expect(out).toBe("invalid outside origin");
+    expect((await cards(r)).map((row) => row["client"])).toEqual([DOT.client]);
+    expect(await held(r, MUSE)).toEqual({ agents: 0, held: 0 });
+  });
+
+  it("is counted by a client row recorded after it, as a store change could leave it",
+     async () => {
+    const r = await rig();
+    await r.sql("INSERT INTO agent_cards (card_id, client, family, source_ref, generation, " +
+                  "authenticated_at, request, digest, filed_at) VALUES (?, ?, ?, 'conn', 1, " +
+                  "NULL, '{}', 'd', ?)", "card_" + "1".repeat(32), MUSE.client, MUSE.family,
+                clock());
+    await r.stub.outsideAgents(r.bind(MUSE));
+    expect(await held(r, MUSE)).toEqual({ agents: 0, held: 1 });
+  });
+
   it("is rechecked with standing at its apply", async () => {
     const r = await rig();
     const filed = await r.stub.registerPropose(r.bind(MUSE), REQUEST);

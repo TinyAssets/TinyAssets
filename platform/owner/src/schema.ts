@@ -386,12 +386,12 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "refusal_receipts) VALUES (1, 0, 0, 0, 0, 0, 0, 0, 0)",
     // Stamped scheduled work (tasks 3.6, `scheduled.ts`): a scheduled turn or automation,
     // the outside authority it was made under (`client`, `generation`, `authenticated_at`;
-    // none for the owner's own), rechecked with `Grants.standing` before it runs. Open work
-    // holds its client's grant row. A claim is fenced by its lease and may-have-run mark,
-    // as a wake is, so unknown work is never run again.
+    // none for the owner's own), rechecked with `Grants.standing` before it is handed to
+    // pi. Open work holds its client's grant row. A hand-off is fenced by its lease and
+    // may-have-been-handed mark, as a wake is, so unknown work is never handed again.
     "CREATE TABLE scheduled_work (work_id TEXT PRIMARY KEY CHECK (length(work_id) = 37), " +
       "kind TEXT NOT NULL CHECK (kind IN ('turn')), due REAL NOT NULL, " +
-      "state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'done', 'failed', " +
+      "state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'handed', 'failed', " +
       "'refused', 'unknown')), payload TEXT NOT NULL CHECK (length(payload) <= 16384), " +
       "client TEXT CHECK (client IS NULL OR length(client) = 64), generation INTEGER, " +
       "authenticated_at REAL, claim_id TEXT, marked INTEGER NOT NULL DEFAULT 0, " +

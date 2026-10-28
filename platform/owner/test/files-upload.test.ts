@@ -410,8 +410,8 @@ describe("a chunk", () => {
       getChunks: (space, reads) => env.FILES.getChunks(space, reads),
       deleteChunks: async () => { throw new Error("FILES is down"); },
     };
-    expect((await failure(() => inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000),
-                                        failing))).message).toBe("FILES is down");
+    // The failure stays in the chunk's row: the pass itself completes.
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000), failing);
     const deleting = await chunk(r, sha);
     expect(deleting).toMatchObject({ state: "deleting" });
     expect(deleting!["gc_after"] as number).toBeGreaterThan(Date.now() / 1000);

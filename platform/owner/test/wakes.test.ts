@@ -12,8 +12,9 @@ import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { clock, HOUR_S, type Ledger, outcome, retryAfter, WAKE_LEASE_S } from "../src/ledger";
+import { runWakes, WAKE_RETRY_S } from "../src/wakes";
 import type { OwnerDO } from "../src/owner-do";
-import { DOT, MCP, MUSE, origin, rig, type Rig, wakeReceipts } from "./ledger-support";
+import { DOT, ledgerOn, MCP, MUSE, origin, rig, type Rig, wakeReceipts } from "./ledger-support";
 import { drainDue, failure, laneJobs } from "./support";
 
 const RINGS = { command_center_id: "alpha", display_name: "Muse", delivery_method: "mcp_event",
@@ -573,6 +574,33 @@ describe("a revoke of a suppressed agent's callbacks", () => {
 });
 
 describe("the wakes lane of the object's one schedule", () => {
+  it("backs a row whose step fails off in its own row, never in a loop (review N8)",
+     async () => {
+    const r = await rig();
+    const t = clock();
+    const out = await runInDurableObject(r.stub, async (_i: OwnerDO, state) => {
+      const ledger = ledgerOn(state.storage);
+      const muse = ringing(ledger);
+      ledger.post(null, `dm:${muse}`, "c1", "hello", null, t - 100);
+      state.storage.sql.exec("CREATE TRIGGER probe_claim BEFORE UPDATE OF claim_id ON " +
+                             "ledger_wakes BEGIN SELECT RAISE(ABORT, 'probe'); END");
+      const sent = await runWakes(ledger, r.sender, () => t);
+      const after = [sent, ledger.nextDue(t, true)];
+      // A lapsed claim whose recovery fails waits the same.
+      state.storage.sql.exec("DROP TRIGGER probe_claim");
+      const at = t + WAKE_RETRY_S;
+      const [wake] = ledger.dueOpen(at, 1);
+      expect(ledger.claim(wake!.wake_id, at).outcome).toBe("claimed");
+      state.storage.sql.exec("CREATE TRIGGER probe_settle BEFORE UPDATE OF settled_at ON " +
+                             "ledger_wakes BEGIN SELECT RAISE(ABORT, 'probe'); END");
+      await runWakes(ledger, null, () => at + WAKE_LEASE_S);
+      state.storage.sql.exec("DROP TRIGGER probe_settle");
+      return [...after, ledger.nextDue(at + WAKE_LEASE_S, false)];
+    });
+    expect(out).toEqual([0, t + WAKE_RETRY_S,
+                         t + WAKE_RETRY_S + WAKE_LEASE_S + WAKE_RETRY_S]);
+  });
+
   it("without a doorbell gives open wakes no job and holds them pending", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event");

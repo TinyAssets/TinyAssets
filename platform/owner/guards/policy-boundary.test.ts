@@ -39,6 +39,12 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   agent_cards: Object.freeze(["owner/src/registrations.ts", SCHEMA]),
 });
 
+/**
+ * Tables no source names at all: Lifecycle's (`cf_agents_*`, its job queue among them) and
+ * pi's session store (`pi_*`). The SDK alone reads and writes them.
+ */
+const RESERVED: readonly RegExp[] = Object.freeze([/\bcf_agents_\w*/, /\bpi_[a-z]\w*/]);
+
 function importer(module: string): RegExp {
   return new RegExp(`(?:\\bfrom\\s*|\\bimport\\s*\\(?\\s*)["'][^"']*/${module}(?:\\.[cm]?[jt]s)?["']`);
 }
@@ -56,6 +62,9 @@ export function reach(sources: Map<string, string>): Record<string, string[]> {
       if (new RegExp(`\\b${table}\\b`).test(source)) {
         (found[table] ??= []).push(path);
       }
+    }
+    if (RESERVED.some((reserved) => reserved.test(source))) {
+      (found["reserved"] ??= []).push(path);
     }
   }
   return found;
@@ -75,6 +84,9 @@ describe("policy-boundary guard", () => {
     ['const policy = await import("./policy");', "policy"],
     ['sql.exec("UPDATE owner_policy SET generation = 9");', "owner_policy"],
     ['sql.exec("DELETE FROM outside_clients");', "outside_clients"],
+    ['sql.exec("DELETE FROM cf_agents_jobs");', "reserved"],
+    ['sql.exec("UPDATE cf_agents_jobs SET time = 0");', "reserved"],
+    ['sql.exec("SELECT * FROM pi_entries");', "reserved"],
   ])("sees %s", (line, name) => {
     expect(reach(new Map([["owner/src/probe.ts", line]]))[name]).toEqual(["owner/src/probe.ts"]);
   });

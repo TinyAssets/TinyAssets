@@ -11,8 +11,8 @@ import { clock, type Origin } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
 import {
-  runWork, Scheduled, type Stamp, WORK_LEASE_S, WORK_LIMITS, type WorkLimits, type WorkRunner,
-  type WorkTarget,
+  runWork, Scheduled, type Stamp, WORK_LEASE_S, WORK_LIMITS, WORK_RETRY_S, type WorkLimits,
+  type WorkRunner, type WorkTarget,
 } from "../src/scheduled";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import { laneAt } from "./support";
@@ -20,18 +20,26 @@ import { laneAt } from "./support";
 const CHATGPT: Origin = Object.freeze({ client: "1".repeat(64), family: "2".repeat(64) });
 const TURN = Object.freeze({ prompt: "check the board" });
 
-/** A runner over a script: each run's answer, `crash` to die mid-run, `early` before mark. */
+/**
+ * A runner over a script: each hand-off's answer, `crash` to die after its mark, `early`
+ * before it, `slow` to hold the hand-off for `slowMs`.
+ */
 class ScriptedRunner implements WorkRunner {
   readonly ran: WorkTarget[] = [];
-  readonly answers: ("done" | "failed" | "crash" | "early")[] = [];
+  readonly answers: ("handed" | "failed" | "crash" | "early" | "slow")[] = [];
+  slowMs = 200;
 
-  async run(target: WorkTarget, mark: () => void) {
-    const answer = this.answers.shift() ?? "done";
+  async handOff(target: WorkTarget, mark: () => void) {
+    const answer = this.answers.shift() ?? "handed";
     if (answer === "early") {
       throw new Error("died before the work began");
     }
-    mark();
+    mark();  // throws when the claim lapsed: the runner stops before any effect
     this.ran.push(target);
+    if (answer === "slow") {
+      await new Promise((resolve) => setTimeout(resolve, this.slowMs));
+      return { state: "handed" as const };
+    }
     if (answer === "crash") {
       throw new Error("died after the work began");
     }
@@ -132,7 +140,7 @@ describe("stamped scheduled work", () => {
       .rejects.toThrow(/never deleted/);
     expect(await inWork(r, ({ work }) => runWork(work, runner, clock))).toBe(1);
     expect(runner.ran.map((t) => [t.kind, t.payload, t.stamp])).toEqual([["turn", TURN, stamp]]);
-    expect(await states(r)).toEqual([{ state: "done", attempts: 1, marked: 1 }]);
+    expect(await states(r)).toEqual([{ state: "handed", attempts: 1, marked: 1 }]);
     expect(await held(r, CHATGPT)).toBe(0);  // settled: the row is free again
     const [after, recount] = await counters(r);
     expect(after).toEqual(recount);
@@ -151,7 +159,7 @@ describe("stamped scheduled work", () => {
     await inWork(r, ({ grants }) => grants.revoke(CHATGPT.client, clock()));
     expect(await inWork(r, ({ work }) => runWork(work, runner, clock))).toBe(1);
     expect(runner.ran.map((t) => t.stamp)).toEqual([null]);
-    expect((await states(r)).map((row) => row["state"]).sort()).toEqual(["done", "refused"]);
+    expect((await states(r)).map((row) => row["state"]).sort()).toEqual(["handed", "refused"]);
     expect(await held(r, CHATGPT)).toBe(0);
   });
 
@@ -204,10 +212,10 @@ describe("stamped scheduled work", () => {
       if (claim.outcome !== "claimed") {
         throw new Error("expected a claim");
       }
-      return [work.settle(id, "claim_x", { state: "done" }, t),
+      return [work.settle(id, "claim_x", { state: "handed" }, t),
               work.mark(id, "claim_x"),
               work.settle(id, claim.target.claim_id, { state: "failed", reason: "boom" }, t),
-              work.settle(id, claim.target.claim_id, { state: "done" }, t),
+              work.settle(id, claim.target.claim_id, { state: "handed" }, t),
               (() => {
                 try {
                   return work.settle(id, claim.target.claim_id, { state: "sent" }, t);
@@ -258,6 +266,90 @@ describe("stamped scheduled work", () => {
     }, { maxSettled: 2 });
     expect((await r.sql("SELECT payload FROM scheduled_work")).map((row) => row["payload"]))
       .toEqual(['{"n":3}']);
+  });
+});
+
+describe("a work pass (slice 5's review L1, L2, N8)", () => {
+  it("claims nothing without a runner", async () => {
+    const r = await rig();
+    await inWork(r, async ({ work }) => {
+      work.add("turn", clock() - 1, TURN, null, clock());
+      expect(await runWork(work, null, clock)).toBe(0);
+    });
+    expect(await states(r)).toEqual([{ state: "pending", attempts: 0, marked: 0 }]);
+  });
+
+  it("stops a runner whose mark fails, before any effect", async () => {
+    const r = await rig();
+    const runner = new ScriptedRunner();
+    const t = clock();
+    await inWork(r, async ({ work, state }) => {
+      const { work_id: id } = work.add("turn", t - 1, TURN, null, t);
+      // The claim lapses and is taken again while the first runner is handed its target.
+      const lapsing: WorkRunner = {
+        handOff: (target, mark) => {
+          state.storage.sql.exec("UPDATE scheduled_work SET claim_id = 'claim_other' " +
+                                 "WHERE work_id = ?", id);
+          return runner.handOff(target, mark);
+        },
+      };
+      expect(await runWork(work, lapsing, () => t)).toBe(0);
+    });
+    expect(runner.ran).toEqual([]);  // it never got past its mark
+    expect(await states(r)).toEqual([{ state: "running", attempts: 1, marked: 0 }]);
+  });
+
+  it("reports a hand-off held past its bound, and leaves it marked to its lease", async () => {
+    const r = await rig();
+    const runner = new ScriptedRunner();
+    runner.answers.push("slow");
+    const t = clock();
+    await inWork(r, async ({ work }) => {
+      work.add("turn", t - 2, TURN, null, t);
+      work.add("turn", t - 1, { n: 2 }, null, t + 0.001);
+      expect(await runWork(work, runner, () => t, 16, 20)).toBe(1);  // the next still runs
+    });
+    expect((await states(r)).map((row) => [row["state"], row["marked"]]))
+      .toEqual([["running", 1], ["handed", 1]]);
+    await inWork(r, ({ work }) => runWork(work, runner, () => t + WORK_LEASE_S));
+    expect((await states(r))[0]!["state"]).toBe("unknown");  // never handed again
+    expect(runner.ran).toHaveLength(2);
+  });
+
+  it("backs a failing row off in its own row, never in a loop", async () => {
+    const r = await rig();
+    const t = clock();
+    const broken: WorkRunner = {
+      handOff: async () => ({ state: "sent" as never }),  // an answer settle refuses
+    };
+    await inWork(r, async ({ work }) => {
+      work.add("turn", t - 1, TURN, null, t);
+      expect(await runWork(work, broken, () => t)).toBe(0);
+    });
+    const [row] = await r.sql("SELECT state, due FROM scheduled_work");
+    expect(row).toEqual({ state: "running", due: t + WORK_LEASE_S });
+    // A pending row whose claim fails is held back too.
+    await r.sql("UPDATE scheduled_work SET state = 'pending', claim_id = NULL, due = ?", t - 1);
+    await inWork(r, async ({ work, state }) => {
+      state.storage.sql.exec("CREATE TRIGGER probe_claim BEFORE UPDATE OF claim_id ON " +
+                             "scheduled_work BEGIN SELECT RAISE(ABORT, 'probe'); END");
+      expect(await runWork(work, new ScriptedRunner(), () => t)).toBe(0);
+      state.storage.sql.exec("DROP TRIGGER probe_claim");
+      expect(work.nextDue(t, true)).toBe(t + WORK_RETRY_S);
+    });
+  });
+
+  it("of a grant change refuses only pending work, never work being handed", async () => {
+    const r = await rig();
+    const stamp = await admitted(r, CHATGPT);
+    const t = clock();
+    await inWork(r, ({ work }) => {
+      const { work_id: id } = work.add("turn", t - 1, TURN, stamp, t);
+      work.add("turn", t + 600, TURN, stamp, t + 0.001);
+      expect(work.claim(id, t).outcome).toBe("claimed");
+    });
+    await r.stub.grantRevoke(r.bind(null), { client: CHATGPT.client });
+    expect((await states(r)).map((row) => row["state"])).toEqual(["running", "refused"]);
   });
 });
 

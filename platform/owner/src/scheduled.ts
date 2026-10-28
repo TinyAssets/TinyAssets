@@ -12,11 +12,22 @@
  * `held`, as an agent holds it), so the free-row bound never forgets that row and turns a
  * standing grant into "no grant" (slice 3's review N3).
  *
- * Runs are fenced as wakes are (`wakes.ts`): a claim takes a lease, the runner calls
- * `mark()` before the work can have any effect, and a claim abandoned past its lease is
- * `unknown` if it was marked, never run again, or else due again, at most
- * `WORK_LIMITS.attempts` times. What runs a turn is the agent's (tasks 5): until it
+ * The lane only hands work off; it never runs a turn (slice 5's review L1). Its pass is
+ * inline in Lifecycle's drive loop, which awaits each job in turn under one alarm's
+ * 15-minute wall, beside PiHarness's wake job, so a runner (the agent's, tasks 5) marks
+ * the row, hands the turn to pi's durable submit and returns. pi runs it, and its status
+ * is pi's receipts; the row says only `handed`. A hand-off is fenced as a wake's send is
+ * (`wakes.ts`): a claim takes a `WORK_LEASE_S` lease, which bounds the hand-off alone; the
+ * runner calls `mark()` before the work can have any effect, and stops if the mark
+ * fails (the claim lapsed); a claim abandoned past its lease is `unknown` if it was
+ * marked, never handed again, or else due again, at most `WORK_LIMITS.attempts` times. A
+ * runner that holds its hand-off past `WORK_HANDOFF_MS` is reported, its row marked as
+ * possibly handed and left to its lease, and the pass moves on. Until the agent
  * constructs a {@link WorkRunner}, pending work is held and gives the lane no job.
+ *
+ * A pass contains each row's failure in that row: a row whose step fails in process is
+ * backed off `WORK_RETRY_S` in its own due time, so it neither stops the others nor
+ * loops the alarm, and the pass throws only when that backoff cannot be written.
  *
  * The owner-wide bounds read counters the schema's triggers keep
  * (`policy_usage.open_work`, `settled_work`); a client's share is counted on its own
@@ -27,10 +38,14 @@ import { Invalid, Refused } from "./errors";
 import { codePoints } from "./text";
 
 export const WORK_KINDS: readonly string[] = Object.freeze(["turn"]);
-/** A claimed run's lease: past it, the may-have-run mark decides. */
+/** A claimed hand-off's lease: past it, the may-have-been-handed mark decides. */
 export const WORK_LEASE_S = 60;
 /** At most this many rows per pass per lane run. */
 export const WORK_PER_PASS = 16;
+/** The longest a runner may hold one hand-off before the pass reports it and moves on. */
+export const WORK_HANDOFF_MS = 5_000;
+/** How long a row whose step failed in process waits before the lane takes it again. */
+export const WORK_RETRY_S = 60;
 const HEX64 = /^[0-9a-f]{64}$/;
 
 export interface WorkLimits {
@@ -75,15 +90,20 @@ export interface WorkTarget {
   readonly stamp: Stamp | null;
 }
 
+/** A hand-off's answer: handed to pi (its status is pi's receipts), or refused before. */
 export interface WorkAnswer {
-  readonly state: "done" | "failed";
+  readonly state: "handed" | "failed";
   readonly reason?: string;
 }
 
-/** What runs a due piece of work: the agent's, from tasks 5. */
+/**
+ * What hands a due piece of work to pi: the agent's, from tasks 5. It never runs the turn
+ * inline: it calls `mark()`, which throws if the claim lapsed (then it stops), hands the
+ * turn to pi's durable submit, and returns within `WORK_HANDOFF_MS`. A throw leaves the
+ * row to its lease.
+ */
 export interface WorkRunner {
-  /** Run one; `mark()` before it can have any effect. A throw leaves it to its lease. */
-  run(target: WorkTarget, mark: () => void): Promise<WorkAnswer>;
+  handOff(target: WorkTarget, mark: () => void): Promise<WorkAnswer>;
 }
 
 export type WorkClaim =
@@ -260,6 +280,12 @@ export class Scheduled {
     });
   }
 
+  /** A row whose step failed in process, held back to `until` (never earlier than it was). */
+  defer(workId: string, until: number): void {
+    this.#sql.exec("UPDATE scheduled_work SET due = MAX(due, ?) WHERE work_id = ? AND state IN " +
+                     "('pending', 'running')", until, workId);
+  }
+
   /** The durable may-have-run mark, written before the work can have any effect. */
   mark(workId: string, claimId: string): boolean {
     return this.#sql.exec("UPDATE scheduled_work SET marked = 1 WHERE work_id = ? AND " +
@@ -297,7 +323,7 @@ export class Scheduled {
       throw new Invalid("invalid work answer");
     }
     const { state, reason } = answer as Record<string, unknown>;
-    if ((state !== "done" && state !== "failed")
+    if ((state !== "handed" && state !== "failed")
         || (reason !== undefined && (typeof reason !== "string" || !REASON.test(reason)))) {
       throw new Invalid("invalid work answer");
     }
@@ -346,17 +372,34 @@ export class Scheduled {
   }
 }
 
+/** What a hand-off came to within its bound: its answer, or that it ran late. */
+async function bounded(run: Promise<WorkAnswer>, ms: number): Promise<WorkAnswer | "late"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<"late">((resolve) => {
+    timer = setTimeout(() => resolve("late"), ms);
+  });
+  try {
+    return await Promise.race([run, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
- * One `work` lane pass; how many runs finished. First the recover pass, whether or not
- * there is a runner; then, with one, each due pending row once.
+ * One `work` lane pass; how many hand-offs finished. First the recover pass, whether or
+ * not there is a runner; then, with one, each due pending row once. A row's failure is
+ * kept in its row (`WORK_RETRY_S`); a hand-off past `handoffMs` is reported and left to
+ * its lease, marked.
  */
 export async function runWork(work: Scheduled, runner: WorkRunner | null, clock: () => number,
-                              limit: number = WORK_PER_PASS): Promise<number> {
+                              limit: number = WORK_PER_PASS,
+                              handoffMs: number = WORK_HANDOFF_MS): Promise<number> {
   for (const workId of work.lapsed(clock(), limit)) {
     try {
       work.recover(workId, clock());
     } catch {
       console.error("scheduled work recovery failed");  // no ids or payload in the log
+      work.defer(workId, clock() + WORK_RETRY_S);
     }
   }
   if (runner === null) {
@@ -370,18 +413,26 @@ export async function runWork(work: Scheduled, runner: WorkRunner | null, clock:
         continue;
       }
       const { target } = claim;
-      const answer = await runner.run(target, () => {
+      const handing = runner.handOff(target, () => {
         if (!work.mark(target.work_id, target.claim_id)) {
-          throw new Error("the work's claim lapsed before its run");
+          throw new Error("the work's claim lapsed before its hand-off");
         }
       });
+      const answer = await bounded(handing, handoffMs);
+      if (answer === "late") {
+        // It may yet hand the work over: never hand it again, and let its lease decide.
+        handing.catch(() => undefined);
+        work.mark(target.work_id, target.claim_id);
+        console.error("a scheduled hand-off ran past its bound; it is left to its lease");
+        continue;
+      }
       if (work.settle(target.work_id, target.claim_id, answer, clock())) {
         finished++;
       }
     } catch {
       console.error("scheduled work failed");  // no ids or payload in the log
+      work.defer(workId, clock() + WORK_RETRY_S);
     }
   }
   return finished;
 }
-

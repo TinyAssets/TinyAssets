@@ -1194,6 +1194,15 @@ export class Ledger {
     });
   }
 
+  /**
+   * A row whose pass failed in process, held back to `until` (never earlier than it was),
+   * so a row that keeps failing waits in its own row instead of looping the alarm.
+   */
+  defer(wakeId: string, until: number): void {
+    this.#sql.exec("UPDATE ledger_wakes SET due = MAX(due, ?) WHERE wake_id = ? AND state IN " +
+                     "('pending', 'rate_limited', 'sending')", until, wakeId);
+  }
+
   /** The durable may-have-sent mark, written before the doorbell's first byte. */
   mark(wakeId: string, claimId: string): boolean {
     return this.#sql.exec(

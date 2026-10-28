@@ -1471,7 +1471,8 @@ export class Files {
    * retention change to kept rows, expire intents and temporary directories, prune due
    * history, then delete due garbage chunks. A delete marks its chunks `deleting` (never
    * held again) before it asks `FILES`, and removes their rows only after; one that fails
-   * is retried later.
+   * stays in those rows, retried after `GC_RETRY_S`, and never fails the pass (the `files`
+   * lane's contract: an outside call's failure is its rows', a throw is a bug).
    */
   async collect(now: number): Promise<void> {
     const sql = this.#sql;
@@ -1501,7 +1502,12 @@ export class Files {
                  now + GC_RETRY_S, sha256);
       }
     });
-    await this.#store.deleteChunks(this.ns(), due);
+    try {
+      await this.#store.deleteChunks(this.ns(), due);
+    } catch {
+      console.error("chunk delete failed; it is tried again later");  // no hashes in the log
+      return;
+    }
     this.#storage.transactionSync(() => {
       for (const sha256 of due) {
         sql.exec("DELETE FROM file_chunks WHERE sha256 = ? AND state = 'deleting'", sha256);

@@ -647,6 +647,21 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
   });
 });
 
+describe("a scoped grant's capabilities (slice 5's review N9)", () => {
+  it("names only the capabilities a door checks", async () => {
+    const r = await rig();
+    await r.stub.outsideAgents(r.bind(CHATGPT));
+    const refused = await failure(() => grant(r, CHATGPT, "scoped",
+                                              [{ ...READ, capability: "read_everything" }]));
+    expect([refused.name, refused.message]).toEqual(["Invalid", "a scope's capability is one " +
+      "of read_graph, write_graph, propose_policy, read_files, write_files"]);
+    for (const capability of ["read_graph", "write_graph", "propose_policy", "read_files",
+                              "write_files"]) {
+      expect((await grant(r, CHATGPT, "scoped", [{ ...READ, capability }])).mode).toBe("scoped");
+    }
+  });
+});
+
 describe("the grant row's own rule (slice 3's review N4)", () => {
   it("refuses a row the owner never set that is anything but a fresh full grant", async () => {
     const r = await rig();

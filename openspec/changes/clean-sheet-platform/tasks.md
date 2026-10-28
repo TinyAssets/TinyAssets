@@ -4,9 +4,9 @@ live acceptance is still owed says so.
 
 ## 1. Verify the unverified facts
 
-- [x] E2B 1 GiB resume p50 247 ms / p95 706 ms; paused storage free and kept; Pro 100
-  concurrent (openspec/changes/clean-sheet-platform/e2b-resume-measurement.md)
-- [ ] E2B resume after 6 h and 24 h paused (run in progress)
+- [ ] E2B p50/p95 resume for a 1 GiB sandbox, measured live; paused-storage price
+  and retention, Pro-plan concurrency, regions. A p95 over 1.5 s switches the
+  sandbox to Cloudflare Containers.
 - [x] Durable Object pricing and limits (2026-10-28, facts-verified.md).
 - [ ] 2026 regional availability from Cloudflare's status history (blocked).
 - [x] Dynamic Workers and Facets: open beta, Workers Paid only, $0.002 per Dynamic
@@ -42,11 +42,13 @@ live acceptance is still owed says so.
   carries its verified `source` and, when known, `authenticated_at`. The outside kill switch
   (`TINYASSETS_OUTSIDE_DENY`) refuses every outside call at the binder, from the
   directory: the object has no env. A key's mint writes its grant (`grantSet`,
-  source `api_key`), a key's revoke calls `grantRevoke` first, and a key's deletion
-  from the directory calls `grantForget` after it; the OAuth server's absolute refresh
-  lifetime is at most `MCP_SIGN_IN_LIFETIME_S` (30 days), held by a binder test; an
-  agent's held API-key request applied with its grant (`_apply_key_request`) comes with the key
-  store, whose key ids it needs.
+  source `api_key`), a key's revoke calls `grantRevoke` first, and the binder calls
+  `grantForget` only after the directory has deleted an API key, never for an MCP
+  client. On `grantRevoke` the binder also revokes the client's grant in the OAuth
+  provider, so its refresh tokens die with it, and a sign-in after a revoke always shows
+  the consent screen, so only the owner's own consent brings a revoked client back. An
+  agent's held API-key request applied with its grant (`_apply_key_request`) comes with
+  the key store, whose key ids it needs.
 - [ ] Owed by 6.1. The file door's bytes: the binder streams chunks to `FILES` itself
   (decided: the binder is the trust root and already reaches every owner's object, so
   its reading an owner's namespace from that owner's object weakens no isolation), with
@@ -96,30 +98,41 @@ live acceptance is still owed says so.
 - [x] 3.6 The schedule: one table, run as jobs on the Agents SDK Lifecycle queue, which
   owns the single alarm and PiHarness's wake-up job; 3.4's direct `setAlarm`/`deleteAlarm`
   move onto it. Built (`schedule.ts`): `OwnerDO` holds a Lifecycle (`agents/lifecycle`,
-  agents 0.31.0 pinned exactly), never the SDK's `Agent`, installs none of its runtime
-  handlers, and its `alarm` only hands the runtime's alarm to it. Each kind of timed work
-  is a lane with its own rows and one Lifecycle job derived from them: `wakes` (3.4's
-  wakes and revokes, `Ledger.nextDue`, `runWakes`), `files` (6.1's housekeeping,
-  `Files.nextAlarm`, `Files.collect`) and `work` (stamped scheduled work,
-  `scheduled.ts`). Every changing door and the object's wake re-derive the jobs; a run
-  is one bounded pass that sets its own job from the rows; a pass that fails through
-  Lifecycle's retries holds its lane back `LANE_RETRY_S`. The alarm guard keeps every
-  source off `setAlarm`, `deleteAlarm` and `getAlarm`, off every `agents` import but
-  `agents/lifecycle`, and off Lifecycle's handlers. Stamped work (owed by 3.5): a
-  scheduled turn or automation carries the outside authority it was made under (client,
-  grant generation, sign-in time), rechecked with `Grants.standing` when made and before
-  it runs; a grant change refuses the client's pending work in its own transaction; open
-  work holds its client's grant row (`held`, slice 3's review N3); a run is fenced by a
-  lease and a may-have-run mark, so `unknown` work never runs again. Slice 3's review
-  carries: a revoked grant row is forgotten once it fences nothing, an API key's at the
-  binder's `grantForget`, an MCP client's once its revoke is older than
-  `MCP_SIGN_IN_LIFETIME_S`, and forgettable rows never count against the owner's bound
-  (L1); an MCP agent registers through a card its client files on its own verified call
-  (`registerPropose`), applied by the owner in session by card id and digest, so the
-  owner's browser pairs an outside origin with its session only for an API key (L2); the
-  scoped capabilities are declared (N1); the refusal receipt's generation and the grant
-  row's `CHECK` are held by tests (N4). The scheduled-work runner is the agent's (5):
-  until it lands, pending work is held and gives the lane no job.
+  agents 0.31.0 pinned exactly, by lockfile integrity too), never the SDK's `Agent`,
+  installs none of its runtime handlers, and its `alarm` only hands the runtime's alarm
+  to it. Each kind of timed work is a lane with its own rows and one single-flight
+  Lifecycle job, `owner-schedule/<lane>`, derived from them: `wakes` (3.4's wakes and
+  revokes), `files` (6.1's housekeeping, with its retention re-apply) and `work`
+  (stamped scheduled work, `scheduled.ts`). Every changing door, and the object's wake,
+  re-derive the jobs, so any door added later that changes a lane's rows calls
+  `#schedule.sync()` too; a re-derive keeps a job Lifecycle moved later (the
+  memory-limit breaker's backoff) unless the rows have earlier work. A pass is short:
+  it keeps each outside call's failure and each row's failed step in that row, backed
+  off there, throws only for a bug (then its lane holds back `LANE_RETRY_S`), and hands
+  long work off. The alarm and policy-boundary guards keep every source off `setAlarm`,
+  `deleteAlarm`, `getAlarm`, `disableAlarms` and `deleteAll` (spelled whole or in
+  pieces), off computed access to a storage or a Lifecycle, off every `agents` import
+  but `agents/lifecycle`, off Lifecycle's handlers, and off Lifecycle's and pi's tables.
+  Stamped work (owed by 3.5): a scheduled turn or automation carries the outside
+  authority it was made under (client, grant generation, sign-in time), rechecked with
+  `Grants.standing` when made and before it is handed to pi; a grant change refuses the
+  client's pending work in its own transaction; open work holds its client's grant row
+  (`held`, slice 3's review N3); the lane only hands a turn to pi's durable submit,
+  fenced by a lease and a may-have-been-handed mark, so `unknown` work is never handed
+  again, and a runner that holds its hand-off past `WORK_HANDOFF_MS` is reported. Slice
+  3's review carries: only the owner's own act lifts a revoke (L1, and slice 5's review
+  M1): an API key's revoked row goes at the binder's `grantForget` once the directory
+  deleted the key; an MCP client's only by the owner in session (`grantForgetRevoked`),
+  and every forgotten MCP revoke moves the owner-wide fence (`grant_fences`), so a
+  client with no row is admitted only from a sign-in after it; the owner's bound counts
+  revoked rows and refuses with the way out named, and never deletes a row for another
+  client's grant. An MCP agent registers through a card its client files on its own
+  verified call (`registerPropose`), applied by the owner in session by card id and
+  digest, so the owner's browser pairs an outside origin with its session only for an
+  API key (L2). The scoped capabilities are declared and are the only ones a scope may
+  name (N1). The refusal receipt's generation and the grant row's `CHECK` are held by
+  tests (N4). The scheduled-work runner is the agent's (5): until it lands, pending work
+  is held and gives the lane no job.
 - [ ] 3.7 The owner's action decision, from `broker/policy.py` and
   `broker/authority_gate.py` (#5333): `decide` with spend reservations,
   once-approvals, standing grants and declared operation kinds, which the gateway's
@@ -148,10 +161,13 @@ live acceptance is still owed says so.
   policy feeds pi's settings, and the per-agent wake limits move into the policy
   document then; an agent run, launch or extension call made for an outside client
   stamps that client's authority and is rechecked with `Grants.standing` before each
-  step; the `WorkRunner` the `work` lane calls runs a scheduled turn (marking it before
-  it is handed to pi), and the door that schedules one stamps the caller's authority; a
-  policy write ends the owner's in-flight turns and streams, and a grant change ends that client's (the Python's stream cancellation and
-  `_end_outside_streams`).
+  step; the `WorkRunner` the `work` lane calls marks a scheduled turn, hands it to pi's
+  durable submit and returns (its status is pi's receipts), and the door that schedules
+  one stamps the caller's authority; a policy write ends the owner's in-flight turns and
+  streams, and a grant change ends that client's (the Python's stream cancellation and
+  `_end_outside_streams`). PiHarness installs with `lifecycle.use` beside the schedule;
+  since the object installs none of Lifecycle's runtime handlers, every door that reaches
+  pi awaits `lifecycle.start()` first, so PiHarness's `onStart` (pi's open) has run.
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
   owner's hook code with the Worker Loader, called over RPC with JSON in and out and a
   timeout. A `beforeTool` timeout or error blocks

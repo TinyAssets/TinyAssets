@@ -22,6 +22,8 @@ import { type Ledger, type Outcome, outcome, type WakeTarget } from "./ledger";
 
 /** At most this many rows per pass per lane run; a run with more due runs again at once. */
 export const WAKES_PER_ALARM = 16;
+/** How long a row whose pass failed in process waits before the lane takes it again. */
+export const WAKE_RETRY_S = 60;
 
 /** What rings an outside agent's doorbell. IDs only: a target never holds a body (S31). */
 export interface WakeSender {
@@ -46,7 +48,9 @@ export interface WakeSender {
  * First the recover pass: each claim past its lease, by its own index, whether or not
  * there is a sender, so open work ahead of it can never starve it. Then, with a sender,
  * the claim pass: each due open row once, a wake sent or a revoke carried out. One
- * failing row is logged and left to its ledger state; it never stops the others.
+ * failing row (the sender's call, or the row's own step) is logged and backed off
+ * `WAKE_RETRY_S` in its row, so it never stops the others, never makes the pass throw and
+ * never loops the alarm. Only a failure to write that backoff, a storage fault, throws.
  */
 export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock: () => number,
                                limit: number = WAKES_PER_ALARM): Promise<number> {
@@ -55,6 +59,7 @@ export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock:
       ledger.recover(lapsed.wake_id, clock());
     } catch {
       console.error("outside-agent wake recovery failed");  // no ids, URL or body in the log
+      ledger.defer(lapsed.wake_id, clock() + WAKE_RETRY_S);
     }
   }
   if (sender === null) {
@@ -82,6 +87,7 @@ export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock:
       accepted += answer.state === "sent" ? 1 : 0;
     } catch {
       console.error("outside-agent wake failed");  // no ids, URL or body in the log
+      ledger.defer(wake.wake_id, clock() + WAKE_RETRY_S);
     }
   }
   return accepted;

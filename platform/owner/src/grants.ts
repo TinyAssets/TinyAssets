@@ -145,13 +145,20 @@ export interface GrantChange {
   readonly name: unknown;
 }
 
-/** `outside_scopes`: exact triples; a wildcard is never a scope. */
+/**
+ * `outside_scopes`: exact triples; a wildcard is never a scope, and a capability is one a
+ * door checks (`CAPABILITIES`), so a grant never names one that nothing would hold.
+ */
 export function scopes(value: unknown, limits: GrantLimits = GRANT_LIMITS): Scope[] {
   if (!Array.isArray(value) || value.length > limits.maxScopes || value.some((scope) =>
     !plain(scope) || Object.keys(scope).sort().join() !== "agent,capability,universe"
     || Object.values(scope).some((v) => typeof v !== "string" || !v || v === "*"
                                         || codePoints(v) > 512))) {
     throw new Invalid("outside scopes require exact universe, agent and capability");
+  }
+  if (value.some((scope) => !(CAPABILITIES as readonly string[]).includes(
+    (scope as Record<string, string>)["capability"]!))) {
+    throw new Invalid(`a scope's capability is one of ${CAPABILITIES.join(", ")}`);
   }
   return value as Scope[];
 }

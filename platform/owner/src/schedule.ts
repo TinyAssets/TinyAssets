@@ -9,7 +9,7 @@
  *
  * Each kind of timed work is a lane: its own durable rows, which stay the truth, and one
  * Lifecycle job, `owner-schedule/<lane>`, that says only when to look again. Job ids are
- * one table-wide key space (`cf_agents_jobs.id`), shared with every capability, so ours
+ * one key space across Lifecycle's whole job table, shared with every capability, so ours
  * carry the schedule's prefix.
  * - `sync()` points each lane's job at the lane's next work, never in the past, cancels it
  *   when there is none, and leaves a job already in place alone: each push and each alarm
@@ -45,7 +45,7 @@
  *
  * Each alarm invocation writes the physical alarm four times: the startup fallback, the
  * deadman pre-arm before driving, a lane's own set when its pass ends, and Lifecycle's
- * final re-arm. Lifecycle's own storage is a fixed set: one `cf_agents_jobs` row per lane
+ * final re-arm. Lifecycle's own storage is a fixed set: one job-table row per lane
  * (and PiHarness's one), and a memory-limit strike counter in the key-value store. It
  * counts toward the object's storage, never toward an owner bound, which count only the
  * object's own tables. Job ids are always given, so Lifecycle never draws one from its
