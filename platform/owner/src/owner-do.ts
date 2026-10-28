@@ -154,6 +154,10 @@ export interface ClientRequest {
   readonly client: string;
 }
 
+export interface ForgetRequest {
+  readonly clients: string[];
+}
+
 export interface PostRequest {
   readonly room_id: string;
   readonly client_message_id: string;
@@ -710,15 +714,28 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * Forget a revoked grant no pre-revoke credential can use (slice 3's review L1): the
-   * binder calls it for an API key once the directory has deleted the key (tasks 2); an
-   * MCP client's goes once its revoke is older than `MCP_SIGN_IN_LIFETIME_S`. A narrowing,
-   * so the owner's account makes it without a session.
+   * Forget a revoked API key's grant (slice 3's review L1): the binder calls it once the
+   * directory has deleted the key (tasks 2). A narrowing, since a key with no row is
+   * refused, so the owner's account makes it without a session. Never an MCP client's.
    */
   grantForget(binding: Binding, request: ClientRequest): { client: string; forgotten: boolean } {
     this.#owner(binding, "forget an outside client's grant");
     const r = policyFields(request, ["client"]);
-    return this.#grants.forget(r["client"], clock());
+    return this.#grants.forgetKey(r["client"], clock());
+  }
+
+  /**
+   * The owner, in its session, forgets revoked clients to make room under its bound: a
+   * widening, so it is the only act that lifts an MCP revoke, and even then a forgotten
+   * MCP client comes back only from a sign-in after the revoke (`grants.ts`).
+   */
+  grantForgetRevoked(binding: Binding, request: ForgetRequest):
+      { forgotten: string[]; mcp_fence: number } {
+    return this.#widening(binding, "outside_forget", request,
+                          "forget its revoked outside clients", (_account, id) => {
+      const r = policyFields(request, ["clients"]);
+      return this.#grants.forgetRevoked(id, r["clients"], clock());
+    });
   }
 
   /**

@@ -5,7 +5,7 @@ live acceptance is still owed says so.
 ## 1. Verify the unverified facts
 
 - [x] E2B 1 GiB resume p50 247 ms / p95 706 ms; paused storage free and kept; Pro 100
-  concurrent (docs/measurements/2026-10-28-e2b-resume.md)
+  concurrent (openspec/changes/clean-sheet-platform/e2b-resume-measurement.md)
 - [ ] E2B resume after 6 h and 24 h paused (run in progress)
 - [x] Durable Object pricing and limits (2026-10-28, facts-verified.md).
 - [ ] 2026 regional availability from Cloudflare's status history (blocked).

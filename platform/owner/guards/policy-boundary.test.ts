@@ -31,6 +31,7 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   policy_proposals: Object.freeze(["owner/src/policy.ts", SCHEMA]),
   proposal_shares: Object.freeze(["owner/src/policy.ts", SCHEMA]),
   outside_clients: Object.freeze(["owner/src/grants.ts", SCHEMA]),
+  grant_fences: Object.freeze(["owner/src/grants.ts", SCHEMA]),
   policy_usage: Object.freeze(["owner/src/grants.ts", "owner/src/policy.ts",
                                "owner/src/registrations.ts", "owner/src/scheduled.ts",
                                "owner/src/sessions.ts", SCHEMA]),

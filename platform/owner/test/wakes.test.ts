@@ -673,7 +673,8 @@ describe("the wakes lane of the object's one schedule", () => {
     await evictDurableObject(r.stub);
     await r.stub.outsideAgents(r.bind(null));  // any call wakes it
     expect(await laneJobs(r.stub))
-      .toEqual({ wakes: { time: Math.ceil(lease * 1000), payload: null } });
+      .toEqual({ wakes: { time: Math.ceil(lease * 1000),
+                          payload: { due: Math.ceil(lease * 1000) } } });
     expect(await r.alarmAt()).toBe(Math.ceil(lease * 1000) / 1000);
   });
 });

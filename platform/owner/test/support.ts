@@ -28,12 +28,12 @@ export interface LaneJob {
   readonly payload: unknown;
 }
 
-/** Every Lifecycle job of the object's schedule, by lane. */
+/** Every Lifecycle job of the object's schedule, by lane (ids are `owner-schedule/<lane>`). */
 export async function laneJobs(stub: DurableObjectStub<OwnerDO>):
     Promise<Record<string, LaneJob>> {
   const rows = await sqlIn(stub, "SELECT id, time, payload FROM cf_agents_jobs WHERE " +
                                    "capability = ? ORDER BY id", SCHEDULE).catch(() => []);
-  return Object.fromEntries(rows.map((row) => [row["id"] as string, {
+  return Object.fromEntries(rows.map((row) => [(row["id"] as string).slice(SCHEDULE.length + 1), {
     time: row["time"] as number,
     payload: row["payload"] === null ? null : JSON.parse(row["payload"] as string),
   }]));

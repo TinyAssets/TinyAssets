@@ -303,9 +303,6 @@ describe("the schedule's own queries", () => {
         plan("DELETE FROM scheduled_work WHERE settled_at IS NOT NULL AND settled_at < ?", 1),
         plan("SELECT work_id FROM scheduled_work WHERE settled_at IS NOT NULL " +
                "ORDER BY settled_at LIMIT ?", 1),
-        plan("SELECT client FROM outside_clients WHERE mode = 'revoked' AND agents = 0 " +
-               "AND held = 0 AND revoked_at <= ? AND source = 'mcp' ORDER BY revoked_at " +
-               "LIMIT ?", 1, 1),
         plan("DELETE FROM agent_cards WHERE filed_at < ?", 1),
         plan("DELETE FROM agent_cards WHERE client = ? AND family = ?", client, client),
         plan("SELECT COUNT(*) AS n FROM agent_cards WHERE client = ?", client),

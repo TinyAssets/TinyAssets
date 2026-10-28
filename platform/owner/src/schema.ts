@@ -16,7 +16,7 @@
  * test ties the two); raising the ceiling is a new migration.
  */
 import { GC_GRACE_S } from "./files";
-import { DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, MCP_SIGN_IN_LIFETIME_S } from "./policy";
+import { DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON } from "./policy";
 
 export type Migration = readonly string[];
 
@@ -44,15 +44,6 @@ const HISTORY_USAGE = (entry: string, sign: string) =>
   `('writer', ${entry}.collection, ${entry}.writer, 0, 0, ${sign}${HISTORY_BYTES(entry)})` +
   ON_USAGE;
 
-/**
- * Whether a revoked grant row fences nothing: no credential signed in before the revoke can
- * still exist (an API key the binder deleted, or an MCP revoke older than the longest
- * sign-in our OAuth server issues). `now` is SQLite's clock. What holds a row is the kept
- * trigger's own check.
- */
-const FORGETTABLE = (row: string, now: string) =>
-  `(${row}.mode = 'revoked' AND ` +
-  `(${row}.source = 'api_key' OR ${row}.revoked_at <= ${now} - ${MCP_SIGN_IN_LIFETIME_S}))`;
 /**
  * Move a grant row's class, times `sign`: set by the owner (counted against the owner's
  * bound), or free to make room (nothing holds it).
@@ -346,11 +337,13 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // triggers on `outside_agents` below) or stamped work holds (`held`: open scheduled
     // work and pending agent registrations, kept by their triggers) is never deleted: it
     // is what that work is rechecked against. A row the owner set (`owner_set`: a grant
-    // change or a revoke) is kept while it is a fence: a revoked row keeps a credential
-    // signed in before the revoke dead, so it goes only once no such credential can
-    // exist (`FORGETTABLE`). Any other row is exactly what the client's next verified call
-    // would record again (`full`, generation 1, never revoked), so it is free: the oldest
-    // free rows make room for new clients.
+    // change or a revoke) is kept while the grant stands; a revoked one may go only by an
+    // act the module makes (an API key the directory deleted, or the owner's own forget in
+    // its session), and an MCP revoke's time then becomes the owner-wide fence
+    // (`grant_fences`), so no credential signed in before it is ever admitted again. Any
+    // other row is exactly what the client's next verified call would record again
+    // (`full`, generation 1, never revoked), so it is free: the oldest free rows make room
+    // for new clients.
     "CREATE TABLE outside_clients (" +
       "client TEXT PRIMARY KEY CHECK (length(client) = 64), " +
       "source TEXT NOT NULL CHECK (source IN ('mcp', 'api_key')), " +
@@ -366,14 +359,18 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE INDEX outside_clients_listed ON outside_clients (first_seen, client)",
     "CREATE INDEX outside_clients_free ON outside_clients (last_seen) " +
       "WHERE owner_set = 0 AND agents = 0 AND held = 0",
-    // The revoked rows nothing holds, oldest revoke first: what the owner's bound forgets.
-    "CREATE INDEX outside_clients_revoked ON outside_clients (revoked_at) " +
-      "WHERE mode = 'revoked' AND agents = 0 AND held = 0",
     "CREATE TRIGGER outside_clients_kept BEFORE DELETE ON outside_clients " +
-      "WHEN OLD.agents > 0 OR OLD.held > 0 OR (OLD.owner_set = 1 AND NOT " +
-      `${FORGETTABLE("OLD", "unixepoch('subsec')")}) BEGIN ` +
-      "SELECT RAISE(ABORT, 'an outside client grant the owner set or an agent holds is " +
-      "never deleted while it fences or holds'); END",
+      "WHEN OLD.agents > 0 OR OLD.held > 0 OR (OLD.owner_set = 1 AND OLD.mode != 'revoked') " +
+      "BEGIN SELECT RAISE(ABORT, 'an outside client grant the owner set or an agent holds is " +
+      "never deleted while it stands or holds'); END",
+    // The latest MCP revoke ever forgotten: an MCP client with no row is admitted only
+    // from a sign-in after it. Every path that drops a revoked MCP row moves it.
+    "CREATE TABLE grant_fences (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      "mcp_through REAL NOT NULL CHECK (mcp_through >= 0))",
+    "INSERT INTO grant_fences VALUES (1, 0)",
+    "CREATE TRIGGER outside_clients_forgotten AFTER DELETE ON outside_clients " +
+      "WHEN OLD.source = 'mcp' AND OLD.revoked_at IS NOT NULL BEGIN " +
+      "UPDATE grant_fences SET mcp_through = MAX(mcp_through, OLD.revoked_at); END",
     "CREATE TABLE policy_usage (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "sessions INTEGER NOT NULL, owner_clients INTEGER NOT NULL, " +
       "free_clients INTEGER NOT NULL, " +
