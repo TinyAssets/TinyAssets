@@ -399,4 +399,22 @@ describe("pi's settings and the owner's notices", () => {
     expect((await failure(() => r.stub.noticeList(outside))).message)
       .toBe("only the owner may read its notices");
   });
+
+  it("keeps a standing condition once by its type and its detail as kept, cut", async () => {
+    const r = agentObject();
+    await r.in(async (_instance, state) => {
+      const gate = new WriteGate(state.storage);
+      const notices = new Notices(gate.storage);
+      // Two packages refused: two notices. Each again: none. A detail past what a notice
+      // keeps matches its kept, cut self.
+      const long = `pkg:long: ${"y".repeat(NOTICE_DETAIL * 2)}`;
+      for (const detail of ["pkg:a: refused", "pkg:b: refused", long, "pkg:a: refused",
+                            "pkg:b: refused", long]) {
+        await gate.write(() => notices.once("extension_skipped", detail, 1));
+      }
+    });
+    const { notices } = await r.stub.noticeList(r.as());
+    expect(notices.map((notice) => notice.detail.slice(0, 5)))
+      .toEqual(["pkg:l", "pkg:b", "pkg:a"]);
+  });
 });

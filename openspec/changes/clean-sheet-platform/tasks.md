@@ -423,10 +423,11 @@ account and no deploy.
   `.cache`, build output), shown to the founder first since they decide what survives a
   lost sandbox.
 - [x] Probe, before the agent (5) runs a turn on the object: the subrequests-per-
-  invocation cap (`FILES`, the gateway, hooks) and the 15-minute alarm wall time, against
-  one pi turn, including whether the cap applies per Durable Object event, before the
-  gateway slice. Run 1 answered the shape (below), and the agent keeps no budget of its
-  own (5, A0).
+  invocation cap (`FILES`, the gateway, hooks) and the 15-minute alarm wall time,
+  including whether the cap applies per Durable Object event, before the gateway slice.
+  The runs measured bursts of service calls per request, DO RPC and alarm, not a pi
+  turn. Run 1 answered the shape (below), and the agent keeps no budget of its own
+  (5, A0).
   Method, cases M1–M12, reading key and results table: `cap-probe.md`; run by the manual
   `cap-probe.yml` (gateway G0), which has run live (results in `cap-probe.md`).
 - [x] Done (`cap-probe.md`). Run B on Paid (40741034491): no cap within 60 calls per
@@ -438,6 +439,8 @@ account and no deploy.
   invocation, or a counter each event resets; one rule here: work in flight
   spends the newest event's count), not to the async context that made them. An alarm is
   cut at 15 minutes.
+- [ ] On the owner Worker's first deploy: check that Paid accepts its explicit
+  `limits.subrequests: 10000` (run B ran at the default limit and never set it).
 - [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
   probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
   does not emulate it); a live probe of the files Worker's create-once put, which

@@ -420,6 +420,72 @@ describe("every file door", () => {
       .toEqual([]);
   });
 
+  /** Narrow MUSE's grant to reading files, from inside the object. */
+  const narrow = async (r: Rig, instance: OwnerDO, generation: number) =>
+    instance.grantSet(r.session(null), {
+      client: MUSE.client, source: "mcp", mode: "scoped",
+      scopes: [{ universe: "alpha", agent: "main", capability: "read_files" }],
+      expected_generation: generation, name: "" });
+
+  /** What a refused chunked write may leave: its intent, its chunk rows, its entry. */
+  const leftBy = (r: Rig) => Promise.all([
+    sqlIn(r.stub, "SELECT intent_id FROM file_intents"),
+    sqlIn(r.stub, "SELECT state, stored, holds FROM file_chunks"),
+    sqlIn(r.stub, "SELECT name FROM file_entries WHERE name = 'big.bin'"),
+  ]);
+
+  it("refuses a chunked write whose grant narrows before its intent, holding nothing",
+     async () => {
+    const r = await rig();
+    await r.register(MUSE);
+    const [row] = (await r.stub.grantList(r.bind(null))).clients;
+    const answer = await runInDurableObject(r.stub, async (instance: OwnerDO, state) => {
+      // The door's check queues behind a held pi commit, the narrowing behind it, then
+      // the write's intent.
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      const commit = new DurableObjectSqliteDatabase(state.storage).transaction(() => held);
+      const writing = instance.fileWrite(r.bind(MUSE), {
+        path: `${W}/big.bin`, expected_etag: null, content: new Uint8Array(INLINE_BYTES + 1) })
+        .then(() => "written", (error: Error) => error.message);
+      const narrowing = narrow(r, instance, row!.generation);
+      release();
+      await Promise.all([commit, narrowing]);
+      return writing;
+    });
+    expect(answer).toBe("outside client capability not granted");
+    expect(await leftBy(r)).toEqual([[], [], []]);  // no intent, no chunk held or sent
+  });
+
+  it("refuses a chunked write whose grant narrows while its chunks are out at FILES",
+     async () => {
+    const r = await rig();
+    await r.register(MUSE);
+    const [row] = (await r.stub.grantList(r.bind(null))).clients;
+    const answer = await runInDurableObject(r.stub, async (instance: OwnerDO, state) => {
+      const writing = instance.fileWrite(r.bind(MUSE), {
+        path: `${W}/big.bin`, expected_etag: null, content: new Uint8Array(INLINE_BYTES + 1) })
+        .then(() => "written", (error: Error) => error.message);
+      // Its intent is made in a few microtasks; its put to FILES needs I/O, so it is
+      // still out while the queue is held and the grant narrowed ahead of the commit.
+      const intents = () => state.storage.sql.exec("SELECT 1 FROM file_intents").toArray();
+      for (let i = 0; i < 1000 && intents().length === 0; i++) {
+        await Promise.resolve();
+      }
+      expect(intents()).toHaveLength(1);
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      const commit = new DurableObjectSqliteDatabase(state.storage).transaction(() => held);
+      const narrowing = narrow(r, instance, row!.generation);
+      release();
+      await Promise.all([commit, narrowing]);
+      return writing;
+    });
+    expect(answer).toBe("outside client capability not granted");
+    // The intent is ended; the chunk it sent is garbage, collected in its time.
+    expect(await leftBy(r)).toEqual([[], [{ state: "garbage", stored: 1, holds: 0 }], []]);
+  });
+
   it("sets the files lane's job from the rows after a whole write, as every file door does",
      async () => {
     const r = await rig();

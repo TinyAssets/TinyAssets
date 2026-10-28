@@ -437,7 +437,7 @@ A whole-file read or write by the environment SHALL move at most 16 MiB, and `re
 - **THEN** the file holds the BOM, the CRLF endings and the edit, and nothing else changed
 
 ### Requirement: The platform counts the object's calls
-The object SHALL keep no call budget of its own: the platform counts subrequests per invocation, charged to the object's newest incoming event, and its own error SHALL be the failure a caller sees (a tool call's error result). The owner Worker's config SHALL set `limits.subrequests` to 10,000, and the config guard SHALL refuse any other value, or none.
+The object SHALL keep no call budget of its own: the platform counts subrequests per invocation, charged to the object's newest incoming event or to a count each event resets (the cap probe's M12 found one of the two and could not tell them apart), and its own error SHALL be the failure a caller sees (a tool call's error result). The owner Worker's config SHALL set `limits.subrequests` to 10,000, and the config guard SHALL refuse any other value, or none.
 
 #### Scenario: The platform refuses a call
 - **WHEN** the files Worker's call throws the platform's subrequest error inside a tool call

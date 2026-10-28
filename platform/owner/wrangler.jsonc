@@ -5,9 +5,10 @@
 // `disable_ctx_exports` keeps the runtime from handing the object its own namespace as
 // `ctx.exports` (guards/config.test.ts checks this config and the files Worker's).
 // `limits.subrequests` is the platform's per-invocation count of the calls the object
-// makes (FILES, and later the gateway and hooks), charged to its newest incoming event
-// (cap-probe M12); the platform's own error is the loud failure, and the object keeps no
-// budget of its own. Set to the Paid default explicitly, and pinned by the config guard.
+// makes (FILES, and later the gateway and hooks), charged to its newest incoming event or
+// to a count each event resets (cap-probe M12, newest-or-reset); the platform's own error
+// is the loud failure, and the object keeps no budget of its own. Set to the Paid default
+// explicitly, and pinned by the config guard.
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "tinyassets-owner",

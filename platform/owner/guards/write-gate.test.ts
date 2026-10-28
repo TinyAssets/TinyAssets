@@ -19,11 +19,16 @@
  *   agent's notices), each call of a write (`WRITES`) sits inside a unit: an arrow handed
  *   to `write`, `#write`, `unit` or a door's gate. A synchronous method is itself a unit's
  *   body, so its calls are the view's to check;
- * - in an async function of any of the object's modules, no value read straight from SQL
- *   outside a unit is used inside one: what a unit decides on, it reads itself, since
- *   another unit may land between (the chunk GC's due list once was such a read). Reads
- *   through a module's own methods are not traced; a unit that acts on one re-checks its
- *   row in its own statement (a claim id, a state), as the lanes' units do.
+ * - in any function of the object's modules that opens a unit, async or not, no value read
+ *   from SQL outside the unit is used inside it: what a unit decides on, it reads itself,
+ *   since another unit may land between (the chunk GC's due list once was such a read).
+ *   A synchronous function that opens a unit is not a unit's body, so its reads count.
+ *   Traced: a name or a destructuring a read declares, a plain assignment of one, and what
+ *   is derived from one in the same function. Not traced, the limits: a read through a
+ *   module's own methods (`stat`, `lapsedClaims`), so a unit that acts on one re-checks
+ *   its row in its own statement (a claim id, a state), as the lanes' units do; a read
+ *   kept in a property or passed through a parameter; and a unit's own name shadowing a
+ *   read's, which can only report too much.
  * The guard is a tripwire for our own code's mistakes, as the alarm guard is.
  */
 import ts from "typescript";
@@ -101,8 +106,10 @@ function enclosing(node: ts.Node): ts.Node | undefined {
 }
 
 /**
- * Each value an async function of `source` reads straight from SQL (a `.exec(` of its own,
- * outside any unit) and then uses inside a unit, as `file:line: what`.
+ * Each value a function of `source` reads from SQL outside any unit and then uses inside a
+ * unit it opens, as `file:line: what`. A value is read when its declaration (a name or
+ * each name a destructuring binds) or a plain assignment to it takes a `.exec(` of the
+ * function's own, or a value already read: `rows.map(...)` of a read `rows` is read too.
  */
 export function staleReads(fileName: string, source: string): string[] {
   const file = parse(fileName, source);
@@ -110,28 +117,51 @@ export function staleReads(fileName: string, source: string): string[] {
   const report = reporter(file, problems);
   const within = (node: ts.Node, test: (n: ts.Node) => boolean): boolean =>
     test(node) || (ts.forEachChild(node, (n) => within(n, test) || undefined) ?? false);
-  const visit = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
-        && node.initializer !== undefined) {
-      const fn = enclosing(node);
-      const name = node.name.text;
-      const read = fn !== undefined && isAsync(fn) && within(node.initializer, (n) =>
-        ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)
-        && n.expression.name.text === "exec" && enclosing(n) === fn);
-      const used = read && within(fn!, (n) => {
-        if (!ts.isIdentifier(n) || n.text !== name || n === node.name) {
-          return false;
-        }
-        for (let up = enclosing(n); up !== undefined && up !== fn; up = enclosing(up)) {
-          if (unitArgument(up, file)) {
-            return true;
-          }
-        }
-        return false;
-      });
-      if (used) {
-        report(node, `${name} is read outside a unit and used inside one`);
+  const bound = (name: ts.BindingName): string[] => ts.isIdentifier(name) ? [name.text]
+    : name.elements.flatMap((element) => ts.isOmittedExpression(element) ? []
+      : bound(element.name));
+  const inUnit = (node: ts.Node, fn: ts.Node): boolean => {
+    for (let up = enclosing(node); up !== undefined && up !== fn; up = enclosing(up)) {
+      if (unitArgument(up, file)) {
+        return true;
       }
+    }
+    return false;
+  };
+  const check = (fn: ts.SignatureDeclaration): void => {
+    const body = (fn as { body?: ts.Node }).body;
+    if (body === undefined || unitArgument(fn, file)) {
+      return;  // a unit's own reads are the unit's
+    }
+    const read = new Map<string, ts.Node>();
+    const reads = (expression: ts.Node): boolean => within(expression, (n) =>
+      enclosing(n) === fn
+      && ((ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)
+           && n.expression.name.text === "exec")
+          || (ts.isIdentifier(n) && read.has(n.text))));
+    const walk = (node: ts.Node): void => {  // in source order, so a read flows forward
+      if (enclosing(node) === fn) {
+        if (ts.isVariableDeclaration(node) && node.initializer !== undefined
+            && reads(node.initializer)) {
+          bound(node.name).forEach((name) => read.set(name, node));
+        } else if (ts.isBinaryExpression(node)
+                   && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+                   && ts.isIdentifier(node.left) && reads(node.right)) {
+          read.set(node.left.text, node);
+        }
+      }
+      ts.forEachChild(node, walk);
+    };
+    walk(body);
+    for (const [name, at] of read) {
+      if (within(body, (n) => ts.isIdentifier(n) && n.text === name && inUnit(n, fn))) {
+        report(at, `${name} is read outside a unit and used inside one`);
+      }
+    }
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isFunctionLike(node)) {
+      check(node);
     }
     ts.forEachChild(node, visit);
   };
@@ -286,7 +316,7 @@ describe("write-gate guard", () => {
     expect(storageReach(new Map([[path, source]]))).toHaveLength(1);
   });
 
-  it("lets no awaiting function act in a unit on a read made outside it", () => {
+  it("lets no function act in a unit on a read made outside it", () => {
     const owner = [...sources].filter(([path]) => path.startsWith("owner/src/"));
     expect(owner.length).toBeGreaterThan(10);
     expect(owner.flatMap(([path, source]) => staleReads(path, source))).toEqual([]);
@@ -297,6 +327,17 @@ describe("write-gate guard", () => {
       "await this.#write(() => { for (const d of due) { sql.exec('UPDATE x'); } }); } }",
     "export async function f(write: W) { const n = s.sql.exec('SELECT 1').one(); " +
       "await write(() => t.transactionSync(() => n)); }",
+    // A synchronous function that opens the unit itself: the same race.
+    "export class F { c() { const n = sql.exec('SELECT 1').one(); return write(() => n); } }",
+    // A destructuring, a value derived from a read, and a read assigned later.
+    "export async function f() { const [x] = sql.exec('SELECT 1').toArray(); " +
+      "await write(() => use(x)); }",
+    "export async function f() { const { a: { b } } = sql.exec('SELECT 1').one(); " +
+      "await write(() => use(b)); }",
+    "export async function f() { const rows = sql.exec('SELECT 1').toArray(); " +
+      "const ids = rows.map((r) => r.id); await f(rows); await write(() => use(ids)); }",
+    "export async function f() { let x = 0; await g(); x = sql.exec('SELECT 1').one().n; " +
+      "await write(() => use(x)); }",
   ])("sees a unit acting on a read made outside it: %s", (source) => {
     expect(staleReads("probe.ts", source)).toHaveLength(1);
   });
@@ -305,7 +346,10 @@ describe("write-gate guard", () => {
     "export class F { async c() { const due = await this.#write(() => " +
       "sql.exec('SELECT 1').toArray()); for (const d of due) { await f(d); } } }",
     "export class F { async c() { const n = sql.exec('SELECT 1').one(); await f(n); } }",
-    "export class F { c() { const n = sql.exec('SELECT 1').one(); return write(() => n); } }",
+    // A unit's body reads for itself, synchronous methods it calls included.
+    "export class F { m() { const n = sql.exec('SELECT 1').one(); return n + 1; } }",
+    "export async function f() { await write(() => { const [x] = sql.exec('S').toArray(); " +
+      "return t.transactionSync(() => x); }); }",
   ])("allows a read made in its unit, or used outside any: %s", (source) => {
     expect(staleReads("probe.ts", source)).toEqual([]);
   });
