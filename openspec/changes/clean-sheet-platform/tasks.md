@@ -263,6 +263,8 @@ live acceptance is still owed says so.
   (`calls.ts`), whose budget already models one platform invocation (the alarm, or a
   door), and answers whether workerd attributes a service call to the invocation whose
   async context started it, as the scope does.
+  Method, cases M1–M12, reading key and results table: `cap-probe.md`; run by the manual
+  `cap-probe.yml` (gateway G0), built and not yet run live.
 - [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
   probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
   does not emulate it); a live probe of the files Worker's create-once put, which
