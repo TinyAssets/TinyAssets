@@ -291,9 +291,11 @@ describe("outside agents register from a verified identity", () => {
     for (const [binding, name, reason] of [
       [r.bind(MUSE, { source: MCP }), "Refused", "interactive owner session required"],
       [r.bind(MUSE, { source: MCP, session: "x".repeat(43) }), "Refused",
-        "interactive owner session required"],
-      [r.bind(null, { source: MCP, session: r.cookie }), "Refused",
-        "an agent registers only from its verified outside identity"],
+        "an MCP client's agent registers through the card it files"],
+      [r.bind(MUSE, { source: MCP, session: r.cookie }), "Refused",
+        "an MCP client's agent registers through the card it files"],
+      // The owner itself registers only by applying a held card.
+      [r.bind(null, { source: MCP, session: r.cookie }), "Invalid", "invalid ledger request"],
       [{ ...r.bind(MUSE, { session: r.cookie }), source: undefined } as never, "Invalid",
         "source is api_key or mcp"],
       [r.bind(MUSE, { session: r.cookie, source: { kind: "oauth", ref: "x" } as never }),
@@ -364,7 +366,7 @@ describe("outside agents register from a verified identity", () => {
     // A re-registration keeps the owner's policy; it cannot carry its own.
     const again = await r.registered(MUSE, "Muse", "mcp_event");
     expect([again.max_wakes_per_hour, again.batch_window_s, again.revision]).toEqual([2, 0, 3]);
-    const carried = await failure(() => r.stub.registerAgent(r.session(MUSE), {
+    const carried = await failure(() => r.stub.registerPropose(r.bind(MUSE), {
       command_center_id: "alpha", display_name: "Muse", delivery_method: "mcp_event",
       recipe_id: null, max_wakes_per_hour: 60 } as never));
     expect(carried.message).toBe("invalid ledger request");
@@ -398,12 +400,17 @@ describe("outside agents register from a verified identity", () => {
   });
 
   it("refuses an outside client's call carrying the owner's session at every door but "
-     + "an agent's registration", async () => {
+     + "an API key agent's registration", async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
     const outside = r.session(DOT);
+    const request = { command_center_id: "alpha", display_name: "Dot", delivery_method: "pull",
+                      recipe_id: null };
     for (const call of [
       () => r.stub.outsideAgents(outside),
+      () => r.stub.registerPropose(outside, request),
+      () => r.stub.registerProposal(outside, { card_id: "card_" + "0".repeat(32) }),
+      () => r.stub.grantForget(outside, { client: DOT.client }),
       () => r.stub.roomPost(outside, { room_id: `dm:${muse}`, client_message_id: "c",
                                        body: "x", parent_id: null }),
       () => r.stub.mailboxRead(outside, { limit: 1 }),
@@ -426,10 +433,14 @@ describe("outside agents register from a verified identity", () => {
     expect((await r.stub.grantList(r.bind(null))).clients.map((c) => c.client))
       .toEqual([MUSE.client]);
     expect(await r.table("policy_receipts")).toEqual([]);
-    expect((await r.stub.registerAgent(outside, { command_center_id: "alpha",
-                                                  display_name: "Dot", delivery_method: "pull",
-                                                  recipe_id: null })).outside_client)
-      .toBe(DOT.client);
+    // An MCP client's pair is refused too, before any grant is recorded: it files a card.
+    expect((await failure(() => r.stub.registerAgent(outside, request))).message)
+      .toBe("an MCP client's agent registers through the card it files");
+    expect((await r.stub.grantList(r.bind(null))).clients.map((c) => c.client))
+      .toEqual([MUSE.client]);
+    const { origin, source } = await r.keyed("0123456789abcdef");
+    expect((await r.stub.registerAgent(r.session(origin, source), request)).outside_client)
+      .toBe(origin.client);
   });
 
   it("lets only the owner, in its session, set wake limits or delete an agent", async () => {
@@ -519,7 +530,8 @@ describe("a refused widening's receipt", () => {
                       delivery_method: "pull", recipe_id: null };
     for (const call of [
       () => r.stub.registerAgent(r.bind(DOT), request),  // no session
-      () => r.stub.registerAgent(r.session(DOT), { ...request, delivery_method: "a2a" }),
+      async () => r.stub.registerAgent(r.session(null), await r.stub.registerPropose(
+        r.bind(DOT), { ...request, delivery_method: "a2a" })),  // a held card refused
       () => r.stub.disableAgent(r.bind(DOT), { agent_id: muse, reason: "x" }),
       () => r.stub.deleteAgent(r.bind(MUSE), { agent_id: muse }),
       () => r.stub.deleteAgent(r.session(null), { agent_id: "agent_x" }),

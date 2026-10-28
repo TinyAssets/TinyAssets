@@ -1,10 +1,11 @@
 /**
- * Outside-agent wakes on the object's one alarm (S3b, W3; ADR-026 zero idle tail).
+ * Outside-agent wakes, the `wakes` lane of the object's one schedule (S3b, W3; ADR-026
+ * zero idle tail).
  *
  * Ported from `agent_wake` (`tinyassets/broker/message_ledger.py`) and `run_due`
  * (`tinyassets/control_plane/outside_wakes.py`). The Python ran one shared tick that
  * walked every owner's ledger with a fairness rotation; here each object is its own
- * owner and schedules itself with one self-rearming alarm (`OwnerDO.alarm`), so there is
+ * owner and schedules itself on its own Lifecycle job queue (`schedule.ts`), so there is
  * no global tick and nothing to rotate.
  *
  * The op journal's may-have-sent record becomes the wake row's `marked` flag, written
@@ -14,13 +15,15 @@
  *
  * The doorbell itself (the signed MCP event POST through the owner's egress) is a later
  * slice (tasks 7): it implements {@link WakeSender}, which the object calls in process,
- * so no wake can be claimed or settled over RPC. Until then the alarm only recovers
+ * so no wake can be claimed or settled over RPC. Until then the lane only recovers
  * lapsed claims, and open wakes and revokes stay pending, held, not lost.
  */
 import { type Ledger, type Outcome, outcome, type WakeTarget } from "./ledger";
 
-/** At most this many rows per pass per alarm run; a run with more due rearms at once. */
+/** At most this many rows per pass per lane run; a run with more due runs again at once. */
 export const WAKES_PER_ALARM = 16;
+/** How long a row whose pass failed in process waits before the lane takes it again. */
+export const WAKE_RETRY_S = 60;
 
 /** What rings an outside agent's doorbell. IDs only: a target never holds a body (S31). */
 export interface WakeSender {
@@ -40,20 +43,25 @@ export interface WakeSender {
 }
 
 /**
- * One alarm pass; returns how many wakes were accepted.
+ * One lane pass; returns how many wakes were accepted.
  *
  * First the recover pass: each claim past its lease, by its own index, whether or not
  * there is a sender, so open work ahead of it can never starve it. Then, with a sender,
- * the claim pass: each due open row once, a wake sent or a revoke carried out. One
- * failing row is logged and left to its ledger state; it never stops the others.
+ * the claim pass: each due open row once, a wake sent or a revoke carried out, taking
+ * none once the wall clock reaches `until` (`schedule.ts`, `LANE_PASS_S`). One
+ * failing row (the sender's call, or the row's own step) is logged and backed off
+ * `WAKE_RETRY_S` in its row, so it never stops the others, never makes the pass throw and
+ * never loops the alarm. Only a failure to write that backoff, a storage fault, throws.
  */
 export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock: () => number,
-                               limit: number = WAKES_PER_ALARM): Promise<number> {
+                               limit: number = WAKES_PER_ALARM,
+                               until: number = Infinity): Promise<number> {
   for (const lapsed of ledger.lapsedClaims(clock(), limit)) {
     try {
       ledger.recover(lapsed.wake_id, clock());
     } catch {
       console.error("outside-agent wake recovery failed");  // no ids, URL or body in the log
+      ledger.defer(lapsed.wake_id, clock() + WAKE_RETRY_S);
     }
   }
   if (sender === null) {
@@ -61,6 +69,9 @@ export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock:
   }
   let accepted = 0;
   for (const wake of ledger.dueOpen(clock(), limit)) {
+    if (Date.now() >= until) {
+      break;  // the rest wait for the lane's next pass, which the job's set brings at once
+    }
     try {
       const claim = ledger.claim(wake.wake_id, clock());
       if (claim.outcome === "revoke") {
@@ -81,6 +92,7 @@ export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock:
       accepted += answer.state === "sent" ? 1 : 0;
     } catch {
       console.error("outside-agent wake failed");  // no ids, URL or body in the log
+      ledger.defer(wake.wake_id, clock() + WAKE_RETRY_S);
     }
   }
   return accepted;

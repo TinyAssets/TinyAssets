@@ -5,7 +5,6 @@
  * nothing deduplicates against bytes the bucket lacks, and garbage collection never lists
  * the bucket.
  */
-import { runDurableObjectAlarm } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
@@ -16,7 +15,9 @@ import {
 } from "../src/files";
 import { MIGRATIONS } from "../src/schema";
 import { rig, type Rig } from "./ledger-support";
-import { failure, fileCounters, inFiles, lostContent, sqlIn, text } from "./support";
+import {
+  alarmOf, drainDue, failure, fileCounters, inFiles, laneAt, lostContent, sqlIn, text,
+} from "./support";
 
 const W = "/workspace";
 
@@ -457,14 +458,22 @@ describe("a chunk", () => {
       getChunks: (space, reads) => env.FILES.getChunks(space, reads),
       deleteChunks: async () => { throw new Error("FILES is down"); },
     };
-    expect((await failure(() => inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000),
-                                        failing))).message).toBe("FILES is down");
+    // The failure stays in the chunk's row: the pass itself completes.
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000), failing);
     const deleting = await chunk(r, sha);
     expect(deleting).toMatchObject({ state: "deleting" });
     expect(deleting!["gc_after"] as number).toBeGreaterThan(Date.now() / 1000);
     expect((await failure(() => begin(r, [piece]))).message)
       .toBe("a chunk of this upload is being deleted; begin again");
+    // A delete that outlasts its pass's budget is tried again, as a failed one is, and a
+    // pass already past its budget takes none.
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
+    const hung: ChunkStore = { ...failing, deleteChunks: () => new Promise(() => undefined) };
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000, Date.now() + 20), hung);
+    expect((await chunk(r, sha))!["gc_after"] as number).toBeGreaterThan(Date.now() / 1000);
+    await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
+    await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000, Date.now() - 1));
+    expect(await chunk(r, sha)).toMatchObject({ state: "deleting", gc_after: 1 });
     await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
     expect(await chunk(r, sha)).toBeUndefined();
     expect((await begin(r, [piece])).missing).toEqual([sha]);
@@ -478,11 +487,14 @@ describe("a chunk", () => {
     await r.stub.fileWrite(r.bind(null), { path: `${W}/a`, expected_etag: null, content: text("x") });
     await r.stub.fileRedact(r.bind(null), { path: `${W}/a`, version: first.version });
     const due = (await chunk(r, sha))!["gc_after"] as number;
-    const armed = await r.alarmAt();
+    const armed = await laneAt(r.stub, "files");
     expect(armed).not.toBeNull();
     expect(armed!).toBeLessThanOrEqual(Math.ceil((due + HOUSEKEEPING_SLACK_S) * 1000) / 1000);
+    expect(await alarmOf(r.stub)).toBeLessThanOrEqual(armed!);  // Lifecycle armed it
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
-    expect(await runDurableObjectAlarm(r.stub)).toBe(true);
+    // Any change re-derives the lane's job from the rows: due now, so Lifecycle runs it.
+    await r.stub.fileMkdir(r.bind(null), { path: `${W}/d`, expected_etag: null });
+    await drainDue(r.stub);
     expect(await chunk(r, sha)).toBeUndefined();
     expect(await inBucket(r, sha)).toBe(false);
   });

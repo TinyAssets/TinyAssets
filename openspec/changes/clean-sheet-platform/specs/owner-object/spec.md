@@ -126,12 +126,48 @@ A post with a sender's client message id and body hash the ledger holds SHALL re
 - **WHEN** a reader acks at or behind its cursor, even after its acked mail was evicted
 - **THEN** the ack succeeds and changes nothing
 
-### Requirement: Only the object's alarm claims and settles wakes
-Wakes, and revokes of an agent's callbacks, SHALL be rows on the object's one schedule. No RPC method SHALL claim, mark or settle one; the alarm SHALL, in process, with the doorbell's sender. Each run SHALL first recover lapsed claims by their own index, then, with a sender, claim due open rows. The alarm SHALL never be set in the past, and SHALL arm for open rows only with a sender, so without one they stay pending and arm nothing.
+### Requirement: The object's timed work is lanes on the Lifecycle job queue
+The object's one schedule SHALL run on the Agents SDK Lifecycle job queue (agents 0.31.0). Each kind of timed work SHALL be a lane: its own rows, the truth, and one Lifecycle job due at the lane's next work, never in the past, and cancelled when it has none. Every door that changes a lane's rows, and the object's wake, SHALL re-derive the jobs, leaving a job already in place unwritten. A lane's run SHALL be one bounded pass that ends by setting its own job from its rows as they then stand.
+
+#### Scenario: A door changes the rows while a lane runs
+- **WHEN** a door adds earlier work to a lane while that lane's pass is in flight
+- **THEN** the pass ends with the lane's job at the door's work, not at a time computed before it
+
+#### Scenario: A lane's pass keeps failing
+- **WHEN** a lane's pass fails through Lifecycle's in-process attempts
+- **THEN** its job is held for a fixed backoff, a door's re-derive keeps the hold, and the next pass that succeeds clears it
+
+### Requirement: A lane's pass is short and keeps its failures in its rows
+A lane's pass SHALL keep each outside call's failure, and each row's failed step, in that row, backed off there, so a failing row neither stops the pass, nor makes it throw, nor arms the alarm in a loop; a pass SHALL throw only for a bug. It SHALL hand long work off rather than await it. A lane's job SHALL be single-flight, its id SHALL carry the schedule's prefix, and a re-derive SHALL keep it where Lifecycle moved it later unless the rows have earlier work.
+
+#### Scenario: The files Worker is down
+- **WHEN** a chunk delete to the files Worker fails during the `files` lane's pass
+- **THEN** the pass completes, the chunks wait in their rows to be tried again, and no later job on the object is starved
+
+### Requirement: A lane's pass fits its hung timeout
+A lane's pass SHALL end within its job's single-flight hung timeout by wall clock, not by batch size: it SHALL take no new row once its pass budget, under the hung timeout, has passed, and each row's outside call SHALL be bounded by the rest.
+
+#### Scenario: A pass runs long
+- **WHEN** a lane's pass reaches its wall-clock budget with due rows left
+- **THEN** it takes no more of them, ends before its job's hung timeout, and its job brings the rest at once
+
+### Requirement: Only Lifecycle touches the object's alarm
+Lifecycle SHALL own the object's single physical alarm, which PiHarness's wake job shares. No source SHALL set, read or clear the alarm itself, import any part of the `agents` package but `agents/lifecycle` (so the object never extends the SDK's `Agent`), or install Lifecycle's runtime `fetch` and WebSocket handlers. The object's `alarm` SHALL only hand the runtime's alarm to Lifecycle.
+
+#### Scenario: Source sets the alarm
+- **WHEN** a Worker source names `setAlarm`, `deleteAlarm`, `getAlarm`, `disableAlarms` or `deleteAll`, spells one in pieces through a string, reaches a storage or a Lifecycle by a computed name, imports any part of the `agents` package but `agents/lifecycle`, installs Lifecycle's handlers, or names a Lifecycle or pi table
+- **THEN** the alarm guard or the policy-boundary guard fails CI
+
+#### Scenario: A binding fetches the object
+- **WHEN** a binding calls the object's `fetch`
+- **THEN** it fails, since the object defines no `fetch`
+
+### Requirement: Only the wakes lane claims and settles wakes
+Wakes, and revokes of an agent's callbacks, SHALL be rows on the object's one schedule, the `wakes` lane. No RPC method SHALL claim, mark or settle one; the lane's pass SHALL, in process, with the doorbell's sender. Each pass SHALL first recover lapsed claims by their own index, then, with a sender, claim due open rows. The lane SHALL have a job for open rows only with a sender, so without one they stay pending and arm nothing.
 
 #### Scenario: A lapsed claim behind due wakes
 - **WHEN** a claim's lease has lapsed behind more due open wakes than one pass takes, and the object has no sender
-- **THEN** one alarm run recovers it and the alarm is left unset
+- **THEN** one pass recovers it, as `unknown` if it was marked, and the lane is left with no job
 
 #### Scenario: A door names a wake claim
 - **WHEN** a binding calls a claim, mark or settle method on the object
@@ -184,19 +220,78 @@ The object SHALL admit each call from an outside client against that client's gr
 - **WHEN** a client scoped to `read_graph` writes a board row through the owner's account
 - **THEN** the write is refused with "outside client capability not granted" and a pull by it is served
 
+### Requirement: A scoped grant names the capabilities the doors check
+A scoped grant SHALL hold exact `{universe, agent, capability}` triples naming only the capabilities the object's doors check: `read_graph` and `write_graph` at the mailbox, its doorbell subscription and the collections; `propose_policy` at an agent's policy proposal; and `read_files` and `write_files` at the file doors.
+
+#### Scenario: A scoped client proposes a policy change
+- **WHEN** a client scoped to `read_graph` in its agent's command center proposes a policy change
+- **THEN** the proposal is refused with "outside client capability not granted", and with `propose_policy` granted there it is held
+
 ### Requirement: An outside client's call never carries the owner's session
-A call from an outside client that also carries the owner's session cookie SHALL be refused before any grant is recorded, at every door but an agent's registration, where the owner's browser names the API key or verified MCP client the agent is.
+A call from an outside client that also carries the owner's session cookie SHALL be refused before any grant is recorded, at every door but an API key agent's registration, where the owner's browser names the key and the object re-derives its origin from the key id.
 
 #### Scenario: An outside client presents the owner's cookie
 - **WHEN** an outside client reads its mailbox with the owner's live session cookie in its binding
 - **THEN** the call is refused with "an outside client's call never carries the owner's session" and no receipt or grant is written
 
 ### Requirement: Grant rows stay bounded without forgetting a fence
-A grant row the owner set or revoked, or one an agent is registered from, SHALL never be deleted. Any other row SHALL be forgotten, least recently seen first, to make room, so a new client's verified call is never refused for the bound. The rows the owner sets SHALL be bounded at the owner's own grant change; a revoke SHALL never be refused for a bound.
+A grant row an agent is registered from, or that stamped work or a held registration holds, SHALL never be deleted, and a row the owner set SHALL be kept until the owner's own act forgets it. Any other row SHALL be forgotten, least recently seen first, so a new client's verified call is never refused for the bound. The owner's set rows, revoked ones included, SHALL be bounded at the owner's own grant change, which never deletes a row to make room; a revoke SHALL never be refused for a bound.
 
 #### Scenario: A new client at the cap
 - **WHEN** the free grant rows are at their bound and the owner has revoked one client
 - **THEN** a new client is admitted `full`, the least recently seen free row is gone, and the revoked row is kept
+
+### Requirement: Only the owner's own act lifts a revoke
+A revoked API key's row nothing holds MAY be forgotten when the binder reports the directory deleted the key, without a session. A revoked MCP client's row SHALL be forgotten only by the owner in its session, a widening receipted per client, never by time or as a side effect of another change. Every forgotten MCP revoke SHALL move an owner-wide fence to its time, and an MCP client with no row SHALL be recorded only from a sign-in known to be after that fence.
+
+#### Scenario: The binder forgets an old MCP revoke
+- **WHEN** an MCP client signed in a month ago is revoked, and the binder asks to forget its row without a session
+- **THEN** the forget is refused, the row is kept, and the client's pre-revoke credential is still refused
+
+#### Scenario: Another client's grant at the bound
+- **WHEN** the owner's set rows are at their bound, one of them an old MCP revoke, and the owner grants a different client
+- **THEN** the grant is refused, naming forgetting revoked clients as the way to make room, and the revoked row is kept
+
+#### Scenario: The owner forgets a revoked MCP client
+- **WHEN** the owner, in its session, forgets a revoked MCP client
+- **THEN** its row is gone, a call from a credential signed in before the revoke, or with no known sign-in time, is refused, and a call from a sign-in after it is recorded `full`
+
+#### Scenario: A revoked key the directory deleted
+- **WHEN** the binder reports that an API key whose grant is revoked has been deleted
+- **THEN** its row is forgotten, and a call with that key is refused with "outside client has no grant"
+
+### Requirement: An MCP agent registers through a card its client files
+An MCP client SHALL file its agent's registration on its own verified call, so the object captures the origin the binder verified, as a held card that never changes, one pending per outside identity, held for a bounded time. The owner SHALL apply it, in its session, only by the card's id and the digest it was shown, at most once, and only while the authority the card was filed under stands. A pending card SHALL hold its client's grant row, and a grant change SHALL drop the client's cards.
+
+#### Scenario: The owner's browser names an MCP client
+- **WHEN** a call carries an MCP client's origin together with the owner's session to register an agent
+- **THEN** it is refused before any grant is recorded, and no agent is registered
+
+#### Scenario: A card applied after a revoke
+- **WHEN** the owner applies a card whose client's grant was revoked after it was filed
+- **THEN** the apply is refused, no agent is registered, and the card is kept
+
+### Requirement: Scheduled work carries the authority it was made under
+A scheduled turn or automation SHALL carry a stamp of the outside authority it was made under (the client, its grant generation and its sign-in time), or none for the owner's own, rechecked with the grant's standing when it is made and before it is handed to pi; a changed, revoked or fenced grant SHALL refuse it. A grant change SHALL refuse the client's pending work, never work being handed, in its own transaction. Open stamped work SHALL hold its client's grant row.
+
+#### Scenario: Free rows at their bound
+- **WHEN** the free grant rows are at their bound while a client's stamped work is pending
+- **THEN** the client's row is kept, and the work still runs under its standing grant
+
+#### Scenario: A grant changed around the doors
+- **WHEN** a stamped turn's client's grant generation moves before the turn is due
+- **THEN** the turn is refused at its hand-off and the runner is never called
+
+### Requirement: Scheduled work is handed to pi, never run in the schedule
+The `work` lane SHALL only hand a turn to pi's durable submit; pi runs it, and its status is pi's receipts. A hand-off SHALL be claimed under a lease that bounds the hand-off alone, and marked before it can have any effect, the runner stopping if its mark fails. A lapsed claim SHALL be `unknown` if it was marked, never handed again, and an unmarked one due again, a bounded number of times. A hand-off held past its bound SHALL be reported and left, marked, to its lease.
+
+#### Scenario: A runner dies after its mark
+- **WHEN** the runner marks a turn and dies before it answers
+- **THEN** once the lease lapses the turn is `unknown`, and the runner is never handed it again
+
+#### Scenario: A runner that awaits the turn
+- **WHEN** a runner holds its hand-off past the bound
+- **THEN** the pass reports it, marks the row, moves on to the next, and the row is `unknown` once its lease lapses
 
 ### Requirement: A grant change ends its client's wakes
 A grant change SHALL suppress the client's agents' open wakes and schedule the revoke of their callbacks in the same transaction, and a claim SHALL suppress a wake whose client's grant no longer stands.
@@ -235,7 +330,7 @@ An upload SHALL declare its file's size and record its chunks, in that size's 4 
 - **THEN** the chunk becomes garbage that a later upload sends again, and its key is deleted after the grace
 
 #### Scenario: A chunk still referenced
-- **WHEN** the alarm runs with a chunk that a kept version's content is made of
+- **WHEN** the `files` lane runs with a chunk that a kept version's content is made of
 - **THEN** the chunk stays, whatever its age
 
 ### Requirement: A content id names one content

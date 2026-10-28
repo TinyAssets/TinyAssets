@@ -498,8 +498,12 @@ export interface FilesEnvOptions {
   /** Who this environment's changes are by, in the history: the agent by default. */
   readonly writer?: string;
   readonly cwd?: string;
-  /** Point the object's one schedule at housekeeping the changes made due. */
-  readonly rearm?: () => Promise<void>;
+  /**
+   * Point the object's one schedule at housekeeping the changes made due: the object's
+   * `Schedule.sync()`, its Lifecycle files lane. Required, so no wiring can leave a
+   * change's housekeeping unscheduled.
+   */
+  readonly rearm: () => Promise<void>;
 }
 
 export class OwnerFilesEnv implements ExecutionEnv {
@@ -518,7 +522,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
     this.#files = options.files;
     this.#writer = options.writer ?? "agent";
     this.cwd = options.cwd ?? WORKSPACE;
-    this.#rearm = options.rearm ?? (async () => undefined);
+    this.#rearm = options.rearm;
     // Named by a hash of the namespace, which never leaves the object itself.
     this.id = `ta-files:${sha256Hex(`ta-env\n${this.#files.ns()}`).slice(0, 32)}`;
   }

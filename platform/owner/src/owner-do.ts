@@ -13,11 +13,15 @@
  * client a call comes through (`origin`, `source`, `authenticated_at`) and the owner's
  * session cookie (`session`). What it decides from them, it decides itself, from its
  * own rows: every outside call, at every door, is admitted against that client's grant
- * and held to its scopes (`grants.ts`), and every widening checks the owner's live
- * session row (`sessions.ts`), a refused one leaving a refusal receipt in the policy
- * receipts (`policy.ts`). An outside client's call never carries the owner's session,
- * with one pinned exception: the owner's browser registering an agent for that client
- * (`registerAgent`). Every other door refuses the pair.
+ * and held to its scopes (`grants.ts`: `read_graph`, `write_graph`, `propose_policy`,
+ * `read_files`, `write_files`), and every widening checks the owner's live session row
+ * (`sessions.ts`), a refused one leaving a refusal receipt in the policy receipts
+ * (`policy.ts`). An outside client's call never carries the owner's session, with one
+ * pinned exception: the owner's browser registering an agent for an API key it holds
+ * (`registerAgent`), whose origin the object re-derives from the key id. An MCP client's
+ * agent registers through a card the client files on its own verified call
+ * (`registerPropose`, `registrations.ts`), which the owner applies in session by its id.
+ * Every other door refuses the pair.
  *
  * Its code cannot reach another owner's object: the Worker binds only `FILES`, the files
  * Worker, which itself binds no Durable Object and no service; the runtime hands it no
@@ -28,13 +32,17 @@
  * guard), since objects of one class can share an isolate.
  *
  * Every public method is an RPC any binding can call, so the class has no public method
- * but its doors (`RPC_METHODS` in the tests pins the list). Claiming and settling wakes
- * is the alarm's own, in process, with the doorbell's {@link WakeSender}; no door
- * reaches it. The same alarm runs file housekeeping (expired uploads and temporary
- * directories, history prunes, garbage chunk deletes) through the one `#rearm`; task 3.6
- * moves both onto the Agents SDK Lifecycle queue, which owns the object's single
- * physical alarm once PiHarness is installed.
+ * but its doors (`RPC_METHODS` in the tests pins the list). Its timed work is the one
+ * schedule's (`schedule.ts`): lanes on the Agents SDK Lifecycle job queue, which owns the
+ * object's single physical alarm, as PiHarness's wake job will once it is installed. The
+ * object is a plain Durable Object that holds a Lifecycle, never the SDK's `Agent`, and
+ * installs none of Lifecycle's runtime handlers: `alarm` alone hands the runtime's alarm to
+ * it, so no `fetch` or WebSocket handler joins the surface. Claiming and settling wakes is
+ * the `wakes` lane's own, in process, with the doorbell's {@link WakeSender}; file
+ * housekeeping (expired uploads and temporary directories, history prunes, garbage chunk
+ * deletes) is the `files` lane's. No door reaches either.
  */
+import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
 import { Collections, Conflict, type HistoryEntry, type Page, type Row } from "./collections";
@@ -44,7 +52,7 @@ import {
   type Entry,
   FileConflict, Files, type Lease, type SyncOp, type SyncOutcome, type Usage,
 } from "./files";
-import { type Client, type Grant, Grants, holds, type Scope } from "./grants";
+import { type Capability, type Client, type Grant, Grants, holds, type Scope } from "./grants";
 import {
   type Agent, clock, Ledger, type MailPage, type Origin, outsideOrigin, type Posted,
   registrant, type Source,
@@ -52,6 +60,11 @@ import {
 import {
   type Change, fileSettings, Policy, type PolicyDocument, type Projection, type Receipt,
 } from "./policy";
+import { type Card, Registrations } from "./registrations";
+import { Schedule } from "./schedule";
+import {
+  runWork, Scheduled, WORK_HANDOFF_MS, WORK_PER_PASS, type WorkRunner,
+} from "./scheduled";
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
 import { principal } from "./text";
@@ -73,7 +86,10 @@ export interface Binding {
   readonly source?: Source;
   /**
    * When the credential was signed in, in whole seconds: an outside client's, which a
-   * revoke fences, or the owner's interactive sign-in, which opens a session.
+   * revoke fences, or the owner's interactive sign-in, which opens a session. Every MCP
+   * call carries it: the grant's original interactive sign-in, which a token refresh never
+   * moves. A revoke, and once any MCP revoke is forgotten the owner-wide fence, refuses an
+   * MCP call without it.
    */
   readonly authenticated_at?: number;
   /** The owner's protected-session cookie, as the browser presented it. */
@@ -120,6 +136,16 @@ export interface CardRequest {
   readonly request_id: string;
 }
 
+/** The owner's apply of a held registration: the card and the digest it was shown. */
+export interface CardApply {
+  readonly card_id: string;
+  readonly digest: string;
+}
+
+export interface RegistrationCardRequest {
+  readonly card_id: string;
+}
+
 export interface GrantRequest {
   readonly client: string;
   readonly source: string;
@@ -131,6 +157,10 @@ export interface GrantRequest {
 
 export interface ClientRequest {
   readonly client: string;
+}
+
+export interface ForgetRequest {
+  readonly clients: string[];
 }
 
 export interface PostRequest {
@@ -322,8 +352,7 @@ interface Serves {
 }
 
 export const OUTSIDE_SESSION = "an outside client's call never carries the owner's session";
-/** How long file housekeeping that failed waits before the alarm tries it again. */
-export const HOUSEKEEPING_RETRY_S = 300;
+export const MCP_REGISTERS_BY_CARD = "an MCP client's agent registers through the card it files";
 
 /**
  * The request's fields are exactly `required`, plus any of `optional`, and none is
@@ -402,12 +431,22 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #sessions: Sessions;
   readonly #ledger: Ledger;
   readonly #files: Files;
+  readonly #work: Scheduled;
+  readonly #registrations: Registrations;
+  readonly #schedule: Schedule;
+  readonly #lifecycle: Lifecycle<OwnerEnv>;
   /**
-   * What rings outside agents' doorbells, called in process by the alarm. None until the
-   * doorbell slice (tasks 7) constructs one here; until then the alarm only recovers
-   * lapsed claims, and open wakes and revokes stay pending without arming it.
+   * What rings outside agents' doorbells, called in process by the `wakes` lane. None
+   * until the doorbell slice (tasks 7) constructs one here; until then the lane only
+   * recovers lapsed claims, and open wakes and revokes stay pending without a job.
    */
   readonly #sender: WakeSender | null = null;
+  /**
+   * What runs due scheduled turns, called in process by the `work` lane. None until the
+   * agent (tasks 5) constructs one; until then the lane only recovers lapsed claims, and
+   * pending work stays held without a job.
+   */
+  readonly #runner: WorkRunner | null = null;
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     super(ctx, env);
@@ -418,55 +457,35 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#ledger = new Ledger(ctx.storage, this.#grants);
     this.#files = new Files(ctx.storage, env.FILES,
                             () => fileSettings(this.#policy.read().document));
+    this.#work = new Scheduled(ctx.storage, this.#grants);
+    this.#registrations = new Registrations(ctx.storage, this.#grants);
+    // The lanes of the one schedule. There is no global tick; each owner's object
+    // schedules only itself.
+    this.#schedule = new Schedule({
+      // Lapsed claims, then due wakes and revokes; open rows count only with a doorbell.
+      wakes: { next: (now) => this.#ledger.nextDue(now, this.#sender !== null),
+               run: (_now, until) => runWakes(this.#ledger, this.#sender, clock,
+                                              WAKES_PER_ALARM, until) },
+      files: { next: (now) => this.#files.nextAlarm(now),
+               run: (now, until) => this.#files.collect(now, until) },
+      // Stamped scheduled work: lapsed claims, then, with a runner, due work rechecked
+      // against the authority it was made under.
+      work: { next: (now) => this.#work.nextDue(now, this.#runner !== null),
+              run: (_now, until) => runWork(this.#work, this.#runner, clock, WORK_PER_PASS,
+                                            WORK_HANDOFF_MS, until) },
+    }, clock);
+    this.#lifecycle = new Lifecycle<OwnerEnv>(this).use(this.#schedule);
     void ctx.blockConcurrencyWhile(async () => {
       migrate(ctx.storage);
-      // The schedule as stored, for this code's sender: a deploy that adds a doorbell
-      // arms the wakes held while there was none.
-      await this.#rearm();
+      // The schedule as stored, for this code's lanes and sender: a deploy that adds a
+      // doorbell gives the wakes held while there was none their job.
+      await this.#schedule.sync();
     });
   }
 
-  /**
-   * The object's one alarm: lapsed claims, then due wakes and revokes, then file
-   * housekeeping (expired uploads and temporary directories, history prunes, garbage
-   * chunk deletes), then rearm at the next time there is work it can do. There is no
-   * global tick; each owner's object schedules only itself. Housekeeping that fails is
-   * logged and tried again after `HOUSEKEEPING_RETRY_S`, never in a tight loop.
-   */
+  /** The runtime's alarm, which Lifecycle owns: it drives the due jobs, then re-arms. */
   override async alarm(): Promise<void> {
-    await runWakes(this.#ledger, this.#sender, clock, WAKES_PER_ALARM);
-    let retry: number | null = null;
-    try {
-      await this.#files.collect(clock());
-    } catch {
-      console.error("file housekeeping failed");  // no paths or hashes in the log
-      retry = clock() + HOUSEKEEPING_RETRY_S;
-    }
-    await this.#rearm(retry);
-  }
-
-  /**
-   * Point the one alarm at the next work it can do, never in the past, or clear it: the
-   * ledger's wakes and the files' housekeeping share it. `notBefore` holds housekeeping
-   * that just failed.
-   */
-  async #rearm(notBefore: number | null = null): Promise<void> {
-    const now = clock();
-    const files = this.#files.nextAlarm(now);
-    const times = [this.#ledger.nextAlarm(now, this.#sender !== null),
-                   files === null || notBefore === null ? files : Math.max(files, notBefore)]
-      .filter((due): due is number => due !== null);
-    const next = times.length ? Math.ceil(Math.min(...times) * 1000) : null;
-    // Each set is a billed row written, and file doors rearm on every change: an alarm
-    // already where it belongs is left alone.
-    if (next === await this.ctx.storage.getAlarm()) {
-      return;
-    }
-    if (next === null) {
-      await this.ctx.storage.deleteAlarm();
-    } else {
-      await this.ctx.storage.setAlarm(next);
-    }
+    await this.#lifecycle.alarm();
   }
 
   /**
@@ -494,11 +513,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
     // The owner's cookie rides only the owner's own browser requests (tasks 2); an
     // outside client's call carrying it is a binder bug or a replay, refused before any
-    // grant is recorded.
+    // grant is recorded. Only an API key's registration carries both: the binder checked
+    // the owner holds the key, and the object re-derives its origin from the key id.
     if (binding.session !== undefined && serves.registering !== true) {
       throw new Refused(OUTSIDE_SESSION);
     }
     const source = registrant(binding.source, origin);
+    if (binding.session !== undefined && source.kind !== "api_key") {
+      throw new Refused(MCP_REGISTERS_BY_CARD);
+    }
     return { owner, caller, origin,
              grant: this.#grants.admit(origin.client, source.kind, signedIn, clock()) };
   }
@@ -545,7 +568,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * the `main` agent, in `center` (default: the command center its one enabled agent is
    * registered in). `full` and the owner pass.
    */
-  #scope(account: Account, capability: string, center?: unknown): void {
+  #scope(account: Account, capability: Capability, center?: unknown): void {
     if (account.grant?.mode !== "scoped") {
       return;
     }
@@ -603,7 +626,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /**
    * The owner's write, in its session; with `proposal`, a held card's one apply. A new
    * files retention is applied to rows already kept by housekeeping, so the schedule is
-   * rearmed after it.
+   * synced after it (the `files` lane re-applies it).
    */
   async policyWrite(binding: Binding, request: PolicyWriteRequest): Promise<Projection> {
     const written = this.#widening(binding, "write", request, "write its policy",
@@ -613,7 +636,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                                       r["proposal"] ?? null, clock());
       return { owner, generation: done.generation, digest: done.digest, policy: done.document };
     });
-    await this.#rearm();
+    await this.#schedule.sync();
     return written;
   }
 
@@ -681,11 +704,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                                        "expected_generation", "name"]);
       return this.ctx.storage.transactionSync(() => {
         const changed = this.#grants.set(id, r as unknown as GrantRequest, clock());
-        this.#ledger.suppressClient(changed.client, clock());
+        this.#endClient(changed.client);
         return changed;
       });
     });
-    await this.#rearm();
+    await this.#schedule.sync();
     return set;
   }
 
@@ -696,11 +719,47 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const r = policyFields(request, ["client"]);
     const revoked = this.ctx.storage.transactionSync(() => {
       const result = this.#grants.revoke(r["client"], clock());
-      this.#ledger.suppressClient(result.client, clock());
+      this.#endClient(result.client);
       return result;
     });
-    await this.#rearm();
+    await this.#schedule.sync();
     return revoked;
+  }
+
+  /**
+   * Forget a revoked API key's grant (slice 3's review L1): the binder calls it once the
+   * directory has deleted the key (tasks 2). A narrowing, since a key with no row is
+   * refused, so the owner's account makes it without a session. Never an MCP client's.
+   */
+  grantForget(binding: Binding, request: ClientRequest): { client: string; forgotten: boolean } {
+    this.#owner(binding, "forget an outside client's grant");
+    const r = policyFields(request, ["client"]);
+    return this.#grants.forgetKey(r["client"], clock());
+  }
+
+  /**
+   * The owner, in its session, forgets revoked clients to make room under its bound: a
+   * widening, so it is the only act that lifts an MCP revoke, and even then a forgotten
+   * MCP client comes back only from a sign-in after the revoke (`grants.ts`).
+   */
+  grantForgetRevoked(binding: Binding, request: ForgetRequest):
+      { forgotten: string[]; mcp_fence: number } {
+    return this.#widening(binding, "outside_forget", request,
+                          "forget its revoked outside clients", (_account, id) => {
+      const r = policyFields(request, ["clients"]);
+      return this.#grants.forgetRevoked(id, r["clients"], clock());
+    });
+  }
+
+  /**
+   * A grant change ends what its client set going (P0-3's M3): its agents' open wakes and
+   * callbacks, its pending scheduled work and its held registrations, in the caller's
+   * transaction.
+   */
+  #endClient(client: string): void {
+    this.#ledger.suppressClient(client, clock());
+    this.#work.endClient(client, clock());
+    this.#registrations.endClient(client);
   }
 
   // -- OUTSIDE_AGENTS ---------------------------------------------------------
@@ -712,20 +771,62 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * Registering an agent needs the owner's protected session (S30): the owner's browser
-   * names the identity the agent is (`origin`), an API key the owner holds or a
-   * verified MCP client, so this is the one door an outside origin reaches together
-   * with the owner's session.
+   * Registering an agent needs the owner's protected session (S30), in one of two forms.
+   * The owner itself applies an MCP client's held registration (`CardApply`): the card
+   * the client filed on its own verified call, which captured its origin. Or the owner's
+   * browser registers an agent for an API key it holds, naming the key's identity
+   * (`origin`, re-derived from the key id): the one door an outside origin reaches
+   * together with the owner's session.
    */
-  async registerAgent(binding: Binding, request: RegisterRequest): Promise<Agent> {
+  async registerAgent(binding: Binding, request: RegisterRequest | CardApply): Promise<Agent> {
     const agent = this.#widening(binding, "OUTSIDE_AGENTS.register", request, null,
                                  ({ origin }) => {
+      if (origin === null) {
+        const r = ledgerFields(request, ["card_id", "digest"]);
+        return this.ctx.storage.transactionSync(() => {
+          const card = this.#registrations.take(r["card_id"], r["digest"], clock());
+          return this.#ledger.register(card.origin, card.source,
+                                       card.request as unknown as RegisterRequest);
+        });
+      }
       const r = ledgerFields(request, ["command_center_id", "display_name", "delivery_method",
                                        "recipe_id"]);
       return this.#ledger.register(origin, binding.source, r as unknown as RegisterRequest);
     }, { registering: true });
-    await this.#rearm();
+    await this.#schedule.sync();
     return agent;
+  }
+
+  /**
+   * An MCP client files the registration of its agent on its own verified call, so the
+   * object captures the origin the binder verified; the owner applies it in session
+   * (`registerAgent`). Never applied here. Filing again replaces the identity's card.
+   */
+  registerPropose(binding: Binding, request: RegisterRequest):
+      { card_id: string; digest: string; expires_at: number } {
+    const account = this.#account(binding);
+    if (account.origin === null || account.grant === null) {
+      throw new Refused("only an outside client files its own agent's registration");
+    }
+    if (registrant(binding.source, account.origin).kind !== "mcp") {
+      throw new Refused("an API key's agent registers from the owner's browser with the key");
+    }
+    const r = ledgerFields(request, ["command_center_id", "display_name", "delivery_method",
+                                     "recipe_id"]);
+    return this.#registrations.file(account.origin, (binding.source as Source).ref, {
+      client: account.origin.client, generation: account.grant.generation,
+      authenticated_at: binding.authenticated_at ?? null }, r, clock());
+  }
+
+  /** The pending registration card the owner is shown, and the digest its apply names. */
+  registerProposal(binding: Binding, request: RegistrationCardRequest): Card {
+    this.#owner(binding, "read its agents' registrations");
+    const r = ledgerFields(request, ["card_id"]);
+    const card = this.#registrations.card(r["card_id"], clock());
+    if (card === null) {
+      throw new Refused("no pending registration for this card");
+    }
+    return card;
   }
 
   /**
@@ -738,7 +839,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const r = ledgerFields(request, ["agent_id", "reason"]);
       return this.#ledger.disable(r["agent_id"], r["reason"], origin);
     });
-    await this.#rearm();
+    await this.#schedule.sync();
     return agent;
   }
 
@@ -750,7 +851,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const r = ledgerFields(request, ["agent_id"]);
       return this.#ledger.remove(r["agent_id"]);
     });
-    await this.#rearm();
+    await this.#schedule.sync();
     return deleted;
   }
 
@@ -762,7 +863,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#scope(account, "write_graph");
     const posted = this.#ledger.post(account.origin, r["room_id"], r["client_message_id"],
                                      r["body"], r["parent_id"]);
-    await this.#rearm();
+    await this.#schedule.sync();
     return posted;
   }
 
@@ -834,7 +935,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * A collection door's caller: the owner, a visiting owner, or an outside client the
    * owner's account acts through, admitted against its grant and held to `capability`.
    */
-  #collector(binding: Binding, capability: string): { owner: string; caller: string } {
+  #collector(binding: Binding, capability: Capability): { owner: string; caller: string } {
     const account = this.#account(binding, { visitors: true });
     this.#scope(account, capability);
     return account;
@@ -902,12 +1003,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return account;
   }
 
-  /** A changing file door: its act, then the one schedule rearmed whatever came of it. */
+  /** A changing file door: its act, then the one schedule synced whatever came of it. */
   async #filing<T>(act: () => T | Promise<T>): Promise<T> {
     try {
       return await act();
     } finally {
-      await this.#rearm();
+      await this.#schedule.sync();
     }
   }
 

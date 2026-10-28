@@ -9,6 +9,7 @@ import {
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
 import { runWakes, type WakeSender } from "../src/wakes";
+import { alarmOf, laneAt } from "./support";
 
 export const MUSE: Origin = Object.freeze({ client: "a".repeat(64), family: "b".repeat(64) });
 export const DOT: Origin = Object.freeze({ client: "c".repeat(64), family: "d".repeat(64) });
@@ -102,17 +103,19 @@ export async function rig() {
   const sender = new FakeSender();
 
   /**
-   * An agent registered from `origin` in the owner's session, then given any wake limits
-   * by the owner's own policy setter (a registration never carries them).
+   * An MCP agent registered from `origin`: its client files the card on its own call, and
+   * the owner applies it in its session. Then given any wake limits by the owner's own
+   * policy setter (a registration never carries them).
    */
   const registered = async (origin: Origin, name = "Muse", method = "pull",
                             extra: { max_wakes_per_hour?: number; batch_window_s?: number;
                                      command_center_id?: string } = {}) => {
     const { max_wakes_per_hour: perHour, batch_window_s: batch, ...request } = extra;
-    const agent = await stub.registerAgent(session(origin), {
+    const { card_id, digest } = await stub.registerPropose(bind(origin), {
       command_center_id: "alpha", display_name: name, delivery_method: method,
       recipe_id: null, ...request,
     });
+    const agent = await stub.registerAgent(session(null), { card_id, digest });
     if (perHour === undefined && batch === undefined) {
       return agent;
     }
@@ -167,11 +170,10 @@ export async function rig() {
     tick: (now: number = clock()): Promise<number> =>
       runInDurableObject(stub, (_i: OwnerDO, state) =>
         runWakes(ledgerOn(state.storage), sender, () => now)),
-    /** The object's alarm time in seconds, or null when it is not set. */
-    alarmAt: (): Promise<number | null> => runInDurableObject(stub, async (_i: OwnerDO, state) => {
-      const at = await state.storage.getAlarm();
-      return at === null ? null : at / 1000;
-    }),
+    /** The object's physical alarm in seconds, as Lifecycle armed it, or null. */
+    alarmAt: (): Promise<number | null> => alarmOf(stub),
+    /** The `wakes` lane's Lifecycle job due time in seconds, or null when it has none. */
+    wakesAt: (): Promise<number | null> => laneAt(stub, "wakes"),
   };
 }
 

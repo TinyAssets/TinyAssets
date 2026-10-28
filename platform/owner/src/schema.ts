@@ -44,10 +44,17 @@ const HISTORY_USAGE = (entry: string, sign: string) =>
   `('writer', ${entry}.collection, ${entry}.writer, 0, 0, ${sign}${HISTORY_BYTES(entry)})` +
   ON_USAGE;
 
-/** Move a grant row's class, times `sign`: set by the owner, or free to make room. */
+/**
+ * Move a grant row's class, times `sign`: set by the owner (counted against the owner's
+ * bound), or free to make room (nothing holds it).
+ */
 const CLIENT_USAGE = (row: string, sign: string) =>
   `UPDATE policy_usage SET owner_clients = owner_clients ${sign} (${row}.owner_set = 1), ` +
-  `free_clients = free_clients ${sign} (${row}.owner_set = 0 AND ${row}.agents = 0);`;
+  `free_clients = free_clients ${sign} (${row}.owner_set = 0 AND ${row}.agents = 0 ` +
+  `AND ${row}.held = 0);`;
+/** Count an open stamped work row against its client's row (`+`), or release it (`-`). */
+const HOLD = (row: string, sign: string) =>
+  `UPDATE outside_clients SET held = held ${sign} 1 WHERE client = ${row}.client;`;
 /** Count a pending proposal in its proposer's share (`+`), or take it out (`-`). */
 const SHARE = (row: string, sign: string) => sign === "+"
   ? `INSERT INTO proposal_shares (proposer, pending) SELECT ${row}.proposer, 1 ` +
@@ -115,7 +122,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // 2: the message ledger (S30, S3a, S3b), its bodies, and the W3 wake limits (ledger.ts).
   // The object is its owner, so no row carries an owner column. Every bound the ledger
   // keeps is a counter that only the triggers below write, inside the statement that
-  // changes the rows it counts, and every query a door or the alarm runs has an index, so
+  // changes the rows it counts, and every query a door or a lane runs has an index, so
   // nothing scans the whole store.
   Object.freeze([
     "CREATE TABLE outside_agents (" +
@@ -184,7 +191,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "unacked INTEGER NOT NULL DEFAULT 0 CHECK (unacked >= 0), " +
       "unacked_bytes INTEGER NOT NULL DEFAULT 0 CHECK (unacked_bytes >= 0))",
     // The object's one schedule: each outside agent's wake, and each revoke of a
-    // suppressed agent's callbacks, which the doorbell consumes on the alarm.
+    // suppressed agent's callbacks, which the doorbell consumes on the `wakes` lane.
     "CREATE TABLE ledger_wakes (" +
       "wake_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, " +
       "kind TEXT NOT NULL DEFAULT 'wake' CHECK (kind IN ('wake', 'revoke')), " +
@@ -326,13 +333,17 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "WHERE applied_at IS NOT NULL",
     "CREATE TABLE proposal_shares (proposer TEXT PRIMARY KEY, " +
       "pending INTEGER NOT NULL CHECK (pending >= 0))",
-    // One row per verified outside client. A row the owner set (`owner_set`: a grant
-    // change or a revoke) or an agent holds (`agents`, kept by the triggers on
-    // `outside_agents` below) is never deleted: a revoked row is what keeps a credential
-    // signed in before the revoke dead after a re-grant, and a held row is what the
-    // agent's wakes ring under. Any other row is exactly what the client's next verified
-    // call would record again (`full`, generation 1, never revoked), so it is free: the
-    // oldest free rows make room for new clients.
+    // One row per verified outside client. A row an agent holds (`agents`, kept by the
+    // triggers on `outside_agents` below) or stamped work holds (`held`: open scheduled
+    // work and pending agent registrations, kept by their triggers) is never deleted: it
+    // is what that work is rechecked against. A row the owner set (`owner_set`: a grant
+    // change or a revoke) is kept while the grant stands; a revoked one may go only by an
+    // act the module makes (an API key the directory deleted, or the owner's own forget in
+    // its session), and an MCP revoke's time then becomes the owner-wide fence
+    // (`grant_fences`), so no credential signed in before it is ever admitted again. Any
+    // other row is exactly what the client's next verified call would record again
+    // (`full`, generation 1, never revoked), so it is free: the oldest free rows make room
+    // for new clients.
     "CREATE TABLE outside_clients (" +
       "client TEXT PRIMARY KEY CHECK (length(client) = 64), " +
       "source TEXT NOT NULL CHECK (source IN ('mcp', 'api_key')), " +
@@ -342,37 +353,88 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "last_seen REAL NOT NULL, " +
       "owner_set INTEGER NOT NULL DEFAULT 0 CHECK (owner_set IN (0, 1)), " +
       "agents INTEGER NOT NULL DEFAULT 0 CHECK (agents >= 0), " +
+      "held INTEGER NOT NULL DEFAULT 0 CHECK (held >= 0), " +
       "CHECK (owner_set = 1 OR (source = 'mcp' AND mode = 'full' AND generation = 1 " +
       "AND revoked_at IS NULL AND scopes = '[]' AND name = '')))",
     "CREATE INDEX outside_clients_listed ON outside_clients (first_seen, client)",
     "CREATE INDEX outside_clients_free ON outside_clients (last_seen) " +
-      "WHERE owner_set = 0 AND agents = 0",
+      "WHERE owner_set = 0 AND agents = 0 AND held = 0",
     "CREATE TRIGGER outside_clients_kept BEFORE DELETE ON outside_clients " +
-      "WHEN OLD.owner_set = 1 OR OLD.agents > 0 BEGIN " +
-      "SELECT RAISE(ABORT, 'an outside client grant the owner set or an agent holds is " +
-      "never deleted'); END",
+      "WHEN OLD.agents > 0 OR OLD.held > 0 OR (OLD.owner_set = 1 AND OLD.mode != 'revoked') " +
+      "BEGIN SELECT RAISE(ABORT, 'an outside client grant the owner set or an agent holds is " +
+      "never deleted while it stands or holds'); END",
+    // The latest MCP revoke ever forgotten: an MCP client with no row is admitted only
+    // from a sign-in after it. Every path that drops a revoked MCP row moves it, and it
+    // only ever rises: lowering it, or dropping its row, is refused.
+    "CREATE TABLE grant_fences (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      "mcp_through REAL NOT NULL CHECK (mcp_through >= 0))",
+    "INSERT INTO grant_fences VALUES (1, 0)",
+    "CREATE TRIGGER grant_fences_rise BEFORE UPDATE ON grant_fences " +
+      "WHEN NEW.mcp_through < OLD.mcp_through OR NEW.only != OLD.only " +
+      "BEGIN SELECT RAISE(ABORT, 'the revoke fence only ever rises'); END",
+    "CREATE TRIGGER grant_fences_kept BEFORE DELETE ON grant_fences " +
+      "BEGIN SELECT RAISE(ABORT, 'the revoke fence only ever rises'); END",
+    "CREATE TRIGGER outside_clients_forgotten AFTER DELETE ON outside_clients " +
+      "WHEN OLD.source = 'mcp' AND OLD.revoked_at IS NOT NULL BEGIN " +
+      "UPDATE grant_fences SET mcp_through = MAX(mcp_through, OLD.revoked_at); END",
     "CREATE TABLE policy_usage (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "sessions INTEGER NOT NULL, owner_clients INTEGER NOT NULL, " +
       "free_clients INTEGER NOT NULL, " +
       "pending_proposals INTEGER NOT NULL, applied_proposals INTEGER NOT NULL, " +
       "owner_receipts INTEGER NOT NULL, agent_receipts INTEGER NOT NULL, " +
-      "refusal_receipts INTEGER NOT NULL)",
-    "INSERT INTO policy_usage VALUES (1, 0, 0, 0, 0, 0, 0, 0, 0)",
+      "refusal_receipts INTEGER NOT NULL, open_work INTEGER NOT NULL DEFAULT 0, " +
+      "settled_work INTEGER NOT NULL DEFAULT 0, pending_cards INTEGER NOT NULL DEFAULT 0)",
+    "INSERT INTO policy_usage (only, sessions, owner_clients, free_clients, " +
+      "pending_proposals, applied_proposals, owner_receipts, agent_receipts, " +
+      "refusal_receipts) VALUES (1, 0, 0, 0, 0, 0, 0, 0, 0)",
+    // Stamped scheduled work (tasks 3.6, `scheduled.ts`): a scheduled turn or automation,
+    // the outside authority it was made under (`client`, `generation`, `authenticated_at`;
+    // none for the owner's own), rechecked with `Grants.standing` before it is handed to
+    // pi. Open work holds its client's grant row. A hand-off is fenced by its lease and
+    // may-have-been-handed mark, as a wake is, so unknown work is never handed again.
+    "CREATE TABLE scheduled_work (work_id TEXT PRIMARY KEY CHECK (length(work_id) = 37), " +
+      "kind TEXT NOT NULL CHECK (kind IN ('turn')), due REAL NOT NULL, " +
+      "state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'handed', 'failed', " +
+      "'refused', 'unknown')), payload TEXT NOT NULL CHECK (length(payload) <= 16384), " +
+      "client TEXT CHECK (client IS NULL OR length(client) = 64), generation INTEGER, " +
+      "authenticated_at REAL, claim_id TEXT, marked INTEGER NOT NULL DEFAULT 0, " +
+      "attempts INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL, settled_at REAL, " +
+      "outcome TEXT, " +
+      "CHECK ((client IS NULL) = (generation IS NULL) " +
+      "AND (client IS NOT NULL OR authenticated_at IS NULL)), " +
+      "CHECK ((settled_at IS NULL) = (state IN ('pending', 'running'))))",
+    "CREATE INDEX work_open ON scheduled_work (due) WHERE state = 'pending'",
+    "CREATE INDEX work_running ON scheduled_work (due) WHERE state = 'running'",
+    "CREATE INDEX work_settled ON scheduled_work (settled_at) WHERE settled_at IS NOT NULL",
+    "CREATE INDEX work_by_client ON scheduled_work (client, state) WHERE settled_at IS NULL",
+    // An MCP client's held registration (slice 3's review L2): filed through the client's
+    // own verified call, so the object captured its origin, and applied by the owner in
+    // its session by card id. One pending card per outside identity; it holds its client's
+    // grant row and carries the authority it was filed under.
+    "CREATE TABLE agent_cards (card_id TEXT PRIMARY KEY CHECK (length(card_id) = 37), " +
+      "client TEXT NOT NULL CHECK (length(client) = 64), " +
+      "family TEXT NOT NULL CHECK (length(family) = 64), source_ref TEXT NOT NULL, " +
+      "generation INTEGER NOT NULL, authenticated_at REAL, " +
+      "request TEXT NOT NULL CHECK (length(request) <= 4096), digest TEXT NOT NULL, " +
+      "filed_at REAL NOT NULL, UNIQUE (client, family))",
+    "CREATE INDEX agent_cards_by_age ON agent_cards (filed_at)",
     "CREATE TRIGGER owner_sessions_added AFTER INSERT ON owner_sessions BEGIN " +
       "UPDATE policy_usage SET sessions = sessions + 1; END",
     "CREATE TRIGGER owner_sessions_removed AFTER DELETE ON owner_sessions BEGIN " +
       "UPDATE policy_usage SET sessions = sessions - 1; END",
     `CREATE TRIGGER outside_clients_added AFTER INSERT ON outside_clients BEGIN ${
       CLIENT_USAGE("NEW", "+")} END`,
-    "CREATE TRIGGER outside_clients_changed AFTER UPDATE OF owner_set, agents " +
+    "CREATE TRIGGER outside_clients_changed AFTER UPDATE OF owner_set, agents, held " +
       `ON outside_clients BEGIN ${CLIENT_USAGE("OLD", "-")} ${CLIENT_USAGE("NEW", "+")} END`,
     `CREATE TRIGGER outside_clients_removed AFTER DELETE ON outside_clients BEGIN ${
       CLIENT_USAGE("OLD", "-")} END`,
-    // A client recorded after its agents were (as a direct store change could leave it)
-    // still counts them.
+    // A client recorded after its agents or stamped work were (as a direct store change
+    // could leave it) still counts them.
     "CREATE TRIGGER outside_clients_held AFTER INSERT ON outside_clients BEGIN " +
       "UPDATE outside_clients SET agents = (SELECT COUNT(*) FROM outside_agents " +
-      "WHERE outside_client = NEW.client) WHERE client = NEW.client; END",
+      "WHERE outside_client = NEW.client), held = (SELECT COUNT(*) FROM scheduled_work " +
+      "WHERE client = NEW.client AND settled_at IS NULL) + (SELECT COUNT(*) FROM " +
+      "agent_cards WHERE client = NEW.client) WHERE client = NEW.client; END",
     "CREATE TRIGGER outside_agents_hold AFTER INSERT ON outside_agents BEGIN " +
       "UPDATE outside_clients SET agents = agents + 1 WHERE client = NEW.outside_client; END",
     "CREATE TRIGGER outside_agents_release AFTER DELETE ON outside_agents BEGIN " +
@@ -392,6 +454,32 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "UPDATE policy_usage SET pending_proposals = pending_proposals - " +
       "(OLD.applied_at IS NULL), applied_proposals = applied_proposals - " +
       `(OLD.applied_at IS NOT NULL); ${SHARE("OLD", "-")} END`,
+    "CREATE TRIGGER scheduled_work_added AFTER INSERT ON scheduled_work BEGIN " +
+      "UPDATE policy_usage SET open_work = open_work + (NEW.settled_at IS NULL), " +
+      `settled_work = settled_work + (NEW.settled_at IS NOT NULL); ` +
+      "UPDATE outside_clients SET held = held + 1 WHERE client = NEW.client " +
+      "AND NEW.settled_at IS NULL; END",
+    "CREATE TRIGGER scheduled_work_settled AFTER UPDATE OF settled_at ON scheduled_work " +
+      "WHEN (OLD.settled_at IS NULL) != (NEW.settled_at IS NULL) BEGIN " +
+      "UPDATE policy_usage SET open_work = open_work + CASE WHEN NEW.settled_at IS NULL " +
+      "THEN 1 ELSE -1 END, settled_work = settled_work + CASE WHEN NEW.settled_at IS NULL " +
+      "THEN -1 ELSE 1 END; " +
+      "UPDATE outside_clients SET held = held + CASE WHEN NEW.settled_at IS NULL THEN 1 " +
+      "ELSE -1 END WHERE client = NEW.client; END",
+    "CREATE TRIGGER scheduled_work_removed AFTER DELETE ON scheduled_work BEGIN " +
+      "UPDATE policy_usage SET open_work = open_work - (OLD.settled_at IS NULL), " +
+      "settled_work = settled_work - (OLD.settled_at IS NOT NULL); " +
+      "UPDATE outside_clients SET held = held - 1 WHERE client = OLD.client " +
+      "AND OLD.settled_at IS NULL; END",
+    "CREATE TRIGGER scheduled_work_restamped BEFORE UPDATE OF client, generation, " +
+      "authenticated_at ON scheduled_work " +
+      "BEGIN SELECT RAISE(ABORT, 'scheduled work keeps the authority it was made under'); END",
+    "CREATE TRIGGER agent_cards_added AFTER INSERT ON agent_cards BEGIN " +
+      `UPDATE policy_usage SET pending_cards = pending_cards + 1; ${HOLD("NEW", "+")} END`,
+    "CREATE TRIGGER agent_cards_removed AFTER DELETE ON agent_cards BEGIN " +
+      `UPDATE policy_usage SET pending_cards = pending_cards - 1; ${HOLD("OLD", "-")} END`,
+    "CREATE TRIGGER agent_cards_kept BEFORE UPDATE ON agent_cards " +
+      "BEGIN SELECT RAISE(ABORT, 'a held registration never changes'); END",
     "CREATE TRIGGER proposal_shares_emptied AFTER UPDATE ON proposal_shares " +
       "WHEN NEW.pending = 0 BEGIN DELETE FROM proposal_shares WHERE proposer = NEW.proposer; END",
     "CREATE TRIGGER policy_receipts_added AFTER INSERT ON policy_receipts BEGIN " +

@@ -22,6 +22,8 @@ import { FILE_DEFAULTS } from "../src/policy";
 import { lostContent, ownerObject, sqlIn } from "./support";
 
 const context = BACKGROUND_CONTEXT;
+/** The schedule's sync, which the object wires in; these cases drive no schedule. */
+const rearm = async (): Promise<void> => undefined;
 
 /** A fresh owner's object, and its files, for the length of `use`. */
 function inOwner(use: (files: Files) => Promise<void>): Promise<void> {
@@ -52,7 +54,7 @@ function counting(): { store: ChunkStore; gets: Get[][]; puts: Put[][] } {
 
 const cases = createEnvConformance({
   assertions: createExpectAssertions(expect),
-  withEnv: (use) => inOwner((files) => use(new OwnerFilesEnv({ files }))),
+  withEnv: (use) => inOwner((files) => use(new OwnerFilesEnv({ files, rearm }))),
   symlinks: false,
   listFiles: true,
 });
@@ -110,15 +112,15 @@ describe("the owner's environment", () => {
 
   it("answers exec as shell_unavailable until the sandbox slice", async () => {
     await inOwner(async (files) => {
-      const result = await new OwnerFilesEnv({ files }).exec("true", undefined, context);
+      const result = await new OwnerFilesEnv({ files, rearm }).exec("true", undefined, context);
       expect(result.ok ? null : result.error.code).toBe("shell_unavailable");
     });
   });
 
   it("refuses an edit whose file changed between its read and its write", async () => {
     await inOwner(async (files) => {
-      const first = new OwnerFilesEnv({ files });
-      const second = new OwnerFilesEnv({ files });
+      const first = new OwnerFilesEnv({ files, rearm });
+      const second = new OwnerFilesEnv({ files, rearm });
       getOrThrow(await first.writeFile("notes.md", "one", context));
       // pi's edit: read, then write what it computed from that read.
       expect(getOrThrow(await second.readTextFile("notes.md", context))).toBe("one");
@@ -149,7 +151,7 @@ describe("the owner's environment", () => {
         deleteChunks: (ns: string, shas: string[]) => env.FILES.deleteChunks(ns, shas),
       };
       const files = new Files(state.storage, store, () => FILE_DEFAULTS);
-      const fs = new OwnerFilesEnv({ files });
+      const fs = new OwnerFilesEnv({ files, rearm });
       getOrThrow(await fs.writeFile("log.txt", new Uint8Array(5000).fill(65), context));
       race = () => files.write("/workspace/log.txt", new Uint8Array([66]),
                                { expected: null, writer: "owner" });
@@ -162,8 +164,8 @@ describe("the owner's environment", () => {
   it("writes unconditionally a path it never read, and keeps its own writes in order",
      async () => {
     await inOwner(async (files) => {
-      const one = new OwnerFilesEnv({ files });
-      const other = new OwnerFilesEnv({ files });
+      const one = new OwnerFilesEnv({ files, rearm });
+      const other = new OwnerFilesEnv({ files, rearm });
       getOrThrow(await other.writeFile("a.txt", "theirs", context));
       getOrThrow(await one.writeFile("a.txt", "mine", context));
       getOrThrow(await one.writeFile("a.txt", "mine again", context));
@@ -180,20 +182,20 @@ describe("the owner's environment", () => {
      async () => {
     let first = "";
     await inOwner(async (files) => {
-      first = new OwnerFilesEnv({ files }).id;
-      expect(new OwnerFilesEnv({ files }).id).toBe(first);
+      first = new OwnerFilesEnv({ files, rearm }).id;
+      expect(new OwnerFilesEnv({ files, rearm }).id).toBe(first);
       expect(first).toMatch(/^ta-files:[0-9a-f]{32}$/);
       expect(first).not.toContain(files.ns());
     });
     await inOwner(async (files) => {
-      expect(new OwnerFilesEnv({ files }).id).not.toBe(first);
+      expect(new OwnerFilesEnv({ files, rearm }).id).not.toBe(first);
     });
   });
 
   it("reads paths outside the owner's roots as missing and refuses writes to them",
      async () => {
     await inOwner(async (files) => {
-      const fs = new OwnerFilesEnv({ files });
+      const fs = new OwnerFilesEnv({ files, rearm });
       const read = await fs.readTextFile("/etc/passwd", context);
       expect(read.ok ? null : read.error.code).toBe("not_found");
       expect(getOrThrow(await fs.exists("/tmp/x", context))).toBe(false);
@@ -207,7 +209,7 @@ describe("the owner's environment", () => {
   it("appends and truncates large files sending only the chunks after those kept",
      async () => {
     await inOwner(async (files) => {
-      const fs = new OwnerFilesEnv({ files });
+      const fs = new OwnerFilesEnv({ files, rearm });
       const big = new Uint8Array(4 * 1024 * 1024 + 10).map((_, i) => i % 251);
       getOrThrow(await fs.writeFile("big.bin", big, context));
       const before = files.open("/workspace/big.bin").chunks!;
@@ -233,7 +235,7 @@ describe("the owner's environment", () => {
     await runInDurableObject(ownerObject().stub, async (_instance: OwnerDO, state) => {
       const { store, gets, puts } = counting();
       const files = new Files(state.storage, store, () => FILE_DEFAULTS);
-      const fs = new OwnerFilesEnv({ files });
+      const fs = new OwnerFilesEnv({ files, rearm });
       const big = new Uint8Array(CHUNK_BYTES + 10).map((_, i) => i % 251);
       getOrThrow(await fs.writeFile("big.bin", big, context));
       const first = files.open("/workspace/big.bin").chunks![0]!;
@@ -256,7 +258,7 @@ describe("the owner's environment", () => {
     await runInDurableObject(ownerObject().stub, async (_instance: OwnerDO, state) => {
       const { store, gets } = counting();
       const files = new Files(state.storage, store, () => FILE_DEFAULTS);
-      const fs = new OwnerFilesEnv({ files });
+      const fs = new OwnerFilesEnv({ files, rearm });
       // Five chunks, 16 MiB and one byte, sent by upload as the HTTP door will.
       const piece = new Uint8Array(CHUNK_BYTES).fill(65);
       const last = new Uint8Array([10]);
@@ -295,7 +297,7 @@ describe("the owner's environment", () => {
     const big = new Uint8Array(INLINE_BYTES + 100).fill(66);
     await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
       const files = new Files(state.storage, env.FILES, () => FILE_DEFAULTS);
-      const fs = new OwnerFilesEnv({ files });
+      const fs = new OwnerFilesEnv({ files, rearm });
       for (const [name, body] of [["small.txt", "small"], ["big.bin", big]] as const) {
         const spill = getOrThrow(await fs.createTempFile({ prefix: "spill-" }, context));
         getOrThrow(await fs.writeFile(spill, body, context));
@@ -309,7 +311,7 @@ describe("the owner's environment", () => {
     await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
       const files = new Files(state.storage, env.FILES, () => FILE_DEFAULTS);
       await files.collect(Date.now() / 1000);
-      const fs = new OwnerFilesEnv({ files });
+      const fs = new OwnerFilesEnv({ files, rearm });
       expect(getOrThrow(await fs.readBinaryFile("big.bin", context))).toEqual(big);
     });
     expect(await lostContent(r.stub)).toEqual([]);
@@ -317,7 +319,7 @@ describe("the owner's environment", () => {
 
   it("keeps a BOM through pi's own edit, byte for byte", async () => {
     await inOwner(async (files) => {
-      const fs = new OwnerFilesEnv({ files });
+      const fs = new OwnerFilesEnv({ files, rearm });
       const bytes = new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode("one\r\ntwo\r\n")]);
       getOrThrow(await fs.writeFile("bom.txt", bytes, context));
       const edit = createEditTool();
@@ -334,7 +336,7 @@ describe("the owner's environment", () => {
       const files = new Files(state.storage, store, () => FILE_DEFAULTS);
       await files.write("/workspace/two.bin", new Uint8Array(2 * CHUNK_BYTES).fill(1),
                         { expected: null, writer: "owner" });
-      const fs = new OwnerFilesEnv({ files });
+      const fs = new OwnerFilesEnv({ files, rearm });
       gets.length = 0;
       for (let i = 0; i < FILES_CALLS; i++) {
         getOrThrow(await fs.readBinaryFile("two.bin", context));
@@ -345,7 +347,7 @@ describe("the owner's environment", () => {
         "or fewer files at once"]);
       expect(gets).toHaveLength(FILES_CALLS);
       // The next tool call's environment has its own budget, which its puts spend too.
-      const next = new OwnerFilesEnv({ files });
+      const next = new OwnerFilesEnv({ files, rearm });
       for (let i = 0; i < FILES_CALLS; i++) {
         getOrThrow(await next.writeFile(`p${i}.bin`, new Uint8Array(INLINE_BYTES + 1).fill(i),
                                         context));
@@ -361,7 +363,7 @@ describe("the owner's environment", () => {
   it("keeps a temporary file under /.ta/tmp until cleanup, and refuses writes outside one",
      async () => {
     await inOwner(async (files) => {
-      const fs = new OwnerFilesEnv({ files });
+      const fs = new OwnerFilesEnv({ files, rearm });
       const file = getOrThrow(await fs.createTempFile({ prefix: "spill-", suffix: ".log" },
                                                       context));
       expect(file).toMatch(/^\/\.ta\/tmp\/tmp-[0-9a-f]{16}\/spill-.*\.log$/);

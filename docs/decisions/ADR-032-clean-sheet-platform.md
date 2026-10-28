@@ -42,12 +42,14 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
    registry, ledger, receipts and bodies, board and room collections on the one
    revision primitive with history, policy, grants, sessions, connection
    metadata and sealed credentials, subscriptions, the session event log, one
-   schedule driven by one alarm, and hibernating app WebSockets. The runtime
-   keeps each object's storage private. The object's code has no way to another
-   owner's object: its Worker binds nothing but service bindings to Workers an
-   allow-list names with the binding kinds each may hold, none reaching another
-   Worker or a shared store beyond its purpose (today the files Worker, with one
-   bucket; the gateway with its slice), checked against the bound Worker's own
+   schedule on the Agents SDK Lifecycle job queue, which owns the object's
+   single alarm and PiHarness's wake-up job, and hibernating app WebSockets.
+   The runtime keeps each object's storage private. The object's code has no
+   way to another owner's object: its Worker binds nothing but service bindings
+   to Workers an allow-list names with the binding kinds each may hold, none
+   reaching another Worker or a shared store beyond its purpose (today the
+   files Worker, with one bucket; the gateway with its slice), checked against
+   the bound Worker's own
    config; the `disable_ctx_exports` flag keeps the runtime from handing it its
    own namespaces as `ctx.exports`; and its source never imports `env`. No
    module keeps mutable state at top level or writes through the global object,
@@ -91,8 +93,9 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
      pi-coding-agent extensions, which target Node and pi's in-process
      extension API.
 
-   **User hooks run in a separately deployed Worker's Durable Object,** not in
-   a Dynamic Worker inside the owner's object. pi measured on Cloudflare
+   **User hooks run in a separately deployed Worker's Durable Object, which
+   loads each owner's hook code with the Worker Loader (Dynamic Workers, open
+   beta),** not in a Dynamic Worker inside the owner's object. pi measured on Cloudflare
    (October 2026) that code computing for 10 s in a Dynamic Worker loaded by
    the session object delayed every other request to that object by the full
    10 s; in a separate Worker's object the delay was about 50 ms. The owner's
@@ -104,6 +107,7 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
 
    **pi is pinned to 1.4.x:** agents supports one pi minor, and pi's
    unreleased main already removes `retryTask`, which agents 0.31.0 calls.
+   Pi 1.4's storage migration cannot be rolled back.
 5. **Owner files live in versioned per-owner object storage** behind a
    trusted file API. A Firecracker microVM sandbox (E2B first, self-hostable
    later) is woken only for `bash`; its disk is a warm cache. How they are
@@ -187,9 +191,10 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
   per owner a month, an owner needs more than 10 GB of trusted state or 1,000
   requests a second, compliance requires customer-held keys, or E2B's p95
   resume exceeds 1.5 s.
-- Facts read secondhand (E2B resume and terms, Durable Object pricing and
-  limits, regional availability, Dynamic Workers and Facets) are verified
-  before each dependent slice commits.
+- E2B resume and terms, and Durable Object regional availability, are
+  verified before each dependent slice commits. Durable Object pricing and
+  limits, Dynamic Workers and Facets were verified from Cloudflare's pages on
+  2026-10-28.
 
 ## Sources
 

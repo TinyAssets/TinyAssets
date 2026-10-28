@@ -1,10 +1,11 @@
-import { runInDurableObject } from "cloudflare:test";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
 import { Collections, LIMITS, type Limits } from "../src/collections";
 import { type ChunkStore, type FileLimits, Files } from "../src/files";
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
+import { SCHEDULE } from "../src/schedule";
 
 export const text = (value: string): Uint8Array => new TextEncoder().encode(value);
 
@@ -20,6 +21,55 @@ export function inFiles<R>(stub: DurableObjectStub<OwnerDO>, limits: Partial<Fil
 }
 
 type Row = Record<string, SqlStorageValue>;
+
+/** A schedule lane's Lifecycle job as Lifecycle stores it: due time in ms, and payload. */
+export interface LaneJob {
+  readonly time: number;
+  readonly payload: unknown;
+}
+
+/** Every Lifecycle job of the object's schedule, by lane (ids are `owner-schedule/<lane>`). */
+export async function laneJobs(stub: DurableObjectStub<OwnerDO>):
+    Promise<Record<string, LaneJob>> {
+  const rows = await sqlIn(stub, "SELECT id, time, payload FROM cf_agents_jobs WHERE " +
+                                   "capability = ? ORDER BY id", SCHEDULE).catch(() => []);
+  return Object.fromEntries(rows.map((row) => [(row["id"] as string).slice(SCHEDULE.length + 1), {
+    time: row["time"] as number,
+    payload: row["payload"] === null ? null : JSON.parse(row["payload"] as string),
+  }]));
+}
+
+/** One lane's job due time in seconds, or null when it has none. */
+export async function laneAt(stub: DurableObjectStub<OwnerDO>, lane: string):
+    Promise<number | null> {
+  const job = (await laneJobs(stub))[lane];
+  return job === undefined ? null : job.time / 1000;
+}
+
+/**
+ * Let the object's due Lifecycle jobs run. workerd fires the alarm Lifecycle armed for
+ * them on its own, so this runs it now if it is still pending, then waits until no job of
+ * any capability is due.
+ */
+export async function drainDue(stub: DurableObjectStub<OwnerDO>): Promise<void> {
+  await runDurableObjectAlarm(stub);
+  for (let tries = 0; tries < 200; tries++) {
+    const due = await sqlIn(stub, "SELECT id FROM cf_agents_jobs WHERE time <= ?", Date.now());
+    if (due.length === 0) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("the due jobs did not run");
+}
+
+/** The object's physical alarm in seconds, as Lifecycle armed it, or null. */
+export function alarmOf(stub: DurableObjectStub<OwnerDO>): Promise<number | null> {
+  return runInDurableObject(stub, async (_instance: OwnerDO, state) => {
+    const at = await state.storage.getAlarm();
+    return at === null ? null : at / 1000;
+  });
+}
 
 /** Rows a query returns in `stub`'s own storage. */
 export function sqlIn(stub: DurableObjectStub<OwnerDO>, statement: string,

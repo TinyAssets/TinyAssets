@@ -8,6 +8,11 @@
  * authority by default (`full`), or exact `{universe, agent, capability}` triples
  * (`scoped`), or none (`revoked`).
  *
+ * A scoped grant holds exact `{universe, agent, capability}` triples. The capabilities
+ * the object's doors check (`CAPABILITIES`): `read_graph` and `write_graph` (the mailbox,
+ * its doorbell subscription and the collections), `propose_policy` (an agent's policy
+ * proposal) and `read_files` and `write_files` (the file doors).
+ *
  * Enforced here now:
  * - Every call from an outside client is admitted, in the object that holds its grant,
  *   before any door acts (`admit`): an MCP client's first verified call records it
@@ -20,28 +25,42 @@
  *   wakes and revokes their doorbell subscriptions in the same transaction (the
  *   Python's M3), so the agent subscribes again under the new grant.
  * - Work saved under a grant is rechecked with `standing` against the generation it
- *   was stamped with: a changed, revoked or fenced grant refuses it.
+ *   was stamped with: a changed, revoked or fenced grant refuses it. The schedule's
+ *   stamped work (`scheduled.ts`) and an MCP client's held registration
+ *   (`registrations.ts`) carry that stamp and hold their client's row (`held`), as an
+ *   agent does, so the free-row bound can never forget it and turn a standing grant
+ *   into "no grant".
  *
- * Owed by later slices, each written into its task: durable work (scheduled turns
- * 3.6, agent runs and launches 5) stamps its outside authority and calls `standing`
- * before it runs; a grant change ends that client's in-flight turns and streams (the
- * Python's `_end_outside_streams`; there are none in the object yet); the doorbell
- * rechecks the grant just before it sends (7).
+ * Owed by later slices, each written into its task: agent runs and launches (5) stamp
+ * their outside authority and call `standing` before each step; a grant change ends that
+ * client's in-flight turns and streams (the Python's `_end_outside_streams`; there are
+ * none in the object yet); the doorbell rechecks the grant just before it sends (7).
  *
- * The rows stay bounded without ever forgetting a fence. A row the owner set or an
- * agent holds is kept: a revoked row is what keeps a pre-revoke credential dead, and
- * an agent's row is what its wakes ring under. Any other row is exactly what its
- * client's next verified call records again, so it is free: past `maxFreeClients` the
- * oldest free row goes, and a new client is never refused. Rows the owner sets are
- * bounded by `maxOwnerClients`, refused at the owner's own `set`; a revoke, a narrowing
- * that must always land, is never refused. Rows agents hold are bounded by the agent
- * registry.
+ * The rows stay bounded without ever forgetting a fence (slice 3's review L1, and slice
+ * 5's review M1). A row an agent or stamped work holds is kept: it is what that work is
+ * checked against. A row the owner set is kept, and only the owner's own act lifts a
+ * revoke:
+ * - An API key's revoked row is forgotten when the binder reports the directory deleted
+ *   the key (`forgetKey`): a narrowing, since an API key with no row is refused, never
+ *   recorded, so it needs no session.
+ * - An MCP client's revoked row is forgotten only by the owner in its session
+ *   (`forgetRevoked`, a widening the object receipts), never by time and never as a side
+ *   effect of another change: no refresh-token lifetime bounds how long a pre-revoke
+ *   credential lives. Even then the fence stays: every forgotten MCP revoke moves the
+ *   owner-wide `grant_fences.mcp_through` (a schema trigger, so no path skips it), and an
+ *   MCP client with no row is recorded only from a sign-in known to be after it.
+ * Any other row is exactly what its client's next verified call records again, so it is
+ * free: past `maxFreeClients` the oldest free row goes, and a new client is never
+ * refused. Rows the owner sets are bounded by `maxOwnerClients`, revoked ones included,
+ * refused at the owner's own `set` with the way out named (forget revoked clients); a
+ * revoke, a narrowing that must always land, is never refused. Rows agents and stamped
+ * work hold are bounded by their own bounds.
  *
  * Declared differences from the Python:
  * - Admission is the object's own, per call, where the grant lives: the Python router's
  *   identity stamp and the box's recheck of it have no counterpart.
  * - The platform's outside kill switch (`TINYASSETS_OUTSIDE_DENY`) is the binder's, from
- *   the owner directory (tasks 2), and the alarm's (tasks 7): the object has no env.
+ *   the owner directory (tasks 2), and the `wakes` lane's (tasks 7): the object has no env.
  * - A held API-key request applied with its grant (`_apply_key_request`) needs the
  *   directory's key ids, so it comes with the key store (tasks 2).
  * - Rows are bounded as above; the Python kept every row.
@@ -51,7 +70,13 @@ import { canonical, plain, type Policy, policyDigest } from "./policy";
 import { codePoints } from "./text";
 
 export const OUTSIDE_MODES: readonly string[] = Object.freeze(["full", "scoped", "revoked"]);
+/** The capabilities a scoped grant's triples name at the object's doors. */
+export const CAPABILITIES = Object.freeze(
+  ["read_graph", "write_graph", "propose_policy", "read_files", "write_files"] as const);
+export type Capability = (typeof CAPABILITIES)[number];
 export const OUTSIDE_SOURCES: readonly string[] = Object.freeze(["mcp", "api_key"]);
+/** Clients one owner forget names at most. */
+const MAX_FORGET = 100;
 const HEX64 = /^[0-9a-f]{64}$/;
 
 /**
@@ -101,10 +126,12 @@ export type Client = {
   readonly name: string;
   readonly first_seen: number;
   readonly last_seen: number;
-  /** Whether the owner has set or revoked this grant; such a row is never forgotten. */
+  /** Whether the owner has set or revoked this grant; kept while it fences. */
   readonly owner_set: number;
   /** The agents registered from this client, which hold its row. */
   readonly agents: number;
+  /** Its open stamped work and pending registrations, which hold its row too. */
+  readonly held: number;
 };
 
 type Stored = Omit<Client, "scopes"> & { scopes: string };
@@ -118,13 +145,20 @@ export interface GrantChange {
   readonly name: unknown;
 }
 
-/** `outside_scopes`: exact triples; a wildcard is never a scope. */
+/**
+ * `outside_scopes`: exact triples; a wildcard is never a scope, and a capability is one a
+ * door checks (`CAPABILITIES`), so a grant never names one that nothing would hold.
+ */
 export function scopes(value: unknown, limits: GrantLimits = GRANT_LIMITS): Scope[] {
   if (!Array.isArray(value) || value.length > limits.maxScopes || value.some((scope) =>
     !plain(scope) || Object.keys(scope).sort().join() !== "agent,capability,universe"
     || Object.values(scope).some((v) => typeof v !== "string" || !v || v === "*"
                                         || codePoints(v) > 512))) {
     throw new Invalid("outside scopes require exact universe, agent and capability");
+  }
+  if (value.some((scope) => !(CAPABILITIES as readonly string[]).includes(
+    (scope as Record<string, string>)["capability"]!))) {
+    throw new Invalid(`a scope's capability is one of ${CAPABILITIES.join(", ")}`);
   }
   return value as Scope[];
 }
@@ -201,10 +235,18 @@ export class Grants {
     return this.#storage.transactionSync(() => {
       let row = this.#row(client);
       if (row === undefined && source === "mcp") {
+        // A forgotten revoke still fences: a client with no row is recorded only from a
+        // sign-in known to be after the latest one.
+        const fence = sql.exec<{ mcp_through: number }>(
+          "SELECT mcp_through FROM grant_fences").one().mcp_through;
+        if (fence > 0 && (authenticatedAt === null
+                          || authenticatedAt <= fence + this.#limits.revokeClockMarginS)) {
+          throw new Refused("a fresh sign-in is required after a revoke");
+        }
         const over = this.#usage().free_clients - this.#limits.maxFreeClients + 1;
         if (over > 0) {
           sql.exec("DELETE FROM outside_clients WHERE client IN (SELECT client FROM " +
-                     "outside_clients WHERE owner_set = 0 AND agents = 0 " +
+                     "outside_clients WHERE owner_set = 0 AND agents = 0 AND held = 0 " +
                      "ORDER BY last_seen LIMIT ?)", over);
         }
         sql.exec("INSERT INTO outside_clients (client, source, mode, scopes, generation, " +
@@ -278,7 +320,8 @@ export class Grants {
         throw new Refused("outside client source changed");
       }
       if (row?.owner_set !== 1 && this.#usage().owner_clients >= this.#limits.maxOwnerClients) {
-        throw new Refused("the owner's managed outside clients are at their limit");
+        throw new Refused("the owner's managed outside clients are at their limit; forget " +
+                          "revoked clients to make room");
       }
       const generation = expected + 1;
       const revokedAt = mode === "revoked" ? now : row?.revoked_at ?? null;
@@ -295,6 +338,69 @@ export class Grants {
         generation, rule: client, decision: mode, outcome: "committed",
       }, now);
       return { client, mode, scopes: held, generation };
+    });
+  }
+
+  /** Drop one revoked row nothing holds, receipted; the schema moves the MCP fence. */
+  #forget(row: Stored, sessionId: string | null, now: number): void {
+    if (row.mode !== "revoked") {
+      throw new Refused("only a revoked grant is forgotten; revoke it first");
+    }
+    if (row.agents > 0 || row.held > 0) {
+      throw new Refused("an agent or scheduled work still holds this client's grant");
+    }
+    this.#sql.exec("DELETE FROM outside_clients WHERE client = ?", row.client);
+    this.#policy.receipt("outside_grant", {
+      session_id: sessionId, request_digest: policyDigest({ client: row.client,
+                                                           mode: "forgotten" }),
+      generation: 0, rule: row.client, decision: "forgotten", outcome: "committed",
+    }, now);
+  }
+
+  /**
+   * Forget a revoked API key's row once the binder has deleted the key from the owner
+   * directory (so call it only then). A narrowing: a key with no row is refused, never
+   * recorded, so the owner's account makes it without a session. An MCP client's revoke
+   * is lifted only by the owner in its session (`forgetRevoked`).
+   */
+  forgetKey(clientId: unknown, now: number): { client: string; forgotten: boolean } {
+    const client = outsideClient(clientId, "api_key");
+    return this.#storage.transactionSync(() => {
+      const row = this.#row(client);
+      if (row === undefined) {
+        return { client, forgotten: false };
+      }
+      if (row.source !== "api_key") {
+        throw new Refused("only the owner, in its session, forgets an MCP client's revoke");
+      }
+      this.#forget(row, null, now);
+      return { client, forgotten: true };
+    });
+  }
+
+  /**
+   * The owner, in its session, forgets revoked clients, one or many, to make room under
+   * its bound: a widening, receipted per client. An MCP client forgotten may come back
+   * only from a sign-in after its revoke (`grant_fences`); an API key's, not at all.
+   */
+  forgetRevoked(sessionId: string, clients: unknown, now: number):
+      { forgotten: string[]; mcp_fence: number } {
+    if (!Array.isArray(clients) || clients.length < 1 || clients.length > MAX_FORGET
+        || new Set(clients).size !== clients.length) {
+      throw new Invalid(`forget names 1 to ${MAX_FORGET} distinct outside clients`);
+    }
+    const ids = clients.map((client) => outsideClient(client));
+    return this.#storage.transactionSync(() => {
+      const forgotten: string[] = [];
+      for (const client of ids) {
+        const row = this.#row(client);
+        if (row !== undefined) {
+          this.#forget(row, sessionId, now);
+          forgotten.push(client);
+        }
+      }
+      return { forgotten, mcp_fence: this.#sql.exec<{ mcp_through: number }>(
+        "SELECT mcp_through FROM grant_fences").one().mcp_through };
     });
   }
 
