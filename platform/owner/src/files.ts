@@ -1400,8 +1400,8 @@ export class Files {
   /**
    * Where a conflicting write's content goes: the blocked ancestor, or else the path,
    * under the first conflict name nothing holds, so a copy never replaces anything. The
-   * whole copy path is checked as any path is: one that would pass 4096 bytes is refused,
-   * as that op's reported outcome. The sandbox keeps such a file and the sync agent
+   * copy's name is a valid path and the rest is the end of one, so only the whole path's
+   * length can fail: one that would pass 4096 bytes is refused, as that op's outcome. The sandbox keeps such a file and the sync agent
    * reports it on every sync until it is renamed or the conflict resolved (tasks 6).
    */
   #copyPath(path: string, epoch: number): string {
@@ -1414,7 +1414,7 @@ export class Files {
           throw new Refused("the conflict copy's path would pass 4096 bytes; " +
                             "the sandbox keeps this file and reports it each sync");
         }
-        return storedPath(copy + rest);
+        return copy + rest;
       }
     }
     throw new Refused("too many conflict copies of this path in this epoch");
