@@ -28,11 +28,15 @@ from e2b import Sandbox, SandboxQuery, SandboxState, ServiceBusyException, Templ
 TEMPLATE_NAME = "tinyassets-resume-probe-1g"
 META = {"purpose": "tinyassets-e2b-resume-probe"}
 SANDBOX_TIMEOUT = 900  # seconds of running time; paused time doesn't count
+PAUSE_BUSY_RETRIES = 60
+API = f"https://api.{os.getenv('E2B_DOMAIN') or 'e2b.app'}"
 
 SEED = r"""
 set -e
 mkdir -p /home/user/data
-for i in $(seq 1 20); do dd if=/dev/urandom of=/home/user/data/blob$i bs=1M count=10 status=none; done
+for i in $(seq 1 20); do
+  dd if=/dev/urandom of=/home/user/data/blob$i bs=1M count=10 status=none
+done
 sha256sum /home/user/data/blob1 | cut -d' ' -f1 > /home/user/data/blob1.sha
 cat > /home/user/holder.py <<'EOF'
 import time
@@ -50,7 +54,7 @@ EOF
 
 CHECK = (
     "pgrep -f holder.py >/dev/null && echo alive || echo dead; cat /home/user/tick; echo; "
-    "test \"$(sha256sum /home/user/data/blob1 | cut -d' ' -f1)\" = \"$(cat /home/user/data/blob1.sha)\" "
+    "sha256sum /home/user/data/blob1 | cut -d' ' -f1 | cmp -s - /home/user/data/blob1.sha "
     "&& echo sha-ok || echo sha-bad; du -sm /home/user/data | cut -f1"
 )
 
@@ -79,7 +83,8 @@ def first_output(sbx: Sandbox, t_start: float) -> float:
     """Run `echo ok`; return seconds from t_start to the first stdout byte."""
     seen: list[float] = []
     res = sbx.commands.run("echo ok", on_stdout=lambda _: seen or seen.append(time.perf_counter()))
-    assert res.stdout.strip() == "ok", res
+    if res.stdout.strip() != "ok" or not seen:
+        raise RuntimeError(f"echo ok gave no first byte: {res!r}")
     return seen[0] - t_start
 
 
@@ -92,13 +97,28 @@ def build_template() -> str:
     return info.template_id
 
 
-def delete_template(template_id: str) -> None:
-    r = httpx.delete(
-        f"https://api.e2b.app/templates/{template_id}",
-        headers={"X-API-Key": os.environ["E2B_API_KEY"]},
-        timeout=30,
-    )
+def _headers() -> dict:
+    return {"X-API-Key": os.environ["E2B_API_KEY"]}
+
+
+def template_by_name() -> str | None:
+    """The probe template's id by its name, or None if it does not exist."""
+    r = httpx.get(f"{API}/templates/aliases/{TEMPLATE_NAME}", headers=_headers(), timeout=30)
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    return r.json()["templateID"]
+
+
+def delete_template(template_id: str | None) -> None:
+    """Delete the probe template, found by name if the build never returned an id."""
+    template_id = template_id or template_by_name()
+    if template_id is None:
+        print("no probe template to delete", flush=True)
+        return
+    r = httpx.delete(f"{API}/templates/{template_id}", headers=_headers(), timeout=30)
     print(f"delete template {template_id}: HTTP {r.status_code}", flush=True)
+    r.raise_for_status()
 
 
 def pause(sbx: Sandbox) -> tuple[float, int]:
@@ -110,6 +130,8 @@ def pause(sbx: Sandbox) -> tuple[float, int]:
             return time.perf_counter() - t, busy
         except ServiceBusyException:
             busy += 1
+            if busy > PAUSE_BUSY_RETRIES:
+                raise
             time.sleep(1)
 
 
@@ -181,13 +203,19 @@ def ours() -> list[str]:
     return ids
 
 
-def cleanup(created: list[str]) -> list[str]:
-    """Kill only sandboxes this probe created; return any of ours still listed."""
-    for sid in sorted(set(created) | set(ours())):
+def kill(ids: set[str]) -> None:
+    for sid in sorted(ids):
         try:
             Sandbox.kill(sid)
         except Exception as e:  # already gone is fine; report anything else
             print(f"kill {sid}: {e!r}", flush=True)
+
+
+def cleanup(created: list[str]) -> list[str]:
+    """Kill this probe's sandboxes: the recorded ones first, then any the list API
+    still tags as ours. Return any of ours still listed."""
+    kill(set(created))
+    kill(set(ours()) - set(created))
     return ours()
 
 
@@ -216,16 +244,21 @@ def main() -> int:
         with open(args.out, "w") as f:
             json.dump(out, f, indent=1)
 
-    template = build_template()
-    out["template_id"] = template
+    template: str | None = None
     try:
+        template = build_template()
+        out["template_id"] = template
         cycles(template, waits, out, save)
         cold(template, args.cold, out, save)
     finally:
-        out["remaining_after_cleanup"] = cleanup(out["created"])
-        delete_template(template)
-        out["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        save()
+        try:
+            out["remaining_after_cleanup"] = cleanup(out["created"])
+        finally:
+            delete_template(template)
+            out["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            save()
+    if out["remaining_after_cleanup"]:
+        raise RuntimeError(f"sandboxes left after cleanup: {out['remaining_after_cleanup']}")
 
     c, k = out["cycles"], out["cold"]
     out["stats"] = {

@@ -50,24 +50,25 @@ How each value was measured (`time.perf_counter`, client side):
 
 Pause measured 185 ms p50 / 705 ms max, much faster than the "about 4 s per 1 GiB
 of RAM" the docs quote. Either the call returns before the snapshot is fully
-written, or 1 GiB with about 360 MB in use snapshots quickly. Resume itself
-matched the docs ("about 1 second") with room to spare. A resumed sandbox is
-slightly *faster* to first byte than a cold create (p50 247 ms against 569 ms).
+written, or a 1 GiB sandbox whose memory is mostly untouched (the holder touches
+150 MiB; total memory in use was not recorded) snapshots quickly. Resume itself
+matched the docs ("about 1 second") with room to spare. A resumed sandbox reaches
+its first byte about 2.3× faster than a cold create (p50 247 ms against 569 ms).
 
 ## E2B facts (docs and pricing, read 2026-10-28)
 
 | Fact | Value | Source |
 |---|---|---|
-| Paused-storage price | No charge. "You only pay while a sandbox is actively running"; "Paused and killed sandboxes are not billed." No storage line item on any page. | https://docs.e2b.dev/billing, https://docs.e2b.dev/faq/calculate-sandbox-price.md, https://e2b.dev/pricing ("Sandbox storage is included with every plan at no extra cost") |
+| Paused-storage price | No charge. "You only pay while a sandbox is actively running"; "Paused and killed sandboxes are not billed." No storage line item on any page. | https://docs.e2b.dev/billing, https://docs.e2b.dev/faq/calculate-sandbox-price.md, https://e2b.dev/pricing (its Storage table lists disk as "10 Hobby Free / 20 Pro Free") |
 | Paused retention | Kept indefinitely, with no TTL and no auto-delete; removed only by an explicit kill | https://docs.e2b.dev/sandbox/persistence |
 | Paused vs. concurrency | Paused sandboxes do not count toward the concurrency limit | https://docs.e2b.dev/faq/paused-sandboxes-concurrency.md |
-| Concurrency | Hobby 20; Pro 100, plus add-ons of $500/mo per +500 up to 1,100 (pricing page: Pro+ 600 at $650/mo, Pro++ 1,100 at $1,150/mo, i.e. the same numbers); Enterprise 1,100+ | https://docs.e2b.dev/billing, https://e2b.dev/pricing |
+| Concurrency | Hobby 20; Pro 100, plus add-ons of +500 for +$500/mo or +1,000 for +$1,000/mo (so 600 at $650/mo or 1,100 at $1,150/mo including the $150 base); Enterprise 1,100+ | https://docs.e2b.dev/billing, https://e2b.dev/pricing |
 | Plans | Hobby $0 (one-time $100 credit); Pro $150/mo + usage; Enterprise custom ($3,000/mo minimum) | https://e2b.dev/pricing |
 | Usage price | $0.000014 per vCPU-second, $0.0000045 per GiB-second, so 2 vCPU + 1 GiB = $0.117 per running hour | https://e2b.dev/pricing |
 | Max session length | Continuous runtime: 1 h Hobby, 24 h Pro, custom Enterprise. **Resets on every pause/resume.** | https://docs.e2b.dev/sandbox, https://docs.e2b.dev/faq/sandbox-lifetime.md |
 | Pause/resume plan requirement | No doc restricts it to a paid plan. The persistence and billing pages describe it with no plan qualifier, and the lifetime FAQ gives its runtime reset for Hobby (1 h) and Pro alike. Which plan this account is on was not checked. | https://docs.e2b.dev/sandbox/persistence, https://docs.e2b.dev/billing |
 | Regions | Several regions, each a separate deployment, chosen per project via support with `E2B_DOMAIN`; the docs don't list them. A shared EU cluster is available on every plan once a payment method is added (ask support). The default lands in the US (Oregon, measured above). | https://docs.e2b.dev/faq/migrate-between-regions.md, https://docs.e2b.dev/faq/eu-region.md |
-| Sizes | 1–8 vCPU, 1–8 GiB RAM, set per template (`cpuCount`/`memoryMB`); disk 10 GiB Hobby / 20 GiB Pro | https://e2b.dev/pricing, https://docs.e2b.dev/billing |
+| Sizes | 1–8 vCPU and up to 8 GiB RAM (default template 512 MiB; more on Pro via support), set per template (`cpuCount`/`memoryMB`); disk 10 GiB Hobby / 20 GiB Pro | https://e2b.dev/pricing, https://docs.e2b.dev/billing |
 | Resume semantics | `connect` resumes a paused sandbox and only *extends* the timeout. Pause can return 503 (`ServiceBusyException`) while a previous snapshot finishes; auto-pause on timeout via `on_timeout="pause"`. | https://docs.e2b.dev/sandbox/persistence |
 
 ## Cost and cleanup
