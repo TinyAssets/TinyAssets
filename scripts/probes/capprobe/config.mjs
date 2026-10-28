@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Writes copies of both probe configs with `limits.subrequests` pinned, for a run that
- * sets the workflow's `subrequests_limit` (cap-probe.md, "Next"). The committed configs
+ * sets the workflow's `subrequests_limit` (cap-probe.md). The committed configs
  * stay as they are; each copy points `main` at the committed script by absolute path.
  *
  *   node scripts/probes/capprobe/config.mjs --limit 50 --out <dir>
