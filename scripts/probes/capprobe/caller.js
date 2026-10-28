@@ -1,15 +1,16 @@
 /**
  * ta-capprobe: the caller half of the live probe of Cloudflare's 32 service-binding calls
  * per request (openspec/changes/clean-sheet-platform/cap-probe.md has the method, the
- * cases and the results).
+ * cases, the reading key and the results).
  *
  * Throwaway. `.github/workflows/cap-probe.yml` deploys it to workers.dev, drives it with
  * `drive.mjs` and deletes it. Nothing in the product imports it. Every route needs the
- * per-run `x-probe-key`.
+ * per-run `x-probe-key`; every route but /health needs `x-probe-run`, the run id that
+ * stamps each stored record so the driver can refuse a record from another run.
  *
  *   POST /run/<case>     start or run one case (query: n, intervalMs, holdMs, ...)
  *   POST /record/<case>  store a Worker case's result when its own store call failed
- *   GET  /results        every case's stored result (query `only=M5,M7` for some)
+ *   GET  /results        every case's stored records (query `only=M5,M7` for some)
  *   GET  /plan           burn CPU well past the Free plan's 10 ms (the plan check)
  *   GET  /health
  *
@@ -23,6 +24,14 @@ const CASES = Object.freeze([
 ]);
 /** The cases that run in the Worker's own fetch handler. */
 const WORKER_CASES = Object.freeze(["M1", "M2", "M3", "M11"]);
+/**
+ * Calls spent before the measured burst, so each charging rule predicts a different
+ * stopping point: by the Worker before it calls M4's object, by M5's `arm()` RPC, by the
+ * RPC that starts M6's and M6a's loops, and by M6a's alarm before it awaits the loop.
+ */
+const PRE = Object.freeze({ worker: 16, arm: 8, start: 8, alarm: 4 });
+/** M12: calls A makes after B's invocation has ended. */
+const M12_AFTER = 10;
 /** M11: loopback, private and metadata addresses, as literals and as DNS names. */
 const PRIVATE_TARGETS = Object.freeze([
   "http://127.0.0.1/",
@@ -33,8 +42,9 @@ const PRIVATE_TARGETS = Object.freeze([
   "http://10.0.0.1.nip.io/",
   "http://169.254.169.254.nip.io/latest/meta-data/",
 ]);
+const RUN_ID = /^[\w.-]{1,64}$/;
 
-function params(url) {
+function params(url, run) {
   const num = (name, fallback) => {
     const raw = url.searchParams.get(name);
     const value = raw === null ? fallback : Number(raw);
@@ -44,12 +54,14 @@ function params(url) {
     return value;
   };
   return {
+    run,
     n: num("n", 40),
     intervalMs: num("intervalMs", 2000),
     holdMs: num("holdMs", 16 * 60 * 1000),
     beatMs: num("beatMs", 30 * 1000),
     messages: num("messages", 100),
-    waitMs: num("waitMs", 60 * 1000),
+    waitMs: num("waitMs", 30 * 1000),
+    settleMs: num("settleMs", 2000),
     timeoutMs: num("timeoutMs", 8000),
   };
 }
@@ -95,8 +107,9 @@ async function burst(kind, n, call) {
   return out;
 }
 
-/** One call of each kind the probe counts. */
+/** One call of each kind the probe counts. The callee's fetch wants the run key. */
 function calls(env) {
+  const keyed = { headers: { "x-probe-key": env.RUN_KEY } };
   return {
     rpc: async (i) => {
       const got = await env.CALLEE.ping(i);
@@ -105,7 +118,7 @@ function calls(env) {
       }
     },
     fetch: async (i) => {
-      const response = await env.CALLEE.fetch(`https://callee/ping?i=${i}`);
+      const response = await env.CALLEE.fetch(`https://callee/ping?i=${i}`, keyed);
       const body = await response.text();
       if (!response.ok || body !== "pong") {
         throw new Error(`CALLEE.fetch status ${response.status}`);
@@ -121,7 +134,7 @@ function calls(env) {
       if (!env.CALLEE_URL) {
         throw new Error("CALLEE_URL is not set");
       }
-      const response = await fetch(`${env.CALLEE_URL}/ping?i=${i}`);
+      const response = await fetch(`${env.CALLEE_URL}/ping?i=${i}`, keyed);
       const body = await response.text();
       if (!response.ok || body !== "pong") {
         throw new Error(`status ${response.status}: ${body.slice(0, 120)}`);
@@ -166,10 +179,17 @@ async function workerCase(id, env, p) {
   return { targets: await addressChecks(p.timeoutMs) };
 }
 
-/** M9: one WebSocket over `CALLEE.fetch`, messages, then RPC calls, then messages again. */
+/**
+ * M9: one WebSocket over `CALLEE.fetch`, then `messages` echoes, half of `n` RPC calls,
+ * one echo, the other half, and `messages` echoes again. The lone echo between the two
+ * bursts tells "the socket counts once" from "a socket message refreshes the budget".
+ */
 async function webSocketCase(env, p) {
-  const out = { open: null, echoesBefore: 0, rpcAfterOpen: null, echoesAfter: 0, wsError: null };
-  const response = await env.CALLEE.fetch("https://callee/ws", { headers: { Upgrade: "websocket" } });
+  const out = { open: null, echoesBefore: 0, rpc1: null, bridgeEcho: false, rpc2: null,
+                echoesAfter: 0, wsError: null };
+  const response = await env.CALLEE.fetch("https://callee/ws", {
+    headers: { Upgrade: "websocket", "x-probe-key": env.RUN_KEY },
+  });
   const ws = response.webSocket;
   if (!ws) {
     out.open = `no WebSocket: status ${response.status}`;
@@ -199,9 +219,9 @@ async function webSocketCase(env, p) {
       });
     });
   };
-  const exchange = async (tag) => {
+  const exchange = async (tag, count) => {
     let echoes = 0;
-    for (let i = 0; i < p.messages; i += 1) {
+    for (let i = 0; i < count; i += 1) {
       const message = `${tag}-${i}`;
       ws.send(message);
       if ((await next(p.timeoutMs)) === message) {
@@ -210,10 +230,14 @@ async function webSocketCase(env, p) {
     }
     return echoes;
   };
+  const ping = calls(env).rpc;
+  const half = Math.floor(p.n / 2);
   try {
-    out.echoesBefore = await exchange("before");
-    out.rpcAfterOpen = await burst("rpc", p.n, calls(env).rpc);
-    out.echoesAfter = await exchange("after");
+    out.echoesBefore = await exchange("before", p.messages);
+    out.rpc1 = await burst("rpc", half, ping);
+    out.bridgeEcho = (await exchange("bridge", 1)) === 1;
+    out.rpc2 = await burst("rpc", half, ping);
+    out.echoesAfter = await exchange("after", p.messages);
   } catch (error) {
     out.wsError = errText(error);
   }
@@ -233,10 +257,16 @@ function deferred() {
 export class Probe extends DurableObject {
   /** M6 and M6a: the background loop, which outlives the RPC that started it. */
   #loop = null;
+  #running = false;
   /** M6a: whether the alarm is awaiting the loop right now. */
   #inAlarm = false;
-  /** M12: the two invocations' rendezvous points. */
+  /** M12: the two invocations' rendezvous points, by run and name. */
   #gates = new Map();
+
+  /** Every record stored here carries the run that wrote it. */
+  async #put(key, value, p) {
+    await this.ctx.storage.put(key, { ...value, run: p.run });
+  }
 
   /** Everything this case stored, by key. */
   async read() {
@@ -247,47 +277,51 @@ export class Probe extends DurableObject {
     return out;
   }
 
-  async record(result) {
-    await this.ctx.storage.put("r:result", result);
+  async record(result, p) {
+    await this.#put("r:result", result, p);
   }
 
-  /** M4: the calls inside a Durable Object RPC method the Worker called. */
-  async runRpc(p) {
+  /** M4: the calls inside a Durable Object RPC method, after the Worker spent `workerPre`. */
+  async runRpc(p, workerPre) {
     const result = { case: "M4", where: "Durable Object RPC method", status: "done", params: p,
-                     startedAt: Date.now() };
+                     startedAt: Date.now(), workerPre };
     result.rpc = await burst("rpc", p.n, calls(this.env).rpc);
     result.finishedAt = Date.now();
-    await this.record(result);
+    await this.record(result, p);
     return result;
   }
 
-  /** M5, M7, M8, M9, M10: run the case from this object's alarm. */
+  /** M5, M7, M8, M9, M10: run the case from this object's alarm. M5's RPC spends first. */
   async arm(id, p) {
-    await this.ctx.storage.put("pending", { id, p });
-    await this.record({ case: id, status: "armed", params: p, armedAt: Date.now() });
+    const armPre = id === "M5" ? await burst("rpc", PRE.arm, calls(this.env).rpc) : null;
+    await this.ctx.storage.put("pending", { id, p, armPre });
+    await this.record({ case: id, status: "armed", params: p, armedAt: Date.now(), armPre }, p);
     await this.ctx.storage.setAlarm(Date.now() + 100);
     return { case: id, status: "armed" };
   }
 
   /**
-   * M6 and M6a: start a loop of `n` calls, one every `intervalMs`, and return at once.
-   * M6 leaves it alone. M6a also arms an alarm that awaits it (PiHarness's shape: work
-   * started in `submit()` continues inside an alarm's wait).
+   * M6 and M6a: spend `PRE.start` calls, start a loop of `n` calls (one every
+   * `intervalMs`), and return. M6 leaves the loop alone. M6a also arms an alarm that
+   * spends `PRE.alarm` calls and then awaits the loop (PiHarness's shape: work started in
+   * `submit()` continues inside an alarm's wait).
    */
   async startBackground(id, p) {
-    if (this.#loop) {
+    if (this.#running) {
       return { case: id, status: "already running" };
     }
+    this.#running = true;
     const result = {
       case: id, status: "running", params: p, startedAt: Date.now(),
       where: id === "M6" ? "background loop started in an RPC that returned; nothing awaits it"
                          : "background loop started in an RPC that returned; an alarm awaits it",
       ok: 0, errors: 0, firstError: null, firstErrorAt: null, calls: [],
     };
-    await this.record(result);
+    result.startPre = await burst("rpc", PRE.start, calls(this.env).rpc);
+    await this.record(result, p);
     if (id === "M6a") {
       await this.ctx.storage.put("pending", { id, p });
-      await this.ctx.storage.setAlarm(Date.now() + Math.floor(p.intervalMs / 2));
+      await this.ctx.storage.setAlarm(Date.now() + Math.floor(p.intervalMs / 4));
     }
     this.#loop = this.#background(result, p);
     return { case: id, status: "started" };
@@ -299,6 +333,7 @@ export class Probe extends DurableObject {
       for (let i = 0; i < p.n; i += 1) {
         await sleep(p.intervalMs);
         const at = Date.now();
+        const inAlarmBefore = this.#inAlarm;
         let ok = true;
         try {
           await ping(i);
@@ -312,41 +347,52 @@ export class Probe extends DurableObject {
           }
         }
         result.calls.push({ i, atMs: at - result.startedAt, ms: Date.now() - at, ok,
-                            inAlarm: this.#inAlarm });
-        await this.record(result);
+                            inAlarmBefore, inAlarmAfter: this.#inAlarm });
+        await this.record(result, p);
       }
       result.status = "done";
     } catch (error) {
       result.status = "failed";
       result.error = errText(error);
+    } finally {
+      this.#running = false;
     }
     result.finishedAt = Date.now();
-    await this.record(result);
+    await this.record(result, p);
   }
 
   /**
-   * M12: two invocations of this method interleave on one object, and each counts its
-   * own calls. A makes 40% of `n`, then waits for B to make its 40%; then both make the
-   * rest at once. Per-invocation counters let each reach 32; one shared counter stops
-   * both near 16; calls charged to the newer invocation stop both in between.
+   * M12: two invocations of this method on one object, B started by the driver only after
+   * A's first phase has ended. A makes 40% of `n`; B arrives and makes 40% of `n`; then
+   * both make the rest at once; then, once B's invocation has ended, A makes `M12_AFTER`
+   * more. The reading key in cap-probe.md names the rule each outcome means.
    */
   async interleave(who, p) {
     const first = Math.floor(p.n * 0.4);
     const ping = calls(this.env).rpc;
-    const result = { case: "M12", who, where: "two concurrent Durable Object RPCs on one object",
+    const gate = (name) => this.#gate(`${p.run}:${name}`);
+    const result = { case: "M12", who, where: "two Durable Object RPCs on one object",
                      status: "done", params: p, startedAt: Date.now() };
     if (who === "B") {
-      result.waitedForA = await this.#wait("A", p.waitMs);
+      result.waitedForA = await this.#wait(gate("A1"), p.waitMs);
     }
     result.phase1 = await burst("rpc", first, ping);
-    this.#gate(who).resolve();
+    result.phase1EndedAt = Date.now();
+    gate(`${who}1`).resolve();
     if (who === "A") {
-      result.waitedForB = await this.#wait("B", p.waitMs);
+      result.waitedForB = await this.#wait(gate("B1"), p.waitMs);
     }
     result.phase2 = await burst("rpc", p.n - first, ping);
-    result.ok = result.phase1.ok + result.phase2.ok;
+    if (who === "B") {
+      gate("B2").resolve();
+    } else {
+      result.waitedForBEnd = await this.#wait(gate("B2"), p.waitMs);
+      await sleep(p.settleMs);
+      result.phase3 = await burst("rpc", M12_AFTER, ping);
+    }
+    result.ok = result.phase1.ok + result.phase2.ok + (result.phase3?.ok ?? 0);
     result.finishedAt = Date.now();
-    await this.ctx.storage.put(`r:${who}`, result);
+    await this.#put(`r:${who}`, result, p);
     return result;
   }
 
@@ -357,11 +403,11 @@ export class Probe extends DurableObject {
     return this.#gates.get(name);
   }
 
-  async #wait(name, ms) {
+  async #wait(gate, ms) {
     const at = Date.now();
     let timer;
     const met = await Promise.race([
-      this.#gate(name).promise.then(() => true),
+      gate.promise.then(() => true),
       new Promise((resolve) => {
         timer = setTimeout(() => resolve(false), ms);
       }),
@@ -375,9 +421,9 @@ export class Probe extends DurableObject {
     if (!pending) {
       return;
     }
-    const { id, p } = pending;
+    const { id, p, armPre } = pending;
     if (id === "M6a") {
-      await this.#drain(info);
+      await this.#drain(p, info);
       return;
     }
     if (id === "M10") {
@@ -385,11 +431,11 @@ export class Probe extends DurableObject {
       return;
     }
     const prior = await this.ctx.storage.get("r:result");
-    if (prior?.status === "done" || prior?.status === "failed") {
-      return;
+    if (prior?.run === p.run && (prior.status === "done" || prior.status === "failed")) {
+      return; // alarms are at-least-once: a redelivery runs nothing twice
     }
     const c = calls(this.env);
-    const result = { case: id, where: "Durable Object alarm", status: "done", params: p,
+    const result = { case: id, where: "Durable Object alarm", status: "done", params: p, armPre,
                      startedAt: Date.now(), retryCount: info?.retryCount ?? 0 };
     try {
       if (id === "M5") {
@@ -409,15 +455,16 @@ export class Probe extends DurableObject {
       result.error = errText(error);
     }
     result.finishedAt = Date.now();
-    await this.record(result);
+    await this.record(result, p);
   }
 
-  /** M6a: the alarm awaits the loop an earlier RPC started. */
-  async #drain(info) {
+  /** M6a: the alarm spends `PRE.alarm` calls, then awaits the loop an earlier RPC started. */
+  async #drain(p, info) {
     const note = { startedAt: Date.now(), retryCount: info?.retryCount ?? 0,
                    loopPresent: this.#loop !== null };
     this.#inAlarm = true;
     try {
+      note.alarmPre = await burst("rpc", PRE.alarm, calls(this.env).rpc);
       if (this.#loop) {
         await this.#loop;
       }
@@ -425,26 +472,37 @@ export class Probe extends DurableObject {
       this.#inAlarm = false;
     }
     note.finishedAt = Date.now();
-    await this.ctx.storage.put("r:alarm", note);
+    await this.#put("r:alarm", note, p);
   }
 
-  /** M10: the alarm awaits one callee call for `holdMs`, beating every `beatMs`. */
+  /**
+   * M10: the alarm awaits one callee call for `holdMs`, beating every `beatMs`. Alarms are
+   * at-least-once, so a later attempt records the gap since the first start and the first
+   * attempt's last beat, and holds nothing again: the reading key decides cut or redelivery.
+   */
   async #hold(p, info) {
-    const attempts = (await this.ctx.storage.get("r:attempts")) ?? [];
+    const stored = await this.ctx.storage.get("r:attempts");
+    const list = stored?.run === p.run ? stored.list : [];
     const startedAt = Date.now();
-    attempts.push({ startedAt, retryCount: info?.retryCount ?? 0 });
-    await this.ctx.storage.put("r:attempts", attempts);
+    list.push({ startedAt, retryCount: info?.retryCount ?? 0 });
+    await this.#put("r:attempts", { list }, p);
     const base = { case: "M10", where: "Durable Object alarm awaiting one call", params: p };
-    if (attempts.length > 1) {
-      // A later attempt means an earlier one never finished: the cut (or a crash) ended
-      // it, and the runtime retried the alarm. Holding again would only repeat it.
-      await this.record({ ...base, status: "done", outcome: "retried: an earlier attempt never finished",
-                          attempts });
+    if (list.length > 1) {
+      const prior = await this.ctx.storage.get("r:result");
+      if (prior?.run === p.run && prior.outcome === "finished") {
+        return; // a redelivery after the hold finished
+      }
+      const beat = await this.ctx.storage.get("r:beat");
+      await this.record({
+        ...base, status: "done", outcome: "retried", attempts: list,
+        gapMs: startedAt - list[0].startedAt,
+        firstLastBeatMs: beat?.run === p.run ? beat.elapsedMs : null,
+      }, p);
       return;
     }
-    await this.record({ ...base, status: "holding", startedAt });
+    await this.record({ ...base, status: "holding", startedAt }, p);
     const beat = setInterval(() => {
-      this.ctx.storage.put("r:beat", { at: Date.now(), elapsedMs: Date.now() - startedAt });
+      this.#put("r:beat", { at: Date.now(), elapsedMs: Date.now() - startedAt }, p);
     }, p.beatMs);
     let result;
     try {
@@ -457,7 +515,7 @@ export class Probe extends DurableObject {
     }
     result.startedAt = startedAt;
     result.elapsedMs = Date.now() - startedAt;
-    await this.record(result);
+    await this.record(result, p);
   }
 }
 
@@ -483,6 +541,10 @@ export default {
     if (verb === "health") {
       return json({ ok: true, cases: CASES });
     }
+    const run = request.headers.get("x-probe-run") ?? "";
+    if (!RUN_ID.test(run)) {
+      return json({ error: "x-probe-run is missing or malformed" }, 400);
+    }
     if (verb === "plan") {
       return json(burn(Number(url.searchParams.get("iters") ?? 1e8)));
     }
@@ -504,13 +566,13 @@ export default {
     }
     const stub = env.PROBE.getByName(id);
     if (verb === "record") {
-      await stub.record(await request.json());
+      await stub.record(await request.json(), { run });
       return json({ ok: true });
     }
     if (verb !== "run") {
       return json({ error: "not found" }, 404);
     }
-    const p = params(url);
+    const p = params(url, run);
     if (WORKER_CASES.includes(id)) {
       const result = { case: id, where: "Worker fetch handler", status: "done", params: p,
                        startedAt: Date.now() };
@@ -519,7 +581,7 @@ export default {
       // This store is itself a Durable Object call made after the burst; if the cap
       // refuses it, the driver stores the returned result with POST /record.
       try {
-        await stub.record({ ...result, recorded: true });
+        await stub.record({ ...result, recorded: true }, p);
         result.recorded = true;
       } catch (error) {
         result.recorded = errText(error);
@@ -527,7 +589,8 @@ export default {
       return json(result);
     }
     if (id === "M4") {
-      return json(await stub.runRpc(p));
+      const workerPre = await burst("rpc", PRE.worker, calls(env).rpc);
+      return json(await stub.runRpc(p, workerPre));
     }
     if (id === "M6" || id === "M6a") {
       return json(await stub.startBackground(id, p));

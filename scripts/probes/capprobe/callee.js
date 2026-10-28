@@ -26,8 +26,17 @@ export default class Callee extends WorkerEntrypoint {
     return ms;
   }
 
-  /** `pong` for any path (M2, M3, M5, M8), or an echoing WebSocket on an upgrade (M9). */
+  /**
+   * `pong` for any path (M2, M3, M5, M8), or an echoing WebSocket on an upgrade (M9).
+   * Its workers.dev URL is public, so it answers only the run's key, as the caller does.
+   */
   async fetch(request) {
+    if (!this.env.RUN_KEY) {
+      return new Response("RUN_KEY is not set", { status: 500 });
+    }
+    if (request.headers.get("x-probe-key") !== this.env.RUN_KEY) {
+      return new Response("forbidden", { status: 403 });
+    }
     if (request.headers.get("Upgrade") === "websocket") {
       const [client, server] = Object.values(new WebSocketPair());
       server.accept();

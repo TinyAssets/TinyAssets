@@ -1,6 +1,7 @@
 // The callee half of the 32-call cap probe (cap-probe.md). Throwaway, workers.dev only:
 // cap-probe.yml deploys it and deletes it. The runtime matches the owner Worker's
-// (platform/owner/wrangler.jsonc) plus global_fetch_strictly_public.
+// (platform/owner/wrangler.jsonc) plus global_fetch_strictly_public. RUN_KEY is not
+// here: the workflow uploads it per run with --secrets-file.
 {
   "name": "ta-capprobe-callee",
   "main": "callee.js",

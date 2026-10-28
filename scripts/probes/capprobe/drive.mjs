@@ -5,12 +5,15 @@
  * the deployed Worker; `local.mjs` runs the same `drive` against miniflare.
  *
  *   PROBE_KEY=... node drive.mjs --base https://ta-capprobe.<sub>.workers.dev \
- *       --out results.json --summary summary.md [--hold-minutes 16] [--redact <text>]
+ *       --run-id <id> --out results.json --summary summary.md \
+ *       [--hold-minutes 16] [--redact <text>]
  *
- * Order: the Worker cases and M4; then M6 and M6a (background loops) and the alarm cases
- * M5, M7, M8, M9; M12's two invocations at once; M10 (the 16-minute alarm) last. No case
- * is read while it should still be running: a read is an incoming call to that object,
- * and which invocation a call is charged to is part of what the probe measures.
+ * Order: the Worker cases and M4; M6 and M6a (background loops) and the alarm cases M5,
+ * M7, M8, M9; M12's two invocations, B started after A's first phase; M10 (the 16-minute
+ * alarm) last. No case is read while it should still be running: a read is an incoming
+ * call to that object, and which invocation a call is charged to is what the probe
+ * measures. A failing case is recorded and the run goes on; the report is written after
+ * every phase, so a killed run still leaves what it had.
  */
 import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -18,169 +21,321 @@ import { pathToFileURL } from "node:url";
 export const CASES = Object.freeze([
   "M1", "M2", "M3", "M4", "M5", "M6", "M6a", "M7", "M8", "M9", "M10", "M11", "M12",
 ]);
-const INLINE = Object.freeze(["M1", "M2", "M3", "M11", "M4"]);
+const WORKER_CASES = Object.freeze(["M1", "M2", "M3", "M11"]);
+const INLINE = Object.freeze([...WORKER_CASES, "M4"]);
 const ALARMS = Object.freeze(["M5", "M7", "M8", "M9"]);
 const BACKGROUND = Object.freeze(["M6", "M6a"]);
+/** M10's alarm may await at most this long, so the step's timeout bounds the run. */
+export const MAX_HOLD_MINUTES = 20;
+const MINUTE = 60_000;
+
+export const LIVE_TIMING = Object.freeze({
+  pollMs: 5000, requestMs: 45_000, healthMs: 120_000, planIters: 1e8,
+  alarmsFirstReadMs: 30_000, alarmsGraceMs: 120_000,
+  backgroundSlackMs: 30_000, backgroundGraceMs: 120_000,
+  m12DelayMs: 10_000, m10FirstReadMs: 60_000, m10GraceMs: 180_000,
+});
+export const LIVE_PARAMS = Object.freeze({
+  n: 40, intervalMs: 2000, holdMs: 16 * MINUTE, waitMs: 30_000, settleMs: 2000,
+});
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Whether a case's stored result is final. */
+/**
+ * The longest `drive` can take: every wait at its bound and every request at its timeout.
+ * cap-probe.yml's step timeout is sized from this at `MAX_HOLD_MINUTES` (local.mjs checks).
+ */
+export function worstCaseMs(params = {}, timing = {}) {
+  const p = { ...LIVE_PARAMS, ...params };
+  const t = { ...LIVE_TIMING, ...timing };
+  const r = t.requestMs;
+  return (t.healthMs + r) + r // health, plan
+    + INLINE.length * r + WORKER_CASES.length * r // inline cases and their fallback stores
+    + (BACKGROUND.length + ALARMS.length) * r // starts and arms
+    + t.m12DelayMs + r // M12
+    + t.alarmsFirstReadMs + t.alarmsGraceMs + r // alarm reads
+    + p.n * p.intervalMs + t.backgroundSlackMs + t.backgroundGraceMs + r // background reads
+    + r + p.holdMs + t.m10FirstReadMs + t.m10GraceMs + r // M10
+    + r; // the final read
+}
+
+/** Whether a case's (fresh) records are final. */
 export function finished(id, stored) {
   if (id === "M12") {
-    return Boolean(stored?.A && stored?.B);
+    return Boolean(stored?.A?.status && stored?.B?.status);
   }
   return ["done", "failed"].includes(stored?.result?.status);
 }
 
+/** A case's records with every one another run wrote replaced by a stale marker. */
+export function fresh(stored, runId) {
+  if (!stored || typeof stored !== "object" || "readError" in stored) {
+    return { records: stored, stale: [] };
+  }
+  const records = {};
+  const stale = [];
+  for (const [key, value] of Object.entries(stored)) {
+    if (value?.run === runId) {
+      records[key] = value;
+    } else {
+      records[key] = { stale: true, run: value?.run ?? null };
+      stale.push(key);
+    }
+  }
+  return { records, stale };
+}
+
+function failure(message, detail) {
+  const error = new Error(message);
+  error.detail = detail;
+  return error;
+}
+
 /**
  * Runs every case. `request(path, init)` answers like `fetch` against the Worker, with
- * the key already attached. `timing` scales the waits: the live run uses the defaults.
+ * the key already attached; the run id goes in `x-probe-run`. `timing` scales the waits.
+ * `onPhase(report)` is called after each phase with the report so far.
  */
-export async function drive({ request, params = {}, timing = {}, log = () => {} }) {
-  const t = {
-    pollMs: 5000, healthMs: 120_000, alarmsFirstReadMs: 30_000, alarmsMs: 5 * 60_000,
-    backgroundSlackMs: 30_000,
-    m10FirstReadMs: 60_000, m10GraceMs: 5 * 60_000, planIters: 1e8, ...timing,
-  };
-  const p = { n: 40, intervalMs: 2000, holdMs: 16 * 60_000, ...params };
+export async function drive({ request, runId, params = {}, timing = {}, log = () => {},
+                              onPhase = () => {} }) {
+  if (!runId) {
+    throw new Error("drive needs a runId");
+  }
+  const t = { ...LIVE_TIMING, ...timing };
+  const p = { ...LIVE_PARAMS, ...params };
+  const report = { runId, phase: "start", plan: null, params: p, timing: t, notes: [],
+                   driverErrors: {}, checks: {}, results: {} };
   const query = (extra = {}) => new URLSearchParams(
     Object.entries({ ...p, ...extra }).map(([key, value]) => [key, String(value)]),
   ).toString();
-  const notes = [];
 
   async function call(method, path, body) {
-    const init = { method };
+    const init = { method, headers: { "x-probe-run": runId },
+                   signal: AbortSignal.timeout(t.requestMs) };
     if (body !== undefined) {
       init.body = JSON.stringify(body);
-      init.headers = { "content-type": "application/json" };
+      init.headers["content-type"] = "application/json";
     }
-    const response = await request(path, init);
-    const text = await response.text();
-    let parsed;
+    let response;
     try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw new Error(`${method} ${path}: status ${response.status}, not JSON: ${text.slice(0, 200)}`);
+      response = await request(path, init);
+    } catch (error) {
+      throw failure(`${method} ${path}: ${error.message}`, { method, path, error: String(error.message) });
     }
+    const text = await response.text();
+    const detail = { method, path, status: response.status, body: text.slice(0, 200),
+                     cfError: /error code: (\d+)/.exec(text)?.[1] ?? null };
     if (!response.ok) {
-      throw new Error(`${method} ${path}: status ${response.status}: ${text.slice(0, 300)}`);
+      throw failure(`${method} ${path}: status ${response.status}`, detail);
     }
-    return parsed;
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw failure(`${method} ${path}: status ${response.status}, not JSON`, detail);
+    }
   }
-  const results = async (ids) => (await call("GET", `/results?only=${ids.join(",")}`)).results;
-  async function pollUntil(ids, deadline) {
-    let stored = await results(ids);
-    while (!ids.every((id) => finished(id, stored[id])) && Date.now() < deadline) {
+  /** Runs `fn`; a failure is recorded under `label` and the run goes on. */
+  async function attempt(label, fn) {
+    try {
+      return await fn();
+    } catch (error) {
+      report.driverErrors[label] = error.detail ?? { error: String(error.message) };
+      log(`${label} failed: ${error.message}`);
+      return undefined;
+    }
+  }
+  async function collect(ids) {
+    const got = await attempt("results", () => call("GET", `/results?only=${ids.join(",")}`));
+    for (const id of got ? ids : []) {
+      const { records, stale } = fresh(got.results[id], runId);
+      report.results[id] = records;
+      if (stale.length) {
+        report.notes.push(`${id}: refused records from another run (${stale.join(", ")})`);
+      }
+    }
+  }
+  async function pollUntil(ids, graceMs) {
+    const deadline = Date.now() + graceMs;
+    await collect(ids);
+    while (!ids.every((id) => finished(id, report.results[id])) && Date.now() < deadline) {
       await sleep(t.pollMs);
-      stored = await results(ids);
+      await collect(ids);
     }
-    const open = ids.filter((id) => !finished(id, stored[id]));
+    const open = ids.filter((id) => !finished(id, report.results[id]));
     if (open.length) {
-      notes.push(`not finished by the deadline: ${open.join(", ")}`);
+      report.notes.push(`not finished when read: ${open.join(", ")}`);
     }
-    return stored;
+  }
+  function phase(name) {
+    report.phase = name;
+    log(name);
+    onPhase(report);
   }
 
   const healthDeadline = Date.now() + t.healthMs;
-  for (;;) {
+  let healthy = false;
+  while (!healthy) {
     try {
       await call("GET", "/health");
-      break;
+      healthy = true;
     } catch (error) {
       if (Date.now() > healthDeadline) {
-        throw new Error(`the probe never answered /health: ${error.message}`);
+        report.driverErrors.health = error.detail ?? { error: String(error.message) };
+        break;
       }
       await sleep(t.pollMs);
     }
   }
-  log("health ok");
+  if (healthy) {
+    await runCases();
+  }
+  await collect(CASES);
+  phase(healthy ? "done" : "the probe never answered /health");
+  return report;
 
-  const planResponse = await request(`/plan?iters=${t.planIters}`, { method: "GET" });
-  const planText = await planResponse.text();
-  const plan = {
-    status: planResponse.status,
-    survivedCpuBurn: planResponse.ok,
-    reading: planResponse.ok
-      ? "the Worker ran well past 10 ms of CPU: not the Free plan's limit"
-      : "the CPU burn was refused: the Free plan's 10 ms CPU limit is likely",
-    body: planText.slice(0, 200),
-  };
-  log(`plan check: ${plan.reading} (status ${plan.status})`);
-
-  for (const id of INLINE) {
-    const body = await call("POST", `/run/${id}?${query()}`);
-    if (id !== "M4" && body.recorded !== true) {
-      await call("POST", `/record/${id}`, body);
-      notes.push(`${id}: stored by the driver (${body.recorded})`);
+  async function runCases() {
+    const planResponse = await attempt("plan", () => request(`/plan?iters=${t.planIters}`, {
+      method: "GET", headers: { "x-probe-run": runId }, signal: AbortSignal.timeout(t.requestMs),
+    }));
+    if (planResponse) {
+      const text = await planResponse.text();
+      report.plan = {
+        status: planResponse.status, survivedCpuBurn: planResponse.ok,
+        reading: planResponse.ok
+          ? "the Worker ran well past 10 ms of CPU: not the Free plan's limit"
+          : "the CPU burn was refused: the Free plan's 10 ms CPU limit is likely",
+        body: text.slice(0, 200), cfError: /error code: (\d+)/.exec(text)?.[1] ?? null,
+      };
     }
-    log(`${id} done`);
+    phase("plan checked");
+
+    for (const id of INLINE) {
+      await attempt(id, async () => {
+        const body = await call("POST", `/run/${id}?${query()}`);
+        if (WORKER_CASES.includes(id) && body.recorded !== true) {
+          await call("POST", `/record/${id}`, body);
+          report.notes.push(`${id}: stored by the driver (${body.recorded})`);
+        }
+      });
+    }
+    await collect(INLINE);
+    phase("inline cases");
+
+    const backgroundStarted = Date.now();
+    for (const id of [...BACKGROUND, ...ALARMS]) {
+      await attempt(id, () => call("POST", `/run/${id}?${query()}`));
+    }
+    const alarmsArmed = Date.now();
+    const a = attempt("M12 A", () => call("POST", `/run/M12?${query({ who: "A" })}`));
+    await sleep(t.m12DelayMs);
+    const b = attempt("M12 B", () => call("POST", `/run/M12?${query({ who: "B" })}`));
+    await Promise.all([a, b]);
+    await sleep(Math.max(0, alarmsArmed + t.alarmsFirstReadMs - Date.now()));
+    await pollUntil([...ALARMS, "M12"], t.alarmsGraceMs);
+    const { A, B } = report.results.M12 ?? {};
+    report.checks.m12Order = A?.phase1 && B?.startedAt
+      ? { ok: B.startedAt > A.startedAt + A.phase1.totalMs, aStartedAt: A.startedAt,
+          aPhase1Ms: A.phase1.totalMs, bStartedAt: B.startedAt }
+      : { ok: false, why: "M12 has no fresh A and B records" };
+    if (!report.checks.m12Order.ok) {
+      report.notes.push("M12: B did not start after A's first phase ended; its reading is void");
+    }
+    phase("alarm cases and M12");
+
+    await sleep(Math.max(0, backgroundStarted + p.n * p.intervalMs + t.backgroundSlackMs - Date.now()));
+    await pollUntil(BACKGROUND, t.backgroundGraceMs);
+    phase("background cases");
+
+    if (p.holdMs > 0) {
+      const armed = await attempt("M10", () => call("POST", `/run/M10?${query()}`));
+      phase(`M10 armed: holding ${p.holdMs} ms`);
+      if (armed) {
+        await sleep(p.holdMs + t.m10FirstReadMs);
+        await pollUntil(["M10"], t.m10GraceMs);
+      }
+    } else {
+      report.notes.push("M10 skipped (hold 0)");
+    }
   }
-
-  const backgroundStarted = Date.now();
-  for (const id of BACKGROUND) {
-    await call("POST", `/run/${id}?${query()}`);
-  }
-  for (const id of ALARMS) {
-    await call("POST", `/run/${id}?${query()}`);
-  }
-  const alarmsArmed = Date.now();
-  log("background loops started and alarms armed");
-
-  await Promise.all(["A", "B"].map((who) => call("POST", `/run/M12?${query({ who })}`)));
-  log("M12 done");
-
-  await sleep(Math.max(0, alarmsArmed + t.alarmsFirstReadMs - Date.now()));
-  await pollUntil(ALARMS, Date.now() + t.alarmsMs);
-  log("alarm cases done");
-
-  const backgroundEnd = backgroundStarted + p.n * p.intervalMs + t.backgroundSlackMs;
-  await sleep(Math.max(0, backgroundEnd - Date.now()));
-  await pollUntil(BACKGROUND, Date.now() + t.alarmsMs);
-  log("background cases done");
-
-  if (p.holdMs > 0) {
-    await call("POST", `/run/M10?${query()}`);
-    log(`M10 armed: holding ${p.holdMs} ms`);
-    await sleep(p.holdMs + t.m10FirstReadMs);
-    await pollUntil(["M10"], Date.now() + t.m10GraceMs);
-    log("M10 read");
-  } else {
-    notes.push("M10 skipped (hold 0)");
-  }
-
-  const final = await call("GET", "/results");
-  return { plan, params: p, notes, results: final.results };
 }
+
+const minutes = (ms) => (typeof ms === "number" ? `${(ms / MINUTE).toFixed(1)} min` : "unknown");
+
+/** M10's reading: the attempts' gap and the first attempt's last beat, together. */
+export function m10Reading(stored) {
+  const r = stored?.result;
+  if (!r || r.stale) {
+    return "no fresh result";
+  }
+  if (r.outcome === "finished") {
+    return `finished after ${minutes(r.elapsedMs)}: no cut while the alarm awaited`;
+  }
+  if (r.outcome === "retried") {
+    return r.gapMs >= 14 * MINUTE
+      ? `cut: retried ${minutes(r.gapMs)} after the first start, whose last beat was at ${minutes(r.firstLastBeatMs)}`
+      : `retried early (${minutes(r.gapMs)}; last beat ${minutes(r.firstLastBeatMs)}): a redelivery or crash, not the cut`;
+  }
+  if (r.outcome === "the call failed") {
+    return `the awaited call failed after ${minutes(r.elapsedMs)}: ${r.error}`;
+  }
+  return `${r.status}, one attempt, last beat at ${minutes(stored.beat?.elapsedMs)}: a cut with no retry seen if the beats stopped near 15 min`;
+}
+
+const isBurst = (value) => value && typeof value === "object" && "kind" in value && "ok" in value;
 
 /** A short table of the bursts, for the job summary. */
 export function summarize(report) {
   const rows = [];
-  for (const [id, stored] of Object.entries(report.results)) {
+  for (const id of CASES) {
+    const stored = report.results[id];
     const parts = id === "M12" ? { A: stored?.A, B: stored?.B } : { "": stored?.result };
     for (const [label, result] of Object.entries(parts)) {
-      if (!result) {
-        rows.push(`| ${id} | ${label} | (none) | | |`);
+      if (!result || result.stale) {
+        rows.push(`| ${id} | ${label} | ${result?.stale ? "stale (refused)" : "(none)"} | | |`);
         continue;
       }
-      const bursts = Object.entries(result).filter(([, v]) => v && typeof v === "object" && "ok" in v && "n" in v);
+      let name = label;
+      if (id === "M12") {
+        const other = label === "A" ? stored.B : stored.A;
+        const order = other?.startedAt ? (result.startedAt < other.startedAt ? "1st" : "2nd") : "?";
+        const met = label === "A" ? result.waitedForB?.met : result.waitedForA?.met;
+        name = `${label} (arrived ${order}; met ${met ? "yes" : "no"})`;
+      }
+      const bursts = [];
+      for (const holder of [result, id === "M6a" ? stored?.alarm : null]) {
+        for (const [kind, value] of Object.entries(holder ?? {})) {
+          if (isBurst(value)) {
+            bursts.push([kind, value]);
+          }
+        }
+      }
       if (Array.isArray(result.calls)) {
-        bursts.push(["background", { ok: result.ok, n: result.params?.n, firstError: result.firstError,
-                                      firstErrorAt: result.firstErrorAt }]);
+        bursts.push(["loop", { ok: result.ok, n: result.params?.n, firstError: result.firstError,
+                               firstErrorAt: result.firstErrorAt }]);
+      }
+      if (id === "M10") {
+        rows.push(`| M10 | | ${m10Reading(stored)} | ${result.status} | ${result.error ?? ""} |`);
+        continue;
       }
       if (!bursts.length) {
-        const what = result.outcome ?? result.open ?? (result.targets ? `${result.targets.length} targets` : "");
-        rows.push(`| ${id} | ${label} | ${result.status} ${what} | | ${result.error ?? ""} |`);
+        const what = result.open ?? (result.targets ? `${result.targets.length} targets` : "");
+        rows.push(`| ${id} | ${name} | ${what} | ${result.status} | ${result.error ?? ""} |`);
       }
-      for (const [kind, b] of bursts) {
-        const error = b.firstError ? `${b.firstError.replaceAll("|", "/")} (call ${b.firstErrorAt})` : "";
-        rows.push(`| ${id} | ${[label, kind].filter(Boolean).join(" ")} | ${b.ok}/${b.n} | ${result.status} | ${error} |`);
+      for (const [kind, burst] of bursts) {
+        const error = burst.firstError
+          ? `${burst.firstError.replaceAll("|", "/")} (call ${burst.firstErrorAt})` : "";
+        rows.push(`| ${id} | ${[name, kind].filter(Boolean).join(" ")} | ${burst.ok}/${burst.n} | ${result.status} | ${error} |`);
       }
     }
   }
+  const errors = Object.entries(report.driverErrors).map(([label, d]) =>
+    `- driver error, ${label}: ${d.status ?? ""} ${d.cfError ? `(error code ${d.cfError}) ` : ""}${(d.body ?? d.error ?? "").replaceAll("\n", " ")}`);
+  const plan = report.plan ? `${report.plan.reading} (status ${report.plan.status})` : "not read";
   return [
-    `Plan check: ${report.plan.reading} (status ${report.plan.status}).`, "",
+    `Run \`${report.runId}\`, phase: ${report.phase}. Plan check: ${plan}.`,
+    `M12 order check: ${report.checks.m12Order ? (report.checks.m12Order.ok ? "ok" : "FAILED") : "not reached"}.`, "",
     "| case | part | ok | status | first error |", "|---|---|---|---|---|", ...rows, "",
-    ...report.notes.map((note) => `- ${note}`),
+    ...errors, ...report.notes.map((note) => `- ${note}`),
   ].join("\n");
 }
 
@@ -197,35 +352,39 @@ function parseArgs(argv) {
   return args;
 }
 
-async function main(args) {
+async function main(args, needles) {
   const key = process.env.PROBE_KEY;
-  if (!args.base || !key) {
-    throw new Error("usage: PROBE_KEY=... drive.mjs --base URL [--out F] [--summary F] [--hold-minutes M]");
+  if (!args.base || !args["run-id"] || !key) {
+    throw new Error("usage: PROBE_KEY=... drive.mjs --base URL --run-id ID [--out F] [--summary F] [--hold-minutes M]");
+  }
+  const holdMinutes = Number(args["hold-minutes"] ?? 16);
+  if (!Number.isInteger(holdMinutes) || holdMinutes < 0 || holdMinutes > MAX_HOLD_MINUTES) {
+    throw new Error(`--hold-minutes must be a whole number from 0 to ${MAX_HOLD_MINUTES}`);
   }
   const base = args.base.replace(/\/$/, "");
-  const holdMinutes = Number(args["hold-minutes"] ?? 16);
   const request = (path, init) => fetch(`${base}${path}`, {
     ...init, headers: { ...(init.headers ?? {}), "x-probe-key": key },
   });
+  const write = (report) => {
+    if (args.out) {
+      writeFileSync(args.out, `${redact(JSON.stringify(report, null, 2), needles)}\n`);
+    }
+    if (args.summary) {
+      writeFileSync(args.summary, `${redact(summarize(report), needles)}\n`);
+    }
+  };
   const report = await drive({
-    request, params: { holdMs: holdMinutes * 60_000 },
-    log: (line) => console.log(`[${new Date().toISOString()}] ${line}`),
+    request, runId: args["run-id"], params: { holdMs: holdMinutes * MINUTE }, onPhase: write,
+    log: (line) => console.log(`[${new Date().toISOString()}] ${redact(line, needles)}`),
   });
-  const needles = [new URL(base).hostname, ...(args.redact ?? "").split(",")];
-  const text = redact(JSON.stringify(report, null, 2), needles);
-  if (args.out) {
-    writeFileSync(args.out, `${text}\n`);
-  }
-  if (args.summary) {
-    writeFileSync(args.summary, `${redact(summarize(report), needles)}\n`);
-  }
   console.log(redact(summarize(report), needles));
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const args = parseArgs(process.argv.slice(2));
-  main(args).catch((error) => {
-    console.error(`::error::${redact(String(error.message), [args.base, ...(args.redact ?? "").split(",")])}`);
+  const needles = [args.base, ...(args.redact ?? "").split(",")];
+  main(args, needles).catch((error) => {
+    console.error(`::error::${redact(String(error.message), needles)}`);
     process.exit(1);
   });
 }
