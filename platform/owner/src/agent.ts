@@ -40,14 +40,30 @@
  * - `onReport`: each report becomes an owner notice (`notices.ts`);
  * - `conversationCreated`: a conversation a task creates (a subagent's) takes its owner
  *   conversation's stamp in the creating commit, and a fork copies its parent's
- *   (`fork: "current"`), so no conversation an outside client's work makes sheds it.
+ *   (`fork: "current"`), so no conversation an outside client's work makes sheds it; and
+ *   every conversation is indexed by its `pi.provider` session id, with its root.
+ *
+ * **A model call's turn** (`turnOf`) is one run of its root conversation, read from pi's
+ * own records. pi hands a provider only the conversation's `pi.provider` session id
+ * (`generation.js`, `compaction.js`), so the `ta.sessions` family maps each session id,
+ * in the commit that creates its conversation, to the conversation and its root: the
+ * conversation itself when it has no owner, else its owner conversation's root (the
+ * owner edge pi records for a task's conversation, a subagent's). A fork with no owner
+ * runs its own submissions, so it is its own root; a fork a task makes has an owner edge.
+ * The turn is the root's live run, named by the submission that started it (`pi.live`'s
+ * `run.inputs[0]`, present exactly while the root is busy: pi hands `run.taskId` to a new
+ * generation every round, but the run's inputs only grow), or, while the root is idle,
+ * its oldest live compaction task (a compaction asked for outside a run). So a compaction
+ * inside a run, which places a user message, and a subagent's calls are the same turn; a
+ * call with none of these is refused (`no_run`).
  */
-import type { Context } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { ClientIdentity, Models, Provider } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
-  type ConversationRecord, createRegistry, defineDoc, defineExtension, type EnvTarget,
-  type Extension, Harness, type HarnessSettings, type ReportInfo, type Tx, wrapTool,
+  type ConversationId, type ConversationRecord, createRegistry, defineDoc, defineDocFamily, defineExtension,
+  type EnvTarget, type Extension, Harness, type HarnessSettings, LiveDoc, ProviderDoc,
+  type ReportInfo, type Tx, wrapTool,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
@@ -97,6 +113,27 @@ export function authorityDoc() {
     checkpointWhen: () => true,
   });
 }
+
+/**
+ * A `ta.sessions` member: the conversation a `pi.provider` session id is, and its root. A
+ * member with no root was never written by the creation hook: pi's records disagree.
+ */
+export type Indexed = { conversation: ConversationId; root?: ConversationId };
+
+/** The `ta.sessions` family: per `pi.provider` session id, written once, at creation. */
+export function sessionsDoc() {
+  return defineDocFamily<Indexed, Indexed>({
+    kind: "ta.sessions",
+    version: 1,
+    scope: "session",
+    family: true,
+    initial: (seed) => ({ ...seed }),
+    checkpointWhen: () => true,
+  });
+}
+
+/** The fixed code of a model call no run of pi's can be found for. */
+export const NO_RUN = "no_run";
 
 /** Who a conversation's file changes are by, in the history. */
 export function writerOf(authority: Readonly<Authority> | undefined): string {
@@ -150,6 +187,8 @@ export class OwnerAgent {
   readonly harness: PiHarness;
   /** The `ta.authority` document, as this object's pi reads and writes it. */
   readonly authority = authorityDoc();
+  /** The `ta.sessions` family, as this object's pi reads and writes it. */
+  readonly sessions = sessionsDoc();
   readonly #parts: AgentParts;
   readonly #source: AgentSource;
   readonly #registry = createRegistry();
@@ -167,7 +206,10 @@ export class OwnerAgent {
           identity: IDENTITY,
           settings: () => ({ ...this.#parts.policy(), ...AGENT_SETTINGS }),
           env: (target, envContext) => this.#env(target, envContext),
-          conversationCreated: (tx, record) => this.#inherit(tx, record),
+          conversationCreated: async (tx, record) => {
+            await this.#index(tx, record);
+            await this.#inherit(tx, record);
+          },
           onReport: (error, info) => this.#report(info.type, detailOf(error, info)),
         }, context);
       },
@@ -208,6 +250,52 @@ export class OwnerAgent {
                                cwd: cwd ?? WORKSPACE, rearm: this.#parts.rearm });
   }
 
+  /**
+   * In the creating commit: the conversation's session id indexed, with its root, its
+   * owner conversation's when it has one. pi stages `pi.provider` before this hook, so the
+   * session id is the one every request of the conversation carries.
+   */
+  async #index(tx: Tx, record: ConversationRecord): Promise<void> {
+    const { sessionId } = await tx.doc(ProviderDoc, record.id);
+    let root = record.id;
+    if (record.owner !== undefined) {
+      const owner = record.owner.conversationId;
+      const indexed = await tx.doc(this.sessions, (await tx.doc(ProviderDoc, owner)).sessionId,
+                                   { conversation: owner });
+      if (indexed.conversation !== owner || indexed.root === undefined) {
+        throw new Error("a conversation's owner has no session index");  // pi's records disagree
+      }
+      root = indexed.root;
+    }
+    await tx.doc(this.sessions, sessionId, { conversation: record.id, root });
+  }
+
+  /**
+   * The turn a model request is part of: its root conversation's live run, from pi's own
+   * records; `no_run` (thrown) when the request names no session pi indexed, or its root is
+   * running neither a run nor a compaction.
+   */
+  async turnOf(sessionId: string | undefined): Promise<string> {
+    if (sessionId === undefined) {
+      throw new Error(NO_RUN);
+    }
+    const pi = await this.harness.pi();
+    const indexed = await pi.snapshot(this.sessions, sessionId, BACKGROUND_CONTEXT);
+    if (indexed?.root === undefined) {
+      throw new Error(NO_RUN);
+    }
+    const live = await pi.snapshot(LiveDoc, indexed.root, BACKGROUND_CONTEXT);
+    const run = live?.run?.inputs[0];
+    if (run !== undefined) {
+      return `${indexed.root}/run:${run}`;
+    }
+    const compaction = live?.compactions?.[0]?.taskId;
+    if (compaction !== undefined) {
+      return `${indexed.root}/compaction:${compaction}`;
+    }
+    throw new Error(NO_RUN);
+  }
+
   /** A task's new conversation takes its owner conversation's stamp. */
   async #inherit(tx: Tx, record: ConversationRecord): Promise<void> {
     if (record.owner === undefined || record.parent !== undefined) {
@@ -228,10 +316,17 @@ export class OwnerAgent {
 
 /**
  * The production agent: pi on the object's `gateway` provider, the one model source, with
- * no extensions beyond the object's own.
+ * no extensions beyond the object's own; `Agent` is the class the tests watch it through.
  */
-export function gatewayAgent(parts: AgentParts): OwnerAgent {
+export function gatewayAgent<A extends OwnerAgent>(
+  parts: AgentParts, Agent: new (parts: AgentParts, source: AgentSource) => A,
+): A;
+export function gatewayAgent(parts: AgentParts): OwnerAgent;
+export function gatewayAgent(
+  parts: AgentParts,
+  Agent: new (parts: AgentParts, source: AgentSource) => OwnerAgent = OwnerAgent,
+): OwnerAgent {
   const models = createModels();
   models.setProvider(parts.provider);
-  return new OwnerAgent(parts, { models: () => models, extensions: [] });
+  return new Agent(parts, { models: () => models, extensions: [] });
 }

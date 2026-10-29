@@ -67,7 +67,7 @@ import { createHash } from "node:crypto";
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import { CHUNK_BYTES, KEEP_CEILING, MAX_INTENT_CHUNKS } from "./files";
-import { codePoints } from "./text";
+import { codePoints, SOURCE_ID } from "./text";
 
 export const BEHAVIOURS: readonly string[] =
   Object.freeze(["do", "do_if_preapproved", "ask_first", "hand_off"]);
@@ -185,13 +185,15 @@ export function fileSettings(document: PolicyDocument): FileSettings {
 
 /**
  * Owner model policy (gateway research §4): what one turn may spend, and what the owner's
- * sources may spend in a UTC day and month. A turn is a conversation's model calls since
- * its newest user message (`usage.ts`). Money is in micro-dollars (µ$), as pi-ai's
- * catalog prices are dollars per million tokens: a token at a price of `p` costs `p` µ$.
- * The Python's per-turn limits (`TurnRequestBudget`: `max_tokens=1_000_000`,
- * `max_cost_microunits=25_000_000`) are the defaults' model, raised for tokens since a
- * turn here is a whole agent loop, each request re-sending its context. A request cap
- * bounds a runaway loop; null daily and monthly ceilings set none.
+ * sources may spend in a UTC day and month. A turn is one run of the root conversation's
+ * submissions, a subagent's and a compaction's calls inside it included (`usage.ts`).
+ * Money is in micro-dollars (µ$), as pi-ai's catalog prices are dollars per million
+ * tokens: a token at a price of `p` costs `p` µ$. The Python's per-turn limits
+ * (`TurnRequestBudget`: `max_tokens=1_000_000`, `max_cost_microunits=25_000_000`) are the
+ * defaults' model, raised for tokens since a turn here is a whole agent loop, each request
+ * re-sending its context. A request cap bounds a runaway loop. The daily and monthly
+ * ceilings default to none, as the Python's do (`PolicyStore`'s default document:
+ * `"daily": None, "monthly": None`); the owner sets them.
  */
 export const MODEL_DEFAULTS = Object.freeze({
   turn_requests: 100,
@@ -209,12 +211,10 @@ export const MODEL_SETTINGS = Object.freeze({
   monthly_cost: Object.freeze([0, 1_000_000_000_000] as const),
   retries: Object.freeze([0, 10] as const),
 });
-/** The connections one `models.sources` table may name. */
+/** The sources one `models.sources` table may name, each by its id (`SOURCE_ID`). */
 const MODEL_SOURCES_MAX = 64;
-/** A connection id, as `connections.ts` makes them. */
-const CONNECTION_ID = /^c[0-9a-f]{24}$/;
 
-/** A connection's own ceilings. */
+/** A source's own ceilings. */
 export interface SourceCeilings {
   readonly daily_cost?: number | null;
   readonly monthly_cost?: number | null;
@@ -227,7 +227,7 @@ export interface ModelPolicy {
   readonly turn_cost?: number;
   readonly daily_cost?: number | null;
   readonly monthly_cost?: number | null;
-  readonly sources?: { readonly [connection: string]: SourceCeilings };
+  readonly sources?: { readonly [source: string]: SourceCeilings };
   readonly retries?: number;
 }
 
@@ -238,7 +238,7 @@ export interface ModelSettings {
   readonly turn_cost: number;
   readonly daily_cost: number | null;
   readonly monthly_cost: number | null;
-  readonly sources: { readonly [connection: string]: SourceCeilings };
+  readonly sources: { readonly [source: string]: SourceCeilings };
 }
 
 /** The model settings a document leaves in force: its own, and the defaults for the rest. */
@@ -268,7 +268,7 @@ function validModels(models: unknown): boolean {
   return Object.entries(models).every(([key, value]) => {
     if (key === "sources") {
       return plain(value) && Object.keys(value).length <= MODEL_SOURCES_MAX
-        && Object.entries(value).every(([id, ceilings]) => CONNECTION_ID.test(id)
+        && Object.entries(value).every(([id, ceilings]) => SOURCE_ID.test(id)
           && plain(ceilings) && Object.entries(ceilings).every(([name, cap]) =>
             (name === "daily_cost" || name === "monthly_cost")
             && (cap === null || bounded(cap, MODEL_SETTINGS[name]))));

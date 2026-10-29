@@ -25,7 +25,11 @@
  * only copy of the tokens the provider must be asked to revoke (RFC 7009), so it is kept,
  * unusable, until the lane's `GATEWAY.revokeAtProvider` succeeds, or `revokeTries` attempts
  * have failed (then it is deleted anyway, with an owner notice: the provider may still
- * hold a live token). A call that already holds the blob completes; the bound is one call.
+ * hold a live token). A source with no revocation endpoint cannot be asked: its blob is
+ * deleted at the first pass, with a notice that the provider honours the token until it
+ * expires. A refresh that lands after the revoke keeps its rotated tokens for the lane to
+ * revoke too, whether or not the lane already revoked the old ones. A call that already
+ * holds the blob completes; the bound is one call.
  * Account revocation (`sessionCloseAll`) and a session's sign-out cancel the session's
  * open flows in their own unit, as the Python's `revoke_owner` did, so a late callback
  * finds no flow.
@@ -52,7 +56,7 @@ import { Invalid, Refused } from "./errors";
 import type { OwnerStorage, Write } from "./gate";
 import type { Notices } from "./notices";
 import { inTime, LANE_HUNG_S, LANE_PASS_S } from "./schedule";
-import { codePoints, isPrintable } from "./text";
+import { codePoints, isPrintable, SOURCE_ID } from "./text";
 
 export interface ConnectionLimits {
   readonly maxConnections: number;
@@ -75,7 +79,8 @@ export interface ConnectionLimits {
 /**
  * Flows last 10 minutes and at most 10 are open (the Python's `MAX_PER_OWNER`); a refresh
  * starts 3 minutes before the access token expires (research §2.6); a lease outlasts the
- * gateway's 15 s token-endpoint bound.
+ * gateway's 15 s token-endpoint bound. A connection keeps up to 1,024 models: the largest
+ * built-in catalog of pi-ai 1.4.0 has 386 (the connections test finds it by a scan).
  */
 export const CONNECTION_LIMITS: ConnectionLimits = Object.freeze({
   maxConnections: 50,
@@ -84,7 +89,7 @@ export const CONNECTION_LIMITS: ConnectionLimits = Object.freeze({
   flowTtlS: 600,
   maxOpenFlows: 10,
   maxFlowRows: 50,
-  maxModels: 256,
+  maxModels: 1_024,
   refreshMarginMs: 3 * 60 * 1000,
   leaseMs: 60 * 1000,
   revokeTries: 5,
@@ -140,6 +145,8 @@ export interface ConnectionView {
 /** A connection a model call may use: its models, as `getModels` lists them. */
 export interface Usable {
   readonly connection: string;
+  /** Its source record, which its spend is counted and capped under. */
+  readonly source: string;
   readonly provider: string;
   readonly display_name: string;
   readonly created_at: number;
@@ -161,19 +168,25 @@ type Row = {
   revoke_due: number | null; revoke_tries: number;
 };
 
+/** How a provider revoke ended: confirmed, impossible (no endpoint), or not confirmed. */
+type RevokeOutcome = "revoked" | "not_revocable" | "failed";
+
 export const CONNECTION_UNAVAILABLE = "connection_unavailable";
 export const CREDENTIAL_EXPIRED = "credential_expired";
 
 const ID = /^c[0-9a-f]{24}$/;
-const SOURCE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
 const PROVIDER = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const KID = /^[A-Za-z0-9_-]{1,32}$/;
 const B64URL = /^[A-Za-z0-9_-]+$/;
 const STATE = /^[A-Za-z0-9_-]{43}$/;
 const MODEL_ID = /^[\x21-\x7e]{1,200}$/;
 const BLOB_MAX = 64 * 1024;
-/** The models a connection keeps, as JSON: the schema's own ceiling. */
-const MODELS_JSON_MAX = 128 * 1024;
+/**
+ * The models a connection keeps, as JSON: the schema's own ceiling. The largest built-in
+ * catalog is about 83 KB for 386 models, 216 bytes a model, so `maxModels` of them is
+ * about 220 KB.
+ */
+const MODELS_JSON_MAX = 256 * 1024;
 const COST_MAX = 1_000_000;
 const TOKENS_MAX = 100_000_000;
 
@@ -338,7 +351,7 @@ export class Connections {
   prepare(request: unknown, now: number): { connection: string; version: number;
                                             expires_at: number } {
     const r = fields(request, ["source", "kind", "display_name", "provider"]);
-    const source = grammar(r["source"], SOURCE, "source");
+    const source = grammar(r["source"], SOURCE_ID, "source");
     const provider = grammar(r["provider"], PROVIDER, "provider");
     const kind = r["kind"];
     if (kind !== "api_key" && kind !== "oauth2") {
@@ -520,8 +533,8 @@ export class Connections {
     const usable = Object.freeze(this.#sql.exec<Row>(
       "SELECT * FROM connections WHERE status = 'active' ORDER BY created_at, id").toArray()
       .map((row) => Object.freeze({
-        connection: row.id, provider: row.provider, display_name: row.display_name,
-        created_at: row.created_at,
+        connection: row.id, source: row.source, provider: row.provider,
+        display_name: row.display_name, created_at: row.created_at,
         models: Object.freeze(JSON.parse(row.models) as ModelInfo[]),
       })));
     this.#usable = { revision: this.#revision, usable };
@@ -644,7 +657,8 @@ export class Connections {
       throw new Refused(`credential_refresh_failed: ${/^[a-z_]{1,40}$/.test(code)
         ? code : "internal"}`);
     }
-    const kept = await this.#write(() => this.#refreshed(id, holder, from.version, refreshed));
+    const kept = await this.#write(() => this.#refreshed(id, holder, from.version, refreshed,
+                                                         this.#clock()));
     if (kept === "malformed") {
       throw new Refused("credential_refresh_failed: malformed");
     }
@@ -665,11 +679,13 @@ export class Connections {
 
   /**
    * In a unit: a refreshed blob stored by compare-and-swap, under the lease, at the next
-   * version. A connection revoked meanwhile keeps the newest tokens for its provider
-   * revoke; one changed in any other way drops them.
+   * version. A connection revoked meanwhile keeps the newest tokens, and its provider
+   * revoke is owed for them, due now if the lane already sent the old ones' (the provider
+   * may honour the rotated tokens either way). One changed in any other way drops them,
+   * and the lease with them.
    */
   #refreshed(id: string, holder: string, version: number,
-             refreshed: Resealed & { readonly expires_at: number | null }):
+             refreshed: Resealed & { readonly expires_at: number | null }, now: number):
       "kept" | "dropped" | "malformed" {
     const expires = refreshed.expires_at;
     const ok = object(refreshed) && refreshed.version === version + 1
@@ -686,15 +702,22 @@ export class Connections {
       return "malformed";
     }
     const row = this.#row(id);
-    const owed = row?.status === "revoked" && row.revoke_due !== null;
+    const revoked = row?.status === "revoked";
     if (row === undefined || row.version !== version
-        || (!owed && (row.status !== "active" || row.lease_id !== holder))) {
+        || (!revoked && (row.status !== "active" || row.lease_id !== holder))) {
+      this.#sql.exec("UPDATE connections SET lease_id = NULL, lease_until = NULL " +
+                       "WHERE id = ? AND lease_id = ?", id, holder);
       return "dropped";
     }
     this.#storage.transactionSync(() => {
       this.#swap(id, version, refreshed.kid, blob);
       this.#sql.exec("UPDATE connections SET expires_at = ?, lease_id = NULL, " +
                        "lease_until = NULL WHERE id = ?", expires, id);
+      if (revoked) {
+        this.#sql.exec("UPDATE connections SET revoke_tries = CASE WHEN revoke_due IS NULL " +
+                         "THEN 0 ELSE revoke_tries END, revoke_due = coalesce(revoke_due, ?) " +
+                         "WHERE id = ?", now, id);
+      }
     });
     return "kept";
   }
@@ -744,7 +767,8 @@ export class Connections {
   /**
    * One pass: sweep expired flows and unclaimed pending connections in a unit, then ask
    * the provider to revoke each due OAuth credential, each call bounded by `revokeMs` and
-   * its outcome kept in its row: done, the blob deleted; failed, backed off, and after
+   * its outcome kept in its row: revoked, the blob deleted; not revocable (the source has
+   * no revocation endpoint), the blob deleted, with a notice; failed, backed off, and after
    * `revokeTries` the blob deleted anyway, with a notice.
    */
   async run(_now: number, until: number): Promise<void> {
@@ -757,7 +781,7 @@ export class Connections {
       if (owed === null) {
         continue;
       }
-      let done = false;
+      let outcome: RevokeOutcome = "failed";
       try {
         const revoking = this.#service().revokeAtProvider(this.#owner(), id, owed.version,
                                                           owed.blob);
@@ -765,12 +789,12 @@ export class Connections {
         if (answer === "late") {
           revoking.catch(() => undefined);
         } else {
-          done = true;
+          outcome = answer.revoked === true ? "revoked" : "not_revocable";
         }
       } catch {
         console.error("a connection's provider revoke failed; it is tried again later");
       }
-      await this.#write(() => this.#revokeOutcome(id, owed.version, done, this.#clock()));
+      await this.#write(() => this.#revokeOutcome(id, owed.version, outcome, this.#clock()));
     }
   }
 
@@ -812,13 +836,13 @@ export class Connections {
   }
 
   /** In a unit: a provider revoke's outcome, kept in the connection's row. */
-  #revokeOutcome(id: string, version: number, done: boolean, now: number): void {
+  #revokeOutcome(id: string, version: number, outcome: RevokeOutcome, now: number): void {
     const row = this.#row(id);
     if (row === undefined || row.revoke_due === null) {
       return;
     }
     const tries = row.revoke_tries + 1;
-    if (!done && tries < this.#limits.revokeTries) {
+    if (outcome === "failed" && tries < this.#limits.revokeTries) {
       this.#sql.exec("UPDATE connections SET revoke_tries = ?, revoke_due = ? WHERE id = ?",
                      tries, now + this.#limits.revokeRetryS * tries, id);
       return;
@@ -831,10 +855,15 @@ export class Connections {
       // A refresh that landed after the revoke stored newer tokens: revoke those too.
       this.#sql.exec("UPDATE connections SET revoke_tries = ?, revoke_due = ? WHERE id = ?",
                      left ? 0 : tries, left ? now : null, id);
-      if (!done) {
+      if (outcome === "failed") {
         this.#notices.add("connection_revoke_failed",
                           `${id}: the provider did not confirm the revoke; the credential ` +
                             "was deleted here, and the provider may still honour it", now);
+      } else if (outcome === "not_revocable") {
+        this.#notices.add("connection_revoke_unsupported",
+                          `${id}: the provider has no revocation endpoint; the credential ` +
+                            "was deleted here, and the provider honours its token until it " +
+                            "expires", now);
       }
       this.#pruneRevoked();
     });

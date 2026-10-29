@@ -81,11 +81,15 @@ The gateway SHALL clamp a call's output tokens, on the request and on the model,
 - **THEN** the upstream request is cancelled, and the stream ends with an `error` event of `aborted` or `deadline`
 
 ### Requirement: Gateway errors are fixed codes
-Every error the gateway returns, throws or streams SHALL be one of its fixed codes, carrying no secret, no upstream body or message and no text of an exception it caught; an upstream failure SHALL be classified from the HTTP status the gateway saw.
+Every error the gateway returns, throws or streams SHALL be one of its fixed codes, carrying no secret, no upstream body or message and no text of an exception it caught; an upstream failure SHALL be classified from the HTTP status the gateway saw. A model call the provider refused before producing anything SHALL be answered with that code and its non-200 status, not a 200 stream, so the owner settles it at no cost; a failure after the stream started SHALL end the stream with an `error` event of its code.
 
 #### Scenario: An upstream refusal quotes the key
 - **WHEN** a provider answers 401, 403, 429 or another 4xx with a body that quotes the credential
-- **THEN** the stream ends with `upstream_unauthorized`, `upstream_rate_limited` or `upstream_rejected`, and neither the key nor the body appears anywhere in the answer
+- **THEN** the gateway answers `upstream_unauthorized`, `upstream_rate_limited` or `upstream_rejected` with status 502, and neither the key nor the body appears anywhere in the answer
+
+#### Scenario: The deadline passes mid-answer
+- **WHEN** a call's deadline passes after the provider began answering
+- **THEN** the answer is a 200 stream that ends with an `error` event of `deadline`
 
 ### Requirement: Sandbox egress is forwarded raw under the sealed endpoints
 `forward` SHALL send a sandbox request's method, path, query, headers and body to the credential's sealed origin only, strip every inbound credential (authorization and API-key headers, cookies, method overrides, the API-key query parameters, our own `x-ta-` headers and Cloudflare's), inject the sealed secret by the sealed auth template, cut the request at five minutes, and pass the provider's answer through.

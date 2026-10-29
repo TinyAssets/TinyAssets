@@ -12,32 +12,40 @@
  *
  * Each call, in order:
  * 1. The target: the model named, or `auto`'s route over the request's transcript.
- * 2. An OAuth credential expiring soon is refreshed first, under the refresh lease.
- * 3. **Reserve**, in one unit of the write gate: the connection's blob at its current
+ * 2. The turn: the request's root conversation's live run, from pi's records
+ *    (`agent.ts`, `turnOf`); none is the call's error, `no_run`, and nothing is reserved.
+ * 3. An OAuth credential expiring soon is refreshed first, under the refresh lease.
+ * 4. **Reserve**, in one unit of the write gate: the connection's blob at its current
  *    version, the owner policy's generation and model caps, and the reservation
  *    (`usage.ts`), so the envelope carries exactly what was reserved under, and concurrent
  *    calls never pass a cap. A refusal is the call's error, named by its rule.
- * 4. **Dispatched**, in a unit of its own: the row still reserved, the policy at the same
+ * 5. **Dispatched**, in a unit of its own: the row still reserved, the policy at the same
  *    generation, the connection at the same version, the call not aborted.
- * 5. The call: pi-messages to `GATEWAY.fetch`, with the envelope in `x-ta-envelope`
+ * 6. The call: pi-messages to `GATEWAY.fetch`, with the envelope in `x-ta-envelope`
  *    (owner, connection, version, blob, reservation id and output cap, policy generation,
  *    deadline; the gateway's `envelope.ts` reads it) and the model sent as the upstream's
  *    own id. The owner is the object's own name: the gateway never chooses one. The output
  *    is capped at the reservation, which the gateway clamps to as well. pi's abort signal
  *    rides the request: the runtime cancels the service binding's stream, and the gateway
  *    then the upstream's (the abort test watches the upstream see it).
- * 6. Every event goes to pi and, as it comes, to the live tee (`live-tee.ts`) under the
+ * 7. Every event goes to pi and, as it comes, to the live tee (`live-tee.ts`) under the
  *    request's `sessionId`, so the owner's views stream token by token while pi commits
  *    once a second.
- * 7. **Settle**, in a unit, before pi sees the end, so the turn's next reservation reads it:
- *    `succeeded` with pi-ai's `Usage` from `done`; `failed` when the gateway refused the
- *    call before it reached the provider (a non-200 answer); `unknown` for anything else,
- *    keeping the reservation. A blob the gateway resealed under a newer kid is stored by
- *    compare-and-swap.
+ * 8. **Settle**, in a unit, before pi sees the end, so the turn's next reservation reads it
+ *    (`outcomeOf`): `succeeded` with pi-ai's `Usage` from `done`; `failed` when the gateway
+ *    answered with a refusal's status, its own or the provider's before any output;
+ *    `unknown` for anything else, keeping the reservation. A blob the gateway resealed
+ *    under a newer kid is stored by compare-and-swap. Once reserved, a call never leaves
+ *    its row open in this instance: a dispatch or settle unit that throws, or anything
+ *    else that does, abandons it (`not_sent` before dispatch, `unknown` after).
  *
- * Every refusal is a fixed code in the answer's `errorMessage`, none of which pi-ai reads
- * as retryable; the gateway's own codes come through as its pi-messages client words them.
- * No secret is ever in this module's hands but the sealed blob it forwards.
+ * Every refusal is a fixed code in the answer's `errorMessage`. Ours are none that pi-ai
+ * reads as retryable. A refusal the gateway answered with a status is given to pi as the
+ * gateway's own code, read from its answer's body, never as the pi-messages client's
+ * `<status> <text>: ...` wording, whose status would make every one of them retryable: so
+ * pi retries `upstream_rate_limited`, as its own rules read it (`isRetryableAssistantError`),
+ * and nothing else. No secret is ever in this module's hands but the sealed blob it
+ * forwards.
  */
 import type {
   Api, AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream, Message, Model,
@@ -49,6 +57,7 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/e
 
 import { type Candidate, physicalId, ranked, route } from "./auto";
 import type { Connections, Credential, GatewayService, Usable } from "./connections";
+import { NO_RUN } from "./agent";
 import type { Write } from "./gate";
 import type { LiveTee } from "./live-tee";
 import { costMicros, type Outcome, type Reserved, type Usage } from "./usage";
@@ -74,6 +83,8 @@ export interface ProviderParts {
   readonly tee: LiveTee;
   /** The object's clock, in seconds. */
   readonly clock: () => number;
+  /** The turn a request's `sessionId` is part of (`OwnerAgent.turnOf`); throws `no_run`. */
+  readonly turn: (sessionId: string | undefined) => Promise<string>;
 }
 
 /** The fields of `x-ta-envelope`, exactly as the gateway's `envelope.ts` takes them. */
@@ -97,15 +108,6 @@ export function envelopeHeader(fields: EnvelopeFields): string {
     policy_generation: fields.policy_generation, deadline: fields.deadline,
   };
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
-}
-
-/**
- * The turn a request belongs to: its conversation (pi's `sessionId`) and its newest user
- * message's time. A request with no session is a turn of its own messages.
- */
-export function turnOf(sessionId: string | undefined, messages: readonly Message[]): string {
-  const user = messages.findLast((message) => message.role === "user");
-  return `${sessionId === undefined ? "direct" : sessionId.slice(0, 256)}:${user?.timestamp ?? 0}`;
 }
 
 /** A connected model as pi lists it: pi-messages to the gateway, with its own metadata. */
@@ -143,10 +145,28 @@ function codeOf(error: unknown, fallback: string): string {
   return /^[a-z_]{1,40}(?:: [a-z_]{1,40})?$/.test(message) ? message : fallback;
 }
 
-/** What the call to the gateway saw: its status, and a blob it resealed. */
-interface Seen {
+/** What the call to the gateway saw: its status, the code of a refusal, a blob it resealed. */
+export interface Seen {
   status?: number;
+  code?: string;
   resealed?: unknown;
+}
+
+/** A gateway code, as its failure answers carry it. */
+const GATEWAY_CODE = /^[a-z_]{1,40}$/;
+
+/**
+ * How a dispatched call settles: `succeeded` from its `done`; `failed` when the gateway
+ * answered with a refusal's status (nothing was produced, so nothing is owed); `unknown`
+ * for anything else, a stream lost or an error after it started included.
+ */
+export function outcomeOf(final: AssistantMessageEvent | undefined, seen: Seen): Outcome {
+  if (final?.type === "done") {
+    return { state: "succeeded", tokens: tokensOf(final.message.usage),
+             cost: costMicros(final.message.usage.cost.total) };
+  }
+  return seen.status !== undefined && seen.status !== 200 ? { state: "failed" }
+    : { state: "unknown" };
 }
 
 export class GatewayProvider implements Provider<Api> {
@@ -222,6 +242,12 @@ export class GatewayProvider implements Provider<Api> {
       return end(failed(model, "no_connected_model", aborted()));
     }
     const physical = listed(target);
+    let turn: string;
+    try {
+      turn = await this.#parts.turn(session);
+    } catch (error) {
+      return end(failed(physical, codeOf(error, NO_RUN), aborted()));
+    }
     try {
       await connections.fresh(target.connection);
     } catch (error) {
@@ -233,7 +259,7 @@ export class GatewayProvider implements Provider<Api> {
       call = await write(() => {
         const credential = connections.credential(target.connection, Date.now());
         const reserved = usage.reserve({
-          turn: turnOf(session, context.messages), connection: target.connection,
+          turn, connection: target.connection, source: target.source,
           model: target.model.id, inputTokens: estimateContextTokens(context).tokens,
           maxOutputTokens: Math.max(1, asked),
           reasoning: options.reasoning !== undefined && physical.reasoning,
@@ -248,13 +274,61 @@ export class GatewayProvider implements Provider<Api> {
     if (!reserved.ok) {
       return end(failed(physical, `model_budget: ${reserved.rule}`, aborted()));
     }
-    const sent = await write(() => usage.dispatched(reserved.id, clock(),
-      aborted() ? "aborted"
-        : connections.current(credential.connection, credential.version) ? null
-          : "connection_changed"));
-    if (!sent.sent) {
-      return end(failed(physical, `model_call_not_sent: ${sent.rule}`, aborted()));
+    // From here the row is this instance's to close: settled, or not sent, or abandoned.
+    let closed = false;
+    try {
+      const sent = await write(() => usage.dispatched(reserved.id, clock(),
+        aborted() ? "aborted"
+          : connections.current(credential.connection, credential.version) ? null
+            : "connection_changed"));
+      if (!sent.sent) {
+        closed = true;
+        return end(failed(physical, `model_call_not_sent: ${sent.rule}`, aborted()));
+      }
+      const { final, seen } = await this.#send(physical, target, context, options, out,
+                                               credential, owner, reserved);
+      try {
+        await write(() => usage.settle(reserved.id, outcomeOf(final, seen), clock()));
+      } catch {
+        console.error("a model call's settlement could not be kept; it is abandoned");
+        await this.#abandon(reserved.id);
+      }
+      closed = true;
+      if (seen.resealed !== undefined) {
+        const resealed = seen.resealed;
+        await write(() => connections.resealed(credential.connection, credential.version,
+                                               resealed, Date.now()))
+          .catch(() => console.error("a resealed blob could not be kept"));
+      }
+      end(seen.status !== undefined && seen.status !== 200 && seen.code !== undefined
+        ? failed(physical, seen.code, aborted())
+        : final ?? failed(physical, "gateway_provider: stream_lost", aborted()));
+    } finally {
+      if (!closed) {
+        await this.#abandon(reserved.id);
+      }
     }
+  }
+
+  /** A reservation abandoned in a unit of its own (`Usage.abandon`); a failure is logged. */
+  async #abandon(id: string): Promise<void> {
+    const { usage, write, clock } = this.#parts;
+    await write(() => usage.abandon(id, clock()))
+      .catch(() => console.error("a model call could not be abandoned"));
+  }
+
+  /**
+   * The call to the gateway, its events streamed to pi and the tee as they come, up to
+   * its terminal event (undefined when the stream was lost without one).
+   */
+  async #send(physical: Model<"pi-messages">, target: Candidate, context: TranscriptContext,
+              options: SimpleStreamOptions, out: AssistantMessageEventStream,
+              credential: Credential, owner: string,
+              reserved: { readonly id: string; readonly max_output_tokens: number;
+                          readonly policy_generation: number }):
+      Promise<{ final: AssistantMessageEvent | undefined; seen: Seen }> {
+    const { tee } = this.#parts;
+    const session = options.sessionId;
     const seen: Seen = {};
     let final: AssistantMessageEvent | undefined;
     try {
@@ -286,24 +360,9 @@ export class GatewayProvider implements Provider<Api> {
         out.push(event);
       }
     } catch {
-      final = undefined;  // settled unknown below; pi-ai's stream itself never throws
+      final = undefined;  // settled unknown; pi-ai's stream itself never throws
     }
-    const outcome: Outcome = final?.type === "done"
-      ? { state: "succeeded", tokens: tokensOf(final.message.usage),
-          cost: costMicros(final.message.usage.cost.total) }
-      : seen.status !== undefined && seen.status !== 200 ? { state: "failed" }
-        : { state: "unknown" };
-    try {
-      await write(() => usage.settle(reserved.id, outcome, clock()));
-      if (seen.resealed !== undefined) {
-        const resealed = seen.resealed;
-        await write(() => connections.resealed(credential.connection, credential.version,
-                                               resealed, Date.now()));
-      }
-    } catch {
-      console.error("a model call's settlement could not be kept");  // the row stays open
-    }
-    end(final ?? failed(physical, "gateway_provider: stream_lost", aborted()));
+    return { final, seen };
   }
 
   /** One request to the gateway, through the service binding only. */
@@ -314,6 +373,13 @@ export class GatewayProvider implements Provider<Api> {
     }
     const response = await gateway.fetch(new Request(input, init));
     seen.status = response.status;
+    if (response.status !== 200) {
+      const code = await response.clone().json()
+        .then((body) => (body as { error?: { code?: unknown } }).error?.code, () => undefined);
+      if (typeof code === "string" && GATEWAY_CODE.test(code)) {
+        seen.code = code;
+      }
+    }
     const resealed = response.headers.get("x-ta-resealed");
     if (resealed !== null) {
       try {

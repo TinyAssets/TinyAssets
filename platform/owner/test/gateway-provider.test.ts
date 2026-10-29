@@ -2,7 +2,8 @@
  * The agent's `gateway` provider (tasks 4 G2, 5 A1), in workerd: a real turn through the
  * gateway Worker run beside the tests, against the gateway's own fake upstream; `no_model`
  * with nothing connected; the live tee against pi's one-second commits; an abort reaching
- * the gateway; a budget refusal; the envelope the gateway reads.
+ * the gateway; a provider's refusal settled at no cost; a budget refusal; a call with no
+ * run; a dispatch or settle that cannot be kept; the envelope the gateway reads.
  */
 import { env } from "cloudflare:workers";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -13,11 +14,14 @@ import { describe, expect, it } from "vitest";
 
 import { envelope } from "../../gateway/src/envelope";
 import { IDENTITY } from "../src/agent";
-import { AUTO_MODEL, envelopeHeader, GATEWAY_BASE_URL, turnOf } from "../src/gateway-provider";
+import { NO_RUN } from "../src/agent";
+import {
+  AUTO_MODEL, envelopeHeader, GATEWAY_BASE_URL, outcomeOf,
+} from "../src/gateway-provider";
 import type { LiveEvent } from "../src/live-tee";
 import { DEFAULT_POLICY_JSON } from "../src/policy";
 import {
-  ANTHROPIC, asked, catalog, type Gated, gated, OPENAI, textOf, until,
+  ANTHROPIC, asked, catalog, direct, type Gated, gated, OPENAI, textOf, until,
 } from "./gateway-support";
 import type { GatedOwnerDO } from "./worker";
 
@@ -187,7 +191,8 @@ describe("a call never sent", () => {
       const stop = new AbortController();
       stop.abort();
       return instance.parts.provider.streamSimple(auto, asked("cmd:echo"),
-                                                  { signal: stop.signal }).result();
+                                                  { ...direct(instance), signal: stop.signal })
+        .result();
     });
     expect([answer.stopReason, answer.errorMessage])
       .toEqual(["aborted", "model_call_not_sent: aborted"]);
@@ -203,7 +208,8 @@ describe("a call never sent", () => {
     const answer = await r.in(async (instance, state) => {
       const auto = instance.parts.provider.getModels()[0]!;
       const queue = holdQueue(state);
-      const call = instance.parts.provider.streamSimple(auto, asked("cmd:echo")).result();
+      const call = instance.parts.provider.streamSimple(auto, asked("cmd:echo"),
+                                                        direct(instance)).result();
       for (let i = 0; i < 50; i++) {
         await Promise.resolve();
       }
@@ -226,7 +232,8 @@ describe("a call never sent", () => {
       const auto = instance.parts.provider.getModels()[0]!;
       const queue = holdQueue(state);
       const revoked = instance.connectionRevoke(r.session(), { connection });
-      const call = instance.parts.provider.streamSimple(auto, asked("cmd:echo")).result();
+      const call = instance.parts.provider.streamSimple(auto, asked("cmd:echo"),
+                                                        direct(instance)).result();
       queue.release();
       await queue.done;
       await revoked;
@@ -247,9 +254,9 @@ describe("a call never sent", () => {
     const connection = await r.connect("sk-missing", ANTHROPIC, "Key", [missing]);
     const answer = await r.in((instance) => instance.parts.provider.streamSimple(
       instance.parts.provider.getModels().find((model) =>
-        model.id === `${connection}/no-such-model`)!, asked("hello")).result());
+        model.id === `${connection}/no-such-model`)!, asked("hello"), direct(instance)).result());
     expect(answer.stopReason).toBe("error");
-    expect(answer.errorMessage).toContain("unknown_model");
+    expect(answer.errorMessage).toBe("unknown_model");
     const { receipts } = await r.stub.usageReceipts(r.bind());
     expect(receipts.map((receipt) => [receipt.state, receipt.cost])).toEqual([["failed", 0]]);
     expect(await r.sql("SELECT SUM(cost) AS cost FROM model_spend WHERE period LIKE 'd:%'"))
@@ -303,19 +310,111 @@ describe("the owner's model budget", () => {
   });
 });
 
-describe("a turn's key", () => {
-  it("is the conversation and its newest user message's time", () => {
-    const at = (text: string, timestamp: number) => ({ role: "user" as const, content: text,
-                                                       timestamp });
-    const reply = { role: "toolResult" as const, toolCallId: "t", toolName: "read",
-                    content: [], isError: false, timestamp: 9 };
-    expect(turnOf("s1", [at("a", 5)])).toBe("s1:5");
-    expect(turnOf("s1", [at("a", 5), reply])).toBe("s1:5");
-    expect(turnOf("s1", [at("a", 5), reply, at("b", 7)])).toBe("s1:7");
-    expect(turnOf("s2", [at("a", 5)])).toBe("s2:5");
-    expect(turnOf(undefined, [at("a", 5)])).toBe("direct:5");
-    expect(turnOf("s1", [])).toBe("s1:0");
-    expect(turnOf("x".repeat(400), [at("a", 1)]).length).toBe(256 + 2);
+describe("a provider's refusal before any output", () => {
+  it("settles failed, at no cost, with the gateway's own code", async () => {
+    const r = await gated();
+    await r.connect("sk-429");
+    const answer = await r.in((instance) => instance.parts.provider.streamSimple(
+      instance.parts.provider.getModels()[0]!, asked("cmd:fail-429"), direct(instance))
+      .result());
+    expect([answer.stopReason, answer.errorMessage]).toEqual(["error", "upstream_rate_limited"]);
+    const { receipts } = await r.stub.usageReceipts(r.bind());
+    expect(receipts.map((receipt) => [receipt.state, receipt.cost])).toEqual([["failed", 0]]);
+    expect(await r.sql("SELECT SUM(cost) AS cost FROM model_spend WHERE period LIKE 'd:%'"))
+      .toEqual([{ cost: 0 }]);
+  });
+
+  it("is retried by pi as a rate limit, and its retries never spend a daily ceiling",
+     async () => {
+    const r = await gated();
+    await r.connect("sk-429b");
+    await models(r, { daily_cost: 20_000_000, retries: 2 });
+    const answer = await r.in((instance) => instance.agent.harness.prompt("cmd:fail-429"));
+    expect(answer.status).toBe("unanswered");
+    const { receipts } = await r.stub.usageReceipts(r.bind());
+    expect(receipts.map((receipt) => [receipt.state, receipt.cost]))
+      .toEqual(Array(3).fill(["failed", 0]));
+    expect(await r.sql("SELECT SUM(cost) AS cost FROM model_spend WHERE period LIKE 'd:%'"))
+      .toEqual([{ cost: 0 }]);
+  }, 60_000);
+
+  it("is not retried when the provider refused the key", async () => {
+    const r = await gated();
+    await r.connect("sk-401");
+    await models(r, { retries: 2 });
+    const answer = await r.in((instance) => instance.agent.harness.prompt("cmd:fail-401"));
+    expect(answer.status).toBe("unanswered");
+    const failed = answer.messages.flatMap((entry) => entry.model ?? []).at(-1) as
+      { errorMessage: string };
+    expect(failed.errorMessage).toBe("upstream_unauthorized");
+    expect((await r.stub.usageReceipts(r.bind())).receipts.map((receipt) => receipt.state))
+      .toEqual(["failed"]);
+  });
+});
+
+describe("a call's outcome", () => {
+  const usage = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3,
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.000_012 } };
+  const message = { role: "assistant" as const, content: [], api: "pi-messages",
+                    provider: "gateway", model: "m", usage, stopReason: "stop" as const,
+                    timestamp: 1 };
+
+  it("is unknown for a stream lost without its terminal event, whatever the status", () => {
+    expect(outcomeOf(undefined, {})).toEqual({ state: "unknown" });
+    expect(outcomeOf(undefined, { status: 200 })).toEqual({ state: "unknown" });
+    expect(outcomeOf({ type: "error", reason: "error",
+                       error: { ...message, stopReason: "error" } }, { status: 200 }))
+      .toEqual({ state: "unknown" });
+  });
+
+  it("is failed for a refusal's status, and succeeded with what a done used", () => {
+    expect(outcomeOf(undefined, { status: 502 })).toEqual({ state: "failed" });
+    expect(outcomeOf({ type: "done", reason: "stop", message }, { status: 200 }))
+      .toEqual({ state: "succeeded", tokens: 3, cost: 12 });
+  });
+});
+
+describe("a call with no run", () => {
+  it("is refused no_run, nothing reserved and nothing sent", async () => {
+    const r = await gated();
+    await r.connect("sk-norun");
+    const answers = await r.in(async (instance) => {
+      const auto = instance.parts.provider.getModels()[0]!;
+      return [await instance.parts.provider.streamSimple(auto, asked("cmd:echo"),
+                                                         { sessionId: "unknown" }).result(),
+              await instance.parts.provider.streamSimple(auto, asked("cmd:echo")).result()];
+    });
+    expect(answers.map((answer) => answer.errorMessage)).toEqual([NO_RUN, NO_RUN]);
+    expect(await r.sql("SELECT id FROM model_reservations")).toEqual([]);
+    expect(await envelopes(r)).toEqual([]);
+  });
+});
+
+describe("a call whose own unit cannot be kept", () => {
+  it("is abandoned unknown, its answer still given, when its settle throws", async () => {
+    const r = await gated();
+    await r.connect("sk-settle");
+    await r.sql("CREATE TRIGGER fail_settle BEFORE UPDATE OF tokens ON model_reservations " +
+                "WHEN NEW.state = 'succeeded' BEGIN SELECT RAISE(ABORT, 'injected'); END");
+    const answer = await r.in((instance) => instance.parts.provider.streamSimple(
+      instance.parts.provider.getModels()[0]!, asked("cmd:echo"), direct(instance)).result());
+    expect(answer.stopReason).toBe("stop");
+    const { receipts } = await r.stub.usageReceipts(r.bind());
+    expect(receipts.map((receipt) => receipt.state)).toEqual(["unknown"]);
+    expect(receipts[0]!.est_cost).toBeGreaterThan(0);
+  });
+
+  it("is abandoned not sent, and never sent, when its dispatch throws", async () => {
+    const r = await gated();
+    await r.connect("sk-dispatch");
+    await r.sql("CREATE TRIGGER fail_dispatch BEFORE UPDATE OF state ON model_reservations " +
+                "WHEN NEW.state = 'dispatched' BEGIN SELECT RAISE(ABORT, 'injected'); END");
+    const answer = await r.in((instance) => instance.parts.provider.streamSimple(
+      instance.parts.provider.getModels()[0]!, asked("cmd:echo"), direct(instance)).result());
+    expect(answer.stopReason).toBe("error");
+    expect(await envelopes(r)).toEqual([]);
+    expect((await r.stub.usageReceipts(r.bind())).receipts.map((receipt) => receipt.state))
+      .toEqual(["not_sent"]);
   });
 });
 
@@ -339,7 +438,8 @@ describe("the envelope", () => {
     await models(r, { turn_requests: 50 });
     const answer = await r.in(async (instance) => {
       const auto = instance.parts.provider.getModels()[0]!;
-      return instance.parts.provider.streamSimple(auto, asked("cmd:echo")).result();
+      return instance.parts.provider.streamSimple(auto, asked("cmd:echo"), direct(instance))
+        .result();
     });
     expect(answer.stopReason).toBe("stop");
     expect(textOf(answer)).toContain("Bearer sk-generation");

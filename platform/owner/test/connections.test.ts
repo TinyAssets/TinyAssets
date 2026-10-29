@@ -1,22 +1,23 @@
 /**
  * The owner's model connections (tasks 4 G2): the connect doors in the owner's session,
  * OAuth flows bound to it and cancelled with it, a revoke's crypto-delete and its provider
- * revoke, the refresh lease under concurrent calls, the reseal's compare-and-swap, and the
- * plaintext key never in the object.
+ * revoke, the refresh lease under concurrent calls, the reseal's compare-and-swap, the
+ * largest built-in catalog, and the plaintext key never in the object.
  */
 import { evictDurableObject, runDurableObjectAlarm } from "cloudflare:test";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { Credential } from "../../gateway/src/credential";
+import { type Credential, type Source, SUPPORTED_APIS } from "../../gateway/src/credential";
 import { open } from "../../gateway/src/keyring";
 import { CONNECTION_LIMITS } from "../src/connections";
 import { MUSE } from "./ledger-support";
 import { failure } from "./support";
 import {
-  ANTHROPIC, asked, catalog, type Gated, gated, keyring, OAUTH, OPENAI, REDIRECT, sealedAs,
-  textOf, until,
+  ANTHROPIC, asked, catalog, direct, type Gated, gated, keyring, OAUTH, OPENAI, REDIRECT,
+  sealedAs, textOf, until,
 } from "./gateway-support";
 
 afterEach(() => {
@@ -42,7 +43,7 @@ function calls(r: Gated, many: number, text = "cmd:echo") {
   return r.in(async (instance) => {
     const auto = instance.parts.provider.getModels()[0]!;
     return Promise.all(Array.from({ length: many }, (_, i) =>
-      instance.parts.provider.streamSimple(auto, asked(text), { sessionId: `s-${i}` })
+      instance.parts.provider.streamSimple(auto, asked(text), direct(instance, `s-${i}`))
         .result()));
   });
 }
@@ -288,6 +289,99 @@ describe("a revoke", () => {
   });
 });
 
+describe("a provider revoke and a refresh in flight", () => {
+  /** An OAuth connection whose token is near expiry, its refresh held until released. */
+  async function heldRefresh(r: Gated) {
+    const connection = await r.connectOAuth(OAUTH, Date.now() + 60_000);
+    let release!: () => void;
+    await r.in((instance) => {
+      instance.faults.refreshGate = new Promise<void>((resolve) => { release = resolve; });
+    });
+    const call = r.in((instance) => instance.parts.provider.streamSimple(
+      instance.parts.provider.getModels()[0]!, asked("cmd:echo"), direct(instance)).result());
+    await until(async () => (await r.in((instance) => instance.calls))
+      .some((made) => made.method === "refresh"), "the refresh to be sent");
+    // Resolved in the object, where the gate was made: a promise is its I/O.
+    return { connection, call, release: () => r.in(() => release()) };
+  }
+
+  it("revokes the newer tokens a refresh stored after the revoke, whenever the lane runs",
+     async () => {
+    const r = await gated();
+    const { connection, call, release } = await heldRefresh(r);
+    await r.stub.connectionRevoke(r.session(), { connection });
+    // The lane's revoke is due at once: the runtime may send it before the refresh lands.
+    await release();
+    // The call that asked for the refresh finds its connection gone.
+    expect((await call).errorMessage).toBe("connection_unavailable");
+    await until(async () => {
+      await lanes(r);
+      return (await secrets(r, connection)).length === 0;
+    }, "every owed revoke to be sent", 50);
+    const sent = (await r.in((instance) => instance.calls))
+      .filter((made) => made.method === "revokeAtProvider").map((made) => JSON.parse(made.text));
+    expect(sent.at(-1)?.slice(0, 3)).toEqual([r.name, connection, 2]);
+    expect((await r.sql("SELECT revoke_due FROM connections"))[0]!["revoke_due"]).toBeNull();
+  });
+
+  it("asks again for tokens a refresh stored while the lane's revoke was in flight",
+     async () => {
+    const r = await gated();
+    const { connection, call, release } = await heldRefresh(r);
+    const [old] = await secrets(r, connection);
+    let letRevoke!: () => void;
+    await r.in((instance) => {
+      instance.faults.revokeGate = new Promise<void>((resolve) => { letRevoke = resolve; });
+    });
+    await r.stub.connectionRevoke(r.session(), { connection });
+    // The lane sends the revoke of version 1, held, and the refresh lands meanwhile.
+    await r.sql("UPDATE cf_agents_jobs SET time = 0");
+    void runDurableObjectAlarm(r.stub).catch(() => false);
+    const revokes = async () => (await r.in((instance) => instance.calls))
+      .filter((made) => made.method === "revokeAtProvider").map((made) => JSON.parse(made.text));
+    await until(async () => (await revokes()).length === 1, "the first revoke to be sent");
+    await release();
+    await call;
+    await until(async () => (await secrets(r, connection))
+      .some((row) => row["version"] === 2), "the refresh to land");
+    await r.in((instance) => {
+      instance.faults.revokeGate = null;
+      letRevoke();
+    });
+    // The revoke of version 1 settles, and the lane is owed one for version 2.
+    await until(async () => {
+      await lanes(r);
+      return (await secrets(r, connection)).length === 0;
+    }, "the newer tokens' revoke", 50);
+    const sent = await revokes();
+    expect(sent[0]).toEqual([r.name, connection, 1, old!["blob"]]);
+    expect(sent.at(-1)?.slice(0, 3)).toEqual([r.name, connection, 2]);
+  });
+
+  it("deletes the blob of a source with no revocation endpoint, with a notice that the " +
+     "provider honours the token until it expires", async () => {
+    const r = await gated();
+    const prepared = await r.stub.connectionPrepare(r.session(), {
+      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai" });
+    const { revocation_endpoint: _none, ...oauth } = OAUTH.oauth!;
+    const blob = await sealedAs("k2", r.name, prepared.connection, 1, {
+      kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
+      oauth: { ...oauth, access: "at-1", refresh: "rt-1", expires_at: null } });
+    await r.stub.connectionCommit(r.session(), { connection: prepared.connection, version: 1,
+                                                 blob, kid: "k2", models: [],
+                                                 expires_at: null });
+    expect(await r.stub.connectionRevoke(r.session(), { connection: prepared.connection }))
+      .toMatchObject({ provider_revoke: true });
+    await lanes(r);
+    expect(await secrets(r, prepared.connection)).toEqual([]);
+    expect((await r.sql("SELECT revoke_due FROM connections"))[0]!["revoke_due"]).toBeNull();
+    const { notices } = await r.stub.noticeList(r.bind());
+    const notice = notices.find((made) => made.type === "connection_revoke_unsupported");
+    expect(notice?.detail).toContain("honours its token until it expires");
+    expect(notices.map((made) => made.type)).not.toContain("connection_revoke_failed");
+  });
+});
+
 describe("the refresh lease", () => {
   it("refreshes an expiring OAuth credential once, however many calls need it", async () => {
     const r = await gated();
@@ -346,6 +440,76 @@ describe("the refresh lease", () => {
   });
 });
 
+describe("a refresh that lands on a changed connection", () => {
+  it("is dropped, and its lease with it", async () => {
+    const r = await gated();
+    const connection = await r.connectOAuth(OAUTH, Date.now() + 60_000);
+    let release!: () => void;
+    await r.in((instance) => {
+      instance.faults.refreshGate = new Promise<void>((resolve) => { release = resolve; });
+    });
+    const call = r.in((instance) => instance.parts.provider.streamSimple(
+      instance.parts.provider.getModels()[0]!, asked("cmd:echo"), direct(instance)).result());
+    await until(async () => (await r.sql("SELECT lease_id FROM connections"))[0]!["lease_id"]
+      !== null, "the lease to be taken");
+    // The connection fails meanwhile (as a refused grant leaves it).
+    await r.sql("UPDATE connections SET status = 'error'");
+    await r.in(() => release());
+    expect((await call).stopReason).toBe("error");
+    expect(await r.sql("SELECT version, lease_id, lease_until FROM connections"))
+      .toEqual([{ version: 1, lease_id: null, lease_until: null }]);
+    expect((await secrets(r, connection)).map((row) => row["version"])).toEqual([1]);
+  });
+});
+
+describe("a credential", () => {
+  it("is refused as expired when its refresh came back already past its expiry", async () => {
+    const r = await gated();
+    await r.connectOAuth(OAUTH, Date.now() + 60_000);
+    await r.in((instance) => {
+      instance.faults.refreshed = (answer) => ({ ...answer, expires_at: Date.now() - 1 });
+    });
+    const [answer] = await calls(r, 1);
+    expect(answer!.errorMessage).toBe("credential_expired");
+    expect(await r.sql("SELECT state FROM model_reservations")).toEqual([]);
+  });
+});
+
+describe("the largest built-in catalog", () => {
+  it("connects, found by a scan of pi-ai's providers", async () => {
+    let largest: { provider: string; api: string; baseUrl: string; count: number } | undefined;
+    for (const provider of builtinProviders()) {
+      const byApi = new Map<string, { count: number; baseUrl: string }>();
+      for (const model of provider.getModels()) {
+        const seen = byApi.get(model.api) ?? { count: 0, baseUrl: model.baseUrl };
+        byApi.set(model.api, { ...seen, count: seen.count + 1 });
+      }
+      for (const [api, { count, baseUrl }] of byApi) {
+        if (SUPPORTED_APIS.includes(api) && count > (largest?.count ?? 0)) {
+          largest = { provider: provider.id, api, baseUrl, count };
+        }
+      }
+    }
+    expect(largest!.count).toBeGreaterThan(256);
+    expect(largest!.count * 2).toBeLessThanOrEqual(CONNECTION_LIMITS.maxModels);
+    const base = new URL(largest!.baseUrl);
+    const record: Source = {
+      upstream: { provider: largest!.provider, api: largest!.api, base_url: largest!.baseUrl,
+                  auth: { header: "authorization", scheme: "Bearer" } },
+      endpoints: [{ origin: base.origin, paths: [`${base.pathname.replace(/\/$/, "")}/*`],
+                    methods: ["GET", "POST"] }],
+    };
+    const listed = await catalog(record);
+    expect(listed).toHaveLength(largest!.count);
+    const r = await gated();
+    const connection = await r.connect("sk-large", record, "Large", listed);
+    expect((await r.stub.connectionList(r.session())).connections[0])
+      .toMatchObject({ connection, status: "active" });
+    expect((await r.stub.connectionList(r.session())).connections[0]!.models)
+      .toHaveLength(largest!.count);
+  });
+});
+
 describe("a blob resealed under the active kid", () => {
   async function oldKid(r: Gated) {
     const prepared = await r.stub.connectionPrepare(r.session(), {
@@ -395,12 +559,13 @@ describe("a blob resealed under the active kid", () => {
       const stop = new AbortController();
       // A call in flight on version 1, under the old kid: its answer carries a reseal.
       const slow = instance.parts.provider.streamSimple(auto, asked(`cmd:slow-${id}`),
-                                                        { sessionId: "slow", signal: stop.signal });
+                                                        { ...direct(instance, "slow"),
+                                                          signal: stop.signal });
       await until(opened, "the slow call to open");
       // The token nears expiry, and another call refreshes it to version 2.
       state.storage.sql.exec("UPDATE connections SET expires_at = ?", Date.now() + 60_000);
       const fresh = await instance.parts.provider.streamSimple(auto, asked("cmd:echo"),
-                                                               { sessionId: "fresh" }).result();
+                                                               direct(instance, "fresh")).result();
       expect(textOf(fresh)).toContain("Bearer at-2|none:client-1");
       stop.abort();
       await slow.result();

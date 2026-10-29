@@ -17,7 +17,8 @@ function model(id: string, output = 1): ModelInfo {
 
 function usable(connection: string, provider: string, created: number,
                 ...models: ModelInfo[]): Usable {
-  return { connection, provider, display_name: connection, created_at: created, models };
+  return { connection, source: provider, provider, display_name: connection, created_at: created,
+           models };
 }
 
 const user = (text: string): Message => ({ role: "user", content: text, timestamp: 1 });
@@ -108,6 +109,16 @@ describe("a route", () => {
     expect(route([first!], [user("hi"), failed(first!)])).toBe(first);
     // A failed model no longer connected: the strongest.
     expect(route(candidates.slice(1), [user("hi"), failed(first!)])).toBe(second);
+  });
+
+  it("is the strongest after an answer that ended without an error, with or without output",
+     () => {
+    // pi asks again after an aborted or a stopped answer only on a retry or a new input.
+    expect(route(candidates, [user("hi"), answer(second!, { stopReason: "aborted",
+                                                             content: [] })])).toBe(first);
+    expect(route(candidates, [user("hi"), answer(second!)])).toBe(first);
+    expect(route(candidates, [user("hi"), answer(first!, { stopReason: "length",
+                                                            content: [] })])).toBe(first);
   });
 });
 

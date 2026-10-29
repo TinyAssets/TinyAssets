@@ -8,7 +8,7 @@
  * `not_sent`; plus `refused`, a reservation the caps turned down, kept as its receipt.
  *
  * - **Reserve**, in one unit with the call's credential (`gateway-provider.ts`): it reads
- *   the owner's model policy and its generation, the turn's reservations and the day's and
+ *   the owner's model policy and its generation, the turn's counters and the day's and
  *   month's spend, checks every cap against what is settled plus what is still open, and
  *   inserts the row, so concurrent calls reserve one after another and never pass a cap
  *   between them. The reservation bounds the call's output tokens (`max_output_tokens`,
@@ -19,33 +19,41 @@
  *   is `not_sent`, and the call never goes. A row is `dispatched` before the first byte
  *   leaves, so an unsent one is provably unsent.
  * - **Settle**, in a unit, once: `succeeded` with pi-ai's `Usage` (tokens, and its catalog
- *   cost) from the `done` event; `failed`, cost 0, when the gateway refused the call
- *   before it reached the provider; `unknown` otherwise (a stream that died, an abort, a
- *   provider error mid-stream), which keeps its whole reservation and is never replayed.
+ *   cost) from the `done` event; `failed`, cost 0, when the gateway answered the call
+ *   with a refusal's status, its own or the provider's before any output (the gateway's
+ *   `messages.ts`); `unknown` otherwise (a stream lost after it started, an abort), which
+ *   keeps its whole reservation and is never replayed.
+ * - **Abandon**, when a dispatch or settle unit threw: the row settled as it stands
+ *   (`reserved` as `not_sent`, `dispatched` as `unknown`), never left open in this instance.
  * - **Recovery**: an object has one live instance, so an open row this instance did not
  *   reserve is a dead instance's call. Each reserve and each receipts read settles them
  *   first: `reserved` as `not_sent`, `dispatched` as `unknown`.
  *
+ * Every cap reads a counter only the schema's triggers write (`schema.ts`, migration 6):
+ * `model_turns` for a turn's requests, tokens and cost, `model_spend` for a source's day
+ * and month. The reservation rows are receipts, history only: the newest `receiptsKept`
+ * are kept, and pruning one frees nothing. A turn's counters go only once the turn has
+ * been idle for `turnIdleS`, with no call of it open.
+ *
  * Money is micro-dollars (µ$): pi-ai's catalog prices are dollars per million tokens, so a
  * token at price `p` costs `p` µ$. An estimate is the context's estimated input at the
- * input price plus the reserved output at the output price. A turn is a conversation's
- * calls since its newest user message (`turnOf`): steering starts a new one, and so does
- * a compaction that summarizes that message away. The day and month are UTC.
+ * input price plus the reserved output at the output price. A turn is one run of the
+ * root conversation's submissions, as pi records it (`agent.ts`, `turnOf`): a compaction
+ * inside it and a subagent's calls are the same turn. A source is a connection's source
+ * record (`connections.ts`), so its ceilings survive a reconnect. The day and month are UTC.
  *
  * Declared differences from the Python: the per-turn limits are owner policy (the
  * `models` table) rather than constants; the free-tier pools, their consecutive-failure
  * stop and the advisory daily evidence have no counterpart (no platform-paid source
  * exists); a reservation shrinks its output to fit what the caps leave, where the Python
- * counted attempts only; the receipts are the reservation rows, the newest
- * `receiptsKept`, while the day's and month's spend are counters the schema's triggers
- * keep, so pruning a receipt never frees a ceiling.
+ * counted attempts only.
  */
 import { randomBytes } from "node:crypto";
 
 import type { OwnerStorage } from "./gate";
 
 export interface UsageLimits {
-  /** Reservation rows kept; the counters keep the spend of the ones pruned. */
+  /** Reservation rows kept, as receipts; no cap reads them. */
   readonly receiptsKept: number;
   readonly receiptsListed: number;
   /** The fewest output tokens a call is worth reserving. */
@@ -55,6 +63,9 @@ export interface UsageLimits {
   /** Days of daily spend counters kept, and months of monthly ones. */
   readonly daysKept: number;
   readonly monthsKept: number;
+  /** Seconds a turn's counters outlive its last call; and how many one pass drops. */
+  readonly turnIdleS: number;
+  readonly turnsPrunedPerPass: number;
 }
 
 export const USAGE_LIMITS: UsageLimits = Object.freeze({
@@ -64,6 +75,8 @@ export const USAGE_LIMITS: UsageLimits = Object.freeze({
   minReasoningOutput: 2_048,
   daysKept: 40,
   monthsKept: 3,
+  turnIdleS: 30 * 86_400,
+  turnsPrunedPerPass: 256,
 });
 
 /** The caps of the owner's model policy (`policy.ts`, `modelSettings`), in µ$ for money. */
@@ -73,7 +86,8 @@ export interface ModelCaps {
   readonly turn_cost: number;
   readonly daily_cost: number | null;
   readonly monthly_cost: number | null;
-  readonly sources: { readonly [connection: string]: {
+  /** Each source record's own ceilings, by its id. */
+  readonly sources: { readonly [source: string]: {
     readonly daily_cost?: number | null; readonly monthly_cost?: number | null } };
 }
 
@@ -87,6 +101,8 @@ export interface UsagePolicy {
 export interface Ask {
   readonly turn: string;
   readonly connection: string;
+  /** The connection's source record, which its spend is counted under. */
+  readonly source: string;
   readonly model: string;
   readonly inputTokens: number;
   /** The output tokens the call asks for (its `maxTokens`, else the model's). */
@@ -113,6 +129,7 @@ export interface UsageReceipt {
   readonly reservation: string;
   readonly at: number;
   readonly connection: string;
+  readonly source: string;
   readonly model: string;
   readonly state: State;
   readonly rule: string | null;
@@ -123,13 +140,6 @@ export interface UsageReceipt {
   readonly cost: number | null;
   readonly settled_at: number | null;
 }
-
-/** What a row holds against the turn's token cap. */
-const HELD_TOKENS = "CASE WHEN state IN ('reserved', 'dispatched', 'unknown') THEN est_tokens " +
-  "WHEN state IN ('succeeded', 'failed') THEN coalesce(tokens, 0) ELSE 0 END";
-/** What a row holds against the cost caps, as the schema's `model_spend` triggers count it. */
-const HELD_COST = "CASE WHEN state IN ('reserved', 'dispatched', 'unknown') THEN est_cost " +
-  "WHEN state IN ('succeeded', 'failed') THEN coalesce(cost, 0) ELSE 0 END";
 
 /** The UTC day and month of `now` (seconds). */
 export function periods(now: number): { day: string; month: string } {
@@ -175,16 +185,21 @@ export class Usage {
       "SELECT id FROM model_reservations WHERE state IN ('reserved', 'dispatched')").toArray()
       .map((row) => row.id).filter((id) => !this.#live.has(id));
     for (const id of open) {
-      this.#sql.exec("UPDATE model_reservations SET state = CASE state WHEN 'reserved' " +
-                       "THEN 'not_sent' ELSE 'unknown' END, settled_at = ? " +
-                       "WHERE id = ? AND state IN ('reserved', 'dispatched')", now, id);
+      this.#settleOpen(id, now);
     }
     return open.length;
   }
 
+  /** An open row settled as it stands: `reserved` as `not_sent`, `dispatched` as `unknown`. */
+  #settleOpen(id: string, now: number): void {
+    this.#sql.exec("UPDATE model_reservations SET state = CASE state WHEN 'reserved' " +
+                     "THEN 'not_sent' ELSE 'unknown' END, settled_at = ? " +
+                     "WHERE id = ? AND state IN ('reserved', 'dispatched')", now, id);
+  }
+
   /**
    * In a unit: reserve a call against every cap, or refuse it, the refusal kept as a
-   * receipt. The policy, the turn's rows and the spend are all read here.
+   * receipt. The policy, the turn's counters and the spend are all read here.
    */
   reserve(ask: Ask, now: number): Reserved {
     return this.#storage.transactionSync(() => {
@@ -192,10 +207,9 @@ export class Usage {
       this.#prune(now);
       const { generation, settings } = this.#policy();
       const { day, month } = periods(now);
-      const turn = this.#sql.exec<{ n: number; tokens: number; cost: number }>(
-        `SELECT COUNT(*) AS n, COALESCE(SUM(${HELD_TOKENS}), 0) AS tokens, ` +
-          `COALESCE(SUM(${HELD_COST}), 0) AS cost FROM model_reservations ` +
-          "WHERE turn = ? AND state NOT IN ('refused', 'not_sent')", ask.turn).one();
+      const turn = this.#sql.exec<{ requests: number; tokens: number; cost: number }>(
+        "SELECT requests, tokens, cost FROM model_turns WHERE turn = ?", ask.turn).toArray()[0]
+        ?? { requests: 0, tokens: 0, cost: 0 };
       const floor = Math.min(ask.maxOutputTokens, ask.reasoning
         ? Math.max(this.#limits.minOutput, this.#limits.minReasoningOutput)
         : this.#limits.minOutput);
@@ -203,25 +217,24 @@ export class Usage {
         this.#insert(ask, "refused", rule, 0, 0, 0, generation, day, month, now);
         return { ok: false, rule };
       };
-      if (turn.n >= settings.turn_requests) {
+      if (turn.requests >= settings.turn_requests) {
         return refuse("turn_requests");
       }
       // The room each cost cap leaves, the tightest first to name.
       const rooms: [string, number][] = [["turn_cost", settings.turn_cost - turn.cost]];
-      const spent = (period: string, connection: string | null) => this.#sql.exec<{ cost: number }>(
+      const spent = (period: string, source: string | null) => this.#sql.exec<{ cost: number }>(
         "SELECT COALESCE(SUM(cost), 0) AS cost FROM model_spend WHERE period = ? " +
-          "AND (? IS NULL OR connection_id = ?)", period, connection, connection).one().cost;
+          "AND (? IS NULL OR source = ?)", period, source, source).one().cost;
+      const own = settings.sources[ask.source];
       const ceilings: [string, number | null | undefined, string, string | null][] = [
         ["daily_cost", settings.daily_cost, `d:${day}`, null],
         ["monthly_cost", settings.monthly_cost, `m:${month}`, null],
-        ["source_daily_cost", settings.sources[ask.connection]?.daily_cost, `d:${day}`,
-         ask.connection],
-        ["source_monthly_cost", settings.sources[ask.connection]?.monthly_cost, `m:${month}`,
-         ask.connection],
+        ["source_daily_cost", own?.daily_cost, `d:${day}`, ask.source],
+        ["source_monthly_cost", own?.monthly_cost, `m:${month}`, ask.source],
       ];
-      for (const [rule, cap, period, connection] of ceilings) {
+      for (const [rule, cap, period, source] of ceilings) {
         if (cap !== null && cap !== undefined) {
-          rooms.push([rule, cap - spent(period, connection)]);
+          rooms.push([rule, cap - spent(period, source)]);
         }
       }
       const [costRule, costRoom] = rooms.reduce((a, b) => (b[1] < a[1] ? b : a));
@@ -246,14 +259,18 @@ export class Usage {
   #insert(ask: Ask, state: State, rule: string | null, output: number, tokens: number,
           cost: number, generation: number, day: string, month: string, now: number,
           id = `r${randomBytes(16).toString("hex")}`): void {
-    this.#sql.exec("INSERT INTO model_reservations (id, turn, connection_id, model, state, " +
-                     "rule, max_output_tokens, est_tokens, est_cost, policy_generation, day, " +
-                     "month, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                   id, ask.turn, ask.connection, ask.model, state, rule, output, tokens, cost,
-                   generation, day, month, now);
+    this.#sql.exec("INSERT INTO model_reservations (id, turn, connection_id, source, model, " +
+                     "state, rule, max_output_tokens, est_tokens, est_cost, policy_generation, " +
+                     "day, month, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                   id, ask.turn, ask.connection, ask.source, ask.model, state, rule, output,
+                   tokens, cost, generation, day, month, now);
   }
 
-  /** Receipts past the newest `receiptsKept`, and spend counters past their window. */
+  /**
+   * Receipts past the newest `receiptsKept`, never an open one; spend counters past their
+   * window; and the counters of turns idle past `turnIdleS` with no call open, a bounded
+   * number a pass. None of it moves a counter a cap reads.
+   */
   #prune(now: number): void {
     this.#sql.exec("DELETE FROM model_reservations WHERE seq <= " +
                      "(SELECT MAX(seq) FROM model_reservations) - ? " +
@@ -265,6 +282,11 @@ export class Usage {
     this.#sql.exec("DELETE FROM model_spend WHERE period < ?", `d:${day}`);
     this.#sql.exec("DELETE FROM model_spend WHERE period >= 'm:' AND period < ?",
                    `m:${month.toISOString().slice(0, 7)}`);
+    this.#sql.exec("DELETE FROM model_turns WHERE turn IN (SELECT turn FROM model_turns " +
+                     "WHERE last_at < ? AND NOT EXISTS (SELECT 1 FROM model_reservations " +
+                     "WHERE state IN ('reserved', 'dispatched') " +
+                     "AND model_reservations.turn = model_turns.turn) ORDER BY last_at LIMIT ?)",
+                   now - this.#limits.turnIdleS, this.#limits.turnsPrunedPerPass);
   }
 
   /**
@@ -308,16 +330,28 @@ export class Usage {
     return settled;
   }
 
+  /**
+   * In a unit: a reservation this instance can no longer carry through, because its
+   * dispatch or settle unit threw, dropped from this instance's open calls first (so,
+   * should this write fail too, the next reserve's recovery settles it) and then settled
+   * as it stands.
+   */
+  abandon(id: string, now: number): void {
+    this.#live.delete(id);
+    this.#settleOpen(id, now);
+  }
+
   /** In a unit: the newest receipts, a dead instance's open calls settled first. */
   receipts(now: number): UsageReceipt[] {
     this.recover(now);
     return this.#sql.exec<Record<string, SqlStorageValue>>(
-      "SELECT id, created_at, connection_id, model, state, rule, max_output_tokens, " +
+      "SELECT id, created_at, connection_id, source, model, state, rule, max_output_tokens, " +
         "est_tokens, est_cost, tokens, cost, settled_at FROM model_reservations " +
         "ORDER BY seq DESC LIMIT ?", this.#limits.receiptsListed).toArray()
       .map((row) => ({
         reservation: row["id"] as string, at: row["created_at"] as number,
-        connection: row["connection_id"] as string, model: row["model"] as string,
+        connection: row["connection_id"] as string, source: row["source"] as string,
+        model: row["model"] as string,
         state: row["state"] as State, rule: row["rule"] as string | null,
         max_output_tokens: row["max_output_tokens"] as number,
         est_tokens: row["est_tokens"] as number, est_cost: row["est_cost"] as number,

@@ -120,6 +120,16 @@ export async function gated() {
 
 export type Gated = Awaited<ReturnType<typeof gated>>;
 
+/**
+ * The options of a test's own call to the provider, outside any pi run: a session of its
+ * own, which the object's agent maps to `turn` (`GatedAgent.direct`).
+ */
+export function direct(instance: GatedOwnerDO, session: string = crypto.randomUUID(),
+                       turn: string = session): { sessionId: string } {
+  instance.agent.direct.set(session, turn);
+  return { sessionId: session };
+}
+
 /** A one-message context, as pi sends a request. */
 export function asked(text: string, at = Date.now()): TranscriptContext {
   return normalizeContext({ messages: [{ role: "user", content: text, timestamp: at }] });

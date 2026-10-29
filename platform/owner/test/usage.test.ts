@@ -16,8 +16,10 @@ import { describe, expect, it } from "vitest";
 
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
-import { agentPolicy, MODEL_DEFAULTS, modelSettings, validate } from "../src/policy";
-import { type Ask, type ModelCaps, periods, Usage, USAGE_LIMITS, type UsageLimits } from "../src/usage";
+import { agentPolicy, MODEL_DEFAULTS, MODEL_SETTINGS, modelSettings, validate } from "../src/policy";
+import {
+  type Ask, micros, type ModelCaps, periods, Usage, USAGE_LIMITS, type UsageLimits,
+} from "../src/usage";
 import { gated, until } from "./gateway-support";
 import { failure, ownerObject } from "./support";
 import type { GatedOwnerDO } from "./worker";
@@ -25,8 +27,8 @@ import type { GatedOwnerDO } from "./worker";
 const NOW = 1_793_000_000;
 
 const ASK: Ask = Object.freeze({
-  turn: "s1:1", connection: "c1", model: "m1", inputTokens: 1000, maxOutputTokens: 4000,
-  reasoning: false, price: Object.freeze({ input: 3, output: 15 }),
+  turn: "t1", connection: "c1", source: "anthropic", model: "m1", inputTokens: 1000,
+  maxOutputTokens: 4000, reasoning: false, price: Object.freeze({ input: 3, output: 15 }),
 });
 
 /** 1000 input at 3 µ$ and 4000 output at 15 µ$. */
@@ -41,7 +43,10 @@ interface Rig {
   /** A second instance's Usage on the same storage, as after an eviction. */
   readonly fresh: () => Usage;
   readonly rows: () => Record<string, SqlStorageValue>[];
+  /** The spend counters, by `<period>/<source>`. */
   readonly spend: () => Record<string, number>;
+  /** A turn's counters, or undefined when it has none. */
+  readonly turn: (turn: string) => Record<string, SqlStorageValue> | undefined;
 }
 
 function withUsage<R>(act: (r: Rig) => Promise<R>, limits: Partial<UsageLimits> = {}): Promise<R> {
@@ -52,51 +57,69 @@ function withUsage<R>(act: (r: Rig) => Promise<R>, limits: Partial<UsageLimits> 
       generation: policy.generation,
       settings: { ...MODEL_DEFAULTS, sources: {}, ...policy.caps },
     }), { ...USAGE_LIMITS, ...limits });
+    const sql = state.storage.sql;
     return act({
       usage: make(), gate, state, policy, fresh: make,
-      rows: () => state.storage.sql.exec<Record<string, SqlStorageValue>>(
-        "SELECT id, turn, connection_id, state, rule, max_output_tokens, est_tokens, " +
+      rows: () => sql.exec<Record<string, SqlStorageValue>>(
+        "SELECT id, turn, connection_id, source, state, rule, max_output_tokens, est_tokens, " +
           "est_cost, tokens, cost FROM model_reservations ORDER BY seq").toArray(),
-      spend: () => Object.fromEntries(state.storage.sql.exec<{ period: string;
-                                                                connection_id: string;
-                                                                cost: number }>(
-        "SELECT period, connection_id, cost FROM model_spend ORDER BY period, connection_id")
-        .toArray().map((row) => [`${row.period}/${row.connection_id}`, row.cost])),
+      spend: () => Object.fromEntries(sql.exec<{ period: string; source: string; cost: number }>(
+        "SELECT period, source, cost FROM model_spend ORDER BY period, source")
+        .toArray().map((row) => [`${row.period}/${row.source}`, row.cost])),
+      turn: (turn) => sql.exec<Record<string, SqlStorageValue>>(
+        "SELECT requests, tokens, cost, last_at FROM model_turns WHERE turn = ?", turn)
+        .toArray()[0],
     });
   });
 }
 
 /** Reserve, dispatch and settle one call that cost `cost` for `tokens`. */
-async function spent(r: Rig, ask: Ask, tokens: number, cost: number): Promise<string> {
+async function spent(r: Rig, ask: Ask, tokens: number, cost: number, now = NOW): Promise<string> {
+  const reserved = await r.gate.write(() => r.usage.reserve(ask, now));
+  if (!reserved.ok) {
+    throw new Error(`refused: ${reserved.rule}`);
+  }
+  expect(await r.gate.write(() => r.usage.dispatched(reserved.id, now, null)))
+    .toEqual({ sent: true });
+  expect(await r.gate.write(() => r.usage.settle(reserved.id, { state: "succeeded", tokens,
+                                                                cost }, now))).toBe(true);
+  return reserved.id;
+}
+
+/** Reserve and dispatch one call, then settle it `failed`. */
+async function failedCall(r: Rig, ask: Ask): Promise<void> {
   const reserved = await r.gate.write(() => r.usage.reserve(ask, NOW));
   if (!reserved.ok) {
     throw new Error(`refused: ${reserved.rule}`);
   }
-  expect(await r.gate.write(() => r.usage.dispatched(reserved.id, NOW, null)))
-    .toEqual({ sent: true });
-  expect(await r.gate.write(() => r.usage.settle(reserved.id, { state: "succeeded", tokens,
-                                                                cost }, NOW))).toBe(true);
-  return reserved.id;
+  await r.gate.write(() => r.usage.dispatched(reserved.id, NOW, null));
+  expect(await r.gate.write(() => r.usage.settle(reserved.id, { state: "failed" }, NOW)))
+    .toBe(true);
 }
 
 const { day, month } = periods(NOW);
+const DAY = `d:${day}/anthropic`;
+const MONTH = `m:${month}/anthropic`;
 
 describe("a reservation", () => {
   it("is reserved, dispatched and settled, the spend counters holding what it held",
      () => withUsage(async (r) => {
     const reserved = await r.gate.write(() => r.usage.reserve(ASK, NOW));
     expect(reserved).toMatchObject({ ok: true, max_output_tokens: 4000, policy_generation: 1 });
-    expect(r.rows()).toMatchObject([{ state: "reserved", est_tokens: 5000, est_cost: FULL }]);
-    expect(r.spend()).toEqual({ [`d:${day}/c1`]: FULL, [`m:${month}/c1`]: FULL });
+    expect(r.rows()).toMatchObject([{ state: "reserved", est_tokens: 5000, est_cost: FULL,
+                                      source: "anthropic" }]);
+    expect(r.spend()).toEqual({ [DAY]: FULL, [MONTH]: FULL });
+    expect(r.turn("t1")).toMatchObject({ requests: 1, tokens: 5000, cost: FULL });
     if (!reserved.ok) {
       return;
     }
     expect(await r.gate.write(() => r.usage.dispatched(reserved.id, NOW, null)))
       .toEqual({ sent: true });
     expect(await r.gate.write(() => r.usage.settle(reserved.id, {
-      state: "succeeded", tokens: 1200, cost: 5000 }, NOW))).toBe(true);
+      state: "succeeded", tokens: 1200, cost: 5000 }, NOW + 5))).toBe(true);
     expect(r.rows()).toMatchObject([{ state: "succeeded", tokens: 1200, cost: 5000 }]);
-    expect(r.spend()).toEqual({ [`d:${day}/c1`]: 5000, [`m:${month}/c1`]: 5000 });
+    expect(r.spend()).toEqual({ [DAY]: 5000, [MONTH]: 5000 });
+    expect(r.turn("t1")).toEqual({ requests: 1, tokens: 1200, cost: 5000, last_at: NOW + 5 });
     expect(() => r.usage.reserve(ASK, NOW)).toThrow();  // outside a unit: the gate refuses
   }));
 
@@ -123,15 +146,12 @@ describe("a reservation", () => {
     expect(r.rows().map((row) => [row["state"], row["rule"]]))
       .toEqual([["unknown", null], ["not_sent", "aborted"]]);
     // Unknown keeps its whole reservation; not sent holds nothing.
-    expect(r.spend()[`d:${day}/c1`]).toBe(FULL);
+    expect(r.spend()[DAY]).toBe(FULL);
+    expect(r.turn("t1")).toMatchObject({ requests: 1, tokens: 5000, cost: FULL });
     // A failed call holds nothing.
-    const third = await write(() => r.usage.reserve(ASK, NOW));
-    if (!third.ok) {
-      throw new Error("refused");
-    }
-    await write(() => r.usage.dispatched(third.id, NOW, null));
-    expect(await write(() => r.usage.settle(third.id, { state: "failed" }, NOW))).toBe(true);
-    expect(r.spend()[`d:${day}/c1`]).toBe(FULL);
+    await failedCall(r, ASK);
+    expect(r.spend()[DAY]).toBe(FULL);
+    expect(r.turn("t1")).toMatchObject({ requests: 2, tokens: 5000, cost: FULL });
   }));
 
   it("is refused once the policy moved since it was reserved", () => withUsage(async (r) => {
@@ -144,30 +164,106 @@ describe("a reservation", () => {
       .toEqual({ sent: false, rule: "policy_changed" });
     expect(r.rows().map((row) => row["state"])).toEqual(["not_sent"]);
   }));
+
+  it("is abandoned as it stands when a dispatch or settle cannot run: never left open",
+     () => withUsage(async (r) => {
+    const reserved = await r.gate.write(() => r.usage.reserve(ASK, NOW));
+    const dispatched = await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2" }, NOW));
+    if (!reserved.ok || !dispatched.ok) {
+      throw new Error("refused");
+    }
+    await r.gate.write(() => r.usage.dispatched(dispatched.id, NOW, null));
+    await r.gate.write(() => r.usage.abandon(reserved.id, NOW));
+    await r.gate.write(() => r.usage.abandon(dispatched.id, NOW));
+    expect(r.rows().map((row) => row["state"])).toEqual(["not_sent", "unknown"]);
+    // Neither is this instance's open call any more.
+    expect(await r.gate.write(() => r.usage.dispatched(reserved.id, NOW, null)))
+      .toEqual({ sent: false, rule: "reservation_not_open" });
+    expect(r.turn("t1")).toMatchObject({ requests: 0, cost: 0 });
+    expect(r.turn("t2")).toMatchObject({ requests: 1, cost: FULL });
+    expect(r.spend()[DAY]).toBe(FULL);
+  }));
 });
 
 describe("the per-turn caps", () => {
-  it("hold a turn to its requests; what was never sent or refused never counts",
+  it("hold a turn to its requests; a failed call counts, one never sent or refused does not",
      () => withUsage(async (r) => {
-    r.policy.caps = { turn_requests: 2 };
+    r.policy.caps = { turn_requests: 3 };
     await spent(r, ASK, 10, 10);
     const unsent = await r.gate.write(() => r.usage.reserve(ASK, NOW));
     if (!unsent.ok) {
       throw new Error("refused");
     }
     await r.gate.write(() => r.usage.dispatched(unsent.id, NOW, "aborted"));
+    await failedCall(r, ASK);
     await spent(r, ASK, 10, 10);
     expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
       .toEqual({ ok: false, rule: "turn_requests" });
     expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
       .toEqual({ ok: false, rule: "turn_requests" });
+    expect(r.turn("t1")).toMatchObject({ requests: 3 });
     // Another turn starts afresh.
-    expect((await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "s1:2" }, NOW))).ok)
+    expect((await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2" }, NOW))).ok)
       .toBe(true);
     expect(r.rows().filter((row) => row["state"] === "refused")
       .map((row) => [row["rule"], row["est_cost"]]))
       .toEqual([["turn_requests", 0], ["turn_requests", 0]]);
   }));
+
+  it("never free a turn's requests when its receipts are pruned", () => withUsage(async (r) => {
+    r.policy.caps = { turn_requests: 3 };
+    const results: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      const reserved = await r.gate.write(() => r.usage.reserve(ASK, NOW));
+      if (reserved.ok) {
+        await r.gate.write(() => r.usage.dispatched(reserved.id, NOW, null));
+        await r.gate.write(() => r.usage.settle(reserved.id, { state: "succeeded", tokens: 10,
+                                                               cost: 7 }, NOW));
+        results.push("ok");
+      } else {
+        results.push(reserved.rule);
+      }
+    }
+    expect(results).toEqual(["ok", "ok", "ok", ...Array(5).fill("turn_requests")]);
+    expect(r.rows().length).toBeLessThanOrEqual(4);
+  }, { receiptsKept: 3 }));
+
+  it("never free a live turn's caps when other turns' receipts push its own out", () =>
+    withUsage(async (r) => {
+      r.policy.caps = { turn_requests: 2 };
+      await spent(r, ASK, 10, 7);
+      await spent(r, ASK, 10, 7);
+      expect((await r.gate.write(() => r.usage.reserve(ASK, NOW))).ok).toBe(false);
+      for (let i = 0; i < 6; i++) {
+        await spent(r, { ...ASK, turn: `other${i}` }, 10, 7);
+      }
+      expect(r.rows().some((row) => row["turn"] === "t1" && row["state"] === "succeeded"))
+        .toBe(false);
+      expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
+        .toEqual({ ok: false, rule: "turn_requests" });
+    }, { receiptsKept: 4 }));
+
+  it("hold 5,000 requests of one turn, past its receipts, and refuse the next", () =>
+    withUsage(async (r) => {
+      expect(MODEL_SETTINGS.turn_requests[1]).toBe(10_000);
+      r.policy.caps = { turn_requests: 5_000, turn_tokens: 1_000_000_000,
+                        turn_cost: 1_000_000_000_000 };
+      const ask = { ...ASK, inputTokens: 1, maxOutputTokens: 1, price: { input: 0, output: 0 } };
+      for (let i = 0; i < 5_000; i++) {
+        await r.gate.write(() => {
+          const reserved = r.usage.reserve(ask, NOW);
+          if (!reserved.ok) {
+            throw new Error(`refused at ${i}: ${reserved.rule}`);
+          }
+          r.usage.dispatched(reserved.id, NOW, null);
+          r.usage.settle(reserved.id, { state: "succeeded", tokens: 2, cost: 0 }, NOW);
+        });
+      }
+      expect(r.turn("t1")).toMatchObject({ requests: 5_000, tokens: 10_000 });
+      expect(r.rows().length).toBeLessThanOrEqual(101);
+      expect(await r.gate.write(() => r.usage.reserve(ask, NOW)))
+        .toEqual({ ok: false, rule: "turn_requests" });
+    }, { receiptsKept: 100 }), 120_000);
 
   it("shrink a call's output to what the turn's tokens leave, then refuse", () =>
     withUsage(async (r) => {
@@ -179,6 +275,40 @@ describe("the per-turn caps", () => {
       expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
         .toEqual({ ok: false, rule: "turn_tokens" });
     }));
+
+  it("count what a failed call used toward the turn's tokens, and an unknown one's estimate",
+     () => withUsage(async (r) => {
+    r.policy.caps = { turn_tokens: 10_000 };
+    await failedCall(r, ASK);
+    const lost = await r.gate.write(() => r.usage.reserve(ASK, NOW));
+    if (!lost.ok) {
+      throw new Error("refused");
+    }
+    await r.gate.write(() => r.usage.dispatched(lost.id, NOW, null));
+    await r.gate.write(() => r.usage.settle(lost.id, { state: "unknown" }, NOW));
+    // 10,000 - 5,000 the unknown call holds - 1000 input leaves 4000.
+    expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
+      .toMatchObject({ ok: true, max_output_tokens: 4000 });
+    expect(r.turn("t1")).toMatchObject({ requests: 3, tokens: 10_000 });
+  }));
+
+  it("refuse an output one token under the floor, and take one at it", () =>
+    withUsage(async (r) => {
+      r.policy.caps = { turn_tokens: 1000 + USAGE_LIMITS.minOutput - 1 };
+      expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
+        .toEqual({ ok: false, rule: "turn_tokens" });
+      r.policy.caps = { turn_tokens: 1000 + USAGE_LIMITS.minOutput };
+      expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
+        .toMatchObject({ ok: true, max_output_tokens: USAGE_LIMITS.minOutput });
+    }));
+
+  it("count a settled call's cost toward the turn's cost", () => withUsage(async (r) => {
+    r.policy.caps = { turn_cost: 50_000 };
+    await spent(r, ASK, 10, 20_000);
+    // 50,000 - 20,000 spent - 3000 input leaves 27,000 µ$: 1800 output tokens at 15.
+    expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
+      .toMatchObject({ ok: true, max_output_tokens: 1800 });
+  }));
 
   it("shrink a call's output to what the turn's cost leaves, never below the floor", () =>
     withUsage(async (r) => {
@@ -212,6 +342,44 @@ describe("the per-turn caps", () => {
                                                      NOW)))
       .toMatchObject({ ok: true, max_output_tokens: 4000 });
   }));
+
+  it("round every estimate up to the next µ$", () => withUsage(async (r) => {
+    expect(micros(3, 0.5)).toBe(2);
+    await r.gate.write(() => r.usage.reserve({ ...ASK, inputTokens: 3, maxOutputTokens: 1030,
+                                               price: { input: 0.5, output: 0.25 } }, NOW));
+    // 1.5 µ$ of input and 257.5 of output.
+    expect(r.rows()[0]).toMatchObject({ est_cost: 2 + 258 });
+  }));
+});
+
+describe("a turn's counters", () => {
+  it("go once the turn has been idle past the window, and not before", () =>
+    withUsage(async (r) => {
+      await spent(r, ASK, 10, 7);
+      const idle = USAGE_LIMITS.turnIdleS;
+      await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2" }, NOW + idle - 1));
+      expect(r.turn("t1")).toMatchObject({ requests: 1 });
+      await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t3" }, NOW + idle + 1));
+      expect(r.turn("t1")).toBeUndefined();
+      expect(r.turn("t2")).toMatchObject({ requests: 1 });
+    }));
+
+  it("are kept while a call of the turn is open, however old", () => withUsage(async (r) => {
+    const open = await r.gate.write(() => r.usage.reserve(ASK, NOW));
+    if (!open.ok) {
+      throw new Error("refused");
+    }
+    await r.gate.write(() => r.usage.dispatched(open.id, NOW, null));
+    await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2" },
+                                             NOW + USAGE_LIMITS.turnIdleS + 1));
+    expect(r.turn("t1")).toMatchObject({ requests: 1, cost: FULL });
+  }));
+
+  it("are never made by a refusal", () => withUsage(async (r) => {
+    r.policy.caps = { turn_cost: 10 };
+    expect((await r.gate.write(() => r.usage.reserve(ASK, NOW))).ok).toBe(false);
+    expect(r.turn("t1")).toBeUndefined();
+  }));
 });
 
 describe("the daily and monthly ceilings", () => {
@@ -219,43 +387,53 @@ describe("the daily and monthly ceilings", () => {
     withUsage(async (r) => {
       r.policy.caps = { daily_cost: FULL * 2 - 10 };
       await r.gate.write(() => r.usage.reserve(ASK, NOW));  // open, holding FULL
-      const second = await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "s2:1" }, NOW));
+      const second = await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2" }, NOW));
       expect(second).toMatchObject({ ok: true,
                                      max_output_tokens: Math.floor((FULL - 10 - 3000) / 15) });
-      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "s3:1" }, NOW)))
+      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t3" }, NOW)))
         .toEqual({ ok: false, rule: "daily_cost" });
       // The next day is a new day.
-      expect((await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "s4:1" },
+      expect((await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t4" },
                                                          NOW + 86_400))).ok).toBe(true);
     }));
 
   it("hold a source's ceiling to that source's own spend", () => withUsage(async (r) => {
-    r.policy.caps = { sources: { c2: { daily_cost: FULL + 10 } } };
-    await spent(r, ASK, 10, FULL);  // c1's spend is not c2's
-    expect(await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "s2:1", connection: "c2" },
-                                                     NOW)))
+    r.policy.caps = { sources: { openai: { daily_cost: FULL + 10 } } };
+    await spent(r, ASK, 10, FULL);  // anthropic's spend is not openai's
+    const openai = { ...ASK, connection: "c2", source: "openai" };
+    expect(await r.gate.write(() => r.usage.reserve({ ...openai, turn: "t2" }, NOW)))
       .toMatchObject({ ok: true, max_output_tokens: 4000 });
-    expect(await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "s3:1", connection: "c2" },
-                                                     NOW)))
+    expect(await r.gate.write(() => r.usage.reserve({ ...openai, turn: "t3" }, NOW)))
       .toEqual({ ok: false, rule: "source_daily_cost" });
   }));
 
+  it("hold a source's ceiling across its connections, so a reconnect keeps it", () =>
+    withUsage(async (r) => {
+      r.policy.caps = { sources: { anthropic: { daily_cost: FULL + 10 } } };
+      await spent(r, ASK, 10, FULL);
+      // The owner revoked c1 and connected the same source again as c9.
+      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2", connection: "c9" },
+                                                       NOW)))
+        .toEqual({ ok: false, rule: "source_daily_cost" });
+    }));
+
   it("hold each source to its own ceilings, and the month across its days", () =>
     withUsage(async (r) => {
-      r.policy.caps = { monthly_cost: FULL * 3, sources: { c2: { daily_cost: 5000 } } };
-      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, connection: "c2" }, NOW)))
+      r.policy.caps = { monthly_cost: FULL * 3, sources: { openai: { daily_cost: 5000 } } };
+      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, connection: "c2",
+                                                         source: "openai" }, NOW)))
         .toEqual({ ok: false, rule: "source_daily_cost" });
       expect((await r.gate.write(() => r.usage.reserve(ASK, NOW))).ok).toBe(true);
       const later = NOW + 86_400;
       expect(periods(later).month).toBe(month);
-      expect((await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "s2:1" }, later))).ok)
+      expect((await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2" }, later))).ok)
         .toBe(true);
-      expect((await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "s3:1" }, later))).ok)
+      expect((await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t3" }, later))).ok)
         .toBe(true);
-      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "s4:1" }, later)))
+      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t4" }, later)))
         .toEqual({ ok: false, rule: "monthly_cost" });
-      r.policy.caps = { sources: { c1: { monthly_cost: FULL * 3 } } };
-      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "s5:1" }, later)))
+      r.policy.caps = { sources: { anthropic: { monthly_cost: FULL * 3 } } };
+      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t5" }, later)))
         .toEqual({ ok: false, rule: "source_monthly_cost" });
     }));
 });
@@ -291,12 +469,12 @@ describe("concurrent reserves", () => {
       await held;
     });
     const reserves = Array.from({ length: 6 }, (_, i) =>
-      r.gate.write(() => r.usage.reserve({ ...ASK, turn: `s${i}:1` }, NOW)));
+      r.gate.write(() => r.usage.reserve({ ...ASK, turn: `t${i}` }, NOW)));
     release();
     await other;
     const results = await Promise.all(reserves);
     expect(results.filter((result) => result.ok)).toHaveLength(2);
-    expect(r.spend()[`d:${day}/c1`]).toBe(FULL * 2);
+    expect(r.spend()[DAY]).toBe(FULL * 2);
   }));
 });
 
@@ -304,7 +482,7 @@ describe("a dead instance's calls", () => {
   it("settle as not sent when reserved and unknown when dispatched, keeping the reservation",
      () => withUsage(async (r) => {
     const reserved = await r.gate.write(() => r.usage.reserve(ASK, NOW));
-    const dispatched = await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "s2:1" }, NOW));
+    const dispatched = await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2" }, NOW));
     if (!reserved.ok || !dispatched.ok) {
       throw new Error("refused");
     }
@@ -317,7 +495,7 @@ describe("a dead instance's calls", () => {
     const receipts = await r.gate.write(() => next.receipts(NOW));
     expect(receipts.map((receipt) => [receipt.reservation, receipt.state])).toEqual([
       [dispatched.id, "unknown"], [reserved.id, "not_sent"]]);
-    expect(r.spend()[`d:${day}/c1`]).toBe(FULL);
+    expect(r.spend()[DAY]).toBe(FULL);
     // A dead instance's settle never lands on a recovered row.
     expect(await r.gate.write(() => r.usage.settle(dispatched.id, { state: "succeeded",
                                                                    tokens: 1, cost: 1 }, NOW)))
@@ -381,25 +559,36 @@ describe("the receipts", () => {
   it("keep the newest, and pruning one never frees what it held", () =>
     withUsage(async (r) => {
       for (let i = 0; i < 6; i++) {
-        await spent(r, { ...ASK, turn: `s${i}:1` }, 10, 7);
+        await spent(r, { ...ASK, turn: `t${i}` }, 10, 7);
       }
       expect(r.rows().length).toBeLessThanOrEqual(4);
-      expect(r.spend()[`d:${day}/c1`]).toBe(42);
-      expect(r.spend()[`m:${month}/c1`]).toBe(42);
+      expect(r.spend()[DAY]).toBe(42);
+      expect(r.spend()[MONTH]).toBe(42);
+      expect(r.turn("t0")).toMatchObject({ requests: 1, tokens: 10, cost: 7 });
     }, { receiptsKept: 3 }));
 
-  it("never prune a reservation still open", () => withUsage(async (r) => {
-    const open = await r.gate.write(() => r.usage.reserve(ASK, NOW));
-    for (let i = 0; i < 4; i++) {
-      await spent(r, { ...ASK, turn: `s${i}:1` }, 10, 7);
-    }
-    expect(r.rows().some((row) => open.ok && row["id"] === open.id)).toBe(true);
-    expect(r.rows().length).toBeLessThanOrEqual(3);
-  }, { receiptsKept: 1 }));
+  it("never prune a reservation still open, reserved or dispatched", () =>
+    withUsage(async (r) => {
+      const open = await r.gate.write(() => r.usage.reserve(ASK, NOW));
+      const out = await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2" }, NOW));
+      if (!open.ok || !out.ok) {
+        throw new Error("refused");
+      }
+      await r.gate.write(() => r.usage.dispatched(out.id, NOW, null));
+      for (let i = 0; i < 4; i++) {
+        await spent(r, { ...ASK, turn: `s${i}` }, 10, 7);
+      }
+      const ids = r.rows().map((row) => row["id"]);
+      expect(ids).toContain(open.id);
+      expect(ids).toContain(out.id);
+      expect(r.rows().length).toBeLessThanOrEqual(4);
+      expect(await r.gate.write(() => r.usage.settle(out.id, { state: "succeeded", tokens: 1,
+                                                               cost: 1 }, NOW))).toBe(true);
+    }, { receiptsKept: 1 }));
 
   it("drop spend counters past their window", () => withUsage(async (r) => {
     await spent(r, ASK, 10, 7);
-    await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "s9:1" }, NOW + 200 * 86_400));
+    await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t9" }, NOW + 200 * 86_400));
     expect(Object.keys(r.spend()).some((key) => key.startsWith(`d:${day}`))).toBe(false);
     expect(Object.keys(r.spend()).some((key) => key.startsWith(`m:${month}`))).toBe(false);
   }));
@@ -421,14 +610,15 @@ describe("the models table of owner policy", () => {
   it("is optional, its defaults the Python's per-turn limits, and feeds pi its retries",
      () => {
     expect(modelSettings(validate(base))).toEqual({ ...MODEL_DEFAULTS, sources: {} });
-    expect(MODEL_DEFAULTS).toMatchObject({ turn_cost: 25_000_000, turn_requests: 100 });
+    expect(MODEL_DEFAULTS).toMatchObject({ turn_cost: 25_000_000, turn_requests: 100,
+                                           daily_cost: null, monthly_cost: null });
     const document = validate({ ...base, models: {
       turn_requests: 5, turn_tokens: 1000, turn_cost: 0, daily_cost: null, monthly_cost: 9,
-      sources: { [`c${"a".repeat(24)}`]: { daily_cost: 1, monthly_cost: null } },
+      sources: { anthropic: { daily_cost: 1, monthly_cost: null } },
       retries: 0 } });
     expect(modelSettings(document)).toEqual({
       turn_requests: 5, turn_tokens: 1000, turn_cost: 0, daily_cost: null, monthly_cost: 9,
-      sources: { [`c${"a".repeat(24)}`]: { daily_cost: 1, monthly_cost: null } } });
+      sources: { anthropic: { daily_cost: 1, monthly_cost: null } } });
     expect(agentPolicy(document)).toEqual({ retry: { maxRetries: 0 } });
     expect(agentPolicy(validate(base))).toEqual({});
   });
@@ -436,9 +626,10 @@ describe("the models table of owner policy", () => {
   it.each([
     { turn_requests: 0 }, { turn_requests: 10_001 }, { turn_requests: 1.5 },
     { turn_tokens: null }, { turn_cost: -1 }, { daily_cost: "1" }, { retries: 11 },
-    { unknown: 1 }, { sources: { c1: { daily_cost: 1 } } },
-    { sources: { [`c${"a".repeat(24)}`]: { weekly_cost: 1 } } },
-    { sources: { [`c${"a".repeat(24)}`]: { daily_cost: -1 } } }, { sources: [] }, [],
+    { unknown: 1 }, { sources: { Anthropic: { daily_cost: 1 } } },
+    { sources: { "-x": { daily_cost: 1 } } }, { sources: { [`a${"b".repeat(64)}`]: {} } },
+    { sources: { anthropic: { weekly_cost: 1 } } },
+    { sources: { anthropic: { daily_cost: -1 } } }, { sources: [] }, [],
   ])("refuses %j", (models) => {
     expect(() => validate({ ...base, models })).toThrow("invalid models policy");
   });

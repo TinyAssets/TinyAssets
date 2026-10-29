@@ -1,8 +1,8 @@
 /**
  * pi-durable in the owner's object, on faux models (tasks 5, sub-slice A0): PiHarness on
  * the object's own Lifecycle, a turn over the owner's files, replay after an eviction, the
- * cold open, a package pi refuses, and the write gate against a transaction of the queue
- * pi's commits use.
+ * cold open, a package pi refuses, the write gate against a transaction of the queue
+ * pi's commits use, and a model request's turn as pi's records give it.
  */
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -12,10 +12,10 @@ import {
   type AssistantMessage, fauxAssistantMessage, type FauxContentBlock, fauxToolCall,
   type Message,
 } from "@earendil-works/pi-ai";
-import type { ConversationId } from "@earendil-works/pi-durable";
+import { type ConversationId, ProviderDoc } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
-import { AGENT_SETTINGS, AUTO, writerOf } from "../src/agent";
+import { AGENT_SETTINGS, AUTO, NO_RUN, writerOf } from "../src/agent";
 import { INLINE_BYTES } from "../src/files";
 import { OUTSIDE_GATE, WriteGate } from "../src/gate";
 import { clock, WAKE_LEASE_S } from "../src/ledger";
@@ -205,6 +205,142 @@ describe("a turn in the owner's object", () => {
     expect(out.shown["read"]).toEqual({ text: expect.stringContaining("alpha"), error: false });
     expect(out.shown["hold"]!.error).toBe(true);
     expect(out.shown["hold"]!.text).toMatch(/interrupt/i);
+  });
+});
+
+/** Whether a request is a compaction's summarization, by the system message pi sends it with. */
+function compacting(messages: readonly Message[]): boolean {
+  return messages.some((message) => (message as { role: string }).role === "system"
+    && JSON.stringify(message).includes("context summarization assistant"));
+}
+
+/** Every request's turn, once the agent has read each. */
+async function turnsOf(instance: FauxOwnerDO): Promise<string[]> {
+  await until(async () => !instance.turns.includes("pending"), "every request's turn");
+  return [...instance.turns];
+}
+
+/** A user message of about 25,000 estimated tokens: past pi's 20,000 kept by a compaction. */
+const LONG = "word ".repeat(20_000);
+
+describe("a model request's turn", () => {
+  it("is one run of the root conversation: every request of a run shares it, and the " +
+     "next run has its own", async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance) => {
+      instance.script = Array.from({ length: 8 }, () => (messages: Message[]) =>
+        messages.at(-1)?.role === "toolResult" ? says("done") : calls(fauxToolCall("hold", {})));
+      const first = await instance.agent.harness.prompt("one");
+      const second = await instance.agent.harness.prompt("two");
+      const root = await (await instance.agent.harness.pi()).root(BG);
+      return { first, second, root: root.id, turns: await turnsOf(instance) };
+    });
+    expect([out.first.status, out.second.status]).toEqual(["done", "done"]);
+    expect(out.turns).toHaveLength(4);
+    expect(out.turns.every((turn) => turn.startsWith(`${out.root}/run:`))).toBe(true);
+    expect(out.turns[1]).toBe(out.turns[0]);
+    expect(out.turns[3]).toBe(out.turns[2]);
+    expect(out.turns[2]).not.toBe(out.turns[0]);
+  });
+
+  it("goes on through a compaction inside the run, whose summary is a user message",
+     async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance) => {
+      instance.script = Array.from({ length: 12 }, () => (messages: Message[]) =>
+        compacting(messages) ? says("## Goal\nkeep going")
+          : messages.at(-1)?.role === "toolResult" ? says("done")
+            : JSON.stringify(messages.at(-1)).includes("work") ? calls(fauxToolCall("hold", {}))
+              : says("noted"));
+      expect((await instance.agent.harness.prompt("early")).status).toBe("done");
+      let release!: () => void;
+      instance.probes.holdGate = new Promise<void>((resolve) => { release = resolve; });
+      const { operationId } = await instance.agent.harness.submit(`work ${LONG}`);
+      await until(async () => instance.probes.holds === 1, "the hold to start");
+      const pi = await instance.agent.harness.pi();
+      const root = await pi.root(BG);
+      const during = await instance.agent.turnOf(
+        (await pi.snapshot(ProviderDoc, root.id, BG))!.sessionId);
+      // Asked while the run is busy, it is placed at the run's next boundary.
+      const asked = root.compact(undefined, BG);
+      release();
+      const settled = await instance.agent.harness.wait(operationId);
+      const compacted = await pi.waitForTask(await asked, BG);
+      const summaries = (await instance.agent.harness.messages())
+        .filter((entry) => entry.kind === "pi.compaction").length;
+      return { settled, compacted, summaries, during, turns: await turnsOf(instance) };
+    });
+    expect(out.settled.status).toBe("done");
+    expect(out.compacted.state.outcome.status).toBe("completed");
+    expect(out.summaries).toBe(1);
+    // The early run's one request, then the held run's: its tool call, the compaction's
+    // summarization, and the answer after the summary.
+    const [early, ...held] = out.turns;
+    expect(held.length).toBeGreaterThanOrEqual(3);
+    expect(held.every((turn) => turn === out.during)).toBe(true);
+    expect(early).not.toBe(out.during);
+  });
+
+  it("is the parent's for a subagent's conversation, through pi's owner edge", async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance) => {
+      let release!: () => void;
+      instance.probes.holdGate = new Promise<void>((resolve) => { release = resolve; });
+      instance.script = Array.from({ length: 8 }, () => (messages: Message[]) =>
+        messages.at(-1)?.role === "toolResult" ? says("done")
+          : calls(fauxToolCall("spawn", {}), fauxToolCall("hold", {})));
+      const { operationId } = await instance.agent.harness.submit("spawn and hold");
+      await until(async () => instance.probes.holds === 1 && instance.probes.spawned !== null,
+                  "the subagent's conversation and the hold");
+      const pi = await instance.agent.harness.pi();
+      const root = await pi.root(BG);
+      const session = async (id: ConversationId) => (await pi.snapshot(ProviderDoc, id, BG))!
+        .sessionId;
+      const child = instance.probes.spawned as ConversationId;
+      const indexed = await pi.snapshot(instance.agent.sessions, await session(child), BG);
+      const turns = [await instance.agent.turnOf(await session(root.id)),
+                     await instance.agent.turnOf(await session(child))];
+      release();
+      await instance.agent.harness.wait(operationId);
+      return { root: root.id, child, indexed, turns };
+    });
+    expect(out.indexed).toEqual({ conversation: out.child, root: out.root });
+    expect(out.turns[1]).toBe(out.turns[0]);
+  });
+
+  it("is refused, no_run, with no run to be part of: idle, an unknown session or none",
+     async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance) => {
+      instance.script = [says("hello")];
+      await instance.agent.harness.prompt("hi");
+      const pi = await instance.agent.harness.pi();
+      const root = await pi.root(BG);
+      const session = (await pi.snapshot(ProviderDoc, root.id, BG))!.sessionId;
+      const refused = (ask: Promise<string>) => ask.then(() => "ran", (error: Error) =>
+        error.message);
+      return [await refused(instance.agent.turnOf(session)),
+              await refused(instance.agent.turnOf("01900000-0000-7000-8000-000000000000")),
+              await refused(instance.agent.turnOf(undefined))];
+    });
+    expect(out).toEqual([NO_RUN, NO_RUN, NO_RUN]);
+  });
+
+  it("is a compaction's own while the conversation is idle", async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance) => {
+      instance.script = Array.from({ length: 8 }, () => (messages: Message[]) =>
+        compacting(messages) ? says("## Goal\nsummary") : says("noted"));
+      await instance.agent.harness.prompt("early");
+      await instance.agent.harness.prompt(LONG);
+      const pi = await instance.agent.harness.pi();
+      const root = await pi.root(BG);
+      const compaction = await root.compact(undefined, BG);
+      const settled = await pi.waitForTask(compaction, BG);
+      return { root: root.id, compaction, settled, turns: await turnsOf(instance) };
+    });
+    expect(out.settled.state.outcome.status).toBe("completed");
+    expect(out.turns.at(-1)).toBe(`${out.root}/compaction:${out.compaction}`);
   });
 });
 

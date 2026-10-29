@@ -54,7 +54,8 @@ const WRITES: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   "owner/src/agent.ts": new Set(["add"]),
   "owner/src/connections.ts": new Set(["#lease", "#unlease", "#refreshed", "#sweep", "#owed",
                                        "#revokeOutcome"]),
-  "owner/src/gateway-provider.ts": new Set(["reserve", "dispatched", "settle", "resealed"]),
+  "owner/src/gateway-provider.ts": new Set(["reserve", "dispatched", "settle", "abandon",
+                                             "resealed"]),
 });
 
 function isAsync(node: ts.Node): boolean {

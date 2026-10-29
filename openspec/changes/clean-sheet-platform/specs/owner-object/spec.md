@@ -511,9 +511,15 @@ What pi reports through `onReport`, and each extension pi refuses to install whi
 ### Requirement: A model connection holds only a blob the gateway sealed
 The object SHALL hold a model connection's credential only as the blob the gateway sealed for that owner, connection and version, never a plaintext key or token: the binder hands a pasted key to the gateway's `seal` and an OAuth code to its `exchange`, and `connectionCommit` takes the blob, its kid, the models the gateway's setup check listed with their metadata, and an OAuth access expiry in clear.
 
+A connection SHALL keep up to 1,024 models, so the largest built-in catalog (386 models in pi-ai 1.4.0) fits with room.
+
 #### Scenario: A pasted key is connected and used
 - **WHEN** the owner connects a key and its agent runs a turn on it
 - **THEN** no table of the object, no call it makes to the gateway and no line it logs holds the key
+
+#### Scenario: The largest built-in catalog
+- **WHEN** a key is connected for the built-in provider whose catalog is the largest
+- **THEN** the connection is active with every model the setup check listed
 
 ### Requirement: The connection doors are the owner's, in its live session
 Preparing, committing, revoking and listing connections and beginning and finishing their OAuth flows SHALL be the owner's own doors, in its live session; a refused one leaves a refusal receipt.
@@ -530,11 +536,15 @@ Preparing, committing, revoking and listing connections and beginning and finish
 - **THEN** the flow is not found, and nothing is exchanged
 
 ### Requirement: A revoke deletes the credential and asks the provider to revoke it
-A connection revoke SHALL make the connection unusable in its own unit. An API key's blob SHALL be deleted in that unit. An OAuth blob, the only copy of the tokens the provider must revoke, SHALL be kept unusable until the `connections` lane's RFC 7009 revoke through the gateway succeeds, then deleted; after 5 failed attempts it SHALL be deleted anyway, with an owner notice.
+A connection revoke SHALL make the connection unusable in its own unit. An API key's blob SHALL be deleted in that unit. An OAuth blob, the only copy of the tokens the provider must revoke, SHALL be kept unusable until the `connections` lane's RFC 7009 revoke through the gateway succeeds, then deleted; after 5 failed attempts it SHALL be deleted anyway, with an owner notice. A source with no revocation endpoint SHALL have its blob deleted at the first pass, with a notice that the provider honours the token until it expires. Tokens a refresh stored after the revoke SHALL be kept for, and revoked by, the lane.
 
 #### Scenario: An OAuth connection is revoked
 - **WHEN** the owner revokes an OAuth connection
 - **THEN** no call can use it from that unit on, the lane sends the gateway's provider revoke with the blob, and the blob is then deleted
+
+#### Scenario: A refresh lands after the revoke
+- **WHEN** a refresh in flight when the owner revoked stores rotated tokens, before or after the lane revoked the old ones
+- **THEN** the lane revokes the rotated tokens too, and no blob is left
 
 ### Requirement: An expiring OAuth credential is refreshed once, under a lease
 Before a model call, an OAuth access token expiring within 3 minutes SHALL be refreshed through the gateway by one caller holding the connection's refresh lease, which every concurrent caller waits on, and the refreshed blob SHALL be stored by compare-and-swap at the next version. A refresh the provider refuses SHALL fail every waiting call loudly, and a refused grant SHALL fail the connection until the owner reconnects.
@@ -551,18 +561,36 @@ A blob the gateway resealed under its active kid SHALL be stored by compare-and-
 - **THEN** version 2's tokens stay, and the call's reseal is dropped
 
 ### Requirement: Every model call is reserved against the owner's model policy
-Each model call SHALL be reserved in one unit that also reads the connection's blob and the owner policy's generation and `models` caps: the turn's requests, tokens and cost, and the owner's and the source's daily and monthly cost, each counting what is settled and what is still open. The reservation SHALL bound the call's output tokens.
+Each model call SHALL be reserved in one unit that also reads the connection's blob and the owner policy's generation and `models` caps: the turn's requests, tokens and cost, and the owner's and the source's daily and monthly cost, each counting what is settled and what is still open. The reservation SHALL bound the call's output tokens. A source's ceilings SHALL be keyed by its source record, so a reconnect keeps them. Every cap SHALL read only counters the schema's triggers write (`model_turns` per turn, `model_spend` per source, day and month), never the receipts.
+
+A turn SHALL be one run of the root conversation's submissions, from pi's own records: the request's `sessionId` names its conversation (indexed when pi creates it), its owner edges lead to the root, and the root's live run, named by the submission that started it, is the turn; while the root is idle, its live compaction is. A compaction inside a run and a subagent's calls SHALL be the same turn. A call no run can be found for SHALL be refused `no_run`, with nothing reserved.
 
 #### Scenario: Concurrent reserves at a cap
 - **WHEN** eight calls of one turn reserve together against a cap of three requests
 - **THEN** three are reserved and five refused, each refusal kept as a receipt
 
+#### Scenario: A compaction inside a run
+- **WHEN** a run compacts, placing its summary as a user message, and asks again
+- **THEN** the compaction's request and the run's every request are one turn
+
+#### Scenario: A subagent's calls
+- **WHEN** a tool of the root's run makes a conversation and the agent calls a model in it
+- **THEN** the call is the root run's turn
+
+#### Scenario: Many requests in one turn
+- **WHEN** one turn makes 5,000 requests while only the newest 100 receipts are kept
+- **THEN** the turn's counters hold all 5,000, and a cap of 5,000 refuses the next
+
 ### Requirement: A reservation is dispatched and settled once, in its own units
-A reservation SHALL be dispatched only while still reserved, at the same policy generation and connection version, and not aborted; and settled once: `succeeded` from pi-ai's usage, `failed` when the gateway refused the call before the provider, `unknown` otherwise, which keeps its whole reservation. Receipts SHALL be bounded without freeing any ceiling.
+A reservation SHALL be dispatched only while still reserved, at the same policy generation and connection version, and not aborted; and settled once: `succeeded` from pi-ai's usage, `failed` when the gateway answered with a refusal's status (its own, or the provider's before any output), `unknown` otherwise, which keeps its whole reservation. A dispatch or settle that cannot be kept SHALL settle the row as it stands (`not_sent` or `unknown`) in the same instance. Receipts SHALL be bounded without freeing any ceiling; a turn's counters SHALL go only once it has been idle 30 days with no call open.
 
 #### Scenario: A connection revoked before the dispatch
 - **WHEN** a connection is revoked between a call's reserve and its dispatch
 - **THEN** the call is `not_sent`, and nothing reaches the gateway
+
+#### Scenario: A provider's rate limit, retried
+- **WHEN** the provider answers 429 before any output, and pi retries the call twice
+- **THEN** each try settles `failed` at no cost, and no ceiling is spent
 
 ### Requirement: A dead instance's calls are settled by the next instance
 An open reservation the live instance did not make SHALL be settled by the next reserve or receipts read: `reserved` as `not_sent`, `dispatched` as `unknown`.

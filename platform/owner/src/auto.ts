@@ -34,6 +34,7 @@ import ranking from "./model-ranking.json" with { type: "json" };
 /** One connected model `auto` may route to. */
 export interface Candidate {
   readonly connection: string;
+  readonly source: string;
   readonly provider: string;
   readonly display_name: string;
   readonly created_at: number;
@@ -85,8 +86,9 @@ export function rankOf(candidate: Pick<Candidate, "provider" | "model">,
 export function ranked(usable: readonly Usable[]): Candidate[] {
   const entries = ranks();
   const all = usable.flatMap((connection) => connection.models.map((model) => ({
-    connection: connection.connection, provider: connection.provider,
-    display_name: connection.display_name, created_at: connection.created_at, model,
+    connection: connection.connection, source: connection.source,
+    provider: connection.provider, display_name: connection.display_name,
+    created_at: connection.created_at, model,
   })));
   const keyed = all.map((candidate) => ({ candidate, rank: rankOf(candidate, entries) }));
   keyed.sort((a, b) => a.rank - b.rank
