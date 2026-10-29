@@ -80,11 +80,21 @@ export interface OAuthGrant extends OAuthClient {
   readonly scope?: string;
 }
 
+/**
+ * A source whose authorization code buys an API key, not a token pair (the Python's
+ * `pkce_user_key_v1`, OpenRouter's PKCE flow): its code and verifier are posted as JSON to
+ * `endpoint`, which answers `{key}`, and the key is sealed as an API key.
+ */
+export interface KeyExchange {
+  readonly endpoint: string;
+}
+
 /** What the binder hands the gateway to seal: the source record's values. */
 export interface Source {
   readonly upstream: Upstream;
   readonly endpoints: readonly Endpoint[];
   readonly oauth?: OAuthClient;
+  readonly key_exchange?: KeyExchange;
 }
 
 interface Common {
@@ -377,6 +387,18 @@ export function source(value: unknown, oauth: boolean): Source {
     ...checked,
     oauth: Object.freeze(oauthClient(shape(fields["oauth"], CLIENT_KEYS, CLIENT_OPTIONAL),
                                      checked.upstream)),
+  });
+}
+
+/** The source record values of a key-exchange source (`KeyExchange`), checked. */
+export function keyExchangeSource(value: unknown): Source & { readonly key_exchange: KeyExchange } {
+  const fields = shape(value, ["upstream", "endpoints", "key_exchange"]);
+  const endpoints = Object.freeze(list(fields["endpoints"], 1, ENDPOINTS_MAX, endpoint));
+  const exchange = shape(fields["key_exchange"], ["endpoint"]);
+  return Object.freeze({
+    upstream: upstream(fields["upstream"], endpoints),
+    endpoints,
+    key_exchange: Object.freeze({ endpoint: httpsUrl(exchange["endpoint"]).href }),
   });
 }
 

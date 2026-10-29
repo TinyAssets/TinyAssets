@@ -11,6 +11,7 @@ import { ACCESS_TOKEN_TTL_S, MCP_RESOURCE, now, REFRESH_TOKEN_TTL_S, WEB_REDIREC
 import { serve } from "../src/doors";
 import { authorizationServer } from "../src/oauth";
 import type { Upstream } from "../src/upstream";
+import { TEST_SOURCES } from "./entry";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 import {
   appPost, authorizeMcp, authorizeUrl, call, connect, consent, decide, doorsEnv, handleOf, Jar,
@@ -153,7 +154,7 @@ describe("the authorization flow", () => {
     const approve = new Request(url("/authorize"), {
       method: "POST", headers: { Cookie: jar.header() },
       body: new URLSearchParams({ handle: handleOf(await page.text()), decision: "approve" }) });
-    await expect(serve(approve, doorsEnv, createExecutionContext(), upstream))
+    await expect(serve(approve, doorsEnv, createExecutionContext(), upstream, TEST_SOURCES))
       .rejects.toThrow("prompt=login");
   });
 

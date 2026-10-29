@@ -698,8 +698,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "version INTEGER NOT NULL CHECK (version >= 1), expires_at INTEGER, " +
       "lease_id TEXT, lease_until INTEGER, created_at REAL NOT NULL, pending_until REAL, " +
       "revoked_at REAL, revoke_due REAL, revoke_tries INTEGER NOT NULL DEFAULT 0, " +
+      "revocable INTEGER NOT NULL CHECK (revocable IN (0, 1)), " +
       "CHECK ((status = 'pending') = (pending_until IS NOT NULL)), " +
-      "CHECK (revoke_due IS NULL OR status = 'revoked')) WITHOUT ROWID",
+      "CHECK (revoke_due IS NULL OR status IN ('revoked', 'error'))) WITHOUT ROWID",
     "CREATE INDEX connections_pending ON connections (pending_until) " +
       "WHERE pending_until IS NOT NULL",
     "CREATE INDEX connections_revokes ON connections (revoke_due) WHERE revoke_due IS NOT NULL",

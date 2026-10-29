@@ -114,7 +114,7 @@ ${loopback}
 }
 
 /** A browser's top-level navigation, as `Sec-Fetch-*` reports it. */
-function navigation(request: Request): boolean {
+export function navigation(request: Request): boolean {
   return request.headers.get("Sec-Fetch-Mode") === "navigate"
     && request.headers.get("Sec-Fetch-Dest") === "document";
 }

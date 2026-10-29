@@ -68,7 +68,7 @@ import { DurableObject } from "cloudflare:workers";
 import { type AgentParts, gatewayAgent, type OwnerAgent } from "./agent";
 import { Authority, AUTHORITY_RULE } from "./authority";
 import { Collections, Conflict, type HistoryEntry, type Page, type Row } from "./collections";
-import { type ConnectionView, Connections, type GatewayService } from "./connections";
+import { type ConnectionView, Connections, type GatewayService, type Prepared } from "./connections";
 import { Invalid, Refused } from "./errors";
 import {
   type Change as FileChange, CHUNK_BYTES, type ChunkRef, type ChunkStore, type Content,
@@ -226,12 +226,18 @@ export interface OwnerEnv {
   readonly GATEWAY: GatewayService;
 }
 
-/** A connection to prepare: its source record's id, kind, display name and pi-ai provider. */
+/**
+ * A connection to prepare: its source record's id, kind, display name and pi-ai provider,
+ * whether its provider can be asked to revoke what it issues, and, for OAuth, the redirect
+ * URI its flow (begun in the same unit) returns to.
+ */
 export interface ConnectionPrepareRequest {
   readonly source: string;
   readonly kind: "api_key" | "oauth2";
   readonly display_name: string;
   readonly provider: string;
+  readonly revocable: boolean;
+  readonly redirect_uri?: string;
 }
 
 /** A prepared connection's sealed blob, its kid, its models and, for OAuth, its expiry. */
@@ -242,15 +248,12 @@ export interface ConnectionCommitRequest {
   readonly kid: string;
   readonly models: unknown[];
   readonly expires_at?: number | null;
+  /** The setup check's code, when it failed after the provider issued the credential. */
+  readonly failed?: string;
 }
 
 export interface ConnectionRequest {
   readonly connection: string;
-}
-
-export interface FlowBeginRequest {
-  readonly connection: string;
-  readonly redirect_uri: string;
 }
 
 export interface FlowFinishRequest {
@@ -1149,12 +1152,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   // no session and is refused, with a refusal receipt. The binder seals and exchanges with
   // the gateway between them; no plaintext secret reaches the object.
 
-  /** A pending connection for the binder to seal a credential for. */
-  connectionPrepare(binding: Binding, request: ConnectionPrepareRequest):
-      Promise<{ connection: string; version: number; expires_at: number }> {
+  /** A pending connection for the binder to seal a credential for; for OAuth, its flow. */
+  connectionPrepare(binding: Binding, request: ConnectionPrepareRequest): Promise<Prepared> {
     return this.#synced(() => this.#widening(binding, "connection_prepare", request,
-                                             "connect a model source",
-                                             () => this.#connections.prepare(request, clock())));
+                                             "connect a model source", (_account, id) =>
+      this.#connections.prepare(id, request, clock())));
   }
 
   /** The sealed blob the gateway returned, and the models its setup check listed. */
@@ -1179,18 +1181,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                                            () => ({ connections: this.#connections.list() })));
   }
 
-  /** An OAuth flow for a pending connection, bound to this session. */
-  flowBegin(binding: Binding, request: FlowBeginRequest):
-      Promise<{ state: string; code_challenge: string; code_challenge_method: "S256";
-                expires_at: number }> {
-    return this.#synced(() => this.#widening(binding, "flow_begin", request,
-                                             "connect a model source", (_account, id) =>
-      this.#connections.flowBegin(id, request, clock())));
-  }
-
   /** The callback's state, in the session that began the flow: its verifier, used up. */
   flowFinish(binding: Binding, request: FlowFinishRequest):
-      Promise<{ connection: string; version: number; verifier: string; redirect_uri: string }> {
+      Promise<{ connection: string; version: number; verifier: string; redirect_uri: string;
+                source: string }> {
     return this.#synced(() => this.#widening(binding, "flow_finish", { state: "[state]" },
                                              "connect a model source", (_account, id) =>
       this.#connections.flowFinish(id, request, clock())));

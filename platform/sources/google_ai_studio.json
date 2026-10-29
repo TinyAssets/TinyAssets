@@ -1,0 +1,36 @@
+{
+  "id": "google_ai_studio",
+  "display_name": "Google AI Studio",
+  "help_url": "https://aistudio.google.com/apikey",
+  "connect": [
+    "api_key"
+  ],
+  "provider": "google",
+  "api": "google-generative-ai",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta",
+  "auth": {
+    "header": "x-goog-api-key",
+    "scheme": ""
+  },
+  "verify_url": "https://generativelanguage.googleapis.com/v1beta/models",
+  "endpoints": [
+    {
+      "origin": "https://generativelanguage.googleapis.com",
+      "paths": [
+        "/v1beta/models/*"
+      ],
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "origin": "https://generativelanguage.googleapis.com",
+      "paths": [
+        "/v1beta/models"
+      ],
+      "methods": [
+        "GET"
+      ]
+    }
+  ]
+}

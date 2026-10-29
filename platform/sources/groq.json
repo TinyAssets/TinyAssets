@@ -1,0 +1,36 @@
+{
+  "id": "groq",
+  "display_name": "Groq",
+  "help_url": "https://console.groq.com/keys",
+  "connect": [
+    "api_key"
+  ],
+  "provider": "groq",
+  "api": "openai-completions",
+  "base_url": "https://api.groq.com/openai/v1",
+  "auth": {
+    "header": "authorization",
+    "scheme": "Bearer"
+  },
+  "verify_url": "https://api.groq.com/openai/v1/models",
+  "endpoints": [
+    {
+      "origin": "https://api.groq.com",
+      "paths": [
+        "/openai/v1/chat/completions"
+      ],
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "origin": "https://api.groq.com",
+      "paths": [
+        "/openai/v1/models"
+      ],
+      "methods": [
+        "GET"
+      ]
+    }
+  ]
+}

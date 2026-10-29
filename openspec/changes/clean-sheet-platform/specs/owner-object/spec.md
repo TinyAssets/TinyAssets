@@ -523,21 +523,43 @@ A connection SHALL keep up to 1,024 models with their metadata, so the largest b
 - **THEN** the connection is active with every model the setup check listed
 
 ### Requirement: The connection doors are the owner's, in its live session
-Preparing, committing, revoking and listing connections and beginning and finishing their OAuth flows SHALL be the owner's own doors, in its live session; a refused one leaves a refusal receipt.
+Preparing (with an OAuth flow's beginning), committing, revoking and listing connections and finishing their OAuth flows SHALL be the owner's own doors, in its live session; a refused one leaves a refusal receipt.
 
 #### Scenario: An outside client tries to connect a source
 - **WHEN** an outside client's call, or the owner's call without a live session, reaches a connection door
 - **THEN** it is refused, and a refusal receipt is kept
 
 ### Requirement: A connection OAuth flow is bound to the session that began it
-`flowBegin` SHALL keep a flow for a pending OAuth connection: the SHA-256 of a fresh state and a fresh PKCE verifier, bound to the beginning session, for 10 minutes, at most 10 open. `flowFinish` SHALL hand back the verifier only for that state, in that session, once. Signing a session out SHALL cancel the flows it began, and account revocation (`sessionCloseAll`) SHALL cancel every open flow, each in the unit that signs out.
+`connectionPrepare` of an OAuth connection SHALL begin its flow in the same unit, at its redirect URI: a fresh state's SHA-256 and a fresh PKCE verifier, bound to the session, for 10 minutes, at most 10 open. `flowFinish` SHALL hand back the verifier and the source record id for that state, in that session, once. Signing a session out SHALL cancel the flows it began, and account revocation (`sessionCloseAll`) SHALL cancel every open flow, each in the unit that signs out.
+
+#### Scenario: A flow past the open limit
+- **WHEN** the owner begins an eleventh open flow
+- **THEN** it is refused and no pending connection is left behind
 
 #### Scenario: A callback after account revocation
 - **WHEN** the owner's sessions are all signed out while a flow is open, and its callback then arrives in a new session
 - **THEN** the flow is not found, and nothing is exchanged
 
 ### Requirement: A revoke deletes the credential and asks the provider to revoke it
-A connection revoke SHALL make the connection unusable in its own unit. An API key's blob SHALL be deleted in that unit. An OAuth blob, the only copy of the tokens the provider must revoke, SHALL be kept unusable until the `connections` lane's RFC 7009 revoke through the gateway succeeds, then deleted; after 5 failed attempts it SHALL be deleted anyway, with an owner notice.
+A connection revoke SHALL make the connection unusable in its own unit. A revocable credential's blob, the only copy of the tokens the provider must revoke, SHALL be kept unusable until the `connections` lane's RFC 7009 revoke through the gateway succeeds, then deleted; after 5 failed attempts it SHALL be deleted anyway, with an owner notice. Any other blob SHALL be deleted in the revoke's unit, one the provider issued with an owner notice, and no provider revoke claimed.
+
+#### Scenario: A key-exchange connection is revoked
+- **WHEN** the owner revokes a connection whose source cannot be asked to revoke
+- **THEN** the answer says no provider revoke, the blob is deleted at once, and a notice tells the owner to delete the key at the provider
+
+### Requirement: A connection knows whether its provider can revoke it
+A connection SHALL record at prepare whether its provider can be asked to revoke what it issues (`revocable`, from its source record; never for a pasted key), and its view SHALL say so.
+
+#### Scenario: A pasted key claims to be revocable
+- **WHEN** a pasted key's connection is prepared as revocable
+- **THEN** it is refused
+
+### Requirement: A credential the provider issued is never dropped silently
+A credential the provider issued whose setup check then failed SHALL be committed `failed`: the connection SHALL be in `error`, a revocable blob kept for the lane's provider revoke, an unrevocable one never stored, with an owner notice to delete it at the provider.
+
+#### Scenario: The setup check times out after an exchange
+- **WHEN** the gateway exchanged a code and its setup check then failed
+- **THEN** the connection is in `error`, no call can use it, and the credential is revoked at the provider or the owner is told to delete it
 
 #### Scenario: An OAuth connection is revoked
 - **WHEN** the owner revokes an OAuth connection
