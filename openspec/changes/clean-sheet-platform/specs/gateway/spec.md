@@ -81,11 +81,14 @@ The gateway SHALL clamp a call's output tokens, on the request and on the model,
 - **THEN** the upstream request is cancelled, and the stream ends with an `error` event of `aborted` or `deadline`
 
 ### Requirement: Gateway errors are fixed codes
-Every error the gateway returns, throws or streams SHALL be one of its fixed codes, carrying no secret, no upstream body or message and no text of an exception it caught; an upstream failure SHALL be classified from the HTTP status the gateway saw. A model call the provider refused before producing anything SHALL be answered with that code and its non-200 status, not a 200 stream, so the owner settles it at no cost; a failure after the stream started SHALL end the stream with an `error` event of its code.
+Every error the gateway returns, throws or streams SHALL be one of its fixed codes, carrying no secret, no upstream body or message and no text of an exception it caught; an upstream failure SHALL be classified from the HTTP status the gateway saw.
 
 #### Scenario: An upstream refusal quotes the key
 - **WHEN** a provider answers 401, 403, 429 or another 4xx with a body that quotes the credential
 - **THEN** the gateway answers `upstream_unauthorized`, `upstream_rate_limited` or `upstream_rejected` with status 502, and neither the key nor the body appears anywhere in the answer
+
+### Requirement: A refusal before any output is answered with its status
+A model call the provider refused before producing anything SHALL be answered with its fixed code and that code's non-200 status, not a 200 stream, so the owner settles it at no cost. A failure after the stream started SHALL end the stream with an `error` event of its code.
 
 #### Scenario: The deadline passes mid-answer
 - **WHEN** a call's deadline passes after the provider began answering
