@@ -277,20 +277,45 @@ account and no deploy.
   only for Sign in with ChatGPT, through its statically bundled OAuth flows
   (`registerBunOAuthFlows`, since its lazy loader's import cannot be bundled) and inside
   a scope that reaches only the sealed token endpoint.
-- [ ] G2 The owner side: the gateway joins the owner config guard's `SERVICES` (binding
-  nothing, `secrets` allowed); migration for `connections`, `connection_secrets`,
-  `connection_flows` and `model_reservations`, and the policy's optional `models` table;
-  `connections.ts` (prepare, commit, revoke, list, flow begin and finish, each in session;
-  the refresh lease; housekeeping on a `connections` lane); `usage.ts` (reserve, settle,
-  `unknown`, per-turn and per-source caps, ported from `request_budget.py` with its
-  tests); `gateway-provider.ts` (pi-ai `createProvider` over pi-messages: reserve, stamp
-  the envelope with the policy generation read in the same transaction, `GATEWAY.fetch`
-  under the platform's subrequest limit (`limits.subrequests`, the only cap), settle from
-  `done`'s usage; the `auto`
-  router to the strongest connected source; the live-delta tee). Owed by 3.5: account
-  revocation (`sessionCloseAll`) cancels every open flow with the sessions, as the
-  Python's `revoke_owner` did; the gateway sees the owner's policy generation on every
-  call, stamped by the object, with no call back.
+- [x] G2 The owner side, in workerd, nothing deployed. `GATEWAY` joins the owner config
+  guard's `SERVICES`: the gateway Worker binds nothing and declares only `GATEWAY_KEYRING`
+  (`secrets.required`). Migration 6: `connections` (the clear facts: kind, provider,
+  models with their metadata, version, OAuth expiry, the refresh lease, a pending
+  window, a provider revoke owed), `connection_secrets` (one sealed blob per connection, at
+  its version), `connection_flows` (the SHA-256 of the state, the PKCE verifier while
+  open, the session) and `model_reservations`, with `model_spend` day and month counters
+  only triggers write. Owner policy's optional `models` table: per-turn requests, tokens
+  and cost (µ$), owner-wide and per-connection daily and monthly cost, pi's retries.
+  `connections.ts`: `connectionPrepare`, `connectionCommit`, `connectionRevoke`,
+  `connectionList`, `flowBegin`, `flowFinish`, each the owner's in session, a refusal
+  receipted; the refresh lease (one refresh per connection, which concurrent calls wait
+  on, stored by compare-and-swap; a refused grant fails the connection; a dead instance's
+  lease is taken over); a reseal stored by compare-and-swap, never under a refresh lease;
+  the `connections` lane (expired flows, unclaimed pending rows, provider revokes, each
+  outcome in its row), every changing door syncing it. `usage.ts`: reserve (the policy,
+  the turn's rows and the spend read in the unit that inserts, output shrunk to what the
+  caps leave, refusals kept as receipts), dispatched (re-checked: reserved, the policy
+  generation, the connection's version, not aborted), settle (`succeeded` from pi-ai's
+  usage, `failed` when the gateway refused before the provider, else `unknown`, which
+  keeps its reservation), and a dead instance's open rows settled by the next reserve or
+  receipts read; `usageReceipts` (owner only). `gateway-provider.ts` is A1's. Owed by 3.5,
+  done: `sessionCloseAll` cancels every open flow in its unit, `sessionClose` its
+  session's; the envelope carries the policy generation read in the reserving unit, with
+  no call back. Declared differences from the research: an OAuth revoke keeps the blob,
+  unusable, until the provider revoke (it is the only copy of the token to revoke), then
+  deletes it, or after 5 failed tries with a notice; an API key's goes in the revoke's
+  unit; `verify` now lists each model with its metadata (G1's answer held ids only, and
+  the object has no catalog); the connections row keeps no base URL (it is sealed); a
+  turn is a conversation's calls since its newest user message (pi's `sessionId` and that
+  message's time); the model policy's per-turn limits replace the Python's constants and
+  its free-tier pools have no counterpart. Mutation: 81 of 86 killed across the caps, the
+  reservation states, the lease, the envelope fields, `auto` and the gate placement; the 5
+  that live are equivalent (the refresh compare-and-swap's lease and version checks,
+  which only this instance's in-memory lease can reach; the reseal's version-shape check of
+  the gateway's own answer; the output cap the gateway clamps to anyway; `flowBegin`'s
+  sync, which its pending row's sweep already covers). Open: the doors' `GATEWAY` binding
+  and the connect routes (G3); the policy write that ends in-flight turns and closes their
+  tee views (A2); the receipts' rows per call, measured live (G5).
 - [ ] G3 The connect doors (the doors Worker): paste-key connect and OAuth connect with
   its callback; the source records ported as data files with a schema; plaintext never
   reaches `OwnerDO`.
@@ -361,6 +386,37 @@ account and no deploy.
   rolled back with a transaction of the shared queue while a door's is kept. Owner bundle
   1,495 KiB, 303 KiB gzip (311 and 74 before; no provider SDK), local startup 20 ms active
   in a 50 ms window (16 in 28 before) of the 1 s limit.
+- [x] A1 The gateway provider, in workerd, nothing deployed (`gateway-provider.ts`,
+  `auto.ts`, `model-ranking.json`, `live-tee.ts`). One pi-ai `Provider`, `gateway`, written
+  directly: `getModels` reads the owner's active connections (`<connection>/<model>`, each
+  with the metadata the gateway's setup check gave) and, with any, `auto`; `streamSimple`
+  is pi-ai's own pi-messages client, its `fetch` the `GATEWAY` service binding, inside the
+  wrapper: the target, a refresh under the lease, reserve, dispatch, the envelope (owner,
+  connection, version, blob, reservation, policy generation, deadline, as G1's
+  `envelope.ts` reads it), the upstream's own model id, the reservation's output cap,
+  settle before pi sees the end, a reseal stored. Production's agent is it
+  (`gatewayAgent`, the default `AgentFactory`), so nothing connected settles `no_model`.
+  `auto`: ranked by the data file (provider and model globs, newer ids first, the rest by
+  catalog output price), its metadata the strongest's; stickiness and fallback read from
+  the request's own transcript (a continuation stays on the model that answered, a retry
+  after a failure before any output goes to the next-ranked), so nothing is kept in
+  memory. `identity`: TinyAssets' attribution. `settings()` spreads owner policy's part
+  (`agentPolicy`: the model retry count) beneath the fixed ones, re-read when the policy
+  generation moves. The live tee: every event, without pi-ai's running partial, to the
+  subscribers of the request's `sessionId`, in memory on the instance, bounded, a throwing
+  listener dropped. Tested against G1's gateway Worker (bundled by wrangler as a deploy
+  bundles it, run beside the tests with its fake upstream): a real turn; `no_model`; the
+  tee's 12 deltas while pi committed at most 3 partials; an abort reaching the upstream;
+  a budget refusal as the turn's error, never sent; a revoke racing a call. Declared
+  differences from the research: stickiness reads the transcript rather than an in-memory
+  map rebuilt from it; a continuation kept on an earlier target is estimated by its own
+  metadata, but pi's compaction threshold reads `auto`'s (the strongest's) until the next
+  user message; pi's abort reaches the gateway through the service binding's own
+  cancellation, with no wrapper of ours. Owner bundle 1,590 KiB, 327 KiB gzip (1,495 and
+  303 before), local startup 24 ms active in a 57 ms window (20 in 50 before). Open: the
+  attribution reaches the gateway hop only (pi-messages carries no identity upstream); an
+  owner pin of a model per agent (`pi.agent`) for `auto`; a package that keeps the
+  ranking current; the tee's transport to the owner's app (A6).
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
   owner's hook code with the Worker Loader, called over RPC with JSON in and out and a
   timeout. A `beforeTool` timeout or error blocks

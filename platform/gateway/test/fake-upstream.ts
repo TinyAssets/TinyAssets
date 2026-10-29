@@ -13,6 +13,8 @@
  * - `cmd:slow-<id>`: one text delta, then holds the stream open; its cancel is recorded
  *   under `<id>`, read back from `https://status.test/cancelled?id=<id>`.
  * - `cmd:tool`: a tool call (Anthropic).
+ * - `cmd:drip`: `DRIP` text deltas (`d0 ` to `d11 `), `DRIP_MS` apart, then the finish:
+ *   a stream that lasts longer than the owner object's one-second partial commits.
  *
  * - `cmd:redirect307`: a 307 to another host.
  *
@@ -26,6 +28,8 @@
 const cancelled = new Map<string, boolean>();
 const evil: unknown[] = [];
 const USAGE = { input: 11, output: 7 };
+const DRIP = 12;
+const DRIP_MS = 150;
 
 function sse(frames: readonly (readonly [string | null, unknown])[]): string {
   return frames.map(([event, data]) =>
@@ -144,6 +148,29 @@ async function model(request: Request, format: Format): Promise<Response> {
       cancel() {
         clearInterval(timer);
         cancelled.set(id, true);
+      },
+    });
+    return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+  }
+  if (cmd === "drip") {
+    let sent = 0;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(format.start(name)));
+        timer = setInterval(() => {
+          if (sent === DRIP) {
+            clearInterval(timer);
+            const all = Array.from({ length: DRIP }, (_, i) => `d${i} `).join("");
+            controller.enqueue(encoder.encode(format.finish(all)));
+            controller.close();
+            return;
+          }
+          controller.enqueue(encoder.encode(format.text(`d${sent++} `)));
+        }, DRIP_MS);
+      },
+      cancel() {
+        clearInterval(timer);
       },
     });
     return new Response(stream, { headers: { "content-type": "text/event-stream" } });

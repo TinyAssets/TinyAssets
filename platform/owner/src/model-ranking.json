@@ -1,0 +1,26 @@
+{
+  "about": "The strength order the virtual model `auto` routes by (auto.ts): the owner's connected model that matches the earliest entry is the strongest. An entry names a pi-ai provider id, or * for any, and a model id, exact or a prefix ending in *, matched against the id and against its part after the last / (an aggregator's vendor/model). Within one entry the newer id ranks first. A model no entry matches ranks after every one that does, by its catalog output price, highest first. Data, not code: a package keeps it current.",
+  "version": 1,
+  "ranks": [
+    { "provider": "*", "model": "claude-fable-*" },
+    { "provider": "*", "model": "gpt-6.1-*" },
+    { "provider": "*", "model": "gpt-6-*" },
+    { "provider": "*", "model": "gemini-4-*" },
+    { "provider": "*", "model": "claude-opus-5*" },
+    { "provider": "*", "model": "gpt-5.6-*" },
+    { "provider": "*", "model": "gpt-5.5*" },
+    { "provider": "*", "model": "claude-opus-4*" },
+    { "provider": "*", "model": "gemini-3.1-pro*" },
+    { "provider": "*", "model": "claude-sonnet-5*" },
+    { "provider": "*", "model": "gpt-5.4*" },
+    { "provider": "*", "model": "gemini-3.*-flash" },
+    { "provider": "*", "model": "claude-sonnet-4*" },
+    { "provider": "*", "model": "gpt-5.2*" },
+    { "provider": "*", "model": "gpt-5.1*" },
+    { "provider": "*", "model": "gemini-2.5-pro*" },
+    { "provider": "*", "model": "grok-*" },
+    { "provider": "*", "model": "gpt-5" },
+    { "provider": "*", "model": "claude-haiku-*" },
+    { "provider": "*", "model": "gemini-2.5-flash*" }
+  ]
+}

@@ -17,23 +17,26 @@ const PULL = { collection: "board", after: 0, limit: 1 };
 
 /**
  * Every public method of the class is an RPC any binding can call, so this list is the
- * object's whole surface: its collection, ledger, policy, file and notice doors. `alarm` is the
+ * object's whole surface: its collection, ledger, policy, file, notice, model-connection and
+ * model-spend doors. `alarm` is the
  * runtime's, handed to Lifecycle, and refused over RPC. Claiming, marking and settling a
  * wake have no door: only the `wakes` lane runs them, in process, with the doorbell's
  * sender. The list only grows by a door.
  */
 const RPC_METHODS = Object.freeze([
   "collectionClear", "collectionDelete", "collectionGet", "collectionHistory", "collectionPull",
-  "collectionWrite", "deleteAgent", "disableAgent", "fileChanges", "fileHistory",
+  "collectionWrite", "connectionCommit", "connectionList", "connectionPrepare",
+  "connectionRevoke", "deleteAgent", "disableAgent", "fileChanges", "fileHistory",
   "fileHistoryPurge", "fileLeaseAcquire", "fileLeaseRelease", "fileLeaseRenew", "fileList",
   "fileMkdir", "fileRead", "fileReadChunks", "fileRedact", "fileRemove", "fileRename",
   "fileRestore", "fileStat", "fileSyncCommit", "fileUploadAbort", "fileUploadBegin",
-  "fileUploadChunks", "fileUploadCommit", "fileUsage", "fileWrite", "grantForget",
+  "fileUploadChunks", "fileUploadCommit", "fileUsage", "fileWrite", "flowBegin",
+  "flowFinish", "grantForget",
   "grantForgetRevoked", "grantList", "grantRevoke", "grantSet", "mailboxAck", "mailboxRead",
   "mailboxSubscriber", "noticeList", "outsideAgents", "policyProposal", "policyPropose",
   "policyRead", "policyReceipts", "policyWakeLimits", "policyWrite", "registerAgent",
   "registerProposal", "registerPropose", "roomPost", "sessionClose", "sessionCloseAll",
-  "sessionExtend", "sessionOpen",
+  "sessionExtend", "sessionOpen", "usageReceipts",
 ]);
 
 describe("schema migration on wake", () => {

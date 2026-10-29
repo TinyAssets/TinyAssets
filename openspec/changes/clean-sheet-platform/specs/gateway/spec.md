@@ -122,3 +122,10 @@ The gateway Worker's config SHALL bind nothing and serve no URL: no binding of a
 #### Scenario: The keyring is read elsewhere
 - **WHEN** a gateway source other than the keyring module names `GATEWAY_KEYRING`, or any gateway source names `process`, `OWNER` or `getByName`
 - **THEN** the isolation guard fails CI
+
+### Requirement: The setup check lists each model with the metadata the owner needs
+`verify` SHALL answer a working credential with the models its source serves (pi-ai's catalog for a built-in provider, the declared list for a custom endpoint), each with its id, name, reasoning flag, input types, context window, output limit and prices, since the owner object holds no catalog of its own and estimates, lists and compacts by them.
+
+#### Scenario: A key is checked at connect time
+- **WHEN** the binder verifies a sealed Anthropic key that the provider accepts
+- **THEN** the answer lists pi-ai's Anthropic models with their catalog metadata, in catalog order

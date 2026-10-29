@@ -278,14 +278,23 @@ describe("redact", () => {
 });
 
 describe("verify", () => {
-  it("passes a working key and lists pi-ai's catalog models for its provider", async () => {
+  it("passes a working key and lists pi-ai's catalog models for its provider, with " +
+     "their metadata", async () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, "sk-good", ANTHROPIC);
     const verified = await verify(env, ALICE, blob, builtinCatalog());
     const catalog = builtinCatalog().provider("anthropic")!.getModels()
-      .filter((model) => model.api === "anthropic-messages").map((model) => model.id);
-    expect(verified.models).toEqual(catalog);
+      .filter((model) => model.api === "anthropic-messages");
+    expect(verified.models.map((model) => model.id)).toEqual(catalog.map((model) => model.id));
     expect(verified.models.length).toBeGreaterThan(0);
+    const [first] = catalog;
+    expect(verified.models[0]).toEqual({
+      id: first!.id, name: first!.name, reasoning: first!.reasoning,
+      input: first!.input.filter((kind) => kind === "text" || kind === "image"),
+      contextWindow: first!.contextWindow, maxTokens: first!.maxTokens,
+      cost: { input: first!.cost.input, output: first!.cost.output,
+              cacheRead: first!.cost.cacheRead, cacheWrite: first!.cost.cacheWrite },
+    });
   });
 
   it("answers a refused key with a fixed code", async () => {

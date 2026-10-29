@@ -19,7 +19,7 @@ import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.l
 import { createProvider } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
-import { SUPPORTED_APIS, type Upstream } from "./credential";
+import { type CustomModel, SUPPORTED_APIS, type Upstream } from "./credential";
 import { Failure } from "./failure";
 
 /** The providers the gateway can stream through, by pi-ai provider id. */
@@ -100,8 +100,24 @@ export function providerFor(catalog: Catalog, upstream: Upstream): Provider {
   return provider;
 }
 
-/** The model ids a sealed upstream serves: its provider's catalog, or its declared list. */
-export function modelIds(catalog: Catalog, upstream: Upstream): string[] {
+/**
+ * The models a sealed upstream serves, with the metadata the owner object needs to list
+ * them, estimate a call and compact (context window, output limit, prices, reasoning,
+ * input types): its provider's catalog, or its declared list. The owner object loads no
+ * catalog of its own, so this is where it learns them, at connect time.
+ */
+export function modelInfos(catalog: Catalog, upstream: Upstream): CustomModel[] {
   return providerFor(catalog, upstream).getModels()
-    .filter((model) => model.api === upstream.api).map((model) => model.id);
+    .filter((model) => model.api === upstream.api)
+    .map((model) => Object.freeze({
+      id: model.id,
+      name: model.name,
+      reasoning: model.reasoning,
+      input: Object.freeze(model.input.filter((kind): kind is "text" | "image" =>
+        kind === "text" || kind === "image")),
+      contextWindow: model.contextWindow,
+      maxTokens: model.maxTokens,
+      cost: Object.freeze({ input: model.cost.input, output: model.cost.output,
+                            cacheRead: model.cost.cacheRead, cacheWrite: model.cost.cacheWrite }),
+    }));
 }

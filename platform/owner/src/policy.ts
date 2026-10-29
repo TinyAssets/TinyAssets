@@ -25,11 +25,17 @@
  *   retention (`FILE_DEFAULTS`, plan §6); what it leaves out keeps the defaults. It is
  *   ours, with no Python counterpart, so the default document leaves it out and keeps
  *   its digest.
+ * - The optional `models` table is the owner's model budget (`MODEL_DEFAULTS`, gateway
+ *   research §4): per-turn requests, tokens and cost, owner-wide and per-connection
+ *   daily and monthly cost ceilings, and pi's retry count. `usage.ts` holds every model
+ *   call to it, in the unit that reserves the call, and `agentPolicy` hands pi the part
+ *   that is pi's. The Python's per-turn limits were code constants; here they are policy.
  *
- * Owed by later slices, each written into its task: the Python closed the owner's
- * public egress tunnels before a write committed and cancelled its live streams after;
- * here the gateway (4) reads the policy generation on every call, and a policy write
- * ends the owner's in-flight turns and streams once the agent (5) has any.
+ * The Python closed the owner's public egress tunnels before a write committed and
+ * cancelled its live streams after. Here each model call carries the policy generation
+ * its reservation read, in its envelope (`gateway-provider.ts`), and a call reserved
+ * under an older one is never sent; owed by the agent (5), a policy write ends the
+ * owner's in-flight turns and streams.
  *
  * Declared differences from the Python:
  * - An egress destination whose host the WHATWG URL parser reads as an IP address
@@ -177,9 +183,109 @@ export function fileSettings(document: PolicyDocument): FileSettings {
   return { ...FILE_DEFAULTS, ...document.files };
 }
 
+/**
+ * Owner model policy (gateway research §4): what one turn may spend, and what the owner's
+ * sources may spend in a UTC day and month. A turn is a conversation's model calls since
+ * its newest user message (`usage.ts`). Money is in micro-dollars (µ$), as pi-ai's
+ * catalog prices are dollars per million tokens: a token at a price of `p` costs `p` µ$.
+ * The Python's per-turn limits (`TurnRequestBudget`: `max_tokens=1_000_000`,
+ * `max_cost_microunits=25_000_000`) are the defaults' model, raised for tokens since a
+ * turn here is a whole agent loop, each request re-sending its context. A request cap
+ * bounds a runaway loop; null daily and monthly ceilings set none.
+ */
+export const MODEL_DEFAULTS = Object.freeze({
+  turn_requests: 100,
+  turn_tokens: 10_000_000,
+  turn_cost: 25_000_000,
+  daily_cost: null as number | null,
+  monthly_cost: null as number | null,
+});
+/** The range each model setting may take. */
+export const MODEL_SETTINGS = Object.freeze({
+  turn_requests: Object.freeze([1, 10_000] as const),
+  turn_tokens: Object.freeze([1, 1_000_000_000] as const),
+  turn_cost: Object.freeze([0, 1_000_000_000_000] as const),
+  daily_cost: Object.freeze([0, 1_000_000_000_000] as const),
+  monthly_cost: Object.freeze([0, 1_000_000_000_000] as const),
+  retries: Object.freeze([0, 10] as const),
+});
+/** The connections one `models.sources` table may name. */
+const MODEL_SOURCES_MAX = 64;
+/** A connection id, as `connections.ts` makes them. */
+const CONNECTION_ID = /^c[0-9a-f]{24}$/;
+
+/** A connection's own ceilings. */
+export interface SourceCeilings {
+  readonly daily_cost?: number | null;
+  readonly monthly_cost?: number | null;
+}
+
+/** The document's `models` table, as written. */
+export interface ModelPolicy {
+  readonly turn_requests?: number;
+  readonly turn_tokens?: number;
+  readonly turn_cost?: number;
+  readonly daily_cost?: number | null;
+  readonly monthly_cost?: number | null;
+  readonly sources?: { readonly [connection: string]: SourceCeilings };
+  readonly retries?: number;
+}
+
+/** The model settings a document leaves in force. */
+export interface ModelSettings {
+  readonly turn_requests: number;
+  readonly turn_tokens: number;
+  readonly turn_cost: number;
+  readonly daily_cost: number | null;
+  readonly monthly_cost: number | null;
+  readonly sources: { readonly [connection: string]: SourceCeilings };
+}
+
+/** The model settings a document leaves in force: its own, and the defaults for the rest. */
+export function modelSettings(document: PolicyDocument): ModelSettings {
+  const { retries: _retries, sources = {}, ...caps } = document.models ?? {};
+  return { ...MODEL_DEFAULTS, ...caps, sources };
+}
+
+/**
+ * The part of owner policy that is pi's own settings (tasks 5: owner policy feeds pi's
+ * settings), spread over the object's fixed ones: today the model retry count.
+ */
+export function agentPolicy(document: PolicyDocument): { readonly retry?: { readonly maxRetries: number } } {
+  const retries = document.models?.retries;
+  return retries === undefined ? {} : { retry: { maxRetries: retries } };
+}
+
+function bounded(value: unknown, [low, high]: readonly [number, number]): boolean {
+  return whole(value) && value >= low && value <= high;
+}
+
+/** The `models` table: known keys only, each in its range; null only for a ceiling. */
+function validModels(models: unknown): boolean {
+  if (!plain(models)) {
+    return false;
+  }
+  return Object.entries(models).every(([key, value]) => {
+    if (key === "sources") {
+      return plain(value) && Object.keys(value).length <= MODEL_SOURCES_MAX
+        && Object.entries(value).every(([id, ceilings]) => CONNECTION_ID.test(id)
+          && plain(ceilings) && Object.entries(ceilings).every(([name, cap]) =>
+            (name === "daily_cost" || name === "monthly_cost")
+            && (cap === null || bounded(cap, MODEL_SETTINGS[name]))));
+    }
+    if (!Object.hasOwn(MODEL_SETTINGS, key)) {
+      return false;
+    }
+    const range = MODEL_SETTINGS[key as keyof typeof MODEL_SETTINGS];
+    return ((key === "daily_cost" || key === "monthly_cost") && value === null)
+      || bounded(value, range);
+  });
+}
+
 /** The document as `validate` leaves it. */
 export interface PolicyDocument {
   readonly files?: Partial<FileSettings>;
+  readonly models?: ModelPolicy;
   readonly entries: PolicyEntry[];
   readonly egress: { readonly mode: string;
                      readonly destinations: { readonly host: string; readonly port: number }[] };
@@ -329,9 +435,12 @@ function destination(entry: unknown): void {
 /** `_validate`: the whole document, or a refusal naming its first fault. */
 export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS):
     PolicyDocument {
-  if (!plain(document) || !keys(document, Object.hasOwn(document, "files")
-    ? ["entries", "spend", "egress", "files"] : ["entries", "spend", "egress"])) {
+  if (!plain(document) || !keys(document, ["entries", "spend", "egress",
+    ...(["files", "models"] as const).filter((table) => Object.hasOwn(document, table))])) {
     throw new Invalid("invalid policy document");
+  }
+  if (document["models"] !== undefined && !validModels(document["models"])) {
+    throw new Invalid("invalid models policy");
   }
   const files = document["files"];
   if (files !== undefined && (!plain(files) || Object.entries(files).some(([key, value]) =>
@@ -426,6 +535,11 @@ export class Policy {
       "SELECT pending_proposals, applied_proposals, owner_receipts, agent_receipts, " +
         "refusal_receipts FROM policy_usage",
     ).one();
+  }
+
+  /** The policy generation as stored. */
+  generation(): number {
+    return this.#generation();
   }
 
   #generation(): number {

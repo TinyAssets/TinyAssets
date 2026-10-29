@@ -9,7 +9,10 @@
  * session themselves, can call a widening), and each policy table is named only by the
  * module that keeps it and the schema. The stamped schedule's work and the held agent
  * registrations are held to the same: only the object (and the registrations, for the
- * stamp's type) import them. The lists only shrink.
+ * stamp's type) import them. So are the model connections and their spend: only the
+ * object builds them, the provider and `auto` read their types and calls, and their
+ * blob, flow, reservation and spend tables are their modules' alone. The lists only
+ * shrink.
  */
 import { describe, expect, it } from "vitest";
 
@@ -23,6 +26,8 @@ const MODULES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   sessions: Object.freeze([OWNER_DO]),
   scheduled: Object.freeze([OWNER_DO, "owner/src/registrations.ts"]),
   registrations: Object.freeze([OWNER_DO]),
+  connections: Object.freeze([OWNER_DO, "owner/src/auto.ts", "owner/src/gateway-provider.ts"]),
+  usage: Object.freeze([OWNER_DO, "owner/src/gateway-provider.ts"]),
 });
 const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   owner_sessions: Object.freeze(["owner/src/sessions.ts", SCHEMA]),
@@ -37,6 +42,12 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
                                "owner/src/sessions.ts", SCHEMA]),
   scheduled_work: Object.freeze(["owner/src/scheduled.ts", SCHEMA]),
   agent_cards: Object.freeze(["owner/src/registrations.ts", SCHEMA]),
+  // The `connections` table's name is a plain word the sources use, so its sealed blobs
+  // and flows are what is held to their module.
+  connection_secrets: Object.freeze(["owner/src/connections.ts", SCHEMA]),
+  connection_flows: Object.freeze(["owner/src/connections.ts", SCHEMA]),
+  model_reservations: Object.freeze(["owner/src/usage.ts", SCHEMA]),
+  model_spend: Object.freeze(["owner/src/usage.ts", SCHEMA]),
 });
 
 /**

@@ -16,8 +16,8 @@
  * bytes. The gateway measures nothing it would keep: the binder counts the bytes it
  * streams and settles the owner's reservation.
  */
-import { type Catalog, modelIds } from "./catalog";
-import { allows, bearer, type Credential } from "./credential";
+import { type Catalog, modelInfos } from "./catalog";
+import { allows, bearer, type Credential, type CustomModel } from "./credential";
 import { type Code, codeOf, Failure, failureResponse, upstreamCode } from "./failure";
 import { nativeFetch } from "./egress";
 import { type Binding, type KeyringEnv, open, type Opened, type Resealed } from "./keyring";
@@ -218,14 +218,15 @@ export async function forward(env: KeyringEnv, bound: Binding, blob: unknown,
 
 /** What a setup check found: the credential works, and the models it can be asked for. */
 export interface Verified {
-  readonly models: readonly string[];
+  readonly models: readonly CustomModel[];
   readonly resealed?: Resealed;
 }
 
 /**
  * Checks an opened credential against its sealed `verify_url` (a `GET` among its
  * endpoints, sent like `forward` sends): a 2xx answer is a working credential, and the
- * models are pi-ai's catalog for its provider (or its declared models). Anything else is
+ * models are pi-ai's catalog for its provider (or its declared models), with their
+ * metadata, which the binder hands the owner object's `connectionCommit`. Anything else is
  * the upstream outcome's fixed code; the answer's body is never read.
  */
 export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
@@ -253,6 +254,6 @@ export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
   if (answer.status < 200 || answer.status >= 300) {
     throw new Failure(upstreamCode(answer.status));
   }
-  return Object.freeze({ models: Object.freeze(modelIds(catalog, credential.upstream)),
+  return Object.freeze({ models: Object.freeze(modelInfos(catalog, credential.upstream)),
                          ...(resealed === undefined ? {} : { resealed }) });
 }

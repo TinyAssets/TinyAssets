@@ -1,10 +1,11 @@
 /**
- * The workerd tests' Worker: the owner Worker's own exports, and two test classes of the
- * same object whose agent opens pi on pi-ai's faux provider instead of an empty catalog.
+ * The workerd tests' Worker: the owner Worker's own exports, two test classes of the
+ * same object whose agent opens pi on pi-ai's faux provider instead of the gateway's, and
+ * one on the production gateway provider with its GATEWAY calls watched (`GatedOwnerDO`).
  *
  * The faux provider is registered as the `gateway` provider with the one model `auto`,
  * the default model a conversation starts on, so the object's wiring is the production
- * wiring with the model source swapped where the gateway provider (A1) will go. It answers
+ * wiring with the model source swapped where the gateway provider goes. It answers
  * each request from the instance's `script`, by how many answers the conversation already
  * holds; with none set, from the script a test stored in the object (`storeScript`), so a
  * conversation a new instance resumes after an eviction continues the same script. A
@@ -20,7 +21,8 @@ import {
 } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 
-import { OwnerAgent } from "../src/agent";
+import { type AgentParts, gatewayAgent, OwnerAgent } from "../src/agent";
+import type { GatewayService } from "../src/connections";
 import { type OwnerEnv, OwnerDO } from "../src/owner-do";
 
 export { OwnerDO } from "../src/owner-do";
@@ -163,3 +165,57 @@ export class MalformedOwnerDO extends OwnerDO {
 
 /** A text answer. */
 export const says = (text: string): AssistantMessage => fauxAssistantMessage(text);
+
+/** One call the object made to its GATEWAY binding, as text: what crossed the binding. */
+export interface GatewayCall {
+  readonly method: string;
+  readonly text: string;
+}
+
+/**
+ * The GATEWAY binding with every call recorded on `calls()` before it is made: an RPC's
+ * arguments, and a fetch's URL, headers and body.
+ */
+function watched(gateway: GatewayService, calls: () => GatewayCall[]): GatewayService {
+  return {
+    fetch: async (request: Request) => {
+      calls().push({ method: "fetch", text: JSON.stringify({
+        url: request.url, headers: Object.fromEntries(request.headers),
+        body: await request.clone().text() }) });
+      return gateway.fetch(request);
+    },
+    refresh: async (...args) => {
+      calls().push({ method: "refresh", text: JSON.stringify(args) });
+      return gateway.refresh(...args);
+    },
+    revokeAtProvider: async (...args) => {
+      calls().push({ method: "revokeAtProvider", text: JSON.stringify(args) });
+      return gateway.revokeAtProvider(...args);
+    },
+  };
+}
+
+/**
+ * The owner object as production builds it, on the gateway provider (`gatewayAgent`),
+ * with its agent and parts in reach and its GATEWAY calls watched.
+ */
+export class GatedOwnerDO extends OwnerDO {
+  readonly agent: OwnerAgent;
+  readonly parts: AgentParts;
+  calls: GatewayCall[] = [];
+
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    const made: { agent?: OwnerAgent; parts?: AgentParts; self?: GatedOwnerDO } = {};
+    const pending: GatewayCall[] = [];
+    super(ctx, { ...env, GATEWAY: watched(env.GATEWAY, () => made.self?.calls ?? pending) },
+          (parts) => {
+            made.parts = parts;
+            made.agent = gatewayAgent(parts);
+            return made.agent;
+          });
+    made.self = this;
+    this.calls.push(...pending);
+    this.agent = made.agent!;
+    this.parts = made.parts!;
+  }
+}
