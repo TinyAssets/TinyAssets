@@ -609,14 +609,19 @@ account and no deploy.
   against a tool call and a thread's recording through the held queue; a revoke ending a
   client's turn, its subagent's, its views and waits while others run on, its door
   waiting for a tool slow to stop; a revoke missing the work in its abort, or committing
-  between reservation and dispatch, spending nothing; a fork's disagreeing copy; the
-  thread bound, `held` and the drop; the hand-off at its generation; status. Mutation:
-  this tree's 91 (the capability map, the standing check, the environment, inheritance,
-  sessions, the abort targets, the bound, the triggers, the hand-off and status), 80
-  killed first, the 11 alive killed by new tests; the reviewer's 68 run on this tree:
-  38 killed, 29 no longer match the rewritten code (each has a counterpart among the 91),
-  and one alive is equivalent: `liveConversations`' submissions, which add nothing on pi
-  1.4.0 while every open submission's conversation also has a live task. Declared
+  between reservation and dispatch, spending nothing; a conversation selecting the gate
+  away spending nothing (the owner's still spends); a fork's disagreeing copy; the
+  thread bounds, no conversation for a refused thread, `held` and the drop; the root
+  never a thread; the hand-off at its generation; status; the guard's evasions.
+  Mutation: this tree's 113 (the capability map, the standing check, the environment,
+  inheritance, sessions, the backstop, the abort targets, the bounds, the triggers, the
+  hand-off, status and the guard's rules), all killed, each alive one killed by a new
+  test; the reviewer's: of round 1's 68, 38 killed and 29 no longer matching the
+  rewritten code (each has a counterpart here), of round 2's 53, 48 killed and 4 no
+  longer matching (counterparts killed here); alive and equivalent: `liveConversations`'
+  submissions, which add nothing on pi 1.4.0 while every open submission's conversation
+  also has a live task, and `modelAuthority`'s no-session branch, whose absent session
+  pi answers as no conversation anyway. Declared
   differences from the research: a stamp also names the universe and agent, and
   `agent_threads` a `universe` column, since a scoped grant is triples; `edit` needs both
   capabilities; abort targets are read from pi's live work and each conversation's
@@ -625,7 +630,7 @@ account and no deploy.
   mutation queue reads a path's canonical form), which tells it whether a path exists:
   accepted, since its changes tell it anyway (a `remove` of a missing path fails
   `not_found`, a non-recursive `createDir` of an existing one `exists`), and no content
-  leaks. Owner bundle 1,627 KiB, 337 KiB gzip
+  leaks. Owner bundle 1,628 KiB, 337 KiB gzip
   (1,598 and 329 at A1), local startup 25 ms active in a 59 ms window. Must land with
   A4, whose doors make threads: thread retention by idle age, which also deletes the pi
   conversations a thread drop leaves behind (until then a dropped thread's conversation

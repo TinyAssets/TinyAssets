@@ -163,6 +163,7 @@ describe("agent-authority guard", () => {
     ["a selection written to pi's AgentDoc", "owner/src/x.ts",
      "(await tx.doc(AgentDoc, id)).extensions = [];"],
     ["a selection written by a literal key", "owner/src/x.ts", "agent[\"extensions\"] = [];"],
+    ["a selection written to a draft", "owner/src/x.ts", "draft.extensions = { remove: [g] };"],
     ["AgentDoc written in the backstop's file", THREAD,
      "import { AgentDoc } from \"p\"; await tx.doc(AgentDoc, id);"],
     ["a raw root", "owner/src/x.ts", "await tx.createRootConversation();"],
