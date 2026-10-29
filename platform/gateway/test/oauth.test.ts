@@ -121,6 +121,7 @@ describe("a key exchange (pkce_user_key_v1)", () => {
   it.each([
     ["a refused code", "bad-code", "oauth_rejected"],
     ["an answer with no key", "nokey-code", "oauth_malformed"],
+    ["a key outside the secret grammar", "spacekey-code", "oauth_malformed"],
     ["a redirect, never followed", "redirect-code", "oauth_rejected"],
     ["a server failure", "down-code", "oauth_unavailable"],
   ])("answers %s with a fixed code", async (_what, value, expected) => {

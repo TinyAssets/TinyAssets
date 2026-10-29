@@ -228,7 +228,7 @@ describe("tool table guard", () => {
                              "sessionOpen", "registerAgent", "fileRedact", "fileHistoryPurge",
                              "fileLeaseAcquire", "fileSyncCommit", "policyRead",
                              "connectionPrepare", "connectionCommit", "connectionRevoke",
-                             "connectionList", "flowBegin", "flowFinish"]) {
+                             "connectionList", "flowFinish"]) {
       expect(DOORS.has(ownerOnly)).toBe(false);
     }
   });

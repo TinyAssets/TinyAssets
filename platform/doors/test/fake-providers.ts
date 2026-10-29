@@ -9,7 +9,7 @@
  * - Google's (`generativelanguage.googleapis.com/v1beta/models`): `200` for an
  *   `x-goog-api-key` starting `AIza-good`.
  * - OpenRouter's key exchange (`openrouter.ai/api/v1/auth/keys`): JSON in; the code
- *   `or-good` buys `sk-or-bought`; any other is `403`. Its model list: `200` for a bearer
+ *   `or-good` buys `sk-or-bought`, `or-badkey` a key with a space; any other is `403`. Its model list: `200` for a bearer
  *   key starting `sk-or-`.
  * - A test OAuth server (`auth.test/token`): the code `good-code` gets `at-good`, any
  *   other `invalid_grant`. OpenAI's model list (`api.openai.com/v1/models`): `200` for
@@ -42,6 +42,9 @@ async function token(request: Request): Promise<Response> {
 
 async function keyExchange(request: Request): Promise<Response> {
   const body = JSON.parse(await request.text()) as Record<string, string>;
+  if (body["code"] === "or-badkey") {
+    return Response.json({ key: "sk-or-has a space" });
+  }
   if (body["code"] !== "or-good" || body["code_challenge_method"] !== "S256"
       || typeof body["code_verifier"] !== "string") {
     return Response.json({ error: { message: `code ${body["code"]} is not valid` } },

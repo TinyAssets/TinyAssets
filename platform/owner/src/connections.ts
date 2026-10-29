@@ -9,25 +9,31 @@
  * version (the seal's additional data). The Python's door-only exchange had the same
  * rule (`broker/model_connect.py`: "no credential leaves the broker").
  *
- * The three steps of a connect, each a door in the owner's live session (`owner-do.ts`):
- * 1. `prepare`: a pending row, its id and version 1, which the binder seals for. A row not
- *    committed within `pendingTtlS` is swept by the lane.
- * 2. For OAuth, `flowBegin` keeps the flow, bound to the session that began it: the
+ * The steps of a connect, each a door in the owner's live session (`owner-do.ts`):
+ * 1. `prepare`: a pending row, its id and version 1, which the binder seals for, and
+ *    whether its provider can be asked to revoke what it issues (`revocable`, from the
+ *    source record). A row not committed within `pendingTtlS` is swept by the lane. For
+ *    OAuth, the same unit begins the flow, bound to the session that prepares it: the
  *    SHA-256 of a fresh state and a fresh PKCE verifier (RFC 7636), for `flowTtlS`, at most
- *    `maxOpenFlows` open. The binder builds the authorize URL from the state and the
- *    challenge; the callback's `flowFinish`, in the same session, uses the flow up and hands
- *    back the verifier for the gateway's exchange.
+ *    `maxOpenFlows` open, so a refused flow leaves no pending row. The binder builds the
+ *    authorize URL from the state and the challenge.
+ * 2. For OAuth, the callback's `flowFinish`, in the same session, uses the flow up and
+ *    hands back the verifier for the gateway's exchange.
  * 3. `commit`: the sealed blob, its kid, the models the gateway's setup check listed (with
  *    the metadata the object has no catalog for) and, for OAuth, the access expiry in clear.
+ *    A credential the provider issued whose setup check then failed is committed `failed`:
+ *    the connection is in `error`, and a revocable one's blob is kept for the lane's
+ *    provider revoke; an unrevocable one's is deleted, with an owner notice to delete it
+ *    at the provider. A minted credential is never dropped silently.
  *
  * A revoke makes the connection unusable in its own unit. An API key's blob is deleted
  * there and then (crypto-delete: nothing can open what is gone). An OAuth blob holds the
  * only copy of the tokens the provider must be asked to revoke (RFC 7009), so it is kept,
  * unusable, until the lane's `GATEWAY.revokeAtProvider` succeeds, or `revokeTries` attempts
  * have failed (then it is deleted anyway, with an owner notice: the provider may still
- * hold a live token). A source with no revocation endpoint cannot be asked: its blob is
- * deleted at the first pass, with a notice that the provider honours the token until it
- * expires. A refresh that lands after the revoke keeps its rotated tokens for the lane to
+ * hold a live token). A credential its provider cannot be asked to revoke (`revocable`
+ * false: a pasted key, or a key-exchange source's key) is deleted in the revoke's unit,
+ * and one the provider issued gets an owner notice to delete it there. A refresh that lands after the revoke keeps its rotated tokens for the lane to
  * revoke too, whether or not the lane already revoked the old ones. A call that already
  * holds the blob completes; the bound is one call.
  * Account revocation (`sessionCloseAll`) and a session's sign-out cancel the session's
@@ -139,7 +145,18 @@ export interface ConnectionView {
   readonly expires_at: number | null;
   readonly created_at: number;
   readonly revoked_at: number | null;
+  /** Whether its provider can be asked to revoke its credential (RFC 7009). */
+  readonly provider_revocable: boolean;
   readonly provider_revoke_pending: boolean;
+}
+
+/** A prepared connection; for OAuth, the flow begun with it. */
+export interface Prepared {
+  readonly connection: string;
+  readonly version: number;
+  readonly expires_at: number;
+  readonly flow?: { readonly state: string; readonly code_challenge: string;
+                    readonly code_challenge_method: "S256"; readonly expires_at: number };
 }
 
 /** A connection a model call may use: its models, as `getModels` lists them. */
@@ -165,7 +182,7 @@ type Row = {
   provider: string; models: string; status: ConnectionView["status"]; version: number;
   expires_at: number | null; lease_id: string | null; lease_until: number | null;
   created_at: number; pending_until: number | null; revoked_at: number | null;
-  revoke_due: number | null; revoke_tries: number;
+  revoke_due: number | null; revoke_tries: number; revocable: number;
 };
 
 /** How a provider revoke ended: confirmed, impossible (no endpoint), or not confirmed. */
@@ -179,6 +196,8 @@ const PROVIDER = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const KID = /^[A-Za-z0-9_-]{1,32}$/;
 const B64URL = /^[A-Za-z0-9_-]+$/;
 const STATE = /^[A-Za-z0-9_-]{43}$/;
+/** A setup check's failure: the gateway's fixed code. */
+const FAILURE = /^[a-z][a-z_]{0,63}$/;
 const MODEL_ID = /^[\x21-\x7e]{1,200}$/;
 const BLOB_MAX = 64 * 1024;
 /**
@@ -295,7 +314,7 @@ function view(row: Row): ConnectionView {
     provider: row.provider, status: row.status, version: row.version,
     models: (JSON.parse(row.models) as ModelInfo[]).map((model) => model.id),
     expires_at: row.expires_at, created_at: row.created_at, revoked_at: row.revoked_at,
-    provider_revoke_pending: row.revoke_due !== null,
+    provider_revocable: row.revocable === 1, provider_revoke_pending: row.revoke_due !== null,
   };
 }
 
@@ -347,35 +366,63 @@ export class Connections {
 
   // -- the doors' bodies, each run inside the door's unit ---------------------------
 
-  /** A pending connection, for the binder to seal a credential for at version 1. */
-  prepare(request: unknown, now: number): { connection: string; version: number;
-                                            expires_at: number } {
-    const r = fields(request, ["source", "kind", "display_name", "provider"]);
+  /**
+   * A pending connection, for the binder to seal a credential for at version 1; for OAuth,
+   * its flow begun in the same unit, bound to `sessionId`. Every check runs before any
+   * write, so a refusal leaves nothing behind.
+   */
+  prepare(sessionId: string, request: unknown, now: number): Prepared {
+    const r = fields(request, ["source", "kind", "display_name", "provider", "revocable"],
+                     ["redirect_uri"]);
     const source = grammar(r["source"], SOURCE_ID, "source");
     const provider = grammar(r["provider"], PROVIDER, "provider");
     const kind = r["kind"];
     if (kind !== "api_key" && kind !== "oauth2") {
       throw new Invalid("a connection is an api_key or an oauth2");
     }
+    const revocable = r["revocable"];
+    if (typeof revocable !== "boolean" || (kind === "api_key" && revocable)) {
+      throw new Invalid("revocable is a boolean, and false for a pasted key");
+    }
+    if ((kind === "oauth2") !== (r["redirect_uri"] !== undefined)) {
+      throw new Invalid("an OAuth connection begins its flow at a redirect URI; a key has none");
+    }
+    const redirect = kind === "oauth2" ? redirectUri(r["redirect_uri"]) : null;
     const name = text(r["display_name"], 128, "display_name");
     const live = this.#sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM connections WHERE status != 'revoked'").one().n;
     if (live >= this.#limits.maxConnections) {
       throw new Refused("the owner's connections are at their limit");
     }
+    if (redirect !== null) {
+      const flows = this.#sql.exec<{ open: number; rows: number }>(
+        "SELECT COALESCE(SUM(status = 'open' AND expires_at > ?), 0) AS open, " +
+          "COUNT(*) AS rows FROM connection_flows", now).one();
+      if (flows.open >= this.#limits.maxOpenFlows || flows.rows >= this.#limits.maxFlowRows) {
+        throw new Refused("too many connection flows; finish or wait for one");
+      }
+    }
     const id = `c${randomBytes(12).toString("hex")}`;
     const until = now + this.#limits.pendingTtlS;
     this.#sql.exec("INSERT INTO connections (id, source, kind, display_name, provider, " +
-                     "status, version, created_at, pending_until) " +
-                     "VALUES (?, ?, ?, ?, ?, 'pending', 1, ?, ?)",
-                   id, source, kind, name, provider, now, until);
+                     "status, version, created_at, pending_until, revocable) " +
+                     "VALUES (?, ?, ?, ?, ?, 'pending', 1, ?, ?, ?)",
+                   id, source, kind, name, provider, now, until, revocable ? 1 : 0);
     this.#changed();
-    return { connection: id, version: 1, expires_at: until };
+    const prepared = { connection: id, version: 1, expires_at: until };
+    return redirect === null ? prepared
+      : { ...prepared, flow: this.#beginFlow(id, sessionId, redirect, now) };
   }
 
-  /** A pending connection's sealed blob and models: the connection is active. */
+  /**
+   * A pending connection's sealed blob and models: the connection is active. Committed
+   * `failed` (the setup check's code), a credential the provider issued is kept out of
+   * use: the connection is in `error`, a revocable blob kept for the lane's provider
+   * revoke, an unrevocable one deleted with an owner notice.
+   */
   commit(request: unknown, now: number): ConnectionView {
-    const r = fields(request, ["connection", "version", "blob", "kid", "models"], ["expires_at"]);
+    const r = fields(request, ["connection", "version", "blob", "kid", "models"],
+                     ["expires_at", "failed"]);
     const id = grammar(r["connection"], ID, "connection");
     const kid = grammar(r["kid"], KID, "kid");
     const blob = blobOf(r["blob"], kid);
@@ -398,6 +445,15 @@ export class Connections {
       : expires !== null && !count(expires, Number.MAX_SAFE_INTEGER)) {
       throw new Invalid("an OAuth connection's expiry is epoch ms or null; a key has none");
     }
+    const failed = r["failed"];
+    if (failed !== undefined) {
+      if (typeof failed !== "string" || !FAILURE.test(failed) || checked.length > 0
+          || row.kind !== "oauth2") {
+        throw new Invalid("a failed setup commits an issued credential, its code and no models");
+      }
+      return this.#storage.transactionSync(() => this.#failed(row, kid, blob, expires, failed,
+                                                              now));
+    }
     return this.#storage.transactionSync(() => {
       this.#sql.exec("DELETE FROM connection_secrets WHERE connection_id = ?", id);
       this.#sql.exec("INSERT INTO connection_secrets (connection_id, version, kid, blob) " +
@@ -413,8 +469,36 @@ export class Connections {
   }
 
   /**
-   * The connection, unusable from this unit on: an API key's blob deleted now, an OAuth
-   * one's kept only for the lane's provider revoke. Revoking twice changes nothing.
+   * In the commit's unit: an issued credential whose setup failed. A revocable one's blob
+   * is kept, its provider revoke due now; an unrevocable one's is never stored, and the
+   * owner is told to delete it at the provider.
+   */
+  #failed(row: Row, kid: string, blob: string, expires: unknown, code: string,
+          now: number): ConnectionView {
+    const owed = row.revocable === 1;
+    this.#sql.exec("DELETE FROM connection_secrets WHERE connection_id = ?", row.id);
+    if (owed) {
+      this.#sql.exec("INSERT INTO connection_secrets (connection_id, version, kid, blob) " +
+                       "VALUES (?, ?, ?, ?)", row.id, row.version, kid, blob);
+    } else {
+      this.#notices.add("connection_setup_failed",
+                        `${row.id}: the setup check failed (${code}) after the provider ` +
+                          "issued a credential; it cannot be revoked from here, so delete " +
+                          "it at the provider", now);
+    }
+    this.#sql.exec("UPDATE connections SET status = 'error', pending_until = NULL, " +
+                     "expires_at = ?, revoke_due = ?, revoke_tries = 0 WHERE id = ?",
+                   expires, owed ? now : null, row.id);
+    this.#sql.exec("UPDATE connection_flows SET status = 'cancelled', verifier = NULL " +
+                     "WHERE connection_id = ? AND status = 'open'", row.id);
+    this.#changed();
+    return view(this.#row(row.id)!);
+  }
+
+  /**
+   * The connection, unusable from this unit on: a revocable credential's blob kept only
+   * for the lane's provider revoke, any other deleted now (an issued one with an owner
+   * notice to delete it at the provider). Revoking twice changes nothing.
    */
   revoke(request: unknown, now: number): { connection: string; revoked: boolean;
                                            provider_revoke: boolean } {
@@ -429,8 +513,13 @@ export class Connections {
     }
     const held = this.#sql.exec("SELECT 1 FROM connection_secrets WHERE connection_id = ?", id)
       .toArray().length > 0;
-    const owed = held && row.kind === "oauth2";
+    const owed = held && row.revocable === 1;
     return this.#storage.transactionSync(() => {
+      if (held && !owed && row.kind === "oauth2") {
+        this.#notices.add("connection_revoke_unsupported",
+                          `${id}: the provider cannot be asked to revoke this credential; ` +
+                            "it was deleted here, so delete it at the provider", now);
+      }
       this.#sql.exec("UPDATE connections SET status = 'revoked', revoked_at = ?, " +
                        "pending_until = NULL, lease_id = NULL, lease_until = NULL, " +
                        "revoke_due = ?, revoke_tries = 0 WHERE id = ?",
@@ -460,25 +549,12 @@ export class Connections {
   }
 
   /**
-   * An OAuth flow for a pending OAuth connection, bound to the session that begins it: the
-   * state and the PKCE challenge the binder's authorize URL carries.
+   * In the prepare's unit: the OAuth flow of the connection just prepared, bound to the
+   * session that prepares it: the state and the PKCE challenge the binder's authorize URL
+   * carries.
    */
-  flowBegin(sessionId: string, request: unknown, now: number):
-      { state: string; code_challenge: string; code_challenge_method: "S256";
-        expires_at: number } {
-    const r = fields(request, ["connection", "redirect_uri"]);
-    const id = grammar(r["connection"], ID, "connection");
-    const redirect = redirectUri(r["redirect_uri"]);
-    const row = this.#row(id);
-    if (row === undefined || row.status !== "pending" || row.kind !== "oauth2") {
-      throw new Refused("no pending OAuth connection");
-    }
-    const flows = this.#sql.exec<{ open: number; rows: number }>(
-      "SELECT COALESCE(SUM(status = 'open' AND expires_at > ?), 0) AS open, COUNT(*) AS rows " +
-        "FROM connection_flows", now).one();
-    if (flows.open >= this.#limits.maxOpenFlows || flows.rows >= this.#limits.maxFlowRows) {
-      throw new Refused("too many connection flows; finish or wait for one");
-    }
+  #beginFlow(id: string, sessionId: string, redirect: string, now: number):
+      NonNullable<Prepared["flow"]> {
     const state = base64url(randomBytes(32));
     const verifier = base64url(randomBytes(32));
     const challenge = createHash("sha256").update(verifier, "ascii").digest("base64url");

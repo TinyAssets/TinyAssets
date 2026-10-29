@@ -93,6 +93,17 @@ describe("the source records", () => {
     expect(() => sealedSource(sourceRecord(claude), "api_key")).toThrow(SourceRecordError);
   });
 
+  it("take an issuer, bare or with a path, and its RFC 9207 flag", () => {
+    for (const issuer of ["https://auth.openai.com", "https://auth.openai.com/tenant"]) {
+      const record = sourceRecord({ ...chatgpt, oauth: {
+        ...(chatgpt["oauth"] as object), issuer,
+        authorization_response_iss_parameter_supported: true } });
+      expect(record.oauth).toMatchObject({ issuer,
+                                           authorization_response_iss_parameter_supported: true });
+    }
+    expect(sourceRecord(chatgpt).oauth).not.toHaveProperty("issuer");
+  });
+
   it("keep Sign in with ChatGPT unwired, naming why", () => {
     expect(sourceRecord(chatgpt).unwired).toMatch(/OpenAI's approval/);
     const served = [...records.values()].map(sourceRecord)
@@ -144,6 +155,19 @@ describe("a record that does not fit", () => {
       ...(openrouter["oauth"] as object), authorize_params: { state: "fixed" } } }],
     ["authorize params that set the callback", { ...openrouter, oauth: {
       ...(openrouter["oauth"] as object), authorize_params: { callback_url: "https://evil.test" } } }],
+    ["an authorize param past 128 characters", { ...openrouter, oauth: {
+      ...(openrouter["oauth"] as object), authorize_params: { key_label: "x".repeat(129) } } }],
+    ["an empty authorize param", { ...openrouter, oauth: {
+      ...(openrouter["oauth"] as object), authorize_params: { key_label: "" } } }],
+    ["an http issuer", { ...chatgpt, oauth: {
+      ...(chatgpt["oauth"] as object), issuer: "http://auth.openai.com" } }],
+    ["an issuer with a query", { ...chatgpt, oauth: {
+      ...(chatgpt["oauth"] as object), issuer: "https://auth.openai.com?x=1" } }],
+    ["the RFC 9207 flag with no issuer", { ...chatgpt, oauth: {
+      ...(chatgpt["oauth"] as object), authorization_response_iss_parameter_supported: true } }],
+    ["the RFC 9207 flag false", { ...chatgpt, oauth: {
+      ...(chatgpt["oauth"] as object), issuer: "https://auth.openai.com",
+      authorization_response_iss_parameter_supported: false } }],
     ["an http exchange endpoint", { ...openrouter, oauth: {
       ...(openrouter["oauth"] as object), exchange_endpoint: "http://openrouter.ai/keys" } }],
     ["an unknown protocol", { ...openrouter, oauth: {

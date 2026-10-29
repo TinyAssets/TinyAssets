@@ -58,6 +58,10 @@ export interface Rfc6749 {
   readonly revocation_endpoint?: string;
   readonly resource?: string;
   readonly refresh_with: "provider" | "rfc6749";
+  /** The authorization server's issuer (RFC 8414), which an `iss` response must name. */
+  readonly issuer?: string;
+  /** Its metadata's RFC 9207 flag: every authorization response then carries `iss`. */
+  readonly authorization_response_iss_parameter_supported?: true;
 }
 
 /** The Python's `pkce_user_key_v1` (OpenRouter): the code buys an API key. */
@@ -209,7 +213,20 @@ function oauthSpec(check: ReturnType<typeof checker>, value: unknown): OAuthSpec
   }
   const fields = check.keys(value, "oauth", [
     "protocol", "authorization_endpoint", "token_endpoint", "client_id", "client_auth",
-    "refresh_with"], ["authorize_params", "scope", "revocation_endpoint", "resource"]);
+    "refresh_with"], ["authorize_params", "scope", "revocation_endpoint", "resource",
+                      "issuer", "authorization_response_iss_parameter_supported"]);
+  const issuer = fields["issuer"];
+  const iss = fields["authorization_response_iss_parameter_supported"];
+  if (issuer !== undefined) {
+    // RFC 8414 §2: an https URL with no query or fragment, compared as a string; a bare
+    // origin is written without its root's `/`.
+    const bare = typeof issuer === "string" && /^https:\/\/[^/]+$/.test(issuer);
+    check.https(typeof issuer === "string" ? `${issuer}${bare ? "/" : ""}` : null,
+                "oauth.issuer");
+  }
+  if (iss !== undefined && (iss !== true || issuer === undefined)) {
+    check.fail("oauth.authorization_response_iss_parameter_supported is true, with the issuer");
+  }
   // A client secret is never data: a confidential client's would need a secret binding.
   if (JSON.stringify(fields["client_auth"]) !== JSON.stringify({ method: "none" })) {
     check.fail("oauth.client_auth is {\"method\": \"none\"}: a record holds no secret");
@@ -231,6 +248,8 @@ function oauthSpec(check: ReturnType<typeof checker>, value: unknown): OAuthSpec
     ...optional("revocation_endpoint",
                 (item) => check.https(item, "oauth.revocation_endpoint")),
     ...optional("resource", (item) => check.https(item, "oauth.resource")),
+    ...(issuer === undefined ? {} : { issuer: issuer as string }),
+    ...(iss === undefined ? {} : { authorization_response_iss_parameter_supported: true }),
   });
 }
 

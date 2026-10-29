@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { type Credential, type Source, SUPPORTED_APIS } from "../../gateway/src/credential";
 import { open } from "../../gateway/src/keyring";
 import { CONNECTION_LIMITS } from "../src/connections";
+import type { Binding } from "../src/owner-do";
 import { MUSE } from "./ledger-support";
 import { failure } from "./support";
 import {
@@ -69,7 +70,7 @@ describe("connecting a pasted key", () => {
   it("is the owner's own act, in its live session, a refusal receipted", async () => {
     const r = await gated();
     const request = { source: "anthropic", kind: "api_key" as const, display_name: "Key",
-                      provider: "anthropic" };
+                      provider: "anthropic", revocable: false };
     expect((await failure(() => r.stub.connectionPrepare(r.bind(), request))).message)
       .toBe("interactive owner session required");
     expect((await failure(() => r.stub.connectionPrepare(
@@ -85,7 +86,8 @@ describe("connecting a pasted key", () => {
      async () => {
     const r = await gated();
     const prepared = await r.stub.connectionPrepare(r.session(), {
-      source: "anthropic", kind: "api_key", display_name: "Key", provider: "anthropic" });
+      source: "anthropic", kind: "api_key", display_name: "Key", provider: "anthropic",
+      revocable: false });
     const sealed = await env.GATEWAY.seal(r.name, prepared.connection, 1, "sk-x", ANTHROPIC);
     const models = (await catalog(ANTHROPIC)).slice(0, 2);
     const commit = (extra: Record<string, unknown>) => r.stub.connectionCommit(r.session(), {
@@ -110,7 +112,7 @@ describe("connecting a pasted key", () => {
   it("prepares at most the limit of live connections", async () => {
     const r = await gated();
     const request = { source: "anthropic", kind: "api_key" as const, display_name: "Key",
-                      provider: "anthropic" };
+                      provider: "anthropic", revocable: false };
     for (let i = 0; i < CONNECTION_LIMITS.maxConnections; i++) {
       await r.stub.connectionPrepare(r.session(), request);
     }
@@ -121,7 +123,8 @@ describe("connecting a pasted key", () => {
   it("sweeps a pending connection never committed", async () => {
     const r = await gated();
     await r.stub.connectionPrepare(r.session(), { source: "anthropic", kind: "api_key",
-                                                  display_name: "Key", provider: "anthropic" });
+                                                  display_name: "Key", provider: "anthropic",
+                                                  revocable: false });
     await r.sql("UPDATE connections SET pending_until = ?", Date.now() / 1000 - 1);
     await lanes(r);
     expect(await r.sql("SELECT * FROM connections")).toEqual([]);
@@ -129,12 +132,11 @@ describe("connecting a pasted key", () => {
 });
 
 describe("an OAuth flow", () => {
-  async function begun(r: Gated) {
-    const prepared = await r.stub.connectionPrepare(r.session(), {
-      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai" });
-    const flow = await r.stub.flowBegin(r.session(), { connection: prepared.connection,
-                                                       redirect_uri: REDIRECT });
-    return { connection: prepared.connection, ...flow };
+  async function begun(r: Gated, session: () => Binding = r.session) {
+    const prepared = await r.stub.connectionPrepare(session(), {
+      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai",
+      revocable: true, redirect_uri: REDIRECT });
+    return { connection: prepared.connection, ...prepared.flow! };
   }
 
   it("hands back the verifier of its challenge once, in the session that began it",
@@ -172,13 +174,44 @@ describe("an OAuth flow", () => {
     expect(await r.sql("SELECT * FROM connection_flows")).toEqual([]);
   });
 
-  it("keeps at most the limit open", async () => {
+  it("keeps at most the limit open, and a refused one leaves no pending connection",
+     async () => {
     const r = await gated();
     for (let i = 0; i < CONNECTION_LIMITS.maxOpenFlows; i++) {
       await begun(r);
     }
     expect((await failure(() => begun(r))).message)
       .toBe("too many connection flows; finish or wait for one");
+    expect(await r.sql("SELECT id FROM connections"))
+      .toHaveLength(CONNECTION_LIMITS.maxOpenFlows);
+  });
+
+  it("begins with its connection, in one door: OAuth needs a redirect URI, a key none",
+     async () => {
+    const r = await gated();
+    const base = { source: "openai-oauth", display_name: "OAuth", provider: "openai" };
+    for (const [request, message] of [
+      [{ ...base, kind: "oauth2", revocable: true },
+       "an OAuth connection begins its flow at a redirect URI; a key has none"],
+      [{ ...base, kind: "api_key", revocable: false, redirect_uri: REDIRECT },
+       "an OAuth connection begins its flow at a redirect URI; a key has none"],
+      [{ ...base, kind: "api_key", revocable: true },
+       "revocable is a boolean, and false for a pasted key"],
+      [{ ...base, kind: "oauth2", redirect_uri: REDIRECT },
+       "invalid connection request"],
+      [{ ...base, kind: "oauth2", revocable: "yes", redirect_uri: REDIRECT },
+       "revocable is a boolean, and false for a pasted key"],
+      [{ ...base, kind: "oauth2", revocable: true, redirect_uri: "http://tinyassets.io/cb" },
+       "invalid redirect URI"],
+    ] as const) {
+      expect((await failure(() => r.stub.connectionPrepare(r.session(), request as never)))
+        .message).toBe(message);
+    }
+    expect(await r.sql("SELECT id FROM connections")).toEqual([]);
+    expect(await r.sql("SELECT flow FROM connection_flows")).toEqual([]);
+    const key = await r.stub.connectionPrepare(r.session(), {
+      ...base, kind: "api_key", revocable: false });
+    expect(key).not.toHaveProperty("flow");
   });
 
   it("is cancelled with every session by sessionCloseAll, so a late callback is refused",
@@ -187,8 +220,7 @@ describe("an OAuth flow", () => {
     const flows = [await begun(r), await begun(r)];
     const { session: other } = await r.stub.sessionOpen(
       r.bind({ authenticated_at: Math.floor(Date.now() / 1000) }));
-    const theirs = await r.stub.flowBegin(r.bind({ session: other }), {
-      connection: flows[0]!.connection, redirect_uri: REDIRECT });
+    const theirs = await begun(r, () => r.bind({ session: other }));
     // Signing one session out cancels that session's flows only.
     expect(await r.stub.sessionClose(r.bind({ session: other }))).toEqual({ closed: 1 });
     expect((await r.sql("SELECT status FROM connection_flows ORDER BY created_at"))
@@ -261,7 +293,8 @@ describe("a revoke", () => {
      async () => {
     const r = await gated();
     const prepared = await r.stub.connectionPrepare(r.session(), {
-      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai" });
+      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai",
+      revocable: true, redirect_uri: REDIRECT });
     const plaintext: Credential = {
       kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
       oauth: { ...OAUTH.oauth!, access: "at-down", refresh: "rt-down", expires_at: null } };
@@ -286,6 +319,108 @@ describe("a revoke", () => {
     const { notices } = await r.stub.noticeList(r.bind());
     expect(notices.map((notice) => notice.type)).toContain("connection_revoke_failed");
     expect((await r.sql("SELECT revoke_due FROM connections"))[0]!["revoke_due"]).toBeNull();
+  });
+});
+
+describe("a credential its provider cannot be asked to revoke", () => {
+  async function issued(r: Gated, revocable: boolean) {
+    const prepared = await r.stub.connectionPrepare(r.session(), {
+      source: "openrouter_user_models_v1", kind: "oauth2", display_name: "Bought",
+      provider: "anthropic", revocable, redirect_uri: REDIRECT });
+    const blob = await sealedAs("k2", r.name, prepared.connection, 1, {
+      kind: "api_key", secret: "sk-bought", upstream: ANTHROPIC.upstream,
+      endpoints: ANTHROPIC.endpoints, sealed_at: 1 });
+    return { connection: prepared.connection, blob };
+  }
+
+  it("is deleted in the revoke's unit, never claimed revocable, with a notice", async () => {
+    const r = await gated();
+    const { connection, blob } = await issued(r, false);
+    const view = await r.stub.connectionCommit(r.session(), {
+      connection, version: 1, blob, kid: "k2", models: [], expires_at: null });
+    expect(view).toMatchObject({ status: "active", provider_revocable: false });
+    expect(await r.stub.connectionRevoke(r.session(), { connection }))
+      .toEqual({ connection, revoked: true, provider_revoke: false });
+    expect(await secrets(r, connection)).toEqual([]);
+    expect((await r.stub.connectionList(r.session())).connections[0])
+      .toMatchObject({ status: "revoked", provider_revocable: false,
+                       provider_revoke_pending: false });
+    const { notices } = await r.stub.noticeList(r.bind());
+    expect(notices.find((made) => made.type === "connection_revoke_unsupported")?.detail)
+      .toContain("delete it at the provider");
+  });
+
+  it("leaves a pasted key without a notice: the owner holds it", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-mine");
+    await r.stub.connectionRevoke(r.session(), { connection });
+    expect((await r.stub.noticeList(r.bind())).notices).toEqual([]);
+  });
+});
+
+describe("an issued credential whose setup check failed", () => {
+  it("is committed in error, its blob kept for the lane's provider revoke", async () => {
+    const r = await gated();
+    const prepared = await r.stub.connectionPrepare(r.session(), {
+      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai",
+      revocable: true, redirect_uri: REDIRECT });
+    const blob = await sealedAs("k2", r.name, prepared.connection, 1, {
+      kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
+      oauth: { ...OAUTH.oauth!, access: "at-1", refresh: "rt-1", expires_at: null } });
+    const view = await r.stub.connectionCommit(r.session(), {
+      connection: prepared.connection, version: 1, blob, kid: "k2", models: [],
+      expires_at: null, failed: "upstream_timeout" });
+    expect(view).toMatchObject({ status: "error", provider_revoke_pending: true });
+    expect(await r.in((instance) => instance.parts.provider.getModels())).toEqual([]);
+    await lanes(r);
+    const sent = await r.in((instance) =>
+      instance.calls.filter((call) => call.method === "revokeAtProvider"));
+    expect(sent.map((call) => JSON.parse(call.text)))
+      .toEqual([[r.name, prepared.connection, 1, blob]]);
+    expect(await secrets(r, prepared.connection)).toEqual([]);
+    expect((await r.stub.connectionList(r.session())).connections[0])
+      .toMatchObject({ status: "error", provider_revoke_pending: false });
+  });
+
+  it("is never stored when it cannot be revoked, and the owner is told", async () => {
+    const r = await gated();
+    const prepared = await r.stub.connectionPrepare(r.session(), {
+      source: "openrouter_user_models_v1", kind: "oauth2", display_name: "Bought",
+      provider: "anthropic", revocable: false, redirect_uri: REDIRECT });
+    const blob = await sealedAs("k2", r.name, prepared.connection, 1, {
+      kind: "api_key", secret: "sk-bought", upstream: ANTHROPIC.upstream,
+      endpoints: ANTHROPIC.endpoints, sealed_at: 1 });
+    expect(await r.stub.connectionCommit(r.session(), {
+      connection: prepared.connection, version: 1, blob, kid: "k2", models: [],
+      expires_at: null, failed: "deadline" }))
+      .toMatchObject({ status: "error", provider_revoke_pending: false });
+    expect(await secrets(r, prepared.connection)).toEqual([]);
+    const { notices } = await r.stub.noticeList(r.bind());
+    expect(notices.find((made) => made.type === "connection_setup_failed")?.detail)
+      .toMatch(/failed \(deadline\).*delete it at the provider/);
+  });
+
+  it("is refused with models, without a code, or for a pasted key", async () => {
+    const r = await gated();
+    const oauth = await r.stub.connectionPrepare(r.session(), {
+      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai",
+      revocable: true, redirect_uri: REDIRECT });
+    const key = await r.stub.connectionPrepare(r.session(), {
+      source: "anthropic", kind: "api_key", display_name: "Key", provider: "anthropic",
+      revocable: false });
+    const models = (await catalog(ANTHROPIC)).slice(0, 1);
+    for (const [connection, extra] of [
+      [oauth.connection, { failed: "deadline", models }],
+      [oauth.connection, { failed: "Not A Code", models: [] }],
+      [key.connection, { failed: "deadline", models: [] }],
+    ] as const) {
+      const blob = await sealedAs("k2", r.name, connection, 1, {
+        kind: "api_key", secret: "sk-x", upstream: ANTHROPIC.upstream,
+        endpoints: ANTHROPIC.endpoints, sealed_at: 1 });
+      expect((await failure(() => r.stub.connectionCommit(r.session(), {
+        connection, version: 1, blob, kid: "k2", ...extra } as never))).message)
+        .toBe("a failed setup commits an issued credential, its code and no models");
+    }
   });
 });
 
@@ -388,7 +523,8 @@ describe("a provider revoke and a refresh in flight", () => {
      "provider honours the token until it expires", async () => {
     const r = await gated();
     const prepared = await r.stub.connectionPrepare(r.session(), {
-      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai" });
+      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai",
+      revocable: true, redirect_uri: REDIRECT });
     const { revocation_endpoint: _none, ...oauth } = OAUTH.oauth!;
     const blob = await sealedAs("k2", r.name, prepared.connection, 1, {
       kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
@@ -447,7 +583,8 @@ describe("the refresh lease", () => {
      "connection until the owner reconnects", async () => {
     const r = await gated();
     const prepared = await r.stub.connectionPrepare(r.session(), {
-      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai" });
+      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai",
+      revocable: true, redirect_uri: REDIRECT });
     const plaintext: Credential = {
       kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
       oauth: { ...OAUTH.oauth!, access: "at-dead", refresh: "rt-dead",
@@ -546,7 +683,8 @@ describe("the largest built-in catalog", () => {
 describe("a blob resealed under the active kid", () => {
   async function oldKid(r: Gated) {
     const prepared = await r.stub.connectionPrepare(r.session(), {
-      source: "anthropic", kind: "api_key", display_name: "Old", provider: "anthropic" });
+      source: "anthropic", kind: "api_key", display_name: "Old", provider: "anthropic",
+      revocable: false });
     const blob = await sealedAs("k1", r.name, prepared.connection, 1, {
       kind: "api_key", secret: "sk-old", upstream: ANTHROPIC.upstream,
       endpoints: ANTHROPIC.endpoints, sealed_at: 1 });
@@ -576,7 +714,8 @@ describe("a blob resealed under the active kid", () => {
   it("never overwrites tokens a refresh stored while its call was in flight", async () => {
     const r = await gated();
     const prepared = await r.stub.connectionPrepare(r.session(), {
-      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai" });
+      source: "openai-oauth", kind: "oauth2", display_name: "OAuth", provider: "openai",
+      revocable: true, redirect_uri: REDIRECT });
     const connection = prepared.connection;
     const far = Date.now() + 86_400_000;
     const blob = await sealedAs("k1", r.name, connection, 1, {

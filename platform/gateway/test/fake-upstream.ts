@@ -276,6 +276,8 @@ async function keyExchange(request: Request): Promise<Response> {
       return Response.json({ key: `sk-bought-${body["code_verifier"]}`, user_id: "u1" });
     case "nokey-code":
       return Response.json({ user_id: "u1" });
+    case "spacekey-code":
+      return Response.json({ key: "sk-bought with a space" });
     case "redirect-code":
       return new Response(null, { status: 307, headers: { location: "https://evil.test/keys" } });
     case "down-code":

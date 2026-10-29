@@ -83,7 +83,7 @@ export async function gated() {
                          models?: ModelInfo[]) => {
     const prepared = await stub.connectionPrepare(session(), {
       source: record.upstream.provider, kind: "api_key", display_name: display,
-      provider: record.upstream.provider });
+      provider: record.upstream.provider, revocable: false });
     const sealed = await env.GATEWAY.seal(name, prepared.connection, 1, key, record);
     const committed = await stub.connectionCommit(session(), {
       connection: prepared.connection, version: 1, blob: sealed.blob, kid: sealed.kid,
@@ -91,14 +91,12 @@ export async function gated() {
     return committed.connection;
   };
 
-  /** Connect by OAuth: prepare, begin, finish, the gateway's exchange, commit. */
+  /** Connect by OAuth: prepare (its flow begun), finish, the gateway's exchange, commit. */
   const connectOAuth = async (record: Source = OAUTH, expiresAt?: number) => {
     const prepared = await stub.connectionPrepare(session(), {
       source: "openai-oauth", kind: "oauth2", display_name: "OAuth",
-      provider: record.upstream.provider });
-    const begun = await stub.flowBegin(session(), { connection: prepared.connection,
-                                                    redirect_uri: REDIRECT });
-    const finished = await stub.flowFinish(session(), { state: begun.state });
+      provider: record.upstream.provider, revocable: true, redirect_uri: REDIRECT });
+    const finished = await stub.flowFinish(session(), { state: prepared.flow!.state });
     const exchanged = await env.GATEWAY.exchange(name, prepared.connection, 1, {
       code: "good-code", verifier: finished.verifier, redirect_uri: finished.redirect_uri },
       record);

@@ -30,7 +30,7 @@ const RPC_METHODS = Object.freeze([
   "fileHistoryPurge", "fileLeaseAcquire", "fileLeaseRelease", "fileLeaseRenew", "fileList",
   "fileMkdir", "fileRead", "fileReadChunks", "fileRedact", "fileRemove", "fileRename",
   "fileRestore", "fileStat", "fileSyncCommit", "fileUploadAbort", "fileUploadBegin",
-  "fileUploadChunks", "fileUploadCommit", "fileUsage", "fileWrite", "flowBegin",
+  "fileUploadChunks", "fileUploadCommit", "fileUsage", "fileWrite",
   "flowFinish", "grantForget",
   "grantForgetRevoked", "grantList", "grantRevoke", "grantSet", "mailboxAck", "mailboxRead",
   "mailboxSubscriber", "noticeList", "outsideAgents", "policyProposal", "policyPropose",

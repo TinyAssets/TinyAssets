@@ -9,7 +9,8 @@
  *   read; the inbound door strips the `Cookie` header as `/mcp` and `/api` do.
  * - `/app/api/*`: the owner surface (`app.ts`).
  * - `/authorize`, `/oauth/upstream/callback`: the sign-in (`authorize.ts`).
- * - `/oauth/connect/callback`: a model source's OAuth redirect (`connect.ts`).
+ * - `/oauth/connect/callback/<source>[/<state>]`: a model source's OAuth redirect
+ *   (`connect.ts`).
  * - `/oauth/clients/web.json`: the first-party app's Client ID Metadata Document.
  * - `/.well-known/oauth-protected-resource/mcp`: the resource's metadata.
  * - `/.well-known/oauth-authorization-server`, `/oauth/token`, `/oauth/register` (only
@@ -80,7 +81,7 @@ export async function serve(request: Request, env: DoorsEnv, ctx: ExecutionConte
     return serveApp(request, env, sources);
   }
   if (path === CONNECT_CALLBACK_PATH || path.startsWith(`${CONNECT_CALLBACK_PATH}/`)) {
-    return connectCallback(request);
+    return connectCallback(request, sources);
   }
   if (path === "/authorize") {
     return authorize(request, env, upstream);

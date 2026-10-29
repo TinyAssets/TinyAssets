@@ -127,7 +127,7 @@ export async function serveApp(request: Request, env: DoorsEnv, sources: Sources
   const session = sessionOf(request);
   const path = new URL(request.url).pathname.slice(OWNER_SURFACE.length);
   const registering = path === "outside-agents";
-  const route = ROUTES[path];
+  const route = Object.hasOwn(ROUTES, path) ? ROUTES[path] : undefined;
   const connect = Object.hasOwn(CONNECT_ROUTES, path) ? CONNECT_ROUTES[path] : undefined;
   if (route === undefined && connect === undefined && !registering) {
     return failure(404, "not found");
