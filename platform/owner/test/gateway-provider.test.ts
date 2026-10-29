@@ -69,7 +69,9 @@ describe("a turn through the gateway Worker", () => {
     expect(sent!.envelope.reservation).toEqual({ id: receipt!.reservation,
                                                  max_output_tokens: receipt!.max_output_tokens });
     expect(echoed.max).toBe(receipt!.max_output_tokens);
-    expect(receipt).toMatchObject({ connection, state: "succeeded", tokens: 18 });
+    // Counted under the connection's source record, which its source ceilings are keyed by.
+    expect(receipt).toMatchObject({ connection, source: "anthropic", state: "succeeded",
+                                    tokens: 18 });
     expect(receipt!.cost).toBeGreaterThan(0);
     expect(receipt!.cost).toBeLessThanOrEqual(receipt!.est_cost);
     const transcript = await r.in(async (instance) => (await instance.agent.harness.messages())

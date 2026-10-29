@@ -256,10 +256,11 @@ describe("the per-turn caps", () => {
             throw new Error(`refused at ${i}: ${reserved.rule}`);
           }
           r.usage.dispatched(reserved.id, NOW, null);
-          r.usage.settle(reserved.id, { state: "succeeded", tokens: 2, cost: 0 }, NOW);
+          r.usage.settle(reserved.id, { state: "succeeded", tokens: 3, cost: 0 }, NOW);
         });
       }
-      expect(r.turn("t1")).toMatchObject({ requests: 5_000, tokens: 10_000 });
+      // Each held 2 tokens reserved and settled at 3, at no cost: the tokens alone moved.
+      expect(r.turn("t1")).toMatchObject({ requests: 5_000, tokens: 15_000, cost: 0 });
       expect(r.rows().length).toBeLessThanOrEqual(101);
       expect(await r.gate.write(() => r.usage.reserve(ask, NOW)))
         .toEqual({ ok: false, rule: "turn_requests" });
@@ -362,6 +363,19 @@ describe("a turn's counters", () => {
       await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t3" }, NOW + idle + 1));
       expect(r.turn("t1")).toBeUndefined();
       expect(r.turn("t2")).toMatchObject({ requests: 1 });
+    }));
+
+  it("keep the newest call's time when an older call of the turn settles after it", () =>
+    withUsage(async (r) => {
+      const first = await r.gate.write(() => r.usage.reserve(ASK, NOW));
+      if (!first.ok) {
+        throw new Error("refused");
+      }
+      await r.gate.write(() => r.usage.dispatched(first.id, NOW, null));
+      await r.gate.write(() => r.usage.reserve(ASK, NOW + 10));
+      await r.gate.write(() => r.usage.settle(first.id, { state: "succeeded", tokens: 1,
+                                                          cost: 1 }, NOW + 5));
+      expect(r.turn("t1")).toMatchObject({ requests: 2, last_at: NOW + 10 });
     }));
 
   it("are kept while a call of the turn is open, however old", () => withUsage(async (r) => {

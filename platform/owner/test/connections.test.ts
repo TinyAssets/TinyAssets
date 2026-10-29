@@ -305,6 +305,32 @@ describe("a provider revoke and a refresh in flight", () => {
     return { connection, call, release: () => r.in(() => release()) };
   }
 
+  it("revokes the rotated tokens of a refresh that lands after the lane revoked the old",
+     async () => {
+    const r = await gated();
+    const { connection, call, release } = await heldRefresh(r);
+    const [old] = await secrets(r, connection);
+    await r.stub.connectionRevoke(r.session(), { connection });
+    await until(async () => {
+      await lanes(r);
+      return (await secrets(r, connection)).length === 0;
+    }, "the old tokens' revoke", 50);
+    expect((await r.sql("SELECT revoke_due FROM connections"))[0]!["revoke_due"]).toBeNull();
+    await release();
+    expect((await call).errorMessage).toBe("connection_unavailable");
+    // The rotated tokens are kept, and owed a revoke of their own.
+    expect((await secrets(r, connection)).map((row) => row["version"])).toEqual([2]);
+    await until(async () => {
+      await lanes(r);
+      return (await secrets(r, connection)).length === 0;
+    }, "the rotated tokens' revoke", 50);
+    const sent = (await r.in((instance) => instance.calls))
+      .filter((made) => made.method === "revokeAtProvider").map((made) => JSON.parse(made.text));
+    expect(sent.map((args) => args.slice(0, 3))).toEqual([[r.name, connection, 1],
+                                                         [r.name, connection, 2]]);
+    expect(sent[0]![3]).toBe(old!["blob"]);
+  });
+
   it("revokes the newer tokens a refresh stored after the revoke, whenever the lane runs",
      async () => {
     const r = await gated();
@@ -441,7 +467,15 @@ describe("the refresh lease", () => {
 });
 
 describe("a refresh that lands on a changed connection", () => {
-  it("is dropped, and its lease with it", async () => {
+  it.each([
+    ["failed meanwhile, as a refused grant leaves it", "UPDATE connections SET status = 'error'",
+     { status: "error", version: 1, lease_id: null }],
+    ["at a version it was not refreshed from", "UPDATE connections SET version = 7",
+     { status: "active", version: 7, lease_id: null }],
+    ["under a lease another holder took over", "UPDATE connections SET lease_id = 'other'",
+     { status: "active", version: 1, lease_id: "other" }],
+  ])("is dropped when the connection %s, and its own lease with it", async (_what, change,
+                                                                             after) => {
     const r = await gated();
     const connection = await r.connectOAuth(OAUTH, Date.now() + 60_000);
     let release!: () => void;
@@ -452,12 +486,11 @@ describe("a refresh that lands on a changed connection", () => {
       instance.parts.provider.getModels()[0]!, asked("cmd:echo"), direct(instance)).result());
     await until(async () => (await r.sql("SELECT lease_id FROM connections"))[0]!["lease_id"]
       !== null, "the lease to be taken");
-    // The connection fails meanwhile (as a refused grant leaves it).
-    await r.sql("UPDATE connections SET status = 'error'");
+    await r.sql(change);
     await r.in(() => release());
-    expect((await call).stopReason).toBe("error");
-    expect(await r.sql("SELECT version, lease_id, lease_until FROM connections"))
-      .toEqual([{ version: 1, lease_id: null, lease_until: null }]);
+    await call;
+    expect(await r.sql("SELECT status, version, lease_id FROM connections")).toEqual([after]);
+    // The refreshed tokens were never stored.
     expect((await secrets(r, connection)).map((row) => row["version"])).toEqual([1]);
   });
 });

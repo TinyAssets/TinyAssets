@@ -12,7 +12,7 @@ import {
   type AssistantMessage, fauxAssistantMessage, type FauxContentBlock, fauxToolCall,
   type Message,
 } from "@earendil-works/pi-ai";
-import { type ConversationId, ProviderDoc } from "@earendil-works/pi-durable";
+import { type ConversationId, LiveDoc, ProviderDoc } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
 import { AGENT_SETTINGS, AUTO, NO_RUN, writerOf } from "../src/agent";
@@ -241,6 +241,32 @@ describe("a model request's turn", () => {
     expect(out.turns[1]).toBe(out.turns[0]);
     expect(out.turns[3]).toBe(out.turns[2]);
     expect(out.turns[2]).not.toBe(out.turns[0]);
+  });
+
+  it("keeps the run's turn when an input steers it", async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance) => {
+      let release!: () => void;
+      instance.probes.holdGate = new Promise<void>((resolve) => { release = resolve; });
+      instance.script = Array.from({ length: 8 }, () => (messages: Message[]) =>
+        messages.at(-1)?.role === "toolResult" ? says("done")
+          : JSON.stringify(messages.at(-1)).includes("steer") ? says("steered")
+            : calls(fauxToolCall("hold", {})));
+      const { operationId } = await instance.agent.harness.submit("work");
+      await until(async () => instance.probes.holds === 1, "the hold to start");
+      // Joins the running work after the tool round: the run's inputs grow.
+      const steered = await instance.agent.harness.submit("steer it", { whenBusy: "steer" });
+      release();
+      const settled = [await instance.agent.harness.wait(operationId),
+                       await instance.agent.harness.wait(steered.operationId)];
+      const live = await (await instance.agent.harness.pi()).snapshot(
+        LiveDoc, (await (await instance.agent.harness.pi()).root(BG)).id, BG);
+      return { settled, live, turns: await turnsOf(instance) };
+    });
+    expect(out.settled.map((answer) => answer.status)).toEqual(["done", "done"]);
+    expect(out.live?.run).toBeUndefined();
+    expect(out.turns.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(out.turns).size).toBe(1);
   });
 
   it("goes on through a compaction inside the run, whose summary is a user message",
