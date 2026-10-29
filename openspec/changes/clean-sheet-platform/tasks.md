@@ -283,37 +283,55 @@ account and no deploy.
   models with their metadata, version, OAuth expiry, the refresh lease, a pending
   window, a provider revoke owed), `connection_secrets` (one sealed blob per connection, at
   its version), `connection_flows` (the SHA-256 of the state, the PKCE verifier while
-  open, the session) and `model_reservations`, with `model_spend` day and month counters
-  only triggers write. Owner policy's optional `models` table: per-turn requests, tokens
-  and cost (µ$), owner-wide and per-connection daily and monthly cost, pi's retries.
+  open, the session) and `model_reservations`, with the counters every cap reads and only
+  triggers write: `model_spend` (each source's day and month) and `model_turns` (each
+  turn's requests, tokens and cost, kept until the turn is idle 30 days with no call
+  open), so the reservation rows are receipts only. A connection keeps up to 1,024 models
+  (the largest built-in catalog, 386, found by a scan, connects). Owner policy's optional
+  `models` table: per-turn requests, tokens and cost (µ$), owner-wide and per-source
+  (by source record) daily and monthly cost, pi's retries.
   `connections.ts`: `connectionPrepare`, `connectionCommit`, `connectionRevoke`,
   `connectionList`, `flowBegin`, `flowFinish`, each the owner's in session, a refusal
   receipted; the refresh lease (one refresh per connection, which concurrent calls wait
   on, stored by compare-and-swap; a refused grant fails the connection; a dead instance's
   lease is taken over); a reseal stored by compare-and-swap, never under a refresh lease;
   the `connections` lane (expired flows, unclaimed pending rows, provider revokes, each
-  outcome in its row), every changing door syncing it. `usage.ts`: reserve (the policy,
-  the turn's rows and the spend read in the unit that inserts, output shrunk to what the
-  caps leave, refusals kept as receipts), dispatched (re-checked: reserved, the policy
-  generation, the connection's version, not aborted), settle (`succeeded` from pi-ai's
-  usage, `failed` when the gateway refused before the provider, else `unknown`, which
-  keeps its reservation), and a dead instance's open rows settled by the next reserve or
-  receipts read; `usageReceipts` (owner only). `gateway-provider.ts` is A1's. Owed by 3.5,
+  outcome in its row; a source with no revocation endpoint has its blob deleted with a
+  notice; a refresh landing after a revoke keeps its rotated tokens for the lane to
+  revoke; a dropped refresh clears its lease), every changing door syncing it.
+  `usage.ts`: reserve (the policy, the turn's counters and the spend read in the unit
+  that inserts, output shrunk to what the caps leave, refusals kept as receipts),
+  dispatched (re-checked: reserved, the policy generation, the connection's version, not
+  aborted), settle (`succeeded` from pi-ai's usage, `failed` when the gateway answered
+  with a refusal's status, its own or the provider's before any output, else `unknown`,
+  which keeps its reservation), abandon (a dispatch or settle unit that threw), and a dead
+  instance's open rows settled by the next reserve or receipts read; `usageReceipts`
+  (owner only). `gateway-provider.ts` is A1's. Owed by 3.5,
   done: `sessionCloseAll` cancels every open flow in its unit, `sessionClose` its
   session's; the envelope carries the policy generation read in the reserving unit, with
   no call back. Declared differences from the research: an OAuth revoke keeps the blob,
   unusable, until the provider revoke (it is the only copy of the token to revoke), then
   deletes it, or after 5 failed tries with a notice; an API key's goes in the revoke's
   unit; `verify` now lists each model with its metadata (G1's answer held ids only, and
-  the object has no catalog); the connections row keeps no base URL (it is sealed); a
-  turn is a conversation's calls since its newest user message (pi's `sessionId` and that
-  message's time); the model policy's per-turn limits replace the Python's constants and
-  its free-tier pools have no counterpart. Mutation: 81 of 86 killed across the caps, the
-  reservation states, the lease, the envelope fields, `auto` and the gate placement; the 5
-  that live are equivalent (the refresh compare-and-swap's lease and version checks,
-  which only this instance's in-memory lease can reach; the reseal's version-shape check of
-  the gateway's own answer; the output cap the gateway clamps to anyway; `flowBegin`'s
-  sync, which its pending row's sweep already covers). Open: the doors' `GATEWAY` binding
+  the object has no catalog); the connections row keeps no base URL (it is sealed); the
+  model policy's per-turn limits replace the Python's constants and its free-tier pools
+  have no counterpart; the daily and monthly ceilings default to none, as the Python's.
+  Review fixes: a provider's refusal before any output is answered by the gateway with
+  its code and status, so it settles `failed` at no cost (it had held its estimate as
+  `unknown`), and pi sees the gateway's code, so only a rate limit is retried; pruning
+  receipts no longer frees a turn's caps (5,000 requests of one turn hold); a turn is
+  pi's run, not the newest user message (A1). Mutation, the reviewer's 56 mapped onto the
+  new code: 48 killed, the 8 that live equivalent (a failed call's tokens and cost are
+  settled 0, so counting it among the settled changes nothing; the dispatch's state guard,
+  checked in its own unit first; dropping a settled row from the in-memory open set, which
+  is read only for open rows; the reseal's own-refresh check, which the lease row also
+  holds; `#owed`'s due check behind the lane's own due query; the tee's undefined
+  session, which no subscriber can hold). Mine, 116 across the caps, the turn counters,
+  the reservation states, the turn, the lease, the revoke, the envelope, `auto`, the gate
+  placement and the gateway's first event: 113 killed, the 3 that live equivalent (the
+  reseal's version-shape check of the gateway's own answer; the output cap the gateway
+  clamps to anyway; `flowBegin`'s sync, which its pending row's sweep covers). Open: the
+  doors' `GATEWAY` binding
   and the connect routes (G3); the policy write that ends in-flight turns and closes their
   tee views (A2); the receipts' rows per call, measured live (G5).
 - [ ] G3 The connect doors (the doors Worker): paste-key connect and OAuth connect with
@@ -391,10 +409,16 @@ account and no deploy.
   directly: `getModels` reads the owner's active connections (`<connection>/<model>`, each
   with the metadata the gateway's setup check gave) and, with any, `auto`; `streamSimple`
   is pi-ai's own pi-messages client, its `fetch` the `GATEWAY` service binding, inside the
-  wrapper: the target, a refresh under the lease, reserve, dispatch, the envelope (owner,
-  connection, version, blob, reservation, policy generation, deadline, as G1's
-  `envelope.ts` reads it), the upstream's own model id, the reservation's output cap,
-  settle before pi sees the end, a reseal stored. Production's agent is it
+  wrapper: the target, the turn, a refresh under the lease, reserve, dispatch, the
+  envelope (owner, connection, version, blob, reservation, policy generation, deadline,
+  as G1's `envelope.ts` reads it), the upstream's own model id, the reservation's output
+  cap, settle before pi sees the end, a reseal stored, and a row abandoned when its own
+  unit throws. The turn is pi's: each conversation's `pi.provider` session id is indexed
+  at creation (`ta.sessions`) with its root, through pi's owner edges, and the turn is the
+  root's live run, named by the submission that started it (pi hands `run.taskId` to a
+  new generation each round), or its live compaction while idle; a compaction inside a
+  run and a subagent's calls are the same turn, and a call with no run is refused
+  `no_run`. Production's agent is it
   (`gatewayAgent`, the default `AgentFactory`), so nothing connected settles `no_model`.
   `auto`: ranked by the data file (provider and model globs, newer ids first, the rest by
   catalog output price), its metadata the strongest's; stickiness and fallback read from
@@ -407,13 +431,18 @@ account and no deploy.
   listener dropped. Tested against G1's gateway Worker (bundled by wrangler as a deploy
   bundles it, run beside the tests with its fake upstream): a real turn; `no_model`; the
   tee's 12 deltas while pi committed at most 3 partials; an abort reaching the upstream;
-  a budget refusal as the turn's error, never sent; a revoke racing a call. Declared
+  a budget refusal as the turn's error, never sent; a revoke racing a call; a 429 retried
+  by pi at no cost; the turn across tool rounds, a steer, a compaction and a subagent; a
+  dispatch or settle that throws. Declared
   differences from the research: stickiness reads the transcript rather than an in-memory
   map rebuilt from it; a continuation kept on an earlier target is estimated by its own
   metadata, but pi's compaction threshold reads `auto`'s (the strongest's) until the next
   user message; pi's abort reaches the gateway through the service binding's own
-  cancellation, with no wrapper of ours. Owner bundle 1,590 KiB, 327 KiB gzip (1,495 and
-  303 before), local startup 24 ms active in a 57 ms window (20 in 50 before). Open: the
+  cancellation, with no wrapper of ours; a fork with no owner is its own root (it runs
+  its own submissions), so only owner edges are walked. Owner bundle 1,598 KiB, 329 KiB
+  gzip (1,495 and 303 before A1), local startup 24 ms active in a 56 ms window (20 in 50
+  before). Open: a background task's or an idle subagent's call outside any root run is
+  refused `no_run` until such work names its own turn; the
   attribution reaches the gateway hop only (pi-messages carries no identity upstream); an
   owner pin of a model per agent (`pi.agent`) for `auto`; a package that keeps the
   ranking current; the tee's transport to the owner's app (A6).
