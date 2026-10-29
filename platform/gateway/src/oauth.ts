@@ -4,7 +4,8 @@
  * sealed blob.
  *
  * - `exchange`: the authorization-code grant with PKCE (RFC 6749 §4.1.3, RFC 7636 §4.5),
- *   with the RFC 8707 resource when the source names one, sealed at once.
+ *   with the RFC 8707 resource when the source names one, sealed at once; or, for a
+ *   key-exchange source (OpenRouter's PKCE flow), the API key its code buys.
  * - `refresh`: a source whose record says `refresh_with: "provider"` refreshes through
  *   pi-ai's own OAuth for its provider (Sign in with ChatGPT: pi-ai's
  *   `openaiChatGPTOAuth.refresh`, which keeps OpenAI's rotation rules), so that provider
@@ -24,7 +25,8 @@ import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 
 import { type Catalog, providerFor } from "./catalog";
 import {
-  type Credential, type OAuthClient, type OAuthGrant, PROVIDER_REFRESH, type Source, source,
+  type Credential, keyExchangeSource, type OAuthClient, type OAuthGrant, PROVIDER_REFRESH,
+  type Source, source,
 } from "./credential";
 import { nativeFetch, within } from "./egress";
 import { type Code, Failure } from "./failure";
@@ -179,13 +181,9 @@ function oauthCredential(base: Source, grant: OAuthGrant): Credential {
            sealed_at: Date.now() };
 }
 
-/** Exchanges an authorization code for tokens and seals them for `bound`. */
-export async function exchange(env: KeyringEnv, bound: Binding, grant: unknown,
-                               record: unknown): Promise<Exchanged> {
-  const checked = source(record, true);
-  const client = checked.oauth;
-  if (client === undefined || !object(grant)
-      || Object.keys(grant).sort().join() !== "code,redirect_uri,verifier"
+/** The callback's code, the flow's verifier and its https redirect URI, checked. */
+function authorizationGrant(grant: unknown): { code: string; verifier: string; redirect: URL } {
+  if (!object(grant) || Object.keys(grant).sort().join() !== "code,redirect_uri,verifier"
       || typeof grant["code"] !== "string" || !CODE.test(grant["code"])
       || typeof grant["verifier"] !== "string" || !VERIFIER.test(grant["verifier"])
       || typeof grant["redirect_uri"] !== "string") {
@@ -200,13 +198,68 @@ export async function exchange(env: KeyringEnv, bound: Binding, grant: unknown,
   if (redirect.protocol !== "https:" || redirect.hash !== "") {
     throw new Failure("invalid_request");
   }
+  return { code: grant["code"], verifier: grant["verifier"], redirect };
+}
+
+/**
+ * Exchanges an authorization code and seals what it buys for `bound`: tokens for an
+ * OAuth source, or the API key a key-exchange source answers with (`keyExchange`).
+ */
+export async function exchange(env: KeyringEnv, bound: Binding, grant: unknown,
+                               record: unknown): Promise<Exchanged> {
+  if (object(record) && Object.hasOwn(record, "key_exchange")) {
+    return keyExchange(env, bound, grant, record);
+  }
+  const checked = source(record, true);
+  const client = checked.oauth;
+  const { code, verifier, redirect } = authorizationGrant(grant);
+  if (client === undefined) {
+    throw new Failure("invalid_request");
+  }
   const answer = await token(client, {
-    grant_type: "authorization_code", code: grant["code"], redirect_uri: redirect.href,
-    code_verifier: grant["verifier"],
+    grant_type: "authorization_code", code, redirect_uri: redirect.href,
+    code_verifier: verifier,
   });
   const sealed = await seal(env, bound, oauthCredential(checked, { ...client, ...answer }));
   return Object.freeze({ ...sealed, expires_at: answer.expires_at,
                          ...(answer.scope === undefined ? {} : { scope: answer.scope }) });
+}
+
+/**
+ * The Python's `pkce_user_key_v1` (`broker/acquisition.py` `exchange_key`, OpenRouter's
+ * PKCE flow): the code and verifier posted once as JSON to the sealed exchange endpoint,
+ * whose `{key}` is sealed as an API key, with no expiry. Never retried: the provider may
+ * already have used the code. The redirect URI is the flow's own and is not sent.
+ */
+async function keyExchange(env: KeyringEnv, bound: Binding, grant: unknown,
+                           record: unknown): Promise<Exchanged> {
+  const checked = keyExchangeSource(record);
+  const { code, verifier } = authorizationGrant(grant);
+  let answer: Response;
+  try {
+    answer = await nativeFetch(checked.key_exchange.endpoint, {
+      method: "POST",
+      headers: { accept: "application/json", "accept-encoding": "identity",
+                 "content-type": "application/json" },
+      body: JSON.stringify({ code, code_verifier: verifier, code_challenge_method: "S256" }),
+      redirect: "manual", signal: AbortSignal.timeout(TOKEN_DEADLINE_MS),
+    });
+  } catch {
+    throw new Failure("oauth_unreachable");
+  }
+  if (answer.status !== 200) {
+    throw new Failure(answer.status >= 300 && answer.status < 400
+      ? "oauth_rejected" : await refused(answer));
+  }
+  const body = await boundedJson(answer);
+  const key = object(body) ? body["key"] : undefined;
+  if (typeof key !== "string" || !TOKEN.test(key)) {
+    throw new Failure("oauth_malformed");
+  }
+  const sealed = await seal(env, bound, { kind: "api_key", secret: key,
+                                          upstream: checked.upstream,
+                                          endpoints: checked.endpoints, sealed_at: Date.now() });
+  return Object.freeze({ ...sealed, expires_at: null });
 }
 
 /** A fetch that sends only `POST` to `endpoint`, and never follows a redirect. */

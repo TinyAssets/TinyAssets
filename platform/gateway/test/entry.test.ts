@@ -3,12 +3,14 @@
  * binding to the configured Worker (so only what RPC carries crosses), with the config's
  * keyring.
  */
+import { createExecutionContext } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { Failure, guarded } from "../src/failure";
 import type Gateway from "../src/index";
+import { ConnectGateway } from "../src/index";
 import { open } from "../src/keyring";
 import { ALICE, ANTHROPIC, envelopeOf, OPENAI, sealed } from "./support";
 
@@ -92,6 +94,19 @@ describe("the gateway Worker", () => {
     expect(((await response.json()) as { path: string }).path).toBe("/v1/models");
     const refused = await gateway.forward("", "c1", 1, blob, new Request("https://egress/v1/models"));
     expect(refused.status).toBe(400);
+  });
+
+  it("gives the doors' entrypoint only the connect steps", async () => {
+    // The doors' own tests reach it over their real `GATEWAY` binding; here, its surface.
+    expect(Object.getOwnPropertyNames(ConnectGateway.prototype).sort())
+      .toEqual(["constructor", "exchange", "seal", "verify"]);
+    const connect = new ConnectGateway(createExecutionContext(), env);
+    const { blob } = await connect.seal("alice", "c1", 1, "sk-good", ANTHROPIC);
+    expect((await connect.verify("alice", "c1", 1, blob)).models.length).toBeGreaterThan(0);
+    expect(await rejected(() => connect.verify("bob", "c1", 1, blob))).toBe("credential_refused");
+    expect(await rejected(() => connect.exchange("alice", "c1", 1, {
+      code: "bad", verifier: "v".repeat(43), redirect_uri: "https://tinyassets.io/cb",
+    }, ANTHROPIC))).toBe("invalid_source");
   });
 
   it("serves /v1/messages and nothing else over fetch", async () => {
