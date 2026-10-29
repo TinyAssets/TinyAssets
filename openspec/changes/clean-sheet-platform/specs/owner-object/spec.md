@@ -671,11 +671,14 @@ Each call SHALL go to the gateway as pi-messages over the `GATEWAY` service bind
 - **THEN** the gateway's upstream request is cancelled, and the call settles `unknown`
 
 ### Requirement: An outside client's tool calls are gated by its conversation's stamp
-A trusted `ta.authority` extension, installed before every other, SHALL check each tool call in `beforeTool`, a nested call included: under the conversation's stamp, the client's grant SHALL still stand at the stamped generation and sign-in, and a scoped grant SHALL hold the tool's capability in the universe and for the agent the thread acts as (`read` needs `read_files`, `write` and `edit` need `write_files`, `bash` is refused, `ta` takes its own map's, any other tool is refused). A refusal SHALL be a block with a fixed reason and SHALL leave a refusal receipt. Each change the environment makes SHALL re-check the stamp's `write_files` in its own unit.
+A trusted `ta.authority` extension, installed first, SHALL check each tool call, nested ones included, in `beforeTool`: under the conversation's stamp, the client's grant SHALL still stand as stamped, and a scoped grant SHALL hold the tool's capability where the thread acts (`read_files` for `read`, `write_files` for `write` and `edit`; `bash` and any tool without a capability refused). A refusal SHALL be a block with a fixed reason and a refusal receipt.
 
 #### Scenario: A scoped client without write_files
 - **WHEN** a scoped client's conversation, granted `read_files` only, calls `read`, `write`, `edit` and `bash`
 - **THEN** the read runs, the other three are blocked with fixed reasons, and each block leaves a refusal receipt
+
+### Requirement: A tool call's writes re-check its authority in their own units
+Each change the environment makes for a stamped conversation SHALL re-check, first in its own unit, that the stamp stands and holds `write_files`.
 
 #### Scenario: A revoke lands after the gate let a write by
 - **WHEN** a revoke's unit is queued ahead of a write whose call already passed the gate
