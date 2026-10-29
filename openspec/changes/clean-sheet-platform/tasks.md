@@ -218,8 +218,8 @@ live acceptance is still owed says so.
   digest, so the owner's browser pairs an outside origin with its session only for an
   API key (L2). The scoped capabilities are declared and are the only ones a scope may
   name (N1). The refusal receipt's generation and the grant row's `CHECK` are held by
-  tests (N4). The scheduled-work runner is the agent's (5): until it lands, pending work
-  is held and gives the lane no job.
+  tests (N4). The scheduled-work runner is the agent's (5, landed in A2), so pending work
+  gets its job.
 - [ ] 3.7 The owner's action decision, from `broker/policy.py` and
   `broker/authority_gate.py` (#5333): `decide` with spend reservations,
   once-approvals, standing grants and declared operation kinds, which the gateway's
@@ -340,9 +340,9 @@ account and no deploy.
   gate placement, the upstream codes and the gateway's first event: 123 killed, the 3 that
   live equivalent (the reseal's version-shape check of the gateway's own answer; the
   output cap the gateway clamps to anyway; a third in code G3 has since deleted). The
-  doors' `GATEWAY` binding and the connect routes are G3's (done). Open: the policy write
-  that ends in-flight turns and closes their
-  tee views (A2); the receipts' rows per call, measured live (G5).
+  doors' `GATEWAY` binding and the connect routes are G3's (done). The policy write that
+  ends in-flight turns and closes their tee views is A2's (done). Open: the receipts' rows
+  per call, measured live (G5).
 - [x] G3 The connect doors (the doors Worker), in workerd through the real gateway Worker,
   nothing deployed. The doors bind `GATEWAY` to the gateway's new `ConnectGateway`
   entrypoint, which serves only `seal`, `exchange` and `verify` (no model call, no egress
@@ -551,6 +551,48 @@ account and no deploy.
   attribution reaches the gateway hop only (pi-messages carries no identity upstream); an
   owner pin of a model per agent (`pi.agent`) for `auto`; a package that keeps the
   ranking current; the tee's transport to the owner's app (A6).
+- [x] A2 Authority, ending work and the work runner, in workerd, nothing deployed
+  (`authority.ts`, `threads.ts`, migration 7). `ta.authority`, a trusted extension
+  installed first, so its block wins, gates every tool call in `beforeTool`, nested ones
+  (`call.parent`) included: under the conversation's stamp, read from pi's `ta.authority`
+  document through `HookApi.snapshot`, `Grants.standing` synchronously, and for a scoped
+  grant the tool's capability where the thread acts (`read` → `read_files`; `write`,
+  `edit` → `write_files`; `bash` refused; `ta` by its own map, empty until A3, so refused;
+  any other tool refused). A refusal is a block with a fixed reason and a refusal receipt
+  (rule `outside_authority`). Each change the environment makes re-checks the stamp's
+  `write_files` in its own unit, so a revoke that lands after the gate let a call by
+  refuses its write. A thread is made by `OwnerAgent.thread`: pi writes the stamp in the
+  creating commit, then `agent_threads` records it in a unit that re-checks it stands;
+  `conversationCreated` stays the one inheritance path (a fork holds its parent's copy). A
+  grant set or revoke ends its client's work after its unit commits: its pending waits,
+  the tee views of its threads and of every live conversation stamped for it, and an
+  abort (`background: true`) of each such conversation; a policy write does the same for
+  every conversation with live work and closes every view; the door waits at most 5 s.
+  `OwnerDO` holds `workRunner`: the thread named in the work row when it was made (a turn
+  only in a thread of its own authority), `mark()` first, `submit` with `operationId =
+  work_id` and `whenBusy: "followUp"`, `accepted: false` handed as `duplicate`, a gone
+  thread `failed` before its mark; held work now gets its job. `OwnerAgent.status` reads
+  `pending()`, then `wait()`; `OwnerAgent.wait` is the waits a change ends (A4's doors).
+  Tested: a scoped client's read, and its write, edit, shell and an unmapped tool blocked
+  with receipts; the universe and agent of the triple; the revoke fence on a new thread;
+  a revoke ending a client's turn, its subagent's, its views (an idle thread's too) and
+  waits while another client's and the owner's run on, its next tool call blocked; a
+  grant set ending a turn; the revoke raced against a tool call through the held queue;
+  a nested call blocked once the grant moved; subagent and fork stamps; a policy write
+  ending turns, background work, views and waits; the runner's duplicate, lapsed claim,
+  busy thread and gone thread; status; a revoke mid-stream settling the reservation
+  `unknown`. Mutation, 58 across the capability map, the standing check, the stamp's
+  inheritance, the abort targets and the hand-off: 57 killed, the one alive equivalent
+  while `ta`'s map is empty (which op names the capability). Declared differences from
+  the research: a stamp also names the universe and agent the thread acts in, and
+  `agent_threads` a `universe` column, since a scoped grant is triples; abort targets are
+  read from pi's live work and each conversation's stamp (subagents and forks have no
+  row), the rows only adding their threads' views; every conversation with live work is
+  aborted on a policy write, owned ones included, which needs no owner-edge walk. Owner
+  bundle 1,618 KiB, 335 KiB gzip (1,598 and 329 at A1), local startup 25 ms active in a
+  60 ms window. Out of scope now: only platform code makes a top-level conversation, so
+  only it could make an unstamped one from a stamped one. Open: thread retention, with
+  A4's doors that make threads; a `ta` capability's grant capability (A3).
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
   owner's hook code with the Worker Loader, called over RPC with JSON in and out and a
   timeout. A `beforeTool` timeout or error blocks

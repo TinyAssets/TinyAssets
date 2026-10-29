@@ -669,3 +669,39 @@ Each call SHALL go to the gateway as pi-messages over the `GATEWAY` service bind
 #### Scenario: A turn is aborted mid-stream
 - **WHEN** the owner aborts a turn whose model call is streaming
 - **THEN** the gateway's upstream request is cancelled, and the call settles `unknown`
+
+### Requirement: An outside client's tool calls are gated by its conversation's stamp
+A trusted `ta.authority` extension, installed before every other, SHALL check each tool call in `beforeTool`, a nested call included: under the conversation's stamp, the client's grant SHALL still stand at the stamped generation and sign-in, and a scoped grant SHALL hold the tool's capability in the universe and for the agent the thread acts as (`read` needs `read_files`, `write` and `edit` need `write_files`, `bash` is refused, `ta` takes its own map's, any other tool is refused). A refusal SHALL be a block with a fixed reason and SHALL leave a refusal receipt. Each change the environment makes SHALL re-check the stamp's `write_files` in its own unit.
+
+#### Scenario: A scoped client without write_files
+- **WHEN** a scoped client's conversation, granted `read_files` only, calls `read`, `write`, `edit` and `bash`
+- **THEN** the read runs, the other three are blocked with fixed reasons, and each block leaves a refusal receipt
+
+#### Scenario: A revoke lands after the gate let a write by
+- **WHEN** a revoke's unit is queued ahead of a write whose call already passed the gate
+- **THEN** the write's own unit refuses it, and nothing is written
+
+### Requirement: A thread's stamp is written where it is made and never shed
+A thread SHALL be made as a top-level conversation whose stamp pi writes in the creating commit, then recorded in `agent_threads` in a unit that re-checks the stamp stands. A conversation a task creates SHALL take its owner conversation's stamp in pi's `conversationCreated`, the one inheritance path, and a fork SHALL hold its parent's copy.
+
+#### Scenario: A fork of a client's thread
+- **WHEN** a client's thread is forked and the client is then revoked
+- **THEN** the fork carries the same stamp, and its next tool call is blocked
+
+### Requirement: A grant or policy change ends the agent work it covers
+After its own unit commits, in the same door, a grant set or revoke SHALL end its client's pending waits, close the live views of its threads and of every live conversation stamped for it, and abort each such conversation's work, background work included; a policy write SHALL do the same for every conversation with live work and close every live view.
+
+#### Scenario: A client revoked mid-turn
+- **WHEN** a client is revoked while its turn, its subagent's and another client's run
+- **THEN** the client's turn and its subagent's settle `unanswered: aborted`, its views hear `end`, its waits end, and the other client's turn runs on
+
+#### Scenario: A revoke during a model call
+- **WHEN** a revoke lands while a client's turn's model call streams
+- **THEN** the turn is aborted, the upstream request cancelled, and its reservation settles `unknown` through the owner's usage
+
+### Requirement: A scheduled turn runs in its own thread, handed once
+A scheduled turn SHALL name, when it is made, a thread made under the same authority. The `work` lane's runner SHALL mark the row before any effect, then submit to that thread with the row's `work_id` as the operation id, queued behind a busy run; a second hand-off SHALL be pi's duplicate, never run twice. An operation's status SHALL be pi's receipts: its pending record, then how it settled.
+
+#### Scenario: A second hand-off of the same work
+- **WHEN** the runner hands the same `work_id` over twice
+- **THEN** pi answers the second `accepted: false`, the row is handed, and the model runs once
