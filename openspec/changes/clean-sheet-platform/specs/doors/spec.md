@@ -134,15 +134,48 @@ The connect doors (`/app/api/connections/*`) SHALL take only the owner's first-p
 - **THEN** it is refused `403` before any object call
 
 ### Requirement: A connect flow finishes only in the browser and session that began it
-Beginning an OAuth connect SHALL set a per-flow `__Host-` binding cookie (SameSite=Lax, ten minutes) holding the digest of its state. The callback (`/oauth/connect/callback`) SHALL take only a top-level navigation with that binding, reach no object, and hand the code and state to the owner's app page in the URL fragment. The finish SHALL carry the binding and the session that began the flow, which the object uses up once.
+Beginning an OAuth connect SHALL set a per-flow `__Host-` binding cookie (SameSite=Lax, ten minutes) holding the digest of its state. The callback SHALL take only a top-level navigation with that binding, reach no object, and hand the code, the state and the redirect URI it arrived on to the owner's app page in the URL fragment. The finish SHALL carry the binding and the session that began the flow, which the object uses up once.
 
 #### Scenario: A callback from another browser
 - **WHEN** the callback comes without the flow's binding cookie, or with another flow's
 - **THEN** it is refused `403` and no object is reached
 
+#### Scenario: A finish that never reaches the object
+- **WHEN** a finish comes cross-origin, as another media type or past the body bound
+- **THEN** it is refused and the flow stays open
+
 #### Scenario: A replayed, expired or cancelled flow
 - **WHEN** a finish repeats a used state, comes after the flow expired, from another session, or after `sessionCloseAll` or the beginning session's sign-out
 - **THEN** it is refused and the gateway is never asked to exchange
+
+### Requirement: Each source returns to its own callback
+Each OAuth source SHALL have its own redirect URI, `/oauth/connect/callback/<source>`, a key-exchange source's state one more path segment, and the callback SHALL take only that source's own form. The finish SHALL refuse unless the code came back on the flow's own redirect URI, so a code one provider issued never reaches another's token endpoint (the mix-up attack, RFC 9700 §4.4).
+
+#### Scenario: A code from another provider
+- **WHEN** a flow begun for one source is finished with a code that came back on another source's callback, or on the bare callback
+- **THEN** it is refused, the code reaches no token endpoint, and the pending connection is given up
+
+#### Scenario: An RFC 6749 state in the path
+- **WHEN** an RFC 6749 source's callback carries its state as a path segment, or a key-exchange source's carries it in the query
+- **THEN** the callback is refused `400`
+
+### Requirement: A source declaring its issuer is answered with it
+A record declaring its issuer and RFC 9207's `authorization_response_iss_parameter_supported` SHALL be answered only with that `iss`, and any `iss` present SHALL be the record's issuer.
+
+#### Scenario: A missing or wrong issuer
+- **WHEN** such a source's callback carries no `iss`, or another issuer's
+- **THEN** the callback is refused `400`
+
+### Requirement: A failed connect leaves nothing live
+A pasted key SHALL be held to the gateway's own secret grammar before any object call. A connect that fails before anything is issued SHALL give its pending connection up at once, and one that fails after the provider issued a credential SHALL commit it `failed`, never drop it.
+
+#### Scenario: A key with a newline or a non-ASCII character
+- **WHEN** the owner pastes a key outside the gateway's secret grammar
+- **THEN** it is refused `400` before any object call
+
+#### Scenario: A key the provider refuses
+- **WHEN** the setup check refuses a pasted key
+- **THEN** the answer is the gateway's fixed code and the connection holds no slot
 
 ### Requirement: Source records are data checked by the gateway's own rule
 Each model source SHALL be an editable JSON record in `platform/sources/` naming how it connects (`api_key`, `oauth`, or `cli` alone) and, for a gateway source, its pi-ai provider, API, base URL, auth header, setup check and endpoints. A record SHALL be checked whole when used and in CI, its gateway values by the gateway's own source check, so the gateway's `SUPPORTED_APIS` is the one list. A record marked unwired SHALL be refused with its reason.

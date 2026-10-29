@@ -295,7 +295,8 @@ account and no deploy.
   `models` table: per-turn requests, tokens and cost (µ$), owner-wide and per-source
   (by source record) daily and monthly cost, pi's retries.
   `connections.ts`: `connectionPrepare`, `connectionCommit`, `connectionRevoke`,
-  `connectionList`, `flowBegin`, `flowFinish`, each the owner's in session, a refusal
+  `connectionList`, `flowBegin` (folded into `connectionPrepare` by G3), `flowFinish`,
+  each the owner's in session, a refusal
   receipted; the refresh lease (one refresh per connection, which concurrent calls wait
   on, stored by compare-and-swap; a refused grant fails the connection; a dead instance's
   lease is taken over); a reseal stored by compare-and-swap, never under a refresh lease;
@@ -347,14 +348,23 @@ account and no deploy.
   forwarding, no keyring); the config guard holds the binding and that class's methods,
   and only `connect.ts` names `GATEWAY` (the binder guard). Owner-surface routes, each in
   the live session with a closed body (owner from the token, connection and version from
-  the object): `connections/key` (prepare, `seal`, `verify`, commit), `connections/oauth`
-  (prepare, `flowBegin`, the authorize URL and a per-flow `__Host-ta-connect-*` browser
+  the object): `connections/key` (the key held to the gateway's own secret grammar,
+  then prepare, `seal`, `verify`, commit), `connections/oauth` (prepare, which begins the
+  flow in its own unit, the authorize URL and a per-flow `__Host-ta-connect-*` browser
   binding, Lax, as the provider's `beginUpstream` binds its own), `GET
-  /oauth/connect/callback` (a top-level navigation with that binding; it reaches no
-  object and hands the code and state to the app page `/app/connected` in the fragment),
-  `connections/oauth/finish` (the binding again, `flowFinish` in the beginning session,
-  `exchange`, `verify`, commit), `connections/revoke` and `connections/list`; the six
-  connection doors join the tool guard's owner-only set. Source records:
+  /oauth/connect/callback/<source>[/<state>]` (each source its own redirect URI, in its
+  protocol's own form, with the issuer an RFC 9207 record declares; a top-level navigation
+  with that binding; it reaches no object and hands the code, the state and the path it
+  arrived on to the app page `/app/connected` in the fragment), `connections/oauth/finish`
+  (the binding again, `flowFinish` in the beginning session, the path held to the flow's
+  own redirect URI (the mix-up, RFC 9700 §4.4), the source re-checked, `exchange`,
+  `verify`, commit), `connections/revoke` and `connections/list`; the connection doors
+  join the tool guard's owner-only set. A connect failing before anything is issued
+  revokes its pending row at once; a credential issued whose setup check then fails is
+  committed `failed` (in `error`, revoked at the provider by the lane, or never stored
+  with an owner notice to delete it there); each connection records at prepare whether
+  its provider can be asked to revoke (`revocable`, from its record), so a key exchange's
+  revoke claims none and tells the owner to delete the key at the provider. Source records:
   `platform/sources/*.json`, the nine Python records ported plus `chatgpt` (Sign in with
   ChatGPT, `unwired` until OpenAI's approval: its connect is refused `501` naming why),
   each checked whole by `doors/src/sources.ts`, whose gateway part is the gateway's own
@@ -363,10 +373,16 @@ account and no deploy.
   every table, the answers and the console for the key, the code and the tokens; an outside
   credential on every connect door; forged owner, connection and version; the callback's
   navigation, binding, state and refusal cases; replayed, expired, other-session, cancelled
-  (`sessionCloseAll`, sign-out) flows; a broken or unsupported record; `413`. Mutation:
-  69 across the browser binding, the flow state, the plaintext path and the owner-only
-  gating, all killed. Doors bundle 1,010 KiB, 211 KiB gzip (966 KiB and 200 KiB before);
-  local startup 46 to 53 ms active over three runs, of the 1 s limit (45 to 47 before). Declared differences from the
+  (`sessionCloseAll`, sign-out) flows; the mix-up, each source's own callback form and
+  the issuer; a key outside the secret grammar; a setup check failing after an exchange;
+  a broken or unsupported record; `413`. From the security review (CHANGES, 54b29ce87):
+  M1 the per-source redirect URIs, M2 the key grammar, L1 to L5 above, each of its probes
+  now a test. Mutation: mine, 94 across the browser binding, the flow state, the
+  plaintext path, the owner-only gating and the review's fixes, all killed; the
+  reviewer's 54, 53 killed and the one that lives equivalent (record parameters set after
+  the flow's, which the schema forbids from naming a flow parameter).
+  Doors bundle 1,013 KiB, 212 KiB gzip (966 KiB and 200 KiB before);
+  local startup 48 to 60 ms active over three runs, of the 1 s limit (45 to 47 before). Declared differences from the
   research: the callback cannot finish the flow itself, since a cross-site navigation
   carries neither the owner's token nor its Strict session cookie, so the app page posts
   the code back in session (the binding is checked at both steps); no `prompt` is forced
@@ -382,15 +398,25 @@ account and no deploy.
   their install, sign-in, invocation and hosts for the sandbox and name no upstream (they
   never enter the gateway); the Python's model lists, cards and free-plan terms are not
   ported (pi-ai's catalog lists models); a record's OAuth client is public only (a
-  confidential client's secret would need a secret binding); a step failing after
-  `connectionPrepare` leaves the pending row for the lane's sweep; `flowFinish` also
-  returns the connection's source record id (one owner field).
-- [ ] The owner app's connect page `/app/connected` (the website slice): read the code
-  and state from the fragment, clear it, and post them to `connections/oauth/finish`.
-- [ ] Each RFC 6749 source's provider registration of the redirect URI
-  `https://tinyassets.io/oauth/connect/callback` (OpenRouter's key exchange takes any
-  callback); Sign in with ChatGPT's hosted client and registration once OpenAI approves
-  (founder), which then drops its record's `unwired`.
+  confidential client's secret would need a secret binding); `flowFinish` also returns
+  the connection's source record id. Owner changes: `connectionPrepare` begins the OAuth
+  flow (the `flowBegin` door deleted), `connectionCommit` takes `failed`, migration 6's
+  `connections` gains `revocable` and a provider revoke may be due on an `error` row.
+- [ ] The owner app's connect page `/app/connected` (the website slice): read the code,
+  the state and the redirect URI from the fragment and post them to
+  `connections/oauth/finish`. `history.replaceState` clears the fragment before any other
+  script runs; the page loads no third-party script; it is served with
+  `Referrer-Policy: no-referrer` and a strict CSP.
+- [ ] Each RFC 6749 source's provider registration of its own redirect URI,
+  `https://tinyassets.io/oauth/connect/callback/<source-id>` (OpenRouter's key exchange
+  takes any callback: `.../callback/openrouter_user_models_v1/<state>`); Sign in with
+  ChatGPT's hosted client and registration once OpenAI approves (founder), which then
+  drops its record's `unwired`.
+- [ ] Mobile connects and sign-in (the app slice): on mobile the OAuth runs in an external
+  browser (RFC 8252), whose cookies are not the WebView's, so the Lax connect binding (and
+  the provider's own upstream binding for the owner's sign-in) does not come back with
+  the callback; the app slice decides how (a claimed https redirect into the app, or the
+  binding carried another way).
 - [ ] G4 The egress door (with the sandbox slice): `egress.tinyassets.io/c/<connection>/*`,
   the sandbox identity (E2B workload identity or a lease token), `egressOpen`, `forward`,
   `egressSettle`; the E2B network document from owner policy. Owed by 3.5: each egress
