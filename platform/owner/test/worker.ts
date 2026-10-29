@@ -44,6 +44,8 @@ export interface Probes {
   holdGate: Promise<void> | null;
   /** How many times `hold` has started on this instance. */
   holds: number;
+  /** How long `hold` lingers once aborted before it returns, in ms. */
+  holdLinger: number;
   /** The conversation `spawn` last made, when it has. */
   spawned: number | null;
   /** The inputs `spawn` submitted to the conversations it made, in order. */
@@ -62,7 +64,8 @@ export interface Probes {
 
 /** Probes as a fresh instance has them. */
 export function freshProbes(): Probes {
-  return { readGate: null, reads: 0, holdGate: null, holds: 0, spawned: null, submitted: [],
+  return { readGate: null, reads: 0, holdGate: null, holds: 0, holdLinger: 0, spawned: null,
+           submitted: [],
            background: null, backgroundGate: null, toolGate: null, gated: [], nestGate: null };
 }
 
@@ -179,6 +182,9 @@ function testExtensions(probes: () => Probes): Extension[] {
         execute: async (_args, _api, context: Context) => {
           probes().holds++;
           await Promise.race([probes().holdGate, abortOf(context)]);
+          if (context.abortSignal?.aborted && probes().holdLinger > 0) {
+            await new Promise((resolve) => setTimeout(resolve, probes().holdLinger));
+          }
           return { output: [{ type: "text", text: "held" }] };
         },
       }),

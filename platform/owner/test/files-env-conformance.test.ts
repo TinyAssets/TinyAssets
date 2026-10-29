@@ -224,6 +224,71 @@ describe("the owner's environment", () => {
     });
   });
 
+  it("refuses in a change's own unit an authority that lapsed after its start", async () => {
+    await inOwner(async (files) => {
+      const owner = new OwnerFilesEnv({ files, rearm });
+      getOrThrow(await owner.writeFile("a.txt", "one", context));
+      getOrThrow(await owner.createDir("dir", undefined, context));
+      // Each operation's first check passes; every later one is the lapsed grant.
+      let asked: string[] = [];
+      const theirs = new OwnerFilesEnv({ files, rearm, authorize: (access) => {
+        asked.push(access);
+        if (asked.length > 1) {
+          throw new Refused("outside client authority no longer stands");
+        }
+      } });
+      const changes = [() => theirs.writeFile("a.txt", "x", context),
+                       () => theirs.appendFile("a.txt", "x", context),
+                       () => theirs.createDir("new", undefined, context),
+                       () => theirs.renameFile("a.txt", "c.txt", context),
+                       () => theirs.remove("dir", { recursive: true }, context),
+                       () => theirs.createTempDir(undefined, context)];
+      const seen: [string, string[]][] = [];
+      for (const change of changes) {
+        asked = [];
+        const result = await change();
+        seen.push([result.ok ? "changed" : result.error.code, asked]);
+      }
+      expect(seen).toEqual(Array.from({ length: 6 },
+                                      () => ["permission_denied", ["write", "write"]]));
+      expect(getOrThrow(await owner.readTextFile("a.txt", context))).toBe("one");
+      expect([getOrThrow(await owner.exists("dir", context)),
+              getOrThrow(await owner.exists("new", context)),
+              getOrThrow(await owner.exists("c.txt", context))]).toEqual([true, false, false]);
+    });
+  });
+
+  it("holds each read, and each read of an opened reader, to the authority's read",
+     async () => {
+    await inOwner(async (files) => {
+      const owner = new OwnerFilesEnv({ files, rearm });
+      getOrThrow(await owner.writeFile("a.txt", "one\ntwo\n", context));
+      let reads = true;
+      const asked: string[] = [];
+      const theirs = new OwnerFilesEnv({ files, rearm, authorize: (access) => {
+        asked.push(access);
+        if (access === "read" && !reads) {
+          throw new Refused("outside client authority no longer stands");
+        }
+      } });
+      const binary = getOrThrow(await theirs.openBinaryReader("a.txt", undefined, context));
+      const lines = getOrThrow(await theirs.openTextLineReader("a.txt", context));
+      expect(getOrThrow(await theirs.readTextFile("a.txt", context))).toBe("one\ntwo\n");
+      expect(asked).toEqual(["read", "read", "read"]);
+      reads = false;
+      const why = (result: { ok: boolean; error?: { code: string } }) =>
+        result.ok ? "read" : result.error!.code;
+      expect([why(await theirs.readTextFile("a.txt", context)),
+              why(await theirs.readBinaryFile("a.txt", context)),
+              why(await binary.read(0, 3, context)),
+              why(await lines.readLine(context))])
+        .toEqual(Array.from({ length: 4 }, () => "permission_denied"));
+      // A write-only grant still writes.
+      getOrThrow(await theirs.writeFile("b.txt", "mine", context));
+      expect(getOrThrow(await owner.readTextFile("b.txt", context))).toBe("mine");
+    });
+  });
+
   it("shares one id across environments of one owner, and none with another owner",
      async () => {
     let first = "";

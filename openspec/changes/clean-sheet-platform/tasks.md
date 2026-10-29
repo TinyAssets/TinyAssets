@@ -552,47 +552,73 @@ account and no deploy.
   owner pin of a model per agent (`pi.agent`) for `auto`; a package that keeps the
   ranking current; the tee's transport to the owner's app (A6).
 - [x] A2 Authority, ending work and the work runner, in workerd, nothing deployed
-  (`authority.ts`, `threads.ts`, migration 7). `ta.authority`, a trusted extension
-  installed first, so its block wins, gates every tool call in `beforeTool`, nested ones
-  (`call.parent`) included: under the conversation's stamp, read from pi's `ta.authority`
-  document through `HookApi.snapshot`, `Grants.standing` synchronously, and for a scoped
-  grant the tool's capability where the thread acts (`read` → `read_files`; `write`,
-  `edit` → `write_files`; `bash` refused; `ta` by its own map, empty until A3, so refused;
-  any other tool refused). A refusal is a block with a fixed reason and a refusal receipt
-  (rule `outside_authority`). Each change the environment makes re-checks the stamp's
-  `write_files` in its own unit, so a revoke that lands after the gate let a call by
-  refuses its write. A thread is made by `OwnerAgent.thread`: pi writes the stamp in the
-  creating commit, then `agent_threads` records it in a unit that re-checks it stands;
-  `conversationCreated` stays the one inheritance path (a fork holds its parent's copy). A
-  grant set or revoke ends its client's work after its unit commits: its pending waits,
-  the tee views of its threads and of every live conversation stamped for it, and an
-  abort (`background: true`) of each such conversation; a policy write does the same for
-  every conversation with live work and closes every view; the door waits at most 5 s.
-  `OwnerDO` holds `workRunner`: the thread named in the work row when it was made (a turn
-  only in a thread of its own authority), `mark()` first, `submit` with `operationId =
-  work_id` and `whenBusy: "followUp"`, `accepted: false` handed as `duplicate`, a gone
-  thread `failed` before its mark; held work now gets its job. `OwnerAgent.status` reads
-  `pending()`, then `wait()`; `OwnerAgent.wait` is the waits a change ends (A4's doors).
-  Tested: a scoped client's read, and its write, edit, shell and an unmapped tool blocked
-  with receipts; the universe and agent of the triple; the revoke fence on a new thread;
-  a revoke ending a client's turn, its subagent's, its views (an idle thread's too) and
-  waits while another client's and the owner's run on, its next tool call blocked; a
-  grant set ending a turn; the revoke raced against a tool call through the held queue;
-  a nested call blocked once the grant moved; subagent and fork stamps; a policy write
-  ending turns, background work, views and waits; the runner's duplicate, lapsed claim,
-  busy thread and gone thread; status; a revoke mid-stream settling the reservation
-  `unknown`. Mutation, 58 across the capability map, the standing check, the stamp's
-  inheritance, the abort targets and the hand-off: 57 killed, the one alive equivalent
-  while `ta`'s map is empty (which op names the capability). Declared differences from
-  the research: a stamp also names the universe and agent the thread acts in, and
-  `agent_threads` a `universe` column, since a scoped grant is triples; abort targets are
-  read from pi's live work and each conversation's stamp (subagents and forks have no
-  row), the rows only adding their threads' views; every conversation with live work is
-  aborted on a policy write, owned ones included, which needs no owner-edge walk. Owner
-  bundle 1,618 KiB, 335 KiB gzip (1,598 and 329 at A1), local startup 25 ms active in a
-  60 ms window. Out of scope now: only platform code makes a top-level conversation, so
-  only it could make an unstamped one from a stamped one. Open: thread retention, with
-  A4's doors that make threads; a `ta` capability's grant capability (A3).
+  (`authority.ts`, `threads.ts`, migration 7). The invariant: an outside client's
+  authority is enforced in the environment pi builds for every tool call, a replay's
+  included, whatever extensions are selected, and in each model call's reservation and
+  dispatch units; `beforeTool` is the early gate, which refuses before a tool begins.
+  Each conversation carries its authority in pi's `ta.authority` document: the owner's
+  (`{by: "owner"}`, the root's and an unstamped thread's, explicit), a client's stamp
+  (client, generation, sign-in, universe, agent), or none, which does nothing (a
+  conversation the object did not make). The environment holds each operation to it
+  (`permission_denied`): a read, each read of an opened reader too, needs `read_files`, a
+  change `write_files`, again in the change's own unit, so a revoke that lands after a
+  call began refuses its write, and `exec` is refused to a scoped grant; every check is
+  `Grants.standing`, so a full grant also must still stand. `ta.authority`, installed
+  first so its block wins, gates every call (`call.parent` too): `read` → `read_files`,
+  `write` → `write_files`, `edit` → both, `bash` refused when scoped, `ta` by its own
+  map (empty until A3; the `ta:` names are reserved for its ops), any other tool refused;
+  a refusal is a block with a fixed reason and a receipt (rule `outside_authority`).
+  Packages named `ta.*` are refused at install, and a guard (`agent-authority.test.ts`)
+  keeps extension selection (`extensions`, `configure`) out of the owner sources and
+  conversation making (`createConversation`, `fork`, `forkConversation`) out of all but
+  `OwnerAgent.thread`. A model call finds its conversation by its provider session
+  (`ta.session`, written in `conversationCreated`); a revoked client's call is refused
+  in its reservation (a `refused` receipt, no fetch) or not sent at dispatch, and a
+  session the object never made is `no_conversation`, so the abort is the prompt stop,
+  not the enforcement. `conversationCreated` is the one inheritance path: a task's
+  conversation takes its owner conversation's authority, and a fork's copy that
+  disagrees throws. A thread is made by `OwnerAgent.thread`: pi writes the authority in
+  the creating commit, then `agent_threads` records it in a unit that re-checks it
+  stands; a thread never changes its stamp (trigger), holds its client's grant row
+  (`held`, so `forgetRevoked` keeps the row), is bounded (64 a client, 10,000 the
+  owner's, refused loudly past them), and is dropped in the unit of its client's grant
+  set or revoke, which returns the dropped threads. After that unit commits the door ends
+  the client's work: its pending waits, the views of those threads and of every live
+  conversation stamped for it, and an abort (`background: true`) of each; a policy write
+  does the same for every conversation with live work and closes every view. Either door
+  opens pi and waits at most `END_WAIT_MS` (5 s); should that fail the door rejects though
+  its write is committed, and what the end missed is refused anyway. `OwnerDO` holds
+  `workRunner`: the thread named in the work row, which `Scheduled.add` accepts only at
+  the work's own client and generation and the runner checks again (and that its stamp
+  still stands) before `mark()`; `submit` with `operationId = work_id` and `whenBusy:
+  "followUp"`, the entry naming the client, `accepted: false` handed as `duplicate`, a
+  gone thread `failed` before its mark. `OwnerAgent.status` reads `pending()`, then waits
+  `STATUS_WAIT_MS`, answering pending only when that wait timed out and failing loudly
+  otherwise; `OwnerAgent.wait` is the waits a change ends (A4's doors). Tested: the
+  capability map and each refusal with its receipt; the environment refusing with
+  `ta.authority` configured away, and a replay's read after an eviction and a revoke;
+  a lapsed grant refused in each change's unit and at an opened reader; the revoke raced
+  against a tool call and a thread's recording through the held queue; a revoke ending a
+  client's turn, its subagent's, its views and waits while others run on, its door
+  waiting for a tool slow to stop; a revoke missing the work in its abort, or committing
+  between reservation and dispatch, spending nothing; a fork's disagreeing copy; the
+  thread bound, `held` and the drop; the hand-off at its generation; status. Mutation:
+  this tree's 91 (the capability map, the standing check, the environment, inheritance,
+  sessions, the abort targets, the bound, the triggers, the hand-off and status), 80
+  killed first, the 11 alive killed by new tests; the reviewer's 68 run on this tree:
+  38 killed, 29 no longer match the rewritten code (each has a counterpart among the 91),
+  and one alive is equivalent: `liveConversations`' submissions, which add nothing on pi
+  1.4.0 while every open submission's conversation also has a live task. Declared
+  differences from the research: a stamp also names the universe and agent, and
+  `agent_threads` a `universe` column, since a scoped grant is triples; `edit` needs both
+  capabilities; abort targets are read from pi's live work and each conversation's
+  authority, the rows only adding their threads' views; a thread goes with its grant's
+  change rather than by idle retention; a write-only client resolves paths too (pi's
+  mutation queue reads a path's canonical form). Owner bundle 1,627 KiB, 337 KiB gzip
+  (1,598 and 329 at A1), local startup 25 ms active in a 59 ms window. Open: thread
+  retention by idle age, with A4's doors that make threads; A3's `ta`, whose `execute`
+  re-derives its capability from the conversation's authority rather than trusting the
+  gate's map alone.
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
   owner's hook code with the Worker Loader, called over RPC with JSON in and out and a
   timeout. A `beforeTool` timeout or error blocks
@@ -649,7 +675,9 @@ account and no deploy.
   the change feed, sync out as one fenced `fileSyncCommit`, a 20 s lease heartbeat and
   15 s checkpoints, `/proc` open-file deferral and SQLite file groups, the cold-create
   size cap); `exec` in the environment (wake, sync in, run, sync out, report conflicts
-  and a fenced sync-out in its result); symbolic links in the manifest and the
+  and a fenced sync-out in its result), which re-checks the conversation's authority
+  (`Grants.standing` on its stamp) before it starts a command and honours the abort
+  signal throughout, so a revoke ends a running command (A2); symbolic links in the manifest and the
   conformance suite's `exec` and symlink cases; and the sync-ignore defaults, which are
   the owner's file `/workspace/.ta/sync-ignore` (`node_modules`, `.venv`, `__pycache__`,
   `.cache`, build output), shown to the founder first since they decide what survives a
