@@ -21,7 +21,7 @@ import { OUTSIDE_GATE, WriteGate } from "../src/gate";
 import { clock, WAKE_LEASE_S } from "../src/ledger";
 import { NOTICE_DETAIL, Notices, NOTICES_KEPT } from "../src/notices";
 import type { Binding } from "../src/owner-do";
-import { ledgerOn, MCP, MUSE } from "./ledger-support";
+import { DOT, ledgerOn, MCP, MUSE } from "./ledger-support";
 import { drainDue, failure } from "./support";
 import {
   type FauxOwnerDO, type MalformedOwnerDO, says, type Spawned, storeScript,
@@ -125,17 +125,14 @@ describe("a turn in the owner's object", () => {
   it("writes as the outside client a conversation is stamped for, and a subagent's " +
      "conversation keeps the stamp", async () => {
     const r = agentObject();
-    const stamp = { client: "c".repeat(64), generation: 3, authenticated_at: 1_700_000_000 };
+    // The client's first verified call records its grant: full, generation 1.
+    await r.stub.outsideAgents({ ...r.as(), origin: DOT, source: MCP });
+    const stamp = { client: DOT.client, generation: 1, authenticated_at: 1_700_000_000,
+                    universe: null, agent: "main" };
     const out = await r.in(async (instance) => {
       const pi = await instance.agent.harness.pi();
       const authority = instance.agent.authority;
-      const stamped = await pi.createConversation({
-        ownership: { kind: "ownerless" },
-        agent: { model: { provider: AUTO.provider, modelId: AUTO.id } },
-        init: async (tx, id) => {
-          (await tx.doc(authority, id)).stamp = stamp;
-        },
-      }, BG);
+      const stamped = { id: (await instance.agent.thread("main", stamp)).conversation_id };
       const spawned = (messages: Message[]) => says(results(messages)["spawn"]!.text);
       instance.script = [calls(fauxToolCall("write", { path: "theirs.md", content: "x" }),
                                fauxToolCall("spawn", {})), spawned];
@@ -152,8 +149,8 @@ describe("a turn in the owner's object", () => {
     });
     expect([out.theirs.status, out.own.status]).toEqual(["done", "done"]);
     expect(Number(out.theirs.text)).toBeGreaterThan(1);
-    expect(out.child).toEqual({ stamp });
-    expect(out.ownChild?.stamp ?? null).toBeNull();
+    expect(out.child).toEqual({ by: "client", stamp });
+    expect(out.ownChild).toEqual({ by: "owner" });
     const history = await r.stub.fileHistory(r.as(), { path: "/workspace/theirs.md", limit: 1 });
     expect(history.changes.map((c) => c.writer)).toEqual([`client:${stamp.client}`]);
   });
@@ -165,6 +162,10 @@ describe("a turn in the owner's object", () => {
       const deep = await pi.createConversation({
         ownership: { kind: "ownerless" },
         agent: { model: { provider: AUTO.provider, modelId: AUTO.id }, cwd: "/workspace/deep" },
+        // The owner's, as a thread of the owner's is made (`OwnerAgent.thread`).
+        init: async (tx, id) => {
+          Object.assign(await tx.doc(instance.agent.authority, id), { by: "owner" });
+        },
       }, BG);
       instance.script = [calls(fauxToolCall("write", { path: "here.md", content: "x" })), echo];
       return instance.agent.harness.prompt("write it", { session: String(deep.id) });
@@ -506,18 +507,24 @@ describe("a package pi refuses to install", () => {
         wakes: state.storage.sql.exec("SELECT state FROM ledger_wakes WHERE kind = 'wake'")
           .toArray(),
         tools: (await root.agent(BG)).tools.map((tool) => tool.name).sort(),
+        gate: (await root.agent(BG)).extensions.filter((extension) =>
+          extension.name === "ta.authority").map((extension) => extension.hooks?.length ?? 0),
       };
     });
     expect(rows.intents).toEqual([]);  // the files lane expired the upload
     expect(rows.wakes).toEqual([{ state: "pending" }]);  // the wakes lane recovered it
     // pi opened without the package, and with every other extension.
-    expect(rows.tools).toEqual(["background", "bash", "edit", "hold", "pass", "read", "spawn",
-                               "write"]);
+    expect(rows.tools).toEqual(["background", "bash", "edit", "fork", "hold", "nest", "pass",
+                               "read", "spawn", "write"]);
+    // A package named as the object's gate is refused, and the gate stays the object's.
+    expect(rows.gate).toEqual([1]);
     const notices = (await stub.noticeList(as())).notices;
     expect(notices.map((notice) => [notice.type, notice.detail.split(":")[0]]))
       .toContainEqual(["extension_skipped", "pkg"]);
-    expect(notices.find((notice) => notice.type === "extension_skipped")!.detail)
-      .toMatch(/^pkg:broken: Extension pkg:broken has two tools named twice/);
+    expect(notices.filter((notice) => notice.type === "extension_skipped")
+      .map((notice) => notice.detail).sort()).toEqual([
+      expect.stringMatching(/^pkg:broken: Extension pkg:broken has two tools named twice/),
+      "ta.authority: the ta. names are the object's own"]);
     // pi opens again in every new instance (and after any pi failure): the package is
     // refused each time, and noticed once while that notice is kept.
     for (let open = 0; open < 2; open++) {
@@ -530,7 +537,7 @@ describe("a package pi refuses to install", () => {
       });
     }
     const kept = (await env.MALFORMED.getByName(name).noticeList(as())).notices;
-    expect(kept.filter((notice) => notice.type === "extension_skipped")).toHaveLength(1);
+    expect(kept.filter((notice) => notice.type === "extension_skipped")).toHaveLength(2);
   });
 });
 
@@ -628,7 +635,8 @@ describe("pi's settings and the owner's notices", () => {
     });
     expect(AUTO).toEqual({ provider: "gateway", id: "auto" });
     expect(writerOf(undefined)).toBe("agent");
-    expect(writerOf({ stamp: null })).toBe("agent");
+    expect(writerOf({ by: "owner" })).toBe("agent");
+    expect(writerOf({ by: "none" })).toBe("agent");
   });
 
   it("settles an input queued behind a failed run, rather than keep it waiting", async () => {

@@ -201,14 +201,22 @@ export class Usage {
 
   /**
    * In a unit: reserve a call against every cap, or refuse it, the refusal kept as a
-   * receipt. The policy, the turn's counters and the spend are all read here.
+   * receipt. The policy, the turn's counters and the spend are all read here, and first
+   * the authority the call's conversation runs under (`authority`: the refusal's rule, or
+   * null when it stands), so a call of a revoked client's turn is refused here, whatever
+   * abort it missed.
    */
-  reserve(ask: Ask, now: number): Reserved {
+  reserve(ask: Ask, now: number, authority: () => string | null): Reserved {
     return this.#storage.transactionSync(() => {
       this.recover(now);
       this.#prune(now);
       const { generation, settings } = this.#policy();
       const { day, month } = periods(now);
+      const unauthorized = authority();
+      if (unauthorized !== null) {
+        this.#insert(ask, "refused", unauthorized, 0, 0, 0, generation, day, month, now);
+        return { ok: false, rule: unauthorized };
+      }
       const turn = this.#sql.exec<{ requests: number; tokens: number; cost: number }>(
         "SELECT requests, tokens, cost FROM model_turns WHERE turn = ?", ask.turn).toArray()[0]
         ?? { requests: 0, tokens: 0, cost: 0 };

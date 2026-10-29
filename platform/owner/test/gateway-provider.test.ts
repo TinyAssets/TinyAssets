@@ -193,7 +193,7 @@ describe("a call never sent", () => {
       const stop = new AbortController();
       stop.abort();
       return instance.parts.provider.streamSimple(auto, asked("cmd:echo"),
-                                                  { ...direct(), signal: stop.signal })
+                                                  { ...await direct(instance), signal: stop.signal })
         .result();
     });
     expect([answer.stopReason, answer.errorMessage])
@@ -209,9 +209,10 @@ describe("a call never sent", () => {
     const connection = await r.connect("sk-raced");
     const answer = await r.in(async (instance, state) => {
       const auto = instance.parts.provider.getModels()[0]!;
+      const options = await direct(instance);
       const queue = holdQueue(state);
-      const call = instance.parts.provider.streamSimple(auto, asked("cmd:echo"),
-                                                        direct()).result();
+      const call = instance.parts.provider.streamSimple(auto, asked("cmd:echo"), options)
+        .result();
       for (let i = 0; i < 50; i++) {
         await Promise.resolve();
       }
@@ -232,10 +233,11 @@ describe("a call never sent", () => {
     const connection = await r.connectOAuth();
     const answer = await r.in(async (instance, state) => {
       const auto = instance.parts.provider.getModels()[0]!;
+      const options = await direct(instance);
       const queue = holdQueue(state);
       const revoked = instance.connectionRevoke(r.session(), { connection });
-      const call = instance.parts.provider.streamSimple(auto, asked("cmd:echo"),
-                                                        direct()).result();
+      const call = instance.parts.provider.streamSimple(auto, asked("cmd:echo"), options)
+        .result();
       queue.release();
       await queue.done;
       await revoked;
@@ -254,9 +256,10 @@ describe("a call never sent", () => {
     const models = await catalog(ANTHROPIC);
     const missing = { ...models[0]!, id: "no-such-model", name: "None" };
     const connection = await r.connect("sk-missing", ANTHROPIC, "Key", [missing]);
-    const answer = await r.in((instance) => instance.parts.provider.streamSimple(
+    const answer = await r.in(async (instance) => instance.parts.provider.streamSimple(
       instance.parts.provider.getModels().find((model) =>
-        model.id === `${connection}/no-such-model`)!, asked("hello"), direct()).result());
+        model.id === `${connection}/no-such-model`)!, asked("hello"),
+          await direct(instance)).result());
     expect(answer.stopReason).toBe("error");
     expect(answer.errorMessage).toBe("unknown_model");
     const { receipts } = await r.stub.usageReceipts(r.bind());
@@ -316,8 +319,8 @@ describe("a provider's refusal before any output", () => {
   it("settles failed, at no cost, with the gateway's own code", async () => {
     const r = await gated();
     await r.connect("sk-429");
-    const answer = await r.in((instance) => instance.parts.provider.streamSimple(
-      instance.parts.provider.getModels()[0]!, asked("cmd:fail-429"), direct())
+    const answer = await r.in(async (instance) => instance.parts.provider.streamSimple(
+      instance.parts.provider.getModels()[0]!, asked("cmd:fail-429"), await direct(instance))
       .result());
     expect([answer.stopReason, answer.errorMessage]).toEqual(["error", "upstream_rate_limited"]);
     const { receipts } = await r.stub.usageReceipts(r.bind());
@@ -440,8 +443,8 @@ describe("a call whose own unit cannot be kept", () => {
     await r.connect("sk-settle");
     await r.sql("CREATE TRIGGER fail_settle BEFORE UPDATE OF tokens ON model_reservations " +
                 "WHEN NEW.state = 'succeeded' BEGIN SELECT RAISE(ABORT, 'injected'); END");
-    const answer = await r.in((instance) => instance.parts.provider.streamSimple(
-      instance.parts.provider.getModels()[0]!, asked("cmd:echo"), direct()).result());
+    const answer = await r.in(async (instance) => instance.parts.provider.streamSimple(
+      instance.parts.provider.getModels()[0]!, asked("cmd:echo"), await direct(instance)).result());
     expect(answer.stopReason).toBe("stop");
     const { receipts } = await r.stub.usageReceipts(r.bind());
     expect(receipts.map((receipt) => receipt.state)).toEqual(["unknown"]);
@@ -453,8 +456,8 @@ describe("a call whose own unit cannot be kept", () => {
     await r.connect("sk-dispatch");
     await r.sql("CREATE TRIGGER fail_dispatch BEFORE UPDATE OF state ON model_reservations " +
                 "WHEN NEW.state = 'dispatched' BEGIN SELECT RAISE(ABORT, 'injected'); END");
-    const answer = await r.in((instance) => instance.parts.provider.streamSimple(
-      instance.parts.provider.getModels()[0]!, asked("cmd:echo"), direct()).result());
+    const answer = await r.in(async (instance) => instance.parts.provider.streamSimple(
+      instance.parts.provider.getModels()[0]!, asked("cmd:echo"), await direct(instance)).result());
     expect(answer.stopReason).toBe("error");
     expect(await envelopes(r)).toEqual([]);
     expect((await r.stub.usageReceipts(r.bind())).receipts.map((receipt) => receipt.state))
@@ -482,7 +485,7 @@ describe("the envelope", () => {
     await models(r, { turn_requests: 50 });
     const answer = await r.in(async (instance) => {
       const auto = instance.parts.provider.getModels()[0]!;
-      return instance.parts.provider.streamSimple(auto, asked("cmd:echo"), direct())
+      return instance.parts.provider.streamSimple(auto, asked("cmd:echo"), await direct(instance))
         .result();
     });
     expect(answer.stopReason).toBe("stop");

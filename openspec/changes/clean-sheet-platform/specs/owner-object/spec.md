@@ -669,3 +669,60 @@ Each call SHALL go to the gateway as pi-messages over the `GATEWAY` service bind
 #### Scenario: A turn is aborted mid-stream
 - **WHEN** the owner aborts a turn whose model call is streaming
 - **THEN** the gateway's upstream request is cancelled, and the call settles `unknown`
+
+### Requirement: An outside client's authority is enforced in its environment
+The environment pi builds for every tool call, a replay's included and whatever extensions run, SHALL hold each operation to the conversation's authority under a grant that still stands as stamped: a read, and each read of an opened reader, `read_files`; a change `write_files`, again in the change's own unit; `exec` refused to a scoped grant. A refusal SHALL be `permission_denied`.
+
+#### Scenario: The gate configured away
+- **WHEN** a scoped client's conversation, granted `read_files` only, runs with no `beforeTool` gate and calls `write`
+- **THEN** its environment refuses the write, and nothing is written
+
+#### Scenario: A revoke lands after a write began
+- **WHEN** a revoke commits after a write's call passed its first check, before the write's own unit
+- **THEN** that unit refuses it, and nothing is written
+
+### Requirement: An outside client's model calls re-check its authority
+Each model call SHALL find its conversation by its provider session, and its reservation and dispatch units SHALL each re-check that conversation's authority: a client's that no longer stands SHALL be refused `outside_authority` with a receipt and nothing sent, and a session the object never made `no_conversation`. A client's conversation whose stored extension selection drops the gate SHALL make no model call.
+
+#### Scenario: A revoke the abort missed
+- **WHEN** a revoke commits while a client's hand-off is between its mark and its submit, or between a call's reservation and its dispatch
+- **THEN** the call is refused or not sent, and the gateway is never called
+
+### Requirement: The authority gate refuses before a tool begins
+A trusted `ta.authority` extension, installed first, SHALL check each tool call, nested ones included, in `beforeTool`: `read_files` for `read`, `write_files` for `write`, both for `edit`; `bash` and any tool without a capability refused to a scoped grant; the `ta:` names reserved for `ta`'s ops. A refusal SHALL be a block with a fixed reason and a receipt. Packages named `ta.*` SHALL be refused.
+
+#### Scenario: A scoped client without write_files
+- **WHEN** a scoped client's conversation, granted `read_files` only, calls `read`, `write`, `edit` and `bash`
+- **THEN** the read runs, the other three are blocked with fixed reasons, and each block leaves a refusal receipt
+
+### Requirement: Every conversation's authority is explicit and never shed
+Each conversation SHALL carry its authority in pi's own document: the owner's (the root's, an owner thread's), a client's stamp, or none, under which no tool runs and no model call is sent. A thread SHALL be made with its authority in pi's creating commit; a task's conversation SHALL take its owner conversation's in `conversationCreated`, and a fork's copy that differs SHALL fail.
+
+#### Scenario: A fork of a client's thread
+- **WHEN** a client's thread is forked and the client is then revoked
+- **THEN** the fork carries the same stamp, and its next tool call is blocked
+
+### Requirement: A client's threads are bounded and hold its grant
+`agent_threads` SHALL record a thread in a unit that re-checks its stamp stands, SHALL never change a thread's stamp, SHALL refuse loudly a thread past its client's bound or all clients' together, before any conversation is made, SHALL never record the root, and SHALL count each thread on its client's grant row (`held`), so the row is not forgotten while a thread names it. A grant set or revoke SHALL drop its client's threads in its own unit.
+
+#### Scenario: A client at its bound
+- **WHEN** a client has as many threads as its bound and asks for another
+- **THEN** the thread is refused loudly, and the client's grant row counts each thread it keeps
+
+### Requirement: A grant or policy change ends the agent work it covers
+After its own unit commits, in the same door, a grant set or revoke SHALL end its client's pending waits, close the live views of its threads and of every live conversation stamped for it, and abort each such conversation's work, background work included; a policy write SHALL do so for every conversation with live work and close every view. The door SHALL wait at most 5 s, and SHALL reject if the ending fails.
+
+#### Scenario: A client revoked mid-turn
+- **WHEN** a client is revoked while its turn, its subagent's and another client's run
+- **THEN** the client's turn and its subagent's settle `unanswered: aborted`, its views hear `end`, its waits end, and the other client's turn runs on
+
+#### Scenario: A revoke during a model call
+- **WHEN** a revoke lands while a client's turn's model call streams
+- **THEN** the turn is aborted, the upstream request cancelled, and its reservation settles `unknown` through the owner's usage
+
+### Requirement: A scheduled turn runs in its own thread, handed once
+A scheduled turn SHALL name a thread made at its own client and generation, and the runner SHALL check that again, and that the stamp stands, before it marks the row and submits with the row's `work_id` as the operation id, queued behind a busy run; a second hand-off SHALL be pi's duplicate. A status SHALL be pi's pending record, then how it settled; any failure but its own timeout SHALL be the call's.
+
+#### Scenario: A second hand-off of the same work
+- **WHEN** the runner hands the same `work_id` over twice
+- **THEN** pi answers the second `accepted: false`, the row is handed, and the model runs once

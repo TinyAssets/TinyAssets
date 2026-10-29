@@ -14,16 +14,18 @@
  *
  * The lane only hands work off; it never runs a turn (slice 5's review L1). Its pass is
  * inline in Lifecycle's drive loop, which awaits each job in turn under one alarm's
- * 15-minute wall, beside PiHarness's wake job, so a runner (the agent's, tasks 5) marks
- * the row, hands the turn to pi's durable submit and returns. pi runs it, and its status
+ * 15-minute wall, beside PiHarness's wake job, so a runner (the agent's, `agent.ts`)
+ * marks the row, hands the turn to pi's durable submit in the thread the work named when
+ * it was made, and returns. pi runs it, and its status
  * is pi's receipts; the row says only `handed`. A hand-off is fenced as a wake's send is
  * (`wakes.ts`): a claim takes a `WORK_LEASE_S` lease, which bounds the hand-off alone; the
  * runner awaits `mark()` before the work can have any effect, and stops if the mark
  * fails (the claim lapsed); a claim abandoned past its lease is `unknown` if it was
  * marked, never handed again, or else due again, at most `WORK_LIMITS.attempts` times. A
  * runner that holds its hand-off past `WORK_HANDOFF_MS` is reported, its row marked as
- * possibly handed and left to its lease, and the pass moves on. Until the agent
- * constructs a {@link WorkRunner}, pending work is held and gives the lane no job.
+ * possibly handed and left to its lease, and the pass moves on. Without a
+ * {@link WorkRunner} (only a test's lanes lack one), pending work is held and gives the
+ * lane no job.
  *
  * A pass contains each row's failure in that row: a row whose step fails in process is
  * backed off `WORK_RETRY_S` in its own due time, so it neither stops the others nor
@@ -40,6 +42,7 @@ import { Invalid, Refused } from "./errors";
 import type { OwnerStorage, Write } from "./gate";
 import { inTime } from "./schedule";
 import { codePoints } from "./text";
+import type { ThreadReader } from "./threads";
 
 export const WORK_KINDS: readonly string[] = Object.freeze(["turn"]);
 /** A claimed hand-off's lease: past it, the may-have-been-handed mark decides. */
@@ -101,7 +104,7 @@ export interface WorkAnswer {
 }
 
 /**
- * What hands a due piece of work to pi: the agent's, from tasks 5. It never runs the turn
+ * What hands a due piece of work to pi: the agent's (`agent.ts`). It never runs the turn
  * inline: it awaits `mark()`, which rejects if the claim lapsed (then it stops), hands the
  * turn to pi's durable submit, and returns within `WORK_HANDOFF_MS`. A throw leaves the
  * row to its lease. The submit's `operationId` is the row's `work_id`, always: a second
@@ -138,6 +141,25 @@ function stampOf(row: Row): Stamp | null {
     : { client: row.client, generation: row.generation!, authenticated_at: row.authenticated_at };
 }
 
+/** A scheduled turn: the thread it runs in, fixed when the work is made, and its input. */
+export interface Turn {
+  readonly thread: string;
+  readonly input: string;
+}
+
+/** A turn's payload, exactly a thread and a non-empty input, or invalid. */
+export function workTurn(payload: unknown): Turn {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)
+      || Object.keys(payload).sort().join() !== "input,thread") {
+    throw new Invalid("a scheduled turn is a thread and its input");
+  }
+  const { thread, input } = payload as Record<string, unknown>;
+  if (typeof thread !== "string" || typeof input !== "string" || input.length === 0) {
+    throw new Invalid("a scheduled turn is a thread and its input");
+  }
+  return { thread, input };
+}
+
 /** A stamp as an admitted call gives it, or refused. */
 export function stamp(value: unknown): Stamp | null {
   if (value === null) {
@@ -159,12 +181,14 @@ export function stamp(value: unknown): Stamp | null {
 export class Scheduled {
   readonly #storage: OwnerStorage;
   readonly #grants: StandingReader;
+  readonly #threads: ThreadReader;
   readonly #limits: WorkLimits;
 
-  constructor(storage: OwnerStorage, grants: StandingReader,
+  constructor(storage: OwnerStorage, grants: StandingReader, threads: ThreadReader,
               limits: WorkLimits = WORK_LIMITS) {
     this.#storage = storage;
     this.#grants = grants;
+    this.#threads = threads;
     this.#limits = limits;
   }
 
@@ -184,7 +208,9 @@ export class Scheduled {
 
   /**
    * Schedule one piece of work at `due`, on the owner's own authority (`stamp` null) or
-   * the outside client's it was admitted under, which must stand now.
+   * the outside client's it was admitted under, which must stand now. A turn names its
+   * thread here, once: a thread made under the same authority (the owner's, or the same
+   * client's at the same grant generation), so work never runs in another's conversation.
    */
   add(kind: unknown, due: unknown, payload: unknown, made: unknown, now: number):
       { work_id: string } {
@@ -198,6 +224,7 @@ export class Scheduled {
     if (body === undefined || codePoints(body) > this.#limits.maxPayload) {
       throw new Invalid(`a work payload is JSON of at most ${this.#limits.maxPayload} characters`);
     }
+    const turn = workTurn(payload);
     const by = stamp(made);
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
@@ -212,6 +239,11 @@ export class Scheduled {
       }
       if (this.#usage().open_work >= this.#limits.maxOpen) {
         throw new Refused("the owner's scheduled work is at its limit");
+      }
+      const thread = this.#threads.get(turn.thread);
+      if (thread === null || thread.client !== (by?.client ?? null)
+          || thread.generation !== (by?.generation ?? null)) {
+        throw new Refused("a scheduled turn runs in a thread made under its own authority");
       }
       const workId = "work_" + token(16);
       sql.exec("INSERT INTO scheduled_work (work_id, kind, due, state, payload, client, " +

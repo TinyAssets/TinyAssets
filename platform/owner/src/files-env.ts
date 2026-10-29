@@ -26,6 +26,12 @@
  *   between the object's events, so a write it made directly could land inside a pi
  *   commit and be rolled back with it. `Files` opens the units of the changes that cross
  *   to `FILES`; this environment opens one for each change it makes itself.
+ * - Every operation is held to the authority the tool call runs under (`authorize`, the
+ *   conversation's, `authority.ts`), first, as `permission_denied`: a read (an opened
+ *   reader at each of its reads too) needs `read_files`, a change `write_files`, again
+ *   in each change's own unit, so a grant that narrowed after the call began refuses its
+ *   write, and `exec` a grant that is not scoped. This is where the authority is enforced,
+ *   for every call, a replay's included: pi builds it whatever extensions run.
  * - `readTextFile` keeps a BOM: it is the file's bytes, which pi's `edit` writes back.
  * - `renameFile` of a directory is one transaction over its subtree; no byte moves.
  * - `watch` hears every commit in the object at once (`native`).
@@ -256,6 +262,23 @@ export function ignored(rules: readonly IgnoreRule[], path: string, directory: b
 
 // -- readers ------------------------------------------------------------------------
 
+/**
+ * What an operation does with the owner's files, which the call's authority must hold.
+ * `resolve` names a path's canonical form, which a read and a write (pi's mutation queue)
+ * both need.
+ */
+export type Access = "read" | "write" | "exec" | "resolve";
+
+/** A reader's refusal when the call's authority no longer holds its read, or undefined. */
+function denied(allowed: () => void, path: string): Result<never, FileError> | undefined {
+  try {
+    allowed();
+    return undefined;
+  } catch (error) {
+    return err(fault(error, path));
+  }
+}
+
 /** Chunk bytes from `FILES`, each call counted against the tool call's budget. */
 type Load = (reads: readonly { sha256: string; offset?: number; length?: number }[]) =>
   Promise<Uint8Array[]>;
@@ -266,15 +289,19 @@ class PinnedReader implements BinaryReader {
   readonly #content: Content;
   #closed = false;
 
-  constructor(load: Load, content: Content) {
+  readonly #allowed: () => void;
+
+  constructor(load: Load, content: Content, allowed: () => void) {
     this.#load = load;
     this.#content = content;
+    this.#allowed = allowed;
   }
 
   #refused(context: Context): Result<never, FileError> | undefined {
     return aborted(context, this.#content.entry.path)
       ?? (this.#closed ? err(new FileError("invalid", "Binary reader is closed",
-                                           this.#content.entry.path)) : undefined);
+                                           this.#content.entry.path)) : undefined)
+      ?? denied(this.#allowed, this.#content.entry.path);
   }
 
   async info(context: Context): Promise<Result<FileInfo, FileError>> {
@@ -391,13 +418,15 @@ class PinnedLines implements TextLineReader {
   readonly #path: string;
   readonly #source: AsyncGenerator<Uint8Array>;
   readonly #decoder = new StreamDecoder();
+  readonly #allowed: () => void;
   #buffered = "";
   #ended = false;
   #closed = false;
 
-  constructor(load: Load, content: Content) {
+  constructor(load: Load, content: Content, allowed: () => void) {
     this.#path = content.entry.path;
     this.#source = pieces(load, content);
+    this.#allowed = allowed;
   }
 
   async readLine(context: Context): Promise<Result<TextLine | undefined, FileError>> {
@@ -407,6 +436,10 @@ class PinnedLines implements TextLineReader {
     }
     if (this.#closed) {
       return err(new FileError("invalid", "Text line reader is closed", this.#path));
+    }
+    const refused = denied(this.#allowed, this.#path);
+    if (refused) {
+      return refused;
     }
     try {
       while (true) {
@@ -447,13 +480,15 @@ class PinnedLines implements TextLineReader {
 class ManifestDirReader implements DirReader {
   readonly #files: Files;
   readonly #path: string;
+  readonly #allowed: () => void;
   #after: string | null = null;
   #done = false;
   #closed = false;
 
-  constructor(files: Files, path: string) {
+  constructor(files: Files, path: string, allowed: () => void) {
     this.#files = files;
     this.#path = path;
+    this.#allowed = allowed;
   }
 
   async next(maxEntries: number, context: Context):
@@ -464,6 +499,10 @@ class ManifestDirReader implements DirReader {
     }
     if (this.#closed) {
       return err(new FileError("invalid", "Directory reader is closed", this.#path));
+    }
+    const refused = denied(this.#allowed, this.#path);
+    if (refused) {
+      return refused;
     }
     if (!Number.isSafeInteger(maxEntries) || maxEntries <= 0) {
       return err(new FileError("invalid", "maxEntries must be a positive safe integer",
@@ -500,6 +539,13 @@ export interface FilesEnvOptions {
    * change's housekeeping unscheduled.
    */
   readonly rearm: () => Promise<void>;
+  /**
+   * The authority the tool call runs under, for each operation's access (it throws a
+   * refusal): first in every operation, at each read of an opened reader, and again in each
+   * change's own unit (`authority.ts`). Always set by the object's agent; a test of the
+   * environment alone may leave it, and every access is then allowed.
+   */
+  readonly authorize?: (access: Access) => void;
 }
 
 export class OwnerFilesEnv implements ExecutionEnv {
@@ -508,6 +554,9 @@ export class OwnerFilesEnv implements ExecutionEnv {
   readonly #files: Files;
   readonly #writer: string;
   readonly #rearm: () => Promise<void>;
+  readonly #authorize: (access: Access) => void;
+  /** The read access, as an opened reader re-checks it. */
+  readonly #reads = () => this.#authorize("read");
   /** The etag this environment last saw at each path it read or wrote. */
   readonly #seen = new Map<string, string>();
   readonly #temps = new Set<string>();
@@ -517,6 +566,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
     this.#writer = options.writer ?? "agent";
     this.cwd = options.cwd ?? WORKSPACE;
     this.#rearm = options.rearm;
+    this.#authorize = options.authorize ?? (() => undefined);
     // Named by a hash of the namespace, which never leaves the object itself.
     this.id = `ta-files:${sha256Hex(`ta-env\n${this.#files.ns()}`).slice(0, 32)}`;
   }
@@ -536,8 +586,11 @@ export class OwnerFilesEnv implements ExecutionEnv {
     return storedPath(absolute);
   }
 
-  /** Run one file operation: aborted first, then its result or its error, never a throw. */
-  async #run<T>(context: Context, path: unknown, act: () => T | Promise<T>):
+  /**
+   * Run one file operation: aborted first, then the authority the call runs under for
+   * `access`, then its result or its error, never a throw.
+   */
+  async #run<T>(context: Context, path: unknown, access: Access, act: () => T | Promise<T>):
       Promise<Result<T, FileError>> {
     const where = typeof path === "string" ? path : undefined;
     const stop = aborted(context, where);
@@ -545,6 +598,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
       return stop;
     }
     try {
+      this.#authorize(access);
       return ok(await act());
     } catch (error) {
       return err(fault(error, where));
@@ -576,7 +630,8 @@ export class OwnerFilesEnv implements ExecutionEnv {
   async #write(at: string, bytes: Uint8Array, expected: string | null,
                extra: { prefix?: readonly ChunkRef[]; mode?: number } = {}): Promise<Entry> {
     const entry = await this.#files.write(at, bytes, { expected, writer: this.#writer,
-                                                       parents: true, ...extra });
+                                                       parents: true, ...extra,
+                                                       authorize: () => this.#authorize("write") });
     this.#seen.set(at, entry.etag);
     await this.#rearm();
     return entry;
@@ -593,14 +648,15 @@ export class OwnerFilesEnv implements ExecutionEnv {
   async readTextFile(path: string, context: Context): Promise<Result<string, FileError>> {
     // A BOM is the file's own bytes: pi's `edit` strips it and writes it back (Fact 9).
     const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
-    return this.#run(context, path, async () => decoder.decode(
+    return this.#run(context, path, "read", async () => decoder.decode(
       await wholeBytes(this.#load, this.#open(this.#where(path, false)))));
   }
 
   async openTextLineReader(path: string, context: Context):
       Promise<Result<TextLineReader, FileError>> {
-    return this.#run(context, path,
-                     () => new PinnedLines(this.#load, this.#open(this.#where(path, false))));
+    return this.#run(context, path, "read",
+                     () => new PinnedLines(this.#load, this.#open(this.#where(path, false)),
+                                           this.#reads));
   }
 
   async readTextLines(path: string, options: { maxLines?: number } | undefined,
@@ -631,20 +687,21 @@ export class OwnerFilesEnv implements ExecutionEnv {
   }
 
   async readBinaryFile(path: string, context: Context): Promise<Result<Uint8Array, FileError>> {
-    return this.#run(context, path, () => wholeBytes(this.#load,
+    return this.#run(context, path, "read", () => wholeBytes(this.#load,
                                                      this.#open(this.#where(path, false))));
   }
 
   /** There are no symbolic links yet, so `noFollow` changes nothing. */
   async openBinaryReader(path: string, _options: { noFollow?: boolean } | undefined,
                          context: Context): Promise<Result<BinaryReader, FileError>> {
-    return this.#run(context, path,
-                     () => new PinnedReader(this.#load, this.#open(this.#where(path, false))));
+    return this.#run(context, path, "read",
+                     () => new PinnedReader(this.#load, this.#open(this.#where(path, false)),
+                                            this.#reads));
   }
 
   async writeFile(path: string, content: string | Uint8Array, context: Context):
       Promise<Result<void, FileError>> {
-    return this.#run(context, path, async () => {
+    return this.#run(context, path, "write", async () => {
       const at = this.#where(path, true);
       await this.#write(at, bytesOf(content), this.#seen.get(at) ?? null);
     });
@@ -667,7 +724,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
 
   async appendFile(path: string, content: string | Uint8Array, context: Context):
       Promise<Result<void, FileError>> {
-    return this.#run(context, path, async () => {
+    return this.#run(context, path, "write", async () => {
       const at = this.#where(path, true);
       const add = bytesOf(content);
       let current: Content | null = null;
@@ -690,7 +747,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
 
   async truncateFile(path: string, size: number, context: Context):
       Promise<Result<void, FileError>> {
-    return this.#run(context, path, async () => {
+    return this.#run(context, path, "write", async () => {
       const at = this.#where(path, true);
       if (!Number.isSafeInteger(size) || size < 0) {
         throw new Invalid("File size must be a non-negative safe integer");
@@ -709,22 +766,25 @@ export class OwnerFilesEnv implements ExecutionEnv {
 
   /** A commit is durable when it resolves, so a flush only checks the file is there. */
   async flushFile(path: string, context: Context): Promise<Result<void, FileError>> {
-    return this.#run(context, path, () => {
+    return this.#run(context, path, "read", () => {
       this.#files.open(this.#where(path, false));
     });
   }
 
   async renameFile(sourcePath: string, destinationPath: string, context: Context):
       Promise<Result<void, FileError>> {
-    return this.#run(context, sourcePath, async () => {
+    return this.#run(context, sourcePath, "write", async () => {
       const from = this.#where(sourcePath, true);
       const to = this.#where(destinationPath, true);
       if (from === to) {
         this.#files.open(from);
         return;
       }
-      const entry = await this.#files.unit(() => this.#files.rename(from, to, {
-        expected: null, replace: true, writer: this.#writer }));
+      const entry = await this.#files.unit(() => {
+        this.#authorize("write");
+        return this.#files.rename(from, to, { expected: null, replace: true,
+                                              writer: this.#writer });
+      });
       this.#moved(from);
       this.#moved(to, entry);
       await this.#rearm();
@@ -732,7 +792,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
   }
 
   async fileInfo(path: string, context: Context): Promise<Result<FileInfo, FileError>> {
-    return this.#run(context, path, () => {
+    return this.#run(context, path, "read", () => {
       const entry = this.#files.stat(this.#where(path, false));
       if (entry === null) {
         throw new FileFault("not_found", "no such file or directory");
@@ -742,7 +802,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
   }
 
   async listDir(path: string, context: Context): Promise<Result<FileInfo[], FileError>> {
-    return this.#run(context, path, () => {
+    return this.#run(context, path, "read", () => {
       const at = this.#where(path, false);
       const out: FileInfo[] = [];
       let after: string | null = null;
@@ -756,10 +816,10 @@ export class OwnerFilesEnv implements ExecutionEnv {
   }
 
   async openDirReader(path: string, context: Context): Promise<Result<DirReader, FileError>> {
-    return this.#run(context, path, () => {
+    return this.#run(context, path, "read", () => {
       const at = this.#where(path, false);
       this.#files.list(at, null, 1);
-      return new ManifestDirReader(this.#files, at);
+      return new ManifestDirReader(this.#files, at, this.#reads);
     });
   }
 
@@ -771,7 +831,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
         return err(new FileError("invalid", `${key} must be a non-negative safe integer`, path));
       }
     }
-    return this.#run(context, path, async () => {
+    return this.#run(context, path, "read", async () => {
       const at = this.#where(path, false);
       const top = this.#files.stat(at);
       if (top === null) {
@@ -862,7 +922,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
 
   async watch(targets: readonly WatchTarget[], onChange: (change: WatchChange) => void,
               context: Context): Promise<Result<FileWatcher, FileError>> {
-    return this.#run(context, undefined, () => {
+    return this.#run(context, undefined, "read", () => {
       const watched = targets.map((target) => {
         if (typeof target?.path !== "string") {
           throw new Invalid("a watch target is a path");
@@ -888,7 +948,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
   }
 
   async canonicalPath(path: string, context: Context): Promise<Result<string, FileError>> {
-    return this.#run(context, path, () => {
+    return this.#run(context, path, "resolve", () => {
       const at = this.#where(path, false);
       if (this.#files.stat(at) === null) {
         throw new FileFault("not_found", "no such file or directory");
@@ -907,10 +967,11 @@ export class OwnerFilesEnv implements ExecutionEnv {
 
   async createDir(path: string, options: { recursive?: boolean } | undefined,
                   context: Context): Promise<Result<void, FileError>> {
-    return this.#run(context, path, async () => {
+    return this.#run(context, path, "write", async () => {
       const at = this.#where(path, true);
       const recursive = options?.recursive ?? true;
       await this.#files.unit(() => {
+        this.#authorize("write");
         if (!recursive && this.#files.stat(at) !== null) {
           throw new FileFault("exists", "already exists");
         }
@@ -923,11 +984,14 @@ export class OwnerFilesEnv implements ExecutionEnv {
 
   async remove(path: string, options: { recursive?: boolean; force?: boolean } | undefined,
                context: Context): Promise<Result<void, FileError>> {
-    return this.#run(context, path, async () => {
+    return this.#run(context, path, "write", async () => {
       const at = this.#where(path, true);
       try {
-        await this.#files.unit(() => this.#files.remove(at, {
-          expected: null, recursive: options?.recursive ?? false, writer: this.#writer }));
+        await this.#files.unit(() => {
+          this.#authorize("write");
+          return this.#files.remove(at, { expected: null, recursive: options?.recursive ?? false,
+                                          writer: this.#writer });
+        });
       } catch (error) {
         if (!(options?.force && error instanceof FileFault && error.code === "not_found")) {
           throw error;
@@ -940,9 +1004,11 @@ export class OwnerFilesEnv implements ExecutionEnv {
 
   async createTempDir(prefix: string | undefined, context: Context):
       Promise<Result<string, FileError>> {
-    return this.#run(context, undefined, async () => {
-      const dir = await this.#files.unit(() => this.#files.tempDir(prefix ?? "tmp-",
-                                                                   this.#writer));
+    return this.#run(context, undefined, "write", async () => {
+      const dir = await this.#files.unit(() => {
+        this.#authorize("write");
+        return this.#files.tempDir(prefix ?? "tmp-", this.#writer);
+      });
       this.#temps.add(dir);
       await this.#rearm();
       return dir;
@@ -955,7 +1021,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
     if (!dir.ok) {
       return dir;
     }
-    return this.#run(context, undefined, async () => {
+    return this.#run(context, undefined, "write", async () => {
       const at = storedPath(`${dir.value}/${options?.prefix ?? ""}${crypto.randomUUID()}${
         options?.suffix ?? ""}`);
       if (parentOf(at) !== dir.value) {
@@ -969,6 +1035,12 @@ export class OwnerFilesEnv implements ExecutionEnv {
   /** The shell comes with the sandbox (tasks 6); until then there is none. */
   async exec(_command: string | readonly string[], _options: unknown, _context: Context):
       Promise<Result<ShellExecResult, ExecutionError>> {
+    try {
+      this.#authorize("exec");
+    } catch (error) {
+      return err(new ExecutionError("spawn_error", error instanceof Error ? error.message
+        : String(error)));
+    }
     return err(new ExecutionError("shell_unavailable",
                                   "no sandbox yet: commands run once the sandbox slice lands"));
   }
