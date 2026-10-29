@@ -150,14 +150,15 @@ export function sessionsDoc() {
  * record of fails the request loudly.
  */
 async function background(pi: Harness, id: TaskId): Promise<boolean> {
-  for (let task = await pi.getTask(id, BACKGROUND_CONTEXT); task !== undefined;
-    task = task.owner === undefined ? undefined : await pi.getTask(task.owner, BACKGROUND_CONTEXT)) {
+  let task = await pi.getTask(id, BACKGROUND_CONTEXT);
+  while (task !== undefined) {
     if (task.background) {
       return true;
     }
     if (task.owner === undefined) {
       return false;
     }
+    task = await pi.getTask(task.owner, BACKGROUND_CONTEXT);
   }
   throw new Error(NO_RUN);
 }
