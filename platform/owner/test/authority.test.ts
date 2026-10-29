@@ -6,7 +6,7 @@
  * change and a policy write ending live turns, views and waits; the `work` lane's runner;
  * status from pi's receipts; and an aborted call's reservation settled through `usage`.
  */
-import { runInDurableObject } from "cloudflare:test";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { DurableObjectSqliteDatabase } from "@earendil-works/chord/sqlite/cloudflare";
@@ -19,20 +19,21 @@ import { describe, expect, it } from "vitest";
 
 import { WAIT_ENDED } from "../src/agent";
 import {
-  AUTHORITY_CHANGED, AUTHORITY_RULE, capabilityOf, NO_SHELL, NOT_GRANTED, type Stamped,
-  stamped,
+  Authority, AUTHORITY_CHANGED, AUTHORITY_RULE, capabilityOf, type Need, NO_AUTHORITY,
+  NO_CONVERSATION, NO_SHELL, NOT_GRANTED, type Stamped, stamped, TA_CAPABILITIES,
 } from "../src/authority";
 import { WriteGate } from "../src/gate";
 import { Grants } from "../src/grants";
 import { clock, type Origin } from "../src/ledger";
+import { originContext } from "../src/origin";
 import { type Binding, workRunner } from "../src/owner-do";
 import { Policy } from "../src/policy";
 import { Scheduled, type WorkTarget } from "../src/scheduled";
 import { Threads } from "../src/threads";
-import { gated, until } from "./gateway-support";
+import { asked, gated, until } from "./gateway-support";
 import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
 import { drainDue, failure } from "./support";
-import { type FauxOwnerDO, type GatedOwnerDO, says } from "./worker";
+import { type FauxOwnerDO, type GatedOwnerDO, says, storeScript } from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
 const text = (value: string): Uint8Array => new TextEncoder().encode(value);
@@ -90,6 +91,8 @@ const ASKS: readonly [string, FauxContentBlock[]][] = [
   ["nest write", [fauxToolCall("nest", { name: "write",
                                          arguments: { path: "nested.md", content: "x" } })]],
   ["start background", [fauxToolCall("background", { work: "background" })]],
+  ["read it", [fauxToolCall("read", { path: "notes.md" })]],
+  ["shell it", [fauxToolCall("bash", { command: "ls" })]],
 ];
 
 /** A held gate and its release. */
@@ -158,14 +161,28 @@ const shown = (answer: { text?: string }) =>
   JSON.parse(answer.text!) as ReturnType<typeof results>;
 
 describe("the authority gate's capability map", () => {
-  it("names read_files for read, write_files for write and edit, none to grant for the " +
-     "shell, and no capability for anything else, ta's until A3 fills its map", () => {
+  it("names read_files for read, write_files for write, both for edit, none to grant for " +
+     "the shell, and no capability for anything else, ta's until A3 fills its map", () => {
     const of = (name: string, args: unknown = {}) => capabilityOf({ name, arguments: args });
     expect([of("read"), of("write"), of("edit"), of("bash")])
-      .toEqual(["read_files", "write_files", "write_files", null]);
+      .toEqual([["read_files"], ["write_files"], ["read_files", "write_files"], null]);
     expect([of("hold"), of("toString"), of("__proto__"), of("ta", { op: "catalog" }),
             of("ta", { op: "call", name: "policy:show" }), of("ta", null)])
       .toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
+  });
+
+  it("reads ta's map by the op or the capability called, the ta: names the ops' alone",
+     () => {
+    expect(TA_CAPABILITIES).toEqual({});
+    // A map as A3 fills it: the catalog's need, and a capability's by the name it calls.
+    const filled: Record<string, Need> = { "ta:catalog": ["read_files"],
+                                           "files:usage": ["read_files", "write_files"] };
+    const of = (args: unknown) => capabilityOf({ name: "ta", arguments: args }, filled);
+    expect([of({ op: "catalog" }), of({ op: "call", name: "files:usage" }),
+            of({ op: "call", name: "ta:catalog" }), of({ op: "call", name: "toString" }),
+            of({ op: "catalog", name: "files:usage" }), of({ op: "other" })])
+      .toEqual([["read_files"], ["read_files", "write_files"], undefined, undefined,
+                ["read_files"], undefined]);
   });
 
   it("takes a stamp only whole: a client, its generation, sign-in, universe and agent", () => {
@@ -208,8 +225,8 @@ describe("a scoped client's conversation", () => {
       .toEqual(Array.from({ length: 4 }, () => ["refusal", "deny", "refused"]));
   });
 
-  it("writes and edits with write_files, as itself, only where its grant's universe and " +
-     "agent are", async () => {
+  it("writes with write_files, as itself, only where its grant's universe and agent are, " +
+     "and edits only with read_files too", async () => {
     const r = await agentRig();
     await r.stub.fileWrite(r.bind(null), { path: "/workspace/notes.md", expected_etag: null,
                                            content: text("remember the milk") });
@@ -230,7 +247,8 @@ describe("a scoped client's conversation", () => {
                helper: await write({ ...r.stampOf(MUSE, generation), agent: "helper" },
                                    "helper") };
     });
-    expect([out.mine["write"]!.error, out.mine["edit"]!.error]).toEqual([false, false]);
+    expect(out.mine["write"]!.error).toBe(false);
+    expect(out.mine["edit"]).toEqual({ text: blocked(NOT_GRANTED), error: true });
     expect(out.elsewhere).toEqual({ text: blocked(NOT_GRANTED), error: true });
     expect(out.helper).toEqual({ text: blocked(NOT_GRANTED), error: true });
     const history = await r.stub.fileHistory(r.bind(null), { path: "/workspace/mine.md",
@@ -335,7 +353,7 @@ describe("a stamp", () => {
       return { stamps, child: await write(child), fork: await write(fork.id),
                own: await write(1) };
     });
-    expect(out.stamps).toEqual([{ stamp }, { stamp }]);
+    expect(out.stamps).toEqual([{ by: "client", stamp }, { by: "client", stamp }]);
     expect(out.child).toEqual({ text: blocked(AUTHORITY_CHANGED), error: true });
     expect(out.fork).toEqual({ text: blocked(AUTHORITY_CHANGED), error: true });
     expect(out.own!.error).toBe(false);  // the owner's own conversation is not the client's
@@ -379,6 +397,8 @@ describe("a grant change", () => {
           .then(() => "settled", (error: Error) => error.message),
       };
       await instance.grantRevoke(r.bind(null), { client: MUSE.client });
+      // The door returned once the work it ended had settled, within its wait.
+      const atOnce = (await instance.agent.status(turns.muse.operationId, muse.session)).status;
       const pi = await instance.agent.harness.pi();
       const ended = [await instance.agent.harness.wait(turns.muse.operationId,
                                                        { session: muse.session }),
@@ -394,9 +414,10 @@ describe("a grant change", () => {
                     await instance.agent.harness.wait(turns.own.operationId)];
       const next = shown(await instance.agent.harness.prompt("write again",
                                                              { session: muse.session }));
-      return { ended, running, done, next, heard, waits: { muse: await waits.muse,
+      return { atOnce, ended, running, done, next, heard, waits: { muse: await waits.muse,
                                                            dot: await waits.dot } };
     });
+    expect(out.atOnce).toBe("unanswered");
     expect(out.ended.map((answer) => [answer.status, answer.reason]))
       .toEqual([["unanswered", "aborted"], ["unanswered", "aborted"],
                 ["unanswered", "aborted"]]);
@@ -587,7 +608,8 @@ describe("the work lane's runner", () => {
     const r = await agentRig();
     const out = await r.in(async (instance, state) => {
       const { thread, session } = await threadFor(instance, null);
-      const runner = workRunner(new Threads(state.storage), instance.agent.harness);
+      const runner = workRunner(new Threads(state.storage), instance.agent.harness,
+                                instance.parts.authority);
       const marks: string[] = [];
       const mark = async () => {
         marks.push("mark");
@@ -612,7 +634,8 @@ describe("the work lane's runner", () => {
       const { thread, session } = await threadFor(instance, null);
       const busy = await instance.agent.harness.submit("hold please", { session });
       await until(() => instance.probes.holds === 1, "the hold to start");
-      const runner = workRunner(new Threads(state.storage), instance.agent.harness);
+      const runner = workRunner(new Threads(state.storage), instance.agent.harness,
+                                instance.parts.authority);
       const answer = await runner.handOff(target("work_q", thread.thread_id), async () => {});
       const queued = await instance.agent.status("work_q", session);
       held.release();
@@ -630,7 +653,8 @@ describe("the work lane's runner", () => {
     const r = await agentRig();
     const out = await r.in(async (instance, state) => {
       const { thread, session } = await threadFor(instance, null);
-      const runner = workRunner(new Threads(state.storage), instance.agent.harness);
+      const runner = workRunner(new Threads(state.storage), instance.agent.harness,
+                                instance.parts.authority);
       const lapsed = await failure(() => runner.handOff(target("work_b", thread.thread_id),
         async () => {
           throw new Error("the work's claim lapsed before its hand-off");
@@ -674,5 +698,295 @@ describe("an aborted turn's model call", () => {
     await until(async () => (await cancelled()) === true, "the upstream to be cancelled");
     const { receipts } = await r.stub.usageReceipts(r.bind());
     expect(receipts.map((receipt) => receipt.state)).toEqual(["unknown"]);
+  });
+});
+
+describe("the authority's enforcement (review M1)", () => {
+  it("holds a conversation to its authority in its environment, whatever extensions it " +
+     "selects", async () => {
+    const r = await agentRig();
+    await r.stub.fileWrite(r.bind(null), { path: "/workspace/notes.md", expected_etag: null,
+                                           content: text("the secret milk") });
+    await r.admit(MUSE);
+    const generation = await r.scoped(MUSE, ["write_files"]);  // no read_files
+    const out = await r.in(async (instance) => {
+      const { thread, session } = await threadFor(instance, r.stampOf(MUSE, generation));
+      const pi = await instance.agent.harness.pi();
+      const conversation = (await pi.conversation(thread.conversation_id as ConversationId,
+                                                  BG))!;
+      await conversation.configure({ extensions: { remove: [{ name: "ta.authority" } as never] } },
+                                   BG);
+      return {
+        read: shown(await instance.agent.harness.prompt("read it", { session }))["read"]!,
+        shell: shown(await instance.agent.harness.prompt("shell it", { session }))["bash"]!,
+      };
+    });
+    // The gate was selected away; the environment refused the read and the shell itself.
+    expect(out.read.error).toBe(true);
+    expect(out.read.text).toContain(NOT_GRANTED);
+    expect(out.read.text).not.toContain("secret");
+    expect(out.shell.error).toBe(true);
+    expect(out.shell.text).toContain(NO_SHELL);
+  });
+
+  it("holds a replay of a replay-safe read, which runs no beforeTool, to the authority as " +
+     "it stands", async () => {
+    const r = await agentRig();
+    await r.stub.fileWrite(r.bind(null), { path: "/workspace/notes.md", expected_etag: null,
+                                           content: text("the secret milk") });
+    await r.admit(MUSE);
+    const { operationId, session } = await r.in(async (instance, state) => {
+      const { session } = await threadFor(instance, r.stampOf(MUSE, 1));
+      storeScript(state, [calls(fauxToolCall("read", { path: "notes.md" })), says("done")]);
+      instance.script = [];
+      instance.probes.readGate = new Promise(() => undefined);
+      return { operationId: (await instance.agent.harness.submit("read it", { session }))
+        .operationId, session };
+    });
+    await until(() => r.in((instance) => instance.probes.reads === 1), "the read to start");
+    expect(await r.in((_instance, state) => state.abort("evicted mid-read"))
+      .then(() => "alive", (error: Error) => error.message)).toBe("evicted mid-read");
+    // Revoked while the object is down, around the doors: no abort reaches the read.
+    const fresh = env.AGENT.getByName(r.owner);
+    await runInDurableObject(fresh, (_instance: FauxOwnerDO, state) => {
+      new Grants(state.storage, new Policy(state.storage)).revoke(MUSE.client, clock());
+    });
+    expect(await runDurableObjectAlarm(fresh)).toBe(true);
+    const read = await runInDurableObject(fresh, async (instance: FauxOwnerDO) => {
+      await instance.agent.harness.wait(operationId, { session });
+      return { reads: instance.probes.reads,
+               shown: results((await instance.agent.harness.messages({ session }))
+                 .flatMap((entry) => (entry.model ?? []) as Message[]))["read"]! };
+    });
+    expect(read.reads).toBe(1);  // the replay ran the read again, past no gate
+    expect(read.shown.error).toBe(true);
+    expect(read.shown.text).toContain(AUTHORITY_CHANGED);
+    expect(read.shown.text).not.toContain("secret");
+  });
+
+  it("makes the owner's authority explicit: a conversation made as no thread does nothing",
+     async () => {
+    const r = await agentRig();
+    const out = await r.in(async (instance) => {
+      instance.script = Array.from({ length: 40 }, () => byAsk);
+      const pi = await instance.agent.harness.pi();
+      const made = await pi.createConversation({ ownership: { kind: "ownerless" },
+        agent: { model: { provider: "gateway", modelId: "auto" } } }, BG);
+      const state = await pi.snapshot(instance.agent.authority, made.id, BG);
+      return { state, read: shown(await instance.agent.harness.prompt(
+        "read it", { session: String(made.id) }))["read"] };
+    });
+    expect(out.state).toEqual({ by: "none" });
+    expect(out.read).toEqual({ text: blocked(NO_AUTHORITY), error: true });
+  });
+
+  it("keeps a task's conversation under its owner conversation's authority, a fork's " +
+     "differing copy refused", async () => {
+    const r = await agentRig();
+    await r.admit(MUSE);
+    const out = await r.in(async (instance) => {
+      const own = await threadFor(instance, null);
+      expect((await instance.agent.harness.prompt("noted", { session: own.session })).status)
+        .toBe("done");
+      const pi = await instance.agent.harness.pi();
+      const ownConversation = (await pi.conversation(own.thread.conversation_id as never, BG))!;
+      const at = (await ownConversation.context(BG)).entries.at(-1)!.id;
+      const theirs = await threadFor(instance, r.stampOf(MUSE, 1));
+      // A client's tool forks the owner's thread, as a conversation its call owns.
+      instance.script = [calls(fauxToolCall("fork", { from: own.thread.conversation_id, at })),
+                         (messages: Message[]) => says(JSON.stringify(results(messages)))];
+      return shown(await instance.agent.harness.prompt("fork it", { session: theirs.session }));
+    });
+    expect(out["fork"]!.error).toBe(true);
+    expect(out["fork"]!.text).toContain("a fork's authority disagrees with its owner");
+  });
+});
+
+describe("an operation's status (review M3)", () => {
+  it("fails loudly for a session pi never made, never answering running", async () => {
+    const r = await agentRig();
+    const out = await r.in(async (instance) => instance.agent.status("op-x", "987654")
+      .then((status) => status.status, (error: Error) => error.message));
+    expect(out).toMatch(/Unknown pi session 987654/);
+  });
+});
+
+describe("a revoked client's model calls (review M2)", () => {
+  /** The gated owner, a model source connected, and a full client admitted. */
+  async function spending() {
+    const r = await gated();
+    await r.connect(`sk-${crypto.randomUUID().slice(0, 8)}`);
+    const at = signedIn();
+    await r.stub.outsideAgents(r.bind({ origin: MUSE, source: MCP, authenticated_at: at }));
+    const stamp: Stamped = { client: MUSE.client, generation: 1, authenticated_at: at,
+                             universe: null, agent: "main" };
+    const fetches = (instance: GatedOwnerDO) =>
+      instance.calls.filter((call) => call.method === "fetch").length;
+    return { r, stamp, fetches };
+  }
+
+  it.each([["run to its end", true], ["only started", false]])(
+    "are refused in their reservation when a revoke %s between a hand-off's mark and its " +
+    "submit misses the work in its abort", async (_how, awaited) => {
+    const { r, stamp, fetches } = await spending();
+    const out = await r.in(async (instance, state) => {
+      const thread = await instance.agent.thread("main", stamp);
+      const runner = workRunner(new Threads(state.storage), instance.agent.harness,
+                                instance.parts.authority);
+      const before = fetches(instance);
+      let revoke: Promise<unknown> = Promise.resolve();
+      const answer = await runner.handOff({
+        work_id: "work_r", claim_id: "claim_x", kind: "turn",
+        payload: { thread: thread.thread_id, input: "cmd:echo" },
+        stamp: { client: MUSE.client, generation: 1, authenticated_at: stamp.authenticated_at },
+      }, async () => {
+        revoke = instance.grantRevoke(r.bind(), { client: MUSE.client });
+        if (awaited) {
+          await revoke;
+        }
+      });
+      await revoke;
+      const settled = await instance.agent.harness.wait(
+        "work_r", { session: String(thread.conversation_id) });
+      return { answer, settled, sent: fetches(instance) - before };
+    });
+    expect(out.answer).toEqual({ state: "handed" });
+    expect([out.settled.status, out.sent]).toEqual(["unanswered", 0]);
+    const { receipts } = await r.stub.usageReceipts(r.bind());
+    const states = receipts.map((receipt) => [receipt.state, receipt.rule]);
+    if (awaited) {
+      expect(states).toEqual([["refused", AUTHORITY_RULE]]);
+    } else {  // refused, or aborted before any reserve: never a call that spent
+      expect(states.filter(([state, rule]) => state !== "refused" || rule !== AUTHORITY_RULE))
+        .toEqual([]);
+    }
+  });
+
+  it("are refused when the revoke's abort never ran (an eviction between its commit and " +
+     "its abort), and a call naming no conversation is refused too", async () => {
+    const { r, stamp, fetches } = await spending();
+    const out = await r.in(async (instance, state) => {
+      const thread = await instance.agent.thread("main", stamp);
+      new Grants(state.storage, new Policy(state.storage)).revoke(MUSE.client, clock());
+      const before = fetches(instance);
+      const answer = await instance.agent.harness.prompt(
+        "cmd:echo", { session: String(thread.conversation_id) });
+      const stray = await instance.parts.provider.streamSimple(
+        instance.parts.provider.getModels()[0]!, asked("cmd:echo"),
+        { sessionId: crypto.randomUUID(), telemetry: originContext("input:stray") }).result();
+      return { answer, stray: stray.errorMessage, sent: fetches(instance) - before };
+    });
+    expect([out.answer.status, out.sent, out.stray]).toEqual(["unanswered", 0, NO_CONVERSATION]);
+    const { receipts } = await r.stub.usageReceipts(r.bind());
+    expect(receipts.map((receipt) => [receipt.state, receipt.rule]))
+      .toContainEqual(["refused", AUTHORITY_RULE]);
+  });
+});
+
+describe("the agent's threads (review L3, L4, L5, L8)", () => {
+  it("are bounded per client, hold the client's grant row, and go with its grant's change",
+     async () => {
+    const r = await agentRig();
+    await r.admit(MUSE);
+    const made = await r.in(async (instance, state) => {
+      const threads = new Threads(state.storage, { perClient: 3, owner: 10 });
+      const tried: string[] = [];
+      for (let i = 0; i < 4; i++) {
+        const pi = await instance.agent.harness.pi();
+        const conversation = await pi.createConversation({ ownership: { kind: "ownerless" } },
+                                                         BG);
+        tried.push(await new WriteGate(state.storage).write(() =>
+          threads.record(conversation.id, "main", r.stampOf(MUSE, 1), clock()).thread_id
+            .slice(0, 7)).catch((error: Error) => error.message));
+      }
+      return tried;
+    });
+    expect(made).toEqual(["thread_", "thread_", "thread_",
+                          "this client's threads are at their limit"]);
+    const held = async () => (await r.stub.grantList(r.bind(null))).clients
+      .find((client) => client.client === MUSE.client)!.held;
+    expect(await held()).toBe(3);
+    await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
+    expect(await held()).toBe(0);
+    // Its threads gone with its grant, the owner may forget the revoked client.
+    expect((await r.stub.grantForgetRevoked(r.session(), { clients: [MUSE.client] })).forgotten)
+      .toEqual([MUSE.client]);
+  });
+
+  it("re-check, in the recording unit, that the stamp still stands", async () => {
+    const r = await agentRig();
+    await r.admit(MUSE);
+    const out = await r.in(async (instance, state) => {
+      await instance.agent.harness.pi();
+      const queue = holdQueue(state);
+      const making = instance.agent.thread("main", r.stampOf(MUSE, 1))
+        .then(() => "made", (error: Error) => error.message);
+      for (let i = 0; i < 20; i++) {
+        await Promise.resolve();
+      }
+      // The stamp stood when the thread was asked for; it is revoked before its unit.
+      new Grants(state.storage, new Policy(state.storage)).revoke(MUSE.client, clock());
+      queue.release();
+      await queue.done;
+      return { made: await making,
+               rows: state.storage.sql.exec("SELECT * FROM agent_threads").toArray().length };
+    });
+    expect(out).toEqual({ made: AUTHORITY_CHANGED, rows: 0 });
+  });
+
+  it("never change the stamp they were made under", async () => {
+    const r = await agentRig();
+    await r.admit(MUSE);
+    await r.in((instance) => instance.agent.thread("main", r.stampOf(MUSE, 1)));
+    await expect(r.in((_instance, state) => state.storage.sql.exec(
+      "UPDATE agent_threads SET generation = 9"))).rejects.toThrow(/never changes the stamp/);
+  });
+
+  it("hand stamped work over only at the work's own generation, its entry naming the client",
+     async () => {
+    const r = await agentRig();
+    await r.admit(MUSE);
+    const out = await r.in(async (instance, state) => {
+      const { thread, session } = await threadFor(instance, r.stampOf(MUSE, 1));
+      const runner = workRunner(new Threads(state.storage), instance.agent.harness,
+                                instance.parts.authority);
+      let marked = 0;
+      const mark = async () => {
+        marked++;
+      };
+      const handOff = (workId: string, generation: number) => runner.handOff({
+        work_id: workId, claim_id: "claim_x", kind: "turn",
+        payload: { thread: thread.thread_id, input: "noted" },
+        stamp: { client: MUSE.client, generation, authenticated_at: r.at } }, mark);
+      const other = await handOff("work_g", 2);
+      const own = await handOff("work_h", 1);
+      await instance.agent.harness.wait("work_h", { session });
+      const entries = (await instance.agent.harness.messages({ session }))
+        .filter((entry) => entry.kind === "ta.work").map((entry) => entry.data);
+      return { other, own, marked, entries };
+    });
+    expect(out.other).toEqual({ state: "failed", reason: "thread_authority" });
+    expect([out.own, out.marked]).toEqual([{ state: "handed" }, 1]);
+    expect(out.entries).toEqual([{ work_id: "work_h", client: MUSE.client }]);
+  });
+});
+
+describe("the authority's checks", () => {
+  it("fail loudly, never as a refusal, when the grants cannot be read (review L8)", async () => {
+    const authority = new Authority({
+      grants: { standing: () => {
+        throw new Error("the grants could not be read");
+      } },
+      receipt: async () => undefined,
+    });
+    const client = { by: "client" as const, stamp: { client: MUSE.client, generation: 1,
+                                                     authenticated_at: null, universe: null,
+                                                     agent: "main" } };
+    expect(() => authority.refusal(client, ["read_files"])).toThrow(/could not be read/);
+    await expect(authority.decide(client, { name: "read", arguments: {} }))
+      .rejects.toThrow(/could not be read/);
+    expect(authority.refusal({ by: "owner" }, null)).toBeUndefined();
+    expect(authority.refusal({ by: "none" }, [])).toBe(NO_AUTHORITY);
+    expect(authority.modelRule({ by: "none" })).toBe(AUTHORITY_RULE);
   });
 });

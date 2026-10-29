@@ -183,6 +183,17 @@ function testExtensions(probes: () => Probes): Extension[] {
         },
       }),
       defineTool({
+        name: "fork",
+        description: "Fork a conversation at an entry, owned by this call.",
+        parameters: Type.Object({ from: Type.Number(), at: Type.Number() }),
+        execute: async (args, api, context: Context) => {
+          const forked = await api.commit((tx) => tx.forkConversation(
+            args.from as never, args.at as never,
+            { ownership: { kind: "task", taskId: api.taskId } }), context);
+          return { output: [{ type: "text", text: String(forked.id) }] };
+        },
+      }),
+      defineTool({
         name: "nest",
         description: "Call another tool as a nested call, as ta does.",
         parameters: Type.Object({ name: Type.String(),
@@ -325,7 +336,7 @@ export class FauxOwnerDO extends OwnerDO {
         made.self!.turns.push(turn);
       }));
       made.agent = new OwnerAgent(parts, {
-        models: () => models, extensions: testExtensions(() => made.self!.probes) });
+        models: () => models, packages: testExtensions(() => made.self!.probes) });
       return made.agent;
     });
     made.self = this;
@@ -347,8 +358,10 @@ export class MalformedOwnerDO extends OwnerDO {
       const twice = defineTool({ name: "twice", description: "One of two.",
                                  parameters: Type.Object({}),
                                  execute: async () => ({ output: [] }) });
-      made.agent = new OwnerAgent(parts, { models: () => models, extensions: [
+      made.agent = new OwnerAgent(parts, { models: () => models, packages: [
         defineExtension({ name: "pkg:broken", tools: [twice, twice] }),
+        // A package named as the object's gate, with no hooks: it would replace the gate.
+        defineExtension({ name: "ta.authority" }),
         ...testExtensions(freshProbes),
       ] });
       return made.agent;

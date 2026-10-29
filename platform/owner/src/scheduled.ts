@@ -210,7 +210,7 @@ export class Scheduled {
    * Schedule one piece of work at `due`, on the owner's own authority (`stamp` null) or
    * the outside client's it was admitted under, which must stand now. A turn names its
    * thread here, once: a thread made under the same authority (the owner's, or the same
-   * client's), so work never runs in another's conversation.
+   * client's at the same grant generation), so work never runs in another's conversation.
    */
   add(kind: unknown, due: unknown, payload: unknown, made: unknown, now: number):
       { work_id: string } {
@@ -240,7 +240,9 @@ export class Scheduled {
       if (this.#usage().open_work >= this.#limits.maxOpen) {
         throw new Refused("the owner's scheduled work is at its limit");
       }
-      if (this.#threads.get(turn.thread)?.client !== (by?.client ?? null)) {
+      const thread = this.#threads.get(turn.thread);
+      if (thread === null || thread.client !== (by?.client ?? null)
+          || thread.generation !== (by?.generation ?? null)) {
         throw new Refused("a scheduled turn runs in a thread made under its own authority");
       }
       const workId = "work_" + token(16);

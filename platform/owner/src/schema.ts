@@ -755,7 +755,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   ]),
   // 7: the agent's threads (threads.ts): each top-level pi conversation the object made for
   // an agent, and the stamp it was made under, which never changes. pi's own tables hold
-  // the conversation and, in its `ta.authority` document, the same stamp.
+  // the conversation and, in its `ta.authority` document, the same stamp. A client's
+  // threads hold its grant row (`held`), as its stamped work and held registrations do.
   Object.freeze([
     "CREATE TABLE agent_threads (thread_id TEXT PRIMARY KEY CHECK (length(thread_id) = 39), " +
       "conversation_id INTEGER NOT NULL UNIQUE CHECK (conversation_id >= 1), " +
@@ -766,10 +767,22 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "CHECK ((client IS NULL) = (generation IS NULL)), " +
       "CHECK (client IS NOT NULL OR (authenticated_at IS NULL AND universe IS NULL))) " +
       "WITHOUT ROWID",
-    "CREATE INDEX agent_threads_by_client ON agent_threads (client, created_at) " +
-      "WHERE client IS NOT NULL",
+    "CREATE INDEX agent_threads_by_client ON agent_threads (client, created_at)",
     "CREATE TRIGGER agent_threads_kept BEFORE UPDATE ON agent_threads BEGIN " +
       "SELECT RAISE(ABORT, 'a thread never changes the stamp it was made under'); END",
+    `CREATE TRIGGER agent_threads_held AFTER INSERT ON agent_threads BEGIN ${
+      HOLD("NEW", "+")} END`,
+    `CREATE TRIGGER agent_threads_released AFTER DELETE ON agent_threads BEGIN ${
+      HOLD("OLD", "-")} END`,
+    // A client recorded after its threads were still counts them, beside what migration 3
+    // counted.
+    "DROP TRIGGER outside_clients_held",
+    "CREATE TRIGGER outside_clients_held AFTER INSERT ON outside_clients BEGIN " +
+      "UPDATE outside_clients SET agents = (SELECT COUNT(*) FROM outside_agents " +
+      "WHERE outside_client = NEW.client), held = (SELECT COUNT(*) FROM scheduled_work " +
+      "WHERE client = NEW.client AND settled_at IS NULL) + (SELECT COUNT(*) FROM " +
+      "agent_cards WHERE client = NEW.client) + (SELECT COUNT(*) FROM agent_threads " +
+      "WHERE client = NEW.client) WHERE client = NEW.client; END",
   ]),
 ]);
 

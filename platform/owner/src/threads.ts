@@ -3,15 +3,22 @@
  * conversation the object makes for an agent, with the stamp it was made under.
  *
  * A thread is made where its work begins (A4's doors; scheduled work names one when it is
- * made, `scheduled.ts`): pi creates the conversation and writes its stamp into the
+ * made, `scheduled.ts`): pi creates the conversation and writes its authority into the
  * `ta.authority` document in the creating commit, then this row records it, in a unit of
  * the write gate that re-checks the stamp's standing. A row never changes. It is the
- * object's index of threads, by our id and by client: the conversation's own
- * stamp, which every conversation below it inherits, is what the authority gate reads
+ * object's index of threads, by our id and by client: the conversation's own authority,
+ * which every conversation below it inherits, is what every check reads
  * (`authority.ts`). A conversation pi made whose row a crash left unwritten holds no
  * input and no work: nothing names it.
+ *
+ * Bounds: a client's threads hold its grant row (the schema's `held`), as its stamped work
+ * does, so the free-row bound never forgets the row they are checked against. A grant
+ * change drops its client's threads in the change's own transaction (`endClient`): their
+ * stamps no longer stand, so they can do nothing more, and dropping them releases the row.
+ * Past `perClient` standing threads, or `owner` of the owner's, a new one is refused.
  */
-import { agentId, stamped } from "./authority";
+import { agentId, type AuthorityState, authorityOf, stamped } from "./authority";
+import { Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 
 /** One thread as stored. */
@@ -31,18 +38,38 @@ export interface ThreadReader {
   get(threadId: unknown): Thread | null;
 }
 
+export interface ThreadLimits {
+  /** Threads one outside client may hold at once. */
+  readonly perClient: number;
+  /** The owner's own threads. */
+  readonly owner: number;
+}
+
+export const THREAD_LIMITS: ThreadLimits = Object.freeze({ perClient: 64, owner: 10_000 });
+
 const THREAD_ID = /^thread_[0-9a-f]{32}$/;
+
+/** A thread's authority, as its conversation's `ta.authority` document holds it. */
+export function threadAuthority(thread: Thread): AuthorityState {
+  return authorityOf(thread.client === null ? null
+    : { client: thread.client, generation: thread.generation!,
+        authenticated_at: thread.authenticated_at, universe: thread.universe,
+        agent: thread.agent_id });
+}
 
 export class Threads implements ThreadReader {
   readonly #storage: OwnerStorage;
+  readonly #limits: ThreadLimits;
 
-  constructor(storage: OwnerStorage) {
+  constructor(storage: OwnerStorage, limits: ThreadLimits = THREAD_LIMITS) {
     this.#storage = storage;
+    this.#limits = limits;
   }
 
   /**
    * In a unit: record the thread pi made as `conversationId`, for `agent` under `stamp`
-   * (null: the owner's own), whose standing the caller re-checks in the same unit.
+   * (null: the owner's own), whose standing the caller re-checks in the same unit; refused
+   * past its bound.
    */
   record(conversationId: number, agent: unknown, stamp: unknown, now: number): Thread {
     if (!Number.isSafeInteger(conversationId) || conversationId < 1) {
@@ -53,10 +80,17 @@ export class Threads implements ThreadReader {
     if (by !== null && by.agent !== id) {
       throw new Error("a thread's stamp names its own agent");
     }
+    const sql = this.#storage.sql;
+    const held = sql.exec<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM agent_threads WHERE client IS ?", by?.client ?? null).one().n;
+    if (held >= (by === null ? this.#limits.owner : this.#limits.perClient)) {
+      throw new Refused(by === null ? "the owner's threads are at their limit"
+        : "this client's threads are at their limit");
+    }
     const raw = new Uint8Array(16);
     crypto.getRandomValues(raw);
     const threadId = `thread_${Array.from(raw, (b) => b.toString(16).padStart(2, "0")).join("")}`;
-    return this.#storage.sql.exec<Thread>(
+    return sql.exec<Thread>(
       "INSERT INTO agent_threads (thread_id, conversation_id, agent_id, client, generation, " +
         "authenticated_at, universe, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
       threadId, conversationId, id, by?.client ?? null, by?.generation ?? null,
@@ -71,10 +105,13 @@ export class Threads implements ThreadReader {
                                           threadId).toArray()[0] ?? null;
   }
 
-  /** A client's threads, oldest first. */
-  ofClient(client: string): Thread[] {
-    return this.#storage.sql.exec<Thread>(
-      "SELECT * FROM agent_threads WHERE client = ? ORDER BY created_at, thread_id", client)
-      .toArray();
+  /**
+   * In the grant change's unit: drop the client's threads, whose stamps the change ended;
+   * the conversations they were, so their live views can be closed once it commits.
+   */
+  endClient(client: string): number[] {
+    return this.#storage.sql.exec<{ conversation_id: number }>(
+      "DELETE FROM agent_threads WHERE client = ? RETURNING conversation_id", client).toArray()
+      .map((row) => row.conversation_id);
   }
 }

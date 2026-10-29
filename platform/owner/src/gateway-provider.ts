@@ -16,12 +16,16 @@
  *    telemetry context pi gives it (`origin.ts`); none is the call's error, `no_run`, and
  *    nothing is reserved.
  * 3. An OAuth credential expiring soon is refreshed first, under the refresh lease.
- * 4. **Reserve**, in one unit of the write gate: the connection's blob at its current
- *    version, the owner policy's generation and model caps, and the reservation
- *    (`usage.ts`), so the envelope carries exactly what was reserved under, and concurrent
- *    calls never pass a cap. A refusal is the call's error, named by its rule.
- * 5. **Dispatched**, in a unit of its own: the row still reserved, the policy at the same
- *    generation, the connection at the same version, the call not aborted.
+ * 4. **Reserve**, in one unit of the write gate: the authority the request's conversation
+ *    runs under (found by its provider session, `OwnerAgent.modelAuthority`; a revoked
+ *    client's is `outside_authority`, a request of no conversation the object made
+ *    `no_conversation`), the connection's blob at its current version, the owner policy's
+ *    generation and model caps, and the reservation (`usage.ts`), so the envelope carries
+ *    exactly what was reserved under, and concurrent calls never pass a cap. A refusal is
+ *    the call's error, named by its rule, and kept as a receipt.
+ * 5. **Dispatched**, in a unit of its own: the row still reserved, the authority still
+ *    standing, the policy at the same generation, the connection at the same version, the
+ *    call not aborted.
  * 6. The call: pi-messages to `GATEWAY.fetch`, with the envelope in `x-ta-envelope`
  *    (owner, connection, version, blob, reservation id and output cap, policy generation,
  *    deadline; the gateway's `envelope.ts` reads it) and the model sent as the upstream's
@@ -57,6 +61,7 @@ import { streamSimple as piMessages } from "@earendil-works/pi-ai/api/pi-message
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 
+import { AUTHORITY_RULE, NO_CONVERSATION } from "./authority";
 import { type Candidate, physicalId, ranked, route } from "./auto";
 import type { Connections, Credential, GatewayService, Usable } from "./connections";
 import type { Write } from "./gate";
@@ -85,6 +90,12 @@ export interface ProviderParts {
   readonly tee: LiveTee;
   /** The object's clock, in seconds. */
   readonly clock: () => number;
+  /**
+   * The authority the request's conversation runs under, by the request's provider
+   * session: a check the reserve and dispatch units run, answering a refusal's rule or null
+   * (`OwnerAgent.modelAuthority`).
+   */
+  readonly authority: (sessionId: string | undefined) => Promise<() => string | null>;
 }
 
 /** The fields of `x-ta-envelope`, exactly as the gateway's `envelope.ts` takes them. */
@@ -248,6 +259,12 @@ export class GatewayProvider implements Provider<Api> {
     } catch (error) {
       return end(failed(physical, codeOf(error, NO_RUN), aborted()));
     }
+    let authority: () => string | null;
+    try {
+      authority = await this.#parts.authority(session);
+    } catch {
+      return end(failed(physical, AUTHORITY_RULE, aborted()));
+    }
     try {
       await connections.fresh(target.connection);
     } catch (error) {
@@ -264,7 +281,7 @@ export class GatewayProvider implements Provider<Api> {
           maxOutputTokens: Math.max(1, asked),
           reasoning: options.reasoning !== undefined && physical.reasoning,
           price: { input: target.model.cost.input, output: target.model.cost.output },
-        }, clock());
+        }, clock(), authority);
         return { credential, reserved };
       });
     } catch (error) {
@@ -272,15 +289,17 @@ export class GatewayProvider implements Provider<Api> {
     }
     const { credential, reserved } = call;
     if (!reserved.ok) {
-      return end(failed(physical, `model_budget: ${reserved.rule}`, aborted()));
+      return end(failed(physical, reserved.rule === AUTHORITY_RULE
+        || reserved.rule === NO_CONVERSATION ? reserved.rule : `model_budget: ${reserved.rule}`,
+                        aborted()));
     }
     // From here the row is this instance's to close: settled, or not sent, or abandoned.
     let closed = false;
     try {
       const sent = await write(() => usage.dispatched(reserved.id, clock(),
         aborted() ? "aborted"
-          : connections.current(credential.connection, credential.version) ? null
-            : "connection_changed"));
+          : authority() ?? (connections.current(credential.connection, credential.version)
+            ? null : "connection_changed")));
       if (!sent.sent) {
         closed = true;
         return end(failed(physical, `model_call_not_sent: ${sent.rule}`, aborted()));

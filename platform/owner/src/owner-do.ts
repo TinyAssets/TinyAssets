@@ -56,10 +56,10 @@
  * only through the gate's view, which refuses a write outside a unit. Reads are direct.
  *
  * The agent's threads run under the authority they were made under (`authority.ts`,
- * `threads.ts`): an outside client's tool calls are gated by its grant as it stands, and a
- * grant change (`grantSet`, `grantRevoke`) or a policy write ends the agent work it covers
- * once its own unit committed (`agent.ts`). The `work` lane hands due turns to pi through
- * the object's `workRunner`.
+ * `threads.ts`): an outside client's every tool operation and model call is held to its
+ * grant as it stands, and a grant change (`grantSet`, `grantRevoke`) or a policy write
+ * ends the agent work it covers once its own unit committed (`agent.ts`). The `work` lane
+ * hands due turns to pi through the object's `workRunner`.
  */
 import type { HarnessSettings } from "@earendil-works/pi-durable";
 import { Lifecycle } from "agents/lifecycle";
@@ -95,7 +95,7 @@ import {
 } from "./scheduled";
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
-import { type ThreadReader, Threads } from "./threads";
+import { threadAuthority, type ThreadReader, Threads } from "./threads";
 import { principal } from "./text";
 import { Usage as ModelUsage, type UsageReceipt } from "./usage";
 import { runWakes, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "./wakes";
@@ -560,16 +560,23 @@ export function ownerLanes(deps: LaneDeps):
  * then submits with the row's `work_id` as the operation id, queued behind a busy run, and
  * returns; pi runs the turn, and its receipts are found by `work_id`. A second hand-off of
  * the same work is pi's duplicate (`accepted: false`): handed all the same, never run
- * twice. A thread that is gone fails the work before its mark.
+ * twice. A thread that is gone, or whose stamp is not the work's or no longer stands,
+ * fails the work before its mark.
  */
 export function workRunner(threads: ThreadReader,
-                           harness: Pick<OwnerAgent["harness"], "submit">): WorkRunner {
+                           harness: Pick<OwnerAgent["harness"], "submit">,
+                           authority: Pick<Authority, "refusal">): WorkRunner {
   return {
     handOff: async (target, mark) => {
       const turn = workTurn(target.payload);
       const thread = threads.get(turn.thread);
       if (thread === null) {
         return { state: "failed", reason: "no_thread" };
+      }
+      if (thread.client !== (target.stamp?.client ?? null)
+          || thread.generation !== (target.stamp?.generation ?? null)
+          || authority.refusal(threadAuthority(thread), []) !== undefined) {
+        return { state: "failed", reason: "thread_authority" };
       }
       await mark();
       const receipt = await harness.submit(turn.input, {
@@ -665,6 +672,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const provider = new GatewayProvider({
       connections: this.#connections, usage: this.#usage, write, gateway: () => env.GATEWAY,
       owner, tee: this.#tee, clock,
+      authority: (session) => this.#agent.modelAuthority(session),
     });
     const authority = new Authority({
       grants: { standing: (client, generation, at) => {
@@ -678,7 +686,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                           rearm: () => this.#schedule.sync(),
                           policy: () => this.#agentPolicy(), provider, tee: this.#tee,
                           authority, threads: this.#threads });
-    this.#runner = workRunner(this.#threads, this.#agent.harness);
+    this.#runner = workRunner(this.#threads, this.#agent.harness, authority);
     this.#lifecycle = new Lifecycle<OwnerEnv>(this).use(this.#schedule).use(this.#agent.harness);
     void ctx.blockConcurrencyWhile(async () => {
       await write(() => migrate(storage));
@@ -882,7 +890,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * The owner's write, in its session; with `proposal`, a held card's one apply. A new
    * files retention is applied to rows already kept by housekeeping, so the schedule is
    * synced after it (the `files` lane re-applies it). Once it committed, it ends the
-   * agent's in-flight work, its live views and its pending waits (`OwnerAgent.endAll`).
+   * agent's in-flight work, its live views and its pending waits (`OwnerAgent.endAll`):
+   * it opens pi to do so, and waits up to `END_WAIT_MS` for the work to end. Should that
+   * fail, the door rejects, though the write is committed; the work it missed is held to
+   * the new policy anyway, and its model calls to the new generation.
    */
   async policyWrite(binding: Binding, request: PolicyWriteRequest): Promise<Projection> {
     const done = await this.#synced(() => this.#widening(binding, "write", request,
@@ -962,7 +973,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /**
    * The owner's widening, in its session; the client's agents' wakes end with it, and once
-   * it committed, the client's agent work (`OwnerAgent.endClient`).
+   * it committed, the client's agent work (`OwnerAgent.endClient`), as `grantRevoke`
+   * ends it.
    */
   async grantSet(binding: Binding, request: GrantRequest):
       Promise<{ client: string; mode: string; scopes: Scope[]; generation: number }> {
@@ -973,17 +985,20 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                                        "expected_generation", "name"]);
       return this.#storage.transactionSync(() => {
         const set = this.#grants.set(id, r as unknown as GrantRequest, clock());
-        this.#endClient(set.client);
-        return set;
+        return { ...set, threads: this.#endClient(set.client) };
       });
     }));
-    await this.#agent.endClient(changed.client);
-    return changed;
+    const { threads, ...answer } = changed;
+    await this.#agent.endClient(answer.client, threads);
+    return answer;
   }
 
   /**
    * A narrowing the owner's account makes without a session, as a key's revoke does; the
-   * client's agent work ends once it committed.
+   * client's agent work ends once it committed: the door opens pi when the client had
+   * threads, and waits up to `END_WAIT_MS` for that work to end. Should that fail, the
+   * door rejects, though the revoke is committed; what it missed is refused anyway, at
+   * every tool operation and model call (`authority.ts`).
    */
   async grantRevoke(binding: Binding, request: ClientRequest):
       Promise<{ client: string; revoked: boolean; generation: number }> {
@@ -992,12 +1007,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const r = policyFields(request, ["client"]);
       return this.#storage.transactionSync(() => {
         const revoked = this.#grants.revoke(r["client"], clock());
-        this.#endClient(revoked.client);
-        return revoked;
+        return { ...revoked, threads: this.#endClient(revoked.client) };
       });
     });
-    await this.#agent.endClient(result.client);
-    return result;
+    const { threads, ...answer } = result;
+    await this.#agent.endClient(answer.client, threads);
+    return answer;
   }
 
   /**
@@ -1033,12 +1048,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /**
    * A grant change ends what its client set going (P0-3's M3): its agents' open wakes and
    * callbacks, its pending scheduled work and its held registrations, in the caller's
-   * transaction. Its agent work ends after that commits (`OwnerAgent.endClient`).
+   * transaction, and its threads, whose conversations it answers: their live views close,
+   * and its agent work ends, after that commits (`OwnerAgent.endClient`).
    */
-  #endClient(client: string): void {
+  #endClient(client: string): number[] {
     this.#ledger.suppressClient(client, clock());
     this.#work.endClient(client, clock());
     this.#registrations.endClient(client);
+    return this.#threads.endClient(client);
   }
 
   // -- OUTSIDE_AGENTS ---------------------------------------------------------

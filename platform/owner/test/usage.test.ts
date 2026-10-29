@@ -35,13 +35,13 @@ const ASK: Ask = Object.freeze({
 const FULL = 1000 * 3 + 4000 * 15;
 
 interface Rig {
-  readonly usage: Usage;
+  readonly usage: Standing;
   readonly gate: WriteGate;
   readonly state: DurableObjectState;
   /** The policy the reservations read: its generation and caps, changeable. */
   readonly policy: { generation: number; caps: Partial<ModelCaps> };
   /** A second instance's Usage on the same storage, as after an eviction. */
-  readonly fresh: () => Usage;
+  readonly fresh: () => Standing;
   readonly rows: () => Record<string, SqlStorageValue>[];
   /** The spend counters, by `<period>/<source>`. */
   readonly spend: () => Record<string, number>;
@@ -49,11 +49,18 @@ interface Rig {
   readonly turn: (turn: string) => Record<string, SqlStorageValue> | undefined;
 }
 
+/** The reservations of calls whose conversation's authority stands: the caps alone decide. */
+class Standing extends Usage {
+  override reserve(ask: Ask, now: number, authority: () => string | null = () => null) {
+    return super.reserve(ask, now, authority);
+  }
+}
+
 function withUsage<R>(act: (r: Rig) => Promise<R>, limits: Partial<UsageLimits> = {}): Promise<R> {
   return runInDurableObject(ownerObject().stub, async (_instance: OwnerDO, state) => {
     const gate = new WriteGate(state.storage);
     const policy: Rig["policy"] = { generation: 1, caps: {} };
-    const make = () => new Usage(gate.storage, () => ({
+    const make = () => new Standing(gate.storage, () => ({
       generation: policy.generation,
       settings: { ...MODEL_DEFAULTS, sources: {}, ...policy.caps },
     }), { ...USAGE_LIMITS, ...limits });
@@ -121,6 +128,15 @@ describe("a reservation", () => {
     expect(r.spend()).toEqual({ [DAY]: 5000, [MONTH]: 5000 });
     expect(r.turn("t1")).toEqual({ requests: 1, tokens: 1200, cost: 5000, last_at: NOW + 5 });
     expect(() => r.usage.reserve(ASK, NOW)).toThrow();  // outside a unit: the gate refuses
+  }));
+
+  it("is refused, kept as a receipt, when its conversation's authority no longer stands",
+     () => withUsage(async (r) => {
+    expect(await r.gate.write(() => r.usage.reserve(ASK, NOW, () => "outside_authority")))
+      .toEqual({ ok: false, rule: "outside_authority" });
+    expect(r.rows()).toMatchObject([{ state: "refused", rule: "outside_authority", est_cost: 0 }]);
+    expect(r.spend()).toEqual({});
+    expect(r.turn("t1")).toBeUndefined();
   }));
 
   it("moves only along its states", () => withUsage(async (r) => {

@@ -115,7 +115,8 @@ async function counters(r: Rig) {
       "(SELECT COUNT(*) FROM scheduled_work WHERE settled_at IS NOT NULL) AS settled_work, " +
       "(SELECT json_group_object(client, n) FROM (SELECT c.client, (SELECT COUNT(*) FROM " +
       "scheduled_work w WHERE w.client = c.client AND w.settled_at IS NULL) + (SELECT " +
-      "COUNT(*) FROM agent_cards a WHERE a.client = c.client) AS n FROM outside_clients c " +
+      "COUNT(*) FROM agent_cards a WHERE a.client = c.client) + (SELECT COUNT(*) FROM " +
+      "agent_threads t WHERE t.client = c.client) AS n FROM outside_clients c " +
       "ORDER BY c.client)) AS held");
   return [kept, counted];
 }
@@ -140,14 +141,14 @@ describe("stamped scheduled work", () => {
                          "outside client has no grant",
                          "a stamp is a client, its grant generation and its sign-in time",
                          "a stamp is a client, its grant generation and its sign-in time"]);
-    expect(await held(r, CHATGPT)).toBe(1);
+    expect(await held(r, CHATGPT)).toBe(2);  // the work, and the thread it names
   });
 
   it("is a turn in a thread made under the same authority, named when it is made",
      async () => {
     const r = await rig();
     const stamp = await admitted(r, CHATGPT);
-    const out = await inWork(r, ({ work, turn }) => {
+    const out = await inWork(r, ({ work, turn, state }) => {
       const tried = (payload: unknown, made: Stamp | null) => {
         try {
           return work.add("turn", clock() + 60, payload, made, clock()).work_id.slice(0, 5);
@@ -157,15 +158,19 @@ describe("stamped scheduled work", () => {
       };
       const owners = turn(null);
       const theirs = turn(stamp);
-      return [tried(theirs, stamp), tried(owners, null), tried(owners, stamp),
+      // The same client's thread, made under another generation of its grant.
+      const older = { ...theirs, thread: new Threads(state.storage).record(
+        987_654, "main", { ...stamp, generation: 2, universe: null, agent: "main" },
+        clock()).thread_id };
+      return [tried(theirs, stamp), tried(owners, null), tried(owners, stamp), tried(older, stamp),
               tried(theirs, null), tried({ ...owners, thread: `thread_${"0".repeat(32)}` }, null),
               tried({ thread: owners.thread }, null), tried({ ...owners, input: "" }, null),
               tried({ ...owners, extra: 1 }, null)];
     });
     const elsewhere = "a scheduled turn runs in a thread made under its own authority";
     const malformed = "a scheduled turn is a thread and its input";
-    expect(out).toEqual(["work_", "work_", elsewhere, elsewhere, elsewhere, malformed, malformed,
-                         malformed]);
+    expect(out).toEqual(["work_", "work_", elsewhere, elsewhere, elsewhere, elsewhere,
+                         malformed, malformed, malformed]);
   });
 
   it("holds its client's row, so free-row eviction never makes it 'no grant' (N3)",
@@ -174,7 +179,7 @@ describe("stamped scheduled work", () => {
     const stamp = await admitted(r, CHATGPT);
     const runner = new ScriptedRunner();
     await inWork(r, ({ work, turn }) => work.add("turn", clock() - 1, turn(stamp), stamp, clock()));
-    expect((await r.stub.grantList(r.bind(null))).clients[0]!.held).toBe(1);
+    expect((await r.stub.grantList(r.bind(null))).clients[0]!.held).toBe(2);
     const [kept, counted] = await counters(r);
     expect(kept).toEqual(counted);  // a held row is not free
     // A free row seen after CHATGPT's: at one free row, the new client takes its place,
@@ -192,7 +197,7 @@ describe("stamped scheduled work", () => {
     expect(runner.ran.map((t) => [t.kind, (t.payload as { input: string }).input, t.stamp]))
       .toEqual([["turn", ASKED, stamp]]);
     expect(await states(r)).toEqual([{ state: "handed", attempts: 1, marked: 1 }]);
-    expect(await held(r, CHATGPT)).toBe(0);  // settled: the row is free again
+    expect(await held(r, CHATGPT)).toBe(1);  // settled: only its thread holds the row
     const [after, recount] = await counters(r);
     expect(after).toEqual(recount);
   });
@@ -211,7 +216,7 @@ describe("stamped scheduled work", () => {
     expect(await inWork(r, ({ work, write }) => runWork(work, runner, clock, write))).toBe(1);
     expect(runner.ran.map((t) => t.stamp)).toEqual([null]);
     expect((await states(r)).map((row) => row["state"]).sort()).toEqual(["handed", "refused"]);
-    expect(await held(r, CHATGPT)).toBe(0);
+    expect(await held(r, CHATGPT)).toBe(1);  // its thread, changed around the doors, still does
   });
 
   it("of a client is ended by the client's grant change, in the change's transaction",

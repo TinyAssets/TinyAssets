@@ -7,11 +7,14 @@
  */
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AssistantMessage, normalizeContext, type TranscriptContext } from "@earendil-works/pi-ai";
+import { ProviderDoc, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { TelemetrySpan } from "@earendil-works/pi-telemetry";
 
 import type { Credential, Source } from "../../gateway/src/credential";
 import { seal } from "../../gateway/src/keyring";
+import type { OwnerAgent } from "../src/agent";
 import type { ModelInfo } from "../src/connections";
 import { originContext } from "../src/origin";
 import type { Binding } from "../src/owner-do";
@@ -121,12 +124,17 @@ export async function gated() {
 export type Gated = Awaited<ReturnType<typeof gated>>;
 
 /**
- * The options of a test's own call to the provider, outside any pi run: a session of its
- * own, and the telemetry context of an input of its own, as pi would hand it (`origin.ts`).
+ * The options of a test's own call to the provider, outside any pi run: the provider
+ * session of the owner's root conversation (a call must name a conversation the object
+ * made), and the telemetry context of an input of its own, `turn`, as pi would hand it
+ * (`origin.ts`).
  */
-export function direct(session: string = crypto.randomUUID()):
-    { sessionId: string; telemetry: TelemetrySpan } {
-  return { sessionId: session, telemetry: originContext(`input:${session}`) };
+export async function direct(instance: { agent: OwnerAgent },
+                             turn: string = crypto.randomUUID()):
+    Promise<{ sessionId: string; telemetry: TelemetrySpan }> {
+  const pi = await instance.agent.harness.pi();
+  const root = await pi.snapshot(ProviderDoc, ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT);
+  return { sessionId: root!.sessionId, telemetry: originContext(`input:${turn}`) };
 }
 
 /** A one-message context, as pi sends a request. */
