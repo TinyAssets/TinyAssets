@@ -326,21 +326,22 @@ account and no deploy.
   `unknown`), and pi sees the gateway's code, named so that pi-ai's own classifier
   retries a timeout, a rate limit, an overload or a server error and no other; pruning
   receipts no longer frees a turn's caps (5,000 requests of one turn hold); a turn is
-  pi's run, not the newest user message (A1). Mutation, the reviewer's round-2 set of 73
-  (its 56 re-anchored on the new code and 17 of the review fixes): 63 killed, the 10 that
-  live equivalent (a failed call's tokens and cost are settled 0, so counting it among the
-  settled changes nothing; the dispatch's state guard, checked in its own unit first;
-  dropping a settled row from the in-memory open set, which is read only for open rows;
-  the reseal's own-refresh check, which the lease row also holds; `#owed`'s due check
-  behind the lane's own due query; the tee's undefined session, which no subscriber can
-  hold; a session member with no chain, which only the creation hook writes; the
-  gateway's first-event check of an abort, which cannot coincide with a provider's refusal
-  status). Mine, 128 across the caps, the turn counters, the reservation states, the turn
-  and its anchor, the lease, the revoke, the envelope, `auto`, the gate placement, the
-  upstream codes and the gateway's first event: 125 killed, the 3 that live equivalent
-  (the reseal's version-shape check of the gateway's own answer; the output cap the
-  gateway clamps to anyway; `flowBegin`'s sync, which its pending row's sweep covers). The doors'
-  `GATEWAY` binding and the connect routes are G3's (done). Open: the policy write that ends in-flight turns and closes their
+  the input at the origin of the call's causal chain, not the newest user message (A1).
+  Mutation, the reviewer's round-3 set of 85: 14 name code the origin design deleted (the
+  session index, its anchors and the background walk); of the 71 left, 62 killed and the 9
+  that live equivalent (a failed call's tokens and cost are settled 0, so counting it
+  among the settled changes nothing; the dispatch's state guard, checked in its own unit
+  first; dropping a settled row from the in-memory open set, which is read only for open
+  rows; the reseal's own-refresh check, which the lease row also holds; `#owed`'s due
+  check behind the lane's own due query; the tee's undefined session, which no subscriber
+  can hold; the gateway's first-event check of an abort, which cannot coincide with a
+  provider's refusal status). Mine, 126 across the caps, the turn counters, the
+  reservation states, the turn's origin, the lease, the revoke, the envelope, `auto`, the
+  gate placement, the upstream codes and the gateway's first event: 123 killed, the 3 that
+  live equivalent (the reseal's version-shape check of the gateway's own answer; the
+  output cap the gateway clamps to anyway; a third in code G3 has since deleted). The
+  doors' `GATEWAY` binding and the connect routes are G3's (done). Open: the policy write
+  that ends in-flight turns and closes their
   tee views (A2); the receipts' rows per call, measured live (G5).
 - [x] G3 The connect doors (the doors Worker), in workerd through the real gateway Worker,
   nothing deployed. The doors bind `GATEWAY` to the gateway's new `ConnectGateway`
@@ -507,16 +508,15 @@ account and no deploy.
   envelope (owner, connection, version, blob, reservation, policy generation, deadline,
   as G1's `envelope.ts` reads it), the upstream's own model id, the reservation's output
   cap, settle before pi sees the end, a reseal stored, and a row abandoned when its own
-  unit throws. The turn is pi's: each conversation's `pi.provider` session id is indexed
-  at creation (`ta.sessions`) with its chain of owner conversations and the task that made
-  each; a request's anchor is the first conversation background work made, else the one
-  with no owner (a task's `background` is read at the request, since the creating commit
-  may read no table). The turn is the anchor's live run, named by the submission that
-  started it (pi hands `run.taskId` to a new generation each round); else the nearest live
-  run up the chain; else the request's conversation's live compaction; else `no_run`. A
-  compaction inside a run and a running root's subagents are the root's turn; a subagent
-  asked again after its root's run, and background work's conversations, run turns of
-  their own. Production's agent is it
+  unit throws. The turn is the submitted input at the origin of the call's causal chain
+  (`origin.ts`): the harness's telemetry adapter carries an origin, and nothing else,
+  along pi's own propagation, durable in pi's records (an input's admission takes its
+  caller's origin, else begins one; a task takes its creator's carrier; a request carries
+  its phase's context). So a run's tool rounds, steers, compactions, subagents and the
+  background work it starts, with that work's own child tasks and conversations, are the
+  run's turn, after the run ended too, and count against its caps (the Python's
+  `_borrowed`); a later input's run is another; a compaction asked for outside a run is
+  its own; a call with no origin is `no_run`. Production's agent is it
   (`gatewayAgent`, the default `AgentFactory`), so nothing connected settles `no_model`.
   `auto`: ranked by the data file (provider and model globs, newer ids first, the rest by
   catalog output price), its metadata the strongest's; stickiness and fallback read from
@@ -531,18 +531,23 @@ account and no deploy.
   tee's 12 deltas while pi committed at most 3 partials; an abort reaching the upstream;
   a budget refusal as the turn's error, never sent; a revoke racing a call; a 429 retried
   by pi at no cost, and each upstream status retried or not as pi-ai reads its code; the
-  turn across tool rounds, a steer, a compaction, two levels of subagents, a subagent
-  after its root's run, a subagent's own idle compaction, and background work's
-  conversation beside a new root run, with a subagent of its own; a
+  turn across tool rounds, a steer, a compaction the run starts (and one an owner asks
+  for), two levels of subagents, background work and its child task's work after the run
+  and beside a later one, and an input from outside any run; background work refused by
+  its spawning run's request cap while a later run is not charged; a
   dispatch or settle that throws. Declared
   differences from the research: stickiness reads the transcript rather than an in-memory
   map rebuilt from it; a continuation kept on an earlier target is estimated by its own
   metadata, but pi's compaction threshold reads `auto`'s (the strongest's) until the next
   user message; pi's abort reaches the gateway through the service binding's own
-  cancellation, with no wrapper of ours; a fork with no owner is its own root (it runs
-  its own submissions), so only owner edges are walked. Owner bundle 1,598 KiB, 329 KiB
+  cancellation, with no wrapper of ours. Owner bundle 1,598 KiB, 329 KiB
   gzip (1,495 and 303 before A1), local startup 24 ms active in a 56 ms window (20 in 50
-  before). Open: the
+  before). Out of scope now: an input submitted under no origin (a door's, an enqueued
+  one, or code that ignores the context pi passes it) begins a turn, and a task created
+  with a forged carrier takes its origin; only platform code can do either, since the
+  object runs no package executable code (A5), hooks run remotely with no submit or task
+  path (H0, H1) and tools have none of their own, so a future in-object package runtime
+  would need an owner-edge check. Open: the
   attribution reaches the gateway hop only (pi-messages carries no identity upstream); an
   owner pin of a model per agent (`pi.agent`) for `auto`; a package that keeps the
   ranking current; the tee's transport to the owner's app (A6).

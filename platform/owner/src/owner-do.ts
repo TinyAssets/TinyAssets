@@ -628,7 +628,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }), clock, write);
     const provider = new GatewayProvider({
       connections: this.#connections, usage: this.#usage, write, gateway: () => env.GATEWAY,
-      owner, tee: this.#tee, clock, turn: (session) => this.#agent.turnOf(session),
+      owner, tee: this.#tee, clock,
     });
     this.#agent = agent({ files: this.#files, notices: this.#notices, write,
                           rearm: () => this.#schedule.sync(),

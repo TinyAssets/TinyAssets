@@ -185,8 +185,9 @@ export function fileSettings(document: PolicyDocument): FileSettings {
 
 /**
  * Owner model policy (gateway research §4): what one turn may spend, and what the owner's
- * sources may spend in a UTC day and month. A turn is one run of the root conversation's
- * submissions, a subagent's and a compaction's calls inside it included (`usage.ts`).
+ * sources may spend in a UTC day and month. A turn is the submitted input at the origin of
+ * a call's causal chain, every subagent's, compaction's and background work's call it
+ * caused included (`origin.ts`).
  * Money is in micro-dollars (µ$), as pi-ai's catalog prices are dollars per million
  * tokens: a token at a price of `p` costs `p` µ$. The Python's per-turn limits
  * (`TurnRequestBudget`: `max_tokens=1_000_000`, `max_cost_microunits=25_000_000`) are the

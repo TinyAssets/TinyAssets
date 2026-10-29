@@ -12,10 +12,10 @@ import {
   type AssistantMessage, fauxAssistantMessage, type FauxContentBlock, fauxToolCall,
   type Message,
 } from "@earendil-works/pi-ai";
-import { type ConversationId, LiveDoc, ProviderDoc } from "@earendil-works/pi-durable";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
-import { AGENT_SETTINGS, AUTO, NO_RUN, writerOf } from "../src/agent";
+import { AGENT_SETTINGS, AUTO, writerOf } from "../src/agent";
 import { INLINE_BYTES } from "../src/files";
 import { OUTSIDE_GATE, WriteGate } from "../src/gate";
 import { clock, WAKE_LEASE_S } from "../src/ledger";
@@ -24,7 +24,7 @@ import type { Binding } from "../src/owner-do";
 import { ledgerOn, MCP, MUSE } from "./ledger-support";
 import { drainDue, failure } from "./support";
 import {
-  BackgroundSpawn, type FauxOwnerDO, type MalformedOwnerDO, says, storeScript,
+  type FauxOwnerDO, type MalformedOwnerDO, says, type Spawned, storeScript,
 } from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
@@ -216,54 +216,74 @@ function compacting(messages: readonly Message[]): boolean {
     && JSON.stringify(message).includes("context summarization assistant"));
 }
 
-/** Every request's turn, once the agent has read each. */
-async function turnsOf(instance: FauxOwnerDO): Promise<string[]> {
-  await until(async () => !instance.turns.includes("pending"), "every request's turn");
+/** Every request's turn so far, as the agent read each when it was made. */
+function turnsOf(instance: FauxOwnerDO): string[] {
   return [...instance.turns];
 }
 
-/** A conversation's `pi.provider` session id. */
-async function sessionOf(instance: FauxOwnerDO, id: ConversationId): Promise<string> {
+/** Wait for a submission pi admitted, by its id. */
+async function settled(instance: FauxOwnerDO, id: number) {
   const pi = await instance.agent.harness.pi();
-  return (await pi.snapshot(ProviderDoc, id, BG))!.sessionId;
+  return (await pi.submission(id as never, BG))!.wait(BG);
 }
 
-/** A conversation's chain as the agent indexed it: itself first, its anchor last. */
-async function chainOf(instance: FauxOwnerDO, id: ConversationId) {
+/** Wait for background work, and the input it submitted to its conversation. */
+async function backgroundDone(instance: FauxOwnerDO) {
   const pi = await instance.agent.harness.pi();
-  return (await pi.snapshot(instance.agent.sessions, await sessionOf(instance, id), BG))?.chain;
+  await until(async () => instance.probes.background !== null, "background work");
+  const task = await pi.waitForTask(instance.probes.background as never, BG);
+  const made = (task.state.outcome as { result: Spawned }).result;
+  return { ...made, answer: await settled(instance, made.submission) };
 }
 
 /** The answers of a conversation tree's tests, by what each conversation was asked. */
 function tree(messages: Message[]): AssistantMessage {
-  const said = JSON.stringify(messages);
+  // What was said, not the system prompt, which names the tools.
+  const said = JSON.stringify(messages.filter((message) =>
+    (message as { role: string }).role !== "system"));
   const asked = (text: string) => said.includes(text);
   return compacting(messages) ? says("## Goal\nsummary")
     : messages.at(-1)?.role === "toolResult" ? says("done")
       : asked("grandchild work") || asked("background work") ? says("answered")
-        : asked("child work") || asked("spawn one") ? calls(fauxToolCall("spawn", {}))
-          : asked("spawn and hold") ? calls(fauxToolCall("spawn", {}), fauxToolCall("hold", {}))
-            : asked("hold please") ? calls(fauxToolCall("hold", {})) : says("noted");
+        : asked("child hold") || asked("hold please") ? calls(fauxToolCall("hold", {}))
+          : asked("child work") ? calls(fauxToolCall("spawn", { work: "grandchild work" }))
+            : asked("spawn and hold")
+              ? calls(fauxToolCall("spawn", { work: "child work" }), fauxToolCall("hold", {}))
+              : asked("spawn one") ? calls(fauxToolCall("spawn", { work: "child hold" }))
+                : asked("start nested") ? calls(fauxToolCall("background",
+                                                            { work: "background work",
+                                                              nested: true }))
+                  : asked("start background")
+                    ? calls(fauxToolCall("background", { work: "background work" }))
+                    : says("noted");
+}
+
+/** A held gate and its release, on an instance's probes. */
+function gate(): { promise: Promise<void>; release: () => void } {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, release };
 }
 
 /** A user message of about 25,000 estimated tokens: past pi's 20,000 kept by a compaction. */
 const LONG = "word ".repeat(20_000);
+/** About 87,500: past the faux model's background compaction threshold of 78,848. */
+const HUGE = "word ".repeat(70_000);
 
 describe("a model request's turn", () => {
-  it("is one run of the root conversation: every request of a run shares it, and the " +
-     "next run has its own", async () => {
+  it("is the input that started its run: a run's requests share it, and the next input's " +
+     "run has its own", async () => {
     const r = agentObject();
     const out = await r.in(async (instance) => {
       instance.script = Array.from({ length: 8 }, () => (messages: Message[]) =>
         messages.at(-1)?.role === "toolResult" ? says("done") : calls(fauxToolCall("hold", {})));
       const first = await instance.agent.harness.prompt("one");
       const second = await instance.agent.harness.prompt("two");
-      const root = await (await instance.agent.harness.pi()).root(BG);
-      return { first, second, root: root.id, turns: await turnsOf(instance) };
+      return { first, second, turns: turnsOf(instance) };
     });
     expect([out.first.status, out.second.status]).toEqual(["done", "done"]);
     expect(out.turns).toHaveLength(4);
-    expect(out.turns.every((turn) => turn.startsWith(`${out.root}/run:`))).toBe(true);
+    expect(out.turns.every((turn) => /^input:[0-9a-f-]{36}$/.test(turn))).toBe(true);
     expect(out.turns[1]).toBe(out.turns[0]);
     expect(out.turns[3]).toBe(out.turns[2]);
     expect(out.turns[2]).not.toBe(out.turns[0]);
@@ -272,31 +292,48 @@ describe("a model request's turn", () => {
   it("keeps the run's turn when an input steers it", async () => {
     const r = agentObject();
     const out = await r.in(async (instance) => {
-      let release!: () => void;
-      instance.probes.holdGate = new Promise<void>((resolve) => { release = resolve; });
+      const held = gate();
+      instance.probes.holdGate = held.promise;
       instance.script = Array.from({ length: 8 }, () => (messages: Message[]) =>
         messages.at(-1)?.role === "toolResult" ? says("done")
           : JSON.stringify(messages.at(-1)).includes("steer") ? says("steered")
             : calls(fauxToolCall("hold", {})));
       const { operationId } = await instance.agent.harness.submit("work");
       await until(async () => instance.probes.holds === 1, "the hold to start");
-      // Joins the running work after the tool round: the run's inputs grow.
+      // Joins the running work after the tool round.
       const steered = await instance.agent.harness.submit("steer it", { whenBusy: "steer" });
-      release();
-      const settled = [await instance.agent.harness.wait(operationId),
+      held.release();
+      const answers = [await instance.agent.harness.wait(operationId),
                        await instance.agent.harness.wait(steered.operationId)];
-      const live = await (await instance.agent.harness.pi()).snapshot(
-        LiveDoc, (await (await instance.agent.harness.pi()).root(BG)).id, BG);
-      return { settled, live, turns: await turnsOf(instance) };
+      return { answers, turns: turnsOf(instance) };
     });
-    expect(out.settled.map((answer) => answer.status)).toEqual(["done", "done"]);
-    expect(out.live?.run).toBeUndefined();
+    expect(out.answers.map((answer) => answer.status)).toEqual(["done", "done"]);
     expect(out.turns.length).toBeGreaterThanOrEqual(2);
     expect(new Set(out.turns).size).toBe(1);
   });
 
-  it("goes on through a compaction inside the run, whose summary is a user message",
+  it("is the run's for a compaction the run starts, even one that runs in the background",
      async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance) => {
+      instance.script = Array.from({ length: 12 }, () => (messages: Message[]) =>
+        compacting(messages) ? says("## Goal\nsummary") : says("noted"));
+      expect((await instance.agent.harness.prompt("early")).status).toBe("done");
+      // Past pi's background threshold (32,768 under the blocking one): the run's
+      // generation starts a background compaction, which pi runs on past the run.
+      const answer = await instance.agent.harness.prompt(HUGE);
+      await until(async () => (await instance.agent.harness.messages())
+        .some((entry) => entry.kind === "pi.compaction"), "the compaction's summary");
+      return { answer, turns: turnsOf(instance) };
+    });
+    expect(out.answer.status).toBe("done");
+    // The early run's request, then the second run's and its compaction's summarization.
+    expect(out.turns).toHaveLength(3);
+    expect(out.turns[2]).toBe(out.turns[1]);
+    expect(out.turns[1]).not.toBe(out.turns[0]);
+  });
+
+  it("is a compaction's own when a door asks for one while a run is busy", async () => {
     const r = agentObject();
     const out = await r.in(async (instance) => {
       instance.script = Array.from({ length: 12 }, () => (messages: Message[]) =>
@@ -305,194 +342,121 @@ describe("a model request's turn", () => {
             : JSON.stringify(messages.at(-1)).includes("work") ? calls(fauxToolCall("hold", {}))
               : says("noted"));
       expect((await instance.agent.harness.prompt("early")).status).toBe("done");
-      let release!: () => void;
-      instance.probes.holdGate = new Promise<void>((resolve) => { release = resolve; });
+      const held = gate();
+      instance.probes.holdGate = held.promise;
       const { operationId } = await instance.agent.harness.submit(`work ${LONG}`);
       await until(async () => instance.probes.holds === 1, "the hold to start");
       const pi = await instance.agent.harness.pi();
       const root = await pi.root(BG);
-      const during = await instance.agent.turnOf(
-        (await pi.snapshot(ProviderDoc, root.id, BG))!.sessionId);
-      // Asked while the run is busy, it is placed at the run's next boundary.
+      // Asked by the owner, not caused by the run: placed at the run's next boundary.
       const asked = root.compact(undefined, BG);
-      release();
-      const settled = await instance.agent.harness.wait(operationId);
-      const compacted = await pi.waitForTask(await asked, BG);
-      const summaries = (await instance.agent.harness.messages())
-        .filter((entry) => entry.kind === "pi.compaction").length;
-      return { settled, compacted, summaries, during, turns: await turnsOf(instance) };
+      held.release();
+      const answer = await instance.agent.harness.wait(operationId);
+      const compaction = await asked;
+      const compacted = await pi.waitForTask(compaction, BG);
+      return { answer, compaction, compacted, turns: turnsOf(instance) };
     });
-    expect(out.settled.status).toBe("done");
+    expect(out.answer.status).toBe("done");
     expect(out.compacted.state.outcome.status).toBe("completed");
-    expect(out.summaries).toBe(1);
-    // The early run's one request, then the held run's: its tool call, the compaction's
-    // summarization, and the answer after the summary.
-    const [early, ...held] = out.turns;
-    expect(held.length).toBeGreaterThanOrEqual(3);
-    expect(held.every((turn) => turn === out.during)).toBe(true);
-    expect(early).not.toBe(out.during);
+    const [early, ...rest] = out.turns;
+    const own = rest.filter((turn) => turn === `task:${out.compaction}`);
+    const run = rest.filter((turn) => turn !== `task:${out.compaction}`);
+    expect(own).toHaveLength(1);
+    expect(run.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(run).size).toBe(1);
+    expect(run[0]).not.toBe(early);
   });
 
-  it("is the running root's for a subagent's and its subagent's calls, through pi's owner " +
-     "edges", async () => {
+  it("is the root run's for a subagent's and its subagent's calls", async () => {
     const r = agentObject();
     const out = await r.in(async (instance) => {
-      let release!: () => void;
-      instance.probes.holdGate = new Promise<void>((resolve) => { release = resolve; });
+      const held = gate();
+      instance.probes.holdGate = held.promise;
       instance.script = Array.from({ length: 12 }, () => tree);
       const { operationId } = await instance.agent.harness.submit("spawn and hold");
-      await until(async () => instance.probes.holds === 1 && instance.probes.spawned !== null,
-                  "the subagent's conversation and the hold");
-      const pi = await instance.agent.harness.pi();
-      const root = await pi.root(BG);
-      const child = instance.probes.spawned as ConversationId;
-      instance.probes.spawned = null;
-      const from = instance.turns.length;
-      // The subagent runs, and makes a subagent of its own, which runs too.
-      const asked = await (await pi.conversation(child, BG))!.submit(
-        { type: "input", content: "child work" }, BG);
-      const childDone = await asked.wait(BG);
-      const grandchild = instance.probes.spawned as ConversationId | null;
-      const deeper = await (await pi.conversation(grandchild!, BG))!.submit(
-        { type: "input", content: "grandchild work" }, BG);
-      const grandchildDone = await deeper.wait(BG);
-      const rootTurn = await instance.agent.turnOf(await sessionOf(instance, root.id));
-      const below = (await turnsOf(instance)).slice(from);
-      const chains = [await chainOf(instance, child), await chainOf(instance, grandchild!)];
-      release();
-      await instance.agent.harness.wait(operationId);
-      return { root: root.id, child, grandchild, childDone, grandchildDone, rootTurn, below,
-               chains };
+      // The subagent runs its work, and makes a subagent of its own, which runs too.
+      await until(async () => instance.probes.submitted.length === 2, "both subagents' work");
+      const below = [await settled(instance, instance.probes.submitted[0]!),
+                     await settled(instance, instance.probes.submitted[1]!)];
+      held.release();
+      const answer = await instance.agent.harness.wait(operationId);
+      return { answer, below, turns: turnsOf(instance) };
     });
-    expect([out.childDone.status, out.grandchildDone.status]).toEqual(["done", "done"]);
-    expect(out.chains).toEqual([[out.child, out.root], [out.grandchild, out.child, out.root]]);
-    // The subagent's two requests and the grandchild's one, each charged to the root's run.
-    expect(out.below).toHaveLength(3);
-    expect(out.rootTurn.startsWith(`${out.root}/run:`)).toBe(true);
-    expect(out.below.every((turn) => turn === out.rootTurn)).toBe(true);
-  });
-
-  it("is a subagent's own run once its root's run has ended", async () => {
-    const r = agentObject();
-    const out = await r.in(async (instance) => {
-      instance.script = Array.from({ length: 8 }, () => tree);
-      expect((await instance.agent.harness.prompt("spawn one")).status).toBe("done");
-      const pi = await instance.agent.harness.pi();
-      const child = instance.probes.spawned as ConversationId;
-      instance.probes.spawned = null;
-      const from = instance.turns.length;
-      const asked = await (await pi.conversation(child, BG))!.submit(
-        { type: "input", content: "child work" }, BG);
-      const settled = await asked.wait(BG);
-      return { child, settled, turns: (await turnsOf(instance)).slice(from) };
-    });
-    expect(out.settled.status).toBe("done");
-    expect(out.turns.length).toBeGreaterThan(0);
+    expect([out.answer.status, ...out.below.map((answer) => answer.status)])
+      .toEqual(["done", "done", "done"]);
+    // The root's two requests, the subagent's two and the grandchild's one.
+    expect(out.turns).toHaveLength(5);
     expect(new Set(out.turns).size).toBe(1);
-    expect(out.turns[0]!.startsWith(`${out.child}/run:`)).toBe(true);
   });
 
-  it("keeps a background subtree's own subagent on that subtree's run", async () => {
+  it("is an input's own when it comes from outside any run, even in a subagent's " +
+     "conversation", async () => {
     const r = agentObject();
     const out = await r.in(async (instance) => {
       instance.script = Array.from({ length: 12 }, () => tree);
       const pi = await instance.agent.harness.pi();
-      const root = await pi.root(BG);
-      const task = await pi.commit((tx) => tx.createTask(BackgroundSpawn, {}, {
-        ownership: { kind: "conversation" }, conversationId: root.id, background: true }), BG);
-      const settled = await pi.waitForTask(task, BG);
-      const made = (settled.state.outcome as { result: number }).result as ConversationId;
-      // The background work's conversation spawns a subagent and holds while it runs.
-      let release!: () => void;
-      instance.probes.holdGate = new Promise<void>((resolve) => { release = resolve; });
-      const held = await (await pi.conversation(made, BG))!.submit(
-        { type: "input", content: "spawn and hold" }, BG);
-      await until(async () => instance.probes.holds === 1 && instance.probes.spawned !== null,
-                  "the subagent and the hold");
-      const below = instance.probes.spawned as ConversationId;
-      const madeTurn = await instance.agent.turnOf(await sessionOf(instance, made));
-      const from = instance.turns.length;
-      const asked = await (await pi.conversation(below, BG))!.submit(
-        { type: "input", content: "grandchild work" }, BG);
-      const done = await asked.wait(BG);
-      const turns = (await turnsOf(instance)).slice(from);
-      release();
-      await held.wait(BG);
-      return { made, below, done, madeTurn, chain: await chainOf(instance, below), turns,
-               root: root.id };
+      instance.probes.holdGate = Promise.resolve();
+      expect((await instance.agent.harness.prompt("spawn one")).status).toBe("done");
+      await settled(instance, instance.probes.submitted[0]!);
+      const from = turnsOf(instance).length;
+      const child = instance.probes.spawned as ConversationId;
+      const asked = await (await pi.conversation(child, BG))!.submit(
+        { type: "input", content: "background work" }, BG);
+      const answer = await asked.wait(BG);
+      return { answer, before: turnsOf(instance).slice(0, from),
+               after: turnsOf(instance).slice(from) };
     });
-    expect(out.done.status).toBe("done");
-    expect(out.chain).toEqual([out.below, out.made, out.root]);
-    expect(out.madeTurn.startsWith(`${out.made}/run:`)).toBe(true);
-    expect(out.turns).toEqual([out.madeTurn]);
+    expect(out.answer.status).toBe("done");
+    expect(new Set(out.before).size).toBe(1);
+    expect(out.after).toHaveLength(1);
+    expect(out.after[0]).not.toBe(out.before[0]);
+  });
+
+  it.each([
+    ["background work", "start background"],
+    ["background work's own child task", "start nested"],
+  ])("keeps %s on the run that started it, after it ended, never a later run",
+     async (_what, prompt) => {
+    const r = agentObject();
+    const out = await r.in(async (instance) => {
+      const held = gate();
+      instance.probes.backgroundGate = held.promise;
+      instance.script = Array.from({ length: 12 }, () => tree);
+      const started = await instance.agent.harness.prompt(prompt);
+      const spawning = turnsOf(instance);
+      const later = await instance.agent.harness.prompt("a later input");
+      const laterTurns = turnsOf(instance).slice(spawning.length);
+      // The background work submits its work only now, during no run.
+      held.release();
+      const work = await backgroundDone(instance);
+      const workTurns = turnsOf(instance).slice(spawning.length + laterTurns.length);
+      return { started, later, work, spawning, laterTurns, workTurns };
+    });
+    expect([out.started.status, out.later.status, out.work.answer.status])
+      .toEqual(["done", "done", "done"]);
+    expect(new Set(out.spawning).size).toBe(1);
+    expect(out.laterTurns).toHaveLength(1);
+    expect(out.laterTurns[0]).not.toBe(out.spawning[0]);
+    expect(out.workTurns).toEqual([out.spawning[0]]);
   });
 
   it("is a subagent's own compaction while nothing runs", async () => {
     const r = agentObject();
     const out = await r.in(async (instance) => {
       instance.script = Array.from({ length: 12 }, () => tree);
+      instance.probes.holdGate = Promise.resolve();
       expect((await instance.agent.harness.prompt("spawn one")).status).toBe("done");
+      await settled(instance, instance.probes.submitted[0]!);
       const pi = await instance.agent.harness.pi();
       const child = instance.probes.spawned as ConversationId;
       const conversation = (await pi.conversation(child, BG))!;
-      await (await conversation.submit({ type: "input", content: "early" }, BG)).wait(BG);
       await (await conversation.submit({ type: "input", content: LONG }, BG)).wait(BG);
       const compaction = await conversation.compact(undefined, BG);
-      const settled = await pi.waitForTask(compaction, BG);
-      return { child, compaction, settled, turns: await turnsOf(instance) };
+      const done = await pi.waitForTask(compaction, BG);
+      return { compaction, done, turns: turnsOf(instance) };
     });
-    expect(out.settled.state.outcome.status).toBe("completed");
-    expect(out.turns.at(-1)).toBe(`${out.child}/compaction:${out.compaction}`);
-  });
-
-  it("is a background subtree's own run, never a root run started meanwhile", async () => {
-    const r = agentObject();
-    const out = await r.in(async (instance) => {
-      instance.script = Array.from({ length: 8 }, () => tree);
-      const pi = await instance.agent.harness.pi();
-      const root = await pi.root(BG);
-      const task = await pi.commit((tx) => tx.createTask(BackgroundSpawn, {}, {
-        ownership: { kind: "conversation" }, conversationId: root.id, background: true }), BG);
-      const settled = await pi.waitForTask(task, BG);
-      const child = (settled.state.outcome as { result: number }).result as ConversationId;
-      // A root run starts, and holds, while the background work's conversation runs.
-      let release!: () => void;
-      instance.probes.holdGate = new Promise<void>((resolve) => { release = resolve; });
-      const { operationId } = await instance.agent.harness.submit("hold please");
-      await until(async () => instance.probes.holds === 1, "the hold to start");
-      const rootTurn = await instance.agent.turnOf(await sessionOf(instance, root.id));
-      const from = instance.turns.length;
-      const asked = await (await pi.conversation(child, BG))!.submit(
-        { type: "input", content: "background work" }, BG);
-      const done = await asked.wait(BG);
-      const turns = (await turnsOf(instance)).slice(from);
-      release();
-      await instance.agent.harness.wait(operationId);
-      return { root: root.id, child, chain: await chainOf(instance, child), done, rootTurn, turns };
-    });
-    expect(out.done.status).toBe("done");
-    expect(out.chain).toEqual([out.child, out.root]);
-    expect(out.turns).toHaveLength(1);
-    expect(out.turns[0]!.startsWith(`${out.child}/run:`)).toBe(true);
-    expect(out.turns[0]).not.toBe(out.rootTurn);
-  });
-
-  it("is refused, no_run, with no run to be part of: idle, an unknown session or none",
-     async () => {
-    const r = agentObject();
-    const out = await r.in(async (instance) => {
-      instance.script = [says("hello")];
-      await instance.agent.harness.prompt("hi");
-      const pi = await instance.agent.harness.pi();
-      const root = await pi.root(BG);
-      const session = (await pi.snapshot(ProviderDoc, root.id, BG))!.sessionId;
-      const refused = (ask: Promise<string>) => ask.then(() => "ran", (error: Error) =>
-        error.message);
-      return [await refused(instance.agent.turnOf(session)),
-              await refused(instance.agent.turnOf("01900000-0000-7000-8000-000000000000")),
-              await refused(instance.agent.turnOf(undefined))];
-    });
-    expect(out).toEqual([NO_RUN, NO_RUN, NO_RUN]);
+    expect(out.done.state.outcome.status).toBe("completed");
+    expect(out.turns.at(-1)).toBe(`task:${out.compaction}`);
   });
 
   it("is a compaction's own while the conversation is idle", async () => {
@@ -505,11 +469,11 @@ describe("a model request's turn", () => {
       const pi = await instance.agent.harness.pi();
       const root = await pi.root(BG);
       const compaction = await root.compact(undefined, BG);
-      const settled = await pi.waitForTask(compaction, BG);
-      return { root: root.id, compaction, settled, turns: await turnsOf(instance) };
+      const done = await pi.waitForTask(compaction, BG);
+      return { compaction, done, turns: turnsOf(instance) };
     });
-    expect(out.settled.state.outcome.status).toBe("completed");
-    expect(out.turns.at(-1)).toBe(`${out.root}/compaction:${out.compaction}`);
+    expect(out.done.state.outcome.status).toBe("completed");
+    expect(out.turns.at(-1)).toBe(`task:${out.compaction}`);
   });
 });
 
@@ -547,7 +511,8 @@ describe("a package pi refuses to install", () => {
     expect(rows.intents).toEqual([]);  // the files lane expired the upload
     expect(rows.wakes).toEqual([{ state: "pending" }]);  // the wakes lane recovered it
     // pi opened without the package, and with every other extension.
-    expect(rows.tools).toEqual(["bash", "edit", "hold", "read", "spawn", "write"]);
+    expect(rows.tools).toEqual(["background", "bash", "edit", "hold", "pass", "read", "spawn",
+                               "write"]);
     const notices = (await stub.noticeList(as())).notices;
     expect(notices.map((notice) => [notice.type, notice.detail.split(":")[0]]))
       .toContainEqual(["extension_skipped", "pkg"]);

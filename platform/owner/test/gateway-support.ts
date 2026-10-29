@@ -8,10 +8,12 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { type AssistantMessage, normalizeContext, type TranscriptContext } from "@earendil-works/pi-ai";
+import type { TelemetrySpan } from "@earendil-works/pi-telemetry";
 
 import type { Credential, Source } from "../../gateway/src/credential";
 import { seal } from "../../gateway/src/keyring";
 import type { ModelInfo } from "../src/connections";
+import { originContext } from "../src/origin";
 import type { Binding } from "../src/owner-do";
 import { signedIn } from "./ledger-support";
 import type { GatedOwnerDO } from "./worker";
@@ -120,12 +122,11 @@ export type Gated = Awaited<ReturnType<typeof gated>>;
 
 /**
  * The options of a test's own call to the provider, outside any pi run: a session of its
- * own, which the object's agent maps to `turn` (`GatedAgent.direct`).
+ * own, and the telemetry context of an input of its own, as pi would hand it (`origin.ts`).
  */
-export function direct(instance: GatedOwnerDO, session: string = crypto.randomUUID(),
-                       turn: string = session): { sessionId: string } {
-  instance.agent.direct.set(session, turn);
-  return { sessionId: session };
+export function direct(session: string = crypto.randomUUID()):
+    { sessionId: string; telemetry: TelemetrySpan } {
+  return { sessionId: session, telemetry: originContext(`input:${session}`) };
 }
 
 /** A one-message context, as pi sends a request. */
