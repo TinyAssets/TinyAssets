@@ -321,20 +321,21 @@ account and no deploy.
   `unknown`), and pi sees the gateway's code, named so that pi-ai's own classifier
   retries a timeout, a rate limit, an overload or a server error and no other; pruning
   receipts no longer frees a turn's caps (5,000 requests of one turn hold); a turn is
-  pi's run, not the newest user message (A1). Mutation, the reviewer's round-2 set of 73
-  (its 56 re-anchored on the new code and 17 of the review fixes): 63 killed, the 10 that
-  live equivalent (a failed call's tokens and cost are settled 0, so counting it among the
-  settled changes nothing; the dispatch's state guard, checked in its own unit first;
-  dropping a settled row from the in-memory open set, which is read only for open rows;
-  the reseal's own-refresh check, which the lease row also holds; `#owed`'s due check
-  behind the lane's own due query; the tee's undefined session, which no subscriber can
-  hold; a session member with no chain, which only the creation hook writes; the
-  gateway's first-event check of an abort, which cannot coincide with a provider's refusal
-  status). Mine, 128 across the caps, the turn counters, the reservation states, the turn
-  and its anchor, the lease, the revoke, the envelope, `auto`, the gate placement, the
-  upstream codes and the gateway's first event: 125 killed, the 3 that live equivalent
-  (the reseal's version-shape check of the gateway's own answer; the output cap the
-  gateway clamps to anyway; `flowBegin`'s sync, which its pending row's sweep covers). Open: the
+  the input at the origin of the call's causal chain, not the newest user message (A1).
+  Mutation, the reviewer's round-3 set of 85: 14 name code the origin design deleted (the
+  session index, its anchors and the background walk); of the 71 left, 62 killed and the 9
+  that live equivalent (a failed call's tokens and cost are settled 0, so counting it
+  among the settled changes nothing; the dispatch's state guard, checked in its own unit
+  first; dropping a settled row from the in-memory open set, which is read only for open
+  rows; the reseal's own-refresh check, which the lease row also holds; `#owed`'s due
+  check behind the lane's own due query; the tee's undefined session, which no subscriber
+  can hold; the gateway's first-event check of an abort, which cannot coincide with a
+  provider's refusal status). Mine, 126 across the caps, the turn counters, the
+  reservation states, the turn's origin, the lease, the revoke, the envelope, `auto`, the
+  gate placement, the upstream codes and the gateway's first event: 123 killed, the 3
+  that live equivalent (the reseal's version-shape check of the gateway's own answer; the
+  output cap the gateway clamps to anyway; `flowBegin`'s sync, which its pending row's
+  sweep covers). Open: the
   doors' `GATEWAY` binding
   and the connect routes (G3); the policy write that ends in-flight turns and closes their
   tee views (A2); the receipts' rows per call, measured live (G5).
@@ -452,7 +453,8 @@ account and no deploy.
   cancellation, with no wrapper of ours; a fork with no owner is its own root (it runs
   its own submissions), so only owner edges are walked. Owner bundle 1,598 KiB, 329 KiB
   gzip (1,495 and 303 before A1), local startup 24 ms active in a 56 ms window (20 in 50
-  before). Open: the
+  before). Open: a package that commits outside the context pi hands it starts causal
+  chains of its own, which only the owner's daily and monthly ceilings bound; the
   attribution reaches the gateway hop only (pi-messages carries no identity upstream); an
   owner pin of a model per agent (`pi.agent`) for `auto`; a package that keeps the
   ranking current; the tee's transport to the owner's app (A6).
