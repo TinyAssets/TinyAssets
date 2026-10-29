@@ -731,8 +731,22 @@ A scheduled turn SHALL name a thread made at its own client and generation, and 
 Every conversation the object creates, the root, a thread, a fork and a subagent's included, SHALL offer the model exactly `read`, `write`, `edit`, `bash` and `ta`, written in pi's `modelTools` in every creating commit over whatever pi copied, and nowhere else. Every other tool SHALL be registered callable by tools and reached through `ta`; a tool the model is not offered SHALL be unavailable to the model's own call. No source SHALL build a tool result `control`, which could add a model tool.
 
 #### Scenario: A package registers a tool the model could call
-- **WHEN** a package tool registered callable by the model, and a deferred one, are installed, and the model calls each directly
+- **WHEN** a tool registered callable by the model, and a deferred one, are installed, and the model calls each directly
 - **THEN** no request offers either, each call settles "not available", and a fork's and a subagent's conversation still offer the five, whatever their parent's tools drifted to
+
+### Requirement: The five are held where the model is reached
+The model provider SHALL refuse, in each call's reservation unit and with the fixed code `tool_surface`, a request whose own transcript offers the model any tools but exactly the five, a request offering none excepted; and a model call of any conversation, the owner's included, whose stored model tools are not exactly the five SHALL be refused the same. Nothing refused SHALL be sent.
+
+#### Scenario: A hook's result widens the model's tools
+- **WHEN** a hook replaces `ta`'s result with one whose `control` adds a tool, and pi adds it to the conversation's model tools
+- **THEN** the run's next request is refused `tool_surface` and never sent, and so is every later call of that conversation
+
+### Requirement: A package never shadows the object's tools or names
+A package that provides or wraps a tool named as a model tool, a platform capability or a `ta:` name, or provides a tool not callable by tools, SHALL be refused at install and kept as an owner notice; `ta`'s catalog SHALL fail loudly on a tool that takes a platform capability's name.
+
+#### Scenario: A package provides a tool named read
+- **WHEN** a package provides a tool `read`, another wraps `bash`, and another provides a tool only the model may call
+- **THEN** each is refused with a notice naming why, and the object's own tools are unchanged
 
 ### Requirement: ta's catalog lists what the conversation may call
 `ta` SHALL take one object, `{op: "catalog", query?, limit?, offset?}` or `{op: "call", name, arguments}`, refusing any other field. The catalog SHALL list the platform capabilities the conversation's authority may call, then the tools registered callable by tools, deferred ones marked, each with its JSON Schema, ranked by `query` as pi's `tool_search` ranks, and paged.
@@ -756,7 +770,7 @@ Each platform capability SHALL be classified a read or an effect, and one not cl
 - **THEN** the unit refuses with "outside client authority no longer stands" and no proposal is held
 
 ### Requirement: The v1 platform capabilities hold to their doors' needs
-The platform capabilities SHALL be `policy:show` (a read, the owner's alone), `policy:propose` (an effect needing `propose_policy`, held for the owner's card), `wake:list` (a read of the authority's own scheduled work), `files:usage` (a read needing `read_files`) and `model` (an effect), each registered in `ta.authority`'s map with that need.
+The platform capabilities SHALL be `policy:show` (a read, the owner's alone), `policy:propose` (an effect needing `propose_policy`, held for the owner's card under the proposer's own share), `wake:list` (a read of only the calling authority's own scheduled work), `files:usage` (a read needing `read_files`) and `model` (an effect), each registered in `ta.authority`'s map with that need.
 
 #### Scenario: Outside clients ask for the owner's policy
 - **WHEN** a full client and a scoped client call `policy:show`, and a client without `propose_policy` calls `policy:propose`

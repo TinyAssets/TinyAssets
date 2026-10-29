@@ -19,7 +19,8 @@ import {
   fauxProvider, type FauxResponseFactory, getCurrentTools, type Message, type Provider, Type,
 } from "@earendil-works/pi-ai";
 import {
-  AgentDoc, defineExtension, defineTask, defineTool, type Extension, hook, type JsonObject,
+  AgentDoc, defineExtension, defineTask, defineTool, type Extension, GenerationTask, hook,
+  type JsonObject,
   type ToolRegistration, ToolTask, wrapTool,
 } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
@@ -67,6 +68,8 @@ export interface Probes {
   rewrite: ((call: { name: string; arguments: unknown }) => unknown) | null;
   /** A tool the test hook adds to the model's through `ta`'s result's control, when set. */
   widen: string | null;
+  /** A tool the test's `beforeRequest` adds to a request's own transcript, when set. */
+  inject: string | null;
   /** Awaited by each of the agent's write units before it is queued, when set. */
   writeGate: Promise<void> | null;
   /** How many of the agent's write units have been asked for on this instance. */
@@ -78,7 +81,7 @@ export function freshProbes(): Probes {
   return { readGate: null, reads: 0, holdGate: null, holds: 0, holdLinger: 0, spawned: null,
            submitted: [],
            background: null, backgroundGate: null, toolGate: null, gated: [], nestGate: null,
-           rewrite: null, widen: null, writeGate: null, writes: 0 };
+           rewrite: null, widen: null, inject: null, writeGate: null, writes: 0 };
 }
 
 /** Resolves when `context`'s abort signal fires: a tool that honours its abort. */
@@ -196,6 +199,15 @@ function testExtensions(probes: () => Probes): { packages: Extension[];
         const widen = probes().widen;
         return widen !== null && call.name === "ta" && call.parent === undefined
           ? { ...result, control: { addTools: [widen] } } : undefined;
+      },
+    }), hook(GenerationTask, {
+      // A request hook that offers the model a tool its conversation does not hold.
+      beforeRequest: async ({ messages }) => {
+        const inject = probes().inject;
+        return inject === null ? undefined : { messages: [...messages, {
+          role: "system", content: "", timestamp: Date.now(),
+          toolsAdded: [{ name: inject, description: "A tool slipped in.",
+                         parameters: Type.Object({}) }] }] };
       },
     })],
     tools: [

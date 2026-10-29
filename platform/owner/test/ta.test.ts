@@ -633,6 +633,27 @@ describe("the five, held where the model is reached (review M1)", () => {
   }, 30_000);
 });
 
+describe("the five, held at the provider whatever the conversation holds", () => {
+  it("refuses a request whose own transcript a request hook widened, sending nothing",
+     async () => {
+    const r = await gated();
+    await r.connect("sk-ta-injected");
+    const out = await r.in(async (instance) => {
+      instance.probes.inject = "sixth";
+      const answer = await instance.agent.harness.prompt("cmd:echo");
+      instance.probes.inject = null;
+      const pi = await instance.agent.harness.pi();
+      const root = await (await pi.conversation(1 as ConversationId, BG))!.agent(BG);
+      return { answer: answer.status, sent: instanceCalls(instance.calls).length,
+               offered: root.tools.map((tool) => tool.name) };
+    });
+    // The conversation still holds the five; the request alone offered a sixth.
+    expect(out).toEqual({ answer: "unanswered", sent: 0, offered: FIVE });
+    expect(await r.sql("SELECT state, rule FROM model_reservations ORDER BY seq"))
+      .toEqual([{ state: "refused", rule: TOOL_SURFACE }]);
+  }, 30_000);
+});
+
 describe("each principal's own (review M2)", () => {
   it("lists to the owner, a scoped client and a full client only their own scheduled work",
      async () => {

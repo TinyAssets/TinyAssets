@@ -643,7 +643,17 @@ account and no deploy.
   `conversationCreated` on every conversation the object creates (the root, threads,
   forks, subagents) over whatever pi copied, and nowhere else (the agent-authority guard:
   that one write of `AgentDoc`, no other `modelTools`, no `addTools`, no tool result
-  `control`); a tool the model is not offered settles "not available". `ta` is
+  `control`); a tool the model is not offered settles "not available". Held where the
+  model is reached too (review M1: pi lets an `afterTool` hook's result `control` add a
+  model tool, and a `beforeRequest` hook can rewrite a request): the gateway provider's
+  reservation unit refuses (`tool_surface`, nothing sent) a request whose own transcript
+  offers anything but exactly the five, or none (`ta`'s nested model call, a compaction),
+  and `modelAuthority` refuses any conversation whose stored `modelTools` is not exactly
+  the five, the owner's included. A package that provides or wraps a model tool's, a
+  platform capability's or a `ta:` name, or provides a tool not callable by tools (it
+  could never run), is refused at install with a notice; the catalog fails loudly on a
+  tool of the object's own taking a platform name (tests' probes install as
+  `AgentSource.trusted`, none in production). `ta` is
   `callers: ["model"]`, `replay: "unsafe"`; its input is one object, `op` an enum and each
   op's fields optional, its shape checked in `execute` (any other field refused). `catalog`
   lists the platform capabilities the conversation's authority may call, then the tools
@@ -667,26 +677,35 @@ account and no deploy.
   reservation and dispatch (`model`). `model` calls the object's model source on the
   conversation's provider session and the call's telemetry context: reserved, dispatched
   and settled like the run's own calls, on the run's turn, against its caps. `wake:list`
-  reads the authority's own scheduled work (`Scheduled.of`). `agent:run` is A4's. Tested:
+  reads the authority's own scheduled work (`Scheduled.of`, migration 8's index).
+  `agent:run` is A4's. Tested:
   the five on the root, a thread, a fork and a subagent (and after a parent's tools
   drifted), a model-callable and a deferred package tool never offered; the catalog's
   order, schemas, ranking and pages, per authority; a platform read and effect; refusals;
   nested calls through the gate; a rewrite and a revoke caught in `execute`; a revoke
   before an effect's unit; `policy:propose` and `policy:show` for the owner and outside
   clients with receipts; `model` through the gateway Worker on its run's turn, and refused
-  by its cap. The test tools are registered callable by tools, so the A0 to A2 tests reach
-  them through `ta`. Mutation: 51 (classification, the capability map, the catalog's
-  `callers` filter and paging, the five-tool fix, nested authority, the re-check, the
-  model call, the guard's rules, the ranking), 50 killed; alive and equivalent: a read
-  handed a writing unit, since no read capability writes. Declared differences from the
+  by its cap, a revoke mid nested stream cancelling the upstream, its system prompt and
+  output cap reaching the gateway; a hook's widening and a request hook's injected tool
+  refused at the provider, nothing sent; `wake:list` per principal (owner, scoped, full);
+  a client's proposal on its own share, refused at its limit while the owner's holds; the
+  package refusals; a call with a catalog field. The test tools are registered callable
+  by tools, so the A0 to A2 tests reach them through `ta`. Mutation, after review: ours,
+  63 (classification, the capability map, the catalog's `callers` filter and paging, the
+  five-tool fix, nested authority, the re-check, the model call, the guard's rules, the
+  ranking, the provider and backstop checks, the package refusals), 62 killed; the
+  reviewer's 57, 55 killed. Alive and equivalent: a read handed a writing unit, since no
+  read capability writes; an effect's unit re-checking only a standing grant rather than
+  its capability, since a grant's scopes change only with its generation, which the
+  standing check holds. Declared differences from the
   research: the input is an object with an `op` enum, not a root union, since pi-ai's
   Anthropic adapter keeps only a root's `properties` and strict sampling refuses object
   unions; the catalog also takes an `offset`, to page; the catalog lists only what the
   conversation's authority may call; deferred tools are listed from `agent.callable`
   (pi's deferred tools a tool may call are always among them); `policy:propose` takes the
   door's `{change, request_id?}`; `model` is in v1 (G2 landed) and `agent:run` is not.
-  Owner bundle 1,646 KiB, 342 KiB gzip (1,628 and 337 at A2), local startup 24 ms active
-  in a 57 ms window. Open: MCP tools (`mcp__<server>__<tool>`, callable by tools, after
+  Owner bundle 1,648 KiB, 342 KiB gzip (1,628 and 337 at A2), local startup 25 to 35 ms
+  active in a 61 to 80 ms window. Open: MCP tools (`mcp__<server>__<tool>`, callable by tools, after
   G3) and code mode as a tool `ta` calls; the sandbox's `ta` CLI through the egress door;
   a nested model call's events reach the conversation's live view, since it shares the
   conversation's provider session (A6 decides how a view shows them).
