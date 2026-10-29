@@ -126,6 +126,20 @@ An upstream status SHALL be named so that pi-ai's own retry classifier reads it 
 - **WHEN** the token endpoint answers `invalid_grant` with a description quoting the code or token
 - **THEN** the call fails as `oauth_invalid_grant` and nothing from the answer is shown
 
+### Requirement: A key-exchange source's code buys a sealed API key
+For a key-exchange source (the Python's `pkce_user_key_v1`, OpenRouter's), `exchange` SHALL post the code and verifier once, as JSON, to the sealed exchange endpoint, and seal the key it answers as an API key with no expiry.
+
+#### Scenario: A key exchange that is refused or redirected
+- **WHEN** a key-exchange endpoint answers other than `200` with a key, or redirects
+- **THEN** the call fails with a fixed code, the redirect is never followed, and nothing is sealed
+
+### Requirement: The doors reach only the connect steps
+The gateway SHALL serve the doors Worker through a named entrypoint, `ConnectGateway`, that offers only `seal`, `exchange` and `verify`; model calls, egress forwarding, refresh, reseal and provider revocation SHALL stay on the entrypoint only the owner Worker binds.
+
+#### Scenario: The doors call a model or forward egress
+- **WHEN** the doors' binding is asked for `fetch`, `forward`, `refresh`, `reseal` or `revokeAtProvider`
+- **THEN** the entrypoint has no such method
+
 ### Requirement: The gateway binds nothing and chooses no owner
 The gateway Worker's config SHALL bind nothing and serve no URL: no binding of any kind, no routes, no workers.dev or preview URL, no environment, and only the declared keyring secret, checked against wrangler's schema. Its source SHALL never name `OWNER` or `getByName`, SHALL import of the owner Worker's code only the owner grammar, and SHALL keep no module-level mutable state, so the caller always names the owner and the seal holds the call to it.
 

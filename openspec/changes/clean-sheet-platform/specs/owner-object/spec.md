@@ -530,7 +530,7 @@ Preparing, committing, revoking and listing connections and beginning and finish
 - **THEN** it is refused, and a refusal receipt is kept
 
 ### Requirement: A connection OAuth flow is bound to the session that began it
-`flowBegin` SHALL keep a flow for a pending OAuth connection: the SHA-256 of a fresh state and a fresh PKCE verifier, bound to the beginning session, for 10 minutes, at most 10 open. `flowFinish` SHALL hand back the verifier only for that state, in that session, once. Signing a session out SHALL cancel the flows it began, and account revocation (`sessionCloseAll`) SHALL cancel every open flow, each in the unit that signs out.
+`flowBegin` SHALL keep a flow for a pending OAuth connection: the SHA-256 of a fresh state and a fresh PKCE verifier, bound to the beginning session, for 10 minutes, at most 10 open. `flowFinish` SHALL hand back the verifier, with the connection's source record id, only for that state, in that session, once. Signing a session out SHALL cancel the flows it began, and account revocation (`sessionCloseAll`) SHALL cancel every open flow, each in the unit that signs out.
 
 #### Scenario: A callback after account revocation
 - **WHEN** the owner's sessions are all signed out while a flow is open, and its callback then arrives in a new session

@@ -55,7 +55,11 @@ live acceptance is still owed says so.
   the code exchange and the ID token's signature, issuer, audience and `auth_time`
   against its JWKS; `OWNER_ISSUER` set to AuthKit's issuer (the config guard pins it
   unset until then); production Google and GitHub apps (founder dashboard work). Until
-  then the deployed entry refuses every sign-in loudly (`UNWIRED`).
+  then the deployed entry refuses every sign-in loudly (`UNWIRED`). No person registers
+  WorkOS settings by hand: the doors deploy copies `WORKOS_API_KEY` from the production
+  host's `/etc/tinyassets/env` into the doors Worker's secrets (the code exchange needs
+  it) and registers the redirect URI with the WorkOS API idempotently (`GET
+  /user_management/redirect_uris`, then `POST` only if it is missing, never deleting).
 - [ ] The AuthKit upstream refuses an ID token without `auth_time`: there is no clock
   fallback (this replaces the research's "use the binder's own clock"), since the fence
   and the session's 600 s bound both rest on the sign-in's real time. The binder names
@@ -334,13 +338,59 @@ account and no deploy.
   and its anchor, the lease, the revoke, the envelope, `auto`, the gate placement, the
   upstream codes and the gateway's first event: 125 killed, the 3 that live equivalent
   (the reseal's version-shape check of the gateway's own answer; the output cap the
-  gateway clamps to anyway; `flowBegin`'s sync, which its pending row's sweep covers). Open: the
-  doors' `GATEWAY` binding
-  and the connect routes (G3); the policy write that ends in-flight turns and closes their
+  gateway clamps to anyway; `flowBegin`'s sync, which its pending row's sweep covers). The doors'
+  `GATEWAY` binding and the connect routes are G3's (done). Open: the policy write that ends in-flight turns and closes their
   tee views (A2); the receipts' rows per call, measured live (G5).
-- [ ] G3 The connect doors (the doors Worker): paste-key connect and OAuth connect with
-  its callback; the source records ported as data files with a schema; plaintext never
-  reaches `OwnerDO`.
+- [x] G3 The connect doors (the doors Worker), in workerd through the real gateway Worker,
+  nothing deployed. The doors bind `GATEWAY` to the gateway's new `ConnectGateway`
+  entrypoint, which serves only `seal`, `exchange` and `verify` (no model call, no egress
+  forwarding, no keyring); the config guard holds the binding and that class's methods,
+  and only `connect.ts` names `GATEWAY` (the binder guard). Owner-surface routes, each in
+  the live session with a closed body (owner from the token, connection and version from
+  the object): `connections/key` (prepare, `seal`, `verify`, commit), `connections/oauth`
+  (prepare, `flowBegin`, the authorize URL and a per-flow `__Host-ta-connect-*` browser
+  binding, Lax, as the provider's `beginUpstream` binds its own), `GET
+  /oauth/connect/callback` (a top-level navigation with that binding; it reaches no
+  object and hands the code and state to the app page `/app/connected` in the fragment),
+  `connections/oauth/finish` (the binding again, `flowFinish` in the beginning session,
+  `exchange`, `verify`, commit), `connections/revoke` and `connections/list`; the six
+  connection doors join the tool guard's owner-only set. Source records:
+  `platform/sources/*.json`, the nine Python records ported plus `chatgpt` (Sign in with
+  ChatGPT, `unwired` until OpenAI's approval: its connect is refused `501` naming why),
+  each checked whole by `doors/src/sources.ts`, whose gateway part is the gateway's own
+  `source` check (one `SUPPORTED_APIS`); the sources guard holds every known provider to
+  pi-ai's catalog base URL and API. Tests: a spy on the object stub's arguments, a scan of
+  every table, the answers and the console for the key, the code and the tokens; an outside
+  credential on every connect door; forged owner, connection and version; the callback's
+  navigation, binding, state and refusal cases; replayed, expired, other-session, cancelled
+  (`sessionCloseAll`, sign-out) flows; a broken or unsupported record; `413`. Mutation:
+  69 across the browser binding, the flow state, the plaintext path and the owner-only
+  gating, all killed. Doors bundle 1,010 KiB, 211 KiB gzip (966 KiB and 200 KiB before);
+  local startup 46 to 53 ms active over three runs, of the 1 s limit (45 to 47 before). Declared differences from the
+  research: the callback cannot finish the flow itself, since a cross-site navigation
+  carries neither the owner's token nor its Strict session cookie, so the app page posts
+  the code back in session (the binding is checked at both steps); no `prompt` is forced
+  on a provider's authorize URL (the sign-in's `prompt=login` exists for the session's
+  fresh `auth_time`; a source record may set `prompt` in its `authorize_params`, which may
+  never set a flow parameter); the gateway gains the `pkce_user_key_v1` exchange
+  (`key_exchange` in the sealed source; G1 had RFC 6749 only), whose key is sealed as an
+  API key on a connection the object holds as `oauth2` (its provider revoke is then "not
+  revocable", with the owner's notice); a key-exchange source, which sends no `state`,
+  carries the flow's state as the callback's last path segment (the Python's and pi-ai's
+  own choice); Google AI Studio is ported to pi-ai's native `google` provider, not the
+  Python's OpenAI-compatible endpoint (research §2.7); the four vendor-CLI records keep
+  their install, sign-in, invocation and hosts for the sandbox and name no upstream (they
+  never enter the gateway); the Python's model lists, cards and free-plan terms are not
+  ported (pi-ai's catalog lists models); a record's OAuth client is public only (a
+  confidential client's secret would need a secret binding); a step failing after
+  `connectionPrepare` leaves the pending row for the lane's sweep; `flowFinish` also
+  returns the connection's source record id (one owner field).
+- [ ] The owner app's connect page `/app/connected` (the website slice): read the code
+  and state from the fragment, clear it, and post them to `connections/oauth/finish`.
+- [ ] Each RFC 6749 source's provider registration of the redirect URI
+  `https://tinyassets.io/oauth/connect/callback` (OpenRouter's key exchange takes any
+  callback); Sign in with ChatGPT's hosted client and registration once OpenAI approves
+  (founder), which then drops its record's `unwired`.
 - [ ] G4 The egress door (with the sandbox slice): `egress.tinyassets.io/c/<connection>/*`,
   the sandbox identity (E2B workload identity or a lease token), `egressOpen`, `forward`,
   `egressSettle`; the E2B network document from owner policy. Owed by 3.5: each egress

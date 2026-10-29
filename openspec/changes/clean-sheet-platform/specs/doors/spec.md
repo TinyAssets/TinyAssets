@@ -105,8 +105,52 @@ Each sign-in of the owner's app SHALL keep its own grant, so devices stay signed
 - **THEN** the phone's token is refused at once and the laptop's still works
 
 ### Requirement: The doors Worker cannot deploy before cutover
-The doors config SHALL bind exactly `OWNER` (the owner Worker's `OwnerDO`, by script name), `OAUTH_KV` and `DIRECTORY` (distinct placeholder ids) and the `DCR_ENABLED` var, with no routes, custom domain, workers.dev or preview URL, and the flags `nodejs_compat`, `disable_ctx_exports` and `global_fetch_strictly_public`.
+The doors config SHALL bind exactly `OWNER` (the owner Worker's `OwnerDO`, by script name), `GATEWAY` (the gateway Worker's `ConnectGateway` entrypoint), `OAUTH_KV` and `DIRECTORY` (distinct placeholder ids) and the `DCR_ENABLED` var, with no routes, custom domain, workers.dev or preview URL, and the flags `nodejs_compat`, `disable_ctx_exports` and `global_fetch_strictly_public`.
 
 #### Scenario: A route is added
-- **WHEN** a route, a service, a real KV id or another binding is added to the doors config
+- **WHEN** a route, another service, a real KV id or another binding is added to the doors config
 - **THEN** the config guard fails CI
+
+#### Scenario: The doors bind more of the gateway
+- **WHEN** `GATEWAY` names the gateway's default entrypoint, or its `ConnectGateway` class serves anything but `seal`, `exchange` and `verify`
+- **THEN** the config guard fails CI
+
+### Requirement: A pasted key or OAuth code reaches only the gateway
+A pasted key SHALL go only to the gateway's `seal`, and an OAuth code only to its `exchange`: neither SHALL appear in any call to the owner's object, its storage, a log, an error or an answer, and only one doors source SHALL reach `GATEWAY`.
+
+#### Scenario: A key is pasted
+- **WHEN** the owner pastes a key for a source record
+- **THEN** the object sees `connectionPrepare` and then `connectionCommit` with the sealed blob, and the key reaches only the gateway and the record's setup check
+
+### Requirement: The connect doors are the owner's own surface
+The connect doors (`/app/api/connections/*`) SHALL take only the owner's first-party token, same-origin JSON within the body bound, and its live session. Each body SHALL be a closed set of fields: the owner SHALL come from the token alone, and the connection and its version from the object alone.
+
+#### Scenario: A connect request names an owner, connection or version
+- **WHEN** a connect body carries any field beyond its own
+- **THEN** it is refused `400` before any object call
+
+#### Scenario: An outside credential on a connect door
+- **WHEN** an MCP token or an API key is presented to a connect door
+- **THEN** it is refused `403` before any object call
+
+### Requirement: A connect flow finishes only in the browser and session that began it
+Beginning an OAuth connect SHALL set a per-flow `__Host-` binding cookie (SameSite=Lax, ten minutes) holding the digest of its state. The callback (`/oauth/connect/callback`) SHALL take only a top-level navigation with that binding, reach no object, and hand the code and state to the owner's app page in the URL fragment. The finish SHALL carry the binding and the session that began the flow, which the object uses up once.
+
+#### Scenario: A callback from another browser
+- **WHEN** the callback comes without the flow's binding cookie, or with another flow's
+- **THEN** it is refused `403` and no object is reached
+
+#### Scenario: A replayed, expired or cancelled flow
+- **WHEN** a finish repeats a used state, comes after the flow expired, from another session, or after `sessionCloseAll` or the beginning session's sign-out
+- **THEN** it is refused and the gateway is never asked to exchange
+
+### Requirement: Source records are data checked by the gateway's own rule
+Each model source SHALL be an editable JSON record in `platform/sources/` naming how it connects (`api_key`, `oauth`, or `cli` alone) and, for a gateway source, its pi-ai provider, API, base URL, auth header, setup check and endpoints. A record SHALL be checked whole when used and in CI, its gateway values by the gateway's own source check, so the gateway's `SUPPORTED_APIS` is the one list. A record marked unwired SHALL be refused with its reason.
+
+#### Scenario: A record names an unsupported API
+- **WHEN** a record names an API the gateway does not run, or breaks the schema
+- **THEN** reading it fails loudly naming the record, and CI fails
+
+#### Scenario: Sign in with ChatGPT before OpenAI's approval
+- **WHEN** the owner begins a connect of the `chatgpt` record
+- **THEN** it is refused `501` naming why, before any object call
