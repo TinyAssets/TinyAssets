@@ -42,10 +42,11 @@
  * Every refusal is a fixed code in the answer's `errorMessage`. Ours are none that pi-ai
  * reads as retryable. A refusal the gateway answered with a status is given to pi as the
  * gateway's own code, read from its answer's body, never as the pi-messages client's
- * `<status> <text>: ...` wording, whose status would make every one of them retryable: so
- * pi retries `upstream_rate_limited`, as its own rules read it (`isRetryableAssistantError`),
- * and nothing else. No secret is ever in this module's hands but the sealed blob it
- * forwards.
+ * `<status> <text>: ...` wording, whose status would make every one of them retryable. So
+ * pi's own classifier (`isRetryableAssistantError`) decides on the gateway's words: it
+ * retries a rate limit, a timeout, an overload and a server error, and no refusal of the
+ * key or the request (the gateway's `upstreamCode`). No secret is ever in this module's
+ * hands but the sealed blob it forwards.
  */
 import type {
   Api, AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream, Message, Model,

@@ -340,18 +340,27 @@ describe("a provider's refusal before any output", () => {
       .toEqual([{ cost: 0 }]);
   }, 60_000);
 
-  it("is not retried when the provider refused the key", async () => {
+  // pi-ai decides by its own reading of the code (`isRetryableAssistantError`): each try
+  // before any output settles failed, at no cost.
+  it.each([
+    [503, "upstream_overloaded", 2], [529, "upstream_overloaded", 2],
+    [500, "upstream_server_error", 2], [502, "upstream_server_error", 2],
+    [408, "upstream_timeout", 2], [429, "upstream_rate_limited", 2],
+    [400, "upstream_rejected", 1], [401, "upstream_unauthorized", 1],
+    [403, "upstream_unauthorized", 1], [404, "upstream_rejected", 1],
+  ])("answers a %d as %s, tried %d times with one retry allowed", async (status, code, tries) => {
     const r = await gated();
-    await r.connect("sk-401");
-    await models(r, { retries: 2 });
-    const answer = await r.in((instance) => instance.agent.harness.prompt("cmd:fail-401"));
+    await r.connect(`sk-${status}`);
+    await models(r, { retries: 1 });
+    const answer = await r.in((instance) => instance.agent.harness.prompt(`cmd:fail-${status}`));
     expect(answer.status).toBe("unanswered");
     const failed = answer.messages.flatMap((entry) => entry.model ?? []).at(-1) as
       { errorMessage: string };
-    expect(failed.errorMessage).toBe("upstream_unauthorized");
-    expect((await r.stub.usageReceipts(r.bind())).receipts.map((receipt) => receipt.state))
-      .toEqual(["failed"]);
-  });
+    expect(failed.errorMessage).toBe(code);
+    const { receipts } = await r.stub.usageReceipts(r.bind());
+    expect(receipts.map((receipt) => [receipt.state, receipt.cost]))
+      .toEqual(Array(tries).fill(["failed", 0]));
+  }, 30_000);
 });
 
 describe("a call's outcome", () => {

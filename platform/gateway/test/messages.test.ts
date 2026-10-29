@@ -286,7 +286,8 @@ describe("against a fake upstream, through pi-ai's real adapters", () => {
   it.each([
     ["401", "upstream_unauthorized"], ["403", "upstream_unauthorized"],
     ["429", "upstream_rate_limited"], ["400", "upstream_rejected"],
-    ["404", "upstream_rejected"],
+    ["404", "upstream_rejected"], ["408", "upstream_timeout"], ["503", "upstream_overloaded"],
+    ["529", "upstream_overloaded"], ["500", "upstream_server_error"],
   ])("answers an upstream %s before any output with %s and its own status, never the " +
      "upstream body or the secret", async (status, code) => {
     const env = ring("k1");

@@ -582,16 +582,24 @@ Every cap SHALL read only counters the schema's triggers write: `model_turns` pe
 - **WHEN** one turn makes 5,000 requests while only the newest 100 receipts are kept
 - **THEN** the turn's counters hold all 5,000, and a cap of 5,000 refuses the next
 
-### Requirement: A model call's turn is a run of the root conversation, from pi's records
-A turn SHALL be one run of the root conversation's submissions: the request's `sessionId` names its conversation (indexed when pi creates it), its owner edges lead to the root, and the root's live run, named by the submission that started it, is the turn; while the root is idle, its live compaction is. A call no run can be found for SHALL be refused `no_run`, with nothing reserved.
+### Requirement: A model call's turn is a run, from pi's records
+A turn SHALL be one run, named by the submission that started it: the request's `sessionId` names its conversation (indexed when pi creates it), and its owner edges lead up to its anchor, the first conversation background work made or else the one with no owner. The turn SHALL be the anchor's live run; else the nearest live run up the chain; else the request's conversation's live compaction; else the call SHALL be refused `no_run`, with nothing reserved.
 
 #### Scenario: A compaction inside a run
 - **WHEN** a run compacts, placing its summary as a user message, and asks again
 - **THEN** the compaction's request and the run's every request are one turn
 
 #### Scenario: A subagent's calls
-- **WHEN** a tool of the root's run makes a conversation and the agent calls a model in it
-- **THEN** the call is the root run's turn
+- **WHEN** a tool of the root's run makes a conversation, which makes one of its own, and the agent calls a model in each while the root runs
+- **THEN** every call is the root run's turn
+
+#### Scenario: A subagent runs on after its root's run
+- **WHEN** a subagent's conversation is asked again once its root's run has ended
+- **THEN** its calls are its own run's turn
+
+#### Scenario: Background work's conversation
+- **WHEN** a conversation background work made runs while a new root run is live
+- **THEN** its calls are its own run's turn, never the root's
 
 ### Requirement: A reservation is dispatched and settled once, in its own units
 A reservation SHALL be dispatched only while still reserved, at the same policy generation and connection version, and not aborted; and settled once: `succeeded` from pi-ai's usage, `failed` when the gateway answered with a refusal's status (its own, or the provider's before any output), `unknown` otherwise, which keeps its whole reservation. A dispatch or settle that cannot be kept SHALL settle the row as it stands (`not_sent` or `unknown`) in the same instance.
@@ -603,6 +611,10 @@ A reservation SHALL be dispatched only while still reserved, at the same policy 
 #### Scenario: A provider's rate limit, retried
 - **WHEN** the provider answers 429 before any output, and pi retries the call twice
 - **THEN** each try settles `failed` at no cost, and no ceiling is spent
+
+#### Scenario: A provider refuses the key
+- **WHEN** the provider answers 401 before any output, with retries allowed
+- **THEN** pi does not try again, and the turn ends `upstream_unauthorized`
 
 ### Requirement: A dead instance's calls are settled by the next instance
 An open reservation the live instance did not make SHALL be settled by the next reserve or receipts read: `reserved` as `not_sent`, `dispatched` as `unknown`.

@@ -318,7 +318,8 @@ account and no deploy.
   have no counterpart; the daily and monthly ceilings default to none, as the Python's.
   Review fixes: a provider's refusal before any output is answered by the gateway with
   its code and status, so it settles `failed` at no cost (it had held its estimate as
-  `unknown`), and pi sees the gateway's code, so only a rate limit is retried; pruning
+  `unknown`), and pi sees the gateway's code, named so that pi-ai's own classifier
+  retries a timeout, a rate limit, an overload or a server error and no other; pruning
   receipts no longer frees a turn's caps (5,000 requests of one turn hold); a turn is
   pi's run, not the newest user message (A1). Mutation, the reviewer's 56 mapped onto the
   new code: 48 killed, the 8 that live equivalent (a failed call's tokens and cost are
@@ -414,11 +415,15 @@ account and no deploy.
   as G1's `envelope.ts` reads it), the upstream's own model id, the reservation's output
   cap, settle before pi sees the end, a reseal stored, and a row abandoned when its own
   unit throws. The turn is pi's: each conversation's `pi.provider` session id is indexed
-  at creation (`ta.sessions`) with its root, through pi's owner edges, and the turn is the
-  root's live run, named by the submission that started it (pi hands `run.taskId` to a
-  new generation each round), or its live compaction while idle; a compaction inside a
-  run and a subagent's calls are the same turn, and a call with no run is refused
-  `no_run`. Production's agent is it
+  at creation (`ta.sessions`) with its chain of owner conversations and the task that made
+  each; a request's anchor is the first conversation background work made, else the one
+  with no owner (a task's `background` is read at the request, since the creating commit
+  may read no table). The turn is the anchor's live run, named by the submission that
+  started it (pi hands `run.taskId` to a new generation each round); else the nearest live
+  run up the chain; else the request's conversation's live compaction; else `no_run`. A
+  compaction inside a run and a running root's subagents are the root's turn; a subagent
+  asked again after its root's run, and background work's conversations, run turns of
+  their own. Production's agent is it
   (`gatewayAgent`, the default `AgentFactory`), so nothing connected settles `no_model`.
   `auto`: ranked by the data file (provider and model globs, newer ids first, the rest by
   catalog output price), its metadata the strongest's; stickiness and fallback read from
@@ -432,7 +437,9 @@ account and no deploy.
   bundles it, run beside the tests with its fake upstream): a real turn; `no_model`; the
   tee's 12 deltas while pi committed at most 3 partials; an abort reaching the upstream;
   a budget refusal as the turn's error, never sent; a revoke racing a call; a 429 retried
-  by pi at no cost; the turn across tool rounds, a steer, a compaction and a subagent; a
+  by pi at no cost, and each upstream status retried or not as pi-ai reads its code; the
+  turn across tool rounds, a steer, a compaction, two levels of subagents, a subagent
+  after its root's run, and background work's conversation beside a new root run; a
   dispatch or settle that throws. Declared
   differences from the research: stickiness reads the transcript rather than an in-memory
   map rebuilt from it; a continuation kept on an earlier target is estimated by its own
@@ -441,8 +448,7 @@ account and no deploy.
   cancellation, with no wrapper of ours; a fork with no owner is its own root (it runs
   its own submissions), so only owner edges are walked. Owner bundle 1,598 KiB, 329 KiB
   gzip (1,495 and 303 before A1), local startup 24 ms active in a 56 ms window (20 in 50
-  before). Open: a background task's or an idle subagent's call outside any root run is
-  refused `no_run` until such work names its own turn; the
+  before). Open: the
   attribution reaches the gateway hop only (pi-messages carries no identity upstream); an
   owner pin of a model per agent (`pi.agent`) for `auto`; a package that keeps the
   ranking current; the tee's transport to the owner's app (A6).

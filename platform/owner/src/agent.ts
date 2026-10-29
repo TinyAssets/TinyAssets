@@ -41,21 +41,30 @@
  * - `conversationCreated`: a conversation a task creates (a subagent's) takes its owner
  *   conversation's stamp in the creating commit, and a fork copies its parent's
  *   (`fork: "current"`), so no conversation an outside client's work makes sheds it; and
- *   every conversation is indexed by its `pi.provider` session id, with its root.
+ *   every conversation is indexed by its `pi.provider` session id, with its owner chain.
  *
- * **A model call's turn** (`turnOf`) is one run of its root conversation, read from pi's
- * own records. pi hands a provider only the conversation's `pi.provider` session id
- * (`generation.js`, `compaction.js`), so the `ta.sessions` family maps each session id,
- * in the commit that creates its conversation, to the conversation and its root: the
- * conversation itself when it has no owner, else its owner conversation's root (the
- * owner edge pi records for a task's conversation, a subagent's). A fork with no owner
- * runs its own submissions, so it is its own root; a fork a task makes has an owner edge.
- * The turn is the root's live run, named by the submission that started it (`pi.live`'s
- * `run.inputs[0]`, present exactly while the root is busy: pi hands `run.taskId` to a new
- * generation every round, but the run's inputs only grow), or, while the root is idle,
- * its oldest live compaction task (a compaction asked for outside a run). So a compaction
- * inside a run, which places a user message, and a subagent's calls are the same turn; a
- * call with none of these is refused (`no_run`).
+ * **A model call's turn** (`turnOf`) is one run, read from pi's own records. pi hands a
+ * provider only the conversation's `pi.provider` session id (`generation.js`,
+ * `compaction.js`), so the `ta.sessions` family maps each session id, in the commit that
+ * creates its conversation, to its chain: the conversation, then its owner conversations
+ * up to one with no owner (the owner edge pi records for a task's conversation, a
+ * subagent's), with the task that made each. A request's anchor is the first conversation
+ * up the chain that background work made (a task pi keeps running past its conversation's
+ * run: `TaskRecord.background`, set only on a conversation-owned task, at the top of a
+ * task's chain of `owner` tasks, as `scheduler.js` `#nearestLiveAbove` walks it), else the
+ * chain's end: a background subtree is its own. A task's record is read at the request
+ * (`Harness.getTask`; pi keeps every task's record, and a commit may read no table after
+ * it wrote one, as the creating commit has). A fork with no owner runs its own
+ * submissions, so it is its own anchor; a fork a task makes has an owner edge.
+ * A run is named by the submission that started it (`pi.live`'s `run.inputs[0]`, present
+ * exactly while the conversation is busy: pi hands `run.taskId` to a new generation every
+ * round, but the run's inputs only grow). The turn is, in order: the anchor's live run, so
+ * a subagent of a running root is charged to the root's run, the runaway bound; else the
+ * nearest live run up the chain from the request's own conversation (a subagent running
+ * on after its root's run ended); else that conversation's oldest live compaction (one
+ * asked for outside a run); else the call is refused (`no_run`). A compaction inside a
+ * run, which places a user message, is the run's turn, and every new turn needs a new
+ * submitted input.
  */
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { ClientIdentity, Models, Provider } from "@earendil-works/pi-ai";
@@ -63,7 +72,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import {
   type ConversationId, type ConversationRecord, createRegistry, defineDoc, defineDocFamily, defineExtension,
   type EnvTarget, type Extension, Harness, type HarnessSettings, LiveDoc, ProviderDoc,
-  type ReportInfo, type Tx, wrapTool,
+  type ReportInfo, type TaskId, type Tx, wrapTool,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
@@ -115,10 +124,13 @@ export function authorityDoc() {
 }
 
 /**
- * A `ta.sessions` member: the conversation a `pi.provider` session id is, and its root. A
- * member with no root was never written by the creation hook: pi's records disagree.
+ * A `ta.sessions` member: the conversation a `pi.provider` session id is, its chain (the
+ * conversation first, a conversation with no owner last) and, for each but the last, the
+ * task that made it. A member with no chain was never written by the creation hook: pi's
+ * records disagree.
  */
-export type Indexed = { conversation: ConversationId; root?: ConversationId };
+export type Indexed = { conversation: ConversationId; chain?: ConversationId[];
+                        makers?: TaskId[] };
 
 /** The `ta.sessions` family: per `pi.provider` session id, written once, at creation. */
 export function sessionsDoc() {
@@ -130,6 +142,24 @@ export function sessionsDoc() {
     initial: (seed) => ({ ...seed }),
     checkpointWhen: () => true,
   });
+}
+
+/**
+ * Whether task `id` is background work, or below it: pi marks only a conversation-owned
+ * task `background`, and a task's `owner` chain leads up to that one. A task pi has no
+ * record of fails the request loudly.
+ */
+async function background(pi: Harness, id: TaskId): Promise<boolean> {
+  for (let task = await pi.getTask(id, BACKGROUND_CONTEXT); task !== undefined;
+    task = task.owner === undefined ? undefined : await pi.getTask(task.owner, BACKGROUND_CONTEXT)) {
+    if (task.background) {
+      return true;
+    }
+    if (task.owner === undefined) {
+      return false;
+    }
+  }
+  throw new Error(NO_RUN);
 }
 
 /** The fixed code of a model call no run of pi's can be found for. */
@@ -251,29 +281,34 @@ export class OwnerAgent {
   }
 
   /**
-   * In the creating commit: the conversation's session id indexed, with its root, its
-   * owner conversation's when it has one. pi stages `pi.provider` before this hook, so the
-   * session id is the one every request of the conversation carries.
+   * In the creating commit: the conversation's session id indexed, with its chain: itself,
+   * then its owner conversation's chain, and the task that made it before that one's
+   * makers. pi stages `pi.provider` before this hook, so the session id is the one every
+   * request of the conversation carries.
    */
   async #index(tx: Tx, record: ConversationRecord): Promise<void> {
     const { sessionId } = await tx.doc(ProviderDoc, record.id);
-    let root = record.id;
+    const chain = [record.id];
+    const makers: TaskId[] = [];
     if (record.owner !== undefined) {
       const owner = record.owner.conversationId;
       const indexed = await tx.doc(this.sessions, (await tx.doc(ProviderDoc, owner)).sessionId,
                                    { conversation: owner });
-      if (indexed.conversation !== owner || indexed.root === undefined) {
+      if (indexed.conversation !== owner || indexed.chain === undefined
+          || indexed.makers === undefined) {
         throw new Error("a conversation's owner has no session index");  // pi's records disagree
       }
-      root = indexed.root;
+      chain.push(...indexed.chain);
+      makers.push(record.owner.taskId, ...indexed.makers);
     }
-    await tx.doc(this.sessions, sessionId, { conversation: record.id, root });
+    await tx.doc(this.sessions, sessionId, { conversation: record.id, chain, makers });
   }
 
   /**
-   * The turn a model request is part of: its root conversation's live run, from pi's own
-   * records; `no_run` (thrown) when the request names no session pi indexed, or its root is
-   * running neither a run nor a compaction.
+   * The turn a model request is part of, from pi's own records: its anchor's live run,
+   * else the nearest live run up its chain, else its own conversation's live compaction;
+   * `no_run` (thrown) when the request names no session pi indexed, or none of these is
+   * live.
    */
   async turnOf(sessionId: string | undefined): Promise<string> {
     if (sessionId === undefined) {
@@ -281,17 +316,33 @@ export class OwnerAgent {
     }
     const pi = await this.harness.pi();
     const indexed = await pi.snapshot(this.sessions, sessionId, BACKGROUND_CONTEXT);
-    if (indexed?.root === undefined) {
+    if (indexed?.chain === undefined || indexed.makers === undefined) {
       throw new Error(NO_RUN);
     }
-    const live = await pi.snapshot(LiveDoc, indexed.root, BACKGROUND_CONTEXT);
-    const run = live?.run?.inputs[0];
-    if (run !== undefined) {
-      return `${indexed.root}/run:${run}`;
+    // The chain up to its anchor: the first conversation background work made, else all.
+    let end = indexed.chain.length;
+    for (const [at, maker] of indexed.makers.entries()) {
+      if (await background(pi, maker)) {
+        end = at + 1;
+        break;
+      }
     }
-    const compaction = live?.compactions?.[0]?.taskId;
+    const chain = indexed.chain.slice(0, end);
+    const own = chain[0];
+    const anchor = chain.at(-1);
+    if (own === undefined || anchor === undefined) {
+      throw new Error(NO_RUN);
+    }
+    const live = (id: ConversationId) => pi.snapshot(LiveDoc, id, BACKGROUND_CONTEXT);
+    for (const id of [anchor, ...chain.slice(0, -1)]) {
+      const run = (await live(id))?.run?.inputs[0];
+      if (run !== undefined) {
+        return `${id}/run:${run}`;
+      }
+    }
+    const compaction = (await live(own))?.compactions?.[0]?.taskId;
     if (compaction !== undefined) {
-      return `${indexed.root}/compaction:${compaction}`;
+      return `${own}/compaction:${compaction}`;
     }
     throw new Error(NO_RUN);
   }

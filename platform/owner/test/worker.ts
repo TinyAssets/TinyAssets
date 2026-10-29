@@ -19,7 +19,7 @@ import {
   fauxProvider, type FauxResponseFactory, type Message, type Provider, Type,
 } from "@earendil-works/pi-ai";
 import {
-  defineExtension, defineTool, type Extension, type ToolRegistration, wrapTool,
+  defineExtension, defineTask, defineTool, type Extension, type ToolRegistration, wrapTool,
 } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 
@@ -50,11 +50,38 @@ function answers(messages: readonly Message[]): number {
   return messages.filter((message) => message.role === "assistant").length;
 }
 
+/**
+ * Background work that makes a conversation of its own and ends, as a package's background
+ * task would; its result is the conversation's id. A test creates it conversation-owned
+ * with `background: true`.
+ */
+type Spawning = { phase: "run" } | { phase: "made"; child: number };
+
+export const BackgroundSpawn = defineTask<Record<string, never>, Spawning, number>({
+  name: "test.background",
+  version: 1,
+  initial: () => ({ phase: "run" }),
+  phases: {
+    // The conversation is made while the task runs, then the task ends with its id.
+    run: async (_task, runtime, context) => runtime.commit(async (tx) => {
+      const child = await tx.createConversation({
+        ownership: { kind: "task", taskId: runtime.taskId } });
+      return { status: "running", checkpoint: { phase: "made", child: child.id } };
+    }, context),
+    made: async (task, runtime, context) => runtime.commit(() => ({
+      status: "terminal", outcome: { status: "completed", result: task.state.checkpoint.child },
+    }), context),
+  },
+  abort: async (_task, runtime, context) => runtime.commit(() => ({
+    status: "terminal", outcome: { status: "failed", error: { message: "aborted" } } }), context),
+});
+
 /** The test tools: `hold` (replay-unsafe), `spawn` (a task-owned conversation), `read`'s gate. */
 function testExtensions(probes: () => Probes): Extension[] {
   const read = CodingTools.tools!.find((tool) => tool.name === "read")! as ToolRegistration;
   return [defineExtension({
     name: "test.tools",
+    tasks: [BackgroundSpawn],
     tools: [
       defineTool({
         name: "hold",

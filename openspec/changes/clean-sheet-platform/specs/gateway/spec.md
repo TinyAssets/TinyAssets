@@ -94,6 +94,13 @@ A model call the provider refused before producing anything SHALL be answered wi
 - **WHEN** a call's deadline passes after the provider began answering
 - **THEN** the answer is a 200 stream that ends with an `error` event of `deadline`
 
+### Requirement: A transient refusal's code is one pi-ai retries
+An upstream status SHALL be named so that pi-ai's own retry classifier reads it as the provider meant: 408 `upstream_timeout`, 429 `upstream_rate_limited`, 503 and 529 `upstream_overloaded` and any other 5xx `upstream_server_error`, which it retries; 401 and 403 `upstream_unauthorized` and any other 4xx `upstream_rejected`, which it does not.
+
+#### Scenario: An overloaded provider
+- **WHEN** a provider answers 529 before any output
+- **THEN** the gateway answers `upstream_overloaded`, and pi's agent, allowed a retry, tries the call again
+
 ### Requirement: Sandbox egress is forwarded raw under the sealed endpoints
 `forward` SHALL send a sandbox request's method, path, query, headers and body to the credential's sealed origin only, strip every inbound credential (authorization and API-key headers, cookies, method overrides, the API-key query parameters, our own `x-ta-` headers and Cloudflare's), inject the sealed secret by the sealed auth template, cut the request at five minutes, and pass the provider's answer through.
 
