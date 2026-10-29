@@ -3,6 +3,9 @@
 // workers.dev or preview URL, and its two KV namespaces are placeholders, so a deploy
 // cannot succeed. It binds exactly what guards/config.test.ts allows:
 // - OWNER: the owner Worker's namespace, by script_name. Only src/binder.ts reaches it.
+// - GATEWAY: the model gateway's ConnectGateway entrypoint, which serves only the connect
+//   steps (seal, exchange, verify): no model call, no egress forwarding, and the keyring
+//   stays in the gateway. Only src/connect.ts reaches it.
 // - OAUTH_KV: the OAuth provider's own store; DIRECTORY: the owner directory (routing
 //   hints and the control record). Two namespaces, so their schemas never collide.
 // - DCR_ENABLED: the deprecated dynamic-registration fallback, off. OWNER_ISSUER:
@@ -26,6 +29,9 @@
       { "name": "OWNER", "class_name": "OwnerDO", "script_name": "tinyassets-owner" }
     ]
   },
+  "services": [
+    { "binding": "GATEWAY", "service": "tinyassets-gateway", "entrypoint": "ConnectGateway" }
+  ],
   "kv_namespaces": [
     { "binding": "OAUTH_KV", "id": "not-provisioned-oauth" },
     { "binding": "DIRECTORY", "id": "not-provisioned-directory" }

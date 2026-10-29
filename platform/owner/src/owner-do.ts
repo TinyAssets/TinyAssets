@@ -1130,7 +1130,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /** The callback's state, in the session that began the flow: its verifier, used up. */
   flowFinish(binding: Binding, request: FlowFinishRequest):
-      Promise<{ connection: string; version: number; verifier: string; redirect_uri: string }> {
+      Promise<{ connection: string; version: number; verifier: string; redirect_uri: string;
+                source: string }> {
     return this.#synced(() => this.#widening(binding, "flow_finish", { state: "[state]" },
                                              "connect a model source", (_account, id) =>
       this.#connections.flowFinish(id, request, clock())));

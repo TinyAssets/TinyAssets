@@ -3,6 +3,10 @@
  * the first-party clients, and the environment it binds (`wrangler.jsonc`, held by
  * `guards/config.test.ts`).
  */
+import type { Source } from "../../gateway/src/credential";
+import type { Verified } from "../../gateway/src/forward";
+import type { Sealed } from "../../gateway/src/keyring";
+import type { Exchanged } from "../../gateway/src/oauth";
 import type { OwnerDO } from "../../owner/src/owner-do";
 
 /** The one configured public origin; the Capacitor WebView loads it too. */
@@ -16,6 +20,19 @@ export const MCP_RESOURCE = `${PUBLIC_ORIGIN}/mcp`;
 export const APP_RESOURCE = `${PUBLIC_ORIGIN}/app`;
 /** Where the upstream sign-in returns the browser. */
 export const UPSTREAM_CALLBACK = `${PUBLIC_ORIGIN}/oauth/upstream/callback`;
+/**
+ * Where a model source's OAuth flow returns the browser (`connect.ts`). A key-exchange
+ * source, which sends no `state`, returns to it with the flow's state as one more path
+ * segment.
+ */
+export const CONNECT_CALLBACK_PATH = "/oauth/connect/callback";
+export const CONNECT_CALLBACK = `${PUBLIC_ORIGIN}${CONNECT_CALLBACK_PATH}`;
+/**
+ * The owner app's page that finishes a connect: the callback hands it the code and
+ * state in the URL fragment, which no server sees, and the page posts them back with the
+ * owner's token and session (the callback's navigation carries neither).
+ */
+export const CONNECTED_PAGE = `${PUBLIC_ORIGIN}/app/connected`;
 /** The first-party app's Client ID Metadata Document, served by this Worker. */
 export const WEB_CLIENT = `${PUBLIC_ORIGIN}/oauth/clients/web.json`;
 /** Where the first-party app finishes its sign-in. */
@@ -54,10 +71,26 @@ export const API_BODY_MAX = 1024 * 1024;
 /** `OWNER_ISSUER` until the AuthKit slice sets AuthKit's production issuer. */
 export const ISSUER_NOT_CONFIGURED = "not-configured";
 
+/**
+ * The gateway as the doors bind it: its `ConnectGateway` entrypoint, which serves only
+ * the connect steps (no model call, no egress forwarding, no keyring). Its answers are
+ * the gateway's own types; every failure is one of its fixed codes.
+ */
+export interface ConnectService {
+  seal(owner: string, connection: string, version: number, key: string, record: Source):
+    Promise<Sealed>;
+  exchange(owner: string, connection: string, version: number,
+           grant: { code: string; verifier: string; redirect_uri: string }, record: Source):
+    Promise<Exchanged>;
+  verify(owner: string, connection: string, version: number, blob: string): Promise<Verified>;
+}
+
 /** What `wrangler.jsonc` binds, exactly (the config guard). */
 export interface DoorsEnv {
   /** The owner Worker's namespace, by `script_name`; reached only in `binder.ts`. */
   readonly OWNER: DurableObjectNamespace<OwnerDO>;
+  /** The gateway's connect entrypoint; reached only in `connect.ts`. */
+  readonly GATEWAY: ConnectService;
   /** The OAuth provider's own store (its schema; never ours). */
   readonly OAUTH_KV: KVNamespace;
   /** The owner directory: routing hints and the `control` record (`directory.ts`). */

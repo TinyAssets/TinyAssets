@@ -1,0 +1,36 @@
+{
+  "id": "mistral",
+  "display_name": "Mistral",
+  "help_url": "https://console.mistral.ai/api-keys",
+  "connect": [
+    "api_key"
+  ],
+  "provider": "mistral",
+  "api": "mistral-conversations",
+  "base_url": "https://api.mistral.ai",
+  "auth": {
+    "header": "authorization",
+    "scheme": "Bearer"
+  },
+  "verify_url": "https://api.mistral.ai/v1/models",
+  "endpoints": [
+    {
+      "origin": "https://api.mistral.ai",
+      "paths": [
+        "/v1/chat/completions"
+      ],
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "origin": "https://api.mistral.ai",
+      "paths": [
+        "/v1/models"
+      ],
+      "methods": [
+        "GET"
+      ]
+    }
+  ]
+}

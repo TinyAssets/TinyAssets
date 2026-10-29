@@ -1,0 +1,36 @@
+{
+  "id": "cerebras",
+  "display_name": "Cerebras",
+  "help_url": "https://cloud.cerebras.ai/platform/api-keys",
+  "connect": [
+    "api_key"
+  ],
+  "provider": "cerebras",
+  "api": "openai-completions",
+  "base_url": "https://api.cerebras.ai/v1",
+  "auth": {
+    "header": "authorization",
+    "scheme": "Bearer"
+  },
+  "verify_url": "https://api.cerebras.ai/v1/models",
+  "endpoints": [
+    {
+      "origin": "https://api.cerebras.ai",
+      "paths": [
+        "/v1/chat/completions"
+      ],
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "origin": "https://api.cerebras.ai",
+      "paths": [
+        "/v1/models"
+      ],
+      "methods": [
+        "GET"
+      ]
+    }
+  ]
+}

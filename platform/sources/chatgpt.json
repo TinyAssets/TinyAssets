@@ -1,0 +1,49 @@
+{
+  "id": "chatgpt",
+  "display_name": "ChatGPT",
+  "help_url": "https://developers.openai.com/siwc",
+  "connect": [
+    "oauth"
+  ],
+  "unwired": "Sign in with ChatGPT for a remotely hosted app needs OpenAI's approval (the founder's interest-form application)",
+  "provider": "openai",
+  "api": "openai-responses",
+  "base_url": "https://api.openai.com/v1",
+  "auth": {
+    "header": "authorization",
+    "scheme": "Bearer"
+  },
+  "verify_url": "https://api.openai.com/v1/models",
+  "endpoints": [
+    {
+      "origin": "https://api.openai.com",
+      "paths": [
+        "/v1/responses"
+      ],
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "origin": "https://api.openai.com",
+      "paths": [
+        "/v1/models"
+      ],
+      "methods": [
+        "GET"
+      ]
+    }
+  ],
+  "oauth": {
+    "protocol": "rfc6749",
+    "authorization_endpoint": "https://auth.openai.com/api/accounts/authorize",
+    "token_endpoint": "https://auth.openai.com/api/accounts/oauth/token",
+    "client_id": "dynamic_agent_client",
+    "client_auth": {
+      "method": "none"
+    },
+    "resource": "https://api.openai.com/v1",
+    "scope": "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct",
+    "refresh_with": "provider"
+  }
+}

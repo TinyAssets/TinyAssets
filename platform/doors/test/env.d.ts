@@ -8,5 +8,8 @@ declare namespace Cloudflare {
     DCR_ENABLED: string;
     OWNER_ISSUER: string;
     FOREIGN_ISSUERS: string;
+    GATEWAY: import("../src/config").ConnectService;
+    /** The fake providers (test/fake-providers.ts), for the tests to read back. */
+    PROVIDERS: Fetcher;
   }
 }

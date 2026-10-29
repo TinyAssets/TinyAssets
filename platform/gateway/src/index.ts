@@ -12,6 +12,9 @@
  * - `reseal`: a blob resealed under the active kid at the next version (the sweep that
  *   retires a kid).
  *
+ * The owner Worker binds the default entrypoint. The doors Worker binds `ConnectGateway`,
+ * which serves only `seal`, `exchange` and `verify`, the steps of a connect.
+ *
  * Every method takes the owner, connection and version the blob is bound to from its
  * caller, and the seal holds the call to them: the gateway never chooses an owner. Each
  * refusal is a fixed code (`failure.ts`), and nothing the gateway catches is rethrown as
@@ -31,6 +34,53 @@ import { type Exchanged, exchange, type Refreshed, refresh, type Revoked,
 /** The gateway's one binding: its keyring secret (`wrangler.jsonc`). */
 export type GatewayEnv = KeyringEnv;
 
+function sealKey(env: GatewayEnv, owner: string, connection: string, version: number,
+                 key: string, record: unknown): Promise<Sealed> {
+  return guarded(async () => {
+    const bound = binding(owner, connection, version);
+    const checked = source(record, false);
+    const plaintext: Credential = { kind: "api_key", secret: secret(key),
+                                    upstream: checked.upstream, endpoints: checked.endpoints,
+                                    sealed_at: Date.now() };
+    return seal(env, bound, plaintext);
+  });
+}
+
+function exchangeCode(env: GatewayEnv, owner: string, connection: string, version: number,
+                      grant: unknown, record: unknown): Promise<Exchanged> {
+  return guarded(() => exchange(env, binding(owner, connection, version), grant, record));
+}
+
+function verifySealed(env: GatewayEnv, owner: string, connection: string, version: number,
+                      blob: string): Promise<Verified> {
+  return guarded(() => verify(env, binding(owner, connection, version), blob, builtinCatalog()));
+}
+
+/**
+ * What the doors Worker (the binder) binds, as the named entrypoint `ConnectGateway`:
+ * the three connect steps and nothing else. It cannot make a model call, forward
+ * egress, refresh, reseal or revoke, and the keyring stays here (doors research §7.2,
+ * `doors/guards/config.test.ts`).
+ */
+export class ConnectGateway extends WorkerEntrypoint<GatewayEnv> {
+  /** Seals a pasted API key for the connection, with its source record's values. */
+  async seal(owner: string, connection: string, version: number, key: string,
+             record: unknown): Promise<Sealed> {
+    return sealKey(this.env, owner, connection, version, key, record);
+  }
+
+  /** Exchanges an authorization code and seals what it buys. */
+  async exchange(owner: string, connection: string, version: number, grant: unknown,
+                 record: unknown): Promise<Exchanged> {
+    return exchangeCode(this.env, owner, connection, version, grant, record);
+  }
+
+  /** Checks a sealed credential against its provider, and lists its models. */
+  async verify(owner: string, connection: string, version: number,
+               blob: string): Promise<Verified> {
+    return verifySealed(this.env, owner, connection, version, blob);
+  }
+}
 
 export default class Gateway extends WorkerEntrypoint<GatewayEnv> {
   override async fetch(request: Request): Promise<Response> {
@@ -44,20 +94,13 @@ export default class Gateway extends WorkerEntrypoint<GatewayEnv> {
   /** Seals a pasted API key for the connection, with its source record's values. */
   async seal(owner: string, connection: string, version: number, key: string,
              record: unknown): Promise<Sealed> {
-    return guarded(async () => {
-      const bound = binding(owner, connection, version);
-      const checked = source(record, false);
-      const plaintext: Credential = { kind: "api_key", secret: secret(key),
-                                      upstream: checked.upstream, endpoints: checked.endpoints,
-                                      sealed_at: Date.now() };
-      return seal(this.env, bound, plaintext);
-    });
+    return sealKey(this.env, owner, connection, version, key, record);
   }
 
-  /** Exchanges an OAuth authorization code and seals the tokens. */
+  /** Exchanges an authorization code and seals what it buys. */
   async exchange(owner: string, connection: string, version: number, grant: unknown,
                  record: unknown): Promise<Exchanged> {
-    return guarded(() => exchange(this.env, binding(owner, connection, version), grant, record));
+    return exchangeCode(this.env, owner, connection, version, grant, record);
   }
 
   /** Refreshes an OAuth credential; the result is bound to `version + 1`. */
@@ -70,8 +113,7 @@ export default class Gateway extends WorkerEntrypoint<GatewayEnv> {
   /** Checks a sealed credential against its provider, and lists its models. */
   async verify(owner: string, connection: string, version: number,
                blob: string): Promise<Verified> {
-    return guarded(() => verify(this.env, binding(owner, connection, version), blob,
-                                builtinCatalog()));
+    return verifySealed(this.env, owner, connection, version, blob);
   }
 
   /** Forwards one sandbox egress request under the sealed endpoints. */

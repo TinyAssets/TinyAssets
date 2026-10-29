@@ -1,0 +1,47 @@
+{
+  "id": "openrouter_user_models_v1",
+  "display_name": "OpenRouter",
+  "suggested": true,
+  "help_url": "https://openrouter.ai/settings/keys",
+  "connect": [
+    "oauth",
+    "api_key"
+  ],
+  "provider": "openrouter",
+  "api": "openai-completions",
+  "base_url": "https://openrouter.ai/api/v1",
+  "auth": {
+    "header": "authorization",
+    "scheme": "Bearer"
+  },
+  "verify_url": "https://openrouter.ai/api/v1/models/user",
+  "endpoints": [
+    {
+      "origin": "https://openrouter.ai",
+      "paths": [
+        "/api/v1/chat/completions"
+      ],
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "origin": "https://openrouter.ai",
+      "paths": [
+        "/api/v1/models/user",
+        "/api/v1/benchmarks"
+      ],
+      "methods": [
+        "GET"
+      ]
+    }
+  ],
+  "oauth": {
+    "protocol": "pkce_user_key_v1",
+    "authorization_endpoint": "https://openrouter.ai/auth",
+    "exchange_endpoint": "https://openrouter.ai/api/v1/auth/keys",
+    "authorize_params": {
+      "key_label": "TinyAssets"
+    }
+  }
+}

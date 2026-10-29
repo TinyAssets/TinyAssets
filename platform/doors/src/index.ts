@@ -6,9 +6,10 @@
  */
 import type { DoorsEnv } from "./config";
 import { serve } from "./doors";
+import { bundledSources } from "./sources";
 import { UNWIRED } from "./upstream";
 
 export default Object.freeze({
   fetch: (request: Request, env: DoorsEnv, ctx: ExecutionContext): Promise<Response> =>
-    serve(request, env, ctx, UNWIRED),
+    serve(request, env, ctx, UNWIRED, bundledSources()),
 });

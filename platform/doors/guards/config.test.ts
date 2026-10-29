@@ -12,8 +12,11 @@
  *   the AuthKit slice names AuthKit's issuer, so every sign-in fails loudly; and
  *   `FOREIGN_ISSUERS` empty (`[]`) until a provider's slice lists its issuer, so any other
  *   issuer is refused, never taken for a new owner.
- * - No service: `FILES` joins with the file-bytes door (tasks 2, owed by 6.1), and rate
- *   limits with their binding (tasks 2).
+ * - `GATEWAY`: the gateway Worker's `ConnectGateway` entrypoint, whose class in the
+ *   gateway's source serves exactly `seal`, `exchange` and `verify` (the connect steps),
+ *   so the doors can make no model call, forward no egress (G4's) and hold no keyring.
+ *   Only `src/connect.ts` names it (the binder guard). No other service: `FILES` joins
+ *   with the file-bytes door (tasks 2, owed by 6.1), and rate limits with their binding.
  * - No routes, custom domain, workers.dev or preview URL, no environment, no migration
  *   (the doors define no Durable Object class).
  * - Flags: `nodejs_compat` (the owner's shared code), `disable_ctx_exports` (no way to the
@@ -37,8 +40,12 @@ const FLAGS: readonly string[] = Object.freeze(["nodejs_compat", "disable_ctx_ex
                                                 "global_fetch_strictly_public"]);
 const KEYS: ReadonlySet<string> = new Set([
   "$schema", "name", "main", "compatibility_date", "compatibility_flags", "workers_dev",
-  "preview_urls", "vars", "durable_objects", "kv_namespaces",
+  "preview_urls", "vars", "durable_objects", "services", "kv_namespaces",
 ]);
+/** The doors' one service: the gateway's connect entrypoint, and what it may serve. */
+const GATEWAY = Object.freeze({ binding: "GATEWAY", service: "tinyassets-gateway",
+                                entrypoint: "ConnectGateway" });
+const CONNECT_METHODS: readonly string[] = Object.freeze(["exchange", "seal", "verify"]);
 const KV: readonly string[] = Object.freeze(["DIRECTORY", "OAUTH_KV"]);
 const VARS = Object.freeze({ DCR_ENABLED: "false", OWNER_ISSUER: "not-configured",
                              FOREIGN_ISSUERS: "[]" });
@@ -72,9 +79,31 @@ function platformConfigs(): Map<string, Config> {
   return found;
 }
 
+/**
+ * The members each class a source exports serves, by class name: its own public methods
+ * and properties, read from the syntax tree.
+ */
+export function exportedMethods(source: string): Map<string, string[]> {
+  const file = ts.createSourceFile("index.ts", source, ts.ScriptTarget.Latest, true);
+  const found = new Map<string, string[]>();
+  file.forEachChild((node) => {
+    if (ts.isClassDeclaration(node) && node.name !== undefined
+        && node.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)) {
+      found.set(node.name.text, node.members.filter((member) =>
+        (ts.isMethodDeclaration(member) || ts.isPropertyDeclaration(member)
+         || ts.isGetAccessorDeclaration(member))
+        && !ts.isPrivateIdentifier(member.name)
+        && !ts.getModifiers(member)?.some((m) => m.kind === ts.SyntaxKind.PrivateKeyword
+                                                 || m.kind === ts.SyntaxKind.ProtectedKeyword))
+        .map((member) => member.name!.getText(file)).sort());
+    }
+  });
+  return found;
+}
+
 /** Each way `config` binds more than the doors need, or could deploy. */
-export function doorsConfigProblems(config: Config,
-                                    platform: ReadonlyMap<string, Config>): string[] {
+export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string, Config>,
+                                    gatewaySource: string): string[] {
   const problems: string[] = [];
   for (const key of Object.keys(config)) {
     if (!KEYS.has(key)) {
@@ -108,6 +137,17 @@ export function doorsConfigProblems(config: Config,
       problems.push("OWNER's script is not the platform's owner Worker with its OwnerDO class");
     }
   }
+  const services = config["services"];
+  if (!Array.isArray(services) || services.length !== 1
+      || JSON.stringify(services[0]) !== JSON.stringify(GATEWAY)) {
+    problems.push("services binds exactly GATEWAY to tinyassets-gateway's ConnectGateway");
+  } else if (platform.get(GATEWAY.service) === undefined) {
+    problems.push("GATEWAY's service is not the platform's gateway Worker");
+  } else if (JSON.stringify(exportedMethods(gatewaySource).get(GATEWAY.entrypoint))
+             !== JSON.stringify(CONNECT_METHODS)) {
+    problems.push(`the gateway's ${GATEWAY.entrypoint} serves exactly ` +
+                  `${CONNECT_METHODS.join(", ")}`);
+  }
   const kv = config["kv_namespaces"];
   if (!Array.isArray(kv) || kv.length !== KV.length
       || JSON.stringify(kv.map((n: { binding?: unknown }) => n.binding).sort())
@@ -122,10 +162,14 @@ export function doorsConfigProblems(config: Config,
 
 const config = parseConfig(readFileSync(join(DOORS, CONFIG), "utf8"));
 const platform = platformConfigs();
+const gatewaySource = readFileSync(join(PLATFORM, "gateway", "src", "index.ts"), "utf8");
 
 describe("doors Worker config", () => {
-  it("binds OWNER, OAUTH_KV and DIRECTORY, and cannot deploy", () => {
-    expect(doorsConfigProblems(config, platform)).toEqual([]);
+  it("binds OWNER, the gateway's connect entrypoint, OAUTH_KV and DIRECTORY, and cannot deploy",
+     () => {
+    expect(doorsConfigProblems(config, platform, gatewaySource)).toEqual([]);
+    expect(exportedMethods(gatewaySource).get("ConnectGateway"))
+      .toEqual(["exchange", "seal", "verify"]);
   });
 
   it("is the only wrangler config in the doors Worker", () => {
@@ -141,6 +185,13 @@ describe("doors Worker config", () => {
     ["preview URLs", { preview_urls: true }],
     ["an environment", { env: { prod: { routes: ["tinyassets.io/*"] } } }],
     ["a service", { services: [{ binding: "FILES", service: "tinyassets-files" }] }],
+    ["no service", { services: [] }],
+    ["the gateway's whole surface", { services: [{ binding: "GATEWAY",
+                                                   service: "tinyassets-gateway" }] }],
+    ["the gateway's default entrypoint", { services: [{ ...GATEWAY, entrypoint: "Gateway" }] }],
+    ["the gateway under another name", { services: [{ ...GATEWAY, binding: "MODELS" }] }],
+    ["a second service", { services: [GATEWAY, { binding: "FILES",
+                                                 service: "tinyassets-files" }] }],
     ["a bucket", { r2_buckets: [{ binding: "BLOBS", bucket_name: "tinyassets-files" }] }],
     ["a migration", { migrations: [{ tag: "v1", new_sqlite_classes: ["X"] }] }],
     ["a rate limit", { ratelimits: [{ name: "KEY_RL", namespace_id: "1",
@@ -169,12 +220,31 @@ describe("doors Worker config", () => {
       { binding: "DIRECTORY", id: "not-provisioned-directory" },
       { binding: "CACHE", id: "not-provisioned-cache" }] }],
   ])("sees %s", (_what, change) => {
-    expect(doorsConfigProblems({ ...config, ...change }, platform)).not.toEqual([]);
+    expect(doorsConfigProblems({ ...config, ...change }, platform, gatewaySource))
+      .not.toEqual([]);
   });
 
   it("sees OWNER bound to a script whose class is not in the platform", () => {
     const without = new Map(platform);
     without.delete("tinyassets-owner");
-    expect(doorsConfigProblems(config, without)).not.toEqual([]);
+    expect(doorsConfigProblems(config, without, gatewaySource)).not.toEqual([]);
+  });
+
+  it("sees GATEWAY bound to a Worker that is not in the platform", () => {
+    const without = new Map(platform);
+    without.delete("tinyassets-gateway");
+    expect(doorsConfigProblems(config, without, gatewaySource)).not.toEqual([]);
+  });
+
+  it.each([
+    ["a model call", "fetch(r: Request) { return r; }"],
+    ["egress forwarding", "forward() { return 1; }"],
+    ["a refresh", "async refresh() { return 1; }"],
+    ["a provider revoke", "revokeAtProvider = () => 1;"],
+  ])("sees the connect entrypoint grow %s", (_what, member) => {
+    const head = "export class ConnectGateway extends WorkerEntrypoint<GatewayEnv> {";
+    const grown = gatewaySource.replace(head, `${head}\n  ${member}`);
+    expect(grown).not.toBe(gatewaySource);
+    expect(doorsConfigProblems(config, platform, grown)).not.toEqual([]);
   });
 });

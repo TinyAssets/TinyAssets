@@ -226,7 +226,9 @@ describe("tool table guard", () => {
     expect(DOORS.get("outsideAgents")?.capability).toBeNull();
     for (const ownerOnly of ["policyWrite", "grantSet", "grantRevoke", "grantForget",
                              "sessionOpen", "registerAgent", "fileRedact", "fileHistoryPurge",
-                             "fileLeaseAcquire", "fileSyncCommit", "policyRead"]) {
+                             "fileLeaseAcquire", "fileSyncCommit", "policyRead",
+                             "connectionPrepare", "connectionCommit", "connectionRevoke",
+                             "connectionList", "flowBegin", "flowFinish"]) {
       expect(DOORS.has(ownerOnly)).toBe(false);
     }
   });

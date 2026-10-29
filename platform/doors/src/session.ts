@@ -1,6 +1,7 @@
 /**
- * The owner's session cookie at the doors (research §8; checklist 6 and 7). The only
- * source that reads a request's `Cookie` header (the binder guard).
+ * The owner's session cookie at the doors (research §8; checklist 6 and 7), and a model
+ * connect's browser binding (below). The only source that reads a request's `Cookie`
+ * header (the binder guard).
  *
  * The cookie is `__Host-ta-owner`: Secure, HttpOnly, Path=/, SameSite=Strict, eight
  * hours. It carries no owner and the doors never look it up: the object minted it and
@@ -81,4 +82,53 @@ export function sessionCookie(value: string): string {
 /** The cookie a sign-out sets. */
 export function clearedCookie(): string {
   return `${COOKIE}=; Secure; HttpOnly; Path=/; SameSite=Strict; Max-Age=0`;
+}
+
+/**
+ * A model source's OAuth flow, bound to the browser that began it, as the OAuth
+ * provider's `beginUpstream` binds its own (gateway research §7.2): one `__Host-` cookie
+ * per flow, named by its digest's first 16 hex and holding the whole digest of the
+ * flow's state, so flows in two tabs never replace each other. Lax, not Strict: it must
+ * ride the provider's top-level redirect back to the callback, a cross-site navigation.
+ * It vouches for nothing but the browser; the session the flow was begun in is checked by
+ * the object (`flowFinish`).
+ */
+export const CONNECT_COOKIE = "__Host-ta-connect";
+
+async function flowDigest(state: string): Promise<string> {
+  const bytes = await crypto.subtle.digest("SHA-256",
+                                           new TextEncoder().encode(`tinyassets-connect\0${state}`));
+  return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function connectName(digest: string): string {
+  return `${CONNECT_COOKIE}-${digest.slice(0, 16)}`;
+}
+
+/** The binding cookie a flow's begin sets, for `maxAge` seconds. */
+export async function connectCookie(state: string, maxAge: number): Promise<string> {
+  const digest = await flowDigest(state);
+  return `${connectName(digest)}=${digest}; Secure; HttpOnly; Path=/; SameSite=Lax; ` +
+    `Max-Age=${maxAge}`;
+}
+
+/** The cookie a flow's finish sets: its binding cleared. */
+export async function clearedConnectCookie(state: string): Promise<string> {
+  return `${connectName(await flowDigest(state))}=; Secure; HttpOnly; Path=/; SameSite=Lax; ` +
+    "Max-Age=0";
+}
+
+/** Whether this browser began the flow for `state`: its one binding cookie matches. */
+export async function connectBound(request: Request, state: string): Promise<boolean> {
+  const digest = await flowDigest(state);
+  const name = connectName(digest);
+  const values = (request.headers.get("Cookie") ?? "").split(";")
+    .map((part) => part.trim())
+    .filter((part) => part.startsWith(`${name}=`))
+    .map((part) => part.slice(name.length + 1));
+  if (values.length !== 1 || values[0]!.length !== digest.length) {
+    return false;
+  }
+  const encoder = new TextEncoder();
+  return crypto.subtle.timingSafeEqual(encoder.encode(values[0]!), encoder.encode(digest));
 }

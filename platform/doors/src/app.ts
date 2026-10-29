@@ -18,6 +18,8 @@
  * - `outside-agents`: the owner's browser registering an agent for an API key it holds.
  * - `session/extend`: the session's renewal.
  * - `session/close`: sign-out, the session closed and the presented token's grant revoked.
+ * - `connections/key`, `connections/oauth`, `connections/oauth/finish`,
+ *   `connections/revoke`, `connections/list`: the model connect doors (`connect.ts`).
  */
 import {
   type Bound, bindKeyRegistration, bindOwner,
@@ -30,9 +32,11 @@ import { ownerGate } from "./control";
 import {
   deleteOwnKey, KeyRefused, looksLikeKey, mintKey, registeringEntry, revokeKey,
 } from "./api-keys";
+import { CONNECT_ROUTES, ConnectRefused } from "./connect";
 import { revokeClient } from "./revoke";
 import { authorizationServer } from "./oauth";
 import { clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
+import type { Sources } from "./sources";
 import { refusal } from "./tools";
 
 export const OUTSIDE_CREDENTIAL = "an outside credential never reaches the owner's surface";
@@ -113,7 +117,8 @@ async function ownerToken(env: DoorsEnv, token: string | null) {
   return app;
 }
 
-export async function serveApp(request: Request, env: DoorsEnv): Promise<Response> {
+export async function serveApp(request: Request, env: DoorsEnv, sources: Sources):
+    Promise<Response> {
   const presented = bearer(request);
   const token = await ownerToken(env, presented);
   if (token instanceof Response) {
@@ -123,7 +128,8 @@ export async function serveApp(request: Request, env: DoorsEnv): Promise<Respons
   const path = new URL(request.url).pathname.slice(OWNER_SURFACE.length);
   const registering = path === "outside-agents";
   const route = ROUTES[path];
-  if (route === undefined && !registering) {
+  const connect = Object.hasOwn(CONNECT_ROUTES, path) ? CONNECT_ROUTES[path] : undefined;
+  if (route === undefined && connect === undefined && !registering) {
     return failure(404, "not found");
   }
   if (request.method !== "POST") {
@@ -148,9 +154,12 @@ export async function serveApp(request: Request, env: DoorsEnv): Promise<Respons
       const { binding, stub } = bindKeyRegistration(env, token, keyId, entry, session);
       return json(200, await stub.registerAgent(binding, register as never));
     }
+    if (connect !== undefined) {
+      return await connect({ env, bound: owner, body: parsed, request, sources });
+    }
     return await route!(env, owner, parsed, presented!);
   } catch (error) {
-    if (error instanceof KeyRefused) {
+    if (error instanceof KeyRefused || error instanceof ConnectRefused) {
       return failure(error.status, error.message);
     }
     const refused = refusal(error);

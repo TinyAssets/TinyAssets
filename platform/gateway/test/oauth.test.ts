@@ -102,6 +102,46 @@ describe("exchange", () => {
   });
 });
 
+describe("a key exchange (pkce_user_key_v1)", () => {
+  function keySource(endpoint = "https://keys.test/api/v1/auth/keys"): Source {
+    return { upstream: OPENAI.upstream, endpoints: OPENAI.endpoints,
+             key_exchange: { endpoint } };
+  }
+
+  it("posts the code and verifier once as JSON, and seals the key it buys as an API key", async () => {
+    const env = ring("k1");
+    const exchanged = await exchange(env, ALICE, { ...GRANT, code: "key-code" }, keySource());
+    expect(exchanged).toMatchObject({ kid: "k1", expires_at: null });
+    expect(exchanged.blob).not.toContain("sk-bought");
+    const opened = (await open(env, ALICE, exchanged.blob)).credential;
+    expect(opened.kind === "api_key" && opened.secret).toBe(`sk-bought-${VERIFIER}`);
+    expect(opened.upstream).toEqual(OPENAI.upstream);
+  });
+
+  it.each([
+    ["a refused code", "bad-code", "oauth_rejected"],
+    ["an answer with no key", "nokey-code", "oauth_malformed"],
+    ["a redirect, never followed", "redirect-code", "oauth_rejected"],
+    ["a server failure", "down-code", "oauth_unavailable"],
+  ])("answers %s with a fixed code", async (_what, value, expected) => {
+    const got = await code(() => exchange(ring("k1"), ALICE, { ...GRANT, code: value }, keySource()));
+    expect(got).toBe(expected);
+    expect(JSON.stringify(await evil())).not.toContain("/keys");
+  });
+
+  it("refuses an http or non-canonical exchange endpoint, or one beside an OAuth client", async () => {
+    expect(await code(() => exchange(ring("k1"), ALICE, GRANT, keySource("http://keys.test/x"))))
+      .toBe("invalid_source");
+    expect(await code(() => exchange(ring("k1"), ALICE, GRANT, keySource("https://KEYS.test/x"))))
+      .toBe("invalid_source");
+    expect(await code(() => exchange(ring("k1"), ALICE, GRANT,
+                                     { ...oauthSource(), key_exchange: { endpoint: "https://keys.test/x" } })))
+      .toBe("invalid_source");
+    expect(await code(() => exchange(ring("k1"), ALICE, { ...GRANT, verifier: "short" }, keySource())))
+      .toBe("invalid_request");
+  });
+});
+
 describe("the token endpoint's answer", () => {
   it("never follows a redirect from the token endpoint", async () => {
     const env = ring("k1");

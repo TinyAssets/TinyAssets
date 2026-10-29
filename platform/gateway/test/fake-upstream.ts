@@ -20,7 +20,7 @@
  *
  * `x-fake-mode` drives the raw passthrough tests (`echo`, `quote`, `hang`, `redirect`,
  * `say`, `decoded`, `hdr`, `jsonesc`); `auth.test` and `auth.openai.com` are token
- * endpoints; `evil.test` records everything it receives, read back from
+ * endpoints; `keys.test` is a key-exchange endpoint (OpenRouter's PKCE flow); `evil.test` records everything it receives, read back from
  * `https://status.test/evil`, so a test sees whether a redirect was followed. It is test
  * code: its module state (the cancel registry, the evil log) is the fake's, never the
  * gateway's.
@@ -264,6 +264,28 @@ async function token(request: Request): Promise<Response> {
   return Response.json({ error: "unsupported_grant_type" }, { status: 400 });
 }
 
+/** A key-exchange endpoint (OpenRouter's PKCE flow): JSON in, `{key}` out. */
+async function keyExchange(request: Request): Promise<Response> {
+  const body = JSON.parse(await request.text()) as Record<string, string>;
+  if (request.method !== "POST" || request.headers.get("content-type") !== "application/json"
+      || body["code_challenge_method"] !== "S256") {
+    return Response.json({ error: "bad request" }, { status: 400 });
+  }
+  switch (body["code"]) {
+    case "key-code":
+      return Response.json({ key: `sk-bought-${body["code_verifier"]}`, user_id: "u1" });
+    case "nokey-code":
+      return Response.json({ user_id: "u1" });
+    case "redirect-code":
+      return new Response(null, { status: 307, headers: { location: "https://evil.test/keys" } });
+    case "down-code":
+      return new Response(`down; code ${body["code"]}`, { status: 503 });
+    default:
+      return Response.json({ error: { message: `code ${body["code"]} is not valid` } },
+                           { status: 403 });
+  }
+}
+
 async function forwardEcho(request: Request): Promise<Response> {
   const mode = request.headers.get("x-fake-mode");
   const url = new URL(request.url);
@@ -332,6 +354,9 @@ export default {
     }
     if (url.hostname === "status.test") {
       return Response.json({ cancelled: cancelled.get(url.searchParams.get("id") ?? "") ?? null });
+    }
+    if (url.hostname === "keys.test") {
+      return keyExchange(request);
     }
     if (url.hostname === "auth.test" || url.hostname === "auth.openai.com") {
       if (url.pathname === "/revoke") {

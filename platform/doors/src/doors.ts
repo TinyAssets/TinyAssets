@@ -9,25 +9,29 @@
  *   read; the inbound door strips the `Cookie` header as `/mcp` and `/api` do.
  * - `/app/api/*`: the owner surface (`app.ts`).
  * - `/authorize`, `/oauth/upstream/callback`: the sign-in (`authorize.ts`).
+ * - `/oauth/connect/callback`: a model source's OAuth redirect (`connect.ts`).
  * - `/oauth/clients/web.json`: the first-party app's Client ID Metadata Document.
  * - `/.well-known/oauth-protected-resource/mcp`: the resource's metadata.
  * - `/.well-known/oauth-authorization-server`, `/oauth/token`, `/oauth/register` (only
  *   with `DCR_ENABLED`): the provider's own endpoints.
  *
- * Any other origin or path is `404`. The upstream sign-in is the caller's: `index.ts`
- * passes `UNWIRED` until the AuthKit slice, and the tests a fake.
+ * Any other origin or path is `404`. The upstream sign-in and the source records are the
+ * caller's: `index.ts` passes `UNWIRED` until the AuthKit slice and the bundled records,
+ * and the tests a fake sign-in and the records with a test source beside them.
  */
 import { serveApi } from "./api";
 import { serveApp } from "./app";
 import { authorize, callback } from "./authorize";
+import { connectCallback } from "./connect";
 import { bindMcp } from "./binder";
 import {
-  type DoorsEnv, MCP_ORIGINS, PUBLIC_ORIGIN, WEB_CLIENT, WEB_REDIRECT,
+  CONNECT_CALLBACK_PATH, type DoorsEnv, MCP_ORIGINS, PUBLIC_ORIGIN, WEB_CLIENT, WEB_REDIRECT,
 } from "./config";
 import { outsideGate } from "./control";
 import { serveMcp } from "./mcp";
 import { authorizationServer, mcpResource } from "./oauth";
 import { OWNER_SURFACE, withoutCookie } from "./session";
+import type { Sources } from "./sources";
 import type { Upstream } from "./upstream";
 
 function notFound(): Response {
@@ -57,7 +61,7 @@ async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext):
 
 /** Serve one request through the doors, with `upstream` as the owner's sign-in. */
 export async function serve(request: Request, env: DoorsEnv, ctx: ExecutionContext,
-                            upstream: Upstream): Promise<Response> {
+                            upstream: Upstream, sources: Sources): Promise<Response> {
   const url = new URL(request.url);
   if (url.origin !== PUBLIC_ORIGIN) {
     return notFound();
@@ -73,7 +77,10 @@ export async function serve(request: Request, env: DoorsEnv, ctx: ExecutionConte
     return notFound();
   }
   if (path.startsWith(OWNER_SURFACE)) {
-    return serveApp(request, env);
+    return serveApp(request, env, sources);
+  }
+  if (path === CONNECT_CALLBACK_PATH || path.startsWith(`${CONNECT_CALLBACK_PATH}/`)) {
+    return connectCallback(request);
   }
   if (path === "/authorize") {
     return authorize(request, env, upstream);

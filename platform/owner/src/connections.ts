@@ -492,10 +492,12 @@ export class Connections {
 
   /**
    * The callback's state, in the session that began its flow: the flow is used up, and
-   * the verifier and redirect URI go to the gateway's exchange.
+   * the verifier and redirect URI go to the gateway's exchange, with the source record
+   * the connection was prepared for.
    */
   flowFinish(sessionId: string, request: unknown, now: number):
-      { connection: string; version: number; verifier: string; redirect_uri: string } {
+      { connection: string; version: number; verifier: string; redirect_uri: string;
+        source: string } {
     const r = fields(request, ["state"]);
     const state = grammar(r["state"], STATE, "state");
     const flow = this.#sql.exec<{ connection_id: string; session_id: string; verifier: string;
@@ -512,8 +514,8 @@ export class Connections {
     }
     this.#sql.exec("UPDATE connection_flows SET status = 'used', verifier = NULL WHERE flow = ?",
                    sha256(state));
-    return { connection: row.id, version: row.version, verifier: flow.verifier,
-             redirect_uri: flow.redirect_uri };
+    return { connection: row.id, version: row.version, source: row.source,
+             verifier: flow.verifier, redirect_uri: flow.redirect_uri };
   }
 
   /** Cancel the open flows of one session, or of every session (`null`). */

@@ -1,0 +1,107 @@
+{
+  "id": "codex",
+  "display_name": "ChatGPT",
+  "connect": [
+    "cli"
+  ],
+  "cli": {
+    "install": {
+      "manager": "npm",
+      "lock_sha256": "b6cee215a26e8d72f6956d1b984343f73151ac7da0067a35a02d559b0adefa47",
+      "package": "@openai/codex",
+      "version": "0.163.0",
+      "integrity": "sha512-HNd7vR9oTK6M2ikxFnvNDCdYUgAsyo9VVnd5KnEd2ON0GYI++7MiX9XNPUkhtdgGKFPsWS+CEppQ1UU63uVhUw==",
+      "bin": "codex",
+      "verify_argv": [
+        "{bin}",
+        "--version"
+      ]
+    },
+    "login": {
+      "argv": [
+        "{bin}",
+        "-c",
+        "cli_auth_credentials_store=\"file\"",
+        "-c",
+        "forced_login_method=\"chatgpt\"",
+        "login",
+        "--device-auth"
+      ],
+      "status_argv": [
+        "{bin}",
+        "-c",
+        "forced_login_method=\"chatgpt\"",
+        "login",
+        "status"
+      ],
+      "url_pattern": "(https://auth\\.openai\\.com/[^\\s\\u001b]+)",
+      "code_pattern": "\\b([A-Z0-9]{4}-[A-Z0-9]{4,5})\\b",
+      "state_checks": [
+        {
+          "path": ".codex/auth.json",
+          "present": [
+            "tokens.access_token",
+            "tokens.refresh_token"
+          ]
+        }
+      ]
+    },
+    "invoke": {
+      "argv": [
+        "{bin}",
+        "exec",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "--json",
+        "-c",
+        "forced_login_method=\"chatgpt\"",
+        "-c",
+        "developer_instructions={system_json}",
+        "-c",
+        "features.shell_tool=false",
+        "-c",
+        "features.unified_exec=false",
+        "-c",
+        "features.apply_patch_freeform=false",
+        "-c",
+        "features.code_mode=false",
+        "-c",
+        "features.multi_agent=false",
+        "-c",
+        "features.multi_agent_v2=false",
+        "-c",
+        "web_search=\"disabled\"",
+        "-c",
+        "mcp_servers={}",
+        "-"
+      ],
+      "model_argv": [
+        "--model",
+        "{model}"
+      ],
+      "format": "jsonl",
+      "match": {
+        "type": "item.completed",
+        "item.type": "agent_message"
+      },
+      "text_path": "item.text",
+      "stdin": "{prompt}"
+    },
+    "state_paths": [
+      ".codex/auth.json"
+    ],
+    "hosts": {
+      "registry": [
+        "registry.npmjs.org"
+      ],
+      "login": [
+        "auth.openai.com",
+        "chatgpt.com"
+      ],
+      "provider": [
+        "chatgpt.com",
+        "auth.openai.com"
+      ]
+    }
+  }
+}

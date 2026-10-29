@@ -8,6 +8,8 @@
  *   a `caller`.
  * - Only `session.ts` reads the `Cookie` header, and only `directory.ts` touches the
  *   directory, whose keys hold no cookie or session hash.
+ * - Only `connect.ts` reaches the gateway (`GATEWAY`), so a pasted key or an OAuth code
+ *   has one path, to the gateway's connect entrypoint.
  * - Consent is never remembered: no source names `remember` or `isConsentRemembered`.
  *
  * A tripwire for our own code, read from the syntax tree, not proof against deliberate
@@ -21,6 +23,7 @@ import { parse, reporter, workerSources } from "../../owner/guards/sources";
 const BINDER = "doors/src/binder.ts";
 const SESSION = "doors/src/session.ts";
 const DIRECTORY = "doors/src/directory.ts";
+const CONNECT = "doors/src/connect.ts";
 const OBJECT_IDS = new Set(["idFromName", "idFromString", "newUniqueId"]);
 const REMEMBERING = new Set(["remember", "isConsentRemembered"]);
 
@@ -55,6 +58,10 @@ export function binderProblems(fileName: string, source: string): string[] {
     if (doors && ts.isIdentifier(node) && node.text === "DIRECTORY" && fileName !== DIRECTORY
         && fileName !== "doors/src/config.ts") {
       report(node, "touches the directory outside directory.ts");
+    }
+    if (doors && ts.isIdentifier(node) && node.text === "GATEWAY" && fileName !== CONNECT
+        && fileName !== "doors/src/config.ts") {
+      report(node, "reaches the gateway outside connect.ts");
     }
     if (doors && fileName !== BINDER && ts.isObjectLiteralExpression(node)
         && node.properties.some((p) => p.name !== undefined && nameOf(p.name) === "caller")) {
@@ -93,6 +100,8 @@ describe("binder guard", () => {
     ["doors/src/authorize.ts", "export const f = (o: any) => o.isConsentRemembered(r, a, x);"],
     ["doors/src/app.ts", "export const f = (env: any) => env.DIRECTORY.put('k:x', 'y');"],
     ["doors/src/directory.ts", "export const k = 's:session';"],
+    ["doors/src/app.ts", "export const f = (env: any) => env.GATEWAY.seal('a', 'c', 1, 'k', {});"],
+    ["doors/src/binder.ts", "export const f = ({ GATEWAY }: any) => GATEWAY;"],
   ])("sees, in %s, %s", (fileName, source) => {
     expect(binderProblems(fileName, source)).not.toEqual([]);
   });
@@ -103,6 +112,7 @@ describe("binder guard", () => {
     ["doors/src/session.ts", "export const f = (r: Request) => r.headers.get('Cookie');"],
     ["doors/src/app.ts", "export const h = { 'Set-Cookie': 'x' };"],
     ["doors/src/directory.ts", "export const f = (env: any) => env.DIRECTORY.get('c:control');"],
+    ["doors/src/connect.ts", "export const f = (env: any) => env.GATEWAY.verify('a', 'c', 1, 'b');"],
   ])("allows, in %s, %s", (fileName, source) => {
     expect(binderProblems(fileName, source)).toEqual([]);
   });
