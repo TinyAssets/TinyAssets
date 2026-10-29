@@ -11,7 +11,8 @@ import { builtinCatalog } from "../src/catalog";
 import type { Source } from "../src/credential";
 import { within } from "../src/egress";
 import {
-  ALICE, ANTHROPIC, ask, client, drain, envelopeOf, gatewayHandler, GOOGLE, ring, sealed,
+  ALICE, ANTHROPIC, ask, client, codeIn, drain, envelopeOf, gatewayHandler, GOOGLE, ring,
+  sealed,
 } from "./support";
 
 /** What the fake's `evil.test` received that mentions `key`. */
@@ -39,7 +40,7 @@ describe("Google's adapter, held by the interposed global fetch", () => {
       const key = `goog-${status}-key`;
       const { message } = await call(key, text);
       expect(message.stopReason).toBe("error");
-      expect(message.errorMessage).toBe("upstream_error");
+      expect(codeIn(message.errorMessage)).toBe("upstream_error");
       expect(await evilSaw(key)).toEqual([]);
     });
 
@@ -47,12 +48,12 @@ describe("Google's adapter, held by the interposed global fetch", () => {
     const narrow: Source = { ...GOOGLE, endpoints: [{
       origin: "https://generativelanguage.googleapis.com", paths: ["/nothing"], methods: ["GET"] }] };
     const { message } = await call("goog-narrow-key", "cmd:echo", narrow);
-    expect(message.errorMessage).toBe("endpoint_refused");
+    expect(codeIn(message.errorMessage)).toBe("endpoint_refused");
   });
 
   it("classifies an upstream 401 from the status it saw", async () => {
     const { message } = await call("goog-401-key", "cmd:fail-401");
-    expect(message.errorMessage).toBe("upstream_unauthorized");
+    expect(codeIn(message.errorMessage)).toBe("upstream_unauthorized");
   });
 
   it("still streams a normal call, with the key only in its own header", async () => {
@@ -76,7 +77,7 @@ describe("Google's adapter, held by the interposed global fetch", () => {
 describe("the interposer", () => {
   it("holds an adapter that takes options.fetch to the same rule (control)", async () => {
     const { message } = await call("anth-307-key", "cmd:redirect307", ANTHROPIC);
-    expect(message.errorMessage).toBe("upstream_error");
+    expect(codeIn(message.errorMessage)).toBe("upstream_error");
     expect(await evilSaw("anth-307-key")).toEqual([]);
   });
 

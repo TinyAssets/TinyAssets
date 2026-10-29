@@ -14,8 +14,9 @@ import { type Source, source } from "../src/credential";
 import { encode, frame } from "../src/encode";
 import { BODY_MAX, guardedFetch, REASONING_MIN_TOKENS } from "../src/messages";
 import {
-  ALICE, ANTHROPIC, ask, client, drain, envelopeOf, FAUX_SOURCE, fauxAssistantMessage,
-  fauxCatalog, gatewayHandler, GOOGLE, OPENAI, replay, ring, rotate, sealed, USER,
+  ALICE, ANTHROPIC, ask, client, codeIn, drain, envelopeOf, FAUX_SOURCE,
+  fauxAssistantMessage, fauxCatalog, gatewayHandler, GOOGLE, OPENAI, replay, ring, rotate,
+  sealed, USER,
 } from "./support";
 
 const SECRET = "sk-alice-0123456789";
@@ -286,23 +287,37 @@ describe("against a fake upstream, through pi-ai's real adapters", () => {
     ["401", "upstream_unauthorized"], ["403", "upstream_unauthorized"],
     ["429", "upstream_rate_limited"], ["400", "upstream_rejected"],
     ["404", "upstream_rejected"],
-  ])("answers an upstream %s with %s, and never the upstream body or the secret", async (
-      status, code) => {
+  ])("answers an upstream %s before any output with %s and its own status, never the " +
+     "upstream body or the secret", async (status, code) => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, ANTHROPIC);
     const model = catalogModel("anthropic", "anthropic-messages");
     const header = envelopeOf({ blob });
-    const { text } = await raw(gatewayHandler(env), header,
-                               { model: model.id, context: ask(`cmd:fail-${status}`),
-                                 options: { } });
+    const { status: answered, text } = await raw(
+      gatewayHandler(env), header,
+      { model: model.id, context: ask(`cmd:fail-${status}`), options: { } });
     expect(text).not.toContain(SECRET);
     expect(text).not.toContain("bad key");
-    const last = JSON.parse(text.trim().split("\n\n").at(-1)!.replace(/^data: /, ""));
-    expect(last).toMatchObject({ type: "error", reason: "error", errorMessage: code });
+    // The provider refused before producing anything: the answer is not a 200 stream.
+    expect(answered).toBe(502);
+    expect(JSON.parse(text)).toEqual({ error: { code, message: code } });
     const owner = client(gatewayHandler(env), header, model.id);
     const { message } = await drain(owner.stream(ask(`cmd:fail-${status}`)));
     expect(message.stopReason).toBe("error");
-    expect(message.errorMessage).toBe(code);
+    expect(codeIn(message.errorMessage)).toBe(code);
+    expect(message.errorMessage).not.toContain("bad key");
+  });
+
+  it("streams a refusal that comes after the provider answered, with its own code", async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, ANTHROPIC);
+    const model = catalogModel("anthropic", "anthropic-messages");
+    const header = envelopeOf({ blob, deadline: Date.now() + 400 });
+    const { status, text } = await raw(gatewayHandler(env), header,
+                                       { model: model.id, context: ask("cmd:slow-late1") });
+    expect(status).toBe(200);
+    const last = JSON.parse(text.trim().split("\n\n").at(-1)!.replace(/^data: /, ""));
+    expect(last).toMatchObject({ type: "error", errorMessage: "deadline" });
   });
 
   it("never follows a redirect, so the secret never leaves the sealed origin", async () => {
@@ -312,7 +327,7 @@ describe("against a fake upstream, through pi-ai's real adapters", () => {
     const owner = client(gatewayHandler(env), envelopeOf({ blob }), model.id);
     const { message } = await drain(owner.stream(ask("cmd:redirect")));
     // Followed, it would have reached evil.test, which records what it receives.
-    expect(message.errorMessage).toBe("upstream_error");
+    expect(codeIn(message.errorMessage)).toBe("upstream_error");
     const evil = await (await fetch("https://status.test/evil")).json() as unknown[];
     expect(JSON.stringify(evil)).not.toContain(SECRET);
   });
@@ -325,7 +340,7 @@ describe("against a fake upstream, through pi-ai's real adapters", () => {
     const model = catalogModel("openai", "openai-responses");
     const owner = client(gatewayHandler(env), envelopeOf({ blob }), model.id);
     const { message } = await drain(owner.stream(USER));
-    expect(message.errorMessage).toBe("endpoint_refused");
+    expect(codeIn(message.errorMessage)).toBe("endpoint_refused");
   });
 
   it("aborts the upstream stream when the owner's call is cancelled", async () => {

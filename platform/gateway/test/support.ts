@@ -192,6 +192,15 @@ export async function drain(stream: AsyncIterable<AssistantMessageEvent> & {
   return { events, message: await stream.result() };
 }
 
+/**
+ * The gateway's fixed code in an answer's error: the code itself when the stream ended
+ * with it, or, when the gateway refused with a status, the code pi-ai's pi-messages client
+ * quotes at the end of its message (`<status> <text>: <code> (<code>)`).
+ */
+export function codeIn(errorMessage: string | undefined): string | undefined {
+  return /\(([a-z_]+)\)$/.exec(errorMessage ?? "")?.[1] ?? errorMessage;
+}
+
 /** The gateway's `/v1/messages` with `env` and `catalog`. */
 export function gatewayHandler(env: Env, catalog: Catalog = builtinCatalog()) {
   return (request: Request) => messages(request, env, catalog);
