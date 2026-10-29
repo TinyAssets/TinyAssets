@@ -16,7 +16,9 @@
  * - `cmd:call-<name>`: a call of the tool `<name>` with no arguments (Anthropic); a tool
  *   result that says `cmd:echo` turns the next answer back to text.
  * - `cmd:ta-<name>`: the same through the owner's `ta` tool, a call of `<name>` with no
- *   arguments; `cmd:ta-model` asks `ta`'s nested model call `cmd:echo`.
+ *   arguments; `cmd:ta-model` asks `ta`'s nested model call `cmd:echo`, and
+ *   `cmd:ta-model-<rest>` asks it `cmd:<rest>`, each with a system prompt and an output
+ *   cap (`TA_SYSTEM`, `TA_MAX_TOKENS`).
  * - `cmd:drip`: `DRIP` text deltas (`d0 ` to `d11 `), `DRIP_MS` apart, then the finish:
  *   a stream that lasts longer than the owner object's one-second partial commits.
  *
@@ -30,6 +32,9 @@
  * gateway's.
  */
 const cancelled = new Map<string, boolean>();
+/** What `cmd:ta-model` hands `ta`'s nested model call besides its question. */
+const TA_SYSTEM = "answer in one word";
+const TA_MAX_TOKENS = 77;
 const evil: unknown[] = [];
 const USAGE = { input: 11, output: 7 };
 const DRIP = 12;
@@ -396,12 +401,14 @@ export default {
       if (command(text) === "tool" || calling !== null) {
         return anthropicTool(request, JSON.parse(text) as Record<string, unknown>, calling?.[1]);
       }
-      const through = /^ta-([a-z]+)$/.exec(command(text));
+      const through = /^ta-([a-z]+)(?:-([a-z0-9-]+))?$/.exec(command(text));
       if (through !== null) {
         const called = through[1]!;
         return anthropicTool(request, JSON.parse(text) as Record<string, unknown>, "ta", {
           op: "call", name: called,
-          arguments: called === "model" ? { messages: [{ role: "user", text: "cmd:echo" }] } : {},
+          arguments: called === "model" ? {
+            messages: [{ role: "user", text: `cmd:${through[2] ?? "echo"}` }],
+            system: TA_SYSTEM, max_tokens: TA_MAX_TOKENS } : {},
         });
       }
       return model(request, anthropicFormat());

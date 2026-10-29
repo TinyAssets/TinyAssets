@@ -16,10 +16,14 @@
  *    telemetry context pi gives it (`origin.ts`); none is the call's error, `no_run`, and
  *    nothing is reserved.
  * 3. An OAuth credential expiring soon is refreshed first, under the refresh lease.
- * 4. **Reserve**, in one unit of the write gate: the authority the request's conversation
+ * 4. **Reserve**, in one unit of the write gate: the tools the request offers the model,
+ *    read from its own transcript (pi carries them in its system entries), exactly
+ *    `MODEL_TOOLS` or none, else `tool_surface`, so no widening of a conversation's tools,
+ *    by any path, reaches a model; the authority the request's conversation
  *    runs under (found by its provider session, `OwnerAgent.modelAuthority`; a revoked
  *    client's is `outside_authority`, a request of no conversation the object made
- *    `no_conversation`), the connection's blob at its current version, the owner policy's
+ *    `no_conversation`, a conversation whose stored tools are not the five
+ *    `tool_surface`), the connection's blob at its current version, the owner policy's
  *    generation and model caps, and the reservation (`usage.ts`), so the envelope carries
  *    exactly what was reserved under, and concurrent calls never pass a cap. A refusal is
  *    the call's error, named by its rule, and kept as a receipt.
@@ -53,15 +57,16 @@
  * key or the request (the gateway's `upstreamCode`). No secret is ever in this module's
  * hands but the sealed blob it forwards.
  */
-import type {
-  Api, AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream, Message, Model,
-  Provider, SimpleStreamOptions, TranscriptContext, Usage as PiUsage,
+import {
+  type Api, type AssistantMessage, type AssistantMessageEvent,
+  type AssistantMessageEventStream, getCurrentTools, type Message, type Model, type Provider,
+  type SimpleStreamOptions, type TranscriptContext, type Usage as PiUsage,
 } from "@earendil-works/pi-ai";
 import { streamSimple as piMessages } from "@earendil-works/pi-ai/api/pi-messages";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 
-import { AUTHORITY_RULE, NO_CONVERSATION } from "./authority";
+import { AUTHORITY_RULE, NO_CONVERSATION, offersFive, TOOL_SURFACE } from "./authority";
 import { type Candidate, physicalId, ranked, route } from "./auto";
 import type { Connections, Credential, GatewayService, Usable } from "./connections";
 import type { Write } from "./gate";
@@ -259,9 +264,13 @@ export class GatewayProvider implements Provider<Api> {
     } catch (error) {
       return end(failed(physical, codeOf(error, NO_RUN), aborted()));
     }
+    // What the request offers the model is checked in the reservation's own unit, first.
+    const surface = offersFive(getCurrentTools(context.messages).map((tool) => tool.name))
+      ? null : TOOL_SURFACE;
     let authority: () => string | null;
     try {
-      authority = await this.#parts.authority(session);
+      const standing = await this.#parts.authority(session);
+      authority = () => surface ?? standing();
     } catch {
       return end(failed(physical, AUTHORITY_RULE, aborted()));
     }
@@ -290,8 +299,8 @@ export class GatewayProvider implements Provider<Api> {
     const { credential, reserved } = call;
     if (!reserved.ok) {
       return end(failed(physical, reserved.rule === AUTHORITY_RULE
-        || reserved.rule === NO_CONVERSATION ? reserved.rule : `model_budget: ${reserved.rule}`,
-                        aborted()));
+        || reserved.rule === NO_CONVERSATION || reserved.rule === TOOL_SURFACE ? reserved.rule
+        : `model_budget: ${reserved.rule}`, aborted()));
     }
     // From here the row is this instance's to close: settled, or not sent, or abandoned.
     let closed = false;

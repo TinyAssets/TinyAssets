@@ -19,7 +19,8 @@ import type { ConversationId, JsonObject } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
 import {
-  AUTHORITY_CHANGED, AUTHORITY_RULE, NOT_GRANTED, NOT_OWNER, type Stamped,
+  AUTHORITY_CHANGED, AUTHORITY_RULE, MODEL_TOOLS, NOT_GRANTED, NOT_OWNER, offersFive,
+  type Stamped, TA_TOOL, TOOL_SURFACE,
 } from "../src/authority";
 import { WriteGate } from "../src/gate";
 import { Grants } from "../src/grants";
@@ -28,13 +29,13 @@ import type { Binding } from "../src/owner-do";
 import { Policy, policyDigest } from "../src/policy";
 import { Scheduled } from "../src/scheduled";
 import {
-  INVALID_REQUEST, kindOf, MODEL_TOOLS, READ_WRITES, RESERVED_NAME, UNKNOWN_CAPABILITY,
+  INVALID_REQUEST, kindOf, PLATFORM_NAMES, READ_WRITES, RESERVED_NAME, UNKNOWN_CAPABILITY,
 } from "../src/ta";
 import { Threads } from "../src/threads";
-import { gated, until } from "./gateway-support";
+import { asked, direct, gated, until } from "./gateway-support";
 import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
 import { failure } from "./support";
-import { type FauxOwnerDO, says } from "./worker";
+import { type FauxOwnerDO, type GatedOwnerDO, type MalformedOwnerDO, says } from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
 /** A third outside client. */
@@ -589,3 +590,192 @@ function instanceCalls(calls: { method: string; text: string }[]): string[] {
   return calls.filter((seen) => seen.method === "fetch")
     .map((seen) => (JSON.parse(seen.text) as { body: string }).body);
 }
+
+describe("the five, held where the model is reached (review M1)", () => {
+  it("knows the five, and lets a request through only offering exactly them, or none", () => {
+    expect(MODEL_TOOLS).toEqual(FIVE);
+    expect(MODEL_TOOLS).toContain(TA_TOOL);
+    expect([offersFive(FIVE), offersFive([...FIVE].reverse()), offersFive([])])
+      .toEqual([true, true, true]);
+    expect([offersFive([...FIVE, "sixth"]), offersFive(FIVE.slice(1)),
+            offersFive(["read", "read", "edit", "bash", "ta"]),
+            offersFive(["read", "write", "edit", "bash", "sixth"])])
+      .toEqual([false, false, false, false]);
+  });
+
+  it("refuses a request a hook's control widened, sending nothing, and every later call of " +
+     "the widened conversation", async () => {
+    const r = await gated();
+    await r.connect("sk-ta-widened");
+    const out = await r.in(async (instance) => {
+      instance.probes.widen = "sixth";
+      const widened = await instance.agent.harness.prompt("cmd:ta-pass");
+      instance.probes.widen = null;
+      const sentThen = instanceCalls(instance.calls).length;
+      // A request of the widened conversation that offers no tools at all: the backstop.
+      const auto = instance.parts.provider.getModels()[0]!;
+      const backstop = await instance.parts.provider.streamSimple(
+        auto, asked("cmd:echo"), await direct(instance)).result();
+      const pi = await instance.agent.harness.pi();
+      const root = await (await pi.conversation(1 as ConversationId, BG))!.agent(BG);
+      return { widened: widened.status, sentThen, sentNow: instanceCalls(instance.calls).length,
+               backstop: backstop.errorMessage, offered: root.tools.map((tool) => tool.name) };
+    });
+    // The widening took in pi: the conversation now offers six.
+    expect(out.offered).toEqual([...FIVE, "sixth"]);
+    // Its first request was sent; the widened one, and the backstop's, never were.
+    expect([out.sentThen, out.sentNow]).toEqual([1, 1]);
+    expect(out.widened).toBe("unanswered");
+    expect(out.backstop).toBe(TOOL_SURFACE);
+    expect(await r.sql("SELECT state, rule FROM model_reservations ORDER BY seq")).toEqual([
+      { state: "succeeded", rule: null }, { state: "refused", rule: TOOL_SURFACE },
+      { state: "refused", rule: TOOL_SURFACE }]);
+  }, 30_000);
+});
+
+describe("each principal's own (review M2)", () => {
+  it("lists to the owner, a scoped client and a full client only their own scheduled work",
+     async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    await r.admit(DOT);
+    const generation = await r.scoped(MUSE, ["read_files"]);
+    const out = await r.in(async (instance, state) => {
+      instance.script = Array.from({ length: 40 }, () => step);
+      const own = await instance.agent.thread("main", null);
+      const muse = await instance.agent.thread("main", r.stampOf(MUSE, generation));
+      const dot = await instance.agent.thread("main", r.stampOf(DOT, 1));
+      const gate = new WriteGate(state.storage);
+      const work = new Scheduled(gate.storage, new Grants(gate.storage, new Policy(gate.storage)),
+                                 new Threads(gate.storage));
+      const add = (thread: { thread_id: string }, input: string, by: Stamped | null) =>
+        gate.write(() => work.add("turn", clock() + 3600, { thread: thread.thread_id, input },
+                                  by === null ? null : { client: by.client,
+                                                         generation: by.generation,
+                                                         authenticated_at: by.authenticated_at },
+                                  clock()));
+      await add(own, "owner work", null);
+      await add(muse, "muse work", r.stampOf(MUSE, generation));
+      await add(dot, "dot work", r.stampOf(DOT, 1));
+      const list = async (thread: { conversation_id: number }) =>
+        ((await value(instance, call("wake:list"), String(thread.conversation_id))) as {
+          work: { payload: { input: string } }[] }).work.map((row) => row.payload.input);
+      return { owner: await list(own), muse: await list(muse), dot: await list(dot) };
+    });
+    expect(out).toEqual({ owner: ["owner work"], muse: ["muse work"], dot: ["dot work"] });
+  });
+
+  it("attributes a client's proposal to the client, on its own share, refused at its " +
+     "limit while the owner's still holds", async () => {
+    const r = await rig();
+    await r.admit(DOT);
+    const generation = await r.scoped(DOT, ["propose_policy"]);
+    const out = await r.in(async (instance, state) => {
+      const dot = await threadFor(instance, r.stampOf(DOT, generation));
+      const first = await value(instance, call("policy:propose", {
+        change: { n: 0 }, request_id: "card-0" }), dot);
+      const sql = (query: string) => state.storage.sql.exec(query).toArray();
+      const proposer = sql("SELECT proposer FROM policy_proposals WHERE request_id = 'card-0'");
+      const share = sql("SELECT proposer, pending FROM proposal_shares");
+      // The client's share filled to its limit, as more of its own proposals would.
+      const gate = new WriteGate(state.storage);
+      const policy = new Policy(gate.storage);
+      for (let n = 1; n < 50; n++) {
+        await gate.write(() => policy.propose({ n }, `card-${n}`, DOT.client, clock()));
+      }
+      const refused = await ta(instance, call("policy:propose", {
+        change: { n: 50 }, request_id: "card-50" }), dot);
+      const own = await ta(instance, call("policy:propose", {
+        change: { n: 51 }, request_id: "card-51" }), await threadFor(instance, null));
+      return { first, proposer, share, refused, own,
+               owners: sql("SELECT proposer FROM policy_proposals WHERE request_id = 'card-51'") };
+    });
+    expect(out.first.generation).toBe(1);
+    expect(out.proposer).toEqual([{ proposer: DOT.client }]);
+    expect(out.share).toEqual([{ proposer: DOT.client, pending: 1 }]);
+    expect(out.refused).toEqual({
+      text: threw("this client's pending policy proposals are at their limit"), error: true });
+    expect(out.own.error).toBe(false);
+    expect(out.owners).toEqual([{ proposer: "owner" }]);
+  });
+});
+
+describe("packages and names (review L1, L2, L3)", () => {
+  it("refuses a catalog loudly where a tool of the object's own takes a platform name",
+     async () => {
+    const stub = env.MALFORMED.getByName(`owner-${crypto.randomUUID()}`);
+    const out = await runInDurableObject(stub, async (instance: MalformedOwnerDO) => {
+      instance.script = Array.from({ length: 20 }, () => step);
+      const catalog = JSON.parse((await instance.agent.harness.prompt(
+        `TA ${JSON.stringify({ op: "catalog" })}`)).text!) as Shown;
+      const usage = JSON.parse((await instance.agent.harness.prompt(
+        `TA ${JSON.stringify(call("files:usage"))}`)).text!) as Shown;
+      return { catalog, usage };
+    });
+    expect(out.catalog).toEqual({
+      text: threw("the tool files:usage takes a platform capability's name"), error: true });
+    // A call of the name is the platform's: the capability, never the shadow.
+    expect(out.usage.error).toBe(false);
+    expect(JSON.parse(out.usage.text)).toHaveProperty("limits");
+  });
+
+  it("names the platform capabilities no package may take, as the catalog lists them",
+     async () => {
+    const r = await rig();
+    const page = await r.in(async (instance) => value(instance, { op: "catalog" },
+                                                      await threadFor(instance, null)));
+    expect(page.capabilities.slice(0, 5).map((entry: { name: string }) => entry.name))
+      .toEqual(PLATFORM_NAMES);
+  });
+
+  it("refuses a call that carries a catalog field, a name that is not text and arguments " +
+     "that are not an object; a page past the end is empty", async () => {
+    const r = await rig();
+    const out = await r.in(async (instance) => {
+      const session = await threadFor(instance, null);
+      return {
+        extra: await ta(instance, { ...call("files:usage"), query: "x" }, session),
+        stringName: await ta(instance, { op: "call", name: 5, arguments: {} }, session),
+        nullArgs: await ta(instance, { op: "call", name: "files:usage", arguments: null },
+                           session),
+        past: await value(instance, { op: "catalog", offset: 1000 }, session),
+      };
+    });
+    expect(out.extra).toEqual({ text: threw(INVALID_REQUEST), error: true });
+    expect(out.stringName.error).toBe(true);
+    expect(out.nullArgs.error).toBe(true);
+    expect(out.past).toEqual({ capabilities: [], total: 13 });
+  });
+});
+
+describe("ta's model call through the gateway (review L4)", () => {
+  it("sends its system prompt and its output cap, and a revoke mid-stream cancels the " +
+     "upstream", async () => {
+    const r = await gated();
+    await r.connect("sk-ta-stream");
+    const at = signedIn();
+    await r.stub.outsideAgents(r.bind({ origin: MUSE, source: MCP, authenticated_at: at }));
+    const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+    const cancelled = async () => ((await (await fetch(`https://status.test/cancelled?id=${id}`))
+      .json()) as { cancelled: boolean | null }).cancelled;
+    const out = await r.in(async (instance: GatedOwnerDO) => {
+      const thread = await instance.agent.thread("main", {
+        client: MUSE.client, generation: 1, authenticated_at: at, universe: null,
+        agent: "main" });
+      const session = String(thread.conversation_id);
+      const { operationId } = await instance.agent.harness.submit(`cmd:ta-model-slow-${id}`,
+                                                                  { session });
+      await until(async () => (await cancelled()) === false, "the nested stream to open");
+      await instance.grantRevoke(r.bind(), { client: MUSE.client });
+      const settled = await instance.agent.harness.wait(operationId, { session });
+      return { settled: [settled.status, settled.reason], bodies: instanceCalls(instance.calls) };
+    });
+    expect(out.settled).toEqual(["unanswered", "aborted"]);
+    await until(async () => (await cancelled()) === true, "the nested upstream to be cancelled");
+    expect(out.bodies).toHaveLength(2);
+    const nested = JSON.parse(out.bodies[1]!) as Record<string, unknown>;
+    expect(JSON.stringify(nested)).toContain("answer in one word");
+    expect(JSON.stringify(nested)).toMatch(/"max_?[tT]okens":77\b/);
+    expect(JSON.stringify(nested)).toContain(`cmd:slow-${id}`);
+  }, 30_000);
+});

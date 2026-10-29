@@ -15,7 +15,8 @@
  * - the model's tools (A3): pi offers the model what a conversation's `modelTools` names,
  *   so it is written in one place, `OwnerAgent.#inherit` (pi's `conversationCreated`, in
  *   every creating commit), as `(await tx.doc(AgentDoc, ...)).modelTools = ...`, that
- *   statement the one write of `AgentDoc` and the one naming of `modelTools`; and no
+ *   statement the one write of `AgentDoc` and of `modelTools`, which only
+ *   `OwnerAgent.modelAuthority` (the backstop, `TOOL_SURFACE`) otherwise reads; and no
  *   source names `addTools`, or builds a `control` key, the result field whose `addTools`
  *   appends to it.
  * A guarded name spelled as a literal key (`x["configure"]`) is refused anywhere. The
@@ -49,6 +50,21 @@ function inMethod(node: ts.Node, name: string): boolean {
     }
   }
   return false;
+}
+
+/** Whether `node` is the backstop's read of a snapshot's `modelTools`: never a write. */
+function backstopReads(node: ts.Identifier, path: string): boolean {
+  const access = node.parent;
+  if (path !== THREAD || !inMethod(node, "modelAuthority")
+      || !ts.isPropertyAccessExpression(access) || access.name !== node) {
+    return false;
+  }
+  const used = access.parent;
+  return !(ts.isBinaryExpression(used) && used.left === access)
+    && !(ts.isPropertyAccessExpression(used) && used.expression === access)
+    && !(ts.isElementAccessExpression(used) && used.expression === access)
+    && !ts.isDeleteExpression(used) && !ts.isPrefixUnaryExpression(used)
+    && !ts.isPostfixUnaryExpression(used);
 }
 
 /**
@@ -180,7 +196,8 @@ export function selections(path: string, source: string): string[] {
               || fixesModelTools(node, path)))) {
         report(node, "names pi's AgentDoc past the backstop's reads of it");
       }
-      if (node.text === MODEL_TOOLS && !fixesModelTools(node, path)) {
+      if (node.text === MODEL_TOOLS && !fixesModelTools(node, path)
+          && !backstopReads(node, path)) {
         report(node, "names the model's tools past their one write");
       }
       if (node.text === ADD_TOOLS) {
@@ -259,6 +276,12 @@ describe("agent-authority guard", () => {
      "const r = () => ({ output: [], control: { addTools: [\"x\"] } });"],
     ["a quoted control key", "owner/src/ta.ts", "const r = () => ({ \"control\": c });"],
     ["pi's addTools", "owner/src/x.ts", "await addTools(tx, id, [\"x\"]);"],
+    ["the backstop writing the model's tools", THREAD,
+     "class OwnerAgent { async modelAuthority() { agent.modelTools = []; } }"],
+    ["the backstop pushing to the model's tools", THREAD,
+     "class OwnerAgent { async modelAuthority() { agent.modelTools.push(x); } }"],
+    ["the model's tools read elsewhere", THREAD,
+     "class OwnerAgent { async other() { return keepsFive(agent?.modelTools); } }"],
   ])("sees %s", (_what, path, source) => {
     expect(selections(path, source).length).toBeGreaterThan(0);
   });
@@ -270,6 +293,8 @@ describe("agent-authority guard", () => {
     [THREAD, "import { AgentDoc } from \"p\"; const a = await pi.snapshot(AgentDoc, id, BG);"],
     [THREAD, "class OwnerAgent { async #inherit(tx, record) { " +
       "(await tx.doc(AgentDoc, record.id)).modelTools = [...MODEL_TOOLS]; } }"],
+    [THREAD, "class OwnerAgent { async modelAuthority() { " +
+      "if (!keepsFive(agent?.modelTools)) { return () => TOOL_SURFACE; } } }"],
   ])("allows %s: %s", (path, source) => {
     expect(selections(path, source)).toEqual([]);
   });

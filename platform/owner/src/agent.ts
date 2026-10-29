@@ -88,8 +88,8 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { type PiOperationResult, PiHarness } from "agents/harness/pi";
 
 import {
-  agentId, type Authority, AUTHORITY_RULE, authorityOf, type AuthorityState, type Need,
-  NO_CONVERSATION, type Stamped, stamped, stampOf,
+  agentId, type Authority, AUTHORITY_RULE, authorityOf, type AuthorityState, MODEL_TOOLS,
+  type Need, NO_CONVERSATION, offersFive, type Stamped, stamped, stampOf, TA_OP, TOOL_SURFACE,
 } from "./authority";
 import { Invalid, Refused } from "./errors";
 import type { Files } from "./files";
@@ -100,7 +100,7 @@ import type { Notices } from "./notices";
 import { originRoot } from "./origin";
 import { WORKSPACE } from "./paths";
 import { inTime } from "./schedule";
-import { MODEL_TOOLS, type Platform, taTool } from "./ta";
+import { PLATFORM_NAMES, type Platform, reachable, taTool } from "./ta";
 import type { Thread, Threads } from "./threads";
 
 const BG = BACKGROUND_CONTEXT;
@@ -234,6 +234,40 @@ export interface AgentParts {
 export interface AgentSource {
   readonly models: () => Models;
   readonly packages: readonly Extension[];
+  /**
+   * Further extensions of the object's own, installed before the packages and without
+   * their rules: none in production (`gatewayAgent`); a test's probes.
+   */
+  readonly trusted?: readonly Extension[];
+}
+
+/**
+ * Why a package may not be installed, or undefined: a `ta.` name is the object's; a tool
+ * it provides or wraps may not take a model tool's name, a platform capability's or a `ta:`
+ * name (it would shadow it); and each tool it provides must be callable by tools, since
+ * the model is offered only the five and `ta` is the one way to the rest (one that is not
+ * would sit installed and never run).
+ */
+export function packageRefusal(extension: Extension): string | undefined {
+  if (String(extension.name).startsWith(RESERVED_PREFIX)) {
+    return `the ${RESERVED_PREFIX} names are the object's own`;
+  }
+  const taken = (name: string) => MODEL_TOOLS.includes(name) || PLATFORM_NAMES.includes(name)
+    || name.startsWith(TA_OP);
+  for (const tool of extension.tools ?? []) {
+    if (taken(tool.name)) {
+      return `a package tool may not take the name ${tool.name}`;
+    }
+    if (!reachable(tool)) {
+      return `the tool ${tool.name} is not callable by tools, so nothing could call it`;
+    }
+  }
+  for (const wrap of extension.wraps ?? []) {
+    if ("tool" in wrap && taken(wrap.tool)) {
+      return `a package may not wrap ${wrap.tool}`;
+    }
+  }
+  return undefined;
 }
 
 type Pi = Awaited<ReturnType<PiHarness["pi"]>>;
@@ -255,6 +289,14 @@ export function keepsGate(selection: AgentState["extensions"]): boolean {
   }
   return Array.isArray(selection) ? selection.includes(GATE)
     : !(selection.remove ?? []).includes(GATE);
+}
+
+/**
+ * Whether a conversation's stored model tools (pi's `AgentDoc`) are exactly the five the
+ * object fixes in every creating commit: anything else was widened past it.
+ */
+export function keepsFive(tools: AgentState["modelTools"]): boolean {
+  return Array.isArray(tools) && tools.length === MODEL_TOOLS.length && offersFive(tools);
 }
 
 /** An authority as plain JSON: a copy of a document's draft, which is no plain object. */
@@ -334,10 +376,14 @@ export class OwnerAgent {
         state: (api, context) => api.snapshot(this.authority, api.conversationId, context),
       })],
     }));
+    for (const extension of this.#source.trusted ?? []) {
+      this.#registry.install(extension);
+    }
     for (const extension of this.#source.packages) {
       try {
-        if (String(extension.name).startsWith(RESERVED_PREFIX)) {
-          throw new Error(`the ${RESERVED_PREFIX} names are the object's own`);
+        const refused = packageRefusal(extension);
+        if (refused !== undefined) {
+          throw new Error(refused);
         }
         this.#registry.install(extension);
       } catch (error) {
@@ -425,7 +471,9 @@ export class OwnerAgent {
    * request that names no conversation the object made is refused (`NO_CONVERSATION`),
    * and a client's or no one's conversation whose stored selection (pi's `AgentDoc`, read
    * only here) drops the gate is refused `AUTHORITY_RULE`, whatever its grant: with its
-   * tools held by its environment, such a conversation does nothing.
+   * tools held by its environment, such a conversation does nothing. Any conversation
+   * whose stored model tools are not exactly `MODEL_TOOLS` (a hook's result `control`
+   * can add one) is refused `TOOL_SURFACE`, the owner's included.
    */
   async modelAuthority(sessionId: string | undefined): Promise<() => string | null> {
     if (sessionId === undefined) {
@@ -438,11 +486,16 @@ export class OwnerAgent {
     }
     const conversation = at.conversation as ConversationId;
     const state = await pi.snapshot(this.authority, conversation, BG);
+    const agent = await pi.snapshot(AgentDoc, conversation, BG);
     // The backstop: a client's or no one's conversation whose selection drops the gate
     // spends nothing; the environment already holds its tools.
-    if (state?.by !== "owner" && !keepsGate((await pi.snapshot(AgentDoc, conversation, BG))
-      ?.extensions)) {
+    if (state?.by !== "owner" && !keepsGate(agent?.extensions)) {
       return () => AUTHORITY_RULE;
+    }
+    // Any conversation's, the owner's too, whose stored model tools were widened past the
+    // five spends nothing either (the provider also refuses a widened request itself).
+    if (!keepsFive(agent?.modelTools)) {
+      return () => TOOL_SURFACE;
     }
     return () => this.#parts.authority.modelRule(state);
   }
@@ -578,10 +631,11 @@ export class OwnerAgent {
 
 /**
  * The production agent: pi on the object's `gateway` provider, the one model source, with
- * no packages beyond the object's own (`packages` are a test's).
+ * no packages beyond the object's own (`packages` and `trusted` are a test's).
  */
-export function gatewayAgent(parts: AgentParts, packages: readonly Extension[] = []): OwnerAgent {
+export function gatewayAgent(parts: AgentParts, packages: readonly Extension[] = [],
+                             trusted: readonly Extension[] = []): OwnerAgent {
   const models = createModels();
   models.setProvider(parts.provider);
-  return new OwnerAgent(parts, { models: () => models, packages });
+  return new OwnerAgent(parts, { models: () => models, packages, trusted });
 }

@@ -531,7 +531,8 @@ describe("a package pi refuses to install", () => {
     expect(rows.wakes).toEqual([{ state: "pending" }]);  // the wakes lane recovered it
     // pi opened without the package, and with every other extension; the model is offered
     // the five tools alone.
-    expect(rows.tools).toEqual(["background", "bash", "edit", "fork", "hold", "nest", "pass",
+    expect(rows.tools).toEqual(["background", "bash", "edit", "files:usage", "fork", "hold",
+                               "nest", "pass",
                                "read", "sixth", "spawn", "weather_lookup", "widen",
                                "write"]);
     expect(rows.offered).toEqual(["read", "write", "edit", "bash", "ta"]);
@@ -543,6 +544,12 @@ describe("a package pi refuses to install", () => {
     expect(notices.filter((notice) => notice.type === "extension_skipped")
       .map((notice) => notice.detail).sort()).toEqual([
       expect.stringMatching(/^pkg:broken: Extension pkg:broken has two tools named twice/),
+      "pkg:lonely: the tool lonely is not callable by tools, so nothing could call it",
+      "pkg:op: a package tool may not take the name ta:catalog",
+      "pkg:policy: a package tool may not take the name policy:show",
+      "pkg:read: a package tool may not take the name read",
+      "pkg:ta: a package tool may not take the name ta",
+      "pkg:wrap: a package may not wrap bash",
       "ta.authority: the ta. names are the object's own"]);
     // pi opens again in every new instance (and after any pi failure): the package is
     // refused each time, and noticed once while that notice is kept.
@@ -556,7 +563,7 @@ describe("a package pi refuses to install", () => {
       });
     }
     const kept = (await env.MALFORMED.getByName(name).noticeList(as())).notices;
-    expect(kept.filter((notice) => notice.type === "extension_skipped")).toHaveLength(2);
+    expect(kept.filter((notice) => notice.type === "extension_skipped")).toHaveLength(8);
   });
 });
 

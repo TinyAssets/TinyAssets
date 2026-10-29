@@ -104,6 +104,23 @@ export const AUTHORITY_RULE = "outside_authority";
 /** A model call's refusal code when its request names no conversation the object made. */
 export const NO_CONVERSATION = "no_conversation";
 
+/** The tools the model is offered, exactly, on every conversation the object creates. */
+export const MODEL_TOOLS: readonly string[] = Object.freeze(["read", "write", "edit", "bash",
+                                                             "ta"]);
+/** A model call's refusal code when it would offer the model any other tools. */
+export const TOOL_SURFACE = "tool_surface";
+
+/**
+ * Whether a request offering the tools `names` may reach the model: exactly
+ * `MODEL_TOOLS` (in any order, each once), or none (`ta`'s nested model call, a
+ * compaction's summary). Any other set, a sixth tool or a stand-in under a model tool's
+ * name counted twice among them, is refused, whatever path widened it.
+ */
+export function offersFive(names: readonly string[]): boolean {
+  return names.length === 0 || (names.length === MODEL_TOOLS.length
+    && MODEL_TOOLS.every((name) => names.includes(name)));
+}
+
 /** The authority a conversation runs under: the client's, as it was admitted, and where. */
 export type Stamped = {
   client: string;

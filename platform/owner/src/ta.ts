@@ -62,9 +62,10 @@ import type { Usage as FileUsage } from "./files";
 import type { Write } from "./gate";
 import { AUTO_MODEL, GATEWAY_PROVIDER } from "./gateway-provider";
 
-/** The tools the model is offered, exactly, on every conversation the object creates. */
-export const MODEL_TOOLS: readonly string[] = Object.freeze(["read", "write", "edit", "bash",
-                                                             TA_TOOL]);
+/** The platform capabilities' names, which no package tool may take. */
+export const PLATFORM_NAMES: readonly string[] = Object.freeze(["policy:show", "policy:propose",
+                                                                "wake:list", "files:usage",
+                                                                "model"]);
 
 /** The capabilities classified as reads; any other is an effect. */
 export const READS: readonly string[] = Object.freeze(["ta:catalog", "policy:show",
@@ -433,6 +434,11 @@ async function tools(api: ToolExecutionApi, context: Context):
   const deferred = new Set(agent.deferred.map((tool) => tool.name));
   const found = new Map<string, { tool: ToolRegistration; deferred: boolean }>();
   for (const tool of agent.callable) {
+    if (reachable(tool) && (PLATFORM_NAMES.includes(tool.name) || tool.name.startsWith(TA_OP))) {
+      // A package may not take one (`packageRefusal`); one of the object's own that does is
+      // a fault, never a shadow.
+      throw new Error(`the tool ${tool.name} takes a platform capability's name`);
+    }
     if (reachable(tool) && !found.has(tool.name)) {
       found.set(tool.name, { tool, deferred: deferred.has(tool.name) });
     }

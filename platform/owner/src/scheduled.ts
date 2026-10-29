@@ -35,9 +35,8 @@
  *
  * The owner-wide bounds read counters the schema's triggers keep
  * (`policy_usage.open_work`, `settled_work`); a client's share is counted on its own
- * index, at most `perClient` rows. Every query has an index but `of`'s (`ta`'s
- * `wake:list`), which scans the table those bounds keep to `maxOpen` plus `maxSettled`
- * rows. Settled rows are kept `settledRetentionS`, at most `maxSettled`.
+ * index, at most `perClient` rows. Every query has an index (`of`, `ta`'s `wake:list`,
+ * migration 8's). Settled rows are kept `settledRetentionS`, at most `maxSettled`.
  */
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage, Write } from "./gate";

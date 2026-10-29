@@ -65,6 +65,8 @@ export interface Probes {
    * review L2): the arguments it runs with instead, or undefined to keep them.
    */
   rewrite: ((call: { name: string; arguments: unknown }) => unknown) | null;
+  /** A tool the test hook adds to the model's through `ta`'s result's control, when set. */
+  widen: string | null;
   /** Awaited by each of the agent's write units before it is queued, when set. */
   writeGate: Promise<void> | null;
   /** How many of the agent's write units have been asked for on this instance. */
@@ -76,7 +78,7 @@ export function freshProbes(): Probes {
   return { readGate: null, reads: 0, holdGate: null, holds: 0, holdLinger: 0, spawned: null,
            submitted: [],
            background: null, backgroundGate: null, toolGate: null, gated: [], nestGate: null,
-           rewrite: null, writeGate: null, writes: 0 };
+           rewrite: null, widen: null, writeGate: null, writes: 0 };
 }
 
 /** Resolves when `context`'s abort signal fires: a tool that honours its abort. */
@@ -173,11 +175,12 @@ function nestedWork(work: ReturnType<typeof conversationWork>) {
  * model reaches them through `ta`; `sixth` is registered callable by the model too, and
  * `weather_lookup` deferred, and the model is never offered either.
  */
-function testExtensions(probes: () => Probes): Extension[] {
+function testExtensions(probes: () => Probes): { packages: Extension[];
+                                                  trusted: Extension[] } {
   const read = CodingTools.tools!.find((tool) => tool.name === "read")! as ToolRegistration;
   const work = conversationWork(probes);
   const nested = nestedWork(work);
-  return [defineExtension({
+  const packages = [defineExtension({
     name: "test.tools",
     tasks: [work, nested],
     hooks: [hook(ToolTask, {
@@ -186,6 +189,13 @@ function testExtensions(probes: () => Probes): Extension[] {
         await probes().toolGate;
         const rewritten = probes().rewrite?.(call);
         return rewritten === undefined ? undefined : { arguments: rewritten as JsonObject };
+      },
+      // A hook that replaces `ta`'s result whole, carrying a control that adds a model tool
+      // (review M1): pi applies it to the conversation's model tools.
+      afterTool: async (call, result) => {
+        const widen = probes().widen;
+        return widen !== null && call.name === "ta" && call.parent === undefined
+          ? { ...result, control: { addTools: [widen] } } : undefined;
       },
     })],
     tools: [
@@ -279,12 +289,6 @@ function testExtensions(probes: () => Probes): Extension[] {
         },
       }),
       defineTool({
-        name: "sixth",
-        description: "A package tool the model may call by its registration: never offered.",
-        parameters: Type.Object({}),
-        execute: async () => ({ output: [{ type: "text", text: "the sixth ran" }] }),
-      }),
-      defineTool({
         name: "weather_lookup",
         description: "Look up the weather forecast for a city.",
         parameters: Type.Object({ city: Type.String({ description: "The city's name" }) }),
@@ -300,6 +304,17 @@ function testExtensions(probes: () => Probes): Extension[] {
         execute: async () => ({ output: [{ type: "text", text: "passed cmd:echo" }] }),
       }),
     ],
+  })];
+  // What no package may do, installed as the object's own: `read`'s probe, and a tool the
+  // model could call by its registration, which no conversation offers it.
+  const trusted = [defineExtension({
+    name: "test.probes",
+    tools: [defineTool({
+      name: "sixth",
+      description: "A tool the model may call by its registration: never offered.",
+      parameters: Type.Object({}),
+      execute: async () => ({ output: [{ type: "text", text: "the sixth ran" }] }),
+    })],
     wraps: [wrapTool(read, (tool) => ({
       ...tool,
       execute: async (args, api, context) => {
@@ -309,6 +324,7 @@ function testExtensions(probes: () => Probes): Extension[] {
       },
     }))],
   })];
+  return { packages, trusted };
 }
 
 /** A script kept in the object's own storage, for the instances after an eviction. */
@@ -410,7 +426,7 @@ export class FauxOwnerDO extends OwnerDO {
         return parts.write(unit);
       };
       made.agent = new OwnerAgent({ ...parts, write }, {
-        models: () => models, packages: testExtensions(() => made.self!.probes) });
+        models: () => models, ...testExtensions(() => made.self!.probes) });
       return made.agent;
     });
     made.self = this;
@@ -420,26 +436,47 @@ export class FauxOwnerDO extends OwnerDO {
   }
 }
 
-/** The owner object with a package pi refuses to install: two tools of one name. */
+/**
+ * The owner object with packages it refuses: two tools of one name (pi refuses it), one
+ * named as the object's gate, ones that take or wrap a model tool's, a platform
+ * capability's or a `ta:` name, and one whose tool nothing could call; and, as its own, a
+ * tool that takes a platform capability's name, which `ta` refuses loudly.
+ */
 export class MalformedOwnerDO extends OwnerDO {
   readonly agent: OwnerAgent;
+  script: Step[] = [];
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
-    const made: { agent?: OwnerAgent } = {};
+    const made: { agent?: OwnerAgent; self?: MalformedOwnerDO } = {};
     super(ctx, env, (parts) => {
       const models = createModels();
-      models.setProvider(scripted(() => []).provider);
-      const twice = defineTool({ name: "twice", description: "One of two.",
-                                 parameters: Type.Object({}),
-                                 execute: async () => ({ output: [] }) });
-      made.agent = new OwnerAgent(parts, { models: () => models, packages: [
-        defineExtension({ name: "pkg:broken", tools: [twice, twice] }),
+      models.setProvider(scripted(() => made.self?.script ?? []).provider);
+      const tool = (name: string, callers?: ("model" | "tools")[]) => defineTool({
+        name, description: `A tool named ${name}.`, parameters: Type.Object({}),
+        ...(callers === undefined ? {} : { callers }),
+        execute: async () => ({ output: [{ type: "text", text: `${name} ran` }] }) });
+      const bash = CodingTools.tools!.find((coding) => coding.name === "bash")!;
+      const { packages, trusted } = testExtensions(freshProbes);
+      made.agent = new OwnerAgent(parts, { models: () => models, trusted: [
+        ...trusted,
+        defineExtension({ name: "test.collision", tools: [tool("files:usage", ["tools"])] }),
+      ], packages: [
+        defineExtension({ name: "pkg:broken", tools: [tool("twice", ["tools"]),
+                                                      tool("twice", ["tools"])] }),
         // A package named as the object's gate, with no hooks: it would replace the gate.
         defineExtension({ name: "ta.authority" }),
-        ...testExtensions(freshProbes),
+        defineExtension({ name: "pkg:read", tools: [tool("read", ["tools"])] }),
+        defineExtension({ name: "pkg:ta", tools: [tool("ta", ["model", "tools"])] }),
+        defineExtension({ name: "pkg:policy", tools: [tool("policy:show", ["tools"])] }),
+        defineExtension({ name: "pkg:op", tools: [tool("ta:catalog", ["tools"])] }),
+        defineExtension({ name: "pkg:wrap", wraps: [wrapTool(bash as ToolRegistration,
+                                                             (shell) => shell)] }),
+        defineExtension({ name: "pkg:lonely", tools: [tool("lonely")] }),
+        ...packages,
       ] });
       return made.agent;
     });
+    made.self = this;
     this.agent = made.agent!;
   }
 }
@@ -510,7 +547,8 @@ export class GatedOwnerDO extends OwnerDO {
                                           () => made.self?.faults) },
           (parts) => {
             made.parts = parts;
-            made.agent = gatewayAgent(parts, testExtensions(() => made.self!.probes));
+            const { packages, trusted } = testExtensions(() => made.self!.probes);
+            made.agent = gatewayAgent(parts, packages, trusted);
             return made.agent;
           });
     made.self = this;
