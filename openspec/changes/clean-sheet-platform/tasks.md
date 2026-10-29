@@ -568,10 +568,15 @@ account and no deploy.
   `write` → `write_files`, `edit` → both, `bash` refused when scoped, `ta` by its own
   map (empty until A3; the `ta:` names are reserved for its ops), any other tool refused;
   a refusal is a block with a fixed reason and a receipt (rule `outside_authority`).
-  Packages named `ta.*` are refused at install, and a guard (`agent-authority.test.ts`)
-  keeps extension selection (`extensions`, `configure`) out of the owner sources and
-  conversation making (`createConversation`, `fork`, `forkConversation`) out of all but
-  `OwnerAgent.thread`. A model call finds its conversation by its provider session
+  Packages named `ta.*` are refused at install. The runtime backstop: a client's or no
+  one's conversation whose stored selection (pi's `AgentDoc`) drops `ta.authority` makes
+  no model call (`outside_authority`), and its environment already holds its tools, so
+  it does nothing. Behind it, a guard (`agent-authority.test.ts`, a tripwire) keeps out
+  of the owner sources any `extensions` key (quoted or computed too) or write, any
+  `configure` (called, destructured or imported), any `AgentDoc` but the backstop's
+  reads, any literal-key access to those names, and every conversation maker
+  (`createConversation`, `createRootConversation`, `fork`, `forkConversation`, a
+  reference too) outside `OwnerAgent.thread`. A model call finds its conversation by its provider session
   (`ta.session`, written in `conversationCreated`); a revoked client's call is refused
   in its reservation (a `refused` receipt, no fetch) or not sent at dispatch, and a
   session the object never made is `no_conversation`, so the abort is the prompt stop,
@@ -580,8 +585,11 @@ account and no deploy.
   disagrees throws. A thread is made by `OwnerAgent.thread`: pi writes the authority in
   the creating commit, then `agent_threads` records it in a unit that re-checks it
   stands; a thread never changes its stamp (trigger), holds its client's grant row
-  (`held`, so `forgetRevoked` keeps the row), is bounded (64 a client, 10,000 the
-  owner's, refused loudly past them), and is dropped in the unit of its client's grant
+  (`held`, so `forgetRevoked` keeps the row), is bounded (64 a client, 1,024 of all
+  clients, 10,000 the owner's; refused loudly before pi makes a conversation, and again
+  in the recording unit), so `agent_threads` and the grant rows its threads hold stay
+  bounded however many clients register, is never the root (`conversation_id > 1`, by
+  schema), and is dropped in the unit of its client's grant
   set or revoke, which returns the dropped threads. After that unit commits the door ends
   the client's work: its pending waits, the views of those threads and of every live
   conversation stamped for it, and an abort (`background: true`) of each; a policy write
@@ -614,11 +622,18 @@ account and no deploy.
   capabilities; abort targets are read from pi's live work and each conversation's
   authority, the rows only adding their threads' views; a thread goes with its grant's
   change rather than by idle retention; a write-only client resolves paths too (pi's
-  mutation queue reads a path's canonical form). Owner bundle 1,627 KiB, 337 KiB gzip
-  (1,598 and 329 at A1), local startup 25 ms active in a 59 ms window. Open: thread
-  retention by idle age, with A4's doors that make threads; A3's `ta`, whose `execute`
-  re-derives its capability from the conversation's authority rather than trusting the
-  gate's map alone.
+  mutation queue reads a path's canonical form), which tells it whether a path exists:
+  accepted, since its changes tell it anyway (a `remove` of a missing path fails
+  `not_found`, a non-recursive `createDir` of an existing one `exists`), and no content
+  leaks. Owner bundle 1,627 KiB, 337 KiB gzip
+  (1,598 and 329 at A1), local startup 25 ms active in a 59 ms window. Must land with
+  A4, whose doors make threads: thread retention by idle age, which also deletes the pi
+  conversations a thread drop leaves behind (until then a dropped thread's conversation
+  stays in pi, refused at every operation and model call); and `agentSubmit` and
+  `agentStatus` address work by `thread_id`, resolved against the calling client's own
+  row, never by a pi session string (a `harness.submit` with no session goes to the
+  root, the owner's). Open: A3's `ta`, whose `execute` re-derives its capability from
+  the conversation's authority rather than trusting the gate's map alone.
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
   owner's hook code with the Worker Loader, called over RPC with JSON in and out and a
   timeout. A `beforeTool` timeout or error blocks

@@ -273,16 +273,18 @@ describe("the owner's environment", () => {
       } });
       const binary = getOrThrow(await theirs.openBinaryReader("a.txt", undefined, context));
       const lines = getOrThrow(await theirs.openTextLineReader("a.txt", context));
+      const dir = getOrThrow(await theirs.openDirReader(".", context));
       expect(getOrThrow(await theirs.readTextFile("a.txt", context))).toBe("one\ntwo\n");
-      expect(asked).toEqual(["read", "read", "read"]);
+      expect(asked).toEqual(["read", "read", "read", "read"]);
       reads = false;
       const why = (result: { ok: boolean; error?: { code: string } }) =>
         result.ok ? "read" : result.error!.code;
       expect([why(await theirs.readTextFile("a.txt", context)),
               why(await theirs.readBinaryFile("a.txt", context)),
               why(await binary.read(0, 3, context)),
-              why(await lines.readLine(context))])
-        .toEqual(Array.from({ length: 4 }, () => "permission_denied"));
+              why(await lines.readLine(context)),
+              why(await dir.next(10, context))])
+        .toEqual(Array.from({ length: 5 }, () => "permission_denied"));
       // A write-only grant still writes.
       getOrThrow(await theirs.writeFile("b.txt", "mine", context));
       expect(getOrThrow(await owner.readTextFile("b.txt", context))).toBe("mine");

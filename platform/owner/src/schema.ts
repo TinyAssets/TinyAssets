@@ -759,7 +759,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // threads hold its grant row (`held`), as its stamped work and held registrations do.
   Object.freeze([
     "CREATE TABLE agent_threads (thread_id TEXT PRIMARY KEY CHECK (length(thread_id) = 39), " +
-      "conversation_id INTEGER NOT NULL UNIQUE CHECK (conversation_id >= 1), " +
+      "conversation_id INTEGER NOT NULL UNIQUE CHECK (conversation_id > 1), " +
       "agent_id TEXT NOT NULL CHECK (length(agent_id) BETWEEN 1 AND 128), " +
       "client TEXT CHECK (client IS NULL OR length(client) = 64), generation INTEGER, " +
       "authenticated_at REAL, universe TEXT CHECK (universe IS NULL OR length(universe) " +

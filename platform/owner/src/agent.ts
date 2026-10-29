@@ -40,7 +40,9 @@
  *   queued inputs withdrawn, so each settles `unanswered: run_failed` rather than waiting
  *   on an unrelated next input; over those, the part of owner policy that is pi's
  *   (`AgentParts.policy`: the model retry count), which never moves the fixed ones. No
- *   source selects extensions, in settings or a conversation's agent (a guard holds it);
+ *   source selects extensions, in settings or a conversation's agent (a guard holds it),
+ *   and a client's conversation whose selection drops the gate makes no model call
+ *   (`modelAuthority`);
  * - `onReport`: each report becomes an owner notice (`notices.ts`);
  * - `conversationCreated`, the one way an authority is inherited, in every creating
  *   commit: the root conversation is the owner's; a conversation a task creates (a
@@ -70,7 +72,8 @@ import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context"
 import type { ClientIdentity, Models, Provider } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
-  type ConversationId, type ConversationRecord, createRegistry, defineDoc, defineDocFamily,
+  AgentDoc, type AgentState, type ConversationId, type ConversationRecord, createRegistry,
+  defineDoc, defineDocFamily,
   defineExtension, type EnvTarget, type Extension, Harness, type HarnessSettings, hook,
   ProviderDoc, type ReportInfo, ROOT_CONVERSATION_ID, ToolTask, type Tx, wrapTool,
 } from "@earendil-works/pi-durable";
@@ -79,8 +82,8 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { type PiOperationResult, PiHarness } from "agents/harness/pi";
 
 import {
-  agentId, type Authority, authorityOf, type AuthorityState, type Need, type Stamped,
-  NO_CONVERSATION, stamped, stampOf,
+  agentId, type Authority, AUTHORITY_RULE, authorityOf, type AuthorityState, type Need,
+  NO_CONVERSATION, type Stamped, stamped, stampOf,
 } from "./authority";
 import { Invalid, Refused } from "./errors";
 import type { Files } from "./files";
@@ -120,6 +123,8 @@ export const WAITS_KEPT = 256;
 export const WAIT_ENDED = "the wait was ended by a grant or policy change";
 /** The extension names that are the object's own: no package may take one. */
 export const RESERVED_PREFIX = "ta.";
+/** The early authority gate's extension name. */
+export const GATE = "ta.authority";
 
 export type { Stamped };
 
@@ -229,6 +234,18 @@ async function liveConversations(pi: Pi): Promise<ConversationId[]> {
                       ...inspection.submissions.map((record) => record.conversationId)])];
 }
 
+/**
+ * Whether a conversation's stored extension selection (pi's `AgentDoc`) keeps the gate:
+ * unset is the host's default, every installed extension, the gate first.
+ */
+export function keepsGate(selection: AgentState["extensions"]): boolean {
+  if (selection === undefined) {
+    return true;
+  }
+  return Array.isArray(selection) ? selection.includes(GATE)
+    : !(selection.remove ?? []).includes(GATE);
+}
+
 /** An authority as plain JSON: a copy of a document's draft, which is no plain object. */
 function copy(state: Readonly<AuthorityState>): AuthorityState {
   return JSON.parse(JSON.stringify(state)) as AuthorityState;
@@ -285,7 +302,7 @@ export class OwnerAgent {
       throw new Error("pi's coding tools have no read tool");
     }
     this.#registry.install(defineExtension({
-      name: "ta.authority",
+      name: GATE,
       hooks: [hook(ToolTask, {
         beforeTool: async (call, api, context) => {
           const state = await api.snapshot(this.authority, api.conversationId, context);
@@ -366,6 +383,7 @@ export class OwnerAgent {
     const { authority, threads, write } = this.#parts;
     const state = authorityOf(by);
     authority.require(state, []);
+    threads.room(by);  // a refusal makes no conversation; the recording unit checks again
     const pi = await this.harness.pi();
     const conversation = await pi.createConversation({
       ownership: { kind: "ownerless" },
@@ -383,7 +401,10 @@ export class OwnerAgent {
   /**
    * The authority a model request runs under, by its provider session: a check, run in
    * the call's reservation and dispatch units, answering the refusal's code or null. A
-   * request that names no conversation the object made is refused (`NO_CONVERSATION`).
+   * request that names no conversation the object made is refused (`NO_CONVERSATION`),
+   * and a client's or no one's conversation whose stored selection (pi's `AgentDoc`, read
+   * only here) drops the gate is refused `AUTHORITY_RULE`, whatever its grant: with its
+   * tools held by its environment, such a conversation does nothing.
    */
   async modelAuthority(sessionId: string | undefined): Promise<() => string | null> {
     if (sessionId === undefined) {
@@ -394,7 +415,14 @@ export class OwnerAgent {
     if (at === undefined) {
       return () => NO_CONVERSATION;
     }
-    const state = await pi.snapshot(this.authority, at.conversation as ConversationId, BG);
+    const conversation = at.conversation as ConversationId;
+    const state = await pi.snapshot(this.authority, conversation, BG);
+    // The backstop: a client's or no one's conversation whose selection drops the gate
+    // spends nothing; the environment already holds its tools.
+    if (state?.by !== "owner" && !keepsGate((await pi.snapshot(AgentDoc, conversation, BG))
+      ?.extensions)) {
+      return () => AUTHORITY_RULE;
+    }
     return () => this.#parts.authority.modelRule(state);
   }
 

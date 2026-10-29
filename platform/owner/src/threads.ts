@@ -15,9 +15,13 @@
  * does, so the free-row bound never forgets the row they are checked against. A grant
  * change drops its client's threads in the change's own transaction (`endClient`): their
  * stamps no longer stand, so they can do nothing more, and dropping them releases the row.
- * Past `perClient` standing threads, or `owner` of the owner's, a new one is refused.
+ * Past `perClient` threads of one client, `clients` of every client's, or `owner` of the
+ * owner's, a new one is refused loudly, so the rows (and the grant rows they hold) are
+ * bounded however many clients register. A thread is never the root conversation, the
+ * owner's own (`conversation_id > 1`, by schema). Idle-age retention, which also removes
+ * the pi conversations a drop leaves behind, lands with A4's doors.
  */
-import { agentId, type AuthorityState, authorityOf, stamped } from "./authority";
+import { agentId, type AuthorityState, authorityOf, type Stamped, stamped } from "./authority";
 import { Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 
@@ -41,11 +45,14 @@ export interface ThreadReader {
 export interface ThreadLimits {
   /** Threads one outside client may hold at once. */
   readonly perClient: number;
+  /** Threads every outside client together may hold at once. */
+  readonly clients: number;
   /** The owner's own threads. */
   readonly owner: number;
 }
 
-export const THREAD_LIMITS: ThreadLimits = Object.freeze({ perClient: 64, owner: 10_000 });
+export const THREAD_LIMITS: ThreadLimits = Object.freeze({ perClient: 64, clients: 1_024,
+                                                           owner: 10_000 });
 
 const THREAD_ID = /^thread_[0-9a-f]{32}$/;
 
@@ -72,21 +79,16 @@ export class Threads implements ThreadReader {
    * past its bound.
    */
   record(conversationId: number, agent: unknown, stamp: unknown, now: number): Thread {
-    if (!Number.isSafeInteger(conversationId) || conversationId < 1) {
-      throw new Error("a thread is a conversation pi made");
+    if (!Number.isSafeInteger(conversationId) || conversationId <= 1) {
+      throw new Error("a thread is a conversation pi made, never the root");
     }
     const id = agentId(agent);
     const by = stamped(stamp);
     if (by !== null && by.agent !== id) {
       throw new Error("a thread's stamp names its own agent");
     }
+    this.room(by);
     const sql = this.#storage.sql;
-    const held = sql.exec<{ n: number }>(
-      "SELECT COUNT(*) AS n FROM agent_threads WHERE client IS ?", by?.client ?? null).one().n;
-    if (held >= (by === null ? this.#limits.owner : this.#limits.perClient)) {
-      throw new Refused(by === null ? "the owner's threads are at their limit"
-        : "this client's threads are at their limit");
-    }
     const raw = new Uint8Array(16);
     crypto.getRandomValues(raw);
     const threadId = `thread_${Array.from(raw, (b) => b.toString(16).padStart(2, "0")).join("")}`;
@@ -95,6 +97,25 @@ export class Threads implements ThreadReader {
         "authenticated_at, universe, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
       threadId, conversationId, id, by?.client ?? null, by?.generation ?? null,
       by?.authenticated_at ?? null, by?.universe ?? null, now).one();
+  }
+
+  /** Refuse loudly a new thread under `by` (null: the owner's) past its bounds; a read. */
+  room(by: Stamped | null): void {
+    const sql = this.#storage.sql;
+    const count = (where: string, ...bound: (string | null)[]) => sql.exec<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM agent_threads WHERE ${where}`, ...bound).one().n;
+    if (by === null) {
+      if (count("client IS ?", null) >= this.#limits.owner) {
+        throw new Refused("the owner's threads are at their limit");
+      }
+      return;
+    }
+    if (count("client IS ?", by.client) >= this.#limits.perClient) {
+      throw new Refused("this client's threads are at their limit");
+    }
+    if (count("client IS NOT NULL") >= this.#limits.clients) {
+      throw new Refused("the outside clients' threads are at their limit");
+    }
   }
 
   get(threadId: unknown): Thread | null {

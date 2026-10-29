@@ -682,7 +682,7 @@ The environment pi builds for every tool call, a replay's included and whatever 
 - **THEN** that unit refuses it, and nothing is written
 
 ### Requirement: An outside client's model calls re-check its authority
-Each model call SHALL find its conversation by its provider session, and its reservation and dispatch units SHALL each re-check that conversation's authority: a client's that no longer stands SHALL be refused `outside_authority` with a receipt and nothing sent, and a session the object never made `no_conversation`, so the abort a revoke sends is the prompt stop, not the enforcement.
+Each model call SHALL find its conversation by its provider session, and its reservation and dispatch units SHALL each re-check that conversation's authority: a client's that no longer stands SHALL be refused `outside_authority` with a receipt and nothing sent, and a session the object never made `no_conversation`. A client's conversation whose stored extension selection drops the gate SHALL make no model call.
 
 #### Scenario: A revoke the abort missed
 - **WHEN** a revoke commits while a client's hand-off is between its mark and its submit, or between a call's reservation and its dispatch
@@ -703,7 +703,7 @@ Each conversation SHALL carry its authority in pi's own document: the owner's (t
 - **THEN** the fork carries the same stamp, and its next tool call is blocked
 
 ### Requirement: A client's threads are bounded and hold its grant
-`agent_threads` SHALL record a thread in a unit that re-checks its stamp stands, SHALL never change a thread's stamp, SHALL refuse a client's thread past its bound loudly, and SHALL count each thread on its client's grant row (`held`), so the row is not forgotten while a thread names it. A grant set or revoke SHALL drop its client's threads in its own unit.
+`agent_threads` SHALL record a thread in a unit that re-checks its stamp stands, SHALL never change a thread's stamp, SHALL refuse loudly a thread past its client's bound or all clients' together, before any conversation is made, SHALL never record the root, and SHALL count each thread on its client's grant row (`held`), so the row is not forgotten while a thread names it. A grant set or revoke SHALL drop its client's threads in its own unit.
 
 #### Scenario: A client at its bound
 - **WHEN** a client has as many threads as its bound and asks for another
