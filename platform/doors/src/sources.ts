@@ -393,6 +393,13 @@ export function sealedSource(record: SourceRecord, method: "api_key" | "oauth"):
 
 /** `records` as the doors serve them: each checked whole when it is read. */
 export function catalogOf(records: readonly unknown[]): Sources {
+  const ids = records.map((record) => object(record) ? record["id"] : undefined);
+  if (new Set(ids).size !== ids.length) {
+    // Two records under one id: which one is served would be an accident (Fact 8).
+    const repeated = ids.find((id, index) => ids.indexOf(id) !== index);
+    throw new SourceRecordError(`source record ${JSON.stringify(String(repeated))}: ` +
+                                "its id is another record's");
+  }
   const byId = (id: string): unknown => records.find((record) =>
     object(record) && record["id"] === id);
   return {

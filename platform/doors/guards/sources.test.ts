@@ -191,6 +191,13 @@ describe("a record that does not fit", () => {
     expect(refused(record)).toMatch(/^source record "[^"]*": /);
   });
 
+  it("fails loudly as a second record under one id", () => {
+    expect(() => catalogOf([groq, openrouter, { ...groq, display_name: "Groq again" }]))
+      .toThrow(/^source record "groq": its id is another record's$/);
+    expect(() => catalogOf([null, null])).toThrow(SourceRecordError);
+    expect(catalogOf([groq, openrouter]).ids()).toEqual(["groq", "openrouter_user_models_v1"]);
+  });
+
   it("fails loudly when served, before any object is reached", () => {
     const broken = catalogOf([{ ...groq, api: "bedrock-converse-stream" }]);
     expect(() => broken.get("groq")).toThrow(SourceRecordError);

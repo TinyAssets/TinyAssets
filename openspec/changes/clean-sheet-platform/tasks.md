@@ -374,10 +374,14 @@ account and no deploy.
   credential on every connect door; forged owner, connection and version; the callback's
   navigation, binding, state and refusal cases; replayed, expired, other-session, cancelled
   (`sessionCloseAll`, sign-out) flows; the mix-up, each source's own callback form and
-  the issuer; a key outside the secret grammar; a setup check failing after an exchange;
+  the issuer; a repeated response parameter in either order; a duplicate source id; a key
+  outside the secret grammar; a setup check failing after an exchange (a gateway
+  `deadline` answered `504`, its own status);
   a broken or unsupported record; `413`. From the security review (CHANGES, 54b29ce87):
   M1 the per-source redirect URIs, M2 the key grammar, L1 to L5 above, each of its probes
-  now a test. Mutation: mine, 94 across the browser binding, the flow state, the
+  now a test; round 2 (APPROVE, 1a40bf175): a repeated `state`, `code`, `iss` or `error`
+  refused (RFC 6749 §3.1), a repeated source id refused by `catalogOf`, `deadline` `504`
+  (8 mutants on those lines, all killed). Mutation: mine, 94 across the browser binding, the flow state, the
   plaintext path, the owner-only gating and the review's fixes, all killed; the
   reviewer's 54, 53 killed and the one that lives equivalent (record parameters set after
   the flow's, which the schema forbids from naming a flow parameter).
@@ -408,10 +412,20 @@ account and no deploy.
   script runs; the page loads no third-party script; it is served with
   `Referrer-Policy: no-referrer` and a strict CSP.
 - [ ] Each RFC 6749 source's provider registration of its own redirect URI,
-  `https://tinyassets.io/oauth/connect/callback/<source-id>` (OpenRouter's key exchange
-  takes any callback: `.../callback/openrouter_user_models_v1/<state>`); Sign in with
+  `https://tinyassets.io/oauth/connect/callback/<source-id>`, registered exactly, never as
+  a prefix, and matched exactly by the provider (RFC 9700 §4.1); OpenRouter's key exchange
+  takes any callback: `.../callback/openrouter_user_models_v1/<state>`; Sign in with
   ChatGPT's hosted client and registration once OpenAI approves (founder), which then
   drops its record's `unwired`.
+- [ ] The key exchange's residual mix-up, before any uncurated source: a source on an
+  authorization server the platform does not curate (an MCP server, or a source from an
+  owner's package) must not share these connect flows while a key-exchange source such as
+  OpenRouter (no `state`, no `iss`) can be connected; that source's own slice solves it
+  (for example a separate flow family, or no key exchange beside it) before such sources
+  are allowed.
+- [ ] Append-only migrations from the first deploy: once a migration has run on a live
+  object it is never edited (G3 edited migration 6 in place only because nothing is
+  deployed), held by a guard that pins each deployed migration's text by digest.
 - [ ] Mobile connects and sign-in (the app slice): on mobile the OAuth runs in an external
   browser (RFC 8252), whose cookies are not the WebView's, so the Lax connect binding (and
   the provider's own upstream binding for the owner's sign-in) does not come back with

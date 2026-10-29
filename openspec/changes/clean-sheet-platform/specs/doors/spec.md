@@ -159,6 +159,17 @@ Each OAuth source SHALL have its own redirect URI, `/oauth/connect/callback/<sou
 - **WHEN** an RFC 6749 source's callback carries its state as a path segment, or a key-exchange source's carries it in the query
 - **THEN** the callback is refused `400`
 
+#### Scenario: A repeated response parameter
+- **WHEN** a callback repeats `state`, `code`, `iss` or `error` (RFC 6749 §3.1), in either order
+- **THEN** it is refused `400`, never read as its first or last copy
+
+### Requirement: No uncurated source shares the flow family with a key exchange
+A source on an authorization server the platform does not curate (an MCP server, or a source from an owner's package) SHALL NOT be connectable through these connect flows while a key-exchange source (OpenRouter's, which sends no `state` and no `iss`) can be: its own slice SHALL close the key exchange's residual mix-up first.
+
+#### Scenario: A package declares its own OAuth source
+- **WHEN** a source record from an owner's package names an authorization server
+- **THEN** it is not served by these connect doors until that slice has closed the residual mix-up
+
 ### Requirement: A source declaring its issuer is answered with it
 A record declaring its issuer and RFC 9207's `authorization_response_iss_parameter_supported` SHALL be answered only with that `iss`, and any `iss` present SHALL be the record's issuer.
 

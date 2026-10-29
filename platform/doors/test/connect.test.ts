@@ -554,12 +554,14 @@ describe("a credential the provider issued whose setup check then fails", () => 
   it("is never kept when it cannot be revoked, and the owner is told to delete it", async () => {
     const app = await signedIn();
     const started = await begin(app, "openrouter_user_models_v1");
-    // A code the doors do not answer as the provider's is thrown as it came, loudly, but
-    // only once the issued credential is accounted for.
-    await expect(post(app, "connections/oauth/finish", {
+    // The gateway's deadline is answered with its own status, once the issued credential
+    // is accounted for.
+    const finished = await post(app, "connections/oauth/finish", {
       state: started.state, code: "or-good",
       redirect_uri: `${CONNECT_CALLBACK}/openrouter_user_models_v1/${started.state}` },
-                      failingVerify("deadline"), [started.binding])).rejects.toThrow("deadline");
+                                failingVerify("deadline"), [started.binding]);
+    expect(finished.status).toBe(504);
+    expect(await finished.json()).toEqual({ error: "deadline" });
     expect(await connectionRows(app.owner)).toEqual([{ status: "error", revoke_due: null }]);
     expect(await blobRows(app.owner)).toEqual([]);
     expect((await noticeTypes(app.owner)).join("\n"))
@@ -630,6 +632,22 @@ describe("the connect callback", () => {
                            [started.binding])).status).toBe(400);
     expect(handed(await callback("/test_oauth", `${base}&${ISS}`, [started.binding])))
       .toMatchObject({ code: "good-code" });
+  });
+
+  it("refuses a repeated response parameter, whichever copy comes first", async () => {
+    const app = await signedIn();
+    const started = await begin(app, "test_oauth");
+    const evil = "iss=https%3A%2F%2Fevil.test";
+    const one = `state=${started.state}`;
+    for (const query of [`code=good-code&${one}&${ISS}&${evil}`,
+                         `code=good-code&${one}&${evil}&${ISS}`,
+                         `code=good-code&code=other&${one}&${ISS}`,
+                         `code=good-code&${one}&${one}&${ISS}`,
+                         `code=good-code&error=x&error=y&${one}&${ISS}`]) {
+      expect((await callback("/test_oauth", query, [started.binding])).status, query).toBe(400);
+    }
+    expect(handed(await callback("/test_oauth", `code=good-code&${one}&${ISS}`,
+                                 [started.binding]))).toMatchObject({ code: "good-code" });
   });
 
   it("hands the provider's refusal on as access_denied, never a code", async () => {

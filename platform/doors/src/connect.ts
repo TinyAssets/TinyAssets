@@ -88,6 +88,8 @@ const CODE = /^[\x21-\x7e]{1,2048}$/;
 const GATEWAY_CODE = /^(?:upstream|oauth)_[a-z_]+$/;
 /** Any of the gateway's fixed codes, as a failed setup is committed with. */
 const ANY_CODE = /^[a-z][a-z_]{0,63}$/;
+/** The authorization response's parameters the callback reads, each at most once. */
+const RESPONSE_PARAMS: readonly string[] = Object.freeze(["state", "code", "iss", "error"]);
 const TOO_EARLY = "the source is not connectable yet";
 const MIXED_UP = "the authorization came back on another source's callback";
 
@@ -145,13 +147,17 @@ function revocable(oauth: OAuthSpec | undefined): boolean {
 
 /**
  * A gateway failure as the connect answers it: a failure of the provider or its token
- * endpoint is the gateway's fixed code (`502`), a malformed request `400`; anything else
- * is a fault here or in the config, so it is thrown as it came, loudly.
+ * endpoint is the gateway's fixed code (`502`), its deadline `504`, a malformed request
+ * `400`; anything else is a fault here or in the config, so it is thrown as it came,
+ * loudly.
  */
 function answered(error: unknown): never {
   const code = error instanceof Error ? error.message : "";
   if (GATEWAY_CODE.test(code)) {
     throw new ConnectRefused(502, code);
+  }
+  if (code === "deadline") {
+    throw new ConnectRefused(504, code);  // the gateway's own status for its deadline
   }
   if (code === "invalid_request") {
     throw new ConnectRefused(400, code);
@@ -299,6 +305,11 @@ export async function connectCallback(request: Request, sources: Sources): Promi
     return page(403, "Open this page in your browser to finish connecting.");
   }
   const url = new URL(request.url);
+  // RFC 6749 §3.1: a response parameter is sent once. A repeated one is refused, never
+  // read as its first (or last) value, so no copy can stand in for the provider's.
+  if (RESPONSE_PARAMS.some((name) => url.searchParams.getAll(name).length > 1)) {
+    return page(400, "This is not a connection's callback.");
+  }
   const flow = returned(sources, url);
   if (flow === null) {
     return page(400, "This is not a connection's callback.");
