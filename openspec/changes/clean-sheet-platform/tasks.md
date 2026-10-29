@@ -450,11 +450,14 @@ account and no deploy.
   map rebuilt from it; a continuation kept on an earlier target is estimated by its own
   metadata, but pi's compaction threshold reads `auto`'s (the strongest's) until the next
   user message; pi's abort reaches the gateway through the service binding's own
-  cancellation, with no wrapper of ours; a fork with no owner is its own root (it runs
-  its own submissions), so only owner edges are walked. Owner bundle 1,598 KiB, 329 KiB
+  cancellation, with no wrapper of ours. Owner bundle 1,598 KiB, 329 KiB
   gzip (1,495 and 303 before A1), local startup 24 ms active in a 56 ms window (20 in 50
-  before). Open: a package that commits outside the context pi hands it starts causal
-  chains of its own, which only the owner's daily and monthly ceilings bound; the
+  before). Out of scope now: an input submitted under no origin (a door's, an enqueued
+  one, or code that ignores the context pi passes it) begins a turn, and a task created
+  with a forged carrier takes its origin; only platform code can do either, since the
+  object runs no package executable code (A5), hooks run remotely with no submit or task
+  path (H0, H1) and tools have none of their own, so a future in-object package runtime
+  would need an owner-edge check. Open: the
   attribution reaches the gateway hop only (pi-messages carries no identity upstream); an
   owner pin of a model per agent (`pi.agent`) for `auto`; a package that keeps the
   ranking current; the tee's transport to the owner's app (A6).

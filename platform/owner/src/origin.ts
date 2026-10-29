@@ -17,17 +17,28 @@
  *
  * This module is the harness's telemetry adapter, and records nothing but that one
  * thing, the origin: an input admitted with a link to a context that has one (a tool or
- * background work submitting to a subagent's conversation) takes that origin; any other
- * input (a door's, or the owner's own) is a new origin. Every other span takes its
- * parent's. So every model call one input caused, through any subagent, compaction or
- * background work, even after the run that started it ended, is charged to that input's
- * turn, as the Python's `_borrowed` charged a child to its parent's budget; a steer joins
- * the run it steers; and only a new input opens a new turn.
+ * background work submitting to a subagent's conversation) takes that origin. Every other
+ * input is a new origin, a new turn: one a door submits, one `PiHarness.enqueue` admits,
+ * and any input submitted under a context with no origin (`BACKGROUND_CONTEXT`, or a
+ * context code made instead of the one pi passed it). Every other span takes its parent's.
+ * So every model call one input caused, through any subagent, compaction or background
+ * work, even after the run that started it ended, is charged to that input's turn, as the
+ * Python's `_borrowed` charged a child to its parent's budget; a steer joins the run it
+ * steers.
  *
- * The one task pi itself starts with no carrier is a compaction asked for outside a run
- * (a door's write submission starts no input span): it is its own origin, by its task id.
- * Any other context without an origin (a package's commit made outside the context it was
- * given) has none, and its calls are refused (`no_run`), never given a fresh turn.
+ * A task takes whatever carrier it was created with. One with no carrier has no origin:
+ * pi's compaction is the one such task pi itself starts (one asked for outside a run; a
+ * door's write submission starts no input span), and it is its own origin, by its task
+ * id; any other task with no carrier (created under a context with no origin) has none,
+ * and its calls are refused (`no_run`). A task created with a forged `trace` carrier
+ * takes the forged origin.
+ *
+ * Neither a fresh input nor a forged carrier is in reach of anything but our own code:
+ * only trusted platform code runs inside the owner object. Package executable code is
+ * refused (A5 refuses `pi.extensions`); hooks run remotely, in the hooks Worker, which has
+ * no submit or task path (H0, H1); and the model's tools have no submit or task path of
+ * their own beyond the contexts pi passes them. A future in-object package runtime would
+ * need an owner-edge check here.
  */
 import { randomUUID } from "node:crypto";
 

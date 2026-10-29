@@ -583,7 +583,7 @@ Every cap SHALL read only counters the schema's triggers write: `model_turns` pe
 - **THEN** the turn's counters hold all 5,000, and a cap of 5,000 refuses the next
 
 ### Requirement: A model call's turn is the input at the origin of its causal chain
-A turn SHALL be the submitted input at the origin of a call's causal chain, carried by pi's own telemetry propagation in its durable records: every call one input caused, through a subagent, a compaction or background work, even after its run ended, SHALL be charged to that input's turn. An input from outside any origin SHALL begin a turn; an owner's compaction outside a run SHALL be its own; any other call with no origin SHALL be refused `no_run`.
+A turn SHALL be the submitted input at the origin of a call's causal chain, carried by pi's own telemetry propagation in its durable records: every call one input caused, through a subagent, a compaction or background work, even after its run ended, SHALL be charged to that input's turn. An input submitted under no origin (a door's, an enqueued one) SHALL begin a turn; an owner's compaction outside a run SHALL be its own; a call of any other task with no carrier SHALL be refused `no_run`.
 
 #### Scenario: A compaction a run starts
 - **WHEN** a run's context passes pi's background threshold, and pi summarizes after the run ended
@@ -600,6 +600,13 @@ A turn SHALL be the submitted input at the origin of a call's causal chain, carr
 #### Scenario: An input from outside any run
 - **WHEN** an input is submitted to a subagent's conversation from outside any run
 - **THEN** its calls begin a turn of their own
+
+### Requirement: Only platform code can start a turn or forge one
+A new turn or a forged task carrier SHALL be in reach of trusted platform code only: the owner object runs no package executable code (`pi.extensions` are refused), hooks run in the hooks Worker with no submit or task path, and the model's tools have none of their own.
+
+#### Scenario: A tool submits to its subagent
+- **WHEN** a tool of a run submits work to a conversation it made, under the context pi passed it
+- **THEN** the work is that run's turn, and no new turn opens
 
 ### Requirement: A reservation is dispatched and settled once, in its own units
 A reservation SHALL be dispatched only while still reserved, at the same policy generation and connection version, and not aborted; and settled once: `succeeded` from pi-ai's usage, `failed` when the gateway answered with a refusal's status (its own, or the provider's before any output), `unknown` otherwise, which keeps its whole reservation. A dispatch or settle that cannot be kept SHALL settle the row as it stands (`not_sent` or `unknown`) in the same instance.
