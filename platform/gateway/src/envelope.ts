@@ -20,7 +20,11 @@ import { Failure } from "./failure";
 
 export const ENVELOPE_HEADER = "x-ta-envelope";
 
-/** The longest a call may be given: the owner object's alarm budget (FV 1.7). */
+/**
+ * The longest a call may be given: a Durable Object keeps an operation it awaits for at
+ * most 15 minutes before it may be evicted (the per-operation window, not the alarm
+ * budget: pi's turn runs between the object's events), so no call outlives its caller.
+ */
 export const DEADLINE_MAX_MS = 15 * 60 * 1000;
 
 const HEADER_MAX = 96 * 1024;

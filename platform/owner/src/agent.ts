@@ -23,23 +23,30 @@
  *   opens again at every wake: the factory never throws for owner
  *   content, since a failed open fails the Lifecycle's startup and the object's lanes
  *   with it;
- * - the models, read at each use: in this slice an empty catalog, so a turn settles
- *   `unanswered: no_model`, loudly, until the gateway provider joins it (A1), and the
- *   default model is that provider's `auto`;
+ * - the models, read at each use: the `gateway` provider (`gateway-provider.ts`, A1),
+ *   whose models are the owner's connected ones and their virtual `auto`, the default a
+ *   conversation starts on; with nothing connected the catalog is empty, so a turn
+ *   settles `unanswered: no_model`, loudly;
+ * - the identity its requests carry: TinyAssets' attribution, not pi's (pi-durable's
+ *   default names pi);
  * - an environment per call: `OwnerFilesEnv` over the owner's files, whose writer in the
  *   file history is the conversation's stamp (`client:<id>` for an outside client's
  *   conversation, else `agent`), read from the `ta.authority` document;
  * - settings read at each use: progress committed at most once a second (the gateway
  *   streams live tokens from memory; a commit is a storage write), and a failed run's
  *   queued inputs withdrawn, so each settles `unanswered: run_failed` rather than waiting
- *   on an unrelated next input;
+ *   on an unrelated next input; over those, the part of owner policy that is pi's
+ *   (`AgentParts.policy`: the model retry count), which never moves the fixed ones;
  * - `onReport`: each report becomes an owner notice (`notices.ts`);
  * - `conversationCreated`: a conversation a task creates (a subagent's) takes its owner
  *   conversation's stamp in the creating commit, and a fork copies its parent's
- *   (`fork: "current"`), so no conversation an outside client's work makes sheds it.
+ *   (`fork: "current"`), so no conversation an outside client's work makes sheds it;
+ * - the telemetry adapter (`origin.ts`), which carries each causal chain's origin, the
+ *   submitted input that started it, along pi's own propagation: a model call's turn.
  */
 import type { Context } from "@earendil-works/chord/context";
-import type { Models } from "@earendil-works/pi-ai";
+import type { ClientIdentity, Models, Provider } from "@earendil-works/pi-ai";
+import { createModels } from "@earendil-works/pi-ai/models";
 import {
   type ConversationRecord, createRegistry, defineDoc, defineExtension, type EnvTarget,
   type Extension, Harness, type HarnessSettings, type ReportInfo, type Tx, wrapTool,
@@ -51,11 +58,18 @@ import { PiHarness } from "agents/harness/pi";
 import type { Files } from "./files";
 import { OwnerFilesEnv } from "./files-env";
 import type { Write } from "./gate";
+import type { LiveTee } from "./live-tee";
 import type { Notices } from "./notices";
+import { originRoot } from "./origin";
 import { WORKSPACE } from "./paths";
 
 /** The model a new conversation starts on: the gateway provider's virtual `auto` (A1). */
 export const AUTO = Object.freeze({ provider: "gateway", id: "auto" });
+
+/** How the agent's model requests name the app to providers: TinyAssets, not pi. */
+export const IDENTITY: ClientIdentity = Object.freeze({
+  attribution: Object.freeze({ name: "TinyAssets", url: "https://tinyassets.io" }),
+});
 
 /** pi's run settings; a function in the options, so it is read at each use. */
 export const AGENT_SETTINGS: HarnessSettings = Object.freeze({
@@ -120,6 +134,12 @@ export interface AgentParts {
   readonly write: Write;
   /** The object's `Schedule.sync()`: a changed file's housekeeping is scheduled. */
   readonly rearm: () => Promise<void>;
+  /** The part of owner policy that is pi's settings, read at each use. */
+  readonly policy: () => HarnessSettings;
+  /** The object's model provider: `gateway`, over the owner's connections. */
+  readonly provider: Provider;
+  /** The live tee the provider publishes every model event to, for the owner's views. */
+  readonly tee: LiveTee;
 }
 
 /** Besides the object's parts: the model catalog, and the extensions after the object's. */
@@ -147,9 +167,11 @@ export class OwnerAgent {
           models: () => this.#source.models(),
           registry: this.#registry,
           onWake,
-          settings: () => AGENT_SETTINGS,
+          identity: IDENTITY,
+          settings: () => ({ ...this.#parts.policy(), ...AGENT_SETTINGS }),
           env: (target, envContext) => this.#env(target, envContext),
           conversationCreated: (tx, record) => this.#inherit(tx, record),
+          telemetry: originRoot(),
           onReport: (error, info) => this.#report(info.type, detailOf(error, info)),
         }, context);
       },
@@ -206,4 +228,15 @@ export class OwnerAgent {
     this.#parts.write(() => this.#parts.notices.add(type, detail, Date.now() / 1000))
       .catch(() => console.error("an agent notice could not be kept"));
   }
+}
+
+/**
+ * The production agent: pi on the object's `gateway` provider, the one model source, with
+ * no extensions beyond the object's own (`extensions` are a test's).
+ */
+export function gatewayAgent(parts: AgentParts,
+                             extensions: readonly Extension[] = []): OwnerAgent {
+  const models = createModels();
+  models.setProvider(parts.provider);
+  return new OwnerAgent(parts, { models: () => models, extensions });
 }

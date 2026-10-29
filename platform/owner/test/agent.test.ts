@@ -1,8 +1,8 @@
 /**
  * pi-durable in the owner's object, on faux models (tasks 5, sub-slice A0): PiHarness on
  * the object's own Lifecycle, a turn over the owner's files, replay after an eviction, the
- * cold open, a package pi refuses, and the write gate against a transaction of the queue
- * pi's commits use.
+ * cold open, a package pi refuses, the write gate against a transaction of the queue
+ * pi's commits use, and a model request's turn as pi's records give it.
  */
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -23,7 +23,9 @@ import { NOTICE_DETAIL, Notices, NOTICES_KEPT } from "../src/notices";
 import type { Binding } from "../src/owner-do";
 import { ledgerOn, MCP, MUSE } from "./ledger-support";
 import { drainDue, failure } from "./support";
-import { type FauxOwnerDO, type MalformedOwnerDO, says, storeScript } from "./worker";
+import {
+  type FauxOwnerDO, type MalformedOwnerDO, says, type Spawned, storeScript,
+} from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
 const text = (value: string): Uint8Array => new TextEncoder().encode(value);
@@ -208,6 +210,273 @@ describe("a turn in the owner's object", () => {
   });
 });
 
+/** Whether a request is a compaction's summarization, by the system message pi sends it with. */
+function compacting(messages: readonly Message[]): boolean {
+  return messages.some((message) => (message as { role: string }).role === "system"
+    && JSON.stringify(message).includes("context summarization assistant"));
+}
+
+/** Every request's turn so far, as the agent read each when it was made. */
+function turnsOf(instance: FauxOwnerDO): string[] {
+  return [...instance.turns];
+}
+
+/** Wait for a submission pi admitted, by its id. */
+async function settled(instance: FauxOwnerDO, id: number) {
+  const pi = await instance.agent.harness.pi();
+  return (await pi.submission(id as never, BG))!.wait(BG);
+}
+
+/** Wait for background work, and the input it submitted to its conversation. */
+async function backgroundDone(instance: FauxOwnerDO) {
+  const pi = await instance.agent.harness.pi();
+  await until(async () => instance.probes.background !== null, "background work");
+  const task = await pi.waitForTask(instance.probes.background as never, BG);
+  const made = (task.state.outcome as { result: Spawned }).result;
+  return { ...made, answer: await settled(instance, made.submission) };
+}
+
+/** The answers of a conversation tree's tests, by what each conversation was asked. */
+function tree(messages: Message[]): AssistantMessage {
+  // What was said, not the system prompt, which names the tools.
+  const said = JSON.stringify(messages.filter((message) =>
+    (message as { role: string }).role !== "system"));
+  const asked = (text: string) => said.includes(text);
+  return compacting(messages) ? says("## Goal\nsummary")
+    : messages.at(-1)?.role === "toolResult" ? says("done")
+      : asked("grandchild work") || asked("background work") ? says("answered")
+        : asked("child hold") || asked("hold please") ? calls(fauxToolCall("hold", {}))
+          : asked("child work") ? calls(fauxToolCall("spawn", { work: "grandchild work" }))
+            : asked("spawn and hold")
+              ? calls(fauxToolCall("spawn", { work: "child work" }), fauxToolCall("hold", {}))
+              : asked("spawn one") ? calls(fauxToolCall("spawn", { work: "child hold" }))
+                : asked("start nested") ? calls(fauxToolCall("background",
+                                                            { work: "background work",
+                                                              nested: true }))
+                  : asked("start background")
+                    ? calls(fauxToolCall("background", { work: "background work" }))
+                    : says("noted");
+}
+
+/** A held gate and its release, on an instance's probes. */
+function gate(): { promise: Promise<void>; release: () => void } {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, release };
+}
+
+/** A user message of about 25,000 estimated tokens: past pi's 20,000 kept by a compaction. */
+const LONG = "word ".repeat(20_000);
+/** About 87,500: past the faux model's background compaction threshold of 78,848. */
+const HUGE = "word ".repeat(70_000);
+
+describe("a model request's turn", () => {
+  it("is the input that started its run: a run's requests share it, and the next input's " +
+     "run has its own", async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance) => {
+      instance.script = Array.from({ length: 8 }, () => (messages: Message[]) =>
+        messages.at(-1)?.role === "toolResult" ? says("done") : calls(fauxToolCall("hold", {})));
+      const first = await instance.agent.harness.prompt("one");
+      const second = await instance.agent.harness.prompt("two");
+      return { first, second, turns: turnsOf(instance) };
+    });
+    expect([out.first.status, out.second.status]).toEqual(["done", "done"]);
+    expect(out.turns).toHaveLength(4);
+    expect(out.turns.every((turn) => /^input:[0-9a-f-]{36}$/.test(turn))).toBe(true);
+    expect(out.turns[1]).toBe(out.turns[0]);
+    expect(out.turns[3]).toBe(out.turns[2]);
+    expect(out.turns[2]).not.toBe(out.turns[0]);
+  });
+
+  it("keeps the run's turn when an input steers it", async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance) => {
+      const held = gate();
+      instance.probes.holdGate = held.promise;
+      instance.script = Array.from({ length: 8 }, () => (messages: Message[]) =>
+        messages.at(-1)?.role === "toolResult" ? says("done")
+          : JSON.stringify(messages.at(-1)).includes("steer") ? says("steered")
+            : calls(fauxToolCall("hold", {})));
+      const { operationId } = await instance.agent.harness.submit("work");
+      await until(async () => instance.probes.holds === 1, "the hold to start");
+      // Joins the running work after the tool round.
+      const steered = await instance.agent.harness.submit("steer it", { whenBusy: "steer" });
+      held.release();
+      const answers = [await instance.agent.harness.wait(operationId),
+                       await instance.agent.harness.wait(steered.operationId)];
+      return { answers, turns: turnsOf(instance) };
+    });
+    expect(out.answers.map((answer) => answer.status)).toEqual(["done", "done"]);
+    expect(out.turns.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(out.turns).size).toBe(1);
+  });
+
+  it("is the run's for a compaction the run starts, even one that runs in the background",
+     async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance) => {
+      instance.script = Array.from({ length: 12 }, () => (messages: Message[]) =>
+        compacting(messages) ? says("## Goal\nsummary") : says("noted"));
+      expect((await instance.agent.harness.prompt("early")).status).toBe("done");
+      // Past pi's background threshold (32,768 under the blocking one): the run's
+      // generation starts a background compaction, which pi runs on past the run.
+      const answer = await instance.agent.harness.prompt(HUGE);
+      await until(async () => (await instance.agent.harness.messages())
+        .some((entry) => entry.kind === "pi.compaction"), "the compaction's summary");
+      return { answer, turns: turnsOf(instance) };
+    });
+    expect(out.answer.status).toBe("done");
+    // The early run's request, then the second run's and its compaction's summarization.
+    expect(out.turns).toHaveLength(3);
+    expect(out.turns[2]).toBe(out.turns[1]);
+    expect(out.turns[1]).not.toBe(out.turns[0]);
+  });
+
+  it("is a compaction's own when a door asks for one while a run is busy", async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance) => {
+      instance.script = Array.from({ length: 12 }, () => (messages: Message[]) =>
+        compacting(messages) ? says("## Goal\nkeep going")
+          : messages.at(-1)?.role === "toolResult" ? says("done")
+            : JSON.stringify(messages.at(-1)).includes("work") ? calls(fauxToolCall("hold", {}))
+              : says("noted"));
+      expect((await instance.agent.harness.prompt("early")).status).toBe("done");
+      const held = gate();
+      instance.probes.holdGate = held.promise;
+      const { operationId } = await instance.agent.harness.submit(`work ${LONG}`);
+      await until(async () => instance.probes.holds === 1, "the hold to start");
+      const pi = await instance.agent.harness.pi();
+      const root = await pi.root(BG);
+      // Asked by the owner, not caused by the run: placed at the run's next boundary.
+      const asked = root.compact(undefined, BG);
+      held.release();
+      const answer = await instance.agent.harness.wait(operationId);
+      const compaction = await asked;
+      const compacted = await pi.waitForTask(compaction, BG);
+      return { answer, compaction, compacted, turns: turnsOf(instance) };
+    });
+    expect(out.answer.status).toBe("done");
+    expect(out.compacted.state.outcome.status).toBe("completed");
+    const [early, ...rest] = out.turns;
+    const own = rest.filter((turn) => turn === `task:${out.compaction}`);
+    const run = rest.filter((turn) => turn !== `task:${out.compaction}`);
+    expect(own).toHaveLength(1);
+    expect(run.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(run).size).toBe(1);
+    expect(run[0]).not.toBe(early);
+  });
+
+  it("is the root run's for a subagent's and its subagent's calls", async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance) => {
+      const held = gate();
+      instance.probes.holdGate = held.promise;
+      instance.script = Array.from({ length: 12 }, () => tree);
+      const { operationId } = await instance.agent.harness.submit("spawn and hold");
+      // The subagent runs its work, and makes a subagent of its own, which runs too.
+      await until(async () => instance.probes.submitted.length === 2, "both subagents' work");
+      const below = [await settled(instance, instance.probes.submitted[0]!),
+                     await settled(instance, instance.probes.submitted[1]!)];
+      held.release();
+      const answer = await instance.agent.harness.wait(operationId);
+      return { answer, below, turns: turnsOf(instance) };
+    });
+    expect([out.answer.status, ...out.below.map((answer) => answer.status)])
+      .toEqual(["done", "done", "done"]);
+    // The root's two requests, the subagent's two and the grandchild's one.
+    expect(out.turns).toHaveLength(5);
+    expect(new Set(out.turns).size).toBe(1);
+  });
+
+  it("is an input's own when it comes from outside any run, even in a subagent's " +
+     "conversation", async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance) => {
+      instance.script = Array.from({ length: 12 }, () => tree);
+      const pi = await instance.agent.harness.pi();
+      instance.probes.holdGate = Promise.resolve();
+      expect((await instance.agent.harness.prompt("spawn one")).status).toBe("done");
+      await settled(instance, instance.probes.submitted[0]!);
+      const from = turnsOf(instance).length;
+      const child = instance.probes.spawned as ConversationId;
+      const asked = await (await pi.conversation(child, BG))!.submit(
+        { type: "input", content: "background work" }, BG);
+      const answer = await asked.wait(BG);
+      return { answer, before: turnsOf(instance).slice(0, from),
+               after: turnsOf(instance).slice(from) };
+    });
+    expect(out.answer.status).toBe("done");
+    expect(new Set(out.before).size).toBe(1);
+    expect(out.after).toHaveLength(1);
+    expect(out.after[0]).not.toBe(out.before[0]);
+  });
+
+  it.each([
+    ["background work", "start background"],
+    ["background work's own child task", "start nested"],
+  ])("keeps %s on the run that started it, after it ended, never a later run",
+     async (_what, prompt) => {
+    const r = agentObject();
+    const out = await r.in(async (instance) => {
+      const held = gate();
+      instance.probes.backgroundGate = held.promise;
+      instance.script = Array.from({ length: 12 }, () => tree);
+      const started = await instance.agent.harness.prompt(prompt);
+      const spawning = turnsOf(instance);
+      const later = await instance.agent.harness.prompt("a later input");
+      const laterTurns = turnsOf(instance).slice(spawning.length);
+      // The background work submits its work only now, during no run.
+      held.release();
+      const work = await backgroundDone(instance);
+      const workTurns = turnsOf(instance).slice(spawning.length + laterTurns.length);
+      return { started, later, work, spawning, laterTurns, workTurns };
+    });
+    expect([out.started.status, out.later.status, out.work.answer.status])
+      .toEqual(["done", "done", "done"]);
+    expect(new Set(out.spawning).size).toBe(1);
+    expect(out.laterTurns).toHaveLength(1);
+    expect(out.laterTurns[0]).not.toBe(out.spawning[0]);
+    expect(out.workTurns).toEqual([out.spawning[0]]);
+  });
+
+  it("is a subagent's own compaction while nothing runs", async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance) => {
+      instance.script = Array.from({ length: 12 }, () => tree);
+      instance.probes.holdGate = Promise.resolve();
+      expect((await instance.agent.harness.prompt("spawn one")).status).toBe("done");
+      await settled(instance, instance.probes.submitted[0]!);
+      const pi = await instance.agent.harness.pi();
+      const child = instance.probes.spawned as ConversationId;
+      const conversation = (await pi.conversation(child, BG))!;
+      await (await conversation.submit({ type: "input", content: LONG }, BG)).wait(BG);
+      const compaction = await conversation.compact(undefined, BG);
+      const done = await pi.waitForTask(compaction, BG);
+      return { compaction, done, turns: turnsOf(instance) };
+    });
+    expect(out.done.state.outcome.status).toBe("completed");
+    expect(out.turns.at(-1)).toBe(`task:${out.compaction}`);
+  });
+
+  it("is a compaction's own while the conversation is idle", async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance) => {
+      instance.script = Array.from({ length: 8 }, () => (messages: Message[]) =>
+        compacting(messages) ? says("## Goal\nsummary") : says("noted"));
+      await instance.agent.harness.prompt("early");
+      await instance.agent.harness.prompt(LONG);
+      const pi = await instance.agent.harness.pi();
+      const root = await pi.root(BG);
+      const compaction = await root.compact(undefined, BG);
+      const done = await pi.waitForTask(compaction, BG);
+      return { compaction, done, turns: turnsOf(instance) };
+    });
+    expect(out.done.state.outcome.status).toBe("completed");
+    expect(out.turns.at(-1)).toBe(`task:${out.compaction}`);
+  });
+});
+
 describe("a package pi refuses to install", () => {
   it("is skipped and kept as a notice, and the wakes and files lanes run on", async () => {
     const name = `owner-${crypto.randomUUID()}`;
@@ -242,7 +511,8 @@ describe("a package pi refuses to install", () => {
     expect(rows.intents).toEqual([]);  // the files lane expired the upload
     expect(rows.wakes).toEqual([{ state: "pending" }]);  // the wakes lane recovered it
     // pi opened without the package, and with every other extension.
-    expect(rows.tools).toEqual(["bash", "edit", "hold", "read", "spawn", "write"]);
+    expect(rows.tools).toEqual(["background", "bash", "edit", "hold", "pass", "read", "spawn",
+                               "write"]);
     const notices = (await stub.noticeList(as())).notices;
     expect(notices.map((notice) => [notice.type, notice.detail.split(":")[0]]))
       .toContainEqual(["extension_skipped", "pkg"]);

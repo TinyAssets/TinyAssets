@@ -21,6 +21,13 @@ export function isPrintable(value: string): boolean {
   return !NOT_PRINTABLE.test(value);
 }
 
+/**
+ * A model source record's id, which a connection names its source by (`connections.ts`)
+ * and owner policy keys a source's ceilings by (`policy.ts`): the Python's
+ * `source_ceilings` key, so a source's ceilings outlive any one connection of it.
+ */
+export const SOURCE_ID = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
+
 /** A collection, row or writer name: 1 to 256 printable characters. */
 export function name(value: unknown, what: string): string {
   if (typeof value !== "string" || !value || codePoints(value) > 256 || !isPrintable(value)) {

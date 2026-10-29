@@ -174,8 +174,10 @@ describe("envelope", () => {
 describe("fixed codes", () => {
   it.each([
     [401, "upstream_unauthorized"], [403, "upstream_unauthorized"], [429, "upstream_rate_limited"],
-    [400, "upstream_rejected"], [404, "upstream_rejected"], [499, "upstream_rejected"],
-    [500, "upstream_unavailable"], [503, "upstream_unavailable"], [302, "upstream_error"],
+    [408, "upstream_timeout"], [400, "upstream_rejected"], [404, "upstream_rejected"],
+    [499, "upstream_rejected"], [503, "upstream_overloaded"], [529, "upstream_overloaded"],
+    [500, "upstream_server_error"], [502, "upstream_server_error"],
+    [504, "upstream_server_error"], [302, "upstream_error"],
   ] as const)("names upstream %d as %s", (status, code) => {
     expect(upstreamCode(status)).toBe(code);
   });

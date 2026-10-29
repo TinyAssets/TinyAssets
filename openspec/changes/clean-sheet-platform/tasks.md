@@ -277,20 +277,68 @@ account and no deploy.
   only for Sign in with ChatGPT, through its statically bundled OAuth flows
   (`registerBunOAuthFlows`, since its lazy loader's import cannot be bundled) and inside
   a scope that reaches only the sealed token endpoint.
-- [ ] G2 The owner side: the gateway joins the owner config guard's `SERVICES` (binding
-  nothing, `secrets` allowed); migration for `connections`, `connection_secrets`,
-  `connection_flows` and `model_reservations`, and the policy's optional `models` table;
-  `connections.ts` (prepare, commit, revoke, list, flow begin and finish, each in session;
-  the refresh lease; housekeeping on a `connections` lane); `usage.ts` (reserve, settle,
-  `unknown`, per-turn and per-source caps, ported from `request_budget.py` with its
-  tests); `gateway-provider.ts` (pi-ai `createProvider` over pi-messages: reserve, stamp
-  the envelope with the policy generation read in the same transaction, `GATEWAY.fetch`
-  under the platform's subrequest limit (`limits.subrequests`, the only cap), settle from
-  `done`'s usage; the `auto`
-  router to the strongest connected source; the live-delta tee). Owed by 3.5: account
-  revocation (`sessionCloseAll`) cancels every open flow with the sessions, as the
-  Python's `revoke_owner` did; the gateway sees the owner's policy generation on every
-  call, stamped by the object, with no call back.
+- [x] G2 The owner side, in workerd, nothing deployed. `GATEWAY` joins the owner config
+  guard's `SERVICES`: the gateway Worker binds nothing and declares only `GATEWAY_KEYRING`
+  (`secrets.required`). Migration 6: `connections` (the clear facts: kind, provider,
+  models with their metadata, version, OAuth expiry, the refresh lease, a pending
+  window, a provider revoke owed), `connection_secrets` (one sealed blob per connection, at
+  its version), `connection_flows` (the SHA-256 of the state, the PKCE verifier while
+  open, the session) and `model_reservations`, with the counters every cap reads and only
+  triggers write: `model_spend` (each source's day and month) and `model_turns` (each
+  turn's requests, tokens and cost, kept until the turn is idle 30 days with no call
+  open), so the reservation rows are receipts only. A connection keeps up to 1,024 models
+  (the largest built-in catalog, 386, found by a scan, connects). Owner policy's optional
+  `models` table: per-turn requests, tokens and cost (µ$), owner-wide and per-source
+  (by source record) daily and monthly cost, pi's retries.
+  `connections.ts`: `connectionPrepare`, `connectionCommit`, `connectionRevoke`,
+  `connectionList`, `flowBegin`, `flowFinish`, each the owner's in session, a refusal
+  receipted; the refresh lease (one refresh per connection, which concurrent calls wait
+  on, stored by compare-and-swap; a refused grant fails the connection; a dead instance's
+  lease is taken over); a reseal stored by compare-and-swap, never under a refresh lease;
+  the `connections` lane (expired flows, unclaimed pending rows, provider revokes, each
+  outcome in its row; a source with no revocation endpoint has its blob deleted with a
+  notice; a refresh landing after a revoke keeps its rotated tokens for the lane to
+  revoke; a dropped refresh clears its lease), every changing door syncing it.
+  `usage.ts`: reserve (the policy, the turn's counters and the spend read in the unit
+  that inserts, output shrunk to what the caps leave, refusals kept as receipts),
+  dispatched (re-checked: reserved, the policy generation, the connection's version, not
+  aborted), settle (`succeeded` from pi-ai's usage, `failed` when the gateway answered
+  with a refusal's status, its own or the provider's before any output, else `unknown`,
+  which keeps its reservation), abandon (a dispatch or settle unit that threw), and a dead
+  instance's open rows settled by the next reserve or receipts read; `usageReceipts`
+  (owner only). `gateway-provider.ts` is A1's. Owed by 3.5,
+  done: `sessionCloseAll` cancels every open flow in its unit, `sessionClose` its
+  session's; the envelope carries the policy generation read in the reserving unit, with
+  no call back. Declared differences from the research: an OAuth revoke keeps the blob,
+  unusable, until the provider revoke (it is the only copy of the token to revoke), then
+  deletes it, or after 5 failed tries with a notice; an API key's goes in the revoke's
+  unit; `verify` now lists each model with its metadata (G1's answer held ids only, and
+  the object has no catalog); the connections row keeps no base URL (it is sealed); the
+  model policy's per-turn limits replace the Python's constants and its free-tier pools
+  have no counterpart; the daily and monthly ceilings default to none, as the Python's.
+  Review fixes: a provider's refusal before any output is answered by the gateway with
+  its code and status, so it settles `failed` at no cost (it had held its estimate as
+  `unknown`), and pi sees the gateway's code, named so that pi-ai's own classifier
+  retries a timeout, a rate limit, an overload or a server error and no other; pruning
+  receipts no longer frees a turn's caps (5,000 requests of one turn hold); a turn is
+  the input at the origin of the call's causal chain, not the newest user message (A1).
+  Mutation, the reviewer's round-3 set of 85: 14 name code the origin design deleted (the
+  session index, its anchors and the background walk); of the 71 left, 62 killed and the 9
+  that live equivalent (a failed call's tokens and cost are settled 0, so counting it
+  among the settled changes nothing; the dispatch's state guard, checked in its own unit
+  first; dropping a settled row from the in-memory open set, which is read only for open
+  rows; the reseal's own-refresh check, which the lease row also holds; `#owed`'s due
+  check behind the lane's own due query; the tee's undefined session, which no subscriber
+  can hold; the gateway's first-event check of an abort, which cannot coincide with a
+  provider's refusal status). Mine, 126 across the caps, the turn counters, the
+  reservation states, the turn's origin, the lease, the revoke, the envelope, `auto`, the
+  gate placement, the upstream codes and the gateway's first event: 123 killed, the 3
+  that live equivalent (the reseal's version-shape check of the gateway's own answer; the
+  output cap the gateway clamps to anyway; `flowBegin`'s sync, which its pending row's
+  sweep covers). Open: the
+  doors' `GATEWAY` binding
+  and the connect routes (G3); the policy write that ends in-flight turns and closes their
+  tee views (A2); the receipts' rows per call, measured live (G5).
 - [ ] G3 The connect doors (the doors Worker): paste-key connect and OAuth connect with
   its callback; the source records ported as data files with a schema; plaintext never
   reaches `OwnerDO`.
@@ -361,6 +409,58 @@ account and no deploy.
   rolled back with a transaction of the shared queue while a door's is kept. Owner bundle
   1,495 KiB, 303 KiB gzip (311 and 74 before; no provider SDK), local startup 20 ms active
   in a 50 ms window (16 in 28 before) of the 1 s limit.
+- [x] A1 The gateway provider, in workerd, nothing deployed (`gateway-provider.ts`,
+  `auto.ts`, `model-ranking.json`, `live-tee.ts`). One pi-ai `Provider`, `gateway`, written
+  directly: `getModels` reads the owner's active connections (`<connection>/<model>`, each
+  with the metadata the gateway's setup check gave) and, with any, `auto`; `streamSimple`
+  is pi-ai's own pi-messages client, its `fetch` the `GATEWAY` service binding, inside the
+  wrapper: the target, the turn, a refresh under the lease, reserve, dispatch, the
+  envelope (owner, connection, version, blob, reservation, policy generation, deadline,
+  as G1's `envelope.ts` reads it), the upstream's own model id, the reservation's output
+  cap, settle before pi sees the end, a reseal stored, and a row abandoned when its own
+  unit throws. The turn is the submitted input at the origin of the call's causal chain
+  (`origin.ts`): the harness's telemetry adapter carries an origin, and nothing else,
+  along pi's own propagation, durable in pi's records (an input's admission takes its
+  caller's origin, else begins one; a task takes its creator's carrier; a request carries
+  its phase's context). So a run's tool rounds, steers, compactions, subagents and the
+  background work it starts, with that work's own child tasks and conversations, are the
+  run's turn, after the run ended too, and count against its caps (the Python's
+  `_borrowed`); a later input's run is another; a compaction asked for outside a run is
+  its own; a call with no origin is `no_run`. Production's agent is it
+  (`gatewayAgent`, the default `AgentFactory`), so nothing connected settles `no_model`.
+  `auto`: ranked by the data file (provider and model globs, newer ids first, the rest by
+  catalog output price), its metadata the strongest's; stickiness and fallback read from
+  the request's own transcript (a continuation stays on the model that answered, a retry
+  after a failure before any output goes to the next-ranked), so nothing is kept in
+  memory. `identity`: TinyAssets' attribution. `settings()` spreads owner policy's part
+  (`agentPolicy`: the model retry count) beneath the fixed ones, re-read when the policy
+  generation moves. The live tee: every event, without pi-ai's running partial, to the
+  subscribers of the request's `sessionId`, in memory on the instance, bounded, a throwing
+  listener dropped. Tested against G1's gateway Worker (bundled by wrangler as a deploy
+  bundles it, run beside the tests with its fake upstream): a real turn; `no_model`; the
+  tee's 12 deltas while pi committed at most 3 partials; an abort reaching the upstream;
+  a budget refusal as the turn's error, never sent; a revoke racing a call; a 429 retried
+  by pi at no cost, and each upstream status retried or not as pi-ai reads its code; the
+  turn across tool rounds, a steer, a compaction the run starts (and one an owner asks
+  for), two levels of subagents, background work and its child task's work after the run
+  and beside a later one, and an input from outside any run; background work refused by
+  its spawning run's request cap while a later run is not charged; a
+  dispatch or settle that throws. Declared
+  differences from the research: stickiness reads the transcript rather than an in-memory
+  map rebuilt from it; a continuation kept on an earlier target is estimated by its own
+  metadata, but pi's compaction threshold reads `auto`'s (the strongest's) until the next
+  user message; pi's abort reaches the gateway through the service binding's own
+  cancellation, with no wrapper of ours. Owner bundle 1,598 KiB, 329 KiB
+  gzip (1,495 and 303 before A1), local startup 24 ms active in a 56 ms window (20 in 50
+  before). Out of scope now: an input submitted under no origin (a door's, an enqueued
+  one, or code that ignores the context pi passes it) begins a turn, and a task created
+  with a forged carrier takes its origin; only platform code can do either, since the
+  object runs no package executable code (A5), hooks run remotely with no submit or task
+  path (H0, H1) and tools have none of their own, so a future in-object package runtime
+  would need an owner-edge check. Open: the
+  attribution reaches the gateway hop only (pi-messages carries no identity upstream); an
+  owner pin of a model per agent (`pi.agent`) for `auto`; a package that keeps the
+  ranking current; the tee's transport to the owner's app (A6).
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
   owner's hook code with the Worker Loader, called over RPC with JSON in and out and a
   timeout. A `beforeTool` timeout or error blocks

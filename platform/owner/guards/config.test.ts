@@ -10,7 +10,9 @@
  * bound Worker's config is checked against that allow-list too, so any other binding it
  * gains (a Durable Object, a service, a queue, a workflow, a dispatch namespace, a
  * Worker loader, a tail consumer, a shared store, an unsafe binding) refuses the owner's
- * binding. The gateway joins `SERVICES` with its slice. Its compatibility flags carry
+ * binding. For `GATEWAY`, the model gateway, that is no binding at all, and its one secret,
+ * the keyring, declared by name (`secrets.required`), which binds nothing either. Its
+ * compatibility flags carry
  * `disable_ctx_exports`, so the runtime does not hand the object its own namespaces as
  * `ctx.exports`. Its `limits` are exactly `LIMITS`, set at top level: the platform's count
  * of subrequests per invocation (50 on Free, 10,000 by default on Paid), whose own error
@@ -52,12 +54,16 @@ interface Bound {
   readonly service: string;
   /** The binding kinds its own config may hold, and how many of each, exactly. */
   readonly bindings: Readonly<Record<string, number>>;
+  /** The secrets its config may declare by name (each binds nothing); none by default. */
+  readonly secrets?: readonly string[];
 }
 
 /** The service bindings the owner Worker may hold, by binding name. */
 const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
   FILES: Object.freeze({ service: "tinyassets-files",
                          bindings: Object.freeze({ r2_buckets: 1 }) }),
+  GATEWAY: Object.freeze({ service: "tinyassets-gateway", bindings: Object.freeze({}),
+                           secrets: Object.freeze(["GATEWAY_KEYRING"]) }),
 });
 
 type Config = Record<string, unknown>;
@@ -80,9 +86,16 @@ function object(value: unknown): value is Config {
  * bind anything).
  */
 export function boundProblems(config: Config, allowed: Bound): string[] {
+  const secrets = allowed.secrets ?? [];
   const problems = Object.keys(config)
-    .filter((key) => !BOUND_KEYS.has(key) && !Object.hasOwn(allowed.bindings, key))
+    .filter((key) => !BOUND_KEYS.has(key) && !Object.hasOwn(allowed.bindings, key)
+                     && !(key === "secrets" && secrets.length > 0))
     .map((key) => `${key} is not a binding the owner's ${allowed.service} binding allows`);
+  const declared = config["secrets"];
+  if (declared !== undefined && secrets.length > 0
+      && JSON.stringify(declared) !== JSON.stringify({ required: secrets })) {
+    problems.push(`secrets declares other than ${secrets.join(", ")}`);
+  }
   for (const [key, many] of Object.entries(allowed.bindings)) {
     const held = config[key];
     if (!Array.isArray(held) || held.length !== many) {
@@ -185,10 +198,52 @@ export function platformConfigs(): Map<string, Config> {
 const config = parseConfig(readFileSync(join(OWNER, CONFIG), "utf8"));
 
 describe("owner Worker config", () => {
-  it("binds only FILES, to a Worker that binds one bucket, and turns ctx.exports off", () => {
+  it("binds only FILES, to a Worker that binds one bucket, and GATEWAY, to one that binds " +
+     "nothing, and turns ctx.exports off", () => {
     expect(configProblems(config, platformConfigs())).toEqual([]);
     expect(config["compatibility_flags"]).toContain(NO_EXPORTS);
-    expect(config["services"]).toEqual([{ binding: "FILES", service: "tinyassets-files" }]);
+    expect(config["services"]).toEqual([{ binding: "FILES", service: "tinyassets-files" },
+                                        { binding: "GATEWAY", service: "tinyassets-gateway" }]);
+  });
+
+  const gateway = { name: "tinyassets-gateway", main: "src/index.ts",
+                    compatibility_flags: ["nodejs_compat"], workers_dev: false,
+                    secrets: { required: ["GATEWAY_KEYRING"] } };
+  const gatewayBinding = [{ binding: "GATEWAY", service: "tinyassets-gateway" }];
+
+  it("allows GATEWAY to the gateway Worker, which binds nothing and declares its keyring",
+     () => {
+    expect(configProblems({ ...config, services: gatewayBinding },
+                          new Map([["tinyassets-gateway", gateway as Config]]))).toEqual([]);
+  });
+
+  it.each([
+    ["a Durable Object namespace", { durable_objects: { bindings: [
+      { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-owner" }] } }],
+    ["a service", { services: [{ binding: "FILES", service: "tinyassets-files" }] }],
+    ["a bucket", { r2_buckets: [{ binding: "B", bucket_name: "b" }] }],
+    ["a KV namespace", { kv_namespaces: [{ binding: "KV", id: "shared" }] }],
+    ["a var", { vars: { OWNER: "alice" } }],
+    ["a second secret", { secrets: { required: ["GATEWAY_KEYRING", "OTHER"] } }],
+    ["a secret of another name", { secrets: { required: ["OTHER"] } }],
+    ["secrets of another shape", { secrets: ["GATEWAY_KEYRING"] }],
+    ["a route", { routes: ["tinyassets.io/gateway/*"] }],
+    ["an environment", { env: { prod: { name: "tinyassets-gateway-prod" } } }],
+  ])("refuses GATEWAY when the gateway Worker holds %s", (_what, extra) => {
+    expect(configProblems({ ...config, services: gatewayBinding },
+                          new Map([["tinyassets-gateway", { ...gateway, ...extra } as Config]])))
+      .not.toEqual([]);
+  });
+
+  it("refuses a secrets key on a bound Worker allowed none", () => {
+    const files = { name: "tinyassets-files", main: "src/index.ts",
+                    r2_buckets: [{ binding: "BLOBS", bucket_name: "tinyassets-files" }],
+                    secrets: { required: ["X"] } };
+    expect(configProblems({ ...config, services: [{ binding: "FILES",
+                                                    service: "tinyassets-files" }] },
+                          new Map([["tinyassets-files", files as Config]])))
+      .toEqual(["services.FILES: secrets is not a binding the owner's tinyassets-files " +
+                "binding allows"]);
   });
 
   it("sets the platform's subrequests per invocation explicitly, to the Paid default", () => {
@@ -205,9 +260,10 @@ describe("owner Worker config", () => {
       .toEqual([`env.prod.limits are not ${JSON.stringify(LIMITS)}`]);
   });
 
-  it("refuses FILES when the files Worker's config is not in the platform", () => {
+  it("refuses FILES and GATEWAY when their Workers' configs are not in the platform", () => {
     expect(configProblems(config)).toEqual(
-      ["services binds tinyassets-files, whose config is not in the platform"]);
+      ["services binds tinyassets-files, whose config is not in the platform",
+       "services binds tinyassets-gateway, whose config is not in the platform"]);
   });
 
   it("refuses FILES bound to another platform Worker, even one that binds nothing", () => {

@@ -1,7 +1,8 @@
 // The per-owner Durable Object (ADR-032). Not deployed yet: no workflow deploys
 // platform/. Edge Workers bind OWNER to this class by script_name from their own
-// configs. This Worker binds one thing, the FILES service: the files Worker, which itself
-// binds no Durable Object and no service, so it is no way to another owner's object.
+// configs. This Worker binds two things, the FILES service: the files Worker, which itself
+// binds no Durable Object and no service, and the GATEWAY service: the model gateway,
+// which binds nothing at all, so neither is a way to another owner's object.
 // `disable_ctx_exports` keeps the runtime from handing the object its own namespace as
 // `ctx.exports` (guards/config.test.ts checks this config and the files Worker's).
 // `limits.subrequests` is the platform's per-invocation count of the calls the object
@@ -19,7 +20,8 @@
   "preview_urls": false,
   "limits": { "subrequests": 10000 },
   "services": [
-    { "binding": "FILES", "service": "tinyassets-files" }
+    { "binding": "FILES", "service": "tinyassets-files" },
+    { "binding": "GATEWAY", "service": "tinyassets-gateway" }
   ],
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["OwnerDO"] }

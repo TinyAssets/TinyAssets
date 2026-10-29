@@ -58,7 +58,11 @@ The owner Worker's config SHALL bind nothing but the service bindings the next r
 - **THEN** a source guard fails CI, for every script extension under `src`
 
 ### Requirement: The owner Worker binds only Workers that reach nothing
-A service binding the owner Worker holds SHALL be only to a Worker the config guard's allow-list names, together with the binding kinds and counts that Worker may hold, none of which reaches another Worker or a store shared beyond its own purpose (today only `FILES`, the files Worker, holding exactly one `r2_buckets` entry). The guard SHALL check the bound Worker's own config, at top level and in every environment, and refuse any binding key the allow-list does not grant it.
+A service binding the owner Worker holds SHALL be only to a Worker the config guard's allow-list names, together with the binding kinds and counts that Worker may hold, none of which reaches another Worker or a store shared beyond its own purpose. The guard SHALL check the bound Worker's own config, at top level and in every environment, and refuse any binding key the allow-list does not grant it.
+
+#### Scenario: The bindings today
+- **WHEN** the owner Worker's config is checked
+- **THEN** it holds `FILES`, to the files Worker holding exactly one `r2_buckets` entry, and `GATEWAY`, to the model gateway holding no binding and declaring only its keyring secret by name
 
 #### Scenario: The bound Worker gains a way on
 - **WHEN** the files Worker's config gains a Durable Object namespace, a service, a queue producer, a workflow, a dispatch namespace, a Worker loader, an unsafe binding, a tail consumer, a KV namespace, a D1 database or a second bucket, at top level or in an environment
@@ -67,6 +71,10 @@ A service binding the owner Worker holds SHALL be only to a Worker the config gu
 #### Scenario: The binding names another Worker
 - **WHEN** `FILES` is bound to another platform Worker, even one that binds nothing
 - **THEN** the config guard refuses it
+
+#### Scenario: The gateway gains a binding or a secret
+- **WHEN** the gateway Worker's config gains any binding, a route, an environment, or a secret other than `GATEWAY_KEYRING`
+- **THEN** the config guard refuses the owner Worker's `GATEWAY` binding
 
 ### Requirement: The object migrates its schema on wake
 The object SHALL apply every schema migration past its stored version before it serves its first call after a wake, each migration in its own transaction with its version bump. A failed migration SHALL leave the version where it was and nothing of the migration behind. A stored version newer than the code's SHALL stop the object loudly. A deployed migration SHALL never change; a new shape is a new migration at the end.
@@ -480,7 +488,7 @@ pi-durable SHALL run in the owner's object on PiHarness, a capability of the obj
 - **THEN** pi opens, migrates its tables to version 2, and the turn completes
 
 ### Requirement: pi opens with the object's registry, tools and settings
-The object SHALL open pi with one registry per object, pi's coding tools with `read` alone replay-safe, settings read at each use (progress committed at most once a second, a failed run's queued inputs withdrawn), and an empty model catalog until the gateway provider lands, so a turn settles `no_model` rather than run on a model no owner connected.
+The object SHALL open pi with one registry per object, pi's coding tools with `read` alone replay-safe, settings read at each use (progress committed at most once a second, a failed run's queued inputs withdrawn, owner policy's part beneath those), TinyAssets' attribution, and one model provider, `gateway`, listing only the owner's connected models.
 
 #### Scenario: An eviction mid-tool
 - **WHEN** the object dies while a `read` and an unsafe tool are running, and its alarm starts it again
@@ -499,3 +507,143 @@ What pi reports through `onReport`, and each extension pi refuses to install whi
 #### Scenario: A malformed package
 - **WHEN** an extension pi refuses to install is among the object's
 - **THEN** it is skipped and kept as a notice, pi opens with the rest, and the `wakes` and `files` lanes run
+
+### Requirement: A model connection holds only a blob the gateway sealed
+The object SHALL hold a model connection's credential only as the blob the gateway sealed for that owner, connection and version, never a plaintext key or token: the binder hands a pasted key to the gateway's `seal` and an OAuth code to its `exchange`, and `connectionCommit` takes the blob, its kid, the models the gateway's setup check listed with their metadata, and an OAuth access expiry in clear.
+
+#### Scenario: A pasted key is connected and used
+- **WHEN** the owner connects a key and its agent runs a turn on it
+- **THEN** no table of the object, no call it makes to the gateway and no line it logs holds the key
+
+### Requirement: A connection keeps up to 1,024 models
+A connection SHALL keep up to 1,024 models with their metadata, so the largest built-in catalog (386 models in pi-ai 1.4.0) fits with room.
+
+#### Scenario: The largest built-in catalog
+- **WHEN** a key is connected for the built-in provider whose catalog is the largest
+- **THEN** the connection is active with every model the setup check listed
+
+### Requirement: The connection doors are the owner's, in its live session
+Preparing, committing, revoking and listing connections and beginning and finishing their OAuth flows SHALL be the owner's own doors, in its live session; a refused one leaves a refusal receipt.
+
+#### Scenario: An outside client tries to connect a source
+- **WHEN** an outside client's call, or the owner's call without a live session, reaches a connection door
+- **THEN** it is refused, and a refusal receipt is kept
+
+### Requirement: A connection OAuth flow is bound to the session that began it
+`flowBegin` SHALL keep a flow for a pending OAuth connection: the SHA-256 of a fresh state and a fresh PKCE verifier, bound to the beginning session, for 10 minutes, at most 10 open. `flowFinish` SHALL hand back the verifier only for that state, in that session, once. Signing a session out SHALL cancel the flows it began, and account revocation (`sessionCloseAll`) SHALL cancel every open flow, each in the unit that signs out.
+
+#### Scenario: A callback after account revocation
+- **WHEN** the owner's sessions are all signed out while a flow is open, and its callback then arrives in a new session
+- **THEN** the flow is not found, and nothing is exchanged
+
+### Requirement: A revoke deletes the credential and asks the provider to revoke it
+A connection revoke SHALL make the connection unusable in its own unit. An API key's blob SHALL be deleted in that unit. An OAuth blob, the only copy of the tokens the provider must revoke, SHALL be kept unusable until the `connections` lane's RFC 7009 revoke through the gateway succeeds, then deleted; after 5 failed attempts it SHALL be deleted anyway, with an owner notice.
+
+#### Scenario: An OAuth connection is revoked
+- **WHEN** the owner revokes an OAuth connection
+- **THEN** no call can use it from that unit on, the lane sends the gateway's provider revoke with the blob, and the blob is then deleted
+
+### Requirement: Every token a revoke leaves is revoked or noticed
+A source with no revocation endpoint SHALL have its blob deleted at the lane's first pass, with a notice that the provider honours the token until it expires. Tokens a refresh stored after the revoke SHALL be kept for, and revoked by, the lane.
+
+#### Scenario: A source with no revocation endpoint
+- **WHEN** the owner revokes an OAuth connection whose source names no revocation endpoint
+- **THEN** its blob is deleted at the lane's next pass, with that notice
+
+#### Scenario: A refresh lands after the revoke
+- **WHEN** a refresh in flight when the owner revoked stores rotated tokens, before or after the lane revoked the old ones
+- **THEN** the lane revokes the rotated tokens too, and no blob is left
+
+### Requirement: An expiring OAuth credential is refreshed once, under a lease
+Before a model call, an OAuth access token expiring within 3 minutes SHALL be refreshed through the gateway by one caller holding the connection's refresh lease, which every concurrent caller waits on, and the refreshed blob SHALL be stored by compare-and-swap at the next version. A refresh the provider refuses SHALL fail every waiting call loudly, and a refused grant SHALL fail the connection until the owner reconnects.
+
+#### Scenario: Concurrent calls on an expiring token
+- **WHEN** four calls start together on an OAuth connection whose token expires within the margin
+- **THEN** the gateway is asked to refresh once, and every call carries the refreshed token
+
+### Requirement: A resealed blob is stored with no lost update
+A blob the gateway resealed under its active kid SHALL be stored by compare-and-swap on the connection and its version, never while a refresh holds the lease, so a reseal of older tokens never overwrites newer ones.
+
+#### Scenario: A refresh lands while an older call is in flight
+- **WHEN** a call made on version 1 under an older kid ends after a refresh stored version 2
+- **THEN** version 2's tokens stay, and the call's reseal is dropped
+
+### Requirement: Every model call is reserved against the owner's model policy
+Each model call SHALL be reserved in one unit that also reads the connection's blob and the owner policy's generation and `models` caps: the turn's requests, tokens and cost, and the owner's and the source's daily and monthly cost, each counting what is settled and what is still open. The reservation SHALL bound the call's output tokens. A source's ceilings SHALL be keyed by its source record, so a reconnect keeps them.
+
+#### Scenario: Concurrent reserves at a cap
+- **WHEN** eight calls of one turn reserve together against a cap of three requests
+- **THEN** three are reserved and five refused, each refusal kept as a receipt
+
+### Requirement: The caps read counters, never receipts
+Every cap SHALL read only counters the schema's triggers write: `model_turns` per turn, `model_spend` per source, day and month. Receipts SHALL be history only, bounded without freeing any cap; a turn's counters SHALL go only once it has been idle 30 days with no call open.
+
+#### Scenario: Many requests in one turn
+- **WHEN** one turn makes 5,000 requests while only the newest 100 receipts are kept
+- **THEN** the turn's counters hold all 5,000, and a cap of 5,000 refuses the next
+
+### Requirement: A model call's turn is the input at the origin of its causal chain
+A turn SHALL be the submitted input at the origin of a call's causal chain, carried by pi's own telemetry propagation in its durable records: every call one input caused, through a subagent, a compaction or background work, even after its run ended, SHALL be charged to that input's turn. An input submitted under no origin (a door's, an enqueued one) SHALL begin a turn; an owner's compaction outside a run SHALL be its own; a call of any other task with no carrier SHALL be refused `no_run`.
+
+#### Scenario: A compaction a run starts
+- **WHEN** a run's context passes pi's background threshold, and pi summarizes after the run ended
+- **THEN** the summarization is the run's turn
+
+#### Scenario: A subagent's calls
+- **WHEN** a tool of the root's run makes a conversation and submits its work there, which does the same once more
+- **THEN** every call is the root run's turn
+
+#### Scenario: Background work after its run
+- **WHEN** a tool starts background work, the run ends, a later input runs, and the background work then calls a model
+- **THEN** its calls are the first run's turn, count against that turn's caps, and never against the later run's
+
+#### Scenario: An input from outside any run
+- **WHEN** an input is submitted to a subagent's conversation from outside any run
+- **THEN** its calls begin a turn of their own
+
+### Requirement: Only platform code can start a turn or forge one
+A new turn or a forged task carrier SHALL be in reach of trusted platform code only: the owner object runs no package executable code (`pi.extensions` are refused), hooks run in the hooks Worker with no submit or task path, and the model's tools have none of their own.
+
+#### Scenario: A tool submits to its subagent
+- **WHEN** a tool of a run submits work to a conversation it made, under the context pi passed it
+- **THEN** the work is that run's turn, and no new turn opens
+
+### Requirement: A reservation is dispatched and settled once, in its own units
+A reservation SHALL be dispatched only while still reserved, at the same policy generation and connection version, and not aborted; and settled once: `succeeded` from pi-ai's usage, `failed` when the gateway answered with a refusal's status (its own, or the provider's before any output), `unknown` otherwise, which keeps its whole reservation. A dispatch or settle that cannot be kept SHALL settle the row as it stands (`not_sent` or `unknown`) in the same instance.
+
+#### Scenario: A connection revoked before the dispatch
+- **WHEN** a connection is revoked between a call's reserve and its dispatch
+- **THEN** the call is `not_sent`, and nothing reaches the gateway
+
+#### Scenario: A provider's rate limit, retried
+- **WHEN** the provider answers 429 before any output, and pi retries the call twice
+- **THEN** each try settles `failed` at no cost, and no ceiling is spent
+
+#### Scenario: A provider refuses the key
+- **WHEN** the provider answers 401 before any output, with retries allowed
+- **THEN** pi does not try again, and the turn ends `upstream_unauthorized`
+
+### Requirement: A dead instance's calls are settled by the next instance
+An open reservation the live instance did not make SHALL be settled by the next reserve or receipts read: `reserved` as `not_sent`, `dispatched` as `unknown`.
+
+#### Scenario: The object dies mid-call
+- **WHEN** the object is reset while a dispatched call streams
+- **THEN** the next instance settles it `unknown`, and its reservation still counts against the ceilings
+
+### Requirement: The agent's models are the owner's connected models and `auto`
+The `gateway` provider SHALL list each active connection's models and, with any, `auto`, carrying the strongest's metadata. `auto` SHALL route each request in the object, by the ranking data file: to the strongest connected model for a user's message, to the model that answered for a continuation, and to the next-ranked after one that failed before any output.
+
+#### Scenario: Nothing is connected
+- **WHEN** a turn starts on an object with no active connection
+- **THEN** it settles `unanswered: no_model`
+
+### Requirement: Each model call goes to the gateway and to the live tee
+Each call SHALL go to the gateway as pi-messages over the `GATEWAY` service binding, with the envelope the gateway reads, and every event SHALL be published to the live tee under the request's `sessionId` as it streams.
+
+#### Scenario: A live view of a streaming answer
+- **WHEN** an answer streams for longer than a second
+- **THEN** the tee hands a subscriber every delta as it comes, while pi commits the answer at most once a second
+
+#### Scenario: A turn is aborted mid-stream
+- **WHEN** the owner aborts a turn whose model call is streaming
+- **THEN** the gateway's upstream request is cancelled, and the call settles `unknown`

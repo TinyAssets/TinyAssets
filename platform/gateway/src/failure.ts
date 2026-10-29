@@ -32,8 +32,10 @@ const STATUS = Object.freeze({
   // OAuth and verify calls throw them.
   upstream_unauthorized: 502,
   upstream_rate_limited: 502,
+  upstream_timeout: 502,
   upstream_rejected: 502,
-  upstream_unavailable: 502,
+  upstream_overloaded: 502,
+  upstream_server_error: 502,
   upstream_unreachable: 502,
   upstream_error: 502,
   unsupported_deferred: 502,
@@ -79,12 +81,22 @@ export function failureResponse(code: Code, extra?: Readonly<Record<string, stri
 }
 
 /**
- * The code for an upstream HTTP status. 401 and 403 mean the credential, 429 the
- * provider's limit, any other 4xx a request it refused, and 5xx the provider itself.
+ * The code for an upstream HTTP status. 401 and 403 mean the credential, 408 a request
+ * the provider timed out, 429 its limit, any other 4xx a request it refused; 503 and 529
+ * a provider overloaded, any other 5xx its own failure.
+ *
+ * The owner's agent decides on a retry by pi-ai's own reading of the code
+ * (`isRetryableAssistantError`, `utils/retry.js`), so the words are chosen for it: it
+ * retries `upstream_rate_limited` ("rate.?limit"), `upstream_timeout` ("timeout"),
+ * `upstream_overloaded` ("overloaded") and `upstream_server_error` ("server.?error"), and
+ * none of `upstream_unauthorized`, `upstream_rejected` and `upstream_error`.
  */
 export function upstreamCode(status: number): Code {
   if (status === 401 || status === 403) {
     return "upstream_unauthorized";
+  }
+  if (status === 408) {
+    return "upstream_timeout";
   }
   if (status === 429) {
     return "upstream_rate_limited";
@@ -92,8 +104,11 @@ export function upstreamCode(status: number): Code {
   if (status >= 400 && status < 500) {
     return "upstream_rejected";
   }
+  if (status === 503 || status === 529) {
+    return "upstream_overloaded";
+  }
   if (status >= 500) {
-    return "upstream_unavailable";
+    return "upstream_server_error";
   }
   return "upstream_error";
 }

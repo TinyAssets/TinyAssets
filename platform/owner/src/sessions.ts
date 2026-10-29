@@ -18,9 +18,10 @@
  * (tasks 2); the object refuses an outside client's call that carries one at every
  * door but an agent's registration (`owner-do.ts`).
  *
- * Owed by a later slice: the Python's `revoke_owner` also cancelled the owner's open
- * hosted-model, connection-OAuth and inline model flows; `closeAll` signs every
- * session out now, and the connection-flow task (4) cancels those flows with it.
+ * The Python's `revoke_owner` also cancelled the owner's open hosted-model,
+ * connection-OAuth and inline model flows: the object's `sessionCloseAll` door cancels
+ * every open connection flow in the unit that signs the sessions out, and `sessionClose`
+ * the flows its session began (`connections.ts`).
  *
  * Declared differences from the Python:
  * - The proof is the cookie only. The Python also took its hash (`session_hash`), which
@@ -134,6 +135,12 @@ export class Sessions {
                      expiresAt, id);
       return { expires_at: expiresAt };
     });
+  }
+
+  /** The id a session's cookie is kept under (its hash), or null for no cookie. */
+  id(proof: unknown): string | null {
+    const cookie = proofOf(proof);
+    return cookie === null ? null : hashed(cookie);
   }
 
   /** Sign one session out; signing out a session that is gone changes nothing. */

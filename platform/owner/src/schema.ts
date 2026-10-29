@@ -69,6 +69,29 @@ const COUNTED = "('uploading', 'live')";
 /** Move `file_space.chunk_bytes` by a chunk row's size, when its state counts. */
 const CHUNK_USAGE = (sign: string, row: string) =>
   `chunk_bytes = chunk_bytes ${sign} ${row}.size * (${row}.state IN ${COUNTED});`;
+/** What a model reservation row holds against the ceilings, in µ$. */
+const HELD = (row: string) =>
+  `(CASE WHEN ${row}.state IN ('reserved', 'dispatched', 'unknown') THEN ${row}.est_cost ` +
+  `WHEN ${row}.state IN ('succeeded', 'failed') THEN coalesce(${row}.cost, 0) ELSE 0 END)`;
+/** What a model reservation row holds against its turn's token cap. */
+const HELD_TOKENS = (row: string) =>
+  `(CASE WHEN ${row}.state IN ('reserved', 'dispatched', 'unknown') THEN ${row}.est_tokens ` +
+  `WHEN ${row}.state IN ('succeeded', 'failed') THEN coalesce(${row}.tokens, 0) ELSE 0 END)`;
+/** Whether a model reservation row counts as one of its turn's requests: it was, or may be, sent. */
+const ASKED = (row: string) => `(${row}.state NOT IN ('refused', 'not_sent'))`;
+/** Add `amount` to the row's source's day and month in `model_spend`. */
+const SPEND = (row: string, amount: string) =>
+  "INSERT INTO model_spend (period, source, cost) VALUES " +
+  `('d:' || ${row}.day, ${row}.source, ${amount}), ` +
+  `('m:' || ${row}.month, ${row}.source, ${amount}) ` +
+  "ON CONFLICT (period, source) DO UPDATE SET cost = cost + excluded.cost;";
+/** Move the row's turn's counters by the row's own, times `sign`, at `at`. */
+const TURN = (row: string, sign: string, at: string) =>
+  "INSERT INTO model_turns (turn, requests, tokens, cost, last_at) VALUES " +
+  `(${row}.turn, ${sign}${ASKED(row)}, ${sign}${HELD_TOKENS(row)}, ${sign}${HELD(row)}, ${at}) ` +
+  "ON CONFLICT (turn) DO UPDATE SET requests = requests + excluded.requests, " +
+  "tokens = tokens + excluded.tokens, cost = cost + excluded.cost, " +
+  "last_at = max(last_at, excluded.last_at);";
 /** A file entry in the temporary area, which keeps no history. */
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // 1: the owner this object serves, and the one revision primitive (S34, ADR-032).
@@ -652,6 +675,82 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TABLE owner_notices (seq INTEGER PRIMARY KEY AUTOINCREMENT, at REAL NOT NULL, " +
       "type TEXT NOT NULL CHECK (length(type) BETWEEN 1 AND 64), " +
       "detail TEXT NOT NULL CHECK (length(detail) <= 1024))",
+  ]),
+  // 6: model connections and their use (gateway research §4, §7; connections.ts,
+  // usage.ts). A connection's credential is a blob sealed by the gateway, which alone
+  // holds the key: the object never holds a plaintext secret. Times are the object's
+  // clock in seconds, but an OAuth access expiry and the refresh lease, which are epoch
+  // ms as the gateway gives them. A reservation's amount is held against the owner's
+  // ceilings by counters only the triggers below write, so no cap ever reads a receipt:
+  // `model_spend`, each source's day and month, and `model_turns`, each turn's requests,
+  // tokens and cost. What is reserved or unknown holds its estimate, what settled holds
+  // what it used, and what was never sent or was refused holds nothing and is no request.
+  // Receipts are history only, pruned without touching a counter; a turn's counters go
+  // only once the turn has been idle past the usage module's window.
+  Object.freeze([
+    "CREATE TABLE connections (id TEXT PRIMARY KEY CHECK (length(id) = 25), " +
+      "source TEXT NOT NULL CHECK (length(source) BETWEEN 1 AND 64), " +
+      "kind TEXT NOT NULL CHECK (kind IN ('api_key', 'oauth2')), " +
+      "display_name TEXT NOT NULL CHECK (length(display_name) BETWEEN 1 AND 128), " +
+      "provider TEXT NOT NULL CHECK (length(provider) BETWEEN 1 AND 64), " +
+      "models TEXT NOT NULL DEFAULT '[]' CHECK (length(models) <= 262144), " +
+      "status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'revoked', 'error')), " +
+      "version INTEGER NOT NULL CHECK (version >= 1), expires_at INTEGER, " +
+      "lease_id TEXT, lease_until INTEGER, created_at REAL NOT NULL, pending_until REAL, " +
+      "revoked_at REAL, revoke_due REAL, revoke_tries INTEGER NOT NULL DEFAULT 0, " +
+      "CHECK ((status = 'pending') = (pending_until IS NOT NULL)), " +
+      "CHECK (revoke_due IS NULL OR status = 'revoked')) WITHOUT ROWID",
+    "CREATE INDEX connections_pending ON connections (pending_until) " +
+      "WHERE pending_until IS NOT NULL",
+    "CREATE INDEX connections_revokes ON connections (revoke_due) WHERE revoke_due IS NOT NULL",
+    // One sealed blob per connection, at its current version.
+    "CREATE TABLE connection_secrets (connection_id TEXT NOT NULL, " +
+      "version INTEGER NOT NULL, kid TEXT NOT NULL CHECK (length(kid) BETWEEN 1 AND 32), " +
+      "blob TEXT NOT NULL CHECK (length(blob) <= 65536), " +
+      "PRIMARY KEY (connection_id, version)) WITHOUT ROWID",
+    // A connection OAuth flow, keyed by the SHA-256 of its state; its PKCE verifier is
+    // held only while it is open.
+    "CREATE TABLE connection_flows (flow TEXT PRIMARY KEY CHECK (length(flow) = 64), " +
+      "connection_id TEXT NOT NULL, session_id TEXT NOT NULL, verifier TEXT, " +
+      "redirect_uri TEXT NOT NULL CHECK (length(redirect_uri) <= 2048), " +
+      "created_at REAL NOT NULL, expires_at REAL NOT NULL, " +
+      "status TEXT NOT NULL CHECK (status IN ('open', 'used', 'cancelled')), " +
+      "CHECK ((status = 'open') = (verifier IS NOT NULL))) WITHOUT ROWID",
+    "CREATE INDEX connection_flows_by_expiry ON connection_flows (expires_at)",
+    "CREATE TABLE model_reservations (seq INTEGER PRIMARY KEY AUTOINCREMENT, " +
+      "id TEXT NOT NULL UNIQUE, turn TEXT NOT NULL CHECK (length(turn) <= 320), " +
+      "connection_id TEXT NOT NULL, source TEXT NOT NULL CHECK (length(source) <= 64), " +
+      "model TEXT NOT NULL CHECK (length(model) <= 256), " +
+      "state TEXT NOT NULL CHECK (state IN ('reserved', 'dispatched', 'succeeded', " +
+      "'failed', 'unknown', 'not_sent', 'refused')), rule TEXT, " +
+      "max_output_tokens INTEGER NOT NULL, est_tokens INTEGER NOT NULL, " +
+      "est_cost INTEGER NOT NULL, tokens INTEGER, cost INTEGER, " +
+      "policy_generation INTEGER NOT NULL, day TEXT NOT NULL, month TEXT NOT NULL, " +
+      "created_at REAL NOT NULL, settled_at REAL)",
+    "CREATE INDEX model_reservations_open ON model_reservations (state) " +
+      "WHERE state IN ('reserved', 'dispatched')",
+    "CREATE TABLE model_spend (period TEXT NOT NULL, source TEXT NOT NULL, " +
+      "cost INTEGER NOT NULL, PRIMARY KEY (period, source)) WITHOUT ROWID",
+    "CREATE TABLE model_turns (turn TEXT PRIMARY KEY, requests INTEGER NOT NULL, " +
+      "tokens INTEGER NOT NULL, cost INTEGER NOT NULL, last_at REAL NOT NULL) WITHOUT ROWID",
+    "CREATE INDEX model_turns_by_age ON model_turns (last_at)",
+    "CREATE TRIGGER model_reservations_spent AFTER INSERT ON model_reservations " +
+      `WHEN ${HELD("NEW")} != 0 BEGIN ${SPEND("NEW", HELD("NEW"))} END`,
+    "CREATE TRIGGER model_reservations_respent AFTER UPDATE OF state, cost " +
+      `ON model_reservations WHEN ${HELD("NEW")} != ${HELD("OLD")} BEGIN ${
+        SPEND("NEW", `${HELD("NEW")} - ${HELD("OLD")}`)} END`,
+    "CREATE TRIGGER model_reservations_turned AFTER INSERT ON model_reservations " +
+      `WHEN ${ASKED("NEW")} BEGIN ${TURN("NEW", "+", "NEW.created_at")} END`,
+    "CREATE TRIGGER model_reservations_returned AFTER UPDATE OF state, tokens, cost " +
+      `ON model_reservations WHEN ${ASKED("NEW")} != ${ASKED("OLD")} ` +
+      `OR ${HELD_TOKENS("NEW")} != ${HELD_TOKENS("OLD")} OR ${HELD("NEW")} != ${HELD("OLD")} ` +
+      `BEGIN ${TURN("OLD", "-", "OLD.created_at")} ${
+        TURN("NEW", "+", "coalesce(NEW.settled_at, NEW.created_at)")} END`,
+    "CREATE TRIGGER model_reservations_kept BEFORE UPDATE OF seq, id, turn, connection_id, " +
+      "source, " +
+      "model, est_tokens, est_cost, policy_generation, day, month, created_at " +
+      "ON model_reservations BEGIN SELECT RAISE(ABORT, 'a reservation never changes " +
+      "what it reserved'); END",
   ]),
 ]);
 

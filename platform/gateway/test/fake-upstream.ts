@@ -13,6 +13,10 @@
  * - `cmd:slow-<id>`: one text delta, then holds the stream open; its cancel is recorded
  *   under `<id>`, read back from `https://status.test/cancelled?id=<id>`.
  * - `cmd:tool`: a tool call (Anthropic).
+ * - `cmd:call-<name>`: a call of the tool `<name>` with no arguments (Anthropic); a tool
+ *   result that says `cmd:echo` turns the next answer back to text.
+ * - `cmd:drip`: `DRIP` text deltas (`d0 ` to `d11 `), `DRIP_MS` apart, then the finish:
+ *   a stream that lasts longer than the owner object's one-second partial commits.
  *
  * - `cmd:redirect307`: a 307 to another host.
  *
@@ -26,6 +30,8 @@
 const cancelled = new Map<string, boolean>();
 const evil: unknown[] = [];
 const USAGE = { input: 11, output: 7 };
+const DRIP = 12;
+const DRIP_MS = 150;
 
 function sse(frames: readonly (readonly [string | null, unknown])[]): string {
   return frames.map(([event, data]) =>
@@ -148,6 +154,29 @@ async function model(request: Request, format: Format): Promise<Response> {
     });
     return new Response(stream, { headers: { "content-type": "text/event-stream" } });
   }
+  if (cmd === "drip") {
+    let sent = 0;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(format.start(name)));
+        timer = setInterval(() => {
+          if (sent === DRIP) {
+            clearInterval(timer);
+            const all = Array.from({ length: DRIP }, (_, i) => `d${i} `).join("");
+            controller.enqueue(encoder.encode(format.finish(all)));
+            controller.close();
+            return;
+          }
+          controller.enqueue(encoder.encode(format.text(`d${sent++} `)));
+        }, DRIP_MS);
+      },
+      cancel() {
+        clearInterval(timer);
+      },
+    });
+    return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+  }
   const reply = JSON.stringify({
     path: url.pathname, query: url.search,
     auth: { "x-api-key": request.headers.get("x-api-key"),
@@ -162,8 +191,10 @@ async function model(request: Request, format: Format): Promise<Response> {
   return new Response(payload, { headers: { "content-type": "text/event-stream" } });
 }
 
-function anthropicTool(request: Request, body: Record<string, unknown>): Response {
+function anthropicTool(request: Request, body: Record<string, unknown>,
+                       tool?: string): Response {
   const name = String(body["model"]);
+  const input = tool === undefined ? ["{\"q\":", "\"pi\"}"] : ["{", "}"];
   return new Response(sse([
     ["message_start", { type: "message_start", message: {
       id: "msg_tool", type: "message", role: "assistant", model: name, content: [],
@@ -176,12 +207,12 @@ function anthropicTool(request: Request, body: Record<string, unknown>): Respons
                               delta: { type: "signature_delta", signature: "sig-1" } }],
     ["content_block_stop", { type: "content_block_stop", index: 0 }],
     ["content_block_start", { type: "content_block_start", index: 1,
-                              content_block: { type: "tool_use", id: "toolu_1", name: "lookup",
-                                               input: {} } }],
+                              content_block: { type: "tool_use", id: "toolu_1",
+                                               name: tool ?? "lookup", input: {} } }],
     ["content_block_delta", { type: "content_block_delta", index: 1,
-                              delta: { type: "input_json_delta", partial_json: "{\"q\":" } }],
+                              delta: { type: "input_json_delta", partial_json: input[0] } }],
     ["content_block_delta", { type: "content_block_delta", index: 1,
-                              delta: { type: "input_json_delta", partial_json: "\"pi\"}" } }],
+                              delta: { type: "input_json_delta", partial_json: input[1] } }],
     ["content_block_stop", { type: "content_block_stop", index: 1 }],
     ["message_delta", { type: "message_delta", delta: { stop_reason: "tool_use" },
                         usage: { output_tokens: USAGE.output } }],
@@ -330,8 +361,9 @@ export default {
     }
     if (url.hostname === "api.anthropic.com") {
       const text = await request.clone().text();
-      if (command(text) === "tool") {
-        return anthropicTool(request, JSON.parse(text) as Record<string, unknown>);
+      const calling = /^call-([a-z]+)$/.exec(command(text));
+      if (command(text) === "tool" || calling !== null) {
+        return anthropicTool(request, JSON.parse(text) as Record<string, unknown>, calling?.[1]);
       }
       return model(request, anthropicFormat());
     }

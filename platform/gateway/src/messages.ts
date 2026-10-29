@@ -18,8 +18,10 @@
  *    request goes through fetch run at all (`catalog.ts`, `SUPPORTED_APIS`).
  * 6. Re-encode each event as pi-messages (`encode.ts`), `done` carrying pi-ai's `Usage`.
  *
- * Failures before the stream are answered with a fixed code (`failure.ts`); after it
- * starts, the stream ends with a pi-messages `error` event whose text is a fixed code,
+ * Failures before the stream are answered with a fixed code (`failure.ts`), and so is a
+ * provider that refused the call before producing anything (its status is in the
+ * answer's, so the owner settles it at no cost); after it starts, the stream ends with a
+ * pi-messages `error` event whose text is a fixed code,
  * classified from what the guarded fetch saw (the HTTP status), never from the
  * adapter's message, which can quote the provider's body.
  *
@@ -258,6 +260,27 @@ async function serve(request: Request, env: KeyringEnv, catalog: Catalog): Promi
     throw new Failure("invalid_request");
   }
 
+  // The first event decides the answer's status. Every adapter the gateway runs pushes
+  // `start` only once the provider answered 2xx (`anthropic-messages.js:476`,
+  // `openai-responses.js:155`, `openai-completions.js:203`, `google-generative-ai.js:50`,
+  // `mistral-conversations.js:37`, `azure-openai-responses.js:70`, each after its request
+  // resolved, which throws on a refusal), so an `error` first means nothing was streamed.
+  // When the guarded fetch saw the provider refuse (a status of 300 or more) or refused to
+  // send it, the answer is that fixed code with its own non-200 status: the provider
+  // produced nothing, and the owner settles the call `failed`, at no cost. Anything else,
+  // an abort or the deadline among them, stays a stream that ends with its `error`.
+  let first: IteratorResult<AssistantMessageEvent> | undefined;
+  try {
+    first = await events.next();
+  } catch {
+    first = undefined;  // pi-ai's stream never throws; the stream below reports it
+  }
+  if (first !== undefined && !first.done && first.value.type === "error"
+      && !deadline.aborted && !cancelled.signal.aborted
+      && (observed.refused || (observed.status !== undefined && observed.status >= 300))) {
+    return failureResponse(observed.refused ? "endpoint_refused" : upstreamCode(observed.status!));
+  }
+
   const encoder = new TextEncoder();
   let ended = false;
   const end = (controller: ReadableStreamDefaultController<Uint8Array>, message: AssistantMessage,
@@ -274,7 +297,8 @@ async function serve(request: Request, env: KeyringEnv, catalog: Catalog): Promi
       }
       let next: IteratorResult<AssistantMessageEvent>;
       try {
-        next = await events.next();
+        next = first ?? await events.next();
+        first = undefined;
       } catch {
         // pi-ai's stream never throws; if it did, its text is not shown.
         cancelled.abort();

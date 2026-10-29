@@ -24,7 +24,8 @@
  * Every other door refuses the pair.
  *
  * Its code cannot reach another owner's object: the Worker binds only `FILES`, the files
- * Worker, which itself binds no Durable Object and no service; the runtime hands it no
+ * Worker, which itself binds no Durable Object and no service, and `GATEWAY`, the model
+ * gateway, which binds nothing at all; the runtime hands it no
  * `ctx.exports` (`disable_ctx_exports`); and its source never names `exports` or imports
  * `env` (the config and self-reach guards). The owner's file bytes reach the bucket only
  * through `FILES`, under the owner's namespace, which only this object holds
@@ -42,18 +43,25 @@
  * {@link WakeSender}; file housekeeping (expired uploads and temporary directories,
  * history prunes, garbage chunk deletes) is the `files` lane's. No door reaches either.
  *
+ * The owner's model connections (`connections.ts`) hold only blobs the gateway sealed;
+ * their doors are the owner's, in its live session. The agent's one model provider
+ * (`gateway-provider.ts`) reserves each call against the owner's model policy (`usage.ts`)
+ * and calls `GATEWAY` with the sealed blob; the `connections` lane sweeps expired flows
+ * and asks providers to revoke what the owner revoked.
+ *
  * Every owner write goes through the object's write gate (`gate.ts`), the SQLite queue
  * pi's commits use, so none lands inside a pi transaction: each door's synchronous body is
  * one unit (`#door`), a door that then crosses to `FILES` writes its later steps through
  * units of their own, and each lane writes a row at a time. The modules see the storage
  * only through the gate's view, which refuses a write outside a unit. Reads are direct.
  */
-import { createModels } from "@earendil-works/pi-ai/models";
+import type { HarnessSettings } from "@earendil-works/pi-durable";
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
-import { type AgentParts, OwnerAgent } from "./agent";
+import { type AgentParts, gatewayAgent, type OwnerAgent } from "./agent";
 import { Collections, Conflict, type HistoryEntry, type Page, type Row } from "./collections";
+import { type ConnectionView, Connections, type GatewayService } from "./connections";
 import { Invalid, Refused } from "./errors";
 import {
   type Change as FileChange, CHUNK_BYTES, type ChunkRef, type ChunkStore, type Content,
@@ -68,9 +76,12 @@ import {
 } from "./ledger";
 import { type Notice, Notices } from "./notices";
 import {
-  type Change, fileSettings, Policy, type PolicyDocument, type Projection, type Receipt,
+  agentPolicy, type Change, fileSettings, modelSettings, Policy, type PolicyDocument,
+  type Projection, type Receipt,
 } from "./policy";
 import { type Card, Registrations } from "./registrations";
+import { GatewayProvider } from "./gateway-provider";
+import { LiveTee } from "./live-tee";
 import { type Lane, Schedule } from "./schedule";
 import {
   runWork, Scheduled, WORK_HANDOFF_MS, WORK_PER_PASS, type WorkRunner,
@@ -78,6 +89,7 @@ import {
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
 import { principal } from "./text";
+import { Usage as ModelUsage, type UsageReceipt } from "./usage";
 import { runWakes, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "./wakes";
 
 /**
@@ -196,12 +208,45 @@ export interface SubscriberRequest {
 }
 
 /**
- * The object's environment: one service binding, `FILES`, to the files Worker, which
- * binds no Durable Object and no service (the config guard checks both configs), and
- * never a binding to its own namespace.
+ * The object's environment: two service bindings, `FILES`, to the files Worker, which
+ * binds no Durable Object and no service, and `GATEWAY`, to the model gateway, which binds
+ * nothing (the config guard checks every config), and never a binding to its own
+ * namespace.
  */
 export interface OwnerEnv {
   readonly FILES: ChunkStore;
+  readonly GATEWAY: GatewayService;
+}
+
+/** A connection to prepare: its source record's id, kind, display name and pi-ai provider. */
+export interface ConnectionPrepareRequest {
+  readonly source: string;
+  readonly kind: "api_key" | "oauth2";
+  readonly display_name: string;
+  readonly provider: string;
+}
+
+/** A prepared connection's sealed blob, its kid, its models and, for OAuth, its expiry. */
+export interface ConnectionCommitRequest {
+  readonly connection: string;
+  readonly version: number;
+  readonly blob: string;
+  readonly kid: string;
+  readonly models: unknown[];
+  readonly expires_at?: number | null;
+}
+
+export interface ConnectionRequest {
+  readonly connection: string;
+}
+
+export interface FlowBeginRequest {
+  readonly connection: string;
+  readonly redirect_uri: string;
+}
+
+export interface FlowFinishRequest {
+  readonly state: string;
 }
 
 export interface FileRequest {
@@ -453,6 +498,10 @@ export interface LaneDeps {
     collect(now: number, until: number): Promise<void>;
   };
   readonly work: Scheduled;
+  readonly connections: {
+    nextDue(now: number): number | null;
+    run(now: number, until: number): Promise<void>;
+  };
   /** The doorbell, or null until tasks 7 constructs one: read at each use, never kept. */
   readonly sender: () => WakeSender | null;
   /** The scheduled-turn runner, or null until tasks 5 constructs one: read at each use. */
@@ -471,7 +520,8 @@ export interface LaneDeps {
  * when a lane looks or runs, so one the object gains later is never missed.
  * Exported so the wiring is tested with recording passes; `OwnerDO` gives it the real ones.
  */
-export function ownerLanes(deps: LaneDeps): Readonly<Record<"wakes" | "files" | "work", Lane>> {
+export function ownerLanes(deps: LaneDeps):
+    Readonly<Record<"wakes" | "files" | "work" | "connections", Lane>> {
   return {
     // Lapsed claims, then due wakes and revokes; open rows count only with a doorbell.
     wakes: { next: (now) => deps.ledger.nextDue(now, deps.sender() !== null),
@@ -486,20 +536,14 @@ export function ownerLanes(deps: LaneDeps): Readonly<Record<"wakes" | "files" | 
             run: (_now, until) => deps.runWork(deps.work, deps.runner(), deps.clock,
                                                deps.write, WORK_PER_PASS, WORK_HANDOFF_MS,
                                                until) },
+    // Connection housekeeping: expired flows, unclaimed pending rows, provider revokes.
+    connections: { next: (now) => deps.connections.nextDue(now),
+                   run: (now, until) => deps.connections.run(now, until) },
   };
 }
 
 /** Builds the object's agent from its parts. */
 export type AgentFactory = (parts: AgentParts) => OwnerAgent;
-
-/**
- * The agent of an object with no model source connected: an empty catalog, so a turn
- * settles `unanswered: no_model`, loudly, until the gateway provider (A1) is in it.
- */
-export function unconnectedAgent(parts: AgentParts): OwnerAgent {
-  const models = createModels();
-  return new OwnerAgent(parts, { models: () => models, extensions: [] });
-}
 
 export class OwnerDO extends DurableObject<OwnerEnv> {
   /** The one write gate: every owner write is a unit of the queue pi's commits use. */
@@ -515,6 +559,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #work: Scheduled;
   readonly #registrations: Registrations;
   readonly #notices: Notices;
+  readonly #connections: Connections;
+  readonly #usage: ModelUsage;
+  /** Live model events for the owner's views, in memory only (`live-tee.ts`). */
+  readonly #tee = new LiveTee();
+  /** The agent's settings from owner policy, kept for the policy generation they are of. */
+  #agentSettings: { generation: number; settings: HarnessSettings } | null = null;
   readonly #schedule: Schedule;
   /** pi-durable on PiHarness, a capability of the one Lifecycle (`agent.ts`). */
   readonly #agent: OwnerAgent;
@@ -533,10 +583,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #runner: WorkRunner | null = null;
 
   /**
-   * The runtime constructs it with `ctx` and `env` alone, so the agent is the unconnected
-   * one; the workerd tests hand a factory that opens it on pi-ai's faux models.
+   * The runtime constructs it with `ctx` and `env` alone, so the agent is the production
+   * one, on the gateway provider; the workerd tests hand a factory that opens it on pi-ai's
+   * faux models.
    */
-  constructor(ctx: DurableObjectState, env: OwnerEnv, agent: AgentFactory = unconnectedAgent) {
+  constructor(ctx: DurableObjectState, env: OwnerEnv, agent: AgentFactory = gatewayAgent) {
     super(ctx, env);
     this.#gate = new WriteGate(ctx.storage);
     const storage = this.#gate.storage;
@@ -552,14 +603,33 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#work = new Scheduled(storage, this.#grants);
     this.#registrations = new Registrations(storage, this.#grants);
     this.#notices = new Notices(storage);
+    const owner = () => {
+      const named = ctx.id.name;
+      if (named === undefined) {
+        throw new Error("this object is not named by an owner");
+      }
+      return named;
+    };
+    this.#connections = new Connections(storage, write, () => env.GATEWAY, owner,
+                                        this.#notices, clock);
+    this.#usage = new ModelUsage(storage, () => {
+      const { generation, document } = this.#policy.read();
+      return { generation, settings: modelSettings(document) };
+    });
     // The lanes of the one schedule. There is no global tick; each owner's object
     // schedules only itself.
     this.#schedule = new Schedule(ownerLanes({
       ledger: this.#ledger, files: this.#files, work: this.#work,
+      connections: this.#connections,
       sender: () => this.#sender, runner: () => this.#runner, clock, write, runWakes, runWork,
     }), clock, write);
+    const provider = new GatewayProvider({
+      connections: this.#connections, usage: this.#usage, write, gateway: () => env.GATEWAY,
+      owner, tee: this.#tee, clock,
+    });
     this.#agent = agent({ files: this.#files, notices: this.#notices, write,
-                          rearm: () => this.#schedule.sync() });
+                          rearm: () => this.#schedule.sync(),
+                          policy: () => this.#agentPolicy(), provider, tee: this.#tee });
     this.#lifecycle = new Lifecycle<OwnerEnv>(this).use(this.#schedule).use(this.#agent.harness);
     void ctx.blockConcurrencyWhile(async () => {
       await write(() => migrate(storage));
@@ -575,6 +645,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   override async alarm(): Promise<void> {
     await this.#lifecycle.alarm();
+  }
+
+  /**
+   * The part of owner policy that is pi's settings: pi reads its settings at every use
+   * (some on every commit), so the document is read again only when its generation moved.
+   */
+  #agentPolicy(): HarnessSettings {
+    const generation = this.#policy.generation();
+    if (this.#agentSettings?.generation !== generation) {
+      this.#agentSettings = { generation,
+                              settings: agentPolicy(this.#policy.read().document) };
+    }
+    return this.#agentSettings.settings;
   }
 
   /** A door's synchronous body, as one unit of the write gate. */
@@ -705,17 +788,27 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
   }
 
+  /** One session signed out, and the connection flows it began cancelled with it. */
   sessionClose(binding: Binding): Promise<{ closed: number }> {
-    return this.#door(() => {
+    return this.#synced(() => {
       this.#owner(binding, "sign out");
-      return this.#sessions.close(binding.session);
+      const id = this.#sessions.id(binding.session);
+      const closed = this.#sessions.close(binding.session);
+      if (id !== null) {
+        this.#connections.cancelFlows(id);
+      }
+      return closed;
     });
   }
 
-  /** Every session signed out: account revocation and deletion (`revoke_owner`). */
+  /**
+   * Every session signed out: account revocation and deletion (`revoke_owner`), every open
+   * connection flow cancelled in the same unit, so a late callback finds none.
+   */
   sessionCloseAll(binding: Binding): Promise<{ closed: number }> {
-    return this.#door(() => {
+    return this.#synced(() => {
       this.#owner(binding, "sign out");
+      this.#connections.cancelFlows(null);
       return this.#sessions.closeAll();
     });
   }
@@ -987,6 +1080,67 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       this.#scope(account, "write_graph");
       return this.#ledger.post(account.origin, r["room_id"], r["client_message_id"],
                                r["body"], r["parent_id"]);
+    });
+  }
+
+  // -- MODEL CONNECTIONS: sealed credentials, flows and spend (tasks 4 G2) ------------
+  //
+  // Each door is the owner's own, in its live session: an outside client's call carries
+  // no session and is refused, with a refusal receipt. The binder seals and exchanges with
+  // the gateway between them; no plaintext secret reaches the object.
+
+  /** A pending connection for the binder to seal a credential for. */
+  connectionPrepare(binding: Binding, request: ConnectionPrepareRequest):
+      Promise<{ connection: string; version: number; expires_at: number }> {
+    return this.#synced(() => this.#widening(binding, "connection_prepare", request,
+                                             "connect a model source",
+                                             () => this.#connections.prepare(request, clock())));
+  }
+
+  /** The sealed blob the gateway returned, and the models its setup check listed. */
+  connectionCommit(binding: Binding, request: ConnectionCommitRequest): Promise<ConnectionView> {
+    return this.#synced(() => this.#widening(binding, "connection_commit", request,
+                                             "connect a model source",
+                                             () => this.#connections.commit(request, clock())));
+  }
+
+  /** A connection unusable at once; its credential deleted here, and at its provider. */
+  connectionRevoke(binding: Binding, request: ConnectionRequest):
+      Promise<{ connection: string; revoked: boolean; provider_revoke: boolean }> {
+    return this.#synced(() => this.#widening(binding, "connection_revoke", request,
+                                             "revoke a model source",
+                                             () => this.#connections.revoke(request, clock())));
+  }
+
+  /** Every connection, newest first, never its blob. */
+  connectionList(binding: Binding): Promise<{ connections: ConnectionView[] }> {
+    return this.#door(() => this.#widening(binding, "connection_list", null,
+                                           "read its model sources",
+                                           () => ({ connections: this.#connections.list() })));
+  }
+
+  /** An OAuth flow for a pending connection, bound to this session. */
+  flowBegin(binding: Binding, request: FlowBeginRequest):
+      Promise<{ state: string; code_challenge: string; code_challenge_method: "S256";
+                expires_at: number }> {
+    return this.#synced(() => this.#widening(binding, "flow_begin", request,
+                                             "connect a model source", (_account, id) =>
+      this.#connections.flowBegin(id, request, clock())));
+  }
+
+  /** The callback's state, in the session that began the flow: its verifier, used up. */
+  flowFinish(binding: Binding, request: FlowFinishRequest):
+      Promise<{ connection: string; version: number; verifier: string; redirect_uri: string }> {
+    return this.#synced(() => this.#widening(binding, "flow_finish", { state: "[state]" },
+                                             "connect a model source", (_account, id) =>
+      this.#connections.flowFinish(id, request, clock())));
+  }
+
+  /** The owner's newest model-call receipts: what each call reserved, and what it cost. */
+  usageReceipts(binding: Binding): Promise<{ receipts: UsageReceipt[] }> {
+    return this.#door(() => {
+      this.#owner(binding, "read its model spend");
+      return { receipts: this.#usage.receipts(clock()) };
     });
   }
 

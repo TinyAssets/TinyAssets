@@ -85,7 +85,21 @@ Every error the gateway returns, throws or streams SHALL be one of its fixed cod
 
 #### Scenario: An upstream refusal quotes the key
 - **WHEN** a provider answers 401, 403, 429 or another 4xx with a body that quotes the credential
-- **THEN** the stream ends with `upstream_unauthorized`, `upstream_rate_limited` or `upstream_rejected`, and neither the key nor the body appears anywhere in the answer
+- **THEN** the gateway answers `upstream_unauthorized`, `upstream_rate_limited` or `upstream_rejected` with status 502, and neither the key nor the body appears anywhere in the answer
+
+### Requirement: A refusal before any output is answered with its status
+A model call the provider refused before producing anything SHALL be answered with its fixed code and that code's non-200 status, not a 200 stream, so the owner settles it at no cost. A failure after the stream started SHALL end the stream with an `error` event of its code.
+
+#### Scenario: The deadline passes mid-answer
+- **WHEN** a call's deadline passes after the provider began answering
+- **THEN** the answer is a 200 stream that ends with an `error` event of `deadline`
+
+### Requirement: A transient refusal's code is one pi-ai retries
+An upstream status SHALL be named so that pi-ai's own retry classifier reads it as the provider meant: 408 `upstream_timeout`, 429 `upstream_rate_limited`, 503 and 529 `upstream_overloaded` and any other 5xx `upstream_server_error`, which it retries; 401 and 403 `upstream_unauthorized` and any other 4xx `upstream_rejected`, which it does not.
+
+#### Scenario: An overloaded provider
+- **WHEN** a provider answers 529 before any output
+- **THEN** the gateway answers `upstream_overloaded`, and pi's agent, allowed a retry, tries the call again
 
 ### Requirement: Sandbox egress is forwarded raw under the sealed endpoints
 `forward` SHALL send a sandbox request's method, path, query, headers and body to the credential's sealed origin only, strip every inbound credential (authorization and API-key headers, cookies, method overrides, the API-key query parameters, our own `x-ta-` headers and Cloudflare's), inject the sealed secret by the sealed auth template, cut the request at five minutes, and pass the provider's answer through.
@@ -122,3 +136,10 @@ The gateway Worker's config SHALL bind nothing and serve no URL: no binding of a
 #### Scenario: The keyring is read elsewhere
 - **WHEN** a gateway source other than the keyring module names `GATEWAY_KEYRING`, or any gateway source names `process`, `OWNER` or `getByName`
 - **THEN** the isolation guard fails CI
+
+### Requirement: The setup check lists each model with the metadata the owner needs
+`verify` SHALL answer a working credential with the models its source serves (pi-ai's catalog for a built-in provider, the declared list for a custom endpoint), each with its id, name, reasoning flag, input types, context window, output limit and prices, since the owner object holds no catalog of its own and estimates, lists and compacts by them.
+
+#### Scenario: A key is checked at connect time
+- **WHEN** the binder verifies a sealed Anthropic key that the provider accepts
+- **THEN** the answer lists pi-ai's Anthropic models with their catalog metadata, in catalog order
