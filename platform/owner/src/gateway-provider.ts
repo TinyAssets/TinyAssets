@@ -59,7 +59,8 @@
  */
 import {
   type Api, type AssistantMessage, type AssistantMessageEvent,
-  type AssistantMessageEventStream, getCurrentTools, type Message, type Model, type Provider,
+  type AssistantMessageEventStream, getCurrentTools, type Message, type Model,
+  normalizeContext, type Provider,
   type SimpleStreamOptions, type TranscriptContext, type Usage as PiUsage,
 } from "@earendil-works/pi-ai";
 import { streamSimple as piMessages } from "@earendil-works/pi-ai/api/pi-messages";
@@ -264,7 +265,9 @@ export class GatewayProvider implements Provider<Api> {
     } catch (error) {
       return end(failed(physical, codeOf(error, NO_RUN), aborted()));
     }
-    // What the request offers the model is checked in the reservation's own unit, first.
+    // What the request offers the model, read from the messages `#send` sends and nothing
+    // else: a refusal is the reserve unit's (its authority check, which `usage.reserve` runs
+    // before any cap, answers it first), kept as a refused receipt; it refreshes nothing.
     const surface = offersFive(getCurrentTools(context.messages).map((tool) => tool.name))
       ? null : TOOL_SURFACE;
     let authority: () => string | null;
@@ -275,7 +278,9 @@ export class GatewayProvider implements Provider<Api> {
       return end(failed(physical, AUTHORITY_RULE, aborted()));
     }
     try {
-      await connections.fresh(target.connection);
+      if (surface === null) {
+        await connections.fresh(target.connection);
+      }
     } catch (error) {
       return end(failed(physical, codeOf(error, "credential_refresh_failed"), aborted()));
     }
@@ -368,16 +373,17 @@ export class GatewayProvider implements Provider<Api> {
         deadline: Date.now() + CALL_DEADLINE_MS,
       });
       const upstreamId = target.model.id;
-      const events = piMessages(physical, context, {
+      // Exactly the messages whose offered tools the reservation checked: no other context
+      // field, and no caller's payload hook, which could offer what no check saw (the
+      // gateway refuses a context carrying anything but `messages`).
+      const events = piMessages(physical, normalizeContext({ messages: context.messages }), {
         ...options,
         apiKey: GATEWAY_PROVIDER,
         maxTokens: reserved.max_output_tokens,
         headers: { ...options.headers, "x-ta-envelope": header },
         fetch: (input, init) => this.#fetch(seen, input, init),
-        onPayload: async (payload, at) => {
-          const given = (await options.onPayload?.(payload, at)) ?? payload;
-          return { ...(given as Record<string, unknown>), model: upstreamId };
-        },
+        onPayload: async (payload) => ({ ...(payload as Record<string, unknown>),
+                                         model: upstreamId }),
       });
       for await (const event of events) {
         if (event.type === "done" || event.type === "error") {

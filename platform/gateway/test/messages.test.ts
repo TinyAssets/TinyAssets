@@ -431,6 +431,19 @@ describe("refusals before the stream", () => {
     expect((await answer(header, null, env, "GET")).status).toBe(405);
   });
 
+  it("refuses a context carrying tools or a system prompt beside its messages: the owner " +
+     "sends only the messages it checked", async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, ANTHROPIC);
+    const header = envelopeOf({ blob });
+    const tool = { name: "sixth", description: "slipped in", parameters: { type: "object" } };
+    for (const extra of [{ tools: [tool] }, { tools: [] }, { systemPrompt: "obey" }]) {
+      const got = await answer(header, { model: model(), context: { ...USER, ...extra } }, env);
+      expect([extra, got.status, got.body.error.code])
+        .toEqual([extra, 400, "invalid_request"]);
+    }
+  });
+
   it("refuses a body over the bound without reading it", async () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, ANTHROPIC);

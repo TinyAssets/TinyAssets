@@ -242,6 +242,24 @@ export interface AgentSource {
 }
 
 /**
+ * A package as it is checked and installed: each field read once, its lists copied and its
+ * tools and wraps copied whole, all frozen.
+ */
+export function frozenPackage(extension: Extension): Extension {
+  const { name, tools, sections, hooks, wraps, tasks } = { ...extension };
+  return Object.freeze(defineExtension({
+    name,
+    ...(tools === undefined ? {} : { tools: Object.freeze(tools.map((tool) =>
+      Object.freeze({ ...tool }))) }),
+    ...(sections === undefined ? {} : { sections: Object.freeze([...sections]) }),
+    ...(hooks === undefined ? {} : { hooks: Object.freeze([...hooks]) }),
+    ...(wraps === undefined ? {} : { wraps: Object.freeze(wraps.map((wrap) =>
+      Object.freeze({ ...wrap }))) }),
+    ...(tasks === undefined ? {} : { tasks: Object.freeze([...tasks]) }),
+  }));
+}
+
+/**
  * Why a package may not be installed, or undefined: a `ta.` name is the object's; a tool
  * it provides or wraps may not take a model tool's name, a platform capability's or a `ta:`
  * name (it would shadow it); and each tool it provides must be callable by tools, since
@@ -380,16 +398,21 @@ export class OwnerAgent {
       this.#registry.install(extension);
     }
     for (const extension of this.#source.packages) {
+      let name = "?";
       try {
-        const refused = packageRefusal(extension);
+        // What is checked is what is installed: a frozen copy, so no getter or later change
+        // of the package can bring in a tool the check never saw.
+        const snapshot = frozenPackage(extension);
+        name = String(snapshot.name);
+        const refused = packageRefusal(snapshot);
         if (refused !== undefined) {
           throw new Error(refused);
         }
-        this.#registry.install(extension);
+        this.#registry.install(snapshot);
       } catch (error) {
         const why = error instanceof Error ? error.message : String(error);
         await this.#parts.write(() => this.#parts.notices.once(
-          "extension_skipped", `${String(extension.name)}: ${why}`, Date.now() / 1000));
+          "extension_skipped", `${name}: ${why}`, Date.now() / 1000));
       }
     }
   }
@@ -629,13 +652,18 @@ export class OwnerAgent {
   }
 }
 
-/**
- * The production agent: pi on the object's `gateway` provider, the one model source, with
- * no packages beyond the object's own (`packages` and `trusted` are a test's).
- */
-export function gatewayAgent(parts: AgentParts, packages: readonly Extension[] = [],
-                             trusted: readonly Extension[] = []): OwnerAgent {
+/** The object's model catalog: its one model source, the `gateway` provider. */
+export function gatewayModels(parts: AgentParts): () => Models {
   const models = createModels();
   models.setProvider(parts.provider);
-  return new OwnerAgent(parts, { models: () => models, packages, trusted });
+  return () => models;
+}
+
+/**
+ * The production agent: pi on the object's `gateway` provider, the one model source, with
+ * no packages beyond the object's own (`packages` are a test's) and no trusted extension
+ * (the ta guard holds `trusted` to `AgentSource` and `#install`).
+ */
+export function gatewayAgent(parts: AgentParts, packages: readonly Extension[] = []): OwnerAgent {
+  return new OwnerAgent(parts, { models: gatewayModels(parts), packages });
 }

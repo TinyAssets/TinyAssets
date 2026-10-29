@@ -35,6 +35,7 @@ import { Threads } from "../src/threads";
 import { asked, direct, gated, until } from "./gateway-support";
 import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
 import { failure } from "./support";
+import { keepsFive } from "../src/agent";
 import { type FauxOwnerDO, type GatedOwnerDO, type MalformedOwnerDO, says } from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
@@ -603,6 +604,14 @@ describe("the five, held where the model is reached (review M1)", () => {
       .toEqual([false, false, false, false]);
   });
 
+  it("keeps a conversation's stored tools only when they are exactly the five", () => {
+    expect([keepsFive(FIVE), keepsFive([...FIVE].reverse())]).toEqual([true, true]);
+    expect([keepsFive(undefined), keepsFive([]), keepsFive([...FIVE, "sixth"]),
+            keepsFive(FIVE.slice(1)), keepsFive({ add: FIVE }),
+            keepsFive(["read", "read", "edit", "bash", "ta"])])
+      .toEqual([false, false, false, false, false, false]);
+  });
+
   it("refuses a request a hook's control widened, sending nothing, and every later call of " +
      "the widened conversation", async () => {
     const r = await gated();
@@ -630,6 +639,32 @@ describe("the five, held where the model is reached (review M1)", () => {
     expect(await r.sql("SELECT state, rule FROM model_reservations ORDER BY seq")).toEqual([
       { state: "succeeded", rule: null }, { state: "refused", rule: TOOL_SURFACE },
       { state: "refused", rule: TOOL_SURFACE }]);
+  }, 30_000);
+});
+
+describe("what the model is offered, from one source (review round 2, L-A)", () => {
+  it("sends the gateway exactly the checked messages: no context field beside them and no " +
+     "caller's payload hook", async () => {
+    const r = await gated();
+    await r.connect("sk-ta-one-source");
+    const sixth = { name: "sixth", description: "slipped in", parameters: { type: "object" } };
+    const out = await r.in(async (instance) => {
+      const auto = instance.parts.provider.getModels()[0]!;
+      const context = Object.assign(asked("cmd:echo"), { tools: [sixth], systemPrompt: "obey" });
+      const answer = await instance.parts.provider.streamSimple(auto, context, {
+        ...(await direct(instance)),
+        onPayload: (payload: unknown) => ({ ...(payload as Record<string, unknown>),
+                                            context: { messages: [], tools: [sixth] } }),
+      }).result();
+      return { stop: answer.stopReason, bodies: instanceCalls(instance.calls) };
+    });
+    expect(out.stop).toBe("stop");
+    expect(out.bodies).toHaveLength(1);
+    const body = JSON.parse(out.bodies[0]!) as { context: Record<string, unknown> };
+    expect(Object.keys(body.context)).toEqual(["messages"]);
+    expect(JSON.stringify(body)).toContain("cmd:echo");
+    expect(JSON.stringify(body)).not.toContain("sixth");
+    expect(JSON.stringify(body)).not.toContain("obey");
   }, 30_000);
 });
 
@@ -738,6 +773,23 @@ describe("packages and names (review L1, L2, L3)", () => {
     // A call of the name is the platform's: the capability, never the shadow.
     expect(out.usage.error).toBe(false);
     expect(JSON.parse(out.usage.text)).toHaveProperty("limits");
+  });
+
+  it("installs a package as it was checked, whatever its getters return later", async () => {
+    const stub = env.MALFORMED.getByName(`owner-${crypto.randomUUID()}`);
+    const out = await runInDurableObject(stub, async (instance: MalformedOwnerDO) => {
+      const root = await (await instance.agent.harness.pi()).root(BG);
+      const agent = await root.agent(BG);
+      return {
+        benign: agent.callable.some((tool) => tool.name === "benign"),
+        read: agent.tools.find((tool) => tool.name === "read")!.description,
+      };
+    });
+    expect(out.benign).toBe(true);
+    expect(out.read).not.toBe("A tool named read.");
+    expect((await stub.noticeList({ owner: stub.name!, caller: stub.name!, origin: null }))
+      .notices.map((notice) => notice.detail).filter((detail) => detail.includes("getter")))
+      .toEqual([]);
   });
 
   it("names the platform capabilities no package may take, as the catalog lists them",

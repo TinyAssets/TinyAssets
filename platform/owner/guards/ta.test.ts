@@ -5,14 +5,61 @@
  * snake_case, plurals, stop words, nested schemas) and requires the same names in the same
  * order. A pi bump that changes the ranking fails here (the pi pin guard holds the
  * version meanwhile).
+ *
+ * And `AgentSource.trusted`, extensions installed without the package rules, cannot reach
+ * production by structure: in the owner's sources only its declaration in `AgentSource`
+ * and `OwnerAgent.#install`'s read name it (no key, no literal key, no other use), so
+ * production's `gatewayAgent` has no way to pass one.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import ts from "typescript";
 import { Type } from "@earendil-works/pi-ai";
 import type { ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
 import { createToolSearchTool } from "@earendil-works/pi-durable/tool-search";
 import { describe, expect, it } from "vitest";
 
 import { rank, searchText, tokenize } from "../src/ta";
+import { parse, reporter, workerSources } from "./sources";
+
+const TRUSTED = "trusted";
+const AGENT = "owner/src/agent.ts";
+
+/** Each naming of `trusted` in `source` past its declaration and `#install`'s read. */
+export function trustedReach(path: string, source: string): string[] {
+  const file = parse(path, source);
+  const problems: string[] = [];
+  const report = reporter(file, problems);
+  const inside = (node: ts.Node, test: (up: ts.Node) => boolean): boolean => {
+    for (let up = node.parent; up !== undefined; up = up.parent) {
+      if (test(up)) {
+        return true;
+      }
+    }
+    return false;
+  };
+  const visit = (node: ts.Node): void => {
+    if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
+        && node.text === TRUSTED) {
+      report(node, "names trusted by a literal");
+    }
+    if (ts.isIdentifier(node) && node.text === TRUSTED) {
+      const declared = path === AGENT && ts.isPropertySignature(node.parent)
+        && node.parent.name === node && ts.isInterfaceDeclaration(node.parent.parent)
+        && node.parent.parent.name.text === "AgentSource";
+      const installed = path === AGENT && ts.isPropertyAccessExpression(node.parent)
+        && node.parent.name === node
+        && node.parent.expression.getText(file) === "this.#source"
+        && inside(node, (up) => ts.isMethodDeclaration(up) && up.name.getText(file) === "#install"
+          && ts.isClassDeclaration(up.parent) && up.parent.name?.text === "OwnerAgent");
+      if (!declared && !installed) {
+        report(node, "names trusted past AgentSource and #install");
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return problems;
+}
 
 const WORDS = Object.freeze([
   "issue", "issues", "search", "searches", "repository", "repositories", "create", "the",
@@ -82,6 +129,27 @@ describe("ta guard", () => {
     }
     expect(compared).toBe(300);
     expect(nonEmpty).toBeGreaterThan(200);  // the comparison is of real rankings
+  });
+
+  it("names trusted only in AgentSource and #install", () => {
+    const owner = [...workerSources()].filter(([path]) => path.startsWith("owner/src/"));
+    expect(owner.length).toBeGreaterThan(10);
+    expect(owner.flatMap(([path, source]) => trustedReach(path, source))).toEqual([]);
+    const agent = owner.find(([path]) => path === AGENT)![1];
+    expect(agent).toContain("readonly trusted?: readonly Extension[];");
+    expect(agent).toContain("this.#source.trusted");
+  });
+
+  it.each([
+    [AGENT, "export function gatewayAgent(p, k, trusted) { return new OwnerAgent(p, " +
+      "{ models, packages: k, trusted }); }"],
+    [AGENT, "export function gatewayAgent(p, k) { return new OwnerAgent(p, " +
+      "{ models, packages: [], trusted: k }); }"],
+    [AGENT, "const s = { [\"trusted\"]: k };"],
+    [AGENT, "class OwnerAgent { other() { return this.#source.trusted; } }"],
+    ["owner/src/owner-do.ts", "interface AgentSource { readonly trusted?: X; }"],
+  ])("sees trusted reached in %s: %s", (path, source) => {
+    expect(trustedReach(path, source).length).toBeGreaterThan(0);
   });
 
   it("tokenizes as pi does: camelCase split, stop words dropped, plurals stemmed", () => {
