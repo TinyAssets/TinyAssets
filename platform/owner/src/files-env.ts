@@ -25,7 +25,10 @@
  * - Every change is a unit of the object's write gate (`gate.ts`): a tool call runs
  *   between the object's events, so a write it made directly could land inside a pi
  *   commit and be rolled back with it. `Files` opens the units of the changes that cross
- *   to `FILES`; this environment opens one for each change it makes itself.
+ *   to `FILES`; this environment opens one for each change it makes itself. Each such unit
+ *   first re-checks the authority the call runs under (`authorize`: an outside client's
+ *   conversation's, `authority.ts`), so a grant that narrowed after the call was let
+ *   through refuses its write (`permission_denied`).
  * - `readTextFile` keeps a BOM: it is the file's bytes, which pi's `edit` writes back.
  * - `renameFile` of a directory is one transaction over its subtree; no byte moves.
  * - `watch` hears every commit in the object at once (`native`).
@@ -500,6 +503,12 @@ export interface FilesEnvOptions {
    * change's housekeeping unscheduled.
    */
   readonly rearm: () => Promise<void>;
+  /**
+   * The authority the tool call runs under, re-checked first in each change's unit (it
+   * throws a refusal): an outside client's conversation's (`authority.ts`). None for the
+   * owner's own.
+   */
+  readonly authorize?: () => void;
 }
 
 export class OwnerFilesEnv implements ExecutionEnv {
@@ -508,6 +517,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
   readonly #files: Files;
   readonly #writer: string;
   readonly #rearm: () => Promise<void>;
+  readonly #authorize: () => void;
   /** The etag this environment last saw at each path it read or wrote. */
   readonly #seen = new Map<string, string>();
   readonly #temps = new Set<string>();
@@ -517,6 +527,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
     this.#writer = options.writer ?? "agent";
     this.cwd = options.cwd ?? WORKSPACE;
     this.#rearm = options.rearm;
+    this.#authorize = options.authorize ?? (() => undefined);
     // Named by a hash of the namespace, which never leaves the object itself.
     this.id = `ta-files:${sha256Hex(`ta-env\n${this.#files.ns()}`).slice(0, 32)}`;
   }
@@ -576,7 +587,8 @@ export class OwnerFilesEnv implements ExecutionEnv {
   async #write(at: string, bytes: Uint8Array, expected: string | null,
                extra: { prefix?: readonly ChunkRef[]; mode?: number } = {}): Promise<Entry> {
     const entry = await this.#files.write(at, bytes, { expected, writer: this.#writer,
-                                                       parents: true, ...extra });
+                                                       parents: true, ...extra,
+                                                       authorize: this.#authorize });
     this.#seen.set(at, entry.etag);
     await this.#rearm();
     return entry;
@@ -723,8 +735,11 @@ export class OwnerFilesEnv implements ExecutionEnv {
         this.#files.open(from);
         return;
       }
-      const entry = await this.#files.unit(() => this.#files.rename(from, to, {
-        expected: null, replace: true, writer: this.#writer }));
+      const entry = await this.#files.unit(() => {
+        this.#authorize();
+        return this.#files.rename(from, to, { expected: null, replace: true,
+                                              writer: this.#writer });
+      });
       this.#moved(from);
       this.#moved(to, entry);
       await this.#rearm();
@@ -911,6 +926,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
       const at = this.#where(path, true);
       const recursive = options?.recursive ?? true;
       await this.#files.unit(() => {
+        this.#authorize();
         if (!recursive && this.#files.stat(at) !== null) {
           throw new FileFault("exists", "already exists");
         }
@@ -926,8 +942,11 @@ export class OwnerFilesEnv implements ExecutionEnv {
     return this.#run(context, path, async () => {
       const at = this.#where(path, true);
       try {
-        await this.#files.unit(() => this.#files.remove(at, {
-          expected: null, recursive: options?.recursive ?? false, writer: this.#writer }));
+        await this.#files.unit(() => {
+          this.#authorize();
+          return this.#files.remove(at, { expected: null, recursive: options?.recursive ?? false,
+                                          writer: this.#writer });
+        });
       } catch (error) {
         if (!(options?.force && error instanceof FileFault && error.code === "not_found")) {
           throw error;
@@ -941,8 +960,10 @@ export class OwnerFilesEnv implements ExecutionEnv {
   async createTempDir(prefix: string | undefined, context: Context):
       Promise<Result<string, FileError>> {
     return this.#run(context, undefined, async () => {
-      const dir = await this.#files.unit(() => this.#files.tempDir(prefix ?? "tmp-",
-                                                                   this.#writer));
+      const dir = await this.#files.unit(() => {
+        this.#authorize();
+        return this.#files.tempDir(prefix ?? "tmp-", this.#writer);
+      });
       this.#temps.add(dir);
       await this.#rearm();
       return dir;

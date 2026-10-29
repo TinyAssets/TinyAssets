@@ -31,10 +31,11 @@
  *   agent does, so the free-row bound can never forget it and turn a standing grant
  *   into "no grant".
  *
- * Owed by later slices, each written into its task: agent runs and launches (5) stamp
- * their outside authority and call `standing` before each step; a grant change ends that
- * client's in-flight turns and streams (the Python's `_end_outside_streams`; there are
- * none in the object yet); the doorbell rechecks the grant just before it sends (7).
+ * The agent's threads made for an outside client carry its stamp, and every tool call in
+ * them is checked with `standing` and the scope's capability (`authority.ts`, A2); a grant
+ * change ends that client's in-flight turns, live views and waits once it committed (the
+ * Python's `_end_outside_streams`; `agent.ts`). Owed by a later slice, written into its
+ * task: the doorbell rechecks the grant just before it sends (7).
  *
  * The rows stay bounded without ever forgetting a fence (slice 3's review L1, and slice
  * 5's review M1). A row an agent or stamped work holds is kept: it is what that work is

@@ -16,8 +16,8 @@
  *   while it awaits pi's open on the queue, so a unit run as one deadlocks against it;
  * - in an async function of the modules that write around outside calls (the lanes, the
  *   files' methods that cross to `FILES`, the pi environment, the schedule's job sets, the
- *   agent's notices, the connections' refresh and lane, a model call's reserve, dispatch,
- *   settle and reseal), each call of a write (`WRITES`) sits inside a unit: an arrow handed
+ *   agent's notices and threads, the connections' refresh and lane, a model call's
+ *   reserve, dispatch, settle and reseal), each call of a write (`WRITES`) sits inside a unit: an arrow handed
  *   to `write`, `#write`, `unit` or a door's gate. A synchronous method is itself a unit's
  *   body, so its calls are the view's to check;
  * - in any function of the object's modules that opens a unit, async or not, no value read
@@ -51,7 +51,7 @@ const WRITES: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
                                  "#writeInline", "ns"]),
   "owner/src/files-env.ts": new Set(["rename", "mkdir", "remove", "tempDir", "dropTemps"]),
   "owner/src/schedule.ts": new Set(["push", "cancel"]),
-  "owner/src/agent.ts": new Set(["add"]),
+  "owner/src/agent.ts": new Set(["add", "record"]),
   "owner/src/connections.ts": new Set(["#lease", "#unlease", "#refreshed", "#sweep", "#owed",
                                        "#revokeOutcome"]),
   "owner/src/gateway-provider.ts": new Set(["reserve", "dispatched", "settle", "abandon",

@@ -12,7 +12,8 @@
  * stamp's type) import them. So are the model connections and their spend: only the
  * object builds them, the provider and `auto` read their types and calls, and their
  * tables (the connections, their blobs and flows, the reservations and the spend and turn
- * counters) are their modules' alone. The lists only shrink.
+ * counters) are their modules' alone, and so is the agent's threads table. The lists only
+ * shrink.
  */
 import { describe, expect, it } from "vitest";
 
@@ -42,6 +43,7 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
                                "owner/src/sessions.ts", SCHEMA]),
   scheduled_work: Object.freeze(["owner/src/scheduled.ts", SCHEMA]),
   agent_cards: Object.freeze(["owner/src/registrations.ts", SCHEMA]),
+  agent_threads: Object.freeze(["owner/src/threads.ts", SCHEMA]),
   connection_secrets: Object.freeze(["owner/src/connections.ts", SCHEMA]),
   connection_flows: Object.freeze(["owner/src/connections.ts", SCHEMA]),
   model_reservations: Object.freeze(["owner/src/usage.ts", SCHEMA]),

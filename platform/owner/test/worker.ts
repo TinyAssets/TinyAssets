@@ -19,7 +19,8 @@ import {
   fauxProvider, type FauxResponseFactory, type Message, type Provider, Type,
 } from "@earendil-works/pi-ai";
 import {
-  defineExtension, defineTask, defineTool, type Extension, type ToolRegistration, wrapTool,
+  defineExtension, defineTask, defineTool, type Extension, hook, type JsonObject,
+  type ToolRegistration, ToolTask, wrapTool,
 } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 
@@ -51,12 +52,29 @@ export interface Probes {
   background: number | null;
   /** Awaited by background work before it submits its work, when set. */
   backgroundGate: Promise<void> | null;
+  /** Awaited by the test gate's `beforeTool`, after the authority gate's, when set. */
+  toolGate: Promise<void> | null;
+  /** Each call the test gate saw, in order: the authority gate let it through. */
+  gated: { name: string; nested: boolean }[];
+  /** Awaited by `nest` before its nested call, when set. */
+  nestGate: Promise<void> | null;
 }
 
 /** Probes as a fresh instance has them. */
 export function freshProbes(): Probes {
   return { readGate: null, reads: 0, holdGate: null, holds: 0, spawned: null, submitted: [],
-           background: null, backgroundGate: null };
+           background: null, backgroundGate: null, toolGate: null, gated: [], nestGate: null };
+}
+
+/** Resolves when `context`'s abort signal fires: a tool that honours its abort. */
+function abortOf(context: Context): Promise<void> {
+  const signal = context.abortSignal;
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+    }
+    signal?.addEventListener("abort", () => resolve(), { once: true });
+  });
 }
 
 function answers(messages: readonly Message[]): number {
@@ -85,7 +103,10 @@ function conversationWork(probes: () => Probes) {
         return { status: "running", checkpoint: { phase: "made", child: child.id } };
       }, context),
       made: async (task, runtime, context) => {
-        await probes().backgroundGate;
+        await Promise.race([probes().backgroundGate, abortOf(context)]);
+        if (context.abortSignal?.aborted) {
+          throw new Error("aborted");  // pi runs the abort handler
+        }
         const child = task.state.checkpoint.child;
         const handle = await runtime.conversation(child as never, context);
         const submission = await handle!.submit(
@@ -132,8 +153,9 @@ function nestedWork(work: ReturnType<typeof conversationWork>) {
 /**
  * The test tools: `hold` (replay-unsafe), `spawn` (a conversation this call owns, and its
  * work submitted there, as a subagent tool does), `background` (background work, as a
- * package starts it), `pass` (an answer that ends a fake upstream's tool loop), and
- * `read`'s gate.
+ * package starts it), `pass` (an answer that ends a fake upstream's tool loop), `nest`
+ * (a nested call of another tool, as `ta` makes one), `read`'s gate, and a gate of every
+ * call after the authority gate's, which records what that one let through.
  */
 function testExtensions(probes: () => Probes): Extension[] {
   const read = CodingTools.tools!.find((tool) => tool.name === "read")! as ToolRegistration;
@@ -142,15 +164,35 @@ function testExtensions(probes: () => Probes): Extension[] {
   return [defineExtension({
     name: "test.tools",
     tasks: [work, nested],
+    hooks: [hook(ToolTask, {
+      beforeTool: async (call) => {
+        probes().gated.push({ name: call.name, nested: call.parent !== undefined });
+        await probes().toolGate;
+        return undefined;
+      },
+    })],
     tools: [
       defineTool({
         name: "hold",
-        description: "Hold until the test lets go.",
+        description: "Hold until the test lets go, or the call is aborted.",
         parameters: Type.Object({}),
-        execute: async () => {
+        execute: async (_args, _api, context: Context) => {
           probes().holds++;
-          await probes().holdGate;
+          await Promise.race([probes().holdGate, abortOf(context)]);
           return { output: [{ type: "text", text: "held" }] };
+        },
+      }),
+      defineTool({
+        name: "nest",
+        description: "Call another tool as a nested call, as ta does.",
+        parameters: Type.Object({ name: Type.String(),
+                                  arguments: Type.Record(Type.String(), Type.Unknown()) }),
+        execute: async (args, api, context: Context) => {
+          await probes().nestGate;
+          const result = await api.executeTool(args.name, args.arguments as JsonObject, context);
+          return { output: [{ type: "text", text: JSON.stringify({
+            error: result.isError, said: result.diagnostics.map((d) => d.message).join("; "),
+            out: result.structuredOutput ?? null }) }] };
         },
       }),
       defineTool({
@@ -255,6 +297,8 @@ function seeing(provider: Provider, seen: (telemetry: unknown) => void): Provide
 /** The owner object, its agent on the faux model and the test tools. */
 export class FauxOwnerDO extends OwnerDO {
   readonly agent: OwnerAgent;
+  /** The parts the object built its agent from: its live tee among them. */
+  readonly parts: AgentParts;
   readonly faux: FauxProviderHandle;
   script: Step[] = [];
   readonly probes: Probes = freshProbes();
@@ -262,8 +306,10 @@ export class FauxOwnerDO extends OwnerDO {
   readonly turns: string[] = [];
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
-    const made: { agent?: OwnerAgent; faux?: FauxProviderHandle; self?: FauxOwnerDO } = {};
+    const made: { agent?: OwnerAgent; parts?: AgentParts; faux?: FauxProviderHandle;
+                  self?: FauxOwnerDO } = {};
     super(ctx, env, (parts) => {
+      made.parts = parts;
       made.faux = scripted(() => {
         const self = made.self!;
         return self.script.length > 0 ? self.script : storedScript(ctx);
@@ -284,6 +330,7 @@ export class FauxOwnerDO extends OwnerDO {
     });
     made.self = this;
     this.agent = made.agent!;
+    this.parts = made.parts!;
     this.faux = made.faux!;
   }
 }

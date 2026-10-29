@@ -21,7 +21,7 @@ import { OUTSIDE_GATE, WriteGate } from "../src/gate";
 import { clock, WAKE_LEASE_S } from "../src/ledger";
 import { NOTICE_DETAIL, Notices, NOTICES_KEPT } from "../src/notices";
 import type { Binding } from "../src/owner-do";
-import { ledgerOn, MCP, MUSE } from "./ledger-support";
+import { DOT, ledgerOn, MCP, MUSE } from "./ledger-support";
 import { drainDue, failure } from "./support";
 import {
   type FauxOwnerDO, type MalformedOwnerDO, says, type Spawned, storeScript,
@@ -125,7 +125,10 @@ describe("a turn in the owner's object", () => {
   it("writes as the outside client a conversation is stamped for, and a subagent's " +
      "conversation keeps the stamp", async () => {
     const r = agentObject();
-    const stamp = { client: "c".repeat(64), generation: 3, authenticated_at: 1_700_000_000 };
+    // The client's first verified call records its grant: full, generation 1.
+    await r.stub.outsideAgents({ ...r.as(), origin: DOT, source: MCP });
+    const stamp = { client: DOT.client, generation: 1, authenticated_at: 1_700_000_000,
+                    universe: null, agent: "main" };
     const out = await r.in(async (instance) => {
       const pi = await instance.agent.harness.pi();
       const authority = instance.agent.authority;
@@ -511,8 +514,8 @@ describe("a package pi refuses to install", () => {
     expect(rows.intents).toEqual([]);  // the files lane expired the upload
     expect(rows.wakes).toEqual([{ state: "pending" }]);  // the wakes lane recovered it
     // pi opened without the package, and with every other extension.
-    expect(rows.tools).toEqual(["background", "bash", "edit", "hold", "pass", "read", "spawn",
-                               "write"]);
+    expect(rows.tools).toEqual(["background", "bash", "edit", "hold", "nest", "pass", "read",
+                               "spawn", "write"]);
     const notices = (await stub.noticeList(as())).notices;
     expect(notices.map((notice) => [notice.type, notice.detail.split(":")[0]]))
       .toContainEqual(["extension_skipped", "pkg"]);

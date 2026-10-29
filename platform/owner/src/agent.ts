@@ -1,6 +1,6 @@
 /**
  * The owner's agent: pi-durable inside the owner's object, on PiHarness (ADR-032 §4;
- * tasks 5, sub-slice A0).
+ * tasks 5, sub-slices A0 and A2).
  *
  * PiHarness (`agents/harness/pi`, agents 0.31.0) is a Lifecycle capability the object
  * installs on its own `new Lifecycle(this)` beside the schedule, with none of Lifecycle's
@@ -15,14 +15,15 @@
  * What pi is opened with, every time it opens (the factory runs again after a storage
  * error, so it is safe to run twice):
  * - one registry per object (pi keeps a Harness subscribed to its registry until it
- *   closes, and an evicted object never closes it), holding pi's `CodingTools` with
- *   `read` wrapped `replay: "safe"` (only pure reads are marked safe; `write`, `edit` and
- *   `bash` stay `unsafe`, so a call an eviction cut off comes back `interrupted` and is
- *   never run twice), then the object's further extensions. One that pi refuses to
- *   install is skipped and kept as an owner notice, once while it is kept, though pi
- *   opens again at every wake: the factory never throws for owner
- *   content, since a failed open fails the Lifecycle's startup and the object's lanes
- *   with it;
+ *   closes, and an evicted object never closes it), holding first `ta.authority`, the
+ *   outside-authority gate (`authority.ts`), whose `beforeTool` runs before every other
+ *   extension's, so its block wins; then pi's `CodingTools` with `read` wrapped
+ *   `replay: "safe"` (only pure reads are marked safe; `write`, `edit` and `bash` stay
+ *   `unsafe`, so a call an eviction cut off comes back `interrupted` and is never run
+ *   twice), then the object's further extensions. One that pi refuses to install is
+ *   skipped and kept as an owner notice, once while it is kept, though pi opens again at
+ *   every wake: the factory never throws for owner content, since a failed open fails the
+ *   Lifecycle's startup and the object's lanes with it;
  * - the models, read at each use: the `gateway` provider (`gateway-provider.ts`, A1),
  *   whose models are the owner's connected ones and their virtual `auto`, the default a
  *   conversation starts on; with nothing connected the catalog is empty, so a turn
@@ -31,30 +32,48 @@
  *   default names pi);
  * - an environment per call: `OwnerFilesEnv` over the owner's files, whose writer in the
  *   file history is the conversation's stamp (`client:<id>` for an outside client's
- *   conversation, else `agent`), read from the `ta.authority` document;
+ *   conversation, else `agent`), read from the `ta.authority` document, and which
+ *   re-checks that stamp's `write_files` in each change's unit;
  * - settings read at each use: progress committed at most once a second (the gateway
  *   streams live tokens from memory; a commit is a storage write), and a failed run's
  *   queued inputs withdrawn, so each settles `unanswered: run_failed` rather than waiting
  *   on an unrelated next input; over those, the part of owner policy that is pi's
  *   (`AgentParts.policy`: the model retry count), which never moves the fixed ones;
  * - `onReport`: each report becomes an owner notice (`notices.ts`);
- * - `conversationCreated`: a conversation a task creates (a subagent's) takes its owner
- *   conversation's stamp in the creating commit, and a fork copies its parent's
- *   (`fork: "current"`), so no conversation an outside client's work makes sheds it;
+ * - `conversationCreated`, the one way a stamp is inherited: a conversation a task creates
+ *   (a subagent's) takes its owner conversation's stamp in the creating commit, and a fork
+ *   holds its parent's (`fork: "current"`), so no conversation an outside client's work
+ *   makes sheds it;
  * - the telemetry adapter (`origin.ts`), which carries each causal chain's origin, the
  *   submitted input that started it, along pi's own propagation: a model call's turn.
+ *
+ * A thread (`thread`) is a top-level conversation the object makes for an agent: pi
+ * writes its stamp in the creating commit, then the object records it (`threads.ts`).
+ *
+ * Ending work (agent research §4.2), each in the door of the change, after its own unit
+ * committed: a grant set or revoke ends its client's work (`endClient`), a policy write
+ * every conversation's (`endAll`). Each ends the pending waits it covers (`wait`), closes
+ * the live views of the conversations it covers (`live-tee.ts`), and aborts each
+ * conversation with live work, background work included: pi withdraws its queued inputs,
+ * marks and signals its live tasks (a model request in flight sees its abort signal, so
+ * the gateway call ends and settles through `usage.ts`), and settles their inputs
+ * `unanswered: aborted`. The door waits for that at most `END_WAIT_MS`; pi finishes it on
+ * its own past then, and any tool call meanwhile is refused by the gate.
  */
-import type { Context } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { ClientIdentity, Models, Provider } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
-  type ConversationRecord, createRegistry, defineDoc, defineExtension, type EnvTarget,
-  type Extension, Harness, type HarnessSettings, type ReportInfo, type Tx, wrapTool,
+  type ConversationId, type ConversationRecord, createRegistry, defineDoc, defineExtension,
+  type EnvTarget, type Extension, Harness, type HarnessSettings, hook, ProviderDoc,
+  type ReportInfo, ToolTask, type Tx, wrapTool,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import { PiHarness } from "agents/harness/pi";
+import { type PiOperationResult, PiHarness } from "agents/harness/pi";
 
+import { agentId, type Authority, type AuthorityState, type Stamped, stamped } from "./authority";
+import { Invalid, Refused } from "./errors";
 import type { Files } from "./files";
 import { OwnerFilesEnv } from "./files-env";
 import type { Write } from "./gate";
@@ -62,6 +81,10 @@ import type { LiveTee } from "./live-tee";
 import type { Notices } from "./notices";
 import { originRoot } from "./origin";
 import { WORKSPACE } from "./paths";
+import { inTime } from "./schedule";
+import type { Thread, Threads } from "./threads";
+
+const BG = BACKGROUND_CONTEXT;
 
 /** The model a new conversation starts on: the gateway provider's virtual `auto` (A1). */
 export const AUTO = Object.freeze({ provider: "gateway", id: "auto" });
@@ -78,19 +101,20 @@ export const AGENT_SETTINGS: HarnessSettings = Object.freeze({
   restartLimit: 5,
 });
 
-/** The outside authority a conversation runs under: the stamp of the client it is for. */
-export type Stamped = {
-  client: string;
-  generation: number;
-  authenticated_at: number | null;
-};
+/** The longest a door waits for the work a change ends; pi finishes the abort past it. */
+export const END_WAIT_MS = 5_000;
+/** The longest a status read waits on an operation it found settled or unknown. */
+export const STATUS_WAIT_MS = 1_000;
+/** Waits the object keeps at once (A4's bounded waits), past which one is refused. */
+export const WAITS_KEPT = 256;
+/** A wait a grant or policy change ended. */
+export const WAIT_ENDED = "the wait was ended by a grant or policy change";
 
-/** The `ta.authority` document's content: a conversation's stamp, or none (the owner's). */
-export type Authority = { stamp: Stamped | null };
+export type { Stamped };
 
 /** The `ta.authority` document: per conversation, the newest only, copied into a fork. */
 export function authorityDoc() {
-  return defineDoc<Authority>({
+  return defineDoc<AuthorityState>({
     kind: "ta.authority",
     version: 1,
     scope: "conversation",
@@ -102,9 +126,18 @@ export function authorityDoc() {
 }
 
 /** Who a conversation's file changes are by, in the history. */
-export function writerOf(authority: Readonly<Authority> | undefined): string {
+export function writerOf(authority: Readonly<AuthorityState> | undefined): string {
   const client = authority?.stamp?.client;
   return client === undefined ? "agent" : `client:${client}`;
+}
+
+/** An operation's status, from pi's submission records: pending, or how it settled. */
+export interface AgentStatus {
+  readonly operation_id: string;
+  readonly session: string;
+  readonly status: "queued" | "running" | "parked" | "done" | "unanswered";
+  readonly reason?: string;
+  readonly text?: string;
 }
 
 /** A report's notice detail: what pi says happened, and the error's message. */
@@ -140,12 +173,25 @@ export interface AgentParts {
   readonly provider: Provider;
   /** The live tee the provider publishes every model event to, for the owner's views. */
   readonly tee: LiveTee;
+  /** The outside-authority gate's decisions, over the object's grants. */
+  readonly authority: Authority;
+  /** The object's threads. */
+  readonly threads: Threads;
 }
 
 /** Besides the object's parts: the model catalog, and the extensions after the object's. */
 export interface AgentSource {
   readonly models: () => Models;
   readonly extensions: readonly Extension[];
+}
+
+type Pi = Awaited<ReturnType<PiHarness["pi"]>>;
+
+/** Every conversation with live work: a live task, or an input not yet settled. */
+async function liveConversations(pi: Pi): Promise<ConversationId[]> {
+  const inspection = await pi.inspect(BG);
+  return [...new Set([...inspection.tasks.map((task) => task.record.conversationId),
+                      ...inspection.submissions.map((record) => record.conversationId)])];
 }
 
 export class OwnerAgent {
@@ -156,6 +202,8 @@ export class OwnerAgent {
   readonly #parts: AgentParts;
   readonly #source: AgentSource;
   readonly #registry = createRegistry();
+  /** The pending waits, by the client they are for ("" for the owner's), on the instance. */
+  readonly #waits = new Map<string, Set<AbortController>>();
 
   constructor(parts: AgentParts, source: AgentSource) {
     this.#parts = parts;
@@ -180,14 +228,24 @@ export class OwnerAgent {
   }
 
   /**
-   * The object's extensions on its registry: pi's coding tools, `read` marked replay-safe,
-   * then the source's, each one pi refuses skipped and kept as a notice.
+   * The object's extensions on its registry: the authority gate first, pi's coding tools,
+   * `read` marked replay-safe, then the source's, each one pi refuses skipped and kept as a
+   * notice.
    */
   async #install(): Promise<void> {
     const read = CodingTools.tools?.find((tool) => tool.name === "read");
     if (read === undefined) {
       throw new Error("pi's coding tools have no read tool");
     }
+    this.#registry.install(defineExtension({
+      name: "ta.authority",
+      hooks: [hook(ToolTask, {
+        beforeTool: async (call, api, context) => {
+          const state = await api.snapshot(this.authority, api.conversationId, context);
+          return this.#parts.authority.decide(state?.stamp ?? null, call);
+        },
+      })],
+    }));
     this.#registry.install(CodingTools);
     this.#registry.install(defineExtension({
       name: "ta.replay",
@@ -206,10 +264,15 @@ export class OwnerAgent {
 
   /** One environment per call, over the owner's files, as the conversation's writer. */
   async #env({ conversationId, cwd, read }: EnvTarget, context: Context): Promise<ExecutionEnv> {
-    const authority = await read.snapshot(this.authority, conversationId, context);
+    const state = await read.snapshot(this.authority, conversationId, context);
+    const stamp = state?.stamp ?? null;
     await this.#parts.files.namespace();  // made through the gate, so the env reads it
-    return new OwnerFilesEnv({ files: this.#parts.files, writer: writerOf(authority),
-                               cwd: cwd ?? WORKSPACE, rearm: this.#parts.rearm });
+    return new OwnerFilesEnv({
+      files: this.#parts.files, writer: writerOf(state), cwd: cwd ?? WORKSPACE,
+      rearm: this.#parts.rearm,
+      ...(stamp === null ? {}
+        : { authorize: () => this.#parts.authority.require(stamp, "write_files") }),
+    });
   }
 
   /** A task's new conversation takes its owner conversation's stamp. */
@@ -227,6 +290,160 @@ export class OwnerAgent {
   #report(type: string, detail: string): void {
     this.#parts.write(() => this.#parts.notices.add(type, detail, Date.now() / 1000))
       .catch(() => console.error("an agent notice could not be kept"));
+  }
+
+  /**
+   * Make a thread for `agent`: a top-level conversation on `auto`, its stamp (null: the
+   * owner's own) written in pi's creating commit, then recorded, in a unit that re-checks
+   * the stamp still stands.
+   */
+  async thread(agent: unknown, stamp: unknown): Promise<Thread> {
+    const id = agentId(agent);
+    const by = stamped(stamp);
+    if (by !== null && by.agent !== id) {
+      throw new Invalid("a thread's stamp names its own agent");
+    }
+    const { authority, threads, write } = this.#parts;
+    authority.stands(by);
+    const pi = await this.harness.pi();
+    const conversation = await pi.createConversation({
+      ownership: { kind: "ownerless" },
+      agent: { model: { provider: AUTO.provider, modelId: AUTO.id } },
+      init: async (tx, made) => {
+        (await tx.doc(this.authority, made)).stamp = by === null ? null : { ...by };
+      },
+    }, BG);
+    return write(() => {
+      authority.stands(by);
+      return threads.record(conversation.id, id, by, Date.now() / 1000);
+    });
+  }
+
+  /**
+   * An operation's status in `session`, from pi's receipts: its pending record first,
+   * then, when it is not pending, how it settled (`not_found` for one pi never saw).
+   */
+  async status(operationId: string, session: string): Promise<AgentStatus> {
+    const pending = async () => (await this.harness.pending({ session }))
+      .find((operation) => operation.operationId === operationId);
+    const open = await pending();
+    if (open !== undefined) {
+      return { operation_id: operationId, session, status: open.status };
+    }
+    let settled: PiOperationResult;
+    try {
+      // Not pending: settled or unknown, both answered at once; one admitted since the
+      // pending read is waited on only briefly.
+      settled = await this.harness.wait(operationId,
+                                        { session, signal: AbortSignal.timeout(STATUS_WAIT_MS) });
+    } catch {
+      return { operation_id: operationId, session, status: (await pending())?.status ?? "running" };
+    }
+    return { operation_id: operationId, session, status: settled.status,
+             ...(settled.reason === undefined ? {} : { reason: settled.reason }),
+             ...(settled.text === undefined ? {} : { text: settled.text }) };
+  }
+
+  /**
+   * Wait for an operation of `client` (null: the owner's) to settle, until `signal`; a
+   * grant change of that client, or a policy write, ends the wait (`WAIT_ENDED`).
+   */
+  async wait(operationId: string, session: string, client: string | null,
+             signal?: AbortSignal): Promise<PiOperationResult> {
+    const key = client ?? "";
+    const ended = this.#keepWait(key);
+    try {
+      return await this.harness.wait(operationId, {
+        session,
+        signal: signal === undefined ? ended.signal : AbortSignal.any([signal, ended.signal]),
+      });
+    } catch (error) {
+      if (ended.signal.aborted) {
+        throw new Refused(WAIT_ENDED);
+      }
+      throw error;
+    } finally {
+      const set = this.#waits.get(key);
+      set?.delete(ended);
+      if (set?.size === 0) {
+        this.#waits.delete(key);
+      }
+    }
+  }
+
+  /** A new pending wait of `key`'s, kept on the instance, within `WAITS_KEPT`. */
+  #keepWait(key: string): AbortController {
+    const kept = [...this.#waits.values()].reduce((sum, set) => sum + set.size, 0);
+    if (kept >= WAITS_KEPT) {
+      throw new Refused("too many pending waits");
+    }
+    const ended = new AbortController();
+    const set = this.#waits.get(key) ?? new Set<AbortController>();
+    this.#waits.set(key, set.add(ended));
+    return ended;
+  }
+
+  /** End the pending waits of `client`, or every one (`undefined`). */
+  #endWaits(client?: string): void {
+    for (const [key, set] of [...this.#waits]) {
+      if (client === undefined || key === client) {
+        for (const ended of set) {
+          ended.abort();
+        }
+      }
+    }
+  }
+
+  /** Close the live views of conversation `id`, by its provider session. */
+  async #closeViews(pi: Pi, id: ConversationId): Promise<void> {
+    const session = (await pi.snapshot(ProviderDoc, id, BG))?.sessionId;
+    if (session !== undefined) {
+      this.#parts.tee.close(session);
+    }
+  }
+
+  /** Abort each conversation's work, background work included, waiting `END_WAIT_MS`. */
+  async #abort(pi: Pi, ids: readonly ConversationId[]): Promise<void> {
+    const aborting = Promise.all(ids.map(async (id) =>
+      (await pi.conversation(id, BG))?.abort(BG, { background: true })));
+    if (await inTime(aborting, END_WAIT_MS) === "late") {
+      aborting.catch(() => console.error("ending an agent's work failed past its wait"));
+    }
+  }
+
+  /**
+   * A grant change ends its client's work: its pending waits, the live views of its
+   * threads and of every conversation with live work stamped for it, and that work. A
+   * client with no thread has none: every conversation stamped for a client descends from
+   * a thread the object made for it.
+   */
+  async endClient(client: string): Promise<void> {
+    this.#endWaits(client);
+    const threads = this.#parts.threads.ofClient(client);
+    if (threads.length === 0) {
+      return;
+    }
+    const pi = await this.harness.pi();
+    const ended: ConversationId[] = [];
+    for (const id of await liveConversations(pi)) {
+      if ((await pi.snapshot(this.authority, id, BG))?.stamp?.client === client) {
+        ended.push(id);
+      }
+    }
+    const viewed = new Set([...ended,
+                            ...threads.map((thread) => thread.conversation_id as ConversationId)]);
+    for (const id of viewed) {
+      await this.#closeViews(pi, id);
+    }
+    await this.#abort(pi, ended);
+  }
+
+  /** A policy write ends every conversation's work: every wait, every view, all live work. */
+  async endAll(): Promise<void> {
+    this.#endWaits();
+    this.#parts.tee.close();
+    const pi = await this.harness.pi();
+    await this.#abort(pi, await liveConversations(pi));
   }
 }
 

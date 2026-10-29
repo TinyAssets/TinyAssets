@@ -21,6 +21,7 @@ import { BATCH_BYTES, CHUNK_BYTES, type ChunkStore, Files, INLINE_BYTES, sha256H
 import { ignored, ignoreRules, OwnerFilesEnv } from "../src/files-env";
 import { OUTSIDE_GATE, type WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
+import { Refused } from "../src/errors";
 import { FILE_DEFAULTS } from "../src/policy";
 import {
   failure, faulty, filesOn, inGate, lostContent, ownerObject, sqlIn, STORAGE_FAULT,
@@ -191,6 +192,35 @@ describe("the owner's environment", () => {
       getOrThrow(await other.writeFile("a.txt", "theirs, edited", context));
       getOrThrow(await other.writeFile("a.txt", "theirs, edited twice", context));
       expect(getOrThrow(await one.readTextFile("a.txt", context))).toBe("theirs, edited twice");
+    });
+  });
+
+  it("re-checks the authority it runs under first in each change's own unit", async () => {
+    await inOwner(async (files) => {
+      const owner = new OwnerFilesEnv({ files, rearm });
+      getOrThrow(await owner.writeFile("a.txt", "one", context));
+      getOrThrow(await owner.createDir("dir", undefined, context));
+      let stands = true;
+      const theirs = new OwnerFilesEnv({ files, rearm, authorize: () => {
+        if (!stands) {
+          throw new Refused("outside client authority no longer stands");
+        }
+      } });
+      getOrThrow(await theirs.writeFile("b.txt", "two", context));
+      stands = false;
+      const why = (result: { ok: boolean; error?: { code: string } }) =>
+        result.ok ? "changed" : result.error!.code;
+      expect([why(await theirs.writeFile("a.txt", "x", context)),
+              why(await theirs.appendFile("a.txt", "x", context)),
+              why(await theirs.createDir("new", undefined, context)),
+              why(await theirs.renameFile("a.txt", "c.txt", context)),
+              why(await theirs.remove("dir", { recursive: true }, context)),
+              why(await theirs.createTempDir(undefined, context))])
+        .toEqual(Array.from({ length: 6 }, () => "permission_denied"));
+      expect(getOrThrow(await owner.readTextFile("a.txt", context))).toBe("one");
+      expect([getOrThrow(await owner.exists("dir", context)),
+              getOrThrow(await owner.exists("new", context)),
+              getOrThrow(await owner.exists("c.txt", context))]).toEqual([true, false, false]);
     });
   });
 

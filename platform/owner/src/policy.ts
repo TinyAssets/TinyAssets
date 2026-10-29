@@ -733,11 +733,15 @@ export class Policy {
       : { change: JSON.parse(row.document) as Change, digest: row.digest };
   }
 
-  /** `receipt_refusal`: a denied owner-session call, by the digest of what was asked. */
-  refusal(action: string, request: unknown, now: number): void {
+  /**
+   * `receipt_refusal`: a denied call, by the digest of what was asked, under its rule: an
+   * owner-session call's, or an outside client's tool call's (`authority.ts`).
+   */
+  refusal(action: string, request: unknown, now: number,
+          rule = "interactive_owner_session"): void {
     this.#storage.transactionSync(() => this.receipt("refusal", {
-      request_digest: policyDigest({ action, request }), rule: "interactive_owner_session",
-      decision: "deny", outcome: "refused",
+      request_digest: policyDigest({ action, request }), rule, decision: "deny",
+      outcome: "refused",
     }, now));
   }
 }

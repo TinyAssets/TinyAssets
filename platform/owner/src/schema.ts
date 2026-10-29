@@ -752,6 +752,24 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "ON model_reservations BEGIN SELECT RAISE(ABORT, 'a reservation never changes " +
       "what it reserved'); END",
   ]),
+  // 7: the agent's threads (threads.ts): each top-level pi conversation the object made for
+  // an agent, and the stamp it was made under, which never changes. pi's own tables hold
+  // the conversation and, in its `ta.authority` document, the same stamp.
+  Object.freeze([
+    "CREATE TABLE agent_threads (thread_id TEXT PRIMARY KEY CHECK (length(thread_id) = 39), " +
+      "conversation_id INTEGER NOT NULL UNIQUE CHECK (conversation_id >= 1), " +
+      "agent_id TEXT NOT NULL CHECK (length(agent_id) BETWEEN 1 AND 128), " +
+      "client TEXT CHECK (client IS NULL OR length(client) = 64), generation INTEGER, " +
+      "authenticated_at REAL, universe TEXT CHECK (universe IS NULL OR length(universe) " +
+      "BETWEEN 1 AND 512), created_at REAL NOT NULL, " +
+      "CHECK ((client IS NULL) = (generation IS NULL)), " +
+      "CHECK (client IS NOT NULL OR (authenticated_at IS NULL AND universe IS NULL))) " +
+      "WITHOUT ROWID",
+    "CREATE INDEX agent_threads_by_client ON agent_threads (client, created_at) " +
+      "WHERE client IS NOT NULL",
+    "CREATE TRIGGER agent_threads_kept BEFORE UPDATE ON agent_threads BEGIN " +
+      "SELECT RAISE(ABORT, 'a thread never changes the stamp it was made under'); END",
+  ]),
 ]);
 
 /** Apply every migration past the stored version; return the version now stored. */
