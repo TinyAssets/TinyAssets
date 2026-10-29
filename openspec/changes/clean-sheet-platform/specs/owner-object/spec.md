@@ -726,3 +726,52 @@ A scheduled turn SHALL name a thread made at its own client and generation, and 
 #### Scenario: A second hand-off of the same work
 - **WHEN** the runner hands the same `work_id` over twice
 - **THEN** pi answers the second `accepted: false`, the row is handed, and the model runs once
+
+### Requirement: The model is offered exactly read, write, edit, bash and ta
+Every conversation the object creates, the root, a thread, a fork and a subagent's included, SHALL offer the model exactly `read`, `write`, `edit`, `bash` and `ta`, written in pi's `modelTools` in every creating commit over whatever pi copied, and nowhere else. Every other tool SHALL be registered callable by tools and reached through `ta`; a tool the model is not offered SHALL be unavailable to the model's own call. No source SHALL build a tool result `control`, which could add a model tool.
+
+#### Scenario: A package registers a tool the model could call
+- **WHEN** a package tool registered callable by the model, and a deferred one, are installed, and the model calls each directly
+- **THEN** no request offers either, each call settles "not available", and a fork's and a subagent's conversation still offer the five, whatever their parent's tools drifted to
+
+### Requirement: ta's catalog lists what the conversation may call
+`ta` SHALL take one object, `{op: "catalog", query?, limit?, offset?}` or `{op: "call", name, arguments}`, refusing any other field. The catalog SHALL list the platform capabilities the conversation's authority may call, then the tools registered callable by tools, deferred ones marked, each with its JSON Schema, ranked by `query` as pi's `tool_search` ranks, and paged.
+
+#### Scenario: A scoped client reads the catalog
+- **WHEN** a client granted `read_files` only asks `ta` for its catalog
+- **THEN** it lists `wake:list`, `files:usage` and `model`, and no policy capability and no tool
+
+### Requirement: ta's call runs a platform capability or reaches a tool
+A call SHALL run a platform capability in the object, or reach a tool registered callable by tools through pi's `executeTool`, returning its structured output, diagnostics and error flag; any other name, the file tools, `ta` itself and the `ta:` names SHALL be refused loudly.
+
+#### Scenario: The model calls a file tool through ta
+- **WHEN** the model calls `ta` with `{op: "call", name: "bash"}`, or names `ta:catalog`
+- **THEN** the call fails "unknown capability: bash", or "the ta: names are the ops' own", and nothing runs
+
+### Requirement: A ta capability is a read only when classified one
+Each platform capability SHALL be classified a read or an effect, and one not classified a read SHALL be an effect. A read SHALL write nothing; an effect SHALL re-check the conversation's authority at its effect: in its own unit of the write gate, or for a nested model call in its reservation and dispatch.
+
+#### Scenario: A revoke lands before a proposal's unit
+- **WHEN** a client granted `propose_policy` calls `policy:propose` and its grant is revoked after `ta`'s check but before the proposal's unit runs
+- **THEN** the unit refuses with "outside client authority no longer stands" and no proposal is held
+
+### Requirement: The v1 platform capabilities hold to their doors' needs
+The platform capabilities SHALL be `policy:show` (a read, the owner's alone), `policy:propose` (an effect needing `propose_policy`, held for the owner's card), `wake:list` (a read of the authority's own scheduled work), `files:usage` (a read needing `read_files`) and `model` (an effect), each registered in `ta.authority`'s map with that need.
+
+#### Scenario: Outside clients ask for the owner's policy
+- **WHEN** a full client and a scoped client call `policy:show`, and a client without `propose_policy` calls `policy:propose`
+- **THEN** each is blocked with its fixed reason and a receipt, while a client granted `propose_policy` holds a proposal for the owner's card
+
+### Requirement: ta re-checks its authority inside its own execute
+`ta` SHALL re-derive its capability's need from the arguments it actually received and re-check the conversation's authority, the stamp's standing included, before it acts, keeping a refusal receipt; `ta.authority`'s `beforeTool` SHALL be only the early gate. A nested call SHALL pass `ta.authority` with its parent named.
+
+#### Scenario: A later hook rewrites an approved call
+- **WHEN** a scoped client's `ta` call of `files:usage` passes the early gate and a later hook rewrites it to `policy:show`
+- **THEN** `ta` refuses it with "only the owner may use this capability", and the policy is not read
+
+### Requirement: A nested model call spends as its run's own calls do
+`ta`'s `model` capability SHALL call the object's model source on the conversation's provider session and its call's telemetry context, so it is reserved, dispatched and settled against the owner's model policy and charged to the turn at the origin of its causal chain; a refusal SHALL be the call's error.
+
+#### Scenario: A run that asks a model through ta
+- **WHEN** a run's model calls `ta`'s `model`, then answers
+- **THEN** the run's three gateway requests are reserved and settled on one turn, counted against that turn's caps, and a later input's request is another turn

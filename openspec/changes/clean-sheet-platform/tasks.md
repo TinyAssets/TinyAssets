@@ -450,7 +450,7 @@ account and no deploy.
 - [ ] pi-durable 1.4.x in the owner's object on its own mechanisms (hook names,
   transcript store, which is the plan's append-only session event log, one
   `ExecutionEnv`, `replay: "unsafe"` by default, compaction, steering, subagents,
-  `sleepUntil`, Agent Skills, deferred MCP tools through `tool_search` and code mode,
+  `sleepUntil`, Agent Skills, MCP tools and code mode reached through `ta` (A3),
   `pi.agent` settings), with ADR-032's kept differences; packages. Owed by 3.5: owner
   policy feeds pi's settings, and the per-agent wake limits move into the policy
   document then; an agent run, launch or extension call made for an outside client
@@ -637,8 +637,59 @@ account and no deploy.
   stays in pi, refused at every operation and model call); and `agentSubmit` and
   `agentStatus` address work by `thread_id`, resolved against the calling client's own
   row, never by a pi session string (a `harness.submit` with no session goes to the
-  root, the owner's). Open: A3's `ta`, whose `execute` re-derives its capability from
-  the conversation's authority rather than trusting the gate's map alone.
+  root, the owner's). A3's `ta` re-derives its capability in its own `execute` (below).
+- [x] A3 `ta`, in workerd, nothing deployed (`ta.ts`). The model is offered exactly
+  `read`, `write`, `edit`, `bash` and `ta`: pi's `modelTools`, written in
+  `conversationCreated` on every conversation the object creates (the root, threads,
+  forks, subagents) over whatever pi copied, and nowhere else (the agent-authority guard:
+  that one write of `AgentDoc`, no other `modelTools`, no `addTools`, no tool result
+  `control`); a tool the model is not offered settles "not available". `ta` is
+  `callers: ["model"]`, `replay: "unsafe"`; its input is one object, `op` an enum and each
+  op's fields optional, its shape checked in `execute` (any other field refused). `catalog`
+  lists the platform capabilities the conversation's authority may call, then the tools
+  registered `callers` naming "tools" (pi's `agent.callable`, deferred ones marked), each
+  with its JSON Schema, ranked by a query with a copy of pi's `tool_search` BM25 and search
+  text (pi exports neither; the ta guard runs pi's `tool_search` beside it on 300
+  generated catalogs), and paged (`limit` at most 100, `offset`, `next_offset`). `call`
+  runs a platform capability in the object (its arguments validated by pi-ai's
+  validator), or reaches a tool through `api.executeTool`, returning its
+  `structuredOutput`, `diagnostics` and `isError`; any other name, the file tools, `ta`
+  and the `ta:` names are refused loudly. Authority: `TA_CAPABILITIES` in `authority.ts`
+  (`ta:catalog`, `wake:list`, `model`: a standing authority; `policy:show`: the owner's
+  alone, a new `OWNER_ONLY` need, as `policyRead`; `policy:propose`: `propose_policy`, as
+  `policyPropose`; `files:usage`: `read_files`, as `fileUsage`); `ta.authority`'s
+  `beforeTool` is the early gate, and `execute` re-derives the need from the arguments it
+  received and re-checks the stamp (a refusal receipt kept), so a later hook's rewrite or
+  a revoke after the gate is refused; a nested call passes `ta.authority` with
+  `call.parent`, so a client reaches nothing through `ta` it could not directly. Each
+  capability is a read or an effect, an effect unless classified a read: a read writes
+  nothing, an effect re-checks its authority in its own unit (`policy:propose`) or in its
+  reservation and dispatch (`model`). `model` calls the object's model source on the
+  conversation's provider session and the call's telemetry context: reserved, dispatched
+  and settled like the run's own calls, on the run's turn, against its caps. `wake:list`
+  reads the authority's own scheduled work (`Scheduled.of`). `agent:run` is A4's. Tested:
+  the five on the root, a thread, a fork and a subagent (and after a parent's tools
+  drifted), a model-callable and a deferred package tool never offered; the catalog's
+  order, schemas, ranking and pages, per authority; a platform read and effect; refusals;
+  nested calls through the gate; a rewrite and a revoke caught in `execute`; a revoke
+  before an effect's unit; `policy:propose` and `policy:show` for the owner and outside
+  clients with receipts; `model` through the gateway Worker on its run's turn, and refused
+  by its cap. The test tools are registered callable by tools, so the A0 to A2 tests reach
+  them through `ta`. Mutation: 51 (classification, the capability map, the catalog's
+  `callers` filter and paging, the five-tool fix, nested authority, the re-check, the
+  model call, the guard's rules, the ranking), 50 killed; alive and equivalent: a read
+  handed a writing unit, since no read capability writes. Declared differences from the
+  research: the input is an object with an `op` enum, not a root union, since pi-ai's
+  Anthropic adapter keeps only a root's `properties` and strict sampling refuses object
+  unions; the catalog also takes an `offset`, to page; the catalog lists only what the
+  conversation's authority may call; deferred tools are listed from `agent.callable`
+  (pi's deferred tools a tool may call are always among them); `policy:propose` takes the
+  door's `{change, request_id?}`; `model` is in v1 (G2 landed) and `agent:run` is not.
+  Owner bundle 1,646 KiB, 342 KiB gzip (1,628 and 337 at A2), local startup 24 ms active
+  in a 57 ms window. Open: MCP tools (`mcp__<server>__<tool>`, callable by tools, after
+  G3) and code mode as a tool `ta` calls; the sandbox's `ta` CLI through the egress door;
+  a nested model call's events reach the conversation's live view, since it shares the
+  conversation's provider session (A6 decides how a view shows them).
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
   owner's hook code with the Worker Loader, called over RPC with JSON in and out and a
   timeout. A `beforeTool` timeout or error blocks

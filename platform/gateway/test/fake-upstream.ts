@@ -15,6 +15,8 @@
  * - `cmd:tool`: a tool call (Anthropic).
  * - `cmd:call-<name>`: a call of the tool `<name>` with no arguments (Anthropic); a tool
  *   result that says `cmd:echo` turns the next answer back to text.
+ * - `cmd:ta-<name>`: the same through the owner's `ta` tool, a call of `<name>` with no
+ *   arguments; `cmd:ta-model` asks `ta`'s nested model call `cmd:echo`.
  * - `cmd:drip`: `DRIP` text deltas (`d0 ` to `d11 `), `DRIP_MS` apart, then the finish:
  *   a stream that lasts longer than the owner object's one-second partial commits.
  *
@@ -192,9 +194,11 @@ async function model(request: Request, format: Format): Promise<Response> {
 }
 
 function anthropicTool(request: Request, body: Record<string, unknown>,
-                       tool?: string): Response {
+                       tool?: string, args?: unknown): Response {
   const name = String(body["model"]);
-  const input = tool === undefined ? ["{\"q\":", "\"pi\"}"] : ["{", "}"];
+  const json = args === undefined ? "" : JSON.stringify(args);
+  const input = tool === undefined ? ["{\"q\":", "\"pi\"}"]
+    : args === undefined ? ["{", "}"] : [json.slice(0, 5), json.slice(5)];
   return new Response(sse([
     ["message_start", { type: "message_start", message: {
       id: "msg_tool", type: "message", role: "assistant", model: name, content: [],
@@ -391,6 +395,14 @@ export default {
       const calling = /^call-([a-z]+)$/.exec(command(text));
       if (command(text) === "tool" || calling !== null) {
         return anthropicTool(request, JSON.parse(text) as Record<string, unknown>, calling?.[1]);
+      }
+      const through = /^ta-([a-z]+)$/.exec(command(text));
+      if (through !== null) {
+        const called = through[1]!;
+        return anthropicTool(request, JSON.parse(text) as Record<string, unknown>, "ta", {
+          op: "call", name: called,
+          arguments: called === "model" ? { messages: [{ role: "user", text: "cmd:echo" }] } : {},
+        });
       }
       return model(request, anthropicFormat());
     }

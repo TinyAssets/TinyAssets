@@ -20,7 +20,9 @@
  *   extension's, so its block wins; then pi's `CodingTools` with `read` wrapped
  *   `replay: "safe"` (only pure reads are marked safe; `write`, `edit` and `bash` stay
  *   `unsafe`, so a call an eviction cut off comes back `interrupted` and is never run
- *   twice), then the object's packages. The `ta.` names are the object's: a package named
+ *   twice), then `ta` (`ta.ts`, A3), the model's way to every other ability, then the
+ *   object's packages, whose tools the model is never offered: `ta` reaches those
+ *   registered callable by tools. The `ta.` names are the object's: a package named
  *   so is refused, as one pi refuses to install is; each is skipped and kept as an owner
  *   notice, once while it is kept, though pi opens again at every wake: the factory never
  *   throws for owner content, since a failed open fails the Lifecycle's startup and the
@@ -44,8 +46,12 @@
  *   and a client's conversation whose selection drops the gate makes no model call
  *   (`modelAuthority`);
  * - `onReport`: each report becomes an owner notice (`notices.ts`);
- * - `conversationCreated`, the one way an authority is inherited, in every creating
- *   commit: the root conversation is the owner's; a conversation a task creates (a
+ * - `conversationCreated`, in every creating commit, the one place the model's tools are
+ *   fixed and the one way an authority is inherited: every conversation, the root, a fork
+ *   and a subagent's included, offers the model exactly read, write, edit, bash and `ta`
+ *   (pi's `modelTools`, written only here, a guard holds it; nothing the model calls
+ *   returns a `control` that would add one); the root conversation is the owner's; a
+ *   conversation a task creates (a
  *   subagent's) takes its owner conversation's authority, over any copy a fork brought,
  *   which must agree; a fork holds its parent's (`fork: "current"`). Each conversation's
  *   provider session is recorded in `ta.session`, so a model call finds its conversation;
@@ -94,6 +100,7 @@ import type { Notices } from "./notices";
 import { originRoot } from "./origin";
 import { WORKSPACE } from "./paths";
 import { inTime } from "./schedule";
+import { MODEL_TOOLS, type Platform, taTool } from "./ta";
 import type { Thread, Threads } from "./threads";
 
 const BG = BACKGROUND_CONTEXT;
@@ -125,6 +132,8 @@ export const WAIT_ENDED = "the wait was ended by a grant or policy change";
 export const RESERVED_PREFIX = "ta.";
 /** The early authority gate's extension name. */
 export const GATE = "ta.authority";
+/** The extension of the `ta` tool (`ta.ts`). */
+export const TA_EXTENSION = "ta.tool";
 
 export type { Stamped };
 
@@ -217,6 +226,8 @@ export interface AgentParts {
   readonly authority: Authority;
   /** The object's threads. */
   readonly threads: Threads;
+  /** What `ta`'s platform capabilities run on. */
+  readonly platform: Platform;
 }
 
 /** Besides the object's parts: the model catalog, and the packages after the object's own. */
@@ -315,6 +326,14 @@ export class OwnerAgent {
       name: "ta.replay",
       wraps: [wrapTool(read, (tool) => ({ ...tool, replay: "safe" }))],
     }));
+    this.#registry.install(defineExtension({
+      name: TA_EXTENSION,
+      tools: [taTool({
+        authority: this.#parts.authority, platform: this.#parts.platform,
+        write: this.#parts.write,
+        state: (api, context) => api.snapshot(this.authority, api.conversationId, context),
+      })],
+    }));
     for (const extension of this.#source.packages) {
       try {
         if (String(extension.name).startsWith(RESERVED_PREFIX)) {
@@ -344,11 +363,13 @@ export class OwnerAgent {
   }
 
   /**
-   * In every creating commit: the root is the owner's; a task's new conversation takes its
-   * owner conversation's authority, which a fork's copy must agree with; and each
-   * conversation's provider session is recorded.
+   * In every creating commit: the model is offered exactly `MODEL_TOOLS`, over whatever
+   * pi copied from an owner conversation or a fork's entry; the root is the owner's; a
+   * task's new conversation takes its owner conversation's authority, which a fork's copy
+   * must agree with; and each conversation's provider session is recorded.
    */
   async #inherit(tx: Tx, record: ConversationRecord): Promise<void> {
+    (await tx.doc(AgentDoc, record.id)).modelTools = [...MODEL_TOOLS];
     const mine = await tx.doc(this.authority, record.id);
     if (record.id === ROOT_CONVERSATION_ID) {
       Object.assign(mine, { by: "owner" });

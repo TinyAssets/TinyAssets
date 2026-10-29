@@ -32,8 +32,12 @@
  * nested one (`call.parent`) alike, with a fixed reason and a refusal receipt. Each tool's
  * need: `read` needs `read_files`; `write` needs `write_files`; `edit`, which reads the
  * file it changes, needs both; `bash` is refused to a scoped grant; `ta` takes its own
- * map's, by the capability called (A3 fills it, so every one is refused now, and the
- * `ta:` names are reserved so no call aliases an op); any other tool is refused.
+ * map's, by the capability called (`TA_CAPABILITIES`: the catalog's and each platform
+ * capability's; a tool `ta` reaches has none, so a scoped grant is refused it, and the
+ * `ta:` names are reserved so no call aliases an op); any other tool is refused. `ta`
+ * re-derives its need from the arguments it actually received and re-checks it inside its
+ * own `execute` (`ta.ts`), since a later hook may rewrite a call's arguments after this
+ * gate approved them.
  *
  * Out of scope now: only platform code makes a top-level conversation (a guard holds it to
  * `OwnerAgent.thread`), and only platform code selects extensions (a guard keeps every
@@ -44,10 +48,16 @@ import { Invalid, Refused } from "./errors";
 import { codePoints, isPrintable } from "./text";
 
 /** The capabilities of a scoped grant the agent's tools need (`grants.ts`'s `CAPABILITIES`). */
-export type ToolCapability = "read_files" | "write_files";
+export type ToolCapability = "read_files" | "write_files" | "propose_policy";
 
-/** What an operation needs: each of these capabilities, or the shell (`null`). */
-export type Need = readonly ToolCapability[] | null;
+/** The need of what only the owner itself may do, whatever grant a client holds. */
+export const OWNER_ONLY = "owner";
+
+/**
+ * What an operation needs: each of these capabilities (none: only a standing authority),
+ * the shell (`null`), or the owner itself (`OWNER_ONLY`).
+ */
+export type Need = readonly ToolCapability[] | null | typeof OWNER_ONLY;
 
 /**
  * Each core tool's need; `null`: refused to a scoped client whatever it holds (the shell
@@ -62,17 +72,32 @@ export const TOOL_CAPABILITIES: Readonly<Record<string, Need>> = Object.freeze({
 
 /**
  * Each `ta` capability's need, by the name `ta` calls (`ta:catalog` for the catalog, as the
- * Python's `check_identity` named it). A3 fills it; one missing is refused. The `ta:`
- * names are the ops' own: a call naming one is refused.
+ * Python's `check_identity` named it), each as the object's door for the same thing holds
+ * it: the catalog and the conversation's own scheduled work need only a standing
+ * authority; the owner's policy is the owner's alone to read (`policyRead`); a proposal
+ * needs `propose_policy` (`policyPropose`); file usage needs `read_files` (`fileUsage`); a
+ * nested model call spends as the turn's own calls do, under a standing authority, re-
+ * checked in its reservation and dispatch. A name missing is refused to a scoped grant.
+ * The `ta:` names are the ops' own: a call naming one is refused.
  */
-export const TA_CAPABILITIES: Readonly<Record<string, Need>> = Object.freeze({});
-const TA_OP = "ta:";
+export const TA_CAPABILITIES: Readonly<Record<string, Need>> = Object.freeze({
+  "ta:catalog": Object.freeze([] as const),
+  "policy:show": OWNER_ONLY,
+  "policy:propose": Object.freeze(["propose_policy"] as const),
+  "wake:list": Object.freeze([] as const),
+  "files:usage": Object.freeze(["read_files"] as const),
+  "model": Object.freeze([] as const),
+});
+/** The tool `ta`, and the prefix of its ops' own names. */
+export const TA_TOOL = "ta";
+export const TA_OP = "ta:";
 
 /** The fixed reasons a call is refused with: the model and the receipts see only these. */
 export const AUTHORITY_CHANGED = "outside client authority no longer stands";
 export const NOT_GRANTED = "outside client capability not granted";
 export const NO_SHELL = "the shell is not granted to a scoped outside client";
 export const NO_AUTHORITY = "this conversation runs under no authority";
+export const NOT_OWNER = "only the owner may use this capability";
 
 /** The receipt's rule for a refused tool call, and a refused model call's code. */
 export const AUTHORITY_RULE = "outside_authority";
@@ -171,7 +196,7 @@ export interface GatedCall {
 export function capabilityOf(call: GatedCall,
                              ta: Readonly<Record<string, Need>> = TA_CAPABILITIES):
     Need | undefined {
-  if (call.name === "ta") {
+  if (call.name === TA_TOOL) {
     const args = call.arguments as Record<string, unknown> | null;
     const op = typeof args === "object" && args !== null ? args["op"] : undefined;
     const name = op === "call" ? args!["name"] : undefined;
@@ -214,7 +239,8 @@ export class Authority {
   /**
    * That `state` holds `need` (none: only that it stands) where its conversation acts; else
    * a refusal with the fixed reason. The owner's holds everything, none nothing; a client's
-   * stamp must stand, and a scoped grant hold each capability (`null`: never).
+   * stamp must stand, never holds what is the owner's alone, and a scoped grant holds each
+   * capability (`null`: never).
    */
   require(state: Readonly<AuthorityState> | undefined, need: Need | undefined): void {
     if (state?.by === "owner") {
@@ -225,6 +251,9 @@ export class Authority {
     }
     const stamp = state.stamp;
     const grant = this.#standing(stamp);
+    if (need === OWNER_ONLY) {
+      throw new Refused(NOT_OWNER);
+    }
     if (grant.mode === "full") {
       return;
     }
