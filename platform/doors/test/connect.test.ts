@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OwnerDO } from "../../owner/src/owner-do";
 import { CONNECT_CALLBACK, CONNECTED_PAGE, type DoorsEnv, now } from "../src/config";
 import { serve } from "../src/doors";
+import { connectCookie } from "../src/session";
 import { bundledRecords, catalogOf } from "../src/sources";
 import { TEST_OAUTH } from "./entry";
 import { FAKE_UPSTREAM } from "./fake-upstream";
@@ -772,6 +773,24 @@ describe("a flow's finish", () => {
     expect(await received()).toEqual([]);
     expect((await connectionRows(app.owner)).map((row) => row.status))
       .toEqual(["revoked", "revoked", "revoked"]);
+  });
+
+  it("refuses a flow begun at any redirect URI but its source's own", async () => {
+    const app = await signedIn();
+    const elsewhere = `${CONNECT_CALLBACK}/groq`;
+    const prepared = await env.OWNER.getByName(app.owner).connectionPrepare(
+      { owner: app.owner, caller: app.owner, origin: null, session: app.session },
+      { source: "test_oauth", kind: "oauth2", display_name: "Test", provider: "openai",
+        revocable: true, redirect_uri: elsewhere });
+    const state = prepared.flow!.state;
+    const binding = (await connectCookie(state, 600)).split(";")[0]!;
+    const answer = await post(app, "connections/oauth/finish",
+                              { state, code: "good-code", redirect_uri: elsewhere }, doorsEnv,
+                              [binding]);
+    expect(answer.status).toBe(403);
+    expect(await answer.json()).toEqual({
+      error: "the authorization came back on another source's callback" });
+    expect(await received()).toEqual([]);
   });
 
   it("re-checks the source is still connectable, before any exchange", async () => {

@@ -93,6 +93,13 @@ describe("the source records", () => {
     expect(() => sealedSource(sourceRecord(claude), "api_key")).toThrow(SourceRecordError);
   });
 
+  it("bound an authorize param at 128 code points, as the Python did", () => {
+    const at = (value: string) => sourceRecord({ ...openrouter, oauth: {
+      ...(openrouter["oauth"] as object), authorize_params: { key_label: value } } });
+    expect(at("\u{1F511}".repeat(128)).oauth!.authorize_params["key_label"]).toHaveLength(256);
+    expect(() => at("\u{1F511}".repeat(129))).toThrow(SourceRecordError);
+  });
+
   it("take an issuer, bare or with a path, and its RFC 9207 flag", () => {
     for (const issuer of ["https://auth.openai.com", "https://auth.openai.com/tenant"]) {
       const record = sourceRecord({ ...chatgpt, oauth: {

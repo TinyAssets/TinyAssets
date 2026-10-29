@@ -186,8 +186,8 @@ function authorizeParams(check: ReturnType<typeof checker>, value: unknown):
     Readonly<Record<string, string>> {
   const params = check.stringMap(value ?? {}, "oauth.authorize_params", PARAM, 8);
   for (const [key, item] of Object.entries(params)) {
-    if (FLOW_PARAMS.includes(key) || item.length === 0 || item.length > 128
-        || !TEXT.test(item)) {
+    // TEXT bounds a value at 1 to 128 code points, as the Python's `len()` did.
+    if (FLOW_PARAMS.includes(key) || !TEXT.test(item)) {
       check.fail(`oauth.authorize_params may not set ${key}, and each value is 1 to 128 ` +
                  "printable characters");
     }
