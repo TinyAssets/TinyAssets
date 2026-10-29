@@ -321,17 +321,20 @@ account and no deploy.
   `unknown`), and pi sees the gateway's code, named so that pi-ai's own classifier
   retries a timeout, a rate limit, an overload or a server error and no other; pruning
   receipts no longer frees a turn's caps (5,000 requests of one turn hold); a turn is
-  pi's run, not the newest user message (A1). Mutation, the reviewer's 56 mapped onto the
-  new code: 48 killed, the 8 that live equivalent (a failed call's tokens and cost are
-  settled 0, so counting it among the settled changes nothing; the dispatch's state guard,
-  checked in its own unit first; dropping a settled row from the in-memory open set, which
-  is read only for open rows; the reseal's own-refresh check, which the lease row also
-  holds; `#owed`'s due check behind the lane's own due query; the tee's undefined
-  session, which no subscriber can hold). Mine, 116 across the caps, the turn counters,
-  the reservation states, the turn, the lease, the revoke, the envelope, `auto`, the gate
-  placement and the gateway's first event: 113 killed, the 3 that live equivalent (the
-  reseal's version-shape check of the gateway's own answer; the output cap the gateway
-  clamps to anyway; `flowBegin`'s sync, which its pending row's sweep covers). Open: the
+  pi's run, not the newest user message (A1). Mutation, the reviewer's round-2 set of 73
+  (its 56 re-anchored on the new code and 17 of the review fixes): 63 killed, the 10 that
+  live equivalent (a failed call's tokens and cost are settled 0, so counting it among the
+  settled changes nothing; the dispatch's state guard, checked in its own unit first;
+  dropping a settled row from the in-memory open set, which is read only for open rows;
+  the reseal's own-refresh check, which the lease row also holds; `#owed`'s due check
+  behind the lane's own due query; the tee's undefined session, which no subscriber can
+  hold; a session member with no chain, which only the creation hook writes; the
+  gateway's first-event check of an abort, which cannot coincide with a provider's refusal
+  status). Mine, 128 across the caps, the turn counters, the reservation states, the turn
+  and its anchor, the lease, the revoke, the envelope, `auto`, the gate placement, the
+  upstream codes and the gateway's first event: 125 killed, the 3 that live equivalent
+  (the reseal's version-shape check of the gateway's own answer; the output cap the
+  gateway clamps to anyway; `flowBegin`'s sync, which its pending row's sweep covers). Open: the
   doors' `GATEWAY` binding
   and the connect routes (G3); the policy write that ends in-flight turns and closes their
   tee views (A2); the receipts' rows per call, measured live (G5).
@@ -439,7 +442,8 @@ account and no deploy.
   a budget refusal as the turn's error, never sent; a revoke racing a call; a 429 retried
   by pi at no cost, and each upstream status retried or not as pi-ai reads its code; the
   turn across tool rounds, a steer, a compaction, two levels of subagents, a subagent
-  after its root's run, and background work's conversation beside a new root run; a
+  after its root's run, a subagent's own idle compaction, and background work's
+  conversation beside a new root run, with a subagent of its own; a
   dispatch or settle that throws. Declared
   differences from the research: stickiness reads the transcript rather than an in-memory
   map rebuilt from it; a continuation kept on an earlier target is estimated by its own
