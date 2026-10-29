@@ -10,8 +10,8 @@
  * holds; with none set, from the script a test stored in the object (`storeScript`), so a
  * conversation a new instance resumes after an eviction continues the same script. A
  * request with no script left is an error, so a turn never succeeds by accident. Every
- * request's turn, as the object's agent reads it from pi's records (`OwnerAgent.turnOf`)
- * when the request is made, is kept on `turns`, as the gateway provider reads it.
+ * request's turn, read from the telemetry context pi gives it (`origin.ts`), is kept on
+ * `turns`, as the gateway provider reads it.
  */
 import type { Context } from "@earendil-works/chord/context";
 import {
@@ -25,6 +25,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 
 import { type AgentParts, gatewayAgent, OwnerAgent } from "../src/agent";
 import type { GatewayService, Resealed } from "../src/connections";
+import { turnOf } from "../src/origin";
 import { type OwnerEnv, OwnerDO } from "../src/owner-do";
 
 export { OwnerDO } from "../src/owner-do";
@@ -44,44 +45,103 @@ export interface Probes {
   holds: number;
   /** The conversation `spawn` last made, when it has. */
   spawned: number | null;
+  /** The inputs `spawn` submitted to the conversations it made, in order. */
+  submitted: number[];
+  /** The background task `background` last started, when it has. */
+  background: number | null;
+  /** Awaited by background work before it submits its work, when set. */
+  backgroundGate: Promise<void> | null;
+}
+
+/** Probes as a fresh instance has them. */
+export function freshProbes(): Probes {
+  return { readGate: null, reads: 0, holdGate: null, holds: 0, spawned: null, submitted: [],
+           background: null, backgroundGate: null };
 }
 
 function answers(messages: readonly Message[]): number {
   return messages.filter((message) => message.role === "assistant").length;
 }
 
-/**
- * Background work that makes a conversation of its own and ends, as a package's background
- * task would; its result is the conversation's id. A test creates it conversation-owned
- * with `background: true`.
- */
+/** Background work's state: it makes its conversation, then submits its work there. */
 type Spawning = { phase: "run" } | { phase: "made"; child: number };
 
-export const BackgroundSpawn = defineTask<Record<string, never>, Spawning, number>({
-  name: "test.background",
-  version: 1,
-  initial: () => ({ phase: "run" }),
-  phases: {
-    // The conversation is made while the task runs, then the task ends with its id.
-    run: async (_task, runtime, context) => runtime.commit(async (tx) => {
-      const child = await tx.createConversation({
-        ownership: { kind: "task", taskId: runtime.taskId } });
-      return { status: "running", checkpoint: { phase: "made", child: child.id } };
-    }, context),
-    made: async (task, runtime, context) => runtime.commit(() => ({
-      status: "terminal", outcome: { status: "completed", result: task.state.checkpoint.child },
-    }), context),
-  },
-  abort: async (_task, runtime, context) => runtime.commit(() => ({
-    status: "terminal", outcome: { status: "failed", error: { message: "aborted" } } }), context),
-});
+/** What background work hands back: its conversation, and the input it submitted. */
+export type Spawned = { child: number; submission: number };
 
-/** The test tools: `hold` (replay-unsafe), `spawn` (a task-owned conversation), `read`'s gate. */
+/**
+ * Work that makes a conversation of its own and submits its work there, through pi's
+ * invocation-bound handles, as a package's background agent would.
+ */
+function conversationWork(probes: () => Probes) {
+  return defineTask<{ work: string }, Spawning, Spawned>({
+    name: "test.work",
+    version: 1,
+    initial: () => ({ phase: "run" }),
+    phases: {
+      run: async (_task, runtime, context) => runtime.commit(async (tx) => {
+        const child = await tx.createConversation({
+          ownership: { kind: "task", taskId: runtime.taskId } });
+        return { status: "running", checkpoint: { phase: "made", child: child.id } };
+      }, context),
+      made: async (task, runtime, context) => {
+        await probes().backgroundGate;
+        const child = task.state.checkpoint.child;
+        const handle = await runtime.conversation(child as never, context);
+        const submission = await handle!.submit(
+          { type: "input", content: task.input.work }, context);
+        await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed",
+          result: { child, submission: submission.id as unknown as number } } }), context);
+      },
+    },
+    abort: async (_task, runtime, context) => runtime.commit(() => ({
+      status: "terminal", outcome: { status: "failed", error: { message: "aborted" } } }),
+      context),
+  });
+}
+
+/** Background work whose own child task does the work (`conversationWork`). */
+type Nesting = { phase: "run" } | { phase: "waited"; child: number };
+
+function nestedWork(work: ReturnType<typeof conversationWork>) {
+  return defineTask<{ work: string }, Nesting, Spawned>({
+    name: "test.nested",
+    version: 1,
+    initial: () => ({ phase: "run" }),
+    phases: {
+      run: async (task, runtime, context) => runtime.commit(async (tx) => {
+        const child = await tx.createTask(work, { work: task.input.work }, {
+          ownership: { kind: "task", taskId: runtime.taskId } });
+        return { status: "waiting", checkpoint: { phase: "waited", child: child as never },
+                 on: [child], policy: "failFast" };
+      }, context),
+      waited: async (task, runtime, context) => {
+        const done = await runtime.getTask(task.state.checkpoint.child as never, context);
+        const result = (done?.state.outcome as { result: Spawned } | undefined)?.result;
+        await runtime.commit(() => (result === undefined
+          ? { status: "terminal", outcome: { status: "failed", error: { message: "no work" } } }
+          : { status: "terminal", outcome: { status: "completed", result } }), context);
+      },
+    },
+    abort: async (_task, runtime, context) => runtime.commit(() => ({
+      status: "terminal", outcome: { status: "failed", error: { message: "aborted" } } }),
+      context),
+  });
+}
+
+/**
+ * The test tools: `hold` (replay-unsafe), `spawn` (a conversation this call owns, and its
+ * work submitted there, as a subagent tool does), `background` (background work, as a
+ * package starts it), `pass` (an answer that ends a fake upstream's tool loop), and
+ * `read`'s gate.
+ */
 function testExtensions(probes: () => Probes): Extension[] {
   const read = CodingTools.tools!.find((tool) => tool.name === "read")! as ToolRegistration;
+  const work = conversationWork(probes);
+  const nested = nestedWork(work);
   return [defineExtension({
     name: "test.tools",
-    tasks: [BackgroundSpawn],
+    tasks: [work, nested],
     tools: [
       defineTool({
         name: "hold",
@@ -96,13 +156,39 @@ function testExtensions(probes: () => Probes): Extension[] {
       defineTool({
         name: "spawn",
         description: "Make a conversation this call owns, as a subagent tool does.",
-        parameters: Type.Object({}),
-        execute: async (_args, api, context: Context) => {
+        parameters: Type.Object({ work: Type.Optional(Type.String()) }),
+        execute: async (args, api, context: Context) => {
           const child = await api.commit((tx) => tx.createConversation({
             ownership: { kind: "task", taskId: api.taskId } }), context);
           probes().spawned = child.id;
+          if (args.work !== undefined) {
+            const handle = await api.conversation(child.id, context);
+            const submission = await handle!.submit({ type: "input", content: args.work },
+                                                    context);
+            probes().submitted.push(submission.id as unknown as number);
+          }
           return { output: [{ type: "text", text: String(child.id) }] };
         },
+      }),
+      defineTool({
+        name: "background",
+        description: "Start background work, as a package does; nested, by a child task.",
+        parameters: Type.Object({ work: Type.Optional(Type.String()),
+                                  nested: Type.Optional(Type.Boolean()) }),
+        execute: async (args, api, context: Context) => {
+          const input = { work: args.work ?? "cmd:call-pass" };
+          const options = { ownership: { kind: "conversation" as const }, background: true };
+          const id = args.nested === true ? await api.createTask(nested, input, options, context)
+            : await api.createTask(work, input, options, context);
+          probes().background = id as unknown as number;
+          return { output: [{ type: "text", text: "started cmd:echo" }] };
+        },
+      }),
+      defineTool({
+        name: "pass",
+        description: "Answer, so the next request asks for text.",
+        parameters: Type.Object({}),
+        execute: async () => ({ output: [{ type: "text", text: "passed cmd:echo" }] }),
       }),
     ],
     wraps: [wrapTool(read, (tool) => ({
@@ -151,13 +237,13 @@ function scripted(script: () => Step[]): FauxProviderHandle {
  * `provider`, with `seen` told each request's `sessionId` as the request is made, before
  * it is answered.
  */
-function seeing(provider: Provider, seen: (sessionId: string | undefined) => void): Provider {
+function seeing(provider: Provider, seen: (telemetry: unknown) => void): Provider {
   return new Proxy(provider, {
     get(target, key, receiver) {
       const value: unknown = Reflect.get(target, key, receiver);
       if ((key === "stream" || key === "streamSimple") && typeof value === "function") {
         return (...args: unknown[]) => {
-          seen((args[2] as { sessionId?: string } | undefined)?.sessionId);
+          seen((args[2] as { telemetry?: unknown } | undefined)?.telemetry);
           return (value as (...given: unknown[]) => unknown).apply(target, args);
         };
       }
@@ -171,8 +257,7 @@ export class FauxOwnerDO extends OwnerDO {
   readonly agent: OwnerAgent;
   readonly faux: FauxProviderHandle;
   script: Step[] = [];
-  readonly probes: Probes = { readGate: null, reads: 0, holdGate: null, holds: 0,
-                              spawned: null };
+  readonly probes: Probes = freshProbes();
   /** Each request's turn, or `error: <message>` when the agent found none; in order made. */
   readonly turns: string[] = [];
 
@@ -184,11 +269,14 @@ export class FauxOwnerDO extends OwnerDO {
         return self.script.length > 0 ? self.script : storedScript(ctx);
       });
       const models = createModels();
-      models.setProvider(seeing(made.faux.provider, (sessionId) => {
-        const turns = made.self!.turns;
-        const at = turns.push("pending") - 1;
-        made.agent!.turnOf(sessionId).then((turn) => { turns[at] = turn; },
-                                           (error: Error) => { turns[at] = `error: ${error.message}`; });
+      models.setProvider(seeing(made.faux.provider, (telemetry) => {
+        let turn: string;
+        try {
+          turn = turnOf(telemetry);
+        } catch (error) {
+          turn = `error: ${(error as Error).message}`;
+        }
+        made.self!.turns.push(turn);
       }));
       made.agent = new OwnerAgent(parts, {
         models: () => models, extensions: testExtensions(() => made.self!.probes) });
@@ -214,8 +302,7 @@ export class MalformedOwnerDO extends OwnerDO {
                                  execute: async () => ({ output: [] }) });
       made.agent = new OwnerAgent(parts, { models: () => models, extensions: [
         defineExtension({ name: "pkg:broken", tools: [twice, twice] }),
-        ...testExtensions(() => ({ readGate: null, reads: 0, holdGate: null, holds: 0,
-                                   spawned: null })),
+        ...testExtensions(freshProbes),
       ] });
       return made.agent;
     });
@@ -271,37 +358,25 @@ function watched(gateway: GatewayService, calls: () => GatewayCall[],
 }
 
 /**
- * The production agent (`gatewayAgent`), and the turn of a test's own call to the
- * provider outside any pi run, set by its session id (`direct`): every other request's
- * turn is pi's, as in production.
- */
-export class GatedAgent extends OwnerAgent {
-  readonly direct = new Map<string, string>();
-
-  override turnOf(sessionId: string | undefined): Promise<string> {
-    const turn = sessionId === undefined ? undefined : this.direct.get(sessionId);
-    return turn === undefined ? super.turnOf(sessionId) : Promise.resolve(turn);
-  }
-}
-
-/**
- * The owner object as production builds it, on the gateway provider, with its agent and
- * parts in reach, its GATEWAY calls watched, and the faults a test sets on them.
+ * The owner object as production builds it (`gatewayAgent`, on the gateway provider), with
+ * the test tools, its agent and parts in reach, its GATEWAY calls watched, and the faults
+ * a test sets on them.
  */
 export class GatedOwnerDO extends OwnerDO {
-  readonly agent: GatedAgent;
+  readonly agent: OwnerAgent;
   readonly parts: AgentParts;
   calls: GatewayCall[] = [];
   readonly faults: GatewayFaults = { refreshGate: null, refreshed: null, revokeGate: null };
+  readonly probes: Probes = freshProbes();
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
-    const made: { agent?: GatedAgent; parts?: AgentParts; self?: GatedOwnerDO } = {};
+    const made: { agent?: OwnerAgent; parts?: AgentParts; self?: GatedOwnerDO } = {};
     const pending: GatewayCall[] = [];
     super(ctx, { ...env, GATEWAY: watched(env.GATEWAY, () => made.self?.calls ?? pending,
                                           () => made.self?.faults) },
           (parts) => {
             made.parts = parts;
-            made.agent = gatewayAgent(parts, GatedAgent);
+            made.agent = gatewayAgent(parts, testExtensions(() => made.self!.probes));
             return made.agent;
           });
     made.self = this;

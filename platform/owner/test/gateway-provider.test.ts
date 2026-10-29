@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 
 import { envelope } from "../../gateway/src/envelope";
 import { IDENTITY } from "../src/agent";
-import { NO_RUN } from "../src/agent";
+import { NO_RUN } from "../src/origin";
 import {
   AUTO_MODEL, envelopeHeader, GATEWAY_BASE_URL, outcomeOf,
 } from "../src/gateway-provider";
@@ -23,7 +23,7 @@ import { DEFAULT_POLICY_JSON } from "../src/policy";
 import {
   ANTHROPIC, asked, catalog, direct, type Gated, gated, OPENAI, textOf, until,
 } from "./gateway-support";
-import type { GatedOwnerDO } from "./worker";
+import type { GatedOwnerDO, Spawned } from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
 
@@ -193,7 +193,7 @@ describe("a call never sent", () => {
       const stop = new AbortController();
       stop.abort();
       return instance.parts.provider.streamSimple(auto, asked("cmd:echo"),
-                                                  { ...direct(instance), signal: stop.signal })
+                                                  { ...direct(), signal: stop.signal })
         .result();
     });
     expect([answer.stopReason, answer.errorMessage])
@@ -211,7 +211,7 @@ describe("a call never sent", () => {
       const auto = instance.parts.provider.getModels()[0]!;
       const queue = holdQueue(state);
       const call = instance.parts.provider.streamSimple(auto, asked("cmd:echo"),
-                                                        direct(instance)).result();
+                                                        direct()).result();
       for (let i = 0; i < 50; i++) {
         await Promise.resolve();
       }
@@ -235,7 +235,7 @@ describe("a call never sent", () => {
       const queue = holdQueue(state);
       const revoked = instance.connectionRevoke(r.session(), { connection });
       const call = instance.parts.provider.streamSimple(auto, asked("cmd:echo"),
-                                                        direct(instance)).result();
+                                                        direct()).result();
       queue.release();
       await queue.done;
       await revoked;
@@ -256,7 +256,7 @@ describe("a call never sent", () => {
     const connection = await r.connect("sk-missing", ANTHROPIC, "Key", [missing]);
     const answer = await r.in((instance) => instance.parts.provider.streamSimple(
       instance.parts.provider.getModels().find((model) =>
-        model.id === `${connection}/no-such-model`)!, asked("hello"), direct(instance)).result());
+        model.id === `${connection}/no-such-model`)!, asked("hello"), direct()).result());
     expect(answer.stopReason).toBe("error");
     expect(answer.errorMessage).toBe("unknown_model");
     const { receipts } = await r.stub.usageReceipts(r.bind());
@@ -317,7 +317,7 @@ describe("a provider's refusal before any output", () => {
     const r = await gated();
     await r.connect("sk-429");
     const answer = await r.in((instance) => instance.parts.provider.streamSimple(
-      instance.parts.provider.getModels()[0]!, asked("cmd:fail-429"), direct(instance))
+      instance.parts.provider.getModels()[0]!, asked("cmd:fail-429"), direct())
       .result());
     expect([answer.stopReason, answer.errorMessage]).toEqual(["error", "upstream_rate_limited"]);
     const { receipts } = await r.stub.usageReceipts(r.bind());
@@ -385,6 +385,39 @@ describe("a call's outcome", () => {
   });
 });
 
+describe("background work a run starts", () => {
+  it("counts against that run's caps, which refuse it, and never against a later run",
+     async () => {
+    const r = await gated();
+    await r.connect("sk-background");
+    await models(r, { turn_requests: 3 });
+    const out = await r.in(async (instance) => {
+      let release!: () => void;
+      instance.probes.backgroundGate = new Promise<void>((resolve) => { release = resolve; });
+      // The run calls the `background` tool, then answers: two requests.
+      const first = await instance.agent.harness.prompt("cmd:call-background");
+      const later = await instance.agent.harness.prompt("cmd:echo");
+      // Its work, two requests more, starts only now: during no run.
+      release();
+      const pi = await instance.agent.harness.pi();
+      const task = await pi.waitForTask(instance.probes.background as never, BG);
+      const made = (task.state.outcome as { result: Spawned }).result;
+      const work = await (await pi.submission(made.submission as never, BG))!.wait(BG);
+      return { first: first.status, later: later.status, work: work.status };
+    });
+    expect(out).toEqual({ first: "done", later: "done", work: "unanswered" });
+    const rows = await r.sql("SELECT turn, state, rule FROM model_reservations ORDER BY seq");
+    const [spawning, , later] = rows.map((row) => row["turn"]);
+    expect(later).not.toBe(spawning);
+    expect(rows.map((row) => [row["turn"] === spawning, row["state"], row["rule"]])).toEqual([
+      [true, "succeeded", null], [true, "succeeded", null], [false, "succeeded", null],
+      // The work's first request is the spawning run's third; its second passes the cap.
+      [true, "succeeded", null], [true, "refused", "turn_requests"]]);
+    expect(await r.sql("SELECT turn, requests FROM model_turns ORDER BY requests"))
+      .toEqual([{ turn: later, requests: 1 }, { turn: spawning, requests: 3 }]);
+  }, 30_000);
+});
+
 describe("a call with no run", () => {
   it("is refused no_run, nothing reserved and nothing sent", async () => {
     const r = await gated();
@@ -408,7 +441,7 @@ describe("a call whose own unit cannot be kept", () => {
     await r.sql("CREATE TRIGGER fail_settle BEFORE UPDATE OF tokens ON model_reservations " +
                 "WHEN NEW.state = 'succeeded' BEGIN SELECT RAISE(ABORT, 'injected'); END");
     const answer = await r.in((instance) => instance.parts.provider.streamSimple(
-      instance.parts.provider.getModels()[0]!, asked("cmd:echo"), direct(instance)).result());
+      instance.parts.provider.getModels()[0]!, asked("cmd:echo"), direct()).result());
     expect(answer.stopReason).toBe("stop");
     const { receipts } = await r.stub.usageReceipts(r.bind());
     expect(receipts.map((receipt) => receipt.state)).toEqual(["unknown"]);
@@ -421,7 +454,7 @@ describe("a call whose own unit cannot be kept", () => {
     await r.sql("CREATE TRIGGER fail_dispatch BEFORE UPDATE OF state ON model_reservations " +
                 "WHEN NEW.state = 'dispatched' BEGIN SELECT RAISE(ABORT, 'injected'); END");
     const answer = await r.in((instance) => instance.parts.provider.streamSimple(
-      instance.parts.provider.getModels()[0]!, asked("cmd:echo"), direct(instance)).result());
+      instance.parts.provider.getModels()[0]!, asked("cmd:echo"), direct()).result());
     expect(answer.stopReason).toBe("error");
     expect(await envelopes(r)).toEqual([]);
     expect((await r.stub.usageReceipts(r.bind())).receipts.map((receipt) => receipt.state))
@@ -449,7 +482,7 @@ describe("the envelope", () => {
     await models(r, { turn_requests: 50 });
     const answer = await r.in(async (instance) => {
       const auto = instance.parts.provider.getModels()[0]!;
-      return instance.parts.provider.streamSimple(auto, asked("cmd:echo"), direct(instance))
+      return instance.parts.provider.streamSimple(auto, asked("cmd:echo"), direct())
         .result();
     });
     expect(answer.stopReason).toBe("stop");

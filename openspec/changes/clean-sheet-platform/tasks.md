@@ -417,16 +417,15 @@ account and no deploy.
   envelope (owner, connection, version, blob, reservation, policy generation, deadline,
   as G1's `envelope.ts` reads it), the upstream's own model id, the reservation's output
   cap, settle before pi sees the end, a reseal stored, and a row abandoned when its own
-  unit throws. The turn is pi's: each conversation's `pi.provider` session id is indexed
-  at creation (`ta.sessions`) with its chain of owner conversations and the task that made
-  each; a request's anchor is the first conversation background work made, else the one
-  with no owner (a task's `background` is read at the request, since the creating commit
-  may read no table). The turn is the anchor's live run, named by the submission that
-  started it (pi hands `run.taskId` to a new generation each round); else the nearest live
-  run up the chain; else the request's conversation's live compaction; else `no_run`. A
-  compaction inside a run and a running root's subagents are the root's turn; a subagent
-  asked again after its root's run, and background work's conversations, run turns of
-  their own. Production's agent is it
+  unit throws. The turn is the submitted input at the origin of the call's causal chain
+  (`origin.ts`): the harness's telemetry adapter carries an origin, and nothing else,
+  along pi's own propagation, durable in pi's records (an input's admission takes its
+  caller's origin, else begins one; a task takes its creator's carrier; a request carries
+  its phase's context). So a run's tool rounds, steers, compactions, subagents and the
+  background work it starts, with that work's own child tasks and conversations, are the
+  run's turn, after the run ended too, and count against its caps (the Python's
+  `_borrowed`); a later input's run is another; a compaction asked for outside a run is
+  its own; a call with no origin is `no_run`. Production's agent is it
   (`gatewayAgent`, the default `AgentFactory`), so nothing connected settles `no_model`.
   `auto`: ranked by the data file (provider and model globs, newer ids first, the rest by
   catalog output price), its metadata the strongest's; stickiness and fallback read from
@@ -441,9 +440,10 @@ account and no deploy.
   tee's 12 deltas while pi committed at most 3 partials; an abort reaching the upstream;
   a budget refusal as the turn's error, never sent; a revoke racing a call; a 429 retried
   by pi at no cost, and each upstream status retried or not as pi-ai reads its code; the
-  turn across tool rounds, a steer, a compaction, two levels of subagents, a subagent
-  after its root's run, a subagent's own idle compaction, and background work's
-  conversation beside a new root run, with a subagent of its own; a
+  turn across tool rounds, a steer, a compaction the run starts (and one an owner asks
+  for), two levels of subagents, background work and its child task's work after the run
+  and beside a later one, and an input from outside any run; background work refused by
+  its spawning run's request cap while a later run is not charged; a
   dispatch or settle that throws. Declared
   differences from the research: stickiness reads the transcript rather than an in-memory
   map rebuilt from it; a continuation kept on an earlier target is estimated by its own

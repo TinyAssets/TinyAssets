@@ -12,8 +12,9 @@
  *
  * Each call, in order:
  * 1. The target: the model named, or `auto`'s route over the request's transcript.
- * 2. The turn: the request's root conversation's live run, from pi's records
- *    (`agent.ts`, `turnOf`); none is the call's error, `no_run`, and nothing is reserved.
+ * 2. The turn: the submitted input at the origin of the request's causal chain, from the
+ *    telemetry context pi gives it (`origin.ts`); none is the call's error, `no_run`, and
+ *    nothing is reserved.
  * 3. An OAuth credential expiring soon is refreshed first, under the refresh lease.
  * 4. **Reserve**, in one unit of the write gate: the connection's blob at its current
  *    version, the owner policy's generation and model caps, and the reservation
@@ -58,9 +59,9 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/e
 
 import { type Candidate, physicalId, ranked, route } from "./auto";
 import type { Connections, Credential, GatewayService, Usable } from "./connections";
-import { NO_RUN } from "./agent";
 import type { Write } from "./gate";
 import type { LiveTee } from "./live-tee";
+import { NO_RUN, turnOf } from "./origin";
 import { costMicros, type Outcome, type Reserved, type Usage } from "./usage";
 
 /** The provider's id, and its virtual model's. */
@@ -84,8 +85,6 @@ export interface ProviderParts {
   readonly tee: LiveTee;
   /** The object's clock, in seconds. */
   readonly clock: () => number;
-  /** The turn a request's `sessionId` is part of (`OwnerAgent.turnOf`); throws `no_run`. */
-  readonly turn: (sessionId: string | undefined) => Promise<string>;
 }
 
 /** The fields of `x-ta-envelope`, exactly as the gateway's `envelope.ts` takes them. */
@@ -245,7 +244,7 @@ export class GatewayProvider implements Provider<Api> {
     const physical = listed(target);
     let turn: string;
     try {
-      turn = await this.#parts.turn(session);
+      turn = turnOf(options.telemetry);
     } catch (error) {
       return end(failed(physical, codeOf(error, NO_RUN), aborted()));
     }

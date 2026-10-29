@@ -37,10 +37,12 @@
  *
  * Money is micro-dollars (µ$): pi-ai's catalog prices are dollars per million tokens, so a
  * token at price `p` costs `p` µ$. An estimate is the context's estimated input at the
- * input price plus the reserved output at the output price. A turn is one run of the
- * root conversation's submissions, as pi records it (`agent.ts`, `turnOf`): a compaction
- * inside it and a subagent's calls are the same turn. A source is a connection's source
- * record (`connections.ts`), so its ceilings survive a reconnect. The day and month are UTC.
+ * input price plus the reserved output at the output price. A turn is the submitted input
+ * at the origin of a call's causal chain, as pi propagates it (`origin.ts`): a compaction,
+ * a subagent and background work a run starts are that run's turn, even after it ended,
+ * as the Python's `_borrowed` charged a child to its parent. A source is a connection's
+ * source record (`connections.ts`), so its ceilings survive a reconnect. The day and month
+ * are UTC.
  *
  * Declared differences from the Python: the per-turn limits are owner policy (the
  * `models` table) rather than constants; the free-tier pools, their consecutive-failure
