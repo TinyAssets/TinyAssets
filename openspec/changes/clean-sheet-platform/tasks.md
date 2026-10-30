@@ -847,52 +847,63 @@ account and no deploy.
   **F6**: `verify` lists each model's whole pi-ai record (`model-record.ts`: id, name,
   reasoning, `thinkingLevelMap`, `promptCache`, input types, `inputLimits`, context window,
   output limit, cost with its `tiers`), without the gateway's own fields; a declared
-  endpoint's models are the same records, checked whole. `ModelInfo` is that record,
-  checked whole at commit; migration 6's `models` cap and `MODELS_JSON_MAX` are 512 KiB
-  (the largest catalog's records whole are 142 KB for 386, so 1,024 of them about 376 KB;
-  `maxModels` stays 1,024; every chat model of every built-in catalog commits). `listed()`
+  endpoint's models are the same records, checked whole within the owner's own bounds (ids
+  and names of 200 characters, prices of $1M a million tokens, token counts of 100M).
+  `ModelInfo` is that record, checked whole at commit; migration 6's `models` cap and
+  `MODELS_JSON_MAX` are 640 KiB, so 1,024 of the largest built-in record (607 bytes) fit
+  (`maxModels` stays 1,024; every chat model of every built-in catalog commits). `listed()`
   spreads the record, so pi offers `xhigh` and `max` where the map has them and `read`
-  resizes to `inputLimits`. Reservations and settlement are priced by pi-ai's
-  `calculateCost` over the target's record: the estimate at the rates its estimated input's
-  tier sets, the settlement priced in the provider as every pi-ai adapter prices its own
-  usage, so pi's `pi.usage` holds the same cost. pi's compaction thresholds are each listed
-  model's own (`compactionFor`: pi's defaults from 256K tokens, an eighth, a quarter and an
-  eighth of a smaller window), keyed `gateway/<id>` and `gateway/auto` (the strongest's),
-  through `AgentSource.compaction`; a request `auto` routes to a model whose threshold is
-  lower than the strongest's is refused `context_length_exceeded` over that threshold
-  before any reservation, and `auto` retries an overflow on the same model. **F4**: the
-  origin adapter carries a metrics capability (`OriginMetrics`, on its root, every span and
-  every extracted parent: each series' count, sum, minimum and maximum, at most 1,024 series,
-  drops counted), read with pi's own `pi.usage` by the owner's `usageMetrics` door, for G5;
-  the span names it reads are typed against pi-durable's exported
-  `DURABLE_TELEMETRY_SCHEMA`, and checked at run time with the phase's attributes and the
-  compaction task's name; no
-  adapter method throws (each guarded, a throwing callback a rejection); ADR-032 §4 declares
-  it a kept difference. Tested: each wire format's overflow refusal, a bare 413, a 429 that
-  reads like an overflow, a mid-stream overflow, the body bound; through the real gateway
-  in the owner pool, an overflow refusal from the fake upstream compacted and retried, the
-  turn done and the refusal settled at no cost; `auto` continuing on a smaller target
-  compacted at that target's threshold and retried there, refused one token past it and
-  not at it, and not refused where pi's own threshold was already lower; thinking levels
-  from the map; a long-context tier reserved and settled at its rates; a 40K model
-  compacted at its own thresholds, not pi's; the turn's metrics and `pi.usage` in the usage
-  view; the adapter fed hostile input of every kind. Mutation: 82 across the overflow
-  classification and the 413, the record's fields and checks on both sides, `calculateCost`,
+  resizes to `inputLimits`. A reservation is priced by pi-ai's `calculateCost` over the
+  target's record, at the rates its estimated input's tier sets, the most output its cost
+  room takes found by bisection (`largestFitting`, about 27 prices at the largest bound); a
+  settled call keeps the cost the gateway's pi-ai adapter reported (its current catalog,
+  with pi-ai's service-tier and fallback adjustments), which `pi.usage` records too. pi's
+  compaction thresholds are each listed model's own (`compactionFor`: pi's defaults from
+  256K tokens, an eighth, a quarter and an eighth of a smaller window), keyed
+  `gateway/<id>` and `gateway/auto` (the strongest's), through `AgentSource.compaction`; a
+  request `auto` routes to a model whose threshold is lower than the strongest's is refused
+  `context_length_exceeded` over that threshold before any reservation, and `auto` retries
+  an overflow on the same model. **F4**: the origin adapter carries a metrics capability
+  (`OriginMetrics`, on its root, every span and every extracted parent: each series' count,
+  sum, minimum and maximum, at most 1,024 series, drops counted), read with pi's own
+  `pi.usage` by the owner's `usageMetrics` door, for G5; the span names it reads are typed
+  against pi-durable's exported `DURABLE_TELEMETRY_SCHEMA`, and checked at run time with the
+  phase's attributes and the compaction task's name; no adapter method throws (each
+  guarded, a throwing callback a rejection); ADR-032 §4 declares it a kept difference.
+  Tested: each wire format's overflow refusal, a bare 413, a 429 that reads like an
+  overflow, a mid-stream overflow, the body bound; through the real gateway in the owner
+  pool, an overflow refusal from the fake upstream compacted and retried, the turn done and
+  the refusal settled at no cost; `auto` continuing on a smaller target compacted at that
+  target's threshold and retried there, refused one token past it and not at it, and not
+  refused where pi's own threshold was already as low; thinking levels from the map; a
+  long-context tier reserved at its rates and settled at the tier's price the gateway
+  priced (a declared endpoint); a stale stored record settled at the gateway's price; the
+  reservation's search bounded in prices and timed at the policy's largest turn cost; a
+  40K model compacted at its own thresholds, not pi's; the turn's metrics and `pi.usage` in
+  the usage view; the adapter fed hostile input of every kind; 1,024 of the largest record
+  committed. Review round 1 (CHANGES): M1 the settled cost is the gateway's, not one
+  recomputed from the stored record (stale after a pi-ai price change, and blind to pi-ai's
+  service-tier and fallback adjustments); M2 the reservation's one-token rounding walk
+  (27,743 steps at worst, inside `transactionSync`) became the bisection; L1 the gateway's
+  declared-model check refuses unknown thinking levels and bad tier thresholds and holds the
+  owner's bounds; L2 the 640 KiB cap; L3 unchanged (pi's own classifier, bounded). Mutation: ours, 96
+  across the overflow classification and the 413, the record's fields, checks and bounds on
+  both sides, the reservation's `calculateCost` and bisection, the gateway's settled price,
   `auto`'s overrides and the routed target's threshold, the metrics and the never-throw
-  adapter: 78 killed, 4 alive and equivalent (the stream classifier's status branch, which
+  adapter: 93 killed, 3 alive and equivalent (the stream classifier's status branch, which
   the first-event check answers first; a tier's threshold made optional in either checker,
-  which its count check still refuses; the output rate from the base price, which the
-  rounding guard walks down to the same reservation). Owner bundle 1,689 KiB, 353 KiB gzip
-  (1,679 and 350 at A4), local startup 25 to 26 ms active in a 61 to 62 ms window (25 to 27
-  in 60 to 62); gateway 3,993 KiB, 542 KiB gzip (3,984 and 540), 33 to 34 ms in 86 ms (33
-  to 35 in 89 to 91). Declared differences from the research: the overflow code answers 413, not the 502
-  of the upstream codes; `compat`, `headers` and the sampling parameters stay the
-  gateway's (its adapter applies them from its own record; pi-messages reads none); pi's
-  settings cannot see a conversation's target, so `auto`'s per-target threshold is held by
-  the provider through pi's overflow recovery, `gateway/auto`'s keep-recent count staying
-  the strongest's (a target whose window cannot hold it fails its run loudly,
-  `context_length_exceeded`); the gateway's own body bound is the overflow too; the
-  settled cost is the owner's `calculateCost` over its record, not the gateway's number;
+  which its count check still refuses); the reviewer's 58: 55 killed and 3 no longer
+  applying (the one-token walk's two and the settlement recompute, all deleted; their
+  counterparts here are killed).
+  Owner bundle 1,689 KiB, 353 KiB gzip (1,679 and 350 at A4), local startup 23 ms active
+  in a 63 to 65 ms window (25 to 27 in 60 to 62); gateway 3,993 KiB, 542 KiB gzip (3,984
+  and 540), 32 to 35 ms in 86 to 89 ms (33 to 35 in 89 to 91). Declared differences from the research: the overflow code answers 413, not the 502 of
+  the upstream codes; `compat`, `headers` and the sampling parameters stay the gateway's
+  (its adapter applies them from its own record; pi-messages reads none); pi's settings
+  cannot see a conversation's target, so `auto`'s per-target threshold is held by the
+  provider through pi's overflow recovery, `gateway/auto`'s keep-recent count staying the
+  strongest's (a target whose window cannot hold it fails its run loudly,
+  `context_length_exceeded`); the gateway's own body bound is the overflow too;
   `AgentParts.provider` is the `GatewayProvider` and `agent.ts` and `owner-do.ts` carry the
   plumbing (`gatewaySource`, `usageMetrics`).
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
