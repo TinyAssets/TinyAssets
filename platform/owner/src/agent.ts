@@ -135,6 +135,8 @@ export const WAITS_PER_CLIENT = 16;
 export const WAITS_OWNER = 32;
 /** A wait a grant or policy change ended. */
 export const WAIT_ENDED = "the wait was ended by a grant or policy change";
+/** The notice of a change the owner's agent makes to its agent definitions. */
+export const AGENT_DEFINITION = "agent_definition";
 /** A wait refused because the object keeps `WAITS_KEPT` already. */
 export const WAITS_FULL = "too many pending waits";
 /** The extension names that are the object's own: no package may take one. */
@@ -451,13 +453,24 @@ export class OwnerAgent {
       files: this.#parts.files, writer: writerOf(state), cwd: cwd ?? WORKSPACE,
       rearm: this.#parts.rearm,
       authorize: (access) => this.#parts.authority.requireOne(state, ACCESS_NEEDS[access]),
-      // The owner's agent definitions change only under the owner's own authority.
-      guard: (path) => {
-        if (state?.by !== "owner" && within(path, AGENTS_DIR)) {
-          throw new Refused(AGENTS_OWNER_ONLY);
-        }
-      },
+      guard: (path) => this.#definitions(state, path),
     });
+  }
+
+  /**
+   * In a change's own unit: the owner's agent definitions change only under the owner's own
+   * authority, and the owner is told each time its agent changes them, since content another
+   * party wrote elsewhere can steer the agent (Direction 3 lets it write there).
+   */
+  #definitions(state: Readonly<AuthorityState> | undefined, path: string): void {
+    if (!within(path, AGENTS_DIR)) {
+      return;
+    }
+    if (state?.by !== "owner") {
+      throw new Refused(AGENTS_OWNER_ONLY);
+    }
+    this.#parts.notices.add(AGENT_DEFINITION, `the owner's agent changes ${path}`,
+                            Date.now() / 1000);
   }
 
   /**

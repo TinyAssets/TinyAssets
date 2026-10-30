@@ -652,12 +652,13 @@ account and no deploy.
   conversation (A4's review measured about 5 KB fixed per fresh conversation and 50 to
   200 KB per real run), and an object's storage is limited to 10 GB, past which every
   write fails `SQLITE_FULL` and the owner's object stops; A4's storage gauge refuses new
-  threads and launches loudly at 90% (below). The storage gauge is a safety net only.
-  The fix is pi's own unit of storage: one pi Session per thread, its storage scoped to
-  that thread and wiped whole when the thread is dropped, a long thread rotating through
-  `reset(handoff)`; its design is being decided now, in the coordinator's design review,
-  and lands as its own slice before A5. Writing pi's tables directly stays banned. A3's
-  `ta` re-derives its capability in its own `execute` (below).
+  threads and launches loudly at 90% (below). The storage gauge is a safety net only,
+  and superseded: the storage slice (S1 to S3) replaces it with pi's own unit of storage,
+  one pi Session per thread on a `ThreadStore`, its storage scoped to that thread and wiped
+  whole when the thread is dropped, a long thread rotating through `reset(handoff)`, with
+  our own `ThreadHost` in place of PiHarness (the plan doc, rev 70). No further work goes
+  into the gauge. Writing pi's tables directly stays banned. A3's `ta` re-derives its
+  capability in its own `execute` (below).
 - [x] A3 `ta`, in workerd, nothing deployed (`ta.ts`). The model is offered exactly
   `read`, `write`, `edit`, `bash` and `ta`: pi's `modelTools`, written in
   `conversationCreated` on every conversation the object creates (the root, threads,
@@ -820,9 +821,18 @@ account and no deploy.
   212), local startup 43 ms active in a 66 ms window (40 to 45 in 67 to 69). Open: the
   Tasks extension (tasks 2); an agent's model pin and further data files; the sandbox's
   sync writer (`lease:<epoch>`) for the agent definitions, refused as a writer until the
-  sandbox slice decides whose authority its sync carries; a dropped thread's pi
-  conversation and pi's retention: one pi Session per thread, wiped whole with its thread
-  (A2's entry), its own slice before A5.
+  sandbox slice decides whose authority its sync carries. Superseded, with no further
+  work on either (the plan doc, rev 70): the storage gauge, by the storage slice (S1 to
+  S3: one pi Session per thread on a `ThreadStore`, wiped whole with its thread, our own
+  `ThreadHost` in place of PiHarness), so the harder stop at 97% round 2's review suggested
+  is moot as well, since nothing deploys before S3; and a scheduled launch's `work` path
+  (the `work` row naming a thread, handed by the `WorkRunner`), by a scheduled turn as a
+  pi task (F1). Review round 2 (approved): the owner is told by a notice
+  (`agent_definition`) each time its agent creates or changes anything under
+  `/workspace/agents`, since content another party wrote elsewhere can steer it, and
+  tests hold that a name merely starting like a root or the tree (`/workspaceX`,
+  `/workspace/agentsX`) is neither, and that an `AGENTS.md` the sandbox's sync wrote
+  (`lease:<epoch>`) configures nothing.
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
   owner's hook code with the Worker Loader, called over RPC with JSON in and out and a
   timeout. A `beforeTool` timeout or error blocks

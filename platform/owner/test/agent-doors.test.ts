@@ -16,12 +16,14 @@ import {
 import type { ConversationId, EntryRecord, JsonObject } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
-import { WAIT_ENDED, WAITS_KEPT, WAITS_OWNER, WAITS_PER_CLIENT } from "../src/agent";
+import {
+  AGENT_DEFINITION, WAIT_ENDED, WAITS_KEPT, WAITS_OWNER, WAITS_PER_CLIENT,
+} from "../src/agent";
 import { NOT_GRANTED } from "../src/authority";
 import { WriteGate } from "../src/gate";
 import { Grants } from "../src/grants";
 import { clock, type Origin } from "../src/ledger";
-import { AGENTS_OWNER_ONLY } from "../src/paths";
+import { AGENTS_DIR, AGENTS_OWNER_ONLY, within } from "../src/paths";
 import { Policy } from "../src/policy";
 import { namedByOpenWork, Scheduled } from "../src/scheduled";
 import {
@@ -791,6 +793,15 @@ describe("the owner's agent definitions (review H1)", () => {
     expect(mine.text).not.toContain(AGENTS_OWNER_ONLY);
     expect((await r.stub.fileStat(r.bind(null), { path: AGENTS_MD })).entry?.writer)
       .toBe("agent");
+    // The owner is told its agent changed its agent definitions, and of nothing else.
+    const told = (await r.stub.noticeList(r.bind(null))).notices
+      .filter((notice) => notice.type === AGENT_DEFINITION).map((notice) => notice.detail);
+    expect(told).toContain(`the owner's agent changes ${AGENTS_MD}`);
+    expect(told.every((detail) => detail.includes("/workspace/agents/"))).toBe(true);
+    await r.stub.agentSubmit(r.bind(null), { message: "plant /workspace/elsewhere.md",
+                                             client_send_id: "e" });
+    expect((await r.stub.noticeList(r.bind(null))).notices
+      .filter((notice) => notice.type === AGENT_DEFINITION)).toHaveLength(told.length);
     const run = await r.stub.agentRun(r.bind(null), { agent: "main", input: "hi" });
     const thread = (await r.threads()).find((made) => made.thread_id === run.thread_id)!;
     expect(await r.in(async (instance) => {
@@ -820,6 +831,34 @@ describe("the owner's agent definitions (review H1)", () => {
                                                                   client_send_id: "b" })))
       .message).toMatch(/outside client has no grant|was not written by the owner/);
     expect(await r.threads()).toEqual([]);
+  }, 30_000);
+
+  it("refuse an AGENTS.md the sandbox's sync wrote (review round 2)", async () => {
+    const r = await rig();
+    await r.in(async (_instance, state) => {
+      const gate = new WriteGate(state.storage);
+      await filesOn(gate.storage, gate.write).write(AGENTS_MD, bytes("SYNCED"), {
+        expected: null, writer: "lease:3", parents: true });
+    });
+    expect((await failure(() => r.stub.agentRun(r.bind(null), { agent: "main", input: "x" })))
+      .message).toBe(`${AGENTS_MD} was not written by the owner`);
+    expect(await r.threads()).toEqual([]);
+  }, 30_000);
+
+  it("hold only the tree and the roots themselves, never a name that merely starts alike " +
+     "(review round 2)", async () => {
+    expect([within("/workspaceX/a", "/workspace"), within("/workspace/agentsX/a", AGENTS_DIR),
+            within("/workspace/agents", AGENTS_DIR), within("/workspace/agents/a", AGENTS_DIR)])
+      .toEqual([false, false, true, true]);
+    const r = await rig();
+    await r.admit(MUSE);
+    const made = await r.stub.fileWrite(r.bind(MUSE), { path: "/workspace/agentsX/AGENTS.md",
+                                                        expected_etag: null,
+                                                        content: bytes("mine") });
+    expect("entry" in made && made.entry.writer).toBe(`client:${MUSE.client}`);
+    expect((await failure(() => r.stub.fileWrite(r.bind(MUSE), {
+      path: "/workspaceX/a.md", expected_etag: null, content: bytes("x") }))).name)
+      .toBe("Invalid");
   }, 30_000);
 
   it("refuse a file too large, or a directory, loudly", async () => {
