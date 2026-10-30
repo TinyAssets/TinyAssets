@@ -127,11 +127,11 @@ export const IDENTITY: ClientIdentity = Object.freeze({
 /**
  * How long an idle conversation keeps its last context read in memory (F11). pi's default
  * is ten minutes, for one Session per process; the object holds up to `OPEN_MAX` Sessions
- * in an isolate it shares with other owners' objects. From live probe P7 (the memory of
+ * in an isolate it shares with other owners' objects. From live probe P4 (the memory of
  * open Harnesses); one minute until it is measured.
  */
 export const CONTEXT_RETENTION_MS = 60_000;
-/** How long a loaded document no watch observes stays in memory (F11). From live probe P7. */
+/** How long a loaded document no watch observes stays in memory (F11). From live probe P4. */
 export const DOCUMENT_RETENTION_MS = 60_000;
 
 /** pi's run settings; a function in the options, so it is read at each use. */

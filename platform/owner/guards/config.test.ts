@@ -22,7 +22,7 @@
  * of subrequests per invocation (50 on Free, 10,000 by default on Paid, at most 10,000,000),
  * whose own error is the object's only call limit, so the number the agent's turns rely on
  * is explicit and moves only with a review here; every thread store RPC is one, so it is
- * raised to 1,000,000 until live probe P4 measures a real run's count. It is the only
+ * raised to 1,000,000 until live probe P1 measures a real run's count. It is the only
  * wrangler config in the owner Worker. Edge Workers bind `OWNER` from their own configs.
  */
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";

@@ -81,7 +81,8 @@ const JOB = /^pi-wake:(.+)$/;
 
 /**
  * Sessions open at once, past which an idle one is closed or the open refused. From live
- * probe P7 (the memory of N open Harnesses in one 128 MB isolate); 32 until it is measured.
+ * probe P4 (the memory of N open Sessions in one 128 MB isolate, `store-probe.md`); 32 until
+ * it is measured.
  */
 export const OPEN_MAX = 32;
 /** How long an idle Session stays open. */

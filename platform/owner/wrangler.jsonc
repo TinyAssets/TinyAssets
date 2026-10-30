@@ -14,7 +14,7 @@
 // error is the loud failure, and the object keeps no budget of its own. One alarm-tracked
 // wait of up to 10 minutes can carry every store, gateway and files call of every thread
 // it covers (about 10,000 at 16 streaming threads with 1 s partial commits), so it is set
-// well above the 10,000 Paid default, within Paid's 10,000,000, until live probe P4
+// well above the 10,000 Paid default, within Paid's 10,000,000, until live probe P1
 // measures a real run's count; pinned by the config guard.
 {
   "$schema": "../node_modules/wrangler/config-schema.json",

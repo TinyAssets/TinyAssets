@@ -848,20 +848,20 @@ account and no deploy.
   capability, one shared registry, `Map<thread, Session>`, a wake job `pi-wake:<thread>`
   per thread driven by that Session's `onWake`, each change kept in `agent_live(thread,
   active, wake_at)` in a gate unit; Sessions opened on demand, closed idle after 2 minutes,
-  least recently used first to make room, and an open past `OPEN_MAX` (32, live probe P7)
+  least recently used first to make room, and an open past `OPEN_MAX` (32, live probe P4)
   refused at once, never waited on, a pinned (watched) Session never closed. PiHarness's
   wake mechanics and recovery tests are ported (MIT), keyed per thread; `agents/harness/pi`
   is no longer imported. A thread is its Session's root, its stamp written in the root's
   creating commit; compaction origins are `task:<thread>:<id>`. Status is one read of pi's
   submission record (F12). `contextRetentionMs` and `documentRetentionMs` are 60 s for many
-  Sessions an isolate (F11, live probe P7). The write gate keeps synchronous units and no
+  Sessions an isolate (F11, live probe P4). The write gate keeps synchronous units and no
   queue: pi no longer shares the owner's database, so its shared-queue rule and chord
   dependency are deleted (F13 moot). A4's storage gauge is deleted; the owner-bound guard
   holds the owner's worst-case rows, at the policy's high bounds, under 50% of 10 GB, and
   names the tables no byte or count bound covers yet (file paths, chunk references, turn
-  counters). `limits.subrequests` is 1,000,000 until live probe P4. Open: drop wiping, run
+  counters). `limits.subrequests` is 1,000,000 until live probe P1. Open: drop wiping, run
   retention and erasure ordering (S4-S5); scheduled turns as pi tasks (F1); rotation
-  (deferred); live probes P2-P5, P7 and P8.
+  (deferred); live probes P1-P5, P7 and P8 (`store-probe.md`; P5 and P8 design-decision §6).
 - [ ] S4-S5 Drops wipe and run retention: idle, grant change and revoke drops through the
   `dropping` state with lane retry; `keep_runs` with receipts and the `runs_kept` bound;
   erasure's store-first order as a tested internal path (its door comes with the §7 doors).
@@ -882,7 +882,8 @@ account and no deploy.
   server clamped to tools-only, OAuth via G3.
 - [ ] Erasure's store-first order: mark the owner erasing, destroy every store a row names,
   then `deleteAll()` the owner.
-- [ ] 0c (live): the dark deploy and probes, batch 1 (P1-P4) on the real code.
+- [ ] 0c (live): the dark deploy of the owner and gateway Workers, the store probe's cases
+  re-run on the real code (P1-P4, P7; P5 a store reset mid-run).
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
   owner's hook code with the Worker Loader, called over RPC with JSON in and out and a
   timeout. A `beforeTool` timeout or error blocks
