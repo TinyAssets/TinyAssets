@@ -60,15 +60,13 @@ const ORIGIN = /^(?:input|task):[0-9A-Za-z-]{1,64}$/;
 
 type DurableSpans = typeof DURABLE_TELEMETRY_SCHEMA["spans"];
 /**
- * pi's span names and attributes this adapter reads, each held to pi-durable's exported
- * vocabulary (`DURABLE_TELEMETRY_SCHEMA`) by its type, and by the origin test at run time,
- * so a pi that renames one fails the build rather than every call's turn.
+ * pi's span names this adapter reads, held to pi-durable's exported vocabulary
+ * (`DURABLE_TELEMETRY_SCHEMA`) by their type, and with the phase's `task.id` and
+ * `task.name` by the origin test at run time, so a pi that renames one fails the build
+ * rather than every call's turn.
  */
 export const ADMISSION = "pi.durable.submit" satisfies keyof DurableSpans;
 export const PHASE = "pi.durable.phase" satisfies keyof DurableSpans;
-type PhaseAttribute = keyof DurableSpans[typeof PHASE]["startAttributes"];
-export const TASK_ID = "task.id" satisfies PhaseAttribute;
-export const TASK_NAME = "task.name" satisfies PhaseAttribute;
 /** pi's compaction task's registered name (`CompactionTask`, held by the origin test). */
 export const COMPACTION = "pi.compaction";
 
@@ -262,9 +260,9 @@ class RootSpan extends OriginSpan {
   constructor(adapter: Adapter, options: SpanOptions) {
     super(adapter, () => this.#settle());
     const attributes = options.attributes ?? {};
-    const task = attributes[TASK_ID];
+    const task = attributes["task.id"];
     this.#fresh = options.name === ADMISSION ? () => `input:${randomUUID()}`
-      : options.name === PHASE && attributes[TASK_NAME] === COMPACTION
+      : options.name === PHASE && attributes["task.name"] === COMPACTION
           && (typeof task === "number" || typeof task === "string")
         ? () => `task:${task}`
         : () => undefined;

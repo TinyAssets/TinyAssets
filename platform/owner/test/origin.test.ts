@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ADMISSION, COMPACTION, METRIC_SERIES_MAX, NO_RUN, OriginMetrics, originContext, originRoot,
-  PHASE, TASK_ID, TASK_NAME, turnOf,
+  PHASE, turnOf,
 } from "../src/origin";
 
 const ROOT = originRoot();
@@ -104,9 +104,10 @@ describe("pi's names the adapter reads", () => {
      "compaction task's name", () => {
     expect(Object.keys(DURABLE_TELEMETRY_SCHEMA.spans)).toEqual(
       expect.arrayContaining([ADMISSION, PHASE]));
-    expect(Object.keys(DURABLE_TELEMETRY_SCHEMA.spans[PHASE].startAttributes))
-      .toEqual(expect.arrayContaining([TASK_ID, TASK_NAME]));
-    expect(DURABLE_TELEMETRY_SCHEMA.spans[PHASE].startAttributes[TASK_ID].required).toBe(true);
+    // The phase's attributes a compaction's origin is read from.
+    const phase = DURABLE_TELEMETRY_SCHEMA.spans[PHASE].startAttributes;
+    expect([phase["task.id"].required, phase["task.name"].required]).toEqual([true, true]);
+    expect(Object.keys(phase)).toEqual(expect.arrayContaining(["task.id", "task.name"]));
     expect(COMPACTION).toBe(CompactionTask.definition.name);
     expect(COMPACTION).toBe("pi.compaction");
   });
@@ -132,7 +133,7 @@ describe("the adapter on pi 1.4, where a throwing adapter can reject a durable c
     await root.startSpan({ name: ADMISSION }, (span) => {
       spans.push(span as TelemetrySpan);
     });
-    await root.startSpan({ name: PHASE, attributes: { [TASK_ID]: 1, [TASK_NAME]: COMPACTION } },
+    await root.startSpan({ name: PHASE, attributes: { "task.id": 1, "task.name": COMPACTION } },
                          (span) => {
       spans.push(span as TelemetrySpan);
     });
