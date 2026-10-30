@@ -414,6 +414,18 @@ describe("the per-turn caps", () => {
       expect(Date.now() - began).toBeLessThan(500);
     }));
 
+  it("name the tighter of the turn's tokens and its cost when both leave less than the floor",
+     () => withUsage(async (r) => {
+      // 1000 input leaves 500 tokens; the cost leaves 3000 for the input and 100 output at 15.
+      r.policy.caps = { turn_tokens: 1_500, turn_cost: 3_000 + 100 * 15 };
+      expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
+        .toEqual({ ok: false, rule: "turn_cost" });
+      // The cost takes the 500 the tokens leave: the tokens are the tighter.
+      r.policy.caps = { turn_tokens: 1_500, turn_cost: 3_000 + 600 * 15 };
+      expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
+        .toEqual({ ok: false, rule: "turn_tokens" });
+    }));
+
   it("keep an estimate rounded up to the µ$ inside the cost it fits", () => withUsage(async (r) => {
     // Here pi-ai's price of the output that fits by its rate, rounded up, is a µ$ over.
     r.policy.caps = { turn_cost: 100_700, turn_tokens: 1_000_000_000 };

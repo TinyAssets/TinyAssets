@@ -715,6 +715,20 @@ describe("a connected model's record", () => {
     expect(kept.length).toBe(records.length + 1);
   });
 
+  it("keeps maxModels of the largest built-in record", async () => {
+    const largest = builtinProviders().flatMap((provider) => provider.getModels()
+      .filter((model) => isModelType(model, "chat"))
+      .map((model) => JSON.parse(JSON.stringify(recordOf(model))) as ModelInfo))
+      .reduce((a, b) => (JSON.stringify(b).length > JSON.stringify(a).length ? b : a));
+    const models = Array.from({ length: CONNECTION_LIMITS.maxModels }, (_, i) =>
+      ({ ...largest, id: `${largest.id.slice(0, 190)}.${String(i).padStart(4, "0")}` }));
+    expect(JSON.stringify(models).length).toBeGreaterThan(600 * 1024);
+    const r = await gated();
+    expect(await committed(r, models)).toBeNull();
+    expect(await r.in((instance) => instance.parts.provider.getModels().length))
+      .toBe(CONNECTION_LIMITS.maxModels + 1);
+  });
+
   it.each([
     ["an unknown field", { compat: {} }],
     ["the gateway's own field", { baseUrl: "https://api.anthropic.com" }],
