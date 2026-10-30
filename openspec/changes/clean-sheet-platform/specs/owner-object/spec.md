@@ -741,8 +741,15 @@ The model provider SHALL refuse, in each call's reservation unit and with the fi
 - **WHEN** a hook replaces `ta`'s result with one whose `control` adds a tool, and pi adds it to the conversation's model tools
 - **THEN** the run's next request is refused `tool_surface` and never sent, and so is every later call of that conversation
 
+### Requirement: What the model is offered has one source
+The provider SHALL send the gateway exactly the messages whose offered tools it checked, no other context field and no caller's payload hook, and the gateway SHALL refuse a context carrying `tools` or `systemPrompt`.
+
+#### Scenario: A caller's payload hook adds a tool
+- **WHEN** a model call's context carries `tools` and a system prompt beside its messages, and its options a payload hook that adds a tool
+- **THEN** the gateway receives a context of the messages alone, and a context sent with either field is refused `invalid_request`
+
 ### Requirement: A package never shadows the object's tools or names
-A package that provides or wraps a tool named as a model tool, a platform capability or a `ta:` name, or provides a tool not callable by tools, SHALL be refused at install and kept as an owner notice; `ta`'s catalog SHALL fail loudly on a tool that takes a platform capability's name.
+A package that provides or wraps a tool named as a model tool, a platform capability or a `ta:` name, or provides a tool not callable by tools, SHALL be refused at install and kept as an owner notice, the frozen copy it is checked as being the one installed; `ta`'s catalog SHALL fail loudly on a tool that takes a platform capability's name.
 
 #### Scenario: A package provides a tool named read
 - **WHEN** a package provides a tool `read`, another wraps `bash`, and another provides a tool only the model may call

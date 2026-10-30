@@ -649,11 +649,16 @@ account and no deploy.
   reservation unit refuses (`tool_surface`, nothing sent) a request whose own transcript
   offers anything but exactly the five, or none (`ta`'s nested model call, a compaction),
   and `modelAuthority` refuses any conversation whose stored `modelTools` is not exactly
-  the five, the owner's included. A package that provides or wraps a model tool's, a
+  the five, the owner's included; one source for what is offered (review round 2): the
+  provider sends the gateway exactly the checked messages, never a caller's `onPayload`,
+  and the gateway refuses a context carrying `tools` or `systemPrompt`. A package that
+  provides or wraps a model tool's, a
   platform capability's or a `ta:` name, or provides a tool not callable by tools (it
   could never run), is refused at install with a notice; the catalog fails loudly on a
-  tool of the object's own taking a platform name (tests' probes install as
-  `AgentSource.trusted`, none in production). `ta` is
+  tool of the object's own taking a platform name; each package is checked and installed
+  as one frozen copy, so a getter cannot bring a shadow in. Tests' probes install as
+  `AgentSource.trusted`, which production cannot pass: `gatewayAgent` takes none, and the
+  ta guard holds `trusted` to its declaration and `#install`. `ta` is
   `callers: ["model"]`, `replay: "unsafe"`; its input is one object, `op` an enum and each
   op's fields optional, its shape checked in `execute` (any other field refused). `catalog`
   lists the platform capabilities the conversation's authority may call, then the tools
@@ -693,8 +698,10 @@ account and no deploy.
   by tools, so the A0 to A2 tests reach them through `ta`. Mutation, after review: ours,
   63 (classification, the capability map, the catalog's `callers` filter and paging, the
   five-tool fix, nested authority, the re-check, the model call, the guard's rules, the
-  ranking, the provider and backstop checks, the package refusals), 62 killed; the
-  reviewer's 57, 55 killed. Alive and equivalent: a read handed a writing unit, since no
+  ranking, the provider and backstop checks, the package refusals, round 2's one source,
+  `trusted` and frozen packages), 72, 71 killed; the reviewer's round 2, 77: 74 killed,
+  one no longer applying (`pkg-as-trusted`: `gatewayAgent` no longer takes `trusted`; our
+  S05 is its counterpart, killed by the guard). Alive and equivalent: a read handed a writing unit, since no
   read capability writes; an effect's unit re-checking only a standing grant rather than
   its capability, since a grant's scopes change only with its generation, which the
   standing check holds. Declared differences from the
@@ -704,8 +711,8 @@ account and no deploy.
   conversation's authority may call; deferred tools are listed from `agent.callable`
   (pi's deferred tools a tool may call are always among them); `policy:propose` takes the
   door's `{change, request_id?}`; `model` is in v1 (G2 landed) and `agent:run` is not.
-  Owner bundle 1,648 KiB, 342 KiB gzip (1,628 and 337 at A2), local startup 25 to 35 ms
-  active in a 61 to 80 ms window. Open: MCP tools (`mcp__<server>__<tool>`, callable by tools, after
+  Owner bundle 1,649 KiB, 342 KiB gzip (1,628 and 337 at A2), local startup 25 to 28 ms
+  active in a 58 to 60 ms window. Open: MCP tools (`mcp__<server>__<tool>`, callable by tools, after
   G3) and code mode as a tool `ta` calls; the sandbox's `ta` CLI through the egress door;
   a nested model call's events reach the conversation's live view, since it shares the
   conversation's provider session (A6 decides how a view shows them).
