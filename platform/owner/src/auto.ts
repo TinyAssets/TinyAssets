@@ -54,8 +54,8 @@ export type Thresholds = Required<Pick<CompactionPolicy,
  * defaults (`DEFAULT_COMPACTION_POLICY`: 16,384 tokens kept free for the answer, 20,000
  * recent ones kept verbatim, a background compaction 32,768 below the blocking threshold)
  * hold for a window of 256K tokens or more; a smaller window keeps an eighth of itself
- * free, a quarter verbatim and starts in the background an eighth lower, as pi's own
- * example sizes a 32K model (4,096, 8,000 and 4,096).
+ * free, a quarter verbatim and starts in the background an eighth lower, close to pi's
+ * own example for a 32K model (4,096, 8,000 and 4,096).
  */
 export function compactionFor(model: Pick<ModelInfo, "contextWindow">): Thresholds {
   const window = model.contextWindow;

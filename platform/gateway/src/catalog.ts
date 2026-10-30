@@ -104,6 +104,7 @@ export function providerFor(catalog: Catalog, upstream: Upstream): Provider {
  */
 export function modelInfos(catalog: Catalog, upstream: Upstream): ModelRecord[] {
   return providerFor(catalog, upstream).getModels()
-    .filter((model): model is Model<Api> => model.api === upstream.api && isModelType(model, "chat"))
+    .filter((model): model is Model<Api> =>
+      model.api === upstream.api && isModelType(model, "chat"))
     .map(recordOf);
 }

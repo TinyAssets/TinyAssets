@@ -149,7 +149,8 @@ export function listed(candidate: Candidate, id: string = physicalId(candidate),
                        name = `${candidate.display_name}: ${candidate.model.name}`):
     Model<"pi-messages"> {
   return {
-    ...structuredClone(candidate.model) as Omit<Model<"pi-messages">, "api" | "provider" | "baseUrl">,
+    ...structuredClone(candidate.model) as Omit<Model<"pi-messages">,
+                                               "api" | "provider" | "baseUrl">,
     id, name, api: "pi-messages", provider: GATEWAY_PROVIDER, baseUrl: GATEWAY_BASE_URL,
   };
 }
@@ -297,9 +298,10 @@ export class GatewayProvider implements Provider<Api> {
     }
     const physical = listed(target);
     // `auto` mirrors the strongest, so pi held the request to the strongest's threshold; a
-    // target with a lower one holds it to its own, through pi's overflow recovery.
+    // target with a lower one holds it to its own, through pi's overflow recovery. Nothing
+    // is reserved or sent.
     const mirrored = candidates[0];
-    if (model.id === AUTO_MODEL && mirrored !== undefined && target !== mirrored
+    if (model.id === AUTO_MODEL && mirrored !== undefined
         && blockingThreshold(target.model) < blockingThreshold(mirrored.model)
         && estimateContextTokens(context).tokens > blockingThreshold(target.model)) {
       return end(failed(physical, CONTEXT_OVERFLOW, aborted()));

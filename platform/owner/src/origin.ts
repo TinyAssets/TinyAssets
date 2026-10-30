@@ -117,7 +117,8 @@ export class OriginMetrics implements TelemetryMetrics {
   #dropped = 0;
 
   counter(name: string, options?: InstrumentOptions): TelemetryCounter {
-    return { add: (value, attributes) => this.#record("counter", name, options, value, attributes) };
+    return { add: (value, attributes) =>
+      this.#record("counter", name, options, value, attributes) };
   }
 
   upDownCounter(name: string, options?: InstrumentOptions): TelemetryUpDownCounter {

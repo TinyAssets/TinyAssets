@@ -658,6 +658,31 @@ describe("a context too long for its model", () => {
     expect(receipts).toHaveLength(2);
     expect(await envelopes(r)).toHaveLength(2);
   });
+
+  it("is not refused on a routed target whose threshold is no lower than the strongest's, " +
+     "which pi already held it to", async () => {
+    const r = await gated();
+    // The stronger by rank has the smaller window: `auto` mirrors it, so pi's threshold
+    // is already the lower one.
+    const [strong, weak] = await pair([64_000, 80_000]);
+    await r.connect("sk-low", ANTHROPIC, "Strong", [strong]);
+    const weakConnection = await r.connect("sk-high", ANTHROPIC, "Weak", [weak]);
+    const target = `${weakConnection}/${weak.id}`;
+    const answer = await r.in(async (instance) => {
+      const [auto] = instance.parts.provider.getModels();
+      const context = normalizeContext({ messages: [
+        { role: "user", content: `${"x".repeat(75_000 * 4)} cmd:echo`, timestamp: 1 },
+        { role: "assistant", content: [{ type: "text", text: "ok" }], api: "pi-messages",
+          provider: "gateway", model: target, stopReason: "error", errorMessage: "context_length_exceeded",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+                   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+          timestamp: 2 }] });
+      return instance.parts.provider.streamSimple(auto!, context, await direct(instance)).result();
+    });
+    // Past the routed target's own threshold (70,000), but not refused: sent, and answered.
+    expect(blockingThreshold(weak)).toBe(70_000);
+    expect([answer.model, answer.errorMessage ?? null]).toEqual([target, null]);
+  });
 });
 
 describe("a connected model's whole record", () => {
@@ -722,6 +747,10 @@ describe("a connected model's whole record", () => {
     } });
     expect(compactionFor(strong)).toEqual({ reserveTokens: 16_384, keepRecentTokens: 20_000,
                                             backgroundTokens: 32_768 });
+    // A connection made later is in pi's next read.
+    const later = await r.connect("sk-later", ANTHROPIC, "Later", [small]);
+    expect(Object.keys((await r.in((instance) => instance.parts.provider.compaction()))
+      .modelOverrides!)).toContain(`gateway/${later}/${small.id}`);
   });
 
   it("is compacted at its own thresholds, which pi reads, not at pi's defaults", async () => {
