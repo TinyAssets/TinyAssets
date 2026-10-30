@@ -965,6 +965,10 @@ account and no deploy.
   cut at 15 minutes.
 - [ ] On the owner Worker's first deploy: check that Paid accepts its explicit
   `limits.subrequests: 10000` (run B ran at the default limit and never set it).
+- [ ] The store probe (slice 0c, batch 1), before the storage slice: P1, P2, P3, P4 and P7
+  for the per-thread `ThreadStore`. Method, cases, reading key and results table:
+  `store-probe.md`; run by the manual `store-probe.yml`. Its main copy deploys with the
+  owner's explicit `limits.subrequests: 10000`, so its first run answers the item above too.
 - [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
   probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
   does not emulate it); a live probe of the files Worker's create-once put, which
