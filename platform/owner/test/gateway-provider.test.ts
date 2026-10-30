@@ -764,6 +764,8 @@ describe("a connected model's whole record", () => {
     const compacted = await r.in(async (instance) => {
       const pi = instance.agent.harness;
       const kinds = async () => (await pi.messages()).map((entry) => entry.kind);
+      // A first exchange a summary could cut, under pi's defaults too.
+      await pi.prompt("cmd:measured-echo");
       await pi.prompt(`${sized(12_000)} cmd:measured-echo`);
       // About 25,000 with the first answer's bill: under its own thresholds.
       await pi.prompt(`${sized(10_000)} cmd:measured-echo`);

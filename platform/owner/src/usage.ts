@@ -18,9 +18,9 @@
  *   be `reserved` and the owner policy at the generation it was reserved under; else it
  *   is `not_sent`, and the call never goes. A row is `dispatched` before the first byte
  *   leaves, so an unsent one is provably unsent.
- * - **Settle**, in a unit, once: `succeeded` with pi-ai's `Usage` (tokens, and its catalog
- *   cost) from the `done` event; `failed`, cost 0, when the gateway answered the call
- *   with a refusal's status, its own or the provider's before any output (the gateway's
+ * - **Settle**, in a unit, once: `succeeded` with pi-ai's `Usage` (tokens, and its cost by
+ *   `calculateCost` over the target's record) from the `done` event; `failed`, cost 0,
+ *   when the gateway answered the call with a refusal's status, its own or the provider's before any output (the gateway's
  *   `messages.ts`); `unknown` otherwise (a stream lost after it started, an abort), which
  *   keeps its whole reservation and is never replayed.
  * - **Abandon**, when a dispatch or settle unit threw: the row settled as it stands

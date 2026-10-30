@@ -154,11 +154,13 @@ describe("the adapter on pi 1.4, where a throwing adapter can reject a durable c
         expect(ran).toBe(1);
         expect(await started).toBe("ran");
         for (const make of ["counter", "upDownCounter", "histogram"] as const) {
-          const instrument = span.metrics![make](input as never, input as never) as
-            { add?: (...args: unknown[]) => void; record?: (...args: unknown[]) => void };
-          const measure = instrument.add ?? instrument.record!;
-          expect(() => measure(input, input, input)).not.toThrow();
-          expect(() => measure(1, input, input)).not.toThrow();
+          for (const name of [input, "pi.ai.tokens"]) {
+            const instrument = span.metrics![make](name as never, input as never) as
+              { add?: (...args: unknown[]) => void; record?: (...args: unknown[]) => void };
+            const measure = instrument.add ?? instrument.record!;
+            expect(() => measure(input, input, input)).not.toThrow();
+            expect(() => measure(1, input, input)).not.toThrow();
+          }
         }
       }
     }
@@ -203,8 +205,9 @@ describe("the adapter's metrics", () => {
     tokens.add(4, { provider: "gateway", model: "auto", kind: "input" });
     tokens.add(7, { provider: "gateway", model: "auto", kind: "output" });
     const duration = typed.histogram("pi.durable.phase.duration");
-    duration.record(30, { task: "pi.generation", phase: "request", outcome: "done" });
+    duration.record(20, { task: "pi.generation", phase: "request", outcome: "done" });
     duration.record(10, { task: "pi.generation", phase: "request", outcome: "done" });
+    duration.record(30, { task: "pi.generation", phase: "request", outcome: "done" });
     const active = typed.upDownCounter("pi.durable.tasks.active");
     active.add(1, { task: "pi.generation" });
     active.add(-1, { task: "pi.generation" });
@@ -219,7 +222,7 @@ describe("the adapter's metrics", () => {
         count: 1, sum: 7, min: 7, max: 7 },
       { name: "pi.durable.phase.duration", kind: "histogram", unit: "ms",
         attributes: { outcome: "done", phase: "request", task: "pi.generation" },
-        count: 2, sum: 40, min: 10, max: 30 },
+        count: 3, sum: 60, min: 10, max: 30 },
       { name: "pi.durable.tasks.active", kind: "upDownCounter", unit: null,
         attributes: { task: "pi.generation" }, count: 2, sum: 0, min: -1, max: 1 },
     ]);

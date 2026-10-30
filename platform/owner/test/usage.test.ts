@@ -373,6 +373,18 @@ describe("the per-turn caps", () => {
     expect(r.rows()[0]).toMatchObject({ est_cost: 260 });
   }));
 
+  it("keep an estimate rounded up to the µ$ inside the cost it fits", () => withUsage(async (r) => {
+    // Here pi-ai's price of the output that fits by its rate, rounded up, is a µ$ over.
+    r.policy.caps = { turn_cost: 100_700, turn_tokens: 1_000_000_000 };
+    const reserved = await r.gate.write(() => r.usage.reserve({
+      ...ASK, inputTokens: 260, maxOutputTokens: 2_000_000, rates: rates(0.1, 0.1) }, NOW));
+    expect(reserved.ok).toBe(true);
+    const [row] = r.rows();
+    expect(row!["est_cost"]).toBeLessThanOrEqual(100_700);
+    expect(priced(rates(0.1, 0.1), 260, Number(row!["max_output_tokens"]) + 1))
+      .toBeGreaterThan(100_700);
+  }));
+
   it("price a call by pi-ai's calculateCost, a long-context tier for the whole request once " +
      "its input passes the threshold", () => withUsage(async (r) => {
     const tiered = rates(3, 15, [{ inputTokensAbove: 2000, input: 6, output: 30, cacheRead: 0,
