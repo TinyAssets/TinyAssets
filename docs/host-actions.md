@@ -1102,8 +1102,11 @@ client claim, credential-family claim and auth_time semantics; no brand, audienc
 header or unverified token is acceptable evidence. Keep the probe receipt free of
 bearers. Configure TINYASSETS_OUTSIDE_CLIENT_CLAIM and
 TINYASSETS_OUTSIDE_FAMILY_CLAIM only from this evidence; explicitly list verified
-first-party issuer|client pairs in TINYASSETS_FIRST_PARTY_CLIENTS. Existing outside
-clients need owner grants through POST /app/outside-clients before cutover. The
-durable OutsideClientAuthority switch defaults denied; TINYASSETS_OUTSIDE_DENY=1
-can only deny. Prove independent client revoke and first-party survival live.
+first-party issuer|client pairs in TINYASSETS_FIRST_PARTY_CLIENTS, set in the same
+change, so the owner's own app never becomes an outside client. No pre-grant is
+needed: a newly verified client starts `full` (decision A1) in the broker's grants,
+and the owner scopes or revokes it with POST /app/outside-clients.
+TINYASSETS_OUTSIDE_DENY=1 in /etc/tinyassets/env (compose passes it to the daemon
+and the broker) refuses every outside client and its durable work. Prove
+independent client revoke and first-party survival live.
 This account-only evidence does not block the main-compatible K1 code or wait on U1.

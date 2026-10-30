@@ -46,13 +46,13 @@ def test_register_and_disable_need_the_owners_protected_session(rig):
 
 def test_the_router_checks_a_key_is_the_owners_and_fails_loudly(tmp_path):
     keys = ApiKeyStore(tmp_path)
-    theirs = keys.mint("bob", name="bob key", scopes=[], authority=None)["key_id"]
-    mine = keys.mint("alice", name="alice key", scopes=[], authority=None)["key_id"]
+    theirs = keys.mint("bob", name="bob key")["key_id"]
+    mine = keys.mint("alice", name="alice key")["key_id"]
     assert keys.agent_origin("alice", mine) == {"client": _client(mine), "family": _family(mine)}
     for ref in (theirs, "0" * 16, None):
         with pytest.raises(ApiKeyRefused, match="not this owner's live key"):
             keys.agent_origin("alice", ref)
-    keys.revoke("alice", mine, authority=None)
+    keys.revoke("alice", mine)
     with pytest.raises(ApiKeyRefused):
         keys.agent_origin("alice", mine)
     keys.path.write_bytes(b"not a database")  # a store failure is an error, never a refusal
@@ -117,8 +117,8 @@ def test_the_router_helper_crosses_the_fenced_owner_channel(broker, tmp_path, mo
     assert posted["recipients"] == [agent["agent_id"]]
     # The owner registers its own key: the router checks it and sends the key's origin.
     keys = ApiKeyStore(tmp_path)
-    mine = keys.mint("alice", name="alice key", scopes=[], authority=None)["key_id"]
-    theirs = keys.mint("bob", name="bob key", scopes=[], authority=None)["key_id"]
+    mine = keys.mint("alice", name="alice key")["key_id"]
+    theirs = keys.mint("bob", name="bob key")["key_id"]
     keyed = {**AGENT, "source": "api_key", "session_proof": PROOF}
     assert ledger_request(tmp_path, owner, "OUTSIDE_AGENTS", "register",
                           **{**keyed, "source_ref": mine})["outside_client"] == _client(mine)

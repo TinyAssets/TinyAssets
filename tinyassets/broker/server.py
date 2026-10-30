@@ -51,6 +51,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,7 @@ from tinyassets import rpc_frames as rf
 from tinyassets.broker.admission import owner_call
 from tinyassets.broker.fence import Fence, Fenced
 from tinyassets.broker.ops import OpIdInvalid, OpStore
+from tinyassets.broker.policy import outside_admits
 from tinyassets.storage.outbound_connections import BrokerStreamStop
 
 _LOG = logging.getLogger(__name__)
@@ -89,9 +91,13 @@ ERROR_CLASSES = frozenset({
     "policy_ask", "policy_hand_off",
 })
 #: N10: owner policy widenings, accepted only on the router's owner channel.
-WIDENINGS = frozenset({"write", "issue_once", "apply_proposal"})
+WIDENINGS = frozenset({"write", "issue_once", "apply_proposal", "outside_set"})
+#: P0-3: the router's verified caller, never the box's word: an outside client's
+#: admission (which records an MCP client ``full``) and a held key request's read.
+ROUTER_ONLY = frozenset({"outside_admit", "outside_revoke", "held"})
 #: N10: the box channel's policy operations. None of them widens authority.
-BOX_POLICY_ACTIONS = frozenset({"read", "receipts", "proposal", "decide", "classify"})
+BOX_POLICY_ACTIONS = frozenset({"read", "receipts", "proposal", "decide", "classify",
+                                "outside_check", "outside_list"})
 
 
 def peer_uid(sock: socket.socket) -> int:
@@ -149,6 +155,8 @@ class _Stream:
     cancel_socket: Any = None
     upload: Any = None
     authority: Any = None
+    #: P0-3: the outside client this OPEN was labelled for; a grant change cancels it.
+    outside: str = ""
     wake: threading.Condition = field(default_factory=threading.Condition)
     duplex: Any = None
 
@@ -226,7 +234,8 @@ class BrokerServer:
 
         ledger = self.ledger[0]
         return run_due(ledger, now=time.time(), send=lambda wake, now: agent_wake(
-            ledger, self.mcp_events.store, self._ops, wake, now=now))
+            ledger, self.mcp_events.store, self._ops, wake, now=now,
+            grants=self._policy_store))
 
     @property
     def ledger(self):
@@ -591,7 +600,8 @@ class _Connection:
                 deliveries = self._server.mcp_events
                 try:
                     result = await asyncio.to_thread(
-                        box_operation, deliveries.store, self._box_owner, doc)
+                        box_operation, deliveries.store, self._box_owner, doc,
+                        partial(outside_admits, self._server._policy_store, self._box_owner))
                     answer = {"op": "BOX_RESULT", "result": result}
                     if doc.get("action") == "capture" and result["queued"]:
                         deliveries.kick()
@@ -633,7 +643,8 @@ class _Connection:
                 result = await asyncio.to_thread(
                     router_operation, self._server.mcp_events.store,
                     self._server._owner_identities, doc,
-                    agents=self._server.ledger[0].mailbox_subscriber)
+                    agents=self._server.ledger[0].mailbox_subscriber,
+                    grant=partial(_mailbox_grant, self._server._policy_store))
                 answer = {"op": "MCP_EVENTS_IS", "result": result}
             except Exception as exc:
                 answer = {"op": "MCP_EVENTS_ERROR", "error": error_answer(exc)}
@@ -1147,7 +1158,7 @@ class _Connection:
             proof_key = "session_proof" if "session_proof" in doc else "cookie"
             if proof_key == "session_proof" and not isinstance(doc[proof_key], dict):
                 raise PolicyRefused("interactive owner session required")
-            if self._role != OWNER and action in WIDENINGS:
+            if self._role != OWNER and action in WIDENINGS | ROUTER_ONLY:
                 raise PolicyRefused("owner policy widens only through the router")
             if action == "read" and set(doc) == {"op", "action", "principal"}:
                 result = store.read(owner).projection()
@@ -1191,6 +1202,34 @@ class _Connection:
                                    if s.namespace == owner]
                     for stream in streams:
                         self._server.cancel(stream)
+            elif action == "outside_admit" and set(doc) == {
+                    "op", "action", "principal", "client", "source", "authenticated_at"}:
+                result = store.outside_admit(owner, doc["client"], doc["source"],
+                                             doc["authenticated_at"])
+            elif action == "outside_check" and set(doc) == {
+                    "op", "action", "principal", "client", "authenticated_at"}:
+                result = store.outside_check(owner, doc["client"], doc["authenticated_at"])
+            elif action == "outside_list" and set(doc) == {"op", "action", "principal"}:
+                result = {"clients": store.outside_list(owner)}
+            elif action == "outside_set" and set(doc) - {"proposal"} == {
+                    "op", "action", "principal", proof_key, "client", "source", "mode",
+                    "scopes", "expected_generation", "name"}:
+                fields = {k: doc[k] for k in ("client", "source", "mode", "scopes",
+                                              "expected_generation", "name")}
+                result = store.outside_set(owner, doc[proof_key], **fields,
+                                           proposal=doc.get("proposal"))
+                self._end_outside_streams(owner, doc["client"])
+            elif action == "outside_revoke" and set(doc) == {
+                    "op", "action", "principal", "client"}:
+                result = store.outside_revoke(owner, doc["client"])
+                self._end_outside_streams(owner, doc["client"])
+            elif action == "held" and set(doc) == {"op", "action", "principal", "request_id"}:
+                from tinyassets.broker.policy import _digest
+
+                change = store.proposal(owner, doc["request_id"])
+                if change is None:
+                    raise PolicyRefused("no pending proposal for this card")
+                result = {"change": change, "digest": _digest(change)}
             elif action == "decide" and set(doc) == {"op", "action", "principal", "request"}:
                 request = doc["request"]
                 if not isinstance(request, dict) or set(request) != {
@@ -1213,6 +1252,26 @@ class _Connection:
                     _LOG.exception("policy refusal receipt unavailable")
             reason = str(exc) if isinstance(exc, PolicyRefused) else "policy unavailable"
             return {"op": "OWNER_POLICY_REFUSED", "reason": reason}
+
+    def _end_outside_streams(self, owner: str, client: str) -> None:
+        """P0-3: a changed grant ends that client's open streams; its next call meets it.
+        A stream registered after this snapshot rechecks the grant itself (``_open``).
+
+        Its ledger agents' open wakes are suppressed and their doorbells revoked, their
+        callbacks erased (S3b M3): the agent subscribes again under the new grant. A
+        wake claimed meanwhile meets the grant at its claim and its send.
+        """
+        with self._server._streams_lock:
+            streams = [s for s in self._server._streams.values()
+                       if s.namespace == owner and s.outside == client]
+        for stream in streams:
+            self._server.cancel(stream)
+        try:
+            ledger = self._server.ledger[0]
+            for agent_id in ledger.suppress_client(owner, client, "grant"):
+                self._server.mcp_events.store.revoke_agent(owner, agent_id)
+        except Exception:  # noqa: BLE001 - committed; the claim and send checks still hold
+            _LOG.exception("ALARM: outside agent wakes not revoked with their grant")
 
     def _usage(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.usage import local_operation, validate
@@ -1476,6 +1535,8 @@ class _Connection:
                 stream = _Stream(stream_id, generation, token, namespace, op_id,
                                  deadline=time.monotonic() + _stream_budget(request),
                                  credit=credit)
+                label = (doc.get("authority") or {}).get("outside") if self._role == BOX else ""
+                stream.outside = label.partition(":")[0] if isinstance(label, str) else ""
                 if verb.startswith(("git_read:", "git_write:")):
                     stream.authority = lambda: ledger.authorize_exact(
                          grant_id=grant_id, connection_id=connection_id)
@@ -1486,6 +1547,18 @@ class _Connection:
                             rf.control(stream.id, {"op": "UPLOAD_CREDIT"}), stream))
                 with self._server._streams_lock:
                     self._server._streams[(self._key, stream_id)] = stream
+                if stream.outside:
+                    # A grant change committed before this registration missed the
+                    # stream in its cancel snapshot: recheck the grant now it is listed.
+                    from tinyassets.broker.authority_gate import outside_grant
+
+                    try:
+                        outside_grant(self._server._policy_store, principal, label)
+                    except Exception:  # noqa: BLE001 - a changed or unreadable grant: no send
+                        with self._server._streams_lock:
+                            self._server._streams.pop((self._key, stream_id), None)
+                        self._server._ops.finish(namespace, op_id, "refused")
+                        return "refused"
                 try:
                     from tinyassets.broker.egress import identity
 
@@ -1729,6 +1802,19 @@ class _Expired(BrokerStreamStop):
 
 class _Fenced(BrokerStreamStop):
     pass
+
+
+def _mailbox_grant(store, owner: str, authority: dict, command_center_id: str) -> None:
+    """P0-3: a ``mailbox.message`` subscribe stands on the client's broker grant as the
+    router stamped it, and a scoped client needs ``read_graph`` in that command center."""
+    from tinyassets.broker.policy import PolicyRefused
+
+    if store is None:
+        raise PolicyRefused("policy store unavailable")
+    grant = store.outside_standing(owner, authority)
+    if grant["mode"] == "scoped" and {"universe": command_center_id, "agent": "main",
+                                      "capability": "read_graph"} not in grant["scopes"]:
+        raise PolicyRefused("outside client capability not granted")
 
 
 def _owner(principal: Any) -> str:

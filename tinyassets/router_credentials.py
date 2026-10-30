@@ -135,6 +135,41 @@ def dispatch(root: Path, owner: str, request: dict) -> dict:
     return _dispatch(root, owner, request)
 
 
+def mint_key(root: Path, owner: str, *, name: str, request_ref: str = "") -> dict:
+    """The router's own key mint (P0-3: never the box's): the owner's live route is
+    rechecked after the write, so no key survives an account withdrawal (C13)."""
+    from tinyassets.api_keys import ApiKeyStore
+    from tinyassets.routing_snapshot import snapshot
+
+    if not isinstance(request_ref, str) or len(request_ref) > 4096:
+        raise ValueError("invalid key request reference")
+    snapshot(root).route(owner)
+    keys = ApiKeyStore(root)
+    result = keys.mint(owner, name=name, request_ref=request_ref)
+    try:
+        snapshot(root).route(owner)
+    except Exception:
+        if not result.get("already_created"):
+            keys.discard(owner, result["key_id"])
+        raise
+    return result
+
+
+def revoke_key(root: Path, owner: str, key_id: str) -> dict:
+    """A key's revoke ends its broker grant first (P0-3), so a stored run, an automation,
+    an event subscription and an OPEN stop with the key. A broker that cannot answer
+    fails the revoke loudly; the key's own row is revoked only after its grant."""
+    from tinyassets.api_keys import ApiKeyRefused, ApiKeyStore, _client
+    from tinyassets.broker.policy_submit import submit
+
+    keys = ApiKeyStore(root)
+    if not isinstance(key_id, str) or not any(
+            key["key_id"] == key_id for key in keys.list(owner)["keys"]):
+        raise ApiKeyRefused("API key not found")
+    submit(root, owner, "outside_revoke", client=_client(key_id))
+    return keys.revoke(owner, key_id)
+
+
 def revoke_account(root: Path, owner: str):
     """Identity cleanup for the broker's fixed account-revocation operation."""
     from tinyassets.api_keys import ApiKeyStore
@@ -152,9 +187,11 @@ def _revoke_account(root: Path, owner: str, keys):
     session_store.revoke_owner(owner)
     with approval_handoff.flows() as db:
         db.execute("DELETE FROM approval_handoffs WHERE owner=?", (owner,))
-    for key in keys.list(owner, authority=None)["keys"]:
+    # Every grant is already dead here: the owner is withdrawn, so the broker's policy
+    # store refuses each of their outside clients, and erasure deletes it (P0-3).
+    for key in keys.list(owner)["keys"]:
         if key["revoked_at"] is None:
-            keys.revoke(owner, key["key_id"], authority=None)
+            keys.revoke(owner, key["key_id"])
     HookOwners(root).revoke_owner(owner)
     # C15: credentials are the authentication fence after routes omit erasures.
     # Retire local OAuth codes and both bearer types in their one identity store.
@@ -170,28 +207,12 @@ def _dispatch(root: Path, owner: str, request: dict) -> dict:
 
     operation = request.get("operation")
     keys = ApiKeyStore(root)
-    if operation == "key_mint" and set(request) == {"operation", "name", "request_ref"}:
-        if not isinstance(request["request_ref"], str) or len(request["request_ref"]) > 4096:
-            raise ValueError("invalid key request reference")
-        result = keys.mint(owner, name=request["name"], request_ref=request["request_ref"],
-                           scopes=[], authority=None)
-        from tinyassets.routing_snapshot import snapshot
-
-        try:
-            snapshot(root).route(owner)
-        except Exception:
-            if not result.get("already_created"):
-                with keys.db() as db:
-                    db.execute("DELETE FROM api_keys WHERE key_id=? AND owner=?",
-                               (result["key_id"], owner))
-            raise
-        return result
     if operation == "key_list" and set(request) == {"operation"}:
-        return keys.list(owner, authority=None)
+        return keys.list(owner)
     if operation == "key_revoke" and set(request) == {"operation", "key_id"}:
         if not isinstance(request["key_id"], str):
             raise ValueError("invalid key id")
-        return keys.revoke(owner, request["key_id"], authority=None)
+        return revoke_key(root, owner, request["key_id"])
     if operation == "hook_mint" and set(request) == {"operation"}:
         token = secrets.token_urlsafe(32)
         hooks = HookOwners(root)
@@ -277,7 +298,7 @@ async def serving(root: Path):
                     and doc["request"] == {"operation": "revoke_account"})
                    or (caller == RELAY_UID and doc["op"] == "RELAY_CREDENTIAL"))):
                 if doc["op"] == "RELAY_CREDENTIAL" and doc["request"].get("operation") not in {
-                        "key_mint", "key_list", "key_revoke", "hook_mint", "hook_revoke"}:
+                        "key_list", "key_revoke", "hook_mint", "hook_revoke"}:
                     raise PermissionError("relay credential operation refused")
                 result = await asyncio.to_thread(dispatch, root, doc["owner"], doc["request"])
                 answer = {"op": "ROUTER_CREDENTIAL_IS", "result": result}

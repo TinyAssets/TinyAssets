@@ -1239,20 +1239,13 @@ class AuthContextMiddleware:
                 _current_identity.set(trusted)
                 _current_bearer_present.set(True)
                 _current_request_boundary_id.set(f"request_boundary_{secrets.token_hex(32)}")
-                if trusted.metadata.get("auth_provider") == "api_key":
-                    from tinyassets.api_keys import admit_forwarded_identity
+                if trusted.metadata.get("outside_origin") is not None:
+                    # P0-3: the router admitted this outside caller and stamped its
+                    # grant; an unstamped one never reaches a handler.
+                    from tinyassets.outside_authority import check_identity
 
-                    if not admit_forwarded_identity(trusted):
-                        await _send_forbidden_403(send, "API capability not granted")
-                        return
-                elif trusted.metadata.get("outside_origin") is not None:
-                    from tinyassets.outside_authority import current_store
-
-                    authority = current_store()
                     try:
-                        authority.observe(trusted.user_id, trusted.metadata["outside_origin"])
-                        trusted.metadata["outside_origin"] = authority.admit(
-                            trusted.user_id, trusted.metadata["outside_origin"])
+                        check_identity(trusted)
                     except PermissionError:
                         await _send_forbidden_403(send, "outside client capability not granted")
                         return
@@ -1396,15 +1389,7 @@ class AuthContextMiddleware:
                     # billing webhook) bind their own principal.
                     await _send_auth_challenge_401(send, invalid_token=False)
                     return
-            if (not self.router and identity is not None and not canary_authorized
-                    and path in {"/mcp", "/mcp/"} and method == "POST"
-                    and identity.metadata.get("oauth_connection")
-                    and not identity.metadata.get("first_party_client")):
-                from tinyassets.connected_agents import serve_mcp
-
-                await serve_mcp(self.app, scope, receive, send, identity)
-            else:
-                await self.app(scope, receive, send)
+            await self.app(scope, receive, send)
         finally:
             try:
                 from tinyassets.observability import observe_identity

@@ -228,13 +228,13 @@ def test_valid_token_resolves_to_founder_identity(keypair) -> None:
     'identity-auth-and-access-control:'
     'Bearer JWT validation is fail-closed, RS256-pinned, and audience-bound',
 )
-def test_only_verified_tokens_supply_opaque_connection_metadata(keypair):
+def test_a_verified_token_keeps_no_session_or_token_in_its_identity(keypair):
+    # P0-3: outside clients are the broker's grant rows; no per-token receipt remains.
     token = _sign(keypair, sid="session_fixture")
     ident = _provider(keypair).resolve_token(token)
-    connection = ident.metadata["oauth_connection"]
-    assert connection["identity_source"] == "verified_session"
-    assert len(connection["id"]) == 64
-    assert "session_fixture" not in str(connection) and token not in str(ident.metadata)
+    assert "oauth_connection" not in ident.metadata
+    assert "session_fixture" not in str(ident.metadata) and token not in str(ident.metadata)
+    assert "outside_origin" not in ident.metadata  # no claim configured: the owner
     assert _provider(keypair).resolve_token(token + "invalid") is None
 
 

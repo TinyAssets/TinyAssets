@@ -772,7 +772,7 @@ def test_shared_doors_authenticate_migrated_keys_and_hooks(
 
     data = cutover[0]
     keys = {owner: api_keys.ApiKeyStore(data).mint(
-        owner, name='synthetic migration key', scopes=[], authority=None)['key']
+        owner, name='synthetic migration key')['key']
         for owner in ('alice', 'bob')}
     hooks = {'alice': 'synthetic-hook-a', 'bob': 'synthetic-hook-b'}
     with closing(sqlite3.connect(data / '.tinyassets.db')) as db, db:

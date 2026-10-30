@@ -73,7 +73,6 @@ RESET_TABLES = {
     ".api-keys.sqlite3": ("api_keys",),
     ".hook-owners.sqlite3": ("hook_owners",),
     ".auth.db": ("oauth_clients", "authorization_codes", "access_tokens", "refresh_tokens"),
-    ".outside-client-authority.sqlite3": ("outside_families", "outside_grants", "outside_effects"),
     ".hosted-model-auth.db": ("hosted_model_flows", "connection_oauth_flows"),
     ".runtime/owner-sessions.db": (
         "owner_sessions",

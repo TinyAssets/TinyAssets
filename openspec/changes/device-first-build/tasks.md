@@ -104,6 +104,15 @@ S0's row above.
 
 - [ ] N10 owner authority in the broker (P0-3's prerequisite): action rules, once-approvals, effector consents and outside-client grant modes in `broker/policy.py`'s per-owner store (plan module map: "Room caps and per-agent grant modes as owner policy (N10)"; founder 2026-10-26: trusted per-owner stores are broker-held SQLite), written only from a protected owner session and enforced at OPEN; the box channel cannot widen authority. Connect-flow consent is built with W7/W11, not here. Stage a1 (action rules and once-approvals) is PR #5333.
 - [ ] P0-3 Outside agents distinguishable from the owner: grant modes (full by default, scoped per agent), `check_identity` consults grants, then the claim probe and setting.
+  - [x] Grant modes in the broker (branch `p0-3-outside-grants`): `outside_clients` in each
+    owner's `policy.db` (`full` by default for a newly verified MCP client, `scoped`,
+    `revoked`); changed only by `outside_set` on the router's owner channel from the
+    protected session (`/app/outside-clients`, `/app/api-keys/mint`); the router admits
+    every outside call and stamps its grant, the box refuses an unstamped one, and OPEN
+    binds the stamped label; a key's revoke revokes its grant, durable work rereads it,
+    and `TINYASSETS_OUTSIDE_DENY` holds in the broker too. The box-held `.outside-client-authority.sqlite3`, its
+    durable switch and its effect leases are deleted. Still owed: effector consents (N10
+    above), and the claim probe and setting.
 
 ## S3b Events
 
@@ -118,10 +127,10 @@ S3a's row above.
   agent's own client; disabling an agent suppresses its wakes and erases its callback;
   registry row S31 converged with `test_outside_wakes`. **Live acceptance still owed:** a
   ChatGPT agent wakes on a message, reads it and replies (an `mcp` agent registers only
-  once P0-3 configures the outside-client claim). **Owed:** M3, a revoked outside-client
-  grant ends the agent's wakes and erases its callbacks (waits on #5343; blocks S31 reading
-  converged once #5343 lands); L5, bounding `ledger_wakes` growth and the per-pass scan of
-  every owner's ledger (S4 caps).
+  once P0-3 configures the outside-client claim). M3 is closed with #5343: a changed or
+  revoked outside-client grant suppresses the agent's wakes and erases its callbacks, and
+  the claim and the send recheck the grant. **Owed:** L5, bounding `ledger_wakes` growth
+  and the per-pass scan of every owner's ledger (S4 caps).
 
 ## ADR-030 tool by tool
 

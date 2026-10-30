@@ -8,20 +8,10 @@ yet is simply not claimed until a later tick.
 from __future__ import annotations
 
 import logging
-import os
 
 _LOG = logging.getLogger(__name__)
 #: Wakes per pass; the pass repeats while any were due, as event deliveries do.
 PASS_LIMIT = 4
-
-
-def outside_denied() -> bool:
-    """The outside kill switch as the broker sees it: its own ``TINYASSETS_OUTSIDE_DENY``.
-
-    The durable switch is router state the broker cannot read; the router's subscribe
-    door enforces both, and while either is off no new doorbell is admitted.
-    """
-    return os.environ.get("TINYASSETS_OUTSIDE_DENY") == "1"
 
 
 def run_due(base, *, now: float, send, limit: int = PASS_LIMIT) -> int:
@@ -32,6 +22,8 @@ def run_due(base, *, now: float, send, limit: int = PASS_LIMIT) -> int:
     others. Only an accepted wake counts, so neither a failing nor a slow callback can
     make the pass run again.
     """
+    from tinyassets.broker.policy import outside_denied  # the one switch (P0-3)
+
     if outside_denied():
         return 0
     accepted = 0

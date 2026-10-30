@@ -1,4 +1,5 @@
-"""N10 owner policy from the router: rules, spend, egress and one-use approvals.
+"""N10 owner policy from the router: rules, spend, egress, one-use approvals and
+outside-client grants (P0-3).
 
 The router submits these on its owner-role broker channel. The box channel
 cannot widen policy, and the session proof travels only on this channel.
@@ -7,7 +8,9 @@ from __future__ import annotations
 
 from tinyassets.broker.policy import PolicyRefused
 
-_ACTIONS = frozenset({"read", "receipts", "write", "issue_once", "apply_proposal"})
+_ACTIONS = frozenset({"read", "receipts", "write", "issue_once", "apply_proposal",
+                      "outside_admit", "outside_check", "outside_set", "outside_revoke",
+                      "outside_list", "held"})
 
 
 def submit(data_root, owner: str, action: str, **fields) -> dict:

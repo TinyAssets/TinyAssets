@@ -98,8 +98,8 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/run/{listing}", "/app/run/{listing}/preview.png", "/app/unread",
         "/app/owner-sign-in", "/app/owner-sign-in/complete", "/app/approvals/{operation}",
         "/app/approval-handoff", "/app/approval-handoff/{ref}",
-        # K1: owner-session-only grant/revoke control for outside clients.
-        "/app/outside-clients", "/app/api-keys",
+        # Owner-session-only outside-client grants and key mints (router-served, P0-3).
+        "/app/outside-clients", "/app/api-keys", "/app/api-keys/mint",
         "/app/model-connect/{operation}", "/app/subscription-connect/{operation}",
         "/app/model-discovery", "/app/connection-discovery",
         "/app/model-callback/{flow}",

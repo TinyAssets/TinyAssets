@@ -248,9 +248,10 @@ def test_the_outside_refusal_leaves_api_mailbox_alone(router):
                                ("POST", "/api/mailbox/replies", {"client_message_id": "c",
                                                                  "body": "hi"})):
         answer = router(method, path, "alice", body, outside=OUTSIDE, provider="api_key")
-        # The mailbox door itself answered (outside access is off for this unregistered
-        # key), never the router's /app outside-surface refusal.
-        assert answer.json()["error"] in {"refused", "outside_access_off"}, answer.text
+        # The key's grant admission answered (P0-3: this key has no grant), or the
+        # mailbox door itself, never the router's /app outside-surface refusal.
+        assert answer.json()["error"] in {"refused", "forbidden"}, answer.text
+        assert answer.json().get("detail") in {None, owner_router.OUTSIDE_REFUSED}
         assert answer.json() != {"error": "forbidden", "detail": owner_router.OUTSIDE_SURFACE}
 
 

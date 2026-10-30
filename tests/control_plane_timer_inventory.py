@@ -37,6 +37,9 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 #: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]``/``[call_later]`` mark a
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
 CLASSIFICATION: dict[str, tuple[str, str]] = {
+    "tinyassets/owner_router.py::_watch_grant": (
+        CALL_SCOPED, "one forwarded outside stream rechecks its grant; ends with the stream",
+    ),
     "tinyassets/providers/subscription_lease.py::save_state": (
         CALL_SCOPED, "at most three custody writeback attempts within one owner-box call",
     ),

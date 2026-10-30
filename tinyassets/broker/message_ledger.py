@@ -293,6 +293,15 @@ class MessageLedger:
                    f"AND agent_id=? AND {_OPEN}", (json.dumps({"reason": reason}), owner,
                                                    agent_id))
 
+    def suppress_client(self, owner: str, client: str, reason: str) -> list[str]:
+        """Suppress the open wakes of every agent of one outside client; their ids."""
+        with self._write(owner) as db:
+            agents = [row[0] for row in db.execute(
+                "SELECT agent_id FROM outside_agents WHERE outside_client=?", (client,))]
+            for agent_id in agents:
+                self._suppress(db, owner, agent_id, reason)
+        return agents
+
     def mailbox_subscriber(self, owner: str, *, origin: dict, command_center_id: str,
                            agent_id: str) -> None:
         """W4: a ``mailbox.message`` subscribe names the caller's own ringing agent."""
@@ -335,12 +344,13 @@ class MessageLedger:
                 break
         return found
 
-    def claim_wake(self, owner: str, wake_id: str, *, op_id: str,
-                   now: float) -> dict | str | None:
+    def claim_wake(self, owner: str, wake_id: str, *, op_id: str, now: float,
+                   live) -> dict | str | None:
         """Before any byte: the claimed agent's IDs and mailbox cursor, or None.
 
-        A wake whose agent is disabled or no longer rings is suppressed here instead,
-        and ``SUPPRESSED`` tells AGENT_WAKE to revoke that agent's callbacks.
+        A wake whose agent is disabled, no longer rings, or whose client's grant no
+        longer stands (``live(owner, client)``, P0-3) is suppressed here instead, and
+        ``SUPPRESSED`` tells AGENT_WAKE to revoke that agent's callbacks.
         """
         with self._write(owner) as db:
             wake = db.execute(f"SELECT * FROM ledger_wakes WHERE wake_id=? AND {_OPEN} AND "
@@ -351,6 +361,9 @@ class MessageLedger:
                                (wake["agent_id"],)).fetchone()
             if agent is None or agent["disabled_reason"] or agent["delivery_method"] not in WAKING:
                 self._suppress(db, owner, wake["agent_id"], "agent")
+                return SUPPRESSED
+            if not live(owner, agent["outside_client"]):
+                self._suppress(db, owner, wake["agent_id"], "grant")
                 return SUPPRESSED
             cursor = db.execute("SELECT through_seq FROM ledger_cursors WHERE reader=?",
                                 (agent["agent_id"],)).fetchone()
@@ -459,7 +472,7 @@ class MessageLedger:
             return {"reader": reader, "through": through}
 
 
-def agent_wake(ledger: MessageLedger, events, ops, wake: Wake, *, now: float) -> str:
+def agent_wake(ledger: MessageLedger, events, ops, wake: Wake, *, now: float, grants) -> str:
     """AGENT_WAKE (W3): one wake through broker egress, under the op journal (``ops.py``).
 
     may-have-sent is durable before the first byte, so a send abandoned past its lease
@@ -479,14 +492,23 @@ def agent_wake(ledger: MessageLedger, events, ops, wake: Wake, *, now: float) ->
     if ops.admit(namespace, op_id, hashlib.sha256(wake.wake_id.encode()).hexdigest()
                  ).kind != "new":
         raise RuntimeError("the op journal refused the wake")
-    target = ledger.claim_wake(wake.owner, wake.wake_id, op_id=op_id, now=now)
+    from tinyassets.broker.policy import outside_admits
+
+    def live(owner, client):
+        try:
+            return grants.outside_live(owner, client)
+        except Exception:  # noqa: BLE001 - no store or an unreadable grant: not live
+            return False
+
+    target = ledger.claim_wake(wake.owner, wake.wake_id, op_id=op_id, now=now, live=live)
     if not isinstance(target, dict):
         ops.finish(namespace, op_id, "refused")
         if target == SUPPRESSED:  # disabled or off mcp_event: no callback may outlive it
             events.revoke_agent(wake.owner, wake.agent_id)
         return SUPPRESSED
     state, detail = events.send_wake(wake.owner, target, wake.wake_id,
-                                     mark=partial(ops.mark_may_have_sent, namespace, op_id))
+                                     mark=partial(ops.mark_may_have_sent, namespace, op_id),
+                                     admits=partial(outside_admits, grants, wake.owner))
     ledger.settle_wake(wake.owner, wake.wake_id, state, now=now,
                        detail={**detail, "through": target["through"]})
     ops.finish(namespace, op_id, {"sent": "completed", "suppressed": "refused"}.get(
