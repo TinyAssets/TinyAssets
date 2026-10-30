@@ -147,9 +147,11 @@ function answerText(chars, salt) {
 
 /**
  * A faux `probe` provider whose every answer is `chars` characters, streamed at
- * `tokensPerSecond` (instant when absent), and the `Models` that serve it.
+ * `tokensPerSecond` (instant when absent), and the `Models` that serve it, for `answers`
+ * answers. Each case shares one across its Sessions, so P4's memory per Session is pi's,
+ * not a provider's.
  */
-function fauxModels(chars, tokensPerSecond) {
+function fauxModels(chars, tokensPerSecond, answers) {
   const faux = fauxProvider({
     provider: MODEL.provider,
     models: [{ id: MODEL.modelId, contextWindow: 4_000_000, maxTokens: 1_000_000 }],
@@ -157,7 +159,7 @@ function fauxModels(chars, tokensPerSecond) {
   });
   let count = 0;
   const respond = () => fauxAssistantMessage(answerText(chars, (count += 1)));
-  faux.setResponses(Array.from({ length: 5000 }, () => respond));
+  faux.setResponses(Array.from({ length: answers + 2 }, () => respond));
   const models = createModels();
   models.setProvider(faux.provider);
   return models;
@@ -647,14 +649,36 @@ export class Owner extends DurableObject {
     return result;
   }
 
+  /**
+   * P1's control: `n` sequential `fetch` calls to the trace page in this one DO RPC. A
+   * fetch is a known subrequest, so on the low copy this stops at its limit only if that
+   * limit applied. Bounded at 30 s, so a slow network cannot hold the door's request.
+   */
+  async p1Control(raw) {
+    const p = params(raw);
+    const result = { case: "P1 control", status: "done", startedAt: Date.now() };
+    const deadline = Date.now() + 30_000;
+    result.burst = await burst("fetch", p.n, async () => {
+      if (Date.now() > deadline) {
+        throw new Error("control stopped: past 30 s");
+      }
+      const response = await fetch("https://www.cloudflare.com/cdn-cgi/trace",
+                                   { signal: AbortSignal.timeout(5000) });
+      await response.arrayBuffer();
+    });
+    result.finishedAt = Date.now();
+    await this.#put("r:result", result, p);
+    return result;
+  }
+
   /** P4's seeding: real pi turns into stores `p4-<from>`..`p4-<to - 1>`, then closed. */
   async p4Seed(raw) {
     const p = params(raw);
     const meter = new Meter();
     const out = [];
+    const models = fauxModels(p.answerBytes, 0, (p.to - p.from) * p.turns);
     for (let i = p.from; i < p.to; i += 1) {
       const at = now();
-      const models = fauxModels(p.answerBytes);
       const thread = await openThread(this.env, `p4-${i}`, meter, models);
       try {
         for (let t = 0; t < p.turns; t += 1) {
@@ -840,10 +864,12 @@ export class Owner extends DurableObject {
     const chars = Math.round(p.answerSeconds * p.tokensPerSecond * 4);
     const threads = [];
     const opening = [];
+    // Twice the answers the run should take, so a faster stream never runs the queue dry.
+    const perThread = 2 * Math.ceil(p.runMs / (p.answerSeconds * 1000)) + 4;
+    const models = fauxModels(chars, p.tokensPerSecond, p.threads * perThread);
     for (let t = 0; t < p.threads; t += 1) {
       try {
-        const thread = await openThread(this.env, `p1run-${p.threads}-${t}`, meter,
-                                        fauxModels(chars, p.tokensPerSecond));
+        const thread = await openThread(this.env, `p1run-${p.threads}-${t}`, meter, models);
         threads.push(thread);
         opening.push(thread.timings);
       } catch (error) {
@@ -856,7 +882,7 @@ export class Owner extends DurableObject {
     result.callsAtStart = meter.total;
     await this.#put("r:result", result, p);
     const deadline = this.#state.startedAt + p.runMs;
-    const perThread = threads.map(() => ({ answers: 0, unanswered: 0, error: null }));
+    const perThreadOut = threads.map(() => ({ answers: 0, unanswered: 0, error: null }));
     const loop = async (thread, out) => {
       while (Date.now() < deadline) {
         try {
@@ -880,14 +906,14 @@ export class Owner extends DurableObject {
           thread.root.abort(BG).catch(() => {});
         }
       }, Math.max(0, deadline - Date.now()));
-      await Promise.all(threads.map((thread, i) => loop(thread, perThread[i])));
+      await Promise.all(threads.map((thread, i) => loop(thread, perThreadOut[i])));
       clearTimeout(stop);
       const elapsedMs = Date.now() - this.#state.startedAt;
       const callsInRun = meter.total;
       await Promise.all(threads.map(closeThread));
       Object.assign(result, {
         status: "done", finishedAt: Date.now(), elapsedMs, callsInRun, calls: meter.summary(),
-        perThread, reports: threads.flatMap((thread) => thread.reports).slice(0, 5),
+        perThread: perThreadOut, reports: threads.flatMap((thread) => thread.reports).slice(0, 5),
         beats: this.#state.beats,
       });
       await this.#put("r:result", result, p);
@@ -930,8 +956,9 @@ export class Owner extends DurableObject {
     const meter = new Meter();
     const fresh = [];
     const storeColos = [];
+    const short = fauxModels(200, 0, s.threads + 2);
     for (let t = 0; t < s.threads; t += 1) {
-      const thread = await openThread(this.env, `p2-new-${t}`, meter, fauxModels(200));
+      const thread = await openThread(this.env, `p2-new-${t}`, meter, short);
       await turn(thread, meter, "Hello.", "first");
       fresh.push({ timings: thread.timings, calls: thread.calls, instance: thread.opened.instance });
       storeColos.push((await thread.store.colo()).colo);
@@ -942,7 +969,7 @@ export class Owner extends DurableObject {
     // The same store again: warm (the live instance), then after `reset()` (a fresh
     // instance over the migrated database), with no first-use migration either time.
     const reopen = async (label) => {
-      const thread = await openThread(this.env, "p2-new-0", meter, fauxModels(200));
+      const thread = await openThread(this.env, "p2-new-0", meter, short);
       await turn(thread, meter, "Again.", "first");
       await closeThread(thread);
       return { label, timings: thread.timings, calls: thread.calls, instance: thread.opened.instance };
@@ -958,9 +985,9 @@ export class Owner extends DurableObject {
     // Commit latency while `streams` threads stream at once (partial commits each second).
     const streamMeter = new Meter();
     const streams = [];
+    const streaming = fauxModels(p.streamSeconds * 20 * 4, 20, s.streams);
     for (let t = 0; t < s.streams; t += 1) {
-      streams.push(await openThread(this.env, `p2-stream-${t}`, streamMeter,
-                                    fauxModels(p.streamSeconds * 20 * 4, 20)));
+      streams.push(await openThread(this.env, `p2-stream-${t}`, streamMeter, streaming));
     }
     await Promise.all(streams.map((thread) => turn(thread, streamMeter, "Stream.")));
     await Promise.all(streams.map(closeThread));
@@ -985,9 +1012,10 @@ export class Owner extends DurableObject {
     const open = [];
     const cold = [];
     const started = now();
+    const models = fauxModels(200, 0, p.max);
     try {
       for (let i = 0; i < p.max; i += 1) {
-        const thread = await openThread(this.env, `p4-${i}`, meter, fauxModels(200));
+        const thread = await openThread(this.env, `p4-${i}`, meter, models);
         open.push(thread);
         await turn(thread, meter, "One more short answer, please.", "turn");
         cold.push(thread.timings);

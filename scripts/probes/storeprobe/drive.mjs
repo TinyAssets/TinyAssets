@@ -8,7 +8,7 @@
  *       --run-id <id> --out results.json --summary summary.md [--run-minutes 10] \
  *       [--p4-max 128] [--raised 1000000] [--deploy deploy.json] [--redact <text>]
  *
- * Order: P3 and P1a (inline); P2 alone (latency, before anything else loads the
+ * Order: P3, the low copy's control and P1a (inline); P2 alone (latency, before anything else loads the
  * isolate); P7, P1b and P1c at once (separate objects); P4 (seeding, then the host,
  * alone, since it fills an isolate); the P1 runs at 1, 8 and 32 threads, one after
  * another. A measured case (P1b, P1c, P1 runs) is never read while it should still be
@@ -52,6 +52,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export function cases(p = LIVE_PARAMS) {
   return {
     P3: ["main", "p3"],
+    "P1 control": ["low", "p1-control"],
     "P1a stub": ["low", "p1a-stub"],
     "P1a session": ["low", "p1a-session"],
     P2: ["main", "p2"],
@@ -74,7 +75,7 @@ export function worstCaseMs(params = {}, timing = {}) {
   const t = { ...LIVE_TIMING, ...timing };
   const r = t.requestMs;
   const batchWait = Math.max(p.idleMs, SHAPE.p1cN * 10 * 1.5, (SHAPE.p1b.windows + 2) * p.windowMs);
-  return t.healthMs + r + 3 * r // health, P3, P1a
+  return t.healthMs + r + 4 * r // health, P3, the control, P1a
     + r + t.p2FirstReadMs + t.p2GraceMs + r // P2
     + 4 * r + batchWait + t.batchSlackMs + t.batchGraceMs + 4 * r // P7, P1b, P1c
     + Math.ceil(p.p4Max / p.p4Batch) * r + r + t.p4GraceMs + p.p4Max * t.p4PerOpenMs + r // P4
@@ -222,10 +223,11 @@ export async function drive({ request, runId, params = {}, timing = {}, log = ()
 
   async function runCases() {
     await attempt("P3", () => call("P3", "p3"));
+    await attempt("P1 control", () => call("P1 control", "p1Control", { n: SHAPE.p1aN }));
     for (const shape of ["stub", "session"]) {
       await attempt(`P1a ${shape}`, () => call(`P1a ${shape}`, "p1Burst", { shape, n: SHAPE.p1aN }));
     }
-    await collect(["P3", "P1a stub", "P1a session"]);
+    await collect(["P3", "P1 control", "P1a stub", "P1a session"]);
     phase("P3 and P1a");
 
     const p2 = { pings: p.pings, streamSeconds: p.streamSeconds };
@@ -377,6 +379,23 @@ function ruleOf(predictions, observed) {
   return hit.length === 1 ? hit[0][0] : hit.length > 1 ? `ambiguous (${hit.map(([rule]) => rule).join(", ")})` : null;
 }
 
+/**
+ * Why P4 stopped. A failure is classified by its error; a reset (the alarm's retry) is
+ * memory or CPU only when analytics counted that error on the P4 owner, else unproven.
+ */
+export function p4Cause(p4, analytics) {
+  if (p4?.status === "failed") {
+    const text = String(p4.error ?? "");
+    return /memory/i.test(text) ? "memory" : /subrequest/i.test(text) ? "subrequests"
+      : /cpu|time limit/i.test(text) ? "CPU" : "other";
+  }
+  if (p4?.status === "reset") {
+    return analytics?.exceededMemoryErrors > 0 ? "memory (analytics: exceededMemoryErrors)"
+      : analytics?.exceededCpuErrors > 0 ? "CPU (analytics: exceededCpuErrors)" : "reset, cause unproven";
+  }
+  return null;
+}
+
 /** Intrusions (reads that reached the object while it ran) before `until` (ms epoch). */
 function intruded(stored, until) {
   return (stored?.intrusions ?? []).filter((at) => until === undefined || at <= until).length;
@@ -415,7 +434,10 @@ export function readings(report) {
       && p3.ownerNameThroughPistore?.ok?.kind === "ThreadStore"
       && p3.ownerNameThroughPistore.ok.id !== p3.ownerId
       && (Boolean(p3.ownerIdThroughPistore?.error) || p3.ownerIdThroughPistore?.ok?.kind === "ThreadStore")
-      && Boolean(p3.ownerMethodThroughPistore?.error) && Boolean(p3.ownerReadThroughPistore?.error)) : null,
+      && Boolean(p3.ownerMethodThroughPistore?.error) && Boolean(p3.ownerReadThroughPistore?.error)
+      // disable_ctx_exports honoured in both classes, and the store sees only PISTORE.
+      && p3.ownerExports === "undefined" && p3.store.ok.exports === "undefined"
+      && JSON.stringify(p3.store.ok.env) === JSON.stringify(["PISTORE"])) : null,
     ctxExports: p3 ? { owner: p3.ownerExports, store: p3.store?.ok?.exports ?? null } : null,
   };
 
@@ -431,13 +453,17 @@ export function readings(report) {
   const p1b = r.P1b?.result;
   if (p1b?.phase1 && p1b?.phase2) {
     const beats = r.P1b?.beats?.list ?? [];
-    const observed = [p1b.phase1.ok, p1b.phase2.ok];
+    const observed = [p1b.phase1.firstErrorAt ?? p1b.phase1.ok, p1b.phase2.ok];
     const predictions = p1bPredictions(report.limits.low, beats);
     const voided = intruded(r.P1b, p1b.finishedAt);
+    // Only a count that a heartbeat resets can fail and then succeed again in phase 1.
+    const recovered = p1b.phase1.okAfterFirstError > 0;
     out.P1b = { observed, predictions, beats: beats.map((beat) => beat.loopCalls),
+                okAfterFirstError: p1b.phase1.okAfterFirstError,
                 rule: voided ? `void (${voided} read(s) while it ran)`
                   : !p1b.waitedForBeat ? "void (no heartbeat before phase 2)"
-                    : ruleOf(predictions, observed) ?? "matches no rule",
+                    : ruleOf(predictions, observed)
+                      ?? (recovered ? "heartbeatResets (phase 1 recovered after a heartbeat)" : "matches no rule"),
                 firstError: p1b.phase1.firstError ?? p1b.phase2.firstError };
   } else {
     out.P1b = p1b ? { status: p1b.status, error: p1b.error ?? null } : null;
@@ -469,6 +495,19 @@ export function readings(report) {
                  firstError: b.firstError, rule };
   }
 
+  // The control: fetches are known subrequests, so they stop at the low limit only if it
+  // applied. Without that, or when main counted store calls, a low-copy "uncounted" is void.
+  const control = r["P1 control"]?.result?.burst;
+  out["P1 control"] = control ? { ok: control.ok, n: control.n, firstError: control.firstError,
+                                  applied: control.ok === report.limits.low && control.errors > 0 } : null;
+  const doubt = !out["P1 control"]?.applied ? `the control did not stop at ${report.limits.low}`
+    : out["P1c main"]?.rule === "counted" ? "P1c main counted store calls" : null;
+  for (const key of ["P1a stub", "P1a session", "P1b"]) {
+    if (doubt && out[key]?.rule === "uncounted") {
+      out[key].rule = `void (uncounted, but ${doubt})`;
+    }
+  }
+
   // P1 runs
   for (const threads of report.params.threadCounts) {
     const key = `P1 run ${threads}`;
@@ -486,7 +525,7 @@ export function readings(report) {
       rule = "void (a read while it ran)";
     } else if (first && SUBREQUESTS.test(first.error)) {
       rule = Math.abs(first.atCall - (C + 1)) <= 2 * threads
-        ? "startEvent: the run was cut at the limit across heartbeats"
+        ? "startEvent or neverReset (P1b separates them): the run was cut at the limit across heartbeats"
         : `a subrequest error at call ${first.atCall}, not at the limit: read the windows`;
     } else if (first) {
       rule = `another error: ${first.error}`;
@@ -538,9 +577,12 @@ export function readings(report) {
   if (p4) {
     out.P4 = {
       status: p4.status, max: p4.max, seeded: report.p4Seeded ?? null,
-      checkpoints: p4.checkpoints ?? [],
+      // pi drops an idle context after contextRetentionMs (10 min by default), so a
+      // checkpoint reached later may hold less than it claims.
+      checkpoints: (p4.checkpoints ?? []).map((point) => ({ ...point, void: point.elapsedMs > 10 * MINUTE })),
       brokeAt: p4.status === "reset" ? (p4.progressAtReset?.opened ?? "unknown")
         : p4.status === "failed" ? (p4.failedAt ?? r.P4?.progress?.opened ?? "unknown") : null,
+      cause: p4Cause(p4, report.analytics?.byObject?.[p4.ownerId]),
       error: p4.error ?? null,
       storeBytes: seeds.length ? Math.round(seeds.reduce((sum, x) => sum + x.bytes, 0) / seeds.length) : null,
       contextChars: seeds.length ? Math.round(seeds.reduce((sum, x) => sum + x.contextChars, 0) / seeds.length) : null,
@@ -589,6 +631,10 @@ export function summarize(report) {
         ownerMethod: report.results.P3.result.ownerMethodThroughPistore,
       }).slice(0, 300) : "");
   row("P3", "ctx.exports (owner, store)", g.P3.ctxExports ? `${g.P3.ctxExports.owner}, ${g.P3.ctxExports.store}` : "not read");
+  const control = g["P1 control"];
+  row("P1a", `control: ${SHAPE.p1aN} fetches in one DO RPC at C ${report.limits.low}`,
+      control ? `${control.ok}/${control.n}: ${control.applied ? "the low limit applies" : "the low limit did not show"}` : "not read",
+      control?.firstError ?? "");
   for (const shape of ["stub", "session"]) {
     const x = g[`P1a ${shape}`];
     row("P1a", `${shape}: ${SHAPE.p1aN} calls in one DO RPC at C ${report.limits.low}`,
@@ -634,10 +680,12 @@ export function summarize(report) {
   if (p4) {
     row("P4", "seeded stores", `${p4.seeded ?? "?"}: mean ${p4.storeBytes} bytes, ${p4.contextChars} context chars`);
     for (const point of p4.checkpoints) {
-      row("P4", `${point.n} Sessions open`, `held, ${point.elapsedMs} ms in`,
+      row("P4", `${point.n} Sessions open`,
+          point.void ? `void: reached ${point.elapsedMs} ms in, past contextRetentionMs` : `held, ${point.elapsedMs} ms in`,
           `cold open ${fmt(point.openMs)}; first turn ${fmt(point.turnMs)}; memory ${JSON.stringify(point.memory)}`);
     }
-    row("P4", "break", p4.brokeAt !== null ? `${p4.status} with ${p4.brokeAt} Sessions open` : `${p4.status}, no reset up to ${p4.max}`, p4.error ?? "");
+    row("P4", "break", p4.brokeAt !== null ? `${p4.status} with ${p4.brokeAt} Sessions open: ${p4.cause}`
+      : `${p4.status}, no reset up to ${p4.max}`, p4.error ?? "");
   } else {
     row("P4", "all", "not read");
   }

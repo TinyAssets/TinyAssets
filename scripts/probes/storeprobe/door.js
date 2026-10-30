@@ -13,7 +13,7 @@
  * id, the object's name and the colo this request entered at (`request.cf.colo`).
  */
 const COPIES = Object.freeze({ main: "OWNER", low: "OWNER_LOW", raised: "OWNER_RAISED" });
-const METHODS = Object.freeze(["read", "p3", "p1Burst", "p4Seed", "arm"]);
+const METHODS = Object.freeze(["read", "p3", "p1Control", "p1Burst", "p4Seed", "arm"]);
 const NAME = /^[\w.-]{1,64}$/;
 
 function json(body, status = 200) {

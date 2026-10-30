@@ -4,13 +4,17 @@
  * Cloudflare's GraphQL Analytics API recorded for each probe object over the run. Optional:
  * it needs Account -> Account Analytics: Read on the token, and a refusal is reported, not
  * fatal. Each dataset is its own query, so a field the API does not know fails only its
- * own reading. Rows are filtered here to the run's own object ids.
+ * own reading. Rows are filtered here to the run's own object ids. It then reads every
+ * probe again with the analytics in hand (P4's reset is memory only when the API counted a
+ * memory error on its owner) and rewrites the summary.
  *
  *   CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... node analytics.mjs \
- *       --results results.json --summary summary.md [--wait-ms 180000]
+ *       --results results.json --summary summary.md [--wait-ms 180000] [--redact <text>]
  */
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+
+import { readings, redact, summarize } from "./drive.mjs";
 
 const ENDPOINT = "https://api.cloudflare.com/client/v4/graphql";
 /** One query per dataset and field set; a refusal of one leaves the others. */
@@ -19,6 +23,7 @@ export const QUERIES = Object.freeze({
   duration: ["durableObjectsPeriodicGroups", "sum { activeTime cpuTime }"],
   subrequests: ["durableObjectsPeriodicGroups", "sum { subrequests }"],
   memory: ["durableObjectsPeriodicGroups", "sum { exceededMemoryErrors }"],
+  cpu: ["durableObjectsPeriodicGroups", "sum { exceededCpuErrors }"],
 });
 
 /** The run's objects, by case: every owner record's `ownerId`, and P7's two stores. */
@@ -49,8 +54,12 @@ function query(dataset, fields) {
 }`;
 }
 
-/** Runs every query for the window and keeps the rows of `ids`. */
-export async function collect({ token, account, start, end, ids, fetcher = fetch }) {
+/**
+ * Runs every query for the window and keeps the rows of `ids`. Error text is redacted of
+ * the account id and each of `needles`, since it lands in the job summary.
+ */
+export async function collect({ token, account, start, end, ids, fetcher = fetch, needles = [] }) {
+  const clean = (text) => redact(String(text), [account, ...needles]).slice(0, 300);
   const byObject = Object.fromEntries(Object.keys(ids).map((id) => [id, { case: ids[id] }]));
   const errors = {};
   for (const [name, [dataset, fields]] of Object.entries(QUERIES)) {
@@ -64,7 +73,7 @@ export async function collect({ token, account, start, end, ids, fetcher = fetch
       });
       const body = await response.json();
       if (!response.ok || body.errors?.length) {
-        errors[name] = `HTTP ${response.status}: ${(body.errors ?? []).map((e) => e.message).join("; ").slice(0, 300)}`;
+        errors[name] = clean(`HTTP ${response.status}: ${(body.errors ?? []).map((e) => e.message).join("; ")}`);
         continue;
       }
       for (const row of body.data?.viewer?.accounts?.[0]?.rows ?? []) {
@@ -76,7 +85,7 @@ export async function collect({ token, account, start, end, ids, fetcher = fetch
         }
       }
     } catch (error) {
-      errors[name] = String(error.message).slice(0, 300);
+      errors[name] = clean(error.message);
     }
   }
   return { start, end, byObject, errors };
@@ -84,7 +93,7 @@ export async function collect({ token, account, start, end, ids, fetcher = fetch
 
 /** The analytics table for the job summary. */
 export function table(analytics) {
-  const fields = ["requests", "activeTime", "cpuTime", "subrequests", "exceededMemoryErrors"];
+  const fields = ["requests", "activeTime", "cpuTime", "subrequests", "exceededMemoryErrors", "exceededCpuErrors"];
   const rows = Object.values(analytics.byObject).map((entry) =>
     `| ${entry.case} | ${fields.map((field) => entry[field] ?? "").join(" | ")} |`);
   return [
@@ -101,18 +110,20 @@ async function main(args) {
   if (!token || !account || !args.results) {
     throw new Error("usage: CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... analytics.mjs --results F [--summary F]");
   }
+  const needles = (args.redact ?? "").split(",").filter(Boolean);
   const report = JSON.parse(readFileSync(args.results, "utf8"));
   // The datasets lag the events by a few minutes.
   await new Promise((resolve) => setTimeout(resolve, Number(args["wait-ms"] ?? 180_000)));
   const minute = (ms) => new Date(Math.floor(ms / 60_000) * 60_000).toISOString();
-  const analytics = await collect({ token, account, ids: objects(report),
+  const analytics = await collect({ token, account, ids: objects(report), needles,
                                     start: minute(report.startedAt ?? Date.now() - 3 * 3_600_000),
                                     end: minute(Date.now()) });
   report.analytics = analytics;
-  writeFileSync(args.results, `${JSON.stringify(report, null, 2)}\n`);
+  report.readings = readings(report);
+  writeFileSync(args.results, `${redact(JSON.stringify(report, null, 2), [account, ...needles])}\n`);
   const text = table(analytics);
   if (args.summary) {
-    appendFileSync(args.summary, `${text}\n`);
+    writeFileSync(args.summary, `${redact(`${summarize(report)}\n${text}`, [account, ...needles])}\n`);
   }
   console.log(text);
 }

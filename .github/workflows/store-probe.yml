@@ -52,8 +52,9 @@ concurrency:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    # Install and harness check ~8, deploy <=15, cases <=150, analytics <=10, cleanup <=5.
-    timeout-minutes: 195
+    # Install <=10, harness <=15, account <=3, deploy <=15, cases <=150, cleanup <=10,
+    # analytics <=10, and the rest.
+    timeout-minutes: 225
     env:
       WRANGLER_SEND_METRICS: 'false'
       WRANGLER: ${{ github.workspace }}/platform/node_modules/.bin/wrangler
@@ -92,13 +93,16 @@ jobs:
       # of its own.
       - name: Install the pinned toolchain
         working-directory: platform
+        timeout-minutes: 10
         run: npm ci --no-audit --no-fund
 
       - name: Harness check in miniflare (proves the harness, not a reading)
+        timeout-minutes: 15
         run: node scripts/probes/storeprobe/local.mjs
 
       - name: Check the account
         id: account
+        timeout-minutes: 3
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID_SECRET: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -224,7 +228,7 @@ jobs:
           echo "deployed=true" >> "${GITHUB_OUTPUT}"
 
       # 150 minutes: drive.mjs's worstCaseMs at the input maxima (14-minute runs, 256
-      # Sessions) is about 140 (every wait at its bound, every request at its 45 s
+      # Sessions) is about 142 (every wait at its bound, every request at its 45 s
       # timeout), and local.mjs fails if it outgrows this. The driver rewrites the
       # results after each phase and prints the whole report to this log, so a step
       # killed here still leaves what it had.
@@ -246,7 +250,33 @@ jobs:
             --raised "$((10#${RAISED_LIMIT}))" --deploy "${RUNNER_TEMP}/storeprobe-deploy.json" \
             --redact "${PROBE_SUBDOMAIN}"
 
-      # Optional (Account Analytics: Read): a refusal is a line in the summary.
+      # Right after the cases, whatever happened: nothing after this needs the Workers
+      # (analytics reads by object id). Its worst case is four deletes and checks at 60 s
+      # each plus a minute of namespace reads.
+      - name: Delete every probe Worker and its namespaces
+        if: always()
+        timeout-minutes: 10
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "The account step never resolved an account, so nothing was deployed."
+            exit 0
+          fi
+          # The door first: it binds the owner copies' classes.
+          # shellcheck disable=SC2086
+          bash scripts/probes/storeprobe/delete.sh ${SCRIPTS}
+          failed=$?
+          if [ "${failed}" = "0" ]; then
+            echo "- **cleanup:** every probe Worker and Durable Object namespace deleted, and checked gone" > "${RUNNER_TEMP}/storeprobe-cleanup.md"
+          else
+            echo "- **cleanup:** FAILED; a probe Worker or namespace is still there (see the step log)" > "${RUNNER_TEMP}/storeprobe-cleanup.md"
+          fi
+          exit "${failed}"
+
+      # Optional (Account Analytics: Read): a refusal is a line in the summary. It reads
+      # every probe again with the analytics (P4's cause) and rewrites the summary.
       - name: Billing-side readings
         if: always() && steps.drive.outcome != 'skipped'
         continue-on-error: true
@@ -256,7 +286,7 @@ jobs:
         run: |
           if [ -f "${RUNNER_TEMP}/storeprobe.json" ]; then
             node scripts/probes/storeprobe/analytics.mjs --results "${RUNNER_TEMP}/storeprobe.json" \
-              --summary "${RUNNER_TEMP}/storeprobe.md"
+              --summary "${RUNNER_TEMP}/storeprobe.md" --redact "${PROBE_SUBDOMAIN:-}"
           fi
 
       - name: Results into the job summary
@@ -269,6 +299,9 @@ jobs:
             echo ""
             echo "- **Workers plan (API):** ${PLAN:-not read}"
             echo "- **sha:** \`${GITHUB_SHA}\`"
+            if [ -f "${RUNNER_TEMP}/storeprobe-cleanup.md" ]; then
+              cat "${RUNNER_TEMP}/storeprobe-cleanup.md"
+            fi
             if [ -f "${RUNNER_TEMP}/storeprobe-deploy.json" ]; then
               echo "- **deploy (P3, and P1's raised limit):** \`$(cat "${RUNNER_TEMP}/storeprobe-deploy.json")\`"
             fi
@@ -286,28 +319,3 @@ jobs:
               echo "No results: the run stopped before the first phase finished."
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
-
-      - name: Delete every probe Worker and its namespaces
-        if: always()
-        timeout-minutes: 5
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          set -uo pipefail
-          if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-            echo "The account step never resolved an account, so nothing was deployed."
-            exit 0
-          fi
-          # The door first: it binds the owner copies' classes.
-          # shellcheck disable=SC2086
-          bash scripts/probes/storeprobe/delete.sh ${SCRIPTS}
-          failed=$?
-          {
-            echo ""
-            if [ "${failed}" = "0" ]; then
-              echo "- **cleanup:** every probe Worker and Durable Object namespace deleted, and checked gone"
-            else
-              echo "- **cleanup:** FAILED; a probe Worker or namespace is still there (see the step log)"
-            fi
-          } >> "${GITHUB_STEP_SUMMARY}"
-          exit "${failed}"

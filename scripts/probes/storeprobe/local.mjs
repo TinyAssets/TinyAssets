@@ -25,7 +25,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { collect, objects, table } from "./analytics.mjs";
 import { BUILD, COPIES, DOOR, LOW_LIMIT, MAIN_LIMIT, PLATFORM, readCommitted, writeConfigs } from "./config.mjs";
 import { discrimination, drive, finished, idealBeats, MAX_P4, MAX_RUN_MINUTES, p1aPredictions,
-         p1bPredictions, raisedReading, readings, summarize, worstCaseMs } from "./drive.mjs";
+         p1bPredictions, p4Cause, raisedReading, readings, summarize, worstCaseMs } from "./drive.mjs";
 import { SHAPE } from "./shape.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -130,10 +130,14 @@ function checkFirstRun(report) {
   expect(show(r.P3?.result?.ownerEnv) === show(["PISTORE"]), `P3: the owner's env: ${show(r.P3?.result?.ownerEnv)}`);
   // workerd enforces no subrequest limit, so every call passes and the key reads "uncounted".
   for (const shape of ["stub", "session"]) {
-    expect(g[`P1a ${shape}`]?.ok === SHAPE.p1aN && /uncounted/.test(g[`P1a ${shape}`]?.rule ?? ""),
+    expect(g[`P1a ${shape}`]?.ok === SHAPE.p1aN
+           && g[`P1a ${shape}`]?.rule === `void (uncounted, but the control did not stop at ${LOW_LIMIT})`,
            `P1a ${shape}: ${show(g[`P1a ${shape}`])}`);
   }
-  expect(g.P1b?.rule === "uncounted" && g.P1b.beats.length >= SHAPE.p1b.windows,
+  expect(g["P1 control"]?.ok === SHAPE.p1aN && g["P1 control"].applied === false,
+         `the control locally: ${show(g["P1 control"])}`);
+  expect(g.P1b?.rule === `void (uncounted, but the control did not stop at ${LOW_LIMIT})`
+         && g.P1b.beats.length >= SHAPE.p1b.windows,
          `P1b: ${show(g.P1b)}`);
   expect(r.P1b?.result?.armPre?.n === SHAPE.p1b.j && r.P1b?.result?.alarmPre?.n === SHAPE.p1b.k,
          `P1b's pre-spends: ${show(r.P1b?.result)}`);
@@ -177,16 +181,22 @@ async function checkAnalytics(report) {
   const fake = async (_url, init) => {
     const { query } = JSON.parse(init.body);
     if (query.includes("exceededMemoryErrors")) {
-      return Response.json({ errors: [{ message: "unknown field" }] });
+      return Response.json({ errors: [{ message: "unknown field for account acct-123" }] });
+    }
+    if (query.includes("exceededCpuErrors")) {
+      return Response.json({ data: { viewer: { accounts: [{ rows: [
+        { dimensions: { objectId: id }, sum: { exceededCpuErrors: 1 } }] }] } } });
     }
     const sum = query.includes("subrequests") ? { subrequests: 7 }
       : query.includes("requests") ? { requests: 3 } : { activeTime: 5, cpuTime: 2 };
     return Response.json({ data: { viewer: { accounts: [{ rows: [
       { dimensions: { objectId: id }, sum }, { dimensions: { objectId: "someone-else" }, sum }] }] } } });
   };
-  const got = await collect({ token: "t", account: "a", start: "s", end: "e", ids, fetcher: fake });
+  const got = await collect({ token: "t", account: "acct-123", start: "s", end: "e", ids, fetcher: fake });
   expect(got.byObject[id]?.requests === 3 && got.byObject[id]?.subrequests === 7 && got.byObject[id]?.activeTime === 5
-         && /unknown field/.test(got.errors.memory ?? "") && !("someone-else" in got.byObject), `analytics: ${show(got)}`);
+         && got.byObject[id]?.exceededCpuErrors === 1
+         && /unknown field/.test(got.errors.memory ?? "") && !/acct-123/.test(got.errors.memory ?? "")
+         && !("someone-else" in got.byObject), `analytics: ${show(got)}`);
   expect(table(got).includes("| object | requests |"), "analytics' table");
 }
 
@@ -206,6 +216,47 @@ function checkConfigs(dir) {
          "the probe binds exactly one namespace, PISTORE, with no script_name");
 }
 
+/** The readings on synthetic records: the control's gate, P1b's late heartbeat, P4's cause. */
+function checkReadings() {
+  const base = (results, extra = {}) => ({ results, limits: { main: MAIN_LIMIT, low: LOW_LIMIT, raised: RAISED },
+                                           params: { threadCounts: [] }, deploy: {}, ...extra });
+  const control = (ok) => ({ result: { burst: { ok, n: SHAPE.p1aN, errors: SHAPE.p1aN - ok } } });
+  const p1b = (phase1, phase2, beats) => ({
+    result: { phase1: { okAfterFirstError: 0, firstErrorAt: null, ...phase1 }, phase2: { ok: phase2 },
+              waitedForBeat: true, finishedAt: 1 },
+    beats: { list: beats.map((loopCalls) => ({ loopCalls })) } });
+  const ontime = [45, 90, 135, 180, 180];
+  const late = [100, 145, 180, 180];
+  const rule = (results) => readings(base(results)).P1b?.rule;
+  expect(rule({ "P1 control": control(LOW_LIMIT), P1b: p1b({ ok: 180 }, 96, ontime) }) === "heartbeatResets",
+         "P1b: heartbeatResets on time");
+  expect(rule({ "P1 control": control(LOW_LIMIT), P1b: p1b({ ok: 96, firstErrorAt: 96 }, 0, ontime) }) === "startEvent",
+         "P1b: startEvent");
+  // A late first heartbeat: phase 1 fails at 96, then recovers once the heartbeat lands.
+  expect(rule({ "P1 control": control(LOW_LIMIT),
+                P1b: p1b({ ok: 176, firstErrorAt: 96, okAfterFirstError: 80 }, 96, late) }) === "heartbeatResets",
+         `P1b with a late heartbeat: ${rule({ "P1 control": control(LOW_LIMIT),
+           P1b: p1b({ ok: 176, firstErrorAt: 96, okAfterFirstError: 80 }, 96, late) })}`);
+  expect(/recovered/.test(rule({ "P1 control": control(LOW_LIMIT),
+                                 P1b: p1b({ ok: 170, firstErrorAt: 93, okAfterFirstError: 77 }, 96, late) }) ?? ""),
+         "P1b: a recovery is heartbeatResets' signature");
+  expect(rule({ "P1 control": control(LOW_LIMIT), P1b: p1b({ ok: 180 }, 150, ontime) }) === "uncounted",
+         "P1b: uncounted stands when the control stopped at the limit");
+  expect(/^void \(uncounted/.test(rule({ "P1 control": control(SHAPE.p1aN), P1b: p1b({ ok: 180 }, 150, ontime) }) ?? ""),
+         "P1b: uncounted is void when the control did not stop");
+  const counted = readings(base({ "P1 control": control(LOW_LIMIT), P1b: p1b({ ok: 180 }, 150, ontime),
+                                  "P1c main": { result: { burst: { ok: MAIN_LIMIT, n: SHAPE.p1cN }, finishedAt: 1 } } }));
+  expect(/^void \(uncounted, but P1c main/.test(counted.P1b?.rule ?? ""), "P1b: uncounted is void when main counted");
+  expect(p4Cause({ status: "failed", error: "Error: Durable Object exceeded its memory limit" }) === "memory"
+         && p4Cause({ status: "failed", error: "Error: Too many subrequests" }) === "subrequests"
+         && p4Cause({ status: "reset" }) === "reset, cause unproven"
+         && p4Cause({ status: "reset" }, { exceededMemoryErrors: 2 }).startsWith("memory")
+         && p4Cause({ status: "reset" }, { exceededCpuErrors: 1 }).startsWith("CPU"), "P4's cause");
+  const p4 = readings(base({ P4: { result: { status: "done", max: 128, ownerId: "x",
+                                             checkpoints: [{ n: 8, elapsedMs: 1000 }, { n: 128, elapsedMs: 11 * 60_000 }] } } }));
+  expect(show(p4.P4.checkpoints.map((point) => point.void)) === show([false, true]), "P4: a checkpoint past 10 min is void");
+}
+
 function checkSecondRun(report, firstRunId) {
   const failed = report.driverErrors["P1a stub"];
   expect(failed?.status === 500 && failed.cfError === "1101", `run 2: P1a stub's failure not recorded: ${show(failed)}`);
@@ -218,6 +269,7 @@ function checkSecondRun(report, firstRunId) {
 
 const dir = mkdtempSync(join(tmpdir(), "storeprobe-local-"));
 checkKey();
+checkReadings();
 let mf;
 try {
   const configs = writeConfigs({ raised: RAISED, outDir: join(dir, "config") });

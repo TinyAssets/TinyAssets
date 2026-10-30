@@ -66,22 +66,24 @@ reaches it while it runs, and the key voids that reading.
 | # | Copy | Where | What |
 |---|---|---|---|
 | P3 | main | the deploy, then one DO RPC | the deploy's outcome. Then, through `PISTORE`: `whoami()` on a store; `idFromString(<the owner's own id>)`; `getByName(<the owner's own name>)`; and the owner-only methods `ownerOnly()` and `read()` on a store stub. Both classes' `ctx.exports` and `env` names |
+| P1 control | low | one DO RPC | 150 sequential `fetch` calls to the trace page. A fetch is a known subrequest, so this shows whether the low copy's 100 applied at all |
 | P1a | low | one DO RPC | 150 × `store.ping()` (stub), or `openSession()` then 150 × `session.ping()` (session) |
 | P1b | low | an arming RPC, a start alarm, heartbeat alarms every 20 s | arm spends j = 8. The start alarm spends k = 4, then starts a loop it does not await. Phase 1: 45 calls per window for 4 windows (180). Phase 2: wait for the next heartbeat, then a burst of 150. Each heartbeat alarm spends h = 4 |
 | P1c | main, raised | one alarm | 10,100 × `store.ping()` in a row |
 | P1 runs | main | a start alarm, then heartbeat alarms every 30 s (PiHarness's wake shape) | 1, 8 or 32 Sessions on fresh stores. Each answers faux inputs one after another until `run_minutes` (default 10) has passed. Each answer streams about 30 s at 20 tokens a second, with partial commits every second. Then every conversation is aborted and closed. Every store call is counted and timed, by method. Each heartbeat records the running total. A Session that fails stops its thread |
 | P2 | main | one alarm, run alone | trace colos of the owner and of each new store, plus the door's `request.cf.colo`. 1,000 pings over a stub and over a session. 8 new threads timed step by step: `storeOpen` (cold start + pi migration + seed), `Harness.open`, `root`, `resume` (synchronous), first admission, settle. Each step's store calls are counted. The same store reopened warm, and after `reset()` (`ctx.abort()`: a fresh instance with no migration). 4 threads streaming 20 s for commit latency |
-| P4 | main | seeding RPCs, then one alarm, run alone | seeding, 8 stores per request: each gets 6 real pi turns of 50 KB answers (about 300 KB of transcript), then closes. The host alarm then opens a Session on each seeded store in turn and keeps every one open, each after one short turn, so pi holds its context (`contextRetentionMs`, 10 min). At 8, 32, 64, 128 (192, 256) it records the count, the cold-open and first-turn latencies and the runtime's memory report. A reset shows as the alarm's retry, which records how many were open and runs nothing again |
+| P4 | main | seeding RPCs, then one alarm, run alone | seeding, 8 stores per request: each gets 6 real pi turns of 50 KB answers (about 300 KB of transcript), then closes. The host alarm then opens a Session on each seeded store in turn and keeps every one open, each after one short turn, so pi holds its context (`contextRetentionMs`, 10 min). At 8, 32, 64, 128 (192, 256) it records the count, the cold-open and first-turn latencies and the runtime's memory report. A reset shows as the alarm's retry, which records how many were open and runs nothing again. One faux provider serves every Session of a case, its queue sized to the answers, so the memory per Session is pi's |
 | P7 | main | one alarm | 200 calls on a per-call stub store and 200 on one `RpcTarget` session. Then 180 s idle, with the session held and the other store unheld. Then each store says whether its instance survived. `analytics.mjs` reads both stores' requests and active time from the GraphQL Analytics API |
 
 Workers clocks advance only across I/O, so a local SQLite commit reads 0 ms. The remote
 commit time is therefore the per-commit overhead. Per-call times are whole milliseconds;
 each ping series also has a batch mean.
 
-**Order.** P3 and P1a run first. P2 runs alone, before anything else loads the isolate.
-P7, P1b and P1c run at once, in separate objects. The driver waits for P1c at P2's measured
+**Order.** P3, the control and P1a run first. P2 runs alone, before anything else loads
+the isolate. P7, P1b and P1c run at once, in separate objects. The driver waits for P1c at P2's measured
 ping pace. P4 runs alone, since it fills an isolate. Then the P1 runs, one after another.
-A default run takes about 50 minutes.
+A default run takes about 50 minutes. The workflow deletes every Worker right after the
+cases, before the optional analytics step, which reads by object id and needs no Worker.
 
 **Local.** `node scripts/probes/storeprobe/local.mjs` needs `npm ci` in `platform/`, and
 the workflow runs it before deploying. It:
@@ -96,8 +98,8 @@ The second run has one case refused with a 1101, and must refuse its first-run r
 stale.
 
 **Live only.** The local results never stand in for these:
-- every P1 reading: workerd enforces no subrequest limit, so locally every call passes and
-  the key reads "uncounted";
+- every P1 reading: workerd enforces no subrequest limit, so locally every call passes, the
+  control does not stop, and every low-copy "uncounted" reads void;
 - P7: nothing is evicted locally, so the reading is inconclusive, and there is no analytics;
 - P4's checkpoints and break: there is no 128 MB isolate, and `process.memoryUsage()`
   reports zeros;
@@ -110,8 +112,8 @@ acceptance of the config.
 ## Reading key
 
 `drive.mjs` holds this key as code (`p1aPredictions`, `p1bPredictions`, `p1cPredictions`,
-`raisedReading` and `readings`). `local.mjs` asserts that P1a and P1b separate every rule
-(`discrimination`).
+`raisedReading`, `p4Cause` and `readings`). `local.mjs` asserts that P1a and P1b separate every rule
+(`discrimination`), and checks the readings on synthetic records.
 
 **P3.**
 - The deploy step records `accepted` or `refused`, with wrangler's error. A refusal
@@ -121,8 +123,14 @@ acceptance of the config.
   - the owner's own name through `PISTORE` reaches a `ThreadStore` with a different id;
   - the owner's own id through `PISTORE` is refused, or reaches a `ThreadStore`;
   - `ownerOnly()` and `read()` on a store stub are refused;
-  - nothing answers as `Owner`.
-- `ctx.exports` should be `undefined` in both classes.
+  - nothing answers as `Owner`;
+  - `ctx.exports` is `undefined` in both classes (`disable_ctx_exports` holds in
+    production);
+  - the store's `env` is exactly `["PISTORE"]`.
+
+**The control** (C = 100). 150 fetches stopping at 100 prove the low copy's limit applied.
+Without that, every low-copy "uncounted" (P1a, P1b) is void. It is void too when P1c main
+reads "counted": store calls cannot count on one copy and not the other.
 
 **P1a** (C = 100).
 - Stub: stopping at 100 means store RPCs count as subrequests. 150 means they do not.
@@ -140,8 +148,12 @@ than voiding the run. With beats on time:
 | [180, 96] | heartbeatResets: each heartbeat alarm takes the count over (newest-or-reset, cap-probe M12). Phase 2 stops at C − h |
 | [180, 150] | uncounted |
 
-The reading is void if a read reached the object while it ran, or if no heartbeat came
-before phase 2.
+Phase 1 is read as the calls before its first error (`firstErrorAt`, or every call when
+none failed), which is what each rule predicts. A late heartbeat stretches a window, so
+under heartbeatResets phase 1 can fail and then succeed again once the heartbeat lands;
+only a count that a heartbeat resets can recover, so `okAfterFirstError > 0` reads as
+heartbeatResets when the beats do not predict the stop exactly. The reading is void if a
+read reached the object while it ran, or if no heartbeat came before phase 2.
 
 **P1c.**
 - Main: 10,000 means the owner's pinned limit bites store RPCs in one alarm. 10,100 means
@@ -151,8 +163,8 @@ before phase 2.
   did not accept the value.
 
 **P1 runs** (C = 10,000).
-- A "Too many subrequests" error within 2 × threads calls of C + 1 means startEvent: the
-  run was cut at the limit across heartbeats.
+- A "Too many subrequests" error within 2 × threads calls of C + 1 means startEvent or
+  neverReset: the run was cut at the limit across heartbeats. P1b separates the two.
 - No error, with more than C calls in the run, means not startEvent. The heartbeats reset
   the count, or calls are uncounted; P1a tells which.
 - No error under C does not discriminate.
@@ -163,18 +175,29 @@ The run also gives the count itself:
 - commit latency under load.
 
 Size `limits.subrequests` from the window maximum under heartbeatResets, or from the run
-total under startEvent.
+total under startEvent. P1 counts store calls only: the gateway's model calls and the
+files Worker's calls charge the same count, so leave headroom for them.
 
 **P2.**
 - The colos: the door's is where the driver's request entered. The owner's and each
   store's come from Cloudflare's trace page, fetched by that object.
-- Pi's migration cost is about `newThread.storeOpen` − `reopenAfterReset.storeOpen`.
+- `newThread.storeOpen` − `reopenAfterReset.storeOpen` bounds pi's migration cost from
+  above: a new store also pays for creating and placing a new object, which a reset
+  instance of an existing one does not.
 
 **P4.**
-- The last checkpoint held is a lower bound on `OPEN_MAX` for 300 KB contexts.
-- `reset` or `failed` with k open is the break.
-- 128 MB ÷ k bounds one Session's memory from above. Workers does not report memory, so
-  the break is the memory reading.
+- The last checkpoint held is a lower bound on `OPEN_MAX` for 300 KB contexts. A
+  checkpoint reached more than 10 minutes in is void: pi drops an idle context after
+  `contextRetentionMs` (10 minutes by default), so it may hold less than it claims.
+- The bound is per isolate, and the isolate also holds the same-script `ThreadStore`
+  objects that serve these Sessions (and any other object of the script placed there), as
+  production's owner isolate would.
+- A `failed` stop is classified by its error: memory, subrequests, CPU or other. A
+  `reset` (the alarm's retry) is memory only when analytics counts
+  `exceededMemoryErrors` on the P4 owner, CPU when it counts `exceededCpuErrors`, and
+  otherwise reads "reset, cause unproven".
+- A memory break with k open bounds one Session's memory from above at 128 MB ÷ k.
+  Workers does not report memory, so the break is the memory reading.
 
 **P7.**
 - The unheld store kept its instance: inconclusive within the idle window.
@@ -202,7 +225,8 @@ workers.dev subdomain. The token needs:
   route, delete, and reading the subdomain and the DO namespace list.
 - Account → Billing: Read (optional): names the plan.
 - Account → Account Analytics: Read (optional): P7's requests and active time per object,
-  and the cross-checks for P1 (`subrequests`) and P4 (`exceededMemoryErrors`).
+  and the cross-checks for P1 (`subrequests`) and P4 (`exceededMemoryErrors`,
+  `exceededCpuErrors`).
 
 Safety, as the cap probe:
 - No route, zone or DNS record.
@@ -213,6 +237,10 @@ Safety, as the cap probe:
   whatever happened. `force=true` deletes their Durable Object namespaces with them. It
   then reads the account's namespace list back until none of the four scripts' namespaces
   is listed, and fails the run if a script or namespace remains.
+- After a run that failed or was cancelled, run it again (its first step deletes all four
+  scripts before deploying) or run `delete.sh` by hand with the same token:
+  `CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... bash scripts/probes/storeprobe/delete.sh
+  ta-storeprobe-door ta-storeprobe ta-storeprobe-low ta-storeprobe-raised`.
 
 The differences from the cap probe:
 - four scripts, not two;
