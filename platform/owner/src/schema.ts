@@ -784,6 +784,11 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "agent_cards WHERE client = NEW.client) + (SELECT COUNT(*) FROM agent_threads " +
       "WHERE client = NEW.client) WHERE client = NEW.client; END",
   ]),
+  // 8: `ta`'s `wake:list` (ta.ts): one authority's scheduled work, newest first
+  // (`Scheduled.of`), the owner's (`client IS NULL`) and each client's, settled rows too.
+  Object.freeze([
+    "CREATE INDEX work_by_creator ON scheduled_work (client, created_at, work_id)",
+  ]),
 ]);
 
 /** Apply every migration past the stored version; return the version now stored. */

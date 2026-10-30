@@ -59,7 +59,13 @@ const THINKING: readonly string[] = Object.freeze(["minimal", "low", "medium", "
 const RETENTION: readonly string[] = Object.freeze(["none", "short", "long"]);
 const OPTIONS: readonly string[] = Object.freeze(["temperature", "maxTokens", "reasoning",
                                                   "cacheRetention", "sessionId", "toolChoice"]);
-const CONTEXT: readonly string[] = Object.freeze(["messages", "systemPrompt", "tools"]);
+/**
+ * The owner sends a transcript's messages alone: what the model is offered (its tools, its
+ * prompt) rides in the messages' system entries, where the owner checked it before the
+ * call was reserved. A `systemPrompt` or `tools` beside them would offer what no check
+ * saw, so either is refused.
+ */
+const CONTEXT: readonly string[] = Object.freeze(["messages"]);
 const SESSION = /^[\x21-\x7e]{1,256}$/;
 
 /** What the guarded fetch saw, read when an error event is classified. */

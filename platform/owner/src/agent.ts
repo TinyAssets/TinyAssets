@@ -20,7 +20,9 @@
  *   extension's, so its block wins; then pi's `CodingTools` with `read` wrapped
  *   `replay: "safe"` (only pure reads are marked safe; `write`, `edit` and `bash` stay
  *   `unsafe`, so a call an eviction cut off comes back `interrupted` and is never run
- *   twice), then the object's packages. The `ta.` names are the object's: a package named
+ *   twice), then `ta` (`ta.ts`, A3), the model's way to every other ability, then the
+ *   object's packages, whose tools the model is never offered: `ta` reaches those
+ *   registered callable by tools. The `ta.` names are the object's: a package named
  *   so is refused, as one pi refuses to install is; each is skipped and kept as an owner
  *   notice, once while it is kept, though pi opens again at every wake: the factory never
  *   throws for owner content, since a failed open fails the Lifecycle's startup and the
@@ -44,8 +46,12 @@
  *   and a client's conversation whose selection drops the gate makes no model call
  *   (`modelAuthority`);
  * - `onReport`: each report becomes an owner notice (`notices.ts`);
- * - `conversationCreated`, the one way an authority is inherited, in every creating
- *   commit: the root conversation is the owner's; a conversation a task creates (a
+ * - `conversationCreated`, in every creating commit, the one place the model's tools are
+ *   fixed and the one way an authority is inherited: every conversation, the root, a fork
+ *   and a subagent's included, offers the model exactly read, write, edit, bash and `ta`
+ *   (pi's `modelTools`, written only here, a guard holds it; nothing the model calls
+ *   returns a `control` that would add one); the root conversation is the owner's; a
+ *   conversation a task creates (a
  *   subagent's) takes its owner conversation's authority, over any copy a fork brought,
  *   which must agree; a fork holds its parent's (`fork: "current"`). Each conversation's
  *   provider session is recorded in `ta.session`, so a model call finds its conversation;
@@ -82,8 +88,8 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { type PiOperationResult, PiHarness } from "agents/harness/pi";
 
 import {
-  agentId, type Authority, AUTHORITY_RULE, authorityOf, type AuthorityState, type Need,
-  NO_CONVERSATION, type Stamped, stamped, stampOf,
+  agentId, type Authority, AUTHORITY_RULE, authorityOf, type AuthorityState, MODEL_TOOLS,
+  type Need, NO_CONVERSATION, offersFive, type Stamped, stamped, stampOf, TA_OP, TOOL_SURFACE,
 } from "./authority";
 import { Invalid, Refused } from "./errors";
 import type { Files } from "./files";
@@ -94,6 +100,7 @@ import type { Notices } from "./notices";
 import { originRoot } from "./origin";
 import { WORKSPACE } from "./paths";
 import { inTime } from "./schedule";
+import { PLATFORM_NAMES, type Platform, reachable, taTool } from "./ta";
 import type { Thread, Threads } from "./threads";
 
 const BG = BACKGROUND_CONTEXT;
@@ -125,6 +132,8 @@ export const WAIT_ENDED = "the wait was ended by a grant or policy change";
 export const RESERVED_PREFIX = "ta.";
 /** The early authority gate's extension name. */
 export const GATE = "ta.authority";
+/** The extension of the `ta` tool (`ta.ts`). */
+export const TA_EXTENSION = "ta.tool";
 
 export type { Stamped };
 
@@ -217,12 +226,66 @@ export interface AgentParts {
   readonly authority: Authority;
   /** The object's threads. */
   readonly threads: Threads;
+  /** What `ta`'s platform capabilities run on. */
+  readonly platform: Platform;
 }
 
 /** Besides the object's parts: the model catalog, and the packages after the object's own. */
 export interface AgentSource {
   readonly models: () => Models;
   readonly packages: readonly Extension[];
+  /**
+   * Further extensions of the object's own, installed before the packages and without
+   * their rules: none in production (`gatewayAgent`); a test's probes.
+   */
+  readonly trusted?: readonly Extension[];
+}
+
+/**
+ * A package as it is checked and installed: each field read once, its lists copied and its
+ * tools and wraps copied whole, all frozen.
+ */
+export function frozenPackage(extension: Extension): Extension {
+  const { name, tools, sections, hooks, wraps, tasks } = { ...extension };
+  return Object.freeze(defineExtension({
+    name,
+    ...(tools === undefined ? {} : { tools: Object.freeze(tools.map((tool) =>
+      Object.freeze({ ...tool }))) }),
+    ...(sections === undefined ? {} : { sections: Object.freeze([...sections]) }),
+    ...(hooks === undefined ? {} : { hooks: Object.freeze([...hooks]) }),
+    ...(wraps === undefined ? {} : { wraps: Object.freeze(wraps.map((wrap) =>
+      Object.freeze({ ...wrap }))) }),
+    ...(tasks === undefined ? {} : { tasks: Object.freeze([...tasks]) }),
+  }));
+}
+
+/**
+ * Why a package may not be installed, or undefined: a `ta.` name is the object's; a tool
+ * it provides or wraps may not take a model tool's name, a platform capability's or a `ta:`
+ * name (it would shadow it); and each tool it provides must be callable by tools, since
+ * the model is offered only the five and `ta` is the one way to the rest (one that is not
+ * would sit installed and never run).
+ */
+export function packageRefusal(extension: Extension): string | undefined {
+  if (String(extension.name).startsWith(RESERVED_PREFIX)) {
+    return `the ${RESERVED_PREFIX} names are the object's own`;
+  }
+  const taken = (name: string) => MODEL_TOOLS.includes(name) || PLATFORM_NAMES.includes(name)
+    || name.startsWith(TA_OP);
+  for (const tool of extension.tools ?? []) {
+    if (taken(tool.name)) {
+      return `a package tool may not take the name ${tool.name}`;
+    }
+    if (!reachable(tool)) {
+      return `the tool ${tool.name} is not callable by tools, so nothing could call it`;
+    }
+  }
+  for (const wrap of extension.wraps ?? []) {
+    if ("tool" in wrap && taken(wrap.tool)) {
+      return `a package may not wrap ${wrap.tool}`;
+    }
+  }
+  return undefined;
 }
 
 type Pi = Awaited<ReturnType<PiHarness["pi"]>>;
@@ -244,6 +307,14 @@ export function keepsGate(selection: AgentState["extensions"]): boolean {
   }
   return Array.isArray(selection) ? selection.includes(GATE)
     : !(selection.remove ?? []).includes(GATE);
+}
+
+/**
+ * Whether a conversation's stored model tools (pi's `AgentDoc`) are exactly the five the
+ * object fixes in every creating commit: anything else was widened past it.
+ */
+export function keepsFive(tools: AgentState["modelTools"]): boolean {
+  return Array.isArray(tools) && tools.length === MODEL_TOOLS.length && offersFive(tools);
 }
 
 /** An authority as plain JSON: a copy of a document's draft, which is no plain object. */
@@ -315,16 +386,33 @@ export class OwnerAgent {
       name: "ta.replay",
       wraps: [wrapTool(read, (tool) => ({ ...tool, replay: "safe" }))],
     }));
+    this.#registry.install(defineExtension({
+      name: TA_EXTENSION,
+      tools: [taTool({
+        authority: this.#parts.authority, platform: this.#parts.platform,
+        write: this.#parts.write,
+        state: (api, context) => api.snapshot(this.authority, api.conversationId, context),
+      })],
+    }));
+    for (const extension of this.#source.trusted ?? []) {
+      this.#registry.install(extension);
+    }
     for (const extension of this.#source.packages) {
+      let name = "?";
       try {
-        if (String(extension.name).startsWith(RESERVED_PREFIX)) {
-          throw new Error(`the ${RESERVED_PREFIX} names are the object's own`);
+        // What is checked is what is installed: a frozen copy, so no getter or later change
+        // of the package can bring in a tool the check never saw.
+        const snapshot = frozenPackage(extension);
+        name = String(snapshot.name);
+        const refused = packageRefusal(snapshot);
+        if (refused !== undefined) {
+          throw new Error(refused);
         }
-        this.#registry.install(extension);
+        this.#registry.install(snapshot);
       } catch (error) {
         const why = error instanceof Error ? error.message : String(error);
         await this.#parts.write(() => this.#parts.notices.once(
-          "extension_skipped", `${String(extension.name)}: ${why}`, Date.now() / 1000));
+          "extension_skipped", `${name}: ${why}`, Date.now() / 1000));
       }
     }
   }
@@ -344,11 +432,13 @@ export class OwnerAgent {
   }
 
   /**
-   * In every creating commit: the root is the owner's; a task's new conversation takes its
-   * owner conversation's authority, which a fork's copy must agree with; and each
-   * conversation's provider session is recorded.
+   * In every creating commit: the model is offered exactly `MODEL_TOOLS`, over whatever
+   * pi copied from an owner conversation or a fork's entry; the root is the owner's; a
+   * task's new conversation takes its owner conversation's authority, which a fork's copy
+   * must agree with; and each conversation's provider session is recorded.
    */
   async #inherit(tx: Tx, record: ConversationRecord): Promise<void> {
+    (await tx.doc(AgentDoc, record.id)).modelTools = [...MODEL_TOOLS];
     const mine = await tx.doc(this.authority, record.id);
     if (record.id === ROOT_CONVERSATION_ID) {
       Object.assign(mine, { by: "owner" });
@@ -404,7 +494,9 @@ export class OwnerAgent {
    * request that names no conversation the object made is refused (`NO_CONVERSATION`),
    * and a client's or no one's conversation whose stored selection (pi's `AgentDoc`, read
    * only here) drops the gate is refused `AUTHORITY_RULE`, whatever its grant: with its
-   * tools held by its environment, such a conversation does nothing.
+   * tools held by its environment, such a conversation does nothing. Any conversation
+   * whose stored model tools are not exactly `MODEL_TOOLS` (a hook's result `control`
+   * can add one) is refused `TOOL_SURFACE`, the owner's included.
    */
   async modelAuthority(sessionId: string | undefined): Promise<() => string | null> {
     if (sessionId === undefined) {
@@ -417,11 +509,16 @@ export class OwnerAgent {
     }
     const conversation = at.conversation as ConversationId;
     const state = await pi.snapshot(this.authority, conversation, BG);
+    const agent = await pi.snapshot(AgentDoc, conversation, BG);
     // The backstop: a client's or no one's conversation whose selection drops the gate
     // spends nothing; the environment already holds its tools.
-    if (state?.by !== "owner" && !keepsGate((await pi.snapshot(AgentDoc, conversation, BG))
-      ?.extensions)) {
+    if (state?.by !== "owner" && !keepsGate(agent?.extensions)) {
       return () => AUTHORITY_RULE;
+    }
+    // Any conversation's, the owner's too, whose stored model tools were widened past the
+    // five spends nothing either (the provider also refuses a widened request itself).
+    if (!keepsFive(agent?.modelTools)) {
+      return () => TOOL_SURFACE;
     }
     return () => this.#parts.authority.modelRule(state);
   }
@@ -555,12 +652,18 @@ export class OwnerAgent {
   }
 }
 
-/**
- * The production agent: pi on the object's `gateway` provider, the one model source, with
- * no packages beyond the object's own (`packages` are a test's).
- */
-export function gatewayAgent(parts: AgentParts, packages: readonly Extension[] = []): OwnerAgent {
+/** The object's model catalog: its one model source, the `gateway` provider. */
+export function gatewayModels(parts: AgentParts): () => Models {
   const models = createModels();
   models.setProvider(parts.provider);
-  return new OwnerAgent(parts, { models: () => models, packages });
+  return () => models;
+}
+
+/**
+ * The production agent: pi on the object's `gateway` provider, the one model source, with
+ * no packages beyond the object's own (`packages` are a test's) and no trusted extension
+ * (the ta guard holds `trusted` to `AgentSource` and `#install`).
+ */
+export function gatewayAgent(parts: AgentParts, packages: readonly Extension[] = []): OwnerAgent {
+  return new OwnerAgent(parts, { models: gatewayModels(parts), packages });
 }

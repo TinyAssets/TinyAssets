@@ -35,8 +35,8 @@
  *
  * The owner-wide bounds read counters the schema's triggers keep
  * (`policy_usage.open_work`, `settled_work`); a client's share is counted on its own
- * index, at most `perClient` rows. Every query has an index. Settled rows are kept
- * `settledRetentionS`, at most `maxSettled`.
+ * index, at most `perClient` rows. Every query has an index (`of`, `ta`'s `wake:list`,
+ * migration 8's). Settled rows are kept `settledRetentionS`, at most `maxSettled`.
  */
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage, Write } from "./gate";
@@ -114,6 +114,18 @@ export interface WorkAnswer {
  */
 export interface WorkRunner {
   handOff(target: WorkTarget, mark: () => Promise<void>): Promise<WorkAnswer>;
+}
+
+/** A row as `ta`'s `wake:list` shows it: what the work is and how it stands. */
+export interface WorkView {
+  readonly work_id: string;
+  readonly kind: string;
+  readonly due: number;
+  readonly state: string;
+  readonly payload: unknown;
+  readonly created_at: number;
+  readonly settled_at: number | null;
+  readonly outcome: unknown;
 }
 
 export type WorkClaim =
@@ -270,6 +282,22 @@ export class Scheduled {
   list(): (Omit<Row, "payload"> & { payload: unknown })[] {
     return this.#sql.exec<Row>("SELECT * FROM scheduled_work ORDER BY created_at, work_id")
       .toArray().map((row) => ({ ...row, payload: JSON.parse(row.payload) as unknown }));
+  }
+
+  /**
+   * The newest `limit` rows of work made under `client`'s authority (null: the owner's
+   * own), newest first, as `ta`'s `wake:list` shows them: what each is and how it stands,
+   * never its claim.
+   */
+  of(client: string | null, limit: number): WorkView[] {
+    return this.#sql.exec<Row>(
+      "SELECT * FROM scheduled_work WHERE client IS ? ORDER BY created_at DESC, work_id DESC " +
+        "LIMIT ?", client, limit).toArray().map((row) => ({
+      work_id: row.work_id, kind: row.kind, due: row.due, state: row.state,
+      payload: JSON.parse(row.payload) as unknown, created_at: row.created_at,
+      settled_at: row.settled_at,
+      outcome: row.outcome === null ? null : JSON.parse(row.outcome) as unknown,
+    }));
   }
 
   /** Pending work that is due, oldest first: what the claim pass takes. */

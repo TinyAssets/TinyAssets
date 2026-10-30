@@ -397,8 +397,8 @@ describe("background work a run starts", () => {
     const out = await r.in(async (instance) => {
       let release!: () => void;
       instance.probes.backgroundGate = new Promise<void>((resolve) => { release = resolve; });
-      // The run calls the `background` tool, then answers: two requests.
-      const first = await instance.agent.harness.prompt("cmd:call-background");
+      // The run calls the `background` tool through `ta`, then answers: two requests.
+      const first = await instance.agent.harness.prompt("cmd:ta-background");
       const later = await instance.agent.harness.prompt("cmd:echo");
       // Its work, two requests more, starts only now: during no run.
       release();

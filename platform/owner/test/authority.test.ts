@@ -14,13 +14,14 @@ import {
   type AssistantMessage, fauxAssistantMessage, type FauxContentBlock, fauxToolCall,
   type Message,
 } from "@earendil-works/pi-ai";
-import { type ConversationId, ProviderDoc } from "@earendil-works/pi-durable";
+import { type ConversationId, type JsonObject, ProviderDoc } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
 import { GATE, keepsGate, STATUS_WAIT_MS, WAIT_ENDED } from "../src/agent";
 import {
   Authority, AUTHORITY_CHANGED, AUTHORITY_RULE, capabilityOf, type Need, NO_AUTHORITY,
-  NO_CONVERSATION, NO_SHELL, NOT_GRANTED, type Stamped, stamped, TA_CAPABILITIES,
+  NO_CONVERSATION, NO_SHELL, NOT_GRANTED, OWNER_ONLY, type Stamped, stamped,
+  TA_CAPABILITIES,
 } from "../src/authority";
 import { WriteGate } from "../src/gate";
 import { Grants } from "../src/grants";
@@ -46,12 +47,28 @@ function calls(...blocks: FauxContentBlock[]): AssistantMessage {
   return fauxAssistantMessage(blocks, { stopReason: "toolUse" });
 }
 
-/** The tool results the model was shown, by tool name: their text, and whether in error. */
+/** A model's call of a test tool, which it reaches through `ta`. */
+function viaTa(name: string, args: JsonObject): FauxContentBlock {
+  return fauxToolCall("ta", { op: "call", name, arguments: args });
+}
+
+/**
+ * The tool results the model was shown, by tool name (a `ta` call's by the name it
+ * called): their text, and whether in error.
+ */
 function results(messages: readonly Message[]): Record<string, { text: string; error: boolean }> {
   const out: Record<string, { text: string; error: boolean }> = {};
+  const called = new Map<string, string>();
   for (const message of messages) {
+    if (message.role === "assistant") {
+      for (const part of message.content) {
+        if (part.type === "toolCall" && part.name === "ta" && part.arguments["op"] === "call") {
+          called.set(part.id, String(part.arguments["name"]));
+        }
+      }
+    }
     if (message.role === "toolResult") {
-      out[message.toolName] = {
+      out[called.get(message.toolCallId) ?? message.toolName] = {
         text: message.content.map((part) => (part.type === "text" ? part.text : "")).join(""),
         error: message.isError,
       };
@@ -78,19 +95,19 @@ const EDIT = fauxToolCall("edit", { path: "notes.md",
                                     edits: [{ oldText: "milk", newText: "cream" }] });
 /** What each ask calls, the first that matches. */
 const ASKS: readonly [string, FauxContentBlock[]][] = [
-  ["hold please", [fauxToolCall("hold", {})]],
+  ["hold please", [viaTa("hold", {})]],
   ["go scoped", [fauxToolCall("read", { path: "notes.md" }), EDIT,
                  fauxToolCall("write", { path: "out.md", content: "x" }),
-                 fauxToolCall("bash", { command: "ls" }), fauxToolCall("pass", {})]],
+                 fauxToolCall("bash", { command: "ls" }), viaTa("pass", {})]],
   ["write it", [fauxToolCall("write", { path: "mine.md", content: "x" }), EDIT]],
   ["write again", [fauxToolCall("write", { path: "again.md", content: "x" })]],
   ["write raced", [fauxToolCall("write", { path: "raced.md", content: "x" })]],
-  ["spawn hold", [fauxToolCall("spawn", { work: "hold please" })]],
-  ["spawn one", [fauxToolCall("spawn", {})]],
-  ["nest read", [fauxToolCall("nest", { name: "read", arguments: { path: "notes.md" } })]],
-  ["nest write", [fauxToolCall("nest", { name: "write",
+  ["spawn hold", [viaTa("spawn", { work: "hold please" })]],
+  ["spawn one", [viaTa("spawn", {})]],
+  ["nest read", [viaTa("nest", { name: "read", arguments: { path: "notes.md" } })]],
+  ["nest write", [viaTa("nest", { name: "write",
                                          arguments: { path: "nested.md", content: "x" } })]],
-  ["start background", [fauxToolCall("background", { work: "background" })]],
+  ["start background", [viaTa("background", { work: "background" })]],
   ["read it", [fauxToolCall("read", { path: "notes.md" })]],
   ["shell it", [fauxToolCall("bash", { command: "ls" })]],
 ];
@@ -162,19 +179,29 @@ const shown = (answer: { text?: string }) =>
 
 describe("the authority gate's capability map", () => {
   it("names read_files for read, write_files for write, both for edit, none to grant for " +
-     "the shell, and no capability for anything else, ta's until A3 fills its map", () => {
+     "the shell, ta's by its own map, and no capability for anything else", () => {
     const of = (name: string, args: unknown = {}) => capabilityOf({ name, arguments: args });
     expect([of("read"), of("write"), of("edit"), of("bash")])
       .toEqual([["read_files"], ["write_files"], ["read_files", "write_files"], null]);
-    expect([of("hold"), of("toString"), of("__proto__"), of("ta", { op: "catalog" }),
-            of("ta", { op: "call", name: "policy:show" }), of("ta", null)])
+    expect([of("hold"), of("toString"), of("__proto__"), of("ta", { op: "call", name: "hold" }),
+            of("ta", { op: "call", name: "toString" }), of("ta", null)])
       .toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
+    expect([of("ta", { op: "catalog" }), of("ta", { op: "call", name: "policy:show" })])
+      .toEqual([[], OWNER_ONLY]);
+  });
+
+  it("holds each ta capability to what its door holds: the owner's policy the owner's, a " +
+     "proposal to propose_policy, file usage to read_files, the rest to a standing grant",
+     () => {
+    expect(TA_CAPABILITIES).toEqual({
+      "ta:catalog": [], "policy:show": OWNER_ONLY, "policy:propose": ["propose_policy"],
+      "wake:list": [], "files:usage": ["read_files"], "model": [],
+    });
   });
 
   it("reads ta's map by the op or the capability called, the ta: names the ops' alone",
      () => {
-    expect(TA_CAPABILITIES).toEqual({});
-    // A map as A3 fills it: the catalog's need, and a capability's by the name it calls.
+    // A map as a test fills it: the catalog's need, and a capability's by the name it calls.
     const filled: Record<string, Need> = { "ta:catalog": ["read_files"],
                                            "files:usage": ["read_files", "write_files"] };
     const of = (args: unknown) => capabilityOf({ name: "ta", arguments: args }, filled);
@@ -225,7 +252,7 @@ describe("a scoped client's conversation", () => {
       .toEqual(Array.from({ length: 4 }, () => ["refusal", "deny", "refused"]));
     // Each receipt is of the client's call: its digest names the client, the tool, the reason.
     const requests = [["write", NOT_GRANTED], ["edit", NOT_GRANTED], ["bash", NO_SHELL],
-                      ["pass", NOT_GRANTED]].map(([tool, reason]) => policyDigest({
+                      ["ta", NOT_GRANTED]].map(([tool, reason]) => policyDigest({
       action: "tool_call", request: { client: MUSE.client, tool, reason } }));
     expect((await refusals()).map((receipt) => receipt.request_digest).sort())
       .toEqual(requests.sort());
@@ -330,8 +357,9 @@ describe("a full client's conversation", () => {
     expect(JSON.parse(out.write.text))
       .toEqual({ error: true, said: blockedSaid(AUTHORITY_CHANGED), out: null });
     // The authority gate let the nested read through, as a nested call, and not the write.
-    expect(out.gated).toEqual([{ name: "nest", nested: false }, { name: "read", nested: true },
-                               { name: "nest", nested: false }]);
+    expect(out.gated).toEqual([{ name: "ta", nested: false }, { name: "nest", nested: true },
+                               { name: "read", nested: true }, { name: "ta", nested: false },
+                               { name: "nest", nested: true }]);
     expect((await r.stub.fileStat(r.bind(null), { path: "/workspace/nested.md" })).entry)
       .toBeNull();
   });
@@ -819,7 +847,7 @@ describe("the authority's enforcement (review M1)", () => {
       const at = (await ownConversation.context(BG)).entries.at(-1)!.id;
       const theirs = await threadFor(instance, r.stampOf(MUSE, 1));
       // A client's tool forks the owner's thread, as a conversation its call owns.
-      instance.script = [calls(fauxToolCall("fork", { from: own.thread.conversation_id, at })),
+      instance.script = [calls(viaTa("fork", { from: own.thread.conversation_id, at })),
                          (messages: Message[]) => says(JSON.stringify(results(messages)))];
       return shown(await instance.agent.harness.prompt("fork it", { session: theirs.session }));
     });

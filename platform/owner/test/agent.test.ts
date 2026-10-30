@@ -12,7 +12,7 @@ import {
   type AssistantMessage, fauxAssistantMessage, type FauxContentBlock, fauxToolCall,
   type Message,
 } from "@earendil-works/pi-ai";
-import type { ConversationId } from "@earendil-works/pi-durable";
+import type { ConversationId, JsonObject } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
 import { AGENT_SETTINGS, AUTO, writerOf } from "../src/agent";
@@ -47,12 +47,28 @@ function calls(...blocks: FauxContentBlock[]): AssistantMessage {
   return fauxAssistantMessage(blocks, { stopReason: "toolUse" });
 }
 
-/** The tool results the model was shown, by tool name: their text, and whether in error. */
+/** A model's call of a test tool, which it reaches through `ta`. */
+function viaTa(name: string, args: JsonObject): FauxContentBlock {
+  return fauxToolCall("ta", { op: "call", name, arguments: args });
+}
+
+/**
+ * The tool results the model was shown, by tool name (a `ta` call's by the name it
+ * called): their text, and whether in error.
+ */
 function results(messages: readonly Message[]): Record<string, { text: string; error: boolean }> {
   const out: Record<string, { text: string; error: boolean }> = {};
+  const called = new Map<string, string>();
   for (const message of messages) {
+    if (message.role === "assistant") {
+      for (const part of message.content) {
+        if (part.type === "toolCall" && part.name === "ta" && part.arguments["op"] === "call") {
+          called.set(part.id, String(part.arguments["name"]));
+        }
+      }
+    }
     if (message.role === "toolResult") {
-      out[message.toolName] = {
+      out[called.get(message.toolCallId) ?? message.toolName] = {
         text: message.content.map((part) => (part.type === "text" ? part.text : "")).join(""),
         error: message.isError,
       };
@@ -135,11 +151,11 @@ describe("a turn in the owner's object", () => {
       const stamped = { id: (await instance.agent.thread("main", stamp)).conversation_id };
       const spawned = (messages: Message[]) => says(results(messages)["spawn"]!.text);
       instance.script = [calls(fauxToolCall("write", { path: "theirs.md", content: "x" }),
-                               fauxToolCall("spawn", {})), spawned];
+                               viaTa("spawn", {})), spawned];
       const theirs = await instance.agent.harness.prompt("write it",
                                                          { session: String(stamped.id) });
       // The same tool in the owner's own conversation: no stamp to keep.
-      instance.script = [calls(fauxToolCall("spawn", {})), spawned];
+      instance.script = [calls(viaTa("spawn", {})), spawned];
       const own = await instance.agent.harness.prompt("spawn one");
       return {
         theirs, own,
@@ -180,7 +196,7 @@ describe("a turn in the owner's object", () => {
     const r = agentObject();
     await r.stub.fileWrite(r.as(), { path: "/workspace/a.md", expected_etag: null,
                                      content: text("alpha") });
-    const script = [calls(fauxToolCall("read", { path: "a.md" }), fauxToolCall("hold", {})),
+    const script = [calls(fauxToolCall("read", { path: "a.md" }), viaTa("hold", {})),
                     says("done")];
     const operation = await r.in(async (instance, state) => {
       storeScript(state, script);
@@ -246,16 +262,15 @@ function tree(messages: Message[]): AssistantMessage {
   return compacting(messages) ? says("## Goal\nsummary")
     : messages.at(-1)?.role === "toolResult" ? says("done")
       : asked("grandchild work") || asked("background work") ? says("answered")
-        : asked("child hold") || asked("hold please") ? calls(fauxToolCall("hold", {}))
-          : asked("child work") ? calls(fauxToolCall("spawn", { work: "grandchild work" }))
+        : asked("child hold") || asked("hold please") ? calls(viaTa("hold", {}))
+          : asked("child work") ? calls(viaTa("spawn", { work: "grandchild work" }))
             : asked("spawn and hold")
-              ? calls(fauxToolCall("spawn", { work: "child work" }), fauxToolCall("hold", {}))
-              : asked("spawn one") ? calls(fauxToolCall("spawn", { work: "child hold" }))
-                : asked("start nested") ? calls(fauxToolCall("background",
-                                                            { work: "background work",
-                                                              nested: true }))
+              ? calls(viaTa("spawn", { work: "child work" }), viaTa("hold", {}))
+              : asked("spawn one") ? calls(viaTa("spawn", { work: "child hold" }))
+                : asked("start nested") ? calls(viaTa("background", { work: "background work",
+                                                                     nested: true }))
                   : asked("start background")
-                    ? calls(fauxToolCall("background", { work: "background work" }))
+                    ? calls(viaTa("background", { work: "background work" }))
                     : says("noted");
 }
 
@@ -277,7 +292,7 @@ describe("a model request's turn", () => {
     const r = agentObject();
     const out = await r.in(async (instance) => {
       instance.script = Array.from({ length: 8 }, () => (messages: Message[]) =>
-        messages.at(-1)?.role === "toolResult" ? says("done") : calls(fauxToolCall("hold", {})));
+        messages.at(-1)?.role === "toolResult" ? says("done") : calls(viaTa("hold", {})));
       const first = await instance.agent.harness.prompt("one");
       const second = await instance.agent.harness.prompt("two");
       return { first, second, turns: turnsOf(instance) };
@@ -298,7 +313,7 @@ describe("a model request's turn", () => {
       instance.script = Array.from({ length: 8 }, () => (messages: Message[]) =>
         messages.at(-1)?.role === "toolResult" ? says("done")
           : JSON.stringify(messages.at(-1)).includes("steer") ? says("steered")
-            : calls(fauxToolCall("hold", {})));
+            : calls(viaTa("hold", {})));
       const { operationId } = await instance.agent.harness.submit("work");
       await until(async () => instance.probes.holds === 1, "the hold to start");
       // Joins the running work after the tool round.
@@ -340,7 +355,7 @@ describe("a model request's turn", () => {
       instance.script = Array.from({ length: 12 }, () => (messages: Message[]) =>
         compacting(messages) ? says("## Goal\nkeep going")
           : messages.at(-1)?.role === "toolResult" ? says("done")
-            : JSON.stringify(messages.at(-1)).includes("work") ? calls(fauxToolCall("hold", {}))
+            : JSON.stringify(messages.at(-1)).includes("work") ? calls(viaTa("hold", {}))
               : says("noted"));
       expect((await instance.agent.harness.prompt("early")).status).toBe("done");
       const held = gate();
@@ -506,16 +521,20 @@ describe("a package pi refuses to install", () => {
         intents: state.storage.sql.exec("SELECT * FROM file_intents").toArray(),
         wakes: state.storage.sql.exec("SELECT state FROM ledger_wakes WHERE kind = 'wake'")
           .toArray(),
-        tools: (await root.agent(BG)).tools.map((tool) => tool.name).sort(),
+        tools: (await root.agent(BG)).callable.map((tool) => tool.name).sort(),
+        offered: (await root.agent(BG)).tools.map((tool) => tool.name),
         gate: (await root.agent(BG)).extensions.filter((extension) =>
           extension.name === "ta.authority").map((extension) => extension.hooks?.length ?? 0),
       };
     });
     expect(rows.intents).toEqual([]);  // the files lane expired the upload
     expect(rows.wakes).toEqual([{ state: "pending" }]);  // the wakes lane recovered it
-    // pi opened without the package, and with every other extension.
-    expect(rows.tools).toEqual(["background", "bash", "edit", "fork", "hold", "nest", "pass",
-                               "read", "spawn", "write"]);
+    // pi opened without the package, and with every other extension; the model is offered
+    // the five tools alone.
+    expect(rows.tools).toEqual(["background", "bash", "benign", "edit", "files:usage", "fork",
+                               "hold", "nest", "pass", "read", "sixth", "spawn",
+                               "weather_lookup", "widen", "write"]);
+    expect(rows.offered).toEqual(["read", "write", "edit", "bash", "ta"]);
     // A package named as the object's gate is refused, and the gate stays the object's.
     expect(rows.gate).toEqual([1]);
     const notices = (await stub.noticeList(as())).notices;
@@ -524,6 +543,12 @@ describe("a package pi refuses to install", () => {
     expect(notices.filter((notice) => notice.type === "extension_skipped")
       .map((notice) => notice.detail).sort()).toEqual([
       expect.stringMatching(/^pkg:broken: Extension pkg:broken has two tools named twice/),
+      "pkg:lonely: the tool lonely is not callable by tools, so nothing could call it",
+      "pkg:op: a package tool may not take the name ta:catalog",
+      "pkg:policy: a package tool may not take the name policy:show",
+      "pkg:read: a package tool may not take the name read",
+      "pkg:ta: a package tool may not take the name ta",
+      "pkg:wrap: a package may not wrap bash",
       "ta.authority: the ta. names are the object's own"]);
     // pi opens again in every new instance (and after any pi failure): the package is
     // refused each time, and noticed once while that notice is kept.
@@ -537,7 +562,7 @@ describe("a package pi refuses to install", () => {
       });
     }
     const kept = (await env.MALFORMED.getByName(name).noticeList(as())).notices;
-    expect(kept.filter((notice) => notice.type === "extension_skipped")).toHaveLength(2);
+    expect(kept.filter((notice) => notice.type === "extension_skipped")).toHaveLength(8);
   });
 });
 
@@ -646,7 +671,7 @@ describe("pi's settings and the owner's notices", () => {
       // fails: no script holds one.
       let release!: () => void;
       instance.probes.holdGate = new Promise((resolve) => { release = resolve; });
-      instance.script = [calls(fauxToolCall("hold", {}))];
+      instance.script = [calls(viaTa("hold", {}))];
       const first = await instance.agent.harness.submit("one");
       await until(async () => instance.probes.holds === 1, "the hold to start");
       const second = await instance.agent.harness.submit("two");

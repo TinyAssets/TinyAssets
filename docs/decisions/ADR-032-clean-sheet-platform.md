@@ -100,8 +100,13 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
      interrupted and is never rerun; only pure reads are marked safe;
    - its compaction, steering, subagents and `sleepUntil` wakes;
    - the Agent Skills format for skills;
-   - deferred MCP tools through `tool_search` and code mode, so the model
-     still sees four tools plus `ta`;
+   - every non-core tool (MCP, package tools, later code mode) registered
+     callable by tools only (pi's `callers: ["tools"]`) and reached through
+     `ta` with pi's `executeTool`, its hooks and replay policy included, so the
+     model sees exactly the four tools plus `ta` (pi's `modelTools`, fixed on
+     every conversation); `ta`'s catalog ranks them as pi's `tool_search`
+     does, which is not offered, since loading tools would widen the model's
+     tools (A3, 2026-10-29);
    - `pi.agent` for per-conversation settings.
 
    Kept differences, each with its one reason:

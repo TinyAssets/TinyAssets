@@ -59,7 +59,10 @@
  * `threads.ts`): an outside client's every tool operation and model call is held to its
  * grant as it stands, and a grant change (`grantSet`, `grantRevoke`) or a policy write
  * ends the agent work it covers once its own unit committed (`agent.ts`). The `work` lane
- * hands due turns to pi through the object's `workRunner`.
+ * hands due turns to pi through the object's `workRunner`. The agent's `ta` (`ta.ts`)
+ * reaches the object's policy, a proposal, its scheduled work and its file usage only
+ * through the narrow `Platform` the object hands it, each held to the conversation's
+ * authority as the matching door holds its caller.
  */
 import type { HarnessSettings } from "@earendil-works/pi-durable";
 import { Lifecycle } from "agents/lifecycle";
@@ -685,7 +688,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#agent = agent({ files: this.#files, notices: this.#notices, write,
                           rearm: () => this.#schedule.sync(),
                           policy: () => this.#agentPolicy(), provider, tee: this.#tee,
-                          authority, threads: this.#threads });
+                          authority, threads: this.#threads, platform: {
+                            policy: () => this.#policy.projection(owner()),
+                            propose: (change, requestId, proposer) =>
+                              this.#policy.propose(change, requestId, proposer, clock()),
+                            work: (client, limit) => this.#work.of(client, limit),
+                            fileUsage: () => this.#files.usage(),
+                          } });
     this.#runner = workRunner(this.#threads, this.#agent.harness, authority);
     this.#lifecycle = new Lifecycle<OwnerEnv>(this).use(this.#schedule).use(this.#agent.harness);
     void ctx.blockConcurrencyWhile(async () => {
