@@ -73,6 +73,8 @@ export class WriteGate {
   #holding = false;
   /** The storage as the object's modules see it: writes only inside a unit. */
   readonly storage: OwnerStorage;
+  /** The object's database size in bytes, pi's tables included: what its storage limit counts. */
+  readonly size = (): number => this.#raw.sql.databaseSize;
 
   constructor(storage: DurableObjectStorage) {
     this.#db = new DurableObjectSqliteDatabase(storage);

@@ -20,6 +20,10 @@
  * - `session/close`: sign-out, the session closed and the presented token's grant revoked.
  * - `connections/key`, `connections/oauth`, `connections/oauth/finish`,
  *   `connections/revoke`, `connections/list`: the model connect doors (`connect.ts`).
+ * - `agent/submit`, `agent/run`, `agent/status`, `agent/cancel`: the agent's doors
+ *   (`agentSubmit`, `agentRun`, `agentStatus`, `agentCancel`) on the owner's own threads,
+ *   the same doors `converse`, `run_graph`, `run_status` and `run_cancel` call for an
+ *   outside client.
  */
 import {
   type Bound, bindKeyRegistration, bindOwner,
@@ -94,6 +98,14 @@ const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
     return json(200, extended, { "Set-Cookie": sessionCookie(binding.session ?? "") });
   },
   "session/close": signOut,
+  "agent/submit": async (_env, { binding, stub }, request) =>
+    json(200, await stub.agentSubmit(binding, request as never)),
+  "agent/run": async (_env, { binding, stub }, request) =>
+    json(200, await stub.agentRun(binding, request as never)),
+  "agent/status": async (_env, { binding, stub }, request) =>
+    json(200, await stub.agentStatus(binding, request as never)),
+  "agent/cancel": async (_env, { binding, stub }, request) =>
+    json(200, await stub.agentCancel(binding, request as never)),
 });
 
 /** The owner's first-party token, or the refusal for what came instead. */

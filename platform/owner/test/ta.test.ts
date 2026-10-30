@@ -32,7 +32,7 @@ import {
   INVALID_REQUEST, kindOf, PLATFORM_NAMES, READ_WRITES, RESERVED_NAME, UNKNOWN_CAPABILITY,
 } from "../src/ta";
 import { Threads } from "../src/threads";
-import { asked, direct, gated, until } from "./gateway-support";
+import { asked, direct, gated, OAUTH, until } from "./gateway-support";
 import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
 import { failure } from "./support";
 import { keepsFive } from "../src/agent";
@@ -218,15 +218,16 @@ describe("ta's catalog", () => {
                                                       await threadFor(instance, null)));
     const names = page.capabilities.map((entry: { name: string }) => entry.name);
     expect(names).toEqual(["policy:show", "policy:propose", "wake:list", "files:usage", "model",
-                           "hold", "fork", "nest", "spawn", "background", "widen",
+                           "agent:run", "hold", "fork", "nest", "spawn", "background", "widen",
                            "weather_lookup", "pass"]);
     expect(page.total).toBe(names.length);
     expect(page.next_offset).toBeUndefined();
     const of = (name: string) => page.capabilities.find((entry: { name: string }) =>
       entry.name === name);
     expect([of("policy:show").effect, of("policy:propose").effect, of("wake:list").effect,
-            of("files:usage").effect, of("model").effect, of("hold").effect])
-      .toEqual([false, true, false, false, true, true]);
+            of("files:usage").effect, of("model").effect, of("agent:run").effect,
+            of("hold").effect])
+      .toEqual([false, true, false, false, true, true, true]);
     expect(of("weather_lookup").deferred).toBe(true);
     expect(of("hold").deferred).toBeUndefined();
     for (const entry of page.capabilities) {
@@ -257,11 +258,11 @@ describe("ta's catalog", () => {
     expect(names(out.policy).slice(0, 2).sort()).toEqual(["policy:propose", "policy:show"]);
     expect(out.nothing).toEqual({ capabilities: [], total: 0 });
     expect([names(out.first), out.first.total, out.first.next_offset]).toEqual([
-      ["policy:show", "policy:propose", "wake:list", "files:usage", "model"], 13, 5]);
+      ["policy:show", "policy:propose", "wake:list", "files:usage", "model"], 14, 5]);
     expect([names(out.second), out.second.next_offset])
-      .toEqual([["hold", "fork", "nest", "spawn", "background"], 10]);
+      .toEqual([["agent:run", "hold", "fork", "nest", "spawn"], 10]);
     expect([names(out.last), out.last.next_offset])
-      .toEqual([["widen", "weather_lookup", "pass"], undefined]);
+      .toEqual([["background", "widen", "weather_lookup", "pass"], undefined]);
   });
 
   it("lists to a scoped client only what its grant reaches, and to a full one all but the " +
@@ -291,7 +292,7 @@ describe("ta's catalog", () => {
     expect(out.usage).toEqual({ text: blocked(NOT_GRANTED), error: true });
     expect(out.fullShows).toEqual({ text: blocked(NOT_OWNER), error: true });
     expect(names(out.full)).toEqual(["policy:propose", "wake:list", "files:usage", "model",
-                                     "hold", "fork", "nest", "spawn", "background",
+                                     "agent:run", "hold", "fork", "nest", "spawn", "background",
                                      "widen", "weather_lookup", "pass"]);
   });
 });
@@ -669,6 +670,27 @@ describe("what the model is offered, from one source (review round 2, L-A)", () 
 });
 
 describe("the five, held at the provider whatever the conversation holds", () => {
+  it("refreshes no credential for a request it refuses for its tools (A3's review)",
+     async () => {
+    const r = await gated();
+    await r.connectOAuth(OAUTH, Date.now() + 60_000);
+    const out = await r.in(async (instance) => {
+      instance.probes.inject = "sixth";
+      const answer = await instance.agent.harness.prompt("cmd:echo");
+      instance.probes.inject = null;
+      return { answer: answer.status, made: instance.calls.map((made) => made.method) };
+    });
+    expect(out).toEqual({ answer: "unanswered", made: [] });
+    expect(await r.sql("SELECT state, rule FROM model_reservations ORDER BY seq"))
+      .toEqual([{ state: "refused", rule: TOOL_SURFACE }]);
+    // The same request, offering the five, refreshes the expiring credential once.
+    const fine = await r.in(async (instance) => {
+      const answer = await instance.agent.harness.prompt("cmd:echo");
+      return { answer: answer.status, made: instance.calls.map((made) => made.method) };
+    });
+    expect(fine.made.filter((method) => method === "refresh")).toEqual(["refresh"]);
+  }, 30_000);
+
   it("refuses a request whose own transcript a request hook widened, sending nothing",
      async () => {
     const r = await gated();
@@ -792,13 +814,28 @@ describe("packages and names (review L1, L2, L3)", () => {
       .toEqual([]);
   });
 
+  it("installs a package's tools as they were checked, whatever is pushed onto its own " +
+     "array later (A3's review)", async () => {
+    const stub = env.MALFORMED.getByName(`owner-${crypto.randomUUID()}`);
+    const out = await runInDurableObject(stub, async (instance: MalformedOwnerDO) => {
+      const pi = await instance.agent.harness.pi();
+      const callable = async () => (await (await pi.root(BG)).agent(BG)).callable
+        .map((tool) => tool.name).filter((name) => name === "early" || name === "pushed");
+      const before = await callable();
+      instance.late.push(instance.pushed);
+      return { before, after: await callable() };
+    });
+    expect(out).toEqual({ before: ["early"], after: ["early"] });
+  });
+
   it("names the platform capabilities no package may take, as the catalog lists them",
      async () => {
     const r = await rig();
     const page = await r.in(async (instance) => value(instance, { op: "catalog" },
                                                       await threadFor(instance, null)));
-    expect(page.capabilities.slice(0, 5).map((entry: { name: string }) => entry.name))
-      .toEqual(PLATFORM_NAMES);
+    expect(page.capabilities.slice(0, PLATFORM_NAMES.length)
+      .map((entry: { name: string }) => entry.name)).toEqual(PLATFORM_NAMES);
+    expect(PLATFORM_NAMES).toHaveLength(6);
   });
 
   it("refuses a call that carries a catalog field, a name that is not text and arguments " +
@@ -817,7 +854,7 @@ describe("packages and names (review L1, L2, L3)", () => {
     expect(out.extra).toEqual({ text: threw(INVALID_REQUEST), error: true });
     expect(out.stringName.error).toBe(true);
     expect(out.nullArgs.error).toBe(true);
-    expect(out.past).toEqual({ capabilities: [], total: 13 });
+    expect(out.past).toEqual({ capabilities: [], total: 14 });
   });
 });
 

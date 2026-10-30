@@ -48,7 +48,8 @@ import { Invalid, Refused } from "./errors";
 import { codePoints, isPrintable } from "./text";
 
 /** The capabilities of a scoped grant the agent's tools need (`grants.ts`'s `CAPABILITIES`). */
-export type ToolCapability = "read_files" | "write_files" | "propose_policy";
+export type ToolCapability = "read_files" | "write_files" | "propose_policy" | "converse"
+  | "run_graph";
 
 /** The need of what only the owner itself may do, whatever grant a client holds. */
 export const OWNER_ONLY = "owner";
@@ -77,7 +78,10 @@ export const TOOL_CAPABILITIES: Readonly<Record<string, Need>> = Object.freeze({
  * authority; the owner's policy is the owner's alone to read (`policyRead`); a proposal
  * needs `propose_policy` (`policyPropose`); file usage needs `read_files` (`fileUsage`); a
  * nested model call spends as the turn's own calls do, under a standing authority, re-
- * checked in its reservation and dispatch. A name missing is refused to a scoped grant.
+ * checked in its reservation and dispatch; a launch of an agent needs `run_graph`
+ * (`agentRun`), here where the calling conversation acts and again, in the launch's own
+ * recording unit, where the launched run will act. A name missing is refused to a scoped
+ * grant.
  * The `ta:` names are the ops' own: a call naming one is refused.
  */
 export const TA_CAPABILITIES: Readonly<Record<string, Need>> = Object.freeze({
@@ -87,6 +91,7 @@ export const TA_CAPABILITIES: Readonly<Record<string, Need>> = Object.freeze({
   "wake:list": Object.freeze([] as const),
   "files:usage": Object.freeze(["read_files"] as const),
   "model": Object.freeze([] as const),
+  "agent:run": Object.freeze(["run_graph"] as const),
 });
 /** The tool `ta`, and the prefix of its ops' own names. */
 export const TA_TOOL = "ta";

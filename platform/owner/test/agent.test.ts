@@ -531,7 +531,8 @@ describe("a package pi refuses to install", () => {
     expect(rows.wakes).toEqual([{ state: "pending" }]);  // the wakes lane recovered it
     // pi opened without the package, and with every other extension; the model is offered
     // the five tools alone.
-    expect(rows.tools).toEqual(["background", "bash", "benign", "edit", "files:usage", "fork",
+    expect(rows.tools).toEqual(["background", "bash", "benign", "early", "edit", "files:usage",
+                               "fork",
                                "hold", "nest", "pass", "read", "sixth", "spawn",
                                "weather_lookup", "widen", "write"]);
     expect(rows.offered).toEqual(["read", "write", "edit", "bash", "ta"]);
