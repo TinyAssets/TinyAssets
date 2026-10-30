@@ -60,7 +60,10 @@
  *
  * A thread (`thread`) is a top-level conversation the object makes for an agent: pi
  * writes its authority in the creating commit, then the object records it (`threads.ts`).
- * It is the one place the object makes a conversation (a guard holds it).
+ * It is the one place the object makes a conversation (a guard holds it). A thread is
+ * configured from its agent's data files (`AgentConfig`: the instructions an agent's
+ * `AGENTS.md` holds, Direction 3) as pi's own conversation agent, in the same creating
+ * commit; never its extensions or its model's tools.
  *
  * Ending work (agent research §4.2), each in the door of the change, after its own unit
  * committed: a grant set or revoke ends its client's work (`endClient`), a policy write
@@ -101,7 +104,7 @@ import { originRoot } from "./origin";
 import { WORKSPACE } from "./paths";
 import { inTime } from "./schedule";
 import { PLATFORM_NAMES, type Platform, reachable, taTool } from "./ta";
-import type { Thread, Threads } from "./threads";
+import type { Thread, ThreadKind, Threads } from "./threads";
 
 const BG = BACKGROUND_CONTEXT;
 
@@ -128,6 +131,8 @@ export const STATUS_WAIT_MS = 1_000;
 export const WAITS_KEPT = 256;
 /** A wait a grant or policy change ended. */
 export const WAIT_ENDED = "the wait was ended by a grant or policy change";
+/** A wait refused because the object keeps `WAITS_KEPT` already. */
+export const WAITS_FULL = "too many pending waits";
 /** The extension names that are the object's own: no package may take one. */
 export const RESERVED_PREFIX = "ta.";
 /** The early authority gate's extension name. */
@@ -172,6 +177,20 @@ export function sessionDoc() {
     initial: (conversation) => ({ conversation }),
     checkpointWhen: () => true,
   });
+}
+
+/** How a thread's conversation is configured: its agent's data files, as pi's agent takes them. */
+export interface AgentConfig {
+  /** The agent's instructions (`AGENTS.md`), rendered after every extension's section. */
+  readonly instructions?: string;
+}
+
+/** How a thread is made: what it is for, how it is configured, and what its stamp needs. */
+export interface ThreadOptions {
+  readonly kind?: ThreadKind;
+  readonly config?: AgentConfig;
+  /** What the stamp must hold where the thread acts, checked before and when it is recorded. */
+  readonly need?: Need;
 }
 
 /** Who a conversation's file changes are by, in the history. */
@@ -460,32 +479,46 @@ export class OwnerAgent {
   }
 
   /**
-   * Make a thread for `agent`: a top-level conversation on `auto`, its authority (the
-   * owner's for a null stamp, else the client's stamp) written in pi's creating commit,
-   * then recorded, in a unit that re-checks the stamp still stands.
+   * Make a thread for `agent`: a top-level conversation on `auto`, configured as `config`
+   * says, its authority (the owner's for a null stamp, else the client's stamp) written in
+   * pi's creating commit, then recorded as `kind`, in a unit that re-checks the stamp
+   * still stands and holds `need` where the thread acts.
    */
-  async thread(agent: unknown, stamp: unknown): Promise<Thread> {
+  async thread(agent: unknown, stamp: unknown, options: ThreadOptions = {}): Promise<Thread> {
     const id = agentId(agent);
     const by = stamped(stamp);
     if (by !== null && by.agent !== id) {
       throw new Invalid("a thread's stamp names its own agent");
     }
     const { authority, threads, write } = this.#parts;
+    const { kind = "run", config = {}, need = [] } = options;
     const state = authorityOf(by);
-    authority.require(state, []);
+    authority.require(state, need);
     threads.room(by);  // a refusal makes no conversation; the recording unit checks again
     const pi = await this.harness.pi();
     const conversation = await pi.createConversation({
       ownership: { kind: "ownerless" },
-      agent: { model: { provider: AUTO.provider, modelId: AUTO.id } },
+      agent: { model: { provider: AUTO.provider, modelId: AUTO.id },
+               ...(config.instructions === undefined ? {}
+                 : { instructions: config.instructions }) },
       init: async (tx, made) => {
         Object.assign(await tx.doc(this.authority, made), copy(state));
       },
     }, BG);
     return write(() => {
-      authority.require(state, []);
-      return threads.record(conversation.id, id, by, Date.now() / 1000);
+      authority.require(state, need);
+      return threads.record(conversation.id, id, by, Date.now() / 1000, kind);
     });
+  }
+
+  /**
+   * The conversations pi holds live work in: a live task or an unsettled input. A task that
+   * owns a conversation (a subagent's, background work's) stays live, completing, while
+   * that conversation works (found in workerd, pi-durable 1.4.0), so a thread whose
+   * subagents or background work run on is among them through its own conversation.
+   */
+  async liveThreads(): Promise<Set<number>> {
+    return new Set(await liveConversations(await this.harness.pi()));
   }
 
   /**
@@ -582,7 +615,7 @@ export class OwnerAgent {
   #keepWait(key: string): AbortController {
     const kept = [...this.#waits.values()].reduce((sum, set) => sum + set.size, 0);
     if (kept >= WAITS_KEPT) {
-      throw new Refused("too many pending waits");
+      throw new Refused(WAITS_FULL);
     }
     const ended = new AbortController();
     const set = this.#waits.get(key) ?? new Set<AbortController>();

@@ -5,8 +5,14 @@
  * Each row names the `OwnerDO` door it calls, the scope capability that door checks, a
  * title, and all four hints as explicit booleans: the three OpenAI's directory requires
  * (`readOnlyHint`, `destructiveHint`, `openWorldHint`) and `idempotentHint`, as the
- * Python set it. `openWorldHint` is false throughout: every tool is confined to the
- * owner's own account. `room_post` is destructive because a send cannot be taken back.
+ * Python set it. `openWorldHint` is false for every tool confined to the owner's own
+ * account, and true for the two that hand work to the owner's agent, `converse` and
+ * `run_graph`: the agent acts on outside services through its connections and egress, as
+ * the Python's annotations declared (`mcp_tool_annotations.py`). `room_post` is destructive
+ * because a send cannot be taken back; `converse` and `run_graph` because the agent's
+ * effects cannot be either, and neither is idempotent (a retry of `converse` with the same
+ * `client_send_id` is deduplicated, but a new id repeats the effects). `run_status` reads;
+ * `run_cancel` is destructive (it ends work) and idempotent (a second cancel ends nothing).
  * No tool selects an operation (no `method`, `operation`, `tool` or `target` field):
  * each operation is its own tool, which both directories require.
  *
@@ -14,6 +20,14 @@
  * owner's object (ADR-032 Decision 4), and are never served here. `guards/tools.test.ts`
  * holds every row to these rules and to a real outside-callable door, and names the
  * outside-callable doors without a tool yet, each with the slice that owes it.
+ *
+ * Long agent work is not an MCP task: the MCP SDK's `createMcpHandler` 2.3.1 serves no
+ * part of the Tasks extension (on 2026-07-28 it strips `capabilities.tasks` and a tool's
+ * `execution.taskSupport` from what it sends, and has no `tasks/get` or `tasks/cancel`
+ * handler of its own), so `converse` answers `running` with an `operation_id` past its
+ * bounded wait, and a client polls `run_status` and cancels with `run_cancel`. When the SDK
+ * serves the extension, its task id is the operation id, `tasks/get` is `agentStatus` and
+ * `tasks/cancel` is `agentCancel`.
  */
 import type { Binding, OwnerDO } from "../../owner/src/owner-do";
 
@@ -30,7 +44,7 @@ export interface Tool {
   readonly door: Door;
   /** The scope capability the door checks a scoped grant for, or null when it checks none. */
   readonly capability: "read_graph" | "write_graph" | "propose_policy" | "read_files"
-    | "write_files" | null;
+    | "write_files" | "converse" | "run_graph" | null;
   readonly title: string;
   readonly description: string;
   readonly readOnlyHint: boolean;
@@ -43,6 +57,7 @@ export interface Tool {
 
 const str = (description: string): JsonSchema => ({ type: "string", description });
 const int = (description: string): JsonSchema => ({ type: "integer", description });
+const num = (description: string): JsonSchema => ({ type: "number", description });
 const bool = (description: string): JsonSchema => ({ type: "boolean", description });
 const orNull = (description: string): JsonSchema =>
   ({ type: ["string", "null"], description });
@@ -58,6 +73,9 @@ const READ = Object.freeze({ readOnlyHint: true, destructiveHint: false, idempot
                              openWorldHint: false } as const);
 const CHANGE = Object.freeze({ readOnlyHint: false, destructiveHint: true,
                                idempotentHint: false, openWorldHint: false } as const);
+/** Work handed to the owner's agent, which acts on outside services too. */
+const AGENT_WORK = Object.freeze({ readOnlyHint: false, destructiveHint: true,
+                                   idempotentHint: false, openWorldHint: true } as const);
 
 /** The table, in the order `tools/list` serves it. */
 export function toolTable(): readonly Tool[] {
@@ -65,6 +83,7 @@ export function toolTable(): readonly Tool[] {
   const row = str("The row's id");
   const path = str("An absolute path in the owner's files, such as /workspace/notes.md");
   const etag = orNull("The entry's current etag, or null to create it");
+  const operation = str("The operation_id converse or run_graph answered");
   return [
     { name: "mailbox_read", door: "mailboxRead", capability: "read_graph",
       title: "Read mailbox", ...READ,
@@ -163,6 +182,36 @@ export function toolTable(): readonly Tool[] {
       title: "Restore file version", ...CHANGE,
       description: "Make a kept version of a file its current content.",
       input: args({ path, version: int("The kept version to restore"), expected_etag: etag }) },
+    { name: "converse", door: "agentSubmit", capability: "converse",
+      title: "Talk with your agent", ...AGENT_WORK,
+      description: "Send a message to one of the owner's agents in your conversation with it, " +
+        "and wait a bounded time for its reply. The agent can use the owner's files and " +
+        "connected services, so a message can have effects; a retry with the same " +
+        "client_send_id is the same message. Past the wait it answers running with an " +
+        "operation_id, which run_status reads.",
+      input: args({ message: str("The message"),
+                    client_send_id: str("Your id for this message, for retries: letters, " +
+                                        "digits, - and _") },
+                  { agent_id: str("Which of the owner's agents: main when omitted"),
+                    steer: bool("Join the agent's running turn after its current step"),
+                    wait_ms: int("How long to wait for the reply, in ms: at most 60000") }) },
+    { name: "run_graph", door: "agentRun", capability: "run_graph",
+      title: "Run an agent", ...AGENT_WORK,
+      description: "Launch one of the owner's agents on an input, in a fresh conversation of " +
+        "its own, now or at a time. Answers at once with an operation_id, which run_status " +
+        "reads and run_cancel ends.",
+      input: args({ agent: str("Which of the owner's agents, such as main"),
+                    input: str("What the agent is asked to do") },
+                  { at: num("When to run it, in seconds since the epoch: now when omitted") }) },
+    { name: "run_status", door: "agentStatus", capability: null,
+      title: "Agent run status", ...READ,
+      description: "Read how one of your agent operations stands, and its answer once done.",
+      input: args({ operation_id: operation }) },
+    { name: "run_cancel", door: "agentCancel", capability: null,
+      title: "Cancel agent run", readOnlyHint: false, destructiveHint: true,
+      idempotentHint: true, openWorldHint: false,
+      description: "Cancel one of your agent operations: withdraw it, or stop the run it joined.",
+      input: args({ operation_id: operation }) },
   ];
 }
 

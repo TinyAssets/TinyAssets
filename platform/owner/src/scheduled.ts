@@ -153,6 +153,16 @@ function stampOf(row: Row): Stamp | null {
     : { client: row.client, generation: row.generation!, authenticated_at: row.authenticated_at };
 }
 
+/** A row as `of` and `view` show it. */
+function viewOf(row: Row): WorkView {
+  return {
+    work_id: row.work_id, kind: row.kind, due: row.due, state: row.state,
+    payload: JSON.parse(row.payload) as unknown, created_at: row.created_at,
+    settled_at: row.settled_at,
+    outcome: row.outcome === null ? null : JSON.parse(row.outcome) as unknown,
+  };
+}
+
 /** A scheduled turn: the thread it runs in, fixed when the work is made, and its input. */
 export interface Turn {
   readonly thread: string;
@@ -257,6 +267,8 @@ export class Scheduled {
           || thread.generation !== (by?.generation ?? null)) {
         throw new Refused("a scheduled turn runs in a thread made under its own authority");
       }
+      // The thread is in use until its work is due: idle retention keeps it.
+      this.#threads.touch(thread.thread_id, Math.max(now, due));
       const workId = "work_" + token(16);
       sql.exec("INSERT INTO scheduled_work (work_id, kind, due, state, payload, client, " +
                  "generation, authenticated_at, created_at) VALUES (?, ?, ?, 'pending', ?, ?, " +
@@ -278,6 +290,32 @@ export class Scheduled {
     });
   }
 
+  /**
+   * The caller's withdrawal of its own pending work, not yet handed to pi: refused
+   * `cancelled`; whether it was. Work of another authority, or already claimed or settled,
+   * is left as it is.
+   */
+  cancel(workId: string, client: string | null, now: number): boolean {
+    return this.#storage.transactionSync(() => {
+      const ended = this.#sql.exec(
+        "UPDATE scheduled_work SET state = 'refused', settled_at = ?, outcome = ? " +
+          "WHERE work_id = ? AND client IS ? AND state = 'pending' RETURNING work_id",
+        now, JSON.stringify({ reason: "cancelled" }), workId, client).toArray().length > 0;
+      if (ended) {
+        this.#prune(now);
+      }
+      return ended;
+    });
+  }
+
+  /** One row of `client`'s (null: the owner's), as `of` shows it, or null. A read. */
+  view(workId: string, client: string | null): WorkView | null {
+    const row = this.#sql.exec<Row>(
+      "SELECT * FROM scheduled_work WHERE work_id = ? AND client IS ?", workId, client)
+      .toArray()[0];
+    return row === undefined ? null : viewOf(row);
+  }
+
   /** Every row, oldest first: the owner's view, and the tests'. */
   list(): (Omit<Row, "payload"> & { payload: unknown })[] {
     return this.#sql.exec<Row>("SELECT * FROM scheduled_work ORDER BY created_at, work_id")
@@ -292,12 +330,7 @@ export class Scheduled {
   of(client: string | null, limit: number): WorkView[] {
     return this.#sql.exec<Row>(
       "SELECT * FROM scheduled_work WHERE client IS ? ORDER BY created_at DESC, work_id DESC " +
-        "LIMIT ?", client, limit).toArray().map((row) => ({
-      work_id: row.work_id, kind: row.kind, due: row.due, state: row.state,
-      payload: JSON.parse(row.payload) as unknown, created_at: row.created_at,
-      settled_at: row.settled_at,
-      outcome: row.outcome === null ? null : JSON.parse(row.outcome) as unknown,
-    }));
+        "LIMIT ?", client, limit).toArray().map(viewOf);
   }
 
   /** Pending work that is due, oldest first: what the claim pass takes. */

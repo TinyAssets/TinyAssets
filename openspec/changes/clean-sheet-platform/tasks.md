@@ -98,8 +98,18 @@ live acceptance is still owed says so.
   admits them with their slice. They count JSON-RPC messages, not HTTP requests (a
   2025-11-25 batch is one request of many calls), and a third limit bounds the CIMD
   metadata fetches an unknown `client_id` makes the provider send.
-- [ ] The agent tools: `run_graph` and `converse` as tools and scope capabilities, with
-  the agent's doors (5).
+- [x] The agent tools: `run_graph` and `converse` as tools and scope capabilities, with
+  the agent's doors (5, A4): `converse`, `run_graph`, `run_status` and `run_cancel` in
+  `tools.ts` (the first two destructive, not idempotent and open world, the agent acting
+  on outside services; `run_status` a read; `run_cancel` destructive and idempotent), on
+  `/mcp` and `/api/tools/*`; `converse` and `run_graph` in the object's `CAPABILITIES`;
+  the tool guard holds open world to those two doors alone; the owner's own
+  `/app/api/agent/{submit,run,status,cancel}`. Open: the MCP Tasks extension, which the
+  SDK's `createMcpHandler` 2.3.1 does not serve (on 2026-07-28 it strips
+  `capabilities.tasks` and `execution.taskSupport` and has no `tasks/*` handler), so a long
+  `converse` answers `running` and is polled through `run_status`; when the SDK serves it, a
+  task id is the operation id, `tasks/get` `agentStatus`, `tasks/cancel` `agentCancel`.
+  MCP clients' tool-call timeouts against the 25 s default wait are a live probe.
 - [ ] Plan correction (doors section): "plus the earlier revision for Claude channels"
   becomes "plus 2025-11-25 for clients still on MCP SDK 1.x, served statelessly from
   the same handler"; Claude channels are local stdio plugins that cannot use 2026-07-28,
@@ -631,13 +641,14 @@ account and no deploy.
   accepted, since its changes tell it anyway (a `remove` of a missing path fails
   `not_found`, a non-recursive `createDir` of an existing one `exists`), and no content
   leaks. Owner bundle 1,628 KiB, 337 KiB gzip
-  (1,598 and 329 at A1), local startup 25 ms active in a 59 ms window. Must land with
-  A4, whose doors make threads: thread retention by idle age, which also deletes the pi
-  conversations a thread drop leaves behind (until then a dropped thread's conversation
-  stays in pi, refused at every operation and model call); and `agentSubmit` and
-  `agentStatus` address work by `thread_id`, resolved against the calling client's own
-  row, never by a pi session string (a `harness.submit` with no session goes to the
-  root, the owner's). A3's `ta` re-derives its capability in its own `execute` (below).
+  (1,598 and 329 at A1), local startup 25 ms active in a 59 ms window. Landed with A4
+  (below): thread retention by idle age; and the agent's doors address work by
+  `thread_id`, resolved against the calling client's own row, never by a pi session
+  string. Still open: deleting the pi conversation a thread drop leaves behind, which
+  pi-durable 1.4.0 and PiHarness 0.31.0 cannot do (no delete on `Harness`, `Session`,
+  `Storage` or `PiSessions`; pi's SQLite store deletes only document revisions), so it
+  stays in pi's tables, holding no live work and named by no row, door or work, until pi
+  offers a delete. A3's `ta` re-derives its capability in its own `execute` (below).
 - [x] A3 `ta`, in workerd, nothing deployed (`ta.ts`). The model is offered exactly
   `read`, `write`, `edit`, `bash` and `ta`: pi's `modelTools`, written in
   `conversationCreated` on every conversation the object creates (the root, threads,
@@ -716,6 +727,71 @@ account and no deploy.
   G3) and code mode as a tool `ta` calls; the sandbox's `ta` CLI through the egress door;
   a nested model call's events reach the conversation's live view, since it shares the
   conversation's provider session (A6 decides how a view shows them).
+- [x] A4 The agent's doors, in workerd, nothing deployed (`owner-do.ts`'s agent doors,
+  `threads.ts`, migration 9; the doors' `tools.ts`, `app.ts`). Four object doors, each
+  through the binder's `Binding`, each admitting its caller and checking its scope in its
+  first unit, before any pi call. `agentSubmit({message, client_send_id, agent_id?,
+  steer?, wait_ms?})`: scope `converse` for the agent named (`main` by default) in the
+  universe of the client's one enabled agent; the caller's one `converse` thread with the
+  agent (one per client, agent and universe, a unique index, so two first messages at once
+  make one), found or made stamped and configured; an outside client's text wrapped in the
+  untrusted envelope naming the client (the Python's `untrusted.py`), its entry
+  `ta.outside`; submitted with pi's request id `sha256(client ∥ client_send_id)` (the
+  owner's `client` the word `owner`), so a resend is pi's duplicate, `whenBusy` `steer` or
+  `followUp`; then a bounded wait (25 s default, 60 s most), past which `running` with the
+  operation id. `agentRun({agent, input, at?})`: scope `run_graph`; a fresh `run` thread;
+  submitted now (entry `ta.run`), or with `at` a scheduled turn naming the thread, which the
+  `work` lane's runner hands to pi when due. An operation id is the thread's id and pi's
+  request id; `agentStatus` and `agentCancel` resolve it against the caller's own rows
+  (`Threads.mine`), so another client's, the owner's for a client, a forged one and a pi
+  session string are refused alike ("no such operation"); status is `OwnerAgent.status`
+  (pending, then settled), or for scheduled work not yet handed its row (`scheduled`, or
+  how it was refused); cancel withdraws pending scheduled work of the caller's own, then
+  PiHarness's `abort` by operation (withdraw, or abort the run it joined). No door hands
+  pi a session but the one its thread row names, so none reaches the root. A thread is
+  configured from `/workspace/agents/<agent>/AGENTS.md` as pi's conversation
+  `instructions`, in the creating commit (an agent id is a safe path segment; a file not
+  text, over 64 KiB or not a file is refused loudly), and its recording unit re-checks the
+  scope where it acts. Idle retention, the `threads` lane: a thread untouched for 7 days
+  is dropped in a unit that re-checks the activity it read; a thread whose conversation pi
+  holds live work in is kept, its activity moved on (a task that owns a conversation stays
+  live, completing, while that conversation works: a thread's subagents and background
+  work keep it, found in workerd); scheduled work moves its thread's activity on to when
+  it is due; every door that makes or uses a thread touches it and syncs the schedule.
+  `ta`'s `agent:run` (an effect, `run_graph` in `TA_CAPABILITIES`): the same launch path,
+  stamped with the calling conversation's authority as the agent it names, so its
+  recording unit refuses an agent the grant holds no `run_graph` for, before pi makes a
+  conversation. A3's review nits: a `tool_surface` refusal refreshes no credential, and a
+  package pushing onto its own `tools` array after install changes nothing, each tested.
+  Tested in workerd: the owner's thread and no root; a resend one submission and one model
+  request; two first messages one thread; the envelope; the bounded wait `running`, then
+  `done`; a steer after the tool round, a follow-up after the turn; invalid fields refused
+  before pi; another client, the owner, forged ids and pi session strings refused, another
+  client's work id in one's own thread no work of one's own, cancel once; scoped clients
+  without the scope, or for another agent, refused before pi, stamped where they act when
+  granted; a revoke ending a pending wait (refused) and the run, then refusing the client;
+  `AGENTS.md` as instructions; a scheduled launch handed by the runner, a cancel of pending
+  work; `ta`'s launch per scope and the owner's; retention dropping the idle, keeping the
+  live, the scheduled and the touched, freeing a full bound, the lane's due time and its
+  run through the object; the doors' tools on `/mcp` and `/api` per owner and per scope,
+  and `/app/api/agent/*` for the owner, refusing an MCP token. Mutation: 46 (the scope
+  checks, the operation id's derivation, the ownership check, the thread lookup, retention,
+  the hints, `agent:run`'s classification, the steer, the wait, the envelope, the cancel,
+  A3's two nits), 45 killed; alive and equivalent: the thread's recording unit re-checking
+  only a standing stamp rather than its scope, since a grant's scopes change only with its
+  generation, which the standing check holds (A3's same case). Declared differences from
+  the research: a thread is configured through pi's own `createConversation` agent in
+  `OwnerAgent.thread`, never `sessions.create()` and `configure` (the agent-authority guard
+  keeps `configure` and every other conversation maker out); the data files are the
+  agent's `AGENTS.md` alone, as its instructions; an operation id names its thread, so
+  status and cancel need no table of their own; the owner's entry is pi's own user entry;
+  scheduled work keeps its thread until due rather than being scanned by the lane; a
+  dropped thread's pi conversation is not deleted (A2's entry above). Owner bundle 1,672
+  KiB, 349 KiB gzip (1,649 and 342 at A3), local startup 24 to 25 ms active in a 58 to 59 ms
+  window (24 to 26 in 57 to 60 at A3); doors bundle 1,016 KiB, 213 KiB gzip (1,013 and
+  212), local startup 46 to 48 ms active in a 70 to 74 ms window (40 to 45 in 67 to 69).
+  Open: the Tasks extension (tasks 2); an agent's model pin and further data files; a
+  dropped thread's pi conversation (A2's entry).
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
   owner's hook code with the Worker Loader, called over RPC with JSON in and out and a
   timeout. A `beforeTool` timeout or error blocks

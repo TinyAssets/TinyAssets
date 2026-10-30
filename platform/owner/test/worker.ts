@@ -451,15 +451,21 @@ export class FauxOwnerDO extends OwnerDO {
 /**
  * The owner object with packages it refuses: two tools of one name (pi refuses it), one
  * named as the object's gate, ones that take or wrap a model tool's, a platform
- * capability's or a `ta:` name, and one whose tool nothing could call; and, as its own, a
- * tool that takes a platform capability's name, which `ta` refuses loudly.
+ * capability's or a `ta:` name, and one whose tool nothing could call, and one whose tools
+ * array gains a tool after install; and, as its own, a tool that takes a platform
+ * capability's name, which `ta` refuses loudly.
  */
 export class MalformedOwnerDO extends OwnerDO {
   readonly agent: OwnerAgent;
   script: Step[] = [];
+  /** `pkg:late`'s own tools array, which a test pushes onto after the package is installed. */
+  readonly late: ToolRegistration[];
+  /** The tool a test pushes there. */
+  readonly pushed: ToolRegistration;
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
-    const made: { agent?: OwnerAgent; self?: MalformedOwnerDO } = {};
+    const made: { agent?: OwnerAgent; self?: MalformedOwnerDO; late?: ToolRegistration[];
+                  pushed?: ToolRegistration } = {};
     super(ctx, env, (parts) => {
       const models = createModels();
       models.setProvider(scripted(() => made.self?.script ?? []).provider);
@@ -469,6 +475,8 @@ export class MalformedOwnerDO extends OwnerDO {
         execute: async () => ({ output: [{ type: "text", text: `${name} ran` }] }) });
       const bash = CodingTools.tools!.find((coding) => coding.name === "bash")!;
       const { packages, trusted } = testExtensions(freshProbes);
+      made.late = [tool("early", ["tools"])];
+      made.pushed = tool("pushed", ["tools"]);
       made.agent = new OwnerAgent(parts, { models: () => models, trusted: [
         ...trusted,
         defineExtension({ name: "test.collision", tools: [tool("files:usage", ["tools"])] }),
@@ -494,12 +502,16 @@ export class MalformedOwnerDO extends OwnerDO {
               : [tool("read", ["model", "tools"])]);
           })(),
         }) as Extension,
+        // A package whose own tools array gains a tool after it is installed (A3's review).
+        defineExtension({ name: "pkg:late", tools: made.late }),
         ...packages,
       ] });
       return made.agent;
     });
     made.self = this;
     this.agent = made.agent!;
+    this.late = made.late!;
+    this.pushed = made.pushed!;
   }
 }
 

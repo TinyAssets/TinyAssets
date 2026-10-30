@@ -690,9 +690,10 @@ describe("a scoped grant's capabilities (slice 5's review N9)", () => {
     const refused = await failure(() => grant(r, CHATGPT, "scoped",
                                               [{ ...READ, capability: "read_everything" }]));
     expect([refused.name, refused.message]).toEqual(["Invalid", "a scope's capability is one " +
-      "of read_graph, write_graph, propose_policy, read_files, write_files"]);
+      "of read_graph, write_graph, propose_policy, read_files, write_files, converse, " +
+      "run_graph"]);
     for (const capability of ["read_graph", "write_graph", "propose_policy", "read_files",
-                              "write_files"]) {
+                              "write_files", "converse", "run_graph"]) {
       expect((await grant(r, CHATGPT, "scoped", [{ ...READ, capability }])).mode).toBe("scoped");
     }
   });

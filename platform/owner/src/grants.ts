@@ -11,7 +11,9 @@
  * A scoped grant holds exact `{universe, agent, capability}` triples. The capabilities
  * the object's doors check (`CAPABILITIES`): `read_graph` and `write_graph` (the mailbox,
  * its doorbell subscription and the collections), `propose_policy` (an agent's policy
- * proposal) and `read_files` and `write_files` (the file doors).
+ * proposal), `read_files` and `write_files` (the file doors), and `converse` and
+ * `run_graph` (the agent's doors: a message to an agent's thread, and a launch of an
+ * agent's run, `agentSubmit` and `agentRun`, as the Python's REST scopes named them).
  *
  * Enforced here now:
  * - Every call from an outside client is admitted, in the object that holds its grant,
@@ -74,7 +76,8 @@ import { codePoints } from "./text";
 export const OUTSIDE_MODES: readonly string[] = Object.freeze(["full", "scoped", "revoked"]);
 /** The capabilities a scoped grant's triples name at the object's doors. */
 export const CAPABILITIES = Object.freeze(
-  ["read_graph", "write_graph", "propose_policy", "read_files", "write_files"] as const);
+  ["read_graph", "write_graph", "propose_policy", "read_files", "write_files", "converse",
+   "run_graph"] as const);
 export type Capability = (typeof CAPABILITIES)[number];
 export const OUTSIDE_SOURCES: readonly string[] = Object.freeze(["mcp", "api_key"]);
 /** Clients one owner forget names at most. */
@@ -282,6 +285,12 @@ export class Grants {
     const row = this.#sql.exec<{ mode: string }>(
       "SELECT mode FROM outside_clients WHERE client = ?", client).toArray()[0];
     return row !== undefined && row.mode !== "revoked";
+  }
+
+  /** The name the owner gave a client's grant ("" when none, or no row). A read. */
+  name(client: string): string {
+    return this.#sql.exec<{ name: string }>("SELECT name FROM outside_clients WHERE client = ?",
+                                            client).toArray()[0]?.name ?? "";
   }
 
   list(): Client[] {
