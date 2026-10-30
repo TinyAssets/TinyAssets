@@ -24,8 +24,10 @@
  * Every other door refuses the pair.
  *
  * Its code cannot reach another owner's object: the Worker binds only `FILES`, the files
- * Worker, which itself binds no Durable Object and no service, and `GATEWAY`, the model
- * gateway, which binds nothing at all; the runtime hands it no
+ * Worker, which itself binds no Durable Object and no service, `GATEWAY`, the model
+ * gateway, which binds nothing at all, and `PISTORE`, the namespace of its own agent
+ * thread stores (`thread-store.ts`), each named by a random id only this object's rows
+ * hold, and none of which reaches anything; the runtime hands it no
  * `ctx.exports` (`disable_ctx_exports`); and its source never names `exports` or imports
  * `env` (the config and self-reach guards). The owner's file bytes reach the bucket only
  * through `FILES`, under the owner's namespace, which only this object holds
@@ -35,10 +37,11 @@
  * Every public method is an RPC any binding can call, so the class has no public method
  * but its doors (`RPC_METHODS` in the tests pins the list). Its timed work is the one
  * schedule's (`schedule.ts`): lanes on the Agents SDK Lifecycle job queue, which owns the
- * object's single physical alarm, beside PiHarness's wake job (`agent.ts`: pi-durable in
- * the object). The object is a plain Durable Object that holds a Lifecycle, never the
- * SDK's `Agent`, and installs none of Lifecycle's runtime handlers: `alarm` alone hands
- * the runtime's alarm to it, so no `fetch` or WebSocket handler joins the surface.
+ * object's single physical alarm, beside each agent thread's wake job (`thread-host.ts`:
+ * pi-durable in the object, one Session per thread). The object is a plain Durable
+ * Object that holds a Lifecycle, never the SDK's `Agent`, and installs none of Lifecycle's
+ * runtime handlers: `alarm` alone hands the runtime's alarm to it, so no `fetch` or
+ * WebSocket handler joins the surface.
  * Claiming and settling wakes is the `wakes` lane's own, in process, with the doorbell's
  * {@link WakeSender}; file housekeeping (expired uploads and temporary directories,
  * history prunes, garbage chunk deletes) is the `files` lane's. No door reaches either.
@@ -49,10 +52,11 @@
  * and calls `GATEWAY` with the sealed blob; the `connections` lane sweeps expired flows
  * and asks providers to revoke what the owner revoked.
  *
- * Every owner write goes through the object's write gate (`gate.ts`), the SQLite queue
- * pi's commits use, so none lands inside a pi transaction: each door's synchronous body is
- * one unit (`#door`), a door that then crosses to `FILES` writes its later steps through
- * units of their own, and each lane writes a row at a time. The modules see the storage
+ * Every owner write goes through the object's write gate (`gate.ts`) as one synchronous
+ * unit: each door's synchronous body is one unit (`#door`), a door that then crosses to
+ * `FILES`, a thread's store or the gateway writes its later steps through units of their
+ * own, and each lane writes a row at a time. pi's records are in the thread stores, never
+ * in this object's database. The modules see the storage
  * only through the gate's view, which refuses a write outside a unit. Reads are direct.
  *
  * The agent's threads run under the authority they were made under (`authority.ts`,
@@ -71,15 +75,13 @@
  * `agentStatus` and `agentCancel` (the caller's own operations only). Each admits its
  * caller and checks its scope (`converse`, `run_graph`) in its first unit, before any pi
  * call; each addresses work by a thread id resolved against the caller's own rows, never
- * a pi session string (`threads.ts`), so no door reaches the root conversation; an outside
+ * a pi session string (`threads.ts`), so no door reaches another caller's Session; an outside
  * client's text reaches pi inside the untrusted envelope, naming the client. Idle threads
  * are dropped by the `threads` lane.
  */
 import type { HarnessSettings } from "@earendil-works/pi-durable";
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
-
-import { type PiOperationResult } from "agents/harness/pi";
 
 import {
   type AgentConfig, type AgentParts, gatewayAgent, type OwnerAgent, WAITS_FULL,
@@ -121,6 +123,8 @@ import {
   type ThreadReader, Threads,
 } from "./threads";
 import { codePoints, principal } from "./text";
+import type { OperationResult } from "./thread-host";
+import type { ThreadStore } from "./thread-store";
 import { Usage as ModelUsage, type UsageReceipt } from "./usage";
 import { runWakes, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "./wakes";
 
@@ -284,6 +288,8 @@ export interface Operation {
 export interface OwnerEnv {
   readonly FILES: ChunkStore;
   readonly GATEWAY: GatewayService;
+  /** The agent's thread stores (`thread-store.ts`), named by their threads' rows. */
+  readonly PISTORE: DurableObjectNamespace<ThreadStore>;
 }
 
 /**
@@ -572,19 +578,6 @@ export const AGENT_TEXT_MAX = 32_000;
 export const AGENT_FILE_MAX = 65_536;
 /** The latest `at` a launch takes: a year and a day ahead (seconds). */
 export const AT_AHEAD_S = 366 * 86_400;
-/**
- * The object's storage, which the platform limits (10 GB per object, every write failing
- * `SQLITE_FULL` past it), and the shares of it at which the owner is told (`storage_high`)
- * and new threads and launches are refused (`STORAGE_FULL`). A safety net only: pi keeps
- * every conversation it was given until each thread has a pi Session of its own, wiped
- * whole when the thread is dropped (tasks 5, its own slice before A5).
- */
-export const STORAGE_BYTES = 10_000_000_000;
-export const STORAGE_NOTICE_SHARE = 0.7;
-export const STORAGE_REFUSE_SHARE = 0.9;
-/** The refusal's fixed code, and its notice's type. */
-export const STORAGE_FULL = "storage_full";
-export const STORAGE_HIGH = "storage_high";
 /** Every operation the caller does not own, or that is no operation: one refusal, alike. */
 export const NO_OPERATION = "no such operation";
 /**
@@ -745,10 +738,10 @@ export function ownerLanes(deps: LaneDeps):
  * returns; pi runs the turn, and its receipts are found by `work_id`. A second hand-off of
  * the same work is pi's duplicate (`accepted: false`): handed all the same, never run
  * twice. A thread that is gone, or whose stamp is not the work's or no longer stands,
- * fails the work before its mark.
+ * fails the work before its mark; one dropped between the mark and the submit fails it
+ * after (its Session is never opened again).
  */
-export function workRunner(threads: ThreadReader,
-                           harness: Pick<OwnerAgent["harness"], "submit">,
+export function workRunner(threads: ThreadReader, agent: Pick<OwnerAgent, "submit">,
                            authority: Pick<Authority, "refusal">): WorkRunner {
   return {
     handOff: async (target, mark) => {
@@ -763,12 +756,20 @@ export function workRunner(threads: ThreadReader,
         return { state: "failed", reason: "thread_authority" };
       }
       await mark();
-      const receipt = await harness.submit(turn.input, {
-        session: String(thread.conversation_id), operationId: target.work_id,
-        whenBusy: "followUp",
-        entry: { kind: "ta.work", data: { work_id: target.work_id,
-                                          client: target.stamp?.client ?? null } },
-      });
+      let receipt: { accepted: boolean };
+      try {
+        receipt = await agent.submit(thread, turn.input, {
+          operationId: target.work_id, whenBusy: "followUp",
+          entry: { kind: "ta.work", data: { work_id: target.work_id,
+                                            client: target.stamp?.client ?? null } },
+        });
+      } catch (error) {
+        if (threads.get(turn.thread) === null) {
+          // Dropped since the check (a grant change): its Session is never opened again.
+          return { state: "failed", reason: "no_thread" };
+        }
+        throw error;
+      }
       return receipt.accepted ? { state: "handed" } : { state: "handed", reason: "duplicate" };
     },
   };
@@ -778,7 +779,7 @@ export function workRunner(threads: ThreadReader,
 export type AgentFactory = (parts: AgentParts) => OwnerAgent;
 
 export class OwnerDO extends DurableObject<OwnerEnv> {
-  /** The one write gate: every owner write is a unit of the queue pi's commits use. */
+  /** The one write gate: every owner write is one synchronous unit. */
   readonly #gate: WriteGate;
   /** The storage as the modules see it: the gate's view. */
   readonly #storage: OwnerStorage;
@@ -799,7 +800,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** The agent's settings from owner policy, kept for the policy generation they are of. */
   #agentSettings: { generation: number; settings: HarnessSettings } | null = null;
   readonly #schedule: Schedule;
-  /** pi-durable on PiHarness, a capability of the one Lifecycle (`agent.ts`). */
+  /** pi-durable, one Session per thread on the thread host, a capability of the one Lifecycle. */
   readonly #agent: OwnerAgent;
   readonly #lifecycle: Lifecycle<OwnerEnv>;
   /**
@@ -810,18 +811,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #sender: WakeSender | null = null;
   /** What hands due scheduled turns to pi, called in process by the `work` lane. */
   readonly #runner: WorkRunner;
-  /** The storage the object is limited to (`STORAGE_BYTES`; a test's smaller). */
-  readonly #storageBytes: () => number;
-
   /**
    * The runtime constructs it with `ctx` and `env` alone, so the agent is the production
-   * one, on the gateway provider, and its storage limit the platform's; the workerd tests
-   * hand a factory that opens it on pi-ai's faux models, and may hand a smaller limit.
+   * one, on the gateway provider; the workerd tests hand a factory that opens it on pi-ai's
+   * faux models.
    */
-  constructor(ctx: DurableObjectState, env: OwnerEnv, agent: AgentFactory = gatewayAgent,
-              storageBytes: () => number = () => STORAGE_BYTES) {
+  constructor(ctx: DurableObjectState, env: OwnerEnv, agent: AgentFactory = gatewayAgent) {
     super(ctx, env);
-    this.#storageBytes = storageBytes;
     this.#gate = new WriteGate(ctx.storage);
     const storage = this.#gate.storage;
     const write = this.#gate.write;
@@ -857,18 +853,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       connections: this.#connections,
       threads: {
         nextDue: (now) => this.#threads.nextIdle(now),
-        run: async (_now, until) => {
-          await write(() => this.#storageGauge());
-          return retainThreads(this.#threads, () => this.#agent.liveThreads(), clock, write,
-                               until);
-        },
+        run: (_now, until) => retainThreads(this.#threads, clock, write, until,
+                                            (thread) => this.#agent.dropped(thread)),
       },
       sender: () => this.#sender, runner: () => this.#runner, clock, write, runWakes, runWork,
     }), clock, write);
     const provider = new GatewayProvider({
       connections: this.#connections, usage: this.#usage, write, gateway: () => env.GATEWAY,
       owner, tee: this.#tee, clock,
-      authority: (session) => this.#agent.modelAuthority(session),
     });
     const authority = new Authority({
       grants: { standing: (client, generation, at) => {
@@ -889,9 +881,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                             fileUsage: () => this.#files.usage(),
                             run: (state, agent, input, at) => this.#taRun(state, agent, input,
                                                                          at),
-                          } });
-    this.#runner = workRunner(this.#threads, this.#agent.harness, authority);
-    this.#lifecycle = new Lifecycle<OwnerEnv>(this).use(this.#schedule).use(this.#agent.harness);
+                          },
+                          stores: (name) => env.PISTORE.getByName(name),
+                          config: (agentId) => this.#agentConfig(agentId),
+                          live: (thread, wake) => write(() => this.#threads.live(
+                            thread, wake.active, wake.at === undefined ? null : wake.at / 1000)),
+                        });
+    this.#runner = workRunner(this.#threads, this.#agent, authority);
+    this.#lifecycle = new Lifecycle<OwnerEnv>(this).use(this.#schedule).use(this.#agent.host);
     void ctx.blockConcurrencyWhile(async () => {
       await write(() => migrate(storage));
       // The schedule as stored, for this code's lanes and sender: a deploy that adds a
@@ -901,8 +898,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * The runtime's alarm, which Lifecycle owns: it starts the Lifecycle (pi's open among
-   * its capabilities'), drives the due jobs, then re-arms.
+   * The runtime's alarm, which Lifecycle owns: it starts the Lifecycle, drives the due jobs
+   * (each lane's, and each thread's wake), then re-arms.
    */
   override async alarm(): Promise<void> {
     await this.#lifecycle.alarm();
@@ -1104,7 +1101,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * files retention is applied to rows already kept by housekeeping, so the schedule is
    * synced after it (the `files` lane re-applies it). Once it committed, it ends the
    * agent's in-flight work, its live views and its pending waits (`OwnerAgent.endAll`):
-   * it opens pi to do so, and waits up to `END_WAIT_MS` for the work to end. Should that
+   * it opens each working thread's Session to do so, and waits up to `END_WAIT_MS` for the
+   * work to end. Should that
    * fail, the door rejects, though the write is committed; the work it missed is held to
    * the new policy anyway, and its model calls to the new generation.
    */
@@ -1208,10 +1206,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /**
    * A narrowing the owner's account makes without a session, as a key's revoke does; the
-   * client's agent work ends once it committed: the door opens pi when the client had
-   * threads, and waits up to `END_WAIT_MS` for that work to end. Should that fail, the
-   * door rejects, though the revoke is committed; what it missed is refused anyway, at
-   * every tool operation and model call (`authority.ts`).
+   * client's agent work ends once it committed: the door ends the work of each of the
+   * client's threads with a Session open, and waits up to `END_WAIT_MS` for it to end.
+   * Should that fail, the door rejects, though the revoke is committed; what it missed is
+   * refused anyway, at every tool operation and model call (`authority.ts`).
    */
   async grantRevoke(binding: Binding, request: ClientRequest):
       Promise<{ client: string; revoked: boolean; generation: number }> {
@@ -1261,10 +1259,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /**
    * A grant change ends what its client set going (P0-3's M3): its agents' open wakes and
    * callbacks, its pending scheduled work and its held registrations, in the caller's
-   * transaction, and its threads, whose conversations it answers: their live views close,
-   * and its agent work ends, after that commits (`OwnerAgent.endClient`).
+   * transaction, and its threads, whose Sessions it answers: their live views close, and
+   * their work ends, after that commits (`OwnerAgent.endClient`).
    */
-  #endClient(client: string): number[] {
+  #endClient(client: string): Thread[] {
     this.#ledger.suppressClient(client, clock());
     this.#work.endClient(client, clock());
     this.#registrations.endClient(client);
@@ -1460,19 +1458,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const thread = this.#threads.conversing(stamp, agent);
       if (thread !== null) {
         this.#threads.touch(thread.thread_id, clock());
-      } else {
-        this.#storageGauge(true);
       }
       return { client: account.origin?.client ?? null, agent, sendId, steer, waitMs, stamp,
                thread, input: this.#inputOf(account.origin?.client ?? null, message) };
     });
+    if (asked.thread === null) {
+      await this.#agentConfig(asked.agent);  // a bad AGENTS.md is refused before a thread
+    }
     const thread = asked.thread ?? await this.#agent.thread(asked.agent, asked.stamp, {
-      kind: "converse", config: await this.#agentConfig(asked.agent), need: ["converse"] });
+      kind: "converse", need: ["converse"] });
     await this.#schedule.sync();
     const key = await sendRequest(asked.client, asked.sendId);
-    await this.#agent.harness.submit(asked.input, {
-      session: String(thread.conversation_id), operationId: key,
-      whenBusy: asked.steer ? "steer" : "followUp",
+    await this.#agent.submit(thread, asked.input, {
+      operationId: key, whenBusy: asked.steer ? "steer" : "followUp",
       ...(asked.client === null ? {}
         : { entry: { kind: "ta.outside", data: { client: asked.client, agent: asked.agent } } }),
     });
@@ -1516,7 +1514,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
     const { thread, key, work } = found;
     const base = { operation_id: operationOf(thread.thread_id, key), thread_id: thread.thread_id };
-    const status = await this.#agent.status(key, String(thread.conversation_id));
+    const status = await this.#agent.status(thread, key);
     if (status.status === "unanswered" && status.reason === "not_found" && work !== null) {
       // Not handed to pi yet, or never to be: the work row says how it stands.
       if (work.state === "pending" || work.state === "running") {
@@ -1534,7 +1532,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /**
    * Withdraw one of the caller's own operations: scheduled work not handed yet is refused
    * `cancelled`; an input pi holds is withdrawn while queued, or the run it joined in the
-   * caller's thread is aborted (PiHarness's `abort` by operation). Cancelling again, or a
+   * caller's thread is aborted (`ThreadHost.withdraw`). Cancelling again, or a
    * settled operation, cancels nothing.
    */
   async agentCancel(binding: Binding, request: OperationRequest):
@@ -1547,8 +1545,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         && this.#work.cancel(key, thread.client, clock());
       return { thread, key, withdrawn };
     });
-    const aborted = await this.#agent.harness.abort({
-      session: String(found.thread.conversation_id), operationId: found.key });
+    const aborted = await this.#agent.cancel(found.thread, found.key);
     return { operation_id: operationOf(found.thread.thread_id, found.key),
              cancelled: found.withdrawn || aborted };
   }
@@ -1572,20 +1569,20 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * A launch, the door's and `ta`'s one path: the storage gauge and, for scheduled work, its
-   * room, each refused before anything is made; a fresh `run` thread, recorded in a unit
-   * that re-checks `run_graph` where it acts; then the input submitted, or scheduled.
+   * A launch, the door's and `ta`'s one path: for scheduled work, its room, refused before
+   * anything is made, and the agent's data files, a bad one refused the same; a fresh `run`
+   * thread, recorded in a unit that re-checks `run_graph` where it acts; then the input
+   * submitted, or scheduled.
    */
   async #launch(stamp: Stamped | null, agent: string, input: string, at: number | null):
       Promise<Operation> {
     await this.#door(() => {
-      this.#storageGauge(true);
       if (at !== null && at > clock()) {
         this.#work.room(stamp?.client ?? null, input);
       }
     });
-    const thread = await this.#agent.thread(agent, stamp, {
-      kind: "run", config: await this.#agentConfig(agent), need: ["run_graph"] });
+    await this.#agentConfig(agent);
+    const thread = await this.#agent.thread(agent, stamp, { kind: "run", need: ["run_graph"] });
     if (at !== null && at > clock()) {
       const { work_id: work } = await this.#door(() => this.#work.add(
         "turn", at, { thread: thread.thread_id, input },
@@ -1597,34 +1594,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
     await this.#schedule.sync();
     const key = `run_${hex(16)}`;
-    await this.#agent.harness.submit(input, {
-      session: String(thread.conversation_id), operationId: key, whenBusy: "followUp",
+    await this.#agent.submit(thread, input, {
+      operationId: key, whenBusy: "followUp",
       entry: { kind: "ta.run", data: { client: stamp?.client ?? null, agent } },
     });
     return { operation_id: operationOf(thread.thread_id, key), thread_id: thread.thread_id,
              status: "queued" };
-  }
-
-  /**
-   * In a unit: the object's storage against its limit. Past `STORAGE_NOTICE_SHARE` the
-   * owner is told once (`storage_high`); past `STORAGE_REFUSE_SHARE` it is told
-   * (`storage_full`), and with `refuse`, a new thread or launch is refused loudly with the
-   * fixed code, the notice kept.
-   */
-  #storageGauge(refuse = false): void {
-    const share = this.#gate.size() / this.#storageBytes();
-    const percent = (at: number) => `${Math.round(at * 100)}%`;
-    if (share >= STORAGE_REFUSE_SHARE) {
-      this.#notices.once(STORAGE_FULL, `the owner's storage is past ${percent(
-        STORAGE_REFUSE_SHARE)} of its limit: new threads and launches are refused`, clock());
-      if (refuse) {
-        throw new Refused(`${STORAGE_FULL}: the owner's storage is past ${percent(
-          STORAGE_REFUSE_SHARE)} of its limit`);
-      }
-    } else if (share >= STORAGE_NOTICE_SHARE) {
-      this.#notices.once(STORAGE_HIGH, `the owner's storage is past ${percent(
-        STORAGE_NOTICE_SHARE)} of its limit`, clock());
-    }
   }
 
   /** The bounded wait for a submitted operation; past `waitMs`, `running`. */
@@ -1632,9 +1607,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       Promise<Operation> {
     const base = { operation_id: operationOf(thread.thread_id, key), thread_id: thread.thread_id };
     const timeout = AbortSignal.timeout(waitMs);
-    let settled: PiOperationResult;
+    let settled: OperationResult;
     try {
-      settled = await this.#agent.wait(key, String(thread.conversation_id), client, timeout);
+      settled = await this.#agent.wait(thread, key, client, timeout);
     } catch (error) {
       if (error instanceof Refused ? error.message === WAITS_FULL : timeout.aborted) {
         return { ...base, status: "running" };

@@ -14,7 +14,7 @@
  *
  * The lane only hands work off; it never runs a turn (slice 5's review L1). Its pass is
  * inline in Lifecycle's drive loop, which awaits each job in turn under one alarm's
- * 15-minute wall, beside PiHarness's wake job, so a runner (the agent's, `agent.ts`)
+ * 15-minute wall, beside each thread's wake job, so a runner (the agent's, `agent.ts`)
  * marks the row, hands the turn to pi's durable submit in the thread the work named when
  * it was made, and returns. pi runs it, and its status
  * is pi's receipts; the row says only `handed`. A hand-off is fenced as a wake's send is

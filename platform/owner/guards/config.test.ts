@@ -3,9 +3,13 @@
  *
  * `OwnerDO` must have no way to another owner's object, so its Worker's config is an
  * allow-list, at top level and in every environment: the keys that name the Worker, its
- * entry, its runtime and its SQLite class migration, and no binding but the service
- * bindings `SERVICES` names. Each names one Worker and exactly the binding kinds that
- * Worker's own config may hold, each a kind that reaches no object, service, queue,
+ * entry, its runtime and its SQLite class migrations, and no binding but the service
+ * bindings `SERVICES` names and, at top level alone, exactly one Durable Object namespace,
+ * `PISTORE`, of the Worker's own `ThreadStore` class (no `script_name`, so no other
+ * Worker's class), whose objects are the agent's thread stores, named only by random ids
+ * the object's rows hold, reaching nothing (`STORES`); `OwnerDO` itself is never bound.
+ * Each service names one Worker and exactly the binding kinds that Worker's own config may
+ * hold, each a kind that reaches no object, service, queue,
  * workflow or other Worker: for `FILES`, the files Worker and its one R2 bucket. The
  * bound Worker's config is checked against that allow-list too, so any other binding it
  * gains (a Durable Object, a service, a queue, a workflow, a dispatch namespace, a
@@ -15,10 +19,11 @@
  * compatibility flags carry
  * `disable_ctx_exports`, so the runtime does not hand the object its own namespaces as
  * `ctx.exports`. Its `limits` are exactly `LIMITS`, set at top level: the platform's count
- * of subrequests per invocation (50 on Free, 10,000 by default on Paid), whose own error
- * is the object's only call limit, so the number the agent's turns rely on is explicit
- * and moves only with a review here. It is the only wrangler config in the owner Worker.
- * Edge Workers bind `OWNER` from their own configs.
+ * of subrequests per invocation (50 on Free, 10,000 by default on Paid, at most 10,000,000),
+ * whose own error is the object's only call limit, so the number the agent's turns rely on
+ * is explicit and moves only with a review here; every thread store RPC is one, so it is
+ * raised to 1,000,000 until live probe P4 measures a real run's count. It is the only
+ * wrangler config in the owner Worker. Edge Workers bind `OWNER` from their own configs.
  */
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,15 +39,27 @@ const OWNER = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = "wrangler.jsonc";
 const NO_EXPORTS = "disable_ctx_exports";
 
+/**
+ * The owner Worker's one Durable Object binding: its own thread stores, of its own class.
+ * Pinned whole: any other namespace, a `script_name` or a second binding is refused.
+ */
+const STORES = Object.freeze({ bindings: Object.freeze([
+  Object.freeze({ name: "PISTORE", class_name: "ThreadStore" })]) });
+/** The classes the Worker's migrations make, each SQLite-backed. */
+const CLASSES = Object.freeze(["OwnerDO", "ThreadStore"]);
 /** The keys an environment may set besides `services`: none of them binds anything. */
 const ENV_KEYS: ReadonlySet<string> = new Set([
   "name", "main", "compatibility_date", "compatibility_flags", "workers_dev", "preview_urls",
   "migrations", "limits",
 ]);
-/** The owner Worker's limits, wherever they are set: the Paid default subrequests. */
-const LIMITS = Object.freeze({ subrequests: 10000 });
-/** The keys the top level may set: an environment's, the schema, and the environments. */
-const TOP_KEYS: ReadonlySet<string> = new Set([...ENV_KEYS, "$schema", "env"]);
+/** The owner Worker's limits, wherever they are set: subrequests, until P4 measures them. */
+const LIMITS = Object.freeze({ subrequests: 1_000_000 });
+/**
+ * The keys the top level may set: an environment's, the schema, the environments, and the
+ * one store namespace (an environment does not inherit it, and may not set its own).
+ */
+const TOP_KEYS: ReadonlySet<string> = new Set([...ENV_KEYS, "$schema", "env",
+                                               "durable_objects"]);
 /** The keys a bound Worker may set that bind nothing. */
 const BOUND_KEYS: ReadonlySet<string> = new Set([
   "$schema", "name", "main", "compatibility_date", "compatibility_flags", "workers_dev",
@@ -146,6 +163,16 @@ export function configProblems(config: Config,
         problems.push(`${where}${key} is not an allowed key`);
       } else if (key === "limits" && JSON.stringify(scope[key]) !== JSON.stringify(LIMITS)) {
         problems.push(`${where}limits are not ${JSON.stringify(LIMITS)}`);
+      } else if (key === "durable_objects"
+                 && JSON.stringify(scope[key]) !== JSON.stringify(STORES)) {
+        problems.push(`${where}durable_objects binds other than PISTORE to its own ThreadStore`);
+      } else if (key === "migrations") {
+        const made = (Array.isArray(scope[key]) ? scope[key] as Config[] : [])
+          .flatMap((migration) => Object.entries(migration))
+          .filter(([field]) => field !== "tag");
+        if (JSON.stringify(made) !== JSON.stringify([["new_sqlite_classes", CLASSES]])) {
+          problems.push(`${where}migrations make other than ${CLASSES.join(" and ")}, SQLite`);
+        }
       }
     }
     if (top && scope["limits"] === undefined) {
@@ -198,12 +225,42 @@ export function platformConfigs(): Map<string, Config> {
 const config = parseConfig(readFileSync(join(OWNER, CONFIG), "utf8"));
 
 describe("owner Worker config", () => {
-  it("binds only FILES, to a Worker that binds one bucket, and GATEWAY, to one that binds " +
-     "nothing, and turns ctx.exports off", () => {
+  it("binds only FILES, to a Worker that binds one bucket, GATEWAY, to one that binds " +
+     "nothing, and PISTORE, its own thread stores, and turns ctx.exports off", () => {
     expect(configProblems(config, platformConfigs())).toEqual([]);
     expect(config["compatibility_flags"]).toContain(NO_EXPORTS);
     expect(config["services"]).toEqual([{ binding: "FILES", service: "tinyassets-files" },
                                         { binding: "GATEWAY", service: "tinyassets-gateway" }]);
+    expect(config["durable_objects"]).toEqual(
+      { bindings: [{ name: "PISTORE", class_name: "ThreadStore" }] });
+  });
+
+  it.each([
+    ["the owner's own class", { bindings: [{ name: "PISTORE", class_name: "OwnerDO" }] }],
+    ["OWNER", { bindings: [{ name: "OWNER", class_name: "OwnerDO" }] }],
+    ["another Worker's class", { bindings: [{ name: "PISTORE", class_name: "ThreadStore",
+                                             script_name: "tinyassets-owner" }] }],
+    ["a second namespace", { bindings: [{ name: "PISTORE", class_name: "ThreadStore" },
+                                        { name: "MORE", class_name: "ThreadStore" }] }],
+    ["another name", { bindings: [{ name: "STORE", class_name: "ThreadStore" }] }],
+    ["no binding", { bindings: [] }],
+    ["an environment's", undefined],
+  ])("refuses a store namespace that is %s", (_what, objects) => {
+    const probe = objects === undefined
+      ? { ...config, env: { prod: { durable_objects: config["durable_objects"] } } }
+      : { ...config, durable_objects: objects };
+    expect(configProblems(probe as Config, platformConfigs())).not.toEqual([]);
+  });
+
+  it("makes OwnerDO and ThreadStore, both SQLite-backed, and no other class", () => {
+    for (const migrations of [[{ tag: "v1", new_sqlite_classes: ["OwnerDO"] }],
+                              [{ tag: "v1", new_classes: ["OwnerDO", "ThreadStore"] }],
+                              [{ tag: "v1", new_sqlite_classes: ["OwnerDO", "ThreadStore"] },
+                               { tag: "v2", new_sqlite_classes: ["Other"] }],
+                              [{ tag: "v1", new_sqlite_classes: ["OwnerDO", "ThreadStore"],
+                                 deleted_classes: ["X"] }]]) {
+      expect(configProblems({ ...config, migrations }, platformConfigs())).not.toEqual([]);
+    }
   });
 
   const gateway = { name: "tinyassets-gateway", main: "src/index.ts",
@@ -246,10 +303,11 @@ describe("owner Worker config", () => {
                 "binding allows"]);
   });
 
-  it("sets the platform's subrequests per invocation explicitly, to the Paid default", () => {
-    expect(config["limits"]).toEqual({ subrequests: 10000 });
-    for (const limits of [undefined, {}, { subrequests: 50 }, { subrequests: 10000, cpu_ms: 1 },
-                          { cpu_ms: 30000 }]) {
+  it("sets the platform's subrequests per invocation explicitly, raised for thread stores",
+     () => {
+    expect(config["limits"]).toEqual({ subrequests: 1_000_000 });
+    for (const limits of [undefined, {}, { subrequests: 50 }, { subrequests: 10000 },
+                          { subrequests: 1_000_000, cpu_ms: 1 }, { cpu_ms: 30000 }]) {
       const { limits: _drop, ...rest } = config;
       const probe = limits === undefined ? rest : { ...rest, limits };
       expect(configProblems(probe, platformConfigs())).toEqual(
@@ -324,7 +382,10 @@ describe("owner Worker config", () => {
     expect([...TOP_KEYS, "services"].filter((key) => !top.includes(key))).toEqual([]);
     expect([...ENV_KEYS, "services"].filter((key) => !env.includes(key))).toEqual([]);
     // Every key wrangler offers beyond the allow-list is refused, bindings among them.
-    for (const key of ["durable_objects", "kv_namespaces", "r2_buckets",
+    // The one Durable Object namespace is the top level's alone, pinned whole (`STORES`).
+    expect([TOP_KEYS.has("durable_objects"), ENV_KEYS.has("durable_objects")])
+      .toEqual([true, false]);
+    for (const key of ["kv_namespaces", "r2_buckets",
                        "d1_databases", "queues", "vars", "ai", "workflows", "browser",
                        "vectorize", "hyperdrive", "analytics_engine_datasets",
                        "dispatch_namespaces", "mtls_certificates", "send_email",
@@ -337,12 +398,15 @@ describe("owner Worker config", () => {
   });
 
   const base = { name: "tinyassets-owner", main: "src/index.ts",
-                 compatibility_flags: ["nodejs_compat", NO_EXPORTS], limits: LIMITS };
+                 compatibility_flags: ["nodejs_compat", NO_EXPORTS], limits: LIMITS,
+                 durable_objects: STORES };
   const bound = new Map([["tinyassets-files", files as Config]]);
 
   it.each([
     ["a self-binding", { ...base, durable_objects: { bindings: [
       { name: "OWNER", class_name: "OwnerDO" }] } }],
+    ["a self-binding beside the stores", { ...base, durable_objects: { bindings: [
+      ...STORES.bindings, { name: "OWNER", class_name: "OwnerDO" }] } }],
     ["a binding inside an environment", { ...base, env: { staging: {
       durable_objects: { bindings: [{ name: "OWNER", class_name: "OwnerDO" }] } } } }],
     ["a services binding", { ...base, services: [{ binding: "SELF", service: "tinyassets-owner" }] }],

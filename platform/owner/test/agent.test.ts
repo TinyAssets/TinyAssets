@@ -7,7 +7,6 @@
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { DurableObjectSqliteDatabase } from "@earendil-works/chord/sqlite/cloudflare";
 import {
   type AssistantMessage, fauxAssistantMessage, type FauxContentBlock, fauxToolCall,
   type Message,
@@ -15,14 +14,16 @@ import {
 import type { ConversationId, JsonObject } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
-import { AGENT_SETTINGS, AUTO, writerOf } from "../src/agent";
+import {
+  AGENT_SETTINGS, AUTO, CONTEXT_RETENTION_MS, DOCUMENT_RETENTION_MS, writerOf,
+} from "../src/agent";
 import { INLINE_BYTES } from "../src/files";
 import { OUTSIDE_GATE, WriteGate } from "../src/gate";
 import { clock, WAKE_LEASE_S } from "../src/ledger";
 import { NOTICE_DETAIL, Notices, NOTICES_KEPT } from "../src/notices";
 import type { Binding } from "../src/owner-do";
 import { DOT, ledgerOn, MCP, MUSE } from "./ledger-support";
-import { drainDue, failure } from "./support";
+import { drainDue, failure, storeOf, storeSql, tablesIn } from "./support";
 import {
   type FauxOwnerDO, type MalformedOwnerDO, says, type Spawned, storeScript,
 } from "./worker";
@@ -96,18 +97,22 @@ describe("pi in the owner's object", () => {
     const r = agentObject();
     const first = await r.in(async (instance) => {
       instance.script = [says("hello")];
-      return instance.agent.harness.prompt("hi");
+      return instance.harness.prompt("hi");
     });
     expect([first.status, first.text]).toEqual(["done", "hello"]);
-    const version = await r.in((_instance, state) => state.storage.sql.exec<{ version: number }>(
-      "SELECT version FROM pi_durable_schema").one().version);
-    expect(version).toBe(2);
+    // pi's tables are the thread's store's alone, at pi's schema version: none in the owner's.
+    const store = await storeOf(r.stub, first.session);
+    expect((await storeSql(store, "SELECT version FROM pi_durable_schema"))[0]!["version"])
+      .toBe(2);
+    expect(await tablesIn(r.stub, "pi_")).toEqual([]);
+    expect((await storeSql(store, "SELECT name FROM sqlite_master WHERE type = 'table' " +
+                                  "AND name LIKE 'pi_%'")).length).toBeGreaterThan(5);
     // Evicted, the object is cold again: its first call opens pi and the turn completes.
     await evictDurableObject(r.stub);
     const again = await r.in(async (instance) => {
       instance.script = [says("hello"), says("again")];
-      const { operationId } = await instance.agent.harness.submit("once more");
-      return instance.agent.harness.wait(operationId);
+      const { operationId } = await instance.harness.submit("once more");
+      return instance.harness.wait(operationId);
     });
     expect([again.status, again.text]).toEqual(["done", "again"]);
   });
@@ -124,7 +129,7 @@ describe("a turn in the owner's object", () => {
               fauxToolCall("write", { path: "out.md", content: "milk" })),
         echo,
       ];
-      return instance.agent.harness.prompt("summarize my notes");
+      return instance.harness.prompt("summarize my notes");
     });
     expect(answer.status).toBe("done");
     const shown = JSON.parse(answer.text!) as ReturnType<typeof results>;
@@ -146,25 +151,28 @@ describe("a turn in the owner's object", () => {
     const stamp = { client: DOT.client, generation: 1, authenticated_at: 1_700_000_000,
                     universe: null, agent: "main" };
     const out = await r.in(async (instance) => {
-      const pi = await instance.agent.harness.pi();
+      const pi = await instance.harness.pi();
       const authority = instance.agent.authority;
-      const stamped = { id: (await instance.agent.thread("main", stamp)).conversation_id };
+      const stamped = (await instance.agent.thread("main", stamp)).thread_id;
       const spawned = (messages: Message[]) => says(results(messages)["spawn"]!.text);
       instance.script = [calls(fauxToolCall("write", { path: "theirs.md", content: "x" }),
                                viaTa("spawn", {})), spawned];
-      const theirs = await instance.agent.harness.prompt("write it",
-                                                         { session: String(stamped.id) });
+      const theirs = await instance.harness.prompt("write it", { session: stamped });
       // The same tool in the owner's own conversation: no stamp to keep.
       instance.script = [calls(viaTa("spawn", {})), spawned];
-      const own = await instance.agent.harness.prompt("spawn one");
+      const own = await instance.harness.prompt("spawn one");
+      const theirPi = await instance.harness.pi({ session: stamped });
       return {
         theirs, own,
-        child: await pi.snapshot(authority, Number(theirs.text) as ConversationId, BG),
+        root: await theirPi.snapshot(authority, 1 as ConversationId, BG),
+        child: await theirPi.snapshot(authority, Number(theirs.text) as ConversationId, BG),
         ownChild: await pi.snapshot(authority, Number(own.text) as ConversationId, BG),
       };
     });
     expect([out.theirs.status, out.own.status]).toEqual(["done", "done"]);
     expect(Number(out.theirs.text)).toBeGreaterThan(1);
+    // The thread is its Session's root, its stamp written in the root's creating commit.
+    expect(out.root).toEqual({ by: "client", stamp });
     expect(out.child).toEqual({ by: "client", stamp });
     expect(out.ownChild).toEqual({ by: "owner" });
     const history = await r.stub.fileHistory(r.as(), { path: "/workspace/theirs.md", limit: 1 });
@@ -174,7 +182,7 @@ describe("a turn in the owner's object", () => {
   it("runs a conversation's tools from its own working directory", async () => {
     const r = agentObject();
     const answer = await r.in(async (instance) => {
-      const pi = await instance.agent.harness.pi();
+      const pi = await instance.harness.pi();
       const deep = await pi.createConversation({
         ownership: { kind: "ownerless" },
         agent: { model: { provider: AUTO.provider, modelId: AUTO.id }, cwd: "/workspace/deep" },
@@ -184,7 +192,7 @@ describe("a turn in the owner's object", () => {
         },
       }, BG);
       instance.script = [calls(fauxToolCall("write", { path: "here.md", content: "x" })), echo];
-      return instance.agent.harness.prompt("write it", { session: String(deep.id) });
+      return instance.harness.prompt("write it", { session: String(deep.id) });
     });
     expect(answer.status).toBe("done");
     const read = await r.stub.fileRead(r.as(), { path: "/workspace/deep/here.md" });
@@ -202,7 +210,7 @@ describe("a turn in the owner's object", () => {
       storeScript(state, script);
       instance.probes.readGate = new Promise(() => undefined);
       instance.probes.holdGate = new Promise(() => undefined);
-      return (await instance.agent.harness.submit("look")).operationId;
+      return (await instance.harness.submit("look")).operationId;
     });
     await until(() => r.in((instance) => instance.probes.reads === 1
                                           && instance.probes.holds === 1), "both tools to start");
@@ -213,9 +221,9 @@ describe("a turn in the owner's object", () => {
     const fresh = env.AGENT.getByName(r.name);
     expect(await runDurableObjectAlarm(fresh)).toBe(true);
     const out = await runInDurableObject(fresh, async (instance: FauxOwnerDO) => ({
-      settled: await instance.agent.harness.wait(operation),
+      settled: await instance.harness.wait(operation),
       reads: instance.probes.reads, holds: instance.probes.holds,
-      shown: results((await instance.agent.harness.messages())
+      shown: results((await instance.harness.messages())
         .flatMap((entry) => (entry.model ?? []) as Message[])),
     }));
     expect([out.settled.status, out.settled.text]).toEqual(["done", "done"]);
@@ -240,13 +248,13 @@ function turnsOf(instance: FauxOwnerDO): string[] {
 
 /** Wait for a submission pi admitted, by its id. */
 async function settled(instance: FauxOwnerDO, id: number) {
-  const pi = await instance.agent.harness.pi();
+  const pi = await instance.harness.pi();
   return (await pi.submission(id as never, BG))!.wait(BG);
 }
 
 /** Wait for background work, and the input it submitted to its conversation. */
 async function backgroundDone(instance: FauxOwnerDO) {
-  const pi = await instance.agent.harness.pi();
+  const pi = await instance.harness.pi();
   await until(async () => instance.probes.background !== null, "background work");
   const task = await pi.waitForTask(instance.probes.background as never, BG);
   const made = (task.state.outcome as { result: Spawned }).result;
@@ -293,8 +301,8 @@ describe("a model request's turn", () => {
     const out = await r.in(async (instance) => {
       instance.script = Array.from({ length: 8 }, () => (messages: Message[]) =>
         messages.at(-1)?.role === "toolResult" ? says("done") : calls(viaTa("hold", {})));
-      const first = await instance.agent.harness.prompt("one");
-      const second = await instance.agent.harness.prompt("two");
+      const first = await instance.harness.prompt("one");
+      const second = await instance.harness.prompt("two");
       return { first, second, turns: turnsOf(instance) };
     });
     expect([out.first.status, out.second.status]).toEqual(["done", "done"]);
@@ -314,13 +322,13 @@ describe("a model request's turn", () => {
         messages.at(-1)?.role === "toolResult" ? says("done")
           : JSON.stringify(messages.at(-1)).includes("steer") ? says("steered")
             : calls(viaTa("hold", {})));
-      const { operationId } = await instance.agent.harness.submit("work");
+      const { operationId } = await instance.harness.submit("work");
       await until(async () => instance.probes.holds === 1, "the hold to start");
       // Joins the running work after the tool round.
-      const steered = await instance.agent.harness.submit("steer it", { whenBusy: "steer" });
+      const steered = await instance.harness.submit("steer it", { whenBusy: "steer" });
       held.release();
-      const answers = [await instance.agent.harness.wait(operationId),
-                       await instance.agent.harness.wait(steered.operationId)];
+      const answers = [await instance.harness.wait(operationId),
+                       await instance.harness.wait(steered.operationId)];
       return { answers, turns: turnsOf(instance) };
     });
     expect(out.answers.map((answer) => answer.status)).toEqual(["done", "done"]);
@@ -334,11 +342,11 @@ describe("a model request's turn", () => {
     const out = await r.in(async (instance) => {
       instance.script = Array.from({ length: 12 }, () => (messages: Message[]) =>
         compacting(messages) ? says("## Goal\nsummary") : says("noted"));
-      expect((await instance.agent.harness.prompt("early")).status).toBe("done");
+      expect((await instance.harness.prompt("early")).status).toBe("done");
       // Past pi's background threshold (32,768 under the blocking one): the run's
       // generation starts a background compaction, which pi runs on past the run.
-      const answer = await instance.agent.harness.prompt(HUGE);
-      await until(async () => (await instance.agent.harness.messages())
+      const answer = await instance.harness.prompt(HUGE);
+      await until(async () => (await instance.harness.messages())
         .some((entry) => entry.kind === "pi.compaction"), "the compaction's summary");
       return { answer, turns: turnsOf(instance) };
     });
@@ -357,26 +365,27 @@ describe("a model request's turn", () => {
           : messages.at(-1)?.role === "toolResult" ? says("done")
             : JSON.stringify(messages.at(-1)).includes("work") ? calls(viaTa("hold", {}))
               : says("noted"));
-      expect((await instance.agent.harness.prompt("early")).status).toBe("done");
+      expect((await instance.harness.prompt("early")).status).toBe("done");
       const held = gate();
       instance.probes.holdGate = held.promise;
-      const { operationId } = await instance.agent.harness.submit(`work ${LONG}`);
+      const { operationId } = await instance.harness.submit(`work ${LONG}`);
       await until(async () => instance.probes.holds === 1, "the hold to start");
-      const pi = await instance.agent.harness.pi();
+      const pi = await instance.harness.pi();
       const root = await pi.root(BG);
       // Asked by the owner, not caused by the run: placed at the run's next boundary.
       const asked = root.compact(undefined, BG);
       held.release();
-      const answer = await instance.agent.harness.wait(operationId);
+      const answer = await instance.harness.wait(operationId);
       const compaction = await asked;
       const compacted = await pi.waitForTask(compaction, BG);
-      return { answer, compaction, compacted, turns: turnsOf(instance) };
+      return { answer, compaction, compacted, turns: turnsOf(instance),
+               thread: await instance.harness.thread() };
     });
     expect(out.answer.status).toBe("done");
     expect(out.compacted.state.outcome.status).toBe("completed");
     const [early, ...rest] = out.turns;
-    const own = rest.filter((turn) => turn === `task:${out.compaction}`);
-    const run = rest.filter((turn) => turn !== `task:${out.compaction}`);
+    const own = rest.filter((turn) => turn === `task:${out.thread}:${out.compaction}`);
+    const run = rest.filter((turn) => turn !== `task:${out.thread}:${out.compaction}`);
     expect(own).toHaveLength(1);
     expect(run.length).toBeGreaterThanOrEqual(2);
     expect(new Set(run).size).toBe(1);
@@ -389,13 +398,13 @@ describe("a model request's turn", () => {
       const held = gate();
       instance.probes.holdGate = held.promise;
       instance.script = Array.from({ length: 12 }, () => tree);
-      const { operationId } = await instance.agent.harness.submit("spawn and hold");
+      const { operationId } = await instance.harness.submit("spawn and hold");
       // The subagent runs its work, and makes a subagent of its own, which runs too.
       await until(async () => instance.probes.submitted.length === 2, "both subagents' work");
       const below = [await settled(instance, instance.probes.submitted[0]!),
                      await settled(instance, instance.probes.submitted[1]!)];
       held.release();
-      const answer = await instance.agent.harness.wait(operationId);
+      const answer = await instance.harness.wait(operationId);
       return { answer, below, turns: turnsOf(instance) };
     });
     expect([out.answer.status, ...out.below.map((answer) => answer.status)])
@@ -410,9 +419,9 @@ describe("a model request's turn", () => {
     const r = agentObject();
     const out = await r.in(async (instance) => {
       instance.script = Array.from({ length: 12 }, () => tree);
-      const pi = await instance.agent.harness.pi();
+      const pi = await instance.harness.pi();
       instance.probes.holdGate = Promise.resolve();
-      expect((await instance.agent.harness.prompt("spawn one")).status).toBe("done");
+      expect((await instance.harness.prompt("spawn one")).status).toBe("done");
       await settled(instance, instance.probes.submitted[0]!);
       const from = turnsOf(instance).length;
       const child = instance.probes.spawned as ConversationId;
@@ -438,9 +447,9 @@ describe("a model request's turn", () => {
       const held = gate();
       instance.probes.backgroundGate = held.promise;
       instance.script = Array.from({ length: 12 }, () => tree);
-      const started = await instance.agent.harness.prompt(prompt);
+      const started = await instance.harness.prompt(prompt);
       const spawning = turnsOf(instance);
-      const later = await instance.agent.harness.prompt("a later input");
+      const later = await instance.harness.prompt("a later input");
       const laterTurns = turnsOf(instance).slice(spawning.length);
       // The background work submits its work only now, during no run.
       held.release();
@@ -461,18 +470,19 @@ describe("a model request's turn", () => {
     const out = await r.in(async (instance) => {
       instance.script = Array.from({ length: 12 }, () => tree);
       instance.probes.holdGate = Promise.resolve();
-      expect((await instance.agent.harness.prompt("spawn one")).status).toBe("done");
+      expect((await instance.harness.prompt("spawn one")).status).toBe("done");
       await settled(instance, instance.probes.submitted[0]!);
-      const pi = await instance.agent.harness.pi();
+      const pi = await instance.harness.pi();
       const child = instance.probes.spawned as ConversationId;
       const conversation = (await pi.conversation(child, BG))!;
       await (await conversation.submit({ type: "input", content: LONG }, BG)).wait(BG);
       const compaction = await conversation.compact(undefined, BG);
       const done = await pi.waitForTask(compaction, BG);
-      return { compaction, done, turns: turnsOf(instance) };
+      return { compaction, done, turns: turnsOf(instance),
+               thread: await instance.harness.thread() };
     });
     expect(out.done.state.outcome.status).toBe("completed");
-    expect(out.turns.at(-1)).toBe(`task:${out.compaction}`);
+    expect(out.turns.at(-1)).toBe(`task:${out.thread}:${out.compaction}`);
   });
 
   it("is a compaction's own while the conversation is idle", async () => {
@@ -480,16 +490,43 @@ describe("a model request's turn", () => {
     const out = await r.in(async (instance) => {
       instance.script = Array.from({ length: 8 }, () => (messages: Message[]) =>
         compacting(messages) ? says("## Goal\nsummary") : says("noted"));
-      await instance.agent.harness.prompt("early");
-      await instance.agent.harness.prompt(LONG);
-      const pi = await instance.agent.harness.pi();
+      await instance.harness.prompt("early");
+      await instance.harness.prompt(LONG);
+      const pi = await instance.harness.pi();
       const root = await pi.root(BG);
       const compaction = await root.compact(undefined, BG);
       const done = await pi.waitForTask(compaction, BG);
-      return { compaction, done, turns: turnsOf(instance) };
+      return { compaction, done, turns: turnsOf(instance),
+               thread: await instance.harness.thread() };
     });
     expect(out.done.state.outcome.status).toBe("completed");
-    expect(out.turns.at(-1)).toBe(`task:${out.compaction}`);
+    expect(out.turns.at(-1)).toBe(`task:${out.thread}:${out.compaction}`);
+  });
+
+  it("is never another thread's: two threads' compactions of one task id are two turns",
+     async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance) => {
+      instance.script = Array.from({ length: 8 }, () => (messages: Message[]) =>
+        compacting(messages) ? says("## Goal\nsummary") : says("noted"));
+      const own = await instance.harness.thread();
+      const run = (await instance.agent.thread("main", null)).thread_id;
+      const compactions = [];
+      for (const session of [own, run]) {
+        await instance.harness.prompt("early", { session });
+        await instance.harness.prompt(LONG, { session });
+        const pi = await instance.harness.pi({ session });
+        const compaction = await (await pi.root(BG)).compact(undefined, BG);
+        await pi.waitForTask(compaction, BG);
+        compactions.push({ session, compaction, turn: turnsOf(instance).at(-1) });
+      }
+      return compactions;
+    });
+    // Task ids are per Session, so the two compactions share one; their turns do not.
+    expect(out[0]!.compaction).toBe(out[1]!.compaction);
+    expect(out.map((one) => one.turn)).toEqual(
+      out.map((one) => `task:${one.session}:${one.compaction}`));
+    expect(out[0]!.turn).not.toBe(out[1]!.turn);
   });
 });
 
@@ -516,7 +553,7 @@ describe("a package pi refuses to install", () => {
     await evictDurableObject(stub);
     await drainDue(stub as never);
     const rows = await runInDurableObject(stub, async (instance: MalformedOwnerDO, state) => {
-      const root = await (await instance.agent.harness.pi()).root(BG);
+      const root = await (await instance.harness.pi()).root(BG);
       return {
         intents: state.storage.sql.exec("SELECT * FROM file_intents").toArray(),
         wakes: state.storage.sql.exec("SELECT state FROM ledger_wakes WHERE kind = 'wake'")
@@ -559,7 +596,7 @@ describe("a package pi refuses to install", () => {
         .then(() => "alive", (error: Error) => error.message)).toBe("gone");
       await runInDurableObject(env.MALFORMED.getByName(name),
                                async (instance: MalformedOwnerDO) => {
-        await instance.agent.harness.pi();
+        await instance.harness.pi();
       });
     }
     const kept = (await env.MALFORMED.getByName(name).noticeList(as())).notices;
@@ -567,86 +604,52 @@ describe("a package pi refuses to install", () => {
   });
 });
 
-describe("the write gate and pi's transactions", () => {
-  it("is the queue pi's commits hold: a door begun during one waits behind it", async () => {
+describe("the write gate and the thread stores", () => {
+  it("never holds a door's unit behind a thread's commit, which is its store's alone",
+     async () => {
     const r = agentObject();
-    const out = await r.in(async (instance, state) => {
-      const pi = await instance.agent.harness.pi();
+    const out = await r.in(async (instance) => {
+      const pi = await instance.harness.pi();
       const root = await pi.root(BG);
-      // Any adapter over the object's storage reaches the one queue chord keeps for it.
-      const queue = (new DurableObjectSqliteDatabase(state.storage) as unknown as
-        { queue: { pending: number } }).queue;
-      const entries = () => state.storage.sql.exec<{ n: number }>(
-        "SELECT COUNT(*) AS n FROM pi_entries").one().n;
-      const before = entries();
       const commit = root.submit({ type: "write", entry: { kind: "test.note", data: 1 } }, BG);
-      for (let i = 0; i < 1000 && queue.pending === 0; i++) {
-        await Promise.resolve();
-      }
-      const held = queue.pending;
-      // The door's unit joins the same queue at once, behind pi's commit.
-      const door = instance.collectionWrite(r.as(), { collection: "board", row_id: "t",
-                                                      body: "1", expected_etag: "",
-                                                      private: false });
-      const queued = queue.pending;
-      const seen = await new WriteGate(state.storage).write(() => entries());
-      await Promise.all([commit, door]);
-      return { held, queued, seen, before };
+      // The door's unit runs at once: the commit is a store RPC, not a transaction here.
+      const door = await instance.collectionWrite(r.as(), { collection: "board", row_id: "t",
+                                                            body: "1", expected_etag: "",
+                                                            private: false });
+      await commit;
+      return { door, thread: await instance.harness.thread() };
     });
-    expect([out.held, out.queued]).toEqual([1, 2]);
-    expect(out.seen).toBe(out.before + 1);  // a unit queued then ran after pi's commit
-  });
-
-  it("keeps a door's write made inside a transaction of that queue, which rolls back a " +
-     "direct write with it", async () => {
-    const r = agentObject();
-    const out = await r.in(async (instance, state) => {
-      const sql = state.storage.sql;
-      sql.exec("CREATE TABLE test_probe (n INTEGER)");
-      let door: Promise<unknown> = Promise.resolve(null);
-      // A commit as pi's adapter makes one: rows through the transaction's handle, awaits
-      // between statements, and work running in the object meanwhile, then a failure that
-      // rolls the transaction back.
-      const failed = await new DurableObjectSqliteDatabase(state.storage)
-        .transaction(async (tx) => {
-          await tx.run("INSERT INTO test_probe VALUES (1)");
-          sql.exec("INSERT INTO test_probe VALUES (2)");  // a direct write, past the gate
-          door = instance.collectionWrite(r.as(), { collection: "board", row_id: "t",
-                                                    body: "kept", expected_etag: "",
-                                                    private: false });
-          await tx.run("INSERT INTO test_probe VALUES (3)");
-          throw new Error("the commit fails");
-        }).then(() => null, (error: Error) => error.message);
-      return { failed, door: await door,
-               probe: sql.exec("SELECT n FROM test_probe").toArray(),
-               board: sql.exec("SELECT row_id, body FROM collection_rows").toArray() };
-    });
-    expect(out.failed).toBe("the commit fails");
-    expect(out.probe).toEqual([]);  // the commit's rows and the direct write: rolled back
     expect(out.door).toMatchObject({ row: { row_id: "t" } });
-    expect(out.board).toEqual([{ row_id: "t", body: "kept" }]);
+    expect(await tablesIn(r.stub, "pi_")).toEqual([]);
+    const store = await storeOf(r.stub, out.thread);
+    expect(await storeSql(store, "SELECT json_extract(record, '$.kind') AS kind " +
+                                 "FROM pi_entries WHERE json_extract(record, '$.kind') = " +
+                                 "'test.note'"))
+      .toEqual([{ kind: "test.note" }]);
   });
 
   it("reports a pi commit that fails as a notice, and pi opens again on the next call",
      async () => {
     const r = agentObject();
-    const failed = await r.in(async (instance, state) => {
-      const sql = state.storage.sql;
-      await instance.agent.harness.pi();
-      sql.exec("CREATE TRIGGER test_pi_fails BEFORE UPDATE ON pi_durable_metadata " +
-               "BEGIN SELECT RAISE(ABORT, 'pi commit fails on purpose'); END");
-      instance.script = [says("never")];
-      const outcome = await instance.agent.harness.submit("hello")
-        .then(() => "committed", (error: Error) => error.message);
-      sql.exec("DROP TRIGGER test_pi_fails");
-      return outcome;
+    const thread = await r.in(async (instance) => {
+      await instance.harness.pi();
+      return instance.harness.thread();
     });
+    const store = await storeOf(r.stub, thread);
+    await storeSql(store, "CREATE TRIGGER test_pi_fails BEFORE UPDATE ON pi_durable_metadata " +
+                          "BEGIN SELECT RAISE(ABORT, 'pi commit fails on purpose'); END");
+    const failed = await r.in(async (instance) => {
+      instance.script = [says("never")];
+      return instance.harness.submit("hello")
+        .then(() => "committed", (error: Error) => error.message);
+    });
+    await storeSql(store, "DROP TRIGGER test_pi_fails");
     expect(failed).toMatch(/pi commit fails on purpose/);
     await until(async () => (await r.stub.noticeList(r.as())).notices
       .some((notice) => notice.type === "session_failed"), "the session_failed notice");
     const next = await r.in(async (instance) => {
       instance.script = [says("back")];
-      return instance.agent.harness.prompt("again");
+      return instance.harness.prompt("again");
     });
     expect([next.status, next.text]).toEqual(["done", "back"]);
   });
@@ -658,7 +661,11 @@ describe("pi's settings and the owner's notices", () => {
       progress: { partialIntervalMs: 1000, outputIntervalMs: 1000 },
       afterFailedRun: "withdraw",
       restartLimit: 5,
+      contextRetentionMs: CONTEXT_RETENTION_MS,
+      documentRetentionMs: DOCUMENT_RETENTION_MS,
     });
+    // Many Sessions share an isolate: retention well under pi's ten-minute default (F11).
+    expect([CONTEXT_RETENTION_MS, DOCUMENT_RETENTION_MS]).toEqual([60_000, 60_000]);
     expect(AUTO).toEqual({ provider: "gateway", id: "auto" });
     expect(writerOf(undefined)).toBe("agent");
     expect(writerOf({ by: "owner" })).toBe("agent");
@@ -673,12 +680,12 @@ describe("pi's settings and the owner's notices", () => {
       let release!: () => void;
       instance.probes.holdGate = new Promise((resolve) => { release = resolve; });
       instance.script = [calls(viaTa("hold", {}))];
-      const first = await instance.agent.harness.submit("one");
+      const first = await instance.harness.submit("one");
       await until(async () => instance.probes.holds === 1, "the hold to start");
-      const second = await instance.agent.harness.submit("two");
+      const second = await instance.harness.submit("two");
       release();
-      return [await instance.agent.harness.wait(first.operationId),
-              await instance.agent.harness.wait(second.operationId)];
+      return [await instance.harness.wait(first.operationId),
+              await instance.harness.wait(second.operationId)];
     });
     expect(out.map((result) => [result.status, result.reason])).toEqual([
       ["unanswered", "model_error"], ["unanswered", "run_failed"]]);

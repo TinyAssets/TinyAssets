@@ -62,6 +62,65 @@ export function selfReach(fileName: string, source: string): string[] {
   return problems;
 }
 
+/** The thread store's source: its own object, which serves pi's records and reaches nothing. */
+const STORE = "owner/src/thread-store.ts";
+
+/**
+ * Each way a thread store's source could reach past its own storage: any `env` (a binding,
+ * `this.env`, a destructured one), any import of the owner's own modules but the store
+ * types' (`import type`), or a runtime name but the class it extends.
+ */
+export function storeReach(fileName: string, source: string): string[] {
+  const file = parse(fileName, source);
+  const problems: string[] = [];
+  const report = reporter(file, problems);
+  const visit = (node: ts.Node): void => {
+    if ((ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) && node.text === "env") {
+      report(node, "names `env`: a thread store reads no binding");
+    }
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      const from = node.moduleSpecifier.text;
+      if (from.startsWith(".") && node.importClause?.isTypeOnly !== true) {
+        report(node, `imports ${from}: a thread store runs none of the owner's code`);
+      }
+      if (from === RUNTIME) {
+        const named = node.importClause?.namedBindings;
+        const names = named !== undefined && ts.isNamedImports(named)
+          ? named.elements.map((element) => (element.propertyName ?? element.name).text) : [];
+        if (names.join() !== "DurableObject") {
+          report(node, `imports ${names.join(", ") || "all"} from ${RUNTIME}`);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return problems;
+}
+
+describe("thread-store guard", () => {
+  it("reads no env binding and runs none of the owner's code", () => {
+    const source = workerSources().get(STORE)!;
+    expect(source).toContain("export class ThreadStore extends DurableObject");
+    expect(storeReach(STORE, source)).toEqual([]);
+  });
+
+  it.each([
+    "export class S extends DurableObject { m() { return this.env.FILES; } }",
+    "export class S extends DurableObject { constructor(ctx, env) { super(ctx, env); } }",
+    "import { env } from 'cloudflare:workers';",
+    "import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';",
+    "import { Files } from './files';",
+    "export class S { m(o: { env: unknown }) { const { env } = o; return env; } }",
+  ])("sees %s", (source) => {
+    expect(storeReach(STORE, source)).not.toEqual([]);
+  });
+
+  it("allows the store types' own import", () => {
+    expect(storeReach(STORE, "import type { Read } from './remote-storage';")).toEqual([]);
+  });
+});
+
 describe("self-reach guard", () => {
   it("finds no way past the object in any Worker's source", () => {
     const sources = workerSources();

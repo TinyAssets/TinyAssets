@@ -11,6 +11,7 @@ import { bundledRecords, catalogOf } from "../src/sources";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 
 export { OwnerDO } from "../../owner/src/owner-do";
+export { ThreadStore } from "../../owner/src/thread-store";
 
 /**
  * A served RFC 6749 source: the bundled records' only one is Sign in with ChatGPT,

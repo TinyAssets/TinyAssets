@@ -108,7 +108,8 @@ export default defineConfig({
         // Worker's own classes of the object (test/worker.ts): its agent on faux models,
         // with a package pi refuses, and on the production gateway provider with its
         // gateway calls watched. FILES and GATEWAY are the config's own bindings, to the
-        // files and gateway Workers run beside it. TEST_KEYRING is the gateway's keyring,
+        // files and gateway Workers run beside it; PISTORE is the config's own namespace of
+        // thread stores, the real class. TEST_KEYRING is the gateway's keyring,
         // so a test can seal under an older kid; the tests' own fetches reach the fake.
         plugins: [
           cloudflareTest({
@@ -120,6 +121,7 @@ export default defineConfig({
                 AGENT: { className: "FauxOwnerDO", useSQLite: true },
                 MALFORMED: { className: "MalformedOwnerDO", useSQLite: true },
                 GATED: { className: "GatedOwnerDO", useSQLite: true },
+                PISTORE: { className: "ThreadStore", useSQLite: true },
               },
               bindings: { TEST_KEYRING: KEYRING },
               outboundService: "fake-upstream",

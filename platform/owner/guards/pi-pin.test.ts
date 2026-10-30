@@ -1,15 +1,17 @@
 /**
  * pi's packages and pi's schema version are pinned (ADR-032; tasks 5).
  *
- * pi's tables sit in the owner's one database beside ours, with their own forward-only
- * schema version (`durable_schema`), which pi migrates when it opens and refuses to run
- * under when it is newer than the code ("a deployment cannot roll back past this
- * release", pi-durable 1.4.0's changelog). So a pi upgrade that moves the version is a
- * one-way deploy: it must deploy alone, behind a canary, and never be rolled back past.
- * This guard makes any such upgrade fail CI until it is made here, on purpose: pi-durable,
- * pi-ai and chord are pinned by exact version and lockfile integrity (agents 0.31.0 takes
- * them as `~1.4.0` peers, and the alarm guard pins agents), and pi's schema version by the
- * number the code migrates to.
+ * pi's tables sit in each agent thread's own store (`thread-store.ts`), with their own
+ * forward-only schema version (`durable_schema`), which pi migrates when a Session first
+ * opens the store and refuses to run under when it is newer than the code ("a deployment
+ * cannot roll back past this release", pi-durable 1.4.0's changelog). The store and the
+ * Session that opens it run from one bundle, the owner Worker's, so they are always one pi
+ * version; still, a pi upgrade that moves the schema version is a one-way deploy: it must
+ * deploy alone, behind a canary, and never be rolled back past. This guard makes any such
+ * upgrade fail CI until it is made here, on purpose: pi-durable, pi-ai and chord are
+ * pinned by exact version and lockfile integrity, and pi's schema version by the number
+ * the code migrates to. The owner's own thread host calls pi's `Harness` API directly, so
+ * an upgrade is gated on nothing of agents' but npm's peer range, which this guard reads.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

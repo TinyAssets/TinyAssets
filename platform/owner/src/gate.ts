@@ -1,31 +1,15 @@
 /**
- * The owner object's one write gate: every owner write goes through the SQLite queue pi's
- * commits use (ADR-032; pi-durable README, "Storage").
+ * The owner object's one write gate: every owner write is one synchronous unit (ADR-032;
+ * tasks 5, S3).
  *
- * pi-durable shares the object's SQLite database, under its own `pi_` tables, and commits
- * through chord's `DurableObjectSqliteDatabase`, whose `transaction()` holds one queue per
- * storage object and runs `ctx.storage.transaction()`. On a SQLite-backed object, anything
- * written through `ctx.storage` while that transaction is open becomes part of it, and a
- * `transactionSync` opened then is a savepoint inside it. pi's transaction awaits between
- * its statements, so a microtask of work already running in the object (a door's
- * continuation, a lane's pass) can run inside it, and its write would then commit with
- * pi's, or be rolled back with it after the door had answered. pi's own words: "direct
- * storage calls bypass the queue and may be rolled back with a Pi transaction".
- *
- * So the object holds one `DurableObjectSqliteDatabase` over its storage, which shares
- * pi's queue by construction (chord keys the queue by the storage object), and runs each
- * write unit as one turn of that queue: `write(unit)` waits for whatever the queue holds
- * (`close()`, chord's own host-query path) and then runs the unit, synchronously, in a
- * `transactionSync`. A unit is synchronous, our existing `transactionSync` bodies, so it
- * holds the queue only for its own SQL, never across an outside call; a door or a lane
- * pass writes through it a unit at a time, never for a whole pass. pi's transaction opens
- * only in a turn of its own after its queue turn begins, so a synchronous unit run once
- * the queue is clear never runs inside one.
- *
- * A unit is never an async `ctx.storage.transaction()` of its own: that holds the input
- * gate (`blockConcurrencyWhile`), and Lifecycle's startup holds the input gate while it
- * awaits pi's open on this queue, so a unit queued just before the open would wait on the
- * startup's gate while the startup waits on the unit, until the runtime resets the object.
+ * pi no longer shares the object's database: each agent thread's Session lives in a store
+ * of its own (`thread-store.ts`), so no pi transaction ever opens in the owner's SQLite,
+ * and the gate keeps no queue. It holds the one rule every owner write keeps: a unit is a
+ * synchronous body run in one `transactionSync`, so it reads what it decides on itself and
+ * writes before anything else runs in the object, and it never spans an outside call (a
+ * store's RPC, `FILES`, the gateway): a door or a lane pass writes through it a unit at a
+ * time, awaiting outside calls only between units. A unit is never an async
+ * `ctx.storage.transaction()`, which would hold the input gate across its awaits.
  *
  * The gate changes no unit's atomicity: a unit's own `transactionSync` keeps it, and what
  * a unit wrote before it threw stands, as it would without the gate, so a refusal receipt
@@ -33,15 +17,9 @@
  *
  * The modules the object builds see its storage only through `storage`, a view that
  * refuses, loudly, any statement but a single `SELECT` (nothing after it) and any
- * `transactionSync` outside a unit (Fact 8: a write that could land in pi's transaction is
- * a crash, not a hope). A unit
- * inside another, and a unit that returns a promise, are refused the same way. Units in
- * pi's own callbacks (a commit's `conversationCreated`) never come here: they write through
- * pi's transaction handle, and a unit queued from inside pi's transaction would wait on it
- * forever (pi-durable README: "calling `database` itself inside the callback never
- * settles").
+ * `transactionSync` outside a unit (Fact 8: a write outside a unit is a crash, not a hope).
+ * A unit inside another, and a unit that returns a promise, are refused the same way.
  */
-import { DurableObjectSqliteDatabase } from "@earendil-works/chord/sqlite/cloudflare";
 
 /** What the object's modules use of its storage: SQL, and `transactionSync`. */
 export interface OwnerStorage {
@@ -67,17 +45,13 @@ function thenable(value: unknown): boolean {
 type Outcome<T> = { readonly value: T } | { readonly error: unknown };
 
 export class WriteGate {
-  readonly #db: DurableObjectSqliteDatabase;
   readonly #raw: DurableObjectStorage;
   /** True only while a unit runs: units are synchronous, so nothing else runs meanwhile. */
   #holding = false;
   /** The storage as the object's modules see it: writes only inside a unit. */
   readonly storage: OwnerStorage;
-  /** The object's database size in bytes, pi's tables included: what its storage limit counts. */
-  readonly size = (): number => this.#raw.sql.databaseSize;
 
   constructor(storage: DurableObjectStorage) {
-    this.#db = new DurableObjectSqliteDatabase(storage);
     this.#raw = storage;
     const sql = storage.sql;
     const exec = ((query: string, ...bindings: SqlStorageValue[]) => {
@@ -102,15 +76,16 @@ export class WriteGate {
   }
 
   /**
-   * Run `unit` on the queue pi's commits use, once whatever it holds is done. A unit inside
-   * another throws at once; one that returns a promise is rolled back.
+   * Run `unit` now, in a `transactionSync` of its own. A unit inside another throws at once;
+   * one that returns a promise is rolled back.
    */
   readonly write: Write = <T>(unit: () => T): Promise<T> => {
     if (this.#holding) {
       throw new Error(NESTED_UNIT);
     }
-    return this.#db.close().then(() => {
-      const outcome = this.#raw.transactionSync((): Outcome<T> => {
+    let outcome: Outcome<T>;
+    try {
+      outcome = this.#raw.transactionSync((): Outcome<T> => {
         this.#holding = true;
         let value: T;
         try {
@@ -125,10 +100,9 @@ export class WriteGate {
         }
         return { value };
       });
-      if ("error" in outcome) {
-        throw outcome.error;
-      }
-      return outcome.value;
-    });
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return "error" in outcome ? Promise.reject(outcome.error) : Promise.resolve(outcome.value);
   };
 }

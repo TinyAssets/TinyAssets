@@ -789,28 +789,65 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   Object.freeze([
     "CREATE INDEX work_by_creator ON scheduled_work (client, created_at, work_id)",
   ]),
-  // 9: the agent's doors (threads.ts, A4): what a thread is for, a conversation an agent
-  // holds with one caller (`converse`, one per caller, agent and universe) or one run
-  // (`run`, a fresh one per launch, as every thread before this was), and when it was last
-  // active, which idle retention reads (the `threads` lane, by its index), with the threads
-  // unsettled work names. A thread's stamp still never changes; its activity only moves on.
+  // 9: the agent's doors and thread stores (threads.ts, A4 and S3). Each thread is one pi
+  // Session over a store of its own (thread-store.ts), so a row names its store (`store`,
+  // 128 random bits as hex, unique, named before the store exists and never changed) and
+  // no pi conversation: the thread is its Session's root. Its state is `ready`, or
+  // `dropping` while its store is wiped (S4); it never moves back. What a thread is for, a
+  // conversation an agent holds with one caller (`converse`, one per caller, agent and
+  // universe) or one run (`run`, a fresh one per launch), and when it was last active, which
+  // idle retention reads (the `threads` lane, by its index), with the threads unsettled work
+  // names. `agent_live` is each thread's wake as its Session last reported it, going with
+  // its thread. Nothing is deployed, so this migration is edited in place: the table is made
+  // again, and a row from before stores existed (none can be) fails it loudly, its store
+  // missing.
   Object.freeze([
-    "ALTER TABLE agent_threads ADD COLUMN kind TEXT NOT NULL DEFAULT 'run' " +
-      "CHECK (kind IN ('converse', 'run'))",
-    "ALTER TABLE agent_threads ADD COLUMN last_active REAL NOT NULL DEFAULT 0",
-    "DROP TRIGGER agent_threads_kept",
-    "UPDATE agent_threads SET last_active = created_at",
+    "DROP TRIGGER outside_clients_held",
+    "CREATE TABLE agent_threads_next (thread_id TEXT PRIMARY KEY " +
+      "CHECK (length(thread_id) = 39), " +
+      "store TEXT NOT NULL UNIQUE CHECK (length(store) = 32 AND store NOT GLOB '*[^0-9a-f]*'), " +
+      "state TEXT NOT NULL CHECK (state IN ('ready', 'dropping')), " +
+      "agent_id TEXT NOT NULL CHECK (length(agent_id) BETWEEN 1 AND 128), " +
+      "client TEXT CHECK (client IS NULL OR length(client) = 64), generation INTEGER, " +
+      "authenticated_at REAL, universe TEXT CHECK (universe IS NULL OR length(universe) " +
+      "BETWEEN 1 AND 512), created_at REAL NOT NULL, " +
+      "kind TEXT NOT NULL CHECK (kind IN ('converse', 'run')), last_active REAL NOT NULL, " +
+      "CHECK ((client IS NULL) = (generation IS NULL)), " +
+      "CHECK (client IS NOT NULL OR (authenticated_at IS NULL AND universe IS NULL))) " +
+      "WITHOUT ROWID",
+    "INSERT INTO agent_threads_next (thread_id, store, state, agent_id, client, generation, " +
+      "authenticated_at, universe, created_at, kind, last_active) SELECT thread_id, NULL, " +
+      "'ready', agent_id, client, generation, authenticated_at, universe, created_at, 'run', " +
+      "created_at FROM agent_threads",
+    "DROP TABLE agent_threads",
+    "ALTER TABLE agent_threads_next RENAME TO agent_threads",
+    "CREATE TABLE agent_live (thread_id TEXT PRIMARY KEY, " +
+      "active INTEGER NOT NULL CHECK (active IN (0, 1)), wake_at REAL, " +
+      "CHECK (active = 1 OR wake_at IS NOT NULL)) WITHOUT ROWID",
+    "CREATE INDEX agent_threads_by_client ON agent_threads (client, created_at)",
     "CREATE TRIGGER agent_threads_kept BEFORE UPDATE ON agent_threads WHEN " +
-      "NEW.thread_id IS NOT OLD.thread_id OR NEW.conversation_id IS NOT OLD.conversation_id " +
+      "NEW.thread_id IS NOT OLD.thread_id OR NEW.store IS NOT OLD.store " +
+      "OR (NEW.state IS NOT OLD.state AND NEW.state != 'dropping') " +
       "OR NEW.agent_id IS NOT OLD.agent_id OR NEW.client IS NOT OLD.client " +
       "OR NEW.generation IS NOT OLD.generation " +
       "OR NEW.authenticated_at IS NOT OLD.authenticated_at " +
       "OR NEW.universe IS NOT OLD.universe OR NEW.created_at IS NOT OLD.created_at " +
       "OR NEW.kind IS NOT OLD.kind OR NEW.last_active < OLD.last_active BEGIN " +
       "SELECT RAISE(ABORT, 'a thread never changes the stamp it was made under'); END",
+    `CREATE TRIGGER agent_threads_held AFTER INSERT ON agent_threads BEGIN ${
+      HOLD("NEW", "+")} END`,
+    `CREATE TRIGGER agent_threads_released AFTER DELETE ON agent_threads BEGIN ${
+      HOLD("OLD", "-")} DELETE FROM agent_live WHERE thread_id = OLD.thread_id; END`,
+    "CREATE TRIGGER outside_clients_held AFTER INSERT ON outside_clients BEGIN " +
+      "UPDATE outside_clients SET agents = (SELECT COUNT(*) FROM outside_agents " +
+      "WHERE outside_client = NEW.client), held = (SELECT COUNT(*) FROM scheduled_work " +
+      "WHERE client = NEW.client AND settled_at IS NULL) + (SELECT COUNT(*) FROM " +
+      "agent_cards WHERE client = NEW.client) + (SELECT COUNT(*) FROM agent_threads " +
+      "WHERE client = NEW.client) WHERE client = NEW.client; END",
     "CREATE INDEX agent_threads_by_activity ON agent_threads (last_active)",
     "CREATE UNIQUE INDEX agent_threads_conversing ON agent_threads " +
-      "(IFNULL(client, ''), agent_id, IFNULL(universe, '')) WHERE kind = 'converse'",
+      "(IFNULL(client, ''), agent_id, IFNULL(universe, '')) " +
+      "WHERE kind = 'converse' AND state = 'ready'",
     // The threads unsettled work names, which idle retention never drops.
     "CREATE INDEX work_by_thread ON scheduled_work (json_extract(payload, '$.thread')) " +
       "WHERE settled_at IS NULL",

@@ -18,7 +18,7 @@ import { MUSE } from "./ledger-support";
 import { failure } from "./support";
 import {
   ANTHROPIC, asked, catalog, direct, type Gated, gated, keyring, OAUTH, OPENAI, REDIRECT,
-  sealedAs, textOf, until,
+  provider, sealedAs, textOf, until,
 } from "./gateway-support";
 
 afterEach(() => {
@@ -44,7 +44,7 @@ function calls(r: Gated, many: number, text = "cmd:echo") {
   return r.in(async (instance) => {
     const auto = instance.parts.provider.getModels()[0]!;
     return Promise.all(Array.from({ length: many }, async (_, i) =>
-      instance.parts.provider.streamSimple(auto, asked(text), await direct(instance, `s-${i}`))
+      (await provider(instance)).streamSimple(auto, asked(text), await direct(instance, `s-${i}`))
         .result()));
   });
 }
@@ -432,7 +432,7 @@ describe("a provider revoke and a refresh in flight", () => {
     await r.in((instance) => {
       instance.faults.refreshGate = new Promise<void>((resolve) => { release = resolve; });
     });
-    const call = r.in(async (instance) => instance.parts.provider.streamSimple(
+    const call = r.in(async (instance) => (await provider(instance)).streamSimple(
       instance.parts.provider.getModels()[0]!, asked("cmd:echo"), await direct(instance)).result());
     await until(async () => (await r.in((instance) => instance.calls))
       .some((made) => made.method === "refresh"), "the refresh to be sent");
@@ -619,7 +619,7 @@ describe("a refresh that lands on a changed connection", () => {
     await r.in((instance) => {
       instance.faults.refreshGate = new Promise<void>((resolve) => { release = resolve; });
     });
-    const call = r.in(async (instance) => instance.parts.provider.streamSimple(
+    const call = r.in(async (instance) => (await provider(instance)).streamSimple(
       instance.parts.provider.getModels()[0]!, asked("cmd:echo"), await direct(instance)).result());
     await until(async () => (await r.sql("SELECT lease_id FROM connections"))[0]!["lease_id"]
       !== null, "the lease to be taken");
@@ -730,13 +730,13 @@ describe("a blob resealed under the active kid", () => {
       const auto = instance.parts.provider.getModels()[0]!;
       const stop = new AbortController();
       // A call in flight on version 1, under the old kid: its answer carries a reseal.
-      const slow = instance.parts.provider.streamSimple(auto, asked(`cmd:slow-${id}`),
+      const slow = (await provider(instance)).streamSimple(auto, asked(`cmd:slow-${id}`),
                                                         { ...await direct(instance, "slow"),
                                                           signal: stop.signal });
       await until(opened, "the slow call to open");
       // The token nears expiry, and another call refreshes it to version 2.
       state.storage.sql.exec("UPDATE connections SET expires_at = ?", Date.now() + 60_000);
-      const fresh = await instance.parts.provider.streamSimple(
+      const fresh = await (await provider(instance)).streamSimple(
         auto, asked("cmd:echo"), await direct(instance, "fresh")).result();
       expect(textOf(fresh)).toContain("Bearer at-2|none:client-1");
       stop.abort();
@@ -772,7 +772,7 @@ describe("the plaintext key", () => {
     }
     // The binder seals the key with the gateway; the object is handed only the blob.
     const connection = await r.connect(key);
-    const answer = await r.in((instance) => instance.agent.harness.prompt("cmd:drip"));
+    const answer = await r.in((instance) => instance.harness.prompt("cmd:drip"));
     expect(answer.status).toBe("done");
     await calls(r, 1, "cmd:drip");
     await r.stub.connectionRevoke(r.session(), { connection });

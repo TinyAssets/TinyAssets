@@ -1,17 +1,28 @@
 /**
- * The agent's threads (agent research §4.1, §8; tasks 5, sub-slices A2 and A4): each
- * top-level pi conversation the object makes for an agent, with the stamp it was made
- * under, what it is for and when it was last active.
+ * The agent's threads (agent research §4.1, §8; tasks 5, sub-slices A2, A4 and S3): each
+ * thread the object makes for an agent, with the stamp it was made under, the store its
+ * Session lives in, what it is for and when it was last active.
  *
- * A thread is made where its work begins, by the agent's doors (`agentSubmit`, `agentRun`
- * and `ta`'s `agent:run`; scheduled work names one when it is made, `scheduled.ts`): pi
- * creates the conversation and writes its authority into the `ta.authority` document in
- * the creating commit, then this row records it, in a unit of the write gate that
- * re-checks the stamp's standing. A row's stamp never changes (a trigger); only its
- * activity moves on. It is the object's index of threads, by our id, by caller and by
- * activity: the conversation's own authority, which every conversation below it
- * inherits, is what every check reads (`authority.ts`). A conversation pi made whose row
- * a crash left unwritten holds no input and no work: nothing names it.
+ * A thread is one pi Session (`thread-host.ts`) over its own store (`thread-store.ts`),
+ * and the thread is that Session's root conversation: every conversation below it (a
+ * subagent's, a fork, background work) lives in the same Session and store. A thread is
+ * made where its work begins, by the agent's doors (`agentSubmit`, `agentRun` and `ta`'s
+ * `agent:run`; scheduled work names one when it is made, `scheduled.ts`): this row first,
+ * in a unit of the write gate that re-checks the stamp's standing, naming a fresh store
+ * (128 random bits, `store`, unique); then the Session is opened, which makes the store at
+ * its first call, and the root, with the thread's stamp written into its `ta.authority`
+ * document in the root's creating commit. So a store is always named in a row before it
+ * exists, and a crash between leaves a row whose store is empty or not yet made, which the
+ * next open makes: no row names a store that cannot be made. A store's name is never
+ * reused. A row's stamp and store never change (a trigger); only its activity moves on,
+ * and its state from `ready` to `dropping`. It is the object's index of threads, by our id,
+ * by caller and by activity: the root's own authority, which every conversation below it
+ * inherits, is what every check reads (`authority.ts`).
+ *
+ * `agent_live` holds each thread's wake as its Session last reported it (`onWake`, kept by
+ * the host in a unit): whether it has work running, and when a sleeping task next wakes. It
+ * is how retention and the end of the owner's work know a thread is live without opening
+ * every store; a row goes with its thread.
  *
  * Two kinds: a `converse` thread is the one conversation an agent holds with one caller
  * (the owner, or an outside client, in one universe), found again by those
@@ -19,9 +30,8 @@
  *
  * Every door addresses work by a thread's id, resolved against the calling client's own
  * rows (`mine`), never by a pi session string: an operation id is the thread's id and
- * pi's request id, and a forged or another caller's resolves to nothing. No door hands
- * pi a session it did not take from a row, so no door can reach the root conversation,
- * the owner's own, which a submit without a session would.
+ * pi's request id, and a forged or another caller's resolves to nothing. A row that is
+ * `dropping` resolves to nothing either.
  *
  * Bounds: a client's threads hold its grant row (the schema's `held`), as its stamped work
  * does, so the free-row bound never forgets the row they are checked against. A grant
@@ -29,25 +39,19 @@
  * stamps no longer stand, so they can do nothing more, and dropping them releases the row.
  * Past `perClient` threads of one client, `clients` of every client's, or `owner` of the
  * owner's, a new one is refused loudly, so the rows (and the grant rows they hold) are
- * bounded however many clients register. A thread is never the root conversation, the
- * owner's own (`conversation_id > 1`, by schema).
+ * bounded however many clients register.
  *
  * Idle retention (the `threads` lane, `retainThreads`): a thread no door, run or scheduled
  * work has touched for `idleS` is dropped, so threads that stopped being used free their
- * bound (16 full clients at 64 threads each no longer hold the shared 1,024 for good). A
- * thread is never dropped while it is live, pi holding live work in its conversation, as
- * pi does while any conversation below it works (`OwnerAgent.liveThreads`): its activity
- * moves on instead; a thread unsettled scheduled work names is never idle, and its
- * activity moves on when the work is claimed (`Scheduled.claim`), so a cancel releases
- * it. A drop
- * re-checks, in its own unit, the activity the pass read, so a door that touched the
- * thread since keeps it. Declared difference from the research: pi-durable 1.4.0 and
- * PiHarness 0.31.0 have no way to delete a conversation (no delete on `Harness`,
- * `Session`, `Storage` or `PiSessions`; pi's SQLite store deletes only document
- * revisions), so a dropped thread's conversation stays in pi's tables, holding no live
- * work and named by no row, door or work. The fix is pi's own unit of storage, one pi
- * Session per thread, wiped whole when the thread is dropped (its own slice before A5,
- * tasks 5); the object's storage gauge is a safety net only.
+ * bound. A thread is never dropped while it is live (an `agent_live` row: work running, or
+ * a task sleeping in its Session): its activity moves on instead; a thread unsettled
+ * scheduled work names is never idle, and its activity moves on when the work is claimed
+ * (`Scheduled.claim`), so a cancel releases it. A drop re-checks, in its own unit, the
+ * activity the pass read and the thread's liveness, so a door that touched the thread
+ * since keeps it. A dropped thread's Session is closed, and nothing opens it again: no row
+ * names it. Wiping its store is S4's (tasks 5): the row turns `dropping`, the store is
+ * destroyed, then the row goes, so no store is forgotten before it is wiped. Until S4, a
+ * drop deletes the row and leaves the store unwiped (nothing is deployed).
  */
 import { agentId, type AuthorityState, authorityOf, type Stamped, stamped } from "./authority";
 import { Refused } from "./errors";
@@ -59,7 +63,9 @@ export type ThreadKind = "converse" | "run";
 /** One thread as stored. */
 export type Thread = {
   readonly thread_id: string;
-  readonly conversation_id: number;
+  /** Its store's name: 128 random bits, as hex, named here before the store exists. */
+  readonly store: string;
+  readonly state: "ready" | "dropping";
   readonly agent_id: string;
   readonly client: string | null;
   readonly generation: number | null;
@@ -100,8 +106,13 @@ export const THREAD_RETENTION: ThreadRetention = Object.freeze({ idleS: 7 * 86_4
 
 const THREAD_ID = /^thread_[0-9a-f]{32}$/;
 
+function randomHex(bytes: number): string {
+  const raw = new Uint8Array(bytes);
+  crypto.getRandomValues(raw);
+  return Array.from(raw, (b) => b.toString(16).padStart(2, "0")).join("");
+}
 
-/** A thread's authority, as its conversation's `ta.authority` document holds it. */
+/** A thread's authority, as its root's `ta.authority` document holds it. */
 export function threadAuthority(thread: Thread): AuthorityState {
   return authorityOf(thread.client === null ? null
     : { client: thread.client, generation: thread.generation!,
@@ -111,6 +122,9 @@ export function threadAuthority(thread: Thread): AuthorityState {
 
 /** The SQL condition that what holds a thread (its open work) names the thread in `column`. */
 export type HeldBy = (column: string) => string;
+
+/** What one idle thread's retention did. */
+export type Retained = "dropped" | "live" | "touched";
 
 export class Threads implements ThreadReader {
   readonly #storage: OwnerStorage;
@@ -132,17 +146,12 @@ export class Threads implements ThreadReader {
   }
 
   /**
-   * In a unit: record the thread pi made as `conversationId`, for `agent` under `stamp`
-   * (null: the owner's own), whose standing the caller re-checks in the same unit; refused
-   * past its bound. A `converse` thread is the caller's one with the agent: when one was
-   * recorded meanwhile (a concurrent first message), that one is answered, and the
-   * conversation pi made for this call is left holding nothing.
+   * In a unit: record a thread for `agent` under `stamp` (null: the owner's own), whose
+   * standing the caller re-checks in the same unit, naming a fresh store; refused past its
+   * bound. A `converse` thread is the caller's one with the agent: when one was recorded
+   * meanwhile (a concurrent first message), that one is answered, and nothing is made.
    */
-  record(conversationId: number, agent: unknown, stamp: unknown, now: number,
-         kind: ThreadKind = "run"): Thread {
-    if (!Number.isSafeInteger(conversationId) || conversationId <= 1) {
-      throw new Error("a thread is a conversation pi made, never the root");
-    }
+  record(agent: unknown, stamp: unknown, now: number, kind: ThreadKind = "run"): Thread {
     const id = agentId(agent);
     const by = stamped(stamp);
     if (by !== null && by.agent !== id) {
@@ -158,16 +167,13 @@ export class Threads implements ThreadReader {
       }
     }
     this.room(by);
-    const sql = this.#storage.sql;
-    const raw = new Uint8Array(16);
-    crypto.getRandomValues(raw);
-    const threadId = `thread_${Array.from(raw, (b) => b.toString(16).padStart(2, "0")).join("")}`;
-    return sql.exec<Thread>(
-      "INSERT INTO agent_threads (thread_id, conversation_id, agent_id, client, generation, " +
+    return this.#storage.sql.exec<Thread>(
+      "INSERT INTO agent_threads (thread_id, store, state, agent_id, client, generation, " +
         "authenticated_at, universe, created_at, kind, last_active) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
-      threadId, conversationId, id, by?.client ?? null, by?.generation ?? null,
-      by?.authenticated_at ?? null, by?.universe ?? null, now, kind, now).one();
+        "VALUES (?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+      `thread_${randomHex(16)}`, randomHex(16), id, by?.client ?? null,
+      by?.generation ?? null, by?.authenticated_at ?? null, by?.universe ?? null, now, kind,
+      now).one();
   }
 
   /** Refuse loudly a new thread under `by` (null: the owner's) past its bounds; a read. */
@@ -189,12 +195,14 @@ export class Threads implements ThreadReader {
     }
   }
 
+  /** A `ready` thread by its id, or null. */
   get(threadId: unknown): Thread | null {
     if (typeof threadId !== "string" || !THREAD_ID.test(threadId)) {
       return null;
     }
-    return this.#storage.sql.exec<Thread>("SELECT * FROM agent_threads WHERE thread_id = ?",
-                                          threadId).toArray()[0] ?? null;
+    return this.#storage.sql.exec<Thread>(
+      "SELECT * FROM agent_threads WHERE thread_id = ? AND state = 'ready'", threadId)
+      .toArray()[0] ?? null;
   }
 
   /**
@@ -204,7 +212,7 @@ export class Threads implements ThreadReader {
   conversing(by: Stamped | null, agent: string): Thread | null {
     return this.#storage.sql.exec<Thread>(
       "SELECT * FROM agent_threads WHERE kind = 'converse' AND IFNULL(client, '') = ? " +
-        "AND agent_id = ? AND IFNULL(universe, '') = ?",
+        "AND agent_id = ? AND IFNULL(universe, '') = ? AND state = 'ready'",
       by?.client ?? "", agent, by?.universe ?? "").toArray()[0] ?? null;
   }
 
@@ -222,6 +230,36 @@ export class Threads implements ThreadReader {
     return this.#storage.sql.exec(
       "UPDATE agent_threads SET last_active = MAX(last_active, ?) WHERE thread_id = ? " +
         "RETURNING thread_id", at, threadId).toArray().length > 0;
+  }
+
+  /**
+   * In a unit: keep the thread's wake as its Session reported it, `active` with work
+   * running and `wakeAt` (seconds) when a sleeping task next wakes; neither forgets it. A
+   * thread with no row keeps nothing.
+   */
+  live(threadId: string, active: boolean, wakeAt: number | null): void {
+    const sql = this.#storage.sql;
+    if (!active && wakeAt === null) {
+      sql.exec("DELETE FROM agent_live WHERE thread_id = ?", threadId);
+      return;
+    }
+    sql.exec("INSERT INTO agent_live (thread_id, active, wake_at) SELECT thread_id, ?, ? " +
+               "FROM agent_threads WHERE thread_id = ? " +
+               "ON CONFLICT (thread_id) DO UPDATE SET active = excluded.active, " +
+               "wake_at = excluded.wake_at", active ? 1 : 0, wakeAt, threadId);
+  }
+
+  /** The threads with work running in their Sessions, as last reported. A read. */
+  active(): string[] {
+    return this.#storage.sql.exec<{ thread_id: string }>(
+      "SELECT thread_id FROM agent_live WHERE active = 1").toArray()
+      .map((row) => row.thread_id);
+  }
+
+  /** Every live thread: work running, or a task sleeping. A read. */
+  liveThreads(): Set<string> {
+    return new Set(this.#storage.sql.exec<{ thread_id: string }>(
+      "SELECT thread_id FROM agent_live").toArray().map((row) => row.thread_id));
   }
 
   /**
@@ -247,49 +285,52 @@ export class Threads implements ThreadReader {
   }
 
   /**
-   * In a unit: drop the thread when it is still as idle as `seen`, its activity as the
-   * pass read it; the conversation it was, or null when a door touched it since.
+   * In a unit: retain one idle thread as the pass read it (`seen`, its activity then). A
+   * live one (its `agent_live` row) has its activity moved on to `now`; one a door touched
+   * since is kept as it is; any other is dropped.
    */
-  drop(threadId: string, seen: number): number | null {
-    return this.#storage.sql.exec<{ conversation_id: number }>(
-      "DELETE FROM agent_threads WHERE thread_id = ? AND last_active <= ? " +
-        "RETURNING conversation_id", threadId, seen).toArray()[0]?.conversation_id ?? null;
+  retain(threadId: string, seen: number, now: number): Retained {
+    const sql = this.#storage.sql;
+    const live = sql.exec("SELECT 1 FROM agent_live WHERE thread_id = ?", threadId).toArray();
+    if (live.length > 0) {
+      this.touch(threadId, now);
+      return "live";
+    }
+    return sql.exec("DELETE FROM agent_threads WHERE thread_id = ? AND last_active <= ? " +
+                      "RETURNING thread_id", threadId, seen).toArray().length > 0
+      ? "dropped" : "touched";
   }
 
   /**
    * In the grant change's unit: drop the client's threads, whose stamps the change ended;
-   * the conversations they were, so their live views can be closed once it commits.
+   * the threads they were, so their Sessions can be ended once it commits.
    */
-  endClient(client: string): number[] {
-    return this.#storage.sql.exec<{ conversation_id: number }>(
-      "DELETE FROM agent_threads WHERE client = ? RETURNING conversation_id", client).toArray()
-      .map((row) => row.conversation_id);
+  endClient(client: string): Thread[] {
+    return this.#storage.sql.exec<Thread>(
+      "DELETE FROM agent_threads WHERE client = ? RETURNING *", client).toArray();
   }
 }
 
 /**
- * One `threads` lane pass (idle retention): each idle thread, the longest idle first, is
- * dropped in a unit of its own, unless pi holds live work in its conversation (`live`),
- * when its activity moves on to now instead. It takes no new thread once the wall clock reaches `until`. How many it dropped.
+ * One `threads` lane pass (idle retention): each idle thread, the longest idle first, in a
+ * unit of its own: dropped unless it is live, when its activity moves on to now instead,
+ * or a door touched it since. A dropped thread's Session is then closed (`closed`). It takes
+ * no new thread once the wall clock reaches `until`. How many it dropped.
  */
-export async function retainThreads(threads: Threads,
-                                    live: () => Promise<ReadonlySet<number>>,
-                                    clock: () => number, write: Write,
-                                    until: number = Infinity): Promise<number> {
-  const idle = threads.idle(clock());
-  if (idle.length === 0) {
-    return 0;
-  }
-  const busy = await live();
+export async function retainThreads(threads: Threads, clock: () => number, write: Write,
+                                    until: number = Infinity,
+                                    closed: (thread: string) => Promise<void> = async () => {}):
+    Promise<number> {
   let dropped = 0;
-  for (const thread of idle) {
+  for (const thread of threads.idle(clock())) {
     if (Date.now() >= until) {
       break;  // the rest wait for the lane's next pass, which its job's set brings at once
     }
-    if (busy.has(thread.conversation_id)) {
-      await write(() => threads.touch(thread.thread_id, clock()));
-    } else if (await write(() => threads.drop(thread.thread_id, thread.last_active)) !== null) {
+    const id = thread.thread_id;
+    const seen = thread.last_active;
+    if (await write(() => threads.retain(id, seen, clock())) === "dropped") {
       dropped++;
+      await closed(id);
     }
   }
   return dropped;

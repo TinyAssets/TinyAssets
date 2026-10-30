@@ -1,6 +1,6 @@
 /**
  * A model call's turn: the submitted input at the origin of its causal chain, carried by
- * pi's own telemetry propagation (ADR-032 §4; tasks 5 A1).
+ * pi's own telemetry propagation (ADR-032 §4; tasks 5 A1, S3).
  *
  * pi-durable propagates a telemetry context along every causal edge it records, and keeps
  * it durably in its own records (`session/transaction.js`, `harness/scheduler.js`,
@@ -15,23 +15,24 @@
  * - each phase of a task runs in the context its `trace` extracts to, and a model request
  *   carries the phase's context (`options.telemetry`).
  *
- * This module is the harness's telemetry adapter, and records nothing but that one
- * thing, the origin: an input admitted with a link to a context that has one (a tool or
- * background work submitting to a subagent's conversation) takes that origin. Every other
- * input is a new origin, a new turn: one a door submits, one `PiHarness.enqueue` admits,
- * and any input submitted under a context with no origin (`BACKGROUND_CONTEXT`, or a
- * context code made instead of the one pi passed it). Every other span takes its parent's.
- * So every model call one input caused, through any subagent, compaction or background
- * work, even after the run that started it ended, is charged to that input's turn, as the
- * Python's `_borrowed` charged a child to its parent's budget; a steer joins the run it
- * steers.
+ * This module is each thread's Session's telemetry adapter (one root per thread,
+ * `originRoot`), and records nothing but that one thing, the origin: an input admitted
+ * with a link to a context that has one (a tool or background work submitting to a
+ * subagent's conversation) takes that origin. Every other input is a new origin, a new
+ * turn: one a door submits, one the thread host admits, and any input submitted under a
+ * context with no origin (`BACKGROUND_CONTEXT`, or a context code made instead of the one
+ * pi passed it). Every other span takes its parent's. So every model call one input
+ * caused, through any subagent, compaction or background work, even after the run that
+ * started it ended, is charged to that input's turn, as the Python's `_borrowed` charged a
+ * child to its parent's budget; a steer joins the run it steers.
  *
  * A task takes whatever carrier it was created with. One with no carrier has no origin:
  * pi's compaction is the one such task pi itself starts (one asked for outside a run; a
- * door's write submission starts no input span), and it is its own origin, by its task
- * id; any other task with no carrier (created under a context with no origin) has none,
- * and its calls are refused (`no_run`). A task created with a forged `trace` carrier
- * takes the forged origin.
+ * door's write submission starts no input span), and it is its own origin, by its task id
+ * named by its thread (`task:<thread>:<id>`): task ids are per Session, and every thread
+ * is a Session of its own, so two threads' compactions never share a turn. Any other task
+ * with no carrier (created under a context with no origin) has none, and its calls are
+ * refused (`no_run`). A task created with a forged `trace` carrier takes the forged origin.
  *
  * Neither a fresh input nor a forged carrier is in reach of anything but our own code:
  * only trusted platform code runs inside the owner object. Package executable code is
@@ -39,6 +40,9 @@
  * no submit or task path (H0, H1); and the model's tools have no submit or task path of
  * their own beyond the contexts pi passes them. A future in-object package runtime would
  * need an owner-edge check here.
+ *
+ * The adapter never throws into pi: on pi 1.4 a throwing telemetry adapter can reject a
+ * durable commit (fixed on pi main), so every span method is total (a guard holds it).
  */
 import { randomUUID } from "node:crypto";
 
@@ -47,8 +51,13 @@ import type {
   TelemetryPropagation, TelemetrySpan,
 } from "@earendil-works/pi-telemetry";
 
-/** What an origin may be, in the carrier's one key, `ta.origin`. */
-const ORIGIN = /^(?:input|task):[0-9A-Za-z-]{1,64}$/;
+/** A thread's id, as its row holds it. */
+const THREAD = /^thread_[0-9a-f]{32}$/;
+/**
+ * What an origin may be, in the carrier's one key, `ta.origin`: an input's, or a
+ * compaction's, named by its thread.
+ */
+const ORIGIN = /^(?:input:[0-9A-Za-z-]{1,64}|task:thread_[0-9a-f]{32}:[0-9]{1,16})$/;
 /** pi's span names and attributes this adapter reads (pi-durable 1.4.0). */
 const ADMISSION = "pi.durable.submit";
 const PHASE = "pi.durable.phase";
@@ -60,12 +69,16 @@ export const NO_RUN = "no_run";
 /** A context's origin, resolved once, at first need. */
 type Resolve = () => string | undefined;
 
-/** A telemetry span that carries an origin and nothing else. */
+/** A telemetry span that carries an origin and nothing else, in one thread's Session. */
 class OriginSpan implements TelemetrySpan {
-  readonly propagation: TelemetryPropagation = PROPAGATION;
+  readonly propagation: TelemetryPropagation;
+  /** The thread whose Session this context is of. */
+  readonly thread: string;
   readonly #resolve: Resolve;
 
-  constructor(resolve: Resolve) {
+  constructor(thread: string, resolve: Resolve) {
+    this.thread = thread;
+    this.propagation = propagationOf(thread);
     this.#resolve = resolve;
   }
 
@@ -81,7 +94,7 @@ class OriginSpan implements TelemetrySpan {
 
   /** A span started here: of this context's origin. */
   protected child(_options: SpanOptions): OriginSpan {
-    return new OriginSpan(() => this.origin());
+    return new OriginSpan(this.thread, () => this.origin());
   }
 
   addLink(_link: SpanLink): void {}
@@ -93,7 +106,7 @@ class OriginSpan implements TelemetrySpan {
 /**
  * A span started at the root, where a causal chain may begin: an input's admission takes
  * its first linked origin, else a new one; pi's compaction with no carrier takes its task
- * id; anything else has none.
+ * id, named by its thread; anything else has none.
  */
 class RootSpan extends OriginSpan {
   #origin: string | undefined;
@@ -101,14 +114,14 @@ class RootSpan extends OriginSpan {
   #resolved = false;
   readonly #fresh: () => string | undefined;
 
-  constructor(options: SpanOptions) {
-    super(() => this.#settle());
-    const attributes = options.attributes ?? {};
+  constructor(thread: string, options: SpanOptions) {
+    super(thread, () => this.#settle());
+    const attributes = options?.attributes ?? {};
     const task = attributes["task.id"];
-    this.#fresh = options.name === ADMISSION ? () => `input:${randomUUID()}`
-      : options.name === PHASE && attributes["task.name"] === COMPACTION
+    this.#fresh = options?.name === ADMISSION ? () => `input:${randomUUID()}`
+      : options?.name === PHASE && attributes["task.name"] === COMPACTION
           && (typeof task === "number" || typeof task === "string")
-        ? () => `task:${task}`
+        ? () => `task:${thread}:${task}`
         : () => undefined;
   }
 
@@ -121,38 +134,47 @@ class RootSpan extends OriginSpan {
   }
 
   override addLink(link: SpanLink): void {
-    if (!this.#resolved && this.#linked === undefined && link.context instanceof OriginSpan) {
+    if (!this.#resolved && this.#linked === undefined && link?.context instanceof OriginSpan) {
       this.#linked = link.context.origin();
     }
   }
 }
 
-/** The harness's root: no origin of its own, and every span it starts may begin a chain. */
+/** A thread's Session's root: no origin of its own, and every span it starts may begin a chain. */
 class Root extends OriginSpan {
-  constructor() {
-    super(() => undefined);
+  constructor(thread: string) {
+    super(thread, () => undefined);
   }
 
   protected override child(options: SpanOptions): OriginSpan {
-    return new RootSpan(options);
+    return new RootSpan(this.thread, options);
   }
 }
 
-const PROPAGATION: TelemetryPropagation = Object.freeze({
-  inject: (context: TelemetryContext): TelemetryCarrier | undefined => {
-    const origin = context instanceof OriginSpan ? context.origin() : undefined;
-    return origin === undefined ? undefined : { "ta.origin": origin };
-  },
-  extract: (carrier: TelemetryCarrier | undefined): TelemetryContext => {
-    const origin = carrier?.["ta.origin"];
-    return origin !== undefined && ORIGIN.test(origin) ? new OriginSpan(() => origin)
-      : new Root();
-  },
-});
+/** One thread's propagation: a carrier with an origin extracts to it, any other to the root. */
+function propagationOf(thread: string): TelemetryPropagation {
+  return Object.freeze({
+    inject: (context: TelemetryContext): TelemetryCarrier | undefined => {
+      const origin = context instanceof OriginSpan ? context.origin() : undefined;
+      return origin === undefined ? undefined : { "ta.origin": origin };
+    },
+    extract: (carrier: TelemetryCarrier | undefined): TelemetryContext => {
+      const origin = carrier?.["ta.origin"];
+      return origin !== undefined && ORIGIN.test(origin)
+        ? new OriginSpan(thread, () => origin) : new Root(thread);
+    },
+  });
+}
 
-/** A harness's telemetry, pi's `HarnessOptions.telemetry`: a root, which holds nothing. */
-export function originRoot(): TelemetrySpan {
-  return new Root();
+/**
+ * A thread's Session's telemetry, pi's `HarnessOptions.telemetry`: a root, which holds
+ * nothing but the thread a compaction's origin is named by.
+ */
+export function originRoot(thread: string): TelemetrySpan {
+  if (!THREAD.test(thread)) {
+    throw new Error("an origin root is a thread's");
+  }
+  return new Root(thread);
 }
 
 /**
@@ -167,9 +189,11 @@ export function turnOf(telemetry: unknown): string {
   return origin;
 }
 
-/** A context of origin `origin`, as a carrier pi stored extracts to (for tests). */
-export function originContext(origin: string): TelemetrySpan {
-  const context = PROPAGATION.extract({ "ta.origin": origin });
+/** A context of origin `origin` in `thread`'s Session, as a stored carrier extracts to (tests). */
+export function originContext(origin: string,
+                              thread = "thread_00000000000000000000000000000000"):
+    TelemetrySpan {
+  const context = originRoot(thread).propagation!.extract({ "ta.origin": origin });
   if (context instanceof Root || !(context instanceof OriginSpan)) {
     throw new Error("not an origin");
   }

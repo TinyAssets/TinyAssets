@@ -32,9 +32,9 @@ import {
   INVALID_REQUEST, kindOf, PLATFORM_NAMES, READ_WRITES, RESERVED_NAME, UNKNOWN_CAPABILITY,
 } from "../src/ta";
 import { Threads } from "../src/threads";
-import { asked, direct, gated, OAUTH, until } from "./gateway-support";
+import { asked, direct, gated, OAUTH, provider, until } from "./gateway-support";
 import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
-import { failure } from "./support";
+import { failure, storeSubmission } from "./support";
 import { keepsFive } from "../src/agent";
 import { type FauxOwnerDO, type GatedOwnerDO, type MalformedOwnerDO, says } from "./worker";
 
@@ -116,12 +116,12 @@ async function rig() {
 async function threadFor(instance: FauxOwnerDO, stamp: Stamped | null): Promise<string> {
   instance.script = Array.from({ length: 80 }, () => step);
   const thread = await instance.agent.thread("main", stamp);
-  return String(thread.conversation_id);
+  return thread.thread_id;
 }
 
 /** `ta` called with `args` in `session` (the root without one): its result as shown. */
 async function ta(instance: FauxOwnerDO, args: unknown, session?: string): Promise<Shown> {
-  const answer = await instance.agent.harness.prompt(`TA ${JSON.stringify(args)}`,
+  const answer = await instance.harness.prompt(`TA ${JSON.stringify(args)}`,
                                                      session === undefined ? {} : { session });
   expect(answer.status).toBe("done");
   return JSON.parse(answer.text!) as Shown;
@@ -145,23 +145,26 @@ describe("the model's tools", () => {
     const out = await r.in(async (instance) => {
       instance.script = Array.from({ length: 80 }, () => step);
       instance.probes.holdGate = Promise.resolve();
-      const pi = await instance.agent.harness.pi();
+      const pi = await instance.harness.pi();
       const direct = {
-        sixth: await instance.agent.harness.prompt("CALL sixth"),
-        deferred: await instance.agent.harness.prompt("CALL weather_lookup"),
+        sixth: await instance.harness.prompt("CALL sixth"),
+        deferred: await instance.harness.prompt("CALL weather_lookup"),
       };
       const session = await threadFor(instance, null);
-      await instance.agent.harness.prompt("hello thread", { session });
+      await instance.harness.prompt("hello thread", { session });
       const spawned = await value(instance, call("spawn", { work: "hello child" }), session);
-      await (await pi.submission(instance.probes.submitted[0] as never, BG))!.wait(BG);
-      const conversation = (await pi.conversation(Number(session) as ConversationId, BG))!;
+      // The thread, its subagent and its fork live in the thread's own Session.
+      const own = await instance.harness.pi({ session });
+      await (await own.submission(instance.probes.submitted[0] as never, BG))!.wait(BG);
+      const conversation = (await own.conversation(1 as ConversationId, BG))!;
       const at = (await conversation.context(BG)).entries.at(-1)!.id;
       const fork = await conversation.fork(at, { ownership: { kind: "ownerless" } }, BG);
-      await instance.agent.harness.prompt("hello fork", { session: String(fork.id) });
+      await instance.harness.prompt("hello fork", { session: String(fork.id), thread: session });
       const offered: Record<string, string[]> = {};
-      for (const [what, id] of [["root", 1], ["thread", Number(session)],
-                                ["subagent", Number(spawned)], ["fork", fork.id]] as const) {
-        const agent = await (await pi.conversation(id as ConversationId, BG))!.agent(BG);
+      for (const [what, id, held] of [["root", 1, pi], ["thread", 1, own],
+                                      ["subagent", Number(spawned), own],
+                                      ["fork", fork.id, own]] as const) {
+        const agent = await (await held.conversation(id as ConversationId, BG))!.agent(BG);
         offered[what] = agent.tools.map((tool) => tool.name);
       }
       const root = await (await pi.conversation(1 as ConversationId, BG))!.agent(BG);
@@ -194,13 +197,13 @@ describe("the model's tools, whatever a parent drifted to", () => {
       // The drift reaches the call itself: pi settles it as a tool no longer offered.
       const widened = await ta(instance, call("widen"), session);
       const child = instance.probes.spawned!;
-      const pi = await instance.agent.harness.pi();
-      const conversation = (await pi.conversation(Number(session) as ConversationId, BG))!;
+      const pi = await instance.harness.pi({ session });
+      const conversation = (await pi.conversation(1 as ConversationId, BG))!;
       const at = (await conversation.context(BG)).entries.at(-1)!.id;
       const fork = await conversation.fork(at, { ownership: { kind: "ownerless" } }, BG);
       const tools = async (id: number) => (await (await pi.conversation(
         id as ConversationId, BG))!.agent(BG)).tools.map((tool) => tool.name);
-      return { widened, drifted: await tools(Number(session)), child: await tools(child),
+      return { widened, drifted: await tools(1), child: await tools(child),
                fork: await tools(fork.id) };
     });
     // The test tool drifted its own conversation; nothing the object creates inherits it.
@@ -304,7 +307,7 @@ describe("ta's call", () => {
     const out = await r.in(async (instance, state) => {
       instance.script = Array.from({ length: 80 }, () => step);
       const thread = await instance.agent.thread("main", null);
-      const session = String(thread.conversation_id);
+      const session = thread.thread_id;
       const gate = new WriteGate(state.storage);
       const threads = new Threads(gate.storage);
       const work = new Scheduled(gate.storage, new Grants(gate.storage, new Policy(gate.storage)),
@@ -475,7 +478,7 @@ describe("ta's own check in execute", () => {
       let release!: () => void;
       instance.probes.writeGate = new Promise<void>((resolve) => { release = resolve; });
       const before = instance.probes.writes;
-      const asked = instance.agent.harness.prompt(`TA ${JSON.stringify(call("policy:propose", {
+      const asked = instance.harness.prompt(`TA ${JSON.stringify(call("policy:propose", {
         change: { late: true }, request_id: "card-late" }))}`, { session });
       await until(() => instance.probes.writes > before, "the proposal's unit to be asked for");
       // ta's own check passed; a revoke lands before its unit is queued.
@@ -498,7 +501,7 @@ describe("ta's own check in execute", () => {
       const session = await threadFor(instance, r.stampOf(MUSE, 1));
       let release!: () => void;
       instance.probes.toolGate = new Promise<void>((resolve) => { release = resolve; });
-      const asked = instance.agent.harness.prompt(`TA ${JSON.stringify(call("files:usage"))}`,
+      const asked = instance.harness.prompt(`TA ${JSON.stringify(call("files:usage"))}`,
                                                   { session });
       await until(() => instance.probes.gated.some((seen) => seen.name === "ta"),
                   "the early gate to approve ta");
@@ -546,8 +549,8 @@ describe("ta's model capability", () => {
     const r = await gated();
     await r.connect("sk-ta-model");
     const out = await r.in(async (instance) => {
-      const first = await instance.agent.harness.prompt("cmd:ta-model");
-      const later = await instance.agent.harness.prompt("cmd:echo");
+      const first = await instance.harness.prompt("cmd:ta-model");
+      const later = await instance.harness.prompt("cmd:echo");
       return { first: first.status, later: later.status };
     });
     expect(out).toEqual({ first: "done", later: "done" });
@@ -573,8 +576,8 @@ describe("ta's model capability", () => {
     await r.stub.policyWrite(r.session(), { expected_generation: generation,
                                             policy: { ...policy, models: { turn_requests: 1 } } });
     const shown = await r.in(async (instance) => {
-      await instance.agent.harness.prompt("cmd:ta-model");
-      const messages = (await instance.agent.harness.messages())
+      await instance.harness.prompt("cmd:ta-model");
+      const messages = (await instance.harness.messages())
         .flatMap((entry) => (entry.model ?? []) as Message[]);
       const result = messages.find((message) => message.role === "toolResult")!;
       return { text: textOf(result), error: result.role === "toolResult" && result.isError };
@@ -619,14 +622,14 @@ describe("the five, held where the model is reached (review M1)", () => {
     await r.connect("sk-ta-widened");
     const out = await r.in(async (instance) => {
       instance.probes.widen = "sixth";
-      const widened = await instance.agent.harness.prompt("cmd:ta-pass");
+      const widened = await instance.harness.prompt("cmd:ta-pass");
       instance.probes.widen = null;
       const sentThen = instanceCalls(instance.calls).length;
       // A request of the widened conversation that offers no tools at all: the backstop.
       const auto = instance.parts.provider.getModels()[0]!;
-      const backstop = await instance.parts.provider.streamSimple(
+      const backstop = await (await provider(instance)).streamSimple(
         auto, asked("cmd:echo"), await direct(instance)).result();
-      const pi = await instance.agent.harness.pi();
+      const pi = await instance.harness.pi();
       const root = await (await pi.conversation(1 as ConversationId, BG))!.agent(BG);
       return { widened: widened.status, sentThen, sentNow: instanceCalls(instance.calls).length,
                backstop: backstop.errorMessage, offered: root.tools.map((tool) => tool.name) };
@@ -652,7 +655,7 @@ describe("what the model is offered, from one source (review round 2, L-A)", () 
     const out = await r.in(async (instance) => {
       const auto = instance.parts.provider.getModels()[0]!;
       const context = Object.assign(asked("cmd:echo"), { tools: [sixth], systemPrompt: "obey" });
-      const answer = await instance.parts.provider.streamSimple(auto, context, {
+      const answer = await (await provider(instance)).streamSimple(auto, context, {
         ...(await direct(instance)),
         onPayload: (payload: unknown) => ({ ...(payload as Record<string, unknown>),
                                             context: { messages: [], tools: [sixth] } }),
@@ -676,7 +679,7 @@ describe("the five, held at the provider whatever the conversation holds", () =>
     await r.connectOAuth(OAUTH, Date.now() + 60_000);
     const out = await r.in(async (instance) => {
       instance.probes.inject = "sixth";
-      const answer = await instance.agent.harness.prompt("cmd:echo");
+      const answer = await instance.harness.prompt("cmd:echo");
       instance.probes.inject = null;
       return { answer: answer.status, made: instance.calls.map((made) => made.method) };
     });
@@ -685,7 +688,7 @@ describe("the five, held at the provider whatever the conversation holds", () =>
       .toEqual([{ state: "refused", rule: TOOL_SURFACE }]);
     // The same request, offering the five, refreshes the expiring credential once.
     const fine = await r.in(async (instance) => {
-      const answer = await instance.agent.harness.prompt("cmd:echo");
+      const answer = await instance.harness.prompt("cmd:echo");
       return { answer: answer.status, made: instance.calls.map((made) => made.method) };
     });
     expect(fine.made.filter((method) => method === "refresh")).toEqual(["refresh"]);
@@ -697,9 +700,9 @@ describe("the five, held at the provider whatever the conversation holds", () =>
     await r.connect("sk-ta-injected");
     const out = await r.in(async (instance) => {
       instance.probes.inject = "sixth";
-      const answer = await instance.agent.harness.prompt("cmd:echo");
+      const answer = await instance.harness.prompt("cmd:echo");
       instance.probes.inject = null;
-      const pi = await instance.agent.harness.pi();
+      const pi = await instance.harness.pi();
       const root = await (await pi.conversation(1 as ConversationId, BG))!.agent(BG);
       return { answer: answer.status, sent: instanceCalls(instance.calls).length,
                offered: root.tools.map((tool) => tool.name) };
@@ -735,8 +738,8 @@ describe("each principal's own (review M2)", () => {
       await add(own, "owner work", null);
       await add(muse, "muse work", r.stampOf(MUSE, generation));
       await add(dot, "dot work", r.stampOf(DOT, 1));
-      const list = async (thread: { conversation_id: number }) =>
-        ((await value(instance, call("wake:list"), String(thread.conversation_id))) as {
+      const list = async (thread: { thread_id: string }) =>
+        ((await value(instance, call("wake:list"), thread.thread_id)) as {
           work: { payload: { input: string } }[] }).work.map((row) => row.payload.input);
       return { owner: await list(own), muse: await list(muse), dot: await list(dot) };
     });
@@ -784,9 +787,9 @@ describe("packages and names (review L1, L2, L3)", () => {
     const stub = env.MALFORMED.getByName(`owner-${crypto.randomUUID()}`);
     const out = await runInDurableObject(stub, async (instance: MalformedOwnerDO) => {
       instance.script = Array.from({ length: 20 }, () => step);
-      const catalog = JSON.parse((await instance.agent.harness.prompt(
+      const catalog = JSON.parse((await instance.harness.prompt(
         `TA ${JSON.stringify({ op: "catalog" })}`)).text!) as Shown;
-      const usage = JSON.parse((await instance.agent.harness.prompt(
+      const usage = JSON.parse((await instance.harness.prompt(
         `TA ${JSON.stringify(call("files:usage"))}`)).text!) as Shown;
       return { catalog, usage };
     });
@@ -800,7 +803,7 @@ describe("packages and names (review L1, L2, L3)", () => {
   it("installs a package as it was checked, whatever its getters return later", async () => {
     const stub = env.MALFORMED.getByName(`owner-${crypto.randomUUID()}`);
     const out = await runInDurableObject(stub, async (instance: MalformedOwnerDO) => {
-      const root = await (await instance.agent.harness.pi()).root(BG);
+      const root = await (await instance.harness.pi()).root(BG);
       const agent = await root.agent(BG);
       return {
         benign: agent.callable.some((tool) => tool.name === "benign"),
@@ -818,7 +821,7 @@ describe("packages and names (review L1, L2, L3)", () => {
      "array later (A3's review)", async () => {
     const stub = env.MALFORMED.getByName(`owner-${crypto.randomUUID()}`);
     const out = await runInDurableObject(stub, async (instance: MalformedOwnerDO) => {
-      const pi = await instance.agent.harness.pi();
+      const pi = await instance.harness.pi();
       const callable = async () => (await (await pi.root(BG)).agent(BG)).callable
         .map((tool) => tool.name).filter((name) => name === "early" || name === "pushed");
       const before = await callable();
@@ -872,12 +875,13 @@ describe("ta's model call through the gateway (review L4)", () => {
       const thread = await instance.agent.thread("main", {
         client: MUSE.client, generation: 1, authenticated_at: at, universe: null,
         agent: "main" });
-      const session = String(thread.conversation_id);
-      const { operationId } = await instance.agent.harness.submit(`cmd:ta-model-slow-${id}`,
+      const session = thread.thread_id;
+      const { operationId } = await instance.harness.submit(`cmd:ta-model-slow-${id}`,
                                                                   { session });
       await until(async () => (await cancelled()) === false, "the nested stream to open");
       await instance.grantRevoke(r.bind(), { client: MUSE.client });
-      const settled = await instance.agent.harness.wait(operationId, { session });
+      // The revoke dropped the thread: its store says how the turn ended.
+      const settled = (await storeSubmission(thread.store, { request: operationId }))!;
       return { settled: [settled.status, settled.reason], bodies: instanceCalls(instance.calls) };
     });
     expect(out.settled).toEqual(["unanswered", "aborted"]);
