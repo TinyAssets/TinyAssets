@@ -789,6 +789,32 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   Object.freeze([
     "CREATE INDEX work_by_creator ON scheduled_work (client, created_at, work_id)",
   ]),
+  // 9: the agent's doors (threads.ts, A4): what a thread is for, a conversation an agent
+  // holds with one caller (`converse`, one per caller, agent and universe) or one run
+  // (`run`, a fresh one per launch, as every thread before this was), and when it was last
+  // active, which idle retention reads (the `threads` lane, by its index), with the threads
+  // unsettled work names. A thread's stamp still never changes; its activity only moves on.
+  Object.freeze([
+    "ALTER TABLE agent_threads ADD COLUMN kind TEXT NOT NULL DEFAULT 'run' " +
+      "CHECK (kind IN ('converse', 'run'))",
+    "ALTER TABLE agent_threads ADD COLUMN last_active REAL NOT NULL DEFAULT 0",
+    "DROP TRIGGER agent_threads_kept",
+    "UPDATE agent_threads SET last_active = created_at",
+    "CREATE TRIGGER agent_threads_kept BEFORE UPDATE ON agent_threads WHEN " +
+      "NEW.thread_id IS NOT OLD.thread_id OR NEW.conversation_id IS NOT OLD.conversation_id " +
+      "OR NEW.agent_id IS NOT OLD.agent_id OR NEW.client IS NOT OLD.client " +
+      "OR NEW.generation IS NOT OLD.generation " +
+      "OR NEW.authenticated_at IS NOT OLD.authenticated_at " +
+      "OR NEW.universe IS NOT OLD.universe OR NEW.created_at IS NOT OLD.created_at " +
+      "OR NEW.kind IS NOT OLD.kind OR NEW.last_active < OLD.last_active BEGIN " +
+      "SELECT RAISE(ABORT, 'a thread never changes the stamp it was made under'); END",
+    "CREATE INDEX agent_threads_by_activity ON agent_threads (last_active)",
+    "CREATE UNIQUE INDEX agent_threads_conversing ON agent_threads " +
+      "(IFNULL(client, ''), agent_id, IFNULL(universe, '')) WHERE kind = 'converse'",
+    // The threads unsettled work names, which idle retention never drops.
+    "CREATE INDEX work_by_thread ON scheduled_work (json_extract(payload, '$.thread')) " +
+      "WHERE settled_at IS NULL",
+  ]),
 ]);
 
 /** Apply every migration past the stored version; return the version now stored. */

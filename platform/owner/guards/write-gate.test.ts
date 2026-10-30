@@ -52,6 +52,7 @@ const WRITES: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   "owner/src/files-env.ts": new Set(["rename", "mkdir", "remove", "tempDir", "dropTemps"]),
   "owner/src/schedule.ts": new Set(["push", "cancel"]),
   "owner/src/agent.ts": new Set(["add", "record"]),
+  "owner/src/threads.ts": new Set(["touch", "drop"]),
   "owner/src/connections.ts": new Set(["#lease", "#unlease", "#refreshed", "#sweep", "#owed",
                                        "#revokeOutcome"]),
   "owner/src/gateway-provider.ts": new Set(["reserve", "dispatched", "settle", "abandon",

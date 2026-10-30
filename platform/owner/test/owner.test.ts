@@ -24,7 +24,7 @@ const PULL = { collection: "board", after: 0, limit: 1 };
  * sender. The list only grows by a door.
  */
 const RPC_METHODS = Object.freeze([
-  "collectionClear", "collectionDelete", "collectionGet", "collectionHistory", "collectionPull",
+  "agentCancel", "agentRun", "agentStatus", "agentSubmit", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory", "collectionPull",
   "collectionWrite", "connectionCommit", "connectionList", "connectionPrepare",
   "connectionRevoke", "deleteAgent", "disableAgent", "fileChanges", "fileHistory",
   "fileHistoryPurge", "fileLeaseAcquire", "fileLeaseRelease", "fileLeaseRenew", "fileList",

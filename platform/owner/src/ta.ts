@@ -37,7 +37,10 @@
  * (read), and `model` (effect: a nested model call through the object's model source, the
  * `gateway` provider in production, reserved and settled like any turn's call and charged
  * to the turn at the origin of this call's causal chain, which pi's telemetry context
- * carries). `agent:run` is A4's.
+ * carries), and `agent:run` (effect: a launch of one of the owner's agents in a fresh
+ * thread of its own, now or at a time, through the same path as the `agentRun` door,
+ * stamped with the calling conversation's authority where the launched agent acts and
+ * recorded in a unit that re-checks `run_graph` there: the run's own scope).
  *
  * `ta` is `callers: ["model"]` (no tool reaches it, so a nested call never nests `ta`) and
  * `replay: "unsafe"`: an eviction mid-call comes back interrupted, never run twice. Its
@@ -65,7 +68,7 @@ import { AUTO_MODEL, GATEWAY_PROVIDER } from "./gateway-provider";
 /** The platform capabilities' names, which no package tool may take. */
 export const PLATFORM_NAMES: readonly string[] = Object.freeze(["policy:show", "policy:propose",
                                                                 "wake:list", "files:usage",
-                                                                "model"]);
+                                                                "model", "agent:run"]);
 
 /** The capabilities classified as reads; any other is an effect. */
 export const READS: readonly string[] = Object.freeze(["ta:catalog", "policy:show",
@@ -104,6 +107,13 @@ export interface Platform {
   work(client: string | null, limit: number): unknown[];
   /** The owner's file usage and limits. */
   fileUsage(): FileUsage;
+  /**
+   * Launch `agent` on `input` under the calling conversation's authority (`state`), as the
+   * `agentRun` door does, now or at `at`: its own thread, its operation id. Each of its
+   * writes is a unit of its own, re-checking `run_graph` where the launched agent acts.
+   */
+  run(state: Readonly<AuthorityState> | undefined, agent: unknown, input: unknown,
+      at: unknown): Promise<unknown>;
 }
 
 /** What `ta` is built from. */
@@ -211,6 +221,22 @@ function platformCapabilities(): readonly PlatformCapability[] {
         max_tokens: Type.Optional(Type.Integer({ minimum: 1 })),
       }, { additionalProperties: false }),
       run: async (args, scope) => modelCall(args, scope),
+    },
+    {
+      name: "agent:run",
+      description: "Launch one of the owner's agents on an input, in a fresh conversation of " +
+        "its own configured from /workspace/agents/<agent>/, now or at a time. Returns its " +
+        "operation id, which its status is read by.",
+      parameters: Type.Object({
+        agent: Type.String({ description: "The agent's id, such as main." }),
+        input: Type.String({ description: "What the agent is asked to do." }),
+        at: Type.Optional(Type.Number({ description: "When, in seconds since the epoch; now " +
+                                                     "when omitted." })),
+      }, { additionalProperties: false }),
+      run: async (args, scope, parts) => ({
+        value: await parts.platform.run(scope.state, args["agent"], args["input"],
+                                        args["at"] ?? null),
+      }),
     },
   ];
 }

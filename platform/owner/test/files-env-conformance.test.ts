@@ -22,6 +22,7 @@ import { ignored, ignoreRules, OwnerFilesEnv } from "../src/files-env";
 import { OUTSIDE_GATE, type WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import { Refused } from "../src/errors";
+import { AGENTS_DIR, AGENTS_OWNER_ONLY, within } from "../src/paths";
 import { FILE_DEFAULTS } from "../src/policy";
 import {
   failure, faulty, filesOn, inGate, lostContent, ownerObject, sqlIn, STORAGE_FAULT,
@@ -192,6 +193,43 @@ describe("the owner's environment", () => {
       getOrThrow(await other.writeFile("a.txt", "theirs, edited", context));
       getOrThrow(await other.writeFile("a.txt", "theirs, edited twice", context));
       expect(getOrThrow(await one.readTextFile("a.txt", context))).toBe("theirs, edited twice");
+    });
+  });
+
+  it("holds every change to its guard: nothing created, changed, moved into or out of, or " +
+     "removed under the owner's agent definitions (review H1)", async () => {
+    await inOwner(async (files) => {
+      const owner = new OwnerFilesEnv({ files, rearm });
+      getOrThrow(await owner.writeFile("/workspace/agents/main/AGENTS.md", "Be brief.", context));
+      getOrThrow(await owner.writeFile("mine.md", "x", context));
+      const guarded: string[] = [];
+      const theirs = new OwnerFilesEnv({ files, rearm, guard: (path) => {
+        guarded.push(path);
+        if (within(path, AGENTS_DIR)) {
+          throw new Refused(AGENTS_OWNER_ONLY);
+        }
+      } });
+      const why = (result: { ok: boolean; error?: { code: string } }) =>
+        result.ok ? "changed" : result.error!.code;
+      const md = "/workspace/agents/main/AGENTS.md";
+      expect([why(await theirs.writeFile(md, "PLANTED", context)),
+              why(await theirs.writeFile("/workspace/agents/other/AGENTS.md", "x", context)),
+              why(await theirs.appendFile(md, "PLANTED", context)),
+              why(await theirs.truncateFile(md, 0, context)),
+              why(await theirs.createDir("/workspace/agents/new", undefined, context)),
+              why(await theirs.renameFile("mine.md", md, context)),
+              why(await theirs.renameFile(md, "/workspace/out.md", context)),
+              why(await theirs.renameFile("/workspace/agents/main", "/workspace/main", context)),
+              why(await theirs.remove("/workspace/agents", { recursive: true }, context))])
+        .toEqual(Array.from({ length: 9 }, () => "permission_denied"));
+      expect(getOrThrow(await owner.readTextFile(md, context))).toBe("Be brief.");
+      // Outside the tree it changes as it may, its paths passed to the guard.
+      getOrThrow(await theirs.writeFile("notes.md", "x", context));
+      getOrThrow(await theirs.renameFile("notes.md", "kept.md", context));
+      expect(guarded).toContain("/workspace/notes.md");
+      expect(guarded).toContain("/workspace/kept.md");
+      // The guard reads the tree, never refuses a read.
+      expect(getOrThrow(await theirs.readTextFile(md, context))).toBe("Be brief.");
     });
   });
 

@@ -13,6 +13,12 @@
  * `resolve` is the one place a relative or dotted path is turned into a stored one, as
  * the pi environment's `absolutePath` does against its `cwd`; the RPC doors take only
  * stored paths and refuse anything else.
+ *
+ * `/workspace/agents` holds the owner's agent definitions (Direction 3: the owner edits
+ * its agents' files), which configure every thread the agent's doors make: only the
+ * owner's own authority creates, changes, moves into or out of, or removes anything there
+ * (`AGENTS_DIR`, held by the file doors and the agent's environment). The roots are never
+ * removed or renamed, so no change outside the tree reaches into it.
  */
 import { Invalid } from "./errors";
 import { utf8Bytes } from "./text";
@@ -21,6 +27,11 @@ export const WORKSPACE = "/workspace";
 export const TEMP = "/.ta/tmp";
 export const ROOTS: readonly string[] = Object.freeze([WORKSPACE, TEMP]);
 export const MAX_PATH_BYTES = 4096;
+/** The owner's agent definitions, `/workspace/agents/<agent>/`: the owner's alone to change. */
+export const AGENTS_DIR = "/workspace/agents";
+/** The refusal of a change to `AGENTS_DIR` under any authority but the owner's. */
+export const AGENTS_OWNER_ONLY = "only the owner changes its agents' files under " +
+  "/workspace/agents";
 export const MAX_NAME_BYTES = 255;
 const LONE_SURROGATE = /\p{Cs}/u;
 

@@ -736,6 +736,103 @@ Each conversation SHALL carry its authority in pi's own document: the owner's (t
 - **WHEN** a client has as many threads as its bound and asks for another
 - **THEN** the thread is refused loudly, and the client's grant row counts each thread it keeps
 
+### Requirement: Idle threads are dropped, never live ones
+The `threads` lane SHALL drop a thread no door or run has touched for the idle age (7 days), in a unit that re-checks the activity it read, so a thread touched since is kept; a thread whose conversation pi holds live work in, its subagents' and background work's included, SHALL never be dropped, its activity moved on instead; a thread unsettled scheduled work names SHALL never be idle, and is in use from its work's claim.
+
+#### Scenario: Clients that stopped calling hold the shared bound
+- **WHEN** clients' threads fill the clients' shared bound and then go unused for the idle age
+- **THEN** the lane drops them, and a new client's thread is made
+
+#### Scenario: A thread whose background work runs on
+- **WHEN** a thread's run ended but the background work it started still runs, past the idle age
+- **THEN** the thread is kept and its activity moved on
+
+#### Scenario: A far launch cancelled
+- **WHEN** a client schedules launches months ahead and cancels some
+- **THEN** the cancelled launches' threads are dropped once idle, and the open one's is kept
+
+### Requirement: Every door that uses a thread keeps it active
+Every door that makes or uses a thread SHALL move its activity on and re-derive the `threads` lane's job.
+
+#### Scenario: A message to an idle-aged thread
+- **WHEN** a door touches a thread after the lane read it as idle, before its drop
+- **THEN** the drop re-checks its activity and keeps it
+
+### Requirement: The owner's agent definitions are the owner's alone
+Only the owner's own authority, the owner at the file doors or its agent under the owner's authority, SHALL create, change, move into or out of, or remove anything under `/workspace/agents`; an outside client SHALL be refused at every file door and every change of the agent's environment, its thread's tools included. A thread SHALL be configured only from an `AGENTS.md` whose recorded writer is the owner or its agent, any other refused loudly.
+
+#### Scenario: A client plants an agent's instructions
+- **WHEN** a client writes, renames or uploads into `/workspace/agents/main/AGENTS.md` by a door, or its conversation's model calls `write` there
+- **THEN** each is refused "only the owner changes its agents' files under /workspace/agents", and no thread of the owner's or another client's is configured from it
+
+#### Scenario: A file another wrote is already there
+- **WHEN** an agent's `AGENTS.md` carries a writer other than the owner's
+- **THEN** a launch or a new thread for that agent is refused loudly, and nothing is made
+
+### Requirement: A launch's time is bounded
+A launch's `at`, at the door and through `ta`, SHALL be seconds since the epoch, at most a year and a day ahead, and refused loudly otherwise; one already past SHALL run now.
+
+#### Scenario: Milliseconds sent for seconds
+- **WHEN** a client launches with `at` in milliseconds, or at 1e300
+- **THEN** the launch is refused as invalid, and no thread, work row or alarm is made
+
+### Requirement: The storage gauge fails loudly before the object is full
+The object SHALL read its database size against its limit (10 GB) before each new thread or launch and in each `threads` lane pass, tell the owner once past 70% (`storage_high`), and past 90% tell the owner (`storage_full`) and refuse each new thread and launch loudly with the fixed code `storage_full`, while existing threads go on. The gauge is a safety net only; the fix is one pi Session per thread, wiped whole when the thread is dropped.
+
+#### Scenario: The object nears its limit
+- **WHEN** the owner's storage passes 90% of its limit
+- **THEN** a new launch is refused `storage_full`, a message to an existing thread is answered, and the owner's notices hold `storage_full`
+
+### Requirement: The bounded waits are shared
+The object SHALL keep at most 256 pending waits, at most 16 of any one outside client's, and the clients together SHALL leave 32 for the owner; a wait refused for room SHALL answer `running` at once, the operation still submitted.
+
+#### Scenario: One client fills its waits
+- **WHEN** a client holds 16 waits and sends a 17th, and every client's together fill theirs
+- **THEN** each further client wait answers `running` at once, and the owner's message is still waited on and answered
+
+### Requirement: The agent's doors admit and scope their caller before any pi call
+`agentSubmit` and `agentRun` SHALL admit the caller and check its scope (`converse`, `run_graph`) for the agent it names, in the universe its one enabled agent is registered in, in their first unit, before any thread is made or any input submitted; a thread SHALL be stamped where its caller acts, and its recording unit SHALL re-check the scope there. An outside client's text SHALL reach pi only inside the untrusted envelope naming the client; the owner's as typed.
+
+#### Scenario: A scoped client without converse
+- **WHEN** a client granted `read_files` only sends a message, or holds `converse` for `main` only and names another agent
+- **THEN** it is refused "outside client capability not granted", no thread is made and pi is handed nothing
+
+### Requirement: The agent's work is addressed by thread, the caller's own
+Every agent door SHALL address work by a thread id resolved against the calling client's own rows (the owner's for the owner), and hand pi only the session that row names, so no door reaches the root conversation; an operation id SHALL be its thread's id and pi's request id, and any operation not the caller's, a forged one and a pi session string included, SHALL be refused alike as no such operation.
+
+#### Scenario: Another client asks for an operation
+- **WHEN** one client, the owner, or anyone naming a pi session string asks the status of, or cancels, a client's operation
+- **THEN** each is refused "no such operation", and the operation runs on
+
+### Requirement: A message is one submission and is waited on a bounded time
+`agentSubmit` SHALL find or make the caller's one `converse` thread with the agent, submit with pi's request id `sha256(client ∥ client_send_id)`, so a resend is pi's duplicate, queued behind a running turn or, with `steer`, placed after its current tool round, and wait at most `wait_ms` (25 s by default, 60 s at most), past which it SHALL answer `running` with the operation id. A grant change of the client or a policy write SHALL end the wait as a refusal and end the turn.
+
+#### Scenario: A client resends a message
+- **WHEN** a client sends the same `client_send_id` twice
+- **THEN** the model is asked once and both answers are the same
+
+#### Scenario: A resend after the thread was dropped
+- **WHEN** a client resends a `client_send_id` after idle retention dropped its thread
+- **THEN** the message runs again in a new thread, since pi deduplicates per conversation
+
+#### Scenario: A steer during a tool round
+- **WHEN** a message with `steer` arrives while the thread's run holds a tool call
+- **THEN** pi places it after that tool round, before the run's next answer
+
+### Requirement: A launch runs in a fresh thread, now or scheduled
+`agentRun` SHALL make a fresh `run` thread configured from the agent's data files (`/workspace/agents/<agent>/AGENTS.md` as its instructions), submit the input now, or with `at` write a scheduled turn naming the thread, which the `work` lane hands to pi when due; a status SHALL be pi's receipts, or for work not yet handed its row.
+
+#### Scenario: A scheduled launch
+- **WHEN** a client launches an agent with `at` a moment ahead
+- **THEN** its status reads `scheduled` until the work runner hands it over, then the run's answer
+
+### Requirement: ta's agent:run launches in the run's own scope
+`ta`'s `agent:run` SHALL launch on `agentRun`'s path, stamped with the calling conversation's authority where the launched agent acts, and SHALL be refused unless that holds `run_graph`, before pi makes a conversation.
+
+#### Scenario: A launch of an agent the grant does not name
+- **WHEN** a client's conversation that holds `run_graph` for `main` calls `agent:run` for another agent
+- **THEN** the call is refused "outside client capability not granted" before pi makes a conversation
+
 ### Requirement: A grant or policy change ends the agent work it covers
 After its own unit commits, in the same door, a grant set or revoke SHALL end its client's pending waits, close the live views of its threads and of every live conversation stamped for it, and abort each such conversation's work, background work included; a policy write SHALL do so for every conversation with live work and close every view. The door SHALL wait at most 5 s, and SHALL reject if the ending fails.
 
@@ -804,7 +901,7 @@ Each platform capability SHALL be classified a read or an effect, and one not cl
 - **THEN** the unit refuses with "outside client authority no longer stands" and no proposal is held
 
 ### Requirement: The v1 platform capabilities hold to their doors' needs
-The platform capabilities SHALL be `policy:show` (a read, the owner's alone), `policy:propose` (an effect needing `propose_policy`, held for the owner's card under the proposer's own share), `wake:list` (a read of only the calling authority's own scheduled work), `files:usage` (a read needing `read_files`) and `model` (an effect), each registered in `ta.authority`'s map with that need.
+The platform capabilities SHALL be `policy:show` (a read, the owner's alone), `policy:propose` (an effect needing `propose_policy`, held for the owner's card under the proposer's own share), `wake:list` (a read of only the calling authority's own scheduled work), `files:usage` (a read needing `read_files`), `model` (an effect) and `agent:run` (an effect needing `run_graph`), each registered in `ta.authority`'s map with that need.
 
 #### Scenario: Outside clients ask for the owner's policy
 - **WHEN** a full client and a scoped client call `policy:show`, and a client without `propose_policy` calls `policy:propose`

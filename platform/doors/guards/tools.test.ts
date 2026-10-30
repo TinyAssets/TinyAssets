@@ -7,7 +7,8 @@
  * `#widening`, is reachable by an outside client. Its capability is the one string it
  * hands `#scope`, `#collector` or `#filer`. Each tool must name such a door, with that
  * capability, and arguments exactly the door's request fields; each such door must have
- * a tool, or be named below with the slice that owes it.
+ * a tool, or be named below with the slice that owes it. Only the doors that hand work to
+ * the owner's agent are open world: the agent acts on outside services.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -38,10 +39,19 @@ const DISPATCH: readonly string[] = Object.freeze(["method", "operation", "tool"
 /** Writes that destroy or send nothing: an ack, a filed card, a proposal, a new directory. */
 const ADDITIVE: readonly string[] = Object.freeze(["mailboxAck", "registerPropose",
                                                    "policyPropose", "fileMkdir"]);
-/** Writes that repeat to the same end: an ack through a sequence, a directory made once. */
-const IDEMPOTENT_WRITES: readonly string[] = Object.freeze(["mailboxAck", "fileMkdir"]);
-/** The one outside-callable read with no scope: an identity's own agents. */
-const UNSCOPED_READS: readonly string[] = Object.freeze(["outsideAgents"]);
+/**
+ * Writes that repeat to the same end: an ack through a sequence, a directory made once, a
+ * cancel of an operation.
+ */
+const IDEMPOTENT_WRITES: readonly string[] = Object.freeze(["mailboxAck", "fileMkdir",
+                                                            "agentCancel"]);
+/**
+ * The outside-callable reads with no scope of their own: an identity's own agents, and
+ * how one of the caller's own agent operations stands.
+ */
+const UNSCOPED_READS: readonly string[] = Object.freeze(["outsideAgents", "agentStatus"]);
+/** The doors that hand work to the owner's agent, which acts on outside services. */
+const OPEN_WORLD: readonly string[] = Object.freeze(["agentSubmit", "agentRun"]);
 
 interface DoorShape {
   readonly capability: string | null;
@@ -153,13 +163,14 @@ export function toolProblems(tools: readonly Tool[], doors: ReadonlyMap<string, 
         say(`${hint} is not an explicit boolean`);
       }
     }
-    if (tool.openWorldHint !== false) {
-      say("open world, but every tool is confined to the owner's account");
-    }
     const door = doors.get(tool.door);
     if (door === undefined) {
       say(`${tool.door} is not an outside-callable OwnerDO door`);
       continue;
+    }
+    if (tool.openWorldHint !== OPEN_WORLD.includes(tool.door)) {
+      say(OPEN_WORLD.includes(tool.door) ? "closed world, but the agent acts outside"
+                                         : "open world, but confined to the owner's account");
     }
     if (used.has(tool.door)) {
       say(`${tool.door} has two tools`);
@@ -224,6 +235,10 @@ describe("tool table guard", () => {
     expect(DOORS.get("collectionWrite")?.capability).toBe("write_graph");
     expect(DOORS.get("fileStat")?.capability).toBe("read_files");
     expect(DOORS.get("outsideAgents")?.capability).toBeNull();
+    expect(DOORS.get("agentSubmit")?.capability).toBe("converse");
+    expect(DOORS.get("agentRun")?.capability).toBe("run_graph");
+    expect(DOORS.get("agentStatus")?.capability).toBeNull();
+    expect(DOORS.get("agentCancel")?.capability).toBeNull();
     for (const ownerOnly of ["policyWrite", "grantSet", "grantRevoke", "grantForget",
                              "sessionOpen", "registerAgent", "fileRedact", "fileHistoryPurge",
                              "fileLeaseAcquire", "fileSyncCommit", "policyRead",
@@ -260,6 +275,34 @@ describe("tool table guard", () => {
   ])("sees %s", (_what, change) => {
     expect(toolProblems([{ ...base, ...change }, ...toolTable().slice(1)], DOORS))
       .not.toEqual([]);
+  });
+
+  it("holds the agent's tools to the table: converse and run_graph destructive, not " +
+     "idempotent and open world, run_status a read, run_cancel destructive and idempotent",
+     () => {
+    const hints = (name: string) => {
+      const tool = toolTable().find((row) => row.name === name)!;
+      return [tool.door, tool.capability, tool.readOnlyHint, tool.destructiveHint,
+              tool.idempotentHint, tool.openWorldHint];
+    };
+    expect(["converse", "run_graph", "run_status", "run_cancel"].map(hints)).toEqual([
+      ["agentSubmit", "converse", false, true, false, true],
+      ["agentRun", "run_graph", false, true, false, true],
+      ["agentStatus", null, true, false, true, false],
+      ["agentCancel", null, false, true, true, false],
+    ]);
+    const table = toolTable();
+    for (const [name, change] of [
+      ["converse", { openWorldHint: false }], ["run_graph", { openWorldHint: false }],
+      ["converse", { idempotentHint: true }], ["run_graph", { destructiveHint: false }],
+      ["run_status", { openWorldHint: true }], ["run_status", { readOnlyHint: false }],
+      ["run_cancel", { idempotentHint: false }], ["run_cancel", { destructiveHint: false }],
+      ["run_cancel", { openWorldHint: true }], ["converse", { capability: null }],
+      ["run_graph", { capability: "converse" }],
+    ] as const) {
+      expect(toolProblems(table.map((tool) => tool.name === name ? { ...tool, ...change } : tool),
+                          DOORS)).not.toEqual([]);
+    }
   });
 
   it("sees an ack marked other than idempotent, and a post marked idempotent", () => {

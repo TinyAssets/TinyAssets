@@ -153,6 +153,25 @@ function stampOf(row: Row): Stamp | null {
     : { client: row.client, generation: row.generation!, authenticated_at: row.authenticated_at };
 }
 
+/** A row as `of` and `view` show it. */
+function viewOf(row: Row): WorkView {
+  return {
+    work_id: row.work_id, kind: row.kind, due: row.due, state: row.state,
+    payload: JSON.parse(row.payload) as unknown, created_at: row.created_at,
+    settled_at: row.settled_at,
+    outcome: row.outcome === null ? null : JSON.parse(row.outcome) as unknown,
+  };
+}
+
+/**
+ * The SQL condition that unsettled work names the thread `column` holds (migration 9's
+ * `work_by_thread`): what idle retention keeps (`threads.ts`), this module's table read.
+ */
+export function namedByOpenWork(column: string): string {
+  return "EXISTS (SELECT 1 FROM scheduled_work WHERE settled_at IS NULL AND " +
+    `json_extract(payload, '$.thread') = ${column})`;
+}
+
 /** A scheduled turn: the thread it runs in, fixed when the work is made, and its input. */
 export interface Turn {
   readonly thread: string;
@@ -219,6 +238,26 @@ export class Scheduled {
   }
 
   /**
+   * Refuse loudly, before anything is made for it, a turn `add` would refuse for its room:
+   * its payload past `maxPayload` (with a thread id in it), the client's open work at its
+   * share, or the owner's at its bound. A read; `add` checks each again.
+   */
+  room(client: string | null, input: string): void {
+    const body = JSON.stringify({ thread: `thread_${"0".repeat(32)}`, input });
+    if (codePoints(body) > this.#limits.maxPayload) {
+      throw new Invalid(`a work payload is JSON of at most ${this.#limits.maxPayload} characters`);
+    }
+    if (client !== null && this.#sql.exec<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM scheduled_work WHERE client = ? AND settled_at IS NULL",
+      client).one().n >= this.#limits.perClient) {
+      throw new Refused("this client's scheduled work is at its limit");
+    }
+    if (this.#usage().open_work >= this.#limits.maxOpen) {
+      throw new Refused("the owner's scheduled work is at its limit");
+    }
+  }
+
+  /**
    * Schedule one piece of work at `due`, on the owner's own authority (`stamp` null) or
    * the outside client's it was admitted under, which must stand now. A turn names its
    * thread here, once: a thread made under the same authority (the owner's, or the same
@@ -278,6 +317,32 @@ export class Scheduled {
     });
   }
 
+  /**
+   * The caller's withdrawal of its own pending work, not yet handed to pi: refused
+   * `cancelled`; whether it was. Work of another authority, or already claimed or settled,
+   * is left as it is.
+   */
+  cancel(workId: string, client: string | null, now: number): boolean {
+    return this.#storage.transactionSync(() => {
+      const ended = this.#sql.exec(
+        "UPDATE scheduled_work SET state = 'refused', settled_at = ?, outcome = ? " +
+          "WHERE work_id = ? AND client IS ? AND state = 'pending' RETURNING work_id",
+        now, JSON.stringify({ reason: "cancelled" }), workId, client).toArray().length > 0;
+      if (ended) {
+        this.#prune(now);
+      }
+      return ended;
+    });
+  }
+
+  /** One row of `client`'s (null: the owner's), as `of` shows it, or null. A read. */
+  view(workId: string, client: string | null): WorkView | null {
+    const row = this.#sql.exec<Row>(
+      "SELECT * FROM scheduled_work WHERE work_id = ? AND client IS ?", workId, client)
+      .toArray()[0];
+    return row === undefined ? null : viewOf(row);
+  }
+
   /** Every row, oldest first: the owner's view, and the tests'. */
   list(): (Omit<Row, "payload"> & { payload: unknown })[] {
     return this.#sql.exec<Row>("SELECT * FROM scheduled_work ORDER BY created_at, work_id")
@@ -292,12 +357,7 @@ export class Scheduled {
   of(client: string | null, limit: number): WorkView[] {
     return this.#sql.exec<Row>(
       "SELECT * FROM scheduled_work WHERE client IS ? ORDER BY created_at DESC, work_id DESC " +
-        "LIMIT ?", client, limit).toArray().map((row) => ({
-      work_id: row.work_id, kind: row.kind, due: row.due, state: row.state,
-      payload: JSON.parse(row.payload) as unknown, created_at: row.created_at,
-      settled_at: row.settled_at,
-      outcome: row.outcome === null ? null : JSON.parse(row.outcome) as unknown,
-    }));
+        "LIMIT ?", client, limit).toArray().map(viewOf);
   }
 
   /** Pending work that is due, oldest first: what the claim pass takes. */
@@ -339,6 +399,8 @@ export class Scheduled {
         }
       }
       const claimId = "claim_" + token(16);
+      // Its thread is in use from now: idle retention counts from the hand-off.
+      this.#threads.touch(workTurn(JSON.parse(row.payload)).thread, now);
       this.#sql.exec("UPDATE scheduled_work SET state = 'running', claim_id = ?, marked = 0, " +
                        "attempts = attempts + 1, due = ? WHERE work_id = ?",
                      claimId, now + WORK_LEASE_S, workId);
