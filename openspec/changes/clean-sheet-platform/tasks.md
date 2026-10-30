@@ -882,10 +882,10 @@ account and no deploy.
   adapter: 78 killed, 4 alive and equivalent (the stream classifier's status branch, which
   the first-event check answers first; a tier's threshold made optional in either checker,
   which its count check still refuses; the output rate from the base price, which the
-  rounding guard walks down to the same reservation). Owner bundle 1,660 KiB, 345 KiB gzip
-  (1,649 and 342 before), local startup 25 ms active in a 59 to 60 ms window (25 in 59);
-  gateway 3,993 KiB, 542 KiB gzip (3,984 and 540), 32 ms in 81 to 82 ms (32 to 34 in 83 to
-  84). Declared differences from the research: the overflow code answers 413, not the 502
+  rounding guard walks down to the same reservation). Owner bundle 1,689 KiB, 353 KiB gzip
+  (1,679 and 350 at A4), local startup 25 to 26 ms active in a 61 to 62 ms window (25 to 27
+  in 60 to 62); gateway 3,993 KiB, 542 KiB gzip (3,984 and 540), 33 to 34 ms in 86 ms (33
+  to 35 in 89 to 91). Declared differences from the research: the overflow code answers 413, not the 502
   of the upstream codes; `compat`, `headers` and the sampling parameters stay the
   gateway's (its adapter applies them from its own record; pi-messages reads none); pi's
   settings cannot see a conversation's target, so `auto`'s per-target threshold is held by
