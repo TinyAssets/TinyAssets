@@ -652,11 +652,12 @@ account and no deploy.
   conversation (A4's review measured about 5 KB fixed per fresh conversation and 50 to
   200 KB per real run), and an object's storage is limited to 10 GB, past which every
   write fails `SQLITE_FULL` and the owner's object stops; A4's storage gauge refuses new
-  threads and launches loudly at 90% (below). The real fix is upstream in pi: a
-  `deleteConversation` that cascades to the conversation's entries, tasks, submissions,
-  documents, revisions and record ids, or a way to forget what precedes a compaction head.
-  Asking pi for it is an outward act, so a founder decision. Writing pi's tables directly
-  stays banned. A3's `ta` re-derives its capability in its own `execute` (below).
+  threads and launches loudly at 90% (below). The storage gauge is a safety net only.
+  The fix is pi's own unit of storage: one pi Session per thread, its storage scoped to
+  that thread and wiped whole when the thread is dropped, a long thread rotating through
+  `reset(handoff)`; its design is being decided now, in the coordinator's design review,
+  and lands as its own slice before A5. Writing pi's tables directly stays banned. A3's
+  `ta` re-derives its capability in its own `execute` (below).
 - [x] A3 `ta`, in workerd, nothing deployed (`ta.ts`). The model is offered exactly
   `read`, `write`, `edit`, `bash` and `ta`: pi's `modelTools`, written in
   `conversationCreated` on every conversation the object creates (the root, threads,
@@ -820,7 +821,8 @@ account and no deploy.
   Tasks extension (tasks 2); an agent's model pin and further data files; the sandbox's
   sync writer (`lease:<epoch>`) for the agent definitions, refused as a writer until the
   sandbox slice decides whose authority its sync carries; a dropped thread's pi
-  conversation and pi's retention (A2's entry, a founder decision).
+  conversation and pi's retention: one pi Session per thread, wiped whole with its thread
+  (A2's entry), its own slice before A5.
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
   owner's hook code with the Worker Loader, called over RPC with JSON in and out and a
   timeout. A `beforeTool` timeout or error blocks

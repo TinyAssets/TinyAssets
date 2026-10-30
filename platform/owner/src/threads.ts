@@ -45,7 +45,9 @@
  * PiHarness 0.31.0 have no way to delete a conversation (no delete on `Harness`,
  * `Session`, `Storage` or `PiSessions`; pi's SQLite store deletes only document
  * revisions), so a dropped thread's conversation stays in pi's tables, holding no live
- * work and named by no row, door or work, until pi offers a delete (open in tasks 5).
+ * work and named by no row, door or work. The fix is pi's own unit of storage, one pi
+ * Session per thread, wiped whole when the thread is dropped (its own slice before A5,
+ * tasks 5); the object's storage gauge is a safety net only.
  */
 import { agentId, type AuthorityState, authorityOf, type Stamped, stamped } from "./authority";
 import { Refused } from "./errors";

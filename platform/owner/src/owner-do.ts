@@ -575,8 +575,9 @@ export const AT_AHEAD_S = 366 * 86_400;
 /**
  * The object's storage, which the platform limits (10 GB per object, every write failing
  * `SQLITE_FULL` past it), and the shares of it at which the owner is told (`storage_high`)
- * and new threads and launches are refused (`STORAGE_FULL`). pi keeps every conversation
- * it was given (tasks 5, A4), so this is the loud failure before the object is full.
+ * and new threads and launches are refused (`STORAGE_FULL`). A safety net only: pi keeps
+ * every conversation it was given until each thread has a pi Session of its own, wiped
+ * whole when the thread is dropped (tasks 5, its own slice before A5).
  */
 export const STORAGE_BYTES = 10_000_000_000;
 export const STORAGE_NOTICE_SHARE = 0.7;

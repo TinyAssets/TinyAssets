@@ -750,7 +750,7 @@ A launch's `at`, at the door and through `ta`, SHALL be seconds since the epoch,
 - **THEN** the launch is refused as invalid, and no thread, work row or alarm is made
 
 ### Requirement: The storage gauge fails loudly before the object is full
-The object SHALL read its database size against its limit (10 GB) before each new thread or launch and in each `threads` lane pass, tell the owner once past 70% (`storage_high`), and past 90% tell the owner (`storage_full`) and refuse each new thread and launch loudly with the fixed code `storage_full`, while existing threads go on. pi keeps every conversation it was given, so no other bound holds the object below its limit.
+The object SHALL read its database size against its limit (10 GB) before each new thread or launch and in each `threads` lane pass, tell the owner once past 70% (`storage_high`), and past 90% tell the owner (`storage_full`) and refuse each new thread and launch loudly with the fixed code `storage_full`, while existing threads go on. The gauge is a safety net only; the fix is one pi Session per thread, wiped whole when the thread is dropped.
 
 #### Scenario: The object nears its limit
 - **WHEN** the owner's storage passes 90% of its limit
