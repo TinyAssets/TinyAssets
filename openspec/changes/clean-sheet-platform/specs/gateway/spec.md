@@ -177,8 +177,8 @@ The gateway Worker's config SHALL bind nothing and serve no URL: no binding of a
 - **THEN** the answer lists pi-ai's Anthropic models with their whole catalog records, in catalog order
 
 ### Requirement: A declared endpoint's models are whole records
-A declared endpoint's models SHALL be pi-ai records of the same fields, each checked whole when it is sealed and again when it is opened.
+A declared endpoint's models SHALL be pi-ai records of the same fields, each checked whole when it is sealed and again when it is opened, within the owner object's own bounds (ids and names of 200 characters, prices of $1M a million tokens, token counts of 100M), so a record sealed here commits there.
 
 #### Scenario: A declared model names a field pi-ai's record does not have
-- **WHEN** a custom source declares a model with a compatibility block, an unknown thinking level, or a price tier with no threshold
+- **WHEN** a custom source declares a model with a compatibility block, a thinking level pi-ai does not have, a price tier whose threshold is missing or not a whole count of tokens, or a price or token count past the owner's bounds
 - **THEN** the source is refused `invalid_source`

@@ -18,7 +18,8 @@ import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import { agentPolicy, MODEL_DEFAULTS, MODEL_SETTINGS, modelSettings, validate } from "../src/policy";
 import {
-  type Ask, type ModelCaps, periods, priced, Usage, USAGE_LIMITS, type UsageLimits,
+  type Ask, largestFitting, type ModelCaps, periods, priced, Usage, USAGE_LIMITS,
+  type UsageLimits,
 } from "../src/usage";
 import { gated, until } from "./gateway-support";
 import { failure, ownerObject } from "./support";
@@ -372,6 +373,46 @@ describe("the per-turn caps", () => {
     // 1.5 µ$ of input and 257.75 of output.
     expect(r.rows()[0]).toMatchObject({ est_cost: 260 });
   }));
+
+  it("find the most output a cost fits by bisection, about log2 of the bound in prices",
+     () => {
+    // The steepest search: the largest output any model takes, at the policy's largest
+    // turn cost, against a cheap record of the real catalog's.
+    const record = rates(0.029, 0.03);
+    let calls = 0;
+    const fits = (output: number) => {
+      calls += 1;
+      return priced(record, 50_000, output) <= MODEL_SETTINGS.turn_cost[1];
+    };
+    expect(largestFitting(100_000_000, fits)).toBe(100_000_000);
+    expect(calls).toBeLessThanOrEqual(28);
+    calls = 0;
+    const room = 1_000_000;
+    const found = largestFitting(100_000_000, (output) => {
+      calls += 1;
+      return priced(record, 50_000, output) <= room;
+    });
+    expect(calls).toBeLessThanOrEqual(28);
+    expect(priced(record, 50_000, found)).toBeLessThanOrEqual(room);
+    expect(priced(record, 50_000, found + 1)).toBeGreaterThan(room);
+    expect(largestFitting(-1, () => true)).toBe(-1);
+    expect(largestFitting(10, () => false)).toBe(-1);
+    expect(largestFitting(0, () => true)).toBe(0);
+  });
+
+  it("reserve a catalog-priced call at the policy's largest turn cost promptly", () =>
+    withUsage(async (r) => {
+      r.policy.caps = { turn_cost: MODEL_SETTINGS.turn_cost[1], turn_tokens: 1_000_000_000 };
+      const began = Date.now();
+      expect(await r.gate.write(() => r.usage.reserve({
+        ...ASK, inputTokens: 50_000, maxOutputTokens: 4_000, rates: rates(0.029, 0.03) }, NOW)))
+        .toMatchObject({ ok: true, max_output_tokens: 4_000 });
+      // A declared price whose output costs a millionth of a µ$ a token.
+      r.policy.caps = { turn_cost: 1_500, turn_tokens: 1_000_000_000 };
+      expect((await r.gate.write(() => r.usage.reserve({
+        ...ASK, turn: "t2", rates: rates(0.1003, 0.0000015) }, NOW))).ok).toBe(true);
+      expect(Date.now() - began).toBeLessThan(500);
+    }));
 
   it("keep an estimate rounded up to the µ$ inside the cost it fits", () => withUsage(async (r) => {
     // Here pi-ai's price of the output that fits by its rate, rounded up, is a µ$ over.

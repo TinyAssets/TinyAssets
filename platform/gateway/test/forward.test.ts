@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { isModelType } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
-import { builtinCatalog } from "../src/catalog";
+import { builtinCatalog, modelInfos } from "../src/catalog";
 import { checkedRecord, recordOf } from "../src/model-record";
 import { Failure } from "../src/failure";
 import { forward, redact, verify } from "../src/forward";
@@ -316,6 +316,15 @@ describe("verify", () => {
       }
     }
     expect(records).toBeGreaterThan(1_000);
+  });
+
+  it("lists a catalog's chat models only, whatever else it serves on the same API", () => {
+    const chat = builtinCatalog().provider("anthropic")!.getModels()
+      .find((model) => model.api === "anthropic-messages")!;
+    const image = { ...chat, id: "an-image-model", type: "image", output: ["image"] };
+    const catalog = { provider: () => ({ ...builtinCatalog().provider("anthropic")!,
+                                         getModels: () => [chat, image] }) as never };
+    expect(modelInfos(catalog, ANTHROPIC.upstream).map((model) => model.id)).toEqual([chat.id]);
   });
 
   it("answers a refused key with a fixed code", async () => {

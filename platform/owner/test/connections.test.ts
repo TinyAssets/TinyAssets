@@ -673,9 +673,11 @@ describe("the largest built-in catalog", () => {
     };
     const listed = await catalog(record);
     expect(listed).toHaveLength(largest!.count);
-    // Its records whole, at their size, fit `maxModels` times over within the JSON bound.
-    const each = JSON.stringify(listed).length / listed.length;
-    expect(each * CONNECTION_LIMITS.maxModels).toBeLessThanOrEqual(MODELS_JSON_MAX);
+    // `maxModels` of the largest record of any built-in catalog fit within the JSON bound.
+    const largestRecord = Math.max(...builtinProviders().flatMap((provider) =>
+      provider.getModels().filter((model) => isModelType(model, "chat"))
+        .map((model) => JSON.stringify(recordOf(model)).length)));
+    expect(largestRecord * CONNECTION_LIMITS.maxModels).toBeLessThanOrEqual(MODELS_JSON_MAX);
     expect(JSON.stringify(listed)).toContain("thinkingLevelMap");
     const r = await gated();
     const connection = await r.connect("sk-large", record, "Large", listed);
@@ -733,6 +735,7 @@ describe("a connected model's record", () => {
       tiers: [{ inputTokensAbove: 1, input: -2, output: 2, cacheRead: 0, cacheWrite: 0 }] } }],
     ["a cost with an unknown rate", { cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0,
                                               cacheWrite1h: 2 } }],
+    ["a context window of zero", { contextWindow: 0 }],
   ])("refuses a model with %s", async (_what, change) => {
     const r = await gated();
     const [model] = await catalog(ANTHROPIC);

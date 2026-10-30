@@ -48,9 +48,9 @@
  *    request's `sessionId`, so the owner's views stream token by token while pi commits
  *    once a second.
  * 8. **Settle**, in a unit, before pi sees the end, so the turn's next reservation reads it
- *    (`outcomeOf`): `succeeded` with pi-ai's `Usage` from `done`, priced as every pi-ai
- *    adapter prices its own, by `calculateCost` over the target's record (so the settled
- *    cost, the reservation's estimate and pi's own `pi.usage` agree); `failed` when the gateway
+ *    (`outcomeOf`): `succeeded` with pi-ai's `Usage` from `done`, at the cost the gateway's
+ *    own pi-ai adapter priced (its current catalog record, with pi-ai's service-tier and
+ *    fallback adjustments), the number pi's own `pi.usage` records; `failed` when the gateway
  *    answered with a refusal's status, its own or the provider's before any output;
  *    `unknown` for anything else, keeping the reservation. A blob the gateway resealed
  *    under a newer kid is stored by compare-and-swap. Once reserved, a call never leaves
@@ -74,7 +74,6 @@ import {
   type SimpleStreamOptions, type TranscriptContext, type Usage as PiUsage,
 } from "@earendil-works/pi-ai";
 import { streamSimple as piMessages } from "@earendil-works/pi-ai/api/pi-messages";
-import { calculateCost } from "@earendil-works/pi-ai/models";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { CompactionSettings } from "@earendil-works/pi-durable";
@@ -433,10 +432,6 @@ export class GatewayProvider implements Provider<Api> {
                                          model: upstreamId }),
       });
       for await (const event of events) {
-        if (event.type === "done") {
-          // Priced by the target's own record, as every pi-ai adapter prices its usage.
-          calculateCost(physical, event.message.usage);
-        }
         if (event.type === "done" || event.type === "error") {
           final = event;
           break;

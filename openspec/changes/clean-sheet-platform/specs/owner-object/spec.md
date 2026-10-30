@@ -516,7 +516,7 @@ The object SHALL hold a model connection's credential only as the blob the gatew
 - **THEN** no table of the object, no call it makes to the gateway and no line it logs holds the key
 
 ### Requirement: A connection keeps up to 1,024 models
-A connection SHALL keep up to 1,024 models, each its whole pi-ai record as the setup check listed it and checked whole at commit, within 512 KiB of JSON, so the largest built-in catalog (386 models in pi-ai 1.4.0, about 367 bytes a record) fits with room, and 1,024 records of its size fit.
+A connection SHALL keep up to 1,024 models, each its whole pi-ai record as the setup check listed it and checked whole at commit, within 640 KiB of JSON, so 1,024 of the largest built-in record (607 bytes in pi-ai 1.4.0) fit, and the largest built-in catalog (386 models) with room.
 
 #### Scenario: The largest built-in catalog
 - **WHEN** a key is connected for the built-in provider whose catalog is the largest
@@ -601,12 +601,16 @@ Each model call SHALL be reserved in one unit that also reads the connection's b
 - **WHEN** eight calls of one turn reserve together against a cap of three requests
 - **THEN** three are reserved and five refused, each refusal kept as a receipt
 
-### Requirement: A call is priced by pi-ai's calculateCost
-A call SHALL be priced, reserved and settled alike, by pi-ai's `calculateCost` over the target model's whole cost record, so a long-context tier prices the whole request once its input passes the tier's threshold.
+### Requirement: A call is estimated by pi-ai's calculateCost and settled at the gateway's price
+A call's reservation SHALL be priced by pi-ai's `calculateCost` over the target model's whole cost record, so a long-context tier prices the whole request once its estimated input passes the tier's threshold, and the most output the cost room takes SHALL be found in about log2 of its bound. A settled call SHALL keep the cost the gateway's pi-ai adapter reported, never one recomputed from the record stored at connect time.
 
 #### Scenario: A long-context tier
 - **WHEN** a call's estimated and billed input pass its model's tier threshold
-- **THEN** its estimate, its reserved output and its settled cost are at the tier's rates, and pi's own `pi.usage` records the same cost
+- **THEN** its estimate and reserved output are at the tier's rates, and it settles at the tier's price the gateway reported, which pi's own `pi.usage` records too
+
+#### Scenario: A stored record older than the gateway's catalog
+- **WHEN** a connection's stored record prices a model at nothing and the gateway's catalog does not
+- **THEN** the call settles at the gateway's price, and its spend counts against the caps
 
 ### Requirement: The caps read counters, never receipts
 Every cap SHALL read only counters the schema's triggers write: `model_turns` per turn, `model_spend` per source, day and month. Receipts SHALL be history only, bounded without freeing any cap; a turn's counters SHALL go only once it has been idle 30 days with no call open.

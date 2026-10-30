@@ -90,7 +90,7 @@ export interface ConnectionLimits {
  * starts 3 minutes before the access token expires (research §2.6); a lease outlasts the
  * gateway's 15 s token-endpoint bound. A connection keeps up to 1,024 models: the largest
  * built-in catalog of pi-ai 1.4.0 has 386 (the connections test finds it by a scan, and
- * holds `MODELS_JSON_MAX` to 1,024 records of its size).
+ * holds `MODELS_JSON_MAX` to 1,024 of the largest built-in record).
  */
 export const CONNECTION_LIMITS: ConnectionLimits = Object.freeze({
   maxConnections: 50,
@@ -206,11 +206,11 @@ const FAILURE = /^[a-z][a-z_]{0,63}$/;
 const MODEL_ID = /^[\x21-\x7e]{1,200}$/;
 const BLOB_MAX = 64 * 1024;
 /**
- * The models a connection keeps, as JSON: the schema's own ceiling. The largest built-in
- * catalog, its records whole, is about 142 KB for 386 models, 367 bytes a model, so
- * `maxModels` of them is about 376 KB.
+ * The models a connection keeps, as JSON: the schema's own ceiling. The largest record of
+ * pi-ai 1.4.0's built-in catalogs, whole, is 607 bytes, so `maxModels` of the largest are
+ * about 607 KiB (the largest catalog is about 142 KB for its 386 models).
  */
-export const MODELS_JSON_MAX = 512 * 1024;
+export const MODELS_JSON_MAX = 640 * 1024;
 const COST_MAX = 1_000_000;
 const TOKENS_MAX = 100_000_000;
 /** pi-ai's thinking levels a map may name (`MODEL_THINKING_LEVELS`), and a value's grammar. */
@@ -333,7 +333,7 @@ function modelInfo(value: unknown): ModelInfo {
     && Array.isArray(value["input"]) && value["input"].length <= 2
     && value["input"].every((kind) => kind === "text" || kind === "image")
     && count(value["contextWindow"], TOKENS_MAX) && count(value["maxTokens"], TOKENS_MAX)
-    && value["maxTokens"] >= 1
+    && value["contextWindow"] >= 1 && value["maxTokens"] >= 1
     && cost(value["cost"])
     && (value["thinkingLevelMap"] === undefined || thinkingLevelMap(value["thinkingLevelMap"]))
     && (value["promptCache"] === undefined || promptCache(value["promptCache"]))

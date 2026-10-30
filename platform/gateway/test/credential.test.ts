@@ -143,6 +143,13 @@ describe("source", () => {
   it("keeps a declared model's whole record: thinking levels, cache, input limits and tiers",
      () => {
     expect(source(declared(WHOLE), false).upstream.models).toEqual([WHOLE]);
+    // At the owner's own bounds.
+    const bounded = { ...WHOLE, id: "m".repeat(200), name: "n".repeat(200),
+                      contextWindow: 100_000_000, maxTokens: 100_000_000,
+                      cost: { ...WHOLE.cost, output: 1_000_000, tiers: [{
+                        inputTokensAbove: 100_000_000, input: 2, output: 1_000_000,
+                        cacheRead: 0.2, cacheWrite: 2.5 }] } };
+    expect(source(declared(bounded), false).upstream.models).toEqual([bounded]);
   });
 
   it.each([
@@ -169,6 +176,20 @@ describe("source", () => {
     ["a repeated input type", { ...WHOLE, input: ["text", "text"] }],
     ["no input type", { ...WHOLE, input: [] }],
     ["a context window of zero", { ...WHOLE, contextWindow: 0 }],
+    ["a thinking level pi-ai does not have", { ...WHOLE, thinkingLevelMap: { ultra: "u" } }],
+    ["a thinking level named none", { ...WHOLE, thinkingLevelMap: { none: "x" } }],
+    ["a negative tier threshold", { ...WHOLE, cost: { ...WHOLE.cost, tiers: [{ inputTokensAbove: -1, input: 2, output: 8, cacheRead: 0.2, cacheWrite: 2.5 }] } }],
+    ["a fractional tier threshold", { ...WHOLE, cost: { ...WHOLE.cost, tiers: [{ inputTokensAbove: 1.5, input: 2, output: 8, cacheRead: 0.2, cacheWrite: 2.5 }] } }],
+    ["a tier threshold in words", { ...WHOLE, cost: { ...WHOLE.cost, tiers: [{ inputTokensAbove: "100", input: 2, output: 8, cacheRead: 0.2, cacheWrite: 2.5 }] } }],
+    ["a tier threshold past the owner's token bound", { ...WHOLE, cost: { ...WHOLE.cost,
+      tiers: [{ inputTokensAbove: 100_000_001, input: 2, output: 8, cacheRead: 0.2, cacheWrite: 2.5 }] } }],
+    ["a price past the owner's bound", { ...WHOLE, cost: { ...WHOLE.cost, output: 1_000_001 } }],
+    ["a tier's price past the owner's bound", { ...WHOLE, cost: { ...WHOLE.cost, tiers: [{
+      inputTokensAbove: 1, input: 2, output: 1_000_001, cacheRead: 0.2, cacheWrite: 2.5 }] } }],
+    ["a context window past the owner's bound", { ...WHOLE, contextWindow: 100_000_001 }],
+    ["an output limit past the owner's bound", { ...WHOLE, maxTokens: 100_000_001 }],
+    ["an id past the owner's bound", { ...WHOLE, id: "m".repeat(201) }],
+    ["a name past the owner's bound", { ...WHOLE, name: "n".repeat(201) }],
   ])("refuses a declared model with %s", (_what, model) => {
     expect(() => source(declared(model), false)).toThrow("invalid_source");
   });

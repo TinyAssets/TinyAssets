@@ -18,8 +18,8 @@
  *   be `reserved` and the owner policy at the generation it was reserved under; else it
  *   is `not_sent`, and the call never goes. A row is `dispatched` before the first byte
  *   leaves, so an unsent one is provably unsent.
- * - **Settle**, in a unit, once: `succeeded` with pi-ai's `Usage` (tokens, and its cost by
- *   `calculateCost` over the target's record) from the `done` event; `failed`, cost 0,
+ * - **Settle**, in a unit, once: `succeeded` with pi-ai's `Usage` (tokens, and the cost the
+ *   gateway's own pi-ai adapter priced) from the `done` event; `failed`, cost 0,
  *   when the gateway answered the call with a refusal's status, its own or the provider's before any output (the gateway's
  *   `messages.ts`); `unknown` otherwise (a stream lost after it started, an abort), which
  *   keeps its whole reservation and is never replayed.
@@ -36,12 +36,14 @@
  * been idle for `turnIdleS`, with no call of it open.
  *
  * Money is micro-dollars (µ$): pi-ai's catalog prices are dollars per million tokens, so a
- * token at price `p` costs `p` µ$. A call is priced by pi-ai's own `calculateCost` over the
+ * token at price `p` costs `p` µ$. A call's estimate is pi-ai's own `calculateCost` over the
  * target model's whole cost record (pi audit F6), so a long-context tier applies to the
  * whole request once its input passes the tier's threshold, as the provider bills it: the
- * estimate is the context's estimated input, uncached, and the reserved output, at the
- * rates the estimated input selects; a settled call's cost is pi-ai's for its usage
- * (`gateway-provider.ts`). A turn is the submitted input
+ * context's estimated input, uncached, and the reserved output, at the rates the estimated
+ * input selects. A settled call's cost is the one the gateway's pi-ai adapter reported:
+ * its `calculateCost` over the gateway's current catalog record, with pi-ai's own
+ * adjustments after it (a service tier's multiplier, a fallback model's prices), so a
+ * record the connection stored at connect time never under-records what was spent. A turn is the submitted input
  * at the origin of a call's causal chain, as pi propagates it (`origin.ts`): a compaction,
  * a subagent and background work a run starts are that run's turn, even after it ended,
  * as the Python's `_borrowed` charged a child to its parent. A source is a connection's
@@ -174,6 +176,27 @@ export function costMicros(dollars: number): number {
   return Number.isFinite(dollars) && dollars > 0 ? Math.ceil(dollars * 1_000_000) : 0;
 }
 
+/**
+ * The largest `n` in `[0, most]` that `fits`, where `fits` holds from 0 up to some point and
+ * not past it; -1 when it holds for none. By bisection: about log2(most) calls of `fits`.
+ */
+export function largestFitting(most: number, fits: (n: number) => boolean): number {
+  if (most < 0 || !fits(0)) {
+    return -1;
+  }
+  let low = 0;
+  let high = most;
+  while (low < high) {
+    const middle = low + Math.ceil((high - low) / 2);
+    if (fits(middle)) {
+      low = middle;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return low;
+}
+
 export class Usage {
   readonly #storage: OwnerStorage;
   readonly #policy: () => UsagePolicy;
@@ -263,22 +286,17 @@ export class Usage {
         }
       }
       const [costRule, costRoom] = rooms.reduce((a, b) => (b[1] < a[1] ? b : a));
-      // The output price is the one the estimated input's tier sets, so the cost is linear in
-      // the output: pi-ai's price of a million output tokens, less that of none, is µ$ a token.
-      const inputCost = priced(ask.rates, ask.inputTokens, 0);
-      const outputRate = priced(ask.rates, ask.inputTokens, 1_000_000) - inputCost;
       const byTokens = settings.turn_tokens - turn.tokens - ask.inputTokens;
-      let byCost = outputRate > 0
-        ? Math.floor((costRoom - inputCost) / (outputRate / 1_000_000))
-        : costRoom - inputCost >= 0 ? Infinity : -1;
-      // pi-ai's cost of the output found, rounded up to a µ$, is the reservation's own.
-      while (Number.isFinite(byCost) && byCost >= 1
-             && priced(ask.rates, ask.inputTokens, byCost) > costRoom) {
-        byCost -= 1;
-      }
-      const output = Math.min(ask.maxOutputTokens, byTokens, byCost);
+      // pi-ai's price, rounded up to a µ$, is non-decreasing in the output (the input alone
+      // picks a tier), so the most output the cost room takes is found by bisection, within
+      // the call's ask and the turn's tokens.
+      const fits = (output: number) => priced(ask.rates, ask.inputTokens, output) <= costRoom;
+      const output = largestFitting(Math.min(ask.maxOutputTokens, byTokens), fits);
       if (output < floor || output < 1) {
-        return refuse(byTokens <= byCost && byTokens < floor ? "turn_tokens" : costRule);
+        // The turn's tokens bind when they leave less than the floor and the cost room
+        // takes what they leave.
+        const byTokensBinds = byTokens < floor && (byTokens < 0 || fits(byTokens));
+        return refuse(byTokensBinds ? "turn_tokens" : costRule);
       }
       const id = `r${randomBytes(16).toString("hex")}`;
       const cost = priced(ask.rates, ask.inputTokens, output);

@@ -27,6 +27,7 @@ import {
 } from "../src/gateway-provider";
 import type { LiveEvent } from "../src/live-tee";
 import { DEFAULT_POLICY_JSON } from "../src/policy";
+import type { Source } from "../../gateway/src/credential";
 import {
   ANTHROPIC, asked, catalog, direct, type Gated, gated, OPENAI, textOf, until,
 } from "./gateway-support";
@@ -659,12 +660,13 @@ describe("a context too long for its model", () => {
     expect(await envelopes(r)).toHaveLength(2);
   });
 
-  it("is not refused on a routed target whose threshold is no lower than the strongest's, " +
-     "which pi already held it to", async () => {
+  it.each([[80_000, 70_000], [64_000, 56_000]])(
+    "is not refused on a routed target whose threshold is no lower than the strongest's, " +
+    "which pi already held it to (a window of %d)", async (window, threshold) => {
     const r = await gated();
-    // The stronger by rank has the smaller window: `auto` mirrors it, so pi's threshold
-    // is already the lower one.
-    const [strong, weak] = await pair([64_000, 80_000]);
+    // The stronger by rank has the smaller window, or the same: `auto` mirrors it, so
+    // pi's threshold is already as low.
+    const [strong, weak] = await pair([64_000, window]);
     await r.connect("sk-low", ANTHROPIC, "Strong", [strong]);
     const weakConnection = await r.connect("sk-high", ANTHROPIC, "Weak", [weak]);
     const target = `${weakConnection}/${weak.id}`;
@@ -679,8 +681,8 @@ describe("a context too long for its model", () => {
           timestamp: 2 }] });
       return instance.parts.provider.streamSimple(auto!, context, await direct(instance)).result();
     });
-    // Past the routed target's own threshold (70,000), but not refused: sent, and answered.
-    expect(blockingThreshold(weak)).toBe(70_000);
+    // Past the routed target's own threshold, but not refused: sent, and answered.
+    expect(blockingThreshold(weak)).toBe(threshold);
     expect([answer.model, answer.errorMessage ?? null]).toEqual([target, null]);
   });
 });
@@ -709,14 +711,22 @@ describe("a connected model's whole record", () => {
     expect(whole.thinkingLevelMap).toEqual(mapped.thinkingLevelMap);
   });
 
-  it("prices a call by its long-context tier, reserved and settled by pi-ai's calculateCost",
-     async () => {
+  it("reserves a call at its long-context tier by pi-ai's calculateCost, and settles what " +
+     "the gateway's pi-ai adapter priced at that tier", async () => {
     const r = await gated();
-    const [first] = await catalog(ANTHROPIC);
-    const tiered: ModelInfo = { ...first!, maxTokens: 4_000, cost: {
-      input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75,
-      tiers: [{ inputTokensAbove: 10, input: 6, output: 30, cacheRead: 0.6, cacheWrite: 7.5 }] } };
-    await r.connect("sk-tier", ANTHROPIC, "Key", [tiered]);
+    // A declared endpoint, so the gateway's own record carries the tier too.
+    const tiered = {
+      id: "tiered-1", name: "Tiered", reasoning: false, input: ["text"] as ("text")[],
+      contextWindow: 200_000, maxTokens: 4_000,
+      cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75,
+              tiers: [{ inputTokensAbove: 10, input: 6, output: 30, cacheRead: 0.6,
+                        cacheWrite: 7.5 }] } };
+    const declared: Source = { upstream: { ...ANTHROPIC.upstream, provider: "custom",
+                                           models: [tiered] },
+                               endpoints: ANTHROPIC.endpoints };
+    const listed = await catalog(declared);
+    expect(listed).toEqual([tiered]);
+    await r.connect("sk-tier", declared, "Key", listed);
     const answer = await r.in(async (instance) => instance.parts.provider.streamSimple(
       instance.parts.provider.getModels()[0]!, asked(`${"a".repeat(350)} cmd:echo`),
       await direct(instance)).result());
@@ -725,12 +735,32 @@ describe("a connected model's whole record", () => {
     // The fake bills 11 input tokens, past the tier's 10, and 7 output: the tier's rates
     // for the whole request, 11 at 6 and 7 at 30, not the base 11 at 3 and 7 at 15.
     expect(Math.abs(receipt!.cost! - (11 * 6 + 7 * 30))).toBeLessThanOrEqual(1);
-    expect(answer.usage.cost.total * 1_000_000).toBeCloseTo(11 * 6 + 7 * 30, 6);
+    expect(receipt!.cost).toBe(Math.ceil(answer.usage.cost.total * 1_000_000));
     // The estimate: its input past the tier too, and the reserved output at the tier's 30.
     const estimated = receipt!.est_tokens - receipt!.max_output_tokens;
     expect(estimated).toBeGreaterThan(10);
     expect(Math.abs(receipt!.est_cost - (estimated * 6 + receipt!.max_output_tokens * 30)))
       .toBeLessThanOrEqual(1);
+  });
+
+  it("settles what the gateway's pi-ai adapter priced, not the record stored at connect " +
+     "time", async () => {
+    const r = await gated();
+    const [first] = await catalog(ANTHROPIC);
+    // The record as stored before a pi-ai upgrade changed the prices.
+    const stale = { ...first!, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+    await r.connect("sk-stale", ANTHROPIC, "Key", [stale]);
+    const answer = await r.in(async (instance) => instance.parts.provider.streamSimple(
+      instance.parts.provider.getModels()[0]!, asked("cmd:echo"), await direct(instance))
+      .result());
+    expect(answer.stopReason).toBe("stop");
+    const { receipts: [receipt] } = await r.stub.usageReceipts(r.bind());
+    // The stored record estimated nothing; the gateway priced 11 input and 7 output tokens
+    // by its own catalog.
+    expect(receipt!.est_cost).toBe(0);
+    expect(Math.abs(receipt!.cost! - (11 * first!.cost.input + 7 * first!.cost.output)))
+      .toBeLessThanOrEqual(1);
+    expect(receipt!.cost).toBeGreaterThan(0);
   });
 
   it("gives pi each listed model's own compaction thresholds, auto's the strongest's",

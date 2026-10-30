@@ -26,8 +26,13 @@ export type ModelRecord = Readonly<Pick<Model<Api>,
 /** pi-ai's thinking levels a map may name (`MODEL_THINKING_LEVELS`). */
 const LEVELS: readonly string[] = Object.freeze(["off", "minimal", "low", "medium", "high",
                                                  "xhigh", "max"]);
-const MODEL_ID = /^[\x21-\x7e]{1,256}$/;
-const NAME = /^[^\p{Cc}]{1,256}$/u;
+/** The owner's own bounds (`connections.ts`), so a record sealed here commits there. */
+const MODEL_ID = /^[\x21-\x7e]{1,200}$/;
+const NAME = /^[^\p{Cc}]{1,200}$/u;
+/** Dollars per million tokens. */
+const PRICE_MAX = 1_000_000;
+/** A context window, an output limit and a tier's threshold, in tokens. */
+const TOKENS_MAX = 100_000_000;
 /** A provider's value for a thinking level: a word it takes. */
 const LEVEL_VALUE = /^[\x21-\x7e]{1,64}$/;
 const TIERS_MAX = 16;
@@ -64,15 +69,15 @@ function shape(value: unknown, required: readonly string[], optional: readonly s
   return value;
 }
 
-function count(value: unknown, min: number): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min) {
+function count(value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max) {
     throw new Failure("invalid_source");
   }
   return value;
 }
 
 function price(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > PRICE_MAX) {
     throw new Failure("invalid_source");
   }
   return value;
@@ -98,7 +103,7 @@ function cost(value: unknown): ModelRecord["cost"] {
     ...rates(fields),
     tiers: Object.freeze(tiers.map((tier) => {
       const each = shape(tier, [...RATES, "inputTokensAbove"]);
-      return Object.freeze({ inputTokensAbove: count(each["inputTokensAbove"], 0), ...rates(each) });
+      return Object.freeze({ inputTokensAbove: count(each["inputTokensAbove"], 0, TOKENS_MAX), ...rates(each) });
     })) as NonNullable<ModelRecord["cost"]["tiers"]>,
   });
 }
@@ -185,8 +190,8 @@ export function checkedRecord(value: unknown): ModelRecord {
     ...(fields["promptCache"] === undefined ? {} : { promptCache: promptCache(fields["promptCache"]) }),
     input: [...input as ("text" | "image")[]],
     ...(fields["inputLimits"] === undefined ? {} : { inputLimits: inputLimits(fields["inputLimits"]) }),
-    contextWindow: count(fields["contextWindow"], 1),
-    maxTokens: count(fields["maxTokens"], 1),
+    contextWindow: count(fields["contextWindow"], 1, TOKENS_MAX),
+    maxTokens: count(fields["maxTokens"], 1, TOKENS_MAX),
     cost: cost(fields["cost"]),
   });
 }

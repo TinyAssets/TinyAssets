@@ -229,6 +229,14 @@ describe("the adapter's metrics", () => {
     ]);
   });
 
+  it("keep each kind of instrument apart, though name and attributes agree", () => {
+    const metrics = new OriginMetrics();
+    metrics.counter("same").add(2, { a: "x" });
+    metrics.histogram("same").record(5, { a: "x" });
+    expect(metrics.snapshot().series.map((series) => [series.kind, series.sum]))
+      .toEqual([["counter", 2], ["histogram", 5]]);
+  });
+
   it("keep at most their bound of series, counting what they drop", () => {
     const metrics = new OriginMetrics();
     const counter = metrics.counter("c");
