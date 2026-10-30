@@ -5,7 +5,11 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { isModelType } from "@earendil-works/pi-ai/models";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+
 import { builtinCatalog } from "../src/catalog";
+import { checkedRecord, recordOf } from "../src/model-record";
 import { Failure } from "../src/failure";
 import { forward, redact, verify } from "../src/forward";
 import { seal } from "../src/keyring";
@@ -287,14 +291,31 @@ describe("verify", () => {
       .filter((model) => model.api === "anthropic-messages");
     expect(verified.models.map((model) => model.id)).toEqual(catalog.map((model) => model.id));
     expect(verified.models.length).toBeGreaterThan(0);
-    const [first] = catalog;
-    expect(verified.models[0]).toEqual({
-      id: first!.id, name: first!.name, reasoning: first!.reasoning,
-      input: first!.input.filter((kind) => kind === "text" || kind === "image"),
-      contextWindow: first!.contextWindow, maxTokens: first!.maxTokens,
-      cost: { input: first!.cost.input, output: first!.cost.output,
-              cacheRead: first!.cost.cacheRead, cacheWrite: first!.cost.cacheWrite },
+    // Each model's whole pi-ai record, but for what is the gateway's: where and how it
+    // speaks to the upstream.
+    verified.models.forEach((record, index) => {
+      const { api: _a, provider: _p, baseUrl: _b, headers: _h, compat: _c, type: _t,
+              samplingParams: _s, samplingParamsByThinkingLevel: _l, ...kept } = catalog[index]!;
+      expect(record).toEqual(kept);
     });
+    expect(verified.models.some((record) => record.thinkingLevelMap?.xhigh !== undefined))
+      .toBe(true);
+    expect(verified.models.some((record) => record.inputLimits?.images?.resize !== undefined))
+      .toBe(true);
+  });
+
+  it("lists records every one of which a declared endpoint could declare, for every " +
+     "built-in catalog", () => {
+    let records = 0;
+    for (const provider of builtinProviders()) {
+      for (const model of provider.getModels()) {
+        if (isModelType(model, "chat")) {
+          expect(checkedRecord(JSON.parse(JSON.stringify(recordOf(model))))).toEqual(recordOf(model));
+          records += 1;
+        }
+      }
+    }
+    expect(records).toBeGreaterThan(1_000);
   });
 
   it("answers a refused key with a fixed code", async () => {

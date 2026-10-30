@@ -15,7 +15,6 @@ const STATUS = Object.freeze({
   invalid_envelope: 400,
   invalid_binding: 400,
   invalid_source: 400,
-  too_large: 413,
   not_found: 404,
   method_not_allowed: 405,
   credential_refused: 403,
@@ -38,6 +37,9 @@ const STATUS = Object.freeze({
   upstream_server_error: 502,
   upstream_unreachable: 502,
   upstream_error: 502,
+  // A context the model cannot take: the provider's overflow refusal, its 413, or a
+  // request past the gateway's own body bound. pi compacts and retries once on it.
+  context_length_exceeded: 413,
   unsupported_deferred: 502,
   aborted: 499,
   oauth_invalid_grant: 502,
@@ -89,7 +91,8 @@ export function failureResponse(code: Code, extra?: Readonly<Record<string, stri
  * (`isRetryableAssistantError`, `utils/retry.js`), so the words are chosen for it: it
  * retries `upstream_rate_limited` ("rate.?limit"), `upstream_timeout` ("timeout"),
  * `upstream_overloaded` ("overloaded") and `upstream_server_error` ("server.?error"), and
- * none of `upstream_unauthorized`, `upstream_rejected` and `upstream_error`.
+ * none of `upstream_unauthorized`, `upstream_rejected` and `upstream_error`. A model call's
+ * refusal is read by `modelRefusalCode` first, for an overflow.
  */
 export function upstreamCode(status: number): Code {
   if (status === 401 || status === 403) {
@@ -111,4 +114,22 @@ export function upstreamCode(status: number): Code {
     return "upstream_server_error";
   }
   return "upstream_error";
+}
+
+/**
+ * The code for a provider's refusal of a model call. A context too long for the model is
+ * `context_length_exceeded`, the generic phrase pi-ai's own overflow detection matches
+ * (`isContextOverflow`, `utils/overflow.js`: `/context[_ ]length[_ ]exceeded/i`), so pi
+ * compacts the conversation and retries once (pi-durable `harness/generation.js`), where
+ * `upstream_rejected` would end the run. It is any 413 (a request too large, whatever the
+ * body says, as pi-ai reads it), and any other refusal whose adapter message pi-ai reads as
+ * an overflow (`overflow`), but for a refusal of the credential or a rate limit, which
+ * their status names. pi-ai's reading is the classification only: the message itself never
+ * crosses the boundary.
+ */
+export function modelRefusalCode(status: number, overflow: boolean): Code {
+  if (status === 413 || (overflow && status !== 401 && status !== 403 && status !== 429)) {
+    return "context_length_exceeded";
+  }
+  return upstreamCode(status);
 }

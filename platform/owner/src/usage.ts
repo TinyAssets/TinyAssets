@@ -36,8 +36,12 @@
  * been idle for `turnIdleS`, with no call of it open.
  *
  * Money is micro-dollars (µ$): pi-ai's catalog prices are dollars per million tokens, so a
- * token at price `p` costs `p` µ$. An estimate is the context's estimated input at the
- * input price plus the reserved output at the output price. A turn is the submitted input
+ * token at price `p` costs `p` µ$. A call is priced by pi-ai's own `calculateCost` over the
+ * target model's whole cost record (pi audit F6), so a long-context tier applies to the
+ * whole request once its input passes the tier's threshold, as the provider bills it: the
+ * estimate is the context's estimated input, uncached, and the reserved output, at the
+ * rates the estimated input selects; a settled call's cost is pi-ai's for its usage
+ * (`gateway-provider.ts`). A turn is the submitted input
  * at the origin of a call's causal chain, as pi propagates it (`origin.ts`): a compaction,
  * a subagent and background work a run starts are that run's turn, even after it ended,
  * as the Python's `_borrowed` charged a child to its parent. A source is a connection's
@@ -51,6 +55,9 @@
  * counted attempts only.
  */
 import { randomBytes } from "node:crypto";
+
+import type { Api, Model, Usage as PiUsage } from "@earendil-works/pi-ai";
+import { calculateCost } from "@earendil-works/pi-ai/models";
 
 import type { OwnerStorage } from "./gate";
 
@@ -99,7 +106,7 @@ export interface UsagePolicy {
   readonly settings: ModelCaps;
 }
 
-/** What a call asks to reserve. Prices are pi-ai's: dollars per million tokens. */
+/** What a call asks to reserve. */
 export interface Ask {
   readonly turn: string;
   readonly connection: string;
@@ -110,7 +117,8 @@ export interface Ask {
   /** The output tokens the call asks for (its `maxTokens`, else the model's). */
   readonly maxOutputTokens: number;
   readonly reasoning: boolean;
-  readonly price: { readonly input: number; readonly output: number };
+  /** The model the call goes to, whose pi-ai cost record prices it (`calculateCost`). */
+  readonly rates: Pick<Model<Api>, "cost">;
 }
 
 export type Reserved =
@@ -149,9 +157,16 @@ export function periods(now: number): { day: string; month: string } {
   return { day, month: day.slice(0, 7) };
 }
 
-/** µ$ of `tokens` at `price` dollars per million tokens. */
-export function micros(tokens: number, price: number): number {
-  return Math.ceil(tokens * price);
+/**
+ * µ$ of a call of `input` uncached input tokens and `output` output tokens on `model`, by
+ * pi-ai's own `calculateCost` (which reads only the model's `cost`, tiers included).
+ */
+export function priced(model: Pick<Model<Api>, "cost">, input: number, output: number): number {
+  const usage: PiUsage = {
+    input, output, cacheRead: 0, cacheWrite: 0, totalTokens: input + output,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+  return costMicros(calculateCost(model as Model<Api>, usage).total);
 }
 
 /** µ$ of a cost pi-ai reports in dollars. */
@@ -248,17 +263,25 @@ export class Usage {
         }
       }
       const [costRule, costRoom] = rooms.reduce((a, b) => (b[1] < a[1] ? b : a));
-      const inputCost = micros(ask.inputTokens, ask.price.input);
+      // The output price is the one the estimated input's tier sets, so the cost is linear in
+      // the output: pi-ai's price of a million output tokens, less that of none, is µ$ a token.
+      const inputCost = priced(ask.rates, ask.inputTokens, 0);
+      const outputRate = priced(ask.rates, ask.inputTokens, 1_000_000) - inputCost;
       const byTokens = settings.turn_tokens - turn.tokens - ask.inputTokens;
-      const byCost = ask.price.output > 0
-        ? Math.floor((costRoom - inputCost) / ask.price.output)
+      let byCost = outputRate > 0
+        ? Math.floor((costRoom - inputCost) / (outputRate / 1_000_000))
         : costRoom - inputCost >= 0 ? Infinity : -1;
+      // pi-ai's cost of the output found, rounded up to a µ$, is the reservation's own.
+      while (Number.isFinite(byCost) && byCost >= 1
+             && priced(ask.rates, ask.inputTokens, byCost) > costRoom) {
+        byCost -= 1;
+      }
       const output = Math.min(ask.maxOutputTokens, byTokens, byCost);
       if (output < floor || output < 1) {
         return refuse(byTokens <= byCost && byTokens < floor ? "turn_tokens" : costRule);
       }
       const id = `r${randomBytes(16).toString("hex")}`;
-      const cost = inputCost + micros(output, ask.price.output);
+      const cost = priced(ask.rates, ask.inputTokens, output);
       this.#insert(ask, "reserved", null, output, ask.inputTokens + output, cost, generation,
                    day, month, now, id);
       this.#live.add(id);

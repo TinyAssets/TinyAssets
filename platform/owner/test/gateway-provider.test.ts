@@ -8,12 +8,19 @@
 import { env } from "cloudflare:workers";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { DurableObjectSqliteDatabase } from "@earendil-works/chord/sqlite/cloudflare";
-import { getAttributionHeaders, mergeClientIdentity } from "@earendil-works/pi-ai";
+import {
+  AI_TELEMETRY_SCHEMA, type Api, getAttributionHeaders, mergeClientIdentity, type Model,
+  normalizeContext, type TranscriptContext,
+} from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
+import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { DEFAULT_HARNESS_IDENTITY, LiveDoc, ProviderDoc } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
 import { envelope } from "../../gateway/src/envelope";
 import { IDENTITY } from "../src/agent";
+import { blockingThreshold, compactionFor, ranked } from "../src/auto";
+import type { ModelInfo } from "../src/connections";
 import { NO_RUN } from "../src/origin";
 import {
   AUTO_MODEL, envelopeHeader, GATEWAY_BASE_URL, outcomeOf,
@@ -23,6 +30,8 @@ import { DEFAULT_POLICY_JSON } from "../src/policy";
 import {
   ANTHROPIC, asked, catalog, direct, type Gated, gated, OPENAI, textOf, until,
 } from "./gateway-support";
+import { MUSE } from "./ledger-support";
+import { failure } from "./support";
 import type { GatedOwnerDO, Spawned } from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
@@ -494,5 +503,275 @@ describe("the envelope", () => {
     expect(sent!.envelope.binding.owner).toBe(r.name);
     expect(sent!.envelope.policy_generation).toBe(2);
     expect(env.TEST_KEYRING).not.toContain("sk-generation");
+  });
+});
+
+/** A random id the fake's `cmd:overflow-<id>` takes. */
+function freshId(): string {
+  return crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+}
+
+/**
+ * Two of the source's catalog models, the stronger first by `auto`'s ranking, each with
+ * the context window and output limit given.
+ */
+async function pair(windows: readonly [number, number]): Promise<[ModelInfo, ModelInfo]> {
+  const models = (await catalog(ANTHROPIC)).slice(0, 2);
+  const [stronger, weaker] = ranked([{ connection: "c", source: "anthropic",
+                                       provider: "anthropic", display_name: "c", created_at: 0,
+                                       models }]).map((candidate) => candidate.model);
+  return [{ ...stronger!, contextWindow: windows[0], maxTokens: 4_000 },
+          { ...weaker!, contextWindow: windows[1], maxTokens: 4_000 }];
+}
+
+/** Connect a pasted key from inside the object, while a turn runs there. */
+async function connectWithin(instance: GatedOwnerDO, r: Gated, key: string,
+                             models: ModelInfo[]): Promise<string> {
+  const prepared = await instance.connectionPrepare(r.session(), {
+    source: "anthropic", kind: "api_key", display_name: "Within", provider: "anthropic",
+    revocable: false });
+  const sealed = await env.GATEWAY.seal(r.name, prepared.connection, 1, key, ANTHROPIC);
+  await instance.connectionCommit(r.session(), { connection: prepared.connection, version: 1,
+                                                 blob: sealed.blob, kid: sealed.kid, models });
+  return prepared.connection;
+}
+
+/** Text of about `tokens` estimated tokens (pi-ai estimates 3.5 characters a token). */
+function sized(tokens: number): string {
+  return "word ".repeat(Math.ceil(tokens * 3.5 / 5));
+}
+
+describe("a context too long for its model", () => {
+  it("is compacted by pi and retried once when the provider refuses it through the gateway, " +
+     "and the turn succeeds", async () => {
+    const r = await gated();
+    await r.connect("sk-overflow");
+    const id = freshId();
+    const out = await r.in(async (instance) => {
+      const pi = instance.agent.harness;
+      await pi.prompt("cmd:echo");
+      // Past the 20,000 recent tokens a compaction keeps verbatim, so the first exchange
+      // can be summarized.
+      await pi.prompt(`${sized(24_000)} cmd:echo`);
+      const answer = await pi.prompt(`cmd:overflow-${id}`);
+      const entries = await pi.messages();
+      return { answer, kinds: entries.map((entry) => entry.kind),
+               failed: entries.flatMap((entry) => entry.model ?? [])
+                 .filter((message) => message.role === "assistant"
+                         && message.stopReason === "error")
+                 .map((message) => (message as { errorMessage?: string }).errorMessage) };
+    });
+    expect(out.answer.status).toBe("done");
+    expect(out.failed).toEqual(["context_length_exceeded"]);
+    expect(out.kinds).toContain("pi.compaction");
+    const { receipts } = await r.stub.usageReceipts(r.bind());
+    // Newest first: the retry, the summary, the refusal (at no cost) and the two before.
+    expect(receipts.map((receipt) => [receipt.state, receipt.state === "failed" ? receipt.cost
+      : null])).toEqual([["succeeded", null], ["succeeded", null], ["failed", 0],
+                         ["succeeded", null], ["succeeded", null]]);
+  }, 60_000);
+
+  it("is held to a smaller target's own threshold when auto continues there: pi compacts, " +
+     "and the retry stays on it", async () => {
+    const r = await gated();
+    const [strong, small] = await pair([1_000_000, 64_000]);
+    // The smaller is the strongest connected when the turn starts; the stronger is
+    // connected while its tool runs, so the turn's continuation stays on the smaller.
+    const smallConnection = await r.connect("sk-small", ANTHROPIC, "Small", [small]);
+    const target = `${smallConnection}/${small.id}`;
+    expect(blockingThreshold(small)).toBe(56_000);
+    const out = await r.in(async (instance) => {
+      let release!: () => void;
+      instance.probes.holdGate = new Promise((resolve) => { release = resolve; });
+      // Two tool rounds of about 14,000 tokens each (under pi's cut of a tool's output).
+      // With the 30,000 and more the first answer was billed for, the first round's
+      // continuation fits the smaller's threshold; the second's passes it, far inside the
+      // stronger's. A compaction keeps 20,000 recent tokens, so it cuts before the second.
+      instance.probes.holdOutputs = [`${sized(14_000)} cmd:measured-hold`,
+                                     `${sized(14_000)} cmd:echo`];
+      const { operationId } = await instance.agent.harness.submit(
+        `${sized(30_000)} cmd:measured-hold`);
+      await until(async () => instance.probes.holds === 1, "the hold to start");
+      await connectWithin(instance, r, "sk-strong", [strong]);
+      expect(instance.parts.provider.getModels()[1]!.id).not.toBe(target);
+      release();
+      const answer = await instance.agent.harness.wait(operationId);
+      const entries = await instance.agent.harness.messages();
+      return { answer, kinds: entries.map((entry) => entry.kind),
+               answers: entries.flatMap((entry) => entry.model ?? [])
+                 .filter((message) => message.role === "assistant")
+                 .map((message) => [(message as { model: string }).model,
+                                    (message as { errorMessage?: string }).errorMessage ?? null]) };
+    });
+    expect(out.answer.status).toBe("done");
+    expect(out.kinds).toContain("pi.compaction");
+    // Kept past the summary: the second tool call, the refusal at the smaller's threshold,
+    // and the retry, all on it.
+    expect(out.answers).toEqual([[target, null], [target, "context_length_exceeded"],
+                                 [target, null]]);
+    // The smaller was sent the two tool rounds and the retry, each under its threshold;
+    // the stronger, the summary.
+    const sent = await envelopes(r);
+    expect(sent.map((call) => call.envelope.binding.connection === smallConnection))
+      .toEqual([true, true, false, true]);
+  }, 60_000);
+
+  it("is refused at the routed target's threshold and not below it, nothing reserved or sent",
+     async () => {
+    const r = await gated();
+    const [strong, small] = await pair([1_000_000, 64_000]);
+    const smallConnection = await r.connect("sk-small2", ANTHROPIC, "Small", [small]);
+    const target = `${smallConnection}/${small.id}`;
+    await r.connect("sk-strong2", ANTHROPIC, "Strong", [strong]);
+    /** A continuation on the smaller whose context is estimated at `tokens`. */
+    const continuing = (tokens: number) => {
+      const tail = (pad: number): TranscriptContext => normalizeContext({ messages: [
+        { role: "user", content: "x".repeat(pad), timestamp: 1 },
+        { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "read",
+                                         arguments: {} }],
+          api: "pi-messages", provider: "gateway", model: target, stopReason: "toolUse",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+                   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+          timestamp: 2 },
+        { role: "toolResult", toolCallId: "t1", toolName: "read",
+          content: [{ type: "text", text: "cmd:echo" }], isError: false, timestamp: 3 }] });
+      let pad = Math.floor(tokens * 3.5) - 64;
+      while (estimateContextTokens(tail(pad)).tokens < tokens) {
+        pad += 1;
+      }
+      expect(estimateContextTokens(tail(pad)).tokens).toBe(tokens);
+      return tail(pad);
+    };
+    const threshold = blockingThreshold(small);
+    const answers = await r.in(async (instance) => {
+      const [auto] = instance.parts.provider.getModels();
+      const call = async (context: TranscriptContext, model = auto!) => instance.parts.provider
+        .streamSimple(model, context, await direct(instance)).result();
+      const physical = instance.parts.provider.getModels().find((model) => model.id === target)!;
+      return [await call(continuing(threshold + 1)), await call(continuing(threshold)),
+              // The smaller named directly is pi's to hold to its own threshold.
+              await call(continuing(threshold + 1), physical)];
+    });
+    expect(answers.map((answer) => [answer.model, answer.errorMessage ?? null])).toEqual([
+      [target, "context_length_exceeded"], [target, null], [target, null]]);
+    const { receipts } = await r.stub.usageReceipts(r.bind());
+    expect(receipts).toHaveLength(2);
+    expect(await envelopes(r)).toHaveLength(2);
+  });
+});
+
+describe("a connected model's whole record", () => {
+  it("offers xhigh and max only for a model whose thinking map has them, and auto the " +
+     "strongest's", async () => {
+    const r = await gated();
+    const records = await catalog(ANTHROPIC);
+    const mapped = records.find((model) => model.thinkingLevelMap?.xhigh !== undefined
+                                && model.thinkingLevelMap.max !== undefined)!;
+    const { thinkingLevelMap: _map, ...plain } =
+      records.find((model) => model.reasoning && model.id !== mapped.id)!;
+    const connection = await r.connect("sk-levels", ANTHROPIC, "Key", [mapped, plain]);
+    const listed = await r.in((instance) => instance.parts.provider.getModels());
+    const levels = (id: string) => getSupportedThinkingLevels(
+      listed.find((model) => model.id === id)! as Model<Api>);
+    expect(levels(`${connection}/${mapped.id}`)).toEqual(expect.arrayContaining(["xhigh", "max"]));
+    expect(levels(`${connection}/${plain.id}`)).toEqual(["off", "minimal", "low", "medium", "high"]);
+    const strongest = listed[1]!;
+    expect(levels(AUTO_MODEL)).toEqual(levels(strongest.id));
+    // The rest of the record rides with it: input limits for `read`, the cache lifetimes.
+    const whole = listed.find((model) => model.id === `${connection}/${mapped.id}`)!;
+    expect(whole.inputLimits).toEqual(mapped.inputLimits);
+    expect(whole.promptCache).toEqual(mapped.promptCache);
+    expect(whole.thinkingLevelMap).toEqual(mapped.thinkingLevelMap);
+  });
+
+  it("prices a call by its long-context tier, reserved and settled by pi-ai's calculateCost",
+     async () => {
+    const r = await gated();
+    const [first] = await catalog(ANTHROPIC);
+    const tiered: ModelInfo = { ...first!, maxTokens: 4_000, cost: {
+      input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75,
+      tiers: [{ inputTokensAbove: 10, input: 6, output: 30, cacheRead: 0.6, cacheWrite: 7.5 }] } };
+    await r.connect("sk-tier", ANTHROPIC, "Key", [tiered]);
+    const answer = await r.in(async (instance) => instance.parts.provider.streamSimple(
+      instance.parts.provider.getModels()[0]!, asked(`${"a".repeat(350)} cmd:echo`),
+      await direct(instance)).result());
+    expect(answer.stopReason).toBe("stop");
+    const { receipts: [receipt] } = await r.stub.usageReceipts(r.bind());
+    // The fake bills 11 input tokens, past the tier's 10, and 7 output: the tier's rates
+    // for the whole request, 11 at 6 and 7 at 30, not the base 11 at 3 and 7 at 15.
+    expect(Math.abs(receipt!.cost! - (11 * 6 + 7 * 30))).toBeLessThanOrEqual(1);
+    expect(answer.usage.cost.total * 1_000_000).toBeCloseTo(11 * 6 + 7 * 30, 6);
+    // The estimate: its input past the tier too, and the reserved output at the tier's 30.
+    const estimated = receipt!.est_tokens - receipt!.max_output_tokens;
+    expect(estimated).toBeGreaterThan(10);
+    expect(Math.abs(receipt!.est_cost - (estimated * 6 + receipt!.max_output_tokens * 30)))
+      .toBeLessThanOrEqual(1);
+  });
+
+  it("gives pi each listed model's own compaction thresholds, auto's the strongest's",
+     async () => {
+    const r = await gated();
+    const [strong, small] = await pair([1_000_000, 32_000]);
+    const connection = await r.connect("sk-thresholds", ANTHROPIC, "Key", [strong, small]);
+    const compaction = await r.in((instance) => instance.parts.provider.compaction());
+    expect(compaction).toEqual({ modelOverrides: {
+      "gateway/auto": compactionFor(strong),
+      [`gateway/${connection}/${strong.id}`]: compactionFor(strong),
+      [`gateway/${connection}/${small.id}`]: { reserveTokens: 4_000, keepRecentTokens: 8_000,
+                                               backgroundTokens: 4_000 },
+    } });
+    expect(compactionFor(strong)).toEqual({ reserveTokens: 16_384, keepRecentTokens: 20_000,
+                                            backgroundTokens: 32_768 });
+  });
+
+  it("is compacted at its own thresholds, which pi reads, not at pi's defaults", async () => {
+    const r = await gated();
+    const [only] = await pair([40_000, 40_000]);
+    await r.connect("sk-own", ANTHROPIC, "Key", [only]);
+    // Its own: blocking past 35,000, in the background past 30,000. pi's defaults would
+    // block past 23,616 and start one in the background at any size a summary can cut.
+    expect(compactionFor(only)).toEqual({ reserveTokens: 5_000, keepRecentTokens: 10_000,
+                                          backgroundTokens: 5_000 });
+    const compacted = await r.in(async (instance) => {
+      const pi = instance.agent.harness;
+      const kinds = async () => (await pi.messages()).map((entry) => entry.kind);
+      await pi.prompt(`${sized(12_000)} cmd:measured-echo`);
+      // About 25,000 with the first answer's bill: under its own thresholds.
+      await pi.prompt(`${sized(10_000)} cmd:measured-echo`);
+      const under = (await kinds()).includes("pi.compaction");
+      // About 36,000: past them.
+      await pi.prompt(`${sized(10_000)} cmd:measured-echo`);
+      await until(async () => (await kinds()).includes("pi.compaction"), "the compaction");
+      return under;
+    });
+    expect(compacted).toBe(false);
+  }, 60_000);
+});
+
+describe("the owner's usage view", () => {
+  it("keeps pi's and pi-ai's metrics and pi's own usage, for the owner alone", async () => {
+    const r = await gated();
+    await r.connect("sk-metrics");
+    const answer = await r.in((instance) => instance.agent.harness.prompt("cmd:echo"));
+    expect(answer.status).toBe("done");
+    const view = await r.stub.usageMetrics(r.session());
+    const names = new Set(view.metrics.series.map((series) => series.name));
+    for (const name of [...Object.keys(AI_TELEMETRY_SCHEMA.metrics),
+                        "pi.durable.phase.duration", "pi.durable.tasks.active"]) {
+      expect(names).toContain(name);
+    }
+    const tokens = view.metrics.series.filter((series) => series.name === "pi.ai.tokens");
+    expect(tokens.find((series) => series.attributes["kind"] === "input")!.sum).toBe(11);
+    expect(tokens.find((series) => series.attributes["kind"] === "output")!.sum).toBe(7);
+    const cost = view.metrics.series.find((series) => series.name === "pi.ai.cost")!;
+    const { receipts: [receipt] } = await r.stub.usageReceipts(r.bind());
+    expect(Math.ceil(cost.sum * 1_000_000)).toBe(receipt!.cost);
+    expect(view.metrics.dropped).toBe(0);
+    // pi's own ledger, by the physical model that answered.
+    const [key, used] = Object.entries(view.models)[0]!;
+    expect(key).toBe(`gateway/${receipt!.connection}/${receipt!.model}`);
+    expect(used).toMatchObject({ input: 11, output: 7 });
+    expect((await failure(() => r.stub.usageMetrics(r.bind({ origin: MUSE, source: {
+      kind: "mcp", ref: "conn-1" } })))).message).toBe("only the owner may read its model usage");
   });
 });

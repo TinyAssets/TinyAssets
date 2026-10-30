@@ -37,11 +37,15 @@
  *   whose writer in the file history is the conversation's stamp (`client:<id>` for an
  *   outside client's conversation, else `agent`), and which enforces the conversation's
  *   authority on every operation, as `ta.authority`'s document holds it;
+ * - the telemetry adapter's metrics (`origin.ts`, `OriginMetrics`), pi's and pi-ai's,
+ *   kept for the object's instance and read by the owner's usage view;
  * - settings read at each use: progress committed at most once a second (the gateway
  *   streams live tokens from memory; a commit is a storage write), and a failed run's
  *   queued inputs withdrawn, so each settles `unanswered: run_failed` rather than waiting
  *   on an unrelated next input; over those, the part of owner policy that is pi's
- *   (`AgentParts.policy`: the model retry count), which never moves the fixed ones. No
+ *   (`AgentParts.policy`: the model retry count) and the model source's compaction
+ *   thresholds (`AgentSource.compaction`: the gateway provider's, each model's own),
+ *   neither of which moves the fixed ones. No
  *   source selects extensions, in settings or a conversation's agent (a guard holds it),
  *   and a client's conversation whose selection drops the gate makes no model call
  *   (`modelAuthority`);
@@ -75,13 +79,15 @@
  * still finds every tool operation and every model call refused.
  */
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
-import type { ClientIdentity, Models, Provider } from "@earendil-works/pi-ai";
+import type { ClientIdentity, Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
-  AgentDoc, type AgentState, type ConversationId, type ConversationRecord, createRegistry,
+  AgentDoc, type AgentState, type CompactionSettings, type ConversationId, type ConversationRecord,
+  createRegistry,
   defineDoc, defineDocFamily,
   defineExtension, type EnvTarget, type Extension, Harness, type HarnessSettings, hook,
-  ProviderDoc, type ReportInfo, ROOT_CONVERSATION_ID, ToolTask, type Tx, wrapTool,
+  ProviderDoc, type ReportInfo, ROOT_CONVERSATION_ID, ToolTask, type Tx, type UsageState,
+  wrapTool,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
@@ -95,9 +101,10 @@ import { Invalid, Refused } from "./errors";
 import type { Files } from "./files";
 import { type Access, OwnerFilesEnv } from "./files-env";
 import type { Write } from "./gate";
+import type { GatewayProvider } from "./gateway-provider";
 import type { LiveTee } from "./live-tee";
 import type { Notices } from "./notices";
-import { originRoot } from "./origin";
+import { type MetricsSnapshot, OriginMetrics, originRoot } from "./origin";
 import { WORKSPACE } from "./paths";
 import { inTime } from "./schedule";
 import { PLATFORM_NAMES, type Platform, reachable, taTool } from "./ta";
@@ -219,7 +226,7 @@ export interface AgentParts {
   /** The part of owner policy that is pi's settings, read at each use. */
   readonly policy: () => HarnessSettings;
   /** The object's model provider: `gateway`, over the owner's connections. */
-  readonly provider: Provider;
+  readonly provider: GatewayProvider;
   /** The live tee the provider publishes every model event to, for the owner's views. */
   readonly tee: LiveTee;
   /** The authority checks, over the object's grants. */
@@ -233,6 +240,8 @@ export interface AgentParts {
 /** Besides the object's parts: the model catalog, and the packages after the object's own. */
 export interface AgentSource {
   readonly models: () => Models;
+  /** pi's compaction settings for the catalog's models, read at each use; none: pi's own. */
+  readonly compaction?: () => CompactionSettings;
   readonly packages: readonly Extension[];
   /**
    * Further extensions of the object's own, installed before the packages and without
@@ -334,6 +343,8 @@ export class OwnerAgent {
   readonly authority = authorityDoc();
   /** The `ta.session` documents, as this object's pi reads and writes them. */
   readonly sessions = sessionDoc();
+  /** pi's and pi-ai's metrics, kept by the telemetry adapter for the object's instance. */
+  readonly metrics = new OriginMetrics();
   readonly #parts: AgentParts;
   readonly #source: AgentSource;
   readonly #registry = createRegistry();
@@ -351,15 +362,21 @@ export class OwnerAgent {
           registry: this.#registry,
           onWake,
           identity: IDENTITY,
-          settings: () => ({ ...this.#parts.policy(), ...AGENT_SETTINGS }),
+          settings: () => ({ ...this.#parts.policy(), ...this.#compaction(), ...AGENT_SETTINGS }),
           env: (target, envContext) => this.#env(target, envContext),
           conversationCreated: (tx, record) => this.#inherit(tx, record),
-          telemetry: originRoot(),
+          telemetry: originRoot(this.metrics),
           onReport: (error, info) => this.#report(info.type, detailOf(error, info)),
         }, context);
       },
       defaults: { model: AUTO },
     });
+  }
+
+  /** The model source's compaction settings, when it has any. */
+  #compaction(): Pick<HarnessSettings, "compaction"> {
+    const compaction = this.#source.compaction;
+    return compaction === undefined ? {} : { compaction: compaction() };
   }
 
   /**
@@ -650,6 +667,25 @@ export class OwnerAgent {
     const pi = await this.harness.pi();
     await this.#abort(pi, await liveConversations(pi));
   }
+
+  /**
+   * The owner's model usage as pi records it (pi audit F4): pi's own `pi.usage`, every
+   * conversation's summed (`Harness.usage`: per `provider/model` and per tool, failed and
+   * aborted attempts included), and the metrics pi and pi-ai recorded since this instance
+   * began. Diagnostic only: every cap reads `usage.ts`'s counters.
+   */
+  async usage(): Promise<UsageView> {
+    const pi = await this.harness.pi();
+    const usage = await pi.usage(BG);
+    return { models: usage.models, tools: usage.tools, metrics: this.metrics.snapshot() };
+  }
+}
+
+/** The owner's usage view: pi's `pi.usage` summed, and the adapter's metrics. */
+export interface UsageView {
+  readonly models: UsageState["models"];
+  readonly tools: UsageState["tools"];
+  readonly metrics: MetricsSnapshot;
 }
 
 /** The object's model catalog: its one model source, the `gateway` provider. */
@@ -665,5 +701,13 @@ export function gatewayModels(parts: AgentParts): () => Models {
  * (the ta guard holds `trusted` to `AgentSource` and `#install`).
  */
 export function gatewayAgent(parts: AgentParts, packages: readonly Extension[] = []): OwnerAgent {
-  return new OwnerAgent(parts, { models: gatewayModels(parts), packages });
+  return new OwnerAgent(parts, { ...gatewaySource(parts), packages });
+}
+
+/**
+ * The object's model source: its catalog (`gatewayModels`) and its models' compaction
+ * thresholds, each one's own (`GatewayProvider.compaction`).
+ */
+export function gatewaySource(parts: AgentParts): Pick<AgentSource, "models" | "compaction"> {
+  return { models: gatewayModels(parts), compaction: () => parts.provider.compaction() };
 }
