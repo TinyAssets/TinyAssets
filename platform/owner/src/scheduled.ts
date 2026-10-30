@@ -163,6 +163,15 @@ function viewOf(row: Row): WorkView {
   };
 }
 
+/**
+ * The SQL condition that unsettled work names the thread `column` holds (migration 9's
+ * `work_by_thread`): what idle retention keeps (`threads.ts`), this module's table read.
+ */
+export function namedByOpenWork(column: string): string {
+  return "EXISTS (SELECT 1 FROM scheduled_work WHERE settled_at IS NULL AND " +
+    `json_extract(payload, '$.thread') = ${column})`;
+}
+
 /** A scheduled turn: the thread it runs in, fixed when the work is made, and its input. */
 export interface Turn {
   readonly thread: string;
@@ -229,6 +238,26 @@ export class Scheduled {
   }
 
   /**
+   * Refuse loudly, before anything is made for it, a turn `add` would refuse for its room:
+   * its payload past `maxPayload` (with a thread id in it), the client's open work at its
+   * share, or the owner's at its bound. A read; `add` checks each again.
+   */
+  room(client: string | null, input: string): void {
+    const body = JSON.stringify({ thread: `thread_${"0".repeat(32)}`, input });
+    if (codePoints(body) > this.#limits.maxPayload) {
+      throw new Invalid(`a work payload is JSON of at most ${this.#limits.maxPayload} characters`);
+    }
+    if (client !== null && this.#sql.exec<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM scheduled_work WHERE client = ? AND settled_at IS NULL",
+      client).one().n >= this.#limits.perClient) {
+      throw new Refused("this client's scheduled work is at its limit");
+    }
+    if (this.#usage().open_work >= this.#limits.maxOpen) {
+      throw new Refused("the owner's scheduled work is at its limit");
+    }
+  }
+
+  /**
    * Schedule one piece of work at `due`, on the owner's own authority (`stamp` null) or
    * the outside client's it was admitted under, which must stand now. A turn names its
    * thread here, once: a thread made under the same authority (the owner's, or the same
@@ -267,8 +296,6 @@ export class Scheduled {
           || thread.generation !== (by?.generation ?? null)) {
         throw new Refused("a scheduled turn runs in a thread made under its own authority");
       }
-      // The thread is in use until its work is due: idle retention keeps it.
-      this.#threads.touch(thread.thread_id, Math.max(now, due));
       const workId = "work_" + token(16);
       sql.exec("INSERT INTO scheduled_work (work_id, kind, due, state, payload, client, " +
                  "generation, authenticated_at, created_at) VALUES (?, ?, ?, 'pending', ?, ?, " +
@@ -372,6 +399,8 @@ export class Scheduled {
         }
       }
       const claimId = "claim_" + token(16);
+      // Its thread is in use from now: idle retention counts from the hand-off.
+      this.#threads.touch(workTurn(JSON.parse(row.payload)).thread, now);
       this.#sql.exec("UPDATE scheduled_work SET state = 'running', claim_id = ?, marked = 0, " +
                        "attempts = attempts + 1, due = ? WHERE work_id = ?",
                      claimId, now + WORK_LEASE_S, workId);

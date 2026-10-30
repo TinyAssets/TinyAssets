@@ -71,6 +71,10 @@ Each external tool SHALL call exactly one owner door an outside client can reach
 ### Requirement: The agent's tools reach the caller's own agent work
 `converse` (the object's `agentSubmit`, scope `converse`) and `run_graph` (`agentRun`, scope `run_graph`) SHALL be destructive, not idempotent and open world; `run_status` (`agentStatus`) SHALL be a read, idempotent; `run_cancel` (`agentCancel`) SHALL be destructive and idempotent. Each SHALL be served on `/mcp` and as `POST /api/tools/<name>`, and the owner's own surface SHALL serve the same doors as `/app/api/agent/submit`, `run`, `status` and `cancel`, refusing an outside credential there.
 
+#### Scenario: A retry after a week idle
+- **WHEN** a client reads `converse`'s description
+- **THEN** it says a retry with the same `client_send_id` is the same message while the conversation lasts, and runs again once a conversation idle for a week was dropped
+
 #### Scenario: Another owner's operation
 - **WHEN** a client of one owner asks `run_status` or `run_cancel` for an operation id another owner's client was given
 - **THEN** its own owner's object answers "no such operation", and the other owner's object is not reached

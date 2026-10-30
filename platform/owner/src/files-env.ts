@@ -546,6 +546,12 @@ export interface FilesEnvOptions {
    * environment alone may leave it, and every access is then allowed.
    */
   readonly authorize?: (access: Access) => void;
+  /**
+   * Each stored path a change touches, in the change's own unit: it throws a refusal for a
+   * path only another authority may change (`AGENTS_DIR`, the owner's alone). Always set by
+   * the object's agent; a test of the environment alone may leave it.
+   */
+  readonly guard?: (path: string) => void;
 }
 
 export class OwnerFilesEnv implements ExecutionEnv {
@@ -555,6 +561,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
   readonly #writer: string;
   readonly #rearm: () => Promise<void>;
   readonly #authorize: (access: Access) => void;
+  readonly #guard: (path: string) => void;
   /** The read access, as an opened reader re-checks it. */
   readonly #reads = () => this.#authorize("read");
   /** The etag this environment last saw at each path it read or wrote. */
@@ -567,6 +574,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
     this.cwd = options.cwd ?? WORKSPACE;
     this.#rearm = options.rearm;
     this.#authorize = options.authorize ?? (() => undefined);
+    this.#guard = options.guard ?? (() => undefined);
     // Named by a hash of the namespace, which never leaves the object itself.
     this.id = `ta-files:${sha256Hex(`ta-env\n${this.#files.ns()}`).slice(0, 32)}`;
   }
@@ -631,7 +639,10 @@ export class OwnerFilesEnv implements ExecutionEnv {
                extra: { prefix?: readonly ChunkRef[]; mode?: number } = {}): Promise<Entry> {
     const entry = await this.#files.write(at, bytes, { expected, writer: this.#writer,
                                                        parents: true, ...extra,
-                                                       authorize: () => this.#authorize("write") });
+                                                       authorize: () => {
+                                                         this.#authorize("write");
+                                                         this.#guard(at);
+                                                       } });
     this.#seen.set(at, entry.etag);
     await this.#rearm();
     return entry;
@@ -782,6 +793,8 @@ export class OwnerFilesEnv implements ExecutionEnv {
       }
       const entry = await this.#files.unit(() => {
         this.#authorize("write");
+        this.#guard(from);
+        this.#guard(to);
         return this.#files.rename(from, to, { expected: null, replace: true,
                                               writer: this.#writer });
       });
@@ -972,6 +985,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
       const recursive = options?.recursive ?? true;
       await this.#files.unit(() => {
         this.#authorize("write");
+        this.#guard(at);
         if (!recursive && this.#files.stat(at) !== null) {
           throw new FileFault("exists", "already exists");
         }
@@ -989,6 +1003,7 @@ export class OwnerFilesEnv implements ExecutionEnv {
       try {
         await this.#files.unit(() => {
           this.#authorize("write");
+          this.#guard(at);
           return this.#files.remove(at, { expected: null, recursive: options?.recursive ?? false,
                                           writer: this.#writer });
         });

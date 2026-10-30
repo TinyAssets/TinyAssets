@@ -37,8 +37,9 @@
  * bound (16 full clients at 64 threads each no longer hold the shared 1,024 for good). A
  * thread is never dropped while it is live, pi holding live work in its conversation, as
  * pi does while any conversation below it works (`OwnerAgent.liveThreads`): its activity
- * moves on instead; and
- * scheduled work moves a thread's activity on to when it is due (`Scheduled.add`). A drop
+ * moves on instead; a thread unsettled scheduled work names is never idle, and its
+ * activity moves on when the work is claimed (`Scheduled.claim`), so a cancel releases
+ * it. A drop
  * re-checks, in its own unit, the activity the pass read, so a door that touched the
  * thread since keeps it. Declared difference from the research: pi-durable 1.4.0 and
  * PiHarness 0.31.0 have no way to delete a conversation (no delete on `Harness`,
@@ -97,6 +98,7 @@ export const THREAD_RETENTION: ThreadRetention = Object.freeze({ idleS: 7 * 86_4
 
 const THREAD_ID = /^thread_[0-9a-f]{32}$/;
 
+
 /** A thread's authority, as its conversation's `ta.authority` document holds it. */
 export function threadAuthority(thread: Thread): AuthorityState {
   return authorityOf(thread.client === null ? null
@@ -105,16 +107,26 @@ export function threadAuthority(thread: Thread): AuthorityState {
         agent: thread.agent_id });
 }
 
+/** The SQL condition that what holds a thread (its open work) names the thread in `column`. */
+export type HeldBy = (column: string) => string;
+
 export class Threads implements ThreadReader {
   readonly #storage: OwnerStorage;
   readonly #limits: ThreadLimits;
   readonly #retention: ThreadRetention;
+  /** A thread idle retention may take: nothing holds it (`held`, the scheduled work's). */
+  readonly #unheld: string;
 
+  /**
+   * `held` is the scheduled work's condition (`namedByOpenWork`, `scheduled.ts`), which the
+   * object hands in; with none, nothing holds a thread (a test's threads alone).
+   */
   constructor(storage: OwnerStorage, limits: ThreadLimits = THREAD_LIMITS,
-              retention: ThreadRetention = THREAD_RETENTION) {
+              retention: ThreadRetention = THREAD_RETENTION, held?: HeldBy) {
     this.#storage = storage;
     this.#limits = limits;
     this.#retention = retention;
+    this.#unheld = held === undefined ? "1" : `NOT ${held("agent_threads.thread_id")}`;
   }
 
   /**
@@ -210,17 +222,25 @@ export class Threads implements ThreadReader {
         "RETURNING thread_id", at, threadId).toArray().length > 0;
   }
 
-  /** When the longest idle thread's idle age is reached, never before `now`; null for none. */
+  /**
+   * When the longest idle thread no unsettled work names reaches its idle age, never before
+   * `now`; null for none. A read, by the activity index and the open work's thread index.
+   */
   nextIdle(now: number): number | null {
-    const oldest = this.#storage.sql.exec<{ at: number | null }>(
-      "SELECT MIN(last_active) AS at FROM agent_threads").one().at;
-    return oldest === null ? null : Math.max(oldest + this.#retention.idleS, now);
+    const oldest = this.#storage.sql.exec<{ at: number }>(
+      `SELECT last_active AS at FROM agent_threads WHERE ${this.#unheld} ORDER BY last_active ` +
+        "LIMIT 1").toArray()[0]?.at;
+    return oldest === undefined ? null : Math.max(oldest + this.#retention.idleS, now);
   }
 
-  /** The threads idle at `now`, the longest idle first, at most `perPass`. A read. */
+  /**
+   * The threads idle at `now` that no unsettled work names, the longest idle first, at most
+   * `perPass`. A read.
+   */
   idle(now: number): Thread[] {
     return this.#storage.sql.exec<Thread>(
-      "SELECT * FROM agent_threads WHERE last_active <= ? ORDER BY last_active LIMIT ?",
+      `SELECT * FROM agent_threads WHERE last_active <= ? AND ${this.#unheld} ` +
+        "ORDER BY last_active LIMIT ?",
       now - this.#retention.idleS, this.#retention.perPass).toArray();
   }
 

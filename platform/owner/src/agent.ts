@@ -101,7 +101,7 @@ import type { Write } from "./gate";
 import type { LiveTee } from "./live-tee";
 import type { Notices } from "./notices";
 import { originRoot } from "./origin";
-import { WORKSPACE } from "./paths";
+import { AGENTS_DIR, AGENTS_OWNER_ONLY, within, WORKSPACE } from "./paths";
 import { inTime } from "./schedule";
 import { PLATFORM_NAMES, type Platform, reachable, taTool } from "./ta";
 import type { Thread, ThreadKind, Threads } from "./threads";
@@ -129,6 +129,10 @@ export const END_WAIT_MS = 5_000;
 export const STATUS_WAIT_MS = 1_000;
 /** Waits the object keeps at once (A4's bounded waits), past which one is refused. */
 export const WAITS_KEPT = 256;
+/** Waits one outside client may keep at once. */
+export const WAITS_PER_CLIENT = 16;
+/** Waits kept for the owner alone: the clients together keep at most the rest. */
+export const WAITS_OWNER = 32;
 /** A wait a grant or policy change ended. */
 export const WAIT_ENDED = "the wait was ended by a grant or policy change";
 /** A wait refused because the object keeps `WAITS_KEPT` already. */
@@ -447,6 +451,12 @@ export class OwnerAgent {
       files: this.#parts.files, writer: writerOf(state), cwd: cwd ?? WORKSPACE,
       rearm: this.#parts.rearm,
       authorize: (access) => this.#parts.authority.requireOne(state, ACCESS_NEEDS[access]),
+      // The owner's agent definitions change only under the owner's own authority.
+      guard: (path) => {
+        if (state?.by !== "owner" && within(path, AGENTS_DIR)) {
+          throw new Refused(AGENTS_OWNER_ONLY);
+        }
+      },
     });
   }
 
@@ -611,10 +621,18 @@ export class OwnerAgent {
     }
   }
 
-  /** A new pending wait of `key`'s, kept on the instance, within `WAITS_KEPT`. */
+  /**
+   * A new pending wait of `key`'s, kept on the instance: within `WAITS_KEPT` in all, an
+   * outside client's within `WAITS_PER_CLIENT` of its own and, with every other client's,
+   * outside the owner's reserve (`WAITS_OWNER`), so no client's waits crowd out another's
+   * or the owner's.
+   */
   #keepWait(key: string): AbortController {
     const kept = [...this.#waits.values()].reduce((sum, set) => sum + set.size, 0);
-    if (kept >= WAITS_KEPT) {
+    const clients = kept - (this.#waits.get("")?.size ?? 0);
+    if (kept >= WAITS_KEPT || (key !== "" && ((this.#waits.get(key)?.size ?? 0)
+                                              >= WAITS_PER_CLIENT
+                                              || clients >= WAITS_KEPT - WAITS_OWNER))) {
       throw new Refused(WAITS_FULL);
     }
     const ended = new AbortController();

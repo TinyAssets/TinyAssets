@@ -28,7 +28,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { type AgentParts, gatewayModels, OwnerAgent } from "../src/agent";
 import type { GatewayService, Resealed } from "../src/connections";
 import { turnOf } from "../src/origin";
-import { type OwnerEnv, OwnerDO } from "../src/owner-do";
+import { type OwnerEnv, OwnerDO, STORAGE_BYTES } from "../src/owner-do";
 
 export { OwnerDO } from "../src/owner-do";
 
@@ -409,6 +409,8 @@ export class FauxOwnerDO extends OwnerDO {
   readonly turns: string[] = [];
   /** The tools each request offered the model, in order made. */
   readonly offered: string[][] = [];
+  /** The storage the object is limited to, which a test sets smaller. */
+  storageBytes = STORAGE_BYTES;
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     const made: { agent?: OwnerAgent; parts?: AgentParts; faux?: FauxProviderHandle;
@@ -440,7 +442,7 @@ export class FauxOwnerDO extends OwnerDO {
       made.agent = new OwnerAgent({ ...parts, write }, {
         models: () => models, ...testExtensions(() => made.self!.probes) });
       return made.agent;
-    });
+    }, () => made.self?.storageBytes ?? STORAGE_BYTES);
     made.self = this;
     this.agent = made.agent!;
     this.parts = made.parts!;

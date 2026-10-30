@@ -187,8 +187,9 @@ export function toolTable(): readonly Tool[] {
       description: "Send a message to one of the owner's agents in your conversation with it, " +
         "and wait a bounded time for its reply. The agent can use the owner's files and " +
         "connected services, so a message can have effects; a retry with the same " +
-        "client_send_id is the same message. Past the wait it answers running with an " +
-        "operation_id, which run_status reads.",
+        "client_send_id is the same message while your conversation lasts (one idle for a " +
+        "week is dropped, and a retry after that runs again). Past the wait it answers " +
+        "running with an operation_id, which run_status reads.",
       input: args({ message: str("The message"),
                     client_send_id: str("Your id for this message, for retries: letters, " +
                                         "digits, - and _") },

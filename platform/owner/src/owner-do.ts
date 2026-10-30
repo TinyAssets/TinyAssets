@@ -111,13 +111,14 @@ import { GatewayProvider } from "./gateway-provider";
 import { LiveTee } from "./live-tee";
 import { type Lane, Schedule } from "./schedule";
 import {
-  runWork, Scheduled, WORK_HANDOFF_MS, WORK_PER_PASS, type WorkRunner, workTurn,
+  namedByOpenWork, runWork, Scheduled, WORK_HANDOFF_MS, WORK_PER_PASS, type WorkRunner, workTurn,
 } from "./scheduled";
-import { WORKSPACE } from "./paths";
+import { AGENTS_DIR, AGENTS_OWNER_ONLY, storedPath, within, WORKSPACE } from "./paths";
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
 import {
-  retainThreads, type Thread, threadAuthority, type ThreadReader, Threads,
+  retainThreads, type Thread, THREAD_LIMITS, THREAD_RETENTION, threadAuthority,
+  type ThreadReader, Threads,
 } from "./threads";
 import { codePoints, principal } from "./text";
 import { Usage as ModelUsage, type UsageReceipt } from "./usage";
@@ -569,6 +570,20 @@ export const WAIT_MAX_MS = 60_000;
 export const AGENT_TEXT_MAX = 32_000;
 /** The largest `AGENTS.md` an agent is configured from, in bytes. */
 export const AGENT_FILE_MAX = 65_536;
+/** The latest `at` a launch takes: a year and a day ahead (seconds). */
+export const AT_AHEAD_S = 366 * 86_400;
+/**
+ * The object's storage, which the platform limits (10 GB per object, every write failing
+ * `SQLITE_FULL` past it), and the shares of it at which the owner is told (`storage_high`)
+ * and new threads and launches are refused (`STORAGE_FULL`). pi keeps every conversation
+ * it was given (tasks 5, A4), so this is the loud failure before the object is full.
+ */
+export const STORAGE_BYTES = 10_000_000_000;
+export const STORAGE_NOTICE_SHARE = 0.7;
+export const STORAGE_REFUSE_SHARE = 0.9;
+/** The refusal's fixed code, and its notice's type. */
+export const STORAGE_FULL = "storage_full";
+export const STORAGE_HIGH = "storage_high";
 /** Every operation the caller does not own, or that is no operation: one refusal, alike. */
 export const NO_OPERATION = "no such operation";
 /**
@@ -640,7 +655,7 @@ function sendIdOf(value: unknown): string {
   return value;
 }
 
-function waitOf(value: unknown): number {
+export function waitOf(value: unknown): number {
   if (value === undefined) {
     return WAIT_DEFAULT_MS;
   }
@@ -651,9 +666,12 @@ function waitOf(value: unknown): number {
   return value;
 }
 
-function timeOf(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    throw new Invalid("at is a time in seconds");
+/** A launch's `at`: seconds since the epoch, at most `AT_AHEAD_S` from `now`. */
+function timeOf(value: unknown, now: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0
+      || value > now + AT_AHEAD_S) {
+    throw new Invalid("at is a time in seconds since the epoch, at most a year and a day " +
+                      "ahead");
   }
   return value;
 }
@@ -791,14 +809,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #sender: WakeSender | null = null;
   /** What hands due scheduled turns to pi, called in process by the `work` lane. */
   readonly #runner: WorkRunner;
+  /** The storage the object is limited to (`STORAGE_BYTES`; a test's smaller). */
+  readonly #storageBytes: () => number;
 
   /**
    * The runtime constructs it with `ctx` and `env` alone, so the agent is the production
-   * one, on the gateway provider; the workerd tests hand a factory that opens it on pi-ai's
-   * faux models.
+   * one, on the gateway provider, and its storage limit the platform's; the workerd tests
+   * hand a factory that opens it on pi-ai's faux models, and may hand a smaller limit.
    */
-  constructor(ctx: DurableObjectState, env: OwnerEnv, agent: AgentFactory = gatewayAgent) {
+  constructor(ctx: DurableObjectState, env: OwnerEnv, agent: AgentFactory = gatewayAgent,
+              storageBytes: () => number = () => STORAGE_BYTES) {
     super(ctx, env);
+    this.#storageBytes = storageBytes;
     this.#gate = new WriteGate(ctx.storage);
     const storage = this.#gate.storage;
     const write = this.#gate.write;
@@ -810,7 +832,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#ledger = new Ledger(storage, this.#grants);
     this.#files = new Files(storage, env.FILES,
                             () => fileSettings(this.#policy.read().document), write);
-    this.#threads = new Threads(storage);
+    this.#threads = new Threads(storage, THREAD_LIMITS, THREAD_RETENTION, namedByOpenWork);
     this.#work = new Scheduled(storage, this.#grants, this.#threads);
     this.#registrations = new Registrations(storage, this.#grants);
     this.#notices = new Notices(storage);
@@ -834,8 +856,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       connections: this.#connections,
       threads: {
         nextDue: (now) => this.#threads.nextIdle(now),
-        run: (_now, until) => retainThreads(this.#threads, () => this.#agent.liveThreads(),
-                                            clock, write, until),
+        run: async (_now, until) => {
+          await write(() => this.#storageGauge());
+          return retainThreads(this.#threads, () => this.#agent.liveThreads(), clock, write,
+                               until);
+        },
       },
       sender: () => this.#sender, runner: () => this.#runner, clock, write, runWakes, runWork,
     }), clock, write);
@@ -1434,6 +1459,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const thread = this.#threads.conversing(stamp, agent);
       if (thread !== null) {
         this.#threads.touch(thread.thread_id, clock());
+      } else {
+        this.#storageGauge(true);
       }
       return { client: account.origin?.client ?? null, agent, sendId, steer, waitMs, stamp,
                thread, input: this.#inputOf(account.origin?.client ?? null, message) };
@@ -1463,7 +1490,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const r = agentFields(request, ["agent", "input"], ["at"]);
       const agent = agentDir(r["agent"]);
       const input = agentText(r["input"], "an input");
-      const at = r["at"] === undefined ? null : timeOf(r["at"]);
+      const at = r["at"] === undefined ? null : timeOf(r["at"], clock());
       const universe = this.#universe(account);
       this.#scope(account, "run_graph", universe, agent);
       return { stamp: this.#stampOf(binding, account, universe, agent), agent, at,
@@ -1530,7 +1557,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                at: unknown): Promise<Operation> {
     const id = agentDir(agent);
     const text = agentText(input, "an input");
-    const when = at === null ? null : timeOf(at);
+    const when = at === null ? null : timeOf(at, clock());
     let stamp: Stamped | null = null;
     if (state?.by !== "owner") {
       const by = stampOf(state);
@@ -1544,11 +1571,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * A launch, the door's and `ta`'s one path: a fresh `run` thread, recorded in a unit
-   * that re-checks `run_graph` where it acts, then the input submitted, or scheduled.
+   * A launch, the door's and `ta`'s one path: the storage gauge and, for scheduled work, its
+   * room, each refused before anything is made; a fresh `run` thread, recorded in a unit
+   * that re-checks `run_graph` where it acts; then the input submitted, or scheduled.
    */
   async #launch(stamp: Stamped | null, agent: string, input: string, at: number | null):
       Promise<Operation> {
+    await this.#door(() => {
+      this.#storageGauge(true);
+      if (at !== null && at > clock()) {
+        this.#work.room(stamp?.client ?? null, input);
+      }
+    });
     const thread = await this.#agent.thread(agent, stamp, {
       kind: "run", config: await this.#agentConfig(agent), need: ["run_graph"] });
     if (at !== null && at > clock()) {
@@ -1568,6 +1602,28 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
     return { operation_id: operationOf(thread.thread_id, key), thread_id: thread.thread_id,
              status: "queued" };
+  }
+
+  /**
+   * In a unit: the object's storage against its limit. Past `STORAGE_NOTICE_SHARE` the
+   * owner is told once (`storage_high`); past `STORAGE_REFUSE_SHARE` it is told
+   * (`storage_full`), and with `refuse`, a new thread or launch is refused loudly with the
+   * fixed code, the notice kept.
+   */
+  #storageGauge(refuse = false): void {
+    const share = this.#gate.size() / this.#storageBytes();
+    const percent = (at: number) => `${Math.round(at * 100)}%`;
+    if (share >= STORAGE_REFUSE_SHARE) {
+      this.#notices.once(STORAGE_FULL, `the owner's storage is past ${percent(
+        STORAGE_REFUSE_SHARE)} of its limit: new threads and launches are refused`, clock());
+      if (refuse) {
+        throw new Refused(`${STORAGE_FULL}: the owner's storage is past ${percent(
+          STORAGE_REFUSE_SHARE)} of its limit`);
+      }
+    } else if (share >= STORAGE_NOTICE_SHARE) {
+      this.#notices.once(STORAGE_HIGH, `the owner's storage is past ${percent(
+        STORAGE_NOTICE_SHARE)} of its limit`, clock());
+    }
   }
 
   /** The bounded wait for a submitted operation; past `waitMs`, `running`. */
@@ -1626,8 +1682,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /**
    * An agent's configuration, from its data files (Direction 3): the instructions its
-   * `/workspace/agents/<agent>/AGENTS.md` holds, none when it has none. A file too large,
-   * not text, or not a file is refused loudly.
+   * `/workspace/agents/<agent>/AGENTS.md` holds, none when it has none. A file the owner's
+   * own authority did not write (the owner, or its agent under the owner's authority), too
+   * large, not text, or not a file is refused loudly.
    */
   async #agentConfig(agent: string): Promise<AgentConfig> {
     const path = `${WORKSPACE}/agents/${agentDir(agent)}/AGENTS.md`;
@@ -1646,6 +1703,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
     if (content === null) {
       return {};
+    }
+    // Only the owner's own authority writes the tree (`AGENTS_DIR`); a file any other
+    // wrote, kept from before that held, configures nothing.
+    if (content.entry.writer !== "owner" && content.entry.writer !== "agent") {
+      throw new Refused(`${path} was not written by the owner`);
     }
     if (content.entry.size > AGENT_FILE_MAX) {
       throw new Invalid(`${path} is larger than ${AGENT_FILE_MAX} bytes`);
@@ -1831,6 +1893,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return account;
   }
 
+  /** That an outside client's change leaves the owner's agent definitions alone. */
+  #ownersTree(account: Account, ...paths: unknown[]): void {
+    if (account.origin !== null
+        && paths.some((path) => within(storedPath(path), AGENTS_DIR))) {
+      throw new Refused(AGENTS_OWNER_ONLY);
+    }
+  }
+
   /** A changing file door: its unit, then the one schedule synced whatever came of it. */
   async #filing<T>(act: () => T): Promise<T> {
     try {
@@ -1900,6 +1970,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const { account, r, content } = await this.#door(() => {
       const account = this.#filer(binding, "write_files");
       const r = fileFields(request, ["path", "expected_etag", "content"], ["mode"]);
+      this.#ownersTree(account, r["path"]);
       const content = r["content"];
       if (!(content instanceof Uint8Array) || content.byteLength > CHUNK_BYTES) {
         throw new Invalid("a written file is bytes, at most 4 MiB; larger ones are uploaded");
@@ -1948,6 +2019,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#filing(() => {
       const account = this.#filer(binding, "write_files");
       const r = fileFields(request, ["intent_id", "path", "expected_etag"], ["mode"]);
+      this.#ownersTree(account, r["path"]);
       return fileConflicted(() => ({
         entry: this.#files.commit(r["intent_id"], r["path"], {
           expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account) }),
@@ -1968,6 +2040,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#filing(() => {
       const account = this.#filer(binding, "write_files");
       const r = fileFields(request, ["path", "expected_etag"]);
+      this.#ownersTree(account, r["path"]);
       return fileConflicted(() => ({
         entry: this.#files.mkdir(r["path"], { expected: r["expected_etag"],
                                               writer: fileWriter(account) }),
@@ -1980,6 +2053,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#filing(() => {
       const account = this.#filer(binding, "write_files");
       const r = fileFields(request, ["path", "expected_etag", "recursive"]);
+      this.#ownersTree(account, r["path"]);
       return fileConflicted(() => this.#files.remove(r["path"], {
         expected: r["expected_etag"], recursive: flag(r["recursive"], "recursive"),
         writer: fileWriter(account) }));
@@ -1991,6 +2065,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#filing(() => {
       const account = this.#filer(binding, "write_files");
       const r = fileFields(request, ["from", "to", "expected_etag", "replace"]);
+      this.#ownersTree(account, r["from"], r["to"]);
       return fileConflicted(() => ({
         entry: this.#files.rename(r["from"], r["to"], {
           expected: r["expected_etag"], replace: flag(r["replace"], "replace"),
@@ -2013,6 +2088,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#filing(() => {
       const account = this.#filer(binding, "write_files");
       const r = fileFields(request, ["path", "version", "expected_etag"]);
+      this.#ownersTree(account, r["path"]);
       return fileConflicted(() => ({
         entry: this.#files.restore(r["path"], r["version"], {
           expected: r["expected_etag"], writer: fileWriter(account) }),

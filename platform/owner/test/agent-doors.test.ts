@@ -16,17 +16,23 @@ import {
 import type { ConversationId, EntryRecord, JsonObject } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
-import { WAIT_ENDED } from "../src/agent";
+import { WAIT_ENDED, WAITS_KEPT, WAITS_OWNER, WAITS_PER_CLIENT } from "../src/agent";
 import { NOT_GRANTED } from "../src/authority";
 import { WriteGate } from "../src/gate";
+import { Grants } from "../src/grants";
 import { clock, type Origin } from "../src/ledger";
+import { AGENTS_OWNER_ONLY } from "../src/paths";
+import { Policy } from "../src/policy";
+import { namedByOpenWork, Scheduled } from "../src/scheduled";
 import {
-  type Binding, NO_OPERATION, type Operation, sendRequest, UNTRUSTED_NOTICE, WAIT_MAX_MS,
+  AGENT_FILE_MAX, AGENT_TEXT_MAX, AT_AHEAD_S, type Binding, NO_OPERATION, type Operation,
+  sendRequest, STORAGE_FULL, STORAGE_HIGH, UNTRUSTED_NOTICE, WAIT_DEFAULT_MS, WAIT_MAX_MS,
+  waitOf,
 } from "../src/owner-do";
-import { Threads, retainThreads, THREAD_LIMITS } from "../src/threads";
+import { Threads, retainThreads, THREAD_LIMITS, THREAD_RETENTION } from "../src/threads";
 import { until } from "./gateway-support";
-import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
-import { drainDue, failure, laneAt } from "./support";
+import { DOT, MCP, MUSE, origin, signedIn } from "./ledger-support";
+import { drainDue, failure, filesOn, laneAt } from "./support";
 import { type FauxOwnerDO, says } from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
@@ -65,6 +71,10 @@ function reply(messages: Message[]): AssistantMessage {
   const asked = last === undefined ? "" : said(last);
   if (asked === "hold please") {
     return calls(viaTa("hold", {}));
+  }
+  const plant = /^plant (\S+)$/.exec(asked);
+  if (plant !== null) {
+    return calls(fauxToolCall("write", { path: plant[1]!, content: "PLANTED" }));
   }
   if (asked === "spawn hold") {
     return calls(viaTa("background", { work: "hold please" }));
@@ -116,9 +126,9 @@ async function rig() {
                                        expected_generation: held.generation });
     },
     /** The client's agent registered in universe `alpha`, as a scoped grant's acts there. */
-    register: async (origin: Origin) => {
+    register: async (origin: Origin, center = "alpha") => {
       const { card_id, digest } = await stub.registerPropose(bind(origin), {
-        command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
+        command_center_id: center, display_name: "Muse", delivery_method: "pull",
         recipe_id: null });
       await stub.registerAgent(session(), { card_id, digest });
     },
@@ -520,16 +530,19 @@ describe("a launch (run_graph)", () => {
       .toEqual({ operation_id: dropped.operation_id, cancelled: true });
     expect(await r.stub.agentStatus(r.bind(MUSE), { operation_id: dropped.operation_id }))
       .toMatchObject({ status: "unanswered", reason: "cancelled" });
-    // The scheduled thread is in use until its work is due.
+    // Scheduling moves no thread's activity; the claim does (below).
     const threads = await r.threads();
-    expect(threads.find((made) => made.thread_id === dropped.thread_id)!.last_active)
-      .toBeGreaterThanOrEqual(clock() + 3500);
+    expect(threads.find((made) => made.thread_id === later.thread_id)!.last_active)
+      .toBeLessThanOrEqual(clock());
     await sleep(1200);
     await drainDue(r.stub);
     expect(await r.settled(r.bind(MUSE), later.operation_id))
       .toMatchObject({ status: "done", text: "echo: at last" });
     const entries = await r.entries(threads[0]!.conversation_id);
     expect(entries[0]!.kind).toBe("ta.work");
+    // Its thread is in use from the hand-off.
+    const handed = (await r.threads()).find((made) => made.thread_id === later.thread_id)!;
+    expect(handed.last_active).toBeGreaterThan(threads[0]!.last_active);
   }, 30_000);
 });
 
@@ -642,7 +655,7 @@ describe("idle retention", () => {
     const out = await r.in(async (instance, state) => {
       const gate = new WriteGate(state.storage);
       const threads = new Threads(gate.storage, { perClient: 3, clients: 3, owner: 10 },
-                                  { idleS: 1, perPass: 32 });
+                                  { idleS: 1, perPass: 32 }, namedByOpenWork);
       // Full: three threads of three.
       const room = () => { try { threads.room({ client: MUSE.client, generation: 1,
                                                 authenticated_at: r.at, universe: null,
@@ -710,5 +723,412 @@ describe("idle retention", () => {
     const [kept] = await r.threads();
     expect(kept!.last_active).toBeGreaterThan(thread!.last_active);
     held.release();
+  }, 30_000);
+});
+
+/** Threads over the object's storage with retention's idle age at a second. */
+function quickThreads(state: DurableObjectState, perPass = 32) {
+  const gate = new WriteGate(state.storage);
+  return { gate, threads: new Threads(gate.storage, THREAD_LIMITS, { idleS: 1, perPass },
+                                      namedByOpenWork) };
+}
+
+describe("the owner's agent definitions (review H1)", () => {
+  const AGENTS_MD = "/workspace/agents/main/AGENTS.md";
+  const bytes = (text: string) => new TextEncoder().encode(text);
+
+  it("are the owner's alone to change by any file door", async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    const client = r.bind(MUSE);
+    const refused = async (call: () => Promise<unknown>) => (await failure(call)).message;
+    expect(await refused(() => r.stub.fileMkdir(client, { path: "/workspace/agents",
+                                                          expected_etag: null })))
+      .toBe(AGENTS_OWNER_ONLY);
+    expect(await refused(() => r.stub.fileWrite(client, { path: AGENTS_MD, expected_etag: null,
+                                                          content: bytes("PLANTED") })))
+      .toBe(AGENTS_OWNER_ONLY);
+    expect(await refused(() => r.stub.fileUploadCommit(client, {
+      intent_id: "intent_x", path: AGENTS_MD, expected_etag: null }))).toBe(AGENTS_OWNER_ONLY);
+    // The owner makes the tree; the client can move nothing into, out of or within it.
+    await r.stub.fileMkdir(r.bind(null), { path: "/workspace/agents", expected_etag: null });
+    await r.stub.fileMkdir(r.bind(null), { path: "/workspace/agents/main", expected_etag: null });
+    const made = await r.stub.fileWrite(r.bind(null), { path: AGENTS_MD, expected_etag: null,
+                                                        content: bytes("Be brief.") });
+    const etag = "entry" in made ? made.entry.etag : null;
+    await r.stub.fileWrite(client, { path: "/workspace/mine.md", expected_etag: null,
+                                     content: bytes("PLANTED") });
+    const mine = (await r.stub.fileStat(client, { path: "/workspace/mine.md" })).entry!.etag;
+    expect(await refused(() => r.stub.fileRename(client, { from: "/workspace/mine.md",
+      to: AGENTS_MD, expected_etag: mine, replace: true }))).toBe(AGENTS_OWNER_ONLY);
+    expect(await refused(() => r.stub.fileRename(client, { from: AGENTS_MD,
+      to: "/workspace/out.md", expected_etag: etag, replace: false }))).toBe(AGENTS_OWNER_ONLY);
+    expect(await refused(() => r.stub.fileRename(client, { from: "/workspace/agents/main",
+      to: "/workspace/main", expected_etag: null, replace: false }))).toBe(AGENTS_OWNER_ONLY);
+    expect(await refused(() => r.stub.fileRemove(client, { path: "/workspace/agents",
+      expected_etag: null, recursive: true }))).toBe(AGENTS_OWNER_ONLY);
+    expect(await refused(() => r.stub.fileRestore(client, { path: AGENTS_MD, version: 1,
+                                                            expected_etag: etag })))
+      .toBe(AGENTS_OWNER_ONLY);
+    // A client still writes the rest of the workspace, and reads the tree.
+    expect((await r.stub.fileStat(client, { path: AGENTS_MD })).entry?.writer).toBe("owner");
+    // The owner changes and moves its own.
+    await r.stub.fileRename(r.bind(null), { from: AGENTS_MD, to: "/workspace/agents/main/old.md",
+                                            expected_etag: etag, replace: false });
+    expect((await r.stub.fileStat(r.bind(null), { path: AGENTS_MD })).entry).toBeNull();
+  }, 30_000);
+
+  it("are the owner's alone to change from a conversation: a client's write is refused, " +
+     "the owner's agent's configures the next thread", async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    const theirs = await r.stub.agentSubmit(r.bind(MUSE), { message: `plant ${AGENTS_MD}`,
+                                                           client_send_id: "p" });
+    expect(theirs.text).toContain(AGENTS_OWNER_ONLY);
+    expect((await r.stub.fileStat(r.bind(null), { path: AGENTS_MD })).entry).toBeNull();
+    const mine = await r.stub.agentSubmit(r.bind(null), { message: `plant ${AGENTS_MD}`,
+                                                         client_send_id: "q" });
+    expect(mine.text).not.toContain(AGENTS_OWNER_ONLY);
+    expect((await r.stub.fileStat(r.bind(null), { path: AGENTS_MD })).entry?.writer)
+      .toBe("agent");
+    const run = await r.stub.agentRun(r.bind(null), { agent: "main", input: "hi" });
+    const thread = (await r.threads()).find((made) => made.thread_id === run.thread_id)!;
+    expect(await r.in(async (instance) => {
+      const pi = await instance.agent.harness.pi();
+      return (await (await pi.conversation(thread.conversation_id as ConversationId, BG))!
+        .agent(BG)).instructions;
+    })).toBe("PLANTED");
+  }, 30_000);
+
+  it("configure no thread from a file another wrote: refused loudly, nothing made", async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    // As a file kept from before the tree was the owner's would be: a client's writer.
+    await r.in(async (_instance, state) => {
+      const gate = new WriteGate(state.storage);
+      const files = filesOn(gate.storage, gate.write);
+      await files.write(AGENTS_MD, bytes("PLANTED BY MUSE"), {
+        expected: null, writer: `client:${MUSE.client}`, parents: true });
+    });
+    const refused = `${AGENTS_MD} was not written by the owner`;
+    expect((await failure(() => r.stub.agentRun(r.bind(null), { agent: "main", input: "x" })))
+      .message).toBe(refused);
+    expect((await failure(() => r.stub.agentSubmit(r.bind(null), { message: "x",
+                                                                   client_send_id: "a" })))
+      .message).toBe(refused);
+    expect((await failure(() => r.stub.agentSubmit(r.bind(DOT), { message: "x",
+                                                                  client_send_id: "b" })))
+      .message).toMatch(/outside client has no grant|was not written by the owner/);
+    expect(await r.threads()).toEqual([]);
+  }, 30_000);
+
+  it("refuse a file too large, or a directory, loudly", async () => {
+    const r = await rig();
+    for (const path of ["/workspace/agents", "/workspace/agents/big",
+                        "/workspace/agents/dir", "/workspace/agents/dir/AGENTS.md"]) {
+      await r.stub.fileMkdir(r.bind(null), { path, expected_etag: null });
+    }
+    await r.stub.fileWrite(r.bind(null), { path: "/workspace/agents/big/AGENTS.md",
+                                           expected_etag: null,
+                                           content: new Uint8Array(AGENT_FILE_MAX + 1).fill(97) });
+    expect((await failure(() => r.stub.agentRun(r.bind(null), { agent: "big", input: "x" })))
+      .message).toBe(`/workspace/agents/big/AGENTS.md is larger than ${AGENT_FILE_MAX} bytes`);
+    expect((await failure(() => r.stub.agentRun(r.bind(null), { agent: "dir", input: "x" })))
+      .message).toBe("/workspace/agents/dir/AGENTS.md is not a file");
+    expect(await r.threads()).toEqual([]);
+  }, 30_000);
+});
+
+describe("a launch's time (review M1)", () => {
+  it("is at most a year and a day ahead, refused loudly past it; ta's alike", async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    for (const at of [1e300, 1e13, 9e12, clock() + AT_AHEAD_S + 60, -1]) {
+      const error = await failure(() => r.stub.agentRun(r.bind(MUSE), { agent: "main",
+                                                                        input: "x", at }));
+      expect([error.name, error.message]).toEqual(["Invalid", "at is a time in seconds since " +
+        "the epoch, at most a year and a day ahead"]);
+    }
+    expect(await r.threads()).toEqual([]);
+    const fine = await r.stub.agentRun(r.bind(MUSE), { agent: "main", input: "x",
+                                                       at: clock() + AT_AHEAD_S - 60 });
+    expect(fine.status).toBe("scheduled");
+    // A time already past runs now.
+    const now = await r.stub.agentRun(r.bind(MUSE), { agent: "main", input: "now",
+                                                      at: clock() - 10 });
+    expect(now.status).toBe("queued");
+    expect(now.operation_id).toMatch(/\.run_[0-9a-f]{32}$/);
+    expect((await r.in((_instance, state) => state.storage.sql.exec(
+      "SELECT COUNT(*) AS n FROM scheduled_work").one())).n).toBe(1);
+    // The alarm stays where the platform can set it.
+    expect(await laneAt(r.stub, "work")).toBeLessThan(clock() + AT_AHEAD_S + 1);
+  }, 30_000);
+
+  it("holds its thread only while its work is open: a cancel releases it to retention, " +
+     "and the lane waits for no held thread", async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    const ops: Operation[] = [];
+    for (let i = 0; i < 3; i++) {
+      ops.push(await r.stub.agentRun(r.bind(MUSE), { agent: "main", input: "x",
+                                                     at: clock() + 300 * 86_400 }));
+    }
+    // Only held threads: none is ever idle, so the lane has no job.
+    expect(await laneAt(r.stub, "threads")).toBeNull();
+    for (const op of ops.slice(0, 2)) {
+      await r.stub.agentCancel(r.bind(MUSE), { operation_id: op.operation_id });
+    }
+    expect(await laneAt(r.stub, "threads")).not.toBeNull();
+    await sleep(1100);
+    const dropped = await r.in(async (instance, state) => {
+      const { gate, threads } = quickThreads(state);
+      return retainThreads(threads, () => instance.agent.liveThreads(), clock, gate.write);
+    });
+    expect(dropped).toBe(2);
+    expect((await r.threads()).map((made) => made.thread_id)).toEqual([ops[2]!.thread_id]);
+  }, 30_000);
+
+  it("is checked for its room before its thread is made", async () => {
+    const r = await rig();
+    const long = "x".repeat(20_000);
+    const error = await failure(() => r.stub.agentRun(r.bind(null), { agent: "main",
+                                                                      input: long,
+                                                                      at: clock() + 600 }));
+    expect(error.message).toMatch(/a work payload is JSON of at most/);
+    expect(await r.threads()).toEqual([]);
+    expect(await r.in(async (instance) => (await instance.agent.harness.sessions.list()).length))
+      .toBe(1);
+  }, 30_000);
+});
+
+describe("the storage gauge (review M2)", () => {
+  it("tells the owner past 70% and refuses new threads and launches past 90%, loudly",
+     async () => {
+    const r = await rig();
+    await r.stub.agentSubmit(r.bind(null), { message: "first", client_send_id: "1" });
+    const limit = (share: number) => r.in((instance, state) => {
+      instance.storageBytes = state.storage.sql.databaseSize / share;
+    });
+    const notices = async () => (await r.stub.noticeList(r.bind(null))).notices
+      .map((notice) => notice.type).filter((type) => type.startsWith("storage_"));
+    await limit(0.75);
+    expect((await r.stub.agentRun(r.bind(null), { agent: "main", input: "x" })).status)
+      .toBe("queued");
+    await r.stub.agentRun(r.bind(null), { agent: "main", input: "y" });
+    expect(await notices()).toEqual([STORAGE_HIGH]);
+    await limit(0.95);
+    const refused = await failure(() => r.stub.agentRun(r.bind(null), { agent: "main",
+                                                                        input: "z" }));
+    expect([refused.name, refused.message.split(":")[0]]).toEqual(["Refused", STORAGE_FULL]);
+    const fresh = await failure(() => r.stub.agentSubmit(r.bind(null), {
+      message: "new", client_send_id: "2", agent_id: "helper" }));
+    expect(fresh.message.split(":")[0]).toBe(STORAGE_FULL);
+    // An existing thread's conversation goes on; the owner was told.
+    expect((await r.stub.agentSubmit(r.bind(null), { message: "again", client_send_id: "3" }))
+      .status).toBe("done");
+    expect(await notices()).toEqual([STORAGE_FULL, STORAGE_HIGH]);
+    expect((await r.threads())).toHaveLength(3);
+  }, 30_000);
+
+  it("is read by the threads lane, which tells the owner", async () => {
+    const r = await rig();
+    await r.stub.agentSubmit(r.bind(null), { message: "first", client_send_id: "1" });
+    await r.in((instance, state) => {
+      instance.storageBytes = state.storage.sql.databaseSize / 0.8;
+      state.storage.sql.exec("INSERT INTO agent_threads (thread_id, conversation_id, " +
+        "agent_id, client, generation, authenticated_at, universe, created_at, kind, " +
+        "last_active) VALUES (?, 99999, 'main', NULL, NULL, NULL, NULL, 1, 'run', 1)",
+        `thread_${"e".repeat(32)}`);
+    });
+    // A door that re-derives the schedule and reads no gauge of its own.
+    await r.stub.fileMkdir(r.bind(null), { path: "/workspace/x", expected_etag: null });
+    await drainDue(r.stub);
+    expect((await r.threads()).map((made) => made.thread_id))
+      .not.toContain(`thread_${"e".repeat(32)}`);
+    expect((await r.stub.noticeList(r.bind(null))).notices.map((notice) => notice.type))
+      .toContain(STORAGE_HIGH);
+  }, 30_000);
+});
+
+describe("the waits (review L1)", () => {
+  it("keeps at most 16 of one client's, the 17th answering running at once", async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    const held = gate();
+    await r.in((instance) => { instance.probes.holdGate = held.promise; });
+    const first = await r.stub.agentSubmit(r.bind(MUSE), { message: "hold please",
+                                                          client_send_id: "h", wait_ms: 0 });
+    await until(() => r.in((instance) => instance.probes.holds === 1), "the hold");
+    const again = () => r.stub.agentSubmit(r.bind(MUSE), { message: "hold please",
+                                                          client_send_id: "h", wait_ms: 20_000 });
+    const waits = Array.from({ length: WAITS_PER_CLIENT }, again);
+    await sleep(300);
+    const began = Date.now();
+    const over = await again();
+    expect(over).toEqual({ ...first, status: "running" });
+    expect(Date.now() - began).toBeLessThan(5_000);
+    held.release();
+    expect((await Promise.all(waits)).map((answer) => answer.status))
+      .toEqual(Array.from({ length: WAITS_PER_CLIENT }, () => "done"));
+  }, 60_000);
+
+  it("keeps the owner's reserve when every client's are full", async () => {
+    const r = await rig();
+    const clients = Math.ceil((WAITS_KEPT - WAITS_OWNER) / WAITS_PER_CLIENT);
+    const origins = Array.from({ length: clients + 1 }, (_v, n) => origin(n + 100));
+    for (const each of origins) {
+      await r.admit(each);
+    }
+    const held = gate();
+    await r.in((instance) => { instance.probes.holdGate = held.promise; });
+    for (const [n, each] of origins.entries()) {
+      await r.stub.agentSubmit(r.bind(each), { message: "hold please", client_send_id: "h",
+                                               wait_ms: 0 });
+      await until(() => r.in((instance) => instance.probes.holds === n + 1), "the hold");
+    }
+    const waits = origins.slice(0, clients).flatMap((each) => Array.from(
+      { length: WAITS_PER_CLIENT }, () => r.stub.agentSubmit(r.bind(each), {
+        message: "hold please", client_send_id: "h", wait_ms: 20_000 })));
+    await sleep(1_000);
+    const began = Date.now();
+    const crowded = await r.stub.agentSubmit(r.bind(origins[clients]!), {
+      message: "hold please", client_send_id: "h", wait_ms: 20_000 });
+    expect(crowded.status).toBe("running");
+    expect(Date.now() - began).toBeLessThan(5_000);
+    expect((await r.stub.agentSubmit(r.bind(null), { message: "quick", client_send_id: "o",
+                                                     wait_ms: 10_000 })).status).toBe("done");
+    held.release();
+    await Promise.allSettled(waits);
+  }, 120_000);
+
+  it("waits 25 s by default and at most 60 s", () => {
+    expect([waitOf(undefined), WAIT_DEFAULT_MS, waitOf(WAIT_MAX_MS), WAIT_MAX_MS])
+      .toEqual([25_000, 25_000, 60_000, 60_000]);
+    expect(() => waitOf(WAIT_MAX_MS + 1)).toThrow(/wait_ms/);
+  });
+});
+
+describe("the doors' remaining edges (review L4)", () => {
+  it("refuses a message past its length, and a scoped client of two enabled agents",
+     async () => {
+    const r = await rig();
+    const long = await failure(() => r.stub.agentSubmit(r.bind(null), {
+      message: "x".repeat(AGENT_TEXT_MAX + 1), client_send_id: "l" }));
+    expect(long.name).toBe("Invalid");
+    expect((await r.stub.agentSubmit(r.bind(null), { message: "x".repeat(AGENT_TEXT_MAX),
+                                                     client_send_id: "m" })).status)
+      .toBe("done");
+    await r.admit(MUSE);
+    await r.register(MUSE);
+    await r.scoped(MUSE, ["converse"]);
+    // A second enabled agent, which the ledger refuses to register (it would lock both
+    // out), made as a bug elsewhere would: the door still acts in no universe it guessed.
+    await r.in((_instance, state) => {
+      const columns = state.storage.sql.exec<{ name: string }>(
+        "SELECT name FROM pragma_table_info('outside_agents')").toArray().map((c) => c.name);
+      const picked = columns.map((column) => column === "agent_id" ? "agent_id || '_twin'"
+        : column === "command_center_id" ? "'beta'" : column);
+      state.storage.sql.exec(`INSERT INTO outside_agents (${columns.join(", ")}) SELECT ${
+        picked.join(", ")} FROM outside_agents`);
+    });
+    expect((await r.stub.outsideAgents(r.bind(MUSE))).agents).toHaveLength(2);
+    expect((await failure(() => r.stub.agentSubmit(r.bind(MUSE), { message: "x",
+                                                                   client_send_id: "n" })))
+      .message).toBe("this outside identity is not one enabled agent");
+  }, 30_000);
+
+  it("syncs the schedule after a launch now", async () => {
+    const r = await rig();
+    await r.stub.agentRun(r.bind(null), { agent: "main", input: "x" });
+    expect(await laneAt(r.stub, "threads")).toBeGreaterThan(clock() + 7 * 86_400 - 60);
+  }, 30_000);
+
+  it("cancels only work not yet claimed", async () => {
+    const r = await rig();
+    const later = await r.stub.agentRun(r.bind(null), { agent: "main", input: "x",
+                                                        at: clock() + 3600 });
+    const work = later.operation_id.split(".")[1]!;
+    await r.in(async (_instance, state) => {
+      const gate = new WriteGate(state.storage);
+      const scheduled = new Scheduled(gate.storage, new Grants(gate.storage,
+                                      new Policy(gate.storage)), new Threads(gate.storage));
+      await gate.write(() => state.storage.sql.exec(
+        "UPDATE scheduled_work SET due = ? WHERE work_id = ?", clock() - 1, work));
+      await gate.write(() => scheduled.claim(work, clock()));
+    });
+    expect((await r.stub.agentCancel(r.bind(null), { operation_id: later.operation_id }))
+      .cancelled).toBe(false);
+    expect((await r.in((_instance, state) => state.storage.sql.exec(
+      "SELECT state FROM scheduled_work").one())).state).toBe("running");
+  }, 30_000);
+
+  it("refuses odd operation ids alike, and answers pi's unknown one in the caller's thread",
+     async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    const mine = await r.stub.agentSubmit(r.bind(MUSE), { message: "a", client_send_id: "o" });
+    const key = mine.operation_id.split(".")[1]!;
+    for (const odd of [`${mine.operation_id}\n`, ` ${mine.operation_id}`,
+                       mine.operation_id.toUpperCase(), `${mine.operation_id}.x`,
+                       `${mine.thread_id}..${key}`]) {
+      expect((await failure(() => r.stub.agentStatus(r.bind(MUSE), { operation_id: odd })))
+        .message).toBe(NO_OPERATION);
+    }
+    expect(await r.stub.agentStatus(r.bind(MUSE), {
+      operation_id: `${mine.thread_id}.run_${"0".repeat(32)}` }))
+      .toMatchObject({ status: "unanswered", reason: "not_found" });
+  }, 30_000);
+
+  it("re-checks a thread's scope in its recording unit, as its grant row holds it then",
+     async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    await r.register(MUSE);
+    await r.scoped(MUSE, ["run_graph"]);
+    const held = gate();
+    const out = await r.in(async (instance, state) => {
+      instance.probes.writeGate = held.promise;
+      const writes = instance.probes.writes;
+      const making = instance.agent.thread("main", {
+        client: MUSE.client, generation: 2, authenticated_at: r.at, universe: "alpha",
+        agent: "main" }, { kind: "run", need: ["run_graph"] }).then(() => "made",
+                                                                   (e: Error) => e.message);
+      while (instance.probes.writes === writes) {
+        await sleep(5);
+      }
+      // The row loses its scope in place, its generation kept (no door does this).
+      state.storage.sql.exec("UPDATE outside_clients SET scopes = '[]' WHERE client = ?",
+                             MUSE.client);
+      held.release();
+      instance.probes.writeGate = null;
+      return making;
+    });
+    expect(out).toBe(NOT_GRANTED);
+    expect(await r.threads()).toEqual([]);
+  }, 30_000);
+});
+
+describe("idle retention's pass (review L4)", () => {
+  it("takes the longest idle first, at most its batch, none past its time, and never " +
+     "moves a thread's activity back", async () => {
+    const r = await rig();
+    await r.stub.agentRun(r.bind(null), { agent: "main", input: "one" });
+    await sleep(50);
+    await r.stub.agentRun(r.bind(null), { agent: "main", input: "two" });
+    const [older, newer] = await r.threads();
+    await sleep(1100);
+    const out = await r.in(async (instance, state) => {
+      const { gate, threads } = quickThreads(state, 1);
+      const late = await retainThreads(threads, () => instance.agent.liveThreads(), clock,
+                                       gate.write, Date.now() - 1);
+      const one = await retainThreads(threads, () => instance.agent.liveThreads(), clock,
+                                      gate.write);
+      const back = await gate.write(() => threads.touch(newer!.thread_id, 1));
+      return { late, one, back, kept: threads.get(newer!.thread_id)?.last_active };
+    });
+    expect(out).toEqual({ late: 0, one: 1, back: true, kept: newer!.last_active });
+    expect((await r.threads()).map((made) => made.thread_id)).toEqual([newer!.thread_id]);
+    expect(older!.last_active).toBeLessThan(newer!.last_active);
+    expect(THREAD_RETENTION).toEqual({ idleS: 7 * 86_400, perPass: 32 });
   }, 30_000);
 });

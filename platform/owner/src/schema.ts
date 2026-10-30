@@ -792,8 +792,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // 9: the agent's doors (threads.ts, A4): what a thread is for, a conversation an agent
   // holds with one caller (`converse`, one per caller, agent and universe) or one run
   // (`run`, a fresh one per launch, as every thread before this was), and when it was last
-  // active, which idle retention reads (the `threads` lane, by its index). A thread's stamp
-  // still never changes; its activity only moves on.
+  // active, which idle retention reads (the `threads` lane, by its index), with the threads
+  // unsettled work names. A thread's stamp still never changes; its activity only moves on.
   Object.freeze([
     "ALTER TABLE agent_threads ADD COLUMN kind TEXT NOT NULL DEFAULT 'run' " +
       "CHECK (kind IN ('converse', 'run'))",
@@ -811,6 +811,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE INDEX agent_threads_by_activity ON agent_threads (last_active)",
     "CREATE UNIQUE INDEX agent_threads_conversing ON agent_threads " +
       "(IFNULL(client, ''), agent_id, IFNULL(universe, '')) WHERE kind = 'converse'",
+    // The threads unsettled work names, which idle retention never drops.
+    "CREATE INDEX work_by_thread ON scheduled_work (json_extract(payload, '$.thread')) " +
+      "WHERE settled_at IS NULL",
   ]),
 ]);
 
