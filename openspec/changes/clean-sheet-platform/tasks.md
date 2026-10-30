@@ -647,8 +647,16 @@ account and no deploy.
   string. Still open: deleting the pi conversation a thread drop leaves behind, which
   pi-durable 1.4.0 and PiHarness 0.31.0 cannot do (no delete on `Harness`, `Session`,
   `Storage` or `PiSessions`; pi's SQLite store deletes only document revisions), so it
-  stays in pi's tables, holding no live work and named by no row, door or work, until pi
-  offers a delete. A3's `ta` re-derives its capability in its own `execute` (below).
+  stays in pi's tables, holding no live work and named by no row, door or work. pi keeps
+  no retention at all: it never deletes an entry, task, submission or document of any
+  conversation (A4's review measured about 5 KB fixed per fresh conversation and 50 to
+  200 KB per real run), and an object's storage is limited to 10 GB, past which every
+  write fails `SQLITE_FULL` and the owner's object stops; A4's storage gauge refuses new
+  threads and launches loudly at 90% (below). The real fix is upstream in pi: a
+  `deleteConversation` that cascades to the conversation's entries, tasks, submissions,
+  documents, revisions and record ids, or a way to forget what precedes a compaction head.
+  Asking pi for it is an outward act, so a founder decision. Writing pi's tables directly
+  stays banned. A3's `ta` re-derives its capability in its own `execute` (below).
 - [x] A3 `ta`, in workerd, nothing deployed (`ta.ts`). The model is offered exactly
   `read`, `write`, `edit`, `bash` and `ta`: pi's `modelTools`, written in
   `conversationCreated` on every conversation the object creates (the root, threads,
@@ -756,8 +764,9 @@ account and no deploy.
   is dropped in a unit that re-checks the activity it read; a thread whose conversation pi
   holds live work in is kept, its activity moved on (a task that owns a conversation stays
   live, completing, while that conversation works: a thread's subagents and background
-  work keep it, found in workerd); scheduled work moves its thread's activity on to when
-  it is due; every door that makes or uses a thread touches it and syncs the schedule.
+  work keep it, found in workerd); a thread unsettled scheduled work names is never idle
+  (migration 9's index on the open work's thread), and is in use from its work's claim;
+  every door that makes or uses a thread touches it and syncs the schedule.
   `ta`'s `agent:run` (an effect, `run_graph` in `TA_CAPABILITIES`): the same launch path,
   stamped with the calling conversation's authority as the agent it names, so its
   recording unit refuses an agent the grant holds no `run_graph` for, before pi makes a
@@ -777,21 +786,41 @@ account and no deploy.
   and `/app/api/agent/*` for the owner, refusing an MCP token. Mutation: 46 (the scope
   checks, the operation id's derivation, the ownership check, the thread lookup, retention,
   the hints, `agent:run`'s classification, the steer, the wait, the envelope, the cancel,
-  A3's two nits), 45 killed; alive and equivalent: the thread's recording unit re-checking
-  only a standing stamp rather than its scope, since a grant's scopes change only with its
-  generation, which the standing check holds (A3's same case). Declared differences from
-  the research: a thread is configured through pi's own `createConversation` agent in
+  A3's two nits), 45 killed; the one alive (the recording unit's scope re-check) is killed
+  since by a test of a grant row changed in place (review round 1). Review round 1 (one
+  high, two medium, four low), fixed: the owner's agent definitions are the owner's alone,
+  since a client's `AGENTS.md` had configured the owner's and other clients' threads (H1):
+  `/workspace/agents/**` changes only under the owner's own authority, refused to an
+  outside client at every file door (write, upload commit, mkdir, remove, rename both
+  ways, restore) and by the agent's environment in each change's own unit (write, append,
+  truncate, mkdir, rename both ways, remove), and a thread is configured only from an
+  `AGENTS.md` whose recorded writer is the owner or its agent, any other refused loudly;
+  a launch's `at` is at most a year and a day ahead (M1: one past 2189 had broken the
+  alarm, and a far one pinned its thread), scheduling no longer moves a thread's activity,
+  and the lane waits on no held thread; a storage gauge (M2): the database size against
+  the 10 GB limit before every new thread and launch and in each lane pass, an owner
+  notice past 70% (`storage_high`), and past 90% a notice and a loud refusal of new threads
+  and launches (`storage_full`), named constants, since the owner policy document has no
+  platform-limit section; at most 16 waits per client and 32 of the 256 kept for the owner
+  (L1); a scheduled launch's work room checked before its thread (L2); `converse` says a
+  retry after a week-idle drop runs again (L3); the reviewer's surviving mutants killed by
+  tests (L4), and its probes are tests. Mutation after round 1: ours, 77 (the first 46, a
+  retention mutant retargeted to the claim, and 31 on the fixes), all killed; the
+  reviewer's, 26: 25 killed, and `agent-dir-dotdot` no longer applying (the `..` check it
+  removed was redundant, since an agent id's pattern admits no bare `..` segment, and is
+  gone). Declared differences from the research: a thread is configured through pi's own `createConversation` agent in
   `OwnerAgent.thread`, never `sessions.create()` and `configure` (the agent-authority guard
   keeps `configure` and every other conversation maker out); the data files are the
   agent's `AGENTS.md` alone, as its instructions; an operation id names its thread, so
   status and cancel need no table of their own; the owner's entry is pi's own user entry;
-  scheduled work keeps its thread until due rather than being scanned by the lane; a
-  dropped thread's pi conversation is not deleted (A2's entry above). Owner bundle 1,672
-  KiB, 349 KiB gzip (1,649 and 342 at A3), local startup 24 to 25 ms active in a 58 to 59 ms
-  window (24 to 26 in 57 to 60 at A3); doors bundle 1,016 KiB, 213 KiB gzip (1,013 and
-  212), local startup 46 to 48 ms active in a 70 to 74 ms window (40 to 45 in 67 to 69).
-  Open: the Tasks extension (tasks 2); an agent's model pin and further data files; a
-  dropped thread's pi conversation (A2's entry).
+  a dropped thread's pi conversation is not deleted (A2's entry above). Owner bundle 1,678
+  KiB, 350 KiB gzip (1,649 and 342 at A3), local startup 25 to 26 ms active in a 61 to 63 ms
+  window (24 to 26 in 57 to 60 at A3); doors bundle 1,017 KiB, 213 KiB gzip (1,013 and
+  212), local startup 43 ms active in a 66 ms window (40 to 45 in 67 to 69). Open: the
+  Tasks extension (tasks 2); an agent's model pin and further data files; the sandbox's
+  sync writer (`lease:<epoch>`) for the agent definitions, refused as a writer until the
+  sandbox slice decides whose authority its sync carries; a dropped thread's pi
+  conversation and pi's retention (A2's entry, a founder decision).
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
   owner's hook code with the Worker Loader, called over RPC with JSON in and out and a
   timeout. A `beforeTool` timeout or error blocks

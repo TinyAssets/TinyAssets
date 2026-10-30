@@ -633,7 +633,7 @@ function agentFields(request: unknown, required: readonly string[],
 
 /** An agent's id, as the directory of its data files names it. */
 function agentDir(value: unknown): string {
-  if (typeof value !== "string" || !AGENT_DIR.test(value) || value.includes("..")) {
+  if (typeof value !== "string" || !AGENT_DIR.test(value)) {
     throw new Invalid("an agent's id is 1 to 128 letters, digits, dots, dashes and " +
                       "underscores, its directory under /workspace/agents/");
   }

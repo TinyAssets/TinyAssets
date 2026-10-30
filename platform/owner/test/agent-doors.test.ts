@@ -843,7 +843,8 @@ describe("a launch's time (review M1)", () => {
   it("is at most a year and a day ahead, refused loudly past it; ta's alike", async () => {
     const r = await rig();
     await r.admit(MUSE);
-    for (const at of [1e300, 1e13, 9e12, clock() + AT_AHEAD_S + 60, -1]) {
+    for (const at of [1e300, 1e13, 9e12, clock() + AT_AHEAD_S + 60, clock() + 367 * 86_400,
+                      (clock() + 3600) * 1000, -1]) {
       const error = await failure(() => r.stub.agentRun(r.bind(MUSE), { agent: "main",
                                                                         input: "x", at }));
       expect([error.name, error.message]).toEqual(["Invalid", "at is a time in seconds since " +
