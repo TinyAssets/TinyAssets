@@ -1,0 +1,313 @@
+name: Store probe
+
+# The live probe of design (a')'s per-thread ThreadStore: P1 (store calls as subrequests),
+# P2 (latency and colo), P3 (the same-script namespace binding), P4 (memory of open pi
+# Sessions) and P7 (billing shape). openspec/changes/clean-sheet-platform/store-probe.md
+# has the method, the cases, the reading key and the results table. Manual only, and the
+# founder approves each run: it deploys four throwaway Workers to the production
+# Cloudflare account (ta-storeprobe, ta-storeprobe-low, ta-storeprobe-raised and
+# ta-storeprobe-door; only the door has a workers.dev URL), drives every case, prints the
+# results into the job summary, and deletes every Worker and its Durable Object
+# namespaces whatever happened, then proves they are gone. No route, zone or DNS record
+# is touched, no owner data exists there, and no model credential is used: pi runs on
+# pi-ai's faux provider.
+#
+# Token scope (the CLOUDFLARE_API_TOKEN repo secret deploy-worker.yml and cap-probe.yml use):
+#   Account -> Workers Scripts: Edit       upload, DO class migrations, the door's
+#                                          workers.dev route, delete, reading the
+#                                          workers.dev subdomain and the DO namespace list
+#   Account -> Billing: Read               optional: names the account's plan
+#   Account -> Account Analytics: Read     optional: P7's requests and active time per
+#                                          object, and the P1 and P4 cross-checks
+#
+# A default run takes about 50 minutes: the three P1 runs hold 10 minutes each.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_minutes:
+        description: 'P1: minutes each run (1, 8 and 32 threads) streams, 1 to 14 (an alarm is cut at 15)'
+        required: false
+        default: '10'
+        type: string
+      p4_max:
+        description: 'P4: the most pi Sessions held open in one isolate, 8 to 256'
+        required: false
+        default: '128'
+        type: string
+      raised_limit:
+        description: 'P1: limits.subrequests the raised copy deploys with, 20000 to 10000000'
+        required: false
+        default: '1000000'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # One run at a time: every run deploys the same four script names.
+  group: store-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    # Install and harness check ~8, deploy <=15, cases <=150, analytics <=10, cleanup <=5.
+    timeout-minutes: 195
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+      WRANGLER: ${{ github.workspace }}/platform/node_modules/.bin/wrangler
+      SCRIPTS: ta-storeprobe-door ta-storeprobe ta-storeprobe-low ta-storeprobe-raised
+    steps:
+      - name: Check the input
+        env:
+          RUN_MINUTES: ${{ inputs.run_minutes }}
+          P4_MAX: ${{ inputs.p4_max }}
+          RAISED_LIMIT: ${{ inputs.raised_limit }}
+        run: |
+          # Digits of a bounded length first, so a huge or odd value fails before any compare.
+          if ! [[ "${RUN_MINUTES}" =~ ^[0-9]{1,2}$ ]] || [ "$((10#${RUN_MINUTES}))" -lt 1 ] || [ "$((10#${RUN_MINUTES}))" -gt 14 ]; then
+            echo "::error::run_minutes must be a whole number from 1 to 14"
+            exit 1
+          fi
+          if ! [[ "${P4_MAX}" =~ ^[0-9]{1,3}$ ]] || [ "$((10#${P4_MAX}))" -lt 8 ] || [ "$((10#${P4_MAX}))" -gt 256 ]; then
+            echo "::error::p4_max must be a whole number from 8 to 256"
+            exit 1
+          fi
+          if ! [[ "${RAISED_LIMIT}" =~ ^[0-9]{5,8}$ ]] || [ "$((10#${RAISED_LIMIT}))" -lt 20000 ] || [ "$((10#${RAISED_LIMIT}))" -gt 10000000 ]; then
+            echo "::error::raised_limit must be a whole number from 20000 to 10000000"
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+
+      # The platform lockfile pins wrangler, miniflare and the pi packages (pi-durable,
+      # pi-ai, chord at 1.4.0); the probe bundles against them rather than a toolchain
+      # of its own.
+      - name: Install the pinned toolchain
+        working-directory: platform
+        run: npm ci --no-audit --no-fund
+
+      - name: Harness check in miniflare (proves the harness, not a reading)
+        run: node scripts/probes/storeprobe/local.mjs
+
+      - name: Check the account
+        id: account
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID_SECRET: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN secret is not set (needs Account: Workers Scripts: Edit)."
+            exit 1
+          fi
+          api() {
+            curl -sS --max-time 60 -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -o "${RUNNER_TEMP}/api.json" -w '%{http_code}' "https://api.cloudflare.com/client/v4$1"
+          }
+
+          account_id="${CLOUDFLARE_ACCOUNT_ID_SECRET}"
+          if [ -z "${account_id}" ]; then
+            echo "CLOUDFLARE_ACCOUNT_ID secret is not set; resolving from the tinyassets.io zone."
+            api "/zones?name=tinyassets.io" > /dev/null
+            account_id="$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])).get("result") or []; print(((r[0].get("account") or {}).get("id") or "") if r else "")' "${RUNNER_TEMP}/api.json")"
+          fi
+          if [ -z "${account_id}" ]; then
+            echo "::error::Could not resolve the Cloudflare account id."
+            exit 1
+          fi
+          echo "::add-mask::${account_id}"
+          echo "CLOUDFLARE_ACCOUNT_ID=${account_id}" >> "${GITHUB_ENV}"
+
+          # The workers.dev subdomain: the door lives only there.
+          status="$(api "/accounts/${account_id}/workers/subdomain")"
+          subdomain="$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("result") or {}).get("subdomain") or "")' "${RUNNER_TEMP}/api.json" || true)"
+          if [ "${status}" != "200" ] || [ -z "${subdomain}" ]; then
+            echo "::error::No workers.dev subdomain on this account (HTTP ${status}). Creating one is account configuration: the founder picks it in the dashboard (Workers & Pages, then Subdomain)."
+            exit 1
+          fi
+          echo "::add-mask::${subdomain}"
+          echo "PROBE_SUBDOMAIN=${subdomain}" >> "${GITHUB_ENV}"
+          echo "workers.dev subdomain: present"
+
+          # The Workers plan: P1's raised limit and P3's binding are Paid questions.
+          status="$(api "/accounts/${account_id}/subscriptions")"
+          plan="$(python3 - "${RUNNER_TEMP}/api.json" "${status}" <<'PY'
+          import json, sys
+          path, status = sys.argv[1], sys.argv[2]
+          if status != "200":
+              print(f"unknown (HTTP {status}: the token cannot read billing)")
+              sys.exit()
+          subs = json.load(open(path)).get("result") or []
+          names = [((sub.get("rate_plan") or {}).get("public_name") or (sub.get("rate_plan") or {}).get("id") or "?") for sub in subs]
+          workers = [n for n in names if "worker" in n.lower()]
+          print("Workers: " + ", ".join(workers) if workers else "Free (no Workers subscription among: " + (", ".join(names) or "none") + ")")
+          PY
+          )"
+          echo "Workers plan: ${plan}"
+          echo "plan=${plan}" >> "${GITHUB_OUTPUT}"
+
+          # A fresh key per run guards the door's route.
+          key="$(openssl rand -hex 24)"
+          echo "::add-mask::${key}"
+          echo "PROBE_KEY=${key}" >> "${GITHUB_ENV}"
+
+      # P3's first reading is this step: whether wrangler and production take the main
+      # copy's config (a same-script PISTORE binding under disable_ctx_exports). A refusal
+      # is recorded, not fatal, and the run skips to the summary and the cleanup. The raised
+      # copy's refusal is P1's reading too; the door then binds only what deployed.
+      - name: Deploy the owner copies and the door
+        id: deploy
+        timeout-minutes: 15
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          RAISED_LIMIT: ${{ inputs.raised_limit }}
+        run: |
+          set -uo pipefail
+          # Clear anything an earlier run left, Durable Object state included.
+          # shellcheck disable=SC2086
+          bash scripts/probes/storeprobe/delete.sh ${SCRIPTS} || exit 1
+          raised="$((10#${RAISED_LIMIT}))"
+          config="${RUNNER_TEMP}/storeprobe-config"
+          node scripts/probes/storeprobe/config.mjs --out "${config}" --raised "${raised}" || exit 1
+          deploy_json="${RUNNER_TEMP}/storeprobe-deploy.json"
+          echo '{}' > "${deploy_json}"
+          record() {
+            python3 - "${deploy_json}" "$1" "$2" "$3" <<'PY'
+          import json, os, re, sys
+          path, copy, status, log = sys.argv[1:5]
+          data = json.load(open(path))
+          entry = {"status": status}
+          if status != "accepted":
+              lines = [l.strip() for l in open(log, errors="replace") if re.search(r"error|refused|invalid", l, re.I)]
+              text = " / ".join(lines[-6:])[:600]
+              # The summary is not masked like the log: no account id or subdomain in it.
+              for needle in (os.environ.get("CLOUDFLARE_ACCOUNT_ID"), os.environ.get("PROBE_SUBDOMAIN")):
+                  if needle:
+                      text = text.replace(needle, "<redacted>")
+              entry["error"] = text
+          data[copy] = entry
+          json.dump(data, open(path, "w"))
+          PY
+          }
+          deployed=""
+          for copy in main low raised; do
+            log="${RUNNER_TEMP}/deploy-${copy}.log"
+            if "${WRANGLER}" deploy --config "${config}/${copy}.wrangler.json" > "${log}" 2>&1; then
+              status="accepted"
+              deployed="${deployed:+${deployed},}${copy}"
+            else
+              status="refused"
+            fi
+            cat "${log}"
+            record "${copy}" "${status}" "${log}"
+            echo "${copy}: ${status}"
+            if [ "${copy}" = "main" ] && [ "${status}" != "accepted" ]; then
+              echo "::warning title=P3::production refused the main copy's config; see the summary"
+              echo "deployed=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+          done
+          # The door binds only the copies that deployed; its key goes up as a Worker secret.
+          node scripts/probes/storeprobe/config.mjs --out "${config}" --raised "${raised}" --copies "${deployed}" || exit 1
+          secrets="${RUNNER_TEMP}/storeprobe-door-key.json"
+          trap 'rm -f "${secrets}"' EXIT
+          python3 -c 'import json,os,sys; json.dump({"RUN_KEY": os.environ["PROBE_KEY"]}, open(sys.argv[1], "w"))' "${secrets}"
+          "${WRANGLER}" deploy --config "${config}/door.wrangler.json" --secrets-file "${secrets}" || exit 1
+          echo "deployed=true" >> "${GITHUB_OUTPUT}"
+
+      # 150 minutes: drive.mjs's worstCaseMs at the input maxima (14-minute runs, 256
+      # Sessions) is about 140 (every wait at its bound, every request at its 45 s
+      # timeout), and local.mjs fails if it outgrows this. The driver rewrites the
+      # results after each phase and prints the whole report to this log, so a step
+      # killed here still leaves what it had.
+      - name: Run every case
+        id: drive
+        if: steps.deploy.outputs.deployed == 'true'
+        timeout-minutes: 150
+        env:
+          RUN_MINUTES: ${{ inputs.run_minutes }}
+          P4_MAX: ${{ inputs.p4_max }}
+          RAISED_LIMIT: ${{ inputs.raised_limit }}
+        run: |
+          set -euo pipefail
+          node scripts/probes/storeprobe/drive.mjs \
+            --base "https://ta-storeprobe-door.${PROBE_SUBDOMAIN}.workers.dev" \
+            --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --out "${RUNNER_TEMP}/storeprobe.json" --summary "${RUNNER_TEMP}/storeprobe.md" \
+            --run-minutes "$((10#${RUN_MINUTES}))" --p4-max "$((10#${P4_MAX}))" \
+            --raised "$((10#${RAISED_LIMIT}))" --deploy "${RUNNER_TEMP}/storeprobe-deploy.json" \
+            --redact "${PROBE_SUBDOMAIN}"
+
+      # Optional (Account Analytics: Read): a refusal is a line in the summary.
+      - name: Billing-side readings
+        if: always() && steps.drive.outcome != 'skipped'
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -f "${RUNNER_TEMP}/storeprobe.json" ]; then
+            node scripts/probes/storeprobe/analytics.mjs --results "${RUNNER_TEMP}/storeprobe.json" \
+              --summary "${RUNNER_TEMP}/storeprobe.md"
+          fi
+
+      - name: Results into the job summary
+        if: always()
+        env:
+          PLAN: ${{ steps.account.outputs.plan }}
+        run: |
+          {
+            echo "### Store probe"
+            echo ""
+            echo "- **Workers plan (API):** ${PLAN:-not read}"
+            echo "- **sha:** \`${GITHUB_SHA}\`"
+            if [ -f "${RUNNER_TEMP}/storeprobe-deploy.json" ]; then
+              echo "- **deploy (P3, and P1's raised limit):** \`$(cat "${RUNNER_TEMP}/storeprobe-deploy.json")\`"
+            fi
+            echo ""
+            if [ -f "${RUNNER_TEMP}/storeprobe.md" ]; then
+              cat "${RUNNER_TEMP}/storeprobe.md"
+              echo ""
+              echo "<details><summary>results JSON</summary>"
+              echo ""
+              echo '```json'
+              cat "${RUNNER_TEMP}/storeprobe.json"
+              echo '```'
+              echo "</details>"
+            else
+              echo "No results: the run stopped before the first phase finished."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Delete every probe Worker and its namespaces
+        if: always()
+        timeout-minutes: 5
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "The account step never resolved an account, so nothing was deployed."
+            exit 0
+          fi
+          # The door first: it binds the owner copies' classes.
+          # shellcheck disable=SC2086
+          bash scripts/probes/storeprobe/delete.sh ${SCRIPTS}
+          failed=$?
+          {
+            echo ""
+            if [ "${failed}" = "0" ]; then
+              echo "- **cleanup:** every probe Worker and Durable Object namespace deleted, and checked gone"
+            else
+              echo "- **cleanup:** FAILED; a probe Worker or namespace is still there (see the step log)"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+          exit "${failed}"

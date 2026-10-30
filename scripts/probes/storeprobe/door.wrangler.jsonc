@@ -1,0 +1,20 @@
+// The door of the store probe (store-probe.md): the one workers.dev URL, guarded by the
+// per-run key, binding each owner-like copy's Owner class by script_name as the doors bind
+// OwnerDO. Throwaway: store-probe.yml deploys it last (config.mjs drops OWNER_RAISED when
+// the raised copy was refused) and deletes it first. RUN_KEY is not here: the workflow
+// uploads it per run with --secrets-file.
+{
+  "name": "ta-storeprobe-door",
+  "main": "door.js",
+  "compatibility_date": "2026-10-23",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [
+      { "name": "OWNER", "class_name": "Owner", "script_name": "ta-storeprobe" },
+      { "name": "OWNER_LOW", "class_name": "Owner", "script_name": "ta-storeprobe-low" },
+      { "name": "OWNER_RAISED", "class_name": "Owner", "script_name": "ta-storeprobe-raised" }
+    ]
+  }
+}
