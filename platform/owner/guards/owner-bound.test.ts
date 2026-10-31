@@ -14,8 +14,10 @@
  * too (`MANIFEST_INDEXES`). The charge counts a page at three quarters full; a thinned page
  * may stay a third full, so the guard counts the manifest at its high bound times
  * `WORST_FILL`, and a workerd test fills, thins and refills a database against it
- * (`files-share.test.ts`). The model turns' counters are bounded by count and a turn's
- * bytes, the calls open at once and the spend counters by count (migration 10). pi's
+ * (`files-share.test.ts`). The model turns' counters live as long as the pi records that
+ * own them, at most `THREAD_INPUTS` open inputs and `THREAD_COMPACTIONS` live compactions
+ * a thread, each turn of at most `TURN_BYTES`; the calls open at once and the spend
+ * counters are bounded by count (migration 10). pi's
  * records live in the thread stores (`thread-store.ts`, S1-S3), never in the owner's
  * database, so what the owner's object holds is its own bounded rows only, whatever its
  * agents do; this guard replaced A4's runtime storage gauge.
@@ -131,7 +133,8 @@ const WORK_LIMITS = declared("scheduled", "WORK_LIMITS", "maxOpen", "maxSettled"
 const MAX_OPEN_INTENTS = constant("files", "MAX_OPEN_INTENTS");
 const MAX_INTENT_CHUNKS = constant("files", "MAX_INTENT_CHUNKS");
 const MAX_PATH_BYTES = constant("paths", "MAX_PATH_BYTES");
-const TURNS_KEPT = constant("schema", "TURNS_KEPT");
+const THREAD_INPUTS = constant("thread-host", "THREAD_INPUTS");
+const THREAD_COMPACTIONS = constant("thread-host", "THREAD_COMPACTIONS");
 const TURN_BYTES = constant("schema", "TURN_BYTES");
 const CALLS_OPEN = constant("schema", "CALLS_OPEN");
 const SPEND_KEPT = constant("schema", "SPEND_KEPT");
@@ -163,6 +166,12 @@ export interface Term {
   /** What bounds it. */
   readonly by: string;
 }
+
+/** A thread's id, as its row holds it. */
+const THREAD_ID = 39;
+/** Every thread's turn owners at once: each thread's open inputs and live compactions. */
+const TURN_OWNERS = (THREAD_LIMITS.owner + THREAD_LIMITS.clients)
+  * (THREAD_INPUTS + THREAD_COMPACTIONS);
 
 /** The file manifest's tables, together: `max_manifest_bytes` at its high bound, at worst fill. */
 const MANIFEST: Term = Object.freeze({
@@ -245,9 +254,11 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
   model_reservations: { rows: USAGE_LIMITS.receiptsKept + CALLS_OPEN, bytes: ROW + 1 * KIB,
                         by: "receiptsKept settled, and CALLS_OPEN open at once" },
   model_spend: { rows: SPEND_KEPT, bytes: ROW, by: "SPEND_KEPT day and month counters" },
-  model_turns: { rows: TURNS_KEPT, bytes: ROW + 2 * TURN_BYTES,
-                 by: "TURNS_KEPT turns of TURN_BYTES, in the row and its age index" },
-  model_usage: { rows: 1, bytes: ROW, by: "one row" },
+  model_turns: { rows: TURN_OWNERS, bytes: ROW + TURN_BYTES + THREAD_ID,
+                 by: "a turn per owner at most: THREAD_INPUTS open inputs and " +
+                   "THREAD_COMPACTIONS live compactions a thread, TURN_BYTES each" },
+  model_turn_owners: { rows: TURN_OWNERS, bytes: ROW + TURN_BYTES + 2 * THREAD_ID,
+                       by: "one per open input or live compaction, a thread each, indexed" },
   // The agent's threads: rows only, every transcript in its own store.
   agent_threads: { rows: THREAD_LIMITS.owner + THREAD_LIMITS.clients, bytes: ROW + 1 * KIB,
                    by: "THREAD_LIMITS (the owner's, and every client's)" },
@@ -341,7 +352,7 @@ describe("the owner's database bound", () => {
     const bytes = worstCase();
     expect(bytes).toBeLessThan(SHARE * DATABASE_BYTES);
     // The manifest at its high bound and its worst fill, the largest term, is counted whole.
-    expect(FILE_SETTINGS.max_manifest_bytes).toBe(1024 ** 3);
+    expect(FILE_SETTINGS.max_manifest_bytes).toBe(768 * 1024 ** 2);
     expect(WORST_FILL).toBe(2.25);
     expect(TERMS["file_manifest"]!.rows * TERMS["file_manifest"]!.bytes)
       .toBe(FILE_SETTINGS.max_manifest_bytes * WORST_FILL);
@@ -355,11 +366,13 @@ describe("the owner's database bound", () => {
     expect([spilled(1), spilled(4092), spilled(4093)]).toEqual([4096, 4096, 8192]);
     expect([MAX_INTENT_CHUNKS, CHUNK_BYTES, constant("files", "KEEP_CEILING")])
       .toEqual([10_000, 4 * 1024 ** 2, 1000]);
-    expect([TURNS_KEPT, CALLS_OPEN, SPEND_KEPT, MODELS_CHARS, BLOB_CHARS])
-      .toEqual([100_000, 1000, 4300, 655_360, 65_536]);
+    expect([THREAD_INPUTS, THREAD_COMPACTIONS, CALLS_OPEN, SPEND_KEPT, MODELS_CHARS,
+            BLOB_CHARS]).toEqual([16, 2, 1000, 4300, 655_360, 65_536]);
     expect([SCOPE_FIELD, CLIENT_NAME, WAKES_AN_HOUR, GRANT_LIMITS.maxScopes])
       .toEqual([512, 80, 60, 64]);
-    expect(TERMS["model_turns"]).toMatchObject({ rows: TURNS_KEPT, bytes: 256 + 2 * TURN_BYTES });
+    expect(TERMS["model_turns"]).toMatchObject({
+      rows: (THREAD_LIMITS.owner + THREAD_LIMITS.clients) * 18, bytes: 256 + TURN_BYTES + 39 });
+    expect(TERMS["model_turn_owners"]!.rows).toBe(TERMS["model_turns"]!.rows);
     expect(TERMS["file_intents"]).toMatchObject({
       rows: MAX_OPEN_INTENTS, bytes: 256 + 2 * spilled(640_000) });
     expect(TERMS["model_reservations"]!.rows).toBe(USAGE_LIMITS.receiptsKept + 1000);

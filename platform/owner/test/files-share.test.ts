@@ -20,7 +20,7 @@ import {
 import type { OwnerDO } from "../src/owner-do";
 import { MAX_PATH_BYTES } from "../src/paths";
 import { FILE_DEFAULTS, FILE_SETTINGS } from "../src/policy";
-import { CALLS_OPEN, MIGRATIONS, SPEND_KEPT, TURN_BYTES, TURNS_KEPT } from "../src/schema";
+import { CALLS_OPEN, MIGRATIONS, SPEND_KEPT, TURN_BYTES } from "../src/schema";
 import { DOT, MUSE, rig, type Rig } from "./ledger-support";
 import { failure, fileCounters, filesOn, inFiles, sqlIn, text } from "./support";
 
@@ -756,8 +756,8 @@ describe("the files policy's byte quota and shares", () => {
     const r = await rig();
     expect(FILE_DEFAULTS).toMatchObject({ max_manifest_bytes: 512 * 1024 ** 2,
                                           client_share: 25, owner_reserve: 25 });
-    expect(FILE_SETTINGS.max_manifest_bytes).toEqual([0, 1024 ** 3]);
-    for (const files of [{ max_manifest_bytes: 1024 ** 3 + 1 }, { client_share: 101 },
+    expect(FILE_SETTINGS.max_manifest_bytes).toEqual([0, 768 * 1024 ** 2]);
+    for (const files of [{ max_manifest_bytes: 768 * 1024 ** 2 + 1 }, { client_share: 101 },
                          { owner_reserve: -1 }, { client_share: 2.5 }]) {
       expect((await failure(() => setPolicy(r, files))).message).toBe("invalid files policy");
     }
@@ -788,30 +788,31 @@ describe("the model turns' counters", () => {
     `VALUES ('r${n}-${turn.length}-${turn.slice(0, 8)}', '${turn}', 'c', 's', 'm', '${state}', ` +
     "1, 1, 1, 1, '2026-10-31', '2026-10', 1)";
 
-  it("keep at most TURNS_KEPT, dropping the turn idle longest with no call open",
+  it("are made with a turn's first owner, go with its last or its thread, and never move",
      async () => {
     const r = await rig();
+    const thread = `thread_${"a".repeat(32)}`;
     await runInDurableObject(r.stub, (_instance: OwnerDO, state) => {
       const sql = state.storage.sql;
-      state.storage.transactionSync(() => {
-        for (let i = 0; i < TURNS_KEPT; i++) {
-          sql.exec("INSERT INTO model_turns (turn, requests, tokens, cost, last_at) " +
-                     "VALUES (?, 1, 1, 1, ?)", `input:t${i}`, i);
-        }
-      });
-      // The two oldest have a call open, reserved or dispatched; the next oldest goes.
-      sql.exec(reserve("input:t0", "dispatched"));
-      sql.exec(reserve("input:t1", "reserved"));
-      sql.exec(reserve("input:new"));
-      const turns = (turn: string) => sql.exec("SELECT 1 FROM model_turns WHERE turn = ?", turn)
-        .toArray().length;
-      expect([turns("input:t0"), turns("input:t1"), turns("input:t2"), turns("input:new")])
-        .toEqual([1, 1, 0, 1]);
-      const counted = sql.exec<{ n: number; kept: number }>(
-        "SELECT COUNT(*) AS n, (SELECT turns FROM model_usage) AS kept FROM model_turns").one();
-      expect(counted).toEqual({ n: TURNS_KEPT, kept: TURNS_KEPT });
+      const own = (owner: string, turn: string) => sql.exec(
+        "INSERT INTO model_turn_owners (owner, thread, turn) VALUES (?, ?, ?)", owner, thread,
+        turn);
+      own("s:1", "input:a");
+      own("s:2", "input:a");
+      own("t:3", `task:${thread}:3`);
+      expect(sql.exec("SELECT turn, thread, owners FROM model_turns ORDER BY turn").toArray())
+        .toEqual([{ turn: "input:a", thread, owners: 2 },
+                  { turn: `task:${thread}:3`, thread, owners: 1 }]);
+      sql.exec("DELETE FROM model_turn_owners WHERE owner = 's:1'");
+      expect(sql.exec("SELECT owners FROM model_turns WHERE turn = 'input:a'").one())
+        .toEqual({ owners: 1 });
+      expect(() => sql.exec("UPDATE model_turns SET thread = 'x'")).toThrow(/a turn never moves/);
+      sql.exec("DELETE FROM model_turn_owners WHERE owner = 's:2'");
+      expect(sql.exec("SELECT turn FROM model_turns").toArray())
+        .toEqual([{ turn: `task:${thread}:3` }]);
+      expect(() => own("x:4", "input:b")).toThrow(/CHECK constraint/);
     });
-  }, 120_000);
+  });
 
   it("refuses a turn past TURN_BYTES", async () => {
     const r = await rig();

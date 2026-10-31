@@ -339,7 +339,7 @@ describe("a model request's turn", () => {
     expect(new Set(out.turns).size).toBe(1);
   });
 
-  it("is the run's for a compaction the run starts, even one that runs in the background",
+  it("is a compaction's own, even one the run starts, which runs on past it in the background",
      async () => {
     const r = agentObject();
     const out = await r.in(async (instance) => {
@@ -351,13 +351,14 @@ describe("a model request's turn", () => {
       const answer = await instance.harness.prompt(HUGE);
       await until(async () => (await instance.harness.messages())
         .some((entry) => entry.kind === "pi.compaction"), "the compaction's summary");
-      return { answer, turns: turnsOf(instance) };
+      return { answer, turns: turnsOf(instance), thread: await instance.harness.thread() };
     });
     expect(out.answer.status).toBe("done");
-    // The early run's request, then the second run's and its compaction's summarization.
+    // The early run's request, then the second run's, and its compaction's summarization
+    // on a turn of its own: the run's turn ends with the run, the compaction's with it.
     expect(out.turns).toHaveLength(3);
-    expect(out.turns[2]).toBe(out.turns[1]);
     expect(out.turns[1]).not.toBe(out.turns[0]);
+    expect(out.turns[2]).toMatch(new RegExp(`^task:${out.thread}:[0-9]+$`));
   });
 
   it("is a compaction's own when a door asks for one while a run is busy", async () => {

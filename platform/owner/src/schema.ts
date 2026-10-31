@@ -154,11 +154,14 @@ const CHUNK_OF = (sha: string, what: string) =>
   `(SELECT ${what} FROM file_chunks k WHERE k.sha256 = ${sha})`;
 
 /**
- * The model turns' counters kept at once (`model_turns`, migration 10): past it, the turn
- * idle longest with no call open goes. A day of a turn every second keeps under it, and
- * at its most the rows take under 100 MB.
+ * Move a turn's counters by a reservation row's, times `sign`, at `at`: only a turn that is
+ * still open has a row (migration 10), and a call settling after its turn ended moves
+ * nothing, never bringing the row back.
  */
-export const TURNS_KEPT = 100_000;
+const TURN_MOVED = (row: string, sign: string, at: string) =>
+  `UPDATE model_turns SET requests = requests ${sign} ${ASKED(row)}, ` +
+  `tokens = tokens ${sign} ${HELD_TOKENS(row)}, cost = cost ${sign} ${HELD(row)}, ` +
+  `last_at = max(last_at, ${at}) WHERE turn = ${row}.turn;`;
 /** A turn's most bytes: an origin (`origin.ts`) is far shorter. */
 export const TURN_BYTES = 320;
 /**
@@ -767,7 +770,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // tokens and cost. What is reserved or unknown holds its estimate, what settled holds
   // what it used, and what was never sent or was refused holds nothing and is no request.
   // Receipts are history only, pruned without touching a counter; a turn's counters go
-  // only once the turn has been idle past the usage module's window.
+  // with the pi records that own the turn (migration 10).
   Object.freeze([
     "CREATE TABLE connections (id TEXT PRIMARY KEY CHECK (length(id) = 25), " +
       "source TEXT NOT NULL CHECK (length(source) BETWEEN 1 AND 64), " +
@@ -954,11 +957,17 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // A file row from before this migration (none can be: nothing is deployed) fails it
   // loudly, its scope unknown.
   //
-  // `model_turns` keeps at most `TURNS_KEPT` turns: a new turn past it drops the turn idle
-  // longest with no call open (the usage module's idle pruning, early), and a turn is at
-  // most 320 bytes (this check counts bytes; the reservation's own counts characters), so
-  // its rows are bounded in bytes, not only by the idle window. The calls open at once and
-  // the spend counters are bounded by count (`CALLS_OPEN`, `SPEND_KEPT`).
+  // A turn's counters live exactly as long as its work: `model_turn_owners` holds each pi
+  // record that owns a turn, an open input submission (`s:<id>`, a steer's its own turn)
+  // or a live compaction task (`t:<id>`), kept by the thread host as it
+  // sees them commit (`thread-host.ts`), and a turn's row is made with its first owner and
+  // goes with its last, or with its thread. A call of a turn with no row is refused
+  // (`usage.ts`), and a reservation only moves a row that is there, so no counter ever
+  // starts over. Each thread holds at most `THREAD_INPUTS` open inputs and pi at most
+  // `THREAD_COMPACTIONS` live compactions, so the rows are bounded by the threads. A turn
+  // is at most 320 bytes (this check counts bytes; the reservation's own counts
+  // characters). The calls open at once and the spend counters are bounded by count
+  // (`CALLS_OPEN`, `SPEND_KEPT`).
   Object.freeze([
     "ALTER TABLE file_space ADD COLUMN manifest_bytes INTEGER NOT NULL DEFAULT 0 " +
       "CHECK (manifest_bytes >= 0)",
@@ -1142,19 +1151,37 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "SELECT RAISE(ABORT, 'a file row''s writer never changes'); END",
     "CREATE TRIGGER file_intents_writer_kept BEFORE UPDATE OF writer ON file_intents BEGIN " +
       "SELECT RAISE(ABORT, 'a file row''s writer never changes'); END",
-    "CREATE TABLE model_usage (only INTEGER PRIMARY KEY CHECK (only = 1), " +
-      "turns INTEGER NOT NULL CHECK (turns >= 0))",
-    "INSERT INTO model_usage VALUES (1, (SELECT COUNT(*) FROM model_turns))",
-    "CREATE TRIGGER model_turns_added AFTER INSERT ON model_turns BEGIN " +
-      "UPDATE model_usage SET turns = turns + 1; " +
-      `DELETE FROM model_turns WHERE (SELECT turns FROM model_usage) > ${TURNS_KEPT} ` +
-      "AND turn = (SELECT t.turn FROM model_turns t WHERE t.turn != NEW.turn " +
-      "AND NOT EXISTS (SELECT 1 FROM model_reservations r WHERE r.state IN ('reserved', " +
-      "'dispatched') AND r.turn = t.turn) ORDER BY t.last_at LIMIT 1); " +
-      `SELECT RAISE(ABORT, 'model_turns_full: every kept turn has a call open') ` +
-      `WHERE (SELECT turns FROM model_usage) > ${TURNS_KEPT}; END`,
-    "CREATE TRIGGER model_turns_removed AFTER DELETE ON model_turns BEGIN " +
-      "UPDATE model_usage SET turns = turns - 1; END",
+    "ALTER TABLE model_turns ADD COLUMN thread TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE model_turns ADD COLUMN owners INTEGER NOT NULL DEFAULT 0 CHECK (owners >= 0)",
+    "DROP INDEX model_turns_by_age",
+    "CREATE TABLE model_turn_owners (owner TEXT PRIMARY KEY CHECK (owner GLOB '[st]:[0-9]*'), " +
+      "thread TEXT NOT NULL CHECK (length(thread) = 39), " +
+      `turn TEXT NOT NULL CHECK (length(CAST(turn AS BLOB)) <= ${TURN_BYTES})) WITHOUT ROWID`,
+    "CREATE INDEX model_turn_owners_by_thread ON model_turn_owners (thread)",
+    // Fails the owner check when any turn is already kept.
+    "INSERT INTO model_turn_owners SELECT 'a turn from before migration 10', '', '' " +
+      "WHERE EXISTS (SELECT 1 FROM model_turns)",
+    "CREATE TRIGGER model_turn_owners_added AFTER INSERT ON model_turn_owners BEGIN " +
+      "INSERT INTO model_turns (turn, requests, tokens, cost, last_at, thread, owners) " +
+      "VALUES (NEW.turn, 0, 0, 0, 0, NEW.thread, 1) " +
+      "ON CONFLICT (turn) DO UPDATE SET owners = owners + 1; END",
+    "CREATE TRIGGER model_turn_owners_removed AFTER DELETE ON model_turn_owners BEGIN " +
+      "UPDATE model_turns SET owners = owners - 1 WHERE turn = OLD.turn; " +
+      "DELETE FROM model_turns WHERE turn = OLD.turn AND owners = 0; END",
+    "CREATE TRIGGER model_turns_kept BEFORE UPDATE OF turn, thread ON model_turns BEGIN " +
+      "SELECT RAISE(ABORT, 'a turn never moves'); END",
+    // A dropped thread's turns go in its drop's unit.
+    "CREATE TRIGGER agent_threads_turns_dropped AFTER DELETE ON agent_threads BEGIN " +
+      "DELETE FROM model_turn_owners WHERE thread = OLD.thread_id; END",
+    "DROP TRIGGER model_reservations_turned",
+    "DROP TRIGGER model_reservations_returned",
+    "CREATE TRIGGER model_reservations_turned AFTER INSERT ON model_reservations " +
+      `WHEN ${ASKED("NEW")} BEGIN ${TURN_MOVED("NEW", "+", "NEW.created_at")} END`,
+    "CREATE TRIGGER model_reservations_returned AFTER UPDATE OF state, tokens, cost " +
+      `ON model_reservations WHEN ${ASKED("NEW")} != ${ASKED("OLD")} ` +
+      `OR ${HELD_TOKENS("NEW")} != ${HELD_TOKENS("OLD")} OR ${HELD("NEW")} != ${HELD("OLD")} ` +
+      `BEGIN ${TURN_MOVED("OLD", "-", "OLD.created_at")} ${
+        TURN_MOVED("NEW", "+", "coalesce(NEW.settled_at, NEW.created_at)")} END`,
     `CREATE TRIGGER model_reservations_turn_bytes BEFORE INSERT ON model_reservations ` +
       `WHEN length(CAST(NEW.turn AS BLOB)) > ${TURN_BYTES} BEGIN ` +
       `SELECT RAISE(ABORT, 'a turn is at most ${TURN_BYTES} bytes'); END`,

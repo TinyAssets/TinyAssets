@@ -32,9 +32,12 @@
  * Every cap reads a counter only the schema's triggers write (`schema.ts`, migration 6):
  * `model_turns` for a turn's requests, tokens and cost, `model_spend` for a source's day
  * and month. The reservation rows are receipts, history only: the newest `receiptsKept`
- * are kept, and pruning one frees nothing. A turn's counters go only once the turn has
- * been idle for `turnIdleS`, with no call of it open; past `TURNS_KEPT` turns, the one
- * idle longest with no call open goes early (migration 10), so they are bounded in bytes.
+ * are kept, and pruning one frees nothing. A turn's counters live exactly as long as its
+ * work (migration 10): its row is made with the first pi record that owns it, an open input
+ * submission or a live compaction, and goes with the last, as the thread host keeps them
+ * (`turnOwners`, `turnsReconciled`), or with its thread. A call of a turn with no row is
+ * refused (`turn_ended`), so a turn's counters never start over, and a call settling after
+ * its turn ended moves nothing.
  *
  * Money is micro-dollars (µ$): pi-ai's catalog prices are dollars per million tokens, so a
  * token at price `p` costs `p` µ$. A call's estimate is pi-ai's own `calculateCost` over the
@@ -45,9 +48,10 @@
  * its `calculateCost` over the gateway's current catalog record, with pi-ai's own
  * adjustments after it (a service tier's multiplier, a fallback model's prices), so a
  * record the connection stored at connect time never under-records what was spent. A turn is the submitted input
- * at the origin of a call's causal chain, as pi propagates it (`origin.ts`): a compaction,
- * a subagent and background work a run starts are that run's turn, even after it ended,
- * as the Python's `_borrowed` charged a child to its parent. A source is a connection's
+ * at the origin of a call's causal chain, as pi propagates it (`origin.ts`): a subagent a
+ * run starts is that run's turn while the run is open, as the Python's `_borrowed` charged
+ * a child to its parent, and work joining it after it ended is refused `turn_ended`; every
+ * compaction is a turn of its own. A source is a connection's
  * source record (`connections.ts`), so its ceilings survive a reconnect. The day and month
  * are UTC.
  *
@@ -63,6 +67,7 @@ import type { Api, Model, Usage as PiUsage } from "@earendil-works/pi-ai";
 import { calculateCost } from "@earendil-works/pi-ai/models";
 
 import type { OwnerStorage } from "./gate";
+import type { TurnOwner } from "./thread-host";
 
 export interface UsageLimits {
   /** Reservation rows kept, as receipts; no cap reads them. */
@@ -75,9 +80,6 @@ export interface UsageLimits {
   /** Days of daily spend counters kept, and months of monthly ones. */
   readonly daysKept: number;
   readonly monthsKept: number;
-  /** Seconds a turn's counters outlive its last call; and how many one pass drops. */
-  readonly turnIdleS: number;
-  readonly turnsPrunedPerPass: number;
 }
 
 export const USAGE_LIMITS: UsageLimits = Object.freeze({
@@ -87,9 +89,12 @@ export const USAGE_LIMITS: UsageLimits = Object.freeze({
   minReasoningOutput: 2_048,
   daysKept: 40,
   monthsKept: 3,
-  turnIdleS: 30 * 86_400,
-  turnsPrunedPerPass: 256,
 });
+
+/** The fixed rule a call of a turn whose work has ended is refused with. */
+export const TURN_ENDED = "turn_ended";
+
+
 
 /** The caps of the owner's model policy (`policy.ts`, `modelSettings`), in µ$ for money. */
 export interface ModelCaps {
@@ -257,8 +262,11 @@ export class Usage {
         return { ok: false, rule: unauthorized };
       }
       const turn = this.#sql.exec<{ requests: number; tokens: number; cost: number }>(
-        "SELECT requests, tokens, cost FROM model_turns WHERE turn = ?", ask.turn).toArray()[0]
-        ?? { requests: 0, tokens: 0, cost: 0 };
+        "SELECT requests, tokens, cost FROM model_turns WHERE turn = ?", ask.turn).toArray()[0];
+      if (turn === undefined) {
+        this.#insert(ask, "refused", TURN_ENDED, 0, 0, 0, generation, day, month, now);
+        return { ok: false, rule: TURN_ENDED };
+      }
       const floor = Math.min(ask.maxOutputTokens, ask.reasoning
         ? Math.max(this.#limits.minOutput, this.#limits.minReasoningOutput)
         : this.#limits.minOutput);
@@ -319,9 +327,51 @@ export class Usage {
   }
 
   /**
-   * Receipts past the newest `receiptsKept`, never an open one; spend counters past their
-   * window; and the counters of turns idle past `turnIdleS` with no call open, a bounded
-   * number a pass. None of it moves a counter a cap reads.
+   * In a unit: the turn owners of `thread` that opened (kept, once) or ended (let go),
+   * in order; a turn's row comes with its first owner and goes with its last. An input
+   * that joined another's turn keeps it only while it is open: one that ended is never
+   * made again, and the input's calls are refused (`turn_ended`).
+   */
+  turnOwners(thread: string, owners: readonly TurnOwner[]): void {
+    for (const { owner, turn, joined } of owners) {
+      if (turn === null) {
+        this.#sql.exec("DELETE FROM model_turn_owners WHERE owner = ? AND thread = ?", owner,
+                       thread);
+      } else {
+        this.#sql.exec("INSERT INTO model_turn_owners (owner, thread, turn) SELECT ?, ?, ? " +
+                         "WHERE NOT ? OR EXISTS (SELECT 1 FROM model_turns WHERE turn = ?) " +
+                         "ON CONFLICT (owner) DO NOTHING", owner, thread, turn,
+                       joined === true ? 1 : 0, turn);
+      }
+    }
+  }
+
+  /** How many open inputs own turns in `thread`. */
+  openInputs(thread: string): number {
+    return this.#sql.exec<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM model_turn_owners WHERE thread = ? AND owner GLOB 's:*'",
+      thread).one().n;
+  }
+
+  /**
+   * In a unit: `thread`'s turn owners made exactly `open`, as its store holds them when its
+   * Session opens: one it never kept is kept, then one a lost listener left behind goes, so
+   * a turn kept by both keeps its counters.
+   */
+  turnsReconciled(thread: string, open: readonly TurnOwner[]): void {
+    this.turnOwners(thread, open);
+    const kept = new Set(open.map(({ owner }) => owner));
+    for (const { owner } of this.#sql.exec<{ owner: string }>(
+           "SELECT owner FROM model_turn_owners WHERE thread = ?", thread).toArray()) {
+      if (!kept.has(owner)) {
+        this.#sql.exec("DELETE FROM model_turn_owners WHERE owner = ?", owner);
+      }
+    }
+  }
+
+  /**
+   * Receipts past the newest `receiptsKept`, never an open one, and spend counters past
+   * their window. None of it moves a counter a cap reads.
    */
   #prune(now: number): void {
     this.#sql.exec("DELETE FROM model_reservations WHERE seq <= " +
@@ -334,11 +384,6 @@ export class Usage {
     this.#sql.exec("DELETE FROM model_spend WHERE period < ?", `d:${day}`);
     this.#sql.exec("DELETE FROM model_spend WHERE period >= 'm:' AND period < ?",
                    `m:${month.toISOString().slice(0, 7)}`);
-    this.#sql.exec("DELETE FROM model_turns WHERE turn IN (SELECT turn FROM model_turns " +
-                     "WHERE last_at < ? AND NOT EXISTS (SELECT 1 FROM model_reservations " +
-                     "WHERE state IN ('reserved', 'dispatched') " +
-                     "AND model_reservations.turn = model_turns.turn) ORDER BY last_at LIMIT ?)",
-                   now - this.#limits.turnIdleS, this.#limits.turnsPrunedPerPass);
   }
 
   /**

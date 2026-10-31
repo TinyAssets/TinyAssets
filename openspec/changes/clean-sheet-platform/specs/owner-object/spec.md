@@ -432,11 +432,26 @@ An upload SHALL be told a chunk need not be sent only when the chunk is stored a
 - **THEN** each commit is refused, and once the client sends the bytes it commits
 
 ### Requirement: The owner's database is bounded under half its limit
-Every table the owner's schema makes SHALL be bounded by a count or bytes the code enforces, with no exception, and a guard SHALL compute the object's worst case from those bounds and the schema, at the policy's high bounds, and hold it under half of the platform's 10 GB. The model turns' counters SHALL be bounded too: at most `TURNS_KEPT` turns of at most 320 bytes each, a new turn past it dropping the turn idle longest with no call open.
+Every table the owner's schema makes SHALL be bounded by a count or bytes the code enforces, with no exception, and a guard SHALL compute the object's worst case from those bounds and the schema, at the policy's high bounds, and hold it under half of the platform's 10 GB. The model turns' counters SHALL be bounded by the threads: at most `THREAD_INPUTS` open inputs and `THREAD_COMPACTIONS` live compactions a thread, each turn of at most 320 bytes.
 
 #### Scenario: A table no bound covers
 - **WHEN** a migration makes a table the guard has no term for, or a manifest table's charging trigger is missing
 - **THEN** the owner-bound guard fails
+
+### Requirement: A turn's counters live as long as its work
+The thread host SHALL keep each pi record that owns a turn (an open input, a live compaction) as the Session commits it, in a unit at once, and all again as it opens, before it resumes. A turn's row SHALL come with its first owner and go with its last or its thread; a call of a turn with no row SHALL be refused `turn_ended`. Every compaction SHALL be its own turn; a thread SHALL hold at most `THREAD_INPUTS` open inputs (`thread_inputs_full`).
+
+#### Scenario: An input answered
+- **WHEN** an input's run answers, and a call later names the input's turn
+- **THEN** the turn's counters are gone, and the call is refused `turn_ended`
+
+#### Scenario: A unit lost between the commit and the owner
+- **WHEN** the owner's units for a thread's commits are lost while an input runs, and the Session closes and reopens
+- **THEN** as it reopens, the open input's turn is kept again and a stale owner goes
+
+#### Scenario: Background work after its run
+- **WHEN** work a run's tool started submits an input after the run answered
+- **THEN** the input's calls are refused `turn_ended`, never starting the run's counters over
 
 ### Requirement: A quota never blocks a change that frees
 A change that only removes or frees (a remove, a redaction, a purge, an aborted upload, housekeeping) SHALL never be refused by a quota. A policy SHALL be refused unless `max_entries` times the larger of `keep_versions` and `keep_recent` is at most `max_history`, so no churn of live files can fill it, and gone paths' churn makes its own room.
@@ -679,18 +694,18 @@ A call's reservation SHALL be priced by pi-ai's `calculateCost` over the target 
 - **THEN** the call settles at the gateway's price, and its spend counts against the caps
 
 ### Requirement: The caps read counters, never receipts
-Every cap SHALL read only counters the schema's triggers write: `model_turns` per turn, `model_spend` per source, day and month. Receipts SHALL be history only, bounded without freeing any cap; a turn's counters SHALL go only once it has been idle 30 days with no call open, or, past `TURNS_KEPT` turns, once it is the turn idle longest with no call open.
+Every cap SHALL read only counters the schema's triggers write: `model_turns` per turn, `model_spend` per source, day and month. Receipts SHALL be history only, bounded without freeing any cap. A turn's counters SHALL live exactly as long as the pi records that own it: its open input submissions, or its live compaction task.
 
 #### Scenario: Many requests in one turn
 - **WHEN** one turn makes 5,000 requests while only the newest 100 receipts are kept
 - **THEN** the turn's counters hold all 5,000, and a cap of 5,000 refuses the next
 
 ### Requirement: A model call's turn is the input at the origin of its causal chain
-A turn SHALL be the submitted input at the origin of a call's causal chain, carried by pi's own telemetry propagation in its durable records: every call one input caused, through a subagent, a compaction or background work, even after its run ended, SHALL be charged to that input's turn. An input submitted under no origin (a door's, an enqueued one) SHALL begin a turn; an owner's compaction outside a run SHALL be its own; a call of any other task with no carrier SHALL be refused `no_run`.
+A turn SHALL be the submitted input at the origin of a call's causal chain, carried by pi's own telemetry propagation in its durable records: every call one input caused through a subagent SHALL be charged to that input's turn while it is open, and work joining it after it ended SHALL be refused `turn_ended`. An input under no origin (a door's, an enqueued one, a steer) SHALL begin a turn; every compaction SHALL be its own; a call of any other task with no carrier SHALL be refused `no_run`.
 
 #### Scenario: A compaction a run starts
 - **WHEN** a run's context passes pi's background threshold, and pi summarizes after the run ended
-- **THEN** the summarization is the run's turn
+- **THEN** the summarization is a turn of its own
 
 #### Scenario: A subagent's calls
 - **WHEN** a tool of the root's run makes a conversation and submits its work there, which does the same once more
@@ -698,7 +713,7 @@ A turn SHALL be the submitted input at the origin of a call's causal chain, carr
 
 #### Scenario: Background work after its run
 - **WHEN** a tool starts background work, the run ends, a later input runs, and the background work then calls a model
-- **THEN** its calls are the first run's turn, count against that turn's caps, and never against the later run's
+- **THEN** its calls are refused `turn_ended`, and never count against the later run's turn
 
 #### Scenario: An input from outside any run
 - **WHEN** an input is submitted to a subagent's conversation from outside any run

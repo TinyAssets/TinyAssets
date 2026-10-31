@@ -26,19 +26,23 @@
  * background work submitting to a subagent's conversation) takes that origin. Every other
  * input is a new origin, a new turn: one a door submits, one the thread host admits,
  * and any input submitted under a context with no origin (`BACKGROUND_CONTEXT`, or a
- * context code made instead of the one pi passed it). Every other span takes its parent's.
- * So every model call one input caused, through any subagent, compaction or background
- * work, even after the run that started it ended, is charged to that input's turn, as the
- * Python's `_borrowed` charged a child to its parent's budget; a steer joins the run it
- * steers.
+ * context code made instead of the one pi passed it). Every other span takes its parent's,
+ * but a compaction's. So every model call one input caused, through any subagent or tool,
+ * is charged to that input's turn while it is open, as the Python's `_borrowed` charged a
+ * child to its parent's budget, and refused `turn_ended` after; a steer's submission is
+ * an origin of its own (pi marks it before it links it to the run), while the run's calls
+ * that read it stay the run's.
  *
- * A task takes whatever carrier it was created with. One with no carrier has no origin:
- * pi's compaction is the one such task pi itself starts (one asked for outside a run; a
- * door's write submission starts no input span), and it is its own origin, by its task id
- * named by its thread (`task:<thread>:<id>`): task ids are per Session, and every thread
- * is a Session of its own, so two threads' compactions never share a turn. Any other task
- * with no carrier (created under a context with no origin) has none, and its calls are
- * refused (`no_run`). A task created with a forged `trace` carrier takes the forged origin.
+ * Every compaction is its own origin, by its task id named by its thread
+ * (`task:<thread>:<id>`), whatever carrier pi created it with: a background one outlives
+ * the run it was made in, and phase spans carry no background flag, so blocking ones are
+ * their own turns too. Task ids are per Session, and every thread is a Session of its
+ * own, so two threads' compactions never share a turn. A turn lives as long as the pi
+ * records that own it (`thread-host.ts`, migration 10): its open input submissions, or its
+ * compaction task. A task takes whatever other carrier it was created with; one with none
+ * (created under a context with no origin) has no origin, and its calls are refused
+ * (`no_run`). A task created with a forged `trace` carrier takes the forged origin. No
+ * owner source creates a task (the create-task guard), so pi's own are all there are.
  *
  * Neither a fresh input nor a forged carrier is in reach of anything but our own code:
  * only trusted platform code runs inside the owner object. Package executable code is
@@ -217,6 +221,11 @@ class OriginSpan implements TelemetrySpan {
     return this.#resolve();
   }
 
+  /** Whether this context's origin is one it joined by a link: an admission's, only. */
+  joined(): boolean {
+    return false;
+  }
+
   /**
    * The callback, run synchronously once in a span of its own; what it returns or throws
    * is the answer's (a throw as a rejection), and nothing of the adapter's own ever is.
@@ -236,15 +245,42 @@ class OriginSpan implements TelemetrySpan {
     }
   }
 
-  /** A span started here: of this context's origin. */
-  protected child(_options: SpanOptions): OriginSpan {
-    return new OriginSpan(this.#adapter, () => this.origin());
+  /** A span started here: of this context's origin, but a compaction's, its own. */
+  protected child(options: SpanOptions): OriginSpan {
+    const own = compactionOrigin(this.#adapter.thread, options);
+    return new OriginSpan(this.#adapter, own === undefined ? () => this.origin() : () => own);
   }
 
   addLink(_link: SpanLink): void {}
   addEvent(_name: string, _attributes?: SpanAttributes): void {}
   setAttributes(_attributes: SpanAttributes): void {}
   setStatus(_status: SpanStatus): void {}
+}
+
+/**
+ * A compaction's own origin, named by its task in its thread, for a span of its phase:
+ * every compaction is a turn of its own, whatever carrier pi created it with (a background
+ * one outlives the run it was made in), owned by its task (`thread-host.ts`); undefined
+ * for any other span.
+ */
+export function compactionOrigin(thread: string, options: SpanOptions): string | undefined {
+  const attributes = options.attributes ?? {};
+  const task = attributes["task.id"];
+  return options.name === PHASE && attributes["task.name"] === COMPACTION
+      && (typeof task === "number" || typeof task === "string")
+    ? `task:${thread}:${task}` : undefined;
+}
+
+/** The carrier key an input that joined another's turn is marked by (`thread-host.ts`). */
+export const JOINED = "ta.joined";
+
+/** Whether `context` is an admission that joined its origin by a link; never throws. */
+function joinedOf(context: unknown): boolean {
+  try {
+    return context instanceof OriginSpan && context.joined();
+  } catch {
+    return false;
+  }
 }
 
 /** `context`'s origin when it is a span of an origin adapter; never throws. */
@@ -258,8 +294,8 @@ function originOf(context: unknown): string | undefined {
 
 /**
  * A span started at the root, where a causal chain may begin: an input's admission takes
- * its first linked origin, else a new one; pi's compaction with no carrier takes its task
- * id, named by its thread; anything else has none.
+ * its first linked origin, else a new one; pi's compaction takes its task id, named by its
+ * thread; anything else has none.
  */
 class RootSpan extends OriginSpan {
   #origin: string | undefined;
@@ -269,21 +305,25 @@ class RootSpan extends OriginSpan {
 
   constructor(adapter: Adapter, options: SpanOptions) {
     super(adapter, () => this.#settle());
-    const attributes = options.attributes ?? {};
-    const task = attributes["task.id"];
+    const compaction = compactionOrigin(adapter.thread, options);
+    this.#own = compaction;
     this.#fresh = options.name === ADMISSION ? () => `input:${randomUUID()}`
-      : options.name === PHASE && attributes["task.name"] === COMPACTION
-          && (typeof task === "number" || typeof task === "string")
-        ? () => `task:${adapter.thread}:${task}`
-        : () => undefined;
+      : () => compaction;
   }
+
+  readonly #own: string | undefined;
 
   #settle(): string | undefined {
     if (!this.#resolved) {
       this.#resolved = true;
-      this.#origin = this.#linked ?? this.#fresh();
+      this.#origin = this.#own ?? this.#linked ?? this.#fresh();
     }
     return this.#origin;
+  }
+
+  override joined(): boolean {
+    this.#settle();
+    return this.#own === undefined && this.#linked !== undefined;
   }
 
   override addLink(link: SpanLink): void {
@@ -326,7 +366,13 @@ function adapter(thread: string, metrics: OriginMetrics): Adapter {
     propagation: Object.freeze({
       inject: (context: TelemetryContext): TelemetryCarrier | undefined => {
         const origin = originOf(context);
-        return origin === undefined ? undefined : { "ta.origin": origin };
+        if (origin === undefined) {
+          return undefined;
+        }
+        // An input that joined another's turn (a steer) says so: it may keep that turn's
+        // counters, never make them again once the turn has ended.
+        return joinedOf(context) ? { "ta.origin": origin, "ta.joined": "1" }
+          : { "ta.origin": origin };
       },
       extract: (carrier: TelemetryCarrier | undefined): TelemetryContext => {
         const origin = carried(carrier);

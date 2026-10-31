@@ -17,7 +17,7 @@ import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import { agentPolicy, MODEL_DEFAULTS, MODEL_SETTINGS, modelSettings, validate } from "../src/policy";
 import {
-  type Ask, largestFitting, type ModelCaps, periods, priced, Usage, USAGE_LIMITS,
+  type Ask, largestFitting, type ModelCaps, periods, priced, TURN_ENDED, Usage, USAGE_LIMITS,
   type UsageLimits,
 } from "../src/usage";
 import { gated, provider, until } from "./gateway-support";
@@ -25,6 +25,11 @@ import { failure, ownerObject } from "./support";
 import type { GatedOwnerDO } from "./worker";
 
 const NOW = 1_793_000_000;
+/** The thread the test turns are in, and the turns open in it. */
+const THREAD = `thread_${"0".repeat(32)}`;
+const OPEN_TURNS = ["t1", "t2", "t3", "t4", "t5", "t9",
+                    ...["t0", "s0", "s1", "s2", "s3"],
+                    ...Array.from({ length: 6 }, (_, i) => `other${i}`)];
 
 /** A model's cost record at `input` and `output` dollars per million tokens, as pi-ai's. */
 function rates(input: number, output: number,
@@ -72,8 +77,12 @@ function withUsage<R>(act: (r: Rig) => Promise<R>, limits: Partial<UsageLimits> 
       settings: { ...MODEL_DEFAULTS, sources: {}, ...policy.caps },
     }), { ...USAGE_LIMITS, ...limits });
     const sql = state.storage.sql;
+    const usage = make();
+    // Each test turn is open, as the thread host keeps them: an input owns it.
+    await gate.write(() => usage.turnOwners(THREAD, OPEN_TURNS.map((turn, i) =>
+      ({ owner: `s:${i + 1}`, turn }))));
     return act({
-      usage: make(), gate, state, policy, fresh: make,
+      usage, gate, state, policy, fresh: make,
       rows: () => sql.exec<Record<string, SqlStorageValue>>(
         "SELECT id, turn, connection_id, source, state, rule, max_output_tokens, est_tokens, " +
           "est_cost, tokens, cost FROM model_reservations ORDER BY seq").toArray(),
@@ -143,7 +152,7 @@ describe("a reservation", () => {
       .toEqual({ ok: false, rule: "outside_authority" });
     expect(r.rows()).toMatchObject([{ state: "refused", rule: "outside_authority", est_cost: 0 }]);
     expect(r.spend()).toEqual({});
-    expect(r.turn("t1")).toBeUndefined();
+    expect(r.turn("t1")).toMatchObject({ requests: 0, tokens: 0, cost: 0 });
   }));
 
   it("moves only along its states", () => withUsage(async (r) => {
@@ -458,15 +467,43 @@ describe("the per-turn caps", () => {
 });
 
 describe("a turn's counters", () => {
-  it("go once the turn has been idle past the window, and not before", () =>
+  it("go with the last pi record that owns them, and never with time", () =>
+    withUsage(async (r) => {
+      await r.gate.write(() => r.usage.turnOwners(THREAD, [{ owner: "s:100", turn: "t1" }]));
+      await spent(r, ASK, 10, 7);
+      // Long idle, a turn still owned keeps its counters.
+      await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2" }, NOW + 400 * 86_400));
+      expect(r.turn("t1")).toMatchObject({ requests: 1 });
+      await r.gate.write(() => r.usage.turnOwners(THREAD, [{ owner: "s:1", turn: null }]));
+      expect(r.turn("t1")).toMatchObject({ requests: 1 });
+      await r.gate.write(() => r.usage.turnOwners(THREAD, [{ owner: "s:100", turn: null }]));
+      expect(r.turn("t1")).toBeUndefined();
+    }));
+
+  it("refuse a call of a turn that has ended, never starting it over", () =>
     withUsage(async (r) => {
       await spent(r, ASK, 10, 7);
-      const idle = USAGE_LIMITS.turnIdleS;
-      await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2" }, NOW + idle - 1));
-      expect(r.turn("t1")).toMatchObject({ requests: 1 });
-      await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t3" }, NOW + idle + 1));
+      await r.gate.write(() => r.usage.turnOwners(THREAD, [{ owner: "s:1", turn: null }]));
+      expect(await r.gate.write(() => r.usage.reserve(ASK, NOW + 1)))
+        .toEqual({ ok: false, rule: TURN_ENDED });
       expect(r.turn("t1")).toBeUndefined();
-      expect(r.turn("t2")).toMatchObject({ requests: 1 });
+      expect(r.rows().at(-1)).toMatchObject({ state: "refused", rule: TURN_ENDED });
+    }));
+
+  it("are reconciled to the owners a store holds, keeping a turn both hold", () =>
+    withUsage(async (r) => {
+      await spent(r, ASK, 10, 7);
+      await r.gate.write(() => r.usage.turnsReconciled(THREAD, [
+        { owner: "s:99", turn: "t1" }, { owner: "t:7", turn: `task:${THREAD}:7` }]));
+      expect(r.turn("t1")).toMatchObject({ requests: 1 });
+      expect(r.turn("t2")).toBeUndefined();
+      expect(r.turn(`task:${THREAD}:7`)).toMatchObject({ requests: 0 });
+      // Another thread's turns are its own.
+      const other = `thread_${"1".repeat(32)}`;
+      await r.gate.write(() => r.usage.turnOwners(other, [{ owner: "s:500", turn: "o1" }]));
+      await r.gate.write(() => r.usage.turnsReconciled(THREAD, []));
+      expect(r.turn("o1")).toMatchObject({ requests: 0 });
+      expect(r.turn("t1")).toBeUndefined();
     }));
 
   it("keep the newest call's time when an older call of the turn settles after it", () =>
@@ -482,21 +519,23 @@ describe("a turn's counters", () => {
       expect(r.turn("t1")).toMatchObject({ requests: 2, last_at: NOW + 10 });
     }));
 
-  it("are kept while a call of the turn is open, however old", () => withUsage(async (r) => {
-    const open = await r.gate.write(() => r.usage.reserve(ASK, NOW));
-    if (!open.ok) {
-      throw new Error("refused");
-    }
-    await r.gate.write(() => r.usage.dispatched(open.id, NOW, null));
-    await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2" },
-                                             NOW + USAGE_LIMITS.turnIdleS + 1));
-    expect(r.turn("t1")).toMatchObject({ requests: 1, cost: FULL });
-  }));
+  it("take nothing from a call that settles after its turn ended", () =>
+    withUsage(async (r) => {
+      const open = await r.gate.write(() => r.usage.reserve(ASK, NOW));
+      if (!open.ok) {
+        throw new Error("refused");
+      }
+      await r.gate.write(() => r.usage.dispatched(open.id, NOW, null));
+      await r.gate.write(() => r.usage.turnOwners(THREAD, [{ owner: "s:1", turn: null }]));
+      await r.gate.write(() => r.usage.settle(open.id, { state: "succeeded", tokens: 1,
+                                                         cost: 1 }, NOW + 5));
+      expect(r.turn("t1")).toBeUndefined();
+    }));
 
-  it("are never made by a refusal", () => withUsage(async (r) => {
+  it("are never moved by a refusal", () => withUsage(async (r) => {
     r.policy.caps = { turn_cost: 10 };
     expect((await r.gate.write(() => r.usage.reserve(ASK, NOW))).ok).toBe(false);
-    expect(r.turn("t1")).toBeUndefined();
+    expect(r.turn("t1")).toMatchObject({ requests: 0, tokens: 0, cost: 0 });
   }));
 });
 

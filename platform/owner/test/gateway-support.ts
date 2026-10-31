@@ -130,13 +130,17 @@ export type Gated = Awaited<ReturnType<typeof gated>>;
  * The options of a test's own call to the provider, outside any pi run: the provider
  * session of the owner's root conversation (a call must name a conversation the object
  * made), and the telemetry context of an input of its own, `turn`, as pi would hand it
- * (`origin.ts`).
+ * (`origin.ts`), its turn open as an input's would be (an owner of the test's own, kept
+ * as the thread host keeps them; a reopened Session's reconcile lets it go).
  */
-export async function direct(instance: { harness: TestHarness },
+export async function direct(instance: { harness: TestHarness; parts: AgentParts },
                              turn: string = crypto.randomUUID()):
     Promise<{ sessionId: string; telemetry: TelemetrySpan }> {
   const pi = await instance.harness.pi();
   const root = await pi.snapshot(ProviderDoc, ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT);
+  await instance.parts.turns.owned(await instance.harness.thread(), [
+    { owner: `s:${1_000_000_000 + Math.floor(Math.random() * 1_000_000_000)}`,
+      turn: `input:${turn}` }]);
   return { sessionId: root!.sessionId, telemetry: originContext(`input:${turn}`) };
 }
 

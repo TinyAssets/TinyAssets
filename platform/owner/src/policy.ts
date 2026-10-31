@@ -186,7 +186,7 @@ export const FILE_SETTINGS: { readonly [K in keyof FileSettings]: readonly [numb
   Object.freeze({
     max_bytes: Object.freeze([0, 1024 ** 4] as const),
     max_inline_bytes: Object.freeze([0, 1024 ** 3] as const),
-    max_manifest_bytes: Object.freeze([0, 1024 ** 3] as const),
+    max_manifest_bytes: Object.freeze([0, 768 * 1024 ** 2] as const),
     max_entries: Object.freeze([0, 1_000_000] as const),
     max_file_bytes: Object.freeze([0, MAX_INTENT_CHUNKS * CHUNK_BYTES] as const),
     max_history: Object.freeze([0, 5_000_000] as const),

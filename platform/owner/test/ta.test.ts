@@ -560,8 +560,8 @@ describe("ta's model capability", () => {
     const [run, nested, answered, later] = rows.map((row) => row["turn"]);
     expect([nested, answered]).toEqual([run, run]);
     expect(later).not.toBe(run);
-    expect(await r.sql("SELECT turn, requests FROM model_turns ORDER BY requests"))
-      .toEqual([{ turn: later, requests: 1 }, { turn: run, requests: 3 }]);
+    // Each turn's counters went with its input, once answered.
+    expect(await r.sql("SELECT turn FROM model_turns")).toEqual([]);
     // The nested call went through the gateway as its own request, asking what ta asked.
     const bodies = instanceCalls(await r.in(async (instance) => instance.calls));
     expect(bodies).toHaveLength(4);

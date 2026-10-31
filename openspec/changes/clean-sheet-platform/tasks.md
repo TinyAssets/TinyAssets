@@ -301,8 +301,8 @@ account and no deploy.
   its version), `connection_flows` (the SHA-256 of the state, the PKCE verifier while
   open, the session) and `model_reservations`, with the counters every cap reads and only
   triggers write: `model_spend` (each source's day and month) and `model_turns` (each
-  turn's requests, tokens and cost, kept until the turn is idle 30 days with no call
-  open), so the reservation rows are receipts only. A connection keeps up to 1,024 models
+  turn's requests, tokens and cost, kept while pi records own the turn: migration 10),
+  so the reservation rows are receipts only. A connection keeps up to 1,024 models
   (the largest built-in catalog, 386, found by a scan, connects). Owner policy's optional
   `models` table: per-turn requests, tokens and cost (µ$), owner-wide and per-source
   (by source record) daily and monthly cost, pi's retries.
@@ -526,11 +526,11 @@ account and no deploy.
   (`origin.ts`): the harness's telemetry adapter carries an origin, and nothing else,
   along pi's own propagation, durable in pi's records (an input's admission takes its
   caller's origin, else begins one; a task takes its creator's carrier; a request carries
-  its phase's context). So a run's tool rounds, steers, compactions, subagents and the
-  background work it starts, with that work's own child tasks and conversations, are the
-  run's turn, after the run ended too, and count against its caps (the Python's
-  `_borrowed`); a later input's run is another; a compaction asked for outside a run is
-  its own; a call with no origin is `no_run`. Production's agent is it
+  its phase's context). So a run's tool rounds and the subagents it starts, with their
+  own conversations, are the run's turn while it is open, and count against its caps (the
+  Python's `_borrowed`); work joining it after it ended is refused `turn_ended` (M3); a
+  steer, a later input's run and every compaction are each a turn of their own; a call
+  with no origin is `no_run`. Production's agent is it
   (`gatewayAgent`, the default `AgentFactory`), so nothing connected settles `no_model`.
   `auto`: ranked by the data file (provider and model globs, newer ids first, the rest by
   catalog output price), its metadata the strongest's; stickiness and fallback read from
@@ -998,13 +998,19 @@ account and no deploy.
   the owner's admission row and `require_work`.
 - [ ] A5 with F5: skills, packages and filters, `parseSkill`, the agents 0.32 bump (diff
   PiHarness at each agents release and carry its fixes into `thread-host.ts`);
-  `agent:delegate` with task-owned children.
+  `agent:delegate` with task-owned children. Tool and package code must never create a
+  conversation-owned task that is not background (it would hold a turn's origin past its
+  input, M3), and A5 needs a cap on the conversations of a thread, each counted in the
+  owner-bound guard's `model_turns` term (live compactions are per conversation); the
+  create-task guard is to be changed with them, deliberately.
 - [ ] H0 with code mode, H1, H2 (founder for H2).
 - [ ] The pi upgrade, within a slice of pi's release: `adopt` in `RemoteStorage`, the tee
   deleted, `persistWithinMs`, `maxTurns` from policy, `onReport`, parking code out of the
   host, the new watch API, the schema re-pinned.
 - [ ] A6: agents `WebSockets` and `Conversation.watch()`; reset, compact, fork, withdraw
-  and the task graph doors.
+  and the task graph doors. The compact door must enforce a per-thread cap on manual
+  compactions with a fixed refusal code, and update the owner-bound guard's `model_turns`
+  term (`THREAD_COMPACTIONS` counts no manual one, since no such path exists yet).
 - [ ] M (MCP) after G4: SDK v2 client in the owner over G4's forward, `mcp.json` with every
   server clamped to tools-only, OAuth via G3.
 - [ ] Erasure's store-first order: mark the owner erasing, destroy every store a row names,
@@ -1082,9 +1088,16 @@ account and no deploy.
   The calls open at once and the spend counters are bounded (`CALLS_OPEN`, `SPEND_KEPT`).
   Refusals carry `file_quota` or `file_share`, in the change's own unit; a change
   past a byte or row bound first prunes gone paths' history by bytes and rows (the
-  client's own for its share). `model_turns` keeps at most `TURNS_KEPT` (100,000) turns of
-  at most 320 bytes, past it dropping the turn idle longest with no call open. The
-  owner-bound guard (`guards/owner-bound.test.ts`) has no exceptions and holds the
+  client's own for its share). A model turn's counters live as long as the pi records that
+  own it (`model_turn_owners`: each open input submission and live compaction, kept by the
+  thread host's `subscribeCommits` listener in a unit at once and reconciled from the store
+  as a Session opens, before it resumes); a call of a turn with no row is refused
+  `turn_ended`, a reservation's settle only moves a row that is there, and the turns'
+  idle pruning is gone. Every compaction is its own turn; an input that joined another's
+  turn by a link keeps it only while it is open. A thread holds at most `THREAD_INPUTS`
+  (16) open inputs (`thread_inputs_full`), pi at most `THREAD_COMPACTIONS` (2) live
+  compactions; a dropped thread's turns go in its drop's unit. No owner source creates a
+  pi task (the create-task guard). The owner-bound guard (`guards/owner-bound.test.ts`) has no exceptions and holds the
   worst case at the policy's high bounds under half of 10 GB.
 - [ ] Doors (with tasks 2): the HTTP `/api/files` door and MCP file tools over the
   `file*` RPC doors, the scoped-grant capabilities `read_files` and `write_files` named
