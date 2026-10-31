@@ -595,13 +595,13 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
     const muse = await r.register(MUSE);
     await revokedAt(r, MUSE, clock() - DAY);
     expect((await failure(() => forgetRevoked(r, [MUSE.client]))).message)
-      .toBe("an agent or scheduled work still holds this client's grant");
+      .toBe("an agent, a thread or a held registration still holds this client's grant");
     await expect(r.sql("DELETE FROM outside_clients WHERE client = ?", MUSE.client))
       .rejects.toThrow(/never deleted/);
     await r.stub.deleteAgent(r.session(null), { agent_id: muse });
     await r.sql("UPDATE outside_clients SET held = 1 WHERE client = ?", MUSE.client);
     expect((await failure(() => forgetRevoked(r, [MUSE.client]))).message)
-      .toBe("an agent or scheduled work still holds this client's grant");
+      .toBe("an agent, a thread or a held registration still holds this client's grant");
     await r.sql("UPDATE outside_clients SET held = 0 WHERE client = ?", MUSE.client);
     expect((await forgetRevoked(r, [MUSE.client])).forgotten).toEqual([MUSE.client]);
   });

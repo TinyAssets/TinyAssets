@@ -205,8 +205,8 @@ export function toolTable(): readonly Tool[] {
                     input: str("What the agent is asked to do") },
                   { at: num("When to run it, in seconds since the epoch: now when omitted"),
                     cron: str("Run it again at each time this names: minute, hour, day of " +
-                              "the month, month and day of the week, in UTC, at least 15 " +
-                              "minutes apart") }) },
+                              "the month, month and day of the week, in UTC only (no " +
+                              "time zone), at least 15 minutes apart") }) },
     { name: "run_status", door: "agentStatus", capability: null,
       title: "Agent run status", ...READ,
       description: "Read how one of your agent operations stands, and its answer once done.",

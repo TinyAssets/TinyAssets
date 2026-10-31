@@ -237,7 +237,8 @@ function platformCapabilities(): readonly PlatformCapability[] {
                                                      "when omitted." })),
         cron: Type.Optional(Type.String({
           description: "Run again at each time this names: five fields (minute, hour, day " +
-            "of the month, month, day of the week) in UTC, at least 15 minutes apart." })),
+            "of the month, month, day of the week) in UTC only, no time zone, at least 15 " +
+            "minutes apart." })),
       }, { additionalProperties: false }),
       run: async (args, scope, parts) => ({
         value: await parts.platform.run(scope.state, args["agent"], args["input"],

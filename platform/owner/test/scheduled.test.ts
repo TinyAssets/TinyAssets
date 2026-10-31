@@ -30,11 +30,15 @@ import { Grants } from "../src/grants";
 import { clock, Ledger, type Origin } from "../src/ledger";
 import { type Binding, NO_OPERATION, type Operation, OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
-import { CANCELLED, RETRY_FIRST_MS, SCHEDULED } from "../src/scheduled";
+import {
+  CANCELLED, createScheduled, RESTART_LIMIT, RETRY_FIRST_MS, RETRY_LAST_MS, retryDelay,
+  SCHEDULED, scheduledTask, standing,
+} from "../src/scheduled";
+import { sameStamp } from "../src/agent";
 import { THREAD_INPUTS } from "../src/schema";
 import { wakeJob } from "../src/thread-host";
 import { RUNS_LIVE, RUNS_SCHEDULED } from "../src/threads";
-import { until } from "./gateway-support";
+import { gated, until } from "./gateway-support";
 import { DOT, MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
 import { alarmOf, drainDue, failure, sqlIn, storeOf, storeSql } from "./support";
 import { type FauxOwnerDO, says, skewClock, storeScript } from "./worker";
@@ -237,7 +241,7 @@ describe("a scheduled launch's sleep (F1)", () => {
   }, 30_000);
 
   it("is left asleep by a policy write, which ends its thread's running work only; its " +
-     "delivery then meets the policy as it stands, and is refused", async () => {
+     "delivery then meets the policy as it stands, held until the policy has room", async () => {
     const r = await rig();
     // Another launch asleep in a closed Session: a policy write never opens it.
     const asleep = await later(r);
@@ -266,14 +270,26 @@ describe("a scheduled launch's sleep (F1)", () => {
     // A new launch is refused at once: the sleepers are the live runs the policy allows.
     expect((await failure(() => r.stub().agentRun(r.bind(null), {
       agent: "main", input: "x", at: clock() + 60 }))).message).toBe(RUNS_LIVE);
-    // Due: its delivery is refused, the task ends with the reason, and nothing is submitted.
+    // Due: its delivery is held for the policy, and sleeps again, saying why; nothing is
+    // submitted.
     await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
     await drainDue(r.stub());
-    expect(await r.settled(op)).toMatchObject({ status: "unanswered", reason: "runs_scheduled" });
-    expect((await r.task(op.thread_id))!.record.state.outcome).toMatchObject({
-      status: "failed", error: { message: "runs_scheduled" } });
+    await until(async () => (await r.task(op.thread_id))?.record.state.checkpoint?.tries === 1,
+                "the hold");
+    expect((await r.task(op.thread_id))!.record.state).toMatchObject({
+      status: "sleeping", checkpoint: { n: 1, tries: 1, held: "runs_scheduled" } });
+    expect(await r.status(op)).toMatchObject({ status: "scheduled",
+                                               reason: "held: runs_scheduled" });
     expect(await r.delivered(op)).toEqual([]);
-  }, 30_000);
+    // The policy raised again, its next try delivers.
+    const raised = await r.stub().policyRead(r.bind(null));
+    await r.stub().policyWrite(r.session(), { expected_generation: raised.generation,
+                                              policy: { ...raised.policy, runs: {} } });
+    await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
+    await drainDue(r.stub());
+    expect(await r.settled(op)).toMatchObject({ status: "done", text: "echo: wake up" });
+    expect(await r.delivered(op)).toHaveLength(1);
+  }, 60_000);
 
   it("delivers on through a policy write that lands while it delivers", async () => {
     const r = await rig();
@@ -307,23 +323,34 @@ describe("a scheduled launch's sleep (F1)", () => {
       status: "completed", result: { deliveries: 1 } });
   }, 60_000);
 
-  it("is refused at its delivery while the owner is suspended, ending terminal with that " +
-     "reason, and the doors refuse meanwhile", async () => {
+  it("is held at its delivery while the owner is suspended for billing, the owner's reads " +
+     "and reductions still served, and delivers once the suspension lifts", async () => {
     const r = await rig();
     const op = await later(r);
+    const other = await later(r);
     expect(await r.stub().admissionSet(r.platform, { reason: "billing", suspended: true }))
       .toEqual({ state: "suspended", reasons: ["billing"] });
-    expect((await failure(() => r.status(op))).message).toMatch(new RegExp(`^${OWNER_SUSPENDED}`));
+    // Work is refused; reads and what only lowers risk are not.
+    expect((await failure(() => r.stub().agentRun(r.bind(null), { agent: "main", input: "x" })))
+      .message).toMatch(new RegExp(`^${OWNER_SUSPENDED}`));
+    expect(await r.status(op)).toMatchObject({ status: "scheduled" });
+    expect(await r.stub().agentCancel(r.bind(null), { operation_id: other.operation_id }))
+      .toMatchObject({ cancelled: true });
     expect((await r.task(op.thread_id))!.status).toBe("sleeping");
     await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
     await drainDue(r.stub());
-    await until(async () => (await r.task(op.thread_id))?.status === "terminal", "the refusal");
-    expect((await r.task(op.thread_id))!.record.state.outcome).toMatchObject({
-      status: "failed", error: { message: "owner_suspended" } });
+    await until(async () => (await r.task(op.thread_id))?.record.state.checkpoint?.tries === 1,
+                "the hold");
+    expect((await r.task(op.thread_id))!.record.state.checkpoint)
+      .toMatchObject({ n: 1, held: "owner_suspended" });
+    expect(await r.status(op)).toMatchObject({ status: "scheduled",
+                                               reason: "held: owner_suspended" });
     expect(await r.delivered(op)).toEqual([]);
     await r.stub().admissionSet(r.platform, { reason: "billing", suspended: false });
-    expect(await r.settled(op)).toMatchObject({ status: "unanswered", reason: "owner_suspended" });
-  }, 30_000);
+    await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
+    await drainDue(r.stub());
+    expect(await r.settled(op)).toMatchObject({ status: "done", text: "echo: wake up" });
+  }, 60_000);
 
   it("delivers once though the object dies inside its delivery, after the submit: pi's " +
      "requestId finds it, and it is not checked again", async () => {
@@ -335,13 +362,12 @@ describe("a scheduled launch's sleep (F1)", () => {
       const host = instance.agent.host;
       const submit = host.submit.bind(host);
       Object.assign(host, { submit: async (...args: Parameters<typeof submit>) => {
-        if (args[2].entry?.kind === "ta.work") {
-          // Its re-check passed; the owner is suspended before its submit lands.
-          state.storage.sql.exec("UPDATE owner_admission SET state = 'suspended', " +
-                                   "reasons = '[\"abuse\"]'");
-        }
         const done = await submit(...args);
         if (args[2].entry?.kind === "ta.work") {
+          // Delivered: the owner is suspended, and the object dies before the task commits.
+          state.storage.sql.exec("UPDATE owner_admission SET state = 'suspended', " +
+                                   "reasons = '[\"abuse\"]'");
+          await state.storage.sync();
           state.abort("evicted inside the delivery");
         }
         return done;
@@ -365,9 +391,11 @@ describe("a scheduled launch's sleep (F1)", () => {
                 wakeJob(op.thread_id));
     await drainDue(r.stub());
     await until(async () => (await r.task(op.thread_id))?.status === "terminal", "its end");
+    // Its one submission stands, delivered though the owner is suspended since.
+    expect((await r.delivered(op)).map((row) => row["request"]))
+      .toEqual([op.operation_id.split(".")[1]]);
     await r.stub().admissionSet(r.platform, { reason: "abuse", suspended: false });
-    expect(await r.settled(op)).toMatchObject({ status: "done", text: "echo: wake up" });
-    expect(await r.delivered(op)).toEqual([{ request: op.operation_id.split(".")[1], status: "done" }]);
+    expect(await r.settled(op)).toMatchObject({ status: "done" });
     expect((await r.task(op.thread_id))!.record.state.outcome).toMatchObject({
       status: "completed", result: { deliveries: 1 } });
   }, 60_000);
@@ -614,6 +642,7 @@ describe("cron recurrence", () => {
     [`0 ${Array.from({ length: 17 }, (_, n) => n).join(",")} * * *`, "at most 16 items"],
     [`0 0 * * *${" ".repeat(CRON_MAX_CHARS)}`, "characters"], ["", "characters"],
     ["0 5-1 * * *", "takes 0 to 23"], ["*/0 * * * *", "takes 0 to 59"],
+    ["*/61 * * * *", "takes 0 to 59"],
   ])("bounds what it accepts: %s", (expression, refusal) => {
     if (refusal === null) {
       expect(parseCron(expression).hours).toHaveLength(24);
@@ -663,6 +692,52 @@ describe("cron recurrence", () => {
       .toEqual([]);
     expect(await r.job(op.thread_id)).toBeUndefined();
   }, 90_000);
+
+  it("keeps a recurring launch through a billing suspension and a lowered policy, each " +
+     "held, and delivers once each lifts (review round 1, M3)", async () => {
+    const r = await rig();
+    const op = await r.stub().agentRun(r.bind(null), { agent: "main", input: "tick",
+                                                       cron: "0 * * * *" });
+    const sleeping = (what: string) => until(async () =>
+      (await r.task(op.thread_id))?.status === "sleeping"
+      && (await r.live(op.thread_id))?.["active"] === 0, what);
+    const due = async () => {
+      await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
+      await drainDue(r.stub());
+    };
+    const delivered = (n: number) => until(async () => (await r.delivered(op)).length === n
+      && (await r.delivered(op))[n - 1]!["status"] === "done", `delivery ${n}`);
+    await sleeping("sleep 1");
+    await due();
+    await delivered(1);
+    // Suspended for billing: its next occurrence is held, and the schedule survives.
+    await sleeping("sleep 2");
+    await r.stub().admissionSet(r.platform, { reason: "billing", suspended: true });
+    await due();
+    await until(async () => (await r.task(op.thread_id))?.record.state.checkpoint?.held
+      === "owner_suspended", "the suspension's hold");
+    expect(await r.delivered(op)).toHaveLength(1);
+    await r.stub().admissionSet(r.platform, { reason: "billing", suspended: false });
+    await sleeping("the held sleep");
+    await due();
+    await delivered(2);
+    // A lowered policy holds the next one; raised again, it delivers.
+    await sleeping("sleep 3");
+    const { generation, policy } = await r.stub().policyRead(r.bind(null));
+    await r.stub().policyWrite(r.session(), { expected_generation: generation,
+                                              policy: { ...policy, runs: { runs_live: 1 } } });
+    await due();
+    await until(async () => (await r.task(op.thread_id))?.record.state.checkpoint?.held
+      === "runs_scheduled", "the policy's hold");
+    expect(await r.delivered(op)).toHaveLength(2);
+    const lowered = await r.stub().policyRead(r.bind(null));
+    await r.stub().policyWrite(r.session(), { expected_generation: lowered.generation,
+                                              policy: { ...lowered.policy, runs: {} } });
+    await sleeping("the second held sleep");
+    await due();
+    await delivered(3);
+    expect((await r.task(op.thread_id))!.status).toBe("sleeping");
+  }, 120_000);
 
   it("refuses a launch whose cron it does not accept, before any thread", async () => {
     const r = await rig();
@@ -747,6 +822,277 @@ describe("the owner's admission", () => {
     expect(out[0]).toEqual({ next: null, claim: "held" });
     expect(out[1]).toMatchObject({ claim: "claimed" });
   }, 30_000);
+});
+
+describe("a suspension's enforcement (review round 1, H1)", () => {
+  /** Hold `host.submit` of what `which` picks, before it runs, until `release`. */
+  async function holdSubmits(r: Rig, which: (options: { entry?: { kind: string } }) => boolean) {
+    const at = gate();
+    const reached = gate();
+    await r.in((instance) => {
+      const host = instance.agent.host;
+      const submit = host.submit.bind(host);
+      Object.assign(host, { submit: async (...args: Parameters<typeof submit>) => {
+        if (which(args[2])) {
+          reached.release();
+          await at.promise;
+        }
+        return submit(...args);
+      } });
+    });
+    return { reached: reached.promise, release: at.release };
+  }
+
+  it("refuses a delivery the suspension lands in, between its check and its submit: " +
+     "nothing reaches pi, and it is held, not lost", async () => {
+    const r = await rig();
+    const op = await later(r);
+    const held = await holdSubmits(r, (options) => options.entry?.kind === "ta.work");
+    await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
+    const driving = drainDue(r.stub());
+    await held.reached;
+    await r.stub().admissionSet(r.platform, { reason: "abuse", suspended: true });
+    held.release();
+    await driving;
+    await until(async () => (await r.task(op.thread_id))?.record.state.checkpoint?.tries === 1,
+                "the hold");
+    expect(await r.delivered(op)).toEqual([]);
+    expect(await r.in((instance) => instance.turns)).toEqual([]);
+    expect((await r.task(op.thread_id))!.record.state.checkpoint)
+      .toMatchObject({ held: "owner_suspended" });
+  }, 60_000);
+
+  it("refuses a door's input the suspension lands in, after its binding check", async () => {
+    const r = await rig();
+    const held = await holdSubmits(r, () => true);
+    const sent = failure(() => r.stub().agentSubmit(r.bind(null), {
+      message: "hello", client_send_id: "race" }));
+    await held.reached;
+    await r.stub().admissionSet(r.platform, { reason: "billing", suspended: true });
+    held.release();
+    expect((await sent).message).toMatch(new RegExp(`^${OWNER_SUSPENDED}`));
+    const [thread] = await sqlIn(r.stub(), "SELECT thread_id FROM agent_threads");
+    expect(await storeSql(await storeOf(r.stub(), thread!["thread_id"] as string),
+                          "SELECT 1 FROM pi_submissions")).toEqual([]);
+    expect(await r.in((instance) => instance.turns)).toEqual([]);
+  }, 30_000);
+
+  it("ends a running turn at once, and refuses a tool call after it", async () => {
+    const r = await rig();
+    const held = gate();
+    await r.in((instance) => { instance.probes.holdGate = held.promise; });
+    const sent = r.stub().agentSubmit(r.bind(null), { message: "hold please",
+                                                      client_send_id: "h", wait_ms: 0 });
+    const op = await sent;
+    await until(() => r.in((instance) => instance.probes.holds === 1), "the hold to start");
+    await r.stub().admissionSet(r.platform, { reason: "billing", suspended: true });
+    expect(await r.settled(op)).toMatchObject({ status: "unanswered", reason: "aborted" });
+    held.release();
+    // Enforcement past the abort: the gate refuses every tool, the owner's too.
+    const refused = await r.in((instance) => instance.parts.authority.decide(
+      { by: "owner" }, { name: "read", arguments: { path: "a.md" } }));
+    expect(refused).toEqual({ block: expect.stringMatching(new RegExp(`^${OWNER_SUSPENDED}`)) });
+    expect(await r.in((instance) => instance.parts.authority.modelRule({ by: "owner" })))
+      .toBe("owner_suspended");
+  }, 30_000);
+
+  it("ends a run asleep in pi's retry backoff, which no model call follows", async () => {
+    const g = await gated();
+    await g.connect("sk-429-backoff");
+    const { generation, policy } = await g.stub.policyRead(g.bind());
+    await g.stub.policyWrite(g.session(), { expected_generation: generation,
+                                            policy: { ...policy, models: { retries: 8 } } });
+    const op = await g.in(async (instance) => (await instance.harness.submit("cmd:fail-429"))
+      .operationId);
+    // Its first call failed, and it sleeps before its retry: live, not working.
+    await until(async () => (await g.sql("SELECT active, wake_at FROM agent_live")).some(
+      (row) => row["active"] === 0 && row["wake_at"] !== null), "the retry's sleep");
+    const calls = (await g.stub.usageReceipts(g.bind())).receipts.length;
+    expect(calls).toBeGreaterThanOrEqual(1);
+    await g.stub.admissionSet({ owner: g.name, caller: PLATFORM_CALLER, origin: null },
+                              { reason: "billing", suspended: true });
+    const settled = await g.in((instance) => instance.harness.wait(op));
+    expect([settled.status, settled.reason]).toEqual(["unanswered", "aborted"]);
+    await sleep(1500);
+    expect((await g.stub.usageReceipts(g.bind())).receipts.length).toBe(calls);
+  }, 60_000);
+});
+
+describe("a cancel of a launch that delivered, or is delivering (review round 1, M1)", () => {
+  it("withdraws a delivered one-shot's run while it still works", async () => {
+    const r = await rig();
+    const held = gate();
+    await r.in((instance) => { instance.probes.holdGate = held.promise; });
+    const op = await later(r, null, 3600, { input: "hold please" });
+    await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
+    await drainDue(r.stub());
+    await until(() => r.in((instance) => instance.probes.holds === 1), "the run to hold");
+    expect((await r.task(op.thread_id))!.status).toBe("terminal");
+    expect(await r.stub().agentCancel(r.bind(null), { operation_id: op.operation_id }))
+      .toMatchObject({ cancelled: true });
+    expect(await r.settled(op)).toMatchObject({ status: "unanswered", reason: "aborted" });
+    held.release();
+  }, 60_000);
+
+  it("stops a delivery a cancel lands in before its submit, and counts one it landed after",
+     async () => {
+    for (const where of ["before", "after"] as const) {
+      const r = await rig();
+      const op = await later(r);
+      const at = gate();
+      const reached = gate();
+      await r.in((instance) => {
+        const host = instance.agent.host;
+        const submit = host.submit.bind(host);
+        Object.assign(host, { submit: async (...args: Parameters<typeof submit>) => {
+          if (args[2].entry?.kind !== "ta.work") {
+            return submit(...args);
+          }
+          if (where === "before") {
+            reached.release();
+            await at.promise;
+            return submit(...args);
+          }
+          const done = await submit(...args);
+          reached.release();
+          await at.promise;
+          return done;
+        } });
+      });
+      await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
+      const driving = drainDue(r.stub());
+      await reached.promise;
+      const cancel = r.stub().agentCancel(r.bind(null), { operation_id: op.operation_id });
+      await sleep(200);
+      at.release();
+      expect(await cancel).toMatchObject({ cancelled: true });
+      await driving;
+      expect((await r.task(op.thread_id))!.record.state.outcome, where).toMatchObject({
+        status: "aborted", reason: CANCELLED, result: { deliveries: where === "before" ? 0 : 1 } });
+      expect((await r.delivered(op)).length, where).toBe(where === "before" ? 0 : 1);
+    }
+  }, 90_000);
+});
+
+describe("review round 1's lows", () => {
+  it("ends a delivery whose thread is dropped after its check, before pi holds it", async () => {
+    const r = await rig();
+    const op = await later(r);
+    await r.in((instance) => {
+      const threads = instance.parts.threads;
+      const liveRefusal = threads.liveRefusal.bind(threads);
+      const get = threads.get.bind(threads);
+      let armed = false;
+      // Armed as the check's last read returns; the next read is the host's own.
+      Object.assign(threads, {
+        liveRefusal: (thread: Parameters<typeof liveRefusal>[0]) => {
+          armed = thread.thread_id === op.thread_id;
+          return liveRefusal(thread);
+        },
+        get: (id: unknown) => {
+          if (armed && id === op.thread_id) {
+            armed = false;
+            return null;
+          }
+          return get(id);
+        },
+      });
+    });
+    await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
+    await drainDue(r.stub());
+    await until(async () => (await r.task(op.thread_id))?.status === "terminal", "its end");
+    expect((await r.task(op.thread_id))!.record.state.outcome).toMatchObject({
+      status: "failed", error: { message: "the thread was dropped" } });
+    expect(await r.delivered(op)).toEqual([]);
+  }, 30_000);
+
+  it("leaves no run row when a launch's task cannot be made", async () => {
+    const r = await rig();
+    await r.in((instance) => {
+      Object.assign(instance.agent.host, { admitted: async () => {
+        throw new Error("the store did not answer (the test's)");
+      } });
+    });
+    expect((await failure(() => r.stub().agentRun(r.bind(null), {
+      agent: "main", input: "x", at: clock() + 600 }))).message)
+      .toBe("the store did not answer (the test's)");
+    await until(async () => (await sqlIn(r.stub(), "SELECT 1 FROM agent_threads")).length === 0,
+                "the run's drop");
+  }, 30_000);
+
+  it("ends a delivery in a thread its row does not name for its work", async () => {
+    const r = await rig();
+    const out = await r.in(async (instance) => {
+      const work = `work_${"8".repeat(32)}`;
+      const thread = await instance.agent.thread("main", null, { kind: "run" });
+      // Its row names no work: a launch made in it as if it did.
+      await instance.agent.schedule({ ...thread, request: work }, {
+        work_id: work, thread: thread.thread_id, at: clock() + 3600, input: "x", cron: null,
+        stamp: null });
+      return thread.thread_id;
+    });
+    await until(async () => (await r.task(out))?.status === "sleeping", "the sleep");
+    await r.pass(out, (await r.task(out))!.record.state.until!);
+    await drainDue(r.stub());
+    await until(async () => (await r.task(out))?.status === "terminal", "its end");
+    expect((await r.task(out))!.record.state.outcome).toMatchObject({
+      status: "failed", error: { message: "thread_authority" } });
+  }, 30_000);
+
+  it("lists no dropping thread in wake:list", async () => {
+    const r = await rig();
+    const op = await later(r);
+    await r.in((_instance, state) => {
+      state.storage.sql.exec("UPDATE agent_threads SET state = 'dropping' WHERE thread_id = ?",
+                             op.thread_id);
+    });
+    expect(await r.in((instance) => instance.parts.threads.scheduledOf(null, 10))).toEqual([]);
+  }, 30_000);
+
+  it("compares a stamp field by field", () => {
+    const stamp = { client: MUSE.client, generation: 1, authenticated_at: 5, universe: "alpha",
+                    agent: "main" };
+    expect(sameStamp(stamp, { ...stamp })).toBe(true);
+    expect(sameStamp(null, null)).toBe(true);
+    expect(sameStamp(stamp, null)).toBe(false);
+    for (const change of [{ client: DOT.client }, { generation: 2 }, { authenticated_at: 6 },
+                          { universe: "beta" }, { agent: "helper" }]) {
+      expect(sameStamp(stamp, { ...stamp, ...change }), JSON.stringify(change)).toBe(false);
+    }
+  });
+
+  it("backs a held delivery off, doubling, to its cap", () => {
+    expect([0, 1, 2, 3, 4, 5, 10].map(retryDelay))
+      .toEqual([30_000, 60_000, 120_000, 240_000, 480_000, RETRY_LAST_MS, RETRY_LAST_MS]);
+  });
+
+  it("reads a pending launch's time from its input, and a parked one's ending", async () => {
+    const input = { work_id: `work_${"1".repeat(32)}`, thread: `thread_${"1".repeat(32)}`,
+                    at: 1_800_000_000, stamp: null, input: "x", cron: null };
+    expect(standing({ input, state: { status: "pending", checkpoint: { phase: "wait" } } } as never))
+      .toEqual({ delivered: 0, due: 1_800_000_000, ended: null, held: null });
+    // A task pi's restart limit parked is aborted by the host: it ends `restart_limit`.
+    const committed: unknown[] = [];
+    const task = scheduledTask({ deliver: async () => ({ kind: "delivered" }),
+                                 made: async () => false });
+    await task.definition.abort({
+      input, restarts: 5, state: { status: "running", checkpoint: { phase: "deliver", n: 2,
+                                                                     tries: 0 } },
+    } as never, {
+      settings: { restartLimit: 5 },
+      commit: async (change: () => unknown) => { committed.push(change()); },
+    } as never, undefined as never);
+    expect(committed).toEqual([{ status: "terminal", outcome: {
+      status: "aborted", reason: RESTART_LIMIT, result: { deliveries: 1 } } }]);
+    expect(standing({ input, state: committed[0] } as never).ended)
+      .toEqual({ reason: RESTART_LIMIT });
+  });
+
+  it("makes only a scheduled launch's task", () => {
+    const root = { commit: async () => 1 } as never;
+    expect(() => createScheduled(root, { definition: { name: "x.other" } } as never,
+                                 {} as never)).toThrow(/only a scheduled launch/);
+  });
 });
 
 describe("the erasure's tombstone", () => {

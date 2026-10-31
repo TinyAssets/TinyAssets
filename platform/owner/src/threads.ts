@@ -1012,6 +1012,16 @@ export class Threads {
     return true;
   }
 
+  /**
+   * In a unit: a launch's run whose scheduled task could not be made, marked `dropping` (the
+   * first step of its drop); the row as marked, or null when it was not ready.
+   */
+  abandon(threadId: string): Thread | null {
+    return this.#storage.sql.exec<Thread>(
+      "UPDATE agent_threads SET state = 'dropping' WHERE thread_id = ? AND state = 'ready' " +
+        "RETURNING *", threadId).toArray()[0] ?? null;
+  }
+
   /** In the erasure's marking unit (`erasure.ts`): every thread marked `dropping`. */
   dropAll(): void {
     this.#storage.sql.exec("UPDATE agent_threads SET state = 'dropping' WHERE state = 'ready'");

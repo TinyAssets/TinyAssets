@@ -60,6 +60,9 @@ live acceptance is still owed says so.
   host's `/etc/tinyassets/env` into the doors Worker's secrets (the code exchange needs
   it) and registers the redirect URI with the WorkOS API idempotently (`GET
   /user_management/redirect_uris`, then `POST` only if it is missing, never deleting).
+  Owner creation by explicit platform admit at sign-up (the binder can't tell sign-up from
+  sign-in today); until then a fresh object is created admitted on first sign-in, and
+  erasure ends in `deleteAll` plus the `erased` row.
 - [ ] The AuthKit upstream refuses an ID token without `auth_time`: there is no clock
   fallback (this replaces the research's "use the binder's own clock"), since the fence
   and the session's 600 s bound both rest on the sign-in's real time. The binder names
@@ -1101,7 +1104,25 @@ account and no deploy.
   `ta.work` (its own turn); a delivery already made (an eviction after its submit) is pi's
   duplicate, not re-checked; no room (`thread_inputs_full`, `sessions_full`) sleeps again,
   30 s doubling to 10 min; a refusal ends the task `failed` with its code, and its run
-  settles with that reason. Cron is ours: five numeric UTC fields, at most 64 characters
+  settles with that reason. Review round 1 (REQUEST CHANGES), all taken: H1 admission is
+  enforced, not only signalled: `Authority.require` and `modelRule` refuse every operation
+  and model call while the owner is not admitted, the host refuses a fresh input right
+  before pi commits it, and a suspension ends the work of every thread with a live row,
+  asleep in pi's retry backoff or deferred poll included, keeping only the scheduled
+  launches' tasks (`endUnadmitted`); each door declares its class (`work`, `read`,
+  `reduce`; the door-class guard), and a `billing` suspension refuses only `work`, so the
+  owner signs in, reads, exports, cancels, revokes and deletes, while `abuse` refuses every
+  door. M1 `deliver` re-checks inside the host's `admitted` step, which stops on the task's
+  abort signal, and the abort handler counts an occurrence pi holds as delivered;
+  `cancelScheduled` waits for the task to end, then withdraws its last delivery. M2 kept
+  as built (the coordinator's decision): `deleteAll`, then the `erased` row; its window is
+  the live probe's to measure. M3 a suspension or a run-policy refusal holds a delivery,
+  which sleeps again backing off (its checkpoint's `held`, status `held: <code>`); only a
+  dropped thread, a stamp that no longer stands or a settled run ends it. Lows: the
+  `THREAD_DROPPED` branch is live and tested; a parked schedule ends `restart_limit`; a
+  launch whose task cannot be made drops its run; `createScheduled` makes only
+  `ta.scheduled`; the tombstone's shape is pinned (a guard); cron is UTC only.
+  Cron is ours: five numeric UTC fields, at most 64 characters
   and 16 items a field, occurrences at least 15 minutes apart, one within eight years; each
   delivery sleeps until the next, until a re-check refuses or a cancel. Cancel is
   `abortTask` (and the last delivery withdrawn); status is the task's record and its last
@@ -1170,7 +1191,11 @@ account and no deploy.
 - [x] Erasure's store-first order: mark the owner erasing, destroy every store a row names,
   then `deleteAll()` the owner. Built as S4-S5's internal path (above); the tombstone that
   keeps a stale binder from making an erased owner again came with the admission row in
-  F1; its door is slice 10's.
+  F1; its door is slice 10's. Erasure completeness needs a record outside the owner object
+  (the directory's or the identity's deletion: the owner's AuthKit identity and directory
+  entries removed, so no sign-in or inbound route resolves the name again), or explicit
+  platform admit at sign-up; the live store probe's Q8 (a write in `deleteAll`'s killed
+  turn lost in workerd) is the deciding input.
 - [ ] 0c (live): the dark deploy of the owner and gateway Workers, the store probe's cases
   re-run on the real code (P1-P4, P7; P5 a store reset mid-run).
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each

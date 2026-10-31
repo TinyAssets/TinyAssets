@@ -279,8 +279,9 @@ An MCP client SHALL file its agent's registration on its own verified call, so t
 - **WHEN** the owner applies a card whose client's grant was revoked after it was filed
 - **THEN** the apply is refused, no agent is registered, and the card is kept
 
+
 ### Requirement: A scheduled launch carries the authority it was made under
-A scheduled launch SHALL run in a run thread stamped with the outside authority it was made under (the client, its grant generation and its sign-in time, and where it acts), or none for the owner's own, rechecked when the thread is recorded and again in its delivery's own unit, with the grant's standing and `run_graph`; a changed, revoked or fenced grant SHALL refuse it. A grant change SHALL drop the client's threads, a sleeping launch's with them, in its own transaction, and wipe each store with the sleeping task in it. A scheduled run SHALL hold its client's grant row as every thread does.
+A scheduled launch SHALL run in a run thread stamped with the authority it was made under, or none for the owner's own, rechecked when the thread is recorded and in each delivery with the grant's standing and `run_graph`; a grant that no longer stands SHALL end it. A grant change SHALL drop the client's threads, sleepers included, wiping each store with its task. A scheduled run SHALL hold its client's grant row.
 
 #### Scenario: Free rows at their bound
 - **WHEN** the free grant rows are at their bound while a client's scheduled launch sleeps
@@ -290,8 +291,9 @@ A scheduled launch SHALL run in a run thread stamped with the outside authority 
 - **WHEN** a scheduled launch's client's grant is revoked by a writer that keeps the thread, before the launch is due
 - **THEN** its delivery is refused `outside client authority no longer stands`, its task ends with that reason, and nothing is submitted
 
+
 ### Requirement: A scheduled launch is a pi task sleeping in its run's Session
-A scheduled launch SHALL be one `ta.scheduled` pi task in its run thread's root, owned by the conversation, background, carrying no telemetry origin, made inside the thread's wake so its job is set before the commit; it SHALL be no lane of the owner's schedule and the owner's code's one task creation point. Its phase `wait` SHALL end in `sleepUntil(at)`, holding no invocation, its wake time kept in the thread's live row by the thread's own job. Its phase `deliver` SHALL re-check, in one unit of the object, the thread and its stamp, the owner's admission, the stamp's standing and the run policy as it stands, then submit the input with `requestId` the occurrence's and the entry `ta.work` through the host's admission, as its own turn, and complete; a delivery an eviction cut off after its submit SHALL be found by its request id, not re-checked, and be pi's duplicate. A delivery the thread or the object has no room for (`thread_inputs_full`, `sessions_full`) SHALL sleep again with backoff, never losing the wake; a refusal SHALL end the task terminal with its reason. Cancel SHALL be `abortTask`.
+A scheduled launch SHALL be one background `ta.scheduled` pi task in its run's root, with no telemetry origin, sleeping until due with its wake in the thread's live row. Its delivery SHALL re-check its thread, stamp, the admission and the run policy right before pi commits the input under the occurrence's `requestId`, as `ta.work`; one already made SHALL be pi's duplicate. Cancel SHALL be `abortTask`, a delivery pi holds counting as made.
 
 #### Scenario: A days-long sleep
 - **WHEN** a launch is scheduled three days ahead, its Session closed and the object evicted
@@ -301,13 +303,17 @@ A scheduled launch SHALL be one `ta.scheduled` pi task in its run thread's root,
 - **WHEN** the object dies after a delivery's submit and before its task commits
 - **THEN** the reopened task finds the submission by its request id, and the thread holds one submission and one answer
 
-#### Scenario: A full thread at its delivery
-- **WHEN** a launch is due while its thread holds `THREAD_INPUTS` open inputs
-- **THEN** its task sleeps again, backing off, and delivers once room frees
+#### Scenario: A full thread, a suspension or a lowered policy at its delivery
+- **WHEN** a launch is due while its thread holds `THREAD_INPUTS` open inputs, the owner is suspended, or the run policy has no room for it
+- **THEN** its task sleeps again, backing off, its status `scheduled` and held with the reason, and delivers once that lifts
 
-#### Scenario: A cancel during the sleep
-- **WHEN** the caller cancels a sleeping launch
-- **THEN** its task ends `aborted` at once, its run settles `cancelled`, and a second cancel cancels nothing
+#### Scenario: A refusal for good
+- **WHEN** a launch is due after its thread was dropped or its stamp stopped standing
+- **THEN** its task ends terminal with the reason, and nothing is submitted
+
+#### Scenario: A cancel during the sleep or the delivery
+- **WHEN** the caller cancels a sleeping launch, or one whose delivery is under way
+- **THEN** its task ends `aborted`, counting the occurrence delivered only if pi holds it, its last delivery is withdrawn, and a second cancel cancels nothing
 
 ### Requirement: A grant change ends its client's wakes
 A grant change SHALL suppress the client's agents' open wakes and schedule the revoke of their callbacks in the same transaction, and a claim SHALL suppress a wake whose client's grant no longer stands.
@@ -960,8 +966,9 @@ A run SHALL settle once: when its Session reports nothing running and nothing as
 - **WHEN** receipts are at 50,000 and the owner launches a day's 1,000 runs at `keep_run_receipts` 365
 - **THEN** none is refused, and each new receipt lets the oldest of its own scope go
 
+
 ### Requirement: Erasing the owner destroys every store before the owner
-Erasing the owner (an internal path; its door comes in slice 10) SHALL mark the owner erasing, with every thread `dropping`, after which every door refuses, no lane runs and no thread is recorded; then destroy every store a row names, each row forgotten after its store; then delete the owner's whole database and leave in it exactly one `erased` admission row, the tombstone, written after the wipe in the same synchronous turn and only into a wiped database. Each step SHALL resume after a crash, from the step the mark records, at the object's next start, by its own job and at every door the mark refuses; a store that refuses its destroy SHALL not keep the others from theirs. Since a store no row names can never be found again, a store SHALL be named in its row before it is made, in the unit that reads the mark. An object that finds the tombstone as it starts SHALL migrate nothing, start no Lifecycle, and refuse every door `owner_erased`.
+Erasing the owner SHALL mark it erasing, every thread `dropping`, after which every door refuses and no lane runs; destroy every store a row names; then `deleteAll()` the owner and leave one `erased` admission row, the tombstone, in the wiped database. Each step SHALL resume after a crash from the step the mark records. A store SHALL be named in its row before it is made. An object holding the tombstone SHALL migrate nothing, start no Lifecycle and refuse every door.
 
 #### Scenario: A thread being made as the erasure begins
 - **WHEN** the owner is erased while a thread's row is recorded and its first open is in flight
@@ -975,12 +982,21 @@ Erasing the owner (an internal path; its door comes in slice 10) SHALL mark the 
 - **WHEN** a binder reaches an erased owner's object again, across evictions
 - **THEN** every door is refused `owner_erased`, and the database still holds only the tombstone, with no alarm
 
-### Requirement: The owner's admission is the object's own row
-The owner's object SHALL hold one admission row, `admitted` when the object is made, `suspended` for `billing`, `abuse` or both, or the erasure's `erased` tombstone. Every door SHALL refuse in its binding check unless the owner is admitted (`owner_suspended`, `owner_erased`), and so SHALL every lane with `require_work` semantics in its own unit: a scheduled launch's delivery, which ends its task with the refusal, and the `wakes` lane's claim, which holds its row and gives its lane no job. Only the platform SHALL set it, through `admissionSet`, as the reserved caller, which reaches no other door and names no owner, with no outside client and no session; a suspension SHALL add its reason and a resumption take it away, an erased owner never being set again; a suspension SHALL end the agent's running work as a policy write does. A guard SHALL keep the reserved name out of every source but its one definition and `platform/admin`.
 
-#### Scenario: A suspended owner
-- **WHEN** the platform suspends an owner for billing and abuse while a launch sleeps
-- **THEN** every door refuses `owner_suspended`, the launch's delivery is refused and its task ends with that reason, and lifting both reasons admits the owner again
+### Requirement: The owner's admission is the object's own row
+The object SHALL hold one admission row: admitted, suspended for billing and or abuse, or the erased tombstone. Every door SHALL declare a class: billing refuses `work`, abuse every door. Every operation, model call, input and delivery SHALL be refused while not admitted; a suspension SHALL end every live thread's work but scheduled tasks, whose deliveries are held. Only the platform's reserved caller SHALL set it, at no other door.
+
+#### Scenario: A billing suspension
+- **WHEN** the platform suspends an owner for billing while a launch sleeps and a turn runs
+- **THEN** the turn is aborted, work doors refuse `owner_suspended` while reads, cancels and revokes are served, the launch's delivery is held, and lifting the suspension lets it deliver
+
+#### Scenario: An abuse suspension
+- **WHEN** the platform suspends an owner for abuse
+- **THEN** every door refuses `owner_suspended`
+
+#### Scenario: A suspension landing mid-delivery or mid-door
+- **WHEN** a suspension lands after a delivery's or a door's check and before its submit
+- **THEN** pi is handed nothing, and no model call is made
 
 #### Scenario: Another caller sets admission
 - **WHEN** the owner, an outside client or a session sends `admissionSet`, or the platform's caller calls any other door
@@ -1040,8 +1056,9 @@ Every agent door SHALL address work by a thread id resolved against the calling 
 - **WHEN** a client's conversation that holds `run_graph` for `main` calls `agent:run` for another agent
 - **THEN** the call is refused "outside client capability not granted" before pi makes a conversation
 
+
 ### Requirement: A grant or policy change ends the agent work it covers
-After its own unit commits, in the same door, a grant set or revoke SHALL end its client's pending waits, close the live views of its threads and of every live conversation stamped for it, and abort each such conversation's work, background work included; a policy write SHALL do so for every Session with work running (`agent_live.active`) and close every view, leaving a sleeping task and a scheduled launch's task alone, each held to the policy as it stands when it wakes. The door SHALL wait at most 5 s, and SHALL reject if the ending fails.
+After its unit commits, a grant set or revoke SHALL end its client's waits, views and work, background work included; a policy write SHALL end the waits, views and running work of every Session with work running, never a sleeping task nor a scheduled launch's, each held to the policy when it wakes. The door SHALL wait at most 5 s, and SHALL reject if the ending fails.
 
 #### Scenario: A client revoked mid-turn
 - **WHEN** a client is revoked while its turn, its subagent's and another client's run
@@ -1053,7 +1070,7 @@ After its own unit commits, in the same door, a grant set or revoke SHALL end it
 
 #### Scenario: A policy write while a launch sleeps
 - **WHEN** a policy write lowers `runs_live` while a launch sleeps in a thread whose other input runs
-- **THEN** the running input is aborted, the launch sleeps on, and at its time its delivery is refused `runs_scheduled`
+- **THEN** the running input is aborted, the launch sleeps on, and at its time its delivery is held `runs_scheduled` until the policy has room
 
 ### Requirement: A scheduled launch delivers once in its own thread
 A scheduled launch SHALL deliver only into the run thread its row names under the stamp it was made with, each occurrence under a request id of its own, queued behind a busy run; a second submission of an occurrence SHALL be pi's duplicate.
@@ -1062,12 +1079,17 @@ A scheduled launch SHALL deliver only into the run thread its row names under th
 - **WHEN** an occurrence's submission is made again
 - **THEN** pi answers it as the same submission, and the model runs once
 
+
 ### Requirement: A recurring launch's cron is ours and bounded
-A launch with `cron` SHALL deliver at each occurrence of its expression, five numeric fields in UTC, each delivery ending by sleeping until the next, until a re-check refuses or it is cancelled. An expression SHALL be refused loudly past 64 characters or 16 items a field, with names or `?`, `L`, `W` or `#`, out of a field's range, with occurrences under 15 minutes apart, or with none in eight years; the next occurrence SHALL be the first whole minute after a time that matches, a day matching when either restricted day field does.
+A launch with `cron` SHALL deliver at each occurrence of its expression, five numeric fields in UTC only, with no time zone, sleeping until the next after each, until a refusal for good or a cancel. An expression SHALL be refused past 64 characters or 16 items a field, with names or `?`, `L`, `W` or `#`, out of range, under 15 minutes apart, or with no occurrence in eight years.
 
 #### Scenario: Three deliveries, then a grant change
 - **WHEN** a client's hourly launch has delivered three times and its grant is revoked
 - **THEN** its thread is dropped and its store wiped with the sleeping task, and no fourth delivery is made
+
+#### Scenario: A suspension and a lowered policy
+- **WHEN** a recurring launch's owner is suspended for billing, then resumed, and its `runs_live` lowered, then raised
+- **THEN** each occurrence meanwhile is held, the schedule survives both, and it delivers after each lifts
 
 ### Requirement: The model is offered exactly read, write, edit, bash and ta
 Every conversation the object creates, the root, a thread, a fork and a subagent's included, SHALL offer the model exactly `read`, `write`, `edit`, `bash` and `ta`, written in pi's `modelTools` in every creating commit over whatever pi copied, and nowhere else. Every other tool SHALL be registered callable by tools and reached through `ta`; a tool the model is not offered SHALL be unavailable to the model's own call. No source SHALL build a tool result `control`, which could add a model tool.

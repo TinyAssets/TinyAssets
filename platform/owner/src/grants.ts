@@ -358,7 +358,8 @@ export class Grants {
       throw new Refused("only a revoked grant is forgotten; revoke it first");
     }
     if (row.agents > 0 || row.held > 0) {
-      throw new Refused("an agent or scheduled work still holds this client's grant");
+      throw new Refused("an agent, a thread or a held registration still holds this " +
+                        "client's grant");
     }
     this.#sql.exec("DELETE FROM outside_clients WHERE client = ?", row.client);
     this.#policy.receipt("outside_grant", {

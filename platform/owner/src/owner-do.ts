@@ -101,15 +101,15 @@ import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
 import {
-  type AgentConfig, type AgentParts, gatewayAgent, type OwnerAgent, type UsageView,
+  type AgentConfig, type AgentParts, END_WAIT_MS, gatewayAgent, type OwnerAgent, type UsageView,
   WAITS_FULL,
 } from "./agent";
 import {
   AGENT_DIR, Authority, AUTHORITY_RULE, type AuthorityState, NO_AUTHORITY, type Stamped, stampOf,
 } from "./authority";
 import {
-  admission, type Admission, OWNER_ERASED, PLATFORM_CALLER, PLATFORM_ONLY, PLATFORM_RESERVED,
-  setAdmission, tombstoned, workRefusal, writeTombstone,
+  admission, type Admission, doorRefusal, type DoorClass, OWNER_ERASED, PLATFORM_CALLER,
+  PLATFORM_ONLY, PLATFORM_RESERVED, setAdmission, tombstoned, workRefusal, writeTombstone,
 } from "./admission";
 import { Collections, Conflict, type HistoryEntry, type Page, type Row } from "./collections";
 import { type ConnectionView, Connections, type GatewayService, type Prepared } from "./connections";
@@ -135,7 +135,7 @@ import {
 import { type Card, Registrations } from "./registrations";
 import { GatewayProvider } from "./gateway-provider";
 import { LiveTee } from "./live-tee";
-import { type Lane, Schedule } from "./schedule";
+import { inTime, type Lane, Schedule } from "./schedule";
 import type { ScheduledInput } from "./scheduled";
 import { nextOccurrence, parseCron } from "./cron";
 import { AGENTS_DIR, AGENTS_OWNER_ONLY, storedPath, within, WORKSPACE } from "./paths";
@@ -890,6 +890,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       } },
       receipt: (request) => write(() => this.#policy.refusal("tool_call", request, clock(),
                                                              AUTHORITY_RULE)),
+      admission: () => workRefusal(admission(storage)),
     });
     this.#agent = agent({ files: this.#files, notices: this.#notices, write,
                           rearm: () => this.#schedule.sync(),
@@ -989,8 +990,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * verified outside client, which is admitted here against its grant (P0-3) before any
    * door acts. A refusal here leaves no receipt: the call never reached the account.
    */
-  #account(binding: Binding, serves: Serves = {}): Account {
-    const { owner, caller } = this.#bind(binding);
+  #account(binding: Binding, door: DoorClass, serves: Serves = {}): Account {
+    const { owner, caller } = this.#bind(binding, door);
     if (!("origin" in binding)) {
       throw new Invalid("invalid outside origin");
     }
@@ -1022,8 +1023,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /** The owner itself, on its own account, never an outside client. */
-  #owner(binding: Binding, action: string): Account {
-    const account = this.#account(binding);
+  #owner(binding: Binding, door: DoorClass, action: string): Account {
+    const account = this.#account(binding, door);
     if (account.origin !== null) {
       throw new Refused(`only the owner may ${action}`);
     }
@@ -1036,9 +1037,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * do in it. A refusal after the account is bound leaves a refusal receipt of what was
    * asked, written once the refused change has rolled back.
    */
-  #widening<T>(binding: Binding, action: string, request: unknown, owner: string | null,
+  #widening<T>(binding: Binding, door: DoorClass, action: string, request: unknown,
+               owner: string | null,
                act: (account: Account, sessionId: string) => T, serves: Serves = {}): T {
-    const account = this.#account(binding, serves);
+    const account = this.#account(binding, door, serves);
     try {
       // An outside client holds no owner session, so what only the owner may do is
       // refused as that before the session is looked for.
@@ -1096,14 +1098,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** A verified interactive sign-in opens a session; its cookie is returned once. */
   sessionOpen(binding: Binding): Promise<{ session: string; expires_at: number }> {
     return this.#door(() => {
-      this.#owner(binding, "open its session");
+      this.#owner(binding, "read", "open its session");
       return this.#sessions.open(binding.authenticated_at, clock());
     });
   }
 
   sessionExtend(binding: Binding): Promise<{ expires_at: number }> {
     return this.#door(() => {
-      this.#owner(binding, "renew its session");
+      this.#owner(binding, "read", "renew its session");
       return this.#sessions.extend(binding.session, clock());
     });
   }
@@ -1111,7 +1113,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** One session signed out, and the connection flows it began cancelled with it. */
   sessionClose(binding: Binding): Promise<{ closed: number }> {
     return this.#synced(() => {
-      this.#owner(binding, "sign out");
+      this.#owner(binding, "reduce", "sign out");
       const id = this.#sessions.id(binding.session);
       const closed = this.#sessions.close(binding.session);
       if (id !== null) {
@@ -1127,7 +1129,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   sessionCloseAll(binding: Binding): Promise<{ closed: number }> {
     return this.#synced(() => {
-      this.#owner(binding, "sign out");
+      this.#owner(binding, "reduce", "sign out");
       this.#connections.cancelFlows(null);
       return this.#sessions.closeAll();
     });
@@ -1137,14 +1139,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   policyRead(binding: Binding): Promise<Projection> {
     return this.#door(() => {
-      const { owner } = this.#owner(binding, "read its policy");
+      const { owner } = this.#owner(binding, "read", "read its policy");
       return this.#policy.projection(owner);
     });
   }
 
   policyReceipts(binding: Binding): Promise<{ receipts: Receipt[] }> {
     return this.#door(() => {
-      this.#owner(binding, "read its policy");
+      this.#owner(binding, "read", "read its policy");
       return { receipts: this.#policy.receipts() };
     });
   }
@@ -1160,7 +1162,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * the new policy anyway, and its model calls to the new generation.
    */
   async policyWrite(binding: Binding, request: PolicyWriteRequest): Promise<Projection> {
-    const done = await this.#synced(() => this.#widening(binding, "write", request,
+    const done = await this.#synced(() => this.#widening(binding, "work", "write", request,
                                                          "write its policy", ({ owner }, id) => {
       const r = policyFields(request, ["expected_generation", "policy"], ["proposal"]);
       const written = this.#policy.write(id, r["expected_generation"], r["policy"],
@@ -1179,7 +1181,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   policyPropose(binding: Binding, request: ProposeRequest):
       Promise<{ request_digest: string; generation: number }> {
     return this.#door(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "work");
       const r = policyFields(request, ["change"], ["request_id"]);
       this.#scope(account, "propose_policy");
       return this.#policy.propose(r["change"], r["request_id"] ?? null,
@@ -1191,7 +1193,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   policyProposal(binding: Binding, request: CardRequest):
       Promise<{ change: Change; digest: string }> {
     return this.#door(() => {
-      this.#owner(binding, "read its policy");
+      this.#owner(binding, "read", "read its policy");
       const r = policyFields(request, ["request_id"]);
       const held = this.#policy.held(r["request_id"], clock());
       if (held === null) {
@@ -1209,7 +1211,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   policyWakeLimits(binding: Binding, request: WakeLimitsRequest):
       Promise<{ agent: Agent; generation: number }> {
     return this.#door(() => {
-      return this.#widening(binding, "wake_limits", request, "change its agents' policy",
+      return this.#widening(binding, "work", "wake_limits", request, "change its agents' policy",
                             (_account, id) => {
         const r = policyFields(request, ["agent_id", "max_wakes_per_hour", "batch_window_s",
                                          "expected_generation"]);
@@ -1230,7 +1232,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   grantList(binding: Binding): Promise<{ clients: Client[] }> {
     return this.#door(() => {
-      this.#owner(binding, "read its outside clients");
+      this.#owner(binding, "read", "read its outside clients");
       return { clients: this.#grants.list() };
     });
   }
@@ -1242,7 +1244,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async grantSet(binding: Binding, request: GrantRequest):
       Promise<{ client: string; mode: string; scopes: Scope[]; generation: number }> {
-    const changed = await this.#synced(() => this.#widening(binding, "outside_set", request,
+    const changed = await this.#synced(() => this.#widening(binding, "work", "outside_set", request,
                                                             "change an outside client's grant",
                                                             (_account, id) => {
       const r = policyFields(request, ["client", "source", "mode", "scopes",
@@ -1267,7 +1269,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async grantRevoke(binding: Binding, request: ClientRequest):
       Promise<{ client: string; revoked: boolean; generation: number }> {
     const result = await this.#synced(() => {
-      this.#owner(binding, "revoke an outside client's grant");
+      this.#owner(binding, "reduce", "revoke an outside client's grant");
       const r = policyFields(request, ["client"]);
       return this.#storage.transactionSync(() => {
         const revoked = this.#grants.revoke(r["client"], clock());
@@ -1287,7 +1289,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   grantForget(binding: Binding, request: ClientRequest):
       Promise<{ client: string; forgotten: boolean }> {
     return this.#door(() => {
-      this.#owner(binding, "forget an outside client's grant");
+      this.#owner(binding, "reduce", "forget an outside client's grant");
       const r = policyFields(request, ["client"]);
       return this.#grants.forgetKey(r["client"], clock());
     });
@@ -1301,7 +1303,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   grantForgetRevoked(binding: Binding, request: ForgetRequest):
       Promise<{ forgotten: string[]; mcp_fence: number }> {
     return this.#door(() => {
-      return this.#widening(binding, "outside_forget", request,
+      return this.#widening(binding, "reduce", "outside_forget", request,
                             "forget its revoked outside clients", (_account, id) => {
         const r = policyFields(request, ["clients"]);
         return this.#grants.forgetRevoked(id, r["clients"], clock());
@@ -1327,7 +1329,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** The owner sees every agent; an outside caller only its own identity's. */
   outsideAgents(binding: Binding): Promise<{ agents: Agent[] }> {
     return this.#door(() => {
-      const { origin } = this.#account(binding);
+      const { origin } = this.#account(binding, "read");
       return { agents: this.#ledger.agents(origin) };
     });
   }
@@ -1341,7 +1343,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * together with the owner's session.
    */
   registerAgent(binding: Binding, request: RegisterRequest | CardApply): Promise<Agent> {
-    return this.#synced(() => this.#widening(binding, "OUTSIDE_AGENTS.register", request, null,
+    return this.#synced(() => this.#widening(binding, "work", "OUTSIDE_AGENTS.register", request, null,
                                              ({ origin }) => {
       if (origin === null) {
         const r = ledgerFields(request, ["card_id", "digest"]);
@@ -1365,7 +1367,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   registerPropose(binding: Binding, request: RegisterRequest):
       Promise<{ card_id: string; digest: string; expires_at: number }> {
     return this.#door(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "work");
       if (account.origin === null || account.grant === null) {
         throw new Refused("only an outside client files its own agent's registration");
       }
@@ -1383,7 +1385,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** The pending registration card the owner is shown, and the digest its apply names. */
   registerProposal(binding: Binding, request: RegistrationCardRequest): Promise<Card> {
     return this.#door(() => {
-      this.#owner(binding, "read its agents' registrations");
+      this.#owner(binding, "read", "read its agents' registrations");
       const r = ledgerFields(request, ["card_id"]);
       const card = this.#registrations.card(r["card_id"], clock());
       if (card === null) {
@@ -1398,7 +1400,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * holds no owner session, and its call never carries one.
    */
   disableAgent(binding: Binding, request: DisableRequest): Promise<Agent> {
-    return this.#synced(() => this.#widening(binding, "OUTSIDE_AGENTS.disable", request, null,
+    return this.#synced(() => this.#widening(binding, "reduce", "OUTSIDE_AGENTS.disable", request, null,
                                              ({ origin }) => {
       const r = ledgerFields(request, ["agent_id", "reason"]);
       return this.#ledger.disable(r["agent_id"], r["reason"], origin);
@@ -1408,7 +1410,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** Only the owner itself, in its session, deletes an agent. */
   deleteAgent(binding: Binding, request: AgentRequest):
       Promise<{ agent_id: string; messages: number }> {
-    return this.#synced(() => this.#widening(binding, "OUTSIDE_AGENTS.delete", request,
+    return this.#synced(() => this.#widening(binding, "reduce", "OUTSIDE_AGENTS.delete", request,
                                              "change its agents' policy", () => {
       const r = ledgerFields(request, ["agent_id"]);
       return this.#ledger.remove(r["agent_id"]);
@@ -1419,7 +1421,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   roomPost(binding: Binding, request: PostRequest): Promise<Posted> {
     return this.#synced(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "work");
       const r = ledgerFields(request, ["room_id", "client_message_id", "body", "parent_id"]);
       this.#scope(account, "write_graph");
       return this.#ledger.post(account.origin, r["room_id"], r["client_message_id"],
@@ -1435,14 +1437,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /** A pending connection for the binder to seal a credential for; for OAuth, its flow. */
   connectionPrepare(binding: Binding, request: ConnectionPrepareRequest): Promise<Prepared> {
-    return this.#synced(() => this.#widening(binding, "connection_prepare", request,
+    return this.#synced(() => this.#widening(binding, "work", "connection_prepare", request,
                                              "connect a model source", (_account, id) =>
       this.#connections.prepare(id, request, clock())));
   }
 
   /** The sealed blob the gateway returned, and the models its setup check listed. */
   connectionCommit(binding: Binding, request: ConnectionCommitRequest): Promise<ConnectionView> {
-    return this.#synced(() => this.#widening(binding, "connection_commit", request,
+    return this.#synced(() => this.#widening(binding, "work", "connection_commit", request,
                                              "connect a model source",
                                              () => this.#connections.commit(request, clock())));
   }
@@ -1450,14 +1452,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** A connection unusable at once; its credential deleted here, and at its provider. */
   connectionRevoke(binding: Binding, request: ConnectionRequest):
       Promise<{ connection: string; revoked: boolean; provider_revoke: boolean }> {
-    return this.#synced(() => this.#widening(binding, "connection_revoke", request,
+    return this.#synced(() => this.#widening(binding, "reduce", "connection_revoke", request,
                                              "revoke a model source",
                                              () => this.#connections.revoke(request, clock())));
   }
 
   /** Every connection, newest first, never its blob. */
   connectionList(binding: Binding): Promise<{ connections: ConnectionView[] }> {
-    return this.#door(() => this.#widening(binding, "connection_list", null,
+    return this.#door(() => this.#widening(binding, "read", "connection_list", null,
                                            "read its model sources",
                                            () => ({ connections: this.#connections.list() })));
   }
@@ -1466,7 +1468,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   flowFinish(binding: Binding, request: FlowFinishRequest):
       Promise<{ connection: string; version: number; verifier: string; redirect_uri: string;
                 source: string }> {
-    return this.#synced(() => this.#widening(binding, "flow_finish", { state: "[state]" },
+    return this.#synced(() => this.#widening(binding, "work", "flow_finish", { state: "[state]" },
                                              "connect a model source", (_account, id) =>
       this.#connections.flowFinish(id, request, clock())));
   }
@@ -1477,14 +1479,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * (`OwnerAgent.usage`), for G5's measurement. The owner's alone; no cap reads it.
    */
   async usageMetrics(binding: Binding): Promise<UsageView & { owner: string }> {
-    const { owner } = await this.#door(() => this.#owner(binding, "read its model usage"));
+    const { owner } = await this.#door(() => this.#owner(binding, "read", "read its model usage"));
     return { owner, ...await this.#agent.usage() };
   }
 
   /** The owner's newest model-call receipts: what each call reserved, and what it cost. */
   usageReceipts(binding: Binding): Promise<{ receipts: UsageReceipt[] }> {
     return this.#door(() => {
-      this.#owner(binding, "read its model spend");
+      this.#owner(binding, "read", "read its model spend");
       return { receipts: this.#usage.receipts(clock()) };
     });
   }
@@ -1507,7 +1509,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async agentSubmit(binding: Binding, request: SubmitRequest): Promise<Operation> {
     const asked = await this.#door(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "work");
       const r = agentFields(request, ["message", "client_send_id"],
                             ["agent_id", "steer", "wait_ms"]);
       const agent = agentDir(r["agent_id"] ?? MAIN_AGENT);
@@ -1549,7 +1551,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async agentRun(binding: Binding, request: RunRequest): Promise<Operation> {
     const asked = await this.#door(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "work");
       const r = agentFields(request, ["agent", "input"], ["at", "cron"]);
       const agent = agentDir(r["agent"]);
       const input = agentText(r["input"], "an input");
@@ -1572,7 +1574,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async agentStatus(binding: Binding, request: OperationRequest): Promise<Operation> {
     const found = await this.#door(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "read");
       const r = agentFields(request, ["operation_id"]);
       return this.#operation(account, r["operation_id"]);
     });
@@ -1600,7 +1602,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async agentCancel(binding: Binding, request: OperationRequest):
       Promise<{ operation_id: string; cancelled: boolean }> {
     const found = await this.#synced(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "reduce");
       const r = agentFields(request, ["operation_id"]);
       return this.#operation(account, r["operation_id"]);
     });
@@ -1631,7 +1633,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return { status: "unanswered", reason: stands.ended.reason };
     }
     if (last === null) {
-      return stands.delivered === 0 ? { status: "scheduled", ...due }
+      return stands.delivered === 0
+        ? { status: "scheduled", ...due,
+            ...(stands.held === null ? {} : { reason: `held: ${stands.held}` }) }
         : { status: "unanswered", reason: "not_found" };
     }
     switch (last.status) {
@@ -1688,7 +1692,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       await this.#schedule.sync();
       const scheduled: ScheduledInput = { work_id: work, thread: thread.thread_id, at: due,
                                           stamp, input, cron };
-      await this.#agent.schedule(thread, scheduled);
+      try {
+        await this.#agent.schedule(thread, scheduled);
+      } catch (error) {
+        // No task: the run is dropped in order (marked, its store wiped, its row forgotten),
+        // so no row is left holding a share of the live runs; the lane finishes a cut drop.
+        const marked = await this.#door(() => this.#threads.abandon(thread.thread_id));
+        if (marked !== null) {
+          await inTime(this.#agent.drop(marked).catch(() => undefined), END_WAIT_MS);
+        }
+        throw error;
+      }
       return { operation_id: operationOf(thread.thread_id, work), thread_id: thread.thread_id,
                status: "scheduled", due };
     }
@@ -1834,7 +1848,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** The owner's notices, newest first (`notices.ts`). */
   noticeList(binding: Binding): Promise<{ notices: Notice[] }> {
     return this.#door(() => {
-      this.#owner(binding, "read its notices");
+      this.#owner(binding, "read", "read its notices");
       return { notices: this.#notices.list() };
     });
   }
@@ -1845,12 +1859,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * The platform suspends the owner for a reason (`billing`, `abuse`), or lifts it
    * (`admission.ts`): taken only from the reserved `PLATFORM_CALLER`, with no outside client
    * and no session, whatever the owner's admission is now; an erased owner is never set
-   * again. A suspension then ends the agent's running work, as a policy write does
-   * (`OwnerAgent.endAll`), and lifting one gives the `wakes` lane its job back.
+   * again. A suspension then ends the work of every thread with a live row, asleep or not,
+   * but the scheduled launches' tasks (`OwnerAgent.endUnadmitted`): the prompt stop, since
+   * every model call, tool call, new input and delivery is refused while it lasts. Lifting
+   * one gives the `wakes` lane its job back, and held deliveries deliver at their next try.
    */
   async admissionSet(binding: Binding, request: AdmissionRequest): Promise<Admission> {
     const set = await this.#synced(() => {
-      const { caller } = this.#bind(binding, false);
+      const { caller } = this.#bind(binding, "admission");
       if (caller !== PLATFORM_CALLER || !("origin" in binding) || binding.origin !== null
           || binding.session !== undefined || binding.source !== undefined) {
         throw new Refused(PLATFORM_ONLY);
@@ -1858,14 +1874,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return setAdmission(this.#storage, request);
     });
     if (set.state !== "admitted") {
-      await this.#agent.endAll();
+      await this.#agent.endUnadmitted();
     }
     return set;
   }
 
   mailboxRead(binding: Binding, request: ReadRequest): Promise<MailPage> {
     return this.#door(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "read");
       const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes"]);
       this.#scope(account, "read_graph");
       return this.#ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null,
@@ -1875,7 +1891,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   mailboxAck(binding: Binding, request: AckRequest): Promise<{ reader: string; through: number }> {
     return this.#door(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "reduce");
       const r = ledgerFields(request, ["through"]);
       this.#scope(account, "write_graph");
       return this.#ledger.ack(account.origin, r["through"]);
@@ -1891,7 +1907,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   mailboxSubscriber(binding: Binding, request: SubscriberRequest):
       Promise<{ agent_id: string; generation: number }> {
     return this.#door(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "work");
       const r = ledgerFields(request, ["command_center_id", "agent_id"]);
       this.#scope(account, "read_graph", r["command_center_id"]);
       const generation = this.#ledger.subscriber(account.origin, r["command_center_id"],
@@ -1908,7 +1924,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * false: the platform's own door, which sets it. The platform's reserved caller reaches
    * no other door, and no owner is named so.
    */
-  #bind(binding: Binding, admitted = true): { owner: string; caller: string } {
+  #bind(binding: Binding, door: DoorClass | "admission"): { owner: string; caller: string } {
     if (this.#tombstone || this.#erasure.erased) {
       throw new Refused(OWNER_ERASED);
     }
@@ -1921,11 +1937,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
     const owner = principal(binding.owner);
     const caller = principal(binding.caller);
-    if (owner === PLATFORM_CALLER || (admitted && caller === PLATFORM_CALLER)) {
+    if (owner === PLATFORM_CALLER || (door !== "admission" && caller === PLATFORM_CALLER)) {
       throw new Refused(PLATFORM_RESERVED);
     }
-    if (admitted) {
-      const refusal = workRefusal(admission(this.#storage));
+    if (door !== "admission") {
+      const refusal = doorRefusal(admission(this.#storage), door);
       if (refusal !== null) {
         throw new Refused(refusal);
       }
@@ -1957,15 +1973,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * A collection door's caller: the owner, a visiting owner, or an outside client the
    * owner's account acts through, admitted against its grant and held to `capability`.
    */
-  #collector(binding: Binding, capability: Capability): { owner: string; caller: string } {
-    const account = this.#account(binding, { visitors: true });
+  #collector(binding: Binding, door: DoorClass, capability: Capability):
+      { owner: string; caller: string } {
+    const account = this.#account(binding, door, { visitors: true });
     this.#scope(account, capability);
     return account;
   }
 
   collectionWrite(binding: Binding, request: WriteRequest): Promise<{ row: Row } | Conflicted> {
     return this.#door(() => {
-      const { owner, caller } = this.#collector(binding, "write_graph");
+      const { owner, caller } = this.#collector(binding, "work", "write_graph");
       const r = fields(request, ["collection", "row_id", "body", "expected_etag", "private"],
                        ["history_op"]);
       return conflicted(() => ({
@@ -1978,7 +1995,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   collectionPull(binding: Binding, request: PullRequest): Promise<Page> {
     return this.#door(() => {
-      const { caller } = this.#collector(binding, "read_graph");
+      const { caller } = this.#collector(binding, "read", "read_graph");
       const r = fields(request, ["collection", "after", "limit"]);
       return this.#collections.pull(caller, r["collection"] as string, r["after"], r["limit"]);
     });
@@ -1986,7 +2003,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   collectionGet(binding: Binding, request: KeyRequest): Promise<{ row: Row | null }> {
     return this.#door(() => {
-      const { caller } = this.#collector(binding, "read_graph");
+      const { caller } = this.#collector(binding, "read", "read_graph");
       const r = fields(request, ["collection", "row_id"]);
       return this.#collections.get(caller, r["collection"] as string, r["row_id"] as string);
     });
@@ -1994,7 +2011,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   collectionHistory(binding: Binding, request: KeyRequest): Promise<{ entries: HistoryEntry[] }> {
     return this.#door(() => {
-      const { caller } = this.#collector(binding, "read_graph");
+      const { caller } = this.#collector(binding, "read", "read_graph");
       const r = fields(request, ["collection", "row_id"]);
       return this.#collections.history(caller, r["collection"] as string, r["row_id"] as string);
     });
@@ -2003,7 +2020,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   collectionDelete(binding: Binding, request: DeleteRequest):
       Promise<{ deleted: number } | Conflicted> {
     return this.#door(() => {
-      const { owner, caller } = this.#collector(binding, "write_graph");
+      const { owner, caller } = this.#collector(binding, "reduce", "write_graph");
       this.#ownerOnly(owner, caller, "delete");
       const r = fields(request, ["collection", "row_id", "expected_etag"]);
       return conflicted(() => this.#collections.delete(
@@ -2014,7 +2031,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   collectionClear(binding: Binding, request: ClearRequest): Promise<{ deleted: number }> {
     return this.#door(() => {
-      const { owner, caller } = this.#collector(binding, "write_graph");
+      const { owner, caller } = this.#collector(binding, "reduce", "write_graph");
       this.#ownerOnly(owner, caller, "clear");
       const r = fields(request, ["collection", "writer"]);
       return this.#collections.clear(caller, r["collection"] as string, r["writer"]);
@@ -2033,8 +2050,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * grant and held to `read_files` or `write_files`. No visiting owner reaches another's
    * files.
    */
-  #filer(binding: Binding, capability: "read_files" | "write_files"): Account {
-    const account = this.#account(binding);
+  #filer(binding: Binding, door: DoorClass, capability: "read_files" | "write_files"):
+      Account {
+    const account = this.#account(binding, door);
     this.#scope(account, capability);
     return account;
   }
@@ -2058,7 +2076,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   fileStat(binding: Binding, request: FileRequest): Promise<{ entry: Entry | null }> {
     return this.#door(() => {
-      this.#filer(binding, "read_files");
+      this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["path"]);
       return { entry: this.#files.stat(r["path"]) };
     });
@@ -2067,7 +2085,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileList(binding: Binding, request: FileListRequest):
       Promise<{ entries: Entry[]; next: string | null }> {
     return this.#door(() => {
-      this.#filer(binding, "read_files");
+      this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["dir", "limit"], ["after"]);
       return this.#files.list(r["dir"], r["after"] ?? null, r["limit"]);
     });
@@ -2080,7 +2098,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileRead(binding: Binding, request: FileReadRequest):
       Promise<{ entry: Entry; not_modified?: true; inline?: Uint8Array; chunks?: ChunkRef[] }> {
     return this.#door(() => {
-      this.#filer(binding, "read_files");
+      this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["path"], ["etag"]);
       const content: Content = this.#files.open(r["path"]);
       if (r["etag"] !== undefined && r["etag"] === content.entry.etag) {
@@ -2095,7 +2113,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async fileReadChunks(binding: Binding, request: FileChunksRequest):
       Promise<{ chunks: Uint8Array[] }> {
     const reads = await this.#door(() => {
-      this.#filer(binding, "read_files");
+      this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["path", "version", "first", "count"]);
       const { chunks = [] } = this.#files.openVersion(r["path"], r["version"]);
       const first = r["first"];
@@ -2114,7 +2132,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async fileWrite(binding: Binding, request: FileWriteRequest):
       Promise<{ entry: Entry } | FileConflicted> {
     const { account, r, content } = await this.#door(() => {
-      const account = this.#filer(binding, "write_files");
+      const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "expected_etag", "content"], ["mode"]);
       this.#ownersTree(account, r["path"]);
       const content = r["content"];
@@ -2128,7 +2146,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return await fileConflictedAfter(async () => ({
         entry: await this.#files.write(r["path"], content, {
           expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account),
-          authorize: () => this.#filer(binding, "write_files") }),
+          authorize: () => this.#filer(binding, "work", "write_files") }),
       }));
     } finally {
       await this.#schedule.sync();
@@ -2142,7 +2160,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileUploadBegin(binding: Binding, request: UploadBeginRequest):
       Promise<{ intent_id: string; missing: string[]; expires_at: number }> {
     return this.#filing(() => {
-      const account = this.#filer(binding, "write_files");
+      const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["size", "chunks"]);
       return this.#files.begin(r["size"], r["chunks"], fileWriter(account));
     });
@@ -2152,7 +2170,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async fileUploadChunks(binding: Binding, request: UploadChunksRequest):
       Promise<{ created: number }> {
     const r = await this.#door(() => {
-      this.#filer(binding, "write_files");
+      this.#filer(binding, "work", "write_files");
       return fileFields(request, ["intent_id", "chunks"]);
     });
     // `Files.upload` records each chunk stored, once `FILES` took it, in a unit of its own.
@@ -2163,7 +2181,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileUploadCommit(binding: Binding, request: UploadCommitRequest):
       Promise<{ entry: Entry } | FileConflicted> {
     return this.#filing(() => {
-      const account = this.#filer(binding, "write_files");
+      const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["intent_id", "path", "expected_etag"], ["mode"]);
       this.#ownersTree(account, r["path"]);
       return fileConflicted(() => ({
@@ -2175,7 +2193,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   fileUploadAbort(binding: Binding, request: IntentRequest): Promise<{ aborted: boolean }> {
     return this.#filing(() => {
-      this.#filer(binding, "write_files");
+      this.#filer(binding, "reduce", "write_files");
       const r = fileFields(request, ["intent_id"]);
       return this.#files.abort(r["intent_id"]);
     });
@@ -2184,7 +2202,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileMkdir(binding: Binding, request: MkdirRequest):
       Promise<{ entry: Entry } | FileConflicted> {
     return this.#filing(() => {
-      const account = this.#filer(binding, "write_files");
+      const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "expected_etag"]);
       this.#ownersTree(account, r["path"]);
       return fileConflicted(() => ({
@@ -2197,7 +2215,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileRemove(binding: Binding, request: RemoveRequest):
       Promise<{ removed: number } | FileConflicted> {
     return this.#filing(() => {
-      const account = this.#filer(binding, "write_files");
+      const account = this.#filer(binding, "reduce", "write_files");
       const r = fileFields(request, ["path", "expected_etag", "recursive"]);
       this.#ownersTree(account, r["path"]);
       return fileConflicted(() => this.#files.remove(r["path"], {
@@ -2209,7 +2227,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileRename(binding: Binding, request: RenameRequest):
       Promise<{ entry: Entry } | FileConflicted> {
     return this.#filing(() => {
-      const account = this.#filer(binding, "write_files");
+      const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["from", "to", "expected_etag", "replace"]);
       this.#ownersTree(account, r["from"], r["to"]);
       return fileConflicted(() => ({
@@ -2223,7 +2241,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileHistory(binding: Binding, request: FileHistoryRequest):
       Promise<{ changes: FileChange[]; next: number | null }> {
     return this.#door(() => {
-      this.#filer(binding, "read_files");
+      this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["path", "limit"], ["before"]);
       return this.#files.history(r["path"], r["before"] ?? null, r["limit"]);
     });
@@ -2232,7 +2250,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileRestore(binding: Binding, request: RestoreRequest):
       Promise<{ entry: Entry } | FileConflicted> {
     return this.#filing(() => {
-      const account = this.#filer(binding, "write_files");
+      const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "version", "expected_etag"]);
       this.#ownersTree(account, r["path"]);
       return fileConflicted(() => ({
@@ -2245,7 +2263,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** Drop a kept version's content: the owner's own act, never an outside client's. */
   fileRedact(binding: Binding, request: VersionRequest): Promise<{ redacted: number }> {
     return this.#filing(() => {
-      this.#owner(binding, "redact its file history");
+      this.#owner(binding, "reduce", "redact its file history");
       const r = fileFields(request, ["path", "version"]);
       return this.#files.redact(r["path"], r["version"]);
     });
@@ -2257,7 +2275,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   fileHistoryPurge(binding: Binding, request: FileRequest): Promise<{ purged: number }> {
     return this.#filing(() => {
-      this.#owner(binding, "purge its file history");
+      this.#owner(binding, "reduce", "purge its file history");
       const r = fileFields(request, ["path"]);
       return this.#files.purge(r["path"]);
     });
@@ -2266,7 +2284,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileChanges(binding: Binding, request: ChangesRequest):
       Promise<{ changes: FileChange[]; cursor: number; reset: boolean }> {
     return this.#door(() => {
-      this.#filer(binding, "read_files");
+      this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["after", "limit"]);
       return this.#files.changes(r["after"], r["limit"]);
     });
@@ -2274,7 +2292,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   fileUsage(binding: Binding): Promise<Usage> {
     return this.#door(() => {
-      return this.#files.usage(fileWriter(this.#filer(binding, "read_files")));
+      return this.#files.usage(fileWriter(this.#filer(binding, "read", "read_files")));
     });
   }
 
@@ -2283,7 +2301,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   fileLeaseAcquire(binding: Binding, request: { holder: string }): Promise<Lease> {
     return this.#door(() => {
-      this.#owner(binding, "hold the file sync lease");
+      this.#owner(binding, "work", "hold the file sync lease");
       const r = fileFields(request, ["holder"]);
       return this.#files.leaseAcquire(r["holder"]);
     });
@@ -2291,7 +2309,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   fileLeaseRenew(binding: Binding, request: LeaseRequest): Promise<Lease> {
     return this.#door(() => {
-      this.#owner(binding, "hold the file sync lease");
+      this.#owner(binding, "work", "hold the file sync lease");
       const r = fileFields(request, ["lease_id", "epoch"]);
       return this.#files.leaseRenew(r["lease_id"], r["epoch"]);
     });
@@ -2299,7 +2317,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   fileLeaseRelease(binding: Binding, request: LeaseRequest): Promise<{ released: boolean }> {
     return this.#door(() => {
-      this.#owner(binding, "hold the file sync lease");
+      this.#owner(binding, "reduce", "hold the file sync lease");
       const r = fileFields(request, ["lease_id", "epoch"]);
       return this.#files.leaseRelease(r["lease_id"], r["epoch"]);
     });
@@ -2308,7 +2326,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileSyncCommit(binding: Binding, request: SyncCommitRequest):
       Promise<{ outcomes: SyncOutcome[] }> {
     return this.#filing(() => {
-      this.#owner(binding, "hold the file sync lease");
+      this.#owner(binding, "work", "hold the file sync lease");
       const r = fileFields(request, ["lease_id", "epoch", "ops"]);
       return this.#files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"],
                                       ops: r["ops"] });

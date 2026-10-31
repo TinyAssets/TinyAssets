@@ -12,10 +12,13 @@
  * is named only there and in `owner-do.ts`, whose binding check and `admissionSet` read it.
  * A tripwire for our own code's mistakes, as the alarm guard is.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { parse, reporter, workerSources } from "./sources";
+import { parse, PLATFORM, reporter, workerSources } from "./sources";
 
 /** The reserved name, as this guard spells it apart from the sources it reads. */
 const NAME = ["plat", "form"].join("");
@@ -131,6 +134,20 @@ describe("admission caller guard", () => {
     "export const PLATFORM = 1;",
   ])("allows %s", (source) => {
     expect(callerReach("doors/src/probe.ts", source)).toEqual([]);
+  });
+
+  it("pins the tombstone's shape, which an erased owner's database keeps unmigrated", () => {
+    // A tombstone is never migrated, and migration 12 and the erasure share the table's
+    // text: changing either is a new migration and a tombstone reader that still reads this.
+    const schema = readFileSync(join(PLATFORM, "owner", "src", "schema.ts"), "utf8");
+    expect(schema).toContain(
+      'export const ADMISSION_TABLE = "CREATE TABLE owner_admission (only INTEGER PRIMARY KEY " +\n' +
+      '  "CHECK (only = 1), state TEXT NOT NULL CHECK (state IN (\'admitted\', \'suspended\', " +\n' +
+      '  "\'erased\')), reasons TEXT NOT NULL CHECK (reasons IN (\'[]\', \'[\\"abuse\\"]\', " +\n');
+    const admission = readFileSync(join(PLATFORM, DEFINED), "utf8");
+    expect(admission).toContain('sql.exec<{ state: string }>("SELECT state FROM owner_admission")');
+    expect(admission).toContain("INSERT INTO owner_admission (only, state, reasons) VALUES " +
+                                "(1, 'erased', '[]')");
   });
 
   it("lets the admin path send it", () => {

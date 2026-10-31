@@ -181,6 +181,11 @@ export interface HostParts {
   /** Whether `thread` is a run that settled: a new input to it is refused (`RUN_SETTLED`). */
   settled(thread: string): boolean;
   /**
+   * The owner's admission's refusal, or null while it is admitted: a new input is refused
+   * with it, read synchronously right before pi commits the input.
+   */
+  admission(): string | null;
+  /**
    * Keep `thread`'s wake in the owner's rows, in a unit of the write gate; `from` is the
    * Session that reported it, when it is open (a run's settling is read from it).
    */
@@ -349,6 +354,11 @@ export class ThreadHost extends LifecycleCapability {
             // Dropped while it was admitted (a grant change): nothing reaches its store.
             throw new Refused(THREAD_DROPPED);
           }
+        }
+        // A suspension since the door's check refuses it here, before pi holds it.
+        const unadmitted = fresh ? this.#parts.admission() : null;
+        if (unadmitted !== null) {
+          throw new Refused(unadmitted);
         }
         await conversation.submit({
           type: "input", content: input, whenBusy: options.whenBusy ?? "followUp",

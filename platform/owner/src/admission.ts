@@ -6,11 +6,16 @@
  *
  * - `admitted`: the owner's object was made (migration 12 writes the row with the
  *   schema), or every suspension was lifted;
- * - `suspended`, for `billing`, `abuse` or both: the platform's word, and nothing works:
- *   every door refuses in the binding check (`OwnerDO`'s `#bind`), and so does every lane
- *   with the Python's `require_work` semantics, in its own unit: a scheduled launch's
- *   `deliver` (`scheduled.ts`, which ends the task terminal with the refusal) and the
- *   `wakes` lane's claim (`ledger.ts`), whose lane then has no job for its open rows;
+ * - `suspended`, for `billing`, `abuse` or both: the platform's word, and no work runs.
+ *   Each door declares its class (`DoorClass`) in its binding check (`OwnerDO`'s `#bind`):
+ *   a billing suspension refuses `work` (spend and growth) and leaves the owner its reads,
+ *   sign-in and what only lowers risk or storage; an abuse suspension refuses every door.
+ *   Work is refused where it is enforced, not only where it starts: every operation and
+ *   model call (`Authority`), every new input (`ThreadHost.submit`), every lane with the
+ *   Python's `require_work` semantics in its own unit: a scheduled launch's delivery
+ *   (`scheduled.ts`, which holds it, to try again) and the `wakes` lane's claim
+ *   (`ledger.ts`), whose lane then has no job for its open rows. A suspension also ends
+ *   the work of every live thread but the scheduled launches' tasks, the prompt stop;
  * - `erased`: the tombstone the owner's erasure leaves as its last step, written after
  *   the wipe in the same synchronous turn (`erase.ts`, `WriteGate.wipe`): exactly this one
  *   row in an otherwise empty database. A stale `getByName` then finds it before anything
@@ -61,6 +66,27 @@ export function workRefusal(state: Admission): string | null {
   return state.state === "admitted" ? null
     : state.state === "erased" ? OWNER_ERASED
       : `${OWNER_SUSPENDED} (${state.reasons.join(", ")})`;
+}
+
+/**
+ * What a door does, which decides what a suspension leaves it: `work` spends or grows
+ * (a message, a launch, a write that adds), `read` only reads (and signs in), `reduce` only
+ * lowers risk or storage (a cancel, a revoke, a delete or purge). Every door declares its
+ * class in its binding check (the door-class guard).
+ */
+export type DoorClass = "work" | "read" | "reduce";
+
+/**
+ * Why a door of class `door` is refused under `state`, or null. A `billing` suspension
+ * refuses work and spend only, so the owner can still sign in, read and export, and lower
+ * its risk and storage; an `abuse` suspension refuses every door (export and erasure go
+ * through the platform alone); an erased owner refuses everything.
+ */
+export function doorRefusal(state: Admission, door: DoorClass): string | null {
+  if (state.state === "suspended" && door !== "work" && !state.reasons.includes("abuse")) {
+    return null;
+  }
+  return workRefusal(state);
 }
 
 /** The Python's `require_work`: refused loudly unless the owner is admitted. A read. */

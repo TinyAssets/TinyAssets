@@ -26,15 +26,22 @@
  *   entry `ta.work`, through the host's admission, which holds it to the thread's open
  *   inputs (`THREAD_INPUTS`) and keeps its turn as its own (a fresh origin, `origin.ts`).
  *   A delivery an eviction cut short after its submit is found by its request id and not
- *   re-checked: pi's dedupe makes it one submission. A thread or the object too full to
- *   take it (`thread_inputs_full`, `sessions_full`) sleeps again, backing off from
- *   `RETRY_FIRST_MS` to `RETRY_LAST_MS`, so the wake is never lost; a refusal ends the
- *   task terminal (`failed`, the refusal its message), which its status reports.
+ *   re-checked: pi's dedupe makes it one submission. The re-check runs right before pi
+ *   commits the input (the host's `admitted` step), which also stops on the task's abort
+ *   signal, so a cancel either lands before the submit or the occurrence counts as
+ *   delivered. A delivery held back (the owner suspended, the run policy or the thread or
+ *   the object with no room for it) sleeps again, backing off from `RETRY_FIRST_MS` to
+ *   `RETRY_LAST_MS`, its reason kept in its checkpoint (`held`), so a schedule survives a
+ *   suspension or a lowered policy and delivers once they lift. Only a refusal for good
+ *   ends it terminal (`failed`, the refusal its message): its thread dropped, its stamp no
+ *   longer standing or not its thread's, its run settled.
  * - **Recurrence** (`cron`, `cron.ts`): a delivery ends by sleeping until the next
  *   occurrence, each delivered under its own request id (`requestOf`), until the grant,
  *   the policy or the admission refuses one, or it is cancelled.
- * - **Cancel** is `abortTask`: the abort handler ends it `aborted`, at once from a sleep.
- *   A grant change drops the thread and wipes its store, the sleeper with it.
+ * - **Cancel** is `abortTask`: the abort handler ends it `aborted`, at once from a sleep,
+ *   counting as delivered an occurrence pi holds. A task pi's restart limit parked is ended
+ *   so too (the thread host's parked ending), its reason `restart_limit`. A grant change
+ *   drops the thread and wipes its store, the sleeper with it.
  */
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -54,6 +61,8 @@ export const RETRY_FIRST_MS = 30_000;
 export const RETRY_LAST_MS = 10 * 60_000;
 /** How a cancelled schedule's status reads. */
 export const CANCELLED = "cancelled";
+/** How a schedule pi's restart limit parked, then ended, reads. */
+export const RESTART_LIMIT = "restart_limit";
 
 /** What a scheduled launch is made with: its task's input. */
 export interface ScheduledInput {
@@ -72,7 +81,9 @@ export interface ScheduledInput {
 /** Where a scheduled launch is: asleep until it is due, or delivering occurrence `n`. */
 export type ScheduledState =
   | { readonly phase: "wait" }
-  | { readonly phase: "deliver"; readonly n: number; readonly tries: number };
+  | { readonly phase: "deliver"; readonly n: number; readonly tries: number;
+      /** Why its last try was held back, while it waits to try again. */
+      readonly held?: string };
 
 /** What a scheduled launch ends with: how many occurrences it delivered. */
 export interface ScheduledResult {
@@ -82,14 +93,17 @@ export interface ScheduledResult {
 /** How one delivery went. */
 export type Delivered =
   | { readonly kind: "delivered" }
-  /** The thread or the object had no room for it: it sleeps, and tries again. */
-  | { readonly kind: "full" }
-  /** A re-check refused it: the task ends with the reason. */
+  /** Held back for now (a suspension, no room): it sleeps, and tries again. */
+  | { readonly kind: "held"; readonly reason: string }
+  /** Refused for good: the task ends with the reason. */
   | { readonly kind: "refused"; readonly reason: string };
 
 /** What delivers an occurrence: the owner's agent, in the object (`OwnerAgent`). */
 export interface Delivery {
-  deliver(input: ScheduledInput, n: number): Promise<Delivered>;
+  /** Deliver occurrence `n`, stopping before pi commits it once `signal` aborts. */
+  deliver(input: ScheduledInput, n: number, signal: AbortSignal): Promise<Delivered>;
+  /** Whether pi holds occurrence `n`'s submission. */
+  made(input: ScheduledInput, n: number): Promise<boolean>;
 }
 
 /** The `ta.scheduled` task's type. */
@@ -121,10 +135,11 @@ export function scheduledTask(delivery: Delivery): ScheduledTask {
         task.input.at * 1000, { phase: "deliver", n: 1, tries: 0 }, context),
       deliver: async (task, runtime, context) => {
         const { n, tries } = task.state.checkpoint;
-        const answer = await delivery.deliver(task.input, n);
-        if (answer.kind === "full") {
+        const answer = await delivery.deliver(task.input, n, runtime.signal);
+        if (answer.kind === "held") {
           await runtime.sleepUntil(runtime.now() + retryDelay(tries),
-                                   { phase: "deliver", n, tries: tries + 1 }, context);
+                                   { phase: "deliver", n, tries: tries + 1, held: answer.reason },
+                                   context);
           return;
         }
         if (answer.kind === "refused") {
@@ -144,11 +159,19 @@ export function scheduledTask(delivery: Delivery): ScheduledTask {
               checkpoint: { phase: "deliver", n: n + 1, tries: 0 } }), context);
       },
     },
-    abort: (task, runtime, context) => runtime.commit(() => ({
-      status: "terminal",
-      outcome: { status: "aborted", reason: CANCELLED,
-                 result: { deliveries: delivered(task.state.checkpoint) } },
-    }), context),
+    abort: async (task, runtime, context) => {
+      const checkpoint = task.state.checkpoint;
+      // An occurrence being delivered as the abort landed counts once pi holds it.
+      const deliveries = checkpoint.phase === "deliver"
+          && await delivery.made(task.input, checkpoint.n) ? checkpoint.n
+        : delivered(checkpoint);
+      const parked = (task.restarts ?? 0) >= runtime.settings.restartLimit;
+      await runtime.commit(() => ({
+        status: "terminal",
+        outcome: { status: "aborted", reason: parked ? RESTART_LIMIT : CANCELLED,
+                   result: { deliveries } },
+      }), context);
+    },
   });
 }
 
@@ -159,6 +182,9 @@ export function scheduledTask(delivery: Delivery): ScheduledTask {
  */
 export function createScheduled(root: Conversation, task: ScheduledTask,
                                 input: ScheduledInput): Promise<TaskId<ScheduledResult>> {
+  if (task.definition.name !== SCHEDULED) {
+    throw new Error("only a scheduled launch's task is made here");
+  }
   return root.commit((tx) => tx.createTask(task, input, {
     ownership: { kind: "conversation" }, background: true, trace: "root",
   }), BACKGROUND_CONTEXT);
@@ -172,6 +198,8 @@ export interface Standing {
   readonly due: number | null;
   /** How it ended, once it has: null for a completed one, else why. */
   readonly ended: { readonly reason: string | null } | null;
+  /** Why its last try was held back, while it waits to try again; else null. */
+  readonly held: string | null;
 }
 
 /** A scheduled launch's standing, from its task record (a store's pure read). */
@@ -183,13 +211,15 @@ export function standing(record: TaskRecord<JsonValue, JsonValue, JsonValue>): S
     const result = (outcome.result ?? (outcome.status === "failed"
       ? outcome.error.detail : undefined)) as { deliveries?: unknown } | undefined;
     const deliveries = typeof result?.deliveries === "number" ? result.deliveries : 0;
-    return { delivered: deliveries, due: null,
+    return { delivered: deliveries, due: null, held: null,
              ended: { reason: outcome.status === "completed" ? null
                : outcome.status === "failed" ? outcome.error.message
-                 : outcome.status === "aborted" ? CANCELLED : outcome.status } };
+                 : outcome.status === "aborted" ? outcome.reason ?? CANCELLED
+                   : outcome.status } };
   }
   const checkpoint = state.checkpoint as unknown as ScheduledState;
   const due = state.status === "sleeping" ? state.until / 1000
     : checkpoint.phase === "wait" ? input.at : null;
-  return { delivered: delivered(checkpoint), due, ended: null };
+  return { delivered: delivered(checkpoint), due, ended: null,
+           held: checkpoint.phase === "deliver" ? checkpoint.held ?? null : null };
 }

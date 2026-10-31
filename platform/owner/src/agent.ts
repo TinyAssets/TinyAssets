@@ -114,7 +114,8 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 
 import {
   agentId, type Authority, AUTHORITY_RULE, authorityOf, type AuthorityState, MODEL_TOOLS,
-  type Need, NO_CONVERSATION, offersFive, type Stamped, stamped, stampOf, TA_OP, TOOL_SURFACE,
+  type Need, NO_CONVERSATION, offersFive, refusalCode, type Stamped, stamped, stampOf, TA_OP,
+  TOOL_SURFACE,
 } from "./authority";
 import { Invalid, Refused } from "./errors";
 import type { Files } from "./files";
@@ -262,13 +263,8 @@ async function scheduledSettled(storage: Storage,
   return { request: workId, status: "done", reason: null, text: assistantText(answer?.entry) };
 }
 
-/** The refusal code of a message that carries one (`code: what`), else the message. */
-function codeOf(message: string): string {
-  return /^[a-z_]+:/.exec(message)?.[0].slice(0, -1) ?? message;
-}
-
 /** Whether two stamps are the same authority, field by field. */
-function sameStamp(a: Stamped | null, b: Stamped | null): boolean {
+export function sameStamp(a: Stamped | null, b: Stamped | null): boolean {
   return a === null || b === null ? a === b
     : a.client === b.client && a.generation === b.generation
       && a.authenticated_at === b.authenticated_at && a.universe === b.universe
@@ -529,7 +525,10 @@ export class OwnerAgent {
   /** The pending waits, by the client they are for ("" for the owner's), on the instance. */
   readonly #waits = new Map<string, Set<AbortController>>();
   /** The scheduled launches' task, delivering through this agent (`#deliver`). */
-  readonly #scheduled: ScheduledTask = scheduledTask({ deliver: (input, n) => this.#deliver(input, n) });
+  readonly #scheduled: ScheduledTask = scheduledTask({
+    deliver: (input, n, signal) => this.#deliver(input, n, signal),
+    made: (input, n) => this.#made(input, n),
+  });
 
   constructor(parts: AgentParts, source: AgentSource) {
     this.#parts = parts;
@@ -537,6 +536,7 @@ export class OwnerAgent {
     this.host = new ThreadHost({
       open: (thread, onWake) => this.#open(thread, onWake),
       exists: (thread) => parts.threads.get(thread) !== null,
+      admission: () => parts.admission(),
       settled: (thread) => parts.threads.settledRun(thread),
       live: (thread, wake, from) => this.#live(thread, wake, from),
       usage: (thread, usage) => parts.usage(thread, usage),
@@ -783,52 +783,90 @@ export class OwnerAgent {
     });
   }
 
+  /** Whether occurrence `n` of a scheduled launch was submitted: pi holds its request id. */
+  async #made(input: ScheduledInput, n: number): Promise<boolean> {
+    const record = await this.host.use(input.thread, ({ storage }) =>
+      storage.submissionByRequest(ROOT, requestOf(input.work_id, n), BG));
+    return record !== undefined;
+  }
+
+  /**
+   * In a unit: how occurrence `n`'s delivery stands under the owner's rows now. Refused for
+   * good when its thread is gone or dropping, is not the one it was made in under the same
+   * stamp, or its stamp no longer stands or holds `run_graph`; held, to try again, while the
+   * owner is not admitted (`require_work`: an erased owner's object runs nothing, so this is
+   * a suspension) or the run policy as it stands has no room for it
+   * (`Threads.liveRefusal`); else null.
+   */
+  #deliveryCheck(input: ScheduledInput): Exclude<Delivered, { kind: "delivered" }> | null {
+    const { threads, authority } = this.#parts;
+    const row = threads.get(input.thread);
+    if (row === null) {
+      return { kind: "refused", reason: NO_THREAD };  // dropping: its Session ends with it
+    }
+    const state = threads.authority(row);
+    if (row.request !== input.work_id || !sameStamp(stampOf(state), input.stamp)) {
+      return { kind: "refused", reason: THREAD_AUTHORITY };
+    }
+    const unadmitted = this.#parts.admission();
+    if (unadmitted !== null) {
+      return { kind: "held", reason: refusalCode(unadmitted) };
+    }
+    const refused = authority.refusal(state, ["run_graph"]);
+    if (refused !== undefined) {
+      return { kind: "refused", reason: refused };
+    }
+    const room = threads.liveRefusal(row);
+    return room === null ? null : { kind: "held", reason: refusalCode(room) };
+  }
+
   /**
    * Deliver occurrence `n` of a scheduled launch, from its task's `deliver` phase. A
    * delivery its request id finds already made (an eviction between its submit and the
    * phase's commit) is pi's: it is not checked again, and its submit is pi's duplicate.
-   * Otherwise one unit re-checks, where it acts: the thread is the one the launch was made
-   * in, under the same stamp; the owner is admitted (`require_work`); the stamp stands and
-   * holds `run_graph` (`Grants.standing`, through the authority); and the run policy as it
-   * stands has room for it (`Threads.liveRefusal`). Then it is submitted through the host's
-   * admission, which holds it to the thread's open inputs; one with no room sleeps again.
+   * Otherwise it is submitted through the host's admission, which holds it to the thread's
+   * open inputs, and whose `admitted` step, right before pi commits it, stops on the
+   * task's abort signal (a cancel) and re-checks, in one unit, what `#deliveryCheck`
+   * reads. A refusal for good ends the task; one held (a suspension, no room in the run
+   * policy or the thread) sleeps again, backing off, so the schedule survives it.
    */
-  async #deliver(input: ScheduledInput, n: number): Promise<Delivered> {
-    const { threads, write, authority } = this.#parts;
+  async #deliver(input: ScheduledInput, n: number, signal: AbortSignal): Promise<Delivered> {
     const request = requestOf(input.work_id, n);
-    const made = await this.host.use(input.thread, ({ storage }) =>
-      storage.submissionByRequest(ROOT, request, BG));
-    if (made === undefined) {
-      const reason = await write((): string | null => {
-        const row = threads.get(input.thread);
-        if (row === null) {
-          return NO_THREAD;  // dropping: its Session ends with its drop
-        }
-        const state = threads.authority(row);
-        if (row.request !== input.work_id || !sameStamp(stampOf(state), input.stamp)) {
-          return THREAD_AUTHORITY;
-        }
-        return this.#parts.admission() ?? authority.refusal(state, ["run_graph"])
-          ?? threads.liveRefusal(row);
-      });
-      if (reason !== null) {
-        return { kind: "refused", reason: codeOf(reason) };
+    const made = await this.#made(input, n);
+    let checked: Delivered | null = null;
+    const admitted = made ? undefined : async () => {
+      if (signal.aborted) {
+        throw signal.reason ?? new Error("the delivery was cancelled");
       }
-    }
+      checked = await this.#parts.write(() => this.#deliveryCheck(input));
+      if (checked !== null) {
+        throw new Refused(checked.reason);
+      }
+    };
     try {
       await this.host.submit(input.thread, input.input, {
         operationId: request, whenBusy: "followUp",
         entry: { kind: WORK_ENTRY, data: { work_id: input.work_id,
                                            client: input.stamp?.client ?? null } },
+        ...(admitted === undefined ? {} : { admitted }),
       });
     } catch (error) {
+      if (checked !== null) {
+        return checked;
+      }
+      if (signal.aborted) {
+        throw error;
+      }
       if (error instanceof Refused
           && (error.message === THREAD_INPUTS_FULL || error.message === SESSIONS_FULL)) {
-        return { kind: "full" };
+        return { kind: "held", reason: refusalCode(error.message) };
       }
       if (error instanceof Refused
           && (error.message === RUN_SETTLED || error.message === THREAD_DROPPED)) {
-        return { kind: "refused", reason: codeOf(error.message) };
+        return { kind: "refused", reason: refusalCode(error.message) };
+      }
+      if (error instanceof Refused && error.message === this.#parts.admission()) {
+        return { kind: "held", reason: refusalCode(error.message) };
       }
       throw error;
     }
@@ -864,8 +902,9 @@ export class OwnerAgent {
 
   /**
    * Cancel a scheduled launch of `thread`: its task aborted (`abortTask`, at once from a
-   * sleep), and the delivery it last made withdrawn, or the run it joined aborted; whether
-   * either did anything.
+   * sleep) and waited on until it ends, which says truly how many occurrences it delivered
+   * (one being delivered as the cancel lands, too: its abort handler asks pi); then the
+   * last of them withdrawn, or the run it joined aborted. Whether either did anything.
    */
   cancelScheduled(thread: Thread, workId: string): Promise<boolean> {
     return this.host.use(thread.thread_id, async ({ pi, storage }) => {
@@ -875,8 +914,12 @@ export class OwnerAgent {
       if (record === undefined) {
         return false;
       }
-      const stands = standing(record);
-      const aborted = stands.ended === null && await pi.abortTask(record.id, BG) === "marked";
+      let stands = standing(record);
+      let aborted = false;
+      if (stands.ended === null) {
+        aborted = await pi.abortTask(record.id, BG) === "marked";
+        stands = standing(await pi.waitForTask(record.id, BG));
+      }
       const withdrawn = stands.delivered > 0
         && await this.host.withdraw(thread.thread_id, requestOf(workId, stands.delivered));
       return aborted || withdrawn;
@@ -1125,12 +1168,16 @@ export class OwnerAgent {
 
   /**
    * End one Session's work: the live views of its root and of every conversation with live
-   * work closed (`views`), then each of those aborted, background work included. A policy
-   * write's ending (`sleepers` kept) aborts each conversation's ordinary work and each
-   * background task that runs, but never a sleeping task nor a scheduled launch's: those
-   * meet the policy as it stands when they wake (`#deliver`).
+   * work closed (`views`), then each of those aborted, background work included (`keep`
+   * none: a drop's). A policy write's ending (`keep` `sleepers`) aborts each conversation's
+   * ordinary work, a run's own sleeping retry among it, and each background task that is
+   * not asleep, never a scheduled launch's: a sleeping background task and a schedule meet
+   * the policy as it stands when they wake (`#deliver`). A suspension's (`keep`
+   * `scheduled`) aborts all of it, asleep or not, but a scheduled launch's task, whose
+   * delivery re-checks the admission. The tasks it aborts are those live as it looks.
    */
-  async #endSession(pi: Harness, views: boolean, sleepers = false): Promise<void> {
+  async #endSession(pi: Harness, views: boolean,
+                    keep: "none" | "sleepers" | "scheduled" = "none"): Promise<void> {
     const inspection = await pi.inspect(BG);
     const live = new Set<ConversationId>([ROOT,
       ...inspection.tasks.map((task) => task.record.conversationId),
@@ -1143,7 +1190,7 @@ export class OwnerAgent {
         }
       }
     }
-    if (!sleepers) {
+    if (keep === "none") {
       await Promise.all([...live].map(async (id) =>
         (await pi.conversation(id, BG))?.abort(BG, { background: true })));
       return;
@@ -1152,7 +1199,7 @@ export class OwnerAgent {
     // neither asleep nor a scheduled launch's, background ones aborted by their ids, every
     // one waited on until it is terminal, as an abort across background boundaries waits.
     const ending = inspection.tasks.filter(({ record, state }) =>
-      record.kind !== SCHEDULED && state.kind !== "sleeping");
+      record.kind !== SCHEDULED && (keep === "scheduled" || state.kind !== "sleeping"));
     await Promise.all([...live].map(async (id) => (await pi.conversation(id, BG))?.abort(BG)));
     await Promise.all(ending.filter(({ record }) => record.background)
       .map(({ record }) => pi.abortTask(record.id, BG)));
@@ -1198,26 +1245,45 @@ export class OwnerAgent {
   }
 
   /**
-   * A policy write, or a suspension, ends every thread's running work: every wait, every
-   * view, and the work of each thread with work running (its live row active, or an open
-   * Session working), opened if need be: an ending's open is never refused, and aborts
-   * before the Session resumes (`ThreadHost.end`), so the endings run in batches of the
-   * host's bound: never more Sessions open for them at once than the bound allows. A sleeping
-   * thread is left asleep, and a sleeping task or a scheduled launch in a working one is
-   * left too (`#endSession`): each meets the policy as it stands when it wakes. A thread
-   * whose work could not be ended rejects this, so the door rejects too.
+   * A policy write ends every thread's running work: every wait, every view, and the work
+   * of each thread with work running (its live row active, or an open Session working),
+   * opened if need be, but no sleeping task and no scheduled launch (`#endSession`'s
+   * `sleepers`): each meets the policy as it stands when it wakes.
    */
-  async endAll(): Promise<void> {
-    this.#endWaits();
-    this.#parts.tee.close();
+  endAll(): Promise<void> {
     const running = new Set([...this.#parts.threads.active(),
       ...this.host.openThreads().filter((thread) => this.host.peek(thread)?.pi.wake().active)]);
-    const threads = [...running];
+    return this.#endThreads([...running], "sleepers");
+  }
+
+  /**
+   * A suspension ends the work of every thread with a live row, working or asleep (a run in
+   * pi's retry backoff or deferred poll among them), and of each open Session working:
+   * everything but the scheduled launches' tasks, whose deliveries are held while the owner
+   * is suspended. The abort is the prompt stop: every model call, tool call and new input is
+   * refused while the owner is not admitted.
+   */
+  endUnadmitted(): Promise<void> {
+    const live = new Set([...this.#parts.threads.liveThreads(),
+      ...this.host.openThreads().filter((thread) => this.host.peek(thread)?.pi.wake().active)]);
+    return this.#endThreads([...live], "scheduled");
+  }
+
+  /**
+   * End `threads`' work, keeping what `keep` says: every wait and view first, then each
+   * thread opened if need be: an ending's open is never refused, and aborts before the
+   * Session resumes (`ThreadHost.end`), so the endings run in batches of the host's bound,
+   * never more Sessions open for them at once than the bound allows. A thread whose work
+   * could not be ended rejects this, so the door rejects too.
+   */
+  async #endThreads(threads: readonly string[], keep: "sleepers" | "scheduled"): Promise<void> {
+    this.#endWaits();
+    this.#parts.tee.close();
     await this.#within((async () => {
       for (let at = 0, size = Math.max(1, this.host.openMax); at < threads.length;
            at += size) {
         await Promise.all(threads.slice(at, at + size).map((thread) =>
-          this.host.end(thread, ({ pi }) => this.#endSession(pi, false, true))));
+          this.host.end(thread, ({ pi }) => this.#endSession(pi, false, keep))));
       }
     })());
   }
