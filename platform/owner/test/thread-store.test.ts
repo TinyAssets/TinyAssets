@@ -91,6 +91,7 @@ function faulty(store: StoreRpc, fails: { reads: number; commits: number },
       return { next, session: wrap(session) };
     },
     attach: async (holder) => wrap(await store.attach(holder)),
+    answer: (request) => store.answer(request),
     size: () => store.size(),
     destroy: () => store.destroy(),
   };

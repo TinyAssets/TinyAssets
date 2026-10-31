@@ -113,7 +113,7 @@ import {
 } from "./ledger";
 import { type Notice, Notices } from "./notices";
 import { Erasure } from "./erase";
-import { ERASING, erasing } from "./erasure";
+import { ERASE_RETRY_MS, ERASING, erasing } from "./erasure";
 import {
   agentPolicy, type Change, fileSettings, modelSettings, Policy, type PolicyDocument,
   type Projection, type Receipt, runPolicy,
@@ -129,7 +129,7 @@ import { AGENTS_DIR, AGENTS_OWNER_ONLY, storedPath, within, WORKSPACE } from "./
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
 import {
-  type Receipt as RunReceipt, retainThreads, type Thread, THREAD_LIMITS, THREAD_RETENTION,
+  type ReceiptView, retainThreads, type Thread, THREAD_LIMITS, THREAD_RETENTION,
   threadAuthority, type ThreadReader, Threads,
 } from "./threads";
 import { codePoints, principal } from "./text";
@@ -285,6 +285,8 @@ export interface Operation {
   readonly status: "queued" | "running" | "parked" | "scheduled" | "done" | "unanswered";
   readonly reason?: string;
   readonly text?: string;
+  /** True when `text` is only the first 4 KiB of a run's answer, its store wiped. */
+  readonly truncated?: boolean;
   /** When scheduled work is due, in seconds. */
   readonly due?: number;
 }
@@ -604,17 +606,19 @@ const AGENT_DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const OPERATION = /^(thread_[0-9a-f]{32})\.([0-9a-f]{64}|run_[0-9a-f]{32}|work_[0-9a-f]{32})$/;
 
 /**
- * How an operation of a settled run stands, from its receipt: its input's settling; any
- * other request id, or a run pi was never handed an input in, is one pi never saw
- * (`not_found`).
+ * How an operation of a settled run stands, from its receipt: its input's settling, its
+ * answer's text marked `truncated` when the receipt holds only its first 4 KiB; any other
+ * request id, or a run pi was never handed an input in, is one pi never saw (`not_found`).
  */
-function receiptStatus(receipt: RunReceipt, key: string): OperationResult {
+function receiptStatus(receipt: ReceiptView, key: string):
+    OperationResult & { readonly truncated?: boolean } {
   if (receipt.request !== key) {
     return { operationId: key, status: "unanswered", reason: "not_found" };
   }
   return { operationId: key, status: receipt.status,
            ...(receipt.reason === null ? {} : { reason: receipt.reason }),
-           ...(receipt.status === "done" ? { text: receipt.text } : {}) };
+           ...(receipt.status === "done" ? { text: receipt.text } : {}),
+           ...(receipt.truncated ? { truncated: true } : {}) };
 }
 
 /** An operation's id: the thread it runs in, and pi's request id in that thread. */
@@ -802,6 +806,12 @@ export function workRunner(threads: ThreadReader, agent: Pick<OwnerAgent, "submi
 /** Builds the object's agent from its parts. */
 export type AgentFactory = (parts: AgentParts) => OwnerAgent;
 
+/** What a test reaches past the doors: the erasure's internal path and its retry interval. */
+export interface Internals {
+  readonly erasure?: (internal: Erasure) => void;
+  readonly eraseRetryMs?: number;
+}
+
 export class OwnerDO extends DurableObject<OwnerEnv> {
   /** The one write gate: every owner write is one synchronous unit. */
   readonly #gate: WriteGate;
@@ -846,7 +856,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * faux models, and take the erasure's internal path (`erasure`), which no door reaches.
    */
   constructor(ctx: DurableObjectState, env: OwnerEnv, agent: AgentFactory = gatewayAgent,
-              erasure: (internal: Erasure) => void = () => {}) {
+              internals: Internals = {}) {
     super(ctx, env);
     this.#gate = new WriteGate(ctx.storage);
     const storage = this.#gate.storage;
@@ -926,9 +936,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#erasure = new Erasure({
       storage, write, clock, threads: this.#threads, ended: () => this.#agent.erasing(),
       drop: (thread) => this.#agent.drop(thread), lifecycle,
-      wipe: () => this.#gate.wipe(),
+      wipe: () => this.#gate.wipe(), retryMs: internals.eraseRetryMs ?? ERASE_RETRY_MS,
     });
-    erasure(this.#erasure);
+    internals.erasure?.(this.#erasure);
     this.#lifecycle = lifecycle.use(this.#schedule).use(this.#agent.host).use(this.#erasure);
     void ctx.blockConcurrencyWhile(async () => {
       await write(() => migrate(storage));
@@ -1572,7 +1582,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const id = thread?.thread_id ?? receipt!.thread_id;
     const base = { operation_id: operationOf(id, key), thread_id: id };
     const status = thread !== null ? await this.#agent.status(thread, key)
-      : receiptStatus(receipt!, key);
+      : await this.#settledStatus(receipt!, key);
     if (status.status === "unanswered" && status.reason === "not_found" && work !== null) {
       // Not handed to pi yet, or never to be: the work row says how it stands.
       if (work.state === "pending" || work.state === "running") {
@@ -1584,7 +1594,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
     return { ...base, status: status.status,
              ...(status.reason === undefined ? {} : { reason: status.reason }),
-             ...(status.text === undefined ? {} : { text: status.text }) };
+             ...(status.text === undefined ? {} : { text: status.text }),
+             ...("truncated" in status && status.truncated === true ? { truncated: true } : {}) };
   }
 
   /**
@@ -1661,6 +1672,23 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
              status: "queued" };
   }
 
+  /**
+   * A settled run's status: its receipt's, and, when the receipt holds only the first 4 KiB
+   * of its answer, the whole answer read from its store while the store is there (a pure
+   * read: no Session opened, no holder claimed, its retention unmoved); once the store is
+   * wiped, the receipt's, marked `truncated`.
+   */
+  async #settledStatus(receipt: ReceiptView, key: string):
+      Promise<OperationResult & { readonly truncated?: boolean }> {
+    const kept = receiptStatus(receipt, key);
+    if (kept.truncated !== true) {
+      return kept;
+    }
+    const whole = await this.#agent.answer(receipt.thread_id, key);
+    return whole?.status === "done" && whole.text !== undefined
+      ? { operationId: key, status: "done", text: whole.text } : kept;
+  }
+
   /** The bounded wait for a submitted operation; past `waitMs`, `running`. */
   async #awaited(thread: Thread, key: string, client: string | null, waitMs: number):
       Promise<Operation> {
@@ -1687,7 +1715,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * too.
    */
   #operation(account: Account, value: unknown):
-      { thread: Thread | null; receipt: RunReceipt | null; client: string | null;
+      { thread: Thread | null; receipt: ReceiptView | null; client: string | null;
         key: string } {
     const match = typeof value === "string" ? OPERATION.exec(value) : null;
     const client = account.origin?.client ?? null;
@@ -1823,7 +1851,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   #bind(binding: Binding): { owner: string; caller: string } {
     if (this.#erasure.erased || erasing(this.#storage)) {
-      this.#erasure.resume();
+      this.#erasure.resume(true);
       throw new Refused(ERASING);
     }
     if (typeof binding !== "object" || binding === null) {

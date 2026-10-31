@@ -120,10 +120,10 @@ import { RemoteStorage } from "./remote-storage";
 import { inTime } from "./schedule";
 import { PLATFORM_NAMES, type Platform, reachable, taTool } from "./ta";
 import {
-  assistantText, HOST_TIMING, type HostTiming, type Opened, type OperationResult,
+  HOST_TIMING, type HostTiming, type Opened, type OperationResult,
   type SubmitOptions, ThreadHost,
 } from "./thread-host";
-import type { StoreRpc } from "./thread-store";
+import { type Answer, assistantText, type StoreRpc } from "./thread-store";
 import {
   addedUsage, type Settled, type Thread, threadAuthority, type ThreadKind, type Threads,
 } from "./threads";
@@ -180,6 +180,8 @@ export const GATE = "ta.authority";
 export const TA_EXTENSION = "ta.tool";
 /** A thread with no row is never opened: it was dropped, or never made. */
 export const NO_THREAD = "no such thread";
+/** How long a cut-off Session's usage is waited for, before its row is forgotten. */
+const CUT_OFF_USAGE_MS = 1_000;
 /** How many of a run's first root submissions its receipt's read looks through. */
 const RECEIPT_SCAN = 8;
 
@@ -668,10 +670,32 @@ export class OwnerAgent {
     return this.host.pi(typeof thread === "string" ? thread : thread.thread_id);
   }
 
-  /** Submit `input` to a thread's root (`ThreadHost.submit`). */
-  submit(thread: Thread, input: string, options: SubmitOptions):
+  /**
+   * Submit `input` to a thread's root (`ThreadHost.submit`); a run is first told, in a unit,
+   * the request id of the input it is handed, so its receipt names it however it ends.
+   */
+  async submit(thread: Thread, input: string, options: SubmitOptions):
       Promise<{ operationId: string; accepted: boolean }> {
+    if (thread.kind === "run") {
+      await this.#parts.write(() => this.#parts.threads.handed(thread.thread_id,
+                                                               options.operationId));
+    }
     return this.host.submit(thread.thread_id, input, options);
+  }
+
+  /**
+   * How a run's input `request` stands in its store, its whole answer once done, while the
+   * store is there: a pure read (`ThreadStore.answer`), never a Session's open or a holder's
+   * claim; null once its row or store is gone, or the store does not answer in time.
+   */
+  async answer(threadId: string, request: string): Promise<Answer | null> {
+    const row = this.#parts.threads.row(threadId);
+    if (row === null) {
+      return null;
+    }
+    const read = this.#parts.stores(row.store).answer(request).catch(() => null);
+    const answered = await inTime(read, END_WAIT_MS);
+    return answered === "late" ? null : answered;
   }
 
   /** Withdraw an operation of a thread, or abort the run it joined. */
@@ -710,10 +734,21 @@ export class OwnerAgent {
     if (threads.row(id)?.state !== "dropping") {
       throw new Error("only a thread marked dropping is dropped");
     }
-    const ending = this.host.drop(id, ({ pi }) => this.#endSession(pi, true));
+    let ended: Harness | undefined;
+    const ending = this.host.drop(id, ({ pi }) => {
+      ended = pi;
+      return this.#endSession(pi, true);
+    });
     if (await inTime(ending, END_WAIT_MS) === "late") {
       ending.catch(() => undefined);
       console.error("a dropped thread's Session did not close in time; it is cut off");
+      // Its usage as it stands, kept now: it closes, if it does, after its row is gone.
+      const usage = ended?.usage(BG).catch(() => undefined);
+      const read = usage === undefined ? undefined : await inTime(usage, CUT_OFF_USAGE_MS);
+      if (read !== undefined && read !== "late") {
+        await this.#parts.usage(id, read).catch(() => console.error(
+          "a cut-off Session's usage could not be kept"));
+      }
     }
     await this.#parts.stores(thread.store).destroy();
     const [rearmed] = await write((): [Promise<unknown>] | [] =>

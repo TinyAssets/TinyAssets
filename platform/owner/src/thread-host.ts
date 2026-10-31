@@ -77,6 +77,7 @@ import {
 
 import { Refused } from "./errors";
 import { inTime } from "./schedule";
+import { assistantText } from "./thread-store";
 
 const BG = BACKGROUND_CONTEXT;
 const ROOT = ROOT_CONVERSATION_ID;
@@ -220,17 +221,6 @@ export function memoryLimitReset(error: unknown): boolean {
     current = current instanceof Error ? current.cause : undefined;
   }
   return false;
-}
-
-/** The text of an assistant entry, for an operation's result. */
-export function assistantText(entry: EntryRecord | undefined): string {
-  const message = (entry as { model?: readonly unknown[] } | undefined)?.model?.[0] as
-    { role?: string; content?: readonly { type: string; text?: string }[] } | undefined;
-  if (message?.role !== "assistant") {
-    return "";
-  }
-  return (message.content ?? []).map((part) => (part.type === "text" ? part.text ?? "" : ""))
-    .join("");
 }
 
 export class ThreadHost extends LifecycleCapability {
@@ -783,7 +773,10 @@ export class ThreadHost extends LifecycleCapability {
     } else if (wake.at !== undefined) {
       await this.#wake(thread, wake.at);
     }
-    await this.#parts.live(thread, wake, opened);
+    // The wake as it stands once the job is in place, not as it stood before: a Session
+    // whose work ended meanwhile (an open's reconcile pass) never has a stale "running"
+    // kept after its own later report.
+    await this.#parts.live(thread, opened?.pi.wake() ?? wake, opened);
   }
 
   /** A Session's `onWake`: off its line, never blocking. */
@@ -810,7 +803,8 @@ export class ThreadHost extends LifecycleCapability {
     if (!this.#parts.exists(thread)) {
       return undefined;
     }
-    const { opened: { pi }, slot } = await this.#open(thread);
+    const { opened, slot } = await this.#open(thread);
+    const { pi } = opened;
     this.#release(slot);
     pi.resume();
     const wake = pi.wake();
@@ -835,6 +829,14 @@ export class ThreadHost extends LifecycleCapability {
     }
     if (wake.at !== undefined) {
       return { rescheduleAt: wake.at };
+    }
+    // Nothing runs and nothing sleeps: the live row is rewritten from the Session (a stale
+    // "running" one cleared, a run that settled kept so) before the job completes; a write
+    // whose read does not answer within a heartbeat leaves the job to try again.
+    const kept = this.#parts.live(thread, wake, opened).then(() => true, () => false);
+    if (await inTime(kept, this.#timing.heartbeatMs) !== true) {
+      console.error("a thread's wake could not be kept; its job tries again");  // no ids
+      return heartbeat;
     }
     return undefined;
   }

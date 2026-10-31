@@ -103,6 +103,8 @@ export interface Probes {
   destroyFails: number;
   /** Awaited by each destroy before it runs, when set. */
   destroyGate: Promise<void> | null;
+  /** Awaited by each store read of `scanSubmissions` (a run's settling), when set. */
+  scanGate: Promise<void> | null;
 }
 
 /** A store as its destroy found it. */
@@ -118,11 +120,16 @@ export function freshProbes(): Probes {
            submitted: [],
            background: null, backgroundGate: null, backgroundRuns: 0, toolGate: null, gated: [], nestGate: null,
            rewrite: null, widen: null, inject: null, writeGate: null, writes: 0,
-           storeCalls: {}, wiped: new Map(), destroyFails: 0, destroyGate: null };
+           storeCalls: {}, wiped: new Map(), destroyFails: 0, destroyGate: null,
+           scanGate: null };
 }
 
-/** A store whose sessions' calls are counted into `calls()`, by method. */
-function countedStore(store: StoreRpc, calls: () => Record<string, number>): StoreRpc {
+/**
+ * A store whose sessions' calls are counted into `calls()`, by method, each submissions scan
+ * held at `gates()`'s `scanGate`.
+ */
+function countedStore(store: StoreRpc, calls: () => Record<string, number>,
+                      gates: () => Probes | undefined = () => undefined): StoreRpc {
   const count = (method: string) => {
     const kept = calls();
     kept[method] = (kept[method] ?? 0) + 1;
@@ -132,8 +139,11 @@ function countedStore(store: StoreRpc, calls: () => Record<string, number>): Sto
       count("commit");
       return session.commit(writes);
     },
-    read: (method, args) => {
+    read: async (method, args) => {
       count(method);
+      if (method === "scanSubmissions") {
+        await gates()?.scanGate;
+      }
       return session.read(method, args);
     },
     [Symbol.dispose]: () => (session as Partial<Disposable>)[Symbol.dispose]?.(),
@@ -147,6 +157,10 @@ function countedStore(store: StoreRpc, calls: () => Record<string, number>): Sto
     attach: async (holder) => {
       count("attach");
       return counted(await store.attach(holder));
+    },
+    answer: (request) => {
+      count("answer");
+      return store.answer(request);
     },
     size: () => store.size(),
     destroy: () => store.destroy(),
@@ -163,6 +177,7 @@ export function wipeWatched(store: StoreRpc, name: string, probes: () => Probes,
   return {
     open: (holder) => store.open(holder),
     attach: (holder) => store.attach(holder),
+    answer: (request) => store.answer(request),
     size: () => store.size(),
     destroy: async () => {
       const kept = probes();
@@ -587,12 +602,13 @@ export class FauxOwnerDO extends OwnerDO {
         return parts.write(unit);
       };
       const stores: AgentParts["stores"] = (name) => wipeWatched(
-        countedStore(parts.stores(name), () => made.self!.probes.storeCalls), name,
+        countedStore(parts.stores(name), () => made.self!.probes.storeCalls,
+                     () => made.self?.probes), name,
         () => made.self!.probes, () => made.agent!.host.openThreads());
       made.agent = new OwnerAgent({ ...parts, write, stores }, {
         models: () => models, timing, ...testExtensions(() => made.self!.probes) });
       return made.agent;
-    }, (erasure) => { made.erasure = erasure; });
+    }, { erasure: (erasure) => { made.erasure = erasure; }, eraseRetryMs: 500 });
     made.self = this;
     this.erasure = made.erasure!;
     this.agent = made.agent!;

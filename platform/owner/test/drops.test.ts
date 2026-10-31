@@ -28,7 +28,7 @@ import {
 } from "../src/policy";
 import { holderId } from "../src/remote-storage";
 import { namedByOpenWork } from "../src/scheduled";
-import { HOST, wakeJob } from "../src/thread-host";
+import { HOST, PARKED, wakeJob } from "../src/thread-host";
 import { DESTROYED } from "../src/thread-store";
 import {
   DROP_NOTICE_AFTER, DROP_RETRY_S, DROP_STUCK, foldedUsage, RECEIPT_TEXT_MAX, retainThreads,
@@ -393,9 +393,7 @@ describe("a run's retention (S5)", () => {
     const long = "é".repeat(3_000);  // an answer past the receipt's 4 KiB
     const run = await r.stub.agentRun(r.bind(null), { agent: "main", input: long });
     const done = await r.settled(r.bind(null), run.operation_id);
-    // Settled, it answers from its receipt: the first 4 KiB of its answer.
-    expect(done.status).toBe("done");
-    expect(`echo: ${long}`.startsWith(done.text!)).toBe(true);
+    expect(done).toMatchObject({ status: "done", text: `echo: ${long}` });
     const [thread] = await r.threads();
     // It settled once, its receipt kept in the same unit, by when it settled.
     expect(thread!.settled_at).not.toBeNull();
@@ -406,8 +404,10 @@ describe("a run's retention (S5)", () => {
     const opens = () => r.in((instance) => instance.probes.storeCalls["open"] ?? 0);
     const before = await opens();
     for (let i = 0; i < 3; i++) {
+      // Its whole answer, read from its store while it is there: no Session, no claim.
       expect(await r.stub.agentStatus(r.bind(null), { operation_id: run.operation_id }))
-        .toMatchObject({ status: "done" });
+        .toEqual({ operation_id: run.operation_id, thread_id: thread!.thread_id,
+                   status: "done", text: `echo: ${long}` });
     }
     expect(await opens()).toBe(before);
     expect(await r.in((instance) => instance.agent.host.openThreads())).toEqual([]);
@@ -422,8 +422,9 @@ describe("a run's retention (S5)", () => {
     expect(await storeState(thread!.store)).toEqual(WIPED);
     expect(await r.threads()).toEqual([]);
     const answered = await r.stub.agentStatus(r.bind(null), { operation_id: run.operation_id });
+    // Once its store is wiped, its receipt's first 4 KiB, marked as cut.
     expect(answered).toEqual({ operation_id: run.operation_id, thread_id: thread!.thread_id,
-                               status: "done",
+                               status: "done", truncated: true,
                                text: utf8Prefix(`echo: ${long}`, RECEIPT_TEXT_MAX) });
     expect(new TextEncoder().encode(answered.text!).length).toBeLessThanOrEqual(4096);
     expect(answered.text!.length).toBeGreaterThan(2000);
@@ -449,6 +450,9 @@ describe("a run's retention (S5)", () => {
     expect(await r.retain()).toBe(0);
     const [kept] = await r.threads();
     expect(kept!.state).toBe("ready");
+    // Its input answered, its background work running: it has not settled.
+    expect(kept!.settled_at).toBeNull();
+    expect(await sqlIn(r.stub, "SELECT 1 FROM run_receipts")).toEqual([]);
     expect(await piTables(kept!.store)).toBeGreaterThan(0);
     await sleep(1100);
     held.release();
@@ -1071,4 +1075,180 @@ describe("S4-S5 review round 1", () => {
     expect(sum).toBe(60);
     expect(total.models["p/m30"]).toEqual({ input: 2, cost: { total: 4 } });
   });
+});
+
+describe("S4-S5 review round 2", () => {
+  it("keeps a run whose input is answered while a task of it sleeps: not settled, not wiped",
+     async () => {
+    const r = await rig();
+    const thread = await r.in(async (instance) => {
+      const made = await instance.agent.thread("main", null);
+      const pi = await instance.agent.host.pi(made.thread_id);
+      const root = (await pi.conversation(1 as never, BG))!;
+      await root.commit((tx) => tx.createTask(Reminder, { until: Date.now() + 3_600_000 },
+                                              { ownership: { kind: "conversation" },
+                                                background: true }), BG);
+      pi.resume();
+      await instance.agent.submit(made, "hello", { operationId: `run_${"1".repeat(32)}` });
+      expect((await instance.agent.host.settled(made.thread_id, `run_${"1".repeat(32)}`))
+        .status).toBe("done");
+      return made;
+    });
+    await until(async () => (await sqlIn(r.stub, "SELECT wake_at FROM agent_live WHERE " +
+                                                 "thread_id = ?", thread.thread_id))[0]?.[
+      "wake_at"] !== undefined && (await sqlIn(r.stub, "SELECT active FROM agent_live"))[0]?.[
+      "active"] === 0, "the sleeper's wake");
+    await r.in((instance) => instance.agent.host.close(thread.thread_id));
+    await sleep(1100);
+    expect(await r.retain()).toBe(0);
+    const [row] = await r.threads();
+    expect([row!.state, row!.settled_at]).toEqual(["ready", null]);
+    expect(await sqlIn(r.stub, "SELECT 1 FROM run_receipts")).toEqual([]);
+    expect(await piTables(thread.store)).toBeGreaterThan(0);
+  }, 30_000);
+
+  it("settles a run whose Session reports idle with its input still placed only once the " +
+     "input settles: a parked run", async () => {
+    const r = await rig();
+    const name = r.owner;
+    const reply = (messages: Message[]) => {
+      const last = messages.at(-1);
+      if (last?.role === "toolResult") {
+        return says("tool done");
+      }
+      return JSON.stringify(last).includes("look")
+        ? fauxAssistantMessage([fauxToolCall("read", { path: "a.md" })],
+                               { stopReason: "toolUse" })
+        : says("noted");
+    };
+    const inside = <R>(act: (i: FauxOwnerDO) => R | Promise<R>) =>
+      runInDurableObject(r.stub, async (i: FauxOwnerDO) => {
+        i.script = Array.from({ length: 200 }, () => reply);
+        i.probes.readGate = new Promise(() => undefined);  // the read never ends
+        return act(i);
+      });
+    await r.stub.fileWrite({ owner: name, caller: name, origin: null },
+                           { path: "/workspace/a.md", expected_etag: null,
+                             content: new TextEncoder().encode("alpha") });
+    const request = `run_${"2".repeat(32)}`;
+    const thread = await inside(async (i) => {
+      const made = await i.agent.thread("main", null);
+      await i.agent.submit(made, "look", { operationId: request });
+      await until(() => i.probes.reads === 1, "the read to start");
+      return made;
+    });
+    const parked = async () => (await inside((i) => i.parts.notices.list()))
+      .some((notice) => notice.type === PARKED);
+    for (let n = 0; n < 8 && !await parked(); n++) {
+      await crash(r);
+      await inside(() => undefined);
+      for (let k = 0, got = 0; k < 20 && got === 0; k++) {
+        await sleep(400);
+        await runDurableObjectAlarm(r.stub);
+        await sleep(200);
+        got = await inside((i) => i.probes.reads);
+      }
+    }
+    await until(async () => (await sqlIn(r.stub, "SELECT 1 FROM run_receipts")).length === 1,
+                "the parked run to settle", 20_000);
+    const stored = await storeSql(thread.store, "SELECT json_extract(record, '$.reason') AS " +
+                                                "reason FROM pi_submissions WHERE " +
+                                                "json_extract(record, '$.requestId') = ?",
+                                  request);
+    // Its receipt is how its input settled, never a guess from an idle Session.
+    expect(await sqlIn(r.stub, "SELECT request, status, reason FROM run_receipts"))
+      .toEqual([{ request, status: "unanswered", reason: stored[0]!["reason"] }]);
+  }, 120_000);
+
+  it("rewrites a stale \"running\" row from the Session when its job finds nothing to do, " +
+     "and settles the run", async () => {
+    const r = await rig();
+    const held = gate();
+    await r.in((instance) => { instance.probes.holdGate = held.promise; });
+    const run = await r.stub.agentRun(r.bind(null), { agent: "main", input: "hold please" });
+    await until(() => r.in((instance) => instance.probes.holds === 1), "the hold to start");
+    await r.in((instance) => { instance.probes.scanGate = new Promise(() => undefined); });
+    held.release();
+    const [thread] = await r.threads();
+    const store = thread!.store;
+    await until(async () => (await storeSql(store, "SELECT status FROM pi_submissions"))[0]?.[
+      "status"] === "done", "the run's input to be answered");
+    // Its settling's read is held, so its row still says it runs, and its job, which found
+    // nothing to do but could not keep that, hands its step back to try again.
+    expect(await sqlIn(r.stub, "SELECT active FROM agent_live")).toEqual([{ active: 1 }]);
+    await until(async () => (await sqlIn(r.stub, "SELECT running FROM cf_agents_jobs WHERE " +
+                                                 "capability = ?", HOST))[0]?.["running"] === 0,
+                "the job to hand the step back");
+    expect(await sqlIn(r.stub, "SELECT active FROM agent_live")).toEqual([{ active: 1 }]);
+    // With the store answering again, the job's next step rewrites the row from the
+    // Session, which settles the run: the Session's own report is long past.
+    await r.in((instance) => { instance.probes.scanGate = null; });
+    await until(async () => (await sqlIn(r.stub, "SELECT 1 FROM agent_live")).length === 0
+                            && (await r.threads())[0]?.settled_at !== null, "the row's rewrite");
+    expect(await r.stub.agentStatus(r.bind(null), { operation_id: run.operation_id }))
+      .toMatchObject({ status: "done", text: "tools answered" });
+  }, 30_000);
+
+  it("keeps a receipt naming the input of a run whose settling was never seen", async () => {
+    const r = await rig();
+    const held = gate();
+    await r.in((instance) => { instance.probes.holdGate = held.promise; });
+    const run = await r.stub.agentRun(r.bind(null), { agent: "main", input: "hold please" });
+    await until(() => r.in((instance) => instance.probes.holds === 1), "the hold to start");
+    // No job and no live row are left to see it settle: a crash with both lost.
+    await r.in((_instance, state) => {
+      state.storage.sql.exec("DELETE FROM cf_agents_jobs WHERE capability = ?", HOST);
+      state.storage.sql.exec("DELETE FROM agent_live");
+    });
+    await crash(r);
+    await sleep(1100);
+    expect(await r.retain()).toBe(1);
+    expect(await sqlIn(r.stub, "SELECT request, status, reason FROM run_receipts"))
+      .toEqual([{ request: run.operation_id.split(".")[1], status: "unanswered",
+                  reason: "dropped" }]);
+    expect(await r.stub.agentStatus(r.bind(null), { operation_id: run.operation_id }))
+      .toMatchObject({ status: "unanswered", reason: "dropped" });
+    held.release();
+  }, 30_000);
+
+  it("keeps a cut-off Session's usage in the owner's total", async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    await r.in((instance) => { instance.probes.holdGate = new Promise(() => undefined); });
+    await r.stub.agentRun(r.bind(MUSE), { agent: "main", input: "hold please" });
+    await until(() => r.in((instance) => instance.probes.holds === 1), "the hold to start");
+    const [thread] = await r.threads();
+    await r.in((instance) => {
+      const host = instance.agent.host;
+      Object.defineProperty(host, "drop", { configurable: true,
+        value: (id: string, act: (opened: unknown) => Promise<void>) => {
+          void act(host.peek(id)).catch(() => undefined);
+          return new Promise(() => {});  // its Session never closes
+        } });
+    });
+    await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
+    await until(async () => (await keyed(r, thread!.thread_id)).row === 0, "the drop", 20_000);
+    const total = JSON.parse((await sqlIn(r.stub, "SELECT usage FROM agent_usage_total"))[0]![
+      "usage"] as string) as UsageTotals;
+    expect(Object.keys(total.models).length).toBeGreaterThan(0);
+    await r.in((instance) => {
+      delete (instance.agent.host as unknown as Record<string, unknown>)["drop"];
+    });
+  }, 30_000);
+
+  it("resumes a failed erasure from a refused door, at most once a retry interval",
+     async () => {
+    const r = await rig();
+    await r.in(async (instance) => {
+      await instance.agent.thread("main", null);
+      instance.probes.destroyFails = 1;
+      await instance.erasure.erase().catch(() => undefined);
+    });
+    expect((await failure(() => r.stub.policyRead(r.bind(null)))).message).toBe(ERASING);
+    await sleep(200);
+    expect(await r.in((instance) => instance.erasure.erased)).toBe(false);  // within its wait
+    await sleep(500);
+    expect((await failure(() => r.stub.policyRead(r.bind(null)))).message).toBe(ERASING);
+    await until(() => r.in((instance) => instance.erasure.erased), "the door's resume");
+  }, 30_000);
 });

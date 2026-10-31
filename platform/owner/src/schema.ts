@@ -862,7 +862,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // failures counted (`drop_failures`). A dropping thread holds its client's grant row, and
   // counts against its bounds, until its row is forgotten. A run settles once
   // (`settled_at`, which never changes once set), and its receipt (`run_receipts`: how its
-  // input settled and the first 4 KiB of its answer) is kept in the same unit; a run's
+  // input settled, the first 4 KiB of its answer and whether that was all of it) is kept
+  // in the same unit; a run handed an input names it (`request`) from then on; a run's
   // retention reads that time alone. The kept usage rows' bytes are counted
   // (`agent_usage_space`), so their sum has a bound of its own, and a dropped thread's usage
   // is added into one owner total (`agent_usage_total`). The owner being erased is one row
@@ -873,6 +874,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE agent_threads ADD COLUMN drop_failures INTEGER NOT NULL DEFAULT 0 " +
       "CHECK (drop_failures >= 0)",
     "ALTER TABLE agent_threads ADD COLUMN settled_at REAL",
+    "ALTER TABLE agent_threads ADD COLUMN request TEXT " +
+      "CHECK (request IS NULL OR length(request) BETWEEN 1 AND 128)",
     "CREATE TRIGGER agent_threads_settled BEFORE UPDATE OF settled_at ON agent_threads " +
       "WHEN OLD.settled_at IS NOT NULL AND NEW.settled_at IS NOT OLD.settled_at BEGIN " +
       "SELECT RAISE(ABORT, 'a run settles once'); END",
@@ -890,6 +893,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "status TEXT NOT NULL CHECK (status IN ('done', 'unanswered')), " +
       "reason TEXT CHECK (reason IS NULL OR length(reason) BETWEEN 1 AND 256), " +
       "text TEXT NOT NULL CHECK (length(CAST(text AS BLOB)) <= 4096), " +
+      "truncated INTEGER NOT NULL DEFAULT 0 CHECK (truncated IN (0, 1)), " +
       "settled_at REAL NOT NULL, CHECK ((status = 'done') = (reason IS NULL)))",
     "CREATE INDEX run_receipts_by_age ON run_receipts (settled_at)",
     "CREATE INDEX run_receipts_by_client ON run_receipts (client, settled_at)",

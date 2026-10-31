@@ -844,7 +844,7 @@ When a thread is dropped, for every reason (idle retention, a run's retention, a
 - **THEN** the `threads` lane finishes the drop: every store is wiped and only then its row forgotten
 
 ### Requirement: A run's store is wiped `keep_runs` after it settles
-A run SHALL settle once: when its Session reports nothing running and nothing asleep with its input settled, one unit SHALL keep the time and its receipt (its input's status, reason and the first 4 KiB of its answer), read from that Session. Its store SHALL be wiped `keep_runs` after it settled (owner policy `runs.keep_runs`, 7 days by default, 30 at most), never while it is live, and no read SHALL move that time; a run never seen settling SHALL be taken `keep_runs` after its last activity, answering as one pi never saw. A settled run's status and cancel SHALL be answered from its receipt, its Session never opened for them, to the caller whose run it was alone, before its drop, during it and after. Receipts SHALL be a history with a row bound (100,000, shared as the runs are), kept `keep_run_receipts` from settling (90 days by default, 365 at most, never less than `keep_runs`); past a scope's share its own oldest receipt SHALL go, and no launch SHALL be refused for receipts.
+A run SHALL settle once: when its Session reports nothing running and nothing asleep with its input settled, one unit SHALL keep the time and its receipt (its input's status, reason and the first 4 KiB of its answer), read from that Session. Its store SHALL be wiped `keep_runs` after it settled (owner policy `runs.keep_runs`, 7 days by default, 30 at most), never while it is live, and no read SHALL move that time; a run never seen settling SHALL be taken `keep_runs` after its last activity, answering as one pi never saw. A settled run's status and cancel SHALL be answered from its receipt, its Session never opened for them, to the caller whose run it was alone, before its drop, during it and after; while its store is there, an answer longer than the receipt's text SHALL be read whole from the store by a read that claims nothing, and once the store is wiped the receipt's text SHALL be marked `truncated`. Receipts SHALL be a history with a row bound (100,000, shared as the runs are), kept `keep_run_receipts` from settling (90 days by default, 365 at most, never less than `keep_runs`); past a scope's share its own oldest receipt SHALL go, and no launch SHALL be refused for receipts.
 
 #### Scenario: A settled run past `keep_runs`
 - **WHEN** a run settled `keep_runs` ago and nothing in its thread is live
@@ -857,6 +857,10 @@ A run SHALL settle once: when its Session reports nothing running and nothing as
 #### Scenario: A client polls a settled run
 - **WHEN** a client reads a settled run's status every second with `keep_runs` at a second
 - **THEN** each read is answered from its receipt, no Session opens, and its store is wiped on time
+
+#### Scenario: A long answer
+- **WHEN** a settled run's answer is longer than 4 KiB
+- **THEN** its status gives the whole answer until its store is wiped, and after that the first 4 KiB marked `truncated`
 
 #### Scenario: Receipts at their bound
 - **WHEN** receipts are at 100,000 and the owner launches a day's 1,000 runs at `keep_run_receipts` 365

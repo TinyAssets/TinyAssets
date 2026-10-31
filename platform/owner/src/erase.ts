@@ -57,12 +57,16 @@ export interface ErasureParts {
   readonly lifecycle: { disableAlarms(): Promise<void> };
   /** The object's whole database deleted (`WriteGate.wipe`). */
   readonly wipe: () => Promise<void>;
+  /** How long a refused door waits after the last attempt before it resumes the erasure. */
+  readonly retryMs: number;
 }
 
 export class Erasure extends LifecycleCapability {
   readonly #parts: ErasureParts;
   #running: Promise<void> | undefined;
   #erased = false;
+  /** When the last attempt began (ms), so a refused door resumes at most once a `retryMs`. */
+  #lastStart = 0;
 
   constructor(parts: ErasureParts) {
     super(ERASURE);
@@ -80,18 +84,24 @@ export class Erasure extends LifecycleCapability {
    * again `ERASE_RETRY_MS` later, and so does the object's next start or refused door.
    */
   erase(): Promise<void> {
-    this.#running ??= this.#erase().finally(() => {
-      this.#running = undefined;
-    });
+    if (this.#running === undefined) {
+      this.#lastStart = Date.now();
+      this.#running = this.#erase().finally(() => {
+        this.#running = undefined;
+      });
+    }
     return this.#running;
   }
 
   /**
-   * An erasure the mark records, resumed off the caller's line (the object's start, a door
-   * the mark refused, inside its unit): never twice at once; a failure waits for the next.
+   * An erasure the mark records, resumed off the caller's line (the object's start; a door
+   * the mark refused, inside its unit, `fromDoor`): never twice at once, and from a door at
+   * most once a `retryMs` after the last attempt began, so a polling caller drives no
+   * retries back to back; a failure waits for the next.
    */
-  resume(): void {
-    if (this.#erased || this.#running !== undefined) {
+  resume(fromDoor = false): void {
+    if (this.#erased || this.#running !== undefined
+        || (fromDoor && Date.now() - this.#lastStart < this.#parts.retryMs)) {
       return;
     }
     queueMicrotask(() => {

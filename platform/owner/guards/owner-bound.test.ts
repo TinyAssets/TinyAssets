@@ -111,9 +111,10 @@ const clients = GRANT_LIMITS.maxFreeClients + GRANT_LIMITS.maxOwnerClients;
 const threadRows = THREAD_LIMITS.owner + THREAD_LIMITS.clients + THREAD_LIMITS.runs;
 /**
  * A thread row at its widest: its ids and store, an agent id of 128 and a universe of 512
- * code points at 4 bytes each, its client hash, and its numbers and words.
+ * code points at 4 bytes each, its client hash, a run's request id, and its numbers and
+ * words.
  */
-const THREAD_ROW = 39 + 32 + 128 * 4 + 64 + 512 * 4 + 9 * 8 + 2 * 8;
+const THREAD_ROW = 39 + 32 + 128 * 4 + 64 + 512 * 4 + 128 + 10 * 8 + 2 * 8;
 
 /** Every owner table's worst case. */
 export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string, Term>>({
@@ -199,7 +200,7 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
                        by: "one row, its keys folded to USAGE_ROW_MAX" },
   // A run's receipt once its store is wiped: runs and receipts together are bounded.
   run_receipts: { rows: THREAD_LIMITS.receipts,
-                    bytes: ROW + 39 + 64 + 128 + RECEIPT_REASON_MAX * 4 + RECEIPT_TEXT_MAX,
+                    bytes: ROW + 39 + 64 + 128 + RECEIPT_REASON_MAX * 4 + RECEIPT_TEXT_MAX + 8,
                     by: "THREAD_LIMITS.receipts, RECEIPT_TEXT_MAX of text each" },
   owner_erasure: { rows: 1, bytes: ROW, by: "one row" },
 });

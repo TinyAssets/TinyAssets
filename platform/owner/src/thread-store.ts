@@ -35,10 +35,14 @@
  *   fails only that read) is answered as `{ requestError }`, since RPC keeps no error
  *   class; any other failure is thrown, and fails the Session (pi: "an error a method
  *   throws is final").
+ * - **`answer(request)`** is a pure read for the owner's status of a settled run: how the
+ *   root's input with that request id stands, and its answer's whole text once done. It
+ *   claims no holder and opens no Session; a store never opened refuses it (`NOT_OPENED`),
+ *   so it never makes one.
  * - **`size()`** is the store's database size in bytes (its 10 GB is its own: a full store
  *   fails only its own thread).
  * - **`destroy()`** wipes the store whole (`deleteAll()`, atomic), leaving nothing: an
- *   empty object, which bills nothing it stores (live probe P8 confirms it) and which
+ *   empty object, which should bill nothing it stores (live probe P8, still owed) and which
  *   refuses every call but `open` (`NOT_OPENED`), as one never made does. While the instance
  *   that destroyed it is in memory, every call, `open` included, is refused at once
  *   (`DESTROYED`), so a late call from a closing Session never makes it again. No mark is
@@ -49,7 +53,8 @@
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
-  type Seq, type Storage, StorageRequestError, type StorageWrite,
+  type EntryRecord, ROOT_CONVERSATION_ID, type Seq, type Storage, StorageRequestError,
+  type StorageWrite,
 } from "@earendil-works/pi-durable";
 import {
   openDurableObjectSqliteStorage,
@@ -90,8 +95,28 @@ export interface StoreRpc {
   open(holder: string): Promise<{ readonly next: number; readonly session: StoreSessionRpc }>;
   /** A fresh session for the holder that holds the store now; never a claim. */
   attach(holder: string): Promise<StoreSessionRpc>;
+  /** How the root's input `request` stands, its whole answer once done; a pure read. */
+  answer(request: string): Promise<Answer | null>;
   size(): Promise<number> | number;
   destroy(): Promise<void>;
+}
+
+/** A root input as a store holds it: how it settled, and its answer's text once done. */
+export interface Answer {
+  readonly status: "queued" | "placed" | "done" | "unanswered";
+  readonly reason?: string;
+  readonly text?: string;
+}
+
+/** The text of an assistant entry, for an operation's result. */
+export function assistantText(entry: EntryRecord | undefined): string {
+  const message = (entry as { model?: readonly unknown[] } | undefined)?.model?.[0] as
+    { role?: string; content?: readonly { type: string; text?: string }[] } | undefined;
+  if (message?.role !== "assistant") {
+    return "";
+  }
+  return (message.content ?? []).map((part) => (part.type === "text" ? part.text ?? "" : ""))
+    .join("");
 }
 
 type Sqlite = Awaited<ReturnType<typeof openDurableObjectSqliteStorage>>;
@@ -158,6 +183,33 @@ export class ThreadStore extends DurableObject implements StoreRpc {
   async attach(holder: string): Promise<StoreSession> {
     await this.#held(holder);
     return this.#session(holder);
+  }
+
+  /**
+   * How the root's input with pi's request id `request` stands, and its answer's whole text
+   * once done; null for none. Claims no holder: a pure read, refused for a store never
+   * opened (so it never makes one) and for one this instance destroyed.
+   */
+  async answer(request: string): Promise<Answer | null> {
+    this.#alive();
+    if (this.ctx.storage.kv.get<string>(HOLDER_KEY) === undefined) {
+      throw new Error(NOT_OPENED);
+    }
+    if (typeof request !== "string" || request.length === 0 || request.length > 128) {
+      throw new Error("a request id is 1 to 128 characters");
+    }
+    const pi = await this.#pi();
+    const record = await pi.submissionByRequest(ROOT_CONVERSATION_ID, request,
+                                                BACKGROUND_CONTEXT);
+    if (record === undefined || record.type !== "input") {
+      return null;
+    }
+    if (record.status === "done") {
+      const entry = await pi.entry(record.answer, BACKGROUND_CONTEXT);
+      return { status: "done", text: assistantText(entry?.entry) };
+    }
+    return record.status === "unanswered" ? { status: "unanswered", reason: record.reason }
+      : { status: record.status };
   }
 
   /** The store's database size in bytes. */

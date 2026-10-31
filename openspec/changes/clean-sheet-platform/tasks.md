@@ -988,6 +988,9 @@ account and no deploy.
   it first. The reviewer's round-3 mutants all killed.
 - [x] Before any deploy holding real data: S4's drop wipes its store (`destroy()`, the row
   `dropping` until it returned). Done in S4-S5 (below).
+- [ ] Before any deploy holding real data: a grant rename, or any set that changes neither
+  mode, scope nor revocation, must not move the authority generation or drop threads;
+  split the revision token from the authority generation (S4-S5 review round 2, L1).
 - [x] S4-S5 Drops wipe and run retention, in workerd, nothing deployed (`threads.ts`,
   `agent.ts`, `thread-host.ts`, `thread-store.ts`, `erasure.ts`, `erase.ts`, `policy.ts`,
   migration 10). One drop path for every reason (idle retention, a run's retention, a
@@ -1011,10 +1014,17 @@ account and no deploy.
   (`run_receipts`: status, reason, the first 4 KiB of its answer), read from that Session.
   A settled run's status and cancel are answered from the receipt, its Session never
   opened (F12's one read holds, polls move nothing), before its drop, during it and after;
+  while its store is there an answer past the receipt's 4 KiB is read whole from it by a
+  pure read (`ThreadStore.answer`: no holder claim, refused for a store never opened), and
+  once it is wiped the receipt answers marked `truncated: true`;
   its store is wiped `keep_runs` after it settled (owner policy `runs.keep_runs`, 7 d, 1 to
   30), never while live; a run never seen settling goes `keep_runs` after its last
   activity, answering as one pi never saw. Conversations go at idle retention (7 d), and a
-  live row moves no activity. Bounds: conversations 64 a client, 1,024 every client's,
+  live row moves no activity; a wake job that finds nothing running and nothing asleep
+  rewrites the live row from its Session (settling a run) before it completes, and an open
+  keeps the wake as it stands once its job is set, so a stale "running" row never holds a
+  run; a run is told its input's request id as it is handed it, so a receipt kept without
+  its settling names it (`dropped`). Bounds: conversations 64 a client, 1,024 every client's,
   10,000 the owner's; runs their own, `runs_kept` 50,000 live stores, an outside client
   holding at most `runs.client_share` (25%) and every client together what
   `runs.owner_reserve` (25%) leaves, so the owner can always launch. Receipts are a history
@@ -1037,7 +1047,7 @@ account and no deploy.
   `gate.ts`'s `deleteAll` beside the store's. Declared differences from the design: a
   closed dropping Session is not reopened to end it (nothing of it runs in memory); client
   runs share `runs_kept` rather than counting in the conversation bounds; a settled run's
-  answer past 4 KiB reads as its receipt's first 4 KiB. A rename (`grantSet` with only the
+  answer read after its store is wiped is its receipt's first 4 KiB, marked. A rename (`grantSet` with only the
   name changed) still ends the client's work and drops its threads: every owner set moves
   the grant's generation, which is both the change's concurrency token and the stamp every
   thread and tool call is checked against, so a name-only change needs its own door (a
@@ -1046,7 +1056,12 @@ account and no deploy.
   M1 run shares; M2 receipts as history; M3 no destroyed mark; M4 the usage total; the
   lows (retry and erasure tests, receipts during a drop, bounded drops with the notice,
   the wipe caller guard, receipts with the grant, slice 10, the guard's row width and
-  Lifecycle's rows). Still owed live: P8, `deleteAll()` frees a store's billed bytes and a
+  Lifecycle's rows). Review round 2 (REQUEST CHANGES), all taken: H1 the whole answer until
+  the wipe, then the marked receipt; M2 the job's rewrite and the open's ordering; M3 tests
+  for a sleeping run, a reopen with background work active, a parked run, and a door's
+  resume; L2 a door resumes an erasure at most once a retry interval; L3 a cut-off
+  Session's usage kept before its row goes; L4 the handed request; the rename as the
+  blocker above; M1 the re-budget at the files-quota merge. Still owed live: P8, `deleteAll()` frees a store's billed bytes and a
   destroyed store bills nothing (`store-probe.md`).
 - [ ] F1 and admission: `ta.scheduled` pi task, `wake:list` from rows, cancel and status
   paths, cron recurrence; delete the `work` lane, `WorkRunner` and migrations 7-8's work

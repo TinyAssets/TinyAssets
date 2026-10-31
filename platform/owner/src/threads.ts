@@ -102,6 +102,8 @@ export type Thread = {
   readonly drop_failures: number;
   /** When a run settled, once (its receipt kept in the same unit); else null. */
   readonly settled_at: number | null;
+  /** pi's request id of the input a run was handed, once; else null. */
+  readonly request: string | null;
 };
 
 /** How a run settled, as its receipt keeps it. */
@@ -114,12 +116,17 @@ export type Receipt = {
   readonly reason: string | null;
   /** The first `RECEIPT_TEXT_MAX` bytes of its answer's text. */
   readonly text: string;
+  /** 1 when its answer was longer than `text`. */
+  readonly truncated: number;
   /** When the run settled, or, for one never handed an input, when it was dropped. */
   readonly settled_at: number;
 };
 
 /** How a run's input settled, as its Session read it: what its receipt keeps. */
 export type Settled = Pick<Receipt, "request" | "status" | "reason" | "text">;
+
+/** A receipt as its status reads it, its truncation a flag. */
+export type ReceiptView = Omit<Receipt, "truncated"> & { readonly truncated: boolean };
 
 /** pi's usage as kept: per `provider/model`, and per tool (pi's `UsageState`). */
 export type UsageTotals = { models: Record<string, unknown>; tools: Record<string, unknown> };
@@ -428,14 +435,23 @@ export class Threads implements ThreadReader {
   }
 
   /** The caller's own run receipt `threadId` names, or null, alike for any other. A read. */
-  receipt(threadId: unknown, client: string | null): Receipt | null {
+  receipt(threadId: unknown, client: string | null): ReceiptView | null {
     if (typeof threadId !== "string" || !THREAD_ID.test(threadId)) {
       return null;
     }
-    return this.#storage.sql.exec<Receipt>(
-      "SELECT thread_id, client, request, status, reason, text, settled_at FROM " +
-        "run_receipts WHERE thread_id = ? AND client IS ?", threadId, client)
-      .toArray()[0] ?? null;
+    const kept = this.#storage.sql.exec<Receipt>(
+      "SELECT thread_id, client, request, status, reason, text, truncated, settled_at FROM " +
+        "run_receipts WHERE thread_id = ? AND client IS ?", threadId, client).toArray()[0];
+    return kept === undefined ? null : { ...kept, truncated: kept.truncated === 1 };
+  }
+
+  /**
+   * In a unit, as a run is handed its input: the input's request id, once, so a receipt
+   * kept without its settling (`retain`) still names it.
+   */
+  handed(threadId: string, request: string): void {
+    this.#storage.sql.exec("UPDATE agent_threads SET request = ? WHERE thread_id = ? AND " +
+                             "kind = 'run' AND request IS NULL", request, threadId);
   }
 
   touch(threadId: string, at: number): boolean {
@@ -493,13 +509,14 @@ export class Threads implements ThreadReader {
    */
   #keepReceipt(thread: Thread, settled: Settled, at: number): void {
     const sql = this.#storage.sql;
+    const text = utf8Prefix(settled.text, RECEIPT_TEXT_MAX);
     if (sql.exec("INSERT INTO run_receipts (thread_id, client, request, status, reason, " +
-                   "text, settled_at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
+                   "text, truncated, settled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
                    "ON CONFLICT (thread_id) DO NOTHING RETURNING thread_id", thread.thread_id,
                  thread.client, settled.request, settled.status,
                  settled.reason === null ? null
                    : [...settled.reason].slice(0, RECEIPT_REASON_MAX).join("") || null,
-                 utf8Prefix(settled.text, RECEIPT_TEXT_MAX), at).toArray().length === 0) {
+                 text, text.length < settled.text.length ? 1 : 0, at).toArray().length === 0) {
       return;
     }
     const { clientShare, ownerReserve } = this.#runs();
@@ -674,8 +691,8 @@ export class Threads implements ThreadReader {
    * In a unit: retain one thread as the pass read it (`seen`, its `retainedAt` then). A
    * live one (its `agent_live` row) has its activity moved on to `now`; one touched or
    * settled since is kept as it is; any other is marked `dropping`, the first step of its
-   * drop. A run marked with no receipt, one pi was never handed an input in, keeps one that
-   * says so.
+   * drop. A run marked with no receipt keeps one that says how it stands: `dropped`, naming
+   * the input it was handed, or, handed none, one pi never saw.
    */
   retain(threadId: string, seen: number, now: number): Retained {
     const sql = this.#storage.sql;
@@ -691,7 +708,8 @@ export class Threads implements ThreadReader {
       return "touched";
     }
     if (row.kind === "run") {
-      this.#keepReceipt(row, { request: null, status: "unanswered", reason: "not_found",
+      this.#keepReceipt(row, { request: row.request, status: "unanswered",
+                               reason: row.request === null ? "not_found" : "dropped",
                                text: "" }, now);
     }
     return "dropped";
