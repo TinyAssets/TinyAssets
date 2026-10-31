@@ -542,6 +542,11 @@ describe("a turn's counters", () => {
         expect.anything(), expect.anything(), expect.anything()]);
       expect([r.turn("n1"), r.turn("n3"), r.turn("t3")]).toEqual([undefined, undefined, undefined]);
       expect(r.usage.openInputs(THREAD)).toBe(2);
+      // Any other refusal is no bound's: thrown, the unit kept whole.
+      await expect(r.gate.write(() => r.usage.turnsReconciled(THREAD, [
+        { owner: "s:1", turn: "t1" }, { owner: "x:1", turn: "t2" }])))
+        .rejects.toThrow(/CHECK constraint/);
+      expect(r.usage.openInputs(THREAD)).toBe(2);
     }));
 
   it("refuse a call of a turn that has ended, never starting it over", () =>

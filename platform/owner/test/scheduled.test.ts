@@ -257,6 +257,19 @@ describe("stamped scheduled work", () => {
       .toBe(1);
     expect(await states(r)).toEqual([{ state: "handed", attempts: 1, marked: 1 }]);
     expect(runner.ran).toHaveLength(1);
+    // A marked claim, which may have run, is never released.
+    const t2 = freed + 1;
+    const released = await inWork(r, ({ work, turn }) => {
+      work.add("turn", t2 - 1, turn(null, "two"), null, t2);
+      const claim = work.claim(work.dueOpen(t2, 16)[0]!, t2);
+      if (claim.outcome !== "claimed") {
+        throw new Error("unclaimed");
+      }
+      work.mark(claim.target.work_id, claim.target.claim_id);
+      return work.release(claim.target.work_id, claim.target.claim_id, t2 + WORK_RETRY_S);
+    });
+    expect(released).toBe(false);
+    expect((await states(r))[1]).toEqual({ state: "running", attempts: 1, marked: 1 });
   });
 
   it("is never run again once it may have run; an unmarked lapse runs again, a few times",

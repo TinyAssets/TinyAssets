@@ -374,7 +374,7 @@ export class Usage {
           continue;
         }
         try {
-          this.#storage.transactionSync(keep);
+          keep();  // a refused statement writes nothing of its own
         } catch (error) {
           if (!(error instanceof Error && error.message.includes(TURN_OWNERS_FULL))) {
             throw error;
