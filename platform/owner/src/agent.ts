@@ -113,7 +113,8 @@ import { RemoteStorage } from "./remote-storage";
 import { inTime } from "./schedule";
 import { PLATFORM_NAMES, type Platform, reachable, taTool } from "./ta";
 import {
-  HOST_TIMING, type HostTiming, type Opened, type OperationResult, type SubmitOptions,
+  HOST_TIMING, type HostParts, type HostTiming, type Opened, type OperationResult,
+  type SubmitOptions,
   ThreadHost,
 } from "./thread-host";
 import type { StoreRpc } from "./thread-store";
@@ -285,6 +286,8 @@ export interface AgentParts {
   readonly live: (thread: string, wake: Wake) => Promise<void>;
   /** Keep a thread's usage as its Session closes (`threads.ts`), in a unit of the gate. */
   readonly usage: (thread: string, usage: UsageState) => Promise<void>;
+  /** Keep a thread's turn owners (`Usage.turnOwners`, `Usage.turnsReconciled`), in units. */
+  readonly turns: HostParts["turns"];
 }
 
 /** What a Session's models are bound to: its thread, and its own authority check. */
@@ -411,6 +414,7 @@ export class OwnerAgent {
       exists: (thread) => parts.threads.get(thread) !== null,
       live: (thread, wake) => parts.live(thread, wake),
       usage: (thread, usage) => parts.usage(thread, usage),
+      turns: parts.turns,
       notice: (type, detail) => this.#report(type, detail),
     }, source.timing ?? HOST_TIMING);
   }

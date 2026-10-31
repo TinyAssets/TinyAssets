@@ -17,6 +17,10 @@
  */
 import { GC_GRACE_S } from "./files";
 import type { OwnerStorage } from "./gate";
+import {
+  CHUNK_BYTES, CHUNK_ROW_BYTES, CLIENT_WRITER, CLIENTS, CONTENT_BYTES, ENTRY_BYTES,
+  HISTORY_BYTES as FILE_HISTORY_BYTES, OWNER_SCOPE, SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
+} from "./manifest";
 import { DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, FILE_DEFAULTS } from "./policy";
 
 export type Migration = readonly string[];
@@ -92,6 +96,100 @@ const TURN = (row: string, sign: string, at: string) =>
   "ON CONFLICT (turn) DO UPDATE SET requests = requests + excluded.requests, " +
   "tokens = tokens + excluded.tokens, cost = cost + excluded.cost, " +
   "last_at = max(last_at, excluded.last_at);";
+type ShareCounter = "entries" | "history" | "chunk_bytes" | "inline_bytes" | "manifest_bytes";
+const SHARE_COUNTERS: readonly ShareCounter[] =
+  Object.freeze(["entries", "history", "chunk_bytes", "inline_bytes", "manifest_bytes"]);
+/** Which share rows a charge goes to: the rows to charge, as a query, and as a list. */
+interface Scopes {
+  readonly rows: string;
+  readonly list: string;
+}
+/**
+ * The scopes the rows of `writer` (a writer, or a chunk's holder) count in: an outside
+ * client's own and all clients' (`*`), else the owner's (`owner`).
+ */
+const SCOPES = (writer: string): Scopes => ({
+  rows: `(SELECT '${CLIENTS}' AS who WHERE ${writer} GLOB '${CLIENT_WRITER}' UNION ALL ` +
+    `SELECT ${writer} WHERE ${writer} GLOB '${CLIENT_WRITER}' UNION ALL ` +
+    `SELECT '${OWNER_SCOPE}' WHERE ${writer} NOT GLOB '${CLIENT_WRITER}')`,
+  list: `(CASE WHEN ${writer} GLOB '${CLIENT_WRITER}' THEN '${CLIENTS}' ELSE '${OWNER_SCOPE}' ` +
+    `END, ${writer})`,
+});
+/** One scope, by name. */
+const SCOPE = (scope: string): Scopes => ({ rows: `(SELECT ${scope} AS who)`, list: `(${scope})` });
+/**
+ * Move share rows by `amounts`, charged (`+`) or credited (`-`). A charge makes a client's
+ * row on its first; a credit only ever finds the row its charge made (the checks hold the
+ * counts at zero or more, and a test recounts them from the rows).
+ */
+const SHARE_USAGE = (scopes: Scopes, sign: "+" | "-",
+                     amounts: Partial<Record<ShareCounter, string>>) => {
+  const moved = SHARE_COUNTERS.filter((counter) => amounts[counter] !== undefined);
+  return sign === "-"
+    ? `UPDATE file_shares SET ${moved.map((counter) =>
+        `${counter} = ${counter} - (${amounts[counter]})`).join(", ")} ` +
+      `WHERE who IN ${scopes.list};`
+    : `INSERT INTO file_shares (who, ${SHARE_COUNTERS.join(", ")}) SELECT who, ${
+        SHARE_COUNTERS.map((counter) => amounts[counter] ?? "0").join(", ")} ` +
+      `FROM ${scopes.rows} WHERE 1 ON CONFLICT (who) DO UPDATE SET ${moved.map((counter) =>
+        `${counter} = ${counter} + excluded.${counter}`).join(", ")};`;
+};
+/** A row's writer's scopes. */
+const WRITER = (row: string): Scopes => SCOPES(`${row}.writer`);
+/**
+ * Count a content reference of a row (an entry's or a history row's) in each scope its
+ * writer's rows count in (`+`), or take it out (`-`).
+ */
+const CONTENT_REF = (row: string, sign: "+" | "-") => sign === "+"
+  ? "INSERT INTO file_scope_contents (scope, content_id, refs) SELECT who, " +
+    `${row}.content_id, 1 FROM ${WRITER(row).rows} WHERE ${row}.content_id IS NOT NULL ` +
+    "ON CONFLICT (scope, content_id) DO UPDATE SET refs = refs + 1;"
+  : `UPDATE file_scope_contents SET refs = refs - 1 WHERE content_id = ${row}.content_id ` +
+    `AND scope IN ${WRITER(row).list};`;
+/** A content's bytes and its inline bytes, read from its row. */
+const CONTENT_OF = (id: string, what: string) =>
+  `(SELECT ${what} FROM file_contents c WHERE c.content_id = ${id})`;
+/** A chunk's row bytes and size, read from its row. */
+const CHUNK_OF = (sha: string, what: string) =>
+  `(SELECT ${what} FROM file_chunks k WHERE k.sha256 = ${sha})`;
+
+/**
+ * Move a turn's counters by a reservation row's, times `sign`, at `at`: only a turn that is
+ * still open has a row (migration 10), and a call settling after its turn ended moves
+ * nothing, never bringing the row back.
+ */
+const TURN_MOVED = (row: string, sign: string, at: string) =>
+  `UPDATE model_turns SET requests = requests ${sign} ${ASKED(row)}, ` +
+  `tokens = tokens ${sign} ${HELD_TOKENS(row)}, cost = cost ${sign} ${HELD(row)}, ` +
+  `last_at = max(last_at, ${at}) WHERE turn = ${row}.turn;`;
+/** A turn's most bytes: an origin (`origin.ts`) is far shorter. */
+export const TURN_BYTES = 96;
+/**
+ * Model calls open at once (`reserved` or `dispatched`), past which a reservation is
+ * refused (`model_calls_full`): far above what one object's threads make at once.
+ */
+export const CALLS_OPEN = 1000;
+/**
+ * Spend counters kept (`model_spend`): a day's or a month's per source, for the days and
+ * months the usage module keeps (40 and 3), each at a hundred sources, past which a new
+ * source's first call in a period is refused (`model_spend_full`).
+ */
+export const SPEND_KEPT = 4300;
+/**
+ * Open inputs (queued or placed) a thread holds at once, each owning a turn while it is
+ * open: the thread host refuses one past it (`thread_inputs_full`), and migration 10's
+ * trigger refuses its owner row past it.
+ */
+export const THREAD_INPUTS = 8;
+/**
+ * Compactions a thread's Session holds live at once: pi starts a background one only while
+ * none is listed (`generation.js`, `pi.live.compactions`), and a run's blocking one waits
+ * in its generation, one run at a time; a thread is one conversation (no owner source
+ * creates a task or a conversation), and there is no manual compaction door yet (A6 caps
+ * its own). Migration 10's trigger refuses a compaction's owner row past it.
+ */
+export const THREAD_COMPACTIONS = 2;
+
 /** A file entry in the temporary area, which keeps no history. */
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // 1: the owner this object serves, and the one revision primitive (S34, ADR-032).
@@ -686,7 +784,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // tokens and cost. What is reserved or unknown holds its estimate, what settled holds
   // what it used, and what was never sent or was refused holds nothing and is no request.
   // Receipts are history only, pruned without touching a counter; a turn's counters go
-  // only once the turn has been idle past the usage module's window.
+  // with the pi records that own the turn (migration 10).
   Object.freeze([
     "CREATE TABLE connections (id TEXT PRIMARY KEY CHECK (length(id) = 25), " +
       "source TEXT NOT NULL CHECK (length(source) BETWEEN 1 AND 64), " +
@@ -855,6 +953,270 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // The threads unsettled work names, which idle retention never drops.
     "CREATE INDEX work_by_thread ON scheduled_work (json_extract(payload, '$.thread')) " +
       "WHERE settled_at IS NULL",
+  ]),
+  // 10: the files byte quota and each outside client's share of it (files.ts, manifest.ts),
+  // and a bound on the model turns' counters (usage.ts). Every manifest row is charged what
+  // SQLite stores it in, path bytes and overflow pages included, by triggers only, as the
+  // other counters are: once to `file_space`'s `manifest_bytes`, the object's real storage;
+  // and to each scope its writer counts in (`file_shares`: an outside client's own,
+  // `client:<id>`, all clients' together, `*`, and the owner's own writers', `owner`). A
+  // scope is charged its own entries, history rows and temporary directories, and once for
+  // each content and chunk its own rows (or its open uploads) reference, counted in
+  // `file_scope_contents` and `file_scope_chunks` and charged while the count is above zero,
+  // deduplicated within the scope and never across scopes; a chunk no scope references is
+  // garbage, charged to its `holder`, the scope that let it go last, until it is deleted or
+  // revived. A share row is charged its own bytes, and a client's goes once it holds
+  // nothing else; all clients' and the owner's rows are never dropped. Every reference is
+  // counted before a content or chunk can go, so a credit reads the row it was charged for.
+  // A file row from before this migration (none can be: nothing is deployed) fails it
+  // loudly, its scope unknown.
+  //
+  // A turn's counters live exactly as long as its work: `model_turn_owners` holds each pi
+  // record that owns a turn, by its thread (pi's ids are per store, a store per thread):
+  // an open input submission (`s:<id>`, a steer's its own turn) or a live compaction task
+  // (`t:<id>`, the run's turn when a run made it), kept by the thread host as it sees them
+  // commit (`thread-host.ts`), and a turn's row is made with its first owner and goes with
+  // its last, or with its thread. A call of a turn with no row is refused (`usage.ts`), and
+  // a reservation only moves a row that is there, so no counter ever starts over. A
+  // thread's owner rows are refused past `THREAD_INPUTS` open inputs and
+  // `THREAD_COMPACTIONS` live compactions, so the rows are bounded by the threads. A turn
+  // is at most `TURN_BYTES` (an origin is at most 70; this check counts bytes, the
+  // reservation's own 320 characters). The calls open at once and the spend counters are bounded by count
+  // (`CALLS_OPEN`, `SPEND_KEPT`).
+  Object.freeze([
+    "ALTER TABLE file_space ADD COLUMN manifest_bytes INTEGER NOT NULL DEFAULT 0 " +
+      "CHECK (manifest_bytes >= 0)",
+    `ALTER TABLE file_chunks ADD COLUMN holder TEXT NOT NULL DEFAULT '${OWNER_SCOPE}'`,
+    "ALTER TABLE file_temps ADD COLUMN writer TEXT NOT NULL DEFAULT 'system'",
+    "ALTER TABLE file_intents ADD COLUMN writer TEXT NOT NULL DEFAULT 'system'",
+    // The chunks the upload's writer has still to send: its proof of holding their bytes.
+    "ALTER TABLE file_intents ADD COLUMN pending TEXT NOT NULL DEFAULT '' " +
+      "CHECK (length(pending) % 64 = 0)",
+    `CREATE TABLE file_shares (who TEXT PRIMARY KEY CHECK (who IN ('${CLIENTS}', '${
+      OWNER_SCOPE}') OR (length(who) = 71 AND who GLOB '${CLIENT_WRITER}')), ` +
+      "entries INTEGER NOT NULL CHECK (entries >= 0), " +
+      "history INTEGER NOT NULL CHECK (history >= 0), " +
+      "chunk_bytes INTEGER NOT NULL CHECK (chunk_bytes >= 0), " +
+      "inline_bytes INTEGER NOT NULL CHECK (inline_bytes >= 0), " +
+      "manifest_bytes INTEGER NOT NULL CHECK (manifest_bytes >= 0)) WITHOUT ROWID",
+    "CREATE TABLE file_scope_contents (scope TEXT NOT NULL, content_id TEXT NOT NULL, " +
+      "refs INTEGER NOT NULL CHECK (refs >= 0), PRIMARY KEY (scope, content_id)) WITHOUT ROWID",
+    "CREATE TABLE file_scope_chunks (scope TEXT NOT NULL, sha256 TEXT NOT NULL, " +
+      "refs INTEGER NOT NULL CHECK (refs >= 0), PRIMARY KEY (scope, sha256)) WITHOUT ROWID",
+    // Fails the `who` check when any file row is already there.
+    "INSERT INTO file_shares (who, entries, history, chunk_bytes, inline_bytes, " +
+      "manifest_bytes) SELECT 'a file row from before migration 10', 0, 0, 0, 0, 0 " +
+      "WHERE EXISTS (SELECT 1 FROM file_entries) OR EXISTS (SELECT 1 FROM file_history) " +
+      "OR EXISTS (SELECT 1 FROM file_chunks) OR EXISTS (SELECT 1 FROM file_temps)",
+    `INSERT INTO file_shares VALUES ('${CLIENTS}', 0, 0, 0, 0, ${SHARE_BYTES}), ('${
+      OWNER_SCOPE}', 0, 0, 0, 0, ${SHARE_BYTES})`,
+    `UPDATE file_space SET manifest_bytes = 2 * ${SHARE_BYTES}`,
+    `CREATE TRIGGER file_shares_charged AFTER INSERT ON file_shares WHEN NEW.who NOT IN ('${
+      CLIENTS}', '${OWNER_SCOPE}') BEGIN UPDATE file_shares SET manifest_bytes = ` +
+      `manifest_bytes + ${SHARE_BYTES} WHERE who IN (NEW.who, '${CLIENTS}'); ` +
+      `UPDATE file_space SET manifest_bytes = manifest_bytes + ${SHARE_BYTES}; END`,
+    `CREATE TRIGGER file_shares_emptied AFTER UPDATE ON file_shares WHEN NEW.who NOT IN ('${
+      CLIENTS}', '${OWNER_SCOPE}') AND NEW.entries = 0 AND NEW.history = 0 ` +
+      "AND NEW.chunk_bytes = 0 " +
+      `AND NEW.inline_bytes = 0 AND NEW.manifest_bytes = ${SHARE_BYTES} BEGIN ` +
+      "DELETE FROM file_shares WHERE who = NEW.who; END",
+    `CREATE TRIGGER file_shares_credited AFTER DELETE ON file_shares WHEN OLD.who NOT IN ('${
+      CLIENTS}', '${OWNER_SCOPE}') BEGIN UPDATE file_shares SET manifest_bytes = ` +
+      `manifest_bytes - ${SHARE_BYTES} WHERE who = '${CLIENTS}'; UPDATE file_space SET ` +
+      `manifest_bytes = manifest_bytes - ${SHARE_BYTES}; END`,
+    `CREATE TRIGGER file_shares_kept BEFORE DELETE ON file_shares WHEN OLD.who IN ('${
+      CLIENTS}', '${OWNER_SCOPE}') BEGIN SELECT RAISE(ABORT, 'all clients'' and the ` +
+      "owner''s share rows are never dropped'); END",
+    // A scope's reference: charged its own row, and the content's bytes or the chunk's
+    // while it holds any; a content's chunks are its scope's too.
+    "CREATE TRIGGER file_scope_contents_added AFTER INSERT ON file_scope_contents BEGIN " +
+      `UPDATE file_space SET manifest_bytes = manifest_bytes + ${SCOPE_REF_BYTES("NEW")}; ${
+        SHARE_USAGE(SCOPE("NEW.scope"), "+", {
+          inline_bytes: CONTENT_OF("NEW.content_id", "coalesce(length(c.inline), 0)"),
+          manifest_bytes: `${SCOPE_REF_BYTES("NEW")} + ${
+            CONTENT_OF("NEW.content_id", CONTENT_BYTES("c"))}` })} ` +
+      "INSERT INTO file_scope_chunks (scope, sha256, refs) SELECT NEW.scope, x.sha256, " +
+      "COUNT(*) FROM file_content_chunks x WHERE x.content_id = NEW.content_id " +
+      "GROUP BY x.sha256 ON CONFLICT (scope, sha256) DO UPDATE SET refs = refs + excluded.refs; " +
+      "END",
+    "CREATE TRIGGER file_scope_contents_emptied AFTER UPDATE OF refs ON file_scope_contents " +
+      "WHEN NEW.refs = 0 BEGIN DELETE FROM file_scope_contents WHERE scope = NEW.scope " +
+      "AND content_id = NEW.content_id; END",
+    "CREATE TRIGGER file_scope_contents_removed AFTER DELETE ON file_scope_contents BEGIN " +
+      "UPDATE file_scope_chunks SET refs = refs - (SELECT COUNT(*) FROM file_content_chunks x " +
+      "WHERE x.content_id = OLD.content_id AND x.sha256 = file_scope_chunks.sha256) " +
+      "WHERE scope = OLD.scope AND sha256 IN (SELECT sha256 FROM file_content_chunks " +
+      "WHERE content_id = OLD.content_id); " +
+      `UPDATE file_space SET manifest_bytes = manifest_bytes - ${SCOPE_REF_BYTES("OLD")}; ${
+        SHARE_USAGE(SCOPE("OLD.scope"), "-", {
+          inline_bytes: CONTENT_OF("OLD.content_id", "coalesce(length(c.inline), 0)"),
+          manifest_bytes: `${SCOPE_REF_BYTES("OLD")} + ${
+            CONTENT_OF("OLD.content_id", CONTENT_BYTES("c"))}` })} END`,
+    "CREATE TRIGGER file_scope_chunks_added AFTER INSERT ON file_scope_chunks BEGIN " +
+      `UPDATE file_space SET manifest_bytes = manifest_bytes + ${SCOPE_REF_BYTES("NEW")}; ${
+        SHARE_USAGE(SCOPE("NEW.scope"), "+", {
+          chunk_bytes: CHUNK_OF("NEW.sha256", "k.size"),
+          manifest_bytes: `${SCOPE_REF_BYTES("NEW")} + ${CHUNK_ROW_BYTES()}` })} END`,
+    "CREATE TRIGGER file_scope_chunks_emptied AFTER UPDATE OF refs ON file_scope_chunks " +
+      "WHEN NEW.refs = 0 BEGIN DELETE FROM file_scope_chunks WHERE scope = NEW.scope " +
+      "AND sha256 = NEW.sha256; END",
+    // The scope that lets a chunk go last holds its garbage.
+    "CREATE TRIGGER file_scope_chunks_removed AFTER DELETE ON file_scope_chunks BEGIN " +
+      `UPDATE file_space SET manifest_bytes = manifest_bytes - ${SCOPE_REF_BYTES("OLD")}; ${
+        SHARE_USAGE(SCOPE("OLD.scope"), "-", {
+          chunk_bytes: CHUNK_OF("OLD.sha256", "k.size"),
+          manifest_bytes: `${SCOPE_REF_BYTES("OLD")} + ${CHUNK_ROW_BYTES()}` })} ` +
+      `UPDATE file_chunks SET holder = OLD.scope WHERE sha256 = OLD.sha256 AND OLD.scope != '${
+        CLIENTS}'; END`,
+    "DROP TRIGGER file_entries_added",
+    "DROP TRIGGER file_entries_removed",
+    "DROP TRIGGER file_entries_changed",
+    "DROP TRIGGER file_history_added",
+    "DROP TRIGGER file_history_removed",
+    "DROP TRIGGER file_history_released",
+    "DROP TRIGGER file_contents_added",
+    "DROP TRIGGER file_contents_removed",
+    "DROP TRIGGER file_chunks_added",
+    "DROP TRIGGER file_chunks_removed",
+    // Each scope's references are counted before the content's own, and taken out first.
+    "CREATE TRIGGER file_entries_added AFTER INSERT ON file_entries BEGIN " +
+      `UPDATE file_space SET entries = entries + 1, manifest_bytes = manifest_bytes + ${
+        ENTRY_BYTES("NEW")}; ` +
+      "UPDATE file_contents SET refs = refs + 1 WHERE content_id = NEW.content_id; " +
+      `${SHARE_USAGE(WRITER("NEW"), "+", { entries: "1", manifest_bytes: ENTRY_BYTES("NEW") })} ${
+        CONTENT_REF("NEW", "+")} END`,
+    "CREATE TRIGGER file_entries_removed AFTER DELETE ON file_entries BEGIN " +
+      `${CONTENT_REF("OLD", "-")} ` +
+      `UPDATE file_space SET entries = entries - 1, manifest_bytes = manifest_bytes - ${
+        ENTRY_BYTES("OLD")}; ` +
+      `${SHARE_USAGE(WRITER("OLD"), "-", { entries: "1", manifest_bytes: ENTRY_BYTES("OLD") })} ` +
+      "UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
+    // An overwrite moves the entry's reference to its new content and writer.
+    "CREATE TRIGGER file_entries_changed AFTER UPDATE OF content_id, writer ON file_entries " +
+      "WHEN NEW.content_id IS NOT OLD.content_id OR NEW.writer IS NOT OLD.writer BEGIN " +
+      `${CONTENT_REF("NEW", "+")} ${CONTENT_REF("OLD", "-")} ` +
+      "UPDATE file_contents SET refs = refs + 1 WHERE content_id = NEW.content_id; " +
+      "UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
+    // An overwrite by another writer moves the entry to it.
+    "CREATE TRIGGER file_entries_recharged AFTER UPDATE OF parent, name, kind, writer " +
+      "ON file_entries WHEN NEW.writer IS NOT OLD.writer OR NEW.parent IS NOT OLD.parent " +
+      "OR NEW.name IS NOT OLD.name OR NEW.kind IS NOT OLD.kind BEGIN " +
+      `UPDATE file_space SET manifest_bytes = manifest_bytes + ${ENTRY_BYTES("NEW")} - ${
+        ENTRY_BYTES("OLD")}; ` +
+      `${SHARE_USAGE(WRITER("OLD"), "-", { entries: "1", manifest_bytes: ENTRY_BYTES("OLD") })} ${
+        SHARE_USAGE(WRITER("NEW"), "+", { entries: "1", manifest_bytes: ENTRY_BYTES("NEW") })} END`,
+    "CREATE TRIGGER file_history_added AFTER INSERT ON file_history BEGIN " +
+      `UPDATE file_space SET history = history + 1, manifest_bytes = manifest_bytes + ${
+        FILE_HISTORY_BYTES("NEW")}; ` +
+      "UPDATE file_contents SET refs = refs + 1 WHERE content_id = NEW.content_id; " +
+      `${SHARE_USAGE(WRITER("NEW"), "+", { history: "1",
+                                          manifest_bytes: FILE_HISTORY_BYTES("NEW") })} ${
+        CONTENT_REF("NEW", "+")} END`,
+    "CREATE TRIGGER file_history_removed AFTER DELETE ON file_history BEGIN " +
+      `${CONTENT_REF("OLD", "-")} ` +
+      `UPDATE file_space SET history = history - 1, manifest_bytes = manifest_bytes - ${
+        FILE_HISTORY_BYTES("OLD")}; ` +
+      `${SHARE_USAGE(WRITER("OLD"), "-", { history: "1",
+                                          manifest_bytes: FILE_HISTORY_BYTES("OLD") })} ` +
+      "UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
+    // A redaction lets the version's content go, in its writer's scopes first.
+    "CREATE TRIGGER file_history_released AFTER UPDATE OF content_id ON file_history BEGIN " +
+      `${CONTENT_REF("OLD", "-")} ` +
+      "UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
+    "CREATE TRIGGER file_contents_added AFTER INSERT ON file_contents BEGIN " +
+      "UPDATE file_space SET inline_bytes = inline_bytes + coalesce(length(NEW.inline), 0), " +
+      `manifest_bytes = manifest_bytes + ${CONTENT_BYTES("NEW")}; END`,
+    "CREATE TRIGGER file_contents_removed AFTER DELETE ON file_contents BEGIN " +
+      "UPDATE file_space SET inline_bytes = inline_bytes - coalesce(length(OLD.inline), 0), " +
+      `manifest_bytes = manifest_bytes - ${CONTENT_BYTES("OLD")}; ` +
+      "DELETE FROM file_content_chunks WHERE content_id = OLD.content_id; END",
+    // A chunk list is exactly the chunks its content's size is cut into, as it is charged.
+    "CREATE TRIGGER file_content_chunks_planned BEFORE INSERT ON file_content_chunks " +
+      `WHEN NEW.idx < 0 OR NOT (NEW.idx < coalesce(${CONTENT_OF("NEW.content_id",
+        `CASE WHEN c.inline IS NULL THEN (c.size + ${CHUNK_BYTES - 1}) / ${CHUNK_BYTES} ` +
+        "ELSE 0 END")}, 0)) BEGIN SELECT RAISE(ABORT, 'a chunk list holds the chunks its ` +
+      "content''s size is cut into'); END",
+    "CREATE TRIGGER file_chunks_added AFTER INSERT ON file_chunks BEGIN " +
+      `UPDATE file_space SET ${CHUNK_USAGE("+", "NEW")} UPDATE file_space SET manifest_bytes = ` +
+      `manifest_bytes + ${CHUNK_ROW_BYTES()}; END`,
+    "CREATE TRIGGER file_chunks_removed AFTER DELETE ON file_chunks BEGIN " +
+      `UPDATE file_space SET ${CHUNK_USAGE("-", "OLD")} UPDATE file_space SET manifest_bytes = ` +
+      `manifest_bytes - ${CHUNK_ROW_BYTES()}; ${
+        SHARE_USAGE(SCOPES("OLD.holder"), "-", { manifest_bytes: `${CHUNK_ROW_BYTES()} * ` +
+          "(OLD.state IN ('garbage', 'deleting'))" })} END`,
+    // Garbage is its holder's, from the moment no scope holds it until it is deleted or an
+    // upload revives it.
+    "CREATE TRIGGER file_chunks_discarded AFTER UPDATE OF state ON file_chunks " +
+      `WHEN OLD.state IN ${COUNTED} AND NEW.state = 'garbage' BEGIN ${
+        SHARE_USAGE(SCOPES("NEW.holder"), "+", { manifest_bytes: CHUNK_ROW_BYTES() })} END`,
+    "CREATE TRIGGER file_chunks_revived AFTER UPDATE OF state ON file_chunks " +
+      `WHEN OLD.state = 'garbage' AND NEW.state IN ${COUNTED} BEGIN ${
+        SHARE_USAGE(SCOPES("OLD.holder"), "-", { manifest_bytes: CHUNK_ROW_BYTES() })} END`,
+    "CREATE TRIGGER file_chunks_held BEFORE UPDATE OF holder ON file_chunks " +
+      "WHEN NEW.holder IS NOT OLD.holder AND OLD.state IN ('garbage', 'deleting') BEGIN " +
+      "SELECT RAISE(ABORT, 'a garbage chunk''s holder never changes'); END",
+    "CREATE TRIGGER file_temps_added AFTER INSERT ON file_temps BEGIN " +
+      `UPDATE file_space SET manifest_bytes = manifest_bytes + ${TEMP_BYTES("NEW")}; ${
+        SHARE_USAGE(WRITER("NEW"), "+", { manifest_bytes: TEMP_BYTES("NEW") })} END`,
+    "CREATE TRIGGER file_temps_removed AFTER DELETE ON file_temps BEGIN " +
+      `UPDATE file_space SET manifest_bytes = manifest_bytes - ${TEMP_BYTES("OLD")}; ${
+        SHARE_USAGE(WRITER("OLD"), "-", { manifest_bytes: TEMP_BYTES("OLD") })} END`,
+    // The writer each is charged to never changes.
+    "CREATE TRIGGER file_temps_writer_kept BEFORE UPDATE OF writer ON file_temps BEGIN " +
+      "SELECT RAISE(ABORT, 'a file row''s writer never changes'); END",
+    "CREATE TRIGGER file_intents_writer_kept BEFORE UPDATE OF writer ON file_intents BEGIN " +
+      "SELECT RAISE(ABORT, 'a file row''s writer never changes'); END",
+    "ALTER TABLE model_turns ADD COLUMN thread TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE model_turns ADD COLUMN owners INTEGER NOT NULL DEFAULT 0 CHECK (owners >= 0)",
+    "DROP INDEX model_turns_by_age",
+    "CREATE TABLE model_turn_owners (thread TEXT NOT NULL CHECK (length(thread) = 39), " +
+      "owner TEXT NOT NULL CHECK (owner GLOB '[st]:[0-9]*'), " +
+      `turn TEXT NOT NULL CHECK (length(CAST(turn AS BLOB)) <= ${TURN_BYTES}), ` +
+      "PRIMARY KEY (thread, owner)) WITHOUT ROWID",
+    // Fails the owner check when any turn is already kept.
+    "INSERT INTO model_turn_owners (thread, owner, turn) " +
+      "SELECT '', 'a turn from before migration 10', '' WHERE EXISTS (SELECT 1 FROM model_turns)",
+    // A thread's new owner past its kind's bound is refused; one it holds is no new one.
+    "CREATE TRIGGER model_turn_owners_full BEFORE INSERT ON model_turn_owners " +
+      "WHEN NOT EXISTS (SELECT 1 FROM model_turn_owners WHERE thread = NEW.thread " +
+      "AND owner = NEW.owner) AND (SELECT COUNT(*) FROM model_turn_owners " +
+      "WHERE thread = NEW.thread AND substr(owner, 1, 2) = substr(NEW.owner, 1, 2)) >= " +
+      `(CASE WHEN NEW.owner GLOB 's:*' THEN ${THREAD_INPUTS} ELSE ${THREAD_COMPACTIONS} END) ` +
+      "BEGIN SELECT RAISE(ABORT, 'turn_owners_full: a thread holds as many open inputs " +
+      "and live compactions as it may'); END",
+    "CREATE TRIGGER model_turn_owners_added AFTER INSERT ON model_turn_owners BEGIN " +
+      "INSERT INTO model_turns (turn, requests, tokens, cost, last_at, thread, owners) " +
+      "VALUES (NEW.turn, 0, 0, 0, 0, NEW.thread, 1) " +
+      "ON CONFLICT (turn) DO UPDATE SET owners = owners + 1; END",
+    "CREATE TRIGGER model_turn_owners_removed AFTER DELETE ON model_turn_owners BEGIN " +
+      "UPDATE model_turns SET owners = owners - 1 WHERE turn = OLD.turn; " +
+      "DELETE FROM model_turns WHERE turn = OLD.turn AND owners = 0; END",
+    "CREATE TRIGGER model_turns_kept BEFORE UPDATE OF turn, thread ON model_turns BEGIN " +
+      "SELECT RAISE(ABORT, 'a turn never moves'); END",
+    // A dropped thread's turns go in its drop's unit.
+    "CREATE TRIGGER agent_threads_turns_dropped AFTER DELETE ON agent_threads BEGIN " +
+      "DELETE FROM model_turn_owners WHERE thread = OLD.thread_id; END",
+    "DROP TRIGGER model_reservations_turned",
+    "DROP TRIGGER model_reservations_returned",
+    "CREATE TRIGGER model_reservations_turned AFTER INSERT ON model_reservations " +
+      `WHEN ${ASKED("NEW")} BEGIN ${TURN_MOVED("NEW", "+", "NEW.created_at")} END`,
+    "CREATE TRIGGER model_reservations_returned AFTER UPDATE OF state, tokens, cost " +
+      `ON model_reservations WHEN ${ASKED("NEW")} != ${ASKED("OLD")} ` +
+      `OR ${HELD_TOKENS("NEW")} != ${HELD_TOKENS("OLD")} OR ${HELD("NEW")} != ${HELD("OLD")} ` +
+      `BEGIN ${TURN_MOVED("OLD", "-", "OLD.created_at")} ${
+        TURN_MOVED("NEW", "+", "coalesce(NEW.settled_at, NEW.created_at)")} END`,
+    `CREATE TRIGGER model_reservations_turn_bytes BEFORE INSERT ON model_reservations ` +
+      `WHEN length(CAST(NEW.turn AS BLOB)) > ${TURN_BYTES} BEGIN ` +
+      `SELECT RAISE(ABORT, 'a turn is at most ${TURN_BYTES} bytes'); END`,
+    // The calls open at once and the spend counters, each bounded by count; an open call is
+    // read by its partial index.
+    "CREATE TRIGGER model_reservations_open BEFORE INSERT ON model_reservations " +
+      "WHEN NEW.state IN ('reserved', 'dispatched') AND (SELECT COUNT(*) FROM " +
+      `model_reservations WHERE state IN ('reserved', 'dispatched')) >= ${CALLS_OPEN} BEGIN ` +
+      `SELECT RAISE(ABORT, 'model_calls_full: ${CALLS_OPEN} model calls are open'); END`,
+    "CREATE TRIGGER model_spend_kept AFTER INSERT ON model_spend " +
+      `WHEN (SELECT COUNT(*) FROM model_spend) > ${SPEND_KEPT} BEGIN ` +
+      `SELECT RAISE(ABORT, 'model_spend_full: ${SPEND_KEPT} spend counters are kept'); END`,
   ]),
 ]);
 

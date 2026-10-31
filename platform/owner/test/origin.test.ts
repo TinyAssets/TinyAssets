@@ -82,6 +82,12 @@ describe("a call's origin", () => {
      "for any other task", async () => {
     expect(await within(ROOT, "pi.durable.phase", { "task.id": 41, "task.name": "pi.compaction" },
                         (span) => turnOf(span))).toBe(`task:${THREAD}:41`);
+    // Its own even when linked to an input's: a compaction never joins another's turn.
+    expect(await within(ROOT, "pi.durable.phase", { "task.id": 43, "task.name": "pi.compaction" },
+                        (span) => {
+                          span.addLink({ context: originContext("input:another") });
+                          return turnOf(span);
+                        })).toBe(`task:${THREAD}:43`);
     // Task ids are per Session: another thread's compaction of the same id is another turn.
     const other = originRoot(`thread_${"b".repeat(32)}`);
     expect(await within(other, "pi.durable.phase", { "task.id": 41,
