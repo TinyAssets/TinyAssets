@@ -102,7 +102,8 @@ async function rig(name = `owner-${crypto.randomUUID()}`) {
                                    "json_extract(record, '$.kind') = ?", SCHEDULED);
     return row === undefined ? undefined
       : { status: row["status"] as string, record: JSON.parse(row["record"] as string) as {
-          state: { status: string; until?: number; checkpoint?: { n: number; tries: number };
+          state: { status: string; until?: number;
+                   checkpoint?: { n: number; tries: number; held?: string };
                    outcome?: { status: string; result?: unknown;
                                error?: { message: string } } } } };
   };
