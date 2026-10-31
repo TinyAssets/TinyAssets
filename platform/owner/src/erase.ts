@@ -9,7 +9,9 @@
  * Its last step is the one place the owner's own database is wiped whole: Lifecycle's
  * alarm is disabled for good first (`disableAlarms`, which also clears the alarm), so
  * Lifecycle writes nothing after the wipe, then the write gate deletes the whole database
- * (`WriteGate.wipe`), its job row with it. A thread store wipes itself in
+ * (`WriteGate.wipe`), its job row with it, and writes the tombstone into it in the same
+ * synchronous turn (`ErasureParts.wipe`: the erased admission row, `admission.ts`), so no
+ * crash can leave the wiped database without it. A thread store wipes itself in
  * `thread-store.ts`; no other source disables Lifecycle's alarm or wipes a database (the
  * alarm guard).
  */
@@ -55,7 +57,7 @@ export interface ErasureParts {
   readonly drop: (thread: Thread) => Promise<void>;
   /** The object's Lifecycle, whose alarm the last step disables for good. */
   readonly lifecycle: { disableAlarms(): Promise<void> };
-  /** The object's whole database deleted (`WriteGate.wipe`). */
+  /** The object's whole database deleted, and the tombstone left (`WriteGate.wipe`). */
   readonly wipe: () => Promise<void>;
   /** How long a refused door waits after the last attempt before it resumes the erasure. */
   readonly retryMs: number;

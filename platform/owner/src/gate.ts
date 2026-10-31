@@ -77,13 +77,21 @@ export class WriteGate {
 
   /**
    * The owner's erasure's last step (`erase.ts`): the whole database deleted at once, every
-   * table, key and job of it. Never inside a unit; nothing writes after it.
+   * table, key and job of it, then `tombstone` run on it in a transaction of its own (the
+   * erased admission row, `admission.ts`), which writes only into a wiped database and only
+   * once. A SQLite object's `deleteAll` wipes at once, so the tombstone lands in the same
+   * synchronous turn, nothing else running between the two; it is run again once the wipe
+   * resolves, so a wipe that took longer is tombstoned all the same, and one that failed is
+   * not. Never inside a unit; nothing else writes after it.
    */
-  wipe(): Promise<void> {
+  wipe(tombstone: (sql: Pick<SqlStorage, "exec">) => void): Promise<void> {
     if (this.#holding) {
       throw new Error(NESTED_UNIT);
     }
-    return this.#raw.deleteAll();
+    const wiped = this.#raw.deleteAll();
+    const leave = () => this.#raw.transactionSync(() => tombstone(this.#raw.sql));
+    leave();
+    return wiped.then(leave);
   }
 
   /**

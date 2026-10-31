@@ -33,12 +33,14 @@
  *
  * The platform capabilities (v1): `policy:show` (read, the owner's alone), `policy:propose`
  * (effect: a proposal held for the owner's card, as `policyPropose` holds it),
- * `wake:list` (read: the conversation's authority's scheduled work), `files:usage`
+ * `wake:list` (read: the conversation's authority's scheduled launches, from the owner's
+ * rows alone, never a store), `files:usage`
  * (read), and `model` (effect: a nested model call through the object's model source, the
  * `gateway` provider in production, reserved and settled like any turn's call and charged
  * to the turn at the origin of this call's causal chain, which pi's telemetry context
  * carries), and `agent:run` (effect: a launch of one of the owner's agents in a fresh
- * thread of its own, now or at a time, through the same path as the `agentRun` door,
+ * thread of its own, now, at a time or recurring, through the same path as the `agentRun`
+ * door,
  * stamped with the calling conversation's authority where the launched agent acts and
  * recorded in a unit that re-checks `run_graph` there: the run's own scope).
  *
@@ -101,19 +103,20 @@ export interface Platform {
   propose(change: unknown, requestId: unknown, proposer: string):
     { request_digest: string; generation: number };
   /**
-   * The newest `limit` rows of the scheduled work made under `client` (null: the owner's),
-   * as `Scheduled.of` shows them.
+   * The newest `limit` scheduled launches made under `client` (null: the owner's), as
+   * `Threads.scheduledOf` shows them: the thread rows and their wakes, never a store.
    */
   work(client: string | null, limit: number): unknown[];
   /** The owner's file usage and limits. */
   fileUsage(): FileUsage;
   /**
    * Launch `agent` on `input` under the calling conversation's authority (`state`), as the
-   * `agentRun` door does, now or at `at`: its own thread, its operation id. Each of its
-   * writes is a unit of its own, re-checking `run_graph` where the launched agent acts.
+   * `agentRun` door does, now, at `at`, or at each occurrence of `cron`: its own thread, its
+   * operation id. Each of its writes is a unit of its own, re-checking `run_graph` where the
+   * launched agent acts.
    */
   run(state: Readonly<AuthorityState> | undefined, agent: unknown, input: unknown,
-      at: unknown): Promise<unknown>;
+      at: unknown, cron: unknown): Promise<unknown>;
 }
 
 /** What `ta` is built from. */
@@ -190,7 +193,7 @@ function platformCapabilities(): readonly PlatformCapability[] {
     },
     {
       name: "wake:list",
-      description: "List my scheduled follow-ups, newest first, and how each stands.",
+      description: "List my scheduled launches, newest first, and how each stands.",
       parameters: Type.Object({
         limit: Type.Optional(Type.Integer({ minimum: 1, maximum: WORK_MAX })),
       }, { additionalProperties: false }),
@@ -225,17 +228,20 @@ function platformCapabilities(): readonly PlatformCapability[] {
     {
       name: "agent:run",
       description: "Launch one of the owner's agents on an input, in a fresh conversation of " +
-        "its own configured from /workspace/agents/<agent>/, now or at a time. Returns its " +
-        "operation id, which its status is read by.",
+        "its own configured from /workspace/agents/<agent>/, now, at a time, or again at each " +
+        "time a cron expression names. Returns its operation id, which its status is read by.",
       parameters: Type.Object({
         agent: Type.String({ description: "The agent's id, such as main." }),
         input: Type.String({ description: "What the agent is asked to do." }),
         at: Type.Optional(Type.Number({ description: "When, in seconds since the epoch; now " +
                                                      "when omitted." })),
+        cron: Type.Optional(Type.String({
+          description: "Run again at each time this names: five fields (minute, hour, day " +
+            "of the month, month, day of the week) in UTC, at least 15 minutes apart." })),
       }, { additionalProperties: false }),
       run: async (args, scope, parts) => ({
         value: await parts.platform.run(scope.state, args["agent"], args["input"],
-                                        args["at"] ?? null),
+                                        args["at"] ?? null, args["cron"] ?? null),
       }),
     },
   ];

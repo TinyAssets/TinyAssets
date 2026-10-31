@@ -16,8 +16,6 @@ import { describe, expect, it } from "vitest";
 
 import { Refused } from "../src/errors";
 import { originContext } from "../src/origin";
-import { workRunner } from "../src/owner-do";
-import type { WorkTarget } from "../src/scheduled";
 import { THREAD_INPUTS } from "../src/schema";
 import {
   keepTurns, SESSIONS_FULL, THREAD_INPUTS_FULL, type TurnOwner, turnOwners, TURNS_UNKEPT,
@@ -349,51 +347,6 @@ describe("a turn's owners, as the thread host sees them commit", () => {
     });
     expect(out).toEqual({ kept: 2, after: [], turns: [] });
   });
-
-  it("hold a scheduled hand-off unmarked while its thread has no room, and take it once " +
-     "room frees, run once", async () => {
-    const r = agentObject();
-    const out = await r.in(async (instance, state) => {
-      instance.script = Array.from({ length: 40 }, () => (messages: Message[]) =>
-        messages.at(-1)?.role === "toolResult" ? says("done")
-          : JSON.stringify(messages.at(-1)).includes("work") ? holding() : says("noted"));
-      const held = gate();
-      instance.probes.holdGate = held.promise;
-      const thread = await instance.harness.thread();
-      const first = await instance.harness.submit("work");
-      await until(async () => instance.probes.holds === 1, "the hold to start");
-      for (let i = 1; i < THREAD_INPUTS; i++) {
-        await instance.harness.submit(`more ${i}`);
-      }
-      const threads = new Threads(state.storage);
-      const marks: string[] = [];
-      const target: WorkTarget = { work_id: "work_full", claim_id: "claim_x", kind: "turn",
-                                   payload: { thread, input: "scheduled hello" }, stamp: null };
-      const hand = () => workRunner(threads, instance.agent, instance.parts.authority)
-        .handOff(target, async () => { marks.push("marked"); });
-      const full = await hand();
-      const unmarked = [...marks];
-      // Every Session working is room the host lacks too: refused, unmarked.
-      const sessions = await workRunner(threads, {
-        submit: () => Promise.reject(new Refused(SESSIONS_FULL)),
-      }, instance.parts.authority).handOff(target, async () => { marks.push("marked"); });
-      held.release();
-      await instance.harness.wait(first.operationId);
-      await until(async () => instance.parts.turns.inputs(thread) === 0, "room to free");
-      const handed = await hand();
-      const ran = await instance.harness.wait("work_full");
-      const asked = (await instance.harness.messages()).filter((entry) =>
-        JSON.stringify(entry).includes("scheduled hello")).length;
-      return { full, unmarked, sessions, handed, marks, ran: ran.status, asked };
-    });
-    expect(out.full).toEqual({ state: "busy", reason: THREAD_INPUTS_FULL });
-    expect(out.unmarked).toEqual([]);
-    expect(out.sessions).toEqual({ state: "busy", reason: SESSIONS_FULL });
-    expect(out.handed).toEqual({ state: "handed" });
-    expect(out.marks).toEqual(["marked"]);
-    expect(out.ran).toBe("done");
-    expect(out.asked).toBe(1);
-  }, 60_000);
 
   it("are refused past THREAD_INPUTS open inputs a thread, at once and loudly", async () => {
     const r = agentObject();

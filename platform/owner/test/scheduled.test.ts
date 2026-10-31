@@ -1,580 +1,757 @@
 /**
- * Stamped scheduled work, the `work` lane (tasks 3.6, slice 3's review N3): made and run
- * only while the outside authority it was stamped with stands, holding its client's grant
- * row meanwhile, and never run again once it may have run.
+ * Scheduled launches as pi tasks, and the owner's admission (tasks 5, F1), in workerd on
+ * faux models: a `ta.scheduled` task sleeping in its run thread's own Session, woken by
+ * that thread's own job; its delivery's re-checks (the grant, the run policy, the
+ * admission); its status and cancel from pi's records; `wake:list` from the owner's rows;
+ * cron recurrence; the scheduled share of `runs_live`; admission at every door and lane;
+ * and the erasure's tombstone.
+ *
+ * A days-long sleep is run on pi's own clock (`skewClock`, pi's `HarnessOptions.now`), moved
+ * days ahead, and the thread's job made due at once: what the platform's alarm would do
+ * when the days had passed.
  */
-import { runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
+import {
+  type AssistantMessage, fauxAssistantMessage, fauxToolCall, type Message,
+} from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 
-import { type Write, WriteGate } from "../src/gate";
-import { GRANT_LIMITS, Grants } from "../src/grants";
-import { clock, type Origin } from "../src/ledger";
-import type { OwnerDO } from "../src/owner-do";
-import { Policy } from "../src/policy";
-import { Threads } from "../src/threads";
 import {
-  runWork, Scheduled, type Stamp, WORK_HANDOFF_MS, WORK_LEASE_S, WORK_LIMITS, WORK_RETRY_S,
-  type WorkLimits, type WorkRunner, type WorkTarget,
-} from "../src/scheduled";
-import { MUSE, rig, type Rig } from "./ledger-support";
-import { laneAt } from "./support";
+  OWNER_ERASED, OWNER_SUSPENDED, PLATFORM_CALLER, PLATFORM_ONLY, PLATFORM_RESERVED,
+  tombstoned, writeTombstone,
+} from "../src/admission";
+import { AUTHORITY_CHANGED } from "../src/authority";
+import {
+  CRON_HORIZON_DAYS, CRON_MAX_CHARS, CRON_MIN_GAP_MIN, nextOccurrence, parseCron,
+} from "../src/cron";
+import { WriteGate } from "../src/gate";
+import { Grants } from "../src/grants";
+import { clock, Ledger, type Origin } from "../src/ledger";
+import { type Binding, NO_OPERATION, type Operation, OwnerDO } from "../src/owner-do";
+import { Policy } from "../src/policy";
+import { CANCELLED, RETRY_FIRST_MS, SCHEDULED } from "../src/scheduled";
+import { THREAD_INPUTS } from "../src/schema";
+import { wakeJob } from "../src/thread-host";
+import { RUNS_LIVE, RUNS_SCHEDULED } from "../src/threads";
+import { until } from "./gateway-support";
+import { DOT, MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
+import { alarmOf, drainDue, failure, sqlIn, storeOf, storeSql } from "./support";
+import { type FauxOwnerDO, says, skewClock, storeScript } from "./worker";
 
-const CHATGPT: Origin = Object.freeze({ client: "1".repeat(64), family: "2".repeat(64) });
-/** What every scheduled turn here asks. */
-const ASKED = "check the board";
+const DAY_S = 86_400;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/**
- * A runner over a script: each hand-off's answer, `crash` to die after its mark, `early`
- * before it, `slow` to hold the hand-off for `slowMs`.
- */
-class ScriptedRunner implements WorkRunner {
-  readonly ran: WorkTarget[] = [];
-  readonly answers: ("handed" | "failed" | "crash" | "early" | "slow" | "stall" | "busy")[] =
-    [];
-  slowMs = 200;
-
-  async handOff(target: WorkTarget, mark: () => Promise<void>) {
-    const answer = this.answers.shift() ?? "handed";
-    if (answer === "early") {
-      throw new Error("died before the work began");
-    }
-    if (answer === "busy") {  // refused for room before its mark
-      return { state: "busy" as const, reason: "thread_inputs_full" };
-    }
-    if (answer === "stall") {  // stalls before its mark, then hands it over
-      await new Promise((resolve) => setTimeout(resolve, this.slowMs));
-    }
-    await mark();  // rejects when the claim lapsed: the runner stops before any effect
-    this.ran.push(target);
-    if (answer === "slow") {
-      await new Promise((resolve) => setTimeout(resolve, this.slowMs));
-      return { state: "handed" as const };
-    }
-    if (answer === "crash") {
-      throw new Error("died after the work began");
-    }
-    return { state: answer === "stall" ? "handed" as const : answer };
+/** A user message's text: an untrusted envelope's content when it is one. */
+function said(message: Message): string {
+  const text = typeof message.content === "string" ? message.content
+    : message.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+  try {
+    const envelope = JSON.parse(text) as { untrusted?: boolean; content?: string };
+    return envelope.untrusted === true ? envelope.content ?? "" : text;
+  } catch {
+    return text;
   }
 }
 
-interface Parts {
-  readonly grants: Grants;
-  readonly work: Scheduled;
-  readonly state: DurableObjectState;
-  /** A write gate over the object's storage, as the object's lane writes through. */
-  readonly write: Write;
-  /**
-   * A turn's payload, in a thread made under the authority `made` names (its client's, or
-   * the owner's), recorded once per client; `input` is what it asks.
-   */
-  readonly turn: (made: unknown, input?: string) => { thread: string; input: string };
+/** The model: `hold please` holds (until the test's gate opens); anything else is echoed. */
+function reply(messages: Message[]): AssistantMessage {
+  const last = messages.at(-1);
+  if (last?.role === "toolResult") {
+    return says("held");
+  }
+  const asked = last === undefined ? "" : said(last);
+  return asked === "hold please"
+    ? fauxAssistantMessage([fauxToolCall("ta", { op: "call", name: "hold", arguments: {} })],
+                           { stopReason: "toolUse" })
+    : says(`echo: ${asked}`);
 }
 
-/** The object's own grants and scheduled work, with some bounds changed. */
-function inWork<R>(r: Rig, act: (parts: Parts) => R | Promise<R>,
-                   limits: Partial<WorkLimits> = {},
-                   grantLimits: Partial<typeof GRANT_LIMITS> = {}): Promise<R> {
-  return runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-    const grants = new Grants(state.storage, new Policy(state.storage),
-                              { ...GRANT_LIMITS, ...grantLimits });
-    const threads = new Threads(state.storage);
-    const turn = (made: unknown, input = ASKED) => {
-      const client = (made as { client?: unknown } | null)?.client;
-      const key = typeof client === "string" ? client : null;
-      const thread = state.storage.sql.exec<{ thread_id: string }>(
-        "SELECT thread_id FROM agent_threads WHERE client IS ?", key).toArray()[0]?.thread_id
-        ?? threads.record("main", key === null ? null
-          : { client: key, generation: 1, authenticated_at: null, universe: null,
-              agent: "main" }, clock()).thread_id;
-      return { thread, input };
+function gate(): { promise: Promise<void>; release: () => void } {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, release };
+}
+
+/** An owner of its own on the faux-model class, signed in. */
+async function rig(name = `owner-${crypto.randomUUID()}`) {
+  const owner = name;
+  const stub = () => env.AGENT.getByName(owner);
+  const at = signedIn();
+  const bind = (origin: Origin | null, extra: Partial<Binding> = {}): Binding =>
+    ({ owner, caller: owner, origin,
+       ...(origin === null ? {} : { source: MCP, authenticated_at: at }), ...extra });
+  const platform: Binding = { owner, caller: PLATFORM_CALLER, origin: null };
+  const { session: cookie } = await stub().sessionOpen(bind(null, { authenticated_at: at }));
+  const session = (): Binding => ({ owner, caller: owner, origin: null, session: cookie });
+  const inside = <R>(act: (instance: FauxOwnerDO, state: DurableObjectState) =>
+    R | Promise<R>) => runInDurableObject(stub(), async (instance: FauxOwnerDO, state) => {
+      if (instance.script.length === 0) {
+        instance.script = Array.from({ length: 200 }, () => reply);
+      }
+      return act(instance, state);
+    });
+  await inside(() => undefined);
+  const task = async (thread: string) => {
+    const [row] = await storeSql(await storeOf(stub(), thread),
+                                 "SELECT status, record FROM pi_tasks WHERE " +
+                                   "json_extract(record, '$.kind') = ?", SCHEDULED);
+    return row === undefined ? undefined
+      : { status: row["status"] as string, record: JSON.parse(row["record"] as string) as {
+          state: { status: string; until?: number; checkpoint?: { n: number; tries: number };
+                   outcome?: { status: string; result?: unknown;
+                               error?: { message: string } } } } };
+  };
+  return {
+    owner, stub, bind, platform, session, at, in: inside, task,
+    admit: async (origin: Origin) => {
+      await stub().outsideAgents(bind(origin));
+    },
+    /** A thread's live row: whether it works, and when it next wakes. */
+    live: async (thread: string) => (await sqlIn(stub(), "SELECT active, wake_at FROM " +
+                                                   "agent_live WHERE thread_id = ?", thread))[0],
+    /** Its wake job's time (ms), or undefined. */
+    job: async (thread: string) => (await sqlIn(stub(), "SELECT time FROM cf_agents_jobs " +
+                                                  "WHERE id = ?", wakeJob(thread)))[0]?.["time"],
+    /** The submissions a schedule made in its thread, by the work's request ids. */
+    delivered: async (op: Operation) => {
+      const work = op.operation_id.split(".")[1]!;
+      return (await storeSql(await storeOf(stub(), op.thread_id),
+                             "SELECT json_extract(record, '$.requestId') AS request, status " +
+                               "FROM pi_submissions ORDER BY id")).filter((row) =>
+        String(row["request"]).startsWith(work));
+    },
+    /**
+     * Time passes to `until` (ms, on pi's clock) and past it: pi's clock is moved there and
+     * the thread's job made due now, as the platform's alarm would find it then.
+     */
+    pass: async (thread: string, untilMs: number) => {
+      await inside((_instance, state) => skewClock(state, untilMs - Date.now() + 1_000));
+      await sqlIn(stub(), "UPDATE cf_agents_jobs SET time = ? WHERE id = ?", Date.now(),
+                  wakeJob(thread));
+    },
+    status: (op: Operation, origin: Origin | null = null) =>
+      stub().agentStatus(bind(origin), { operation_id: op.operation_id }),
+    settled: async (op: Operation, origin: Origin | null = null): Promise<Operation> => {
+      for (let tries = 0; tries < 400; tries++) {
+        const status = await stub().agentStatus(bind(origin), { operation_id: op.operation_id });
+        if (status.status === "done" || status.status === "unanswered") {
+          return status;
+        }
+        await sleep(25);
+      }
+      throw new Error("the operation did not settle");
+    },
+  };
+}
+
+type Rig = Awaited<ReturnType<typeof rig>>;
+
+/** A launch an hour (or `ahead` s) from now, once its task sleeps. */
+async function later(r: Rig, origin: Origin | null = null, ahead = 3600,
+                     extra: { cron?: string; input?: string } = {}): Promise<Operation> {
+  const op = await r.stub().agentRun(r.bind(origin), {
+    agent: "main", input: extra.input ?? "wake up", at: clock() + ahead,
+    ...(extra.cron === undefined ? {} : { cron: extra.cron }) });
+  await until(async () => (await r.task(op.thread_id))?.status === "sleeping"
+                && (await r.live(op.thread_id))?.["active"] === 0, "the launch to sleep");
+  return op;
+}
+
+describe("a scheduled launch's sleep (F1)", () => {
+  it("sleeps days holding no invocation, its wake in its live row, and through an eviction " +
+     "and a reopen delivers once, as ta.work, then completes", async () => {
+    const r = await rig();
+    const due = clock() + 3 * DAY_S;
+    const op = await r.stub().agentRun(r.bind(null), { agent: "main", input: "wake up",
+                                                       at: due });
+    expect(op).toMatchObject({ status: "scheduled", due });
+    expect(op.operation_id).toMatch(/^thread_[0-9a-f]{32}\.work_[0-9a-f]{32}$/);
+    await until(async () => (await r.live(op.thread_id))?.["wake_at"] === due, "its wake row");
+    expect(await r.live(op.thread_id)).toEqual({ active: 0, wake_at: due });
+    expect(await r.job(op.thread_id)).toBe(due * 1000);
+    expect((await r.task(op.thread_id))!.record.state).toMatchObject({ status: "sleeping",
+                                                                       until: due * 1000 });
+    expect(await r.status(op)).toMatchObject({ status: "scheduled", due });
+    expect(await r.delivered(op)).toEqual([]);
+    // Its Session closed (an open one holds its store's session), the object is evicted.
+    await r.in((instance) => instance.agent.host.close(op.thread_id));
+    await evictDurableObject(r.stub());
+    expect(await r.in((instance) => instance.agent.host.openThreads())).toEqual([]);
+    // Three days on.
+    await r.pass(op.thread_id, due * 1000);
+    await drainDue(r.stub());
+    expect(await r.settled(op)).toMatchObject({ status: "done", text: "echo: wake up" });
+    expect(await r.delivered(op)).toEqual([{ request: op.operation_id.split(".")[1], status: "done" }]);
+    const entries = (await r.in((instance) => instance.harness.messages({
+      session: op.thread_id }))).filter((entry) => entry.kind === "ta.work");
+    expect(entries.map((entry) => entry.data)).toEqual([{ work_id: op.operation_id.split(".")[1],
+                                                          client: null }]);
+    expect((await r.task(op.thread_id))!.record.state).toMatchObject({
+      status: "terminal", outcome: { status: "completed", result: { deliveries: 1 } } });
+    // Its run settles, and its job goes; a later alarm delivers nothing more.
+    await until(async () => (await sqlIn(r.stub(), "SELECT settled_at FROM agent_threads WHERE " +
+                                           "thread_id = ?", op.thread_id))[0]?.["settled_at"]
+                  !== null, "the run to settle");
+    await until(async () => (await r.job(op.thread_id)) === undefined, "its job to go");
+    await runDurableObjectAlarm(r.stub());
+    expect(await r.delivered(op)).toHaveLength(1);
+    expect(await r.status(op)).toMatchObject({ status: "done", text: "echo: wake up" });
+  }, 60_000);
+
+  it("is cancelled during its sleep: its task ends aborted at once, its run settles " +
+     "cancelled, and a second cancel cancels nothing", async () => {
+    const r = await rig();
+    const op = await later(r);
+    expect(await r.stub().agentCancel(r.bind(null), { operation_id: op.operation_id }))
+      .toEqual({ operation_id: op.operation_id, cancelled: true });
+    await until(async () => (await r.task(op.thread_id))?.status === "terminal", "the abort");
+    expect((await r.task(op.thread_id))!.record.state.outcome).toMatchObject({
+      status: "aborted", reason: CANCELLED, result: { deliveries: 0 } });
+    expect(await r.settled(op)).toMatchObject({ status: "unanswered", reason: CANCELLED });
+    await until(async () => (await r.live(op.thread_id)) === undefined
+                  && (await r.job(op.thread_id)) === undefined, "its live row and job to go");
+    expect(await r.stub().agentCancel(r.bind(null), { operation_id: op.operation_id }))
+      .toEqual({ operation_id: op.operation_id, cancelled: false });
+    // Pass its time: nothing is delivered.
+    await runDurableObjectAlarm(r.stub());
+    expect(await r.delivered(op)).toEqual([]);
+  }, 30_000);
+
+  it("is wiped with its thread by its client's grant change, sleeper and all", async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    const op = await later(r, MUSE);
+    const store = await storeOf(r.stub(), op.thread_id);
+    await r.stub().grantRevoke(r.bind(null), { client: MUSE.client });
+    await until(async () => (await sqlIn(r.stub(), "SELECT 1 FROM agent_threads WHERE " +
+                                           "thread_id = ?", op.thread_id)).length === 0,
+                "the drop");
+    expect(await storeSql(store, "SELECT name FROM sqlite_master WHERE name GLOB 'pi_*'"))
+      .toEqual([]);
+    expect([await r.live(op.thread_id), await r.job(op.thread_id)])
+      .toEqual([undefined, undefined]);
+    expect(await r.in((instance) => instance.probes.wiped.has(store))).toBe(true);
+    // The owner finds no operation of the client's.
+    expect((await failure(() => r.status(op))).message).toBe(NO_OPERATION);
+  }, 30_000);
+
+  it("is left asleep by a policy write, which ends its thread's running work only; its " +
+     "delivery then meets the policy as it stands, and is refused", async () => {
+    const r = await rig();
+    const op = await later(r);
+    const held = gate();
+    await r.in(async (instance) => {
+      instance.probes.holdGate = held.promise;
+      await instance.agent.host.submit(op.thread_id, "hold please", { operationId: "run_held" });
+      await until(() => instance.probes.holds === 1, "the hold to start");
+    });
+    const { generation, policy } = await r.stub().policyRead(r.bind(null));
+    // Room for one live run: the scheduled share of it is none.
+    await r.stub().policyWrite(r.session(), { expected_generation: generation,
+                                              policy: { ...policy, runs: { runs_live: 1 } } });
+    const ended = await r.in((instance) => instance.agent.host.settled(op.thread_id,
+                                                                       "run_held"));
+    held.release();
+    expect([ended.status, ended.reason]).toEqual(["unanswered", "aborted"]);
+    expect((await r.task(op.thread_id))!.status).toBe("sleeping");
+    // A new launch is refused at once: the sleeper is the one live run the policy allows.
+    expect((await failure(() => r.stub().agentRun(r.bind(null), {
+      agent: "main", input: "x", at: clock() + 60 }))).message).toBe(RUNS_LIVE);
+    // Due: its delivery is refused, the task ends with the reason, and nothing is submitted.
+    await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
+    await drainDue(r.stub());
+    expect(await r.settled(op)).toMatchObject({ status: "unanswered", reason: "runs_scheduled" });
+    expect((await r.task(op.thread_id))!.record.state.outcome).toMatchObject({
+      status: "failed", error: { message: "runs_scheduled" } });
+    expect(await r.delivered(op)).toEqual([]);
+  }, 30_000);
+
+  it("is refused at its delivery while the owner is suspended, ending terminal with that " +
+     "reason, and the doors refuse meanwhile", async () => {
+    const r = await rig();
+    const op = await later(r);
+    expect(await r.stub().admissionSet(r.platform, { reason: "billing", suspended: true }))
+      .toEqual({ state: "suspended", reasons: ["billing"] });
+    expect((await failure(() => r.status(op))).message).toMatch(new RegExp(`^${OWNER_SUSPENDED}`));
+    expect((await r.task(op.thread_id))!.status).toBe("sleeping");
+    await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
+    await drainDue(r.stub());
+    await until(async () => (await r.task(op.thread_id))?.status === "terminal", "the refusal");
+    expect((await r.task(op.thread_id))!.record.state.outcome).toMatchObject({
+      status: "failed", error: { message: "owner_suspended" } });
+    expect(await r.delivered(op)).toEqual([]);
+    await r.stub().admissionSet(r.platform, { reason: "billing", suspended: false });
+    expect(await r.settled(op)).toMatchObject({ status: "unanswered", reason: "owner_suspended" });
+  }, 30_000);
+
+  it("delivers once though the object dies inside its delivery, after the submit: pi's " +
+     "requestId finds it, and it is not checked again", async () => {
+    const r = await rig();
+    const op = await later(r);
+    await r.in((instance, state) => {
+      // The model's answers for an instance after the crash, which no test sets in time.
+      storeScript(state, [says("echo: wake up"), says("echo: wake up")]);
+      const host = instance.agent.host;
+      const submit = host.submit.bind(host);
+      Object.assign(host, { submit: async (...args: Parameters<typeof submit>) => {
+        const done = await submit(...args);
+        if (args[2].entry?.kind === "ta.work") {
+          state.abort("evicted inside the delivery");
+        }
+        return done;
+      } });
+    });
+    await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
+    await runDurableObjectAlarm(r.stub()).catch(() => undefined);
+    // A new instance answers; its alarm reopens the Session, and the task's phase runs again.
+    for (let tries = 0; ; tries++) {
+      if (await r.in(() => true).catch(() => false)) {
+        break;
+      }
+      if (tries > 100) {
+        throw new Error("the object did not come back");
+      }
+      await sleep(10);
+    }
+    await sqlIn(r.stub(), "UPDATE cf_agents_jobs SET time = ? WHERE id = ?", Date.now(),
+                wakeJob(op.thread_id));
+    await drainDue(r.stub());
+    expect(await r.settled(op)).toMatchObject({ status: "done", text: "echo: wake up" });
+    expect(await r.delivered(op)).toEqual([{ request: op.operation_id.split(".")[1], status: "done" }]);
+    expect((await r.task(op.thread_id))!.record.state.outcome).toMatchObject({
+      status: "completed", result: { deliveries: 1 } });
+  }, 60_000);
+
+  it("sleeps again, backing off, when its thread is full at its delivery, and later " +
+     "delivers once", async () => {
+    const r = await rig();
+    const op = await later(r);
+    const held = gate();
+    await r.in(async (instance) => {
+      instance.probes.holdGate = held.promise;
+      await instance.agent.host.submit(op.thread_id, "hold please", { operationId: "run_0" });
+      await until(() => instance.probes.holds === 1, "the hold to start");
+      for (let n = 1; n < THREAD_INPUTS; n++) {
+        await instance.agent.host.submit(op.thread_id, `more ${n}`, { operationId: `run_${n}` });
+      }
+      expect(instance.parts.turns.inputs(op.thread_id)).toBe(THREAD_INPUTS);
+    });
+    const first = (await r.task(op.thread_id))!.record.state.until!;
+    await r.pass(op.thread_id, first);
+    // The thread's job waits on its working Session; at the sleep's time the wait resumes it.
+    await r.in((instance) => instance.agent.host.peek(op.thread_id)!.pi.resume());
+    await until(async () => (await r.task(op.thread_id))?.record.state.checkpoint?.tries === 1,
+                "the delivery to sleep again");
+    const again = (await r.task(op.thread_id))!.record.state;
+    expect(again).toMatchObject({ status: "sleeping", checkpoint: { n: 1, tries: 1 } });
+    expect(again.until! - (first + 1_000)).toBeGreaterThanOrEqual(RETRY_FIRST_MS - 5_000);
+    expect(await r.delivered(op)).toEqual([]);
+    held.release();
+    await until(() => r.in((instance) => instance.parts.turns.inputs(op.thread_id) === 0),
+                "room to free");
+    await r.pass(op.thread_id, again.until!);
+    await drainDue(r.stub());
+    expect(await r.settled(op)).toMatchObject({ status: "done", text: "echo: wake up" });
+    expect(await r.delivered(op)).toHaveLength(1);
+  }, 60_000);
+});
+
+describe("a scheduled launch's status, cancel and wake:list", () => {
+  it("lists from the owner's rows, its run's Session never opened, nor its store claimed",
+     async () => {
+    const r = await rig();
+    const op = await later(r);
+    const out = await r.in(async (instance) => {
+      await instance.agent.host.close(op.thread_id);
+      const opens = instance.probes.storeCalls["open"] ?? 0;
+      const rows = instance.parts.threads.scheduledOf(null, 10);
+      const status = await instance.agent.scheduledStatus(
+        instance.parts.threads.get(op.thread_id)!, op.operation_id.split(".")[1]!);
+      return { rows, status, open: instance.agent.host.openThreads(),
+               opened: (instance.probes.storeCalls["open"] ?? 0) - opens };
+    });
+    expect(out.rows).toEqual([expect.objectContaining({
+      operation_id: op.operation_id, thread_id: op.thread_id, state: "sleeping",
+      due: op.due, settled_at: null, status: null })]);
+    expect(out.status).toMatchObject({ standing: { delivered: 0, due: op.due, ended: null },
+                                       last: null });
+    expect([out.open, out.opened]).toEqual([[], 0]);
+    expect(await r.status(op)).toMatchObject({ status: "scheduled", due: op.due });
+    expect(await r.in((instance) => instance.agent.host.openThreads())).toEqual([]);
+  }, 30_000);
+
+  it("answers a delivered launch's status from its delivery, then its receipt, and cancels " +
+     "nothing of it; a refused one's with its reason", async () => {
+    const r = await rig();
+    const op = await later(r, null, 1);
+    await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
+    await drainDue(r.stub());
+    expect(await r.settled(op)).toMatchObject({ status: "done", text: "echo: wake up" });
+    expect(await r.stub().agentCancel(r.bind(null), { operation_id: op.operation_id }))
+      .toMatchObject({ cancelled: false });
+    // Refused: the grant moved by a writer that kept the thread; its delivery refuses it.
+    await r.admit(MUSE);
+    const theirs = await later(r, MUSE);
+    // Revoked by a writer that kept the thread (no door's drop).
+    await r.in((_instance, state) => {
+      new Grants(state.storage, new Policy(state.storage)).revoke(MUSE.client, clock());
+    });
+    await r.pass(theirs.thread_id, (await r.task(theirs.thread_id))!.record.state.until!);
+    await drainDue(r.stub());
+    await until(async () => (await r.task(theirs.thread_id))?.status === "terminal", "refused");
+    expect((await r.task(theirs.thread_id))!.record.state.outcome).toMatchObject({
+      status: "failed", error: { message: AUTHORITY_CHANGED } });
+    const status = await r.in(async (instance) => instance.agent.scheduledStatus(
+      instance.parts.threads.get(theirs.thread_id)!, theirs.operation_id.split(".")[1]!));
+    expect(status).toMatchObject({ standing: { delivered: 0, ended: { reason: AUTHORITY_CHANGED } } });
+    expect(await r.in(async (instance) => instance.agent.cancelScheduled(
+      instance.parts.threads.get(theirs.thread_id)!, theirs.operation_id.split(".")[1]!)))
+      .toBe(false);
+  }, 60_000);
+
+  it("refuses a delivery whose stamp is not its thread's, and a launch made in a thread its " +
+     "row does not name", async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    const out = await r.in(async (instance) => {
+      const work = `work_${"9".repeat(32)}`;
+      const thread = await instance.agent.thread("main", null, { kind: "run", work });
+      // Under the client's stamp, in the owner's thread: its delivery refuses it.
+      await instance.agent.schedule(thread, {
+        work_id: work, thread: thread.thread_id, at: clock() + 3600, input: "x", cron: null,
+        stamp: { client: MUSE.client, generation: 1, authenticated_at: r.at, universe: null,
+                 agent: "main" } });
+      const other = await instance.agent.thread("main", null, { kind: "run" });
+      const unnamed = await instance.agent.schedule(other, {
+        work_id: work, thread: other.thread_id, at: clock() + 3600, input: "x", cron: null,
+        stamp: null }).then(() => "made", (error: Error) => error.message);
+      return { thread: thread.thread_id, unnamed };
+    });
+    expect(out.unnamed).toBe("a scheduled launch is made in the run its row names");
+    await until(async () => (await r.task(out.thread))?.status === "sleeping", "the sleep");
+    await r.pass(out.thread, (await r.task(out.thread))!.record.state.until!);
+    await drainDue(r.stub());
+    await until(async () => (await r.task(out.thread))?.status === "terminal", "the refusal");
+    expect((await r.task(out.thread))!.record.state.outcome).toMatchObject({
+      status: "failed", error: { message: "thread_authority" } });
+  }, 30_000);
+
+  it("holds scheduled launches to their share of runs_live: past it a scheduled launch is " +
+     "refused, while a launch now still runs", async () => {
+    const r = await rig();
+    const { generation, policy } = await r.stub().policyRead(r.bind(null));
+    await r.stub().policyWrite(r.session(), { expected_generation: generation,
+                                              policy: { ...policy, runs: { runs_live: 4 } } });
+    await later(r);
+    await later(r);
+    expect((await failure(() => r.stub().agentRun(r.bind(null), {
+      agent: "main", input: "x", at: clock() + 60 }))).message).toBe(RUNS_SCHEDULED);
+    expect((await r.stub().agentRun(r.bind(null), { agent: "main", input: "now" })).status)
+      .toBe("queued");
+    // What the owner sees of them: its two scheduled launches, asleep.
+    expect((await r.in((instance) => instance.parts.threads.scheduledOf(null, 10)))
+      .map((row) => row.state)).toEqual(["sleeping", "sleeping"]);
+  }, 30_000);
+});
+
+describe("cron recurrence", () => {
+  /** A deterministic generator, so a failure names its seed. */
+  function random(seed: number): () => number {
+    let state = seed >>> 0;
+    return () => {
+      state = (state * 1664525 + 1013904223) >>> 0;
+      return state / 2 ** 32;
     };
-    return act({ grants, state, write: new WriteGate(state.storage).write, turn,
-                 work: new Scheduled(state.storage, grants, threads,
-                                     { ...WORK_LIMITS, ...limits }) });
-  });
-}
+  }
+  const pick = <T>(next: () => number, items: readonly T[]): T =>
+    items[Math.floor(next() * items.length)]!;
 
-/** The client's authority as its last admitted call had it. */
-async function admitted(r: Rig, origin: Origin, signedIn: number | null = null): Promise<Stamp> {
-  await r.stub.outsideAgents(r.bind(origin));
-  const row = (await r.stub.grantList(r.bind(null))).clients
-    .find((c) => c.client === origin.client)!;
-  return { client: origin.client, generation: row.generation, authenticated_at: signedIn };
-}
+  /** Whether `value` matches one field's text, by arithmetic, apart from `cron.ts`. */
+  function fieldMatches(text: string, value: number, low: number, high: number): boolean {
+    return text.split(",").some((item) => {
+      const [base, step] = item.split("/") as [string, string | undefined];
+      const by = step === undefined ? 1 : Number(step);
+      const [from, to] = base === "*" ? [low, high]
+        : base.includes("-") ? base.split("-").map(Number) as [number, number]
+          : [Number(base), step === undefined ? Number(base) : high];
+      return value >= from && value <= to && (value - from) % by === 0;
+    });
+  }
 
-const states = (r: Rig) => r.sql("SELECT state, attempts, marked FROM scheduled_work " +
-                                 "ORDER BY created_at, work_id");
-const held = async (r: Rig, origin: Origin) => (await r.sql(
-  "SELECT held FROM outside_clients WHERE client = ?", origin.client))[0]?.["held"];
+  /** Whether the minute starting at `t` (seconds) matches `expression`, in UTC. */
+  function matches(expression: string, t: number): boolean {
+    const [minute, hour, day, month, weekday] = expression.split(" ") as
+      [string, string, string, string, string];
+    const date = new Date(t * 1000);
+    const dayOk = fieldMatches(day, date.getUTCDate(), 1, 31);
+    const weekdayOk = fieldMatches(weekday, date.getUTCDay(), 0, 6);
+    const days = day === "*" && weekday === "*" ? true : day === "*" ? weekdayOk
+      : weekday === "*" ? dayOk : dayOk || weekdayOk;
+    return t % 60 === 0 && fieldMatches(minute, date.getUTCMinutes(), 0, 59)
+      && fieldMatches(hour, date.getUTCHours(), 0, 23)
+      && fieldMatches(month, date.getUTCMonth() + 1, 1, 12) && days;
+  }
 
-/** Every counter the work's bounds read, and the same numbers counted from the rows. */
-async function counters(r: Rig) {
-  const [kept] = await r.sql("SELECT open_work, settled_work, free_clients, " +
-    "(SELECT json_group_object(client, held) FROM (SELECT * FROM outside_clients " +
-    "ORDER BY client)) AS held FROM policy_usage");
-  const [counted] = await r.sql(
-    "SELECT (SELECT COUNT(*) FROM scheduled_work WHERE settled_at IS NULL) AS open_work, " +
-      "(SELECT COUNT(*) FROM outside_clients WHERE owner_set = 0 AND agents = 0 " +
-      "AND held = 0) AS free_clients, " +
-      "(SELECT COUNT(*) FROM scheduled_work WHERE settled_at IS NOT NULL) AS settled_work, " +
-      "(SELECT json_group_object(client, n) FROM (SELECT c.client, (SELECT COUNT(*) FROM " +
-      "scheduled_work w WHERE w.client = c.client AND w.settled_at IS NULL) + (SELECT " +
-      "COUNT(*) FROM agent_cards a WHERE a.client = c.client) + (SELECT COUNT(*) FROM " +
-      "agent_threads t WHERE t.client = c.client) AS n FROM outside_clients c " +
-      "ORDER BY c.client)) AS held");
-  return [kept, counted];
-}
-
-describe("stamped scheduled work", () => {
-  it("is made only under authority that stands, or the owner's own", async () => {
-    const r = await rig();
-    const stamp = await admitted(r, CHATGPT);
-    const out = await inWork(r, ({ work, write, turn }) => {
-      const tried = (made: unknown) => {
-        try {
-          return work.add("turn", clock() + 60, turn(made), made, clock()).work_id.slice(0, 5);
-        } catch (error) {
-          return (error as Error).message;
+  it("answers the first matching minute strictly after a time, for random expressions " +
+     "(property tests against a minute-by-minute scan)", () => {
+    const minutes = ["0", "*/15", "5,35", "0-30/10", "7", "*/20", "45"];
+    const hours = ["*", "*/2", "9-17", "3", "1,13", "0-23/6", "22"];
+    const days = ["*", "*", "1", "15", "1-7", "*/10", "28-31"];
+    const months = ["*", "*", "1", "*/3", "6-8", "2"];
+    const weekdays = ["*", "*", "1-5", "0", "6", "2,4"];
+    let checked = 0;
+    for (let seed = 1; seed <= 400; seed++) {
+      const next = random(seed);
+      const expression = [pick(next, minutes), pick(next, hours), pick(next, days),
+                          pick(next, months), pick(next, weekdays)].join(" ");
+      const cron = parseCron(expression);
+      const after = 1_700_000_000 + Math.floor(next() * 3 * 365 * DAY_S) + Math.floor(next() * 60);
+      const found = nextOccurrence(cron, after);
+      expect(found, `${expression} after ${after}`).not.toBeNull();
+      expect(found! > after && matches(expression, found!), `${expression} after ${after}`)
+        .toBe(true);
+      // Nothing matches between: scanned minute by minute while the gap is short.
+      if (found! - after <= 3 * DAY_S) {
+        for (let t = Math.floor(after / 60) * 60 + 60; t < found!; t += 60) {
+          expect(matches(expression, t), `${expression}: ${t} before ${found}`).toBe(false);
         }
-      };
-      return [tried(stamp), tried(null), tried({ ...stamp, generation: 2 }),
-              tried({ ...stamp, client: "9".repeat(64) }), tried({ ...stamp, extra: 1 }),
-              tried({ ...stamp, generation: "1" })];
-    });
-    expect(out).toEqual(["work_", "work_", "outside client authority changed",
-                         "outside client has no grant",
-                         "a stamp is a client, its grant generation and its sign-in time",
-                         "a stamp is a client, its grant generation and its sign-in time"]);
-    expect(await held(r, CHATGPT)).toBe(2);  // the work, and the thread it names
-  });
-
-  it("is a turn in a thread made under the same authority, named when it is made",
-     async () => {
-    const r = await rig();
-    const stamp = await admitted(r, CHATGPT);
-    const out = await inWork(r, ({ work, turn, state }) => {
-      const tried = (payload: unknown, made: Stamp | null) => {
-        try {
-          return work.add("turn", clock() + 60, payload, made, clock()).work_id.slice(0, 5);
-        } catch (error) {
-          return (error as Error).message;
-        }
-      };
-      const owners = turn(null);
-      const theirs = turn(stamp);
-      // The same client's thread, made under another generation of its grant.
-      const older = { ...theirs, thread: new Threads(state.storage).record(
-        "main", { ...stamp, generation: 2, universe: null, agent: "main" },
-        clock()).thread_id };
-      return [tried(theirs, stamp), tried(owners, null), tried(owners, stamp), tried(older, stamp),
-              tried(theirs, null), tried({ ...owners, thread: `thread_${"0".repeat(32)}` }, null),
-              tried({ thread: owners.thread }, null), tried({ ...owners, input: "" }, null),
-              tried({ ...owners, extra: 1 }, null)];
-    });
-    const elsewhere = "a scheduled turn runs in a thread made under its own authority";
-    const malformed = "a scheduled turn is a thread and its input";
-    expect(out).toEqual(["work_", "work_", elsewhere, elsewhere, elsewhere, elsewhere,
-                         malformed, malformed, malformed]);
-  });
-
-  it("holds its client's row, so free-row eviction never makes it 'no grant' (N3)",
-     async () => {
-    const r = await rig();
-    const stamp = await admitted(r, CHATGPT);
-    const runner = new ScriptedRunner();
-    await inWork(r, ({ work, turn }) => work.add("turn", clock() - 1, turn(stamp), stamp, clock()));
-    expect((await r.stub.grantList(r.bind(null))).clients[0]!.held).toBe(2);
-    const [kept, counted] = await counters(r);
-    expect(kept).toEqual(counted);  // a held row is not free
-    // A free row seen after CHATGPT's: at one free row, the new client takes its place,
-    // never the older row the work holds.
-    const DOT_LATER = { client: "d".repeat(64), family: "e".repeat(64) };
-    await inWork(r, ({ grants }) => {
-      grants.admit(DOT_LATER.client, "mcp", null, clock() + 1);
-      grants.admit(MUSE.client, "mcp", null, clock() + 2);
-    }, {}, { maxFreeClients: 1 });
-    expect((await r.stub.grantList(r.bind(null))).clients.map((c) => c.client).sort())
-      .toEqual([CHATGPT.client, MUSE.client].sort());
-    await expect(r.sql("DELETE FROM outside_clients WHERE client = ?", CHATGPT.client))
-      .rejects.toThrow(/never deleted/);
-    expect(await inWork(r, ({ work, write }) => runWork(work, runner, clock, write))).toBe(1);
-    expect(runner.ran.map((t) => [t.kind, (t.payload as { input: string }).input, t.stamp]))
-      .toEqual([["turn", ASKED, stamp]]);
-    expect(await states(r)).toEqual([{ state: "handed", attempts: 1, marked: 1 }]);
-    expect(await held(r, CHATGPT)).toBe(1);  // settled: only its thread holds the row
-    const [after, recount] = await counters(r);
-    expect(after).toEqual(recount);
-  });
-
-  it("is rechecked with standing before it runs, and refused once the grant moved",
-     async () => {
-    const r = await rig();
-    const stamp = await admitted(r, CHATGPT, 100);
-    const runner = new ScriptedRunner();
-    await inWork(r, ({ work, write, turn }) => {
-      work.add("turn", clock() - 1, turn(stamp), stamp, clock());
-      work.add("turn", clock() - 1, turn(null), null, clock());  // the owner's own: no stamp
-    });
-    // A grant change made around the object's doors, so only the run's recheck sees it.
-    await inWork(r, ({ grants }) => grants.revoke(CHATGPT.client, clock()));
-    expect(await inWork(r, ({ work, write }) => runWork(work, runner, clock, write))).toBe(1);
-    expect(runner.ran.map((t) => t.stamp)).toEqual([null]);
-    expect((await states(r)).map((row) => row["state"]).sort()).toEqual(["handed", "refused"]);
-    expect(await held(r, CHATGPT)).toBe(1);  // its thread, changed around the doors, still does
-  });
-
-  it("of a client is ended by the client's grant change, in the change's transaction",
-     async () => {
-    const r = await rig();
-    const stamp = await admitted(r, CHATGPT);
-    await inWork(r, ({ work, turn }) =>
-      work.add("turn", clock() + 600, turn(stamp), stamp, clock()));
-    await r.stub.grantRevoke(r.bind(null), { client: CHATGPT.client });
-    expect(await states(r)).toEqual([{ state: "refused", attempts: 0, marked: 0 }]);
-    expect(await held(r, CHATGPT)).toBe(0);
-    const [kept, counted] = await counters(r);
-    expect(kept).toEqual(counted);
-  });
-
-  it("is released unmarked when its thread has no room, and handed once room frees, its " +
-     "attempts given back", async () => {
-    const r = await rig();
-    const runner = new ScriptedRunner();
-    runner.answers.push(...Array.from({ length: WORK_LIMITS.attempts + 1 }, () => "busy" as const));
-    const t = clock();
-    await inWork(r, ({ work, turn }) => work.add("turn", t - 10, turn(null, "one"), null, t));
-    for (let pass = 0; pass <= WORK_LIMITS.attempts; pass++) {
-      const at = t + pass * WORK_RETRY_S;
-      expect(await inWork(r, ({ work, write }) => runWork(work, runner, () => at, write))).toBe(0);
-      expect(await states(r)).toEqual([{ state: "pending", attempts: 0, marked: 0 }]);
-      expect((await r.sql("SELECT due FROM scheduled_work"))[0]!["due"]).toBe(at + WORK_RETRY_S);
+        checked++;
+      }
+      // From the occurrence itself, the next is a later one.
+      expect(nextOccurrence(cron, found!)! > found!).toBe(true);
     }
-    // Not due again before its backoff; then handed, once.
-    const freed = t + (WORK_LIMITS.attempts + 1) * WORK_RETRY_S;
-    expect(await inWork(r, ({ work, write }) => runWork(work, runner, () => freed - 1, write)))
-      .toBe(0);
-    expect(await inWork(r, ({ work, write }) => runWork(work, runner, () => freed, write)))
-      .toBe(1);
-    expect(await states(r)).toEqual([{ state: "handed", attempts: 1, marked: 1 }]);
-    expect(runner.ran).toHaveLength(1);
-    // A marked claim, which may have run, is never released.
-    const t2 = freed + 1;
-    const released = await inWork(r, ({ work, turn }) => {
-      work.add("turn", t2 - 1, turn(null, "two"), null, t2);
-      const claim = work.claim(work.dueOpen(t2, 16)[0]!, t2);
-      if (claim.outcome !== "claimed") {
-        throw new Error("unclaimed");
-      }
-      work.mark(claim.target.work_id, claim.target.claim_id);
-      return work.release(claim.target.work_id, claim.target.claim_id, t2 + WORK_RETRY_S);
-    });
-    expect(released).toBe(false);
-    expect((await states(r))[1]).toEqual({ state: "running", attempts: 1, marked: 1 });
+    expect(checked).toBeGreaterThan(100);
   });
 
-  it("is never run again once it may have run; an unmarked lapse runs again, a few times",
-     async () => {
-    const r = await rig();
-    const runner = new ScriptedRunner();
-    runner.answers.push("crash", "early", "early", "early");
-    const t = clock();
-    await inWork(r, ({ work, write, turn }) => {
-      work.add("turn", t - 10, turn(null, "one"), null, t);
-    });
-    await inWork(r, ({ work, write }) => runWork(work, runner, () => t, write));
-    expect(await states(r)).toEqual([{ state: "running", attempts: 1, marked: 1 }]);
-    // Past its lease: marked, so unknown, and never handed to the runner again.
-    await inWork(r, ({ work, write }) => runWork(work, runner, () => t + WORK_LEASE_S, write));
-    expect(await states(r)).toEqual([{ state: "unknown", attempts: 1, marked: 1 }]);
-    expect(runner.ran).toHaveLength(1);
-    // A run that died before its mark is due again, until it has used its attempts.
-    await inWork(r, ({ work, turn }) => work.add("turn", t - 10, turn(null, "two"), null, t + 1));
-    for (let pass = 1; pass <= WORK_LIMITS.attempts; pass++) {
-      const at = t + pass * (WORK_LEASE_S + 1);
-      await inWork(r, ({ work, write }) => runWork(work, runner, () => at, write));
+  it("matches a day by either day field when both are restricted, as classic cron", () => {
+    // The 13th of a month, or a Friday: 2026-11-13 is a Friday; 2026-11-06 a Friday too.
+    const cron = parseCron("0 9 13 * 5");
+    const start = Date.UTC(2026, 10, 1) / 1000;
+    expect(nextOccurrence(cron, start)).toBe(Date.UTC(2026, 10, 6, 9) / 1000);
+    expect(nextOccurrence(cron, Date.UTC(2026, 10, 6, 9) / 1000))
+      .toBe(Date.UTC(2026, 10, 13, 9) / 1000);
+    // A leap day four years off is within the horizon.
+    expect(nextOccurrence(parseCron("0 0 29 2 *"), Date.UTC(2025, 0, 1) / 1000))
+      .toBe(Date.UTC(2028, 1, 29) / 1000);
+    expect(CRON_HORIZON_DAYS).toBeGreaterThanOrEqual(8 * 365);
+  });
+
+  it.each([
+    ["* * * * *", "minutes apart"], ["*/5 * * * *", "minutes apart"],
+    ["0,10 * * * *", "minutes apart"], ["0 0-23 * * *", null],
+    ["60 * * * *", "takes 0 to 59"], ["0 24 * * *", "takes 0 to 23"],
+    ["0 0 0 * *", "takes 1 to 31"], ["0 0 * 13 *", "takes 1 to 12"],
+    ["0 0 * * 7", "takes 0 to 6"], ["0 0 * * MON", "not a value"], ["0 0 * JAN *", "not a value"],
+    ["0 0 L * *", "not a value"], ["0 0 ? * *", "not a value"], ["0 0 * * 1#2", "not a value"],
+    ["0 0 30 2 *", "an occurrence within"], ["0 0 31 4 *", "an occurrence within"],
+    ["0 0 * *", "exactly five fields"], ["0 0 * * * *", "exactly five fields"],
+    [`0 ${Array.from({ length: 17 }, (_, n) => n).join(",")} * * *`, "at most 16 items"],
+    [`0 0 * * *${" ".repeat(CRON_MAX_CHARS)}`, "characters"], ["", "characters"],
+    ["0 5-1 * * *", "takes 0 to 23"], ["*/0 * * * *", "takes 0 to 59"],
+  ])("bounds what it accepts: %s", (expression, refusal) => {
+    if (refusal === null) {
+      expect(parseCron(expression).hours).toHaveLength(24);
+      return;
     }
-    const last = t + (WORK_LIMITS.attempts + 1) * (WORK_LEASE_S + 1);
-    await inWork(r, ({ work, write }) => runWork(work, runner, () => last, write));
-    expect((await states(r))[1]).toEqual({ state: "failed", attempts: WORK_LIMITS.attempts,
-                                           marked: 0 });
-    expect(runner.ran).toHaveLength(1);
+    expect(() => parseCron(expression)).toThrow(refusal);
   });
 
-  it("settles only from the claim that holds it", async () => {
-    const r = await rig();
-    const out = await inWork(r, ({ work, write, turn }) => {
-      const t = clock();
-      const { work_id: id } = work.add("turn", t - 1, turn(null), null, t);
-      const claim = work.claim(id, t);
-      if (claim.outcome !== "claimed") {
-        throw new Error("expected a claim");
-      }
-      return [work.settle(id, "claim_x", { state: "handed" }, t),
-              work.mark(id, "claim_x"),
-              work.settle(id, claim.target.claim_id, { state: "failed", reason: "boom" }, t),
-              work.settle(id, claim.target.claim_id, { state: "handed" }, t),
-              (() => {
-                try {
-                  return work.settle(id, claim.target.claim_id, { state: "sent" }, t);
-                } catch (error) {
-                  return (error as Error).message;
-                }
-              })()];
-    });
-    expect(out).toEqual([false, false, true, false, "invalid work answer"]);
+  it("holds the bounds as named", () => {
+    expect([CRON_MAX_CHARS, CRON_MIN_GAP_MIN]).toEqual([64, 15]);
+    // The least gap counts across midnight: 23:50 then 00:00 is ten minutes.
+    expect(() => parseCron("0,50 0,23 * * *")).toThrow("minutes apart");
+    expect(parseCron("0 0,23 * * *").hours).toEqual([0, 23]);
   });
 
-  it("is bounded per owner and per client, and keeps its stamp", async () => {
+  it("delivers a recurring launch at each occurrence, three times, until its client's " +
+     "grant changes, which ends it with its thread", async () => {
     const r = await rig();
-    const stamp = await admitted(r, CHATGPT);
-    const out = await inWork(r, ({ work, write, turn }) => {
-      const tried = (made: Stamp | null, payload: unknown = turn(made)) => {
-        try {
-          work.add("turn", clock() + 60, payload, made, clock());
-          return "added";
-        } catch (error) {
-          return (error as Error).message;
-        }
-      };
-      return [tried(stamp), tried(stamp), tried(stamp), tried(null), tried(null), tried(null),
-              tried(null, "x".repeat(WORK_LIMITS.maxPayload)), tried(null, () => 1)];
-    }, { maxOpen: 4, perClient: 2 });
-    const payload = "a work payload is JSON of at most 16384 characters";
-    expect(out).toEqual(["added", "added", "this client's scheduled work is at its limit",
-                         "added", "added", "the owner's scheduled work is at its limit",
-                         payload, payload]);
-    await expect(r.sql("UPDATE scheduled_work SET generation = 9"))
-      .rejects.toThrow(/keeps the authority it was made under/);
-    const [kept, counted] = await counters(r);
-    expect(kept).toEqual(counted);
-  });
+    await r.admit(MUSE);
+    const op = await r.stub().agentRun(r.bind(MUSE), { agent: "main", input: "tick",
+                                                       cron: "0 * * * *" });
+    expect(op.status).toBe("scheduled");
+    const work = op.operation_id.split(".")[1]!;
+    expect(op.due! % 3600).toBe(0);
+    for (let n = 1; n <= 3; n++) {
+      await until(async () => (await r.task(op.thread_id))?.status === "sleeping"
+                    && (await r.live(op.thread_id))?.["active"] === 0, `sleep ${n}`);
+      const { until: due } = (await r.task(op.thread_id))!.record.state;
+      expect(due! % 3_600_000).toBe(0);
+      await r.pass(op.thread_id, due!);
+      await drainDue(r.stub());
+      await until(async () => (await r.delivered(op)).length === n
+                    && (await r.delivered(op))[n - 1]!["status"] === "done", `delivery ${n}`);
+    }
+    expect((await r.delivered(op)).map((row) => row["request"]))
+      .toEqual([work, `${work}.2`, `${work}.3`]);
+    expect(await r.status(op, MUSE)).toMatchObject({ status: "done", text: "echo: tick",
+                                                     due: expect.any(Number) });
+    await until(async () => (await r.task(op.thread_id))?.status === "sleeping", "sleep 4");
+    // The grant change ends it: its thread dropped, its store wiped, no fourth delivery.
+    const store = await storeOf(r.stub(), op.thread_id);
+    await r.stub().grantRevoke(r.bind(null), { client: MUSE.client });
+    await until(async () => (await sqlIn(r.stub(), "SELECT 1 FROM agent_threads WHERE " +
+                                           "thread_id = ?", op.thread_id)).length === 0,
+                "the drop");
+    expect(await storeSql(store, "SELECT name FROM sqlite_master WHERE name GLOB 'pi_*'"))
+      .toEqual([]);
+    expect(await r.job(op.thread_id)).toBeUndefined();
+  }, 90_000);
 
-  it("keeps settled rows for their retention, and at most the newest", async () => {
+  it("refuses a launch whose cron it does not accept, before any thread", async () => {
     const r = await rig();
-    const runner = new ScriptedRunner();
-    const t = clock();
-    await inWork(r, async ({ work, write, turn }) => {
-      for (let n = 0; n < 3; n++) {
-        work.add("turn", t - 1, turn(null, `${n}`), null, t);
-      }
-      await runWork(work, runner, () => t, write);
-      work.add("turn", t - 1, turn(null, "3"), null, t);
-      await runWork(work, runner, () => t + WORK_LIMITS.settledRetentionS + 1, write);
-    }, { maxSettled: 2 });
-    expect((await r.sql("SELECT payload FROM scheduled_work")).map((row) =>
-      (JSON.parse(row["payload"] as string) as { input: string }).input)).toEqual(["3"]);
-  });
+    expect((await failure(() => r.stub().agentRun(r.bind(null), {
+      agent: "main", input: "x", cron: "* * * * *" }))).name).toBe("Invalid");
+    expect(await sqlIn(r.stub(), "SELECT 1 FROM agent_threads")).toEqual([]);
+  }, 30_000);
 });
 
-describe("a work pass (slice 5's review L1, L2, N8)", () => {
-  it("claims nothing without a runner", async () => {
-    const r = await rig();
-    await inWork(r, async ({ work, write, turn }) => {
-      work.add("turn", clock() - 1, turn(null), null, clock());
-      expect(await runWork(work, null, clock, write)).toBe(0);
-    });
-    expect(await states(r)).toEqual([{ state: "pending", attempts: 0, marked: 0 }]);
-  });
+describe("the owner's admission", () => {
+  const doors = () => Object.getOwnPropertyNames(OwnerDO.prototype)
+    .filter((door) => door !== "constructor" && door !== "alarm" && door !== "admissionSet");
+  const call = (r: Rig, door: string, binding: Binding) =>
+    (r.stub() as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[door]!(
+      binding, {});
 
-  it("stops a runner whose mark fails, before any effect", async () => {
+  it("refuses every door while suspended, for either reason, until each is lifted", async () => {
     const r = await rig();
-    const runner = new ScriptedRunner();
-    const t = clock();
-    await inWork(r, async ({ work, state, write, turn }) => {
-      const { work_id: id } = work.add("turn", t - 1, turn(null), null, t);
-      // The claim lapses and is taken again while the first runner is handed its target.
-      const lapsing: WorkRunner = {
-        handOff: (target, mark) => {
-          state.storage.sql.exec("UPDATE scheduled_work SET claim_id = 'claim_other' " +
-                                 "WHERE work_id = ?", id);
-          return runner.handOff(target, mark);
-        },
-      };
-      expect(await runWork(work, lapsing, () => t, write)).toBe(0);
-    });
-    expect(runner.ran).toEqual([]);  // it never got past its mark
-    expect(await states(r)).toEqual([{ state: "running", attempts: 1, marked: 0 }]);
-  });
-
-  it("reports a hand-off held past its bound, and leaves it marked to its lease", async () => {
-    const r = await rig();
-    const runner = new ScriptedRunner();
-    runner.answers.push("slow");
-    const t = clock();
-    await inWork(r, async ({ work, write, turn }) => {
-      work.add("turn", t - 2, turn(null), null, t);
-      work.add("turn", t - 1, turn(null, "two"), null, t + 0.001);
-      // The next still runs.
-      expect(await runWork(work, runner, () => t, write, 16, 20)).toBe(1);
-    });
-    expect((await states(r)).map((row) => [row["state"], row["marked"]]))
-      .toEqual([["running", 1], ["handed", 1]]);
-    await inWork(r, ({ work, write }) => runWork(work, runner, () => t + WORK_LEASE_S, write));
-    expect((await states(r))[0]!["state"]).toBe("unknown");  // never handed again
-    expect(runner.ran).toHaveLength(2);
-  });
-
-  it("marks a hand-off that stalls before its mark, so it is never handed again",
-     async () => {
-    const r = await rig();
-    const runner = new ScriptedRunner();
-    runner.answers.push("stall");
-    const t = clock();
-    await inWork(r, async ({ work, write, turn }) => {
-      work.add("turn", t - 1, turn(null), null, t);
-      expect(await runWork(work, runner, () => t, write, 16, 20)).toBe(0);
-    });
-    expect(await states(r)).toEqual([{ state: "running", attempts: 1, marked: 1 }]);
-    await inWork(r, ({ work, write }) => runWork(work, runner, () => t + WORK_LEASE_S, write));
-    expect((await states(r))[0]!["state"]).toBe("unknown");
-  });
-
-  it("takes no row past its pass's budget, and leaves the rest for the next pass (N2)",
-     async () => {
-    const r = await rig();
-    const runner = new ScriptedRunner();
-    runner.answers.push("slow");
-    runner.slowMs = 50;
-    const t = clock();
-    await inWork(r, async ({ work, write, turn }) => {
-      work.add("turn", t - 2, turn(null), null, t);
-      work.add("turn", t - 1, turn(null, "two"), null, t + 0.001);
-      expect(await runWork(work, runner, () => t, write, 16, WORK_HANDOFF_MS,
-                           Date.now() + 20))
-        .toBe(1);
-      const late = await runWork(work, runner, () => t, write, 16, WORK_HANDOFF_MS,
-                                 Date.now() - 1);
-      expect(late).toBe(0);
-    });
-    expect((await states(r)).map((row) => row["state"])).toEqual(["handed", "pending"]);
-  });
-
-  it("backs off a lapsed claim whose recovery fails, in its own row (review L3)",
-     async () => {
-    const r = await rig();
-    const t = clock();
-    const at = t + WORK_LEASE_S;
-    const due = await inWork(r, async ({ work, state, write, turn }) => {
-      const { work_id: id } = work.add("turn", t - 1, turn(null), null, t);
-      expect(work.claim(id, t).outcome).toBe("claimed");
-      work.defer(id, t + 1);  // a defer never moves a row earlier, its lease included
-      expect(work.nextDue(t, false)).toBe(at);
-      state.storage.sql.exec("CREATE TRIGGER probe_recover BEFORE UPDATE OF state ON " +
-                             "scheduled_work BEGIN SELECT RAISE(ABORT, 'probe'); END");
-      await runWork(work, null, () => at, write);
-      state.storage.sql.exec("DROP TRIGGER probe_recover");
-      return work.nextDue(at, false);
-    });
-    expect(due).toBe(at + WORK_RETRY_S);
-  });
-
-  it("takes only a hand-off's two answers, never the old 'done' (review L3)", async () => {
-    const r = await rig();
-    const out = await inWork(r, ({ work, write, turn }) => {
-      const t = clock();
-      const { work_id: id } = work.add("turn", t - 1, turn(null), null, t);
-      const claim = work.claim(id, t);
-      if (claim.outcome !== "claimed") {
-        throw new Error("expected a claim");
-      }
-      try {
-        return work.settle(id, claim.target.claim_id, { state: "done" as never }, t);
-      } catch (error) {
-        return (error as Error).message;
-      }
-    });
-    expect(out).toBe("invalid work answer");
-  });
-
-  it("backs a failing row off in its own row, never in a loop", async () => {
-    const r = await rig();
-    const t = clock();
-    const broken: WorkRunner = {
-      handOff: async () => ({ state: "sent" as never }),  // an answer settle refuses
-    };
-    await inWork(r, async ({ work, write, turn }) => {
-      work.add("turn", t - 1, turn(null), null, t);
-      expect(await runWork(work, broken, () => t, write)).toBe(0);
-    });
-    const [row] = await r.sql("SELECT state, due FROM scheduled_work");
-    expect(row).toEqual({ state: "running", due: t + WORK_LEASE_S });
-    // A pending row whose claim fails is held back too.
-    await r.sql("UPDATE scheduled_work SET state = 'pending', claim_id = NULL, due = ?", t - 1);
-    await inWork(r, async ({ work, state, write, turn }) => {
-      state.storage.sql.exec("CREATE TRIGGER probe_claim BEFORE UPDATE OF claim_id ON " +
-                             "scheduled_work BEGIN SELECT RAISE(ABORT, 'probe'); END");
-      expect(await runWork(work, new ScriptedRunner(), () => t, write)).toBe(0);
-      state.storage.sql.exec("DROP TRIGGER probe_claim");
-      expect(work.nextDue(t, true)).toBe(t + WORK_RETRY_S);
-    });
-  });
-
-  it("of a grant change refuses only pending work, never work being handed", async () => {
-    const r = await rig();
-    const stamp = await admitted(r, CHATGPT);
-    const t = clock();
-    await inWork(r, ({ work, write, turn }) => {
-      const { work_id: id } = work.add("turn", t - 1, turn(stamp), stamp, t);
-      work.add("turn", t + 600, turn(stamp), stamp, t + 0.001);
-      expect(work.claim(id, t).outcome).toBe("claimed");
-    });
-    await r.stub.grantRevoke(r.bind(null), { client: CHATGPT.client });
-    expect((await states(r)).map((row) => row["state"])).toEqual(["running", "refused"]);
-  });
-});
-
-describe("the work lane", () => {
-  it("has a job for pending work, since the object has its runner, and one for a claim's " +
-     "lease", async () => {
-    const r = await rig();
-    const t = clock();
-    const due = t + 600;
-    await inWork(r, ({ work, turn }) => work.add("turn", due, turn(null), null, t));
-    await r.stub.grantRevoke(r.bind(null), { client: CHATGPT.client });  // any change syncs
-    expect(await laneAt(r.stub, "work")).toBe(Math.ceil(due * 1000) / 1000);
-    await inWork(r, ({ work }) => {
-      const [id] = work.dueOpen(due, 1);
-      expect(work.claim(id!, due).outcome).toBe("claimed");
-    });
-    await r.stub.grantRevoke(r.bind(null), { client: CHATGPT.client });
-    expect(await laneAt(r.stub, "work")).toBe(Math.ceil((due + WORK_LEASE_S) * 1000) / 1000);
-    const lease = due + WORK_LEASE_S;
-    expect(await inWork(r, ({ work }) => [work.nextDue(t, false), work.nextDue(t, true),
-                                          work.nextDue(lease + 5, false)]))
-      .toEqual([lease, lease, lease + 5]);
-  });
-});
-
-describe("the schedule's own queries", () => {
-  it("read by index, never by scanning a table", async () => {
-    const r = await rig();
-    const plans = await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
-      const plan = (query: string, ...params: SqlStorageValue[]) => state.storage.sql
-        .exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, ...params).toArray()
-        .map((row) => row.detail).join("; ");
-      const client = "1".repeat(64);
-      return [
-        plan("SELECT work_id FROM scheduled_work WHERE state = 'pending' AND due <= ? " +
-               "ORDER BY due LIMIT ?", 1, 1),
-        plan("SELECT work_id FROM scheduled_work WHERE state = 'running' AND due <= ? " +
-               "ORDER BY due LIMIT ?", 1, 1),
-        plan("SELECT MIN(due) AS due FROM scheduled_work WHERE state = 'running'"),
-        plan("SELECT MIN(due) AS due FROM scheduled_work WHERE state = 'pending'"),
-        plan("SELECT COUNT(*) AS n FROM scheduled_work WHERE client = ? AND settled_at IS NULL",
-             client),
-        plan("UPDATE scheduled_work SET state = 'refused' WHERE client = ? AND " +
-               "state = 'pending' AND settled_at IS NULL", client),
-        plan("DELETE FROM scheduled_work WHERE settled_at IS NOT NULL AND settled_at < ?", 1),
-        plan("SELECT work_id FROM scheduled_work WHERE settled_at IS NOT NULL " +
-               "ORDER BY settled_at LIMIT ?", 1),
-        plan("DELETE FROM agent_cards WHERE filed_at < ?", 1),
-        plan("DELETE FROM agent_cards WHERE client = ? AND family = ?", client, client),
-        plan("SELECT COUNT(*) AS n FROM agent_cards WHERE client = ?", client),
-        plan("SELECT * FROM agent_cards WHERE card_id = ? AND filed_at >= ?", "card_x", 1),
-      ];
-    });
-    for (const plan of plans) {
-      expect(plan).not.toMatch(/SCAN (?!.*USING)/);
+    expect(doors().length).toBeGreaterThan(60);
+    await r.stub().admissionSet(r.platform, { reason: "billing", suspended: true });
+    await r.stub().admissionSet(r.platform, { reason: "abuse", suspended: true });
+    const answers = new Map<string, string>();
+    for (const door of doors()) {
+      answers.set(door, (await failure(() => call(r, door, r.session()))).message);
     }
-  });
+    expect([...answers].filter(([, answer]) =>
+      answer !== `${OWNER_SUSPENDED} (abuse, billing)`)).toEqual([]);
+    expect(await r.stub().admissionSet(r.platform, { reason: "billing", suspended: false }))
+      .toEqual({ state: "suspended", reasons: ["abuse"] });
+    expect((await failure(() => r.stub().policyRead(r.bind(null)))).message)
+      .toBe(`${OWNER_SUSPENDED} (abuse)`);
+    expect(await r.stub().admissionSet(r.platform, { reason: "abuse", suspended: false }))
+      .toEqual({ state: "admitted", reasons: [] });
+    expect((await r.stub().policyRead(r.bind(null))).generation).toBeGreaterThan(0);
+  }, 60_000);
+
+  it("is set only by the platform's reserved caller, which reaches no other door, and no " +
+     "owner is named so", async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    const set = { reason: "billing", suspended: true };
+    expect((await failure(() => r.stub().admissionSet(r.bind(null), set))).message)
+      .toBe(PLATFORM_ONLY);
+    expect((await failure(() => r.stub().admissionSet(r.session(), set))).message)
+      .toBe(PLATFORM_ONLY);
+    expect((await failure(() => r.stub().admissionSet(
+      { ...r.platform, origin: MUSE, source: MCP }, set))).message).toBe(PLATFORM_ONLY);
+    expect((await failure(() => r.stub().admissionSet({ ...r.platform, session: "x" }, set)))
+      .message).toBe(PLATFORM_ONLY);
+    for (const door of ["policyRead", "collectionPull", "agentStatus", "fileUsage"]) {
+      expect((await failure(() => call(r, door, r.platform))).message).toBe(PLATFORM_RESERVED);
+    }
+    for (const bad of [{ reason: "fraud", suspended: true }, { reason: "billing" },
+                       { reason: "billing", suspended: "yes" }, {}]) {
+      expect((await failure(() => r.stub().admissionSet(r.platform, bad as never))).name)
+        .toBe("Invalid");
+    }
+    const named = env.AGENT.getByName(PLATFORM_CALLER);
+    expect((await failure(() => named.policyRead(
+      { owner: PLATFORM_CALLER, caller: PLATFORM_CALLER, origin: null }))).message)
+      .toBe(PLATFORM_RESERVED);
+    // Still admitted: nothing above set it.
+    expect((await r.stub().policyRead(r.bind(null))).generation).toBeGreaterThan(0);
+  }, 30_000);
+
+  it("holds the wakes lane's claims while the owner is not admitted", async () => {
+    const r = await ledgerRig();
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    await r.post(null, `dm:${muse}`);
+    const due = clock() + 3600;
+    const out = await runInDurableObject(r.stub, (_instance: OwnerDO, state) => {
+      const grants = new Grants(state.storage, new Policy(state.storage));
+      const wake = (admitted: boolean) => {
+        const ledger = new Ledger(state.storage, grants, undefined, () => admitted);
+        return { next: ledger.nextDue(clock(), admitted),
+                 claim: ledger.claim(ledger.dueOpen(due, 1)[0]!.wake_id, due).outcome };
+      };
+      return [wake(false), wake(true)];
+    });
+    expect(out[0]).toEqual({ next: null, claim: "held" });
+    expect(out[1]).toMatchObject({ claim: "claimed" });
+  }, 30_000);
+});
+
+describe("the erasure's tombstone", () => {
+  /** The owner's tables, the runtime's (`_cf_`) aside. */
+  const tables = (r: Rig) => sqlIn(r.stub(), "SELECT name FROM sqlite_master WHERE " +
+                                     "type = 'table' AND name NOT LIKE '\\_cf\\_%' ESCAPE " +
+                                     "'\\' ORDER BY name");
+
+  it("leaves exactly one erased admission row, in the wipe's own turn; a stale getByName is " +
+     "then refused, migrating nothing and starting no Lifecycle, across evictions", async () => {
+    const r = await rig();
+    await r.stub().agentSubmit(r.bind(null), { message: "hello", client_send_id: "a" });
+    await later(r);
+    await r.in((instance) => instance.erasure.erase());
+    expect(await tables(r)).toEqual([{ name: "owner_admission" }]);
+    expect(await sqlIn(r.stub(), "SELECT only, state, reasons FROM owner_admission"))
+      .toEqual([{ only: 1, state: "erased", reasons: "[]" }]);
+    for (let round = 0; round < 2; round++) {
+      await evictDurableObject(r.stub());
+      for (const call of [() => r.stub().policyRead(r.bind(null)),
+                          () => r.stub().sessionOpen(r.bind(null, { authenticated_at: r.at })),
+                          () => r.stub().admissionSet(r.platform, { reason: "billing",
+                                                                    suspended: false }),
+                          () => r.stub().agentRun(r.bind(null), { agent: "main", input: "x" })]) {
+        expect((await failure(call)).message).toBe(OWNER_ERASED);
+      }
+      expect(await tables(r)).toEqual([{ name: "owner_admission" }]);
+      expect(await sqlIn(r.stub(), "SELECT name FROM sqlite_master WHERE name GLOB " +
+                                     "'cf_agents_*'")).toEqual([]);
+      expect(await alarmOf(r.stub())).toBeNull();
+      expect(await runDurableObjectAlarm(r.stub())).toBe(false);
+    }
+  }, 60_000);
+
+  it("is written in the same turn as the wipe, only into a wiped database, and once", async () => {
+    const { stub } = await rig();
+    const out = await runInDurableObject(stub(), async (_instance: OwnerDO, state) => {
+      // Not wiped (its erasure's mark-table is there): nothing is written.
+      writeTombstone(state.storage.sql);
+      const before = tombstoned(state.storage.sql);
+      const gate = new WriteGate(state.storage);
+      const wiping = gate.wipe(writeTombstone);
+      const sameTurn = tombstoned(state.storage.sql);
+      await wiping;
+      writeTombstone(state.storage.sql);  // again: one row still
+      return { before, sameTurn, rows: state.storage.sql.exec(
+        "SELECT state FROM owner_admission").toArray() };
+    });
+    expect(out).toEqual({ before: false, sameTurn: true, rows: [{ state: "erased" }] });
+  }, 30_000);
+
+  it("leaves another owner admitted, made fresh as ever", async () => {
+    const r = await rig();
+    await r.in((instance) => instance.erasure.erase());
+    const other = await rig();
+    expect((await other.stub().policyRead(other.bind(null))).generation).toBeGreaterThan(0);
+    expect(await sqlIn(other.stub(), "SELECT state FROM owner_admission"))
+      .toEqual([{ state: "admitted" }]);
+  }, 30_000);
+});
+
+describe("ta's agent:run with cron, and DOT's launch", () => {
+  it("makes a recurring launch through ta's path, stamped as the calling client", async () => {
+    const r = await rig();
+    await r.admit(DOT);
+    const op = await r.in(async (instance) => instance.parts.platform.run(
+      { by: "client", stamp: { client: DOT.client, generation: 1, authenticated_at: r.at,
+                               universe: null, agent: "main" } },
+      "main", "tick", null, "30 9 * * 1-5")) as Operation;
+    expect(op).toMatchObject({ status: "scheduled" });
+    expect(new Date(op.due! * 1000).getUTCMinutes()).toBe(30);
+    const rows = await r.in((instance) => instance.parts.threads.scheduledOf(DOT.client, 10));
+    expect(rows.map((row) => row.operation_id)).toEqual([op.operation_id]);
+  }, 30_000);
 });

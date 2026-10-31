@@ -78,12 +78,12 @@ live acceptance is still owed says so.
   binder, the directory's `h:` and `i:` entries, the 1 MiB cap and the `control.inbound`
   gate, and a new owner door `inboundAccept` (config, revision, dedupe, owner-held
   secrets, the breaker).
-- [ ] Owner admission and erasure, in the owner's object: an `admission` row
+- [x] Owner admission and erasure, in the owner's object: an `admission` row
   (`admitted | suspended{billing, abuse} | erased`), checked in `#bind` at every door
   and by every lane with `require_work` semantics, an erasure tombstone so a stale
   `getByName` never recreates an erased owner, and a new door `admissionSet` taken only
   from a reserved `platform` caller, with a guard keeping that name out of every source
-  but `platform/admin`. This **reverses** the earlier wording here ("the binder refuses
+  but `platform/admin`. Built with F1 (tasks 5); the erasure door stays slice 10's. This **reverses** the earlier wording here ("the binder refuses
   an unadmitted owner before it reaches the object, from the directory's admission
   state"), because the object is strongly consistent and already on every path (no
   extra read, no 60 s lag), the alarm reads it locally, and erasure needs an object
@@ -195,9 +195,9 @@ live acceptance is still owed says so.
   installs none of its runtime handlers, and its `alarm` only hands the runtime's alarm
   to it. Each kind of timed work is a lane with its own rows and one single-flight
   Lifecycle job, `owner-schedule/<lane>`, derived from them: `wakes` (3.4's wakes and
-  revokes), `files` (6.1's housekeeping, with its retention re-apply), `connections`,
-  `threads` and, until F1 replaces it with a `ta.scheduled` pi task, `work` (stamped
-  scheduled work, `scheduled.ts`). Every changing door, and the object's wake,
+  revokes), `files` (6.1's housekeeping, with its retention re-apply), `connections` and
+  `threads`. A scheduled launch is no lane's: it is a `ta.scheduled` pi task sleeping in
+  its run thread, woken by that thread's own job (F1). Every changing door, and the object's wake,
   re-derive the jobs, so any door added later that changes a lane's rows calls
   `#schedule.sync()` too; a re-derive keeps a job Lifecycle moved later (the
   memory-limit breaker's backoff) unless the rows have earlier work. A pass is short:
@@ -212,13 +212,12 @@ live acceptance is still owed says so.
   storage or a Lifecycle, off every `agents` import but `agents/lifecycle`, off
   Lifecycle's handlers, and off Lifecycle's tables; there is no `pi_` table in the owner's
   `OwnerDO` database: pi's tables exist only in `ThreadStore` objects (S1-S3).
-  Stamped work (owed by 3.5): a scheduled turn or automation carries the outside
-  authority it was made under (client, grant generation, sign-in time), rechecked with
-  `Grants.standing` when made and before it is handed to pi; a grant change refuses the
-  client's pending work in its own transaction; open work holds its client's grant row
-  (`held`, slice 3's review N3); the lane only hands a turn to pi's durable submit,
-  fenced by a lease and a may-have-been-handed mark, so `unknown` work is never handed
-  again, and a runner that holds its hand-off past `WORK_HANDOFF_MS` is reported. Slice
+  Stamped work (owed by 3.5): a scheduled launch carries the outside authority it was
+  made under (client, grant generation, sign-in time) as its run thread's stamp,
+  rechecked with `Grants.standing` when made and in its delivery's own unit (F1); a
+  grant change drops the client's threads, the sleepers with them, in its own
+  transaction; a scheduled run holds its client's grant row as every thread does
+  (`held`, slice 3's review N3). Slice
   3's review carries: only the owner's own act lifts a revoke (L1, and slice 5's review
   M1): an API key's revoked row goes at the binder's `grantForget` once the directory
   deleted the key; an MCP client's only by the owner in session (`grantForgetRevoked`),
@@ -230,8 +229,7 @@ live acceptance is still owed says so.
   digest, so the owner's browser pairs an outside origin with its session only for an
   API key (L2). The scoped capabilities are declared and are the only ones a scope may
   name (N1). The refusal receipt's generation and the grant row's `CHECK` are held by
-  tests (N4). The scheduled-work runner is the agent's (5, landed in A2), so pending work
-  gets its job.
+  tests (N4).
 - [ ] 3.7 The owner's action decision, from `broker/policy.py` and
   `broker/authority_gate.py` (#5333): `decide` with spend reservations,
   once-approvals, standing grants and declared operation kinds, which the gateway's
@@ -468,16 +466,14 @@ account and no deploy.
   policy feeds pi's settings, and the per-agent wake limits move into the policy
   document then; an agent run, launch or extension call made for an outside client
   stamps that client's authority and is rechecked with `Grants.standing` before each
-  step; the `WorkRunner` the `work` lane calls marks a scheduled turn, hands it to pi's
-  durable submit with `operationId` set to the row's `work_id` (so a second hand-off is
-  pi's duplicate, deduped) and returns (its status is pi's receipts, found by
-  `work_id`), and the door that schedules
-  one stamps the caller's authority; a policy write ends the owner's in-flight turns and
+  step; a scheduled turn is a `ta.scheduled` pi task whose delivery submits with
+  `requestId` its `work_id` (so a second delivery is pi's duplicate, deduped; its status
+  is its task's record and that submission's), and the door that schedules one stamps the
+  caller's authority; a policy write ends the owner's in-flight turns and
   streams, and a grant change ends that client's (the Python's stream cancellation and
   `_end_outside_streams`). The object's `ThreadHost` installs with `lifecycle.use`; each
   thread is one pi Session over its own `ThreadStore`; owner writes are synchronous gate
-  units. A scheduled turn is a `ta.scheduled` pi task sleeping in its run thread (F1);
-  until F1, the `work` lane's `WorkRunner` above hands it to its thread.
+  units. A scheduled turn is a `ta.scheduled` pi task sleeping in its run thread (F1).
 - [x] A0 pi in the object, on faux models, in workerd, nothing deployed (`agent.ts`,
   `gate.ts`, `notices.ts`, migration 5). PiHarness sits on the object's own Lifecycle
   beside the schedule, no handlers installed, `alarm` the one forwarded; pi opens in
@@ -610,12 +606,10 @@ account and no deploy.
   conversation stamped for it, and an abort (`background: true`) of each; a policy write
   does the same for every conversation with live work and closes every view. Either door
   opens pi and waits at most `END_WAIT_MS` (5 s); should that fail the door rejects though
-  its write is committed, and what the end missed is refused anyway. `OwnerDO` holds
-  `workRunner`: the thread named in the work row, which `Scheduled.add` accepts only at
-  the work's own client and generation and the runner checks again (and that its stamp
-  still stands) before `mark()`; `submit` with `operationId = work_id` and `whenBusy:
-  "followUp"`, the entry naming the client, `accepted: false` handed as `duplicate`, a
-  gone thread `failed` before its mark. `OwnerAgent.status` reads `pending()`, then waits
+  its write is committed, and what the end missed is refused anyway. A scheduled turn's
+  hand-off is F1's: its `ta.scheduled` task's delivery checks its thread's stamp again
+  (and that it still stands), then submits with `requestId = work_id` and `whenBusy:
+  "followUp"`, the entry `ta.work` naming the client. `OwnerAgent.status` reads `pending()`, then waits
   `STATUS_WAIT_MS`, answering pending only when that wait timed out and failing loudly
   otherwise; `OwnerAgent.wait` is the waits a change ends (A4's doors). Tested: the
   capability map and each refusal with its receipt; the environment refusing with
@@ -698,7 +692,8 @@ account and no deploy.
   reservation and dispatch (`model`). `model` calls the object's model source on the
   conversation's provider session and the call's telemetry context: reserved, dispatched
   and settled like the run's own calls, on the run's turn, against its caps. `wake:list`
-  reads the authority's own scheduled work (`Scheduled.of`, migration 8's index).
+  reads the authority's own scheduled launches from the owner's rows (F1: each run's
+  thread row and its live row's wake, never a store).
   `agent:run` is A4's. Tested:
   the five on the root, a thread, a fork and a subagent (and after a parent's tools
   drifted), a model-callable and a deferred package tool never offered; the catalog's
@@ -745,14 +740,14 @@ account and no deploy.
   owner's `client` the word `owner`), so a resend is pi's duplicate, `whenBusy` `steer` or
   `followUp`; then a bounded wait (25 s default, 60 s most), past which `running` with the
   operation id. `agentRun({agent, input, at?})`: scope `run_graph`; a fresh `run` thread;
-  submitted now (entry `ta.run`), or with `at` a scheduled turn naming the thread, which the
-  `work` lane's runner hands to pi when due. An operation id is the thread's id and pi's
+  submitted now (entry `ta.run`), or with `at` a scheduled launch, its `ta.scheduled` pi
+  task sleeping in the thread until due (F1). An operation id is the thread's id and pi's
   request id; `agentStatus` and `agentCancel` resolve it against the caller's own rows
   (`Threads.mine`), so another client's, the owner's for a client, a forged one and a pi
   session string are refused alike ("no such operation"); status is `OwnerAgent.status`
-  (pending, then settled), or for scheduled work not yet handed its row (`scheduled`, or
-  how it was refused); cancel withdraws pending scheduled work of the caller's own, then
-  PiHarness's `abort` by operation (withdraw, or abort the run it joined). No door hands
+  (pending, then settled), or for a scheduled launch its task's record and its last
+  delivery (`scheduled`, or how it was refused; F1); cancel aborts a scheduled launch's
+  task (F1), else PiHarness's `abort` by operation (withdraw, or abort the run it joined). No door hands
   pi a session but the one its thread row names, so none reaches the root. A thread is
   configured from `/workspace/agents/<agent>/AGENTS.md` as pi's conversation
   `instructions`, in the creating commit (an agent id is a safe path segment; a file not
@@ -761,8 +756,7 @@ account and no deploy.
   is dropped in a unit that re-checks the activity it read; a thread whose conversation pi
   holds live work in is kept, its activity moved on (a task that owns a conversation stays
   live, completing, while that conversation works: a thread's subagents and background
-  work keep it, found in workerd); a thread unsettled scheduled work names is never idle
-  (migration 9's index on the open work's thread), and is in use from its work's claim;
+  work keep it, found in workerd); a thread whose scheduled launch sleeps is live (F1);
   every door that makes or uses a thread touches it and syncs the schedule.
   `ta`'s `agent:run` (an effect, `run_graph` in `TA_CAPABILITIES`): the same launch path,
   stamped with the calling conversation's authority as the agent it names, so its
@@ -1089,10 +1083,63 @@ account and no deploy.
   one conversation a caller, agent and universe (a guard; no index can read the universe).
   L4, `runs_live`'s default at its high bound, is F1's. Still owed live: P8, `deleteAll()` frees a store's billed bytes and a
   destroyed store bills nothing (`store-probe.md`).
-- [ ] F1 and admission: `ta.scheduled` pi task, `wake:list` from rows, cancel and status
+- [x] F1 and admission: `ta.scheduled` pi task, `wake:list` from rows, cancel and status
   paths, cron recurrence; delete the `work` lane, `WorkRunner` and migrations 7-8's work
   tables; a policy write aborts active Sessions' work only, sleepers enforced in `deliver`;
-  the owner's admission row and `require_work`.
+  the owner's admission row and `require_work`. Built in workerd, nothing deployed
+  (`scheduled.ts`, `cron.ts`, `admission.ts`, `agent.ts`, `thread-host.ts`,
+  `thread-store.ts`, `threads.ts`, `owner-do.ts`, `ledger.ts`, `gate.ts`, migration 12).
+  A scheduled launch (`agentRun` with `at` or `cron`, `ta`'s `agent:run`) records its run
+  thread naming its work (`request`, `work_…`) and its store, then makes its `ta.scheduled`
+  task in the thread's root inside the thread's wake (`ThreadHost.admitted`), owned by the
+  conversation, `background: true`, `trace: "root"`, its input `{work_id, thread, at,
+  stamp, input, cron}`: the owner's one task creation point (the create-task guard, changed
+  for exactly it). `wait` sleeps until `at`, its wake reaching `agent_live.wake_at` by the
+  thread's job; `deliver` re-checks in one unit the thread and stamp, the admission, the
+  stamp's standing and `run_graph`, and the run policy as it stands (`Threads.liveRefusal`),
+  then submits through the host's admission with `requestId` the occurrence's and entry
+  `ta.work` (its own turn); a delivery already made (an eviction after its submit) is pi's
+  duplicate, not re-checked; no room (`thread_inputs_full`, `sessions_full`) sleeps again,
+  30 s doubling to 10 min; a refusal ends the task `failed` with its code, and its run
+  settles with that reason. Cron is ours: five numeric UTC fields, at most 64 characters
+  and 16 items a field, occurrences at least 15 minutes apart, one within eight years; each
+  delivery sleeps until the next, until a re-check refuses or a cancel. Cancel is
+  `abortTask` (and the last delivery withdrawn); status is the task's record and its last
+  delivery's, by a pure store read (`ThreadStore.task`, `answer`) that opens no Session,
+  then the run's receipt; `wake:list` reads `Threads.scheduledOf` (the thread row, its live
+  row, its receipt). A policy write aborts active Sessions' work only, never a sleeping
+  task nor a scheduled launch's; grant changes still drop and wipe the client's threads,
+  sleepers included. The scheduled launches hold at most `SCHEDULED_SHARE` (50%) of
+  `runs_live`, shared by `client_share` and `owner_reserve`, refused `runs_scheduled` at the
+  launch (S4-S5 review L4: a scheduled backlog never starves a launch made now; `runs_live`
+  stays 2,000 default and high). Deleted: the `work` lane, `WorkRunner`, `Scheduled` and
+  their tests, and threads' held-by-work retention case; migration 12 drops
+  `scheduled_work` (migrations 9 to 11 name it, so it is dropped rather than edited out).
+  Admission: `owner_admission`, admitted when the object is made, refused at every door in
+  `#bind` (`owner_suspended`, `owner_erased`) and by `deliver` and the `wakes` claim (held,
+  its lane given no job for open rows); `admissionSet` from `PLATFORM_CALLER` only, which
+  reaches no other door and names no owner (the admission-caller guard: the name spelled
+  once, in `admission.ts`, while no `platform/admin` exists); a suspension ends running work
+  as a policy write does. The erasure's last step leaves one `erased` row in the wiped
+  database, written in the wipe's own turn (and again once it resolves, only into a wiped
+  database); an object that finds it migrates nothing, starts no Lifecycle and refuses
+  every door. The owner-bound guard drops the work table's term and counts the admission
+  row: 4,897,208,852 bytes, 49.0% (49.3% before). Tested: a three-day sleep through an
+  eviction (pi's clock moved ahead) delivering once; a cancel asleep; a grant change wiping
+  a sleeper; a policy write leaving a sleeper asleep while ending its thread's running
+  input, its delivery then refused `runs_scheduled`; a suspension refusing a delivery; an
+  eviction inside `deliver` giving one submission; a full thread sleeping again and
+  delivering once; `wake:list` and status with no Session opened; status and cancel
+  delivered and refused; cron property tests against a minute scan, and a recurring
+  launch delivering three times until a grant change; the share; admission at every
+  door, its platform-only door, the `wakes` claim; the tombstone across evictions, in the
+  wipe's turn, and after each erasure crash. Declared differences: the task's input also
+  names its thread and cron (the registry is shared by every Session); a scheduled run's
+  `request` is its work id from its recording, so its receipt names it however it ends; an
+  owner absent an admission row is admitted (migration 12 writes it), the platform
+  suspending; every door refuses a suspended owner, reads too. Live probe P10 still owed:
+  a days-long sleep across hibernation and a deploy, and `deleteAll` and the tombstone in
+  one turn on production storage.
 - [ ] A5 with F5: skills, packages and filters, `parseSkill`, the agents 0.32 bump (diff
   PiHarness at each agents release and carry its fixes into `thread-host.ts`);
   `agent:delegate` with task-owned children. Tool and package code must never create a
@@ -1116,9 +1163,9 @@ account and no deploy.
 - [ ] M (MCP) after G4: SDK v2 client in the owner over G4's forward, `mcp.json` with every
   server clamped to tools-only, OAuth via G3.
 - [x] Erasure's store-first order: mark the owner erasing, destroy every store a row names,
-  then `deleteAll()` the owner. Built as S4-S5's internal path (above); its door, and the
-  tombstone that keeps a stale binder from making an erased owner again, come with the
-  admission row in slice 10.
+  then `deleteAll()` the owner. Built as S4-S5's internal path (above); the tombstone that
+  keeps a stale binder from making an erased owner again came with the admission row in
+  F1; its door is slice 10's.
 - [ ] 0c (live): the dark deploy of the owner and gateway Workers, the store probe's cases
   re-run on the real code (P1-P4, P7; P5 a store reset mid-run).
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
@@ -1207,10 +1254,8 @@ account and no deploy.
   in its drop's unit. A thread's kept usage is at most 16 KiB (`USAGE_ROW_MAX`). An owner
   unit is all or nothing (its own savepoint); a Session's open reconcile passes over an
   owner past the bound with an owner notice (`turns_unkept`), so the thread still opens. A
-  scheduled hand-off is marked only once the thread host admits it: one refused for room
-  (`thread_inputs_full`, or every Session working) answers `busy`, its claim released
-  unmarked, its attempt given back, due again after `WORK_RETRY_S` (until F1's
-  `sleepUntil` replaces the path). Every files bound can bind inside the manifest's: the
+  scheduled delivery that finds no room (`thread_inputs_full`, or every Session working)
+  sleeps again, backing off, its wake never lost (F1). Every files bound can bind inside the manifest's: the
   defaults are 30,000 entries and 600,000 history rows (highs 500,000 and 600,000), and
   `max_inline_bytes` is at most 384 MiB. The guard's headroom is about 371 MB: a new table
   or a raised bound comes out of an existing term. No owner source creates a
@@ -1298,7 +1343,7 @@ account and no deploy.
   fails.
   Deferred from 3.4, as the Python's tick had them: no wake is claimed while the outside
   kill switch (`TINYASSETS_OUTSIDE_DENY`) is off or the owner is not admitted
-  (`require_work`). The kill switch reaches the alarm through a `DOORBELL` service
+  (`require_work`: the claim reads the admission row in its own unit, built in F1). The kill switch reaches the alarm through a `DOORBELL` service
   binding on the owner Worker, to a `tinyassets-doorbell` Worker that binds only
   `DIRECTORY` and reads its `c:control` record; the `wakes` lane asks `DOORBELL.open()`
   once a pass before it claims and claims nothing on closed or a failure, and the owner

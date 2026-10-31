@@ -62,7 +62,7 @@ export interface WakeSender {
  * never loops the alarm. Only a failure to write that backoff, a storage fault, throws.
  *
  * The lane bounds each send and revoke itself, at `sendMs`, rather than trust every
- * sender to: a late one is left to its lease, as a late hand-off is (`scheduled.ts`). A
+ * sender to: a late one is left to its lease. A
  * late send is marked first, since a byte may have left, so its lapsed claim recovers as
  * `unknown`, never sent again; a late revoke recovers due again, since erasing twice is
  * harmless. Every write (a recovery, a claim, a mark, a settle, a backoff) is one unit

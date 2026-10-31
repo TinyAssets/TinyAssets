@@ -22,8 +22,21 @@ import {
   HISTORY_BYTES as FILE_HISTORY_BYTES, OWNER_SCOPE, SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
 } from "./manifest";
 import { DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, FILE_DEFAULTS } from "./policy";
+import { SCHEDULED_RUN } from "./threads";
 
 export type Migration = readonly string[];
+
+/**
+ * The owner's admission row (`admission.ts`): one row, `admitted`, `suspended` for one or
+ * both of its reasons, or `erased`, the tombstone the erasure leaves as its last step. Its
+ * reasons are a sorted JSON list, empty unless suspended. The erasure makes the table again
+ * in the wiped database, so it is spelled once, here.
+ */
+export const ADMISSION_TABLE = "CREATE TABLE owner_admission (only INTEGER PRIMARY KEY " +
+  "CHECK (only = 1), state TEXT NOT NULL CHECK (state IN ('admitted', 'suspended', " +
+  "'erased')), reasons TEXT NOT NULL CHECK (reasons IN ('[]', '[\"abuse\"]', " +
+  "'[\"billing\"]', '[\"abuse\",\"billing\"]')), " +
+  "CHECK ((state = 'suspended') = (reasons != '[]')))";
 
 /** Add a row's or history entry's counts, times `sign`, to each scope it falls in. */
 const ADD_USAGE =
@@ -57,7 +70,7 @@ const CLIENT_USAGE = (row: string, sign: string) =>
   `UPDATE policy_usage SET owner_clients = owner_clients ${sign} (${row}.owner_set = 1), ` +
   `free_clients = free_clients ${sign} (${row}.owner_set = 0 AND ${row}.agents = 0 ` +
   `AND ${row}.held = 0);`;
-/** Count an open stamped work row against its client's row (`+`), or release it (`-`). */
+/** Count a row that holds its client's grant row (`+`), or release it (`-`). */
 const HOLD = (row: string, sign: string) =>
   `UPDATE outside_clients SET held = held ${sign} 1 WHERE client = ${row}.client;`;
 /** Count a pending proposal in its proposer's share (`+`), or take it out (`-`). */
@@ -1362,6 +1375,32 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "INSERT INTO agent_usage_total (only, usage) VALUES (1, '{\"models\":{},\"tools\":{}}')",
     "CREATE TABLE owner_erasure (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "started_at REAL NOT NULL, step INTEGER NOT NULL DEFAULT 1 CHECK (step IN (1, 2)))",
+  ]),
+  // 12: scheduled turns as pi tasks, and the owner's admission (tasks 5, F1). A scheduled
+  // launch is a `ta.scheduled` pi task sleeping in its run thread's own Session
+  // (`scheduled.ts`), so the `work` lane's table goes, with its counters and its part of a
+  // client's held count: the run's thread row holds its client's grant row, as every
+  // thread does. Migrations 9 to 11 name the table in their triggers and index, so it is
+  // dropped here rather than edited out of migration 3. A scheduled run's thread names its
+  // work (`request`, its `work_` id) from the unit that records it; `ta`'s `wake:list` and
+  // the scheduled runs' share of `runs_live` read them by `agent_threads_scheduled`.
+  // `owner_admission` is the owner's one admission row (`admission.ts`): admitted when the
+  // object is first made, suspended for billing or abuse by the platform, or, as the last
+  // step of the owner's erasure, the erased tombstone, alone in the wiped database.
+  Object.freeze([
+    "DROP TRIGGER outside_clients_held",
+    "DROP TABLE scheduled_work",
+    "ALTER TABLE policy_usage DROP COLUMN open_work",
+    "ALTER TABLE policy_usage DROP COLUMN settled_work",
+    "CREATE TRIGGER outside_clients_held AFTER INSERT ON outside_clients BEGIN " +
+      "UPDATE outside_clients SET agents = (SELECT COUNT(*) FROM outside_agents " +
+      "WHERE outside_client = NEW.client), held = (SELECT COUNT(*) FROM " +
+      "agent_cards WHERE client = NEW.client) + (SELECT COUNT(*) FROM agent_threads " +
+      "WHERE client = NEW.client) WHERE client = NEW.client; END",
+    `CREATE INDEX agent_threads_scheduled ON agent_threads (client, created_at) WHERE ${
+      SCHEDULED_RUN}`,
+    ADMISSION_TABLE,
+    "INSERT INTO owner_admission (only, state, reasons) VALUES (1, 'admitted', '[]')",
   ]),
 ]);
 

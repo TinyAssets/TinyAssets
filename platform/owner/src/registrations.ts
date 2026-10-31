@@ -25,8 +25,19 @@
 import { digest } from "./collections";
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
-import type { Stamp, StandingReader } from "./scheduled";
 import { codePoints } from "./text";
+
+/** The outside authority a held card was filed under: its client, generation and sign-in. */
+export interface Stamp {
+  readonly client: string;
+  readonly generation: number;
+  readonly authenticated_at: number | null;
+}
+
+/** What `standing` answers; the object's grants (`grants.ts`). */
+export interface StandingReader {
+  standing(client: unknown, generation: unknown, authenticatedAt: number | null): unknown;
+}
 
 /** How long a filed card waits for the owner. */
 export const CARD_TTL_S = 86_400;

@@ -13,7 +13,8 @@
  *   wipes itself whole with `deleteAll`; and the owner's erasure, whose last step disables
  *   Lifecycle's alarm for good (`erase.ts`, `disableAlarms`) and then has the write gate,
  *   the one holder of the owner's raw storage, delete the whole database (`gate.ts`,
- *   `deleteAll`), so Lifecycle writes nothing after it;
+ *   `deleteAll`), so Lifecycle writes nothing after it, and the gate writes the erased
+ *   admission row into it in the same turn (the tombstone, `admission.ts`);
  * - reads `ctx.storage` and a Lifecycle only by literal names, never by a computed one,
  *   and gives no class or object member a computed name but a literal;
  * - imports from the `agents` package only what `AGENTS_IMPORTS` lists, and loads no
@@ -200,7 +201,10 @@ describe("alarm guard", () => {
     expect(alarmReach(ERASE, "export class E { m(s: S) { return s.setAlarm(1); } }"))
       .not.toEqual([]);
     expect(workerSources().get(ERASE)).toContain("await lifecycle.disableAlarms();");
-    expect(workerSources().get(GATE)).toContain("return this.#raw.deleteAll();");
+    expect(workerSources().get(GATE)).toContain(
+      "const wiped = this.#raw.deleteAll();\n" +
+      "    const leave = () => this.#raw.transactionSync(() => tombstone(this.#raw.sql));\n" +
+      "    leave();\n    return wiped.then(leave);");
   });
 
   it("lets only the object's erasure wiring call the gate's wipe", () => {
@@ -208,7 +212,7 @@ describe("alarm guard", () => {
       [...source.matchAll(/\.wipe\(/g)].map(() => path));
     expect(callers).toEqual(["owner/src/owner-do.ts"]);
     expect(workerSources().get("owner/src/owner-do.ts"))
-      .toContain("wipe: () => this.#gate.wipe(),");
+      .toContain("wipe: () => this.#gate.wipe(writeTombstone),");
   });
 
   it("finds the object's one hand-off", () => {

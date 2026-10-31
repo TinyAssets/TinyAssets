@@ -7,7 +7,7 @@
  * and the thread is that Session's root conversation: every conversation below it (a
  * subagent's, a fork, background work) lives in the same Session and store. A thread is
  * made where its work begins, by the agent's doors (`agentSubmit`, `agentRun` and `ta`'s
- * `agent:run`; scheduled work names one when it is made, `scheduled.ts`): this row first,
+ * `agent:run`, a scheduled launch among them, `scheduled.ts`): this row first,
  * in a unit of the write gate that re-checks the stamp's standing, naming a fresh store
  * (128 random bits, `store`, unique); then the Session is opened, which makes the store at
  * its first call, and the root, with the thread's stamp written into its `ta.authority`
@@ -28,7 +28,9 @@
  * Two kinds: a `converse` thread is the one conversation an agent holds with one caller
  * (the owner, or an outside client, in one universe), found again by those
  * (`conversing`, a unique index); a `run` thread is made fresh for each launch (the
- * `run_graph` door, `ta`'s `agent:run`, and a scheduled launch, whose work names it). A run
+ * `run_graph` door, `ta`'s `agent:run`, and a scheduled launch, whose row names its work by
+ * its `work_` request id from the unit that records it, its `ta.scheduled` task sleeping in
+ * the thread's own Session until it delivers, `scheduled.ts`). A run
  * settles once: when its Session reports nothing running and nothing asleep with its input
  * settled, one unit keeps the time (`settled_at`) and its receipt (`settle`: status,
  * reason, the first 768 bytes of its answer), read from the Session that reported it, and adds
@@ -36,7 +38,8 @@
  * status is answered from the receipt, its Session is never opened for it, and it takes no
  * input (`run_settled`, refused at the host's admission): a settled run holds no work, only
  * its row, its store and its receipt. Runs not yet settled, a sleeping one too, are the
- * live runs (`runs_live`, owner policy).
+ * live runs (`runs_live`, owner policy); the scheduled ones among them hold at most their
+ * own share (`SCHEDULED_SHARE`), so a scheduled backlog never starves a launch made now.
  *
  * Every door addresses work by a thread's id, resolved against the calling client's own
  * rows (`mine`), never by a pi session string: an operation id is the thread's id and
@@ -55,8 +58,8 @@
  * its row (`drop_retry`) when its store does not answer, the owner told once it keeps
  * failing: `destroy()` is idempotent, so a store is never forgotten before it is wiped.
  *
- * Bounds: a client's threads hold its grant row (the schema's `held`), as its stamped work
- * does, dropping ones too until they are forgotten, so the free-row bound never forgets the
+ * Bounds: a client's threads hold its grant row (the schema's `held`), as its held
+ * registrations do, dropping ones too until they are forgotten, so the free-row bound never forgets the
  * row they are checked against. A grant change marks its client's threads dropping in the
  * change's own transaction (`endClient`), and lets go of its run receipts: their stamps no
  * longer stand, so they can do nothing more; their drops finish after it commits. Past
@@ -67,16 +70,16 @@
  * counts, a dropping one too, until it is forgotten: its store is still there. Receipts are
  * a history with a row bound (`receipts`, shared the same way), never a refusal.
  *
- * Retention (the `threads` lane, `retainThreads`): a conversation no door, run or scheduled
- * work has touched for `idleS` is dropped, so threads that stopped being used free their
+ * Retention (the `threads` lane, `retainThreads`): a conversation no door or run has
+ * touched for `idleS` is dropped, so threads that stopped being used free their
  * bound; a run's store is wiped `keepRunsS` after it settled (owner policy, `keep_runs`; one
  * never seen settling, after its last activity), and its receipt is kept `keepReceiptsS` from
  * then (`keep_run_receipts`). No read moves either. A thread is never marked while it is
- * live (an `agent_live` row: work running, or a task sleeping in its Session): its activity
- * moves on instead; a thread unsettled scheduled work names is never taken, and its
- * activity moves on when the work is claimed (`Scheduled.claim`), so a cancel releases it. A
- * mark re-checks, in its own unit, the time the pass read and the thread's liveness, so a
- * door that touched the thread since keeps it.
+ * live (an `agent_live` row: work running, or a task sleeping in its Session, a scheduled
+ * launch's among them): its activity moves on instead. A cancelled schedule's task ends,
+ * so its thread is no longer live, and goes as any run does. A mark re-checks, in its own
+ * unit, the time the pass read and the thread's liveness, so a door that touched the thread
+ * since keeps it.
  */
 import { agentId, type AuthorityState, authorityOf, type Stamped, stamped } from "./authority";
 import { refuseErasing } from "./erasure";
@@ -193,15 +196,6 @@ export const NO_REGISTRATIONS: Registered = Object.freeze({
   universe: () => undefined,
 });
 
-/** What scheduled work reads of the threads: one, by its id; and moves on its activity. */
-export interface ThreadReader {
-  get(threadId: unknown): Thread | null;
-  /** The authority `thread` was stamped with, its universe read from its registration. */
-  authority(thread: Thread): AuthorityState;
-  /** In a unit: the thread is active until at least `at`; whether it is still there. */
-  touch(threadId: string, at: number): boolean;
-}
-
 export interface ThreadLimits {
   /** Conversations one outside client may hold at once. */
   readonly perClient: number;
@@ -256,6 +250,31 @@ export const RUNS_LIVE = "runs_live: the agent has as many live runs as it may";
 export const RUNS_LIVE_SHARE = "runs_live: this client has its share of the live runs";
 export const RUNS_LIVE_CLIENTS = "runs_live: the outside clients have their share of the " +
   "live runs";
+/**
+ * The percent of `runs_live` scheduled launches may hold, sleeping or delivering: the rest
+ * is kept for launches made now, so a scheduled backlog never starves them. A client's
+ * scheduled launches hold its share of this (`client_share`), and every client's together
+ * what the owner's reserve leaves.
+ */
+export const SCHEDULED_SHARE = 50;
+/**
+ * The refusals of a scheduled launch past the scheduled share of `runs_live`, or a share of
+ * that: what the owner sees, at the launch and in `wake:list`, when its scheduled launches
+ * fill their share (a launch made now still runs).
+ */
+export const RUNS_SCHEDULED = "runs_scheduled: the agent has as many scheduled launches as " +
+  "it may; cancel one, or launch now";
+export const RUNS_SCHEDULED_SHARE = "runs_scheduled: this client has its share of the " +
+  "scheduled launches";
+export const RUNS_SCHEDULED_CLIENTS = "runs_scheduled: the outside clients have their share " +
+  "of the scheduled launches";
+/**
+ * A run thread a scheduled launch made, by its row: its request id is its work's
+ * (`work_` and 32 hex), named in the unit that records it.
+ */
+export const SCHEDULED_RUN = "kind = 'run' AND request GLOB 'work_*'";
+/** A work id, as a scheduled launch's request id names it. */
+export const WORK_ID = /^work_[0-9a-f]{32}$/;
 
 /** `percent` of `bound`, whole. */
 export function shareOf(bound: number, percent: number): number {
@@ -341,9 +360,6 @@ export function threadAuthority(thread: Thread, universe: string | null): Author
         authenticated_at: thread.authenticated_at, universe, agent: thread.agent_id });
 }
 
-/** The SQL condition that what holds a thread (its open work) names the thread in `column`. */
-export type HeldBy = (column: string) => string;
-
 /** What one retained thread's mark did. */
 export type Retained = "dropped" | "live" | "touched";
 
@@ -351,22 +367,32 @@ export type Retained = "dropped" | "live" | "touched";
 const RETAINED_AT = "CASE kind WHEN 'run' THEN IFNULL(settled_at, last_active) " +
   "ELSE last_active END";
 
-export class Threads implements ThreadReader {
+/** A scheduled launch as `ta`'s `wake:list` shows it, from its thread's row alone. */
+export interface ScheduledView {
+  readonly operation_id: string;
+  readonly thread_id: string;
+  readonly agent_id: string;
+  readonly created_at: number;
+  /** `sleeping` until it is due, `running` while its Session works, `settled` once done. */
+  readonly state: "pending" | "sleeping" | "running" | "settled";
+  /** When its task next wakes, in seconds, while it sleeps. */
+  readonly due: number | null;
+  readonly settled_at: number | null;
+  /** How it settled, from its receipt, once it has. */
+  readonly status: "done" | "unanswered" | null;
+  readonly reason: string | null;
+}
+
+export class Threads {
   readonly #storage: OwnerStorage;
   readonly #registered: Registered;
   readonly #limits: ThreadLimits;
   readonly #retention: ThreadRetention;
   readonly #runs: () => RunPolicy;
-  /** A thread retention may take: nothing holds it (`held`, the scheduled work's). */
-  readonly #unheld: string;
 
-  /**
-   * `held` is the scheduled work's condition (`namedByOpenWork`, `scheduled.ts`), which the
-   * object hands in; with none, nothing holds a thread (a test's threads alone). `runs` is
-   * read at each use: the object's reads owner policy.
-   */
+  /** `runs` is read at each use: the object's reads owner policy. */
   constructor(storage: OwnerStorage, limits: ThreadLimits = THREAD_LIMITS,
-              retention: ThreadRetention = THREAD_RETENTION, held?: HeldBy,
+              retention: ThreadRetention = THREAD_RETENTION,
               runs: () => RunPolicy = () => RUN_POLICY,
               registered: Registered = NO_REGISTRATIONS) {
     this.#registered = registered;
@@ -374,7 +400,6 @@ export class Threads implements ThreadReader {
     this.#limits = limits;
     this.#retention = retention;
     this.#runs = runs;
-    this.#unheld = held === undefined ? "1" : `NOT ${held("agent_threads.thread_id")}`;
   }
 
   /**
@@ -382,9 +407,12 @@ export class Threads implements ThreadReader {
    * standing the caller re-checks in the same unit, naming a fresh store; refused past its
    * bound, and while the owner is being erased. A `converse` thread is the caller's one with
    * the agent: when one was recorded meanwhile (a concurrent first message), that one is
-   * answered, and nothing is made.
+   * answered, and nothing is made. A scheduled launch's run names its `work` id here, as its
+   * request id, so its row says it is scheduled from the start, and counts in the scheduled
+   * share.
    */
-  record(agent: unknown, stamp: unknown, now: number, kind: ThreadKind = "run"): Thread {
+  record(agent: unknown, stamp: unknown, now: number, kind: ThreadKind = "run",
+         work: string | null = null): Thread {
     const id = agentId(agent);
     const by = stamped(stamp);
     if (by !== null && by.agent !== id) {
@@ -393,6 +421,9 @@ export class Threads implements ThreadReader {
     if (kind !== "converse" && kind !== "run") {
       throw new Error("a thread is a caller's conversation or a run");
     }
+    if (work !== null && (kind !== "run" || !WORK_ID.test(work))) {
+      throw new Error("a scheduled launch is a run named by its work id");
+    }
     refuseErasing(this.#storage);
     if (kind === "converse") {
       const held = this.conversing(by, id);
@@ -400,14 +431,14 @@ export class Threads implements ThreadReader {
         return held;
       }
     }
-    this.room(by, kind);
+    this.room(by, kind, work !== null);
     return this.#storage.sql.exec<Thread>(
       "INSERT INTO agent_threads (thread_id, store, state, agent_id, client, generation, " +
-        "authenticated_at, registration, created_at, kind, last_active) " +
-        "VALUES (?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+        "authenticated_at, registration, created_at, kind, last_active, request) " +
+        "VALUES (?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
       `thread_${randomHex(16)}`, randomHex(16), id, by?.client ?? null,
       by?.generation ?? null, by?.authenticated_at ?? null, this.#registration(by), now, kind,
-      now).one();
+      now, work).one();
   }
 
   /**
@@ -451,9 +482,11 @@ export class Threads implements ThreadReader {
    * read. Every row counts, a dropping one too: its store is not wiped yet. Conversations
    * have their bounds and runs theirs: every run within `runs`, an outside client's within
    * its share of it (`client_share`), and every client's together within what the owner's
-   * reserve leaves (`owner_reserve`), so the owner can always launch.
+   * reserve leaves (`owner_reserve`), so the owner can always launch. A scheduled launch
+   * (`scheduled`) is also held to the scheduled share of the live runs (`SCHEDULED_SHARE`),
+   * shared the same way.
    */
-  room(by: Stamped | null, kind: ThreadKind = "run"): void {
+  room(by: Stamped | null, kind: ThreadKind = "run", scheduled = false): void {
     const sql = this.#storage.sql;
     const count = (where: string, ...bound: (string | null)[]) => sql.exec<{ n: number }>(
       `SELECT COUNT(*) AS n FROM agent_threads WHERE kind = ? AND ${where}`, kind, ...bound)
@@ -466,6 +499,12 @@ export class Threads implements ThreadReader {
       }
       if (count("settled_at IS NULL") >= runsLive) {
         throw new Refused(RUNS_LIVE);
+      }
+      if (scheduled) {
+        const reason = this.#scheduledRoom(by?.client ?? null, 0);
+        if (reason !== null) {
+          throw new Refused(reason);
+        }
       }
       if (by === null) {
         return;
@@ -498,6 +537,88 @@ export class Threads implements ThreadReader {
     if (count("client IS NOT NULL") >= this.#limits.clients) {
       throw new Refused("the outside clients' threads are at their limit");
     }
+  }
+
+  /**
+   * Why one more scheduled launch of `client` (null: the owner's) would pass the scheduled share of the live
+   * runs, past `counted` of them already counted (the launch itself, at its delivery), or
+   * null. A read.
+   */
+  #scheduledRoom(client: string | null, counted: number): string | null {
+    const { clientShare, ownerReserve, runsLive } = this.#runs();
+    const bound = shareOf(runsLive, SCHEDULED_SHARE);
+    const sql = this.#storage.sql;
+    const count = (where: string, ...bound: (string | null)[]) => sql.exec<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM agent_threads WHERE ${SCHEDULED_RUN} AND settled_at IS NULL ` +
+        `AND ${where}`, ...bound).one().n - counted;
+    if (count("1") >= bound) {
+      return RUNS_SCHEDULED;
+    }
+    if (client === null) {
+      return null;
+    }
+    if (count("client IS ?", client) >= shareOf(bound, clientShare)) {
+      return RUNS_SCHEDULED_SHARE;
+    }
+    if (count("client IS NOT NULL") >= shareOf(bound, 100 - ownerReserve)) {
+      return RUNS_SCHEDULED_CLIENTS;
+    }
+    return null;
+  }
+
+  /**
+   * As a scheduled launch delivers, in its unit: why the run policy as it stands now (a
+   * policy write since may have lowered it) leaves no room for it, counting it among the
+   * live runs it is one of, or null. Its bounds as a launch's: every live run within
+   * `runs_live`, a client's within its share and every client's within what the owner's
+   * reserve leaves, and the scheduled ones within their share. A read.
+   */
+  liveRefusal(thread: Thread): string | null {
+    const { clientShare, ownerReserve, runsLive } = this.#runs();
+    const sql = this.#storage.sql;
+    const count = (where: string, ...bound: (string | null)[]) => sql.exec<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM agent_threads WHERE kind = 'run' AND settled_at IS NULL ` +
+        `AND ${where}`, ...bound).one().n - 1;
+    if (count("1") >= runsLive) {
+      return RUNS_LIVE;
+    }
+    const client = thread.client;
+    if (client !== null && count("client IS ?", client) >= shareOf(runsLive, clientShare)) {
+      return RUNS_LIVE_SHARE;
+    }
+    if (client !== null && count("client IS NOT NULL") >= shareOf(runsLive, 100 - ownerReserve)) {
+      return RUNS_LIVE_CLIENTS;
+    }
+    return this.#scheduledRoom(client, 1);
+  }
+
+  /**
+   * The newest `limit` scheduled launches made under `client`'s authority (null: the
+   * owner's own), newest first, as `ta`'s `wake:list` shows them: from the owner's rows
+   * alone, each thread's row with its live row's wake and its receipt, never a store.
+   */
+  scheduledOf(client: string | null, limit: number): ScheduledView[] {
+    return this.#storage.sql.exec<{
+      thread_id: string; request: string; agent_id: string; created_at: number;
+      settled_at: number | null; active: number | null; wake_at: number | null;
+      status: "done" | "unanswered" | null; reason: string | null;
+    }>(
+      "SELECT t.thread_id, t.request, t.agent_id, t.created_at, t.settled_at, l.active, " +
+        "l.wake_at, r.status, r.reason FROM agent_threads AS t " +
+        "LEFT JOIN agent_live AS l ON l.thread_id = t.thread_id " +
+        "LEFT JOIN run_receipts AS r ON r.thread_id = t.thread_id " +
+        "WHERE t.kind = 'run' AND t.request GLOB 'work_*' " +
+        "AND t.client IS ? AND t.state = 'ready' " +
+        "ORDER BY t.created_at DESC, t.thread_id DESC LIMIT ?", client, limit).toArray()
+      .map((row) => ({
+        operation_id: `${row.thread_id}.${row.request}`, thread_id: row.thread_id,
+        agent_id: row.agent_id, created_at: row.created_at,
+        state: row.settled_at !== null ? "settled" as const
+          : row.active === 1 ? "running" as const
+            : row.wake_at !== null ? "sleeping" as const : "pending" as const,
+        due: row.active === 1 ? null : row.wake_at, settled_at: row.settled_at,
+        status: row.status, reason: row.reason,
+      }));
   }
 
   /** A `ready` thread by its id, or null. */
@@ -722,23 +843,23 @@ export class Threads implements ThreadReader {
       "SELECT thread_id FROM agent_live").toArray().map((row) => row.thread_id));
   }
 
-  /** The longest idle conversation no unsettled work names: its activity, or undefined. */
+  /** The longest idle conversation: its activity, or undefined. */
   #oldestConversation(): number | undefined {
     return this.#storage.sql.exec<{ at: number }>(
       `SELECT last_active AS at FROM agent_threads WHERE kind = 'converse' AND ` +
-        `state = 'ready' AND ${this.#unheld} ORDER BY last_active LIMIT 1`).toArray()[0]?.at;
+        `state = 'ready' ORDER BY last_active LIMIT 1`).toArray()[0]?.at;
   }
 
-  /** The longest settled run no unsettled work names: when it settled, or undefined. */
+  /** The longest settled run: when it settled, or undefined. */
   #oldestRun(): number | undefined {
     return this.#storage.sql.exec<{ at: number }>(
       `SELECT IFNULL(settled_at, last_active) AS at FROM agent_threads WHERE kind = 'run' ` +
-        `AND state = 'ready' AND ${this.#unheld} ORDER BY IFNULL(settled_at, last_active) ` +
+        `AND state = 'ready' ORDER BY IFNULL(settled_at, last_active) ` +
         "LIMIT 1").toArray()[0]?.at;
   }
 
   /**
-   * When the longest idle conversation no unsettled work names reaches its idle age, never
+   * When the longest idle conversation reaches its idle age, never
    * before `now`; null for none. A read, by the kind's activity index.
    */
   nextIdle(now: number): number | null {
@@ -778,25 +899,25 @@ export class Threads implements ThreadReader {
   }
 
   /**
-   * The conversations idle at `now` that no unsettled work names, the longest idle first,
+   * The conversations idle at `now`, the longest idle first,
    * at most `perPass`. A read.
    */
   idle(now: number): Thread[] {
     return this.#storage.sql.exec<Thread>(
       `SELECT * FROM agent_threads WHERE kind = 'converse' AND state = 'ready' AND ` +
-        `last_active <= ? AND ${this.#unheld} ORDER BY last_active LIMIT ?`,
+        `last_active <= ? ORDER BY last_active LIMIT ?`,
       now - this.#retention.idleS, this.#retention.perPass).toArray();
   }
 
   /**
-   * The runs settled `keep_runs` ago at `now` (one never seen settling: last active then) that
-   * no unsettled work names, the longest settled first, at most `perPass`. A read; a live
+   * The runs settled `keep_runs` ago at `now` (one never seen settling: last active then),
+   * the longest settled first, at most `perPass`. A read; a live
    * one among them is kept by its mark.
    */
   settledRuns(now: number): Thread[] {
     return this.#storage.sql.exec<Thread>(
       `SELECT * FROM agent_threads WHERE kind = 'run' AND state = 'ready' AND ` +
-        `IFNULL(settled_at, last_active) <= ? AND ${this.#unheld} ` +
+        `IFNULL(settled_at, last_active) <= ? ` +
         "ORDER BY IFNULL(settled_at, last_active) LIMIT ?",
       now - this.#runs().keepRunsS, this.#retention.perPass).toArray();
   }

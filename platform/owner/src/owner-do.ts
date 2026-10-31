@@ -62,16 +62,18 @@
  * The agent's threads run under the authority they were made under (`authority.ts`,
  * `threads.ts`): an outside client's every tool operation and model call is held to its
  * grant as it stands, and a grant change (`grantSet`, `grantRevoke`) or a policy write
- * ends the agent work it covers once its own unit committed (`agent.ts`). The `work` lane
- * hands due turns to pi through the object's `workRunner`. The agent's `ta` (`ta.ts`)
- * reaches the object's policy, a proposal, its scheduled work and its file usage only
+ * ends the agent work it covers once its own unit committed (`agent.ts`). A scheduled
+ * launch is a pi task sleeping in its run thread's Session (`scheduled.ts`), woken by that
+ * thread's own job, never a lane of the schedule. The agent's `ta` (`ta.ts`)
+ * reaches the object's policy, a proposal, its scheduled launches and its file usage only
  * through the narrow `Platform` the object hands it, each held to the conversation's
  * authority as the matching door holds its caller.
  *
  * The agent's doors (agent research §8; tasks 5, A4) are how outside chatbots, through
  * `/mcp` and `/api`, and the owner, through `/app/api`, reach the owner's agent:
  * `agentSubmit` (a message to the caller's one thread with an agent, or a steer of its
- * run, then a bounded wait), `agentRun` (a launch in a fresh thread, now or scheduled),
+ * run, then a bounded wait), `agentRun` (a launch in a fresh thread, now, at a time, or
+ * recurring),
  * `agentStatus` and `agentCancel` (the caller's own operations only). Each admits its
  * caller and checks its scope (`converse`, `run_graph`) in its first unit, before any pi
  * call; each addresses work by a thread id resolved against the caller's own rows, never
@@ -84,7 +86,15 @@
  * Erasing the owner (`erasure.ts`, `erase.ts`) is an internal path, which no door reaches
  * until the erasure door (slice 10): once it marks the owner, every door refuses
  * (`ERASING`, in the binding check every door's first unit runs), no lane runs, and no
- * thread is made; it destroys every store a row names, then wipes the owner whole.
+ * thread is made; it destroys every store a row names, then wipes the owner whole, leaving
+ * only the erased admission row (`admission.ts`). An object that finds that tombstone as it
+ * starts migrates nothing and starts no Lifecycle, and every door refuses it
+ * (`OWNER_ERASED`), so a stale `getByName` never makes owner state again.
+ *
+ * The owner's admission (`admission.ts`) is checked in the same binding check: a suspended
+ * owner's every door refuses, and so do the lanes with `require_work` semantics (a
+ * scheduled delivery, the `wakes` lane's claim). Only the platform, as the reserved
+ * `PLATFORM_CALLER`, sets it, at `admissionSet`, the one door that caller reaches.
  */
 import type { HarnessSettings } from "@earendil-works/pi-durable";
 import { Lifecycle } from "agents/lifecycle";
@@ -97,6 +107,10 @@ import {
 import {
   AGENT_DIR, Authority, AUTHORITY_RULE, type AuthorityState, NO_AUTHORITY, type Stamped, stampOf,
 } from "./authority";
+import {
+  admission, type Admission, OWNER_ERASED, PLATFORM_CALLER, PLATFORM_ONLY, PLATFORM_RESERVED,
+  setAdmission, tombstoned, workRefusal, writeTombstone,
+} from "./admission";
 import { Collections, Conflict, type HistoryEntry, type Page, type Row } from "./collections";
 import { type ConnectionView, Connections, type GatewayService, type Prepared } from "./connections";
 import { Invalid, Refused } from "./errors";
@@ -122,20 +136,16 @@ import { type Card, Registrations } from "./registrations";
 import { GatewayProvider } from "./gateway-provider";
 import { LiveTee } from "./live-tee";
 import { type Lane, Schedule } from "./schedule";
-import {
-  namedByOpenWork, runWork, Scheduled, WORK_HANDOFF_MS, WORK_PER_PASS, type WorkRunner, workTurn,
-} from "./scheduled";
+import type { ScheduledInput } from "./scheduled";
+import { nextOccurrence, parseCron } from "./cron";
 import { AGENTS_DIR, AGENTS_OWNER_ONLY, storedPath, within, WORKSPACE } from "./paths";
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
 import {
-  type ReceiptView, retainThreads, type Thread, THREAD_LIMITS, THREAD_RETENTION,
-  type ThreadReader, Threads,
+  type ReceiptView, retainThreads, type Thread, THREAD_LIMITS, THREAD_RETENTION, Threads,
 } from "./threads";
 import { codePoints, principal } from "./text";
-import {
-  type OperationResult, RUN_SETTLED, SESSIONS_FULL, THREAD_INPUTS_FULL,
-} from "./thread-host";
+import type { OperationResult } from "./thread-host";
 import type { ThreadStore } from "./thread-store";
 import { Usage as ModelUsage, type UsageReceipt } from "./usage";
 import { runWakes, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "./wakes";
@@ -268,11 +278,22 @@ export interface SubmitRequest {
   readonly wait_ms?: number;
 }
 
-/** A launch of an agent on an input in a fresh thread: now, or `at` (seconds). */
+/**
+ * A launch of an agent on an input in a fresh thread: now, or `at` (seconds), and again at
+ * each occurrence of `cron` (`cron.ts`, UTC) after the first, which is `at`, or the cron's
+ * next occurrence when `at` is left out.
+ */
 export interface RunRequest {
   readonly agent: string;
   readonly input: string;
   readonly at?: number;
+  readonly cron?: string;
+}
+
+/** The platform's change of the owner's admission (`admission.ts`). */
+export interface AdmissionRequest {
+  readonly reason: string;
+  readonly suspended: boolean;
 }
 
 /** One of the caller's own operations, by the id a submit or a launch answered. */
@@ -280,7 +301,7 @@ export interface OperationRequest {
   readonly operation_id: string;
 }
 
-/** An operation as the agent's doors answer it: pi's receipts, or the scheduled work's. */
+/** An operation as the agent's doors answer it: pi's receipts, or a scheduled launch's task. */
 export interface Operation {
   readonly operation_id: string;
   readonly thread_id: string;
@@ -289,7 +310,7 @@ export interface Operation {
   readonly text?: string;
   /** True when `text` is only the first 4 KiB of a run's answer, its store wiped. */
   readonly truncated?: boolean;
-  /** When scheduled work is due, in seconds. */
+  /** When a scheduled launch next delivers, in seconds. */
   readonly due?: number;
 }
 
@@ -698,6 +719,11 @@ function timeOf(value: unknown, now: number): number {
   return value;
 }
 
+/** A launch's `cron`: an expression `cron.ts` accepts, as it gives it back. */
+function cronOf(value: unknown): string {
+  return parseCron(value).source;
+}
+
 /** What the object's lanes run over: its stores, its in-process callers and the passes. */
 export interface LaneDeps {
   readonly ledger: Ledger;
@@ -705,7 +731,6 @@ export interface LaneDeps {
     nextAlarm(now: number): number | null;
     collect(now: number, until: number): Promise<void>;
   };
-  readonly work: Scheduled;
   readonly connections: {
     nextDue(now: number): number | null;
     run(now: number, until: number): Promise<void>;
@@ -717,97 +742,39 @@ export interface LaneDeps {
   };
   /** The doorbell, or null until tasks 7 constructs one: read at each use, never kept. */
   readonly sender: () => WakeSender | null;
-  /** The scheduled-turn runner (null only in a test's lanes): read at each use. */
-  readonly runner: () => WorkRunner | null;
+  /** Whether the owner is admitted (`require_work`): read at each use. */
+  readonly admitted: () => boolean;
   readonly clock: () => number;
   /** The object's write gate, which every lane write goes through a row at a time. */
   readonly write: Write;
   readonly runWakes: typeof runWakes;
-  readonly runWork: typeof runWork;
 }
 
 /**
  * The lanes of the object's one schedule (`schedule.ts`). Each lane's pass is handed the
  * pass's wall-clock end (`until`) and passes it on, so no lane can outrun its hung
- * timeout; the passes write through the object's gate. The doorbell and runner are read
- * when a lane looks or runs, so one the object gains later is never missed.
+ * timeout; the passes write through the object's gate. The doorbell and the admission are
+ * read when a lane looks or runs, so one the object gains later is never missed.
  * Exported so the wiring is tested with recording passes; `OwnerDO` gives it the real ones.
  */
 export function ownerLanes(deps: LaneDeps):
-    Readonly<Record<"wakes" | "files" | "work" | "connections" | "threads", Lane>> {
+    Readonly<Record<"wakes" | "files" | "connections" | "threads", Lane>> {
   return {
-    // Lapsed claims, then due wakes and revokes; open rows count only with a doorbell.
-    wakes: { next: (now) => deps.ledger.nextDue(now, deps.sender() !== null),
+    // Lapsed claims, then due wakes and revokes; open rows count only with a doorbell, and
+    // only while the owner is admitted (`require_work`): a suspended owner's wait.
+    wakes: { next: (now) => deps.ledger.nextDue(now, deps.sender() !== null
+                                                       && deps.admitted()),
              run: (_now, until) => deps.runWakes(deps.ledger, deps.sender(), deps.clock,
                                                  deps.write, WAKES_PER_ALARM, WAKE_SEND_MS,
                                                  until) },
     files: { next: (now) => deps.files.nextAlarm(now),
              run: (now, until) => deps.files.collect(now, until) },
-    // Stamped scheduled work: lapsed claims, then, with a runner, due work rechecked
-    // against the authority it was made under.
-    work: { next: (now) => deps.work.nextDue(now, deps.runner() !== null),
-            run: (_now, until) => deps.runWork(deps.work, deps.runner(), deps.clock,
-                                               deps.write, WORK_PER_PASS, WORK_HANDOFF_MS,
-                                               until) },
     // Connection housekeeping: expired flows, unclaimed pending rows, provider revokes.
     connections: { next: (now) => deps.connections.nextDue(now),
                    run: (now, until) => deps.connections.run(now, until) },
     // The agent's threads: an idle one dropped, a live one kept.
     threads: { next: (now) => deps.threads.nextDue(now),
                run: (now, until) => deps.threads.run(now, until) },
-  };
-}
-
-/**
- * The `work` lane's runner (agent research §3): a due turn handed to pi in the thread its
- * work named when it was made, since pi dedupes a submission per conversation. It marks
- * the row before any effect (a lapsed claim's mark throws, and nothing is submitted),
- * then submits with the row's `work_id` as the operation id, queued behind a busy run, and
- * returns; pi runs the turn, and its receipts are found by `work_id`. A second hand-off of
- * the same work is pi's duplicate (`accepted: false`): handed all the same, never run
- * twice. A thread that is gone, or whose stamp is not the work's or no longer stands,
- * fails the work before its mark; one dropped between the mark and the submit fails it
- * after (its Session is never opened again).
- */
-export function workRunner(threads: ThreadReader, agent: Pick<OwnerAgent, "submit">,
-                           authority: Pick<Authority, "refusal">): WorkRunner {
-  return {
-    handOff: async (target, mark) => {
-      const turn = workTurn(target.payload);
-      const thread = threads.get(turn.thread);
-      if (thread === null) {
-        return { state: "failed", reason: "no_thread" };
-      }
-      if (thread.client !== (target.stamp?.client ?? null)
-          || thread.generation !== (target.stamp?.generation ?? null)
-          || authority.refusal(threads.authority(thread), []) !== undefined) {
-        return { state: "failed", reason: "thread_authority" };
-      }
-      let receipt: { accepted: boolean };
-      try {
-        // Marked once the host admits it, so a refusal for room leaves it unmarked.
-        receipt = await agent.submit(thread, turn.input, {
-          operationId: target.work_id, whenBusy: "followUp", admitted: mark,
-          entry: { kind: "ta.work", data: { work_id: target.work_id,
-                                            client: target.stamp?.client ?? null } },
-        });
-      } catch (error) {
-        if (threads.get(turn.thread) === null) {
-          // Dropped since the check (a grant change): its Session is never opened again.
-          return { state: "failed", reason: "no_thread" };
-        }
-        if (error instanceof Refused
-            && (error.message === THREAD_INPUTS_FULL || error.message === SESSIONS_FULL)) {
-          return { state: "busy", reason: error.message };
-        }
-        if (error instanceof Refused && error.message === RUN_SETTLED) {
-          // A settled run takes no input, ever: the work ends, never retried.
-          return { state: "failed", reason: "run_settled" };
-        }
-        throw error;
-      }
-      return receipt.accepted ? { state: "handed" } : { state: "handed", reason: "duplicate" };
-    },
   };
 }
 
@@ -831,7 +798,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #sessions: Sessions;
   readonly #ledger: Ledger;
   readonly #files: Files;
-  readonly #work: Scheduled;
   readonly #threads: Threads;
   readonly #registrations: Registrations;
   readonly #notices: Notices;
@@ -851,8 +817,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * recovers lapsed claims, and open wakes and revokes stay pending without a job.
    */
   readonly #sender: WakeSender | null = null;
-  /** What hands due scheduled turns to pi, called in process by the `work` lane. */
-  readonly #runner: WorkRunner;
+  /**
+   * Whether this object's database is an erased owner's tombstone, as the object found it
+   * starting (`admission.ts`): it then migrates nothing, starts no Lifecycle, and every door
+   * refuses.
+   */
+  readonly #tombstone: boolean;
   /**
    * The owner's erasure (`erasure.ts`, `erase.ts`): an internal path, which the erasure
    * door (slice 10) calls; no door reaches it yet.
@@ -870,17 +840,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const storage = this.#gate.storage;
     const write = this.#gate.write;
     this.#storage = storage;
+    this.#tombstone = tombstoned(storage.sql);
+    const admitted = () => workRefusal(admission(storage)) === null;
     this.#collections = new Collections(storage);
     this.#policy = new Policy(storage);
     this.#grants = new Grants(storage, this.#policy);
     this.#sessions = new Sessions(storage);
-    this.#ledger = new Ledger(storage, this.#grants);
+    this.#ledger = new Ledger(storage, this.#grants, undefined, admitted);
     this.#files = new Files(storage, env.FILES,
                             () => fileSettings(this.#policy.read().document), write);
-    this.#threads = new Threads(storage, THREAD_LIMITS, THREAD_RETENTION, namedByOpenWork,
+    this.#threads = new Threads(storage, THREAD_LIMITS, THREAD_RETENTION,
                                 () => runPolicy(this.#policy.read().document),
                                 this.#ledger.registered);
-    this.#work = new Scheduled(storage, this.#grants, this.#threads);
     this.#registrations = new Registrations(storage, this.#grants);
     this.#notices = new Notices(storage);
     const owner = () => {
@@ -899,15 +870,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     // The lanes of the one schedule. There is no global tick; each owner's object
     // schedules only itself.
     this.#schedule = new Schedule(ownerLanes({
-      ledger: this.#ledger, files: this.#files, work: this.#work,
-      connections: this.#connections,
+      ledger: this.#ledger, files: this.#files, connections: this.#connections,
       threads: {
         nextDue: (now) => this.#threads.nextDue(now),
         run: (_now, until) => retainThreads(
           this.#threads, clock, write, (thread) => this.#agent.drop(thread),
           (type, detail) => this.#notices.add(type, detail, clock()), until),
       },
-      sender: () => this.#sender, runner: () => this.#runner, clock, write, runWakes, runWork,
+      sender: () => this.#sender, admitted, clock, write, runWakes,
     }), clock, write, undefined, () => erasing(storage));
     const provider = new GatewayProvider({
       connections: this.#connections, usage: this.#usage, write, gateway: () => env.GATEWAY,
@@ -928,10 +898,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                             policy: () => this.#policy.projection(owner()),
                             propose: (change, requestId, proposer) =>
                               this.#policy.propose(change, requestId, proposer, clock()),
-                            work: (client, limit) => this.#work.of(client, limit),
+                            work: (client, limit) => this.#threads.scheduledOf(client, limit),
                             fileUsage: () => this.#files.usage(),
-                            run: (state, agent, input, at) => this.#taRun(state, agent, input,
-                                                                         at),
+                            run: (state, agent, input, at, cron) =>
+                              this.#taRun(state, agent, input, at, cron),
                           },
                           stores: (name) => env.PISTORE.getByName(name),
                           config: (agentId) => this.#agentConfig(agentId),
@@ -953,17 +923,21 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                               this.#usage.turnsReconciled(thread, open)),
                             inputs: (thread) => this.#usage.openInputs(thread),
                           },
+                          admission: () => workRefusal(admission(storage)),
                         });
-    this.#runner = workRunner(this.#threads, this.#agent, authority);
     const lifecycle = new Lifecycle<OwnerEnv>(this);
     this.#erasure = new Erasure({
       storage, write, clock, threads: this.#threads, ended: () => this.#agent.erasing(),
       drop: (thread) => this.#agent.drop(thread), lifecycle,
-      wipe: () => this.#gate.wipe(), retryMs: internals.eraseRetryMs ?? ERASE_RETRY_MS,
+      wipe: () => this.#gate.wipe(writeTombstone),
+      retryMs: internals.eraseRetryMs ?? ERASE_RETRY_MS,
     });
     internals.erasure?.(this.#erasure);
     this.#lifecycle = lifecycle.use(this.#schedule).use(this.#agent.host).use(this.#erasure);
     void ctx.blockConcurrencyWhile(async () => {
+      if (this.#tombstone) {
+        return;  // an erased owner: nothing is made here again
+      }
       await write(() => migrate(storage));
       if (erasing(storage)) {
         // An erasure a crash cut short, from its recorded step: its alarm may be gone.
@@ -1337,13 +1311,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /**
    * A grant change ends what its client set going (P0-3's M3): its agents' open wakes and
-   * callbacks, its pending scheduled work and its held registrations, in the caller's
-   * transaction, and its threads, whose Sessions it answers: their live views close, and
-   * their work ends, after that commits (`OwnerAgent.endClient`).
+   * callbacks and its held registrations, in the caller's transaction, and its threads,
+   * whose Sessions it answers, its scheduled launches' among them: their live views close,
+   * and their work ends, after that commits, and each is dropped, its store wiped with the
+   * sleeping task in it (`OwnerAgent.endClient`).
    */
   #endClient(client: string): Thread[] {
     this.#ledger.suppressClient(client, clock());
-    this.#work.endClient(client, clock());
     this.#registrations.endClient(client);
     return this.#threads.endClient(client);
   }
@@ -1568,53 +1542,48 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /**
    * A launch of an agent on an input (`run_graph`): a fresh thread, stamped and configured
-   * from the agent's data files, the input submitted now, or with `at`, a scheduled turn
-   * naming the thread that the `work` lane hands to pi when due. It answers the operation
-   * id at once; `agentStatus` reads how it stands.
+   * from the agent's data files, the input submitted now, or with `at` or `cron`, a
+   * scheduled launch: a `ta.scheduled` pi task sleeping in the thread's own Session until it
+   * is due (`scheduled.ts`). It answers the operation id at once; `agentStatus` reads how it
+   * stands.
    */
   async agentRun(binding: Binding, request: RunRequest): Promise<Operation> {
     const asked = await this.#door(() => {
       const account = this.#account(binding);
-      const r = agentFields(request, ["agent", "input"], ["at"]);
+      const r = agentFields(request, ["agent", "input"], ["at", "cron"]);
       const agent = agentDir(r["agent"]);
       const input = agentText(r["input"], "an input");
       const at = r["at"] === undefined ? null : timeOf(r["at"], clock());
+      const cron = r["cron"] === undefined ? null : cronOf(r["cron"]);
       const universe = this.#universe(account);
       this.#scope(account, "run_graph", universe, agent);
-      return { stamp: this.#stampOf(binding, account, universe, agent), agent, at,
+      return { stamp: this.#stampOf(binding, account, universe, agent), agent, at, cron,
                input: this.#inputOf(account.origin?.client ?? null, input) };
     });
-    return this.#launch(asked.stamp, asked.agent, asked.input, asked.at);
+    return this.#launch(asked.stamp, asked.agent, asked.input, asked.at, asked.cron);
   }
 
   /**
    * How one of the caller's own operations stands, from pi's receipts (`OwnerAgent.status`:
-   * pending, else how it settled), or, for scheduled work pi has not been handed yet, its
-   * row. Any operation that is not the caller's is refused as no operation at all.
+   * pending, else how it settled), or, for a scheduled launch not yet settled, its task's
+   * record and the delivery it last made, read from its store without opening a Session
+   * (`OwnerAgent.scheduledStatus`). Any operation that is not the caller's is refused as no
+   * operation at all.
    */
   async agentStatus(binding: Binding, request: OperationRequest): Promise<Operation> {
     const found = await this.#door(() => {
       const account = this.#account(binding);
       const r = agentFields(request, ["operation_id"]);
-      const operation = this.#operation(account, r["operation_id"]);
-      const work = operation.key.startsWith("work_")
-        ? this.#work.view(operation.key, operation.client) : null;
-      return { ...operation, work };
+      return this.#operation(account, r["operation_id"]);
     });
-    const { thread, receipt, key, work } = found;
+    const { thread, receipt, key } = found;
     const id = thread?.thread_id ?? receipt!.thread_id;
     const base = { operation_id: operationOf(id, key), thread_id: id };
+    if (thread !== null && thread.request === key && key.startsWith("work_")) {
+      return { ...base, ...await this.#scheduledStatus(thread, key) };
+    }
     const status = thread !== null ? await this.#agent.status(thread, key)
       : await this.#settledStatus(receipt!, key);
-    if (status.status === "unanswered" && status.reason === "not_found" && work !== null) {
-      // Not handed to pi yet, or never to be: the work row says how it stands.
-      if (work.state === "pending" || work.state === "running") {
-        return { ...base, status: "scheduled", due: work.due };
-      }
-      const reason = (work.outcome as { reason?: unknown } | null)?.reason;
-      return { ...base, status: "unanswered",
-               reason: typeof reason === "string" ? reason : work.state };
-    }
     return { ...base, status: status.status,
              ...(status.reason === undefined ? {} : { reason: status.reason }),
              ...(status.text === undefined ? {} : { text: status.text }),
@@ -1622,33 +1591,69 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * Withdraw one of the caller's own operations: scheduled work not handed yet is refused
-   * `cancelled`; an input pi holds is withdrawn while queued, or the run it joined in the
-   * caller's thread is aborted (`ThreadHost.withdraw`). Cancelling again, or a
-   * settled operation, cancels nothing.
+   * Withdraw one of the caller's own operations: a scheduled launch's task is aborted
+   * (`abortTask`, at once from its sleep) and the delivery it last made withdrawn; an input
+   * pi holds is withdrawn while queued, or the run it joined in the caller's thread is
+   * aborted (`ThreadHost.withdraw`). Cancelling again, or a settled operation, cancels
+   * nothing.
    */
   async agentCancel(binding: Binding, request: OperationRequest):
       Promise<{ operation_id: string; cancelled: boolean }> {
     const found = await this.#synced(() => {
       const account = this.#account(binding);
       const r = agentFields(request, ["operation_id"]);
-      const { thread, receipt, client, key } = this.#operation(account, r["operation_id"]);
-      const withdrawn = key.startsWith("work_") && this.#work.cancel(key, client, clock());
-      return { thread, receipt, key, withdrawn };
+      return this.#operation(account, r["operation_id"]);
     });
+    const { thread, key } = found;
     // A run its receipt answers for has nothing left to abort: its store is wiped.
-    const aborted = found.thread !== null && await this.#agent.cancel(found.thread, found.key);
-    return { operation_id: operationOf(found.thread?.thread_id ?? found.receipt!.thread_id,
-                                       found.key),
-             cancelled: found.withdrawn || aborted };
+    const cancelled = thread === null ? false
+      : thread.request === key && key.startsWith("work_")
+        ? await this.#agent.cancelScheduled(thread, key)
+        : await this.#agent.cancel(thread, key);
+    return { operation_id: operationOf(thread?.thread_id ?? found.receipt!.thread_id, key),
+             cancelled };
+  }
+
+  /**
+   * A scheduled launch's status, by a pure read of its store: `scheduled` until it first
+   * delivers, then how its last delivery stands, with when it next delivers while it recurs;
+   * once its task ended for a reason (refused, cancelled), `unanswered` with that reason.
+   */
+  async #scheduledStatus(thread: Thread, key: string):
+      Promise<Omit<Operation, "operation_id" | "thread_id">> {
+    const read = await this.#agent.scheduledStatus(thread, key);
+    if (read === null) {
+      return { status: "unanswered", reason: "not_found" };
+    }
+    const { standing: stands, last } = read;
+    const due = stands.due === null ? {} : { due: stands.due };
+    if (stands.ended !== null && stands.ended.reason !== null) {
+      return { status: "unanswered", reason: stands.ended.reason };
+    }
+    if (last === null) {
+      return stands.delivered === 0 ? { status: "scheduled", ...due }
+        : { status: "unanswered", reason: "not_found" };
+    }
+    switch (last.status) {
+      case "queued":
+        return { status: "queued", ...due };
+      case "placed":
+        return { status: "running", ...due };
+      case "done":
+        return { status: "done", ...(last.text === undefined ? {} : { text: last.text }), ...due };
+      default:
+        return { status: "unanswered", ...(last.reason === undefined ? {}
+          : { reason: last.reason }), ...due };
+    }
   }
 
   /** `ta`'s `agent:run`: the conversation's authority launches, as the agent it names. */
   async #taRun(state: Readonly<AuthorityState> | undefined, agent: unknown, input: unknown,
-               at: unknown): Promise<Operation> {
+               at: unknown, cron: unknown): Promise<Operation> {
     const id = agentDir(agent);
     const text = agentText(input, "an input");
     const when = at === null ? null : timeOf(at, clock());
+    const recurring = cron === null ? null : cronOf(cron);
     let stamp: Stamped | null = null;
     if (state?.by !== "owner") {
       const by = stampOf(state);
@@ -1658,33 +1663,36 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       stamp = { ...by, agent: id };
     }
     const wrapped = await this.#door(() => this.#inputOf(stamp?.client ?? null, text));
-    return this.#launch(stamp, id, wrapped, when);
+    return this.#launch(stamp, id, wrapped, when, recurring);
   }
 
   /**
-   * A launch, the door's and `ta`'s one path: for scheduled work, its room, refused before
-   * anything is made, and the agent's data files, a bad one refused the same; a fresh `run`
-   * thread, recorded in a unit that re-checks `run_graph` where it acts; then the input
-   * submitted, or scheduled.
+   * A launch, the door's and `ta`'s one path: the agent's data files, a bad one refused
+   * before anything is made; a fresh `run` thread, recorded in a unit that re-checks
+   * `run_graph` where it acts; then the input submitted now, or, with an `at` ahead or a
+   * `cron`, a scheduled launch: its work id named in the thread's row as it is recorded
+   * (held to the scheduled share of the live runs), then its `ta.scheduled` task made in
+   * the thread's root, sleeping until its first delivery (`at`, else the cron's next
+   * occurrence).
    */
-  async #launch(stamp: Stamped | null, agent: string, input: string, at: number | null):
-      Promise<Operation> {
-    await this.#door(() => {
-      if (at !== null && at > clock()) {
-        this.#work.room(stamp?.client ?? null, input);
-      }
-    });
+  async #launch(stamp: Stamped | null, agent: string, input: string, at: number | null,
+                cron: string | null = null): Promise<Operation> {
     await this.#agentConfig(agent);
-    const thread = await this.#agent.thread(agent, stamp, { kind: "run", need: ["run_graph"] });
-    if (at !== null && at > clock()) {
-      const { work_id: work } = await this.#door(() => this.#work.add(
-        "turn", at, { thread: thread.thread_id, input },
-        stamp === null ? null : { client: stamp.client, generation: stamp.generation,
-                                  authenticated_at: stamp.authenticated_at }, clock()));
+    const now = clock();
+    const due = at !== null && at > now ? at
+      : cron !== null ? (at ?? nextOccurrence(parseCron(cron), now)) : null;
+    if (due !== null) {
+      const work = `work_${hex(16)}`;
+      const thread = await this.#agent.thread(agent, stamp, { kind: "run", need: ["run_graph"],
+                                                              work });
       await this.#schedule.sync();
+      const scheduled: ScheduledInput = { work_id: work, thread: thread.thread_id, at: due,
+                                          stamp, input, cron };
+      await this.#agent.schedule(thread, scheduled);
       return { operation_id: operationOf(thread.thread_id, work), thread_id: thread.thread_id,
-               status: "scheduled", due: at };
+               status: "scheduled", due };
     }
+    const thread = await this.#agent.thread(agent, stamp, { kind: "run", need: ["run_graph"] });
     await this.#schedule.sync();
     const key = `run_${hex(16)}`;
     await this.#agent.submit(thread, input, {
@@ -1831,6 +1839,30 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
   }
 
+  // -- ADMISSION: the platform's word on the owner's account -------------------------
+
+  /**
+   * The platform suspends the owner for a reason (`billing`, `abuse`), or lifts it
+   * (`admission.ts`): taken only from the reserved `PLATFORM_CALLER`, with no outside client
+   * and no session, whatever the owner's admission is now; an erased owner is never set
+   * again. A suspension then ends the agent's running work, as a policy write does
+   * (`OwnerAgent.endAll`), and lifting one gives the `wakes` lane its job back.
+   */
+  async admissionSet(binding: Binding, request: AdmissionRequest): Promise<Admission> {
+    const set = await this.#synced(() => {
+      const { caller } = this.#bind(binding, false);
+      if (caller !== PLATFORM_CALLER || !("origin" in binding) || binding.origin !== null
+          || binding.session !== undefined || binding.source !== undefined) {
+        throw new Refused(PLATFORM_ONLY);
+      }
+      return setAdmission(this.#storage, request);
+    });
+    if (set.state !== "admitted") {
+      await this.#agent.endAll();
+    }
+    return set;
+  }
+
   mailboxRead(binding: Binding, request: ReadRequest): Promise<MailPage> {
     return this.#door(() => {
       const account = this.#account(binding);
@@ -1870,10 +1902,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /**
    * The owner this object serves: the name it was reached by, and every other one
-   * refused. The stored owner, fixed at first use, is a second check of the same.
+   * refused. The stored owner, fixed at first use, is a second check of the same. An
+   * erased owner's tombstone refuses every call (`OWNER_ERASED`), an erasure under way too
+   * (`ERASING`), and so does an owner not admitted (`require_work`), unless `admission` is
+   * false: the platform's own door, which sets it. The platform's reserved caller reaches
+   * no other door, and no owner is named so.
    */
-  #bind(binding: Binding): { owner: string; caller: string } {
-    if (this.#erasure.erased || erasing(this.#storage)) {
+  #bind(binding: Binding, admitted = true): { owner: string; caller: string } {
+    if (this.#tombstone || this.#erasure.erased) {
+      throw new Refused(OWNER_ERASED);
+    }
+    if (erasing(this.#storage)) {
       this.#erasure.resume(true);
       throw new Refused(ERASING);
     }
@@ -1882,6 +1921,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
     const owner = principal(binding.owner);
     const caller = principal(binding.caller);
+    if (owner === PLATFORM_CALLER || (admitted && caller === PLATFORM_CALLER)) {
+      throw new Refused(PLATFORM_RESERVED);
+    }
+    if (admitted) {
+      const refusal = workRefusal(admission(this.#storage));
+      if (refusal !== null) {
+        throw new Refused(refusal);
+      }
+    }
     const named = this.ctx.id.name;
     if (named === undefined) {
       throw new Refused("this object is not named by an owner");

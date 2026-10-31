@@ -7,9 +7,9 @@
  * and only the router's owner channel submitted a widening. Here, only the object
  * imports the session and grant modules (so only its doors, which check the owner's
  * session themselves, can call a widening), and each policy table is named only by the
- * module that keeps it and the schema. The stamped schedule's work and the held agent
- * registrations are held to the same: only the object (and the registrations, for the
- * stamp's type) import them. So are the model connections and their spend: only the
+ * module that keeps it and the schema. The held agent registrations and the owner's
+ * admission are held to the same: only the object imports them, and the admission row is
+ * its module's and the schema's alone. So are the model connections and their spend: only the
  * object builds them, the provider and `auto` read their types and calls, and their
  * tables (the connections, their blobs and flows, the reservations and the spend and turn
  * counters) are their modules' alone, and so are the agent's threads, live, usage and
@@ -25,8 +25,8 @@ const MODULES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   policy: Object.freeze([OWNER_DO, "owner/src/grants.ts", SCHEMA]),
   grants: Object.freeze([OWNER_DO]),
   sessions: Object.freeze([OWNER_DO]),
-  scheduled: Object.freeze([OWNER_DO, "owner/src/registrations.ts"]),
   registrations: Object.freeze([OWNER_DO]),
+  admission: Object.freeze([OWNER_DO]),
   connections: Object.freeze([OWNER_DO, "owner/src/auto.ts", "owner/src/gateway-provider.ts"]),
   usage: Object.freeze([OWNER_DO, "owner/src/gateway-provider.ts"]),
 });
@@ -39,9 +39,10 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   outside_clients: Object.freeze(["owner/src/grants.ts", SCHEMA]),
   grant_fences: Object.freeze(["owner/src/grants.ts", SCHEMA]),
   policy_usage: Object.freeze(["owner/src/grants.ts", "owner/src/policy.ts",
-                               "owner/src/registrations.ts", "owner/src/scheduled.ts",
-                               "owner/src/sessions.ts", SCHEMA]),
-  scheduled_work: Object.freeze(["owner/src/scheduled.ts", SCHEMA]),
+                               "owner/src/registrations.ts", "owner/src/sessions.ts", SCHEMA]),
+  // Its table is dropped (migration 12); only the migrations that made and dropped it name it.
+  scheduled_work: Object.freeze([SCHEMA]),
+  owner_admission: Object.freeze(["owner/src/admission.ts", SCHEMA]),
   agent_cards: Object.freeze(["owner/src/registrations.ts", SCHEMA]),
   agent_threads: Object.freeze(["owner/src/threads.ts", SCHEMA]),
   agent_live: Object.freeze(["owner/src/threads.ts", SCHEMA]),

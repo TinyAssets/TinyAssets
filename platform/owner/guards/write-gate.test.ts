@@ -49,7 +49,6 @@ const UNITS = /(^|\.)(#?write|unit|#door|#synced|#filing)$/;
 /** By module, the calls that write: each must be in a unit wherever a function awaits. */
 const WRITES: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   "owner/src/wakes.ts": new Set(["recover", "defer", "claim", "mark", "settle"]),
-  "owner/src/scheduled.ts": new Set(["recover", "defer", "claim", "mark", "settle"]),
   "owner/src/files.ts": new Set(["#change", "transactionSync", "begin", "commit", "abort",
                                  "#writeInline", "ns"]),
   "owner/src/files-env.ts": new Set(["rename", "mkdir", "remove", "tempDir", "dropTemps"]),

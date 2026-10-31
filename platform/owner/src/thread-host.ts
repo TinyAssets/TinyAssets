@@ -360,6 +360,16 @@ export class ThreadHost extends LifecycleCapability {
     });
   }
 
+  /**
+   * Run `act`, which commits work into `thread`'s Session (a scheduled launch's task,
+   * `scheduled.ts`), inside the thread's wake, as an input is admitted: its job is scheduled
+   * before `act` runs, so if the object dies once pi holds the work, that job restarts it,
+   * and the job steps again after, so it sees the work even if it just completed.
+   */
+  admitted<T>(thread: string, act: (opened: Opened) => Promise<T>): Promise<T> {
+    return this.#use(thread, (opened, slot) => this.#admit(thread, slot, () => act(opened)));
+  }
+
   /** Withdraw a queued input, or abort the run it joined; false when nothing was. */
   withdraw(thread: string, operationId: string): Promise<boolean> {
     return this.use(thread, async ({ pi, storage }) => {

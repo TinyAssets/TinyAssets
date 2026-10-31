@@ -39,6 +39,9 @@
  *   root's input with that request id stands, and its answer's whole text once done. It
  *   claims no holder and opens no Session; a store never opened refuses it (`NOT_OPENED`),
  *   so it never makes one.
+ * - **`task(kind, workId)`** is the same kind of pure read for a scheduled launch's status
+ *   (`scheduled.ts`): the root's task of that kind whose input names the work id, its record
+ *   as JSON, so a status poll of a sleeping schedule opens no Session and keeps none open.
  * - **`size()`** is the store's database size in bytes (its 10 GB is its own: a full store
  *   fails only its own thread).
  * - **`destroy()`** wipes the store whole (`deleteAll()`, atomic), leaving nothing: an
@@ -61,12 +64,15 @@ import {
 } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
 import { DurableObject, RpcTarget } from "cloudflare:workers";
 
+
 /** pi's table prefix in a store: its own default, alone in the database. */
 export const STORE_PREFIX = "pi_";
 /** The refusals, each fixed. */
 export const STALE_HOLDER = "a stale holder: a newer Session holds this store";
 export const NOT_OPENED = "this store was never opened";
 export const DESTROYED = "this store was destroyed";
+/** How many of a kind's tasks a run's root is looked through for one (`task`). */
+const TASK_SCAN = 8;
 /** A holder: 128 random bits, as hex. */
 const HOLDER = /^[0-9a-f]{32}$/;
 /** The durable key of the holder. */
@@ -97,6 +103,8 @@ export interface StoreRpc {
   attach(holder: string): Promise<StoreSessionRpc>;
   /** How the root's input `request` stands, its whole answer once done; a pure read. */
   answer(request: string): Promise<Answer | null>;
+  /** The root's task of `kind` whose input names `workId`, as JSON, or null; a pure read. */
+  task(kind: string, workId: string): Promise<string | null>;
   size(): Promise<number> | number;
   destroy(): Promise<void>;
 }
@@ -191,14 +199,10 @@ export class ThreadStore extends DurableObject implements StoreRpc {
    * opened (so it never makes one) and for one this instance destroyed.
    */
   async answer(request: string): Promise<Answer | null> {
-    this.#alive();
-    if (this.ctx.storage.kv.get<string>(HOLDER_KEY) === undefined) {
-      throw new Error(NOT_OPENED);
-    }
+    const pi = await this.#read();
     if (typeof request !== "string" || request.length === 0 || request.length > 128) {
       throw new Error("a request id is 1 to 128 characters");
     }
-    const pi = await this.#pi();
     const record = await pi.submissionByRequest(ROOT_CONVERSATION_ID, request,
                                                 BACKGROUND_CONTEXT);
     if (record === undefined || record.type !== "input") {
@@ -210,6 +214,34 @@ export class ThreadStore extends DurableObject implements StoreRpc {
     }
     return record.status === "unanswered" ? { status: "unanswered", reason: record.reason }
       : { status: record.status };
+  }
+
+  /**
+   * The root's task of `kind` whose input names `workId` (a scheduled launch's,
+   * `scheduled.ts`), its record as stored, as JSON; null for none. A pure read, as `answer`
+   * is: no holder claimed, refused for a store never opened and for one this instance
+   * destroyed.
+   */
+  async task(kind: string, workId: string): Promise<string | null> {
+    const pi = await this.#read();
+    if (typeof kind !== "string" || kind.length === 0 || kind.length > 128
+        || typeof workId !== "string" || workId.length === 0 || workId.length > 128) {
+      throw new Error("a task kind and a work id are 1 to 128 characters");
+    }
+    const page = await pi.scanTasks({ conversationId: ROOT_CONVERSATION_ID, kind },
+                                    TASK_SCAN, undefined, BACKGROUND_CONTEXT);
+    const record = page.items.find((task) =>
+      (task.input as { work_id?: unknown } | null)?.work_id === workId);
+    return record === undefined ? null : JSON.stringify(record);
+  }
+
+  /** pi's storage for a pure read: never a claim, and never a store not yet opened. */
+  async #read(): Promise<Sqlite> {
+    this.#alive();
+    if (this.ctx.storage.kv.get<string>(HOLDER_KEY) === undefined) {
+      throw new Error(NOT_OPENED);
+    }
+    return this.#pi();
   }
 
   /** The store's database size in bytes. */
