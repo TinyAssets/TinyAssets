@@ -487,9 +487,8 @@ function escapeXml(text: string): string {
     .replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
 
-/** The skills section: each model-invocable skill's name, description and path; none: none. */
-export function skillsSection(skills: readonly Skill[]): string | undefined {
-  const visible = skills.filter((skill) => skill.invocable);
+/** The skills section: each skill's name, description and path, as given; none: none. */
+export function skillsSection(visible: readonly Skill[]): string | undefined {
   if (visible.length === 0) {
     return undefined;
   }
@@ -785,6 +784,7 @@ export class Resources {
         templates.push({ name, path });
       }
     }
+    // Only a model-invocable skill is listed; any skill expands by its command.
     const listed = skills.filter((skill) => skill.invocable);
     if (truncated || listed.length > SKILLS_LISTED || templates.length > TEMPLATES_KEPT) {
       this.#notice(RESOURCES_TRUNCATED, `only the first ${SKILLS_LISTED} skills, ` +

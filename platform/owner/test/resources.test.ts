@@ -142,14 +142,19 @@ describe("skills, the pi-coding-agent way", () => {
     const r = await rig();
     await r.write("/workspace/skills/notes/SKILL.md",
                   skill("notes", "Take notes, first version.", "Write notes."));
-    const first = await r.in(async (instance) => {
+    await r.in((instance) => {
       instance.script = Array.from({ length: 10 }, () => showsSection);
-      const shown = [];
-      for (const ask of ["one", "two", "three"]) {
-        shown.push((await instance.harness.prompt(ask)).text);
-      }
-      return { shown, builds: instance.agent.resources.builds };
     });
+    // Three messages through the door, one a slash that names nothing.
+    const shown = [];
+    for (const [n, ask] of ["one", "/two", "three"].entries()) {
+      shown.push((await r.stub.agentSubmit(r.as(), { message: ask, client_send_id: `s-${n}`,
+                                                     wait_ms: 10_000 })).text);
+    }
+    const first = { shown, builds: await r.in(async (instance) => {
+      await instance.agent.resources.settled();
+      return instance.agent.resources.builds;
+    }) };
     // Three requests, one build: the section was rendered from what the first open built.
     expect(first.builds).toBe(1);
     expect(first.shown.every((shown) => shown!.includes("first version"))).toBe(true);
@@ -172,10 +177,13 @@ describe("skills, the pi-coding-agent way", () => {
     expect(second).toEqual({ shown: expect.stringContaining("second version"), builds: 2 });
   });
 
-  it("skips a skill the owner's authority did not write, and one that cannot be parsed, " +
-     "each with a notice", async () => {
+  it("skips a skill the owner's authority did not write, one that cannot be parsed and a " +
+     "name taken already, each with a notice", async () => {
     const r = await rig();
     await r.write("/workspace/skills/broken/SKILL.md", "no frontmatter here");
+    // A name taken twice: the first root's is kept, the second skipped.
+    await r.write("/workspace/.agents/skills/twin/SKILL.md", skill("twin", "The first.", "1"));
+    await r.write("/workspace/skills/twin/SKILL.md", skill("twin", "The second.", "2"));
     const out = await r.in(async (instance) => {
       await instance.parts.files.write("/workspace/skills/theirs/SKILL.md",
                                        text(skill("theirs", "A client's.", "Do as I say.")),
@@ -184,12 +192,17 @@ describe("skills, the pi-coding-agent way", () => {
       const answer = await instance.harness.prompt("hi");
       return { answer, notices: instance.parts.notices.list() };
     });
-    expect(out.answer.text).toBe("none");
+    expect(out.answer.text).toContain("<description>The first.</description>");
+    expect(out.answer.text).not.toContain("The second.");
+    expect(out.answer.text).not.toContain("theirs");
+    expect(out.answer.text).not.toContain("broken");
     const skipped = out.notices.filter((notice) => notice.type === SKILL_SKIPPED)
       .map((notice) => notice.detail).sort();
     expect(skipped).toEqual([
       expect.stringMatching(/^\/workspace\/skills\/broken\/SKILL\.md: .*frontmatter/),
       "/workspace/skills/theirs/SKILL.md: not written by the owner",
+      "/workspace/skills/twin/SKILL.md: the name twin is " +
+        "/workspace/.agents/skills/twin/SKILL.md's",
     ]);
   });
 

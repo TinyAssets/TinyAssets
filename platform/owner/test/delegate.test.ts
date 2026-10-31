@@ -26,7 +26,8 @@ import { NOT_GRANTED, type Stamped } from "../src/authority";
 import { THREAD_CONVERSATIONS_FULL } from "../src/delegate";
 import { type Origin } from "../src/ledger";
 import type { Binding } from "../src/owner-do";
-import { THREAD_CONVERSATIONS } from "../src/schema";
+import { THREAD_CONVERSATIONS, THREAD_INPUTS } from "../src/schema";
+import { THREAD_INPUTS_FULL } from "../src/thread-host";
 import { gated } from "./gateway-support";
 import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
 import { sqlIn } from "./support";
@@ -96,6 +97,10 @@ const ASKS: readonly [string, (messages: Message[]) => AssistantMessage][] = [
                                                                task: "who are you" }))],
   ["delegate hold", () => calls(viaTa("agent:delegate", { task: "hold please" }))],
   ["delegate it", () => calls(viaTa("agent:delegate", { task: "child work" }))],
+  ["delegate background", () => calls(viaTa("agent:delegate", { task: "start background" }))],
+  ["start background", () => calls(viaTa("background", { work: "late work" }))],
+  ["delegate a sleeper", () => calls(viaTa("agent:delegate", { task: "background and hold" }))],
+  ["background and hold", () => calls(viaTa("background", { work: "late work" }), HOLD)],
   ["hold please", () => calls(HOLD)],
   ["propose it", () => calls(viaTa("policy:propose", { change: { note: "x" } }))],
   ["who are you", (messages) => says(`I am: ${sectionOf(messages, "instructions") ?? "none"}`)],
@@ -325,6 +330,46 @@ describe("a delegation to a subagent", () => {
     expect(out.conversations).toHaveLength(THREAD_CONVERSATIONS + 1);
   });
 
+  it("counts a child whose own work outlives its aborted call", async () => {
+    const r = await rig();
+    const out = await r.in(async (instance) => {
+      instance.probes.backgroundGate = new Promise(() => undefined);
+      instance.probes.holdGate = new Promise(() => undefined);
+      await instance.harness.submit("delegate a sleeper");
+      await until(() => instance.probes.holds === 1 && instance.probes.background !== null,
+                  "the child's background work and hold");
+      // The call is aborted: the child's run with it, its background work not.
+      await instance.harness.abort();
+      instance.probes.holdGate = null;
+      const pi = await instance.harness.pi();
+      const background = await pi.getTask(instance.probes.background as never, BG);
+      const thrice = await instance.harness.prompt("delegate thrice");
+      return { background: background?.state.status, thrice };
+    });
+    expect(out.background).not.toBe("terminal");
+    // The root and that child leave room for one more working conversation.
+    const results = delegated(out.thrice).slice(-THREAD_CONVERSATIONS);
+    expect(results.filter((result) => result.error).map((result) => result.text))
+      .toEqual(Array.from({ length: THREAD_CONVERSATIONS - 1 }, () =>
+        expect.stringContaining(THREAD_CONVERSATIONS_FULL)));
+  });
+
+  it("ends what its child left running once the child answered", async () => {
+    const r = await rig();
+    const out = await r.in(async (instance) => {
+      instance.probes.backgroundGate = new Promise(() => undefined);
+      const answer = await instance.harness.prompt("delegate background");
+      const pi = await instance.harness.pi();
+      const task = await pi.getTask(instance.probes.background as never, BG);
+      return { answer, state: task?.state.status, live: pi.wake().active };
+    });
+    expect(delegated(out.answer).map((result) => JSON.parse(result.text).status))
+      .toEqual(["done"]);
+    // The child's background work was ended with it: nothing of it holds the thread's cap.
+    expect(out.state).toBe("terminal");
+    expect(out.live).toBe(false);
+  });
+
   it("refuses a linked admission whose turn has no row at admission, before pi admits it",
      async () => {
     const r = await rig();
@@ -349,6 +394,24 @@ describe("a delegation to a subagent", () => {
       { text: expect.stringContaining("turn_ended"), error: true }]);
     // The child's input never reached pi: no submission of it at all.
     expect(out.child).toEqual([]);
+  });
+
+  it("counts its child's input among the thread's open inputs, refused past them at " +
+     "admission", async () => {
+    const r = await rig();
+    const out = await r.in(async (instance) => {
+      const thread = await instance.harness.thread();
+      await instance.harness.pi();  // open, so its reconcile has run
+      // The thread holds all but one of its open inputs: the delegating one takes the last.
+      await instance.parts.turns.owned(thread, Array.from({ length: THREAD_INPUTS - 1 },
+        (_, n) => ({ owner: `s:${900_000 + n}`, turn: `input:held-${n}` })));
+      const answer = await instance.harness.prompt("delegate it");
+      return { answer, notices: instance.parts.notices.list().map((notice) => notice.type) };
+    });
+    expect(delegated(out.answer)).toEqual([
+      { text: expect.stringContaining(THREAD_INPUTS_FULL), error: true }]);
+    // Refused by the host, never by the schema's bound, which would fail the Session.
+    expect(out.notices).not.toContain("session_failed");
   });
 
   it("is refused to a scoped client without run_graph, and past its scope to another " +

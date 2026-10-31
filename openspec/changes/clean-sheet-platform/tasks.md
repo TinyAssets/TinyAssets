@@ -1262,7 +1262,17 @@ account and no deploy.
   rerun after an eviction reusing the child and its input, the abort cascade and idle, the
   conversation cap, `turn_ended` at admission, a scoped client refused without
   `run_graph` and past its scope, a revoke, a suspension and a policy write ending the
-  child, the caps through the gateway; the two lows. Declared differences from pi and the
+  child, the caps through the gateway; the two lows. Mutation: 53 (the section's
+  filtering, walk and first-wins, the rebuild trigger and a rebuild per request, the
+  expansions, the package refusal, filters and selection, the delegation's ownership,
+  reuse, request id, wait, instructions, scope and lingering work, the conversation cap and
+  its pruning, the linked admission's inputs and turn checks, `ta`'s rerun rule, the two
+  lows, the guards' terms and creation points), 51 killed: of those first alive, five were
+  killed by tests added for them, and a sixth went with the code it mutated (a second copy
+  of the build's model-invocable filter in the section); two survive as equivalent, each covering the other: the linked
+  admission's own admission check and the admission unit's authority re-check (`require`
+  reads the admission too, and every authority change drops the thread, its abort failing
+  the submit). Declared differences from pi and the
   audit (F5, F9): standalone `.md` skills are not loaded (the directory form only); the
   `tinyassets` key's fields (settings, model routing hints) are skipped with a notice
   until they have a consumer (owner policy is the one settings source; `auto`'s ranking
