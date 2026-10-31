@@ -236,6 +236,9 @@ export function q7Gate(g) {
 
 const gb = (bytes) => (typeof bytes === "number" ? `${(bytes / GB).toFixed(2)} GB` : String(bytes));
 
+/** A plan the parent's own resets ended (parent.js `alarm`). */
+const RESET = /^aborted: the parent was reset/;
+
 /**
  * Q1's readings from the two fill plans, in two parts.
  * - Parent vs facet (`verdict`, Q7's gate): "separate" only when the parent and `q1b`
@@ -273,6 +276,12 @@ export function q1Reading(bc, a, limitBytes = SHAPE.limitBytes) {
     out.verdict = "shared";
     out.detail = `q1b hit a limit at ${gb(b.size)} with the parent at ${gb(self?.size)} (${gb(pair)} together)`
       + `${persist ? `, and the parent's own write then failed: ${persist.error}` : ""}: one budget`;
+  } else if (RESET.test(status) && self?.status === "reached" && b?.status === "writing" && inBand(pair)) {
+    // The limit's reset form (run 41247617223): at the ceiling production resets the parent
+    // again and again instead of returning a size error.
+    out.verdict = "shared";
+    out.detail = `the parent was reset repeatedly with itself at ${gb(self.size)} and q1b at ${gb(b.size)} `
+      + `(${gb(pair)} together), at the ceiling: the limit's reset form, one budget`;
   } else if (/^aborted/.test(status)) {
     out.verdict = "void";
     out.detail = `a non-limit error stopped the fill: ${Object.values(out.errors)[0] ?? status}`;
@@ -296,26 +305,32 @@ export function q1Reading(bc, a, limitBytes = SHAPE.limitBytes) {
     out.facetDetail = `q1c ${gb(c?.size)} (${c?.status ?? "-"}${c?.error ? `: ${c.error}` : ""})`;
   }
   if (big) {
+    const lone = a.plan.status;
     out.facetLimit = big.status === "limit"
-      ? `a lone facet stopped at ${gb(big.size)}${inBand(size(big)) ? ", at a 10 GB limit of its own" : ", not near 10 GB or 10 GiB"}: ${big.error}`
+      ? `a lone facet stopped at ${gb(big.size)}${inBand(size(big)) ? ", at the ceiling" : ", not near 10 GB or 10 GiB"}: ${big.error}`
       : big.status === "reached" ? `a lone facet passed ${gb(big.size)} with no limit error`
-        : `a lone facet reached ${gb(big.size)} (${big.status}${big.error ? `: ${big.error}` : ""})`;
+        : RESET.test(lone) && big.status === "writing" && inBand(size(big))
+          ? `a lone facet's parent was reset repeatedly with the facet at ${gb(big.size)}, at the ceiling: the limit's reset form`
+          : `a lone facet reached ${gb(big.size)} (${big.status}${big.error ? `: ${big.error}` : ""})`;
   }
   return out;
 }
 
 /**
  * Q8's reading from its three variants. The order control (`same-turn-noabort`) must read
- * wiped and written in every trial, and the crash-model control (`awaited`) wiped and not
- * written in every trial; only then is a same-turn "wiped and not written" F1's crash
- * window. A control that itself loses the row is a different finding.
+ * wiped and written in every trial, and the crash-model control (`awaited`) must lose the
+ * row in every trial, all wiped or all not wiped; only then is a same-turn "wiped and not
+ * written" F1's crash window. A control that itself loses the row is a different finding.
  */
 export function q8Reading(control, sameTurn, awaited) {
+  // The crash model holds when every awaited trial lost the aborted turn's row and came
+  // back as a fresh instance. Its delete either committed at the await (wiped, workerd) or
+  // was held to the turn's commit and lost with it (not wiped, production in run
+  // 41247617223); either form is a crash before commit.
   const n = sameTurn?.n ?? 0;
   const c = control?.counts;
   const s = sameTurn?.counts;
   const a = awaited?.counts;
-  const notWiped = s ? s.notWipedWritten + s.notWipedNotWritten : 0;
   if (!c || !a) {
     return { verdict: "void", detail: "a control did not run" };
   }
@@ -326,14 +341,15 @@ export function q8Reading(control, sameTurn, awaited) {
   if (c.wipedWritten !== control.n || c.notKilled !== control.n) {
     return { verdict: "void", detail: `the order control read ${JSON.stringify(c)}, not ${control.n} of ${control.n} wiped and written` };
   }
-  if (a.wipedNotWritten !== awaited.n || awaited.freshInstances !== awaited.n) {
+  const crashLost = a.wipedNotWritten === awaited.n || a.notWipedNotWritten === awaited.n;
+  if (!crashLost || awaited.freshInstances !== awaited.n) {
     return { verdict: "void", detail: `the crash-model control read ${JSON.stringify(a)}: ctx.abort() did not act as a crash before commit` };
   }
   if (s.wipedNotWritten > 0) {
     return { verdict: "crash window",
              detail: `${s.wipedNotWritten} of ${n} same-turn trials were wiped with the row lost: the delete commits apart from the same-turn write` };
   }
-  if (notWiped === n) {
+  if (s.notWipedNotWritten === n) {
     return { verdict: "no window at this crash point",
              detail: `every trial kept the old rows and lost the row: consistent with one atomic commit at this one crash point; 20 trials sample one moment, so this does not prove there is no window` };
   }

@@ -182,6 +182,12 @@ function checkKey() {
     ["M2: facets pooled, the parent separate",
      plan([["self", 6 * GB, "reached"], ["q1b", 6 * GB, "reached"], ["q1c", 4 * GB, "limit", "SQLITE_FULL"]]), "separate", "pooled"],
     ["a non-limit error", plan([["self", 2 * GB, "error", "Error: network lost"]], "aborted: a non-limit error"), "void"],
+    ["run 41247617223: the parent reset at the ceiling, the limit's reset form",
+     plan([["self", 6_002_180_096, "reached"], ["q1b", 4_722_520_064, "writing"], ["q1c", null, "pending"]],
+          "aborted: the parent was reset more than 3 times"), "shared"],
+    ["a reset far below the ceiling stays void",
+     plan([["self", 6_002_180_096, "reached"], ["q1b", 1 * GB, "writing"], ["q1c", null, "pending"]],
+          "aborted: the parent was reset more than 3 times"), "void"],
   ];
   for (const [name, bc, verdict, facetVerdict] of cases) {
     const got = read(bc);
@@ -189,7 +195,9 @@ function checkKey() {
            `Q1 key, ${name}: ${got.verdict} / ${got.facetVerdict} (${got.detail})`);
   }
   const lone = q1Reading(cases[0][1], plan([["q1a", GIB10, "limit", "SQLITE_FULL"]]));
-  expect(/limit of its own/.test(lone.facetLimit), `Q1 key, a lone facet at 10 GiB: ${lone.facetLimit}`);
+  expect(/at the ceiling/.test(lone.facetLimit), `Q1 key, a lone facet at 10 GiB: ${lone.facetLimit}`);
+  const loneReset = q1Reading(cases[0][1], plan([["q1a", 10_724_667_392, "writing"]], "aborted: the parent was reset more than 3 times"));
+  expect(/reset form/.test(loneReset.facetLimit), `Q1 key, run 41247617223's lone facet: ${loneReset.facetLimit}`);
   // Q8's key: the order control and the crash-model control gate the same-turn reading.
   const q8 = (counts, n = 20, fresh = n) => ({ n, freshInstances: fresh, counts: { wipedWritten: 0, wipedNotWritten: 0,
     notWipedWritten: 0, notWipedNotWritten: 0, unread: 0, notKilled: 0, ...counts } });
@@ -201,6 +209,10 @@ function checkKey() {
     ["the control loses the row", q8({ wipedNotWritten: 20, notKilled: 20 }, 20, 0), q8({ wipedNotWritten: 20 }), okCrash,
      "deleteAll erases a same-turn write"],
     ["abort is no crash", okControl, q8({ wipedWritten: 20 }), q8({ wipedWritten: 20 }), "void"],
+    ["run 41247617223: the delete held to the turn's commit and lost with it", okControl,
+     q8({ notWipedNotWritten: 20 }), q8({ notWipedNotWritten: 20 }), "no window at this crash point"],
+    ["a mixed crash-model control is void", okControl, q8({ notWipedNotWritten: 20 }),
+     q8({ notWipedNotWritten: 10, wipedNotWritten: 10 }), "void"],
   ]) {
     const got = q8Reading(control, same, awaited);
     expect(got.verdict === verdict, `Q8 key, ${name}: ${got.verdict} (${got.detail})`);
