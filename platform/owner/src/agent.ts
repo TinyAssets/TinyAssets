@@ -1,36 +1,34 @@
 /**
- * The owner's agent: pi-durable inside the owner's object, on PiHarness (ADR-032 §4;
- * tasks 5, sub-slices A0 and A2).
+ * The owner's agent: pi-durable inside the owner's object, one pi Session per agent thread
+ * (ADR-032 §4, amended 2026-10-30; tasks 5, sub-slices A0, A2 and S3).
  *
- * PiHarness (`agents/harness/pi`, agents 0.31.0) is a Lifecycle capability the object
- * installs on its own `new Lifecycle(this)` beside the schedule, with none of Lifecycle's
- * runtime handlers: the object forwards `alarm` alone. pi opens in Lifecycle's startup,
- * which the first alarm or the first PiHarness call runs; every PiHarness method awaits
- * that startup itself, so no door starts the Lifecycle first. pi's tables sit in the
- * owner's one SQLite database under its own prefix, with their own forward-only schema
- * version beside ours (the pi pin guard holds it at 2). pi's commits run through chord's
- * per-storage queue, which every owner write shares through the object's write gate
- * (`gate.ts`), so no owner write lands inside a pi transaction.
+ * Each thread is one pi Session over its own store (`thread-store.ts`, by RPC through
+ * `remote-storage.ts`), hosted by the object's thread host (`thread-host.ts`), a Lifecycle
+ * capability the object installs on its own `new Lifecycle(this)` beside the schedule,
+ * with none of Lifecycle's runtime handlers: the object forwards `alarm` alone. Only pi's
+ * bytes live in the store; the harness, every hook, the environment, the model provider and
+ * every authority check run here, in the owner's object, over the owner's rows. A Session
+ * opens on demand (a door's call, or the thread's own wake job), each time through
+ * `#open`, which is safe to run again after a storage error failed the last one.
  *
- * What pi is opened with, every time it opens (the factory runs again after a storage
- * error, so it is safe to run twice):
- * - one registry per object (pi keeps a Harness subscribed to its registry until it
- *   closes, and an evicted object never closes it), holding first `ta.authority`, the
- *   early authority gate (`authority.ts`), whose `beforeTool` runs before every other
- *   extension's, so its block wins; then pi's `CodingTools` with `read` wrapped
- *   `replay: "safe"` (only pure reads are marked safe; `write`, `edit` and `bash` stay
- *   `unsafe`, so a call an eviction cut off comes back `interrupted` and is never run
+ * What each Session is opened with, every time it opens:
+ * - one registry for the whole object, shared by every Session (pi keeps a Harness
+ *   subscribed to its registry until it closes), installed once, holding first
+ *   `ta.authority`, the early authority gate (`authority.ts`), whose `beforeTool` runs
+ *   before every other extension's, so its block wins; then pi's `CodingTools` with `read`
+ *   wrapped `replay: "safe"` (only pure reads are marked safe; `write`, `edit` and `bash`
+ *   stay `unsafe`, so a call an eviction cut off comes back `interrupted` and is never run
  *   twice), then `ta` (`ta.ts`, A3), the model's way to every other ability, then the
  *   object's packages, whose tools the model is never offered: `ta` reaches those
  *   registered callable by tools. The `ta.` names are the object's: a package named
  *   so is refused, as one pi refuses to install is; each is skipped and kept as an owner
- *   notice, once while it is kept, though pi opens again at every wake: the factory never
- *   throws for owner content, since a failed open fails the Lifecycle's startup and the
- *   object's lanes with it;
- * - the models, read at each use: the `gateway` provider (`gateway-provider.ts`, A1),
- *   whose models are the owner's connected ones and their virtual `auto`, the default a
- *   conversation starts on; with nothing connected the catalog is empty, so a turn
- *   settles `unanswered: no_model`, loudly;
+ *   notice, once while it is kept: installing never throws for owner content, since a
+ *   failed install would fail every thread's open;
+ * - the models, read at each use, bound to the Session: the `gateway` provider
+ *   (`gateway-provider.ts`, A1), whose models are the owner's connected ones and their
+ *   virtual `auto`, the default a thread starts on, and whose authority check reads this
+ *   Session's own conversations (`modelAuthority`); with nothing connected the catalog is
+ *   empty, so a turn settles `unanswered: no_model`, loudly;
  * - the identity its requests carry: TinyAssets' attribution, not pi's (pi-durable's
  *   default names pi);
  * - an environment per call, replays included: `OwnerFilesEnv` over the owner's files,
@@ -38,11 +36,13 @@
  *   outside client's conversation, else `agent`), and which enforces the conversation's
  *   authority on every operation, as `ta.authority`'s document holds it;
  * - the telemetry adapter's metrics (`origin.ts`, `OriginMetrics`), pi's and pi-ai's,
- *   kept for the object's instance and read by the owner's usage view;
+ *   kept for the object's instance, every thread's Session's alike, and read by the
+ *   owner's usage view;
  * - settings read at each use: progress committed at most once a second (the gateway
- *   streams live tokens from memory; a commit is a storage write), and a failed run's
- *   queued inputs withdrawn, so each settles `unanswered: run_failed` rather than waiting
- *   on an unrelated next input; over those, the part of owner policy that is pi's
+ *   streams live tokens from memory; a commit is a store RPC), a failed run's queued inputs
+ *   withdrawn, so each settles `unanswered: run_failed` rather than waiting on an unrelated
+ *   next input, and context and document retention short enough for many Sessions in one
+ *   isolate (F11); over those, the part of owner policy that is pi's
  *   (`AgentParts.policy`: the model retry count) and the model source's compaction
  *   thresholds (`AgentSource.compaction`: the gateway provider's, each model's own),
  *   neither of which moves the fixed ones. No
@@ -54,47 +54,47 @@
  *   fixed and the one way an authority is inherited: every conversation, the root, a fork
  *   and a subagent's included, offers the model exactly read, write, edit, bash and `ta`
  *   (pi's `modelTools`, written only here, a guard holds it; nothing the model calls
- *   returns a `control` that would add one); the root conversation is the owner's; a
- *   conversation a task creates (a
- *   subagent's) takes its owner conversation's authority, over any copy a fork brought,
- *   which must agree; a fork holds its parent's (`fork: "current"`). Each conversation's
- *   provider session is recorded in `ta.session`, so a model call finds its conversation;
- * - the telemetry adapter (`origin.ts`), which carries each causal chain's origin, the
- *   submitted input that started it, along pi's own propagation: a model call's turn.
+ *   returns a `control` that would add one); a conversation a task creates (a subagent's)
+ *   takes its owner conversation's authority, over any copy a fork brought, which must
+ *   agree; a fork holds its parent's (`fork: "current"`). Each conversation's provider
+ *   session is recorded in `ta.session`, so a model call finds its conversation;
+ * - the thread's telemetry root (`origin.ts`), which carries each causal chain's origin,
+ *   the submitted input that started it, along pi's own propagation: a model call's turn.
  *
- * A thread (`thread`) is a top-level conversation the object makes for an agent: pi
- * writes its authority in the creating commit, then the object records it (`threads.ts`).
- * It is the one place the object makes a conversation (a guard holds it). A thread is
- * configured from its agent's data files (`AgentConfig`: the instructions an agent's
- * `AGENTS.md` holds, Direction 3) as pi's own conversation agent, in the same creating
- * commit; never its extensions or its model's tools.
+ * A thread is its Session's root conversation. Its row is recorded first, naming its store
+ * (`threads.ts`), in a unit that re-checks the stamp; the root is made at the Session's
+ * first open, configured from its agent's data files (`AgentConfig`: the instructions an
+ * agent's `AGENTS.md` holds, Direction 3) as pi's own conversation agent, with the thread's
+ * stamp written into its `ta.authority` document, both in the root's creating commit
+ * (`root`'s `init`); never its extensions or its model's tools. `#open` is the one place
+ * the object makes a conversation (a guard holds it).
  *
  * Ending work (agent research §4.2), each in the door of the change, after its own unit
- * committed: a grant set or revoke ends its client's work (`endClient`), a policy write
- * every conversation's (`endAll`). Each ends the pending waits it covers (`wait`), closes
- * the live views of the conversations it covers (`live-tee.ts`), and aborts each
- * conversation with live work, background work included: pi withdraws its queued inputs,
- * marks and signals its live tasks (a model request in flight sees its abort signal, so
- * the gateway call ends and settles through `usage.ts`), and settles their inputs
- * `unanswered: aborted`. The door waits for that at most `END_WAIT_MS`; pi finishes it on
- * its own past then. The abort is the prompt stop, not the enforcement: an abort missed
- * (work admitted after the end's read, or an eviction between the commit and the abort)
- * still finds every tool operation and every model call refused.
+ * committed: a grant set or revoke ends its client's work (`endClient`, the client's
+ * threads, which the unit dropped), a policy write every thread's with work running
+ * (`endAll`, from the threads' live rows). Each ends the pending waits it covers (`wait`), closes the
+ * live views of the conversations it covers (`live-tee.ts`), and aborts each of those
+ * Sessions' conversations with live work, background work included: pi withdraws its
+ * queued inputs, marks and signals its live tasks (a model request in flight sees its abort
+ * signal, so the gateway call ends and settles through `usage.ts`), and settles their
+ * inputs `unanswered: aborted`. A dropped client's thread's Session is then closed. The
+ * door waits for that at most `END_WAIT_MS`; pi finishes it on its own past then. The
+ * abort is the prompt stop, not the enforcement: an abort missed (work admitted after the
+ * end's read, or an eviction between the commit and the abort) still finds every tool
+ * operation and every model call refused.
  */
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
-import type { ClientIdentity, Models } from "@earendil-works/pi-ai";
+import type { ClientIdentity, Models, Provider } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
-  AgentDoc, type AgentState, type CompactionSettings, type ConversationId, type ConversationRecord,
-  createRegistry,
-  defineDoc, defineDocFamily,
+  AgentDoc, type AgentState, type CompactionSettings, type ConversationId,
+  type ConversationRecord, createRegistry, defineDoc, defineDocFamily,
   defineExtension, type EnvTarget, type Extension, Harness, type HarnessSettings, hook,
   ProviderDoc, type ReportInfo, ROOT_CONVERSATION_ID, ToolTask, type Tx, type UsageState,
-  wrapTool,
+  type Wake, wrapTool,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import { type PiOperationResult, PiHarness } from "agents/harness/pi";
 
 import {
   agentId, type Authority, AUTHORITY_RULE, authorityOf, type AuthorityState, MODEL_TOOLS,
@@ -104,18 +104,25 @@ import { Invalid, Refused } from "./errors";
 import type { Files } from "./files";
 import { type Access, OwnerFilesEnv } from "./files-env";
 import type { Write } from "./gate";
-import type { GatewayProvider } from "./gateway-provider";
+import type { GatewayProvider, SessionAuthority } from "./gateway-provider";
 import type { LiveTee } from "./live-tee";
 import type { Notices } from "./notices";
 import { type MetricsSnapshot, OriginMetrics, originRoot } from "./origin";
 import { AGENTS_DIR, AGENTS_OWNER_ONLY, within, WORKSPACE } from "./paths";
+import { RemoteStorage } from "./remote-storage";
 import { inTime } from "./schedule";
 import { PLATFORM_NAMES, type Platform, reachable, taTool } from "./ta";
-import type { Thread, ThreadKind, Threads } from "./threads";
+import {
+  HOST_TIMING, type HostTiming, type Opened, type OperationResult, type SubmitOptions,
+  ThreadHost,
+} from "./thread-host";
+import type { StoreRpc } from "./thread-store";
+import { type Thread, threadAuthority, type ThreadKind, type Threads } from "./threads";
 
 const BG = BACKGROUND_CONTEXT;
+const ROOT = ROOT_CONVERSATION_ID;
 
-/** The model a new conversation starts on: the gateway provider's virtual `auto` (A1). */
+/** The model a new thread starts on: the gateway provider's virtual `auto` (A1). */
 export const AUTO = Object.freeze({ provider: "gateway", id: "auto" });
 
 /** How the agent's model requests name the app to providers: TinyAssets, not pi. */
@@ -123,17 +130,27 @@ export const IDENTITY: ClientIdentity = Object.freeze({
   attribution: Object.freeze({ name: "TinyAssets", url: "https://tinyassets.io" }),
 });
 
+/**
+ * How long an idle conversation keeps its last context read in memory (F11). pi's default
+ * is ten minutes, for one Session per process; the object holds up to `OPEN_MAX` Sessions
+ * in an isolate it shares with other owners' objects. One minute: live probe P4
+ * (`store-probe.md`) held 128 Sessions at this setting with no memory pressure.
+ */
+export const CONTEXT_RETENTION_MS = 60_000;
+/** How long a loaded document no watch observes stays in memory (F11); as P4 held it. */
+export const DOCUMENT_RETENTION_MS = 60_000;
+
 /** pi's run settings; a function in the options, so it is read at each use. */
 export const AGENT_SETTINGS: HarnessSettings = Object.freeze({
   progress: Object.freeze({ partialIntervalMs: 1000, outputIntervalMs: 1000 }),
   afterFailedRun: "withdraw",
   restartLimit: 5,
+  contextRetentionMs: CONTEXT_RETENTION_MS,
+  documentRetentionMs: DOCUMENT_RETENTION_MS,
 });
 
 /** The longest a door waits for the work a change ends; pi finishes the abort past it. */
 export const END_WAIT_MS = 5_000;
-/** The longest a status read waits on an operation it found settled or unknown. */
-export const STATUS_WAIT_MS = 1_000;
 /** Waits the object keeps at once (A4's bounded waits), past which one is refused. */
 export const WAITS_KEPT = 256;
 /** Waits one outside client may keep at once. */
@@ -152,6 +169,8 @@ export const RESERVED_PREFIX = "ta.";
 export const GATE = "ta.authority";
 /** The extension of the `ta` tool (`ta.ts`). */
 export const TA_EXTENSION = "ta.tool";
+/** A thread with no row is never opened: it was dropped, or never made. */
+export const NO_THREAD = "no such thread";
 
 export type { Stamped };
 
@@ -192,16 +211,15 @@ export function sessionDoc() {
   });
 }
 
-/** How a thread's conversation is configured: its agent's data files, as pi's agent takes them. */
+/** How a thread's root is configured: its agent's data files, as pi's agent takes them. */
 export interface AgentConfig {
   /** The agent's instructions (`AGENTS.md`), rendered after every extension's section. */
   readonly instructions?: string;
 }
 
-/** How a thread is made: what it is for, how it is configured, and what its stamp needs. */
+/** How a thread is made: what it is for, and what its stamp needs where it acts. */
 export interface ThreadOptions {
   readonly kind?: ThreadKind;
-  readonly config?: AgentConfig;
   /** What the stamp must hold where the thread acts, checked before and when it is recorded. */
   readonly need?: Need;
 }
@@ -212,11 +230,10 @@ export function writerOf(authority: Readonly<AuthorityState> | undefined): strin
   return client === undefined ? "agent" : `client:${client}`;
 }
 
-/** An operation's status, from pi's submission records: pending, or how it settled. */
+/** An operation's status, from pi's submission record: pending, or how it settled. */
 export interface AgentStatus {
   readonly operation_id: string;
-  readonly session: string;
-  readonly status: "queued" | "running" | "parked" | "done" | "unanswered";
+  readonly status: OperationResult["status"];
   readonly reason?: string;
   readonly text?: string;
 }
@@ -260,11 +277,26 @@ export interface AgentParts {
   readonly threads: Threads;
   /** What `ta`'s platform capabilities run on. */
   readonly platform: Platform;
+  /** A thread's store, by the name its row holds (`PISTORE`). */
+  readonly stores: (name: string) => StoreRpc;
+  /** An agent's configuration, from its data files, read when its thread's root is made. */
+  readonly config: (agent: string) => Promise<AgentConfig>;
+  /** Keep a thread's wake in its live row (`threads.ts`), in a unit of the write gate. */
+  readonly live: (thread: string, wake: Wake) => Promise<void>;
+  /** Keep a thread's usage as its Session closes (`threads.ts`), in a unit of the gate. */
+  readonly usage: (thread: string, usage: UsageState) => Promise<void>;
+}
+
+/** What a Session's models are bound to: its thread, and its own authority check. */
+export interface SessionBinding {
+  readonly thread: string;
+  readonly authority: SessionAuthority;
 }
 
 /** Besides the object's parts: the model catalog, and the packages after the object's own. */
 export interface AgentSource {
-  readonly models: () => Models;
+  /** One Session's models, bound to it. */
+  readonly models: (session: SessionBinding) => Models;
   /** pi's compaction settings for the catalog's models, read at each use; none: pi's own. */
   readonly compaction?: () => CompactionSettings;
   readonly packages: readonly Extension[];
@@ -273,6 +305,8 @@ export interface AgentSource {
    * their rules: none in production (`gatewayAgent`); a test's probes.
    */
   readonly trusted?: readonly Extension[];
+  /** The thread host's timings: production's, or a test's shorter ones. */
+  readonly timing?: HostTiming;
 }
 
 /**
@@ -322,15 +356,6 @@ export function packageRefusal(extension: Extension): string | undefined {
   return undefined;
 }
 
-type Pi = Awaited<ReturnType<PiHarness["pi"]>>;
-
-/** Every conversation with live work: a live task, or an input not yet settled. */
-async function liveConversations(pi: Pi): Promise<ConversationId[]> {
-  const inspection = await pi.inspect(BG);
-  return [...new Set([...inspection.tasks.map((task) => task.record.conversationId),
-                      ...inspection.submissions.map((record) => record.conversationId)])];
-}
-
 /**
  * Whether a conversation's stored extension selection (pi's `AgentDoc`) keeps the gate:
  * unset is the host's default, every installed extension, the gate first.
@@ -362,40 +387,103 @@ function same(a: Readonly<AuthorityState>, b: Readonly<AuthorityState>): boolean
 }
 
 export class OwnerAgent {
-  /** The Lifecycle capability the object installs. */
-  readonly harness: PiHarness;
-  /** The `ta.authority` document, as this object's pi reads and writes it. */
+  /** The Lifecycle capability the object installs: every thread's Session. */
+  readonly host: ThreadHost;
+  /** The `ta.authority` document, as every Session reads and writes it. */
   readonly authority = authorityDoc();
-  /** The `ta.session` documents, as this object's pi reads and writes them. */
+  /** The `ta.session` documents, as every Session reads and writes them. */
   readonly sessions = sessionDoc();
   /** pi's and pi-ai's metrics, kept by the telemetry adapter for the object's instance. */
   readonly metrics = new OriginMetrics();
   readonly #parts: AgentParts;
   readonly #source: AgentSource;
+  /** One registry for every Session (pi keeps each Harness subscribed until it closes). */
   readonly #registry = createRegistry();
+  #installed: Promise<void> | undefined;
   /** The pending waits, by the client they are for ("" for the owner's), on the instance. */
   readonly #waits = new Map<string, Set<AbortController>>();
 
   constructor(parts: AgentParts, source: AgentSource) {
     this.#parts = parts;
     this.#source = source;
-    this.harness = new PiHarness({
-      harness: async ({ storage, context, onWake }) => {
-        await this.#install();
-        return Harness.open(storage, {
-          models: () => this.#source.models(),
-          registry: this.#registry,
-          onWake,
-          identity: IDENTITY,
-          settings: () => ({ ...this.#parts.policy(), ...this.#compaction(), ...AGENT_SETTINGS }),
-          env: (target, envContext) => this.#env(target, envContext),
-          conversationCreated: (tx, record) => this.#inherit(tx, record),
-          telemetry: originRoot(this.metrics),
-          onReport: (error, info) => this.#report(info.type, detailOf(error, info)),
-        }, context);
-      },
-      defaults: { model: AUTO },
+    this.host = new ThreadHost({
+      open: (thread, onWake) => this.#open(thread, onWake),
+      exists: (thread) => parts.threads.get(thread) !== null,
+      live: (thread, wake) => parts.live(thread, wake),
+      usage: (thread, usage) => parts.usage(thread, usage),
+      notice: (type, detail) => this.#report(type, detail),
+    }, source.timing ?? HOST_TIMING);
+  }
+
+  /**
+   * Open `thread`'s Session over its store, as its row names it: the registry installed
+   * (once), its models bound to it, and its root made when absent, configured from its
+   * agent's data files, with its stamp written in the root's creating commit.
+   */
+  async #open(thread: string, onWake: (wake: Wake) => void): Promise<Opened> {
+    const row = this.#parts.threads.get(thread);
+    if (row === null) {
+      throw new Error(NO_THREAD);
+    }
+    this.#installed ??= this.#install().catch((error: unknown) => {
+      this.#installed = undefined;
+      throw error;
     });
+    // The store opens while the registry installs: a new thread's store opens cold in about
+    // 0.3 s (live probe P2), and neither waits on the other.
+    const [installing, opening] = await Promise.allSettled([
+      this.#installed, RemoteStorage.open(() => this.#parts.stores(row.store))]);
+    if (installing.status === "rejected") {
+      if (opening.status === "fulfilled") {
+        await opening.value.close(BG);
+      }
+      throw installing.reason;
+    }
+    if (opening.status === "rejected") {
+      throw opening.reason;
+    }
+    const storage = opening.value;
+    let opened: Harness | undefined;
+    const models = this.#source.models({
+      thread,
+      authority: (sessionId) => (opened === undefined ? Promise.resolve(() => NO_CONVERSATION)
+        : this.modelAuthority(opened, sessionId)),
+    });
+    // An opened Harness closes its storage; one that failed to open may not have, so its
+    // storage is closed here (twice is once), releasing the store's session.
+    const pi = await Harness.open(storage, {
+      models: () => models,
+      registry: this.#registry,
+      onWake,
+      identity: IDENTITY,
+      settings: () => ({ ...this.#parts.policy(), ...this.#compaction(), ...AGENT_SETTINGS }),
+      env: (target, envContext) => this.#env(target, envContext),
+      conversationCreated: (tx, record) => this.#inherit(tx, record),
+      telemetry: originRoot(thread, this.metrics),
+      onReport: (error, info) => this.#report(info.type, detailOf(error, info)),
+    }, BG).catch(async (error: unknown) => {
+      await storage.close(BG);
+      throw error;
+    });
+    opened = pi;
+    try {
+      if (await storage.conversation(ROOT, BG) === undefined) {
+        const config = await this.#parts.config(row.agent_id);
+        const state = copy(threadAuthority(row));
+        await pi.root(BG, {
+          agent: { model: { provider: AUTO.provider, modelId: AUTO.id },
+                   ...(config.instructions === undefined ? {}
+                     : { instructions: config.instructions }) },
+          init: async (tx, made) => {
+            Object.assign(await tx.doc(this.authority, made), state);
+          },
+        });
+      }
+    } catch (error) {
+      await pi.close(BG).catch(() => {});
+      throw error;
+    }
+    return { pi, storage };
   }
 
   /** The model source's compaction settings, when it has any. */
@@ -477,7 +565,8 @@ export class OwnerAgent {
   /**
    * In a change's own unit: the owner's agent definitions change only under the owner's own
    * authority, and the owner is told each time its agent changes them, since content another
-   * party wrote elsewhere can steer the agent (Direction 3 lets it write there).
+   * party wrote elsewhere can steer the agent (Direction 3 lets it write there). A refused
+   * change leaves no notice.
    */
   #definitions(state: Readonly<AuthorityState> | undefined, path: string): void {
     if (!within(path, AGENTS_DIR)) {
@@ -492,16 +581,15 @@ export class OwnerAgent {
 
   /**
    * In every creating commit: the model is offered exactly `MODEL_TOOLS`, over whatever
-   * pi copied from an owner conversation or a fork's entry; the root is the owner's; a
-   * task's new conversation takes its owner conversation's authority, which a fork's copy
-   * must agree with; and each conversation's provider session is recorded.
+   * pi copied from an owner conversation or a fork's entry; a task's new conversation takes
+   * its owner conversation's authority, which a fork's copy must agree with; and each
+   * conversation's provider session is recorded. The root's authority is its thread's
+   * stamp, which `root`'s `init` writes after this, in the same commit.
    */
   async #inherit(tx: Tx, record: ConversationRecord): Promise<void> {
     (await tx.doc(AgentDoc, record.id)).modelTools = [...MODEL_TOOLS];
-    const mine = await tx.doc(this.authority, record.id);
-    if (record.id === ROOT_CONVERSATION_ID) {
-      Object.assign(mine, { by: "owner" });
-    } else if (record.owner !== undefined) {
+    const mine = await tx.doc(this.authority, record.id);  // explicit: none, until given one
+    if (record.owner !== undefined) {
       const from = await tx.doc(this.authority, record.owner.conversationId);
       if (record.parent !== undefined && !same(mine, from)) {
         throw new Error("a fork's authority disagrees with its owner conversation's");
@@ -519,10 +607,9 @@ export class OwnerAgent {
   }
 
   /**
-   * Make a thread for `agent`: a top-level conversation on `auto`, configured as `config`
-   * says, its authority (the owner's for a null stamp, else the client's stamp) written in
-   * pi's creating commit, then recorded as `kind`, in a unit that re-checks the stamp
-   * still stands and holds `need` where the thread acts.
+   * Make a thread for `agent`, under `stamp` (null: the owner's): its row, naming a fresh
+   * store, recorded as `kind` in a unit that re-checks the stamp still stands and holds
+   * `need` where the thread acts. Its Session, store and root are made at its first open.
    */
   async thread(agent: unknown, stamp: unknown, options: ThreadOptions = {}): Promise<Thread> {
     const id = agentId(agent);
@@ -531,51 +618,52 @@ export class OwnerAgent {
       throw new Invalid("a thread's stamp names its own agent");
     }
     const { authority, threads, write } = this.#parts;
-    const { kind = "run", config = {}, need = [] } = options;
+    const { kind = "run", need = [] } = options;
     const state = authorityOf(by);
     authority.require(state, need);
-    threads.room(by);  // a refusal makes no conversation; the recording unit checks again
-    const pi = await this.harness.pi();
-    const conversation = await pi.createConversation({
-      ownership: { kind: "ownerless" },
-      agent: { model: { provider: AUTO.provider, modelId: AUTO.id },
-               ...(config.instructions === undefined ? {}
-                 : { instructions: config.instructions }) },
-      init: async (tx, made) => {
-        Object.assign(await tx.doc(this.authority, made), copy(state));
-      },
-    }, BG);
+    threads.room(by);  // a refusal makes nothing; the recording unit checks again
     return write(() => {
       authority.require(state, need);
-      return threads.record(conversation.id, id, by, Date.now() / 1000, kind);
+      return threads.record(id, by, Date.now() / 1000, kind);
     });
   }
 
-  /**
-   * The conversations pi holds live work in: a live task or an unsettled input. A task that
-   * owns a conversation (a subagent's, background work's) stays live, completing, while
-   * that conversation works (found in workerd, pi-durable 1.4.0), so a thread whose
-   * subagents or background work run on is among them through its own conversation.
-   */
-  async liveThreads(): Promise<Set<number>> {
-    return new Set(await liveConversations(await this.harness.pi()));
+  /** `thread`'s Session, opened if it is not. */
+  pi(thread: Thread | string): Promise<Harness> {
+    return this.host.pi(typeof thread === "string" ? thread : thread.thread_id);
+  }
+
+  /** Submit `input` to a thread's root (`ThreadHost.submit`). */
+  submit(thread: Thread, input: string, options: SubmitOptions):
+      Promise<{ operationId: string; accepted: boolean }> {
+    return this.host.submit(thread.thread_id, input, options);
+  }
+
+  /** Withdraw an operation of a thread, or abort the run it joined. */
+  cancel(thread: Thread, operationId: string): Promise<boolean> {
+    return this.host.withdraw(thread.thread_id, operationId);
+  }
+
+  /** Close a thread's Session, once its row was dropped. */
+  dropped(thread: string): Promise<void> {
+    return this.host.close(thread);
   }
 
   /**
-   * The authority a model request runs under, by its provider session: a check, run in
-   * the call's reservation and dispatch units, answering the refusal's code or null. A
-   * request that names no conversation the object made is refused (`NO_CONVERSATION`),
-   * and a client's or no one's conversation whose stored selection (pi's `AgentDoc`, read
-   * only here) drops the gate is refused `AUTHORITY_RULE`, whatever its grant: with its
-   * tools held by its environment, such a conversation does nothing. Any conversation
-   * whose stored model tools are not exactly `MODEL_TOOLS` (a hook's result `control`
-   * can add one) is refused `TOOL_SURFACE`, the owner's included.
+   * The authority a model request of `pi`'s Session runs under, by its provider session: a
+   * check, run in the call's reservation and dispatch units, answering the refusal's code
+   * or null. A request that names no conversation of the Session is refused
+   * (`NO_CONVERSATION`), and a client's or no one's conversation whose stored selection
+   * (pi's `AgentDoc`, read only here) drops the gate is refused `AUTHORITY_RULE`, whatever
+   * its grant: with its tools held by its environment, such a conversation does nothing.
+   * Any conversation whose stored model tools are not exactly `MODEL_TOOLS` (a hook's
+   * result `control` can add one) is refused `TOOL_SURFACE`, the owner's included.
    */
-  async modelAuthority(sessionId: string | undefined): Promise<() => string | null> {
+  async modelAuthority(pi: Harness, sessionId: string | undefined):
+      Promise<() => string | null> {
     if (sessionId === undefined) {
       return () => NO_CONVERSATION;
     }
-    const pi = await this.harness.pi();
     const at = await pi.snapshot(this.sessions, sessionId, BG);
     if (at === undefined) {
       return () => NO_CONVERSATION;
@@ -596,47 +684,26 @@ export class OwnerAgent {
     return () => this.#parts.authority.modelRule(state);
   }
 
-  /**
-   * An operation's status in `session`, from pi's receipts: its pending record first,
-   * then, when it is not pending, how it settled (`not_found` for one pi never saw). One
-   * admitted since the pending read is waited on only `STATUS_WAIT_MS`; any other failure
-   * is the call's.
-   */
-  async status(operationId: string, session: string): Promise<AgentStatus> {
-    const pending = async () => (await this.harness.pending({ session }))
-      .find((operation) => operation.operationId === operationId);
-    const open = await pending();
-    if (open !== undefined) {
-      return { operation_id: operationId, session, status: open.status };
-    }
-    const timeout = AbortSignal.timeout(STATUS_WAIT_MS);
-    let settled: PiOperationResult;
-    try {
-      settled = await this.harness.wait(operationId, { session, signal: timeout });
-    } catch (error) {
-      if (!timeout.aborted) {
-        throw error;
-      }
-      return { operation_id: operationId, session, status: (await pending())?.status ?? "running" };
-    }
-    return { operation_id: operationId, session, status: settled.status,
-             ...(settled.reason === undefined ? {} : { reason: settled.reason }),
-             ...(settled.text === undefined ? {} : { text: settled.text }) };
+  /** An operation's status in `thread`, from pi's submission record (one read). */
+  async status(thread: Thread, operationId: string): Promise<AgentStatus> {
+    const result = await this.host.status(thread.thread_id, operationId);
+    return { operation_id: operationId, status: result.status,
+             ...(result.reason === undefined ? {} : { reason: result.reason }),
+             ...(result.text === undefined ? {} : { text: result.text }) };
   }
 
   /**
-   * Wait for an operation of `client` (null: the owner's) to settle, until `signal`; a
-   * grant change of that client, or a policy write, ends the wait (`WAIT_ENDED`).
+   * Wait for an operation of `client` (null: the owner's) in `thread` to settle, until
+   * `signal`; a grant change of that client, or a policy write, ends the wait
+   * (`WAIT_ENDED`).
    */
-  async wait(operationId: string, session: string, client: string | null,
-             signal?: AbortSignal): Promise<PiOperationResult> {
+  async wait(thread: Thread, operationId: string, client: string | null,
+             signal?: AbortSignal): Promise<OperationResult> {
     const key = client ?? "";
     const ended = this.#keepWait(key);
     try {
-      return await this.harness.wait(operationId, {
-        session,
-        signal: signal === undefined ? ended.signal : AbortSignal.any([signal, ended.signal]),
-      });
+      return await this.host.settled(thread.thread_id, operationId,
+        signal === undefined ? ended.signal : AbortSignal.any([signal, ended.signal]));
     } catch (error) {
       if (ended.signal.aborted) {
         throw new Refused(WAIT_ENDED);
@@ -671,6 +738,11 @@ export class OwnerAgent {
     return ended;
   }
 
+  /** How many waits the instance keeps now. */
+  waitsKept(): number {
+    return [...this.#waits.values()].reduce((sum, set) => sum + set.size, 0);
+  }
+
   /** End the pending waits of `client`, or every one (`undefined`). */
   #endWaits(client?: string): void {
     for (const [key, set] of [...this.#waits]) {
@@ -682,67 +754,127 @@ export class OwnerAgent {
     }
   }
 
-  /** Close the live views of conversation `id`, by its provider session. */
-  async #closeViews(pi: Pi, id: ConversationId): Promise<void> {
-    const session = (await pi.snapshot(ProviderDoc, id, BG))?.sessionId;
-    if (session !== undefined) {
-      this.#parts.tee.close(session);
+  /**
+   * End one Session's work: the live views of its root and of every conversation with live
+   * work closed (`views`), then each of those aborted, background work included.
+   */
+  async #endSession(pi: Harness, views: boolean): Promise<void> {
+    const inspection = await pi.inspect(BG);
+    const live = new Set<ConversationId>([ROOT,
+      ...inspection.tasks.map((task) => task.record.conversationId),
+      ...inspection.submissions.map((record) => record.conversationId)]);
+    if (views) {
+      for (const id of live) {
+        const session = (await pi.snapshot(ProviderDoc, id, BG))?.sessionId;
+        if (session !== undefined) {
+          this.#parts.tee.close(session);
+        }
+      }
     }
+    await Promise.all([...live].map(async (id) =>
+      (await pi.conversation(id, BG))?.abort(BG, { background: true })));
   }
 
-  /** Abort each conversation's work, background work included, waiting `END_WAIT_MS`. */
-  async #abort(pi: Pi, ids: readonly ConversationId[]): Promise<void> {
-    const aborting = Promise.all(ids.map(async (id) =>
-      (await pi.conversation(id, BG))?.abort(BG, { background: true })));
-    if (await inTime(aborting, END_WAIT_MS) === "late") {
-      aborting.catch(() => console.error("ending an agent's work failed past its wait"));
+  /** Run `ending` for at most `END_WAIT_MS`; pi finishes what is past it on its own. */
+  async #within(ending: Promise<unknown>): Promise<void> {
+    if (await inTime(ending, END_WAIT_MS) === "late") {
+      ending.catch(() => console.error("ending an agent's work failed past its wait"));
     }
   }
 
   /**
-   * A grant change ends its client's work: its pending waits, the live views of `threads`
-   * (the client's threads, which the change's unit dropped) and of every conversation with
-   * live work stamped for it, and that work. A client with no thread has none: every
-   * conversation stamped for a client descends from a thread the object made for it.
+   * A grant change ends its client's work: its pending waits, and in each of `threads`
+   * (the client's threads, which the change's unit dropped) with a Session open, its live
+   * views and its work, then the Session itself. A thread whose Session is closed has
+   * nothing running here, and nothing opens it again: no row names it.
    */
-  async endClient(client: string, threads: readonly number[]): Promise<void> {
+  async endClient(client: string, threads: readonly Thread[]): Promise<void> {
     this.#endWaits(client);
-    if (threads.length === 0) {
-      return;
-    }
-    const pi = await this.harness.pi();
-    const ended: ConversationId[] = [];
-    for (const id of await liveConversations(pi)) {
-      if (stampOf(await pi.snapshot(this.authority, id, BG))?.client === client) {
-        ended.push(id);
+    await this.#within(Promise.all(threads.map(async ({ thread_id: thread }) => {
+      const opened = this.host.peek(thread);
+      if (opened !== undefined) {
+        await this.#endSession(opened.pi, true);
       }
-    }
-    const viewed = new Set([...ended, ...threads.map((id) => id as ConversationId)]);
-    for (const id of viewed) {
-      await this.#closeViews(pi, id);
-    }
-    await this.#abort(pi, ended);
+      await this.host.close(thread);
+    })));
   }
 
-  /** A policy write ends every conversation's work: every wait, every view, all live work. */
+  /**
+   * A policy write ends every thread's work: every wait, every view, and the work of each
+   * thread with work running (its live row, or an open Session), opened if need be: an
+   * ending's open is never refused, and aborts before the Session resumes
+   * (`ThreadHost.end`), so the endings run in batches of the host's bound: never more
+   * Sessions open for them at once than the bound allows. A thread whose work could not be
+   * ended rejects this, so the door rejects too.
+   */
   async endAll(): Promise<void> {
     this.#endWaits();
     this.#parts.tee.close();
-    const pi = await this.harness.pi();
-    await this.#abort(pi, await liveConversations(pi));
+    const running = new Set([...this.#parts.threads.active(),
+      ...this.host.openThreads().filter((thread) => this.host.peek(thread)?.pi.wake().active)]);
+    const threads = [...running];
+    await this.#within((async () => {
+      for (let at = 0, size = Math.max(1, this.host.openMax); at < threads.length;
+           at += size) {
+        await Promise.all(threads.slice(at, at + size).map((thread) =>
+          this.host.end(thread, ({ pi }) => this.#endSession(pi, false))));
+      }
+    })());
   }
 
   /**
    * The owner's model usage as pi records it (pi audit F4): pi's own `pi.usage`, every
    * conversation's summed (`Harness.usage`: per `provider/model` and per tool, failed and
-   * aborted attempts included), and the metrics pi and pi-ai recorded since this instance
-   * began. Diagnostic only: every cap reads `usage.ts`'s counters.
+   * aborted attempts included) across every thread, and the metrics pi and pi-ai recorded
+   * since this instance began. Diagnostic only: every cap reads `usage.ts`'s counters.
+   *
+   * A read never opens a Session: a thread's usage is its open Session's, read live, or
+   * else its usage row, kept as its Session last closed (`ThreadHost`). A thread whose
+   * object died with its Session open counts as it last closed, until it closes again.
    */
   async usage(): Promise<UsageView> {
-    const pi = await this.harness.pi();
-    const usage = await pi.usage(BG);
-    return { models: usage.models, tools: usage.tools, metrics: this.metrics.snapshot() };
+    const sum: UsageState = { models: {}, tools: {} };
+    const add = (usage: Readonly<UsageState>) => {
+      for (const bucket of ["models", "tools"] as const) {
+        for (const [key, counts] of Object.entries(usage[bucket] ?? {})) {
+          sum[bucket][key] = added(sum[bucket][key], counts) as typeof counts;
+        }
+      }
+    };
+    const read: string[] = [];  // the threads read live
+    for (const thread of this.host.openThreads()) {
+      const usage = await this.host.peek(thread)?.pi.usage(BG).catch(() => undefined);
+      if (usage !== undefined) {  // one closing counts by the row its close keeps
+        read.push(thread);
+        add(usage);
+      }
+    }
+    for (const kept of this.#parts.threads.keptUsage()) {
+      if (!read.includes(kept.thread_id)) {
+        add(JSON.parse(kept.usage) as UsageState);
+      }
+    }
+    return { models: sum.models, tools: sum.tools, metrics: this.metrics.snapshot() };
   }
+}
+
+/** Two of pi's usage records summed, counter by counter (pi's `addUsageState`, per key). */
+function added(total: unknown, usage: unknown): unknown {
+  if (total === undefined) {
+    return usage;
+  }
+  if (typeof total === "number" && typeof usage === "number") {
+    return total + usage;
+  }
+  if (total !== null && usage !== null && typeof total === "object" && typeof usage === "object"
+      && !Array.isArray(total) && !Array.isArray(usage)) {
+    const sum: Record<string, unknown> = { ...total as Record<string, unknown> };
+    for (const [key, value] of Object.entries(usage as Record<string, unknown>)) {
+      sum[key] = added(sum[key], value);
+    }
+    return sum;
+  }
+  return usage;
 }
 
 /** The owner's usage view: pi's `pi.usage` summed, and the adapter's metrics. */
@@ -752,11 +884,13 @@ export interface UsageView {
   readonly metrics: MetricsSnapshot;
 }
 
-/** The object's model catalog: its one model source, the `gateway` provider. */
-export function gatewayModels(parts: AgentParts): () => Models {
-  const models = createModels();
-  models.setProvider(parts.provider);
-  return () => models;
+/** One Session's model catalog: the object's one model source, bound to the Session. */
+export function gatewayModels(parts: AgentParts): (session: SessionBinding) => Models {
+  return ({ authority }) => {
+    const models = createModels();
+    models.setProvider(parts.provider.forSession(authority) as Provider);
+    return models;
+  };
 }
 
 /**

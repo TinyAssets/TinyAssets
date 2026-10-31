@@ -9,7 +9,6 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { DurableObjectSqliteDatabase } from "@earendil-works/chord/sqlite/cloudflare";
 import {
   type AssistantMessage, fauxAssistantMessage, type FauxContentBlock, fauxToolCall,
   type Message,
@@ -17,7 +16,7 @@ import {
 import { type ConversationId, type JsonObject, ProviderDoc } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
-import { GATE, keepsGate, STATUS_WAIT_MS, WAIT_ENDED } from "../src/agent";
+import { GATE, keepsGate, NO_THREAD, WAIT_ENDED } from "../src/agent";
 import {
   Authority, AUTHORITY_CHANGED, AUTHORITY_RULE, capabilityOf, type Need, NO_AUTHORITY,
   NO_CONVERSATION, NO_SHELL, NOT_GRANTED, OWNER_ONLY, type Stamped, stamped,
@@ -30,10 +29,11 @@ import { originContext } from "../src/origin";
 import { type Binding, workRunner } from "../src/owner-do";
 import { Policy, policyDigest } from "../src/policy";
 import { Scheduled, type WorkTarget } from "../src/scheduled";
-import { Threads } from "../src/threads";
-import { asked, gated, until } from "./gateway-support";
+import { DESTROYED } from "../src/thread-store";
+import { type Thread, Threads } from "../src/threads";
+import { asked, gated, provider, until } from "./gateway-support";
 import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
-import { drainDue, failure } from "./support";
+import { drainDue, failure, storeSubmission } from "./support";
 import { type FauxOwnerDO, type GatedOwnerDO, says, storeScript } from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
@@ -119,15 +119,6 @@ function gate(): { promise: Promise<void>; release: () => void } {
   return { promise, release };
 }
 
-/** Hold the queue every unit and pi commit waits on until `release` is called. */
-function holdQueue(state: DurableObjectState): { release: () => void; done: Promise<void> } {
-  const held = gate();
-  const done = new DurableObjectSqliteDatabase(state.storage).transaction(async () => {
-    await held.promise;
-  });
-  return { release: held.release, done };
-}
-
 /** An owner of its own on the faux-model class, signed in, and the binder's calls on it. */
 async function agentRig() {
   const owner = `owner-${crypto.randomUUID()}`;
@@ -165,13 +156,19 @@ async function agentRig() {
 async function threadFor(instance: FauxOwnerDO, stamp: Stamped | null) {
   instance.script = Array.from({ length: 40 }, () => byAsk);
   const thread = await instance.agent.thread("main", stamp);
-  return { thread, session: String(thread.conversation_id) };
+  return { thread, session: thread.thread_id };
 }
 
-/** A conversation's live tee session: its pi provider identity. */
-async function teeSession(instance: FauxOwnerDO, id: number): Promise<string> {
-  const pi = await instance.agent.harness.pi();
+/** A conversation's live tee session: its pi provider identity, in its thread's Session. */
+async function teeSession(instance: FauxOwnerDO, id: number, session?: string):
+    Promise<string> {
+  const pi = await instance.harness.pi(session === undefined ? {} : { session });
   return (await pi.snapshot(ProviderDoc, id as ConversationId, BG))!.sessionId;
+}
+
+/** The owner's own thread's row. */
+async function ownRow(instance: FauxOwnerDO) {
+  return instance.parts.threads.get(await instance.harness.thread())!;
 }
 
 const shown = (answer: { text?: string }) =>
@@ -237,7 +234,7 @@ describe("a scoped client's conversation", () => {
       .filter((receipt) => receipt.rule === AUTHORITY_RULE);
     const answer = await r.in(async (instance) => {
       const { session } = await threadFor(instance, r.stampOf(MUSE, generation));
-      return instance.agent.harness.prompt("go scoped", { session });
+      return instance.harness.prompt("go scoped", { session });
     });
     expect(answer.status).toBe("done");
     const tools = shown(answer);
@@ -267,13 +264,13 @@ describe("a scoped client's conversation", () => {
     const generation = await r.scoped(MUSE, ["write_files"]);
     const out = await r.in(async (instance) => {
       const { session } = await threadFor(instance, r.stampOf(MUSE, generation));
-      const mine = await instance.agent.harness.prompt("write it", { session });
+      const mine = await instance.harness.prompt("write it", { session });
       // The same grant, for a thread in another universe, and for another agent: no
       // triple holds there.
       const write = async (stamp: Stamped, agent = "main") => {
         const thread = await instance.agent.thread(agent, stamp);
-        return shown(await instance.agent.harness.prompt(
-          "write again", { session: String(thread.conversation_id) }))["write"];
+        return shown(await instance.harness.prompt(
+          "write again", { session: thread.thread_id }))["write"];
       };
       return { mine: shown(mine),
                elsewhere: await write({ ...r.stampOf(MUSE, generation), universe: "beta" }),
@@ -317,11 +314,11 @@ describe("a full client's conversation", () => {
     await r.admit(MUSE);
     const out = await r.in(async (instance, state) => {
       const { session } = await threadFor(instance, r.stampOf(MUSE, 1));
-      const first = shown(await instance.agent.harness.prompt("go scoped", { session }));
+      const first = shown(await instance.harness.prompt("go scoped", { session }));
       // A grant change made around the doors: only the gate's own check sees it.
       new Grants(state.storage, new Policy(state.storage))
         .revoke(MUSE.client, clock());
-      const after = shown(await instance.agent.harness.prompt("write again", { session }));
+      const after = shown(await instance.harness.prompt("write again", { session }));
       return { first, after };
     });
     expect([out.first["write"]!.error, out.first["edit"]!.error, out.first["pass"]!.error])
@@ -338,17 +335,17 @@ describe("a full client's conversation", () => {
     await r.admit(MUSE);
     const out = await r.in(async (instance, state) => {
       const { session } = await threadFor(instance, r.stampOf(MUSE, 1));
-      const read = shown(await instance.agent.harness.prompt("nest read", { session }));
+      const read = shown(await instance.harness.prompt("nest read", { session }));
       const nest = gate();
       instance.probes.nestGate = nest.promise;
-      const { operationId } = await instance.agent.harness.submit("nest write", { session });
+      const { operationId } = await instance.harness.submit("nest write", { session });
       await until(() => instance.probes.gated.filter((call) => call.name === "nest").length === 2,
                   "the second nest to pass the gate");
       new Grants(state.storage, new Policy(state.storage))
         .revoke(MUSE.client, clock());
       nest.release();
-      await instance.agent.harness.wait(operationId, { session });
-      const messages = (await instance.agent.harness.messages({ session }))
+      await instance.harness.wait(operationId, { session });
+      const messages = (await instance.harness.messages({ session }))
         .flatMap((entry) => (entry.model ?? []) as Message[]);
       return { read, write: results(messages)["nest"]!, gated: instance.probes.gated };
     });
@@ -371,21 +368,25 @@ describe("a stamp", () => {
     const r = await agentRig();
     await r.admit(MUSE);
     const stamp = r.stampOf(MUSE, 1);
-    const out = await r.in(async (instance) => {
+    const out = await r.in(async (instance, state) => {
       const { thread, session } = await threadFor(instance, stamp);
-      const spawned = shown(await instance.agent.harness.prompt("spawn one", { session }));
+      const spawned = shown(await instance.harness.prompt("spawn one", { session }));
       const child = Number(spawned["spawn"]!.text) as ConversationId;
-      const pi = await instance.agent.harness.pi();
-      const conversation = (await pi.conversation(thread.conversation_id as ConversationId, BG))!;
+      const pi = await instance.harness.pi({ session });
+      const conversation = (await pi.conversation(1 as ConversationId, BG))!;
       const at = (await conversation.context(BG)).entries.at(-1)!.id;
       const fork = await conversation.fork(at, { ownership: { kind: "ownerless" } }, BG);
       const stamps = [await pi.snapshot(instance.agent.authority, child, BG),
                       await pi.snapshot(instance.agent.authority, fork.id, BG)];
-      await instance.grantRevoke(r.bind(null), { client: MUSE.client });
-      const write = async (id: number) => shown(await instance.agent.harness.prompt(
-        "write again", { session: String(id) }))["write"];
-      return { stamps, child: await write(child), fork: await write(fork.id),
-               own: await write(1) };
+      // The revoke's row alone, as one whose end never ran leaves it (a door's revoke also
+      // drops the thread): the Session's conversations are held to the stamp that no
+      // longer stands.
+      new Grants(state.storage, new Policy(state.storage)).revoke(MUSE.client, clock());
+      const write = async (id: number, at?: string) => shown(await instance.harness.prompt(
+        "write again", { session: String(id), ...(at === undefined ? {} : { thread: at }) }))[
+        "write"];
+      return { stamps, child: await write(child, thread.thread_id),
+               fork: await write(fork.id, thread.thread_id), own: await write(1) };
     });
     expect(out.stamps).toEqual([{ by: "client", stamp }, { by: "client", stamp }]);
     expect(out.child).toEqual({ text: blocked(AUTHORITY_CHANGED), error: true });
@@ -408,59 +409,65 @@ describe("a grant change", () => {
       const parent = await threadFor(instance, r.stampOf(MUSE, 1));
       const dot = await threadFor(instance, r.stampOf(DOT, 1));
       const turns = {
-        muse: await instance.agent.harness.submit("hold please", { session: muse.session }),
+        muse: await instance.harness.submit("hold please", { session: muse.session }),
         // A subagent of the client's, holding in a conversation its parent's tool owns.
-        parent: await instance.agent.harness.submit("spawn hold", { session: parent.session }),
-        dot: await instance.agent.harness.submit("hold please", { session: dot.session }),
-        own: await instance.agent.harness.submit("hold please"),
+        parent: await instance.harness.submit("spawn hold", { session: parent.session }),
+        dot: await instance.harness.submit("hold please", { session: dot.session }),
+        own: await instance.harness.submit("hold please"),
       };
       await until(() => instance.probes.holds === 4, "the four holds to start");
       const child = instance.probes.spawned!;
       const heard: Record<string, string[]> = { muse: [], idle: [], child: [], dot: [],
                                                 own: [] };
-      for (const [who, id] of [["muse", muse.thread.conversation_id],
-                               ["idle", idle.thread.conversation_id], ["child", child],
-                               ["dot", dot.thread.conversation_id], ["own", 1]] as const) {
-        instance.parts.tee.subscribe(await teeSession(instance, id),
+      for (const [who, id, session] of [["muse", 1, muse.session], ["idle", 1, idle.session],
+                                        ["child", child, parent.session],
+                                        ["dot", 1, dot.session],
+                                        ["own", 1, undefined]] as const) {
+        instance.parts.tee.subscribe(await teeSession(instance, id, session),
                                      (event) => heard[who]!.push(event.type));
       }
       const waits = {
-        muse: instance.agent.wait(turns.muse.operationId, muse.session, MUSE.client)
+        muse: instance.agent.wait(muse.thread, turns.muse.operationId, MUSE.client)
           .then(() => "settled", (error: Error) => error.message),
-        dot: instance.agent.wait(turns.dot.operationId, dot.session, DOT.client)
+        dot: instance.agent.wait(dot.thread, turns.dot.operationId, DOT.client)
           .then(() => "settled", (error: Error) => error.message),
       };
       await instance.grantRevoke(r.bind(null), { client: MUSE.client });
-      // The door returned once the work it ended had settled, within its wait.
-      const atOnce = (await instance.agent.status(turns.muse.operationId, muse.session)).status;
-      const pi = await instance.agent.harness.pi();
-      const ended = [await instance.agent.harness.wait(turns.muse.operationId,
-                                                       { session: muse.session }),
-                     await instance.agent.harness.wait(turns.parent.operationId,
-                                                       { session: parent.session }),
-                     await (await pi.submission(instance.probes.submitted[0] as never, BG))!
-                       .wait(BG)];
-      const running = [await instance.agent.status(turns.dot.operationId, dot.session),
-                       await instance.agent.status(turns.own.operationId, "1")];
+      // The door returned once the work it ended had settled, within its wait: the client's
+      // threads are dropped and their Sessions closed, so their stores say how it ended.
+      const atOnce = (await storeSubmission(muse.thread.store,
+                                            { request: turns.muse.operationId }))?.status;
+      const ended = [await storeSubmission(muse.thread.store,
+                                           { request: turns.muse.operationId }),
+                     await storeSubmission(parent.thread.store,
+                                           { request: turns.parent.operationId }),
+                     await storeSubmission(parent.thread.store,
+                                           { id: instance.probes.submitted[0]! })];
+      const closed = instance.agent.host.openThreads();
+      const running = [await instance.agent.status(dot.thread, turns.dot.operationId),
+                       await instance.agent.status(await ownRow(instance), turns.own.operationId)];
       held.release();
-      const done = [await instance.agent.harness.wait(turns.dot.operationId,
+      const done = [await instance.harness.wait(turns.dot.operationId,
                                                       { session: dot.session }),
-                    await instance.agent.harness.wait(turns.own.operationId)];
-      const next = shown(await instance.agent.harness.prompt("write again",
-                                                             { session: muse.session }));
-      return { atOnce, ended, running, done, next, heard, waits: { muse: await waits.muse,
-                                                           dot: await waits.dot } };
+                    await instance.harness.wait(turns.own.operationId)];
+      // Nothing reaches the dropped thread again: no row names its store.
+      const next = await instance.harness.prompt("write again", { session: muse.session })
+        .then(() => "ran", (error: Error) => error.message);
+      return { atOnce, ended, running, done, next, heard, closed,
+               dropped: [muse, idle, parent].map((one) => one.thread.thread_id),
+               waits: { muse: await waits.muse, dot: await waits.dot } };
     });
     expect(out.atOnce).toBe("unanswered");
-    expect(out.ended.map((answer) => [answer.status, answer.reason]))
+    expect(out.ended.map((answer) => [answer?.status, answer?.reason]))
       .toEqual([["unanswered", "aborted"], ["unanswered", "aborted"],
                 ["unanswered", "aborted"]]);
+    expect(out.closed.filter((thread) => out.dropped.includes(thread))).toEqual([]);
     expect(out.running.map((status) => status.status)).toEqual(["running", "running"]);
     expect(out.done.map((answer) => answer.status)).toEqual(["done", "done"]);
     expect(out.waits).toEqual({ muse: WAIT_ENDED, dot: "settled" });
     expect(out.heard).toEqual({ muse: ["end"], idle: ["end"], child: ["end"], dot: [],
                                 own: [] });
-    expect(out.next["write"]).toEqual({ text: blocked(AUTHORITY_CHANGED), error: true });
+    expect(out.next).toBe(NO_THREAD);
     expect((await r.stub.fileStat(r.bind(null), { path: "/workspace/again.md" })).entry)
       .toBeNull();
   });
@@ -470,14 +477,14 @@ describe("a grant change", () => {
     await r.admit(MUSE);
     const out = await r.in(async (instance) => {
       instance.probes.holdGate = new Promise(() => undefined);
-      const { session } = await threadFor(instance, r.stampOf(MUSE, 1));
-      const { operationId } = await instance.agent.harness.submit("hold please", { session });
+      const { thread, session } = await threadFor(instance, r.stampOf(MUSE, 1));
+      const { operationId } = await instance.harness.submit("hold please", { session });
       await until(() => instance.probes.holds === 1, "the hold to start");
       await instance.grantSet(r.session(), { client: MUSE.client, source: "mcp",
                                              mode: "scoped", name: "", expected_generation: 1,
                                              scopes: [{ universe: "alpha", agent: "main",
                                                         capability: "write_files" }] });
-      return instance.agent.harness.wait(operationId, { session });
+      return (await storeSubmission(thread.store, { request: operationId }))!;
     });
     expect([out.status, out.reason]).toEqual(["unanswered", "aborted"]);
   });
@@ -489,36 +496,31 @@ describe("a grant change", () => {
     const out = await r.in(async (instance) => {
       instance.probes.holdGate = new Promise(() => undefined);
       instance.probes.holdLinger = 200;
-      const { session } = await threadFor(instance, r.stampOf(MUSE, 1));
-      const { operationId } = await instance.agent.harness.submit("hold please", { session });
+      const { thread, session } = await threadFor(instance, r.stampOf(MUSE, 1));
+      const { operationId } = await instance.harness.submit("hold please", { session });
       await until(() => instance.probes.holds === 1, "the hold to start");
       await instance.grantRevoke(r.bind(null), { client: MUSE.client });
-      return (await instance.agent.status(operationId, session)).status;
+      return (await storeSubmission(thread.store, { request: operationId }))!.status;
     });
     expect(out).toBe("unanswered");
   });
 
   it("refuses, in the write's own unit, a write whose call passed the gate before the " +
-     "revoke, the revoke's unit queued ahead of it behind a held queue", async () => {
+     "revoke, the revoke's unit committed ahead of it", async () => {
     const r = await agentRig();
     await r.admit(MUSE);
-    const out = await r.in(async (instance, state) => {
-      const { session } = await threadFor(instance, r.stampOf(MUSE, 1));
+    const out = await r.in(async (instance) => {
+      const { thread, session } = await threadFor(instance, r.stampOf(MUSE, 1));
       const toolGate = gate();
       instance.probes.toolGate = toolGate.promise;
-      const { operationId } = await instance.agent.harness.submit("write raced", { session });
+      const { operationId } = await instance.harness.submit("write raced", { session });
       await until(() => instance.probes.gated.some((call) => call.name === "write"),
                   "the write to pass the authority gate");
-      const queue = holdQueue(state);
+      // The revoke's unit runs at once, synchronously; its end of the work follows.
       const revoke = instance.grantRevoke(r.bind(null), { client: MUSE.client });
-      toolGate.release();  // the call goes on to its intent, queued behind the revoke's unit
-      for (let i = 0; i < 50; i++) {
-        await Promise.resolve();
-      }
-      queue.release();
-      await queue.done;
+      toolGate.release();  // the call goes on to its intent, after the revoke's unit
       await revoke;
-      return instance.agent.harness.wait(operationId, { session });
+      return (await storeSubmission(thread.store, { request: operationId }))!;
     });
     expect(out.status).toBe("unanswered");
     expect((await r.stub.fileStat(r.bind(null), { path: "/workspace/raced.md" })).entry)
@@ -533,7 +535,7 @@ describe("a grant change", () => {
       const { session } = await threadFor(instance, r.stampOf(MUSE, 1));
       const toolGate = gate();
       instance.probes.toolGate = toolGate.promise;
-      const answer = instance.agent.harness.prompt("write raced", { session });
+      const answer = instance.harness.prompt("write raced", { session });
       await until(() => instance.probes.gated.some((call) => call.name === "write"),
                   "the write to pass the authority gate");
       // Around the doors, so no abort follows: only the write's own unit sees it.
@@ -560,25 +562,25 @@ describe("a policy write", () => {
       const muse = await threadFor(instance, r.stampOf(MUSE, 1));
       // Background work its run started, in a thread of the owner's: it outlives the run.
       const started = await threadFor(instance, null);
-      expect((await instance.agent.harness.prompt("start background",
+      expect((await instance.harness.prompt("start background",
                                                   { session: started.session })).status)
         .toBe("done");
-      const own = await instance.agent.harness.submit("hold please");
-      const theirs = await instance.agent.harness.submit("hold please",
+      const own = await instance.harness.submit("hold please");
+      const theirs = await instance.harness.submit("hold please",
                                                          { session: muse.session });
       await until(() => instance.probes.holds === 2 && instance.probes.background !== null,
                   "both holds and the background work to start");
       const heard: string[] = [];
       instance.parts.tee.subscribe(await teeSession(instance, 1), (event) =>
         heard.push(event.type));
-      const waited = instance.agent.wait(own.operationId, "1", null)
+      const waited = instance.agent.wait(await ownRow(instance), own.operationId, null)
         .then(() => "settled", (error: Error) => error.message);
       const { generation, policy } = await instance.policyRead(r.bind(null));
       await instance.policyWrite(r.session(), { expected_generation: generation, policy });
-      const pi = await instance.agent.harness.pi();
+      const pi = await instance.harness.pi({ session: started.session });
       return {
-        ended: [await instance.agent.harness.wait(own.operationId),
-                await instance.agent.harness.wait(theirs.operationId, { session: muse.session })],
+        ended: [await instance.harness.wait(own.operationId),
+                await instance.harness.wait(theirs.operationId, { session: muse.session })],
         background: (await pi.waitForTask(instance.probes.background as never, BG))
           .state.outcome,
         heard, waited: await waited,
@@ -590,6 +592,127 @@ describe("a policy write", () => {
     expect(out.heard).toEqual(["end"]);
     expect(out.waited).toBe(WAIT_ENDED);
   });
+
+  it("ends a thread its live row says is working, its Session closed: opened past the " +
+     "bound, aborted before it resumes, so no model request starts, then closed", async () => {
+    const r = await agentRig();
+    const op = await r.in(async (instance) => {
+      instance.probes.holdGate = new Promise(() => undefined);
+      await threadFor(instance, null);
+      const { operationId } = await instance.harness.submit("hold please");
+      await until(() => instance.probes.holds === 1, "the hold to start");
+      return operationId;
+    });
+    // The object dies mid-run: its row still says the thread is working.
+    await runInDurableObject(r.stub, (_i, state) => state.abort("crash")).catch(() => undefined);
+    const again = <R>(act: (instance: FauxOwnerDO) => Promise<R>) =>
+      runInDurableObject(env.AGENT.getByName(r.owner), act);
+    const out = await again(async (instance) => {
+      const requests: number[] = [];
+      instance.script = Array.from({ length: 4 }, () => (messages: Message[]) => {
+        requests.push(messages.length);
+        return says("resumed");
+      });
+      instance.timing.openMax = 0;  // every other open is refused: an ending's is not
+      const thread = await ownRow(instance);
+      const before = { open: instance.agent.host.openThreads(),
+                       active: instance.parts.threads.active() };
+      const { generation, policy } = await instance.policyRead(r.bind(null));
+      await instance.policyWrite(r.session(), { expected_generation: generation, policy });
+      return { before, thread: thread.thread_id, requests,
+               after: instance.agent.host.openThreads() };
+    });
+    expect(out.before).toEqual({ open: [], active: [out.thread] });
+    expect(out.requests).toEqual([]);
+    expect(out.after).toEqual([]);
+    const settled = await again(async (instance) => {
+      instance.timing.openMax = 4;
+      return instance.agent.status(await ownRow(instance), op);
+    });
+    expect([settled.status, settled.reason]).toEqual(["unanswered", "aborted"]);
+  });
+
+  it("ends working threads in batches of the bound, never more opened for it at once",
+     async () => {
+    // Review round 2 (L2): every stale live row after a mass eviction opened at once.
+    const r = await agentRig();
+    const ops = await r.in(async (instance) => {
+      instance.probes.holdGate = new Promise(() => undefined);
+      const made = [];
+      for (let n = 0; n < 3; n++) {
+        const { session } = await threadFor(instance, null);
+        made.push([session, (await instance.harness.submit("hold please", { session }))
+          .operationId] as const);
+      }
+      await until(() => instance.probes.holds === 3, "the holds to start");
+      return made;
+    });
+    await runInDurableObject(r.stub, (_i, state) => state.abort("crash")).catch(() => undefined);
+    const out = await runInDurableObject(env.AGENT.getByName(r.owner),
+                                         async (instance: FauxOwnerDO) => {
+      instance.script = Array.from({ length: 8 }, () => says("resumed"));
+      instance.timing.openMax = 2;
+      const host = instance.agent.host;
+      const end = host.end.bind(host);
+      let ending = 0;
+      let most = 0;
+      host.end = async (thread, act) => {
+        most = Math.max(most, ++ending);
+        try {
+          return await end(thread, act);
+        } finally {
+          ending--;
+        }
+      };
+      const { generation, policy } = await instance.policyRead(r.bind(null));
+      await instance.policyWrite(r.session(), { expected_generation: generation, policy });
+      instance.timing.openMax = 64;
+      const settled = [];
+      for (const [session, operationId] of ops) {
+        settled.push((await instance.harness.wait(operationId, { session })).reason);
+      }
+      return { most, settled };
+    });
+    expect(out.most).toBe(2);
+    expect(out.settled).toEqual(["aborted", "aborted", "aborted"]);
+  });
+
+  it("ends a thread whose open Session is working though its live row is gone", async () => {
+    const r = await agentRig();
+    const out = await r.in(async (instance, state) => {
+      instance.probes.holdGate = new Promise(() => undefined);
+      await threadFor(instance, null);
+      const { operationId } = await instance.harness.submit("hold please");
+      await until(() => instance.probes.holds === 1, "the hold to start");
+      state.storage.sql.exec("DELETE FROM agent_live");
+      const { generation, policy } = await instance.policyRead(r.bind(null));
+      await instance.policyWrite(r.session(), { expected_generation: generation, policy });
+      return instance.harness.wait(operationId);
+    });
+    expect([out.status, out.reason]).toEqual(["unanswered", "aborted"]);
+  });
+
+  it("rejects, loudly, when a working thread's work cannot be ended; the write stands",
+     async () => {
+    const r = await agentRig();
+    const thread = await r.in(async (instance) => {
+      const { thread: row } = await threadFor(instance, null);
+      expect((await instance.harness.prompt("hi")).status).toBe("done");
+      await instance.agent.host.close(row.thread_id);
+      return row;
+    });
+    // Its store is gone, and its row says it is working: it cannot be opened to end it.
+    await env.PISTORE.getByName(thread.store).destroy();
+    await r.in((_instance, state) => {
+      state.storage.sql.exec("INSERT INTO agent_live (thread_id, active, wake_at) " +
+                             "VALUES (?, 1, NULL)", thread.thread_id);
+    });
+    const { generation, policy } = await r.stub.policyRead(r.bind(null));
+    const refused = await failure(() => r.stub.policyWrite(r.session(), {
+      expected_generation: generation, policy }));
+    expect(refused.message).toContain(DESTROYED);
+    expect((await r.stub.policyRead(r.bind(null))).generation).toBe(generation + 1);
+  });
 });
 
 describe("an operation's status", () => {
@@ -599,22 +722,22 @@ describe("an operation's status", () => {
     const out = await r.in(async (instance) => {
       const held = gate();
       instance.probes.holdGate = held.promise;
-      const { session } = await threadFor(instance, null);
-      const first = await instance.agent.harness.submit("hold please", { session });
+      const { thread, session } = await threadFor(instance, null);
+      const first = await instance.harness.submit("hold please", { session });
       await until(() => instance.probes.holds === 1, "the hold to start");
-      const second = await instance.agent.harness.submit("after", { session });
+      const second = await instance.harness.submit("after", { session });
       const began = Date.now();
-      const open = [await instance.agent.status(first.operationId, session),
-                    await instance.agent.status(second.operationId, session)];
-      // An open operation's status is its pending record, read at once: no wait on it.
+      const open = [await instance.agent.status(thread, first.operationId),
+                    await instance.agent.status(thread, second.operationId)];
+      // An open operation's status is its submission record, read at once: no wait on it.
       const took = Date.now() - began;
-      open.push(await instance.agent.status("op-unknown", session));
+      open.push(await instance.agent.status(thread, "op-unknown"));
       held.release();
-      await instance.agent.harness.wait(second.operationId, { session });
-      return { open, took, settled: [await instance.agent.status(first.operationId, session),
-                                     await instance.agent.status(second.operationId, session)] };
+      await instance.harness.wait(second.operationId, { session });
+      return { open, took, settled: [await instance.agent.status(thread, first.operationId),
+                                     await instance.agent.status(thread, second.operationId)] };
     });
-    expect(out.took).toBeLessThan(STATUS_WAIT_MS);
+    expect(out.took).toBeLessThan(1_000);
     expect(out.open.map((status) => [status.status, status.reason ?? null])).toEqual([
       ["running", null], ["queued", null], ["unanswered", "not_found"]]);
     expect(out.settled.map((status) => [status.status, status.text])).toEqual([
@@ -630,7 +753,7 @@ describe("the work lane's runner", () => {
 
   it("hands held work its job: due work runs in the thread it named, as ta.work", async () => {
     const r = await agentRig();
-    const { workId, session } = await r.in(async (instance, state) => {
+    const { workId, session, thread } = await r.in(async (instance, state) => {
       const { thread, session } = await threadFor(instance, null);
       const gateway = new WriteGate(state.storage);
       const threads = new Threads(gateway.storage);
@@ -640,16 +763,16 @@ describe("the work lane's runner", () => {
       const { work_id: workId } = await gateway.write(() => work.add(
         "turn", clock() - 1, { thread: thread.thread_id, input: "scheduled hello" }, null,
         clock()));
-      return { workId, session };
+      return { workId, session, thread };
     });
     // Any changing door re-derives the lanes' jobs; the alarm runs the work lane.
     await r.stub.grantRevoke(r.bind(null), { client: DOT.client });
     await drainDue(r.stub as never);
     const out = await r.in(async (instance, state) => ({
-      settled: await instance.agent.harness.wait(workId, { session }),
-      status: await instance.agent.status(workId, session),
+      settled: await instance.harness.wait(workId, { session }),
+      status: await instance.agent.status(thread, workId),
       row: state.storage.sql.exec("SELECT state, outcome FROM scheduled_work").toArray(),
-      entries: (await instance.agent.harness.messages({ session }))
+      entries: (await instance.harness.messages({ session }))
         .filter((entry) => entry.kind === "ta.work").map((entry) => entry.data),
     }));
     expect([out.settled.status, out.status.status]).toEqual(["done", "done"]);
@@ -662,7 +785,7 @@ describe("the work lane's runner", () => {
     const r = await agentRig();
     const out = await r.in(async (instance, state) => {
       const { thread, session } = await threadFor(instance, null);
-      const runner = workRunner(new Threads(state.storage), instance.agent.harness,
+      const runner = workRunner(new Threads(state.storage), instance.agent,
                                 instance.parts.authority);
       const marks: string[] = [];
       const mark = async () => {
@@ -670,8 +793,8 @@ describe("the work lane's runner", () => {
       };
       const answers = [await runner.handOff(target("work_a", thread.thread_id), mark),
                        await runner.handOff(target("work_a", thread.thread_id), mark)];
-      const settled = await instance.agent.harness.wait("work_a", { session });
-      const users = (await instance.agent.harness.messages({ session }))
+      const settled = await instance.harness.wait("work_a", { session });
+      const users = (await instance.harness.messages({ session }))
         .filter((entry) => entry.kind === "ta.work").length;
       return { answers, marks, settled, users, requests: instance.turns.length };
     });
@@ -686,16 +809,16 @@ describe("the work lane's runner", () => {
       const held = gate();
       instance.probes.holdGate = held.promise;
       const { thread, session } = await threadFor(instance, null);
-      const busy = await instance.agent.harness.submit("hold please", { session });
+      const busy = await instance.harness.submit("hold please", { session });
       await until(() => instance.probes.holds === 1, "the hold to start");
-      const runner = workRunner(new Threads(state.storage), instance.agent.harness,
+      const runner = workRunner(new Threads(state.storage), instance.agent,
                                 instance.parts.authority);
       const answer = await runner.handOff(target("work_q", thread.thread_id), async () => {});
-      const queued = await instance.agent.status("work_q", session);
+      const queued = await instance.agent.status(thread, "work_q");
       held.release();
-      return { answer, queued, busy: await instance.agent.harness.wait(busy.operationId,
+      return { answer, queued, busy: await instance.harness.wait(busy.operationId,
                                                                       { session }),
-               work: await instance.agent.harness.wait("work_q", { session }) };
+               work: await instance.harness.wait("work_q", { session }) };
     });
     expect([out.answer, out.queued.status]).toEqual([{ state: "handed" }, "queued"]);
     // Its own run: the held run answered its tool round, then the work its own input.
@@ -707,7 +830,7 @@ describe("the work lane's runner", () => {
     const r = await agentRig();
     const out = await r.in(async (instance, state) => {
       const { thread, session } = await threadFor(instance, null);
-      const runner = workRunner(new Threads(state.storage), instance.agent.harness,
+      const runner = workRunner(new Threads(state.storage), instance.agent,
                                 instance.parts.authority);
       const lapsed = await failure(() => runner.handOff(target("work_b", thread.thread_id),
         async () => {
@@ -718,8 +841,8 @@ describe("the work lane's runner", () => {
         marked = true;
       });
       return { lapsed: lapsed.message, gone, marked,
-               pending: await instance.agent.harness.pending({ session }),
-               status: await instance.agent.status("work_b", session) };
+               pending: await instance.harness.pending({ session }),
+               status: await instance.agent.status(thread, "work_b") };
     });
     expect(out.lapsed).toBe("the work's claim lapsed before its hand-off");
     expect(out.pending).toEqual([]);
@@ -742,11 +865,11 @@ describe("an aborted turn's model call", () => {
       const thread = await instance.agent.thread("main", {
         client: MUSE.client, generation: 1, authenticated_at: at, universe: null,
         agent: "main" });
-      const session = String(thread.conversation_id);
-      const { operationId } = await instance.agent.harness.submit(`cmd:slow-${id}`, { session });
+      const session = thread.thread_id;
+      const { operationId } = await instance.harness.submit(`cmd:slow-${id}`, { session });
       await until(async () => (await cancelled()) === false, "the upstream stream to open");
       await instance.grantRevoke(r.bind(), { client: MUSE.client });
-      return instance.agent.harness.wait(operationId, { session });
+      return (await storeSubmission(thread.store, { request: operationId }))!;
     });
     expect([settled.status, settled.reason]).toEqual(["unanswered", "aborted"]);
     await until(async () => (await cancelled()) === true, "the upstream to be cancelled");
@@ -764,15 +887,14 @@ describe("the authority's enforcement (review M1)", () => {
     await r.admit(MUSE);
     const generation = await r.scoped(MUSE, ["write_files"]);  // no read_files
     const out = await r.in(async (instance) => {
-      const { thread, session } = await threadFor(instance, r.stampOf(MUSE, generation));
-      const pi = await instance.agent.harness.pi();
-      const conversation = (await pi.conversation(thread.conversation_id as ConversationId,
-                                                  BG))!;
+      const { session } = await threadFor(instance, r.stampOf(MUSE, generation));
+      const pi = await instance.harness.pi({ session });
+      const conversation = (await pi.conversation(1 as ConversationId, BG))!;
       await conversation.configure({ extensions: { remove: [{ name: "ta.authority" } as never] } },
                                    BG);
       return {
-        read: shown(await instance.agent.harness.prompt("read it", { session }))["read"]!,
-        shell: shown(await instance.agent.harness.prompt("shell it", { session }))["bash"]!,
+        read: shown(await instance.harness.prompt("read it", { session }))["read"]!,
+        shell: shown(await instance.harness.prompt("shell it", { session }))["bash"]!,
       };
     });
     // The gate was selected away; the environment refused the read and the shell itself.
@@ -794,7 +916,7 @@ describe("the authority's enforcement (review M1)", () => {
       storeScript(state, [calls(fauxToolCall("read", { path: "notes.md" })), says("done")]);
       instance.script = [];
       instance.probes.readGate = new Promise(() => undefined);
-      return { operationId: (await instance.agent.harness.submit("read it", { session }))
+      return { operationId: (await instance.harness.submit("read it", { session }))
         .operationId, session };
     });
     await until(() => r.in((instance) => instance.probes.reads === 1), "the read to start");
@@ -807,9 +929,9 @@ describe("the authority's enforcement (review M1)", () => {
     });
     expect(await runDurableObjectAlarm(fresh)).toBe(true);
     const read = await runInDurableObject(fresh, async (instance: FauxOwnerDO) => {
-      await instance.agent.harness.wait(operationId, { session });
+      await instance.harness.wait(operationId, { session });
       return { reads: instance.probes.reads,
-               shown: results((await instance.agent.harness.messages({ session }))
+               shown: results((await instance.harness.messages({ session }))
                  .flatMap((entry) => (entry.model ?? []) as Message[]))["read"]! };
     });
     expect(read.reads).toBe(1);  // the replay ran the read again, past no gate
@@ -823,11 +945,11 @@ describe("the authority's enforcement (review M1)", () => {
     const r = await agentRig();
     const out = await r.in(async (instance) => {
       instance.script = Array.from({ length: 40 }, () => byAsk);
-      const pi = await instance.agent.harness.pi();
+      const pi = await instance.harness.pi();
       const made = await pi.createConversation({ ownership: { kind: "ownerless" },
         agent: { model: { provider: "gateway", modelId: "auto" } } }, BG);
       const state = await pi.snapshot(instance.agent.authority, made.id, BG);
-      return { state, read: shown(await instance.agent.harness.prompt(
+      return { state, read: shown(await instance.harness.prompt(
         "read it", { session: String(made.id) }))["read"] };
     });
     expect(out.state).toEqual({ by: "none" });
@@ -839,17 +961,26 @@ describe("the authority's enforcement (review M1)", () => {
     const r = await agentRig();
     await r.admit(MUSE);
     const out = await r.in(async (instance) => {
-      const own = await threadFor(instance, null);
-      expect((await instance.agent.harness.prompt("noted", { session: own.session })).status)
-        .toBe("done");
-      const pi = await instance.agent.harness.pi();
-      const ownConversation = (await pi.conversation(own.thread.conversation_id as never, BG))!;
-      const at = (await ownConversation.context(BG)).entries.at(-1)!.id;
       const theirs = await threadFor(instance, r.stampOf(MUSE, 1));
-      // A client's tool forks the owner's thread, as a conversation its call owns.
-      instance.script = [calls(viaTa("fork", { from: own.thread.conversation_id, at })),
+      // A conversation of the owner's authority in the client's thread's own Session (no
+      // door makes one: every conversation of a thread's Session is the thread's or below
+      // it), with an entry to fork at.
+      const pi = await instance.harness.pi({ session: theirs.session });
+      const owners = await pi.createConversation({
+        ownership: { kind: "ownerless" },
+        agent: { model: { provider: "gateway", modelId: "auto" } },
+        init: async (tx, id) => {
+          Object.assign(await tx.doc(instance.agent.authority, id), { by: "owner" });
+        },
+      }, BG);
+      expect((await instance.harness.prompt("noted", { session: String(owners.id),
+                                                      thread: theirs.session })).status)
+        .toBe("done");
+      const at = (await owners.context(BG)).entries.at(-1)!.id;
+      // A client's tool forks the owner's conversation, as a conversation its call owns.
+      instance.script = [calls(viaTa("fork", { from: owners.id, at })),
                          (messages: Message[]) => says(JSON.stringify(results(messages)))];
-      return shown(await instance.agent.harness.prompt("fork it", { session: theirs.session }));
+      return shown(await instance.harness.prompt("fork it", { session: theirs.session }));
     });
     expect(out["fork"]!.error).toBe(true);
     expect(out["fork"]!.text).toContain("a fork's authority disagrees with its owner");
@@ -857,11 +988,12 @@ describe("the authority's enforcement (review M1)", () => {
 });
 
 describe("an operation's status (review M3)", () => {
-  it("fails loudly for a session pi never made, never answering running", async () => {
+  it("fails loudly for a thread the object never made, never answering running", async () => {
     const r = await agentRig();
-    const out = await r.in(async (instance) => instance.agent.status("op-x", "987654")
+    const out = await r.in(async (instance) => instance.agent.status(
+      { thread_id: `thread_${"9".repeat(32)}` } as Thread, "op-x")
       .then((status) => status.status, (error: Error) => error.message));
-    expect(out).toMatch(/Unknown pi session 987654/);
+    expect(out).toBe(NO_THREAD);
   });
 });
 
@@ -880,12 +1012,12 @@ describe("a revoked client's model calls (review M2)", () => {
   }
 
   it.each([["run to its end", true], ["only started", false]])(
-    "are refused in their reservation when a revoke %s between a hand-off's mark and its " +
-    "submit misses the work in its abort", async (_how, awaited) => {
+    "never reach a thread a revoke %s between a hand-off's mark and its submit dropped: " +
+    "the hand-off fails, nothing submitted, nothing spent", async (_how, awaited) => {
     const { r, stamp, fetches } = await spending();
     const out = await r.in(async (instance, state) => {
       const thread = await instance.agent.thread("main", stamp);
-      const runner = workRunner(new Threads(state.storage), instance.agent.harness,
+      const runner = workRunner(new Threads(state.storage), instance.agent,
                                 instance.parts.authority);
       const before = fetches(instance);
       let revoke: Promise<unknown> = Promise.resolve();
@@ -900,20 +1032,16 @@ describe("a revoked client's model calls (review M2)", () => {
         }
       });
       await revoke;
-      const settled = await instance.agent.harness.wait(
-        "work_r", { session: String(thread.conversation_id) });
-      return { answer, settled, sent: fetches(instance) - before };
+      // The revoke dropped the thread in its own unit: its Session is never opened again,
+      // so the work never reached its store.
+      const submitted = await storeSubmission(thread.store, { request: "work_r" })
+        .catch(() => undefined);
+      return { answer, submitted, sent: fetches(instance) - before };
     });
-    expect(out.answer).toEqual({ state: "handed" });
-    expect([out.settled.status, out.sent]).toEqual(["unanswered", 0]);
+    expect(out.answer).toEqual({ state: "failed", reason: "no_thread" });
+    expect([out.submitted, out.sent]).toEqual([undefined, 0]);
     const { receipts } = await r.stub.usageReceipts(r.bind());
-    const states = receipts.map((receipt) => [receipt.state, receipt.rule]);
-    if (awaited) {
-      expect(states).toEqual([["refused", AUTHORITY_RULE]]);
-    } else {  // refused, or aborted before any reserve: never a call that spent
-      expect(states.filter(([state, rule]) => state !== "refused" || rule !== AUTHORITY_RULE))
-        .toEqual([]);
-    }
+    expect(receipts).toEqual([]);
   });
 
   it("are refused while the conversation's selection drops the gate, its grant standing; " +
@@ -921,16 +1049,16 @@ describe("a revoked client's model calls (review M2)", () => {
     const { r, stamp, fetches } = await spending();
     const out = await r.in(async (instance) => {
       const thread = await instance.agent.thread("main", stamp);
-      const pi = await instance.agent.harness.pi();
-      const drop = async (id: number) => (await pi.conversation(id as ConversationId, BG))!
+      const drop = async (session?: string) => (await (await instance.harness.pi(
+        session === undefined ? {} : { session })).conversation(1 as ConversationId, BG))!
         .configure({ extensions: { remove: [{ name: GATE } as never] } }, BG);
-      await drop(thread.conversation_id);
-      await drop(1);
+      await drop(thread.thread_id);
+      await drop();
       const before = fetches(instance);
-      const client = await instance.agent.harness.prompt(
-        "cmd:echo", { session: String(thread.conversation_id) });
+      const client = await instance.harness.prompt(
+        "cmd:echo", { session: thread.thread_id });
       const between = fetches(instance);
-      const owner = await instance.agent.harness.prompt("cmd:echo");
+      const owner = await instance.harness.prompt("cmd:echo");
       return { client: client.status, owner: owner.status,
                sent: [between - before, fetches(instance) - between] };
     });
@@ -955,8 +1083,8 @@ describe("a revoked client's model calls (review M2)", () => {
         throw new Error("the authority could not be read");
       };
       const before = fetches(instance);
-      const answer = await instance.agent.harness.prompt(
-        "cmd:echo", { session: String(thread.conversation_id) });
+      const answer = await instance.harness.prompt(
+        "cmd:echo", { session: thread.thread_id });
       return { status: answer.status, sent: fetches(instance) - before };
     });
     expect(out).toEqual({ status: "unanswered", sent: 0 });
@@ -971,8 +1099,8 @@ describe("a revoked client's model calls (review M2)", () => {
       const real = agent.modelAuthority.bind(agent);
       let checks = 0;
       // The revoke commits with the reservation, after its check: no abort reaches the turn.
-      agent.modelAuthority = async (session) => {
-        const rule = await real(session);
+      agent.modelAuthority = async (pi, session) => {
+        const rule = await real(pi, session);
         return () => {
           const said = rule();
           if (++checks === 1) {
@@ -982,8 +1110,8 @@ describe("a revoked client's model calls (review M2)", () => {
         };
       };
       const before = fetches(instance);
-      const answer = await agent.harness.prompt("cmd:echo",
-                                                { session: String(thread.conversation_id) });
+      const answer = await instance.harness.prompt("cmd:echo",
+                                                { session: thread.thread_id });
       return { answer, checks, sent: fetches(instance) - before };
     });
     expect([out.answer.status, out.checks, out.sent]).toEqual(["unanswered", 2, 0]);
@@ -999,18 +1127,21 @@ describe("a revoked client's model calls (review M2)", () => {
       const thread = await instance.agent.thread("main", stamp);
       new Grants(state.storage, new Policy(state.storage)).revoke(MUSE.client, clock());
       const before = fetches(instance);
-      const answer = await instance.agent.harness.prompt(
-        "cmd:echo", { session: String(thread.conversation_id) });
-      const stray = (sessionId: string | undefined) => instance.parts.provider.streamSimple(
+      const answer = await instance.harness.prompt(
+        "cmd:echo", { session: thread.thread_id });
+      // A call of the owner's own thread's Session, and one of no Session at all.
+      const bound = await provider(instance);
+      const stray = (sessionId: string | undefined, through = bound) => through.streamSimple(
         instance.parts.provider.getModels()[0]!, asked("cmd:echo"),
         { ...(sessionId === undefined ? {} : { sessionId }),
           telemetry: originContext("input:stray") }).result();
       const strays = [(await stray(crypto.randomUUID())).errorMessage,
-                      (await stray(undefined)).errorMessage];
+                      (await stray(undefined)).errorMessage,
+                      (await stray(crypto.randomUUID(), instance.parts.provider)).errorMessage];
       return { answer, strays, sent: fetches(instance) - before };
     });
     expect([out.answer.status, out.sent, out.strays])
-      .toEqual(["unanswered", 0, [NO_CONVERSATION, NO_CONVERSATION]]);
+      .toEqual(["unanswered", 0, [NO_CONVERSATION, NO_CONVERSATION, NO_CONVERSATION]]);
     const { receipts } = await r.stub.usageReceipts(r.bind());
     expect(receipts.map((receipt) => [receipt.state, receipt.rule]))
       .toContainEqual(["refused", AUTHORITY_RULE]);
@@ -1028,11 +1159,8 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
       const tried = async (stamp: Stamped | null, times: number) => {
         const out: string[] = [];
         for (let i = 0; i < times; i++) {
-          const pi = await instance.agent.harness.pi();
-          const conversation = await pi.createConversation(
-            { ownership: { kind: "ownerless" } }, BG);
           out.push(await new WriteGate(state.storage).write(() =>
-            threads.record(conversation.id, "main", stamp, clock()).thread_id.slice(0, 7))
+            threads.record("main", stamp, clock()).thread_id.slice(0, 7))
             .catch((error: Error) => error.message));
         }
         return out;
@@ -1055,17 +1183,16 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
       .toEqual([MUSE.client]);
   });
 
-  it("are refused before any conversation is made, when the stamp no longer stands or the " +
-     "bound is met", async () => {
+  it("are refused before any thread or store is made, when the stamp no longer stands or " +
+     "the bound is met", async () => {
     const r = await agentRig();
     await r.admit(MUSE);
     const out = await r.in(async (instance, state) => {
-      await instance.agent.harness.pi();
+      await instance.harness.pi();
       const sql = state.storage.sql;
-      const table = sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE " +
-        "type = 'table' AND name LIKE '%conversations'").one().name;
       const conversations = () => sql.exec<{ n: number }>(
-        `SELECT COUNT(*) AS n FROM "${table}"`).one().n;
+        "SELECT COUNT(*) AS n FROM agent_threads").one().n + instance.agent.host.openThreads()
+        .length;
       for (let i = 0; i < 64; i++) {
         await instance.agent.thread("main", r.stampOf(MUSE, 1));
       }
@@ -1082,27 +1209,46 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
                           made: 0 });
   });
 
-  it("are never the root, by schema, and a client recorded after its threads counts them",
-     async () => {
+  it("each name a store of their own, by schema, and a client recorded after its threads " +
+     "counts them", async () => {
     const r = await agentRig();
     await r.admit(MUSE);
     const out = await r.in(async (instance, state) => {
-      await instance.agent.thread("main", r.stampOf(MUSE, 1));
-      const root = await failure(async () =>
-        new Threads(state.storage).record(1, "main", null, 1));
+      const made = await instance.agent.thread("main", r.stampOf(MUSE, 1));
       const sql = state.storage.sql;
-      const raw = await failure(async () => sql.exec(
-        "INSERT INTO agent_threads (thread_id, conversation_id, agent_id, created_at) " +
-        "VALUES (?, 1, 'main', 1)", `thread_${"1".repeat(32)}`));
+      const insert = (store: string | null) => failure(async () => sql.exec(
+        "INSERT INTO agent_threads (thread_id, store, state, agent_id, created_at, kind, " +
+        "last_active) VALUES (?, ?, 'ready', 'main', 1, 'run', 1)", `thread_${"1".repeat(32)}`,
+        store));
+      const none = await insert(null);
+      const odd = await insert("g".repeat(32));
+      const taken = await insert(made.store);
       // A thread's row kept for a client whose grant row is written after it (the schema
       // orders nothing between them) is counted when the grant row is.
-      sql.exec("INSERT INTO agent_threads (thread_id, conversation_id, agent_id, client, " +
-        "generation, created_at) VALUES (?, 999, 'main', ?, 1, 1)", `thread_${"2".repeat(32)}`,
-        DOT.client);
-      return { root: root.message, raw: raw.message };
+      sql.exec("INSERT INTO agent_threads (thread_id, store, state, agent_id, client, " +
+        "generation, created_at, kind, last_active) VALUES (?, ?, 'ready', 'main', ?, 1, 1, " +
+        "'run', 1)", `thread_${"2".repeat(32)}`, "2".repeat(32), DOT.client);
+      // A store never changes, and a state moves only to dropping.
+      const moved = await failure(async () => sql.exec(
+        "UPDATE agent_threads SET store = ? WHERE thread_id = ?", "3".repeat(32),
+        made.thread_id));
+      const back = await failure(async () => {
+        sql.exec("UPDATE agent_threads SET state = 'dropping' WHERE thread_id = ?",
+                 made.thread_id);
+        sql.exec("UPDATE agent_threads SET state = 'ready' WHERE thread_id = ?",
+                 made.thread_id);
+      });
+      return { none: none.message, odd: odd.message, taken: taken.message,
+               moved: moved.message, back: back.message,
+               state: sql.exec<{ state: string }>("SELECT state FROM agent_threads WHERE " +
+                 "thread_id = ?", made.thread_id).one().state };
     });
-    expect(out.root).toMatch(/never the root/);
-    expect(out.raw).toMatch(/CHECK constraint failed/);
+    expect(out.none).toMatch(/NOT NULL constraint failed/);
+    expect(out.odd).toMatch(/CHECK constraint failed/);
+    expect(out.taken).toMatch(/UNIQUE constraint failed/);
+    expect(out.moved).toMatch(/never changes the stamp/);
+    expect(out.back).toMatch(/never changes the stamp/);
+    expect(out.state).toBe("dropping");
     await r.admit(DOT);
     expect((await r.stub.grantList(r.bind(null))).clients
       .find((client) => client.client === DOT.client)!.held).toBe(1);
@@ -1112,19 +1258,20 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
     const r = await agentRig();
     await r.admit(MUSE);
     const out = await r.in(async (instance, state) => {
-      await instance.agent.harness.pi();
-      const queue = holdQueue(state);
+      await instance.harness.pi();
+      const held = gate();
+      instance.probes.writeGate = held.promise;
+      const writes = instance.probes.writes;
       const making = instance.agent.thread("main", r.stampOf(MUSE, 1))
         .then(() => "made", (error: Error) => error.message);
-      for (let i = 0; i < 20; i++) {
-        await Promise.resolve();
-      }
+      await until(() => instance.probes.writes > writes, "the recording unit to be asked for");
       // The stamp stood when the thread was asked for; it is revoked before its unit.
       new Grants(state.storage, new Policy(state.storage)).revoke(MUSE.client, clock());
-      queue.release();
-      await queue.done;
+      instance.probes.writeGate = null;
+      held.release();
       return { made: await making,
-               rows: state.storage.sql.exec("SELECT * FROM agent_threads").toArray().length };
+               rows: state.storage.sql.exec("SELECT * FROM agent_threads WHERE " +
+                                            "client IS NOT NULL").toArray().length };
     });
     expect(out).toEqual({ made: AUTHORITY_CHANGED, rows: 0 });
   });
@@ -1137,7 +1284,7 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
       "UPDATE agent_threads SET generation = 9"))).rejects.toThrow(/never changes the stamp/);
     // Nor is one recorded under a stamp for another agent.
     await expect(r.in((_instance, state) => new Threads(state.storage).record(
-      2, "main", { ...r.stampOf(MUSE, 1), agent: "helper" }, 1)))
+      "main", { ...r.stampOf(MUSE, 1), agent: "helper" }, 1)))
       .rejects.toThrow(/names its own agent/);
   });
 
@@ -1147,7 +1294,7 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
     await r.admit(MUSE);
     const out = await r.in(async (instance, state) => {
       const { thread, session } = await threadFor(instance, r.stampOf(MUSE, 1));
-      const runner = workRunner(new Threads(state.storage), instance.agent.harness,
+      const runner = workRunner(new Threads(state.storage), instance.agent,
                                 instance.parts.authority);
       let marked = 0;
       const mark = async () => {
@@ -1159,8 +1306,8 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
         stamp: { client: MUSE.client, generation, authenticated_at: r.at } }, mark);
       const other = await handOff("work_g", 2);
       const own = await handOff("work_h", 1);
-      await instance.agent.harness.wait("work_h", { session });
-      const entries = (await instance.agent.harness.messages({ session }))
+      await instance.harness.wait("work_h", { session });
+      const entries = (await instance.harness.messages({ session }))
         .filter((entry) => entry.kind === "ta.work").map((entry) => entry.data);
       // A grant moved by a writer that kept the thread: its own generation no longer stands.
       new Grants(state.storage, new Policy(state.storage)).revoke(MUSE.client, clock());

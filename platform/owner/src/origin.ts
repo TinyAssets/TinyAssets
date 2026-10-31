@@ -1,6 +1,6 @@
 /**
  * A model call's turn: the submitted input at the origin of its causal chain, carried by
- * pi's own telemetry propagation (ADR-032 §4; tasks 5 A1).
+ * pi's own telemetry propagation (ADR-032 §4; tasks 5 A1, S3).
  *
  * pi-durable propagates a telemetry context along every causal edge it records, and keeps
  * it durably in its own records (`session/transaction.js`, `harness/scheduler.js`,
@@ -15,16 +15,16 @@
  * - each phase of a task runs in the context its `trace` extracts to, and a model request
  *   carries the phase's context (`options.telemetry`).
  *
- * This module is the harness's telemetry adapter. Its spans record nothing but one
- * thing, the origin, and its metrics capability keeps pi's and pi-ai's metrics
- * (`OriginMetrics`). It is ADR-032 §4's kept difference: the turn every spend cap keys on
+ * This module is each thread's Session's telemetry adapter (one root per thread,
+ * `originRoot`). Its spans record nothing but one thing, the origin, and its metrics
+ * capability keeps pi's and pi-ai's metrics (`OriginMetrics`). It is ADR-032 §4's kept difference: the turn every spend cap keys on
  * rides pi's telemetry propagation, against pi-telemetry's "a span is diagnostic data,
  * not business state", because pi has no durable causal context of its own (pi audit
  * F4). So the span names it reads are held to pi's exported `DURABLE_TELEMETRY_SCHEMA`,
  * and no method of it ever throws: on pi 1.4 a throwing adapter can reject a durable
  * commit. The origin: an input admitted with a link to a context that has one (a tool or
  * background work submitting to a subagent's conversation) takes that origin. Every other
- * input is a new origin, a new turn: one a door submits, one `PiHarness.enqueue` admits,
+ * input is a new origin, a new turn: one a door submits, one the thread host admits,
  * and any input submitted under a context with no origin (`BACKGROUND_CONTEXT`, or a
  * context code made instead of the one pi passed it). Every other span takes its parent's.
  * So every model call one input caused, through any subagent, compaction or background
@@ -34,10 +34,11 @@
  *
  * A task takes whatever carrier it was created with. One with no carrier has no origin:
  * pi's compaction is the one such task pi itself starts (one asked for outside a run; a
- * door's write submission starts no input span), and it is its own origin, by its task
- * id; any other task with no carrier (created under a context with no origin) has none,
- * and its calls are refused (`no_run`). A task created with a forged `trace` carrier
- * takes the forged origin.
+ * door's write submission starts no input span), and it is its own origin, by its task id
+ * named by its thread (`task:<thread>:<id>`): task ids are per Session, and every thread
+ * is a Session of its own, so two threads' compactions never share a turn. Any other task
+ * with no carrier (created under a context with no origin) has none, and its calls are
+ * refused (`no_run`). A task created with a forged `trace` carrier takes the forged origin.
  *
  * Neither a fresh input nor a forged carrier is in reach of anything but our own code:
  * only trusted platform code runs inside the owner object. Package executable code is
@@ -55,8 +56,13 @@ import type {
   TelemetryPropagation, TelemetrySpan, TelemetryUpDownCounter,
 } from "@earendil-works/pi-telemetry";
 
-/** What an origin may be, in the carrier's one key, `ta.origin`. */
-const ORIGIN = /^(?:input|task):[0-9A-Za-z-]{1,64}$/;
+/** A thread's id, as its row holds it. */
+const THREAD = /^thread_[0-9a-f]{32}$/;
+/**
+ * What an origin may be, in the carrier's one key, `ta.origin`: an input's, or a
+ * compaction's, named by its thread.
+ */
+const ORIGIN = /^(?:input:[0-9A-Za-z-]{1,64}|task:thread_[0-9a-f]{32}:[0-9]{1,16})$/;
 
 type DurableSpans = typeof DURABLE_TELEMETRY_SCHEMA["spans"];
 /**
@@ -174,13 +180,17 @@ export class OriginMetrics implements TelemetryMetrics {
 /** A context's origin, resolved once, at first need. */
 type Resolve = () => string | undefined;
 
-/** The adapter's capabilities, shared by its root, every span and every extracted parent. */
+/**
+ * The adapter's capabilities, shared by its root, every span and every extracted parent:
+ * the thread whose Session it is, its metrics, and its propagation.
+ */
 interface Adapter {
+  readonly thread: string;
   readonly metrics: OriginMetrics;
   readonly propagation: TelemetryPropagation;
 }
 
-/** A telemetry span that carries an origin and nothing else. */
+/** A telemetry span that carries an origin and nothing else, in one thread's Session. */
 class OriginSpan implements TelemetrySpan {
   readonly #adapter: Adapter;
   readonly #resolve: Resolve;
@@ -249,7 +259,7 @@ function originOf(context: unknown): string | undefined {
 /**
  * A span started at the root, where a causal chain may begin: an input's admission takes
  * its first linked origin, else a new one; pi's compaction with no carrier takes its task
- * id; anything else has none.
+ * id, named by its thread; anything else has none.
  */
 class RootSpan extends OriginSpan {
   #origin: string | undefined;
@@ -264,7 +274,7 @@ class RootSpan extends OriginSpan {
     this.#fresh = options.name === ADMISSION ? () => `input:${randomUUID()}`
       : options.name === PHASE && attributes["task.name"] === COMPACTION
           && (typeof task === "number" || typeof task === "string")
-        ? () => `task:${task}`
+        ? () => `task:${adapter.thread}:${task}`
         : () => undefined;
   }
 
@@ -287,7 +297,7 @@ class RootSpan extends OriginSpan {
   }
 }
 
-/** The harness's root: no origin of its own, and every span it starts may begin a chain. */
+/** A thread's Session's root: no origin of its own, and every span it starts may begin a chain. */
 class Root extends OriginSpan {
   constructor(adapter: Adapter) {
     super(adapter, () => undefined);
@@ -308,9 +318,10 @@ function carried(carrier: unknown): string | undefined {
   }
 }
 
-/** An adapter: its metrics, and a propagation whose extracted parents carry them. */
-function adapter(metrics: OriginMetrics): Adapter {
+/** `thread`'s adapter: its metrics, and a propagation whose extracted parents carry them. */
+function adapter(thread: string, metrics: OriginMetrics): Adapter {
   const made: Adapter = {
+    thread,
     metrics,
     propagation: Object.freeze({
       inject: (context: TelemetryContext): TelemetryCarrier | undefined => {
@@ -327,11 +338,16 @@ function adapter(metrics: OriginMetrics): Adapter {
 }
 
 /**
- * A harness's telemetry, pi's `HarnessOptions.telemetry`: a root, which holds nothing, with
- * `metrics` as its metrics capability.
+ * A thread's Session's telemetry, pi's `HarnessOptions.telemetry`: a root, which holds
+ * nothing but the thread a compaction's origin is named by, with `metrics` as its metrics
+ * capability. Throws for a name not a thread's (before pi has it).
  */
-export function originRoot(metrics: OriginMetrics = new OriginMetrics()): TelemetrySpan {
-  return new Root(adapter(metrics));
+export function originRoot(thread: string, metrics: OriginMetrics = new OriginMetrics()):
+    TelemetrySpan {
+  if (!THREAD.test(thread)) {
+    throw new Error("an origin root is a thread's");
+  }
+  return new Root(adapter(thread, metrics));
 }
 
 /**
@@ -346,9 +362,12 @@ export function turnOf(telemetry: unknown): string {
   return origin;
 }
 
-/** A context of origin `origin`, as a carrier pi stored extracts to (for tests). */
-export function originContext(origin: string): TelemetrySpan {
-  const context = adapter(new OriginMetrics()).propagation.extract({ "ta.origin": origin });
+/** A context of origin `origin` in `thread`'s Session, as a stored carrier extracts to (tests). */
+export function originContext(origin: string,
+                              thread = "thread_00000000000000000000000000000000"):
+    TelemetrySpan {
+  const context = adapter(thread, new OriginMetrics()).propagation
+    .extract({ "ta.origin": origin });
   if (context instanceof Root || !(context instanceof OriginSpan)) {
     throw new Error("not an origin");
   }

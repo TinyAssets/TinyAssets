@@ -8,10 +8,11 @@
  *   no source names `extensions` as a key it builds or a property it writes, names
  *   `configure` at all (a call, a destructuring, an import), or names pi's `AgentDoc`,
  *   but the backstop's reads of it;
- * - conversation making: a top-level conversation's authority is written where it is made,
- *   so only `OwnerAgent.thread` names a maker (`createConversation`,
- *   `createRootConversation`, `fork`, `forkConversation`), and a task's conversation
- *   takes its owner's in pi's `conversationCreated`;
+ * - conversation making: each thread is one pi Session whose root is the thread, its
+ *   authority written in the root's creating commit, so the only maker any source names is
+ *   pi's `root`, in `OwnerAgent.#open` (the thread host's opener), and no source names
+ *   another (`createConversation`, `createRootConversation`, `fork`, `forkConversation`); a
+ *   task's conversation takes its owner's in pi's `conversationCreated`;
  * - the model's tools (A3): pi offers the model what a conversation's `modelTools` names,
  *   so it is written in one place, `OwnerAgent.#inherit` (pi's `conversationCreated`, in
  *   every creating commit), as `(await tx.doc(AgentDoc, ...)).modelTools = ...`, that
@@ -32,13 +33,15 @@ const SELECTS = "extensions";
 const CONFIGURE = "configure";
 const AGENT_DOC = "AgentDoc";
 const MAKERS: ReadonlySet<string> = new Set(["createConversation", "createRootConversation",
-                                             "fork", "forkConversation"]);
+                                             "fork", "forkConversation", "root"]);
+/** The one maker a source may name, and only in `OwnerAgent.#open`. */
+const ROOT = "root";
 const MODEL_TOOLS = "modelTools";
 const ADD_TOOLS = "addTools";
 const CONTROL = "control";
 const GUARDED: ReadonlySet<string> = new Set([SELECTS, CONFIGURE, AGENT_DOC, MODEL_TOOLS,
                                               ADD_TOOLS, ...MAKERS]);
-/** `OwnerAgent.thread` and the backstop's file. */
+/** `OwnerAgent.#open` and the backstop's file. */
 const THREAD = "owner/src/agent.ts";
 
 /** Whether `node` sits in `OwnerAgent`'s method `name`. */
@@ -100,15 +103,25 @@ function fixesModelTools(node: ts.Identifier, path: string): boolean {
     && ts.isExpressionStatement(assigned.parent);
 }
 
-/** Whether `node` sits in `OwnerAgent`'s `thread` method. */
-function inThread(node: ts.Node): boolean {
-  for (let up = node.parent; up !== undefined; up = up.parent) {
-    if (ts.isMethodDeclaration(up) && up.name.getText() === "thread"
-        && ts.isClassDeclaration(up.parent) && up.parent.name?.text === "OwnerAgent") {
-      return true;
-    }
-  }
-  return false;
+/**
+ * Whether `node` names a member, as a maker is reached (`pi.root`, `{ root } = pi`): a
+ * plain name `root` (a path's root, a parameter) is no maker.
+ */
+function namesMember(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  return (ts.isPropertyAccessExpression(parent) && parent.name === node)
+    || (ts.isBindingElement(parent) && (parent.propertyName === node
+                                        || (parent.propertyName === undefined
+                                            && parent.name === node)))
+    || ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent);
+}
+
+/** Whether `node` is pi's `root`, called in `OwnerAgent`'s `#open`. */
+function opensRoot(node: ts.Identifier): boolean {
+  const access = node.parent;
+  return node.text === ROOT && ts.isPropertyAccessExpression(access) && access.name === node
+    && ts.isCallExpression(access.parent) && access.parent.expression === access
+    && inMethod(node, "#open");
 }
 
 /** The name a key or a key expression spells, when it is a literal one. */
@@ -188,8 +201,10 @@ export function selections(path: string, source: string): string[] {
       if (node.text === CONFIGURE) {
         report(node, "configures a conversation's agent");
       }
-      if (MAKERS.has(node.text) && !declaredKey(node) && !(path === THREAD && inThread(node))) {
-        report(node, `${node.text} outside OwnerAgent.thread`);
+      if (MAKERS.has(node.text) && !declaredKey(node)
+          && !(node.text === ROOT && !namesMember(node))
+          && !(path === THREAD && opensRoot(node))) {
+        report(node, `${node.text} outside OwnerAgent.#open's root`);
       }
       if (node.text === AGENT_DOC && !(path === THREAD
           && (ts.isImportSpecifier(node.parent) || snapshotted(node)
@@ -213,12 +228,13 @@ export function selections(path: string, source: string): string[] {
 describe("agent-authority guard", () => {
   const owner = [...workerSources()].filter(([path]) => path.startsWith("owner/src/"));
 
-  it("selects no extensions and makes conversations only as threads", () => {
+  it("selects no extensions and makes conversations only as threads' roots", () => {
     expect(owner.length).toBeGreaterThan(10);
     expect(owner.flatMap(([path, source]) => selections(path, source))).toEqual([]);
     // The one maker and the backstop are where the guard looks for them.
     const agent = owner.find(([path]) => path === THREAD)![1];
-    expect(agent).toContain("pi.createConversation(");
+    expect(agent).toContain("await pi.root(BG, {");
+    expect(agent).not.toContain("createConversation(");
     expect(agent).toContain("pi.snapshot(AgentDoc, ");
     expect(agent).toContain("(await tx.doc(AgentDoc, record.id)).modelTools = [...MODEL_TOOLS];");
   });
@@ -231,10 +247,19 @@ describe("agent-authority guard", () => {
      "pi.createConversation({ ownership, agent: { extensions } }, BG);"],
     ["a selection in settings", "owner/src/x.ts", "const s = () => ({ ...p(), extensions: [] });"],
     ["a maker", "owner/src/x.ts", "await pi.createConversation({ ownership }, BG);"],
-    ["a maker in OwnerAgent but thread", THREAD,
+    ["a maker in OwnerAgent but #open", THREAD,
      "class OwnerAgent { other() { return tx.forkConversation(a, b, o); } }"],
-    ["a fork beside thread", THREAD, "class OwnerAgent { thread() { return c.fork(at, o, BG)" +
-      ".then(() => pi.createConversation(o, BG)); } other() { return c.fork(at, o, BG); } }"],
+    ["a fork beside #open's root", THREAD, "class OwnerAgent { async #open() { " +
+      "await pi.root(BG, o); return c.fork(at, o, BG); } }"],
+    ["another maker in #open", THREAD,
+     "class OwnerAgent { async #open() { await pi.createConversation(o, BG); } }"],
+    ["the root outside #open", THREAD,
+     "class OwnerAgent { async thread() { await pi.root(BG, o); } }"],
+    ["the root in another file", "owner/src/thread-host.ts",
+     "class OwnerAgent { async #open() { await pi.root(BG, o); } }"],
+    ["the root by reference", THREAD,
+     "class OwnerAgent { async #open() { const r = pi.root; await r(BG); } }"],
+    ["the root destructured", "owner/src/x.ts", "const { root } = pi; await root(BG);"],
     // The review's evasions (R7).
     ["configure by a literal key", "owner/src/x.ts", "c[\"configure\"]({ model }, BG);"],
     ["a quoted selection key", "owner/src/x.ts",
@@ -287,7 +312,8 @@ describe("agent-authority guard", () => {
   });
 
   it.each([
-    [THREAD, "class OwnerAgent { async thread() { await pi.createConversation(o, BG); } }"],
+    [THREAD, "class OwnerAgent { async #open() { await pi.root(BG, o); } }"],
+    ["owner/src/x.ts", "export function f(root: string) { return ROOTS.some((root) => root); }"],
     ["owner/src/x.ts", "const packages = this.source.packages; read(source.extensions);"],
     ["owner/src/x.ts", "const doc = defineDoc({ name, fork: \"current\" });"],
     [THREAD, "import { AgentDoc } from \"p\"; const a = await pi.snapshot(AgentDoc, id, BG);"],

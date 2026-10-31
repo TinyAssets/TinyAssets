@@ -8,7 +8,6 @@
  * drives `alarm()` itself.
  */
 import { runInDurableObject } from "cloudflare:test";
-import { DurableObjectSqliteDatabase } from "@earendil-works/chord/sqlite/cloudflare";
 import { Lifecycle, LifecycleCapability } from "agents/lifecycle";
 import { describe, expect, it } from "vitest";
 
@@ -299,23 +298,6 @@ describe("a lane's run", () => {
     expect(await inTime(new Promise(() => undefined), 10)).toBe("late");
     const slow = new Promise((resolve) => setTimeout(() => resolve("done"), 20));
     expect(await inTime(slow, Infinity)).toBe("done");  // unbounded waits it out
-  }));
-
-  it("is set inside a unit of the write gate: never while a pi transaction holds the queue",
-     () => withProbe(["a"], async (p) => {
-    p.lanes["a"]!.due = p.now + 900;
-    // A transaction of the queue pi's commits use, held open as a pi commit holds it.
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => { release = resolve; });
-    const open = new DurableObjectSqliteDatabase(p.storage).transaction(() => held);
-    const setting = p.schedule.sync();
-    for (let i = 0; i < 20; i++) {
-      await Promise.resolve();
-    }
-    expect(p.jobs()).toEqual({});  // the job row waits for the queue
-    release();
-    await Promise.all([open, setting]);
-    expect(p.jobs()["a"]).toEqual(at(p.now + 900));
   }));
 
   it("that fails through Lifecycle's retries backs its lane off, and a door honours it",

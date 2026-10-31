@@ -62,6 +62,88 @@ export function selfReach(fileName: string, source: string): string[] {
   return problems;
 }
 
+/** The thread store's source: its own object, which serves pi's records and reaches nothing. */
+const STORE = "owner/src/thread-store.ts";
+
+/** The runtime names a thread store may import: its class, and its sessions'. */
+const STORE_IMPORTS = new Set(["DurableObject", "DurableObject,RpcTarget"]);
+
+/**
+ * Each way a thread store's source could reach past its own storage: any `env` (a binding,
+ * `this.env`, a destructured one, or the string, as `this["env"]` or `Reflect.get(this,
+ * "env")` would name it), `this` other than as a property access by name (`this[...]`,
+ * `const { ... } = this`, `this` handed to a call), `Reflect`, any import of the owner's own
+ * modules but the store types' (`import type`), or a runtime name but the class it extends
+ * and `RpcTarget` (its sessions).
+ */
+export function storeReach(fileName: string, source: string): string[] {
+  const file = parse(fileName, source);
+  const problems: string[] = [];
+  const report = reporter(file, problems);
+  const visit = (node: ts.Node): void => {
+    if ((ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteralLike(node))
+        && node.text === "env") {
+      report(node, "names `env`: a thread store reads no binding");
+    }
+    if (ts.isIdentifier(node) && node.text === "Reflect") {
+      report(node, "names `Reflect`: a thread store reads its own members by name only");
+    }
+    if (node.kind === ts.SyntaxKind.ThisKeyword
+        && !(ts.isPropertyAccessExpression(node.parent) && node.parent.expression === node)) {
+      report(node, "uses `this` but by a member's name: a thread store reads no binding");
+    }
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      const from = node.moduleSpecifier.text;
+      if (from.startsWith(".") && node.importClause?.isTypeOnly !== true) {
+        report(node, `imports ${from}: a thread store runs none of the owner's code`);
+      }
+      if (from === RUNTIME) {
+        const named = node.importClause?.namedBindings;
+        const names = named !== undefined && ts.isNamedImports(named)
+          ? named.elements.map((element) => (element.propertyName ?? element.name).text) : [];
+        if (!STORE_IMPORTS.has([...names].sort().join())) {
+          report(node, `imports ${names.join(", ") || "all"} from ${RUNTIME}`);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return problems;
+}
+
+describe("thread-store guard", () => {
+  it("reads no env binding and runs none of the owner's code", () => {
+    const source = workerSources().get(STORE)!;
+    expect(source).toContain("export class ThreadStore extends DurableObject");
+    expect(storeReach(STORE, source)).toEqual([]);
+  });
+
+  it.each([
+    "export class S extends DurableObject { m() { return this.env.FILES; } }",
+    "export class S extends DurableObject { constructor(ctx, env) { super(ctx, env); } }",
+    "import { env } from 'cloudflare:workers';",
+    "import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';",
+    "import { DurableObject, RpcTarget, WorkerEntrypoint } from 'cloudflare:workers';",
+    "import { RpcTarget } from 'cloudflare:workers';",
+    "import { Files } from './files';",
+    "export class S { m(o: { env: unknown }) { const { env } = o; return env; } }",
+    "export class S extends DurableObject { m() { return this[\"env\"]; } }",
+    "export class S extends DurableObject { m() { return this[`e${'nv'}`]; } }",
+    "export class S extends DurableObject { m() { return Reflect.get(this, 'e' + 'nv'); } }",
+    "export class S extends DurableObject { m() { const { ...all } = this; return all; } }",
+    "export class S extends DurableObject { m() { return Object.values(this); } }",
+  ])("sees %s", (source) => {
+    expect(storeReach(STORE, source)).not.toEqual([]);
+  });
+
+  it("allows the store types' own import, and its sessions' class", () => {
+    expect(storeReach(STORE, "import type { Read } from './remote-storage';")).toEqual([]);
+    expect(storeReach(STORE, "import { RpcTarget, DurableObject } from 'cloudflare:workers';"))
+      .toEqual([]);
+  });
+});
+
 describe("self-reach guard", () => {
   it("finds no way past the object in any Worker's source", () => {
     const sources = workerSources();

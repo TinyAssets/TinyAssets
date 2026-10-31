@@ -14,11 +14,14 @@ import type { TelemetrySpan } from "@earendil-works/pi-telemetry";
 
 import type { Credential, Source } from "../../gateway/src/credential";
 import { seal } from "../../gateway/src/keyring";
-import type { OwnerAgent } from "../src/agent";
+import type { Provider } from "@earendil-works/pi-ai";
+
+import type { AgentParts, OwnerAgent } from "../src/agent";
 import type { ModelInfo } from "../src/connections";
 import { originContext } from "../src/origin";
 import type { Binding } from "../src/owner-do";
 import { signedIn } from "./ledger-support";
+import type { TestHarness } from "./agent-support";
 import type { GatedOwnerDO } from "./worker";
 
 export const ANTHROPIC: Source = Object.freeze({
@@ -129,12 +132,23 @@ export type Gated = Awaited<ReturnType<typeof gated>>;
  * made), and the telemetry context of an input of its own, `turn`, as pi would hand it
  * (`origin.ts`).
  */
-export async function direct(instance: { agent: OwnerAgent },
+export async function direct(instance: { harness: TestHarness },
                              turn: string = crypto.randomUUID()):
     Promise<{ sessionId: string; telemetry: TelemetrySpan }> {
-  const pi = await instance.agent.harness.pi();
+  const pi = await instance.harness.pi();
   const root = await pi.snapshot(ProviderDoc, ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT);
   return { sessionId: root!.sessionId, telemetry: originContext(`input:${turn}`) };
+}
+
+/**
+ * The provider as the owner's own thread's Session sees it (`forSession`): a test's own
+ * call names that Session's conversations, as pi's calls do.
+ */
+export async function provider(instance: { agent: OwnerAgent; parts: AgentParts;
+                                           harness: TestHarness }): Promise<Provider> {
+  const pi = await instance.harness.pi();
+  return instance.parts.provider.forSession((sessionId) =>
+    instance.agent.modelAuthority(pi, sessionId));
 }
 
 /** A one-message context, as pi sends a request. */

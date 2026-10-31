@@ -79,7 +79,7 @@ function inWork<R>(r: Rig, act: (parts: Parts) => R | Promise<R>,
       const key = typeof client === "string" ? client : null;
       const thread = state.storage.sql.exec<{ thread_id: string }>(
         "SELECT thread_id FROM agent_threads WHERE client IS ?", key).toArray()[0]?.thread_id
-        ?? threads.record(Math.floor(Math.random() * 1e9) + 1, "main", key === null ? null
+        ?? threads.record("main", key === null ? null
           : { client: key, generation: 1, authenticated_at: null, universe: null,
               agent: "main" }, clock()).thread_id;
       return { thread, input };
@@ -160,7 +160,7 @@ describe("stamped scheduled work", () => {
       const theirs = turn(stamp);
       // The same client's thread, made under another generation of its grant.
       const older = { ...theirs, thread: new Threads(state.storage).record(
-        987_654, "main", { ...stamp, generation: 2, universe: null, agent: "main" },
+        "main", { ...stamp, generation: 2, universe: null, agent: "main" },
         clock()).thread_id };
       return [tried(theirs, stamp), tried(owners, null), tried(owners, stamp), tried(older, stamp),
               tried(theirs, null), tried({ ...owners, thread: `thread_${"0".repeat(32)}` }, null),

@@ -15,9 +15,10 @@
  * may stay a third full, so the guard counts the manifest at its high bound times
  * `WORST_FILL`, and a workerd test fills, thins and refills a database against it
  * (`files-share.test.ts`). The model turns' counters are bounded by count and a turn's
- * bytes, the calls open at once and the spend counters by count (migration 10). Until the
- * storage slice (S1-S3) lands, pi's own tables share the object, made by pi rather than
- * this schema, and A4's storage gauge stands for them.
+ * bytes, the calls open at once and the spend counters by count (migration 10). pi's
+ * records live in the thread stores (`thread-store.ts`, S1-S3), never in the owner's
+ * database, so what the owner's object holds is its own bounded rows only, whatever its
+ * agents do; this guard replaced A4's runtime storage gauge.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -29,7 +30,7 @@ import { LEDGER_LIMITS } from "../src/ledger";
 import { CHUNK_BYTES, MANIFEST_INDEXES, MANIFEST_TABLES, WORST_FILL } from "../src/manifest";
 import { NOTICE_DETAIL, NOTICES_KEPT } from "../src/notices";
 import { SESSION_LIMITS } from "../src/sessions";
-import { THREAD_LIMITS } from "../src/threads";
+import { THREAD_LIMITS, USAGE_ROW_MAX } from "../src/threads";
 import { USAGE_LIMITS } from "../src/usage";
 import { PLATFORM } from "./sources";
 
@@ -247,8 +248,13 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
   model_turns: { rows: TURNS_KEPT, bytes: ROW + 2 * TURN_BYTES,
                  by: "TURNS_KEPT turns of TURN_BYTES, in the row and its age index" },
   model_usage: { rows: 1, bytes: ROW, by: "one row" },
+  // The agent's threads: rows only, every transcript in its own store.
   agent_threads: { rows: THREAD_LIMITS.owner + THREAD_LIMITS.clients, bytes: ROW + 1 * KIB,
                    by: "THREAD_LIMITS (the owner's, and every client's)" },
+  agent_live: { rows: THREAD_LIMITS.owner + THREAD_LIMITS.clients, bytes: ROW,
+                by: "one per thread" },
+  agent_usage: { rows: THREAD_LIMITS.owner + THREAD_LIMITS.clients, bytes: ROW + USAGE_ROW_MAX,
+                 by: "one per thread, USAGE_ROW_MAX each" },
 });
 
 /** Every table the owner's schema makes, by its final name. */

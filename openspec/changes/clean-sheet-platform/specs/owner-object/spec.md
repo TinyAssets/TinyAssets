@@ -160,10 +160,10 @@ A lane's pass SHALL end within its job's single-flight hung timeout by wall cloc
 - **THEN** it takes no more of them, ends before its job's hung timeout, and its job brings the rest at once
 
 ### Requirement: Only Lifecycle touches the object's alarm
-Lifecycle SHALL own the object's single physical alarm, which PiHarness's wake job shares. No source SHALL set, read or clear the alarm itself, import any part of the `agents` package but `agents/lifecycle` and `agents/harness/pi` (so the object never extends the SDK's `Agent`), or install Lifecycle's runtime `fetch` and WebSocket handlers. The object's `alarm` SHALL only hand the runtime's alarm to Lifecycle.
+Lifecycle SHALL own the object's single physical alarm, which each agent thread's wake job shares. No source SHALL set, read or clear the alarm itself, import any part of the `agents` package but `agents/lifecycle` (so the object never extends the SDK's `Agent`), or install Lifecycle's runtime `fetch` and WebSocket handlers. The object's `alarm` SHALL only hand the runtime's alarm to Lifecycle.
 
 #### Scenario: Source sets the alarm
-- **WHEN** a Worker source names `setAlarm`, `deleteAlarm`, `getAlarm`, `disableAlarms` or `deleteAll`, spells one in pieces through a string, reaches a storage or a Lifecycle by a computed name, imports any part of the `agents` package but `agents/lifecycle` and `agents/harness/pi`, installs Lifecycle's handlers, or names a Lifecycle or pi table
+- **WHEN** a Worker source names `setAlarm`, `deleteAlarm`, `getAlarm`, `disableAlarms` or `deleteAll`, spells one in pieces through a string, reaches a storage or a Lifecycle by a computed name, imports any part of the `agents` package but `agents/lifecycle` (`agents/harness/pi` included), installs Lifecycle's handlers, or names a Lifecycle or pi table
 - **THEN** the alarm guard or the policy-boundary guard fails CI
 
 #### Scenario: A binding fetches the object
@@ -498,16 +498,12 @@ The object SHALL keep no call budget of its own: the platform counts subrequests
 - **WHEN** the files Worker's call throws the platform's subrequest error inside a tool call
 - **THEN** the tool's result is that error, and nothing was written
 
-### Requirement: Every owner write goes through pi's SQLite queue
-Every owner write SHALL run as a unit of the object's write gate: a synchronous turn of chord's per-storage queue, which pi's commits use, run once the queue holds nothing. A door's synchronous body SHALL be one unit; a door, lane or tool call that crosses to an outside call SHALL write each step around it as a unit of its own; Lifecycle's job sets SHALL be made inside a unit. A unit SHALL keep its own atomicity. Reads stay direct.
+### Requirement: Every owner write is a synchronous gate unit
+Every owner write SHALL run as a unit of the object's write gate: one synchronous `transactionSync`, run at once, which reads what it decides on itself and spans no outside call. pi's records SHALL live only in the thread stores, never in the owner's database, so no pi transaction is ever open in it. A door's synchronous body SHALL be one unit; a door, lane or tool call that crosses to an outside call (a thread store, `FILES`, the gateway) SHALL write each step around it as a unit of its own. A unit SHALL keep its own atomicity, and SHALL never be an async storage transaction, which would hold the input gate. Reads stay direct.
 
-#### Scenario: A door writes while a transaction of the queue is open
-- **WHEN** a door is called while a transaction of the shared queue is open, and that transaction then rolls back
-- **THEN** the door's write waits for the queue and is kept, where a direct write made at the same point is rolled back with the transaction
-
-#### Scenario: A unit queued as Lifecycle starts
-- **WHEN** a unit is queued just before Lifecycle's startup, which holds the input gate, awaits pi's open on the queue
-- **THEN** the unit runs, then the open, and neither waits on the other: a unit is never an async storage transaction of its own, which would need the input gate
+#### Scenario: A door writes while a thread commits
+- **WHEN** a door is called while a thread's commit is in flight
+- **THEN** the door's unit runs at once and is kept, and the commit lands in the thread's own store
 
 ### Requirement: No write reaches the storage past the gate
 The object's modules SHALL see the storage only through the gate's view, which SHALL refuse, loudly, any statement but a single read and any `transactionSync` outside a unit; the gate SHALL refuse a unit inside another and a unit that returns a promise.
@@ -527,12 +523,35 @@ A unit SHALL read the rows it decides on, or re-check them in its own statements
 - **WHEN** an outside client's whole write has passed its door's check and its grant loses `write_files` before the write's unit runs
 - **THEN** the write is refused and nothing is written
 
-### Requirement: pi runs in the owner's object on PiHarness
-pi-durable SHALL run in the owner's object on PiHarness, a capability of the object's own Lifecycle beside the schedule, with none of Lifecycle's handlers installed. pi SHALL open in Lifecycle's startup, which the first alarm or the first PiHarness call runs, with no door starting it first. Its tables SHALL carry their own schema version beside ours, which the pi pin guard SHALL hold at 2, with pi-durable, pi-ai and chord pinned by exact version and lockfile integrity.
+### Requirement: Each agent thread is one pi Session over its own store
+pi-durable SHALL run in the owner's object, one Session per agent thread, hosted by the object's own `ThreadHost`, a capability of its Lifecycle beside the schedule, with none of Lifecycle's handlers installed. Each Session SHALL be opened over its thread's own `ThreadStore`, a second SQLite class of the owner Worker bound as `PISTORE` (no `script_name`), by RPC over one session per open Session, released when the Session closes; the harness, every hook, the environment, the model provider and every authority check SHALL run in the owner's object. pi's tables SHALL exist only in the stores, under pi's own schema version, which the pi pin guard SHALL hold at 2, with pi-durable, pi-ai and chord pinned by exact version and lockfile integrity. A store SHALL serve only its holder, the Session that last opened it, refuse every call before it is opened, read no binding, and once destroyed refuse every call.
 
 #### Scenario: A cold object's first call
 - **WHEN** a cold object's first call submits a turn
-- **THEN** pi opens, migrates its tables to version 2, and the turn completes
+- **THEN** the thread's store is made and migrated to version 2, the turn completes, and the owner's database holds no `pi_` table
+
+#### Scenario: A stale Session
+- **WHEN** a newer Session opened a thread's store and the older one commits
+- **THEN** the store refuses the older one's call, and the newer one reads what was committed
+
+### Requirement: The thread host wakes each thread by its own job
+Each thread's Session SHALL be woken by a job of its own (`pi-wake:<thread>`), driven by that Session's `onWake`, each change kept in the thread's `agent_live` row in a gate unit. Sessions SHALL open on demand, close when idle for 2 minutes, the least recently used idle one first to make room, and an open past `OPEN_MAX` with no idle Session SHALL be refused at once, never waited on; a watched Session SHALL be pinned open and counted. A Session a storage error failed SHALL be opened again by its job or the next call, over what it committed.
+
+#### Scenario: A sleeping task in a closed Session
+- **WHEN** a thread's task sleeps until a deadline and its Session is closed
+- **THEN** the thread's own job opens its Session at the deadline and the task runs
+
+#### Scenario: A store reset mid-run
+- **WHEN** a thread's store refuses its Session's commit while an unsafe tool runs
+- **THEN** the Session fails, its job opens it again, committed work stands, and the tool comes back `interrupted`, never run twice
+
+#### Scenario: A task parked by pi's restart limit
+- **WHEN** a thread's task is cut off pi's restart limit times in a row and pi parks it
+- **THEN** the next open of its Session ends the run it holds up, its input settles `unanswered`, the owner is told, and the thread's next input is answered
+
+#### Scenario: A policy write while every Session is working
+- **WHEN** a policy write ends a thread whose live row says it is working, its Session closed and no Session idle
+- **THEN** the ending opens it past the bound, aborts its work before it resumes, starts no model request, and closes it again
 
 ### Requirement: pi opens with the object's registry, tools and settings
 The object SHALL open pi with one registry per object, pi's coding tools with `read` alone replay-safe, settings read at each use (progress committed at most once a second, a failed run's queued inputs withdrawn, owner policy's part beneath those), TinyAssets' attribution, and one model provider, `gateway`, listing only the owner's connected models.
@@ -733,7 +752,7 @@ pi's compaction thresholds SHALL be each listed model's own, from its context wi
 - **THEN** the call is refused before any reservation, pi compacts, and the retry goes to the same model under its threshold
 
 ### Requirement: pi's and pi-ai's metrics are kept
-The telemetry adapter SHALL carry a metrics capability on its root, every span and every extracted parent, aggregating every metric pi and pi-ai record by name, kind and attributes in the object's memory, at most 1,024 series, a measurement past them counted as dropped. The owner's `usageMetrics` SHALL answer them with pi's own `pi.usage`, summed over the conversations; no cap reads either.
+The telemetry adapter SHALL carry a metrics capability on its root, every span and every extracted parent, aggregating every metric pi and pi-ai record by name, kind and attributes in the object's memory, at most 1,024 series, a measurement past them counted as dropped. The owner's `usageMetrics` SHALL answer them with pi's own `pi.usage`, summed over every thread: an open Session's read live, any other's from the usage row the owner kept as its Session last closed (at most 64 KiB, going with its thread). The read SHALL never open a Session, and SHALL cover the threads the object holds now, each counted once (a dropped thread's usage goes with its row); no cap reads either.
 
 #### Scenario: A turn's metrics
 - **WHEN** a turn runs through the gateway and the owner reads its usage
@@ -794,14 +813,14 @@ Each conversation SHALL carry its authority in pi's own document: the owner's (t
 - **THEN** the fork carries the same stamp, and its next tool call is blocked
 
 ### Requirement: A client's threads are bounded and hold its grant
-`agent_threads` SHALL record a thread in a unit that re-checks its stamp stands, SHALL never change a thread's stamp, SHALL refuse loudly a thread past its client's bound or all clients' together, before any conversation is made, SHALL never record the root, and SHALL count each thread on its client's grant row (`held`), so the row is not forgotten while a thread names it. A grant set or revoke SHALL drop its client's threads in its own unit.
+`agent_threads` SHALL record a thread in a unit that re-checks its stamp stands, naming a fresh store (128 random bits, unique) before the store exists, SHALL never change a thread's stamp or store, SHALL refuse loudly a thread past its client's bound or all clients' together, before any store is made, and SHALL count each thread on its client's grant row (`held`), so the row is not forgotten while a thread names it. A thread is its Session's root; its stamp SHALL be written in the root's creating commit. A grant set or revoke SHALL drop its client's threads in its own unit.
 
 #### Scenario: A client at its bound
 - **WHEN** a client has as many threads as its bound and asks for another
 - **THEN** the thread is refused loudly, and the client's grant row counts each thread it keeps
 
 ### Requirement: Idle threads are dropped, never live ones
-The `threads` lane SHALL drop a thread no door or run has touched for the idle age (7 days), in a unit that re-checks the activity it read, so a thread touched since is kept; a thread whose conversation pi holds live work in, its subagents' and background work's included, SHALL never be dropped, its activity moved on instead; a thread unsettled scheduled work names SHALL never be idle, and is in use from its work's claim.
+The `threads` lane SHALL drop a thread no door or run has touched for the idle age (7 days), in a unit that re-checks the activity it read, so a thread touched since is kept; a live thread (its `agent_live` row: work running in its Session, its subagents' and background work's included, or a task sleeping) SHALL never be dropped, its activity moved on instead; a dropped thread's Session SHALL be closed and never opened again; a thread unsettled scheduled work names SHALL never be idle, and is in use from its work's claim.
 
 #### Scenario: Clients that stopped calling hold the shared bound
 - **WHEN** clients' threads fill the clients' shared bound and then go unused for the idle age
@@ -840,12 +859,19 @@ A launch's `at`, at the door and through `ta`, SHALL be seconds since the epoch,
 - **WHEN** a client launches with `at` in milliseconds, or at 1e300
 - **THEN** the launch is refused as invalid, and no thread, work row or alarm is made
 
-### Requirement: The storage gauge fails loudly before the object is full
-The object SHALL read its database size against its limit (10 GB) before each new thread or launch and in each `threads` lane pass, tell the owner once past 70% (`storage_high`), and past 90% tell the owner (`storage_full`) and refuse each new thread and launch loudly with the fixed code `storage_full`, while existing threads go on. The gauge is a safety net only; the fix is one pi Session per thread, wiped whole when the thread is dropped.
+### Requirement: A thread's store is wiped when the thread is dropped
+When a thread is dropped (idle, a grant change, a revoke), its store SHALL be wiped whole (`deleteAll`) before its row is forgotten (S4); the owner's own database SHALL hold only its bounded rows, its worst case at the policy's high bounds under half its 10 GB (a static guard).
 
-#### Scenario: The object nears its limit
-- **WHEN** the owner's storage passes 90% of its limit
-- **THEN** a new launch is refused `storage_full`, a message to an existing thread is answered, and the owner's notices hold `storage_full`
+#### Scenario: A client's threads after a revoke
+- **WHEN** a client with threads is revoked
+- **THEN** each of its threads' stores is wiped before its row is forgotten, and nothing opens them again
+
+### Requirement: A run's store is wiped `keep_runs` after it settles
+A run thread's store SHALL be wiped `keep_runs` after its run settles, its row kept as a receipt (S5).
+
+#### Scenario: A settled run past `keep_runs`
+- **WHEN** a run settled `keep_runs` ago and nothing in its thread is live
+- **THEN** its store is wiped, and its status is still answered from its receipt
 
 ### Requirement: The bounded waits are shared
 The object SHALL keep at most 256 pending waits, at most 16 of any one outside client's, and the clients together SHALL leave 32 for the owner; a wait refused for room SHALL answer `running` at once, the operation still submitted.
@@ -862,7 +888,7 @@ The object SHALL keep at most 256 pending waits, at most 16 of any one outside c
 - **THEN** it is refused "outside client capability not granted", no thread is made and pi is handed nothing
 
 ### Requirement: The agent's work is addressed by thread, the caller's own
-Every agent door SHALL address work by a thread id resolved against the calling client's own rows (the owner's for the owner), and hand pi only the session that row names, so no door reaches the root conversation; an operation id SHALL be its thread's id and pi's request id, and any operation not the caller's, a forged one and a pi session string included, SHALL be refused alike as no such operation.
+Every agent door SHALL address work by a thread id resolved against the calling client's own rows (the owner's for the owner), and reach only the Session that row names, so no door reaches another caller's thread; an operation id SHALL be its thread's id and pi's request id, and any operation not the caller's, a forged one and a pi session string included, SHALL be refused alike as no such operation.
 
 #### Scenario: Another client asks for an operation
 - **WHEN** one client, the owner, or anyone naming a pi session string asks the status of, or cancels, a client's operation

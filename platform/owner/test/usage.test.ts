@@ -11,7 +11,6 @@
  */
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { DurableObjectSqliteDatabase } from "@earendil-works/chord/sqlite/cloudflare";
 import { describe, expect, it } from "vitest";
 
 import { WriteGate } from "../src/gate";
@@ -21,7 +20,7 @@ import {
   type Ask, largestFitting, type ModelCaps, periods, priced, Usage, USAGE_LIMITS,
   type UsageLimits,
 } from "../src/usage";
-import { gated, until } from "./gateway-support";
+import { gated, provider, until } from "./gateway-support";
 import { failure, ownerObject } from "./support";
 import type { GatedOwnerDO } from "./worker";
 
@@ -561,20 +560,9 @@ describe("concurrent reserves", () => {
   it("never pass a cap: each reads and inserts in its own unit, one after another", () =>
     withUsage(async (r) => {
       r.policy.caps = { turn_requests: 3 };
-      let release!: () => void;
-      const held = new Promise<void>((resolve) => { release = resolve; });
-      // A transaction of the queue every unit waits on, held while the reserves queue.
-      const other = new DurableObjectSqliteDatabase(r.state.storage).transaction(async () => {
-        await held;
-      });
+      // Asked for together, each runs whole in its own unit, reading what the last wrote.
       const reserves = Array.from({ length: 8 }, () =>
         r.gate.write(() => r.usage.reserve(ASK, NOW)));
-      for (let i = 0; i < 20; i++) {
-        await Promise.resolve();
-      }
-      expect(r.rows()).toEqual([]);
-      release();
-      await other;
       const results = await Promise.all(reserves);
       expect(results.filter((result) => result.ok)).toHaveLength(3);
       expect(results.slice(3)).toEqual(Array(5).fill({ ok: false, rule: "turn_requests" }));
@@ -582,15 +570,8 @@ describe("concurrent reserves", () => {
 
   it("never pass a spend ceiling either", () => withUsage(async (r) => {
     r.policy.caps = { daily_cost: FULL * 2 };
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => { release = resolve; });
-    const other = new DurableObjectSqliteDatabase(r.state.storage).transaction(async () => {
-      await held;
-    });
     const reserves = Array.from({ length: 6 }, (_, i) =>
       r.gate.write(() => r.usage.reserve({ ...ASK, turn: `t${i}` }, NOW)));
-    release();
-    await other;
     const results = await Promise.all(reserves);
     expect(results.filter((result) => result.ok)).toHaveLength(2);
     expect(r.spend()[DAY]).toBe(FULL * 2);
@@ -647,7 +628,7 @@ describe("a dead instance's calls", () => {
     const cancelled = async () => ((await (await fetch(`https://status.test/cancelled?id=${id}`))
       .json()) as { cancelled: boolean | null }).cancelled;
     await r.in(async (instance: GatedOwnerDO) => {
-      await instance.agent.harness.submit(`cmd:slow-${id}`);
+      await instance.harness.submit(`cmd:slow-${id}`);
     });
     await until(async () => (await cancelled()) === false, "the upstream stream to open");
     const [open] = await r.sql("SELECT id, state, est_cost FROM model_reservations");

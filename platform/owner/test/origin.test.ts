@@ -17,7 +17,9 @@ import {
   PHASE, turnOf,
 } from "../src/origin";
 
-const ROOT = originRoot();
+/** A thread's Session's root, as the thread host opens it. */
+const THREAD = `thread_${"a".repeat(32)}`;
+const ROOT = originRoot(THREAD);
 
 /** The span `parent` starts with `name` and `attributes`, handed to `act`. */
 function within<T>(parent: TelemetryContext, name: string,
@@ -76,10 +78,15 @@ describe("a call's origin", () => {
     expect(first).not.toBe("input:caller-1");
   });
 
-  it("is a compaction's own, by its task id, when pi gives it no carrier, and none for any " +
-     "other task", async () => {
+  it("is a compaction's own, by its thread and task id, when pi gives it no carrier, and none " +
+     "for any other task", async () => {
     expect(await within(ROOT, "pi.durable.phase", { "task.id": 41, "task.name": "pi.compaction" },
-                        (span) => turnOf(span))).toBe("task:41");
+                        (span) => turnOf(span))).toBe(`task:${THREAD}:41`);
+    // Task ids are per Session: another thread's compaction of the same id is another turn.
+    const other = originRoot(`thread_${"b".repeat(32)}`);
+    expect(await within(other, "pi.durable.phase", { "task.id": 41,
+                                                     "task.name": "pi.compaction" },
+                        (span) => turnOf(span))).toBe(`task:thread_${"b".repeat(32)}:41`);
     await within(ROOT, "pi.durable.phase", { "task.id": 42, "task.name": "pkg.work" },
                  (span) => expect(() => turnOf(span)).toThrow(NO_RUN));
     await within(ROOT, "pi.durable.phase", { "task.name": "pi.compaction" },
@@ -89,13 +96,19 @@ describe("a call's origin", () => {
 
   it("is carried only in its own key, in its own grammar", () => {
     const extract = ROOT.propagation!.extract;
-    expect(turnOf(extract({ "ta.origin": "task:7" }))).toBe("task:7");
+    expect(turnOf(extract({ "ta.origin": `task:${THREAD}:7` }))).toBe(`task:${THREAD}:7`);
     for (const carrier of [undefined, {}, { "ta.origin": "run:7" }, { "ta.origin": "input:" },
-                           { origin: "input:x" }, { "ta.origin": `input:${"a".repeat(65)}` }]) {
+                           { origin: "input:x" }, { "ta.origin": `input:${"a".repeat(65)}` },
+                           { "ta.origin": "task:7" }, { "ta.origin": `task:${THREAD}:x` },
+                           { "ta.origin": "task:thread_x:7" }]) {
       expect(() => turnOf(extract(carrier))).toThrow(NO_RUN);
     }
     expect(ROOT.propagation!.inject(originContext("input:x"))).toEqual({ "ta.origin": "input:x" });
     expect(() => originContext("bad")).toThrow();
+    // A root is a thread's, by its id.
+    for (const thread of ["", "thread_x", `thread_${"A".repeat(32)}`, "1"]) {
+      expect(() => originRoot(thread)).toThrow(/a thread's/);
+    }
   });
 });
 
@@ -128,7 +141,7 @@ describe("the adapter on pi 1.4, where a throwing adapter can reject a durable c
   it("never throws, from any span, its propagation or its metrics, whatever it is handed",
      async () => {
     const metrics = new OriginMetrics();
-    const root = originRoot(metrics);
+    const root = originRoot(THREAD, metrics);
     const spans: TelemetrySpan[] = [root, originContext("input:x")];
     await root.startSpan({ name: ADMISSION }, (span) => {
       spans.push(span as TelemetrySpan);
@@ -173,7 +186,7 @@ describe("the adapter on pi 1.4, where a throwing adapter can reject a durable c
     const failure = new Error("the callback's own");
     let started: Promise<unknown> | undefined;
     expect(() => {
-      started = originRoot().startSpan({ name: ADMISSION }, () => {
+      started = originRoot(THREAD).startSpan({ name: ADMISSION }, () => {
         throw failure;
       });
     }).not.toThrow();
@@ -182,7 +195,7 @@ describe("the adapter on pi 1.4, where a throwing adapter can reject a durable c
 
   it("keeps the same metrics on its root, every span and every extracted parent", async () => {
     const metrics = new OriginMetrics();
-    const root = originRoot(metrics);
+    const root = originRoot(THREAD, metrics);
     expect(root.metrics).toBe(metrics);
     await root.startSpan({ name: ADMISSION }, async (span) => {
       expect(span.metrics).toBe(metrics);

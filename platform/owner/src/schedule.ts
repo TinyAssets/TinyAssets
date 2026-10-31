@@ -2,10 +2,11 @@
  * The owner object's one schedule, on the Agents SDK Lifecycle job queue (ADR-032, tasks 3.6).
  *
  * Lifecycle (`agents/lifecycle`, agents 0.31.0) owns the Durable Object's queue of durable
- * jobs and its single physical alarm, and PiHarness (`agent.ts`) keeps its own wake job on
- * the same queue. So no source here sets, reads or clears the alarm (the alarm guard):
- * every queue change re-arms it from the queue, and `OwnerDO.alarm` only hands the
- * runtime's alarm to Lifecycle, which drives the due jobs and re-arms.
+ * jobs and its single physical alarm, and the thread host (`thread-host.ts`) keeps a wake
+ * job per agent thread on the same queue. So no source here sets, reads or clears the
+ * alarm (the alarm guard): every queue change re-arms it from the queue, and
+ * `OwnerDO.alarm` only hands the runtime's alarm to Lifecycle, which drives the due jobs
+ * and re-arms.
  *
  * Each kind of timed work is a lane: its own durable rows, which stay the truth, and one
  * Lifecycle job, `owner-schedule/<lane>`, that says only when to look again. Job ids are
@@ -26,7 +27,7 @@
  *   off in its row (a wake's or work row's due time, a chunk's retry time), so it neither
  *   loops the alarm nor rethrows. Lifecycle reads a rethrown transport error ("network
  *   connection lost") as a platform failure and rethrows the whole alarm, which would
- *   starve every later job on the object, PiHarness's among them. A pass throws only for
+ *   starve every later job on the object, every thread's wake among them. A pass throws only for
  *   a bug; then, after Lifecycle's in-process retries, its lane backs off `LANE_RETRY_S`.
  * - Passes are inline in Lifecycle's drive loop, which awaits each job in turn, so a pass
  *   is short: it hands long work off (a turn to pi's durable submit, `scheduled.ts`) and
@@ -46,15 +47,16 @@
  *
  * Lifecycle's memory-limit breaker is the object's, not a lane's: it counts consecutive
  * memory-limit resets across every capability's jobs. A strike in a lane backs off that
- * lane's job and every pending `recoveryLoop` job (PiHarness's wake), and a sealing strike
- * deletes the executing job and purges those (agents `job-driver.ts`); a strike in pi's job
- * does the same to it. Our jobs are not `recoveryLoop`: they re-derive from their rows,
- * so a purged lane comes back at the next door or wake.
+ * lane's job and every pending `recoveryLoop` job (the threads' wakes), and a sealing
+ * strike deletes the executing job and purges those (agents `job-driver.ts`); a strike in a
+ * thread's wake does the same to it. Our lanes' jobs are not `recoveryLoop`: they
+ * re-derive from their rows, so a purged lane comes back at the next door or wake.
  *
  * Each alarm invocation writes the physical alarm four times: the startup fallback, the
  * deadman pre-arm before driving, a lane's own set when its pass ends, and Lifecycle's
- * final re-arm. Lifecycle's own storage is a fixed set: one job-table row per lane
- * (and PiHarness's one), and a memory-limit strike counter in the key-value store. It
+ * final re-arm. Lifecycle's own storage is a bounded set: one job-table row per lane and
+ * per working or sleeping thread, a wake-failure count per failing thread and a
+ * memory-limit strike counter in the key-value store. It
  * counts toward the object's storage, never toward an owner bound, which count only the
  * object's own tables. Job ids are always given, so Lifecycle never draws one from its
  * random pool.

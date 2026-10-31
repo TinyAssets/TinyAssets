@@ -75,7 +75,8 @@ export default defineConfig({
         // Runs in workerd, against the config's own KV namespaces, flags and GATEWAY
         // binding. The test entry serves the doors with a fake upstream sign-in and the
         // records with a test source beside them, and exports the real OwnerDO, so OWNER,
-        // which the config binds by script_name, is bound to it here; the fake upstream's
+        // which the config binds by script_name, is bound to it here, and the real
+        // ThreadStore, the owner Worker's own PISTORE, which the object's agent reaches; the fake upstream's
         // issuer stands in for AuthKit's as the owner issuer. GATEWAY reaches the real
         // gateway Worker, whose fetches reach the fake providers; PROVIDERS is the tests'
         // own way to them, to read back what they received.
@@ -84,7 +85,8 @@ export default defineConfig({
             main: "./test/entry.ts",
             wrangler: { configPath: "./wrangler.jsonc" },
             miniflare: {
-              durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
+              durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true },
+                                PISTORE: { className: "ThreadStore", useSQLite: true } },
               bindings: { OWNER_ISSUER: "https://upstream.test" },
               serviceBindings: { PROVIDERS: "fake-providers" },
               workers: [gatewayWorker(KEYRING), fakeProviders()],

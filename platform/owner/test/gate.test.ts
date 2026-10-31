@@ -1,9 +1,8 @@
 /**
- * The write gate (`gate.ts`): units run one at a time on the queue pi's commits use, keep
+ * The write gate (`gate.ts`): units run one at a time, each at once and synchronously, keep
  * their own atomicity, and the storage view refuses a write outside one.
  */
 import { runInDurableObject } from "cloudflare:test";
-import { DurableObjectSqliteDatabase } from "@earendil-works/chord/sqlite/cloudflare";
 import { describe, expect, it } from "vitest";
 
 import { ASYNC_UNIT, NESTED_UNIT, OUTSIDE_GATE, WriteGate } from "../src/gate";
@@ -74,39 +73,19 @@ describe("the write gate", () => {
     expect(rows(state)).toEqual([]);
   }));
 
-  it("never waits on the input gate: a startup holding it waits on the queue behind a unit",
-     () => withGate(async (gate, state) => {
-    // Lifecycle's startup holds the input gate (blockConcurrencyWhile) and awaits pi's
-    // open, a transaction of this queue; a unit queued just before it must not need the
-    // input gate to run, or each waits on the other until the runtime resets the object.
-    const unit = gate.write(() => {
-      gate.storage.sql.exec("INSERT INTO gate_probe VALUES (1)");
-    });
-    await state.blockConcurrencyWhile(() =>
-      new DurableObjectSqliteDatabase(state.storage).transaction(async (tx) => {
-        await tx.run("INSERT INTO gate_probe VALUES (2)");
-      }));
-    await unit;
-    expect(rows(state)).toEqual([1, 2]);
-  }));
-
-  it("runs units one at a time, in order, behind a transaction of the same queue",
-     () => withGate(async (gate, state) => {
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => { release = resolve; });
-    const other = new DurableObjectSqliteDatabase(state.storage).transaction(async (tx) => {
-      await tx.run("INSERT INTO gate_probe VALUES (1)");
-      await held;
-    });
-    const units = [2, 3].map((n) => gate.write(() => {
+  it("runs each unit at once, in the order asked: nothing to wait behind, the input gate's " +
+     "hold included", () => withGate(async (gate, state) => {
+    // pi's commits are its thread stores' own: no transaction of this database to queue on.
+    const units = [1, 2, 3].map((n) => gate.write(() => {
       gate.storage.sql.exec("INSERT INTO gate_probe VALUES (?)", n);
+      return n;
     }));
-    for (let i = 0; i < 20; i++) {
-      await Promise.resolve();
-    }
-    expect(rows(state)).toEqual([]);  // the transaction has not begun or holds the queue
-    release();
-    await Promise.all([other, ...units]);
+    // Each committed before any was awaited: a unit spans no await.
     expect(rows(state)).toEqual([1, 2, 3]);
+    expect(await Promise.all(units)).toEqual([1, 2, 3]);
+    await state.blockConcurrencyWhile(async () => {
+      await gate.write(() => gate.storage.sql.exec("INSERT INTO gate_probe VALUES (4)"));
+    });
+    expect(rows(state)).toEqual([1, 2, 3, 4]);
   }));
 });
