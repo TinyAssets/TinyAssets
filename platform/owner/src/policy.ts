@@ -30,7 +30,7 @@
  *   daily and monthly cost ceilings, and pi's retry count. `usage.ts` holds every model
  *   call to it, in the unit that reserves the call, and `agentPolicy` hands pi the part
  *   that is pi's. The Python's per-turn limits were code constants; here they are policy.
- * - The optional `runs` table is the owner's run retention (`RUN_DEFAULTS`, tasks 5 S5):
+ * - The optional `runs` table is the owner's run policy (`RUN_DEFAULTS`, tasks 5 S5):
  *   how long a settled run's store is kept (`keep_runs`), and its receipt
  *   (`keep_run_receipts`), which the `threads` lane reads (`threads.ts`).
  *
@@ -71,7 +71,7 @@ import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import { CHUNK_BYTES, KEEP_CEILING, MAX_INTENT_CHUNKS } from "./files";
 import { codePoints, SOURCE_ID } from "./text";
-import type { RunRetention } from "./threads";
+import type { RunPolicy } from "./threads";
 
 export const BEHAVIOURS: readonly string[] =
   Object.freeze(["do", "do_if_preapproved", "ask_first", "hand_off"]);
@@ -188,15 +188,21 @@ export function fileSettings(document: PolicyDocument): FileSettings {
 }
 
 /**
- * Owner run retention (tasks 5, S5): how long a settled run's store is kept (`keep_runs`,
+ * Owner run policy (tasks 5, S5): how long a settled run's store is kept (`keep_runs`,
  * whole days, at most 30), and how long its receipt is kept from when it settled
- * (`keep_run_receipts`, whole days, at least `keep_runs` and at most 365). The document's
- * optional `runs` table sets either; the rest keep these values. A run's receipt is how its
- * status is answered once its store is wiped (`threads.ts`).
+ * (`keep_run_receipts`, whole days, at least `keep_runs` and at most 365); and, as the
+ * files quotas share theirs, the percent of the runs' live stores (`runs_kept`) and of
+ * their receipts one outside client may hold (`client_share`), and the percent every
+ * client together leaves the owner (`owner_reserve`), so the owner can always launch. The
+ * document's optional `runs` table sets any of them; the rest keep these values. A run's
+ * receipt is how its status is answered once it settled (`threads.ts`); receipts past a
+ * share let their oldest go, and never refuse a launch.
  */
 export const RUN_DEFAULTS = Object.freeze({
   keep_runs: 7,
   keep_run_receipts: 90,
+  client_share: 25,
+  owner_reserve: 25,
 });
 export type RunSettings = { readonly [K in keyof typeof RUN_DEFAULTS]: number };
 /** The range each run setting may take. */
@@ -204,6 +210,8 @@ export const RUN_SETTINGS: { readonly [K in keyof RunSettings]: readonly [number
   Object.freeze({
     keep_runs: Object.freeze([1, 30] as const),
     keep_run_receipts: Object.freeze([1, 365] as const),
+    client_share: Object.freeze([0, 100] as const),
+    owner_reserve: Object.freeze([0, 100] as const),
   });
 const DAY_S = 86_400;
 
@@ -212,11 +220,12 @@ export function runSettings(document: PolicyDocument): RunSettings {
   return { ...RUN_DEFAULTS, ...document.runs };
 }
 
-/** The run retention a document leaves in force, in seconds, as the threads read it. */
-export function runRetention(document: PolicyDocument): RunRetention {
+/** The run policy a document leaves in force, its times in seconds, as the threads read it. */
+export function runPolicy(document: PolicyDocument): RunPolicy {
   const settings = runSettings(document);
   return { keepRunsS: settings.keep_runs * DAY_S,
-           keepReceiptsS: settings.keep_run_receipts * DAY_S };
+           keepReceiptsS: settings.keep_run_receipts * DAY_S,
+           clientShare: settings.client_share, ownerReserve: settings.owner_reserve };
 }
 
 /**

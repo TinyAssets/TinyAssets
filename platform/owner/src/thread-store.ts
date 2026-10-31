@@ -37,17 +37,15 @@
  *   throws is final").
  * - **`size()`** is the store's database size in bytes (its 10 GB is its own: a full store
  *   fails only its own thread).
- * - **`destroy()`** wipes the store whole (`deleteAll()`, atomic) and then leaves only a
- *   mark that it was destroyed, so every later call, `open` included, is refused: a
- *   destroyed store's Session can never be opened again, and a late call from a closed one
- *   never resurrects it. Names are never reused, so nothing needs it back. The wipe and the
- *   mark are two steps (`deleteAll` takes the mark with it), so a destroy cut short between
- *   them leaves an empty store with no mark. The owner keeps that store from reviving: its
- *   caller (the drop and erasure paths, S4) names the store in a row before it is made,
- *   marks the row `dropping` before it calls `destroy()`, and forgets the row only once
- *   `destroy()` returned, retrying it until then; the owner never opens a dropping thread
- *   (`Threads.get` reads ready rows only). A namespace's objects cannot be listed, so the
- *   row is the only way back to a store.
+ * - **`destroy()`** wipes the store whole (`deleteAll()`, atomic), leaving nothing: an
+ *   empty object, which bills nothing it stores (live probe P8 confirms it) and which
+ *   refuses every call but `open` (`NOT_OPENED`), as one never made does. While the instance
+ *   that destroyed it is in memory, every call, `open` included, is refused at once
+ *   (`DESTROYED`), so a late call from a closing Session never makes it again. No mark is
+ *   kept past that: names are never reused, the owner opens only a store its `ready` row
+ *   names, and it forgets a row only once its store's `destroy()` returned (the drop and
+ *   erasure paths, `threads.ts`, `erase.ts`); a namespace's objects cannot be listed, so
+ *   the row is the only way back to a store, and no row names a destroyed one.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
@@ -66,9 +64,8 @@ export const NOT_OPENED = "this store was never opened";
 export const DESTROYED = "this store was destroyed";
 /** A holder: 128 random bits, as hex. */
 const HOLDER = /^[0-9a-f]{32}$/;
-/** The durable keys: the holder, and the mark a destroyed store keeps. */
+/** The durable key of the holder. */
 const HOLDER_KEY = "ta:holder";
-const DESTROYED_KEY = "ta:destroyed";
 
 /** The reads of pi's `Storage` the store serves, each by its name. */
 export const READS = Object.freeze([
@@ -137,6 +134,8 @@ export class StoreSession extends RpcTarget implements StoreSessionRpc {
 }
 
 export class ThreadStore extends DurableObject implements StoreRpc {
+  /** Set once this instance wiped the store: it answers nothing more. */
+  #destroyed = false;
   /** pi's storage over this object's database, opened at the holder's first call. */
   #storage: Promise<Sqlite> | undefined;
 
@@ -167,15 +166,15 @@ export class ThreadStore extends DurableObject implements StoreRpc {
   }
 
   /**
-   * Wipe the store whole, then mark it destroyed: every later call is refused. Idempotent,
+   * Wipe the store whole, leaving nothing; this instance refuses every later call. Idempotent,
    * so an interrupted destroy is simply run again.
    */
   async destroy(): Promise<void> {
     const open = this.#storage;
     this.#storage = undefined;
     await (await open?.catch(() => undefined))?.close(BACKGROUND_CONTEXT).catch(() => {});
+    this.#destroyed = true;
     await this.ctx.storage.deleteAll();
-    this.ctx.storage.kv.put(DESTROYED_KEY, true);
   }
 
   #session(holder: string): StoreSession {
@@ -183,7 +182,7 @@ export class ThreadStore extends DurableObject implements StoreRpc {
   }
 
   #alive(): void {
-    if (this.ctx.storage.kv.get(DESTROYED_KEY) !== undefined) {
+    if (this.#destroyed) {
       throw new Error(DESTROYED);
     }
   }

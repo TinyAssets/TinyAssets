@@ -851,7 +851,7 @@ A run thread's store SHALL be wiped `keep_runs` after its run settles (owner pol
 - **THEN** a new run is refused loudly, and receipts past `keep_run_receipts` are let go
 
 ### Requirement: Erasing the owner destroys every store before the owner
-Erasing the owner (an internal path; its door comes with the doors of tasks 7) SHALL mark the owner erasing, with every thread `dropping`, after which every door refuses, no lane runs and no thread is recorded; then destroy every store a row names, each row forgotten after its store; then delete the owner's whole database. Each step SHALL resume after a crash, by the erasure's own job. Since a store no row names can never be found again, a store SHALL be named in its row before it is made, in the unit that reads the mark.
+Erasing the owner (an internal path; its door comes in slice 10) SHALL mark the owner erasing, with every thread `dropping`, after which every door refuses, no lane runs and no thread is recorded; then destroy every store a row names, each row forgotten after its store; then delete the owner's whole database. Each step SHALL resume after a crash, by the erasure's own job. Since a store no row names can never be found again, a store SHALL be named in its row before it is made, in the unit that reads the mark.
 
 #### Scenario: A thread being made as the erasure begins
 - **WHEN** the owner is erased while a thread's row is recorded and its first open is in flight

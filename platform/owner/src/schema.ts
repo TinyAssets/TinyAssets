@@ -858,32 +858,28 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   ]),
   // 10: drops wipe, run retention and erasure (threads.ts, erasure.ts; S4-S5). A thread is
   // marked `dropping`, its Session ended and closed, its store destroyed, and only then
-  // its row forgotten; a drop the store did not answer is tried again at `drop_retry`. A
-  // dropping thread holds its client's grant row no longer: the mark releases it, as the
-  // row's delete did before. A run's row leaves a receipt (`run_receipts`: how its input
-  // settled and the first 4 KiB of its answer), kept by its settling time. The kept usage
-  // rows' bytes are counted (`agent_usage_space`), so their sum has a bound of its own. The
-  // owner being erased is one row (`owner_erasure`), the mark every door, lane and new
-  // thread refuses on.
+  // its row forgotten; a drop the store did not answer is tried again at `drop_retry`, its
+  // failures counted (`drop_failures`). A dropping thread holds its client's grant row, and
+  // counts against its bounds, until its row is forgotten. A run settles once
+  // (`settled_at`, which never changes once set), and its receipt (`run_receipts`: how its
+  // input settled and the first 4 KiB of its answer) is kept in the same unit; a run's
+  // retention reads that time alone. The kept usage rows' bytes are counted
+  // (`agent_usage_space`), so their sum has a bound of its own, and a dropped thread's usage
+  // is added into one owner total (`agent_usage_total`). The owner being erased is one row
+  // (`owner_erasure`, with the step it reached), the mark every door, lane and new thread
+  // refuses on.
   Object.freeze([
     "ALTER TABLE agent_threads ADD COLUMN drop_retry REAL",
-    "DROP TRIGGER agent_threads_released",
-    "CREATE TRIGGER agent_threads_released AFTER DELETE ON agent_threads BEGIN " +
-      "UPDATE outside_clients SET held = held - 1 WHERE client = OLD.client " +
-      "AND OLD.state = 'ready'; DELETE FROM agent_live WHERE thread_id = OLD.thread_id; " +
-      "DELETE FROM agent_usage WHERE thread_id = OLD.thread_id; END",
-    "CREATE TRIGGER agent_threads_dropping AFTER UPDATE OF state ON agent_threads " +
-      "WHEN OLD.state = 'ready' AND NEW.state = 'dropping' BEGIN " +
-      `${HOLD("OLD", "-")} END`,
-    "DROP TRIGGER outside_clients_held",
-    "CREATE TRIGGER outside_clients_held AFTER INSERT ON outside_clients BEGIN " +
-      "UPDATE outside_clients SET agents = (SELECT COUNT(*) FROM outside_agents " +
-      "WHERE outside_client = NEW.client), held = (SELECT COUNT(*) FROM scheduled_work " +
-      "WHERE client = NEW.client AND settled_at IS NULL) + (SELECT COUNT(*) FROM " +
-      "agent_cards WHERE client = NEW.client) + (SELECT COUNT(*) FROM agent_threads " +
-      "WHERE client = NEW.client AND state = 'ready') WHERE client = NEW.client; END",
+    "ALTER TABLE agent_threads ADD COLUMN drop_failures INTEGER NOT NULL DEFAULT 0 " +
+      "CHECK (drop_failures >= 0)",
+    "ALTER TABLE agent_threads ADD COLUMN settled_at REAL",
+    "CREATE TRIGGER agent_threads_settled BEFORE UPDATE OF settled_at ON agent_threads " +
+      "WHEN OLD.settled_at IS NOT NULL AND NEW.settled_at IS NOT OLD.settled_at BEGIN " +
+      "SELECT RAISE(ABORT, 'a run settles once'); END",
     "CREATE INDEX agent_threads_by_kind ON agent_threads (kind, last_active) " +
       "WHERE state = 'ready'",
+    "CREATE INDEX agent_threads_runs ON agent_threads (IFNULL(settled_at, last_active)) " +
+      "WHERE kind = 'run' AND state = 'ready'",
     "CREATE INDEX agent_threads_by_holder ON agent_threads (kind, client)",
     "CREATE INDEX agent_threads_dropping ON agent_threads (drop_retry) " +
       "WHERE state = 'dropping'",
@@ -896,6 +892,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "text TEXT NOT NULL CHECK (length(CAST(text AS BLOB)) <= 4096), " +
       "settled_at REAL NOT NULL, CHECK ((status = 'done') = (reason IS NULL)))",
     "CREATE INDEX run_receipts_by_age ON run_receipts (settled_at)",
+    "CREATE INDEX run_receipts_by_client ON run_receipts (client, settled_at)",
     "CREATE TABLE agent_usage_space (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "bytes INTEGER NOT NULL CHECK (bytes >= 0))",
     "INSERT INTO agent_usage_space (only, bytes) SELECT 1, " +
@@ -907,8 +904,11 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "+ length(CAST(NEW.usage AS BLOB)); END",
     "CREATE TRIGGER agent_usage_removed AFTER DELETE ON agent_usage BEGIN " +
       "UPDATE agent_usage_space SET bytes = bytes - length(CAST(OLD.usage AS BLOB)); END",
+    "CREATE TABLE agent_usage_total (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      "usage TEXT NOT NULL CHECK (length(CAST(usage AS BLOB)) <= 65536))",
+    "INSERT INTO agent_usage_total (only, usage) VALUES (1, '{\"models\":{},\"tools\":{}}')",
     "CREATE TABLE owner_erasure (only INTEGER PRIMARY KEY CHECK (only = 1), " +
-      "started_at REAL NOT NULL)",
+      "started_at REAL NOT NULL, step INTEGER NOT NULL DEFAULT 1 CHECK (step IN (1, 2)))",
   ]),
 ]);
 

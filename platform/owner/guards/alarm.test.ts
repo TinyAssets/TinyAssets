@@ -203,6 +203,14 @@ describe("alarm guard", () => {
     expect(workerSources().get(GATE)).toContain("return this.#raw.deleteAll();");
   });
 
+  it("lets only the object's erasure wiring call the gate's wipe", () => {
+    const callers = [...workerSources()].flatMap(([path, source]) =>
+      [...source.matchAll(/\.wipe\(/g)].map(() => path));
+    expect(callers).toEqual(["owner/src/owner-do.ts"]);
+    expect(workerSources().get("owner/src/owner-do.ts"))
+      .toContain("wipe: () => this.#gate.wipe(),");
+  });
+
   it("finds the object's one hand-off", () => {
     const source = workerSources().get("owner/src/owner-do.ts")!;
     expect(source).toContain(`override async alarm(): Promise<void> {\n    ${HAND_OFF}\n  }`);

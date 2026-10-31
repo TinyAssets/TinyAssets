@@ -1164,14 +1164,17 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
       const tried = async (stamp: Stamped | null, times: number, kind: ThreadKind = "run") => {
         const out: string[] = [];
         for (let i = 0; i < times; i++) {
+          const agent = kind === "converse" ? `agent${i}` : "main";
           out.push(await new WriteGate(state.storage).write(() =>
-            threads.record(kind === "converse" ? `agent${i}` : "main", stamp, clock(), kind)
+            threads.record(agent, stamp === null ? null : { ...stamp, agent }, clock(), kind)
               .thread_id.slice(0, 7))
             .catch((error: Error) => error.message));
         }
         return out;
       };
-      return { muse: await tried(r.stampOf(MUSE, 1), 4), dot: await tried(r.stampOf(DOT, 1), 3),
+      // A client's bounds are its conversations', as the owner's are; runs have their own.
+      return { muse: await tried(r.stampOf(MUSE, 1), 4, "converse"),
+               dot: await tried(r.stampOf(DOT, 1), 3, "converse"),
                owner: await tried(null, 3, "converse") };
     });
     expect(made).toEqual({
@@ -1199,15 +1202,17 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
       const conversations = () => sql.exec<{ n: number }>(
         "SELECT COUNT(*) AS n FROM agent_threads").one().n + instance.agent.host.openThreads()
         .length;
+      // Its conversations, one an agent, to its bound (its runs have their own).
+      const converse = (i: number, generation: number) => instance.agent.thread(
+        `agent-${i}`, { ...r.stampOf(MUSE, generation), agent: `agent-${i}` },
+        { kind: "converse" });
       for (let i = 0; i < 64; i++) {
-        await instance.agent.thread("main", r.stampOf(MUSE, 1));
+        await converse(i, 1);
       }
       const before = conversations();
       const refused = [
-        await instance.agent.thread("main", r.stampOf(MUSE, 1))
-          .then(() => "made", (error: Error) => error.message),
-        await instance.agent.thread("main", r.stampOf(MUSE, 2))
-          .then(() => "made", (error: Error) => error.message),
+        await converse(64, 1).then(() => "made", (error: Error) => error.message),
+        await converse(65, 2).then(() => "made", (error: Error) => error.message),
       ];
       return { refused, made: conversations() - before };
     });

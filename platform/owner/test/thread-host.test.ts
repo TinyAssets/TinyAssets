@@ -752,6 +752,8 @@ describe("a message's store calls", () => {
       const host = instance.agent.host;
       await host.submit(thread, "first", { operationId: "op-1" });
       await host.settled(thread, "op-1");
+      // The run's settling, read once from its Session, is the first message's.
+      await until(() => !instance.parts.threads.unsettledRun(thread), "the run to settle");
       instance.probes.storeCalls = {};
       await host.submit(thread, "again", { operationId: "op-2" });
       await host.settled(thread, "op-2");

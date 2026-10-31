@@ -32,7 +32,7 @@ import {
   waitOf,
 } from "../src/owner-do";
 import {
-  type Thread, Threads, retainThreads, THREAD_LIMITS, THREAD_RETENTION,
+  RUN_POLICY, type Thread, Threads, retainThreads, THREAD_LIMITS, THREAD_RETENTION,
 } from "../src/threads";
 import { until } from "./gateway-support";
 import { DOT, MCP, MUSE, origin, signedIn } from "./ledger-support";
@@ -650,14 +650,16 @@ describe("idle retention", () => {
     const dropped = await r.in(async (instance, state) => {
       const gate = new WriteGate(state.storage);
       return retainThreads(new Threads(gate.storage, THREAD_LIMITS, { idleS: 1, perPass: 32 }),
-                           clock, gate.write, (thread) => instance.agent.drop(thread));
+                           clock, gate.write, (thread) => instance.agent.drop(thread),
+                           noticed(instance));
     });
     expect(dropped).toBe(0);
     await sleep(1100);
     expect(await r.in(async (instance, state) => {
       const gate = new WriteGate(state.storage);
       return retainThreads(new Threads(gate.storage, THREAD_LIMITS, { idleS: 1, perPass: 32 }),
-                           clock, gate.write, (thread) => instance.agent.drop(thread));
+                           clock, gate.write, (thread) => instance.agent.drop(thread),
+                           noticed(instance));
     })).toBe(1);
   }, 30_000);
 
@@ -678,17 +680,18 @@ describe("idle retention", () => {
     await sleep(1100);
     const out = await r.in(async (instance, state) => {
       const gate = new WriteGate(state.storage);
-      const threads = new Threads(gate.storage, { ...THREAD_LIMITS, perClient: 3, clients: 3,
+      const threads = new Threads(gate.storage, { ...THREAD_LIMITS, perClient: 1, clients: 1,
                                                   owner: 10 },
                                   { idleS: 1, perPass: 32 }, namedByOpenWork);
-      // Full: three threads of three.
+      // Full: its one conversation of one (its runs have their own bound).
       const room = () => { try { threads.room({ client: MUSE.client, generation: 1,
                                                 authenticated_at: r.at, universe: null,
-                                                agent: "main" }); return "room"; }
+                                                agent: "main" }, "converse"); return "room"; }
                            catch (error) { return (error as Error).message; } };
       const before = room();
       const dropped = await retainThreads(threads, clock, gate.write,
-                                          (thread) => instance.agent.drop(thread));
+                                          (thread) => instance.agent.drop(thread),
+                           noticed(instance));
       return { before, dropped, after: room() };
     });
     expect(out).toEqual({ before: "this client's threads are at their limit", dropped: 1,
@@ -748,7 +751,8 @@ describe("idle retention", () => {
                                   undefined, () => QUICK_RUNS);
       const live = instance.parts.threads.liveThreads();
       const dropped = await retainThreads(threads, clock, gate.write,
-                                          (thread) => instance.agent.drop(thread));
+                                          (thread) => instance.agent.drop(thread),
+                           noticed(instance));
       return { live: [...live], dropped };
     });
     expect(out.live).toContain(thread!.thread_id);
@@ -760,7 +764,12 @@ describe("idle retention", () => {
 });
 
 /** Run retention at a second: a run's store wiped a second after it settled. */
-const QUICK_RUNS = Object.freeze({ keepRunsS: 1, keepReceiptsS: 90 * 86_400 });
+const QUICK_RUNS = Object.freeze({ ...RUN_POLICY, keepRunsS: 1 });
+
+/** The owner notices a lane pass keeps, in its own unit. */
+function noticed(instance: FauxOwnerDO) {
+  return (type: string, detail: string) => instance.parts.notices.add(type, detail, clock());
+}
 
 /** Threads over the object's storage with retention's idle age, and `keep_runs`, at a second. */
 function quickThreads(state: DurableObjectState, perPass = 32) {
@@ -958,7 +967,8 @@ describe("a launch's time (review M1)", () => {
     await sleep(1100);
     const dropped = await r.in(async (instance, state) => {
       const { gate, threads } = quickThreads(state);
-      return retainThreads(threads, clock, gate.write, (thread) => instance.agent.drop(thread));
+      return retainThreads(threads, clock, gate.write, (thread) => instance.agent.drop(thread),
+                           noticed(instance));
     });
     expect(dropped).toBe(2);
     expect((await r.threads()).map((made) => made.thread_id)).toEqual([ops[2]!.thread_id]);
@@ -1170,8 +1180,8 @@ describe("idle retention's pass (review L4)", () => {
       const { gate, threads } = quickThreads(state, 1);
       const drop = (thread: Thread) => instance.agent.drop(thread);
       const late = await retainThreads(threads, clock,
-                                       gate.write, drop, Date.now() - 1);
-      const one = await retainThreads(threads, clock, gate.write, drop);
+                                       gate.write, drop, noticed(instance), Date.now() - 1);
+      const one = await retainThreads(threads, clock, gate.write, drop, noticed(instance));
       const back = await gate.write(() => threads.touch(newer!.thread_id, 1));
       return { late, one, back, kept: threads.get(newer!.thread_id)?.last_active };
     });

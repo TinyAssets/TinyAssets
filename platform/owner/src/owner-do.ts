@@ -82,7 +82,7 @@
  * status from its receipt.
  *
  * Erasing the owner (`erasure.ts`, `erase.ts`) is an internal path, which no door reaches
- * until the erasure door (tasks 7): once it marks the owner, every door refuses
+ * until the erasure door (slice 10): once it marks the owner, every door refuses
  * (`ERASING`, in the binding check every door's first unit runs), no lane runs, and no
  * thread is made; it destroys every store a row names, then wipes the owner whole.
  */
@@ -116,7 +116,7 @@ import { Erasure } from "./erase";
 import { ERASING, erasing } from "./erasure";
 import {
   agentPolicy, type Change, fileSettings, modelSettings, Policy, type PolicyDocument,
-  type Projection, type Receipt, runRetention,
+  type Projection, type Receipt, runPolicy,
 } from "./policy";
 import { type Card, Registrations } from "./registrations";
 import { GatewayProvider } from "./gateway-provider";
@@ -604,8 +604,9 @@ const AGENT_DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const OPERATION = /^(thread_[0-9a-f]{32})\.([0-9a-f]{64}|run_[0-9a-f]{32}|work_[0-9a-f]{32})$/;
 
 /**
- * How an operation of a run whose store was wiped stands, from its receipt: its input's
- * settling; any other request id, pi never saw (`not_found`).
+ * How an operation of a settled run stands, from its receipt: its input's settling; any
+ * other request id, or a run pi was never handed an input in, is one pi never saw
+ * (`not_found`).
  */
 function receiptStatus(receipt: RunReceipt, key: string): OperationResult {
   if (receipt.request !== key) {
@@ -836,7 +837,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #runner: WorkRunner;
   /**
    * The owner's erasure (`erasure.ts`, `erase.ts`): an internal path, which the erasure
-   * door (tasks 7) calls; no door reaches it yet.
+   * door (slice 10) calls; no door reaches it yet.
    */
   readonly #erasure: Erasure;
   /**
@@ -859,7 +860,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#files = new Files(storage, env.FILES,
                             () => fileSettings(this.#policy.read().document), write);
     this.#threads = new Threads(storage, THREAD_LIMITS, THREAD_RETENTION, namedByOpenWork,
-                                () => runRetention(this.#policy.read().document));
+                                () => runPolicy(this.#policy.read().document));
     this.#work = new Scheduled(storage, this.#grants, this.#threads);
     this.#registrations = new Registrations(storage, this.#grants);
     this.#notices = new Notices(storage);
@@ -883,8 +884,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       connections: this.#connections,
       threads: {
         nextDue: (now) => this.#threads.nextDue(now),
-        run: (_now, until) => retainThreads(this.#threads, clock, write,
-                                            (thread) => this.#agent.drop(thread), until),
+        run: (_now, until) => retainThreads(
+          this.#threads, clock, write, (thread) => this.#agent.drop(thread),
+          (type, detail) => this.#notices.add(type, detail, clock()), until),
       },
       sender: () => this.#sender, runner: () => this.#runner, clock, write, runWakes, runWork,
     }), clock, write, undefined, () => erasing(storage));
@@ -915,8 +917,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                           stores: (name) => env.PISTORE.getByName(name),
                           config: (agentId) => this.#agentConfig(agentId),
                           live: (thread, wake) => write(() => this.#threads.live(
-                            thread, wake.active, wake.at === undefined ? null : wake.at / 1000,
-                            clock())),
+                            thread, wake.active, wake.at === undefined ? null : wake.at / 1000)),
                           usage: (thread, usage) => write(() => this.#threads.keepUsage(
                             thread, JSON.stringify(usage))),
                         });
@@ -924,13 +925,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const lifecycle = new Lifecycle<OwnerEnv>(this);
     this.#erasure = new Erasure({
       storage, write, clock, threads: this.#threads, ended: () => this.#agent.erasing(),
-      drop: (thread) => this.#agent.drop(thread, false), lifecycle,
+      drop: (thread) => this.#agent.drop(thread), lifecycle,
       wipe: () => this.#gate.wipe(),
     });
     erasure(this.#erasure);
     this.#lifecycle = lifecycle.use(this.#schedule).use(this.#agent.host).use(this.#erasure);
     void ctx.blockConcurrencyWhile(async () => {
       await write(() => migrate(storage));
+      if (erasing(storage)) {
+        // An erasure a crash cut short, from its recorded step: its alarm may be gone.
+        this.#erasure.resume();
+        return;
+      }
       // The schedule as stored, for this code's lanes and sender: a deploy that adds a
       // doorbell gives the wakes held while there was none their job.
       await this.#schedule.sync();
@@ -1675,9 +1681,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * The caller's own operation `value` names: its thread, resolved against the caller's
-   * own rows by thread id, or, for a run whose store was wiped, its receipt, the caller's
-   * own alike; and pi's request id. Anything else is `NO_OPERATION`, a dropping thread's
+   * The caller's own operation `value` names: for a run that settled, its receipt; else its
+   * thread, resolved against the caller's own ready rows by thread id; the caller's own
+   * alike, and pi's request id. Anything else is `NO_OPERATION`, a dropping conversation's
    * too.
    */
   #operation(account: Account, value: unknown):
@@ -1685,9 +1691,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         key: string } {
     const match = typeof value === "string" ? OPERATION.exec(value) : null;
     const client = account.origin?.client ?? null;
-    const thread = match === null ? null : this.#threads.mine(match[1], client);
-    const receipt = match === null || thread !== null ? null
-      : this.#threads.receipt(match[1], client);
+    // A settled run answers from its receipt, its Session never opened for it, before its
+    // drop, during it and after; any other thread from its ready row.
+    const receipt = match === null ? null : this.#threads.receipt(match[1], client);
+    const thread = match === null || receipt !== null ? null
+      : this.#threads.mine(match[1], client);
     if (thread === null && receipt === null) {
       throw new Refused(NO_OPERATION);
     }
@@ -1815,6 +1823,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   #bind(binding: Binding): { owner: string; caller: string } {
     if (this.#erasure.erased || erasing(this.#storage)) {
+      this.#erasure.resume();
       throw new Refused(ERASING);
     }
     if (typeof binding !== "object" || binding === null) {

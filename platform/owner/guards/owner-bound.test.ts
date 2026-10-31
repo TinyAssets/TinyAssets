@@ -104,11 +104,16 @@ interface Term {
 const high = (setting: keyof typeof FILE_SETTINGS): number => FILE_SETTINGS[setting];
 const clients = GRANT_LIMITS.maxFreeClients + GRANT_LIMITS.maxOwnerClients;
 /**
- * Every thread row at once: the owner's conversations, every client's threads, and the
- * runs whose stores are kept (`runs_kept`); a client's run counts in both of its bounds,
- * so the sum is over, never under.
+ * Every thread row at once, dropping ones included (each counts until it is forgotten):
+ * the owner's conversations, every client's conversations, and the runs whose stores are
+ * kept (`runs_kept`, every caller's).
  */
 const threadRows = THREAD_LIMITS.owner + THREAD_LIMITS.clients + THREAD_LIMITS.runs;
+/**
+ * A thread row at its widest: its ids and store, an agent id of 128 and a universe of 512
+ * code points at 4 bytes each, its client hash, and its numbers and words.
+ */
+const THREAD_ROW = 39 + 32 + 128 * 4 + 64 + 512 * 4 + 9 * 8 + 2 * 8;
 
 /** Every owner table's worst case. */
 export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string, Term>>({
@@ -183,18 +188,33 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
   model_spend: { rows: (USAGE_LIMITS.daysKept + USAGE_LIMITS.monthsKept) * 64,
                  bytes: ROW, by: "days and months kept, a row per source" },
   // The agent's threads: rows only, every transcript in its own store.
-  agent_threads: { rows: threadRows, bytes: ROW + 1 * KIB,
+  agent_threads: { rows: threadRows, bytes: ROW + THREAD_ROW,
                    by: "THREAD_LIMITS (the owner's conversations, every client's, the runs)" },
   agent_live: { rows: threadRows, bytes: ROW, by: "one per thread" },
   agent_usage: { rows: threadRows, bytes: ROW + Math.min(USAGE_ROW_MAX,
                                                          USAGE_SPACE_MAX / threadRows),
                  by: "one per thread, USAGE_SPACE_MAX of usage in all" },
   agent_usage_space: { rows: 1, bytes: ROW, by: "one row" },
+  agent_usage_total: { rows: 1, bytes: ROW + USAGE_ROW_MAX,
+                       by: "one row, its keys folded to USAGE_ROW_MAX" },
   // A run's receipt once its store is wiped: runs and receipts together are bounded.
   run_receipts: { rows: THREAD_LIMITS.receipts,
                     bytes: ROW + 39 + 64 + 128 + RECEIPT_REASON_MAX * 4 + RECEIPT_TEXT_MAX,
                     by: "THREAD_LIMITS.receipts, RECEIPT_TEXT_MAX of text each" },
   owner_erasure: { rows: 1, bytes: ROW, by: "one row" },
+});
+
+/**
+ * What the runtime and Lifecycle keep in the owner's database beside its own tables, which
+ * the schema does not make: Lifecycle's job table, one wake job per thread, the lanes' and
+ * the erasure's; and the key-value store, a wake-failure count per thread, the memory-limit
+ * strike counter and Lifecycle's own few keys.
+ */
+export const RUNTIME: Readonly<Record<string, Term>> = Object.freeze<Record<string, Term>>({
+  cf_agents_jobs: { rows: threadRows + 16, bytes: ROW + 256,
+                    by: "a wake job per thread, a job per lane, the erasure's" },
+  _cf_KV: { rows: threadRows + 16, bytes: ROW + 128,
+            by: "a wake-failure count per thread, and Lifecycle's own keys" },
 });
 
 /**
@@ -236,8 +256,9 @@ function ownerTables(): string[] {
   return [...tables].sort();
 }
 
-/** The worst case of the bounded tables, in bytes. */
-export function worstCase(terms: Readonly<Record<string, Term>> = TERMS): number {
+/** The worst case of the bounded tables and the runtime's rows, in bytes. */
+export function worstCase(terms: Readonly<Record<string, Term>> = { ...TERMS, ...RUNTIME }):
+    number {
   return Object.values(terms).reduce((sum, term) => sum + term.rows * term.bytes, 0);
 }
 
@@ -268,6 +289,8 @@ describe("the owner's database bound", () => {
   it("counts every run whose store is kept, every receipt, and the usage of each thread",
      () => {
     expect(TERMS["agent_threads"]!.rows).toBe(61_024);
+    expect(TERMS["agent_threads"]!.bytes).toBeGreaterThan(2_700);
+    expect(RUNTIME["cf_agents_jobs"]!.rows).toBeGreaterThan(threadRows);
     expect(TERMS["run_receipts"]!.rows).toBe(100_000);
     expect(TERMS["run_receipts"]!.bytes).toBeGreaterThan(RECEIPT_TEXT_MAX);
     // The usage rows' sum is the space bound, not each row's bound times every thread.

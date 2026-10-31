@@ -23,51 +23,56 @@
  * `agent_live` holds each thread's wake as its Session last reported it (`onWake`, kept by
  * the host in a unit): whether it has work running, and when a sleeping task next wakes. It
  * is how retention and the end of the owner's work know a thread is live without opening
- * every store; a row goes with its thread. Each change moves the thread's activity on, and
- * so does its work's end (the row's removal), so a run's activity is when it settled.
+ * every store; a row goes with its thread. It moves no activity.
  *
  * Two kinds: a `converse` thread is the one conversation an agent holds with one caller
  * (the owner, or an outside client, in one universe), found again by those
  * (`conversing`, a unique index); a `run` thread is made fresh for each launch (the
- * `run_graph` door, `ta`'s `agent:run`, and a scheduled launch, whose work names it).
+ * `run_graph` door, `ta`'s `agent:run`, and a scheduled launch, whose work names it). A run
+ * settles once: when its Session reports nothing running and nothing asleep with its input
+ * settled, one unit keeps the time (`settled_at`) and its receipt (`settle`: status,
+ * reason, the first 4 KiB of its answer), read from the Session that reported it. From then
+ * on its status is answered from the receipt, and its Session is never opened for it.
  *
  * Every door addresses work by a thread's id, resolved against the calling client's own
  * rows (`mine`), never by a pi session string: an operation id is the thread's id and
- * pi's request id, and a forged or another caller's resolves to nothing. A row that is
- * `dropping` resolves to nothing either. A run whose store was wiped answers from its
- * receipt (`receipt`), the caller's own alike.
+ * pi's request id, and a forged or another caller's resolves to nothing. A conversation
+ * that is `dropping` resolves to nothing either; a run answers from its receipt, the
+ * caller's own alike, before its drop, during it and after.
  *
  * Dropping a thread, for every reason (idle retention, a run's retention, a grant change
  * or revoke, the owner's erasure), is one path, each step resumable: (1) in one unit, the
- * row is marked `dropping`, so no door resolves it and nothing opens its Session again;
- * (2) its Session's work is ended and the Session closed (`ThreadHost.drop`); a run's
- * receipt is read from its store and kept (`keepReceipt`), since after the wipe nothing is
- * left to read; (3) its store is destroyed; (4) in one unit, its row is forgotten with
- * every row keyed to it (`forget`: its live and usage rows, by trigger, and its wake job),
- * a run leaving its receipt. The `threads` lane finishes any drop cut short
- * (`dropping`), each in turn, backed off in its row (`drop_retry`) when its store does not
- * answer: `destroy()` is idempotent, so a store is never forgotten before it is wiped.
+ * row is marked `dropping`, so no door resolves it and nothing opens its Session; (2) its
+ * Session's work is ended and the Session closed (`ThreadHost.drop`), bounded, so one that
+ * will not close is cut off; (3) its store is destroyed; (4) in one unit, its row is
+ * forgotten with every row keyed to it (`forget`: its live and usage rows, by trigger, its
+ * usage first added into the owner's total, and its wake job), a run leaving its receipt.
+ * The `threads` lane finishes any drop cut short (`dropping`), each in turn, backed off in
+ * its row (`drop_retry`) when its store does not answer, the owner told once it keeps
+ * failing: `destroy()` is idempotent, so a store is never forgotten before it is wiped.
  *
- * Bounds: a client's ready threads hold its grant row (the schema's `held`), as its stamped
- * work does, so the free-row bound never forgets the row they are checked against. A grant
- * change marks its client's threads dropping in the change's own transaction
- * (`endClient`), which releases the row: their stamps no longer stand, so they can do
- * nothing more; their drops finish after it commits. Past `perClient` threads of one
- * client, `clients` of every client's, `owner` of the owner's conversations or `runs` runs
- * (live stores), a new one is refused loudly, and so is a run once runs and receipts
- * together reach `receipts`, so every run's receipt has room: the rows (and the grant rows
- * they hold) are bounded however many clients register. A dropping row counts until it is
- * forgotten: its store is still there.
+ * Bounds: a client's threads hold its grant row (the schema's `held`), as its stamped work
+ * does, dropping ones too until they are forgotten, so the free-row bound never forgets the
+ * row they are checked against. A grant change marks its client's threads dropping in the
+ * change's own transaction (`endClient`), and lets go of its run receipts: their stamps no
+ * longer stand, so they can do nothing more; their drops finish after it commits. Past
+ * `perClient` conversations of one client, `clients` of every client's or `owner` of the
+ * owner's, a new one is refused loudly; runs have their own bound, `runs` live stores, of
+ * which one client holds at most its share (`client_share`) and every client together what
+ * the owner's reserve leaves (`owner_reserve`), so the owner can always launch. Every row
+ * counts, a dropping one too, until it is forgotten: its store is still there. Receipts are
+ * a history with a row bound (`receipts`, shared the same way), never a refusal.
  *
  * Retention (the `threads` lane, `retainThreads`): a conversation no door, run or scheduled
  * work has touched for `idleS` is dropped, so threads that stopped being used free their
- * bound; a run's store is wiped `keepRunsS` after it settled (owner policy, `keep_runs`),
- * and its receipt is kept `keepReceiptsS` from then (`keep_run_receipts`). A thread is
- * never marked while it is live (an `agent_live` row: work running, or a task sleeping in
- * its Session): its activity moves on instead; a thread unsettled scheduled work names is
- * never taken, and its activity moves on when the work is claimed (`Scheduled.claim`), so
- * a cancel releases it. A mark re-checks, in its own unit, the activity the pass read and
- * the thread's liveness, so a door that touched the thread since keeps it.
+ * bound; a run's store is wiped `keepRunsS` after it settled (owner policy, `keep_runs`; one
+ * never seen settling, after its last activity), and its receipt is kept `keepReceiptsS` from
+ * then (`keep_run_receipts`). No read moves either. A thread is never marked while it is
+ * live (an `agent_live` row: work running, or a task sleeping in its Session): its activity
+ * moves on instead; a thread unsettled scheduled work names is never taken, and its
+ * activity moves on when the work is claimed (`Scheduled.claim`), so a cancel releases it. A
+ * mark re-checks, in its own unit, the time the pass read and the thread's liveness, so a
+ * door that touched the thread since keeps it.
  */
 import { agentId, type AuthorityState, authorityOf, type Stamped, stamped } from "./authority";
 import { refuseErasing } from "./erasure";
@@ -93,9 +98,13 @@ export type Thread = {
   readonly last_active: number;
   /** A dropping thread's next try, once a drop of it did not finish; else null. */
   readonly drop_retry: number | null;
+  /** How many tries of its drop did not finish. */
+  readonly drop_failures: number;
+  /** When a run settled, once (its receipt kept in the same unit); else null. */
+  readonly settled_at: number | null;
 };
 
-/** How a run settled, as its receipt keeps it once its store is wiped. */
+/** How a run settled, as its receipt keeps it. */
 export type Receipt = {
   readonly thread_id: string;
   readonly client: string | null;
@@ -105,14 +114,24 @@ export type Receipt = {
   readonly reason: string | null;
   /** The first `RECEIPT_TEXT_MAX` bytes of its answer's text. */
   readonly text: string;
-  /** When the run settled (its thread's last activity). */
+  /** When the run settled, or, for one never handed an input, when it was dropped. */
   readonly settled_at: number;
 };
 
+/** How a run's input settled, as its Session read it: what its receipt keeps. */
+export type Settled = Pick<Receipt, "request" | "status" | "reason" | "text">;
+
+/** pi's usage as kept: per `provider/model`, and per tool (pi's `UsageState`). */
+export type UsageTotals = { models: Record<string, unknown>; tools: Record<string, unknown> };
+
 /** The most bytes a thread's kept usage (`keepUsage`) takes: 64 KiB of JSON. */
 export const USAGE_ROW_MAX = 64 * 1024;
-/** The most bytes every thread's kept usage takes together: 256 MiB. */
+/** The most bytes every thread's kept usage takes together: 256 MiB, a backstop. */
 export const USAGE_SPACE_MAX = 256 * 1024 * 1024;
+/** The most keys each bucket of the owner's usage total keeps apart; the rest sum in one. */
+export const USAGE_TOTAL_KEYS = 48;
+/** The key the usage total sums the rest into. */
+export const USAGE_OTHER = "other";
 /** A receipt's text: the first 4 KiB of the run's answer. */
 export const RECEIPT_TEXT_MAX = 4096;
 /** A receipt's reason, at most, in characters. */
@@ -121,6 +140,12 @@ export const RECEIPT_REASON_MAX = 256;
 export const DROP_MS = 10_000;
 /** How long a drop that did not finish waits before the lane tries it again. */
 export const DROP_RETRY_S = 60;
+/** After this many tries that did not finish, the owner is told (`DROP_STUCK`). */
+export const DROP_NOTICE_AFTER = 5;
+/** The owner notice of a drop that keeps failing. */
+export const DROP_STUCK = "thread_drop_stuck";
+const DROP_STUCK_DETAIL = "a dropped thread's store could not be wiped after several tries; " +
+  "the threads lane keeps trying";
 /** Receipts one pass lets go. */
 export const RECEIPTS_PER_PASS = 1_000;
 
@@ -132,15 +157,15 @@ export interface ThreadReader {
 }
 
 export interface ThreadLimits {
-  /** Threads one outside client may hold at once. */
+  /** Conversations one outside client may hold at once. */
   readonly perClient: number;
-  /** Threads every outside client together may hold at once. */
+  /** Conversations every outside client together may hold at once. */
   readonly clients: number;
   /** The owner's own conversations. */
   readonly owner: number;
   /** Run threads, every caller's, whose stores are kept (`runs_kept`). */
   readonly runs: number;
-  /** Run threads and receipts together: every run's receipt has room. */
+  /** Receipts kept, every caller's together. */
   readonly receipts: number;
 }
 
@@ -157,17 +182,27 @@ export interface ThreadRetention {
 export const THREAD_RETENTION: ThreadRetention = Object.freeze({ idleS: 7 * 86_400,
                                                                  perPass: 32 });
 
-/** Run retention (owner policy, `runs`): a settled run's store, and its receipt. */
-export interface RunRetention {
+/** The owner's run policy (`runs`): retention, and each client's share of the bounds. */
+export interface RunPolicy {
   /** `keep_runs`: how long a settled run's store is kept. */
   readonly keepRunsS: number;
   /** `keep_run_receipts`: how long its receipt is kept, from when it settled. */
   readonly keepReceiptsS: number;
+  /** `client_share`: the percent of `runs` and `receipts` one outside client may hold. */
+  readonly clientShare: number;
+  /** `owner_reserve`: the percent of each the outside clients together leave the owner. */
+  readonly ownerReserve: number;
 }
 
-/** Run retention at the policy's defaults (`RUN_DEFAULTS`). */
-export const RUN_RETENTION: RunRetention = Object.freeze({ keepRunsS: 7 * 86_400,
-                                                           keepReceiptsS: 90 * 86_400 });
+/** The run policy at the policy's defaults (`RUN_DEFAULTS`). */
+export const RUN_POLICY: RunPolicy = Object.freeze({ keepRunsS: 7 * 86_400,
+                                                     keepReceiptsS: 90 * 86_400,
+                                                     clientShare: 25, ownerReserve: 25 });
+
+/** `percent` of `bound`, whole. */
+export function shareOf(bound: number, percent: number): number {
+  return Math.floor(bound * percent / 100);
+}
 
 const THREAD_ID = /^thread_[0-9a-f]{32}$/;
 
@@ -190,6 +225,54 @@ export function utf8Prefix(text: string, max: number): string {
   return new TextDecoder().decode(bytes.subarray(0, end));
 }
 
+/** Two of pi's usage records summed, counter by counter (pi's `addUsageState`, per key). */
+export function addedUsage(total: unknown, usage: unknown): unknown {
+  if (total === undefined) {
+    return usage;
+  }
+  if (typeof total === "number" && typeof usage === "number") {
+    return total + usage;
+  }
+  if (total !== null && usage !== null && typeof total === "object" && typeof usage === "object"
+      && !Array.isArray(total) && !Array.isArray(usage)) {
+    const sum: Record<string, unknown> = { ...total as Record<string, unknown> };
+    for (const [key, value] of Object.entries(usage as Record<string, unknown>)) {
+      sum[key] = addedUsage(sum[key], value);
+    }
+    return sum;
+  }
+  return usage;
+}
+
+/**
+ * `usage` added into `total`, key by key; past `USAGE_TOTAL_KEYS` keys in a bucket, or past
+ * `USAGE_ROW_MAX` in all, a key's counts are summed into `USAGE_OTHER` instead, so the sum
+ * stays exact and bounded.
+ */
+export function foldedUsage(total: UsageTotals, usage: Partial<UsageTotals>): UsageTotals {
+  const folded: UsageTotals = { models: { ...total.models }, tools: { ...total.tools } };
+  for (const bucket of ["models", "tools"] as const) {
+    const into = folded[bucket];
+    for (const [key, counts] of Object.entries(usage[bucket] ?? {})) {
+      const named = key in into || Object.keys(into).length < USAGE_TOTAL_KEYS ? key
+        : USAGE_OTHER;
+      into[named] = addedUsage(into[named], counts);
+    }
+  }
+  const size = () => new TextEncoder().encode(JSON.stringify(folded)).length;
+  while (size() > USAGE_ROW_MAX) {
+    const bucket = Object.keys(folded.models).length >= Object.keys(folded.tools).length
+      ? folded.models : folded.tools;
+    const key = Object.keys(bucket).find((name) => name !== USAGE_OTHER);
+    if (key === undefined) {
+      throw new Error("the owner's usage total is past its bound");
+    }
+    bucket[USAGE_OTHER] = addedUsage(bucket[USAGE_OTHER], bucket[key]);
+    delete bucket[key];
+  }
+  return folded;
+}
+
 /** A thread's authority, as its root's `ta.authority` document holds it. */
 export function threadAuthority(thread: Thread): AuthorityState {
   return authorityOf(thread.client === null ? null
@@ -204,11 +287,15 @@ export type HeldBy = (column: string) => string;
 /** What one retained thread's mark did. */
 export type Retained = "dropped" | "live" | "touched";
 
+/** The time a thread's retention reads: a conversation's activity, a run's settling. */
+const RETAINED_AT = "CASE kind WHEN 'run' THEN IFNULL(settled_at, last_active) " +
+  "ELSE last_active END";
+
 export class Threads implements ThreadReader {
   readonly #storage: OwnerStorage;
   readonly #limits: ThreadLimits;
   readonly #retention: ThreadRetention;
-  readonly #runs: () => RunRetention;
+  readonly #runs: () => RunPolicy;
   /** A thread retention may take: nothing holds it (`held`, the scheduled work's). */
   readonly #unheld: string;
 
@@ -219,7 +306,7 @@ export class Threads implements ThreadReader {
    */
   constructor(storage: OwnerStorage, limits: ThreadLimits = THREAD_LIMITS,
               retention: ThreadRetention = THREAD_RETENTION, held?: HeldBy,
-              runs: () => RunRetention = () => RUN_RETENTION) {
+              runs: () => RunPolicy = () => RUN_POLICY) {
     this.#storage = storage;
     this.#limits = limits;
     this.#retention = retention;
@@ -262,26 +349,35 @@ export class Threads implements ThreadReader {
 
   /**
    * Refuse loudly a new `kind` thread under `by` (null: the owner's) past its bounds; a
-   * read. Every row counts, a dropping one too: its store is not wiped yet.
+   * read. Every row counts, a dropping one too: its store is not wiped yet. Conversations
+   * have their bounds and runs theirs: every run within `runs`, an outside client's within
+   * its share of it (`client_share`), and every client's together within what the owner's
+   * reserve leaves (`owner_reserve`), so the owner can always launch.
    */
   room(by: Stamped | null, kind: ThreadKind = "run"): void {
     const sql = this.#storage.sql;
     const count = (where: string, ...bound: (string | null)[]) => sql.exec<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM agent_threads WHERE ${where}`, ...bound).one().n;
+      `SELECT COUNT(*) AS n FROM agent_threads WHERE kind = ? AND ${where}`, kind, ...bound)
+      .one().n;
     if (kind === "run") {
-      const runs = count("kind = 'run'");
-      if (runs >= this.#limits.runs) {
+      const { clientShare, ownerReserve } = this.#runs();
+      const runs = this.#limits.runs;
+      if (count("1") >= runs) {
         throw new Refused("the agent's runs are at their limit");
       }
-      const receipts = sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM run_receipts")
-        .one().n;
-      if (runs + receipts >= this.#limits.receipts) {
-        throw new Refused("the runs' receipts are at their limit");
+      if (by === null) {
+        return;
       }
+      if (count("client IS ?", by.client) >= shareOf(runs, clientShare)) {
+        throw new Refused("this client's runs are at its share");
+      }
+      if (count("client IS NOT NULL") >= shareOf(runs, 100 - ownerReserve)) {
+        throw new Refused("the outside clients' runs are at their share");
+      }
+      return;
     }
     if (by === null) {
-      if (kind === "converse"
-          && count("kind = 'converse' AND client IS ?", null) >= this.#limits.owner) {
+      if (count("client IS ?", null) >= this.#limits.owner) {
         throw new Refused("the owner's threads are at their limit");
       }
       return;
@@ -349,34 +445,86 @@ export class Threads implements ThreadReader {
   }
 
   /**
-   * In a unit: keep the thread's wake as its Session reported it at `now`, `active` with
-   * work running and `wakeAt` (seconds) when a sleeping task next wakes; neither forgets
-   * it. For a run, each change, and the forgetting of a kept wake (its work ended), moves
-   * its activity on to `now`, so a run's activity is when it settled; a conversation's is
-   * its callers' (`touch`). A thread with no row keeps nothing.
+   * In a unit: keep the thread's wake as its Session reported it, `active` with work
+   * running and `wakeAt` (seconds) when a sleeping task next wakes; neither forgets it. It
+   * moves no activity. A thread with no row keeps nothing.
    */
-  live(threadId: string, active: boolean, wakeAt: number | null, now: number): void {
+  live(threadId: string, active: boolean, wakeAt: number | null): void {
     const sql = this.#storage.sql;
     if (!active && wakeAt === null) {
-      if (sql.exec("DELETE FROM agent_live WHERE thread_id = ? RETURNING thread_id", threadId)
-            .toArray().length > 0) {
-        this.#settling(threadId, now);
-      }
+      sql.exec("DELETE FROM agent_live WHERE thread_id = ?", threadId);
       return;
     }
-    if (sql.exec("INSERT INTO agent_live (thread_id, active, wake_at) SELECT thread_id, ?, ? " +
-                   "FROM agent_threads WHERE thread_id = ? " +
-                   "ON CONFLICT (thread_id) DO UPDATE SET active = excluded.active, " +
-                   "wake_at = excluded.wake_at RETURNING thread_id", active ? 1 : 0, wakeAt,
-                 threadId).toArray().length > 0) {
-      this.#settling(threadId, now);
+    sql.exec("INSERT INTO agent_live (thread_id, active, wake_at) SELECT thread_id, ?, ? " +
+               "FROM agent_threads WHERE thread_id = ? " +
+               "ON CONFLICT (thread_id) DO UPDATE SET active = excluded.active, " +
+               "wake_at = excluded.wake_at", active ? 1 : 0, wakeAt, threadId);
+  }
+
+  /** Whether `threadId` is a run not yet settled: one whose settling its Session reads. */
+  unsettledRun(threadId: string): boolean {
+    return this.#storage.sql.exec("SELECT 1 FROM agent_threads WHERE thread_id = ? AND " +
+                                    "kind = 'run' AND settled_at IS NULL", threadId)
+      .toArray().length > 0;
+  }
+
+  /**
+   * In a unit, as a run's Session reports its work done (nothing running, nothing asleep)
+   * with its input settled: its wake forgotten, and, once only, the time it settled and its
+   * receipt (`settled`, read from the Session). Retention reads that time alone, and its
+   * status is answered from the receipt from then on, its Session never opened for it.
+   */
+  settle(threadId: string, settled: Settled, now: number): void {
+    const sql = this.#storage.sql;
+    sql.exec("DELETE FROM agent_live WHERE thread_id = ?", threadId);
+    const row = sql.exec<Thread>(
+      "UPDATE agent_threads SET settled_at = ? WHERE thread_id = ? AND kind = 'run' AND " +
+        "settled_at IS NULL RETURNING *", now, threadId).toArray()[0];
+    if (row !== undefined) {
+      this.#keepReceipt(row, settled, now);
     }
   }
 
-  /** A run's work moved at `now`: its activity, which its retention reads, moves on. */
-  #settling(threadId: string, now: number): void {
-    this.#storage.sql.exec("UPDATE agent_threads SET last_active = MAX(last_active, ?) " +
-                             "WHERE thread_id = ? AND kind = 'run'", now, threadId);
+  /**
+   * Keep `thread`'s receipt as of `at`; a second keep keeps the first. Receipts are a
+   * history with a row bound, never a refusal: past its own scope's share (an outside
+   * client's `client_share` of `receipts`, every client's together what `owner_reserve`
+   * leaves, everyone's `receipts`), the oldest receipt of the scope it passed goes.
+   */
+  #keepReceipt(thread: Thread, settled: Settled, at: number): void {
+    const sql = this.#storage.sql;
+    if (sql.exec("INSERT INTO run_receipts (thread_id, client, request, status, reason, " +
+                   "text, settled_at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
+                   "ON CONFLICT (thread_id) DO NOTHING RETURNING thread_id", thread.thread_id,
+                 thread.client, settled.request, settled.status,
+                 settled.reason === null ? null
+                   : [...settled.reason].slice(0, RECEIPT_REASON_MAX).join("") || null,
+                 utf8Prefix(settled.text, RECEIPT_TEXT_MAX), at).toArray().length === 0) {
+      return;
+    }
+    const { clientShare, ownerReserve } = this.#runs();
+    const bound = this.#limits.receipts;
+    const count = (where: string, ...bound: (string | null)[]) => sql.exec<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM run_receipts WHERE ${where}`, ...bound).one().n;
+    const letGo = (where: string, ...bound: (string | null)[]) => sql.exec(
+      "DELETE FROM run_receipts WHERE rowid = (SELECT rowid FROM run_receipts WHERE " +
+        `${where} AND thread_id != ? ORDER BY settled_at, rowid LIMIT 1)`, ...bound,
+      thread.thread_id);
+    const client = thread.client;
+    if (client !== null && count("client IS ?", client) > shareOf(bound, clientShare)) {
+      letGo("client IS ?", client);
+    } else if (client !== null && count("client IS NOT NULL")
+               > shareOf(bound, 100 - ownerReserve)) {
+      letGo("client IS NOT NULL");
+    } else if (count("1") > bound) {
+      // Its own party's oldest; a client with none takes the owner's, which then holds
+      // more than its reserve (every client's together is within what it leaves).
+      if (count("client IS ?", client) > 1) {
+        letGo("client IS ?", client);
+      } else {
+        letGo("client IS NULL");
+      }
+    }
   }
 
   /**
@@ -405,11 +553,17 @@ export class Threads implements ThreadReader {
 
   /**
    * Each thread's usage as its Session last closed, as JSON: a dropping thread's too, until
-   * its row goes, and its usage with it. A read.
+   * its row goes, and its usage into the total (`usageTotal`). A read.
    */
   keptUsage(): { thread_id: string; usage: string }[] {
     return this.#storage.sql.exec<{ thread_id: string; usage: string }>(
       "SELECT thread_id, usage FROM agent_usage").toArray();
+  }
+
+  /** Every dropped thread's usage, summed as each was forgotten. A read. */
+  usageTotal(): UsageTotals {
+    return JSON.parse(this.#storage.sql.exec<{ usage: string }>(
+      "SELECT usage FROM agent_usage_total").one().usage) as UsageTotals;
   }
 
   /** The threads with work running in their Sessions, as last reported. A read. */
@@ -425,11 +579,19 @@ export class Threads implements ThreadReader {
       "SELECT thread_id FROM agent_live").toArray().map((row) => row.thread_id));
   }
 
-  /** The oldest activity of a ready `kind` thread no unsettled work names, or undefined. */
-  #oldest(kind: ThreadKind): number | undefined {
+  /** The longest idle conversation no unsettled work names: its activity, or undefined. */
+  #oldestConversation(): number | undefined {
     return this.#storage.sql.exec<{ at: number }>(
-      `SELECT last_active AS at FROM agent_threads WHERE kind = ? AND state = 'ready' AND ${
-        this.#unheld} ORDER BY last_active LIMIT 1`, kind).toArray()[0]?.at;
+      `SELECT last_active AS at FROM agent_threads WHERE kind = 'converse' AND ` +
+        `state = 'ready' AND ${this.#unheld} ORDER BY last_active LIMIT 1`).toArray()[0]?.at;
+  }
+
+  /** The longest settled run no unsettled work names: when it settled, or undefined. */
+  #oldestRun(): number | undefined {
+    return this.#storage.sql.exec<{ at: number }>(
+      `SELECT IFNULL(settled_at, last_active) AS at FROM agent_threads WHERE kind = 'run' ` +
+        `AND state = 'ready' AND ${this.#unheld} ORDER BY IFNULL(settled_at, last_active) ` +
+        "LIMIT 1").toArray()[0]?.at;
   }
 
   /**
@@ -437,7 +599,7 @@ export class Threads implements ThreadReader {
    * before `now`; null for none. A read, by the kind's activity index.
    */
   nextIdle(now: number): number | null {
-    const oldest = this.#oldest("converse");
+    const oldest = this.#oldestConversation();
     return oldest === undefined ? null : Math.max(oldest + this.#retention.idleS, now);
   }
 
@@ -460,7 +622,7 @@ export class Threads implements ThreadReader {
     if (idle !== null) {
       times.push(idle);
     }
-    const run = this.#oldest("run");
+    const run = this.#oldestRun();
     if (run !== undefined) {
       times.push(run + keepRunsS);
     }
@@ -484,14 +646,21 @@ export class Threads implements ThreadReader {
   }
 
   /**
-   * The runs settled `keep_runs` ago at `now` that no unsettled work names, the longest
-   * settled first, at most `perPass`. A read; a live one among them is kept by its mark.
+   * The runs settled `keep_runs` ago at `now` (one never seen settling: last active then) that
+   * no unsettled work names, the longest settled first, at most `perPass`. A read; a live
+   * one among them is kept by its mark.
    */
   settledRuns(now: number): Thread[] {
     return this.#storage.sql.exec<Thread>(
       `SELECT * FROM agent_threads WHERE kind = 'run' AND state = 'ready' AND ` +
-        `last_active <= ? AND ${this.#unheld} ORDER BY last_active LIMIT ?`,
+        `IFNULL(settled_at, last_active) <= ? AND ${this.#unheld} ` +
+        "ORDER BY IFNULL(settled_at, last_active) LIMIT ?",
       now - this.#runs().keepRunsS, this.#retention.perPass).toArray();
+  }
+
+  /** The time retention read for a thread: a conversation's activity, a run's settling. */
+  retainedAt(thread: Thread): number {
+    return thread.kind === "run" ? thread.settled_at ?? thread.last_active : thread.last_active;
   }
 
   /** The dropping threads due to be tried again at `now`, at most `perPass`. A read. */
@@ -502,9 +671,11 @@ export class Threads implements ThreadReader {
   }
 
   /**
-   * In a unit: retain one thread as the pass read it (`seen`, its activity then). A live
-   * one (its `agent_live` row) has its activity moved on to `now`; one a door touched since
-   * is kept as it is; any other is marked `dropping`, the first step of its drop.
+   * In a unit: retain one thread as the pass read it (`seen`, its `retainedAt` then). A
+   * live one (its `agent_live` row) has its activity moved on to `now`; one touched or
+   * settled since is kept as it is; any other is marked `dropping`, the first step of its
+   * drop. A run marked with no receipt, one pi was never handed an input in, keeps one that
+   * says so.
    */
   retain(threadId: string, seen: number, now: number): Retained {
     const sql = this.#storage.sql;
@@ -513,73 +684,67 @@ export class Threads implements ThreadReader {
       this.touch(threadId, now);
       return "live";
     }
-    return sql.exec("UPDATE agent_threads SET state = 'dropping' WHERE thread_id = ? " +
-                      "AND state = 'ready' AND last_active <= ? RETURNING thread_id",
-                    threadId, seen).toArray().length > 0
-      ? "dropped" : "touched";
+    const row = sql.exec<Thread>(
+      "UPDATE agent_threads SET state = 'dropping' WHERE thread_id = ? AND state = 'ready' " +
+        `AND ${RETAINED_AT} <= ? RETURNING *`, threadId, seen).toArray()[0];
+    if (row === undefined) {
+      return "touched";
+    }
+    if (row.kind === "run") {
+      this.#keepReceipt(row, { request: null, status: "unanswered", reason: "not_found",
+                               text: "" }, now);
+    }
+    return "dropped";
   }
 
   /**
-   * In the grant change's unit: mark the client's threads, whose stamps the change ended,
-   * `dropping`, which releases its grant row; every dropping thread of the client, so their
-   * drops can finish once it commits.
+   * In the grant change's unit: let go of the client's receipts, and mark its threads,
+   * whose stamps the change ended, `dropping`, which releases its grant row; every dropping
+   * thread of the client, so their drops can finish once it commits. Nothing made under a
+   * grant is seen under the next.
    */
   endClient(client: string): Thread[] {
     const sql = this.#storage.sql;
+    sql.exec("DELETE FROM run_receipts WHERE client = ?", client);
     sql.exec("UPDATE agent_threads SET state = 'dropping' WHERE client = ? AND state = 'ready'",
              client);
     return sql.exec<Thread>("SELECT * FROM agent_threads WHERE client = ? AND " +
                               "state = 'dropping'", client).toArray();
   }
 
-  /** In a unit: a drop of `threadId` that did not finish is tried again at `at`. */
-  retry(threadId: string, at: number): void {
-    this.#storage.sql.exec("UPDATE agent_threads SET drop_retry = ? WHERE thread_id = ? " +
-                             "AND state = 'dropping'", at, threadId);
-  }
-
-  /** Whether `threadId` keeps a receipt. A read. */
-  hasReceipt(threadId: string): boolean {
-    return this.#storage.sql.exec("SELECT 1 FROM run_receipts WHERE thread_id = ?",
-                                  threadId).toArray().length > 0;
-  }
-
   /**
-   * In a unit: keep a dropping run's receipt, as its store said it settled, by the run's
-   * settling time (its last activity); a second keep keeps the first. Its room was kept
-   * when the run was made (`room`): one past the bound is a bug, refused loudly.
+   * In a unit: a drop of `threadId` that did not finish is tried again at `at`. Past
+   * `DROP_NOTICE_AFTER` such tries, `notice` keeps an owner notice, once.
    */
-  keepReceipt(thread: Thread,
-              settled: Pick<Receipt, "request" | "status" | "reason" | "text">): void {
-    const sql = this.#storage.sql;
-    const row = this.row(thread.thread_id);
-    if (row === null || row.state !== "dropping" || row.kind !== "run") {
-      throw new Error("a receipt is a dropping run's");
+  retry(threadId: string, at: number, notice: (type: string, detail: string) => void): void {
+    const failures = this.#storage.sql.exec<{ drop_failures: number }>(
+      "UPDATE agent_threads SET drop_retry = ?, drop_failures = drop_failures + 1 WHERE " +
+        "thread_id = ? AND state = 'dropping' RETURNING drop_failures", at, threadId)
+      .toArray()[0]?.drop_failures;
+    if (failures === DROP_NOTICE_AFTER) {
+      notice(DROP_STUCK, DROP_STUCK_DETAIL);
     }
-    if (this.hasReceipt(row.thread_id)) {
-      return;
-    }
-    if (sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM run_receipts").one().n
-        >= this.#limits.receipts) {
-      throw new Error("the runs' receipts are past their bound");
-    }
-    sql.exec("INSERT INTO run_receipts (thread_id, client, request, status, reason, text, " +
-               "settled_at) VALUES (?, ?, ?, ?, ?, ?, ?)", row.thread_id, row.client,
-             settled.request, settled.status,
-             settled.reason === null ? null
-               : [...settled.reason].slice(0, RECEIPT_REASON_MAX).join(""),
-             utf8Prefix(settled.text, RECEIPT_TEXT_MAX), row.last_active);
   }
 
   /**
    * In a unit, the drop's last step, once its store was destroyed: forget the dropping
-   * thread's row, and with it (by trigger) its live and usage rows; a run's receipt stays.
-   * Whether there was one to forget.
+   * thread's row, and with it (by trigger) its live and usage rows, its usage added into
+   * the owner's total first; a run's receipt stays. Whether there was one to forget.
    */
   forget(threadId: string): boolean {
-    return this.#storage.sql.exec("DELETE FROM agent_threads WHERE thread_id = ? AND " +
-                                    "state = 'dropping' RETURNING thread_id", threadId)
-      .toArray().length > 0;
+    const sql = this.#storage.sql;
+    if (sql.exec("SELECT 1 FROM agent_threads WHERE thread_id = ? AND state = 'dropping'",
+                 threadId).toArray().length === 0) {
+      return false;
+    }
+    const kept = sql.exec<{ usage: string }>("SELECT usage FROM agent_usage WHERE " +
+                                               "thread_id = ?", threadId).toArray()[0];
+    if (kept !== undefined) {
+      sql.exec("UPDATE agent_usage_total SET usage = ?", JSON.stringify(foldedUsage(
+        this.usageTotal(), JSON.parse(kept.usage) as Partial<UsageTotals>)));
+    }
+    sql.exec("DELETE FROM agent_threads WHERE thread_id = ?", threadId);
+    return true;
   }
 
   /** In the erasure's marking unit (`erasure.ts`): every thread marked `dropping`. */
@@ -587,10 +752,11 @@ export class Threads implements ThreadReader {
     this.#storage.sql.exec("UPDATE agent_threads SET state = 'dropping' WHERE state = 'ready'");
   }
 
-  /** Up to `limit` threads still named by a row, whatever their state (the erasure's). */
-  remaining(limit: number): Thread[] {
+  /** Up to `limit` threads still named by a row past `after`, by id, whatever their state. */
+  remaining(limit: number, after = ""): Thread[] {
     return this.#storage.sql.exec<Thread>(
-      "SELECT * FROM agent_threads ORDER BY thread_id LIMIT ?", limit).toArray();
+      "SELECT * FROM agent_threads WHERE thread_id > ? ORDER BY thread_id LIMIT ?", after,
+      limit).toArray();
   }
 
   /** In a unit: let go of the receipts kept `keep_run_receipts` at `now`, at most a batch. */
@@ -619,19 +785,21 @@ async function within(run: Promise<void>, ms: number): Promise<"done" | "failed"
  * One `threads` lane pass: the receipts past `keep_run_receipts` let go; each drop cut short
  * finished (`drop`, the object's one drop path), the longest waiting first; then each idle
  * conversation and each run past `keep_runs`, the longest first, marked in a unit of its own
- * (unless it is live, when its activity moves on to now instead, or a door touched it since)
- * and dropped. A drop whose outside calls fail, or take past `DROP_MS`, is tried again
- * `DROP_RETRY_S` later, by its row; it never fails the pass. It takes no new thread once
- * the wall clock reaches `until`. How many threads it marked.
+ * (unless it is live, when its activity moves on to now instead, or touched or settled
+ * since) and dropped. A drop whose outside calls fail, or take past `DROP_MS`, is tried
+ * again `DROP_RETRY_S` later, by its row, and the owner told once it keeps failing
+ * (`notice`, in the unit); it never fails the pass, and the pass goes on to the next. It
+ * takes no new thread once the wall clock reaches `until`. How many threads it marked.
  */
 export async function retainThreads(threads: Threads, clock: () => number, write: Write,
                                     drop: (thread: Thread) => Promise<void>,
+                                    notice: (type: string, detail: string) => void,
                                     until: number = Infinity): Promise<number> {
   const finish = async (thread: Thread) => {
     const outcome = await within(drop(thread), DROP_MS);
     if (outcome !== "done") {
       console.error("a thread's drop did not finish; it is tried again");  // no ids
-      await write(() => threads.retry(thread.thread_id, clock() + DROP_RETRY_S));
+      await write(() => threads.retry(thread.thread_id, clock() + DROP_RETRY_S, notice));
     }
   };
   await write(() => threads.expireReceipts(clock()));
@@ -648,7 +816,7 @@ export async function retainThreads(threads: Threads, clock: () => number, write
       break;  // the rest wait for the lane's next pass, which its job's set brings at once
     }
     const id = thread.thread_id;
-    const seen = thread.last_active;
+    const seen = threads.retainedAt(thread);
     if (await write(() => threads.retain(id, seen, clock())) === "dropped") {
       dropped++;
       await finish(threads.row(id)!);

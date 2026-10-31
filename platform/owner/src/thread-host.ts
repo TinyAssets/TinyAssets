@@ -153,8 +153,11 @@ export interface HostParts {
   open(thread: string, onWake: (wake: Wake) => void): Promise<Opened>;
   /** Whether `thread` has a row: a dropped thread is never opened again. */
   exists(thread: string): boolean;
-  /** Keep `thread`'s wake in the owner's rows, in a unit of the write gate. */
-  live(thread: string, wake: Wake): Promise<void>;
+  /**
+   * Keep `thread`'s wake in the owner's rows, in a unit of the write gate; `opened` is the
+   * Session that reported it, when it is open (a run's settling is read from it).
+   */
+  live(thread: string, wake: Wake, opened?: Opened): Promise<void>;
   /** Keep `thread`'s usage (pi's `pi.usage`) as its Session closes, in a unit. */
   usage(thread: string, usage: UsageState): Promise<void>;
   /** Keep an owner notice (`notices.ts`). */
@@ -576,7 +579,7 @@ export class ThreadHost extends LifecycleCapability {
       if (!ending) {
         pi.resume();
         await new Promise((resolve) => setTimeout(resolve, 0));
-        await this.#wakeFor(thread, pi.wake());
+        await this.#wakeFor(thread, pi.wake(), opened);
       }
     } catch (error) {
       pi.close(BG).catch(() => {});
@@ -774,21 +777,21 @@ export class ThreadHost extends LifecycleCapability {
    * owner's rows: the job first, so a row that fails to land leaves a job that finds the
    * work itself, and never a live row with no job to wake it.
    */
-  async #wakeFor(thread: string, wake: Wake): Promise<void> {
+  async #wakeFor(thread: string, wake: Wake, opened?: Opened): Promise<void> {
     if (wake.active) {
       await this.#wake(thread);
     } else if (wake.at !== undefined) {
       await this.#wake(thread, wake.at);
     }
-    await this.#parts.live(thread, wake);
+    await this.#parts.live(thread, wake, opened);
   }
 
   /** A Session's `onWake`: off its line, never blocking. */
   #onWake(thread: string, slot: Slot, wake: Wake): void {
     slot.lastUsed = Date.now();
     slot.changed?.();
-    const kept = slot.waiting !== undefined ? this.#parts.live(thread, wake)
-      : this.#wakeFor(thread, wake);
+    const kept = slot.waiting !== undefined ? this.#parts.live(thread, wake, slot.opened)
+      : this.#wakeFor(thread, wake, slot.opened);
     kept.catch(() => console.error("a thread's wake could not be kept"));  // no ids
   }
 
