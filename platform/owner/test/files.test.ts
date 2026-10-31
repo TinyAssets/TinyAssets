@@ -356,7 +356,7 @@ describe("every file door", () => {
       await r.stub.grantSet(r.session(null), {
         client: MUSE.client, source: "mcp", mode: "scoped",
         scopes: [{ universe: "alpha", agent: "main", capability }],
-        expected_generation: row!.generation, name: "" });
+        expected_revision: row!.revision, name: "" });
     };
     for (const granted of ["read_files", "write_files"]) {
       await scope(granted);
@@ -410,7 +410,7 @@ describe("every file door", () => {
       const narrowing = instance.grantSet(r.session(null), {
         client: MUSE.client, source: "mcp", mode: "scoped",
         scopes: [{ universe: "alpha", agent: "main", capability: "read_files" }],
-        expected_generation: row!.generation, name: "" });
+        expected_revision: row!.revision, name: "" });
       release();
       await Promise.all([commit, narrowing]);
       return writing;
@@ -421,11 +421,11 @@ describe("every file door", () => {
   });
 
   /** Narrow MUSE's grant to reading files, from inside the object. */
-  const narrow = async (r: Rig, instance: OwnerDO, generation: number) =>
+  const narrow = async (r: Rig, instance: OwnerDO, revision: number) =>
     instance.grantSet(r.session(null), {
       client: MUSE.client, source: "mcp", mode: "scoped",
       scopes: [{ universe: "alpha", agent: "main", capability: "read_files" }],
-      expected_generation: generation, name: "" });
+      expected_revision: revision, name: "" });
 
   /** What a refused chunked write may leave: its intent, its chunk rows, its entry. */
   const leftBy = (r: Rig) => Promise.all([
@@ -448,7 +448,7 @@ describe("every file door", () => {
       const writing = instance.fileWrite(r.bind(MUSE), {
         path: `${W}/big.bin`, expected_etag: null, content: new Uint8Array(INLINE_BYTES + 1) })
         .then(() => "written", (error: Error) => error.message);
-      const narrowing = narrow(r, instance, row!.generation);
+      const narrowing = narrow(r, instance, row!.revision);
       release();
       await Promise.all([commit, narrowing]);
       return writing;
@@ -476,7 +476,7 @@ describe("every file door", () => {
       let release!: () => void;
       const held = new Promise<void>((resolve) => { release = resolve; });
       const commit = new DurableObjectSqliteDatabase(state.storage).transaction(() => held);
-      const narrowing = narrow(r, instance, row!.generation);
+      const narrowing = narrow(r, instance, row!.revision);
       release();
       await Promise.all([commit, narrowing]);
       return writing;

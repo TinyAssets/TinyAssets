@@ -40,7 +40,7 @@ import {
 } from "../src/threads";
 import { until } from "./gateway-support";
 import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
-import { failure, sqlIn, storeSql } from "./support";
+import { drainDue, failure, sqlIn, storeSql } from "./support";
 import { type FauxOwnerDO, Reminder, says } from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
@@ -377,7 +377,7 @@ describe("a drop (S4)", () => {
     const grant = (await r.stub.grantList(r.bind(null))).clients
       .find((client) => client.client === MUSE.client)!;
     await r.stub.grantSet(r.session(), { client: MUSE.client, source: "mcp", mode: "scoped",
-                                         name: "", expected_generation: grant.generation,
+                                         name: "", expected_revision: grant.revision,
                                          scopes: [{ universe: "alpha", agent: "main",
                                                     capability: "read_files" }] });
     expect(await storeState(thread.store)).toEqual(WIPED);
@@ -920,10 +920,10 @@ describe("S4-S5 review round 1", () => {
     await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
     expect(await sqlIn(r.stub, "SELECT 1 FROM run_receipts WHERE client = ?", MUSE.client))
       .toEqual([]);
-    const generation = (await r.stub.grantList(r.bind(null))).clients
-      .find((client) => client.client === MUSE.client)!.generation;
+    const revision = (await r.stub.grantList(r.bind(null))).clients
+      .find((client) => client.client === MUSE.client)!.revision;
     await r.stub.grantSet(r.session(), { client: MUSE.client, source: "mcp", mode: "full",
-                                         scopes: [], name: "", expected_generation: generation });
+                                         scopes: [], name: "", expected_revision: revision });
     // A sign-in past the revoke and its clock margin.
     const fresh = { ...r.bind(MUSE), authenticated_at: signedIn() + 10 };
     expect((await failure(() => r.stub.agentStatus(fresh, {
@@ -1072,7 +1072,7 @@ describe("S4-S5 review round 1", () => {
     expect((await grant()).held).toBe(THREAD_LIMITS.perClient);
     await r.stub.grantSet(r.session(), { client: MUSE.client, source: "mcp", mode: "full",
                                          scopes: [], name: "",
-                                         expected_generation: (await grant()).generation });
+                                         expected_revision: (await grant()).revision });
     const generation = (await grant()).generation;
     const room = () => r.in((instance) => {
       try {
@@ -1620,4 +1620,146 @@ describe("live and settled runs", () => {
     expect(out).toBe(7_000);
     expect(7 * 1_000).toBeLessThan(THREAD_LIMITS.runs);
   }, 300_000);
+});
+
+describe("a grant's rename, apart from a change of its authority (S4-S5 review round 2, L1)",
+         () => {
+  const CONVERSE = Object.freeze({ universe: "alpha", agent: "main", capability: "converse" });
+  const RUN = Object.freeze({ ...CONVERSE, capability: "run_graph" });
+
+  /** The owner sets MUSE's grant against the revision it stands at. */
+  async function set(r: Rig, mode: string, scopes: object[], name = "") {
+    const row = (await r.stub.grantList(r.bind(null))).clients
+      .find((client) => client.client === MUSE.client)!;
+    return r.stub.grantSet(r.session(), { client: MUSE.client, source: "mcp", mode, name,
+                                          scopes: scopes as never,
+                                          expected_revision: row.revision });
+  }
+
+  /**
+   * MUSE's work at its grant's `generation`, stamped in `universe`: a conversation, through
+   * its door, a run whose task sleeps, its Session closed, a settled run's receipt, a turn
+   * it scheduled `in` seconds ahead and an agent registration card it filed.
+   */
+  async function clientWork(r: Rig, generation: number, universe: string | null, ahead = 3600):
+      Promise<{ sleeper: Thread; work: Operation; card: { card_id: string; digest: string } }> {
+    const stamp = { client: MUSE.client, generation, authenticated_at: r.at, universe,
+                    agent: "main" };
+    expect((await r.stub.agentSubmit(r.bind(MUSE), { message: "hello",
+                                                     client_send_id: "a" })).status)
+      .toBe("done");
+    const sleeper = await r.in(async (instance) => {
+      const made = await instance.agent.thread("main", stamp);
+      const pi = await instance.agent.host.pi(made.thread_id);
+      const root = (await pi.conversation(1 as never, BG))!;
+      await root.commit((tx) => tx.createTask(Reminder, { until: Date.now() + 86_400_000 },
+                                              { ownership: { kind: "conversation" },
+                                                background: true }), BG);
+      pi.resume();
+      return made;
+    });
+    await until(async () => (await keyed(r, sleeper.thread_id)).job === 1, "the sleeper's job");
+    await r.in((instance) => instance.agent.host.close(sleeper.thread_id));
+    await r.in(async (instance) => {
+      const { threads, write } = instance.parts;
+      const made = await write(() => threads.record("main", stamp, clock()));
+      await write(() => threads.settle(made.thread_id, {
+        request: "run_x", status: "done", reason: null, text: "ok" }, clock()));
+    });
+    const work = await r.stub.agentRun(r.bind(MUSE), { agent: "main", input: "at last",
+                                                       at: clock() + ahead });
+    expect(work.status).toBe("scheduled");
+    const card = await r.stub.registerPropose(r.bind(MUSE), {
+      command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
+      recipe_id: null });
+    return { sleeper, work, card };
+  }
+
+  /** MUSE's scheduled work as its rows stand, and its pending cards. */
+  async function held(r: Rig) {
+    return {
+      work: (await sqlIn(r.stub, "SELECT state FROM scheduled_work WHERE client = ?",
+                         MUSE.client)).map((row) => row["state"]),
+      cards: (await sqlIn(r.stub, "SELECT 1 FROM agent_cards WHERE client = ?", MUSE.client))
+        .length,
+    };
+  }
+
+  it("keeps a renamed client's conversation, sleeping task, receipts, scheduled turn and " +
+     "registration card, and passes its tool calls", async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    const { sleeper, work, card } = await clientWork(r, 1, null, 5);
+    const before = await r.threads();
+    expect(before.map((thread) => [thread.kind, thread.state, thread.generation])).toEqual([
+      ["converse", "ready", 1], ["run", "ready", 1], ["run", "ready", 1], ["run", "ready", 1]]);
+    expect(await held(r)).toEqual({ work: ["pending"], cards: 1 });
+    expect(await set(r, "full", [], "Muse")).toEqual({
+      client: MUSE.client, mode: "full", scopes: [], generation: 1, revision: 2 });
+    expect(await r.threads()).toEqual(before);
+    expect(await keyed(r, sleeper.thread_id)).toEqual({ row: 1, live: 1, usage: 1, job: 1 });
+    expect((await storeSql(sleeper.store, "SELECT 1 FROM pi_tasks WHERE status != 'terminal'"))
+      .length).toBe(1);
+    expect(await sqlIn(r.stub, "SELECT status FROM run_receipts WHERE client = ?", MUSE.client))
+      .toEqual([{ status: "done" }]);
+    expect(await r.in((instance) => instance.probes.wiped.size)).toBe(0);
+    expect(await held(r)).toEqual({ work: ["pending"], cards: 1 });
+    expect(await r.stub.agentStatus(r.bind(MUSE), { operation_id: work.operation_id }))
+      .toMatchObject({ status: "scheduled" });
+    // The conversation made before the rename takes its next message, and its tool runs.
+    expect(await r.stub.agentSubmit(r.bind(MUSE), { message: "hold please",
+                                                    client_send_id: "b" }))
+      .toMatchObject({ status: "done", text: "tools answered" });
+    expect(await r.in((instance) => instance.probes.holds)).toBe(1);
+    expect((await r.threads()).map((thread) => thread.thread_id))
+      .toEqual(before.map((thread) => thread.thread_id));
+    // The card filed before the rename applies, and the turn scheduled before it is handed.
+    const apply = { card_id: card.card_id, digest: card.digest };
+    expect((await r.stub.registerAgent(r.session(), apply)).command_center_id).toBe("alpha");
+    await until(async () => clock() > work.due! + 0.1, "the turn to fall due");
+    await drainDue(r.stub);
+    expect(await r.settled(r.bind(MUSE), work.operation_id))
+      .toMatchObject({ status: "done", text: "echo: at last" });
+  }, 30_000);
+
+  const changes: Record<string, { from: object[] | null; to: (r: Rig) => Promise<unknown> }> = {
+    "a mode change": { from: null, to: (r) => set(r, "scoped", [RUN]) },
+    "a scope change": { from: [CONVERSE, RUN], to: (r) => set(r, "scoped", [RUN]) },
+    "a revoke": { from: null,
+                  to: (r) => r.stub.grantRevoke(r.bind(null), { client: MUSE.client }) },
+  };
+  for (const [name, { from, to }] of Object.entries(changes)) {
+    it(`drops and wipes the client's work on ${name}, as before`, async () => {
+      const r = await rig();
+      await r.admit(MUSE);
+      if (from !== null) {  // a scoped client acts where its agent is registered
+        const { card_id, digest } = await r.stub.registerPropose(r.bind(MUSE), {
+          command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
+          recipe_id: null });
+        await r.stub.registerAgent(r.session(), { card_id, digest });
+      }
+      const generation = from === null ? 1 : (await set(r, "scoped", from)).generation;
+      const { sleeper, card } = await clientWork(r, generation,
+                                                 from === null ? null : "alpha");
+      const before = await r.threads();
+      expect(before.map((thread) => [thread.kind, thread.generation])).toEqual([
+        ["converse", generation], ["run", generation], ["run", generation],
+        ["run", generation]]);
+      expect(await held(r)).toEqual({ work: ["pending"], cards: 1 });
+      expect(await to(r)).toMatchObject({ generation: generation + 1 });
+      expect(await held(r)).toEqual({ work: ["refused"], cards: 0 });
+      const apply = { card_id: card.card_id, digest: card.digest };
+      expect((await failure(() => r.stub.registerAgent(r.session(), apply))).message)
+        .toBe("registration is not the pending card shown");
+      expect(await r.threads()).toEqual([]);
+      for (const thread of before) {
+        expect(await keyed(r, thread.thread_id)).toEqual(GONE);
+      }
+      for (const thread of [sleeper, before[0]!]) {
+        expect(await storeState(thread.store)).toEqual(WIPED);
+      }
+      expect(await sqlIn(r.stub, "SELECT 1 FROM run_receipts WHERE client = ?", MUSE.client))
+        .toEqual([]);
+    }, 30_000);
+  }
 });

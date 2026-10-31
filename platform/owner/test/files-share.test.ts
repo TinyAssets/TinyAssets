@@ -249,7 +249,7 @@ describe("an outside client's share", () => {
     const narrowed = await r.stub.grantSet(r.session(null), {
       client: MUSE.client, source: "mcp", mode: "scoped",
       scopes: [{ universe: "alpha", agent: "main", capability: "read_files" }],
-      expected_generation: row!.generation, name: "" });
+      expected_revision: row!.revision, name: "" });
     expect(narrowed.mode).toBe("scoped");
     expect((await r.stub.grantRevoke(r.bind(null), { client: MUSE.client })).revoked).toBe(true);
     await setPolicy(r, { max_manifest_bytes: 2_000_000, client_share: 50 });
