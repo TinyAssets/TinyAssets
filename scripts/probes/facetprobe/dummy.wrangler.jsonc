@@ -1,0 +1,9 @@
+// The facet probe's dummy service (facet-probe.md, Q3): the SVC binding's target.
+// Throwaway; facet-probe.yml deploys it first and deletes it. No route, no workers.dev URL.
+{
+  "name": "ta-facetprobe-dummy",
+  "main": "dummy.js",
+  "compatibility_date": "2026-10-23",
+  "workers_dev": false,
+  "preview_urls": false
+}
