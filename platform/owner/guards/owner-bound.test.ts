@@ -227,6 +227,15 @@ const THREAD_ID = 39;
  * kept (`runs_kept`, every caller's).
  */
 const threadRows = THREAD_LIMITS.owner + THREAD_LIMITS.clients + THREAD_LIMITS.runs;
+/** The live runs' bound at the policy's high setting (`runs.runs_live`). */
+const RUNS_LIVE = declared("policy", "RUN_SETTINGS", "runs_live").runs_live;
+/**
+ * The threads that may hold live work at once: every conversation, and the runs not yet
+ * settled (`runs_live`, high). A settled run takes no input (`run_settled`, refused at the
+ * host's admission, a check below), so it holds no turn, no live row, no wake job and no
+ * usage row: only its thread row and its receipt.
+ */
+const liveRows = THREAD_LIMITS.owner + THREAD_LIMITS.clients + RUNS_LIVE;
 /**
  * A thread row at its widest: its ids and store, an agent id of 128 and a universe of 512
  * code points at 4 bytes each, its client hash, a run's request id, and its numbers and
@@ -234,10 +243,10 @@ const threadRows = THREAD_LIMITS.owner + THREAD_LIMITS.clients + THREAD_LIMITS.r
  */
 const THREAD_ROW = THREAD_ID + 32 + 128 * 4 + 64 + 512 * 4 + 128 + 10 * 8 + 2 * 8;
 /**
- * Every thread's turn owners at once: each thread's open inputs and live compactions, a
- * dropping thread's too until its row is forgotten.
+ * Every thread's turn owners at once: each live thread's open inputs and live compactions,
+ * a dropping one's too until its row is forgotten.
  */
-const TURN_OWNERS = threadRows * (THREAD_INPUTS + THREAD_COMPACTIONS);
+const TURN_OWNERS = liveRows * (THREAD_INPUTS + THREAD_COMPACTIONS);
 
 /** The file manifest's tables, together: `max_manifest_bytes` at its high bound, at worst fill. */
 const MANIFEST: Term = Object.freeze({
@@ -328,10 +337,10 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
   // The agent's threads: rows only, every transcript in its own store.
   agent_threads: { rows: threadRows, bytes: ROW + THREAD_ROW,
                    by: "THREAD_LIMITS (the owner's conversations, every client's, the runs)" },
-  agent_live: { rows: threadRows, bytes: ROW, by: "one per thread" },
-  agent_usage: { rows: threadRows, bytes: ROW + Math.min(USAGE_ROW_MAX,
-                                                         USAGE_SPACE_MAX / threadRows),
-                 by: "one per thread, USAGE_SPACE_MAX of usage in all" },
+  agent_live: { rows: liveRows, bytes: ROW, by: "one per live thread" },
+  agent_usage: { rows: liveRows, bytes: ROW + Math.min(USAGE_ROW_MAX,
+                                                       USAGE_SPACE_MAX / liveRows),
+                 by: "one per live thread, USAGE_SPACE_MAX of usage in all" },
   agent_usage_space: { rows: 1, bytes: ROW, by: "one row" },
   agent_usage_total: { rows: 1, bytes: ROW + USAGE_ROW_MAX,
                        by: "one row, its keys folded to USAGE_ROW_MAX" },
@@ -350,10 +359,10 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
  * strike counter and Lifecycle's own few keys.
  */
 export const RUNTIME: Readonly<Record<string, Term>> = Object.freeze<Record<string, Term>>({
-  cf_agents_jobs: { rows: threadRows + 16, bytes: ROW + 256,
-                    by: "a wake job per thread, a job per lane, the erasure's" },
-  _cf_KV: { rows: threadRows + 16, bytes: ROW + 128,
-            by: "a wake-failure count per thread, and Lifecycle's own keys" },
+  cf_agents_jobs: { rows: liveRows + 16, bytes: ROW + 256,
+                    by: "a wake job per live thread, a job per lane, the erasure's" },
+  _cf_KV: { rows: liveRows + 16, bytes: ROW + 128,
+            by: "a wake-failure count per live thread, and Lifecycle's own keys" },
 });
 
 /** Every table the owner's schema makes, by its final name. */
@@ -482,7 +491,7 @@ describe("the owner's database bound", () => {
     expect([SCOPE_FIELD, CLIENT_NAME, WAKES_AN_HOUR, GRANT_LIMITS.maxScopes])
       .toEqual([512, 80, 60, 64]);
     expect(TERMS["model_turns"]).toMatchObject({
-      rows: (THREAD_LIMITS.owner + THREAD_LIMITS.clients + THREAD_LIMITS.runs) * 10,
+      rows: (THREAD_LIMITS.owner + THREAD_LIMITS.clients + RUNS_LIVE) * 10,
       bytes: 256 + TURN_BYTES + 39 });
     expect([TURN_BYTES, USAGE_ROW_MAX]).toEqual([96, 16 * 1024]);
     expect(TERMS["model_turn_owners"]).toMatchObject({
@@ -502,14 +511,32 @@ describe("the owner's database bound", () => {
     expect(TERMS["agent_threads"]!.rows).toBe(threadRows);
     expect(threadRows).toBe(THREAD_LIMITS.owner + THREAD_LIMITS.clients + THREAD_LIMITS.runs);
     expect(TERMS["agent_threads"]!.bytes).toBeGreaterThan(2_700);
-    expect(RUNTIME["cf_agents_jobs"]!.rows).toBeGreaterThan(threadRows);
+    expect(RUNTIME["cf_agents_jobs"]!.rows).toBeGreaterThan(liveRows);
+    expect(RUNS_LIVE).toBe(10_000);
     expect(worstCase()).toBe(worstCase(TERMS) + worstCase(RUNTIME));
     expect(TERMS["run_receipts"]!.rows).toBe(THREAD_LIMITS.receipts);
     expect(TERMS["run_receipts"]!.bytes).toBeGreaterThan(RECEIPT_TEXT_MAX);
     // The usage rows' sum is the space bound, not each row's bound times every thread.
     expect(TERMS["agent_usage"]!.rows * TERMS["agent_usage"]!.bytes)
-      .toBeLessThanOrEqual(threadRows * ROW + USAGE_SPACE_MAX);
-    expect(threadRows * USAGE_ROW_MAX).toBeGreaterThan(USAGE_SPACE_MAX);
+      .toBeLessThanOrEqual(liveRows * ROW + USAGE_SPACE_MAX);
+    expect(liveRows * USAGE_ROW_MAX).toBeGreaterThan(USAGE_SPACE_MAX);
+  });
+
+  it("holds what it counts settled runs by: a settled run takes no input, refused at the " +
+     "host's admission before pi commits one", () => {
+    const host = source("thread-host");
+    const submit = host.slice(host.indexOf("  submit(thread: string"));
+    const body = submit.slice(0, submit.indexOf("\n  }\n"));
+    const refused = body.indexOf("if (fresh && this.#parts.settled(thread)) {\n" +
+                                 "          throw new Refused(RUN_SETTLED);");
+    expect(refused).toBeGreaterThan(0);
+    expect(refused).toBeLessThan(body.indexOf("await conversation.submit("));
+    expect(body.lastIndexOf("this.#parts.settled(thread)"))
+      .toBeLessThan(body.indexOf("await conversation.submit("));
+    // The usage of a settled run goes to the total; no row of its own is kept.
+    const threads = source("threads");
+    expect(threads).toContain("\"WHERE thread_id = ? AND settled_at IS NULL \" +");
+    expect(source("agent")).toContain("settled: (thread) => parts.threads.settledRun(thread),");
   });
 
   it("sees a bound that would pass half the limit, or a table it no longer covers", () => {

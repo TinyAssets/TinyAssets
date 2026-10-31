@@ -524,9 +524,11 @@ describe("a model request's turn", () => {
       instance.script = Array.from({ length: 8 }, () => (messages: Message[]) =>
         compacting(messages) ? says("## Goal\nsummary") : says("noted"));
       const own = await instance.harness.thread();
-      const run = (await instance.agent.thread("main", null)).thread_id;
+      // Another conversation of the owner's: a settled run takes no second input.
+      const other = (await instance.agent.thread("helper", null, { kind: "converse" }))
+        .thread_id;
       const compactions = [];
-      for (const session of [own, run]) {
+      for (const session of [own, other]) {
         await instance.harness.prompt("early", { session });
         await instance.harness.prompt(LONG, { session });
         const pi = await instance.harness.pi({ session });

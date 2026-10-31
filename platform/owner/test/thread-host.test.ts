@@ -63,9 +63,12 @@ function rig() {
     });
   return {
     name, stub, in: inside,
-    /** A run thread of the owner's, made by the agent. */
-    thread: () => inside(async (instance) =>
-      (await instance.agent.thread("main", null)).thread_id),
+    /**
+     * A conversation of the owner's, made by the agent, with an agent of its own (one per
+     * caller and agent): it takes input after input, as a settled run does not.
+     */
+    thread: () => inside(async (instance) => (await instance.agent.thread(
+      `agent-${crypto.randomUUID()}`, null, { kind: "converse" })).thread_id),
     /** The host's wake jobs: each thread's id and due time. */
     jobs: async () => (await sqlIn(stub(), "SELECT id, time FROM cf_agents_jobs WHERE " +
                                             "capability = ? ORDER BY id", HOST))
@@ -712,7 +715,8 @@ describe("a task pi's restart limit parked", () => {
         i.probes.backgroundGate = new Promise(() => undefined);  // the work never ends
         return act(i);
       });
-    const thread = await inside(async (i) => (await i.agent.thread("main", null)).thread_id);
+    const thread = await inside(async (i) => (await i.agent.thread(
+      "main", null, { kind: "converse" })).thread_id);
     const aborts = await inside(async (i) => {
       await i.agent.host.submit(thread, "start it", { operationId: "op-start" });
       await until(() => i.probes.backgroundRuns === 1, "the background work to start");

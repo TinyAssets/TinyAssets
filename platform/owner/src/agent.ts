@@ -450,6 +450,7 @@ export class OwnerAgent {
     this.host = new ThreadHost({
       open: (thread, onWake) => this.#open(thread, onWake),
       exists: (thread) => parts.threads.get(thread) !== null,
+      settled: (thread) => parts.threads.settledRun(thread),
       live: (thread, wake, opened) => this.#live(thread, wake, opened),
       usage: (thread, usage) => parts.usage(thread, usage),
       turns: parts.turns,
@@ -788,8 +789,11 @@ export class OwnerAgent {
     if (settled === null) {
       return this.#parts.live(thread, wake);
     }
+    // Its usage as its Session holds it now goes into the owner's total as it settles.
+    const usage = await opened.pi.usage(BG).catch(() => undefined);
     const kept = settled;
-    await write(() => threads.settle(thread, kept, Date.now() / 1000));
+    await write(() => threads.settle(thread, kept, Date.now() / 1000,
+                                     usage === undefined ? null : JSON.stringify(usage)));
   }
 
   /**
@@ -1001,6 +1005,9 @@ export class OwnerAgent {
     };
     const read: string[] = [];  // the threads read live
     for (const thread of this.host.openThreads()) {
+      if (this.#parts.threads.settledRun(thread)) {
+        continue;  // a settled run's usage is in the total, from its settling
+      }
       const usage = await this.host.peek(thread)?.pi.usage(BG).catch(() => undefined);
       if (usage !== undefined) {  // one closing counts by the row its close keeps
         read.push(thread);

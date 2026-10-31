@@ -114,10 +114,10 @@ async function rig() {
   };
 }
 
-/** A thread for `stamp` (null: the owner's), its session, the model answering by `step`. */
+/** `stamp`'s conversation (null: the owner's), its session, the model answering by `step`. */
 async function threadFor(instance: FauxOwnerDO, stamp: Stamped | null): Promise<string> {
   instance.script = Array.from({ length: 80 }, () => step);
-  const thread = await instance.agent.thread("main", stamp);
+  const thread = await instance.agent.thread("main", stamp, { kind: "converse" });
   return thread.thread_id;
 }
 
@@ -308,7 +308,7 @@ describe("ta's call", () => {
     const r = await rig();
     const out = await r.in(async (instance, state) => {
       instance.script = Array.from({ length: 80 }, () => step);
-      const thread = await instance.agent.thread("main", null);
+      const thread = await instance.agent.thread("main", null, { kind: "converse" });
       const session = thread.thread_id;
       const gate = new WriteGate(state.storage);
       const threads = new Threads(gate.storage);

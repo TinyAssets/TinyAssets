@@ -31,8 +31,12 @@
  * `run_graph` door, `ta`'s `agent:run`, and a scheduled launch, whose work names it). A run
  * settles once: when its Session reports nothing running and nothing asleep with its input
  * settled, one unit keeps the time (`settled_at`) and its receipt (`settle`: status,
- * reason, the first 2 KiB of its answer), read from the Session that reported it. From then
- * on its status is answered from the receipt, and its Session is never opened for it.
+ * reason, the first 2 KiB of its answer), read from the Session that reported it, and adds
+ * its usage into the owner's total, keeping no usage row of its own. From then on its
+ * status is answered from the receipt, its Session is never opened for it, and it takes no
+ * input (`run_settled`, refused at the host's admission): a settled run holds no work, only
+ * its row, its store and its receipt. Runs not yet settled, a sleeping one too, are the
+ * live runs (`runs_live`, owner policy).
  *
  * Every door addresses work by a thread's id, resolved against the calling client's own
  * rows (`mine`), never by a pi session string: an operation id is the thread's id and
@@ -202,12 +206,24 @@ export interface RunPolicy {
   readonly clientShare: number;
   /** `owner_reserve`: the percent of each the outside clients together leave the owner. */
   readonly ownerReserve: number;
+  /**
+   * `runs_live`: runs not yet settled (running, waiting or asleep), every caller's, shared
+   * as `runs` is. Only these may hold live work: a settled run takes no input.
+   */
+  readonly runsLive: number;
 }
 
 /** The run policy at the policy's defaults (`RUN_DEFAULTS`). */
 export const RUN_POLICY: RunPolicy = Object.freeze({ keepRunsS: 7 * 86_400,
                                                      keepReceiptsS: 90 * 86_400,
-                                                     clientShare: 25, ownerReserve: 25 });
+                                                     clientShare: 25, ownerReserve: 25,
+                                                     runsLive: 2_000 });
+
+/** The refusals of a launch past the live runs' bound, or a share of it. */
+export const RUNS_LIVE = "runs_live: the agent has as many live runs as it may";
+export const RUNS_LIVE_SHARE = "runs_live: this client has its share of the live runs";
+export const RUNS_LIVE_CLIENTS = "runs_live: the outside clients have their share of the " +
+  "live runs";
 
 /** `percent` of `bound`, whole. */
 export function shareOf(bound: number, percent: number): number {
@@ -370,10 +386,13 @@ export class Threads implements ThreadReader {
       `SELECT COUNT(*) AS n FROM agent_threads WHERE kind = ? AND ${where}`, kind, ...bound)
       .one().n;
     if (kind === "run") {
-      const { clientShare, ownerReserve } = this.#runs();
+      const { clientShare, ownerReserve, runsLive } = this.#runs();
       const runs = this.#limits.runs;
       if (count("1") >= runs) {
         throw new Refused("the agent's runs are at their limit");
+      }
+      if (count("settled_at IS NULL") >= runsLive) {
+        throw new Refused(RUNS_LIVE);
       }
       if (by === null) {
         return;
@@ -383,6 +402,14 @@ export class Threads implements ThreadReader {
       }
       if (count("client IS NOT NULL") >= shareOf(runs, 100 - ownerReserve)) {
         throw new Refused("the outside clients' runs are at their share");
+      }
+      if (count("settled_at IS NULL AND client IS ?", by.client)
+          >= shareOf(runsLive, clientShare)) {
+        throw new Refused(RUNS_LIVE_SHARE);
+      }
+      if (count("settled_at IS NULL AND client IS NOT NULL")
+          >= shareOf(runsLive, 100 - ownerReserve)) {
+        throw new Refused(RUNS_LIVE_CLIENTS);
       }
       return;
     }
@@ -493,7 +520,7 @@ export class Threads implements ThreadReader {
    * receipt (`settled`, read from the Session). Retention reads that time alone, and its
    * status is answered from the receipt from then on, its Session never opened for it.
    */
-  settle(threadId: string, settled: Settled, now: number): void {
+  settle(threadId: string, settled: Settled, now: number, usage: string | null = null): void {
     const sql = this.#storage.sql;
     sql.exec("DELETE FROM agent_live WHERE thread_id = ?", threadId);
     const row = sql.exec<Thread>(
@@ -501,7 +528,23 @@ export class Threads implements ThreadReader {
         "settled_at IS NULL RETURNING *", now, threadId).toArray()[0];
     if (row !== undefined) {
       this.#keepReceipt(row, settled, now);
+      // Its usage, as its Session holds it now (else as it last closed), into the owner's
+      // total, once: it does no more work, and keeps no usage row of its own.
+      const kept = usage ?? sql.exec<{ usage: string }>(
+        "SELECT usage FROM agent_usage WHERE thread_id = ?", threadId).toArray()[0]?.usage;
+      if (kept !== undefined) {
+        sql.exec("UPDATE agent_usage_total SET usage = ?", JSON.stringify(foldedUsage(
+          this.usageTotal(), JSON.parse(kept) as Partial<UsageTotals>)));
+      }
+      sql.exec("DELETE FROM agent_usage WHERE thread_id = ?", threadId);
     }
+  }
+
+  /** Whether `threadId` is a settled run: one that takes no input, and does no work. */
+  settledRun(threadId: string): boolean {
+    return this.#storage.sql.exec("SELECT 1 FROM agent_threads WHERE thread_id = ? AND " +
+                                    "kind = 'run' AND settled_at IS NOT NULL", threadId)
+      .toArray().length > 0;
   }
 
   /**
@@ -550,7 +593,8 @@ export class Threads implements ThreadReader {
   /**
    * In a unit: keep the thread's usage (pi's `pi.usage`, as JSON) as its Session closed,
    * over what was kept. Refused past `USAGE_ROW_MAX`, or past `USAGE_SPACE_MAX` for every
-   * thread's together; a thread with no row keeps nothing.
+   * thread's together; a thread with no row keeps nothing, and nor does a settled run,
+   * whose usage went into the total as it settled.
    */
   keepUsage(threadId: string, usage: string): void {
     const bytes = new TextEncoder().encode(usage).length;
@@ -567,7 +611,8 @@ export class Threads implements ThreadReader {
     }
     sql.exec(
       "INSERT INTO agent_usage (thread_id, usage) SELECT thread_id, ? FROM agent_threads " +
-        "WHERE thread_id = ? ON CONFLICT (thread_id) DO UPDATE SET usage = excluded.usage",
+        "WHERE thread_id = ? AND settled_at IS NULL " +
+        "ON CONFLICT (thread_id) DO UPDATE SET usage = excluded.usage",
       usage, threadId);
   }
 

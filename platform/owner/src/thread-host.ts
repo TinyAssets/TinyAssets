@@ -122,6 +122,11 @@ const SESSION_CLOSE_MS = 1_000;
 export const SESSIONS_FULL = "too many of the agent's threads are working at once";
 /** The refusal of a submit whose thread was dropped while it was admitted. */
 export const THREAD_DROPPED = "the thread was dropped";
+/**
+ * The refusal of a new input to a settled run (`HostParts.settled`): a run that settled
+ * takes no more work, so it holds no turn and no live row; going on is a conversation's.
+ */
+export const RUN_SETTLED = "run_settled: the run has settled and takes no more input";
 /** The owner notice a thread's open owners past its bound leave as it opens. */
 export const TURNS_UNKEPT = "turns_unkept";
 const TURNS_UNKEPT_DETAIL = "a thread held more open inputs or live compactions than it may " +
@@ -173,6 +178,8 @@ export interface HostParts {
   open(thread: string, onWake: (wake: Wake) => void): Promise<Opened>;
   /** Whether `thread` has a row: a dropped thread is never opened again. */
   exists(thread: string): boolean;
+  /** Whether `thread` is a run that settled: a new input to it is refused (`RUN_SETTLED`). */
+  settled(thread: string): boolean;
   /**
    * Keep `thread`'s wake in the owner's rows, in a unit of the write gate; `opened` is the
    * Session that reported it, when it is open (a run's settling is read from it).
@@ -326,6 +333,11 @@ export class ThreadHost extends LifecycleCapability {
       }
       const accepted = await this.#admit(thread, slot, async () => {
         const fresh = await storage.submissionByRequest(ROOT, operationId, BG) === undefined;
+        // A settled run takes no new input, refused here, before pi commits one (a resend
+        // of its own is pi's duplicate, and commits nothing).
+        if (fresh && this.#parts.settled(thread)) {
+          throw new Refused(RUN_SETTLED);
+        }
         // The thread's open inputs as its turn owners hold them, with every admission in
         // flight beside this one, so none passes the cap.
         if (fresh && this.#parts.turns.inputs(thread) + slot.admitting - 1 >= THREAD_INPUTS) {
@@ -336,6 +348,9 @@ export class ThreadHost extends LifecycleCapability {
           if (!this.#parts.exists(thread)) {
             // Dropped while it was admitted (a grant change): nothing reaches its store.
             throw new Refused(THREAD_DROPPED);
+          }
+          if (fresh && this.#parts.settled(thread)) {
+            throw new Refused(RUN_SETTLED);
           }
         }
         await conversation.submit({
@@ -860,8 +875,10 @@ export class ThreadHost extends LifecycleCapability {
   #onWake(thread: string, slot: Slot, wake: Wake): void {
     slot.lastUsed = Date.now();
     slot.changed?.();
-    const kept = slot.waiting !== undefined ? this.#parts.live(thread, wake, slot.opened)
-      : this.#wakeFor(thread, wake, slot.opened);
+    // While an input is admitted, no settling is read: the run is about to work again.
+    const opened = slot.admitting > 0 ? undefined : slot.opened;
+    const kept = slot.waiting !== undefined ? this.#parts.live(thread, wake, opened)
+      : this.#wakeFor(thread, wake, opened);
     kept.catch(() => console.error("a thread's wake could not be kept"));  // no ids
   }
 

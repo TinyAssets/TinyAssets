@@ -1227,8 +1227,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // input settled, the first 2 KiB of its answer and whether that was all of it) is kept
   // in the same unit; a run handed an input names it (`request`) from then on; a run's
   // retention reads that time alone. The kept usage rows' bytes are counted
-  // (`agent_usage_space`), so their sum has a bound of its own, and a dropped thread's usage
-  // is added into one owner total (`agent_usage_total`). The owner being erased is one row
+  // (`agent_usage_space`), so their sum has a bound of its own, and a dropped thread's usage,
+  // and a run's as it settles, is added into one owner total (`agent_usage_total`); a
+  // settled run keeps no usage row (`keepUsage` keeps none). The owner being erased is one row
   // (`owner_erasure`, with the step it reached), the mark every door, lane and new thread
   // refuses on.
   Object.freeze([

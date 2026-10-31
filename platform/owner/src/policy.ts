@@ -216,8 +216,10 @@ export function fileSettings(document: PolicyDocument): FileSettings {
  * (`keep_run_receipts`, whole days, at least `keep_runs` and at most 365); and, as the
  * files quotas share theirs, the percent of the runs' live stores (`runs_kept`) and of
  * their receipts one outside client may hold (`client_share`), and the percent every
- * client together leaves the owner (`owner_reserve`), so the owner can always launch. The
- * document's optional `runs` table sets any of them; the rest keep these values. A run's
+ * client together leaves the owner (`owner_reserve`), so the owner can always launch; and
+ * how many runs may be live at once, not yet settled (`runs_live`, shared the same way),
+ * since only a live run holds work. The document's optional `runs` table sets any of them;
+ * the rest keep these values. A run's
  * receipt is how its status is answered once it settled (`threads.ts`); receipts past a
  * share let their oldest go, and never refuse a launch.
  */
@@ -226,6 +228,7 @@ export const RUN_DEFAULTS = Object.freeze({
   keep_run_receipts: 90,
   client_share: 25,
   owner_reserve: 25,
+  runs_live: 2_000,
 });
 export type RunSettings = { readonly [K in keyof typeof RUN_DEFAULTS]: number };
 /** The range each run setting may take. */
@@ -235,6 +238,7 @@ export const RUN_SETTINGS: { readonly [K in keyof RunSettings]: readonly [number
     keep_run_receipts: Object.freeze([1, 365] as const),
     client_share: Object.freeze([0, 100] as const),
     owner_reserve: Object.freeze([0, 100] as const),
+    runs_live: Object.freeze([1, 10_000] as const),
   });
 const DAY_S = 86_400;
 
@@ -248,7 +252,8 @@ export function runPolicy(document: PolicyDocument): RunPolicy {
   const settings = runSettings(document);
   return { keepRunsS: settings.keep_runs * DAY_S,
            keepReceiptsS: settings.keep_run_receipts * DAY_S,
-           clientShare: settings.client_share, ownerReserve: settings.owner_reserve };
+           clientShare: settings.client_share, ownerReserve: settings.owner_reserve,
+           runsLive: settings.runs_live };
 }
 
 /**

@@ -840,7 +840,11 @@ Each conversation SHALL carry its authority in pi's own document: the owner's (t
 - **THEN** the fork carries the same stamp, and its next tool call is blocked
 
 ### Requirement: A client's threads are bounded and hold its grant
-`agent_threads` SHALL record a thread in a unit that re-checks its stamp stands, naming a fresh store (128 random bits, unique) before the store exists, SHALL never change a thread's stamp or store, SHALL refuse loudly a conversation past its client's bound (64), all clients' together (1,024) or the owner's (10,000), and a run past the runs' own bound (`runs_kept`, 25,000 live stores), an outside client's past its share of it (`runs.client_share`, 25%) and every client's together past what the owner's reserve leaves (`runs.owner_reserve`, 25%), before any store is made; a dropping thread SHALL count against every bound, and SHALL hold its client's grant row (`held`), until its row is forgotten. A thread is its Session's root; its stamp SHALL be written in the root's creating commit. A grant set or revoke SHALL mark its client's threads dropping, and let go of its run receipts, in its own unit, and drop them once it committed.
+`agent_threads` SHALL record a thread in a unit that re-checks its stamp stands, naming a fresh store (128 random bits, unique) before the store exists, SHALL never change a thread's stamp or store, SHALL refuse loudly a conversation past its client's bound (64), all clients' together (1,024) or the owner's (10,000), and a run past the runs' own bound (`runs_kept`, 25,000 stores), past the runs not yet settled, a sleeping one among them (owner policy `runs.runs_live`, 2,000 by default, 10,000 at most, refused `runs_live`), an outside client's past its share of either (`runs.client_share`, 25%) and every client's together past what the owner's reserve leaves (`runs.owner_reserve`, 25%), before any store is made; a dropping thread SHALL count against every bound, and SHALL hold its client's grant row (`held`), until its row is forgotten. A thread is its Session's root; its stamp SHALL be written in the root's creating commit. A grant set or revoke SHALL mark its client's threads dropping, and let go of its run receipts, in its own unit, and drop them once it committed.
+
+#### Scenario: A client's flood of live runs
+- **WHEN** an outside client launches runs that do not settle until its share of `runs_live` is held
+- **THEN** its next launch is refused `runs_live`, and the owner's launch is made
 
 #### Scenario: 1,000 launches a day
 - **WHEN** the owner launches 1,000 runs in a day while its conversations are one short of their bound
@@ -918,7 +922,7 @@ When a thread is dropped, for every reason (idle retention, a run's retention, a
 - **THEN** the `threads` lane finishes the drop: every store is wiped and only then its row forgotten
 
 ### Requirement: A run's store is wiped `keep_runs` after it settles
-A run SHALL settle once: when its Session reports nothing running and nothing asleep with its input settled, one unit SHALL keep the time and its receipt (its input's status, reason and the first 2 KiB of its answer), read from that Session. Its store SHALL be wiped `keep_runs` after it settled (owner policy `runs.keep_runs`, 7 days by default, 30 at most), never while it is live, and no read SHALL move that time; a run never seen settling SHALL be taken `keep_runs` after its last activity, answering as one pi never saw. A settled run's status and cancel SHALL be answered from its receipt, its Session never opened for them, to the caller whose run it was alone, before its drop, during it and after; while its store is there, an answer longer than the receipt's text SHALL be read whole from the store by a read that claims nothing, and once the store is wiped the receipt's text SHALL be marked `truncated`. Receipts SHALL be a history with a row bound (50,000, shared as the runs are), kept `keep_run_receipts` from settling (90 days by default, 365 at most, never less than `keep_runs`); past a scope's share its own oldest receipt SHALL go, and no launch SHALL be refused for receipts.
+A run SHALL settle once: when its Session reports nothing running and nothing asleep with its input settled, one unit SHALL keep the time and its receipt (its input's status, reason and the first 2 KiB of its answer), read from that Session, and SHALL add its usage into the owner's total, keeping no usage row of its own and counting it once whether its Session is open or not. A settled run SHALL take no input: a new one SHALL be refused `run_settled` at the host's admission, before pi commits it, from every path (the doors, `ta`, scheduled work), so a settled run holds no turn, live row, wake job or usage row. Its store SHALL be wiped `keep_runs` after it settled (owner policy `runs.keep_runs`, 7 days by default, 30 at most), never while it is live, and no read SHALL move that time; a run never seen settling SHALL be taken `keep_runs` after its last activity, answering as one pi never saw. A settled run's status and cancel SHALL be answered from its receipt, its Session never opened for them, to the caller whose run it was alone, before its drop, during it and after; while its store is there, an answer longer than the receipt's text SHALL be read whole from the store by a read that claims nothing, and once the store is wiped the receipt's text SHALL be marked `truncated`. Receipts SHALL be a history with a row bound (50,000, shared as the runs are), kept `keep_run_receipts` from settling (90 days by default, 365 at most, never less than `keep_runs`); past a scope's share its own oldest receipt SHALL go, and no launch SHALL be refused for receipts.
 
 #### Scenario: A settled run past `keep_runs`
 - **WHEN** a run settled `keep_runs` ago and nothing in its thread is live
@@ -935,6 +939,10 @@ A run SHALL settle once: when its Session reports nothing running and nothing as
 #### Scenario: A long answer
 - **WHEN** a settled run's answer is longer than 2 KiB
 - **THEN** its status gives the whole answer until its store is wiped, and after that the first 2 KiB marked `truncated`
+
+#### Scenario: Input to a settled run
+- **WHEN** a settled run is sent a new input, or scheduled work names it
+- **THEN** it is refused `run_settled` (the work fails, never retried), and it holds no turn
 
 #### Scenario: Receipts at their bound
 - **WHEN** receipts are at 50,000 and the owner launches a day's 1,000 runs at `keep_run_receipts` 365

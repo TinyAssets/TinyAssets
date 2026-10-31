@@ -1012,10 +1012,16 @@ account and no deploy.
   `agent:run`, a scheduled launch), `converse` the door's conversation; none was left
   unmapped. A run settles once: when its Session reports nothing running and nothing
   asleep with its input settled, one unit keeps `settled_at` and its receipt
-  (`run_receipts`: status, reason, the first 4 KiB of its answer), read from that Session.
+  (`run_receipts`: status, reason, the first 2 KiB of its answer), read from that Session,
+  and adds its usage into the owner's total, keeping no usage row (counted once, the usage
+  view the same before and after). A settled run takes no input: a new one is refused
+  `run_settled` at the host's admission before pi commits it (a guard), from the doors,
+  `ta` and scheduled work alike (the work fails, never retried), and a late commit of its
+  Session lets its turn owners go and keeps none, so it holds no turn, live row, wake job or
+  usage row; F1's scheduled run is unsettled while it sleeps.
   A settled run's status and cancel are answered from the receipt, its Session never
   opened (F12's one read holds, polls move nothing), before its drop, during it and after;
-  while its store is there an answer past the receipt's 4 KiB is read whole from it by a
+  while its store is there an answer past the receipt's 2 KiB is read whole from it by a
   pure read (`ThreadStore.answer`: no holder claim, refused for a store never opened), and
   once it is wiped the receipt answers marked `truncated: true`;
   its store is wiped `keep_runs` after it settled (owner policy `runs.keep_runs`, 7 d, 1 to
@@ -1026,10 +1032,12 @@ account and no deploy.
   keeps the wake as it stands once its job is set, so a stale "running" row never holds a
   run; a run is told its input's request id as it is handed it, so a receipt kept without
   its settling names it (`dropped`). Bounds: conversations 64 a client, 1,024 every client's,
-  10,000 the owner's; runs their own, `runs_kept` 50,000 live stores, an outside client
-  holding at most `runs.client_share` (25%) and every client together what
+  10,000 the owner's; runs their own, `runs_kept` 25,000 kept stores and `runs.runs_live`
+  (owner policy, 2,000, 1 to 10,000) runs not yet settled, a sleeping one among them, each
+  refused at launch with a fixed code (`runs_live` for the live ones), an outside client
+  holding at most `runs.client_share` (25%) of each and every client together what
   `runs.owner_reserve` (25%) leaves, so the owner can always launch. Receipts are a history
-  with a row bound, never a refusal: 100,000, shared the same way, each scope's oldest let
+  with a row bound, never a refusal: 50,000, shared the same way, each scope's oldest let
   go past its share, kept `keep_run_receipts` from settling (90 d, 1 to 365, never under
   `keep_runs`); a client's receipts go with its grant's change. Every thread's kept usage is
   bounded at 256 MiB in all (a backstop). Erasure as a tested internal path (its door comes
@@ -1042,13 +1050,14 @@ account and no deploy.
   (`WriteGate.wipe`, whose only caller is the erasure's wiring, a guard). Each step resumes
   from the recorded one at the object's next start, by the job, and at every refused door:
   a crash after the alarm's disabling, or a failed wipe, finishes at the next start. The
-  owner-bound guard counts the runs' rows at their widest (about 3 KB), the receipts, the
-  usage space and total, the erasure mark, and Lifecycle's own job and key rows (worst case
-  in the round-1 report); the alarm guard admits only `erase.ts`'s `disableAlarms` and
+  owner-bound guard counts by state: every thread row at its widest (about 3 KB), and only
+  the live ones (conversations and `runs_live`) with turn owners, `model_turns`, usage and
+  live rows, wake jobs and keys; a settled run by its row and its receipt; the usage space
+  and total and the erasure mark (worst case in the live/settled report); the alarm guard admits only `erase.ts`'s `disableAlarms` and
   `gate.ts`'s `deleteAll` beside the store's. Declared differences from the design: a
   closed dropping Session is not reopened to end it (nothing of it runs in memory); client
   runs share `runs_kept` rather than counting in the conversation bounds; a settled run's
-  answer read after its store is wiped is its receipt's first 4 KiB, marked. A rename (`grantSet` with only the
+  answer read after its store is wiped is its receipt's first 2 KiB, marked. A rename (`grantSet` with only the
   name changed) still ends the client's work and drops its threads: every owner set moves
   the grant's generation, which is both the change's concurrency token and the stamp every
   thread and tool call is checked against, so a name-only change needs its own door (a

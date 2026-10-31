@@ -154,10 +154,14 @@ async function agentRig() {
   };
 }
 
-/** A thread made for `stamp`, its pi session, and the model answering by `byAsk`. */
-async function threadFor(instance: FauxOwnerDO, stamp: Stamped | null) {
+/**
+ * A thread made for `stamp`, its pi session, and the model answering by `byAsk`: a run, or
+ * the caller's conversation, for input after input (a settled run takes no more).
+ */
+async function threadFor(instance: FauxOwnerDO, stamp: Stamped | null,
+                         kind: "run" | "converse" = "run") {
   instance.script = Array.from({ length: 40 }, () => byAsk);
-  const thread = await instance.agent.thread("main", stamp);
+  const thread = await instance.agent.thread("main", stamp, { kind });
   return { thread, session: thread.thread_id };
 }
 
@@ -315,7 +319,7 @@ describe("a full client's conversation", () => {
                                            content: text("remember the milk") });
     await r.admit(MUSE);
     const out = await r.in(async (instance, state) => {
-      const { session } = await threadFor(instance, r.stampOf(MUSE, 1));
+      const { session } = await threadFor(instance, r.stampOf(MUSE, 1), "converse");
       const first = shown(await instance.harness.prompt("go scoped", { session }));
       // A grant change made around the doors: only the gate's own check sees it.
       new Grants(state.storage, new Policy(state.storage))
@@ -336,7 +340,7 @@ describe("a full client's conversation", () => {
                                            content: text("nested milk") });
     await r.admit(MUSE);
     const out = await r.in(async (instance, state) => {
-      const { session } = await threadFor(instance, r.stampOf(MUSE, 1));
+      const { session } = await threadFor(instance, r.stampOf(MUSE, 1), "converse");
       const read = shown(await instance.harness.prompt("nest read", { session }));
       const nest = gate();
       instance.probes.nestGate = nest.promise;
@@ -890,7 +894,7 @@ describe("the authority's enforcement (review M1)", () => {
     await r.admit(MUSE);
     const generation = await r.scoped(MUSE, ["write_files"]);  // no read_files
     const out = await r.in(async (instance) => {
-      const { session } = await threadFor(instance, r.stampOf(MUSE, generation));
+      const { session } = await threadFor(instance, r.stampOf(MUSE, generation), "converse");
       const pi = await instance.harness.pi({ session });
       const conversation = (await pi.conversation(1 as ConversationId, BG))!;
       await conversation.configure({ extensions: { remove: [{ name: "ta.authority" } as never] } },

@@ -133,7 +133,9 @@ import {
   threadAuthority, type ThreadReader, Threads,
 } from "./threads";
 import { codePoints, principal } from "./text";
-import { type OperationResult, SESSIONS_FULL, THREAD_INPUTS_FULL } from "./thread-host";
+import {
+  type OperationResult, RUN_SETTLED, SESSIONS_FULL, THREAD_INPUTS_FULL,
+} from "./thread-host";
 import type { ThreadStore } from "./thread-store";
 import { Usage as ModelUsage, type UsageReceipt } from "./usage";
 import { runWakes, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "./wakes";
@@ -285,7 +287,7 @@ export interface Operation {
   readonly status: "queued" | "running" | "parked" | "scheduled" | "done" | "unanswered";
   readonly reason?: string;
   readonly text?: string;
-  /** True when `text` is only the first 2 KiB of a run's answer, its store wiped. */
+  /** True when `text` is only the first 4 KiB of a run's answer, its store wiped. */
   readonly truncated?: boolean;
   /** When scheduled work is due, in seconds. */
   readonly due?: number;
@@ -607,7 +609,7 @@ const OPERATION = /^(thread_[0-9a-f]{32})\.([0-9a-f]{64}|run_[0-9a-f]{32}|work_[
 
 /**
  * How an operation of a settled run stands, from its receipt: its input's settling, its
- * answer's text marked `truncated` when the receipt holds only its first 2 KiB; any other
+ * answer's text marked `truncated` when the receipt holds only its first 4 KiB; any other
  * request id, or a run pi was never handed an input in, is one pi never saw (`not_found`).
  */
 function receiptStatus(receipt: ReceiptView, key: string):
@@ -800,6 +802,10 @@ export function workRunner(threads: ThreadReader, agent: Pick<OwnerAgent, "submi
             && (error.message === THREAD_INPUTS_FULL || error.message === SESSIONS_FULL)) {
           return { state: "busy", reason: error.message };
         }
+        if (error instanceof Refused && error.message === RUN_SETTLED) {
+          // A settled run takes no input, ever: the work ends, never retried.
+          return { state: "failed", reason: "run_settled" };
+        }
         throw error;
       }
       return receipt.accepted ? { state: "handed" } : { state: "handed", reason: "duplicate" };
@@ -936,10 +942,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                             thread, JSON.stringify(usage))),
                           turns: {
                             // A forgotten thread's late commit (a Session cut off at its
-                            // drop) keeps nothing: its turns went with its row.
+                            // drop) keeps nothing: its turns went with its row. A settled
+                            // run's lets its owners go, and holds none anew.
                             owned: (thread, owners) => write(() => {
                               if (this.#threads.row(thread) !== null) {
-                                this.#usage.turnOwners(thread, owners);
+                                this.#usage.turnOwners(thread, this.#threads.settledRun(thread)
+                                  ? owners.filter(({ turn }) => turn === null) : owners);
                               }
                             }),
                             reconciled: (thread, open) => write(() =>
@@ -1689,7 +1697,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * A settled run's status: its receipt's, and, when the receipt holds only the first 2 KiB
+   * A settled run's status: its receipt's, and, when the receipt holds only the first 4 KiB
    * of its answer, the whole answer read from its store while the store is there (a pure
    * read: no Session opened, no holder claimed, its retention unmoved); once the store is
    * wiped, the receipt's, marked `truncated`.
