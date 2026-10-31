@@ -9,6 +9,7 @@ import {
 } from "../src/ledger";
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
+import type { Registered } from "../src/threads";
 import { runWakes, type WakeSender } from "../src/wakes";
 import { alarmOf, laneAt } from "./support";
 
@@ -80,6 +81,33 @@ export function ledgerOn(storage: DurableObjectStorage,
       return super.register(origin, source, request, now);
     }
   })(storage, grants, { ...LEDGER_LIMITS, ...limits });
+}
+
+/** The registrations a stamp's universe is made from, as the object's threads read them. */
+export function registeredOn(storage: DurableObjectStorage): Registered {
+  return ledgerOn(storage).registered;
+}
+
+/**
+ * `origin`'s agent registered in `center` too, left disabled, as a client that registered
+ * there before it moved leaves one; its enabled agent stays as it was.
+ */
+export function registeredElsewhere(storage: DurableObjectStorage, origin: Origin,
+                                    center: string): string {
+  const ledger = ledgerOn(storage);
+  const enabled = ledger.agents(origin).filter((agent) => agent.disabled_reason === null);
+  for (const agent of enabled) {
+    ledger.disable(agent.agent_id, "moved");
+  }
+  const made = ledger.register(origin, MCP, { command_center_id: center, display_name: "Muse",
+                                              delivery_method: "pull", recipe_id: null });
+  ledger.disable(made.agent_id, "moved");
+  for (const agent of enabled) {
+    ledger.register(origin, MCP, { command_center_id: agent.command_center_id,
+                                   display_name: agent.display_name, delivery_method: "pull",
+                                   recipe_id: null });
+  }
+  return made.agent_id;
 }
 
 /** Now, in the whole seconds a binder reports a sign-in at. */

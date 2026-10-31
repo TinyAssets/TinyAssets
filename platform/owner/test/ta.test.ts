@@ -33,10 +33,12 @@ import {
 } from "../src/ta";
 import { Threads } from "../src/threads";
 import { asked, direct, gated, OAUTH, provider, until } from "./gateway-support";
-import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
-import { failure, storeSubmission } from "./support";
+import { DOT, ledgerOn, MCP, MUSE, signedIn } from "./ledger-support";
+import { failure } from "./support";
 import { keepsFive } from "../src/agent";
-import { type FauxOwnerDO, type GatedOwnerDO, type MalformedOwnerDO, says } from "./worker";
+import {
+  type FauxOwnerDO, type GatedOwnerDO, type MalformedOwnerDO, says, wipedSubmission,
+} from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
 /** A third outside client. */
@@ -91,8 +93,15 @@ async function rig() {
   const session = (): Binding => bind(null, { session: cookie });
   return {
     owner, stub, bind, at,
+    /**
+     * The client's first verified call records its grant: full, generation 1; and its agent
+     * registered in universe `alpha`, where its stamps act.
+     */
     admit: async (origin: Origin) => {
       await stub.outsideAgents(bind(origin, { authenticated_at: at }));
+      await runInDurableObject(stub, (_instance, state) => ledgerOn(state.storage).register(
+        origin, MCP, { command_center_id: "alpha", display_name: "Muse",
+                       delivery_method: "pull", recipe_id: null }));
     },
     /** The owner scopes the client to `capabilities` in universe `alpha`, as agent `main`. */
     scoped: async (origin: Origin, capabilities: string[]) => {
@@ -112,10 +121,10 @@ async function rig() {
   };
 }
 
-/** A thread for `stamp` (null: the owner's), its session, the model answering by `step`. */
+/** `stamp`'s conversation (null: the owner's), its session, the model answering by `step`. */
 async function threadFor(instance: FauxOwnerDO, stamp: Stamped | null): Promise<string> {
   instance.script = Array.from({ length: 80 }, () => step);
-  const thread = await instance.agent.thread("main", stamp);
+  const thread = await instance.agent.thread("main", stamp, { kind: "converse" });
   return thread.thread_id;
 }
 
@@ -306,7 +315,7 @@ describe("ta's call", () => {
     const r = await rig();
     const out = await r.in(async (instance, state) => {
       instance.script = Array.from({ length: 80 }, () => step);
-      const thread = await instance.agent.thread("main", null);
+      const thread = await instance.agent.thread("main", null, { kind: "converse" });
       const session = thread.thread_id;
       const gate = new WriteGate(state.storage);
       const threads = new Threads(gate.storage);
@@ -880,8 +889,8 @@ describe("ta's model call through the gateway (review L4)", () => {
                                                                   { session });
       await until(async () => (await cancelled()) === false, "the nested stream to open");
       await instance.grantRevoke(r.bind(), { client: MUSE.client });
-      // The revoke dropped the thread: its store says how the turn ended.
-      const settled = (await storeSubmission(thread.store, { request: operationId }))!;
+      // The revoke dropped the thread: its store, as it was wiped, says how the turn ended.
+      const settled = wipedSubmission(instance.probes, thread.store, { request: operationId })!;
       return { settled: [settled.status, settled.reason], bodies: instanceCalls(instance.calls) };
     });
     expect(out.settled).toEqual(["unanswered", "aborted"]);

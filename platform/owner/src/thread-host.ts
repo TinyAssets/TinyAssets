@@ -79,6 +79,7 @@ import {
 import { Refused } from "./errors";
 import { COMPACTION, JOINED } from "./origin";
 import { inTime } from "./schedule";
+import { assistantText } from "./thread-store";
 import { THREAD_INPUTS } from "./schema";
 
 const BG = BACKGROUND_CONTEXT;
@@ -121,6 +122,11 @@ const SESSION_CLOSE_MS = 1_000;
 export const SESSIONS_FULL = "too many of the agent's threads are working at once";
 /** The refusal of a submit whose thread was dropped while it was admitted. */
 export const THREAD_DROPPED = "the thread was dropped";
+/**
+ * The refusal of a new input to a settled run (`HostParts.settled`): a run that settled
+ * takes no more work, so it holds no turn and no live row; going on is a conversation's.
+ */
+export const RUN_SETTLED = "run_settled: the run has settled and takes no more input";
 /** The owner notice a thread's open owners past its bound leave as it opens. */
 export const TURNS_UNKEPT = "turns_unkept";
 const TURNS_UNKEPT_DETAIL = "a thread held more open inputs or live compactions than it may " +
@@ -172,8 +178,13 @@ export interface HostParts {
   open(thread: string, onWake: (wake: Wake) => void): Promise<Opened>;
   /** Whether `thread` has a row: a dropped thread is never opened again. */
   exists(thread: string): boolean;
-  /** Keep `thread`'s wake in the owner's rows, in a unit of the write gate. */
-  live(thread: string, wake: Wake): Promise<void>;
+  /** Whether `thread` is a run that settled: a new input to it is refused (`RUN_SETTLED`). */
+  settled(thread: string): boolean;
+  /**
+   * Keep `thread`'s wake in the owner's rows, in a unit of the write gate; `from` is the
+   * Session that reported it, when it is open (a run's settling is read from it).
+   */
+  live(thread: string, wake: Wake, from?: Reported): Promise<void>;
   /** Keep `thread`'s usage (pi's `pi.usage`) as its Session closes, in a unit. */
   usage(thread: string, usage: UsageState): Promise<void>;
   /**
@@ -256,17 +267,6 @@ export function memoryLimitReset(error: unknown): boolean {
   return false;
 }
 
-/** The text of an assistant entry, for an operation's result. */
-function assistantText(entry: EntryRecord | undefined): string {
-  const message = (entry as { model?: readonly unknown[] } | undefined)?.model?.[0] as
-    { role?: string; content?: readonly { type: string; text?: string }[] } | undefined;
-  if (message?.role !== "assistant") {
-    return "";
-  }
-  return (message.content ?? []).map((part) => (part.type === "text" ? part.text ?? "" : ""))
-    .join("");
-}
-
 export class ThreadHost extends LifecycleCapability {
   readonly #parts: HostParts;
   readonly #timing: HostTiming;
@@ -333,6 +333,11 @@ export class ThreadHost extends LifecycleCapability {
       }
       const accepted = await this.#admit(thread, slot, async () => {
         const fresh = await storage.submissionByRequest(ROOT, operationId, BG) === undefined;
+        // A settled run takes no new input, refused here, before pi commits one (a resend
+        // of its own is pi's duplicate, and commits nothing).
+        if (fresh && this.#parts.settled(thread)) {
+          throw new Refused(RUN_SETTLED);
+        }
         // The thread's open inputs as its turn owners hold them, with every admission in
         // flight beside this one, so none passes the cap.
         if (fresh && this.#parts.turns.inputs(thread) + slot.admitting - 1 >= THREAD_INPUTS) {
@@ -473,6 +478,51 @@ export class ThreadHost extends LifecycleCapability {
     }
   }
 
+  /**
+   * A dropping thread's Session ended and closed (a drop's second step, `threads.ts`): its
+   * work ended by `act` (which only aborts) in the Session as it is, past `openMax` and
+   * never resumed, then the Session closed, however it was held open. One not open is
+   * never opened: nothing of it runs here, and its store is about to be wiped. Resolves
+   * once it closed; an open that was in flight is awaited first, so its store is made, if
+   * it is, before the drop wipes it.
+   */
+  async drop(thread: string, act: (opened: Opened) => Promise<void>): Promise<void> {
+    if (this.#slots.get(thread)?.opening !== undefined) {
+      try {
+        await this.#use(thread, async (opened, slot) => {
+          slot.ending++;
+          try {
+            await act(opened);
+          } finally {
+            slot.ending--;
+          }
+        }, true);
+      } catch (error) {
+        if (this.#slots.get(thread)?.opened !== undefined) {
+          throw error;  // its work could not be ended
+        }
+        // The open in flight failed, or the Session closed meanwhile: nothing runs.
+      }
+    }
+    const slot = this.#slots.get(thread);
+    if (slot !== undefined) {
+      slot.pins = 0;  // a watch ends with its thread
+      await this.#closeSlot(slot);
+    }
+  }
+
+  /**
+   * Inside the drop's last unit: `thread`'s wake job and its failure count, forgotten with
+   * its row; the job row goes in the unit, and the alarm is re-armed after it (the answer).
+   */
+  forgetWake(thread: string): Promise<unknown> {
+    const kv = this.lifecycle.storage.kv;
+    if (kv.get(errorsKey(thread)) !== undefined) {
+      kv.delete(errorsKey(thread));
+    }
+    return this.lifecycle.jobs.cancel(wakeJob(thread));
+  }
+
   /** `thread`'s Session, opened if it is not (a test's, and the agent's brief reads). */
   async pi(thread: string): Promise<Harness> {
     const { opened, slot } = await this.#open(thread);
@@ -581,7 +631,7 @@ export class ThreadHost extends LifecycleCapability {
       if (!ending) {
         pi.resume();
         await new Promise((resolve) => setTimeout(resolve, 0));
-        await this.#wakeFor(thread, pi.wake());
+        await this.#wakeFor(thread, pi.wake(), opened, slot);
       }
     } catch (error) {
       pi.close(BG).catch(() => {});
@@ -806,21 +856,26 @@ export class ThreadHost extends LifecycleCapability {
    * owner's rows: the job first, so a row that fails to land leaves a job that finds the
    * work itself, and never a live row with no job to wake it.
    */
-  async #wakeFor(thread: string, wake: Wake): Promise<void> {
+  async #wakeFor(thread: string, wake: Wake, opened: Opened, slot: Slot): Promise<void> {
     if (wake.active) {
       await this.#wake(thread);
     } else if (wake.at !== undefined) {
       await this.#wake(thread, wake.at);
     }
-    await this.#parts.live(thread, wake);
+    // The wake as it stands once the job is in place, not as it stood before: a Session
+    // whose work ended meanwhile (an open's reconcile pass) never has a stale "running"
+    // kept after its own later report.
+    await this.#parts.live(thread, opened.pi.wake(), reported(opened, slot));
   }
 
   /** A Session's `onWake`: off its line, never blocking. */
   #onWake(thread: string, slot: Slot, wake: Wake): void {
     slot.lastUsed = Date.now();
     slot.changed?.();
-    const kept = slot.waiting !== undefined ? this.#parts.live(thread, wake)
-      : this.#wakeFor(thread, wake);
+    const { opened } = slot;
+    const kept = opened === undefined ? this.#parts.live(thread, wake)
+      : slot.waiting !== undefined ? this.#parts.live(thread, wake, reported(opened, slot))
+        : this.#wakeFor(thread, wake, opened, slot);
     kept.catch(() => console.error("a thread's wake could not be kept"));  // no ids
   }
 
@@ -839,7 +894,8 @@ export class ThreadHost extends LifecycleCapability {
     if (!this.#parts.exists(thread)) {
       return undefined;
     }
-    const { opened: { pi }, slot } = await this.#open(thread);
+    const { opened, slot } = await this.#open(thread);
+    const { pi } = opened;
     this.#release(slot);
     pi.resume();
     const wake = pi.wake();
@@ -864,6 +920,15 @@ export class ThreadHost extends LifecycleCapability {
     }
     if (wake.at !== undefined) {
       return { rescheduleAt: wake.at };
+    }
+    // Nothing runs and nothing sleeps: the live row is rewritten from the Session (a stale
+    // "running" one cleared, a run that settled kept so) before the job completes; a write
+    // whose read does not answer within a heartbeat leaves the job to try again.
+    const kept = this.#parts.live(thread, wake, reported(opened, slot))
+      .then(() => true, () => false);
+    if (await inTime(kept, this.#timing.heartbeatMs) !== true) {
+      console.error("a thread's wake could not be kept; its job tries again");  // no ids
+      return heartbeat;
     }
     return undefined;
   }
@@ -946,6 +1011,20 @@ export interface TurnOwner {
    * the turn, never makes it again.
    */
   readonly joined?: boolean;
+}
+
+/**
+ * The open Session a wake is reported from, and `quiet`, read in the settling unit:
+ * whether no input is being admitted. A run settles only then, so an admitted input is
+ * never refused for a settling that came after it.
+ */
+export interface Reported {
+  readonly opened: Opened;
+  readonly quiet: () => boolean;
+}
+
+function reported(opened: Opened, slot: Slot): Reported {
+  return { opened, quiet: () => slot.admitting === 0 };
 }
 
 /** A commit's change, as pi publishes it. */

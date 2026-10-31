@@ -549,6 +549,21 @@ describe("a turn's counters", () => {
       expect(r.usage.openInputs(THREAD)).toBe(2);
     }));
 
+  it("let a held turn go in a reconcile that passes its only owner over the bound", () =>
+    withUsage(async (r) => {
+      capTurnOwners(r.state.storage.sql, 1, 1);
+      const other = `thread_${"9".repeat(32)}`;
+      await r.gate.write(() => r.usage.turnOwners(other, [{ owner: "s:1", turn: "h1" }]));
+      expect(r.turn("h1")).toBeDefined();
+      // Its stale owner goes, a new one takes the thread's one place, and the turn's own new
+      // owner is passed over: nothing owns it, so it goes, never left at no owners.
+      expect(await r.gate.write(() => r.usage.turnsReconciled(other, [
+        { owner: "s:5", turn: "h5" }, { owner: "s:9", turn: "h1" }]))).toBe(1);
+      expect([r.turn("h1"), r.turn("h5")]).toEqual([undefined, expect.anything()]);
+      expect(r.state.storage.sql.exec("SELECT 1 FROM model_turns WHERE owners = 0").toArray())
+        .toEqual([]);
+    }));
+
   it("refuse a call of a turn that has ended, never starting it over", () =>
     withUsage(async (r) => {
       await spent(r, ASK, 10, 7);

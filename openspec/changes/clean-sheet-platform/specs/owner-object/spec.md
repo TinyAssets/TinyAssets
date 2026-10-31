@@ -840,14 +840,34 @@ Each conversation SHALL carry its authority in pi's own document: the owner's (t
 - **THEN** the fork carries the same stamp, and its next tool call is blocked
 
 ### Requirement: A client's threads are bounded and hold its grant
-`agent_threads` SHALL record a thread in a unit that re-checks its stamp stands, naming a fresh store (128 random bits, unique) before the store exists, SHALL never change a thread's stamp or store, SHALL refuse loudly a thread past its client's bound or all clients' together, before any store is made, and SHALL count each thread on its client's grant row (`held`), so the row is not forgotten while a thread names it. A thread is its Session's root; its stamp SHALL be written in the root's creating commit. A grant set or revoke SHALL drop its client's threads in its own unit.
+`agent_threads` SHALL record a thread in a unit that re-checks its stamp stands, naming a fresh store (128 random bits, unique) before the store exists, SHALL never change a thread's stamp or store, SHALL refuse loudly a conversation past its client's bound (64), all clients' together (1,024) or the owner's (10,000), and a run past the runs' own bound (`runs_kept`, 25,000 stores), past the runs not yet settled, a sleeping one among them (owner policy `runs.runs_live`, 2,000 by default and at most, refused `runs_live`), an outside client's past its share of either (`runs.client_share`, 25%) and every client's together past what the owner's reserve leaves (`runs.owner_reserve`, 25%), before any store is made; a dropping thread SHALL count against every bound, and SHALL hold its client's grant row (`held`), until its row is forgotten. A thread is its Session's root; its stamp SHALL be written in the root's creating commit. A thread row SHALL NOT copy its stamp's universe: it SHALL name the outside agent's registration the stamp was made from, whose id, universe and client never change and which SHALL NOT be deleted while a thread names it (the owner's delete leaves a tombstone that goes with the last such thread), so a thread acts in the universe it was stamped in after its client registers elsewhere, and a run opens there with no agent of its client enabled. A grant set or revoke SHALL mark its client's threads dropping, and let go of its run receipts, in its own unit, and drop them once it committed.
+
+#### Scenario: A client that moved
+- **WHEN** a client's thread was stamped in universe A, and the owner disables its agent there and the client registers in B
+- **THEN** the A thread still acts under A, a message in B gets a conversation of its own, and a run launched under A opens under A
+
+#### Scenario: A client's flood of live runs
+- **WHEN** an outside client launches runs that do not settle until its share of `runs_live` is held
+- **THEN** its next launch is refused `runs_live`, and the owner's launch is made
+
+#### Scenario: 1,000 launches a day
+- **WHEN** the owner launches 1,000 runs in a day while its conversations are one short of their bound
+- **THEN** none is refused, and its next conversation is still made
+
+#### Scenario: One client floods runs
+- **WHEN** an outside client launches runs until it reaches its share of `runs_kept`
+- **THEN** its next run is refused loudly, and the owner can still launch
+
+#### Scenario: A grant made again at once
+- **WHEN** a client with 64 conversations is revoked and granted again before their drops finish
+- **THEN** its new conversations are refused until the drops finish
 
 #### Scenario: A client at its bound
 - **WHEN** a client has as many threads as its bound and asks for another
 - **THEN** the thread is refused loudly, and the client's grant row counts each thread it keeps
 
 ### Requirement: Idle threads are dropped, never live ones
-The `threads` lane SHALL drop a thread no door or run has touched for the idle age (7 days), in a unit that re-checks the activity it read, so a thread touched since is kept; a live thread (its `agent_live` row: work running in its Session, its subagents' and background work's included, or a task sleeping) SHALL never be dropped, its activity moved on instead; a dropped thread's Session SHALL be closed and never opened again; a thread unsettled scheduled work names SHALL never be idle, and is in use from its work's claim.
+The `threads` lane SHALL drop a conversation no door has touched for the idle age (7 days), and a run `keep_runs` after it settled, each marked in a unit that re-checks the activity it read, so a thread touched since is kept; a live thread (its `agent_live` row: work running in its Session, its subagents' and background work's included, or a task sleeping) SHALL never be marked, its activity moved on instead; a dropped thread's Session SHALL be closed and never opened again; a thread unsettled scheduled work names SHALL never be taken, and is in use from its work's claim.
 
 #### Scenario: Clients that stopped calling hold the shared bound
 - **WHEN** clients' threads fill the clients' shared bound and then go unused for the idle age
@@ -887,18 +907,61 @@ A launch's `at`, at the door and through `ta`, SHALL be seconds since the epoch,
 - **THEN** the launch is refused as invalid, and no thread, work row or alarm is made
 
 ### Requirement: A thread's store is wiped when the thread is dropped
-When a thread is dropped (idle, a grant change, a revoke), its store SHALL be wiped whole (`deleteAll`) before its row is forgotten (S4); the owner's own database SHALL hold only its bounded rows, its worst case at the policy's high bounds under half its 10 GB (a static guard).
+When a thread is dropped, for every reason (idle retention, a run's retention, a grant change or revoke, the owner's erasure), one path SHALL run, each step resumable: in one unit its row is marked `dropping`, after which no door resolves it (an operation on it is no such operation) and nothing opens its Session; its Session's work is ended and the Session closed, never opened for it; a run's receipt is kept; its store is wiped whole (`deleteAll`); and only then, in one unit, its row is forgotten with every row keyed to it (its live and usage rows, its wake job). The `threads` lane SHALL finish any drop cut short, backing off in its row a drop whose store did not answer. A revoke SHALL end live work before it drops. The owner's own database SHALL hold only its bounded rows, its worst case at the policy's high bounds under half its 10 GB (a static guard), the runs' live stores, their receipts and every thread's kept usage (64 MiB in all, a backstop told as `usage_unkept`) included.
 
 #### Scenario: A client's threads after a revoke
 - **WHEN** a client with threads is revoked
 - **THEN** each of its threads' stores is wiped before its row is forgotten, and nothing opens them again
 
+#### Scenario: A revoke while a tool runs
+- **WHEN** a client is revoked while a tool of its run is running
+- **THEN** the run is ended, then its Session closed, then its store wiped
+
+#### Scenario: A sleeping task after a grant change
+- **WHEN** a client's grant changes while a task sleeps in its closed thread
+- **THEN** the store is wiped with the task in it, and its wake job goes with the row
+
+#### Scenario: A crash between two steps of a drop
+- **WHEN** the object dies after a drop's mark, or after its store was wiped, or a store refuses its destroy
+- **THEN** the `threads` lane finishes the drop: every store is wiped and only then its row forgotten
+
 ### Requirement: A run's store is wiped `keep_runs` after it settles
-A run thread's store SHALL be wiped `keep_runs` after its run settles, its row kept as a receipt (S5).
+A run SHALL settle once: when its Session reports nothing running and nothing asleep with its input settled, one unit SHALL keep the time and its receipt (its input's status, a reason of at most 64 characters, a fixed code and a short detail, and the first 768 bytes of its answer, a summary), read from that Session, and SHALL add its usage into the owner's total, keeping no usage row of its own and counting it once whether its Session is open or not. A settled run SHALL take no input: a new one SHALL be refused `run_settled` at the host's admission, before pi commits it, from every path (the doors, `ta`, scheduled work), so a settled run holds no turn, live row, wake job or usage row. Its store SHALL be wiped `keep_runs` after it settled (owner policy `runs.keep_runs`, 7 days by default, 30 at most), never while it is live, and no read SHALL move that time; a run never seen settling SHALL be taken `keep_runs` after its last activity, answering as one pi never saw. A settled run's status and cancel SHALL be answered from its receipt, its Session never opened for them, to the caller whose run it was alone, before its drop, during it and after; while its store is there, an answer longer than the receipt's text SHALL be read whole from the store by a read that claims nothing, and once the store is wiped the receipt's text SHALL be marked `truncated`. Receipts SHALL be a history with a row bound (50,000, shared as the runs are), kept `keep_run_receipts` from settling (90 days by default, 365 at most, never less than `keep_runs`); past a scope's share its own oldest receipt SHALL go, and no launch SHALL be refused for receipts.
 
 #### Scenario: A settled run past `keep_runs`
 - **WHEN** a run settled `keep_runs` ago and nothing in its thread is live
 - **THEN** its store is wiped, and its status is still answered from its receipt
+
+#### Scenario: A run with live background work
+- **WHEN** a run's input is answered but background work it started still runs past `keep_runs`
+- **THEN** its store is kept, and wiped `keep_runs` after that work settles
+
+#### Scenario: A client polls a settled run
+- **WHEN** a client reads a settled run's status every second with `keep_runs` at a second
+- **THEN** each read is answered from its receipt, no Session opens, and its store is wiped on time
+
+#### Scenario: A long answer
+- **WHEN** a settled run's answer is longer than 768 bytes
+- **THEN** its status gives the whole answer until its store is wiped, and after that the first 768 bytes marked `truncated`
+
+#### Scenario: Input to a settled run
+- **WHEN** a settled run is sent a new input, or scheduled work names it
+- **THEN** it is refused `run_settled` (the work fails, never retried), and it holds no turn
+
+#### Scenario: Receipts at their bound
+- **WHEN** receipts are at 50,000 and the owner launches a day's 1,000 runs at `keep_run_receipts` 365
+- **THEN** none is refused, and each new receipt lets the oldest of its own scope go
+
+### Requirement: Erasing the owner destroys every store before the owner
+Erasing the owner (an internal path; its door comes in slice 10) SHALL mark the owner erasing, with every thread `dropping`, after which every door refuses, no lane runs and no thread is recorded; then destroy every store a row names, each row forgotten after its store; then delete the owner's whole database. Each step SHALL resume after a crash, from the step the mark records, at the object's next start, by its own job and at every door the mark refuses; a store that refuses its destroy SHALL not keep the others from theirs. Since a store no row names can never be found again, a store SHALL be named in its row before it is made, in the unit that reads the mark.
+
+#### Scenario: A thread being made as the erasure begins
+- **WHEN** the owner is erased while a thread's row is recorded and its first open is in flight
+- **THEN** its store is destroyed too, before the owner's database is deleted
+
+#### Scenario: A crash mid-erasure
+- **WHEN** the object dies after the mark, or with some stores destroyed, or after every store is destroyed, or after Lifecycle's alarm was disabled, or its wipe failed
+- **THEN** the doors still refuse, and the next start finishes it: every store destroyed, then the owner deleted
 
 ### Requirement: The bounded waits are shared
 The object SHALL keep at most 256 pending waits, at most 16 of any one outside client's, and the clients together SHALL leave 32 for the owner; a wait refused for room SHALL answer `running` at once, the operation still submitted.

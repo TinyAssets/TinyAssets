@@ -127,18 +127,24 @@ export class Schedule extends LifecycleCapability {
   /** The object's write gate, which every job set goes through. */
   readonly #write: Write;
   readonly #passMs: number;
+  /** Whether every lane is halted: the owner is being erased (`erasure.ts`). A read. */
+  readonly #halted: () => boolean;
 
   constructor(lanes: Readonly<Record<string, Lane>>, clock: () => number, write: Write,
-              passMs: number = LANE_PASS_S * 1000) {
+              passMs: number = LANE_PASS_S * 1000, halted: () => boolean = () => false) {
     super(SCHEDULE);
     this.#lanes = new Map(Object.entries(lanes));
     this.#clock = clock;
     this.#write = write;
     this.#passMs = passMs;
+    this.#halted = halted;
   }
 
-  /** Point every lane's job at its next work, or cancel it. */
+  /** Point every lane's job at its next work, or cancel it; nothing while halted. */
   async sync(): Promise<void> {
+    if (this.#halted()) {
+      return;
+    }
     for (const name of this.#lanes.keys()) {
       await this.#set(name, undefined);
     }
@@ -177,11 +183,14 @@ export class Schedule extends LifecycleCapability {
     await rearmed;
   }
 
-  /** A lane's job is due: one bounded pass, then its job set from the rows as they stand. */
+  /**
+   * A lane's job is due: one bounded pass, then its job set from the rows as they stand.
+   * While halted, no lane runs, and its job completes.
+   */
   async onJob({ job }: LifecycleJobContext): Promise<LifecycleJobOutcome> {
     const lane = this.#lanes.get(job.fn);
-    if (lane === undefined || job.id !== laneJob(job.fn)) {
-      return undefined;  // no lane of this code's: done
+    if (lane === undefined || job.id !== laneJob(job.fn) || this.#halted()) {
+      return undefined;  // no lane of this code's, or none runs: done
     }
     await lane.run(this.#clock(), Date.now() + this.#passMs);
     await this.#set(job.fn, null);

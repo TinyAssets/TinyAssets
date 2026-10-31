@@ -162,10 +162,14 @@ function label(value: unknown, max: number): value is string {
     && codePoints(value) <= max && isPrintable(value);
 }
 
-/** An agent's id as a thread names it. */
+/** An agent's id: its directory's name under `/workspace/agents/`. */
+export const AGENT_DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/** An agent's id as a thread names it: its directory's name (`AGENT_DIR`). */
 export function agentId(value: unknown): string {
-  if (!label(value, 128)) {
-    throw new Invalid("an agent id is 1 to 128 printable characters");
+  if (typeof value !== "string" || !AGENT_DIR.test(value)) {
+    throw new Invalid("an agent id is 1 to 128 letters, digits, dots, dashes and " +
+                      "underscores");
   }
   return value;
 }

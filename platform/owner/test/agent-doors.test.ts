@@ -31,9 +31,13 @@ import {
   sendRequest, UNTRUSTED_NOTICE, WAIT_DEFAULT_MS, WAIT_MAX_MS,
   waitOf,
 } from "../src/owner-do";
-import { Threads, retainThreads, THREAD_LIMITS, THREAD_RETENTION } from "../src/threads";
+import {
+  RUN_POLICY, type Thread, Threads, retainThreads, THREAD_LIMITS, THREAD_RETENTION,
+} from "../src/threads";
 import { until } from "./gateway-support";
-import { DOT, MCP, MUSE, origin, signedIn } from "./ledger-support";
+import {
+  DOT, ledgerOn, MCP, MUSE, origin, registeredOn, signedIn,
+} from "./ledger-support";
 import { drainDue, failure, filesOn, laneAt, storeSql } from "./support";
 import { type FauxOwnerDO, says } from "./worker";
 
@@ -145,8 +149,9 @@ async function rig() {
     threads: async () => (await inside((_instance, state) => state.storage.sql.exec<
       { thread_id: string; store: string; state: string; agent_id: string;
         client: string | null; universe: string | null; kind: string; last_active: number }>(
-      "SELECT thread_id, store, state, agent_id, client, universe, kind, last_active " +
-        "FROM agent_threads ORDER BY created_at").toArray())),
+      "SELECT thread_id, store, state, t.agent_id, client, command_center_id AS universe, " +
+        "kind, last_active FROM agent_threads t LEFT JOIN outside_agents a " +
+        "ON a.agent_id = t.registration ORDER BY t.created_at").toArray())),
     /** A thread's root's transcript, as its Session holds it. */
     entries: (thread: string) => inside(async (instance) =>
       instance.harness.messages({ session: thread })),
@@ -267,9 +272,11 @@ describe("a message to an agent (converse)", () => {
   it("finds a caller's thread by its client, its agent and where its stamp acts", async () => {
     const r = await rig();
     await r.admit(MUSE);
+    await r.register(MUSE);
     const out = await r.in(async (_instance, state) => {
       const gate = new WriteGate(state.storage);
-      const threads = new Threads(gate.storage);
+      const threads = new Threads(gate.storage, undefined, undefined, undefined, undefined,
+                                  registeredOn(state.storage));
       const stamp = { client: MUSE.client, generation: 1, authenticated_at: r.at,
                       universe: "alpha", agent: "main" };
       const made = await gate.write(() => threads.record("main", stamp, clock(), "converse"));
@@ -483,10 +490,11 @@ describe("a grant change", () => {
     const [thread] = await r.threads();
     await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
     expect((await waiting).message).toBe(WAIT_ENDED);
-    // Its run ended: its store holds nothing pending, and its Session is closed.
-    expect(await storeSql(thread!.store, "SELECT id FROM pi_submissions WHERE " +
-                                         "json_extract(record, '$.status') IN " +
-                                         "('queued', 'placed')")).toEqual([]);
+    // Its run ended: its store held nothing pending as it was wiped, and its Session is
+    // closed.
+    expect(await r.in((instance) => instance.probes.wiped.get(thread!.store)!.submissions
+      .filter((record) => record.status === "queued" || record.status === "placed")
+      .map((record) => record.id))).toEqual([]);
     expect(await r.in((instance) => instance.agent.host.openThreads()))
       .not.toContain(thread!.thread_id);
     expect(await r.threads()).toEqual([]);
@@ -613,6 +621,135 @@ describe("ta's agent:run", () => {
   }, 30_000);
 });
 
+describe("a stamp's registration (S4-S5)", () => {
+  /** `origin`'s registrations, oldest first. */
+  const registrations = (r: Rig, origin: Origin) => r.in((_instance, state) =>
+    state.storage.sql.exec<{ agent_id: string; deleted_at: number | null }>(
+      "SELECT agent_id, deleted_at FROM outside_agents WHERE outside_client = ? " +
+        "ORDER BY created_at, agent_id", origin.client).toArray());
+  /** The owner scopes `origin` to `scopes`, each `universe:capability`, as agent `main`. */
+  const scope = async (r: Rig, origin: Origin, scopes: string[]) => {
+    const held = (await r.stub.grantList(r.bind(null))).clients
+      .find((client) => client.client === origin.client);
+    await r.stub.grantSet(r.session(), {
+      client: origin.client, source: "mcp", mode: "scoped", name: "",
+      scopes: scopes.map((one) => ({ universe: one.split(":")[0]!, agent: "main",
+                                     capability: one.split(":")[1]! })),
+      expected_generation: held?.generation ?? 0 });
+  };
+
+  it("keeps a thread stamped in one universe acting there after its client moves to another, " +
+     "which gets a conversation of its own", async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    await r.register(MUSE);
+    await scope(r, MUSE, ["alpha:converse", "alpha:read_files", "beta:converse"]);
+    const first = await r.stub.agentSubmit(r.bind(MUSE), { message: "hello", client_send_id: "a" });
+    // The owner disables its agent in alpha, and the client registers in beta.
+    const [alpha] = await registrations(r, MUSE);
+    await r.stub.disableAgent(r.session(), { agent_id: alpha!.agent_id, reason: "moved" });
+    await r.register(MUSE, "beta");
+    const second = await r.stub.agentSubmit(r.bind(MUSE), { message: "hello again",
+                                                           client_send_id: "b" });
+    expect(second.thread_id).not.toBe(first.thread_id);
+    const out = await r.in(async (instance) => {
+      const threads = instance.parts.threads;
+      const [a, b] = [threads.get(first.thread_id)!, threads.get(second.thread_id)!];
+      const pi = await instance.agent.host.pi(a.thread_id);
+      const doc = await pi.snapshot(instance.agent.authority, 1 as ConversationId, BG);
+      const reads = (thread: Thread) => instance.parts.authority.refusal(
+        threads.authority(thread), ["read_files"]) ?? "granted";
+      return { universes: [threads.universe(a), threads.universe(b)],
+               doc: doc?.by === "client" ? doc.stamp.universe : null,
+               reads: [reads(a), reads(b)] };
+    });
+    expect(out).toEqual({ universes: ["alpha", "beta"], doc: "alpha",
+                          reads: ["granted", NOT_GRANTED] });
+  }, 30_000);
+
+  it("opens a run launched in one universe in that universe, with no agent of its client " +
+     "enabled by then", async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    await r.register(MUSE);
+    await r.scoped(MUSE, ["run_graph"]);
+    const later = await r.stub.agentRun(r.bind(MUSE), { agent: "main", input: "at last",
+                                                        at: clock() + 1 });
+    const [alpha] = await registrations(r, MUSE);
+    await r.stub.disableAgent(r.session(), { agent_id: alpha!.agent_id, reason: "away" });
+    await sleep(1200);
+    await drainDue(r.stub);
+    const out = await r.in(async (instance) => {
+      const answer = await instance.agent.host.settled(later.thread_id,
+                                                       later.operation_id.split(".")[1]!);
+      const pi = await instance.agent.host.pi(later.thread_id);
+      const doc = await pi.snapshot(instance.agent.authority, 1 as ConversationId, BG);
+      return { status: answer.status, doc: doc?.by === "client" ? doc.stamp.universe : null };
+    });
+    expect(out).toEqual({ status: "done", doc: "alpha" });
+  }, 30_000);
+
+  it("keeps a registration a thread names: its delete is ignored, the owner's leaves a " +
+     "tombstone, which goes with the last thread", async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    await r.register(MUSE);
+    await r.scoped(MUSE, ["converse"]);
+    await r.stub.agentSubmit(r.bind(MUSE), { message: "hello", client_send_id: "a" });
+    const [alpha] = await registrations(r, MUSE);
+    await r.in((_instance, state) => state.storage.sql.exec(
+      "DELETE FROM outside_agents WHERE agent_id = ?", alpha!.agent_id));
+    expect(await registrations(r, MUSE)).toEqual([{ agent_id: alpha!.agent_id,
+                                                    deleted_at: null }]);
+    // Nor do its id, universe or client ever change.
+    expect((await failure(() => r.in((_instance, state) => state.storage.sql.exec(
+      "UPDATE outside_agents SET command_center_id = 'beta' WHERE agent_id = ?",
+      alpha!.agent_id)))).message).toMatch(/never changes its id, universe or client/);
+    await r.stub.deleteAgent(r.session(), { agent_id: alpha!.agent_id });
+    expect((await registrations(r, MUSE))[0]!.deleted_at).not.toBeNull();
+    await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
+    await until(async () => (await r.threads()).length === 0, "the drop");
+    expect(await registrations(r, MUSE)).toEqual([]);
+  }, 30_000);
+
+  it("holds one conversation a caller, agent and universe: one client's two families in a " +
+     "universe share it, and the schema refuses a second", async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    await r.register(MUSE);
+    const other = { client: MUSE.client, family: "family-other" };
+    const out = await r.in(async (_instance, state) => {
+      const gate = new WriteGate(state.storage);
+      const threads = new Threads(gate.storage, undefined, undefined, undefined, undefined,
+                                  registeredOn(state.storage));
+      const stamp = { client: MUSE.client, generation: 1, authenticated_at: r.at,
+                      universe: "alpha", agent: "main" };
+      const made = await gate.write(() => threads.record("main", stamp, clock(), "converse"));
+      // Its other family registered there too, after it: the same universe, the same thread.
+      ledgerOn(state.storage).register(other, MCP, { command_center_id: "alpha",
+                                                     display_name: "Muse",
+                                                     delivery_method: "pull", recipe_id: null });
+      const again = await gate.write(() => threads.record("main", stamp, clock(), "converse"));
+      const second = (() => {
+        try {
+          state.storage.sql.exec("INSERT INTO agent_threads (thread_id, store, state, agent_id, " +
+            "client, generation, authenticated_at, registration, created_at, kind, " +
+            "last_active) SELECT ?, ?, 'ready', agent_id, client, generation, " +
+            "authenticated_at, registration, created_at, kind, last_active FROM " +
+            "agent_threads WHERE thread_id = ?", `thread_${"d".repeat(32)}`, "d".repeat(32),
+            made.thread_id);
+          return "made";
+        } catch (error) {
+          return (error as Error).message;
+        }
+      })();
+      return { same: again.thread_id === made.thread_id, second };
+    });
+    expect(out.same).toBe(true);
+    expect(out.second).toMatch(/UNIQUE constraint failed/);
+  }, 30_000);
+});
+
 describe("idle retention", () => {
   it("is the object's threads lane, due when the longest idle thread's idle age is reached",
      async () => {
@@ -621,8 +758,8 @@ describe("idle retention", () => {
     const old = `thread_${"e".repeat(32)}`;
     await r.in(async (instance, state) => {
       state.storage.sql.exec("INSERT INTO agent_threads (thread_id, store, state, agent_id, " +
-        "client, generation, authenticated_at, universe, created_at, kind, last_active) " +
-        "VALUES (?, ?, 'ready', 'main', NULL, NULL, NULL, NULL, 1, 'run', 1)",
+        "client, generation, authenticated_at, registration, created_at, kind, last_active) " +
+        "VALUES (?, ?, 'ready', 'helper', NULL, NULL, NULL, NULL, 1, 'converse', 1)",
         old, "e".repeat(32));
       await instance.agent.host.pi(old);
       expect(instance.agent.host.openThreads()).toContain(old);
@@ -647,14 +784,16 @@ describe("idle retention", () => {
     const dropped = await r.in(async (instance, state) => {
       const gate = new WriteGate(state.storage);
       return retainThreads(new Threads(gate.storage, THREAD_LIMITS, { idleS: 1, perPass: 32 }),
-                           clock, gate.write);
+                           clock, gate.write, (thread) => instance.agent.drop(thread),
+                           noticed(instance));
     });
     expect(dropped).toBe(0);
     await sleep(1100);
     expect(await r.in(async (instance, state) => {
       const gate = new WriteGate(state.storage);
       return retainThreads(new Threads(gate.storage, THREAD_LIMITS, { idleS: 1, perPass: 32 }),
-                           clock, gate.write);
+                           clock, gate.write, (thread) => instance.agent.drop(thread),
+                           noticed(instance));
     })).toBe(1);
   }, 30_000);
 
@@ -675,15 +814,18 @@ describe("idle retention", () => {
     await sleep(1100);
     const out = await r.in(async (instance, state) => {
       const gate = new WriteGate(state.storage);
-      const threads = new Threads(gate.storage, { perClient: 3, clients: 3, owner: 10 },
+      const threads = new Threads(gate.storage, { ...THREAD_LIMITS, perClient: 1, clients: 1,
+                                                  owner: 10 },
                                   { idleS: 1, perPass: 32 }, namedByOpenWork);
-      // Full: three threads of three.
+      // Full: its one conversation of one (its runs have their own bound).
       const room = () => { try { threads.room({ client: MUSE.client, generation: 1,
                                                 authenticated_at: r.at, universe: null,
-                                                agent: "main" }); return "room"; }
+                                                agent: "main" }, "converse"); return "room"; }
                            catch (error) { return (error as Error).message; } };
       const before = room();
-      const dropped = await retainThreads(threads, clock, gate.write);
+      const dropped = await retainThreads(threads, clock, gate.write,
+                                          (thread) => instance.agent.drop(thread),
+                           noticed(instance));
       return { before, dropped, after: room() };
     });
     expect(out).toEqual({ before: "this client's threads are at their limit", dropped: 1,
@@ -739,9 +881,12 @@ describe("idle retention", () => {
     await sleep(1100);
     const out = await r.in(async (instance, state) => {
       const gate = new WriteGate(state.storage);
-      const threads = new Threads(gate.storage, THREAD_LIMITS, { idleS: 1, perPass: 32 });
+      const threads = new Threads(gate.storage, THREAD_LIMITS, { idleS: 1, perPass: 32 },
+                                  undefined, () => QUICK_RUNS);
       const live = instance.parts.threads.liveThreads();
-      const dropped = await retainThreads(threads, clock, gate.write);
+      const dropped = await retainThreads(threads, clock, gate.write,
+                                          (thread) => instance.agent.drop(thread),
+                           noticed(instance));
       return { live: [...live], dropped };
     });
     expect(out.live).toContain(thread!.thread_id);
@@ -752,11 +897,19 @@ describe("idle retention", () => {
   }, 30_000);
 });
 
-/** Threads over the object's storage with retention's idle age at a second. */
+/** Run retention at a second: a run's store wiped a second after it settled. */
+const QUICK_RUNS = Object.freeze({ ...RUN_POLICY, keepRunsS: 1 });
+
+/** The owner notices a lane pass keeps, in its own unit. */
+function noticed(instance: FauxOwnerDO) {
+  return (type: string, detail: string) => instance.parts.notices.add(type, detail, clock());
+}
+
+/** Threads over the object's storage with retention's idle age, and `keep_runs`, at a second. */
 function quickThreads(state: DurableObjectState, perPass = 32) {
   const gate = new WriteGate(state.storage);
   return { gate, threads: new Threads(gate.storage, THREAD_LIMITS, { idleS: 1, perPass },
-                                      namedByOpenWork) };
+                                      namedByOpenWork, () => QUICK_RUNS) };
 }
 
 describe("the owner's agent definitions (review H1)", () => {
@@ -948,7 +1101,8 @@ describe("a launch's time (review M1)", () => {
     await sleep(1100);
     const dropped = await r.in(async (instance, state) => {
       const { gate, threads } = quickThreads(state);
-      return retainThreads(threads, clock, gate.write);
+      return retainThreads(threads, clock, gate.write, (thread) => instance.agent.drop(thread),
+                           noticed(instance));
     });
     expect(dropped).toBe(2);
     expect((await r.threads()).map((made) => made.thread_id)).toEqual([ops[2]!.thread_id]);
@@ -1158,9 +1312,10 @@ describe("idle retention's pass (review L4)", () => {
     await sleep(1100);
     const out = await r.in(async (instance, state) => {
       const { gate, threads } = quickThreads(state, 1);
+      const drop = (thread: Thread) => instance.agent.drop(thread);
       const late = await retainThreads(threads, clock,
-                                       gate.write, Date.now() - 1);
-      const one = await retainThreads(threads, clock, gate.write);
+                                       gate.write, drop, noticed(instance), Date.now() - 1);
+      const one = await retainThreads(threads, clock, gate.write, drop, noticed(instance));
       const back = await gate.write(() => threads.touch(newer!.thread_id, 1));
       return { late, one, back, kept: threads.get(newer!.thread_id)?.last_active };
     });

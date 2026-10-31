@@ -382,8 +382,10 @@ export class Usage {
           skipped++;
         }
       }
+      // A held turn whose owners all went or were passed over goes with its hold.
       for (const turn of held) {
         this.#sql.exec("UPDATE model_turns SET owners = owners - 1 WHERE turn = ?", turn);
+        this.#sql.exec("DELETE FROM model_turns WHERE turn = ? AND owners = 0", turn);
       }
       return skipped;
     });

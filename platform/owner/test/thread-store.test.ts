@@ -91,6 +91,7 @@ function faulty(store: StoreRpc, fails: { reads: number; commits: number },
       return { next, session: wrap(session) };
     },
     attach: async (holder) => wrap(await store.attach(holder)),
+    answer: (request) => store.answer(request),
     size: () => store.size(),
     destroy: () => store.destroy(),
   };
@@ -156,6 +157,15 @@ describe("a thread store", () => {
     await runInDurableObject(env.PISTORE.getByName(name), (_instance, state) =>
       state.abort("reset")).catch(() => undefined);
     expect(await storage.conversation(ROOT, BG)).toEqual({ id: ROOT });
+  });
+
+  it("answers a root input by a pure read, refusing a store never opened and making none",
+     async () => {
+    const store = freshStore();
+    const empty = await store.size();
+    expect(await failed(store.answer("run_x"))).toContain(NOT_OPENED);
+    expect(await store.size()).toBe(empty);
+    expect(await failed(store.attach(holderId()))).toContain(NOT_OPENED);
   });
 
   it("answers its size, and once destroyed is empty and never opens again", async () => {

@@ -71,17 +71,24 @@
  *
  * Ending work (agent research §4.2), each in the door of the change, after its own unit
  * committed: a grant set or revoke ends its client's work (`endClient`, the client's
- * threads, which the unit dropped), a policy write every thread's with work running
- * (`endAll`, from the threads' live rows). Each ends the pending waits it covers (`wait`), closes the
- * live views of the conversations it covers (`live-tee.ts`), and aborts each of those
- * Sessions' conversations with live work, background work included: pi withdraws its
+ * threads, which the unit marked dropping), a policy write every thread's with work running
+ * (`endAll`, from the threads' live rows). Each ends the pending waits it covers (`wait`),
+ * closes the live views of the conversations it covers (`live-tee.ts`), and aborts each of
+ * those Sessions' conversations with live work, background work included: pi withdraws its
  * queued inputs, marks and signals its live tasks (a model request in flight sees its abort
  * signal, so the gateway call ends and settles through `usage.ts`), and settles their
- * inputs `unanswered: aborted`. A dropped client's thread's Session is then closed. The
- * door waits for that at most `END_WAIT_MS`; pi finishes it on its own past then. The
- * abort is the prompt stop, not the enforcement: an abort missed (work admitted after the
- * end's read, or an eviction between the commit and the abort) still finds every tool
- * operation and every model call refused.
+ * inputs `unanswered: aborted`. A dropped client's thread then goes the one drop path
+ * (`drop`): its Session closed, a run's receipt kept, its store wiped, its row forgotten.
+ * The door waits for that at most `END_WAIT_MS`; pi finishes the abort, and the `threads`
+ * lane the drop, on their own past then. The abort is the prompt stop, not the
+ * enforcement: an abort missed (work admitted after the end's read, or an eviction between
+ * the commit and the abort) still finds every tool operation and every model call refused.
+ *
+ * Dropping a thread (`drop`, `threads.ts`), for every reason, is one path: idle retention,
+ * a run's retention, a grant change or revoke, and the owner's erasure (`erase.ts`) each
+ * mark the row `dropping` in a unit of their own, then hand it here. A dropping thread is
+ * never opened: its work is ended in the Session as it is, if open, and a run's receipt is
+ * read from its store directly once the Session closed.
  */
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { ClientIdentity, Models, Provider } from "@earendil-works/pi-ai";
@@ -91,7 +98,7 @@ import {
   type ConversationRecord, createRegistry, defineDoc, defineDocFamily,
   defineExtension, type EnvTarget, type Extension, Harness, type HarnessSettings, hook,
   ProviderDoc, type ReportInfo, ROOT_CONVERSATION_ID, ToolTask, type Tx, type UsageState,
-  type Wake, wrapTool,
+  type Storage, type Wake, wrapTool,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
@@ -114,11 +121,12 @@ import { inTime } from "./schedule";
 import { PLATFORM_NAMES, type Platform, reachable, taTool } from "./ta";
 import {
   HOST_TIMING, type HostParts, type HostTiming, type Opened, type OperationResult,
-  type SubmitOptions,
-  ThreadHost,
+  type Reported, type SubmitOptions, ThreadHost, USAGE_UNKEPT,
 } from "./thread-host";
-import type { StoreRpc } from "./thread-store";
-import { type Thread, threadAuthority, type ThreadKind, type Threads } from "./threads";
+import { type Answer, assistantText, type StoreRpc } from "./thread-store";
+import {
+  addedUsage, type Settled, type Thread, type ThreadKind, type Threads,
+} from "./threads";
 
 const BG = BACKGROUND_CONTEXT;
 const ROOT = ROOT_CONVERSATION_ID;
@@ -172,6 +180,37 @@ export const GATE = "ta.authority";
 export const TA_EXTENSION = "ta.tool";
 /** A thread with no row is never opened: it was dropped, or never made. */
 export const NO_THREAD = "no such thread";
+/** The `usage_unkept` notice's detail when a settling run's usage cannot be read. */
+const USAGE_UNREAD_DETAIL = "a run's model usage could not be read as it settled; the " +
+  "owner's total counts it as its Session last closed";
+/** The rule a model call of a dropping thread is refused under: its turns end with its row. */
+export const THREAD_DROPPING = "thread_dropping";
+/** How long a cut-off Session's usage is waited for, before its row is forgotten. */
+const CUT_OFF_USAGE_MS = 1_000;
+/** How many of a run's first root submissions its receipt's read looks through. */
+const RECEIPT_SCAN = 8;
+
+/**
+ * How a run's input settled, as its Session's own storage holds it: its root's first input,
+ * and its answer's text once done; null while it has none, or it has not settled.
+ */
+export async function settledIn(storage: Storage): Promise<Settled | null> {
+  const page = await storage.scanSubmissions({ conversationId: ROOT, order: "ascending" },
+                                             RECEIPT_SCAN, undefined, BG);
+  const input = page.items.find((record) => record.type === "input");
+  if (input === undefined) {
+    return null;
+  }
+  const request = input.requestId ?? null;
+  if (input.status === "done") {
+    const answer = await storage.entry(input.answer, BG);
+    return { request, status: "done", reason: null, text: assistantText(answer?.entry) };
+  }
+  if (input.status === "unanswered") {
+    return { request, status: "unanswered", reason: input.reason, text: "" };
+  }
+  return null;
+}
 
 export type { Stamped };
 
@@ -403,6 +442,8 @@ export class OwnerAgent {
   /** One registry for every Session (pi keeps each Harness subscribed until it closes). */
   readonly #registry = createRegistry();
   #installed: Promise<void> | undefined;
+  /** The drops in flight, by thread, on the instance: one each at a time. */
+  readonly #drops = new Map<string, Promise<void>>();
   /** The pending waits, by the client they are for ("" for the owner's), on the instance. */
   readonly #waits = new Map<string, Set<AbortController>>();
 
@@ -412,7 +453,8 @@ export class OwnerAgent {
     this.host = new ThreadHost({
       open: (thread, onWake) => this.#open(thread, onWake),
       exists: (thread) => parts.threads.get(thread) !== null,
-      live: (thread, wake) => parts.live(thread, wake),
+      settled: (thread) => parts.threads.settledRun(thread),
+      live: (thread, wake, from) => this.#live(thread, wake, from),
       usage: (thread, usage) => parts.usage(thread, usage),
       turns: parts.turns,
       notice: (type, detail) => this.#report(type, detail),
@@ -450,8 +492,12 @@ export class OwnerAgent {
     let opened: Harness | undefined;
     const models = this.#source.models({
       thread,
-      authority: (sessionId) => (opened === undefined ? Promise.resolve(() => NO_CONVERSATION)
-        : this.modelAuthority(opened, sessionId)),
+      // A dropping thread's turns count until its row goes, but no call of one is sent.
+      authority: async (sessionId) => {
+        const rule = opened === undefined ? () => NO_CONVERSATION
+          : await this.modelAuthority(opened, sessionId);
+        return () => (this.#parts.threads.get(thread) === null ? THREAD_DROPPING : rule());
+      },
     });
     // An opened Harness closes its storage; one that failed to open may not have, so its
     // storage is closed here (twice is once), releasing the store's session.
@@ -473,7 +519,7 @@ export class OwnerAgent {
     try {
       if (await storage.conversation(ROOT, BG) === undefined) {
         const config = await this.#parts.config(row.agent_id);
-        const state = copy(threadAuthority(row));
+        const state = copy(this.#parts.threads.authority(row));
         await pi.root(BG, {
           agent: { model: { provider: AUTO.provider, modelId: AUTO.id },
                    ...(config.instructions === undefined ? {}
@@ -625,7 +671,7 @@ export class OwnerAgent {
     const { kind = "run", need = [] } = options;
     const state = authorityOf(by);
     authority.require(state, need);
-    threads.room(by);  // a refusal makes nothing; the recording unit checks again
+    threads.room(by, kind);  // a refusal makes nothing; the recording unit checks again
     return write(() => {
       authority.require(state, need);
       return threads.record(id, by, Date.now() / 1000, kind);
@@ -637,10 +683,32 @@ export class OwnerAgent {
     return this.host.pi(typeof thread === "string" ? thread : thread.thread_id);
   }
 
-  /** Submit `input` to a thread's root (`ThreadHost.submit`). */
-  submit(thread: Thread, input: string, options: SubmitOptions):
+  /**
+   * Submit `input` to a thread's root (`ThreadHost.submit`); a run is first told, in a unit,
+   * the request id of the input it is handed, so its receipt names it however it ends.
+   */
+  async submit(thread: Thread, input: string, options: SubmitOptions):
       Promise<{ operationId: string; accepted: boolean }> {
+    if (thread.kind === "run") {
+      await this.#parts.write(() => this.#parts.threads.handed(thread.thread_id,
+                                                               options.operationId));
+    }
     return this.host.submit(thread.thread_id, input, options);
+  }
+
+  /**
+   * How a run's input `request` stands in its store, its whole answer once done, while the
+   * store is there: a pure read (`ThreadStore.answer`), never a Session's open or a holder's
+   * claim; null once its row or store is gone, or the store does not answer in time.
+   */
+  async answer(threadId: string, request: string): Promise<Answer | null> {
+    const row = this.#parts.threads.row(threadId);
+    if (row === null) {
+      return null;
+    }
+    const read = this.#parts.stores(row.store).answer(request).catch(() => null);
+    const answered = await inTime(read, END_WAIT_MS);
+    return answered === "late" ? null : answered;
   }
 
   /** Withdraw an operation of a thread, or abort the run it joined. */
@@ -648,9 +716,101 @@ export class OwnerAgent {
     return this.host.withdraw(thread.thread_id, operationId);
   }
 
-  /** Close a thread's Session, once its row was dropped. */
-  dropped(thread: string): Promise<void> {
-    return this.host.close(thread);
+  /**
+   * Drop a thread its row marks `dropping` (`threads.ts`), for whatever reason, the one
+   * path: its Session's live views closed and its work ended, background work included,
+   * then the Session closed (`ThreadHost.drop`: never opened for it), for at most
+   * `END_WAIT_MS`, past which a Session that will not close is cut off (its store, once
+   * wiped, refuses its late calls: it is no longer opened); its store destroyed; then, in
+   * one unit, its row forgotten with every row keyed to it, its usage added into the
+   * owner's total, and its wake job. A run's receipt was kept when it settled, or at its
+   * mark; nothing reads its store. Each step is safe to run again, so a drop cut short is
+   * finished by running it again (the `threads` lane, the erasure); one in flight for a
+   * thread is joined, never run twice at once.
+   */
+  drop(thread: Thread): Promise<void> {
+    const id = thread.thread_id;
+    const running = this.#drops.get(id);
+    if (running !== undefined) {
+      return running;
+    }
+    const dropping = this.#drop(thread).finally(() => {
+      this.#drops.delete(id);
+    });
+    this.#drops.set(id, dropping);
+    return dropping;
+  }
+
+  async #drop(thread: Thread): Promise<void> {
+    const { threads, write } = this.#parts;
+    const id = thread.thread_id;
+    if (threads.row(id)?.state !== "dropping") {
+      throw new Error("only a thread marked dropping is dropped");
+    }
+    let ended: Harness | undefined;
+    const ending = this.host.drop(id, ({ pi }) => {
+      ended = pi;
+      return this.#endSession(pi, true);
+    });
+    if (await inTime(ending, END_WAIT_MS) === "late") {
+      ending.catch(() => undefined);
+      console.error("a dropped thread's Session did not close in time; it is cut off");
+      // Its usage as it stands, kept now: it closes, if it does, after its row is gone.
+      const usage = ended?.usage(BG).catch(() => undefined);
+      const read = usage === undefined ? undefined : await inTime(usage, CUT_OFF_USAGE_MS);
+      if (read !== undefined && read !== "late") {
+        await this.#parts.usage(id, read).catch(() => console.error(
+          "a cut-off Session's usage could not be kept"));
+      }
+    }
+    await this.#parts.stores(thread.store).destroy();
+    const [rearmed] = await write((): [Promise<unknown>] | [] =>
+      (threads.forget(id) ? [this.host.forgetWake(id)] : []));
+    await rearmed;
+  }
+
+  /**
+   * A Session's wake, kept in its live row; for a run not yet settled whose Session reports
+   * its work done (nothing running, nothing asleep), its input's settling is read from the
+   * Session that reported it and kept, with the time, in the unit that forgets the wake
+   * (`Threads.settle`). A read that fails keeps the wake alone, loudly: the run then counts
+   * as one never handed an input.
+   */
+  async #live(thread: string, wake: Wake, from: Reported | undefined): Promise<void> {
+    const { threads, write } = this.#parts;
+    if (wake.active || wake.at !== undefined || from === undefined
+        || !threads.unsettledRun(thread)) {
+      return this.#parts.live(thread, wake);
+    }
+    let settled: Settled | null;
+    try {
+      settled = await settledIn(from.opened.storage);
+    } catch {
+      console.error("a run's settling could not be read");  // no ids
+      settled = null;
+    }
+    if (settled === null) {
+      return this.#parts.live(thread, wake);
+    }
+    // Its usage as its Session holds it now goes into the owner's total as it settles; a
+    // read that fails leaves the usage it last kept, told loudly.
+    const usage = await from.opened.pi.usage(BG).catch(() => {
+      console.error("a settling run's usage could not be read");  // no ids
+      this.#report(USAGE_UNKEPT, USAGE_UNREAD_DETAIL);
+      return undefined;
+    });
+    const kept = settled;
+    const done = await write(() => {
+      if (!from.quiet()) {
+        return false;  // an input is being admitted: the run works again
+      }
+      threads.settle(thread, kept, Date.now() / 1000,
+                     usage === undefined ? null : JSON.stringify(usage));
+      return true;
+    });
+    if (!done) {
+      return this.#parts.live(thread, wake);
+    }
   }
 
   /**
@@ -787,20 +947,34 @@ export class OwnerAgent {
   }
 
   /**
-   * A grant change ends its client's work: its pending waits, and in each of `threads`
-   * (the client's threads, which the change's unit dropped) with a Session open, its live
-   * views and its work, then the Session itself. A thread whose Session is closed has
-   * nothing running here, and nothing opens it again: no row names it.
+   * A grant change ends its client's work: its pending waits, then each of `threads` (the
+   * client's threads, which the change's unit marked dropping) dropped: its live views and
+   * work ended, its Session closed, its store wiped, its row forgotten (`drop`), sleepers
+   * included, whose sleeping tasks go with their stores. The door waits for that at most
+   * `END_WAIT_MS`. A thread whose work could not be ended rejects this, so the door does; a
+   * store that did not answer is wiped by the `threads` lane, which finishes every drop.
    */
   async endClient(client: string, threads: readonly Thread[]): Promise<void> {
     this.#endWaits(client);
-    await this.#within(Promise.all(threads.map(async ({ thread_id: thread }) => {
-      const opened = this.host.peek(thread);
-      if (opened !== undefined) {
-        await this.#endSession(opened.pi, true);
+    await this.#within(Promise.all(threads.map(async (thread) => {
+      try {
+        await this.drop(thread);
+      } catch (error) {
+        if (this.host.peek(thread.thread_id) !== undefined) {
+          throw error;
+        }
+        console.error("a dropped thread's store is wiped by the lane");  // no ids
       }
-      await this.host.close(thread);
     })));
+  }
+
+  /**
+   * The owner's erasure began (`erasure.ts`): every pending wait and live view ends; each
+   * thread's work then ends with its drop.
+   */
+  erasing(): void {
+    this.#endWaits();
+    this.#parts.tee.close();
   }
 
   /**
@@ -833,20 +1007,24 @@ export class OwnerAgent {
    * since this instance began. Diagnostic only: every cap reads `usage.ts`'s counters.
    *
    * A read never opens a Session: a thread's usage is its open Session's, read live, or
-   * else its usage row, kept as its Session last closed (`ThreadHost`). A thread whose
-   * object died with its Session open counts as it last closed, until it closes again.
+   * else its usage row, kept as its Session last closed (`ThreadHost`); a dropped thread's
+   * is in the owner's usage total, added in its drop's last unit. A thread whose object died
+   * with its Session open counts as it last closed, until it closes again.
    */
   async usage(): Promise<UsageView> {
     const sum: UsageState = { models: {}, tools: {} };
     const add = (usage: Readonly<UsageState>) => {
       for (const bucket of ["models", "tools"] as const) {
         for (const [key, counts] of Object.entries(usage[bucket] ?? {})) {
-          sum[bucket][key] = added(sum[bucket][key], counts) as typeof counts;
+          sum[bucket][key] = addedUsage(sum[bucket][key], counts) as typeof counts;
         }
       }
     };
     const read: string[] = [];  // the threads read live
     for (const thread of this.host.openThreads()) {
+      if (this.#parts.threads.settledRun(thread)) {
+        continue;  // a settled run's usage is in the total, from its settling
+      }
       const usage = await this.host.peek(thread)?.pi.usage(BG).catch(() => undefined);
       if (usage !== undefined) {  // one closing counts by the row its close keeps
         read.push(thread);
@@ -858,27 +1036,9 @@ export class OwnerAgent {
         add(JSON.parse(kept.usage) as UsageState);
       }
     }
+    add(this.#parts.threads.usageTotal() as unknown as UsageState);  // dropped threads' total
     return { models: sum.models, tools: sum.tools, metrics: this.metrics.snapshot() };
   }
-}
-
-/** Two of pi's usage records summed, counter by counter (pi's `addUsageState`, per key). */
-function added(total: unknown, usage: unknown): unknown {
-  if (total === undefined) {
-    return usage;
-  }
-  if (typeof total === "number" && typeof usage === "number") {
-    return total + usage;
-  }
-  if (total !== null && usage !== null && typeof total === "object" && typeof usage === "object"
-      && !Array.isArray(total) && !Array.isArray(usage)) {
-    const sum: Record<string, unknown> = { ...total as Record<string, unknown> };
-    for (const [key, value] of Object.entries(usage as Record<string, unknown>)) {
-      sum[key] = added(sum[key], value);
-    }
-    return sum;
-  }
-  return usage;
 }
 
 /** The owner's usage view: pi's `pi.usage` summed, and the adapter's metrics. */

@@ -13,14 +13,14 @@
  * request's turn, read from the telemetry context pi gives it (`origin.ts`), is kept on
  * `turns`, as the gateway provider reads it.
  */
-import type { Context } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT as BG_CONTEXT, type Context } from "@earendil-works/chord/context";
 import {
   type AssistantMessage, createModels, fauxAssistantMessage, type FauxProviderHandle,
   fauxProvider, type FauxResponseFactory, getCurrentTools, type Message, type Provider, Type,
 } from "@earendil-works/pi-ai";
 import {
   AgentDoc, defineExtension, defineTask, defineTool, type Extension, GenerationTask, hook,
-  type JsonObject,
+  type JsonObject, type SubmissionRecord,
   type ToolRegistration, ToolTask, wrapTool,
 } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
@@ -28,6 +28,8 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { type AgentParts, gatewaySource, OwnerAgent } from "../src/agent";
 import type { GatewayService, Resealed } from "../src/connections";
 import { turnOf } from "../src/origin";
+import { RemoteStorage } from "../src/remote-storage";
+import type { Erasure } from "../src/erase";
 import { type OwnerEnv, OwnerDO } from "../src/owner-do";
 import { HOST_TIMING, type HostTiming } from "../src/thread-host";
 import type { StoreRpc, StoreSessionRpc } from "../src/thread-store";
@@ -92,6 +94,23 @@ export interface Probes {
   writes: number;
   /** The store calls the agent's Sessions made on this instance, by method. */
   storeCalls: Record<string, number>;
+  /**
+   * Each store the agent destroyed on this instance, by name, in order: its submissions as
+   * the destroy found them, and the threads whose Sessions were open then.
+   */
+  wiped: Map<string, Wiped>;
+  /** Destroys to fail before they run, one each, while any is left (a crash between steps). */
+  destroyFails: number;
+  /** Awaited by each destroy before it runs, when set. */
+  destroyGate: Promise<void> | null;
+  /** Awaited by each store read of `scanSubmissions` (a run's settling), when set. */
+  scanGate: Promise<void> | null;
+}
+
+/** A store as its destroy found it. */
+export interface Wiped {
+  readonly submissions: readonly SubmissionRecord[];
+  readonly open: readonly string[];
 }
 
 /** Probes as a fresh instance has them. */
@@ -101,11 +120,16 @@ export function freshProbes(): Probes {
            submitted: [],
            background: null, backgroundGate: null, backgroundRuns: 0, toolGate: null, gated: [], nestGate: null,
            rewrite: null, widen: null, inject: null, writeGate: null, writes: 0,
-           storeCalls: {} };
+           storeCalls: {}, wiped: new Map(), destroyFails: 0, destroyGate: null,
+           scanGate: null };
 }
 
-/** A store whose sessions' calls are counted into `calls()`, by method. */
-function countedStore(store: StoreRpc, calls: () => Record<string, number>): StoreRpc {
+/**
+ * A store whose sessions' calls are counted into `calls()`, by method, each submissions scan
+ * held at `gates()`'s `scanGate`.
+ */
+function countedStore(store: StoreRpc, calls: () => Record<string, number>,
+                      gates: () => Probes | undefined = () => undefined): StoreRpc {
   const count = (method: string) => {
     const kept = calls();
     kept[method] = (kept[method] ?? 0) + 1;
@@ -115,8 +139,11 @@ function countedStore(store: StoreRpc, calls: () => Record<string, number>): Sto
       count("commit");
       return session.commit(writes);
     },
-    read: (method, args) => {
+    read: async (method, args) => {
       count(method);
+      if (method === "scanSubmissions") {
+        await gates()?.scanGate;
+      }
       return session.read(method, args);
     },
     [Symbol.dispose]: () => (session as Partial<Disposable>)[Symbol.dispose]?.(),
@@ -131,9 +158,63 @@ function countedStore(store: StoreRpc, calls: () => Record<string, number>): Sto
       count("attach");
       return counted(await store.attach(holder));
     },
+    answer: (request) => {
+      count("answer");
+      return store.answer(request);
+    },
     size: () => store.size(),
     destroy: () => store.destroy(),
   };
+}
+
+/**
+ * `store` (named `name`) with each destroy watched: failed while `destroyFails` is left,
+ * held at `destroyGate`, and once through, the store's submissions as the destroy found
+ * them kept on `wiped`, with the threads whose Sessions were open (`open`).
+ */
+export function wipeWatched(store: StoreRpc, name: string, probes: () => Probes,
+                            open: () => string[]): StoreRpc {
+  return {
+    open: (holder) => store.open(holder),
+    attach: (holder) => store.attach(holder),
+    answer: (request) => store.answer(request),
+    size: () => store.size(),
+    destroy: async () => {
+      const kept = probes();
+      if (kept.destroyFails > 0) {
+        kept.destroyFails--;
+        throw new Error("a destroy failed (the test's)");
+      }
+      await kept.destroyGate;
+      const opened = open();
+      let submissions: readonly SubmissionRecord[] = [];
+      try {
+        const storage = await RemoteStorage.open(() => store);
+        submissions = (await storage.scanSubmissions({}, 100, undefined, BG_CONTEXT)).items;
+        await storage.close(BG_CONTEXT);
+      } catch {
+        // destroyed already: a second destroy of the same store finds nothing
+      }
+      await store.destroy();
+      if (!kept.wiped.has(name)) {
+        kept.wiped.set(name, { submissions, open: opened });
+      }
+    },
+  };
+}
+
+/**
+ * A submission as a thread's store held it when the store was wiped, by its request id or
+ * its id: how it stood (as `storeSubmission` reads a store not yet wiped).
+ */
+export function wipedSubmission(probes: Probes, store: string,
+                                by: { request?: string; id?: number }):
+    { status: string; reason: string | null } | undefined {
+  const found = probes.wiped.get(store)?.submissions.find((record) =>
+    (by.request !== undefined && record.requestId === by.request)
+    || (by.id !== undefined && (record.id as unknown as number) === by.id));
+  return found === undefined ? undefined
+    : { status: found.status, reason: (found as { reason?: string }).reason ?? null };
 }
 
 /** Resolves when `context`'s abort signal fires: a tool that honours its abort. */
@@ -489,10 +570,12 @@ export class FauxOwnerDO extends OwnerDO {
   readonly timing: Timing;
   /** The tests' handle on the agent's threads. */
   readonly harness: TestHarness;
+  /** The owner's erasure, the internal path no door reaches yet. */
+  readonly erasure: Erasure;
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     const made: { agent?: OwnerAgent; parts?: AgentParts; faux?: FauxProviderHandle;
-                  self?: FauxOwnerDO } = {};
+                  self?: FauxOwnerDO; erasure?: Erasure } = {};
     const timing = testTiming();
     super(ctx, env, (parts) => {
       made.parts = parts;
@@ -518,13 +601,16 @@ export class FauxOwnerDO extends OwnerDO {
         await probes.writeGate;
         return parts.write(unit);
       };
-      const stores: AgentParts["stores"] = (name) =>
-        countedStore(parts.stores(name), () => made.self!.probes.storeCalls);
+      const stores: AgentParts["stores"] = (name) => wipeWatched(
+        countedStore(parts.stores(name), () => made.self!.probes.storeCalls,
+                     () => made.self?.probes), name,
+        () => made.self!.probes, () => made.agent!.host.openThreads());
       made.agent = new OwnerAgent({ ...parts, write, stores }, {
         models: () => models, timing, ...testExtensions(() => made.self!.probes) });
       return made.agent;
-    });
+    }, { erasure: (erasure) => { made.erasure = erasure; }, eraseRetryMs: 500 });
     made.self = this;
+    this.erasure = made.erasure!;
     this.agent = made.agent!;
     this.parts = made.parts!;
     this.faux = made.faux!;
@@ -675,9 +761,12 @@ export class GatedOwnerDO extends OwnerDO {
                                           () => made.self?.faults) },
           (parts) => {
             made.parts = parts;
-            made.agent = new OwnerAgent(parts, { ...gatewaySource(parts),
-                                                 timing: testTiming(),
-                                                 ...testExtensions(() => made.self!.probes) });
+            const stores: AgentParts["stores"] = (name) => wipeWatched(
+              parts.stores(name), name, () => made.self!.probes,
+              () => made.agent!.host.openThreads());
+            made.agent = new OwnerAgent({ ...parts, stores },
+                                        { ...gatewaySource(parts), timing: testTiming(),
+                                          ...testExtensions(() => made.self!.probes) });
             return made.agent;
           });
     made.self = this;

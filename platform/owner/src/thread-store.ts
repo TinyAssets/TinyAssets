@@ -35,23 +35,26 @@
  *   fails only that read) is answered as `{ requestError }`, since RPC keeps no error
  *   class; any other failure is thrown, and fails the Session (pi: "an error a method
  *   throws is final").
+ * - **`answer(request)`** is a pure read for the owner's status of a settled run: how the
+ *   root's input with that request id stands, and its answer's whole text once done. It
+ *   claims no holder and opens no Session; a store never opened refuses it (`NOT_OPENED`),
+ *   so it never makes one.
  * - **`size()`** is the store's database size in bytes (its 10 GB is its own: a full store
  *   fails only its own thread).
- * - **`destroy()`** wipes the store whole (`deleteAll()`, atomic) and then leaves only a
- *   mark that it was destroyed, so every later call, `open` included, is refused: a
- *   destroyed store's Session can never be opened again, and a late call from a closed one
- *   never resurrects it. Names are never reused, so nothing needs it back. The wipe and the
- *   mark are two steps (`deleteAll` takes the mark with it), so a destroy cut short between
- *   them leaves an empty store with no mark. The owner keeps that store from reviving: its
- *   caller (the drop and erasure paths, S4) names the store in a row before it is made,
- *   marks the row `dropping` before it calls `destroy()`, and forgets the row only once
- *   `destroy()` returned, retrying it until then; the owner never opens a dropping thread
- *   (`Threads.get` reads ready rows only). A namespace's objects cannot be listed, so the
- *   row is the only way back to a store.
+ * - **`destroy()`** wipes the store whole (`deleteAll()`, atomic), leaving nothing: an
+ *   empty object, which should bill nothing it stores (live probe P8, still owed) and which
+ *   refuses every call but `open` (`NOT_OPENED`), as one never made does. While the instance
+ *   that destroyed it is in memory, every call, `open` included, is refused at once
+ *   (`DESTROYED`), so a late call from a closing Session never makes it again. No mark is
+ *   kept past that: names are never reused, the owner opens only a store its `ready` row
+ *   names, and it forgets a row only once its store's `destroy()` returned (the drop and
+ *   erasure paths, `threads.ts`, `erase.ts`); a namespace's objects cannot be listed, so
+ *   the row is the only way back to a store, and no row names a destroyed one.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
-  type Seq, type Storage, StorageRequestError, type StorageWrite,
+  type EntryRecord, ROOT_CONVERSATION_ID, type Seq, type Storage, StorageRequestError,
+  type StorageWrite,
 } from "@earendil-works/pi-durable";
 import {
   openDurableObjectSqliteStorage,
@@ -66,9 +69,8 @@ export const NOT_OPENED = "this store was never opened";
 export const DESTROYED = "this store was destroyed";
 /** A holder: 128 random bits, as hex. */
 const HOLDER = /^[0-9a-f]{32}$/;
-/** The durable keys: the holder, and the mark a destroyed store keeps. */
+/** The durable key of the holder. */
 const HOLDER_KEY = "ta:holder";
-const DESTROYED_KEY = "ta:destroyed";
 
 /** The reads of pi's `Storage` the store serves, each by its name. */
 export const READS = Object.freeze([
@@ -93,8 +95,28 @@ export interface StoreRpc {
   open(holder: string): Promise<{ readonly next: number; readonly session: StoreSessionRpc }>;
   /** A fresh session for the holder that holds the store now; never a claim. */
   attach(holder: string): Promise<StoreSessionRpc>;
+  /** How the root's input `request` stands, its whole answer once done; a pure read. */
+  answer(request: string): Promise<Answer | null>;
   size(): Promise<number> | number;
   destroy(): Promise<void>;
+}
+
+/** A root input as a store holds it: how it settled, and its answer's text once done. */
+export interface Answer {
+  readonly status: "queued" | "placed" | "done" | "unanswered";
+  readonly reason?: string;
+  readonly text?: string;
+}
+
+/** The text of an assistant entry, for an operation's result. */
+export function assistantText(entry: EntryRecord | undefined): string {
+  const message = (entry as { model?: readonly unknown[] } | undefined)?.model?.[0] as
+    { role?: string; content?: readonly { type: string; text?: string }[] } | undefined;
+  if (message?.role !== "assistant") {
+    return "";
+  }
+  return (message.content ?? []).map((part) => (part.type === "text" ? part.text ?? "" : ""))
+    .join("");
 }
 
 type Sqlite = Awaited<ReturnType<typeof openDurableObjectSqliteStorage>>;
@@ -137,6 +159,8 @@ export class StoreSession extends RpcTarget implements StoreSessionRpc {
 }
 
 export class ThreadStore extends DurableObject implements StoreRpc {
+  /** Set once this instance wiped the store: it answers nothing more. */
+  #destroyed = false;
   /** pi's storage over this object's database, opened at the holder's first call. */
   #storage: Promise<Sqlite> | undefined;
 
@@ -161,21 +185,48 @@ export class ThreadStore extends DurableObject implements StoreRpc {
     return this.#session(holder);
   }
 
+  /**
+   * How the root's input with pi's request id `request` stands, and its answer's whole text
+   * once done; null for none. Claims no holder: a pure read, refused for a store never
+   * opened (so it never makes one) and for one this instance destroyed.
+   */
+  async answer(request: string): Promise<Answer | null> {
+    this.#alive();
+    if (this.ctx.storage.kv.get<string>(HOLDER_KEY) === undefined) {
+      throw new Error(NOT_OPENED);
+    }
+    if (typeof request !== "string" || request.length === 0 || request.length > 128) {
+      throw new Error("a request id is 1 to 128 characters");
+    }
+    const pi = await this.#pi();
+    const record = await pi.submissionByRequest(ROOT_CONVERSATION_ID, request,
+                                                BACKGROUND_CONTEXT);
+    if (record === undefined || record.type !== "input") {
+      return null;
+    }
+    if (record.status === "done") {
+      const entry = await pi.entry(record.answer, BACKGROUND_CONTEXT);
+      return { status: "done", text: assistantText(entry?.entry) };
+    }
+    return record.status === "unanswered" ? { status: "unanswered", reason: record.reason }
+      : { status: record.status };
+  }
+
   /** The store's database size in bytes. */
   size(): number {
     return this.ctx.storage.sql.databaseSize;
   }
 
   /**
-   * Wipe the store whole, then mark it destroyed: every later call is refused. Idempotent,
+   * Wipe the store whole, leaving nothing; this instance refuses every later call. Idempotent,
    * so an interrupted destroy is simply run again.
    */
   async destroy(): Promise<void> {
     const open = this.#storage;
     this.#storage = undefined;
     await (await open?.catch(() => undefined))?.close(BACKGROUND_CONTEXT).catch(() => {});
+    this.#destroyed = true;
     await this.ctx.storage.deleteAll();
-    this.ctx.storage.kv.put(DESTROYED_KEY, true);
   }
 
   #session(holder: string): StoreSession {
@@ -183,7 +234,7 @@ export class ThreadStore extends DurableObject implements StoreRpc {
   }
 
   #alive(): void {
-    if (this.ctx.storage.kv.get(DESTROYED_KEY) !== undefined) {
+    if (this.#destroyed) {
       throw new Error(DESTROYED);
     }
   }

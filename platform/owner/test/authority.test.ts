@@ -30,11 +30,15 @@ import { type Binding, workRunner } from "../src/owner-do";
 import { Policy, policyDigest } from "../src/policy";
 import { Scheduled, type WorkTarget } from "../src/scheduled";
 import { DESTROYED } from "../src/thread-store";
-import { type Thread, Threads } from "../src/threads";
+import { type Thread, THREAD_LIMITS, type ThreadKind, Threads } from "../src/threads";
 import { asked, gated, provider, until } from "./gateway-support";
-import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
+import {
+  DOT, ledgerOn, MCP, MUSE, registeredElsewhere, registeredOn, signedIn,
+} from "./ledger-support";
 import { drainDue, failure, storeSubmission } from "./support";
-import { type FauxOwnerDO, type GatedOwnerDO, says, storeScript } from "./worker";
+import {
+  type FauxOwnerDO, type GatedOwnerDO, says, storeScript, wipedSubmission,
+} from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
 const text = (value: string): Uint8Array => new TextEncoder().encode(value);
@@ -131,8 +135,15 @@ async function agentRig() {
   return {
     owner, stub, bind, session, at,
     /** The client's first verified call records its grant: full, generation 1. */
+    /**
+     * The client's first verified call records its grant: full, generation 1; and its agent
+     * registered in universe `alpha`, where its stamps act.
+     */
     admit: async (origin: Origin) => {
       await stub.outsideAgents(bind(origin, { authenticated_at: at }));
+      await runInDurableObject(stub, (_instance, state) => ledgerOn(state.storage).register(
+        origin, MCP, { command_center_id: "alpha", display_name: "Muse",
+                       delivery_method: "pull", recipe_id: null }));
     },
     /** The owner scopes the client to `capabilities` in universe `alpha`, as agent `main`. */
     scoped: async (origin: Origin, capabilities: string[]) => {
@@ -152,10 +163,14 @@ async function agentRig() {
   };
 }
 
-/** A thread made for `stamp`, its pi session, and the model answering by `byAsk`. */
-async function threadFor(instance: FauxOwnerDO, stamp: Stamped | null) {
+/**
+ * A thread made for `stamp`, its pi session, and the model answering by `byAsk`: a run, or
+ * the caller's conversation, for input after input (a settled run takes no more).
+ */
+async function threadFor(instance: FauxOwnerDO, stamp: Stamped | null,
+                         kind: "run" | "converse" = "run") {
   instance.script = Array.from({ length: 40 }, () => byAsk);
-  const thread = await instance.agent.thread("main", stamp);
+  const thread = await instance.agent.thread("main", stamp, { kind });
   return { thread, session: thread.thread_id };
 }
 
@@ -262,7 +277,8 @@ describe("a scoped client's conversation", () => {
                                            content: text("remember the milk") });
     await r.admit(MUSE);
     const generation = await r.scoped(MUSE, ["write_files"]);
-    const out = await r.in(async (instance) => {
+    const out = await r.in(async (instance, state) => {
+      registeredElsewhere(state.storage, MUSE, "beta");
       const { session } = await threadFor(instance, r.stampOf(MUSE, generation));
       const mine = await instance.harness.prompt("write it", { session });
       // The same grant, for a thread in another universe, and for another agent: no
@@ -313,7 +329,7 @@ describe("a full client's conversation", () => {
                                            content: text("remember the milk") });
     await r.admit(MUSE);
     const out = await r.in(async (instance, state) => {
-      const { session } = await threadFor(instance, r.stampOf(MUSE, 1));
+      const { session } = await threadFor(instance, r.stampOf(MUSE, 1), "converse");
       const first = shown(await instance.harness.prompt("go scoped", { session }));
       // A grant change made around the doors: only the gate's own check sees it.
       new Grants(state.storage, new Policy(state.storage))
@@ -334,7 +350,7 @@ describe("a full client's conversation", () => {
                                            content: text("nested milk") });
     await r.admit(MUSE);
     const out = await r.in(async (instance, state) => {
-      const { session } = await threadFor(instance, r.stampOf(MUSE, 1));
+      const { session } = await threadFor(instance, r.stampOf(MUSE, 1), "converse");
       const read = shown(await instance.harness.prompt("nest read", { session }));
       const nest = gate();
       instance.probes.nestGate = nest.promise;
@@ -434,15 +450,16 @@ describe("a grant change", () => {
       };
       await instance.grantRevoke(r.bind(null), { client: MUSE.client });
       // The door returned once the work it ended had settled, within its wait: the client's
-      // threads are dropped and their Sessions closed, so their stores say how it ended.
-      const atOnce = (await storeSubmission(muse.thread.store,
-                                            { request: turns.muse.operationId }))?.status;
-      const ended = [await storeSubmission(muse.thread.store,
-                                           { request: turns.muse.operationId }),
-                     await storeSubmission(parent.thread.store,
-                                           { request: turns.parent.operationId }),
-                     await storeSubmission(parent.thread.store,
-                                           { id: instance.probes.submitted[0]! })];
+      // threads are dropped and their Sessions closed, then their stores wiped, so what each
+      // store held as it was wiped says how it ended.
+      const atOnce = wipedSubmission(instance.probes, muse.thread.store,
+                                     { request: turns.muse.operationId })?.status;
+      const ended = [wipedSubmission(instance.probes, muse.thread.store,
+                                     { request: turns.muse.operationId }),
+                     wipedSubmission(instance.probes, parent.thread.store,
+                                     { request: turns.parent.operationId }),
+                     wipedSubmission(instance.probes, parent.thread.store,
+                                     { id: instance.probes.submitted[0]! })];
       const closed = instance.agent.host.openThreads();
       const running = [await instance.agent.status(dot.thread, turns.dot.operationId),
                        await instance.agent.status(await ownRow(instance), turns.own.operationId)];
@@ -484,7 +501,7 @@ describe("a grant change", () => {
                                              mode: "scoped", name: "", expected_generation: 1,
                                              scopes: [{ universe: "alpha", agent: "main",
                                                         capability: "write_files" }] });
-      return (await storeSubmission(thread.store, { request: operationId }))!;
+      return wipedSubmission(instance.probes, thread.store, { request: operationId })!;
     });
     expect([out.status, out.reason]).toEqual(["unanswered", "aborted"]);
   });
@@ -500,7 +517,7 @@ describe("a grant change", () => {
       const { operationId } = await instance.harness.submit("hold please", { session });
       await until(() => instance.probes.holds === 1, "the hold to start");
       await instance.grantRevoke(r.bind(null), { client: MUSE.client });
-      return (await storeSubmission(thread.store, { request: operationId }))!.status;
+      return wipedSubmission(instance.probes, thread.store, { request: operationId })!.status;
     });
     expect(out).toBe("unanswered");
   });
@@ -520,7 +537,7 @@ describe("a grant change", () => {
       const revoke = instance.grantRevoke(r.bind(null), { client: MUSE.client });
       toolGate.release();  // the call goes on to its intent, after the revoke's unit
       await revoke;
-      return (await storeSubmission(thread.store, { request: operationId }))!;
+      return wipedSubmission(instance.probes, thread.store, { request: operationId })!;
     });
     expect(out.status).toBe("unanswered");
     expect((await r.stub.fileStat(r.bind(null), { path: "/workspace/raced.md" })).entry)
@@ -869,7 +886,7 @@ describe("an aborted turn's model call", () => {
       const { operationId } = await instance.harness.submit(`cmd:slow-${id}`, { session });
       await until(async () => (await cancelled()) === false, "the upstream stream to open");
       await instance.grantRevoke(r.bind(), { client: MUSE.client });
-      return (await storeSubmission(thread.store, { request: operationId }))!;
+      return wipedSubmission(instance.probes, thread.store, { request: operationId })!;
     });
     expect([settled.status, settled.reason]).toEqual(["unanswered", "aborted"]);
     await until(async () => (await cancelled()) === true, "the upstream to be cancelled");
@@ -887,7 +904,7 @@ describe("the authority's enforcement (review M1)", () => {
     await r.admit(MUSE);
     const generation = await r.scoped(MUSE, ["write_files"]);  // no read_files
     const out = await r.in(async (instance) => {
-      const { session } = await threadFor(instance, r.stampOf(MUSE, generation));
+      const { session } = await threadFor(instance, r.stampOf(MUSE, generation), "converse");
       const pi = await instance.harness.pi({ session });
       const conversation = (await pi.conversation(1 as ConversationId, BG))!;
       await conversation.configure({ extensions: { remove: [{ name: "ta.authority" } as never] } },
@@ -1155,18 +1172,25 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
     await r.admit(MUSE);
     await r.admit(DOT);
     const made = await r.in(async (instance, state) => {
-      const threads = new Threads(state.storage, { perClient: 3, clients: 5, owner: 2 });
-      const tried = async (stamp: Stamped | null, times: number) => {
+      const threads = new Threads(state.storage, { ...THREAD_LIMITS, perClient: 3, clients: 5,
+                                                   owner: 2 }, undefined, undefined, undefined,
+                                  registeredOn(state.storage));
+      // The owner's bound is its conversations', one an agent: its runs have their own.
+      const tried = async (stamp: Stamped | null, times: number, kind: ThreadKind = "run") => {
         const out: string[] = [];
         for (let i = 0; i < times; i++) {
+          const agent = kind === "converse" ? `agent${i}` : "main";
           out.push(await new WriteGate(state.storage).write(() =>
-            threads.record("main", stamp, clock()).thread_id.slice(0, 7))
+            threads.record(agent, stamp === null ? null : { ...stamp, agent }, clock(), kind)
+              .thread_id.slice(0, 7))
             .catch((error: Error) => error.message));
         }
         return out;
       };
-      return { muse: await tried(r.stampOf(MUSE, 1), 4), dot: await tried(r.stampOf(DOT, 1), 3),
-               owner: await tried(null, 3) };
+      // A client's bounds are its conversations', as the owner's are; runs have their own.
+      return { muse: await tried(r.stampOf(MUSE, 1), 4, "converse"),
+               dot: await tried(r.stampOf(DOT, 1), 3, "converse"),
+               owner: await tried(null, 3, "converse") };
     });
     expect(made).toEqual({
       muse: ["thread_", "thread_", "thread_", "this client's threads are at their limit"],
@@ -1178,7 +1202,15 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
     expect(await held()).toBe(3);
     await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
     expect(await held()).toBe(0);
-    // Its threads gone with its grant, the owner may forget the revoked client.
+    // Its threads gone with its grant, the registration they named goes at the owner's
+    // delete, and the owner may forget the revoked client.
+    const [registration] = await r.in((_instance, state) => state.storage.sql.exec<
+      { agent_id: string }>("SELECT agent_id FROM outside_agents WHERE outside_client = ?",
+                            MUSE.client).toArray());
+    await r.stub.deleteAgent(r.session(), { agent_id: registration!.agent_id });
+    expect(await r.in((_instance, state) => state.storage.sql.exec(
+      "SELECT 1 FROM outside_agents WHERE outside_client = ?", MUSE.client).toArray()))
+      .toEqual([]);
     expect((await r.stub.grantForgetRevoked(r.session(), { clients: [MUSE.client] })).forgotten)
       .toEqual([MUSE.client]);
   });
@@ -1193,15 +1225,17 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
       const conversations = () => sql.exec<{ n: number }>(
         "SELECT COUNT(*) AS n FROM agent_threads").one().n + instance.agent.host.openThreads()
         .length;
+      // Its conversations, one an agent, to its bound (its runs have their own).
+      const converse = (i: number, generation: number) => instance.agent.thread(
+        `agent-${i}`, { ...r.stampOf(MUSE, generation), agent: `agent-${i}` },
+        { kind: "converse" });
       for (let i = 0; i < 64; i++) {
-        await instance.agent.thread("main", r.stampOf(MUSE, 1));
+        await converse(i, 1);
       }
       const before = conversations();
       const refused = [
-        await instance.agent.thread("main", r.stampOf(MUSE, 1))
-          .then(() => "made", (error: Error) => error.message),
-        await instance.agent.thread("main", r.stampOf(MUSE, 2))
-          .then(() => "made", (error: Error) => error.message),
+        await converse(64, 1).then(() => "made", (error: Error) => error.message),
+        await converse(65, 2).then(() => "made", (error: Error) => error.message),
       ];
       return { refused, made: conversations() - before };
     });
@@ -1294,7 +1328,7 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
     await r.admit(MUSE);
     const out = await r.in(async (instance, state) => {
       const { thread, session } = await threadFor(instance, r.stampOf(MUSE, 1));
-      const runner = workRunner(new Threads(state.storage), instance.agent,
+      const runner = workRunner(instance.parts.threads, instance.agent,
                                 instance.parts.authority);
       let marked = 0;
       const mark = async () => {

@@ -24,9 +24,10 @@
  * database, so what the owner's object holds is its own bounded rows only, whatever its
  * agents do; this guard replaced A4's runtime storage gauge.
  *
- * The headroom is thin: the worst case is 46.3% of the limit (migration 10), about 371 MB
- * under half. A new table, or a raised bound, must come out of an existing term: lower
- * another bound in the same change, or the guard fails.
+ * The headroom is thin: the worst case is 49.3% of the limit (migration 11, S4-S5:
+ * 4,933,044,828 bytes), about 67 MB under half. A new table, or a raised bound, must come
+ * out of an existing term: lower another bound in the same change, or the guard fails. F1
+ * and every later slice trade terms so; none has room of its own left.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -41,7 +42,9 @@ import {
 } from "../src/manifest";
 import { NOTICE_DETAIL, NOTICES_KEPT } from "../src/notices";
 import { SESSION_LIMITS } from "../src/sessions";
-import { THREAD_LIMITS, USAGE_ROW_MAX } from "../src/threads";
+import {
+  RECEIPT_REASON_MAX, RECEIPT_TEXT_MAX, THREAD_LIMITS, USAGE_ROW_MAX, USAGE_SPACE_MAX,
+} from "../src/threads";
 import { USAGE_LIMITS } from "../src/usage";
 import { PLATFORM } from "./sources";
 
@@ -219,9 +222,33 @@ export function termBytes(name: string, term: Term): number {
 
 /** A thread's id, as its row holds it. */
 const THREAD_ID = 39;
-/** Every thread's turn owners at once: each thread's open inputs and live compactions. */
-const TURN_OWNERS = (THREAD_LIMITS.owner + THREAD_LIMITS.clients)
-  * (THREAD_INPUTS + THREAD_COMPACTIONS);
+/**
+ * Every thread row at once, dropping ones included (each counts until it is forgotten):
+ * the owner's conversations, every client's conversations, and the runs whose stores are
+ * kept (`runs_kept`, every caller's).
+ */
+const threadRows = THREAD_LIMITS.owner + THREAD_LIMITS.clients + THREAD_LIMITS.runs;
+/** The live runs' bound at the policy's high setting (`runs.runs_live`). */
+const RUNS_LIVE = declared("policy", "RUN_SETTINGS", "runs_live").runs_live;
+/**
+ * The threads that may hold live work at once: every conversation, and the runs not yet
+ * settled (`runs_live`, high). A settled run takes no input (`run_settled`, refused at the
+ * host's admission, a check below), so it holds no turn, no live row, no wake job and no
+ * usage row: only its thread row and its receipt.
+ */
+const liveRows = THREAD_LIMITS.owner + THREAD_LIMITS.clients + RUNS_LIVE;
+/**
+ * A thread row at its widest: its ids and store, an agent id of 128 bytes (its directory's
+ * name, ASCII, a CHECK), its client hash, the registration its stamp was made from (an
+ * outside agent's id, at most 32: the universe is that row's, counted in `outside_agents`),
+ * a run's request id, and its numbers and words. It fits in place in its b-tree page.
+ */
+const THREAD_ROW = THREAD_ID + 32 + 128 + 64 + 32 + 128 + 10 * 8 + 2 * 8;
+/**
+ * Every thread's turn owners at once: each live thread's open inputs and live compactions,
+ * a dropping one's too until its row is forgotten.
+ */
+const TURN_OWNERS = liveRows * (THREAD_INPUTS + THREAD_COMPACTIONS);
 
 /** The file manifest's tables, together: `max_manifest_bytes` at its high bound, at worst fill. */
 const MANIFEST: Term = Object.freeze({
@@ -261,7 +288,7 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
   grant_fences: { rows: 1, bytes: ROW, by: "one row" },
   owner_sessions: { rows: SESSION_LIMITS.maxSessions, bytes: ROW, by: "maxSessions" },
   outside_agents: { rows: LEDGER_LIMITS.maxAgentRows, bytes: ROW + 1 * KIB,
-                    by: "maxAgentRows" },
+                    by: "maxAgentRows, every row: a tombstone a revoke or a thread holds too" },
   ledger_messages: { rows: LEDGER_LIMITS.maxMessages, bytes: ROW + 1 * KIB,
                      by: "maxMessages" },
   message_bodies: { rows: LEDGER_LIMITS.maxMessages,
@@ -310,12 +337,34 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
   model_turn_owners: { rows: TURN_OWNERS, bytes: ROW + TURN_BYTES + 2 * THREAD_ID,
                        by: "one per open input or live compaction, a thread each, indexed" },
   // The agent's threads: rows only, every transcript in its own store.
-  agent_threads: { rows: THREAD_LIMITS.owner + THREAD_LIMITS.clients, bytes: ROW + 1 * KIB,
-                   by: "THREAD_LIMITS (the owner's, and every client's)" },
-  agent_live: { rows: THREAD_LIMITS.owner + THREAD_LIMITS.clients, bytes: ROW,
-                by: "one per thread" },
-  agent_usage: { rows: THREAD_LIMITS.owner + THREAD_LIMITS.clients, bytes: ROW + USAGE_ROW_MAX,
-                 by: "one per thread, USAGE_ROW_MAX each" },
+  agent_threads: { rows: threadRows, bytes: ROW + THREAD_ROW,
+                   by: "THREAD_LIMITS (the owner's conversations, every client's, the runs)" },
+  agent_live: { rows: liveRows, bytes: ROW, by: "one per live thread" },
+  agent_usage: { rows: liveRows, bytes: ROW + Math.min(USAGE_ROW_MAX,
+                                                       USAGE_SPACE_MAX / liveRows),
+                 by: "one per live thread, USAGE_SPACE_MAX of usage in all" },
+  agent_usage_space: { rows: 1, bytes: ROW, by: "one row" },
+  agent_usage_total: { rows: 1, bytes: ROW + USAGE_ROW_MAX,
+                       by: "one row, its keys folded to USAGE_ROW_MAX" },
+  // A run's receipt, a history its row bound keeps.
+  run_receipts: { rows: THREAD_LIMITS.receipts,
+                  bytes: ROW + THREAD_ID + 64 + 128 + RECEIPT_REASON_MAX * 4 + RECEIPT_TEXT_MAX
+                    + 8,
+                  by: "THREAD_LIMITS.receipts, RECEIPT_TEXT_MAX of text each" },
+  owner_erasure: { rows: 1, bytes: ROW, by: "one row" },
+});
+
+/**
+ * What the runtime and Lifecycle keep in the owner's database beside its own tables, which
+ * the schema does not make: Lifecycle's job table, one wake job per thread, the lanes' and
+ * the erasure's; and the key-value store, a wake-failure count per thread, the memory-limit
+ * strike counter and Lifecycle's own few keys.
+ */
+export const RUNTIME: Readonly<Record<string, Term>> = Object.freeze<Record<string, Term>>({
+  cf_agents_jobs: { rows: liveRows + 16, bytes: ROW + 256,
+                    by: "a wake job per live thread, a job per lane, the erasure's" },
+  _cf_KV: { rows: liveRows + 16, bytes: ROW + 128,
+            by: "a wake-failure count per live thread, and Lifecycle's own keys" },
 });
 
 /** Every table the owner's schema makes, by its final name. */
@@ -364,8 +413,9 @@ export function uncharged(schema: string = source("schema")): string[] {
   return missing;
 }
 
-/** The worst case of the bounded tables, in bytes. */
-export function worstCase(terms: Readonly<Record<string, Term>> = TERMS): number {
+/** The worst case of the bounded tables and the runtime's rows, in bytes. */
+export function worstCase(terms: Readonly<Record<string, Term>> = { ...TERMS, ...RUNTIME }):
+    number {
   return Object.entries(terms).reduce((sum, [name, term]) => sum + termBytes(name, term), 0);
 }
 
@@ -443,7 +493,8 @@ describe("the owner's database bound", () => {
     expect([SCOPE_FIELD, CLIENT_NAME, WAKES_AN_HOUR, GRANT_LIMITS.maxScopes])
       .toEqual([512, 80, 60, 64]);
     expect(TERMS["model_turns"]).toMatchObject({
-      rows: (THREAD_LIMITS.owner + THREAD_LIMITS.clients) * 10, bytes: 256 + TURN_BYTES + 39 });
+      rows: (THREAD_LIMITS.owner + THREAD_LIMITS.clients + RUNS_LIVE) * 10,
+      bytes: 256 + TURN_BYTES + 39 });
     expect([TURN_BYTES, USAGE_ROW_MAX]).toEqual([96, 16 * 1024]);
     expect(TERMS["model_turn_owners"]).toMatchObject({
       rows: TERMS["model_turns"]!.rows, bytes: 256 + TURN_BYTES + 2 * 39 });
@@ -455,6 +506,75 @@ describe("the owner's database bound", () => {
     expect(TERMS["connection_secrets"]!.bytes).toBe(256 + 4 * 65_536);
     expect(TERMS["outside_clients"]!.rows * TERMS["outside_clients"]!.bytes)
       .toBe(2000 * 256 + 1000 * (64 * (3 * 512 * 6 + 64) + 80 * 4));
+  });
+
+  it("counts every run whose store is kept, every receipt, the usage of each thread and " +
+     "Lifecycle's own rows", () => {
+    expect(TERMS["agent_threads"]!.rows).toBe(threadRows);
+    expect(threadRows).toBe(THREAD_LIMITS.owner + THREAD_LIMITS.clients + THREAD_LIMITS.runs);
+    // A thread row names its registration, never a universe: it fits in place, at its widest.
+    expect(KEPT_AS_INDEX.has("agent_threads")).toBe(true);
+    expect(TERMS["agent_threads"]!.bytes).toBeGreaterThan(700);
+    expect(TERMS["agent_threads"]!.bytes).toBeLessThanOrEqual(INDEX_KEPT);
+    expect(source("schema")).toContain("\"authenticated_at REAL, registration TEXT CHECK " +
+                                       "(registration IS NULL \" +");
+    expect(source("schema")).toContain("\"AND agent_id NOT GLOB '*[^A-Za-z0-9._-]*'), \" +");
+    expect(RUNTIME["cf_agents_jobs"]!.rows).toBeGreaterThan(liveRows);
+    expect(RUNS_LIVE).toBe(2_000);
+    expect(worstCase()).toBe(worstCase(TERMS) + worstCase(RUNTIME));
+    expect(TERMS["run_receipts"]!.rows).toBe(THREAD_LIMITS.receipts);
+    expect(TERMS["run_receipts"]!.bytes).toBeGreaterThan(RECEIPT_TEXT_MAX);
+    // The usage rows' sum is the space bound, not each row's bound times every thread.
+    expect(TERMS["agent_usage"]!.rows * TERMS["agent_usage"]!.bytes)
+      .toBeLessThanOrEqual(liveRows * ROW + USAGE_SPACE_MAX);
+    expect(liveRows * USAGE_ROW_MAX).toBeGreaterThan(USAGE_SPACE_MAX);
+  });
+
+  it("counts every registration row, a tombstone a revoke or a thread holds among them, " +
+     "which the registry refuses past", () => {
+    // Every row is counted as it is made and refused past maxAgentRows; a tombstone is one.
+    expect(source("schema")).toContain("\"CREATE TRIGGER outside_agents_added AFTER INSERT ON " +
+                                       "outside_agents BEGIN \" +\n      \"UPDATE ledger_usage " +
+                                       "SET agents = agents + 1, \" +");
+    expect(source("ledger")).toContain("if (usage.agents >= limits.maxAgentRows) {");
+    expect(source("schema")).toContain("\"CREATE TRIGGER outside_agents_named BEFORE DELETE ON " +
+                                       "outside_agents WHEN EXISTS \" +");
+  });
+
+  it("holds one conversation a caller, agent and universe in the recording unit, which no " +
+     "index can read the universe for", () => {
+    const threads = source("threads");
+    const record = threads.slice(threads.indexOf("  record(agent: unknown"));
+    const body = record.slice(0, record.indexOf("\n  }\n"));
+    const found = body.indexOf("      const held = this.conversing(by, id);");
+    expect(found).toBeGreaterThan(0);
+    expect(found).toBeLessThan(body.indexOf("INSERT INTO agent_threads"));
+    expect(body.indexOf("if (kind === \"converse\") {")).toBeLessThan(found);
+    expect(source("schema")).toContain("\"(IFNULL(client, ''), agent_id, " +
+                                       "IFNULL(registration, '')) \" +");
+  });
+
+  it("holds what it counts settled runs by: a settled run takes no input, refused at the " +
+     "host's admission before pi commits one", () => {
+    const host = source("thread-host");
+    const submit = host.slice(host.indexOf("  submit(thread: string"));
+    const body = submit.slice(0, submit.indexOf("\n  }\n"));
+    const refused = body.indexOf("if (fresh && this.#parts.settled(thread)) {\n" +
+                                 "          throw new Refused(RUN_SETTLED);");
+    expect(refused).toBeGreaterThan(0);
+    expect(refused).toBeLessThan(body.indexOf("await conversation.submit("));
+    // No run settles in a unit that finds an input being admitted, so none is refused late.
+    const agent = source("agent");
+    const quiet = agent.indexOf("      if (!from.quiet()) {\n        return false;");
+    expect(quiet).toBeGreaterThan(0);
+    expect(quiet).toBeLessThan(agent.indexOf("      threads.settle(thread, kept,"));
+    // Its turn owners go in its settling unit, a lost unit's too.
+    expect(source("schema")).toContain("\"DELETE FROM model_turn_owners WHERE thread = " +
+                                       "NEW.thread_id; \" +");
+    // The usage of a settled run goes to the total; no row of its own is kept.
+    const threads = source("threads");
+    expect(threads).toContain("\"WHERE thread_id = ? AND settled_at IS NULL \" +");
+    expect(agent).toContain("settled: (thread) => parts.threads.settledRun(thread),");
   });
 
   it("sees a bound that would pass half the limit, or a table it no longer covers", () => {

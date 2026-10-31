@@ -251,8 +251,8 @@ describe("the ledger's bounds", () => {
         } catch (error) {
           // N1: the refusal names the tombstones that hold the registry.
           expect((error as Error).message).toBe(
-            "the owner's agent registry is full (3 of its rows are deleted agents waiting " +
-            "on a pending callback revoke)");
+            "the owner's agent registry is full (3 of its rows are deleted agents, kept " +
+            "while a revoke of their callbacks is pending or a thread was stamped from them)");
           full++;
         }
       }
@@ -307,8 +307,8 @@ describe("the ledger's bounds", () => {
         .toBe("the owner's enabled agents are at their limit");  // re-enabling counts
       ledger.disable(dot, "paused");
       expect(refusal(() => ledger.register(origin(3), MCP, PULL)))
-        .toBe("the owner's agent registry is full (0 of its rows are deleted agents " +
-              "waiting on a pending callback revoke)");
+        .toBe("the owner's agent registry is full (0 of its rows are deleted agents, kept " +
+              "while a revoke of their callbacks is pending or a thread was stamped from them)");
       ledger.remove(muse);
       ledger.register(origin(3), MCP, PULL);
     });
