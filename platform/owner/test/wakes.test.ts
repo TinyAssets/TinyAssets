@@ -947,4 +947,29 @@ describe("the registry's quieter rules", () => {
     expect(r.sender.revoked).toEqual([[muse, 2]]);
     expect(await r.table("outside_agents")).toEqual([]);
   });
+
+  it("keeps a tombstone a thread named past that thread while its revoke is left to run",
+     async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE, "Muse", "mcp_event");
+    await r.subscribe(MUSE, muse);
+    // A thread stamped from it, then the owner's delete: a tombstone, its revoke pending.
+    await r.sql("INSERT INTO agent_threads (thread_id, store, state, agent_id, client, " +
+      "generation, authenticated_at, registration, created_at, kind, last_active) VALUES " +
+      "(?, ?, 'ready', 'main', ?, 1, NULL, ?, 1, 'run', 1)", `thread_${"c".repeat(32)}`,
+                "c".repeat(32), MUSE.client, muse);
+    await r.stub.deleteAgent(r.session(null), { agent_id: muse });
+    await r.sql("DELETE FROM agent_threads");
+    expect((await r.table("outside_agents")).map((a) => a["deleted_at"] !== null))
+      .toEqual([true]);
+    const at = clock() + 1;
+    const claim = await r.inLedger({}, (ledger) => ledger.claim(ledger.dueOpen(at, 1)[0]!.wake_id,
+                                                                at));
+    if (claim.outcome !== "revoke") {
+      throw new Error("expected the revoke claimed");
+    }
+    await r.inLedger({}, (ledger) => ledger.settle(claim.target.wake_id, claim.target.claim_id,
+                                                   { state: "sent" }, at + 1));
+    expect(await r.table("outside_agents")).toEqual([]);
+  });
 });

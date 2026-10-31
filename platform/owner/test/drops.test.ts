@@ -1520,6 +1520,27 @@ describe("live and settled runs", () => {
     expect(sleeping).toBe(RUNS_LIVE);
   }, 30_000);
 
+  it("keeps a receipt's reason to 64 characters and its text to 768 bytes, and a thread's " +
+     "agent to its directory's name", async () => {
+    const r = await rig();
+    const out = await r.in(async (instance, state) => {
+      const gated = new WriteGate(state.storage);
+      const threads = new Threads(gated.storage);
+      const made = await gated.write(() => threads.record("main", null, clock()));
+      await gated.write(() => threads.settle(made.thread_id, {
+        request: "run_x", status: "unanswered", reason: `run_failed: ${"r".repeat(100)}`,
+        text: "t".repeat(2000) }, clock()));
+      const [kept] = state.storage.sql.exec<{ reason: string; text: string }>(
+        "SELECT reason, text FROM run_receipts").toArray();
+      const agent = await instance.agent.thread("an agent/", null)
+        .then(() => "made", (error: Error) => error.message);
+      return { reason: [...kept!.reason].length, text: kept!.text.length, agent };
+    });
+    expect(out).toEqual({ reason: 64, text: 768,
+                          agent: "an agent id is 1 to 128 letters, digits, dots, dashes and " +
+                            "underscores" });
+  }, 30_000);
+
   it("refuses none of a week of 1,000 launches a day, each settled, at the policy's " +
      "defaults", async () => {
     const r = await rig();
