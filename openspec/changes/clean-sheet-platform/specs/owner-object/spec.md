@@ -301,6 +301,10 @@ The `work` lane SHALL only hand a turn to pi's durable submit; pi runs it, and i
 - **WHEN** a runner holds its hand-off past the bound
 - **THEN** the pass reports it, marks the row, moves on to the next, and the row is `unknown` once its lease lapses
 
+#### Scenario: A hand-off with no room in its thread
+- **WHEN** the thread host refuses a due turn's submit for room (its thread at `THREAD_INPUTS` open inputs, or every Session working)
+- **THEN** the refusal comes before the mark, the claim is released unmarked, its attempt given back, and the turn is handed once room frees
+
 ### Requirement: A grant change ends its client's wakes
 A grant change SHALL suppress the client's agents' open wakes and schedule the revoke of their callbacks in the same transaction, and a claim SHALL suppress a wake whose client's grant no longer stands.
 
@@ -356,7 +360,7 @@ History SHALL keep each live path's newest `keep_versions` and its versions youn
 - **THEN** its newest ten versions are kept whatever their age, and the two older ones only for 30 days
 
 ### Requirement: Gone paths' history makes room at the quota
-A change that would take history past `max_history` SHALL first prune that many of the earliest-due rows of paths that are gone, which retention has already let go, raising the change feed's floor past any pruned row that was its path's newest, and never lowering it. It SHALL prune no more rows than it recorded, and never a live path's row.
+A change that would take history rows past `max_history`, the manifest's bytes past `max_manifest_bytes`, or a client's share of either, SHALL first prune the earliest-due rows of gone paths, which retention has already let go, until it fits: the client's own for its share, any client's for all clients', any for the owner's. It SHALL raise the feed's floor past any pruned row that was its path's newest, prune no more than the change took past the bound, and never a live path's row.
 
 #### Scenario: Deleted paths' churn
 - **WHEN** a policy of 5 entries, `keep_versions` 1, `keep_recent` 2 and `max_history` 10 holds, and eight files of unique names are each written and removed
@@ -365,6 +369,10 @@ A change that would take history past `max_history` SHALL first prune that many 
 #### Scenario: A live path's version kept for its age
 - **WHEN** history is at its quota and a live path's oldest kept version is the earliest due
 - **THEN** a change prunes a gone path's row, and the live path keeps its version
+
+#### Scenario: Gone long paths at the byte quota
+- **WHEN** the manifest is at `max_manifest_bytes` with ten deleted 3,000-byte paths' history kept, and five new 3,000-byte files are written
+- **THEN** each write lands after pruning the earliest gone rows, the manifest stays within its quota, and once no gone row is left a write is refused `file_quota`
 
 ### Requirement: Every entry holds its content
 Each file entry SHALL hold a reference to its content, in every root, as each kept history row does, so content any entry or kept row names is never collected. A rename SHALL record its targets before it drops its sources.
@@ -385,11 +393,77 @@ A version MAY be restored as a new one, or have its content redacted unless it i
 - **THEN** every version but its current one goes, never refused for a quota, and a gone path's history goes whole
 
 ### Requirement: File quotas are owner policy, refused loudly
-Chunk bytes, inline bytes, entries, history rows, open uploads and the chunks they hold, and a single file's size SHALL each be bounded by owner policy (the document's optional `files` table over the defaults) or a fixed ceiling, read from counters the schema's triggers keep. A change that takes a counter past its bound SHALL be refused with nothing left behind.
+Chunk, inline and manifest bytes, entries, history rows, open uploads and their chunks, and a file's size SHALL each be bounded by owner policy or a fixed ceiling, read from counters the schema's triggers keep. A change past a bound SHALL be refused in its own unit before it commits (an upload before any byte is sent), leaving nothing, its reason starting with a fixed code: `file_quota` for the owner's bound, `file_share` for a client's share.
 
 #### Scenario: The owner's entries at their quota
 - **WHEN** a write would add an entry past `max_entries`
-- **THEN** it is refused, and no parent directory, history row or content of it is kept
+- **THEN** it is refused `file_quota`, and no parent directory, history row or content of it is kept
+
+### Requirement: Every manifest row is bounded in bytes as the object stores it
+Every manifest row (entry, history row, content with its inline bytes and chunk list, chunk, temporary directory, share row, scope reference) SHALL be charged, by triggers only, the page bytes of each b-tree record and index entry it makes, its text in bytes and its overflow pages included, against `max_manifest_bytes`. The charge SHALL bound the database's growth within the guard's worst-case fill factor, `WORST_FILL`, for every path length (up to 4,096 bytes).
+
+#### Scenario: The other file bounds inside the manifest's
+- **WHEN** the files policy is at its defaults, or every bound at its high
+- **THEN** `max_entries` small files at one version, `max_history` versions, and `max_inline_bytes` each fit inside `max_manifest_bytes`, so each can bind
+
+#### Scenario: A client writing 4,096-byte paths
+- **WHEN** an outside client writes file after file at 4,096-byte paths
+- **THEN** each is charged its three spilled copies' overflow pages, and the client is refused `file_share` at its share while the owner still writes
+
+#### Scenario: A database filled, thinned and filled again
+- **WHEN** files are written to a charge, every other one removed and purged, and the charge refilled, round after round
+- **THEN** the database grows by more than the charge as pages stay half used, and never by more than the charge times `WORST_FILL`
+
+### Requirement: An outside client holds a share of every file quota
+Each outside client SHALL hold at most `client_share` percent of every file quota, open uploads included, and all clients together at most what `owner_reserve` percent leaves, both owner policy, so the owner always has room of its own.
+
+#### Scenario: A client fills its share
+- **WHEN** an outside client holding `write_files` writes until it is refused `file_share`
+- **THEN** the owner's writes, grant changes, revokes and policy writes all still land
+
+#### Scenario: Two clients together
+- **WHEN** `client_share` is 40 and `owner_reserve` 50 of ten entries, and two clients write four and one files
+- **THEN** a fifth file of the first, or a second of the other, is refused `file_share`, and the owner writes five more
+
+### Requirement: Each scope is charged once for what its own rows reference
+Each scope (an outside client's own, all clients', the owner's writers') SHALL be charged its own entries, history rows and temporary directories, and once for each content and chunk its rows or open uploads reference, while any do, deduplicated within the scope and never across scopes; a chunk no scope references SHALL be charged to the scope that let it go last until it is deleted or revived. The owner-wide total SHALL count each stored row once.
+
+#### Scenario: A client copies the owner's file
+- **WHEN** the owner writes a file, a client writes the same bytes, and the owner removes and purges its own
+- **THEN** the client's share holds the bytes and the owner's scope is credited, while the object stores them once
+
+### Requirement: An upload proves the bytes its writer does not hold
+An upload SHALL be told a chunk need not be sent only when the chunk is stored and the writer's own scope holds it through its contents (or let it go last as garbage); a commit SHALL be refused unless the upload sent every other chunk, or the writer's scope holds it by then, so no upload reveals or claims bytes another scope stored.
+
+#### Scenario: A client names a chunk only the owner holds
+- **WHEN** a client begins an upload of a chunk the owner stored and commits without sending it, by one upload or two
+- **THEN** each commit is refused, and once the client sends the bytes it commits
+
+### Requirement: The owner's database is bounded under half its limit
+Every owner table SHALL be bounded by a count or bytes the code enforces, with no exception, and a guard SHALL compute the worst case from those bounds and the schema, at the policy's high bounds, each row laid out as SQLite lays it at a thinned page's worst fill (`WORST_FILL`), and hold it under half the platform's 10 GB. The schema SHALL refuse a turn owner past `THREAD_INPUTS` open inputs or `THREAD_COMPACTIONS` live compactions a thread.
+
+#### Scenario: A table no bound covers
+- **WHEN** a migration makes a table the guard has no term for, or a manifest table's charging trigger is missing
+- **THEN** the owner-bound guard fails
+
+### Requirement: A turn's counters live as long as its work
+The thread host SHALL keep each pi record that owns a turn (an open input, a live compaction), keyed by its thread, as the Session commits it, in a unit at once, closing the Session when one cannot be kept, and all again as it opens, before it resumes. A turn's row SHALL come with its first owner and go with its last or its thread; a call of a turn with no row SHALL be refused `turn_ended`. A thread SHALL hold at most `THREAD_INPUTS` open inputs (`thread_inputs_full`).
+
+#### Scenario: An input answered
+- **WHEN** an input's run answers, and a call later names the input's turn
+- **THEN** the turn's counters are gone, and the call is refused `turn_ended`
+
+#### Scenario: A unit lost between the commit and the owner
+- **WHEN** the owner's units for a thread's commits are lost while an input runs, and the Session closes and reopens
+- **THEN** as it reopens, the open input's turn is kept again and a stale owner goes
+
+#### Scenario: Background work after its run
+- **WHEN** work a run's tool started submits an input after the run answered
+- **THEN** the input's calls are refused `turn_ended`, never starting the run's counters over
+
+#### Scenario: Two threads at once
+- **WHEN** two threads' first inputs, which pi numbers alike in each thread's own store, are open at once, and both call a model
+- **THEN** each input owns its own thread's turn, and both calls are kept
 
 ### Requirement: A quota never blocks a change that frees
 A change that only removes or frees (a remove, a redaction, a purge, an aborted upload, housekeeping) SHALL never be refused by a quota. A policy SHALL be refused unless `max_entries` times the larger of `keep_versions` and `keep_recent` is at most `max_history`, so no churn of live files can fill it, and gone paths' churn makes its own room.
@@ -632,18 +706,18 @@ A call's reservation SHALL be priced by pi-ai's `calculateCost` over the target 
 - **THEN** the call settles at the gateway's price, and its spend counts against the caps
 
 ### Requirement: The caps read counters, never receipts
-Every cap SHALL read only counters the schema's triggers write: `model_turns` per turn, `model_spend` per source, day and month. Receipts SHALL be history only, bounded without freeing any cap; a turn's counters SHALL go only once it has been idle 30 days with no call open.
+Every cap SHALL read only counters the schema's triggers write: `model_turns` per turn, `model_spend` per source, day and month. Receipts SHALL be history only, bounded without freeing any cap. A turn's counters SHALL live exactly as long as the pi records that own it: its open input submissions, or its live compaction task.
 
 #### Scenario: Many requests in one turn
 - **WHEN** one turn makes 5,000 requests while only the newest 100 receipts are kept
 - **THEN** the turn's counters hold all 5,000, and a cap of 5,000 refuses the next
 
 ### Requirement: A model call's turn is the input at the origin of its causal chain
-A turn SHALL be the submitted input at the origin of a call's causal chain, carried by pi's own telemetry propagation in its durable records: every call one input caused, through a subagent, a compaction or background work, even after its run ended, SHALL be charged to that input's turn. An input submitted under no origin (a door's, an enqueued one) SHALL begin a turn; an owner's compaction outside a run SHALL be its own; a call of any other task with no carrier SHALL be refused `no_run`.
+A turn SHALL be the submitted input at the origin of a call's causal chain, carried by pi's telemetry propagation in its durable records: every call one input caused, through a subagent or a compaction, SHALL be charged to its turn while it is open, and work joining it after it ended refused `turn_ended`. An input under no origin (a door's, a steer) SHALL begin a turn, as SHALL a compaction outside any run; a call of any other task with no carrier SHALL be refused `no_run`.
 
 #### Scenario: A compaction a run starts
 - **WHEN** a run's context passes pi's background threshold, and pi summarizes after the run ended
-- **THEN** the summarization is the run's turn
+- **THEN** the summarization is the run's turn, under its caps, and the turn ends with the compaction
 
 #### Scenario: A subagent's calls
 - **WHEN** a tool of the root's run makes a conversation and submits its work there, which does the same once more
@@ -651,7 +725,7 @@ A turn SHALL be the submitted input at the origin of a call's causal chain, carr
 
 #### Scenario: Background work after its run
 - **WHEN** a tool starts background work, the run ends, a later input runs, and the background work then calls a model
-- **THEN** its calls are the first run's turn, count against that turn's caps, and never against the later run's
+- **THEN** its calls are refused `turn_ended`, and never count against the later run's turn
 
 #### Scenario: An input from outside any run
 - **WHEN** an input is submitted to a subagent's conversation from outside any run
@@ -705,7 +779,7 @@ pi's compaction thresholds SHALL be each listed model's own, from its context wi
 - **THEN** the call is refused before any reservation, pi compacts, and the retry goes to the same model under its threshold
 
 ### Requirement: pi's and pi-ai's metrics are kept
-The telemetry adapter SHALL carry a metrics capability on its root, every span and every extracted parent, aggregating every metric pi and pi-ai record by name, kind and attributes in the object's memory, at most 1,024 series, a measurement past them counted as dropped. The owner's `usageMetrics` SHALL answer them with pi's own `pi.usage`, summed over every thread: an open Session's read live, any other's from the usage row the owner kept as its Session last closed (at most 64 KiB, going with its thread). The read SHALL never open a Session, and SHALL cover the threads the object holds now, each counted once (a dropped thread's usage goes with its row); no cap reads either.
+The telemetry adapter SHALL carry a metrics capability on its root, every span and every extracted parent, aggregating every metric pi and pi-ai record by name, kind and attributes in the object's memory, at most 1,024 series, a measurement past them counted as dropped. The owner's `usageMetrics` SHALL answer them with pi's own `pi.usage`, summed over every thread: an open Session's read live, any other's from the usage row the owner kept as its Session last closed (at most 16 KiB, going with its thread). The read SHALL never open a Session, and SHALL cover the threads the object holds now, each counted once (a dropped thread's usage goes with its row); no cap reads either.
 
 #### Scenario: A turn's metrics
 - **WHEN** a turn runs through the gateway and the owner reads its usage
@@ -766,7 +840,7 @@ Each conversation SHALL carry its authority in pi's own document: the owner's (t
 - **THEN** the fork carries the same stamp, and its next tool call is blocked
 
 ### Requirement: A client's threads are bounded and hold its grant
-`agent_threads` SHALL record a thread in a unit that re-checks its stamp stands, naming a fresh store (128 random bits, unique) before the store exists, SHALL never change a thread's stamp or store, SHALL refuse loudly a conversation past its client's bound (64), all clients' together (1,024) or the owner's (10,000), and a run past the runs' own bound (`runs_kept`, 50,000 live stores), an outside client's past its share of it (`runs.client_share`, 25%) and every client's together past what the owner's reserve leaves (`runs.owner_reserve`, 25%), before any store is made; a dropping thread SHALL count against every bound, and SHALL hold its client's grant row (`held`), until its row is forgotten. A thread is its Session's root; its stamp SHALL be written in the root's creating commit. A grant set or revoke SHALL mark its client's threads dropping, and let go of its run receipts, in its own unit, and drop them once it committed.
+`agent_threads` SHALL record a thread in a unit that re-checks its stamp stands, naming a fresh store (128 random bits, unique) before the store exists, SHALL never change a thread's stamp or store, SHALL refuse loudly a conversation past its client's bound (64), all clients' together (1,024) or the owner's (10,000), and a run past the runs' own bound (`runs_kept`, 25,000 live stores), an outside client's past its share of it (`runs.client_share`, 25%) and every client's together past what the owner's reserve leaves (`runs.owner_reserve`, 25%), before any store is made; a dropping thread SHALL count against every bound, and SHALL hold its client's grant row (`held`), until its row is forgotten. A thread is its Session's root; its stamp SHALL be written in the root's creating commit. A grant set or revoke SHALL mark its client's threads dropping, and let go of its run receipts, in its own unit, and drop them once it committed.
 
 #### Scenario: 1,000 launches a day
 - **WHEN** the owner launches 1,000 runs in a day while its conversations are one short of their bound
@@ -844,7 +918,7 @@ When a thread is dropped, for every reason (idle retention, a run's retention, a
 - **THEN** the `threads` lane finishes the drop: every store is wiped and only then its row forgotten
 
 ### Requirement: A run's store is wiped `keep_runs` after it settles
-A run SHALL settle once: when its Session reports nothing running and nothing asleep with its input settled, one unit SHALL keep the time and its receipt (its input's status, reason and the first 4 KiB of its answer), read from that Session. Its store SHALL be wiped `keep_runs` after it settled (owner policy `runs.keep_runs`, 7 days by default, 30 at most), never while it is live, and no read SHALL move that time; a run never seen settling SHALL be taken `keep_runs` after its last activity, answering as one pi never saw. A settled run's status and cancel SHALL be answered from its receipt, its Session never opened for them, to the caller whose run it was alone, before its drop, during it and after; while its store is there, an answer longer than the receipt's text SHALL be read whole from the store by a read that claims nothing, and once the store is wiped the receipt's text SHALL be marked `truncated`. Receipts SHALL be a history with a row bound (100,000, shared as the runs are), kept `keep_run_receipts` from settling (90 days by default, 365 at most, never less than `keep_runs`); past a scope's share its own oldest receipt SHALL go, and no launch SHALL be refused for receipts.
+A run SHALL settle once: when its Session reports nothing running and nothing asleep with its input settled, one unit SHALL keep the time and its receipt (its input's status, reason and the first 2 KiB of its answer), read from that Session. Its store SHALL be wiped `keep_runs` after it settled (owner policy `runs.keep_runs`, 7 days by default, 30 at most), never while it is live, and no read SHALL move that time; a run never seen settling SHALL be taken `keep_runs` after its last activity, answering as one pi never saw. A settled run's status and cancel SHALL be answered from its receipt, its Session never opened for them, to the caller whose run it was alone, before its drop, during it and after; while its store is there, an answer longer than the receipt's text SHALL be read whole from the store by a read that claims nothing, and once the store is wiped the receipt's text SHALL be marked `truncated`. Receipts SHALL be a history with a row bound (50,000, shared as the runs are), kept `keep_run_receipts` from settling (90 days by default, 365 at most, never less than `keep_runs`); past a scope's share its own oldest receipt SHALL go, and no launch SHALL be refused for receipts.
 
 #### Scenario: A settled run past `keep_runs`
 - **WHEN** a run settled `keep_runs` ago and nothing in its thread is live
@@ -859,11 +933,11 @@ A run SHALL settle once: when its Session reports nothing running and nothing as
 - **THEN** each read is answered from its receipt, no Session opens, and its store is wiped on time
 
 #### Scenario: A long answer
-- **WHEN** a settled run's answer is longer than 4 KiB
-- **THEN** its status gives the whole answer until its store is wiped, and after that the first 4 KiB marked `truncated`
+- **WHEN** a settled run's answer is longer than 2 KiB
+- **THEN** its status gives the whole answer until its store is wiped, and after that the first 2 KiB marked `truncated`
 
 #### Scenario: Receipts at their bound
-- **WHEN** receipts are at 100,000 and the owner launches a day's 1,000 runs at `keep_run_receipts` 365
+- **WHEN** receipts are at 50,000 and the owner launches a day's 1,000 runs at `keep_run_receipts` 365
 - **THEN** none is refused, and each new receipt lets the oldest of its own scope go
 
 ### Requirement: Erasing the owner destroys every store before the owner

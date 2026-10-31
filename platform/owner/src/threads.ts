@@ -31,7 +31,7 @@
  * `run_graph` door, `ta`'s `agent:run`, and a scheduled launch, whose work names it). A run
  * settles once: when its Session reports nothing running and nothing asleep with its input
  * settled, one unit keeps the time (`settled_at`) and its receipt (`settle`: status,
- * reason, the first 4 KiB of its answer), read from the Session that reported it. From then
+ * reason, the first 2 KiB of its answer), read from the Session that reported it. From then
  * on its status is answered from the receipt, and its Session is never opened for it.
  *
  * Every door addresses work by a thread's id, resolved against the calling client's own
@@ -131,16 +131,19 @@ export type ReceiptView = Omit<Receipt, "truncated"> & { readonly truncated: boo
 /** pi's usage as kept: per `provider/model`, and per tool (pi's `UsageState`). */
 export type UsageTotals = { models: Record<string, unknown>; tools: Record<string, unknown> };
 
-/** The most bytes a thread's kept usage (`keepUsage`) takes: 64 KiB of JSON. */
-export const USAGE_ROW_MAX = 64 * 1024;
+/**
+ * The most bytes a thread's kept usage (`keepUsage`) takes: 16 KiB of JSON, far past what
+ * a thread's models make, and inside the owner-bound guard's worst case at every thread.
+ */
+export const USAGE_ROW_MAX = 16 * 1024;
 /** The most bytes every thread's kept usage takes together: 256 MiB, a backstop. */
 export const USAGE_SPACE_MAX = 256 * 1024 * 1024;
 /** The most keys each bucket of the owner's usage total keeps apart; the rest sum in one. */
 export const USAGE_TOTAL_KEYS = 48;
 /** The key the usage total sums the rest into. */
 export const USAGE_OTHER = "other";
-/** A receipt's text: the first 4 KiB of the run's answer. */
-export const RECEIPT_TEXT_MAX = 4096;
+/** A receipt's text: the first 2 KiB of the run's answer. */
+export const RECEIPT_TEXT_MAX = 2048;
 /** A receipt's reason, at most, in characters. */
 export const RECEIPT_REASON_MAX = 256;
 /** How long one drop's outside calls may take in a lane pass before it is tried later. */
@@ -177,8 +180,8 @@ export interface ThreadLimits {
 }
 
 export const THREAD_LIMITS: ThreadLimits = Object.freeze({ perClient: 64, clients: 1_024,
-                                                           owner: 10_000, runs: 50_000,
-                                                           receipts: 100_000 });
+                                                           owner: 10_000, runs: 25_000,
+                                                           receipts: 50_000 });
 
 /** Idle retention: how long a conversation may go untouched, and how many one pass takes. */
 export interface ThreadRetention {

@@ -415,7 +415,7 @@ describe("the owner's environment", () => {
       const last = new Uint8Array([10]);
       const size = 4 * CHUNK_BYTES + 1;
       const begun = await files.unit(() => files.begin(
-        size, [...Array(4).fill(sha256Hex(piece)), sha256Hex(last)]));
+        size, [...Array(4).fill(sha256Hex(piece)), sha256Hex(last)], "owner"));
       await files.upload(begun.intent_id, [{ sha256: sha256Hex(piece), bytes: piece },
                                            { sha256: sha256Hex(last), bytes: last }]);
       await files.unit(() => files.commit(begun.intent_id, "/workspace/huge.txt",

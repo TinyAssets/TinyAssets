@@ -376,6 +376,12 @@ describe("the open Sessions", () => {
       const began = Date.now();
       const refused = await host.pi(c).then(() => "opened", (error: Error) => error.message);
       const took = Date.now() - began;
+      // A submit refused for room is refused before its admission's step runs.
+      const admitted: string[] = [];
+      const submitted = await host.submit(c, "x", { operationId: "op-c", admitted: async () => {
+        admitted.push("c");
+      } }).then(() => "submitted", (error: Error) => error.message);
+      expect([submitted, admitted]).toEqual([SESSIONS_FULL, []]);
       const open = host.openThreads().sort();
       host.unpin(b);
       await host.pi(c);  // b is idle now: closed to make room

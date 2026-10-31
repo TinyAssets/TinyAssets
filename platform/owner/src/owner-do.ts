@@ -133,7 +133,7 @@ import {
   threadAuthority, type ThreadReader, Threads,
 } from "./threads";
 import { codePoints, principal } from "./text";
-import type { OperationResult } from "./thread-host";
+import { type OperationResult, SESSIONS_FULL, THREAD_INPUTS_FULL } from "./thread-host";
 import type { ThreadStore } from "./thread-store";
 import { Usage as ModelUsage, type UsageReceipt } from "./usage";
 import { runWakes, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "./wakes";
@@ -285,7 +285,7 @@ export interface Operation {
   readonly status: "queued" | "running" | "parked" | "scheduled" | "done" | "unanswered";
   readonly reason?: string;
   readonly text?: string;
-  /** True when `text` is only the first 4 KiB of a run's answer, its store wiped. */
+  /** True when `text` is only the first 2 KiB of a run's answer, its store wiped. */
   readonly truncated?: boolean;
   /** When scheduled work is due, in seconds. */
   readonly due?: number;
@@ -607,7 +607,7 @@ const OPERATION = /^(thread_[0-9a-f]{32})\.([0-9a-f]{64}|run_[0-9a-f]{32}|work_[
 
 /**
  * How an operation of a settled run stands, from its receipt: its input's settling, its
- * answer's text marked `truncated` when the receipt holds only its first 4 KiB; any other
+ * answer's text marked `truncated` when the receipt holds only its first 2 KiB; any other
  * request id, or a run pi was never handed an input in, is one pi never saw (`not_found`).
  */
 function receiptStatus(receipt: ReceiptView, key: string):
@@ -783,11 +783,11 @@ export function workRunner(threads: ThreadReader, agent: Pick<OwnerAgent, "submi
           || authority.refusal(threadAuthority(thread), []) !== undefined) {
         return { state: "failed", reason: "thread_authority" };
       }
-      await mark();
       let receipt: { accepted: boolean };
       try {
+        // Marked once the host admits it, so a refusal for room leaves it unmarked.
         receipt = await agent.submit(thread, turn.input, {
-          operationId: target.work_id, whenBusy: "followUp",
+          operationId: target.work_id, whenBusy: "followUp", admitted: mark,
           entry: { kind: "ta.work", data: { work_id: target.work_id,
                                             client: target.stamp?.client ?? null } },
         });
@@ -795,6 +795,10 @@ export function workRunner(threads: ThreadReader, agent: Pick<OwnerAgent, "submi
         if (threads.get(turn.thread) === null) {
           // Dropped since the check (a grant change): its Session is never opened again.
           return { state: "failed", reason: "no_thread" };
+        }
+        if (error instanceof Refused
+            && (error.message === THREAD_INPUTS_FULL || error.message === SESSIONS_FULL)) {
+          return { state: "busy", reason: error.message };
         }
         throw error;
       }
@@ -930,6 +934,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                             thread, wake.active, wake.at === undefined ? null : wake.at / 1000)),
                           usage: (thread, usage) => write(() => this.#threads.keepUsage(
                             thread, JSON.stringify(usage))),
+                          turns: {
+                            // A forgotten thread's late commit (a Session cut off at its
+                            // drop) keeps nothing: its turns went with its row.
+                            owned: (thread, owners) => write(() => {
+                              if (this.#threads.row(thread) !== null) {
+                                this.#usage.turnOwners(thread, owners);
+                              }
+                            }),
+                            reconciled: (thread, open) => write(() =>
+                              this.#usage.turnsReconciled(thread, open)),
+                            inputs: (thread) => this.#usage.openInputs(thread),
+                          },
                         });
     this.#runner = workRunner(this.#threads, this.#agent, authority);
     const lifecycle = new Lifecycle<OwnerEnv>(this);
@@ -1673,7 +1689,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * A settled run's status: its receipt's, and, when the receipt holds only the first 4 KiB
+   * A settled run's status: its receipt's, and, when the receipt holds only the first 2 KiB
    * of its answer, the whole answer read from its store while the store is there (a pure
    * read: no Session opened, no holder claimed, its retention unmoved); once the store is
    * wiped, the receipt's, marked `truncated`.
@@ -2071,9 +2087,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileUploadBegin(binding: Binding, request: UploadBeginRequest):
       Promise<{ intent_id: string; missing: string[]; expires_at: number }> {
     return this.#filing(() => {
-      this.#filer(binding, "write_files");
+      const account = this.#filer(binding, "write_files");
       const r = fileFields(request, ["size", "chunks"]);
-      return this.#files.begin(r["size"], r["chunks"]);
+      return this.#files.begin(r["size"], r["chunks"], fileWriter(account));
     });
   }
 
@@ -2203,8 +2219,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   fileUsage(binding: Binding): Promise<Usage> {
     return this.#door(() => {
-      this.#filer(binding, "read_files");
-      return this.#files.usage();
+      return this.#files.usage(fileWriter(this.#filer(binding, "read_files")));
     });
   }
 

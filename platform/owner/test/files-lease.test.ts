@@ -206,7 +206,8 @@ describe("a sync commit", () => {
         { op: "remove", path: `${W}/gone`, base: null },
       ] });
       expect(outcomes.map((o) => o.outcome)).toEqual(["committed", "refused", "committed"]);
-      expect(outcomes[1]).toMatchObject({ reason: "the owner's file entries are at their quota" });
+      expect(outcomes[1]).toMatchObject({
+        reason: "file_quota: the owner's file entries are at their quota" });
     });
   });
 

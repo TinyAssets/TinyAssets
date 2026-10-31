@@ -144,15 +144,32 @@ export interface PolicyEntry {
  * default: the document's optional `files` table sets any of them, and the rest keep
  * these values. Quotas are refused loudly at the bound and never make room by dropping
  * history. `max_bytes` counts unique chunk bytes, live and in history; `max_inline_bytes`
- * the small files kept in the object itself, whose 10 GB the high bound protects.
- * Retention keeps each live path's last `keep_versions`, and its versions younger than
- * `retention_days` up to `keep_recent` in all; a deleted path keeps up to `keep_recent`
- * for `retention_days`. A version past those goes in the change that pushed it out.
+ * the small files kept in the object itself; `max_manifest_bytes` everything the manifest
+ * takes in the object as SQLite stores it (`manifest.ts`): every entry, history row,
+ * content, chunk list, chunk and temporary directory, each path and inline byte in them.
+ * Its high bound, at the worst page fill SQLite leaves (`WORST_FILL`), holds the object's
+ * worst case under half its 10 GB (the owner-bound guard). Every other bound the manifest
+ * holds can bind inside it: a small file at one version takes about 1,070 bytes of it and
+ * each further version about 850, so `max_entries` is at most what fits at one version,
+ * `max_history` what fits as versions, and `max_inline_bytes` leaves a quarter of it to
+ * the rows. Retention keeps each live path's last `keep_versions`, and its versions younger
+ * than `retention_days` up to `keep_recent` in all; a deleted path keeps up to
+ * `keep_recent` for `retention_days`. A version past those goes in the change that pushed
+ * it out.
+ *
+ * Each outside client holds at most `client_share` percent of every quota (and of the
+ * open uploads and the chunks they hold), and all of them together at most what
+ * `owner_reserve` percent leaves, so no client fills the owner's files and the owner
+ * always keeps room of its own, as the wait and thread caps keep the owner's. A client is
+ * charged its own rows (the entries it last wrote, its history rows, its temporary
+ * directories) and once for each content and chunk they or its open uploads reference,
+ * whoever else references them too (`manifest.ts`).
  *
  * `max_history` is never below `max_entries × max(keep_versions, keep_recent)`, the most
  * rows the live paths can hold at once, so no churn of live files fills it. Deleted
  * paths' recent history, which retention has already let go, makes room: a change that
- * would pass `max_history` first prunes their earliest-due rows (files.ts `#fit`). The
+ * would pass `max_history` or `max_manifest_bytes`, or a client's share of either, first
+ * prunes their earliest-due rows (files.ts `#fit`). The
  * owner may purge any path's history (never refused) at any time. A file is at most
  * `MAX_INTENT_CHUNKS` chunks (40 GiB), the most one upload intent holds. The sync agent's
  * exclude list is not here: it is the owner's file `/workspace/.ta/sync-ignore`, whose
@@ -161,25 +178,31 @@ export interface PolicyEntry {
 export const FILE_DEFAULTS = Object.freeze({
   max_bytes: 1024 ** 3,
   max_inline_bytes: 256 * 1024 ** 2,
-  max_entries: 200_000,
+  max_manifest_bytes: 512 * 1024 ** 2,
+  max_entries: 30_000,
   max_file_bytes: 5 * 1024 ** 3,
-  max_history: 4_000_000,
+  max_history: 600_000,
   retention_days: 30,
   keep_versions: 10,
   keep_recent: 20,
+  client_share: 25,
+  owner_reserve: 25,
 });
 export type FileSettings = { readonly [K in keyof typeof FILE_DEFAULTS]: number };
 /** The range each setting may take. */
 export const FILE_SETTINGS: { readonly [K in keyof FileSettings]: readonly [number, number] } =
   Object.freeze({
     max_bytes: Object.freeze([0, 1024 ** 4] as const),
-    max_inline_bytes: Object.freeze([0, 1024 ** 3] as const),
-    max_entries: Object.freeze([0, 1_000_000] as const),
+    max_inline_bytes: Object.freeze([0, 384 * 1024 ** 2] as const),
+    max_manifest_bytes: Object.freeze([0, 512 * 1024 ** 2] as const),
+    max_entries: Object.freeze([0, 500_000] as const),
     max_file_bytes: Object.freeze([0, MAX_INTENT_CHUNKS * CHUNK_BYTES] as const),
-    max_history: Object.freeze([0, 5_000_000] as const),
+    max_history: Object.freeze([0, 600_000] as const),
     retention_days: Object.freeze([0, 3650] as const),
     keep_versions: Object.freeze([1, KEEP_CEILING] as const),
     keep_recent: Object.freeze([1, KEEP_CEILING] as const),
+    client_share: Object.freeze([0, 100] as const),
+    owner_reserve: Object.freeze([0, 100] as const),
   });
 
 /** The files settings a document leaves in force: its own, and the defaults for the rest. */

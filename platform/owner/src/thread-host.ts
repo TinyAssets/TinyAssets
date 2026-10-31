@@ -68,7 +68,8 @@
  */
 import { BACKGROUND_CONTEXT, type Context, withAbortSignal } from "@earendil-works/chord/context";
 import {
-  type ConversationId, type EntryRecord, type Harness, type JsonObject, ROOT_CONVERSATION_ID,
+  type ConversationId, type Cursor, type EntryRecord, type Harness, type JsonObject, type Page,
+  ROOT_CONVERSATION_ID,
   type SettledSubmissionRecord, type Storage, type TaskId, type UsageState, type Wake,
 } from "@earendil-works/pi-durable";
 import {
@@ -76,8 +77,10 @@ import {
 } from "agents/lifecycle";
 
 import { Refused } from "./errors";
+import { COMPACTION, JOINED } from "./origin";
 import { inTime } from "./schedule";
 import { assistantText } from "./thread-store";
+import { THREAD_INPUTS } from "./schema";
 
 const BG = BACKGROUND_CONTEXT;
 const ROOT = ROOT_CONVERSATION_ID;
@@ -117,10 +120,26 @@ export const MAX_WAKE_BACKOFF_MS = 10 * 60_000;
 const SESSION_CLOSE_MS = 1_000;
 /** An open refused past `openMax` with no idle Session to close. */
 export const SESSIONS_FULL = "too many of the agent's threads are working at once";
+/** The refusal of a submit whose thread was dropped while it was admitted. */
+export const THREAD_DROPPED = "the thread was dropped";
+/** The owner notice a thread's open owners past its bound leave as it opens. */
+export const TURNS_UNKEPT = "turns_unkept";
+const TURNS_UNKEPT_DETAIL = "a thread held more open inputs or live compactions than it may " +
+  "as its Session opened; the calls of those past the bound are refused turn_ended";
 /** The owner notice a thread's usage that could not be kept at its close leaves. */
 export const USAGE_UNKEPT = "usage_unkept";
 const USAGE_UNKEPT_DETAIL = "a thread's model usage could not be kept as its Session " +
   "closed; the usage view counts it as it last closed";
+/**
+ * The refusal of an input past `THREAD_INPUTS` open ones a thread holds (`schema.ts`), at
+ * once, never waited on: each owns a turn's counters while it is open.
+ */
+export const THREAD_INPUTS_FULL = "thread_inputs_full: the thread holds as many open inputs " +
+  "as it may; wait for one to be answered";
+/** The task states that are still live, as pi's scheduler holds them. */
+const LIVE_TASKS = Object.freeze(["pending", "running", "waiting", "sleeping", "completing"] as const);
+const SCAN_PAGE = 100;
+
 /** The owner notice a parked task's ended run leaves (`#endParked`). */
 export const PARKED = "run_parked";
 const PARKED_DETAIL = "a task was cut off too many times in a row without progress, so " +
@@ -161,6 +180,18 @@ export interface HostParts {
   live(thread: string, wake: Wake, opened?: Opened): Promise<void>;
   /** Keep `thread`'s usage (pi's `pi.usage`) as its Session closes, in a unit. */
   usage(thread: string, usage: UsageState): Promise<void>;
+  /**
+   * The turn owners of `thread` that opened or ended in a commit, in a unit run at once
+   * (`Usage.turnOwners`), and all of them as its store holds them when it opens
+   * (`Usage.turnsReconciled`).
+   */
+  turns: {
+    owned(thread: string, owners: readonly TurnOwner[]): Promise<void>;
+    /** How many owners past the thread's bound it passed over. */
+    reconciled(thread: string, open: readonly TurnOwner[]): Promise<number>;
+    /** How many open inputs `thread`'s turn owners hold (`Usage.openInputs`). */
+    inputs(thread: string): number;
+  };
   /** Keep an owner notice (`notices.ts`). */
   notice(type: string, detail: string): void;
 }
@@ -179,6 +210,12 @@ export interface SubmitOptions {
   readonly whenBusy?: "followUp" | "steer";
   /** The entry the input is placed as (its kind and data), when not pi's plain input. */
   readonly entry?: { readonly kind: string; readonly data: JsonObject };
+  /**
+   * Awaited once the input is admitted, past the open Sessions' and the thread's open
+   * inputs' bounds, before pi's submit commits it; a throw stops the submit, and so does
+   * the thread's drop meanwhile.
+   */
+  readonly admitted?: () => Promise<void>;
 }
 
 /** A task pi's restart limit parked: its id, its conversation, and whether background. */
@@ -289,6 +326,18 @@ export class ThreadHost extends LifecycleCapability {
       }
       const accepted = await this.#admit(thread, slot, async () => {
         const fresh = await storage.submissionByRequest(ROOT, operationId, BG) === undefined;
+        // The thread's open inputs as its turn owners hold them, with every admission in
+        // flight beside this one, so none passes the cap.
+        if (fresh && this.#parts.turns.inputs(thread) + slot.admitting - 1 >= THREAD_INPUTS) {
+          throw new Refused(THREAD_INPUTS_FULL);
+        }
+        if (options.admitted !== undefined) {
+          await options.admitted();
+          if (!this.#parts.exists(thread)) {
+            // Dropped while it was admitted (a grant change): nothing reaches its store.
+            throw new Refused(THREAD_DROPPED);
+          }
+        }
         await conversation.submit({
           type: "input", content: input, whenBusy: options.whenBusy ?? "followUp",
           requestId: operationId, ...(options.entry === undefined ? {} : { entry: options.entry }),
@@ -560,6 +609,7 @@ export class ThreadHost extends LifecycleCapability {
     const opened = await this.#parts.open(thread, (wake) => this.#onWake(thread, slot, wake));
     const { pi } = opened;
     try {
+      await this.#ownTurns(thread, opened);
       const closed = pi.closed;
       pi.subscribeClose(() => this.#piClosing(thread, slot, current(), opened, closed));
       const parked = await this.#parked(opened);
@@ -579,6 +629,33 @@ export class ThreadHost extends LifecycleCapability {
       slot.opened = opened;
     }
     return opened;
+  }
+
+  /**
+   * Keep `thread`'s turn owners as its Session commits them, from before it resumes: each
+   * commit's in a unit at once (`subscribeCommits` runs on adoption, synchronously), and
+   * first all of them as its store holds them, so one a lost unit missed (the object died
+   * between the store's commit and its unit) is healed here. Nothing commits while the
+   * Session is closed (the store's holder fence), and a commit while this scans is kept
+   * after it, idempotently, so none is lost.
+   */
+  async #ownTurns(thread: string, { pi, storage }: Opened): Promise<void> {
+    const turns = {
+      owned: (at: string, owners: readonly TurnOwner[]) => this.#parts.turns.owned(at, owners),
+      reconciled: async (at: string, open: readonly TurnOwner[]) => {
+        const skipped = await this.#parts.turns.reconciled(at, open);
+        if (skipped > 0) {
+          this.#parts.notice(TURNS_UNKEPT, TURNS_UNKEPT_DETAIL);
+        }
+        return skipped;
+      },
+    };
+    await keepTurns(thread, (listener) => pi.subscribeCommits(listener), turns,
+                    () => openOwners(thread, storage), () => {
+                      // Loudly: closed, its next open reconciles what this lost.
+                      console.error("a thread's turns could not be kept; its Session closes");
+                      pi.close(BG).catch(() => {});
+                    });
   }
 
   /**
@@ -905,4 +982,124 @@ export class ThreadHost extends LifecycleCapability {
 /** A thread's count of wake failures in a row, kept across restarts. */
 function errorsKey(thread: string): string {
   return `${HOST}:wake-errors:${thread}`;
+}
+
+/**
+ * One pi record that owns a turn, in a thread: an input submission (`s:<id>`) or a
+ * compaction task (`t:<id>`), and its turn while it is open, null once it is not.
+ */
+export interface TurnOwner {
+  readonly owner: string;
+  readonly turn: string | null;
+  /**
+   * An owner that joined another's turn (a linked input, a run's compaction): it keeps
+   * the turn, never makes it again.
+   */
+  readonly joined?: boolean;
+}
+
+/** A commit's change, as pi publishes it. */
+type Change = Parameters<Parameters<Harness["subscribeCommits"]>[0]>[0]["changes"][number];
+
+/** An input submission's turn, the origin its admission's carrier holds, and if it joined it. */
+function originOf(trace: unknown): { turn: string; joined: boolean } | undefined {
+  const carrier = typeof trace === "object" && trace !== null
+    ? trace as Record<string, unknown> : {};
+  const origin = carrier["ta.origin"];
+  return typeof origin === "string" ? { turn: origin, joined: carrier[JOINED] === "1" }
+    : undefined;
+}
+
+/**
+ * The turn owners a commit opened or ended in `thread`: each input submission while it is
+ * queued or placed, and each compaction task while it is live, with its turn; with none
+ * once it settled or ended. A compaction a run made joins the run's turn (its carrier's
+ * origin, as its calls are charged); one made outside any run is its own.
+ */
+export function turnOwners(thread: string, changes: readonly Change[]): TurnOwner[] {
+  const owners: TurnOwner[] = [];
+  for (const change of changes) {
+    if (change.type === "submission" && change.value.type === "input") {
+      const origin = originOf(change.value.trace);
+      if (origin !== undefined) {
+        const open = change.value.status === "queued" || change.value.status === "placed";
+        owners.push(open ? { owner: `s:${change.value.id}`, ...origin }
+          : { owner: `s:${change.value.id}`, turn: null });
+      }
+    } else if (change.type === "task" && change.value.kind === COMPACTION) {
+      const open = (LIVE_TASKS as readonly string[]).includes(change.value.state.status);
+      const run = originOf(change.value.trace);
+      owners.push(!open ? { owner: `t:${change.value.id}`, turn: null }
+        : run === undefined ? { owner: `t:${change.value.id}`,
+                                turn: `task:${thread}:${change.value.id}` }
+          : { owner: `t:${change.value.id}`, turn: run.turn, joined: true });
+    }
+  }
+  return owners;
+}
+
+/**
+ * Keep `thread`'s turn owners from its commits, as `subscribe` publishes them, after first
+ * reconciling them to `open`: a commit published before that is done is held, then kept
+ * after it, so the reconcile never undoes it. Resolves once the reconcile is done. A
+ * commit's owners that cannot be kept are `lost`, at once.
+ */
+export async function keepTurns(
+  thread: string, subscribe: Harness["subscribeCommits"],
+  turns: Pick<HostParts["turns"], "owned" | "reconciled">,
+  open: () => Promise<readonly TurnOwner[]>, lost: () => void,
+): Promise<void> {
+  let held: TurnOwner[][] | undefined = [];
+  const keep = (owners: readonly TurnOwner[]) => {
+    turns.owned(thread, owners).catch(lost);
+  };
+  subscribe((publication) => {
+    const owners = turnOwners(thread, publication.changes);
+    if (owners.length === 0) {
+      return;
+    }
+    if (held === undefined) {
+      keep(owners);
+    } else {
+      held.push(owners);
+    }
+  });
+  await turns.reconciled(thread, await open());
+  const later = held;
+  held = undefined;
+  for (const owners of later) {
+    keep(owners);
+  }
+}
+
+/** Every page of a scan. */
+async function scanned<T>(scan: (cursor: Cursor | undefined) => Promise<Page<T, Cursor>>):
+    Promise<T[]> {
+  const items: T[] = [];
+  let cursor: Cursor | undefined;
+  do {
+    const page = await scan(cursor);
+    items.push(...page.items);
+    cursor = page.next;
+  } while (cursor !== undefined);
+  return items;
+}
+
+/** The input submissions a thread's store holds open. */
+async function openSubmissions(storage: Storage) {
+  return (await Promise.all((["queued", "placed"] as const).map((status) =>
+    scanned((cursor) => storage.scanSubmissions({ status }, SCAN_PAGE, cursor, BG)))))
+    .flat().filter((record) => record.type === "input");
+}
+
+/** Every turn owner a thread's store holds open: its open inputs and live compactions. */
+async function openOwners(thread: string, storage: Storage): Promise<TurnOwner[]> {
+  const submissions = await openSubmissions(storage);
+  const compactions = (await Promise.all(LIVE_TASKS.map((status) =>
+    scanned((cursor) => storage.scanTasks({ kind: COMPACTION, status }, SCAN_PAGE, cursor,
+                                          BG))))).flat();
+  return turnOwners(thread, [
+    ...submissions.map((value) => ({ type: "submission" as const, value })),
+    ...compactions.map((value) => ({ type: "task" as const, value })),
+  ] as Change[]);
 }

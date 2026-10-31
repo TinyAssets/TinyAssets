@@ -339,25 +339,36 @@ describe("a model request's turn", () => {
     expect(new Set(out.turns).size).toBe(1);
   });
 
-  it("is the run's for a compaction the run starts, even one that runs in the background",
+  it("is the run's for a compaction the run starts, kept while it runs on past the run",
      async () => {
     const r = agentObject();
-    const out = await r.in(async (instance) => {
-      instance.script = Array.from({ length: 12 }, () => (messages: Message[]) =>
-        compacting(messages) ? says("## Goal\nsummary") : says("noted"));
+    const out = await r.in(async (instance, state) => {
+      let kept: unknown[] = [];
+      instance.script = Array.from({ length: 12 }, () => (messages: Message[]) => {
+        if (!compacting(messages)) {
+          return says("noted");
+        }
+        kept = state.storage.sql.exec("SELECT turn, owners FROM model_turns").toArray();
+        return says("## Goal\nsummary");
+      });
       expect((await instance.harness.prompt("early")).status).toBe("done");
       // Past pi's background threshold (32,768 under the blocking one): the run's
       // generation starts a background compaction, which pi runs on past the run.
       const answer = await instance.harness.prompt(HUGE);
       await until(async () => (await instance.harness.messages())
         .some((entry) => entry.kind === "pi.compaction"), "the compaction's summary");
-      return { answer, turns: turnsOf(instance) };
+      await until(async () => state.storage.sql.exec("SELECT 1 FROM model_turns").toArray()
+        .length === 0, "the turn to end with its compaction");
+      return { answer, kept, turns: turnsOf(instance) };
     });
     expect(out.answer.status).toBe("done");
-    // The early run's request, then the second run's and its compaction's summarization.
+    // The early run's request, then the second run's, and its compaction's summarization
+    // on the run's turn, under its caps: the compaction's task keeps the turn while it is
+    // live, so it is there when the summarization calls, and goes with it.
     expect(out.turns).toHaveLength(3);
-    expect(out.turns[2]).toBe(out.turns[1]);
     expect(out.turns[1]).not.toBe(out.turns[0]);
+    expect(out.turns[2]).toBe(out.turns[1]);
+    expect(out.kept).toContainEqual({ turn: out.turns[1], owners: expect.any(Number) });
   });
 
   it("is a compaction's own when a door asks for one while a run is busy", async () => {

@@ -27,6 +27,7 @@ import {
 } from "../src/gateway-provider";
 import type { LiveEvent } from "../src/live-tee";
 import { DEFAULT_POLICY_JSON } from "../src/policy";
+import { TURN_ENDED } from "../src/usage";
 import type { Source } from "../../gateway/src/credential";
 import {
   ANTHROPIC, asked, catalog, direct, type Gated, gated, OPENAI, provider, textOf, until,
@@ -394,7 +395,8 @@ describe("a call's outcome", () => {
 });
 
 describe("background work a run starts", () => {
-  it("counts against that run's caps, which refuse it, and never against a later run",
+  it("is refused once that run's turn ended, never starting its counters over, nor a " +
+     "later run's", 
      async () => {
     const r = await gated();
     await r.connect("sk-background");
@@ -419,10 +421,10 @@ describe("background work a run starts", () => {
     expect(later).not.toBe(spawning);
     expect(rows.map((row) => [row["turn"] === spawning, row["state"], row["rule"]])).toEqual([
       [true, "succeeded", null], [true, "succeeded", null], [false, "succeeded", null],
-      // The work's first request is the spawning run's third; its second passes the cap.
-      [true, "succeeded", null], [true, "refused", "turn_requests"]]);
-    expect(await r.sql("SELECT turn, requests FROM model_turns ORDER BY requests"))
-      .toEqual([{ turn: later, requests: 1 }, { turn: spawning, requests: 3 }]);
+      // The work joined the spawning run's turn, which ended with the run: refused loudly.
+      [true, "refused", TURN_ENDED]]);
+    // Every turn ended with what owned it: no counter is kept, none made again.
+    expect(await r.sql("SELECT turn FROM model_turns")).toEqual([]);
   }, 30_000);
 });
 

@@ -426,8 +426,9 @@ describe("a run's retention (S5)", () => {
     expect(answered).toEqual({ operation_id: run.operation_id, thread_id: thread!.thread_id,
                                status: "done", truncated: true,
                                text: utf8Prefix(`echo: ${long}`, RECEIPT_TEXT_MAX) });
-    expect(new TextEncoder().encode(answered.text!).length).toBeLessThanOrEqual(4096);
-    expect(answered.text!.length).toBeGreaterThan(2000);
+    expect(new TextEncoder().encode(answered.text!).length).toBeLessThanOrEqual(
+      RECEIPT_TEXT_MAX);
+    expect(answered.text!.length).toBeGreaterThan(RECEIPT_TEXT_MAX / 2 - 10);
     // Another request id in the run's thread is one pi never saw; another caller's is none.
     expect(await r.stub.agentStatus(r.bind(null), {
       operation_id: `${thread!.thread_id}.run_${"0".repeat(32)}` }))
@@ -509,9 +510,11 @@ describe("a run's retention (S5)", () => {
     });
     expect(out).toEqual({ conversation: ["made", "the owner's threads are at their limit"],
                           launched: 1_000, atRuns: "the agent's runs are at their limit" });
-    // At 1,000 a day, the policy's highest keep_runs and its default receipts fit the bounds.
-    expect(1_000 * RUN_SETTINGS.keep_runs[1]).toBeLessThan(THREAD_LIMITS.runs);
-    expect(1_000 * RUN_DEFAULTS.keep_run_receipts).toBeLessThanOrEqual(THREAD_LIMITS.receipts);
+    // At 1,000 a day, the policy's default keep_runs fits the runs' bound (its highest, 30
+    // days, does not: past 25 days a launch is refused loudly at runs_kept), and receipts,
+    // a history, keep the newest of each scope's share.
+    expect(1_000 * RUN_DEFAULTS.keep_runs).toBeLessThan(THREAD_LIMITS.runs);
+    expect(1_000 * RUN_SETTINGS.keep_runs[1]).toBeGreaterThan(THREAD_LIMITS.runs);
   }, 60_000);
 
   it("lets receipts go at keep_run_receipts, and keeps the rest", async () => {

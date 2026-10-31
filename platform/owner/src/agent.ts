@@ -120,7 +120,7 @@ import { RemoteStorage } from "./remote-storage";
 import { inTime } from "./schedule";
 import { PLATFORM_NAMES, type Platform, reachable, taTool } from "./ta";
 import {
-  HOST_TIMING, type HostTiming, type Opened, type OperationResult,
+  HOST_TIMING, type HostParts, type HostTiming, type Opened, type OperationResult,
   type SubmitOptions, ThreadHost,
 } from "./thread-host";
 import { type Answer, assistantText, type StoreRpc } from "./thread-store";
@@ -180,6 +180,8 @@ export const GATE = "ta.authority";
 export const TA_EXTENSION = "ta.tool";
 /** A thread with no row is never opened: it was dropped, or never made. */
 export const NO_THREAD = "no such thread";
+/** The rule a model call of a dropping thread is refused under: its turns end with its row. */
+export const THREAD_DROPPING = "thread_dropping";
 /** How long a cut-off Session's usage is waited for, before its row is forgotten. */
 const CUT_OFF_USAGE_MS = 1_000;
 /** How many of a run's first root submissions its receipt's read looks through. */
@@ -320,6 +322,8 @@ export interface AgentParts {
   readonly live: (thread: string, wake: Wake) => Promise<void>;
   /** Keep a thread's usage as its Session closes (`threads.ts`), in a unit of the gate. */
   readonly usage: (thread: string, usage: UsageState) => Promise<void>;
+  /** Keep a thread's turn owners (`Usage.turnOwners`, `Usage.turnsReconciled`), in units. */
+  readonly turns: HostParts["turns"];
 }
 
 /** What a Session's models are bound to: its thread, and its own authority check. */
@@ -448,6 +452,7 @@ export class OwnerAgent {
       exists: (thread) => parts.threads.get(thread) !== null,
       live: (thread, wake, opened) => this.#live(thread, wake, opened),
       usage: (thread, usage) => parts.usage(thread, usage),
+      turns: parts.turns,
       notice: (type, detail) => this.#report(type, detail),
     }, source.timing ?? HOST_TIMING);
   }
@@ -483,8 +488,12 @@ export class OwnerAgent {
     let opened: Harness | undefined;
     const models = this.#source.models({
       thread,
-      authority: (sessionId) => (opened === undefined ? Promise.resolve(() => NO_CONVERSATION)
-        : this.modelAuthority(opened, sessionId)),
+      // A dropping thread's turns count until its row goes, but no call of one is sent.
+      authority: async (sessionId) => {
+        const rule = opened === undefined ? () => NO_CONVERSATION
+          : await this.modelAuthority(opened, sessionId);
+        return () => (this.#parts.threads.get(thread) === null ? THREAD_DROPPING : rule());
+      },
     });
     // An opened Harness closes its storage; one that failed to open may not have, so its
     // storage is closed here (twice is once), releasing the store's session.
