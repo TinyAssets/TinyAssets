@@ -693,7 +693,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "kind TEXT NOT NULL CHECK (kind IN ('api_key', 'oauth2')), " +
       "display_name TEXT NOT NULL CHECK (length(display_name) BETWEEN 1 AND 128), " +
       "provider TEXT NOT NULL CHECK (length(provider) BETWEEN 1 AND 64), " +
-      "models TEXT NOT NULL DEFAULT '[]' CHECK (length(models) <= 262144), " +
+      "models TEXT NOT NULL DEFAULT '[]' CHECK (length(models) <= 655360), " +
       "status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'revoked', 'error')), " +
       "version INTEGER NOT NULL CHECK (version >= 1), expires_at INTEGER, " +
       "lease_id TEXT, lease_until INTEGER, created_at REAL NOT NULL, pending_until REAL, " +

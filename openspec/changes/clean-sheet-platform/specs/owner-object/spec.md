@@ -527,11 +527,15 @@ The object SHALL hold a model connection's credential only as the blob the gatew
 - **THEN** no table of the object, no call it makes to the gateway and no line it logs holds the key
 
 ### Requirement: A connection keeps up to 1,024 models
-A connection SHALL keep up to 1,024 models with their metadata, so the largest built-in catalog (386 models in pi-ai 1.4.0) fits with room.
+A connection SHALL keep up to 1,024 models, each its whole pi-ai record as the setup check listed it and checked whole at commit, within 640 KiB of JSON, so 1,024 of the largest built-in record (607 bytes in pi-ai 1.4.0) fit, and the largest built-in catalog (386 models) with room.
 
 #### Scenario: The largest built-in catalog
 - **WHEN** a key is connected for the built-in provider whose catalog is the largest
 - **THEN** the connection is active with every model the setup check listed
+
+#### Scenario: A model whose thinking map names xhigh
+- **WHEN** a connected model's record maps `xhigh` and `max`, and another reasoning model's has no map
+- **THEN** pi-ai's `getSupportedThinkingLevels` offers both levels for the first, through `high` only for the second, and `auto` offers the strongest's
 
 ### Requirement: The connection doors are the owner's, in its live session
 Preparing (with an OAuth flow's beginning), committing, revoking and listing connections and finishing their OAuth flows SHALL be the owner's own doors, in its live session; a refused one leaves a refusal receipt.
@@ -608,6 +612,17 @@ Each model call SHALL be reserved in one unit that also reads the connection's b
 - **WHEN** eight calls of one turn reserve together against a cap of three requests
 - **THEN** three are reserved and five refused, each refusal kept as a receipt
 
+### Requirement: A call is estimated by pi-ai's calculateCost and settled at the gateway's price
+A call's reservation SHALL be priced by pi-ai's `calculateCost` over the target model's whole cost record, so a long-context tier prices the whole request once its estimated input passes the tier's threshold, and the most output the cost room takes SHALL be found in about log2 of its bound. A settled call SHALL keep the cost the gateway's pi-ai adapter reported, never one recomputed from the record stored at connect time.
+
+#### Scenario: A long-context tier
+- **WHEN** a call's estimated and billed input pass its model's tier threshold
+- **THEN** its estimate and reserved output are at the tier's rates, and it settles at the tier's price the gateway reported, which pi's own `pi.usage` records too
+
+#### Scenario: A stored record older than the gateway's catalog
+- **WHEN** a connection's stored record prices a model at nothing and the gateway's catalog does not
+- **THEN** the call settles at the gateway's price, and its spend counts against the caps
+
 ### Requirement: The caps read counters, never receipts
 Every cap SHALL read only counters the schema's triggers write: `model_turns` per turn, `model_spend` per source, day and month. Receipts SHALL be history only, bounded without freeing any cap; a turn's counters SHALL go only once it has been idle 30 days with no call open.
 
@@ -664,11 +679,40 @@ An open reservation the live instance did not make SHALL be settled by the next 
 - **THEN** the next instance settles it `unknown`, and its reservation still counts against the ceilings
 
 ### Requirement: The agent's models are the owner's connected models and `auto`
-The `gateway` provider SHALL list each active connection's models and, with any, `auto`, carrying the strongest's metadata. `auto` SHALL route each request in the object, by the ranking data file: to the strongest connected model for a user's message, to the model that answered for a continuation, and to the next-ranked after one that failed before any output.
+The `gateway` provider SHALL list each active connection's models, each with its whole record, and, with any, `auto`, carrying the strongest's. `auto` SHALL route each request in the object, by the ranking data file: to the strongest connected model for a user's message, to the model that answered for a continuation, to the next-ranked after one that failed before any output, and to the same model after one that failed for its context's length.
 
 #### Scenario: Nothing is connected
 - **WHEN** a turn starts on an object with no active connection
 - **THEN** it settles `unanswered: no_model`
+
+### Requirement: Each model is compacted at its own thresholds
+pi's compaction thresholds SHALL be each listed model's own, from its context window (pi's defaults from 256K tokens, in proportion below), `auto`'s the strongest's. A request `auto` routes to a model whose threshold is lower than the strongest's SHALL be held to that model's own: over it, the call is refused `context_length_exceeded` before anything is reserved, so pi compacts and retries.
+
+#### Scenario: A provider refuses an overflowing context
+- **WHEN** the provider refuses a turn's call for its context's length, through the gateway
+- **THEN** pi compacts the conversation and retries once, the refusal settles `failed` at no cost, and the turn succeeds
+
+#### Scenario: auto continues on a smaller model
+- **WHEN** a turn's continuation stays on a model whose threshold is lower than the strongest's, and its context passes that threshold
+- **THEN** the call is refused before any reservation, pi compacts, and the retry goes to the same model under its threshold
+
+### Requirement: pi's and pi-ai's metrics are kept
+The telemetry adapter SHALL carry a metrics capability on its root, every span and every extracted parent, aggregating every metric pi and pi-ai record by name, kind and attributes in the object's memory, at most 1,024 series, a measurement past them counted as dropped. The owner's `usageMetrics` SHALL answer them with pi's own `pi.usage`, summed over the conversations; no cap reads either.
+
+#### Scenario: A turn's metrics
+- **WHEN** a turn runs through the gateway and the owner reads its usage
+- **THEN** the answer holds pi-ai's token and cost metrics, pi-durable's phase and task metrics, and pi's `pi.usage` for the physical model that answered
+
+### Requirement: The telemetry adapter never throws and reads pi's exported names
+The span names and attributes the adapter reads SHALL be pi-durable's exported `DURABLE_TELEMETRY_SCHEMA`'s, and no adapter method SHALL throw, whatever it is handed: on pi 1.4 a throwing adapter can reject a durable commit.
+
+#### Scenario: Hostile input
+- **WHEN** a span, its propagation or its metrics is handed values whose every read throws
+- **THEN** nothing throws, and a measurement that cannot be kept is counted as dropped
+
+#### Scenario: pi renames a span
+- **WHEN** a pi upgrade's `DURABLE_TELEMETRY_SCHEMA` no longer names a span or attribute the adapter reads
+- **THEN** the build fails, at the adapter's types and in its test
 
 ### Requirement: Each model call goes to the gateway and to the live tee
 Each call SHALL go to the gateway as pi-messages over the `GATEWAY` service binding, with the envelope the gateway reads, and every event SHALL be published to the live tee under the request's `sessionId` as it streams.

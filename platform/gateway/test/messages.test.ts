@@ -13,6 +13,7 @@ import { builtinCatalog, providerFor } from "../src/catalog";
 import { type Source, source } from "../src/credential";
 import { encode, frame } from "../src/encode";
 import { BODY_MAX, guardedFetch, REASONING_MIN_TOKENS } from "../src/messages";
+import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import {
   ALICE, ANTHROPIC, ask, client, codeIn, drain, envelopeOf, FAUX_SOURCE,
   fauxAssistantMessage, fauxCatalog, gatewayHandler, GOOGLE, OPENAI, replay, ring, rotate,
@@ -197,6 +198,7 @@ describe("against a fake upstream, through pi-ai's real adapters", () => {
     ["google-generative-ai", GOOGLE, "x-goog-api-key", SECRET],
   ];
 
+  // The first call of each API loads its provider SDK: slow beside the other files.
   it.each(cases)("%s: sends the opened secret, only upstream, with the clamp", async (
       api, record, header, value) => {
     const env = ring("k1");
@@ -227,6 +229,58 @@ describe("against a fake upstream, through pi-ai's real adapters", () => {
       expect((message.content[0] as { textSignature?: string }).textSignature)
         .toContain("msg_fake");
     }
+  }, 15_000);
+
+  it.each(cases)("%s: answers the provider's overflow refusal as context_length_exceeded, " +
+                 "which pi-ai reads as an overflow, and never with its words", async (
+      api, record) => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, record);
+    const model = catalogModel(record.upstream.provider, api);
+    const header = envelopeOf({ blob });
+    const { status, text } = await raw(gatewayHandler(env), header,
+                                       { model: model.id, context: ask("cmd:overflow") });
+    // Refused before any output: the overflow code, at no cost, with a 413.
+    expect(status).toBe(413);
+    expect(JSON.parse(text)).toEqual({ error: { code: "context_length_exceeded",
+                                                message: "context_length_exceeded" } });
+    const owner = client(gatewayHandler(env), header, model.id);
+    const { message } = await drain(owner.stream(ask("cmd:overflow")));
+    expect(codeIn(message.errorMessage)).toBe("context_length_exceeded");
+    expect(isContextOverflow(message)).toBe(true);
+    expect(message.errorMessage).not.toMatch(/too long|context window|token count/);
+  });
+
+  it("answers an upstream 413 as context_length_exceeded, whatever its body", async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, ANTHROPIC);
+    const model = catalogModel("anthropic", "anthropic-messages");
+    const { status, text } = await raw(gatewayHandler(env), envelopeOf({ blob }),
+                                       { model: model.id, context: ask("cmd:fail-413") });
+    expect([status, JSON.parse(text).error.code]).toEqual([413, "context_length_exceeded"]);
+    expect(text).not.toContain("bad key");
+  });
+
+  it("answers a 429 by its status, though its words read like an overflow", async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, OPENAI);
+    const model = catalogModel("openai", "openai-responses");
+    const { status, text } = await raw(gatewayHandler(env), envelopeOf({ blob }),
+                                       { model: model.id, context: ask("cmd:tpm") });
+    expect([status, JSON.parse(text).error.code]).toEqual([502, "upstream_rate_limited"]);
+  });
+
+  it("ends a stream the provider failed for its context's length with context_length_exceeded",
+     async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, OPENAI);
+    const model = catalogModel("openai", "openai-responses");
+    const { status, text } = await raw(gatewayHandler(env), envelopeOf({ blob }),
+                                       { model: model.id, context: ask("cmd:streamoverflow") });
+    expect(status).toBe(200);
+    const last = JSON.parse(text.trim().split("\n\n").at(-1)!.replace(/^data: /, ""));
+    expect(last).toMatchObject({ type: "error", errorMessage: "context_length_exceeded" });
+    expect(text).not.toContain("context window");
   });
 
   it.each(cases)("%s: catalog prices make pi-ai's cost in done", async (api, record) => {
@@ -444,15 +498,20 @@ describe("refusals before the stream", () => {
     }
   });
 
-  it("refuses a body over the bound without reading it", async () => {
+  it("refuses a body over the bound without reading it, as a context too long", async () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, ANTHROPIC);
-    const response = await gatewayHandler(env)(new Request("https://g/v1/messages", {
-      method: "POST", headers: { "x-ta-envelope": envelopeOf({ blob }),
-                                 "content-length": String(BODY_MAX + 1) },
+    const sent = (length: string) => gatewayHandler(env)(new Request("https://g/v1/messages", {
+      method: "POST", headers: { "x-ta-envelope": envelopeOf({ blob }), "content-length": length },
       body: "{}",
     }));
-    expect(response.status).toBe(413);
+    const over = await sent(String(BODY_MAX + 1));
+    expect([over.status, (await over.json() as { error: { code: string } }).error.code])
+      .toEqual([413, "context_length_exceeded"]);
+    // A length that is no number is a malformed request, not an overflow.
+    const malformed = await sent("2e9");
+    expect([malformed.status, (await malformed.json() as { error: { code: string } }).error.code])
+      .toEqual([400, "invalid_request"]);
   });
 
   it("fails loudly with no usable keyring, never with a default key", async () => {
@@ -537,7 +596,9 @@ describe("refusals before the stream", () => {
       method: "POST", headers: { "x-ta-envelope": envelopeOf({ blob }) }, body,
     });
     expect(request.headers.get("content-length")).toBeNull();
-    expect((await gatewayHandler(env)(request)).status).toBe(413);
+    const response = await gatewayHandler(env)(request);
+    expect([response.status, (await response.json() as { error: { code: string } }).error.code])
+      .toEqual([413, "context_length_exceeded"]);
   });
 
   it("refuses a source pi-ai has no provider for", async () => {

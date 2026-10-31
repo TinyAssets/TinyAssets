@@ -249,6 +249,13 @@ export class Threads implements ThreadReader {
                "wake_at = excluded.wake_at", active ? 1 : 0, wakeAt, threadId);
   }
 
+  /** Every ready thread's id, the oldest first. A read, within the threads' bounds. */
+  ids(): string[] {
+    return this.#storage.sql.exec<{ thread_id: string }>(
+      "SELECT thread_id FROM agent_threads WHERE state = 'ready' ORDER BY created_at, " +
+        "thread_id").toArray().map((row) => row.thread_id);
+  }
+
   /** The threads with work running in their Sessions, as last reported. A read. */
   active(): string[] {
     return this.#storage.sql.exec<{ thread_id: string }>(

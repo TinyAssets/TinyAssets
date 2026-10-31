@@ -35,12 +35,17 @@
  *   whose writer in the file history is the conversation's stamp (`client:<id>` for an
  *   outside client's conversation, else `agent`), and which enforces the conversation's
  *   authority on every operation, as `ta.authority`'s document holds it;
+ * - the telemetry adapter's metrics (`origin.ts`, `OriginMetrics`), pi's and pi-ai's,
+ *   kept for the object's instance, every thread's Session's alike, and read by the
+ *   owner's usage view;
  * - settings read at each use: progress committed at most once a second (the gateway
  *   streams live tokens from memory; a commit is a store RPC), a failed run's queued inputs
  *   withdrawn, so each settles `unanswered: run_failed` rather than waiting on an unrelated
  *   next input, and context and document retention short enough for many Sessions in one
  *   isolate (F11); over those, the part of owner policy that is pi's
- *   (`AgentParts.policy`: the model retry count), which never moves the fixed ones. No
+ *   (`AgentParts.policy`: the model retry count) and the model source's compaction
+ *   thresholds (`AgentSource.compaction`: the gateway provider's, each model's own),
+ *   neither of which moves the fixed ones. No
  *   source selects extensions, in settings or a conversation's agent (a guard holds it),
  *   and a client's conversation whose selection drops the gate makes no model call
  *   (`modelAuthority`);
@@ -82,10 +87,11 @@ import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context"
 import type { ClientIdentity, Models, Provider } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
-  AgentDoc, type AgentState, type ConversationId, type ConversationRecord, createRegistry,
-  defineDoc, defineDocFamily,
+  AgentDoc, type AgentState, type CompactionSettings, type ConversationId,
+  type ConversationRecord, createRegistry, defineDoc, defineDocFamily,
   defineExtension, type EnvTarget, type Extension, Harness, type HarnessSettings, hook,
-  ProviderDoc, type ReportInfo, ROOT_CONVERSATION_ID, ToolTask, type Tx, type Wake, wrapTool,
+  ProviderDoc, type ReportInfo, ROOT_CONVERSATION_ID, ToolTask, type Tx, type UsageState,
+  type Wake, wrapTool,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
@@ -101,7 +107,7 @@ import type { Write } from "./gate";
 import type { GatewayProvider, SessionAuthority } from "./gateway-provider";
 import type { LiveTee } from "./live-tee";
 import type { Notices } from "./notices";
-import { originRoot } from "./origin";
+import { type MetricsSnapshot, OriginMetrics, originRoot } from "./origin";
 import { AGENTS_DIR, AGENTS_OWNER_ONLY, within, WORKSPACE } from "./paths";
 import { RemoteStorage } from "./remote-storage";
 import { inTime } from "./schedule";
@@ -289,6 +295,8 @@ export interface SessionBinding {
 export interface AgentSource {
   /** One Session's models, bound to it. */
   readonly models: (session: SessionBinding) => Models;
+  /** pi's compaction settings for the catalog's models, read at each use; none: pi's own. */
+  readonly compaction?: () => CompactionSettings;
   readonly packages: readonly Extension[];
   /**
    * Further extensions of the object's own, installed before the packages and without
@@ -383,6 +391,8 @@ export class OwnerAgent {
   readonly authority = authorityDoc();
   /** The `ta.session` documents, as every Session reads and writes them. */
   readonly sessions = sessionDoc();
+  /** pi's and pi-ai's metrics, kept by the telemetry adapter for the object's instance. */
+  readonly metrics = new OriginMetrics();
   readonly #parts: AgentParts;
   readonly #source: AgentSource;
   /** One registry for every Session (pi keeps each Harness subscribed until it closes). */
@@ -443,10 +453,10 @@ export class OwnerAgent {
       registry: this.#registry,
       onWake,
       identity: IDENTITY,
-      settings: () => ({ ...this.#parts.policy(), ...AGENT_SETTINGS }),
+      settings: () => ({ ...this.#parts.policy(), ...this.#compaction(), ...AGENT_SETTINGS }),
       env: (target, envContext) => this.#env(target, envContext),
       conversationCreated: (tx, record) => this.#inherit(tx, record),
-      telemetry: originRoot(thread),
+      telemetry: originRoot(thread, this.metrics),
       onReport: (error, info) => this.#report(info.type, detailOf(error, info)),
     }, BG).catch(async (error: unknown) => {
       await storage.close(BG);
@@ -471,6 +481,12 @@ export class OwnerAgent {
       throw error;
     }
     return { pi, storage };
+  }
+
+  /** The model source's compaction settings, when it has any. */
+  #compaction(): Pick<HarnessSettings, "compaction"> {
+    const compaction = this.#source.compaction;
+    return compaction === undefined ? {} : { compaction: compaction() };
   }
 
   /**
@@ -795,6 +811,52 @@ export class OwnerAgent {
     await this.#within(Promise.all([...running].map((thread) =>
       this.host.end(thread, ({ pi }) => this.#endSession(pi, false)))));
   }
+
+  /**
+   * The owner's model usage as pi records it (pi audit F4): pi's own `pi.usage`, every
+   * conversation's summed (`Harness.usage`: per `provider/model` and per tool, failed and
+   * aborted attempts included) across every thread's Session, each opened if need be, and
+   * the metrics pi and pi-ai recorded since this instance began. Diagnostic only: every cap
+   * reads `usage.ts`'s counters.
+   */
+  async usage(): Promise<UsageView> {
+    const sum: UsageState = { models: {}, tools: {} };
+    for (const thread of this.#parts.threads.ids()) {
+      const usage = await this.host.use(thread, ({ pi }) => pi.usage(BG));
+      for (const bucket of ["models", "tools"] as const) {
+        for (const [key, counts] of Object.entries(usage[bucket])) {
+          sum[bucket][key] = added(sum[bucket][key], counts) as typeof counts;
+        }
+      }
+    }
+    return { models: sum.models, tools: sum.tools, metrics: this.metrics.snapshot() };
+  }
+}
+
+/** Two of pi's usage records summed, counter by counter (pi's `addUsageState`, per key). */
+function added(total: unknown, usage: unknown): unknown {
+  if (total === undefined) {
+    return usage;
+  }
+  if (typeof total === "number" && typeof usage === "number") {
+    return total + usage;
+  }
+  if (total !== null && usage !== null && typeof total === "object" && typeof usage === "object"
+      && !Array.isArray(total) && !Array.isArray(usage)) {
+    const sum: Record<string, unknown> = { ...total as Record<string, unknown> };
+    for (const [key, value] of Object.entries(usage as Record<string, unknown>)) {
+      sum[key] = added(sum[key], value);
+    }
+    return sum;
+  }
+  return usage;
+}
+
+/** The owner's usage view: pi's `pi.usage` summed, and the adapter's metrics. */
+export interface UsageView {
+  readonly models: UsageState["models"];
+  readonly tools: UsageState["tools"];
+  readonly metrics: MetricsSnapshot;
 }
 
 /** One Session's model catalog: the object's one model source, bound to the Session. */
@@ -812,5 +874,13 @@ export function gatewayModels(parts: AgentParts): (session: SessionBinding) => M
  * (the ta guard holds `trusted` to `AgentSource` and `#install`).
  */
 export function gatewayAgent(parts: AgentParts, packages: readonly Extension[] = []): OwnerAgent {
-  return new OwnerAgent(parts, { models: gatewayModels(parts), packages });
+  return new OwnerAgent(parts, { ...gatewaySource(parts), packages });
+}
+
+/**
+ * The object's model source: its catalog (`gatewayModels`) and its models' compaction
+ * thresholds, each one's own (`GatewayProvider.compaction`).
+ */
+export function gatewaySource(parts: AgentParts): Pick<AgentSource, "models" | "compaction"> {
+  return { models: gatewayModels(parts), compaction: () => parts.provider.compaction() };
 }

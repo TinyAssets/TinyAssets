@@ -5,14 +5,16 @@
  * largest built-in catalog, and the plaintext key never in the object.
  */
 import { evictDurableObject, runDurableObjectAlarm } from "cloudflare:test";
+import { isModelType } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { type Credential, type Source, SUPPORTED_APIS } from "../../gateway/src/credential";
+import { recordOf } from "../../gateway/src/model-record";
 import { open } from "../../gateway/src/keyring";
-import { CONNECTION_LIMITS } from "../src/connections";
+import { CONNECTION_LIMITS, type ModelInfo, MODELS_JSON_MAX } from "../src/connections";
 import type { Binding } from "../src/owner-do";
 import { MUSE } from "./ledger-support";
 import { failure } from "./support";
@@ -671,12 +673,87 @@ describe("the largest built-in catalog", () => {
     };
     const listed = await catalog(record);
     expect(listed).toHaveLength(largest!.count);
+    // `maxModels` of the largest record of any built-in catalog fit within the JSON bound.
+    const largestRecord = Math.max(...builtinProviders().flatMap((provider) =>
+      provider.getModels().filter((model) => isModelType(model, "chat"))
+        .map((model) => JSON.stringify(recordOf(model)).length)));
+    expect(largestRecord * CONNECTION_LIMITS.maxModels).toBeLessThanOrEqual(MODELS_JSON_MAX);
+    expect(JSON.stringify(listed)).toContain("thinkingLevelMap");
     const r = await gated();
     const connection = await r.connect("sk-large", record, "Large", listed);
     expect((await r.stub.connectionList(r.session())).connections[0])
       .toMatchObject({ connection, status: "active" });
     expect((await r.stub.connectionList(r.session())).connections[0]!.models)
       .toHaveLength(largest!.count);
+  });
+});
+
+describe("a connected model's record", () => {
+  /** Commit `models` on a fresh pending connection; the refusal's message, or null. */
+  async function committed(r: Gated, models: unknown[]): Promise<string | null> {
+    const prepared = await r.stub.connectionPrepare(r.session(), {
+      source: "anthropic", kind: "api_key", display_name: "Key", provider: "anthropic",
+      revocable: false });
+    const sealed = await env.GATEWAY.seal(r.name, prepared.connection, 1, "sk-x", ANTHROPIC);
+    return r.stub.connectionCommit(r.session(), { connection: prepared.connection, version: 1,
+                                                  blob: sealed.blob, kid: sealed.kid,
+                                                  models: models as ModelInfo[] })
+      .then(() => null, (error: Error) => error.message);
+  }
+
+  it("is kept whole for every model of every built-in catalog", async () => {
+    const records = builtinProviders().flatMap((provider) => provider.getModels()
+      .filter((model) => isModelType(model, "chat")).map((model, i) => ({
+        ...JSON.parse(JSON.stringify(recordOf(model))) as ModelInfo,
+        id: `${provider.id}.${i}` })));
+    expect(records.length).toBeGreaterThan(CONNECTION_LIMITS.maxModels);
+    const r = await gated();
+    for (let at = 0; at < records.length; at += CONNECTION_LIMITS.maxModels) {
+      expect(await committed(r, records.slice(at, at + CONNECTION_LIMITS.maxModels))).toBeNull();
+    }
+    const kept = await r.in((instance) => instance.parts.provider.getModels());
+    expect(kept.length).toBe(records.length + 1);
+  });
+
+  it("keeps maxModels of the largest built-in record", async () => {
+    const largest = builtinProviders().flatMap((provider) => provider.getModels()
+      .filter((model) => isModelType(model, "chat"))
+      .map((model) => JSON.parse(JSON.stringify(recordOf(model))) as ModelInfo))
+      .reduce((a, b) => (JSON.stringify(b).length > JSON.stringify(a).length ? b : a));
+    const models = Array.from({ length: CONNECTION_LIMITS.maxModels }, (_, i) =>
+      ({ ...largest, id: `${largest.id.slice(0, 190)}.${String(i).padStart(4, "0")}` }));
+    expect(JSON.stringify(models).length).toBeGreaterThan(600 * 1024);
+    const r = await gated();
+    expect(await committed(r, models)).toBeNull();
+    expect(await r.in((instance) => instance.parts.provider.getModels().length))
+      .toBe(CONNECTION_LIMITS.maxModels + 1);
+  });
+
+  it.each([
+    ["an unknown field", { compat: {} }],
+    ["the gateway's own field", { baseUrl: "https://api.anthropic.com" }],
+    ["an unknown thinking level", { thinkingLevelMap: { extreme: "x" } }],
+    ["a thinking value of another type", { thinkingLevelMap: { high: 1 } }],
+    ["a cache lifetime of zero", { promptCache: { short: 0 } }],
+    ["an unknown input limit", { inputLimits: { maxTokens: 1 } }],
+    ["a request byte limit of zero", { inputLimits: { maxRequestBytes: 0 } }],
+    ["an unknown image limit", { inputLimits: { images: { maxSize: 1 } } }],
+    ["a fractional image count", { inputLimits: { images: { maxPerMessage: 1.5 } } }],
+    ["a JPEG quality past 100", { inputLimits: { images: { resize: { jpegQuality: 101 } } } }],
+    ["an unknown resize field", { inputLimits: { images: { resize: { dpi: 72 } } } }],
+    ["no tiers in a tier list", { cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0,
+                                          tiers: [] } }],
+    ["a tier with no threshold", { cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0,
+      tiers: [{ input: 2, output: 2, cacheRead: 0, cacheWrite: 0 }] } }],
+    ["a tier at a negative price", { cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0,
+      tiers: [{ inputTokensAbove: 1, input: -2, output: 2, cacheRead: 0, cacheWrite: 0 }] } }],
+    ["a cost with an unknown rate", { cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0,
+                                              cacheWrite1h: 2 } }],
+    ["a context window of zero", { contextWindow: 0 }],
+  ])("refuses a model with %s", async (_what, change) => {
+    const r = await gated();
+    const [model] = await catalog(ANTHROPIC);
+    expect(await committed(r, [{ ...model, ...change }])).toBe("invalid connection model");
   });
 });
 

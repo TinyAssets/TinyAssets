@@ -25,7 +25,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 
-import { type AgentParts, gatewayModels, OwnerAgent } from "../src/agent";
+import { type AgentParts, gatewaySource, OwnerAgent } from "../src/agent";
 import type { GatewayService, Resealed } from "../src/connections";
 import { turnOf } from "../src/origin";
 import { type OwnerEnv, OwnerDO } from "../src/owner-do";
@@ -59,6 +59,8 @@ export interface Probes {
   holds: number;
   /** How long `hold` lingers once aborted before it returns, in ms. */
   holdLinger: number;
+  /** What `hold` answers, one each call while any is left; then `held`. */
+  holdOutputs: string[];
   /** The conversation `spawn` last made, when it has. */
   spawned: number | null;
   /** The inputs `spawn` submitted to the conversations it made, in order. */
@@ -92,7 +94,8 @@ export interface Probes {
 
 /** Probes as a fresh instance has them. */
 export function freshProbes(): Probes {
-  return { readGate: null, reads: 0, holdGate: null, holds: 0, holdLinger: 0, spawned: null,
+  return { readGate: null, reads: 0, holdGate: null, holds: 0, holdLinger: 0, holdOutputs: [],
+           spawned: null,
            submitted: [],
            background: null, backgroundGate: null, toolGate: null, gated: [], nestGate: null,
            rewrite: null, widen: null, inject: null, writeGate: null, writes: 0,
@@ -292,7 +295,7 @@ function testExtensions(probes: () => Probes): { packages: Extension[];
           if (context.abortSignal?.aborted && probes().holdLinger > 0) {
             await new Promise((resolve) => setTimeout(resolve, probes().holdLinger));
           }
-          return { output: [{ type: "text", text: "held" }] };
+          return { output: [{ type: "text", text: probes().holdOutputs.shift() ?? "held" }] };
         },
       }),
       defineTool({
@@ -649,7 +652,7 @@ function watched(gateway: GatewayService, calls: () => GatewayCall[],
 }
 
 /**
- * The owner object as production builds it (`gatewayModels`, the gateway provider), with
+ * The owner object as production builds it (`gatewaySource`, the gateway provider), with
  * the test tools, its agent and parts in reach, its GATEWAY calls watched, and the faults
  * a test sets on them.
  */
@@ -669,7 +672,7 @@ export class GatedOwnerDO extends OwnerDO {
                                           () => made.self?.faults) },
           (parts) => {
             made.parts = parts;
-            made.agent = new OwnerAgent(parts, { models: gatewayModels(parts),
+            made.agent = new OwnerAgent(parts, { ...gatewaySource(parts),
                                                  timing: testTiming(),
                                                  ...testExtensions(() => made.self!.probes) });
             return made.agent;

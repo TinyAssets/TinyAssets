@@ -17,7 +17,8 @@
  * streams and settles the owner's reservation.
  */
 import { type Catalog, modelInfos } from "./catalog";
-import { allows, bearer, type Credential, type CustomModel } from "./credential";
+import { allows, bearer, type Credential } from "./credential";
+import type { ModelRecord } from "./model-record";
 import { type Code, codeOf, Failure, failureResponse, upstreamCode } from "./failure";
 import { nativeFetch } from "./egress";
 import { type Binding, type KeyringEnv, open, type Opened, type Resealed } from "./keyring";
@@ -218,7 +219,7 @@ export async function forward(env: KeyringEnv, bound: Binding, blob: unknown,
 
 /** What a setup check found: the credential works, and the models it can be asked for. */
 export interface Verified {
-  readonly models: readonly CustomModel[];
+  readonly models: readonly ModelRecord[];
   readonly resealed?: Resealed;
 }
 

@@ -16,15 +16,21 @@
  *   carries the phase's context (`options.telemetry`).
  *
  * This module is each thread's Session's telemetry adapter (one root per thread,
- * `originRoot`), and records nothing but that one thing, the origin: an input admitted
- * with a link to a context that has one (a tool or background work submitting to a
- * subagent's conversation) takes that origin. Every other input is a new origin, a new
- * turn: one a door submits, one the thread host admits, and any input submitted under a
- * context with no origin (`BACKGROUND_CONTEXT`, or a context code made instead of the one
- * pi passed it). Every other span takes its parent's. So every model call one input
- * caused, through any subagent, compaction or background work, even after the run that
- * started it ended, is charged to that input's turn, as the Python's `_borrowed` charged a
- * child to its parent's budget; a steer joins the run it steers.
+ * `originRoot`). Its spans record nothing but one thing, the origin, and its metrics
+ * capability keeps pi's and pi-ai's metrics (`OriginMetrics`). It is ADR-032 §4's kept difference: the turn every spend cap keys on
+ * rides pi's telemetry propagation, against pi-telemetry's "a span is diagnostic data,
+ * not business state", because pi has no durable causal context of its own (pi audit
+ * F4). So the span names it reads are held to pi's exported `DURABLE_TELEMETRY_SCHEMA`,
+ * and no method of it ever throws: on pi 1.4 a throwing adapter can reject a durable
+ * commit. The origin: an input admitted with a link to a context that has one (a tool or
+ * background work submitting to a subagent's conversation) takes that origin. Every other
+ * input is a new origin, a new turn: one a door submits, one the thread host admits,
+ * and any input submitted under a context with no origin (`BACKGROUND_CONTEXT`, or a
+ * context code made instead of the one pi passed it). Every other span takes its parent's.
+ * So every model call one input caused, through any subagent, compaction or background
+ * work, even after the run that started it ended, is charged to that input's turn, as the
+ * Python's `_borrowed` charged a child to its parent's budget; a steer joins the run it
+ * steers.
  *
  * A task takes whatever carrier it was created with. One with no carrier has no origin:
  * pi's compaction is the one such task pi itself starts (one asked for outside a run; a
@@ -40,15 +46,14 @@
  * no submit or task path (H0, H1); and the model's tools have no submit or task path of
  * their own beyond the contexts pi passes them. A future in-object package runtime would
  * need an owner-edge check here.
- *
- * The adapter never throws into pi: on pi 1.4 a throwing telemetry adapter can reject a
- * durable commit (fixed on pi main), so every span method is total (a guard holds it).
  */
 import { randomUUID } from "node:crypto";
 
+import type { DURABLE_TELEMETRY_SCHEMA } from "@earendil-works/pi-durable";
 import type {
-  SpanAttributes, SpanLink, SpanOptions, SpanStatus, TelemetryCarrier, TelemetryContext,
-  TelemetryPropagation, TelemetrySpan,
+  HistogramOptions, InstrumentOptions, SpanAttributes, SpanLink, SpanOptions, SpanStatus,
+  TelemetryCarrier, TelemetryContext, TelemetryCounter, TelemetryHistogram, TelemetryMetrics,
+  TelemetryPropagation, TelemetrySpan, TelemetryUpDownCounter,
 } from "@earendil-works/pi-telemetry";
 
 /** A thread's id, as its row holds it. */
@@ -58,28 +63,153 @@ const THREAD = /^thread_[0-9a-f]{32}$/;
  * compaction's, named by its thread.
  */
 const ORIGIN = /^(?:input:[0-9A-Za-z-]{1,64}|task:thread_[0-9a-f]{32}:[0-9]{1,16})$/;
-/** pi's span names and attributes this adapter reads (pi-durable 1.4.0). */
-const ADMISSION = "pi.durable.submit";
-const PHASE = "pi.durable.phase";
-const COMPACTION = "pi.compaction";
+
+type DurableSpans = typeof DURABLE_TELEMETRY_SCHEMA["spans"];
+/**
+ * pi's span names this adapter reads, held to pi-durable's exported vocabulary
+ * (`DURABLE_TELEMETRY_SCHEMA`) by their type, and with the phase's `task.id` and
+ * `task.name` by the origin test at run time, so a pi that renames one fails the build
+ * rather than every call's turn.
+ */
+export const ADMISSION = "pi.durable.submit" satisfies keyof DurableSpans;
+export const PHASE = "pi.durable.phase" satisfies keyof DurableSpans;
+/** pi's compaction task's registered name (`CompactionTask`, held by the origin test). */
+export const COMPACTION = "pi.compaction";
 
 /** The fixed code of a model call no origin can be found for. */
 export const NO_RUN = "no_run";
 
+/** The series the metrics keep at most; past it a new one is counted as dropped. */
+export const METRIC_SERIES_MAX = 1_024;
+
+/** One series of a metric pi recorded: its name, kind and attributes, and its measurements. */
+export interface MetricSeries {
+  readonly name: string;
+  readonly kind: "counter" | "upDownCounter" | "histogram";
+  readonly unit: string | null;
+  readonly attributes: Readonly<Record<string, string | number | boolean>>;
+  readonly count: number;
+  readonly sum: number;
+  readonly min: number;
+  readonly max: number;
+}
+
+/** What the metrics hold: each series, and how many measurements were dropped. */
+export interface MetricsSnapshot {
+  readonly series: readonly MetricSeries[];
+  readonly dropped: number;
+}
+
+type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
+/**
+ * The adapter's metrics capability (pi-telemetry's `TelemetryMetrics`), so the metrics pi
+ * and pi-ai record are kept rather than dropped (pi audit F4): pi-ai's `pi.ai.tokens`,
+ * `pi.ai.cost`, `pi.ai.request.duration` and `pi.ai.first_chunk.duration` of every model
+ * request, pi-durable's `pi.durable.phase.duration`, `pi.durable.tasks.active` and
+ * `pi.durable.reports`. Each is aggregated in the object's memory by its name, kind and
+ * attributes (their count, sum, minimum and maximum), at most `METRIC_SERIES_MAX` series,
+ * and read by the owner's usage view (`OwnerDO.usageMetrics`), where G5 reads them. It is
+ * diagnostic data, lost with the instance, and never business state: no cap reads it.
+ *
+ * Recording never throws, as the whole adapter never does: on pi 1.4 a throwing telemetry
+ * adapter can reject a durable commit (fixed on pi's main), so a measurement that cannot
+ * be kept is dropped.
+ */
+export class OriginMetrics implements TelemetryMetrics {
+  readonly #series = new Map<string, Mutable<MetricSeries>>();
+  #dropped = 0;
+
+  counter(name: string, options?: InstrumentOptions): TelemetryCounter {
+    return { add: (value, attributes) =>
+      this.#record("counter", name, options, value, attributes) };
+  }
+
+  upDownCounter(name: string, options?: InstrumentOptions): TelemetryUpDownCounter {
+    return { add: (value, attributes) =>
+      this.#record("upDownCounter", name, options, value, attributes) };
+  }
+
+  histogram(name: string, options?: HistogramOptions): TelemetryHistogram {
+    return { record: (value, attributes) =>
+      this.#record("histogram", name, options, value, attributes) };
+  }
+
+  /** Every series, and the measurements dropped. */
+  snapshot(): MetricsSnapshot {
+    return { series: [...this.#series.values()].map((series) => ({
+      ...series, attributes: { ...series.attributes } })), dropped: this.#dropped };
+  }
+
+  #record(kind: MetricSeries["kind"], name: unknown, options: InstrumentOptions | undefined,
+          value: unknown, attributes: SpanAttributes | undefined): void {
+    try {
+      if (typeof name !== "string" || typeof value !== "number" || !Number.isFinite(value)) {
+        this.#dropped += 1;
+        return;
+      }
+      const kept: Record<string, string | number | boolean> = {};
+      for (const [key, entry] of Object.entries(attributes ?? {}).sort(([a], [b]) =>
+        (a < b ? -1 : a > b ? 1 : 0))) {
+        if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") {
+          kept[key] = entry;
+        }
+      }
+      const key = JSON.stringify([kind, name, kept]);
+      let series = this.#series.get(key);
+      if (series === undefined) {
+        if (this.#series.size >= METRIC_SERIES_MAX) {
+          this.#dropped += 1;
+          return;
+        }
+        const unit = options?.unit;
+        series = { name, kind, unit: typeof unit === "string" ? unit : null, attributes: kept,
+                   count: 0, sum: 0, min: value, max: value };
+        this.#series.set(key, series);
+      }
+      series.count += 1;
+      series.sum += value;
+      series.min = Math.min(series.min, value);
+      series.max = Math.max(series.max, value);
+    } catch {
+      this.#dropped += 1;
+    }
+  }
+}
+
 /** A context's origin, resolved once, at first need. */
 type Resolve = () => string | undefined;
 
+/**
+ * The adapter's capabilities, shared by its root, every span and every extracted parent:
+ * the thread whose Session it is, its metrics, and its propagation.
+ */
+interface Adapter {
+  readonly thread: string;
+  readonly metrics: OriginMetrics;
+  readonly propagation: TelemetryPropagation;
+}
+
 /** A telemetry span that carries an origin and nothing else, in one thread's Session. */
 class OriginSpan implements TelemetrySpan {
-  readonly propagation: TelemetryPropagation;
-  /** The thread whose Session this context is of. */
-  readonly thread: string;
+  readonly #adapter: Adapter;
   readonly #resolve: Resolve;
 
-  constructor(thread: string, resolve: Resolve) {
-    this.thread = thread;
-    this.propagation = propagationOf(thread);
+  constructor(adapter: Adapter, resolve: Resolve) {
+    this.#adapter = adapter;
     this.#resolve = resolve;
+  }
+
+  get metrics(): TelemetryMetrics {
+    return this.#adapter.metrics;
+  }
+
+  get propagation(): TelemetryPropagation {
+    return this.#adapter.propagation;
+  }
+
+  protected get adapter(): Adapter {
+    return this.#adapter;
   }
 
   /** This context's origin, or undefined for the root and a context that has none. */
@@ -87,20 +217,43 @@ class OriginSpan implements TelemetrySpan {
     return this.#resolve();
   }
 
+  /**
+   * The callback, run synchronously once in a span of its own; what it returns or throws
+   * is the answer's (a throw as a rejection), and nothing of the adapter's own ever is.
+   */
   startSpan<T>(options: SpanOptions, callback: (span: TelemetrySpan) => T | Promise<T>):
       Promise<T> {
-    return Promise.resolve(callback(this.child(options)));
+    let span: OriginSpan;
+    try {
+      span = this.child(options);
+    } catch {
+      span = new OriginSpan(this.#adapter, () => undefined);
+    }
+    try {
+      return Promise.resolve(callback(span));
+    } catch (error) {
+      return Promise.reject(error);
+    }
   }
 
   /** A span started here: of this context's origin. */
   protected child(_options: SpanOptions): OriginSpan {
-    return new OriginSpan(this.thread, () => this.origin());
+    return new OriginSpan(this.#adapter, () => this.origin());
   }
 
   addLink(_link: SpanLink): void {}
   addEvent(_name: string, _attributes?: SpanAttributes): void {}
   setAttributes(_attributes: SpanAttributes): void {}
   setStatus(_status: SpanStatus): void {}
+}
+
+/** `context`'s origin when it is a span of an origin adapter; never throws. */
+function originOf(context: unknown): string | undefined {
+  try {
+    return context instanceof OriginSpan ? context.origin() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -114,14 +267,14 @@ class RootSpan extends OriginSpan {
   #resolved = false;
   readonly #fresh: () => string | undefined;
 
-  constructor(thread: string, options: SpanOptions) {
-    super(thread, () => this.#settle());
-    const attributes = options?.attributes ?? {};
+  constructor(adapter: Adapter, options: SpanOptions) {
+    super(adapter, () => this.#settle());
+    const attributes = options.attributes ?? {};
     const task = attributes["task.id"];
-    this.#fresh = options?.name === ADMISSION ? () => `input:${randomUUID()}`
-      : options?.name === PHASE && attributes["task.name"] === COMPACTION
+    this.#fresh = options.name === ADMISSION ? () => `input:${randomUUID()}`
+      : options.name === PHASE && attributes["task.name"] === COMPACTION
           && (typeof task === "number" || typeof task === "string")
-        ? () => `task:${thread}:${task}`
+        ? () => `task:${adapter.thread}:${task}`
         : () => undefined;
   }
 
@@ -134,47 +287,67 @@ class RootSpan extends OriginSpan {
   }
 
   override addLink(link: SpanLink): void {
-    if (!this.#resolved && this.#linked === undefined && link?.context instanceof OriginSpan) {
-      this.#linked = link.context.origin();
+    try {
+      if (!this.#resolved && this.#linked === undefined) {
+        this.#linked = originOf(link.context);
+      }
+    } catch {
+      // A link that cannot be read links nothing.
     }
   }
 }
 
 /** A thread's Session's root: no origin of its own, and every span it starts may begin a chain. */
 class Root extends OriginSpan {
-  constructor(thread: string) {
-    super(thread, () => undefined);
+  constructor(adapter: Adapter) {
+    super(adapter, () => undefined);
   }
 
   protected override child(options: SpanOptions): OriginSpan {
-    return new RootSpan(this.thread, options);
+    return new RootSpan(this.adapter, options);
   }
 }
 
-/** One thread's propagation: a carrier with an origin extracts to it, any other to the root. */
-function propagationOf(thread: string): TelemetryPropagation {
-  return Object.freeze({
-    inject: (context: TelemetryContext): TelemetryCarrier | undefined => {
-      const origin = context instanceof OriginSpan ? context.origin() : undefined;
-      return origin === undefined ? undefined : { "ta.origin": origin };
-    },
-    extract: (carrier: TelemetryCarrier | undefined): TelemetryContext => {
-      const origin = carrier?.["ta.origin"];
-      return origin !== undefined && ORIGIN.test(origin)
-        ? new OriginSpan(thread, () => origin) : new Root(thread);
-    },
-  });
+/** The carrier's origin, when it holds one in its grammar; never throws. */
+function carried(carrier: unknown): string | undefined {
+  try {
+    const origin = (carrier as TelemetryCarrier | undefined)?.["ta.origin"];
+    return typeof origin === "string" && ORIGIN.test(origin) ? origin : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** `thread`'s adapter: its metrics, and a propagation whose extracted parents carry them. */
+function adapter(thread: string, metrics: OriginMetrics): Adapter {
+  const made: Adapter = {
+    thread,
+    metrics,
+    propagation: Object.freeze({
+      inject: (context: TelemetryContext): TelemetryCarrier | undefined => {
+        const origin = originOf(context);
+        return origin === undefined ? undefined : { "ta.origin": origin };
+      },
+      extract: (carrier: TelemetryCarrier | undefined): TelemetryContext => {
+        const origin = carried(carrier);
+        return origin !== undefined ? new OriginSpan(made, () => origin) : new Root(made);
+      },
+    }),
+  };
+  return Object.freeze(made);
 }
 
 /**
  * A thread's Session's telemetry, pi's `HarnessOptions.telemetry`: a root, which holds
- * nothing but the thread a compaction's origin is named by.
+ * nothing but the thread a compaction's origin is named by, with `metrics` as its metrics
+ * capability. Throws for a name not a thread's (before pi has it).
  */
-export function originRoot(thread: string): TelemetrySpan {
+export function originRoot(thread: string, metrics: OriginMetrics = new OriginMetrics()):
+    TelemetrySpan {
   if (!THREAD.test(thread)) {
     throw new Error("an origin root is a thread's");
   }
-  return new Root(thread);
+  return new Root(adapter(thread, metrics));
 }
 
 /**
@@ -182,7 +355,7 @@ export function originRoot(thread: string): TelemetrySpan {
  * (`options.telemetry`); throws `no_run` for a context with no origin.
  */
 export function turnOf(telemetry: unknown): string {
-  const origin = telemetry instanceof OriginSpan ? telemetry.origin() : undefined;
+  const origin = originOf(telemetry);
   if (origin === undefined) {
     throw new Error(NO_RUN);
   }
@@ -193,7 +366,8 @@ export function turnOf(telemetry: unknown): string {
 export function originContext(origin: string,
                               thread = "thread_00000000000000000000000000000000"):
     TelemetrySpan {
-  const context = originRoot(thread).propagation!.extract({ "ta.origin": origin });
+  const context = adapter(thread, new OriginMetrics()).propagation
+    .extract({ "ta.origin": origin });
   if (context instanceof Root || !(context instanceof OriginSpan)) {
     throw new Error("not an origin");
   }
