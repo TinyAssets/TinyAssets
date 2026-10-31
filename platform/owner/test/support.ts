@@ -114,6 +114,42 @@ export function sqlIn(stub: DurableObjectStub<OwnerDO>, statement: string,
     state.storage.sql.exec<Row>(statement, ...params).toArray());
 }
 
+/** The store a thread's row names, in `stub`'s object. */
+export async function storeOf(stub: DurableObjectStub<OwnerDO>, thread: string):
+    Promise<string> {
+  const [row] = await sqlIn(stub, "SELECT store FROM agent_threads WHERE thread_id = ?", thread);
+  if (row === undefined) {
+    throw new Error("no such thread");
+  }
+  return row["store"] as string;
+}
+
+/** Rows a query returns in a thread store's own database. */
+export function storeSql(store: string, statement: string, ...params: SqlStorageValue[]):
+    Promise<Row[]> {
+  return runInDurableObject(env.PISTORE.getByName(store), (_instance, state) =>
+    state.storage.sql.exec<Row>(statement, ...params).toArray());
+}
+
+/** A submission as a thread's store keeps it, by its request id or its id: how it stands. */
+export async function storeSubmission(store: string, by: { request?: string; id?: number }):
+    Promise<{ status: string; reason: string | null } | undefined> {
+  const [row] = await storeSql(store, "SELECT status, json_extract(record, '$.reason') AS " +
+                                      "reason FROM pi_submissions WHERE json_extract(record, '$.requestId') IS ? " +
+                                      "OR id IS ?",
+                               by.request ?? null, by.id ?? null);
+  return row === undefined ? undefined
+    : { status: row["status"] as string, reason: (row["reason"] ?? null) as string | null };
+}
+
+/** The tables of `stub`'s own database whose names begin `prefix`. */
+export async function tablesIn(stub: DurableObjectStub<OwnerDO>, prefix: string):
+    Promise<string[]> {
+  return (await sqlIn(stub, "SELECT name FROM sqlite_master WHERE type = 'table' " +
+                              "AND substr(name, 1, length(?)) = ? ORDER BY name", prefix, prefix))
+    .map((row) => row["name"] as string);
+}
+
 /**
  * What the manifest names but could lose: a content an entry or a kept history row
  * names that has no row, and a chunk of such content that is missing, garbage or being

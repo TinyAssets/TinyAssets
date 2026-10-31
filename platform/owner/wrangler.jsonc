@@ -1,15 +1,21 @@
 // The per-owner Durable Object (ADR-032). Not deployed yet: no workflow deploys
 // platform/. Edge Workers bind OWNER to this class by script_name from their own
-// configs. This Worker binds two things, the FILES service: the files Worker, which itself
-// binds no Durable Object and no service, and the GATEWAY service: the model gateway,
-// which binds nothing at all, so neither is a way to another owner's object.
-// `disable_ctx_exports` keeps the runtime from handing the object its own namespace as
-// `ctx.exports` (guards/config.test.ts checks this config and the files Worker's).
+// configs. This Worker binds three things: the FILES service, the files Worker, which
+// itself binds no Durable Object and no service; the GATEWAY service, the model gateway,
+// which binds nothing at all, so neither is a way to another owner's object; and PISTORE,
+// the namespace of its own second class, ThreadStore (one pi store per agent thread, no
+// script_name), whose objects are named only by random ids the owner object's rows hold
+// and reach nothing (ADR-032 §1, amended 2026-10-30). `disable_ctx_exports` keeps the
+// runtime from handing the object its own namespaces as `ctx.exports`
+// (guards/config.test.ts checks this config and the files Worker's).
 // `limits.subrequests` is the platform's per-invocation count of the calls the object
-// makes (FILES, and later the gateway and hooks), charged to its newest incoming event or
-// to a count each event resets (cap-probe M12, newest-or-reset); the platform's own error
-// is the loud failure, and the object keeps no budget of its own. Set to the Paid default
-// explicitly, and pinned by the config guard.
+// makes (FILES and the gateway as subrequests; thread store RPCs on a separate "API
+// requests" count it also lifts), reset as the work moves across events (live probe P1,
+// `store-probe.md`: at 10,000, store calls stopped at exactly 10,000 in one alarm; at
+// 1,000,000 they passed, and 32 streaming threads made 32,697 store calls in 10 minutes
+// with no error); the platform's own error is the loud failure, and the object keeps no
+// budget of its own. Paid accepts 1,000,000 (P1), within its 10,000,000; pinned by the
+// config guard.
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "tinyassets-owner",
@@ -18,12 +24,17 @@
   "compatibility_flags": ["nodejs_compat", "disable_ctx_exports"],
   "workers_dev": false,
   "preview_urls": false,
-  "limits": { "subrequests": 10000 },
+  "limits": { "subrequests": 1000000 },
   "services": [
     { "binding": "FILES", "service": "tinyassets-files" },
     { "binding": "GATEWAY", "service": "tinyassets-gateway" }
   ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "PISTORE", "class_name": "ThreadStore" }
+    ]
+  },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["OwnerDO"] }
+    { "tag": "v1", "new_sqlite_classes": ["OwnerDO", "ThreadStore"] }
   ]
 }

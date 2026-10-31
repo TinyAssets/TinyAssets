@@ -41,16 +41,18 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
    Durable Object per owner (`OwnerDO`).** It holds the owner's agent
    registry, ledger, receipts and bodies, board and room collections on the one
    revision primitive with history, policy, grants, sessions, connection
-   metadata and sealed credentials, subscriptions, the session event log, one
+   metadata and sealed credentials, subscriptions, the agent's thread index, one
    schedule on the Agents SDK Lifecycle job queue, which owns the object's
-   single alarm and PiHarness's wake-up job, and hibernating app WebSockets.
+   single alarm and the thread host's wake jobs, and hibernating app WebSockets.
    The runtime keeps each object's storage private. The object's code has no
    way to another owner's object: its Worker binds nothing but service bindings
    to Workers an allow-list names with the binding kinds each may hold, none
    reaching another Worker or a shared store beyond its purpose (today the
    files Worker, with one bucket; the gateway with its slice), checked against
    the bound Worker's own
-   config; the `disable_ctx_exports` flag keeps the runtime from handing it its
+   config, and one Durable Object namespace of its own `ThreadStore` class (no
+   `script_name`), whose objects are named only by unguessable ids the owner's
+   rows hold; none reaches another owner's object; the `disable_ctx_exports` flag keeps the runtime from handing it its
    own namespaces as `ctx.exports`; and its source never imports `env`. No
    module keeps mutable state at top level or writes through the global object,
    since objects of one class can share an isolate.
@@ -92,7 +94,9 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
    goes:
    - its hook names: `beforeRequest`, `afterResponse`, `onYield`,
      `beforeTool`, `afterTool`, `afterTools`, `beforeCompact`;
-   - its transcript and turn-journal store, in the owner's object;
+   - one pi Session per agent thread, over that thread's own `ThreadStore`;
+     the harness and every hook, env, provider and authority check run in the
+     owner's object;
    - one pi `ExecutionEnv` for tool plumbing: its file methods call the file
      service and its `exec` wakes the microVM, checked with pi's conformance
      tests; `ta` is a trusted pi-durable tool;
@@ -126,6 +130,16 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
      pi-ai's metrics, reads only span names pinned to pi's exported
      `DURABLE_TELEMETRY_SCHEMA`, and never throws, since on pi 1.4 a throwing
      adapter can reject a durable commit (pi audit F4, slice 0b).
+   - Our own multi-Session host (`ThreadHost`) instead of PiHarness: PiHarness
+     hosts one Session per object.
+   - A store per thread rather than Cloudflare's harness per conversation
+     object: a thread object woken by its own alarm would need a binder to its
+     owner.
+   - Until the pi upgrade, the live tee: pi 1.4 shows partials only per commit.
+   - The MCP SDK v2 client in the owner's object over the gateway's forward,
+     configured in pi's `mcp.json` format, every server tools-only through
+     `ta`; not agents' `MCPClientManager`, which keeps tables and credentials
+     of its own.
 
    **User hooks run in a separately deployed Worker's Durable Object, which
    loads each owner's hook code with the Worker Loader (Dynamic Workers, open
@@ -138,10 +152,12 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
    must survive a crash are held by `api.memo` on the trusted side.
    Declarative package parts (skills, prompts, model routing, tool schemas,
    settings) load into the loop as data; shell-level code runs in the microVM.
+   After its probe (P11), the hooks Worker also serves pi's code mode sandbox to
+   the owner through a service binding (`CodemodeRemote`).
 
-   **pi is pinned to 1.4.x:** agents supports one pi minor, and pi's
-   unreleased main already removes `retryTask`, which agents 0.31.0 calls.
-   Pi 1.4's storage migration cannot be rolled back.
+   **pi is pinned to 1.4.x by its storage schema,** in one bundle with its store.
+   Our own host calls pi's `Harness` API directly, so pi upgrades are not gated
+   on agents. Pi 1.4's storage migration cannot be rolled back.
 5. **Owner files live in versioned per-owner object storage** behind a
    trusted file API. A Firecracker microVM sandbox (E2B first, self-hostable
    later) is woken only for `bash`; its disk is a warm cache. How they are
@@ -161,9 +177,12 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
      only, never sees a path or chooses an owner, and verifies every put with
      R2's `put` SHA-256 check (not S3 checksum headers, which R2 lists as
      composite only). A call moves at most two chunks' bytes. Subrequests are limited
-     per invocation (50 on Free, 10,000 by default on Paid; `limits.subrequests` is set
-     explicitly), and an object's calls count against its newest incoming event, or a
-     count each event resets (the cap probe's M12: newest-or-reset, one of the two). The
+     per invocation (50 on Free, up to 10,000,000 on Paid; the owner sets
+     `limits.subrequests` to 1,000,000, which Paid accepts and which also lifts the separate
+     per-invocation count of thread store RPCs, as live probe P1 measured), and an object's
+     calls count against its newest incoming event, or a count each event resets (the cap
+     probe's M12; P1: 32 streaming threads made 32,697 store calls in 10 minutes at 10,000
+     with no error, so the starting alarm does not carry every call). The
      platform's own error is the loud failure; there is no budget
      of ours. The binder, the trust root, may stream chunks to it with a namespace read
      from the owner's object.
@@ -187,6 +206,33 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
    never imported, and its tests become acceptance tests. The new stack is
    built beside production and moved to in one cutover window after a full
    backup (Direction 5); the old paths are deleted in that change.
+
+## Amended 2026-10-30: agent storage and hosting
+
+Each agent thread is one pi Session over its own `ThreadStore`, a second
+SQLite-backed Durable Object class in the owner Worker, named by a random
+128-bit id that only the owner's thread row holds. Only pi's bytes move there,
+over RPC (`RemoteStorage`), one `RpcTarget` session per open Session, released
+when it closes (live probe P7: a session bills one request, not one per call);
+the harness, every hook, the environment, the
+model provider, authority and spend stay in the owner's object, hosted by our
+own multi-Session `ThreadHost` on the Agents SDK Lifecycle, with a wake job per
+thread. A store is named in a row before it is created and wiped
+(`deleteAll`) before its row is forgotten, so erasure can find every store;
+names are never reused. Transcripts are not owner state, so the owner's own
+database is a function of its bounded rows only. Rejected, each for its one
+reason:
+
+- **(b) Cloudflare's harness per conversation object:** a thread object woken
+  by its own alarm must reach its owner, which needs a second binder.
+- **(c) per-thread table prefixes in the owner's database:** one 10 GB for
+  every thread and the owner's grants, and about 25 schema objects a thread
+  parsed at every cold start.
+- **Durable Object facets as the transport:** not shown to have a database
+  limit of their own, or to work under `disable_ctx_exports` (probe P13).
+- **A patch or fork of pi-durable adding a conversation delete:** Storage
+  trusts its Session, and a delete pi does not know of would write behind its
+  back; a fork would have to be carried at every pi release.
 
 ## What it supersedes
 
@@ -231,6 +277,10 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
   per owner a month, an owner needs more than 10 GB of trusted state or 1,000
   requests a second, compliance requires customer-held keys, or E2B's p95
   resume exceeds 1.5 s.
+- The decision is re-evaluated if a thread store passes 1 GB (build store
+  rotation), or if pi's Chord v2 `StoreStorage` gains a drop of one owner
+  name's tables (re-evaluate co-locating thread Sessions in the owner's own
+  database).
 - E2B resume and terms, and Durable Object regional availability, are
   verified before each dependent slice commits. Durable Object pricing and
   limits, Dynamic Workers and Facets were verified from Cloudflare's pages on
@@ -244,7 +294,11 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
 - https://raw.githubusercontent.com/cloudflare/agents/main/README.md
 - pi 1.4.0 and pi-durable 1.4.0 (npm `@earendil-works/pi-coding-agent`,
   `@earendil-works/pi-durable`), and Cloudflare agents 0.31.0
-  (`agents/harness/pi`), source-checked 2026-10-28
+  (`agents/harness/pi`), source-checked 2026-10-28; pi-durable README "Durable
+  Objects" (one process per storage, the shared operation queue, reopen to
+  recover; source-checked 2026-10-30)
+- Cloudflare docs: `agents/harnesses/pi` (a Durable Object per conversation),
+  `workers/platform/limits` (`limits.subrequests` up to 10,000,000 on Paid)
 - Cloudflare docs repo (`cloudflare/cloudflare-docs`, 2026-10-27): Durable
   Objects limits, pricing, lifecycle, in-memory state, alarms, data location;
   Workers OAuth Provider v1; Agents harness for pi

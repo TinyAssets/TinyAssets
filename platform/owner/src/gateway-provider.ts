@@ -27,7 +27,8 @@
  *    read from its own transcript (pi carries them in its system entries), exactly
  *    `MODEL_TOOLS` or none, else `tool_surface`, so no widening of a conversation's tools,
  *    by any path, reaches a model; the authority the request's conversation
- *    runs under (found by its provider session, `OwnerAgent.modelAuthority`; a revoked
+ *    runs under (found by its provider session in the one thread's Session the provider
+ *    is bound to, `forSession` and `OwnerAgent.modelAuthority`; a revoked
  *    client's is `outside_authority`, a request of no conversation the object made
  *    `no_conversation`, a conversation whose stored tools are not the five
  *    `tool_surface`), the connection's blob at its current version, the owner policy's
@@ -109,13 +110,17 @@ export interface ProviderParts {
   readonly tee: LiveTee;
   /** The object's clock, in seconds. */
   readonly clock: () => number;
-  /**
-   * The authority the request's conversation runs under, by the request's provider
-   * session: a check the reserve and dispatch units run, answering a refusal's rule or null
-   * (`OwnerAgent.modelAuthority`).
-   */
-  readonly authority: (sessionId: string | undefined) => Promise<() => string | null>;
 }
+
+/**
+ * The authority a request's conversation runs under, by the request's provider session, in
+ * the one thread's Session the provider is bound to (`forSession`): a check the reserve and
+ * dispatch units run, answering a refusal's rule or null (`OwnerAgent.modelAuthority`).
+ */
+export type SessionAuthority = (sessionId: string | undefined) => Promise<() => string | null>;
+
+/** A provider with no Session: every request names no conversation the object made. */
+const NO_SESSION: SessionAuthority = async () => () => NO_CONVERSATION;
 
 /** The fields of `x-ta-envelope`, exactly as the gateway's `envelope.ts` takes them. */
 export interface EnvelopeFields {
@@ -265,8 +270,30 @@ export class GatewayProvider implements Provider<Api> {
 
   streamSimple(model: Model<Api>, context: TranscriptContext,
                options: SimpleStreamOptions = {}): AssistantMessageEventStream {
+    return this.#stream(NO_SESSION, model, context, options);
+  }
+
+  /**
+   * The provider as one thread's Session sees it: the same models and calls, each request's
+   * authority read from that Session's own conversations (`authority`).
+   */
+  forSession(authority: SessionAuthority): Provider<Api> {
+    const streamSimple: Provider<Api>["streamSimple"] = (model, context, options) =>
+      this.#stream(authority, model, context, options ?? {});
+    return Object.freeze({
+      id: this.id, name: this.name, auth: this.auth,
+      getModels: () => this.getModels(),
+      stream: ((model, context, options) =>
+        streamSimple(model, context, options as SimpleStreamOptions | undefined)
+      ) as Provider<Api>["stream"],
+      streamSimple,
+    });
+  }
+
+  #stream(authority: SessionAuthority, model: Model<Api>, context: TranscriptContext,
+          options: SimpleStreamOptions): AssistantMessageEventStream {
     const out = createAssistantMessageEventStream();
-    this.#call(model, context, options, out).catch(() => {
+    this.#call(authority, model, context, options, out).catch(() => {
       console.error("a gateway model call failed in the object");  // no ids or content
       out.push(failed(model, "gateway_provider: internal", options.signal?.aborted ?? false));
     });
@@ -274,7 +301,8 @@ export class GatewayProvider implements Provider<Api> {
   }
 
   /** One model call, from its target to its settlement; every outcome ends `out`. */
-  async #call(model: Model<Api>, context: TranscriptContext, options: SimpleStreamOptions,
+  async #call(sessionAuthority: SessionAuthority, model: Model<Api>,
+              context: TranscriptContext, options: SimpleStreamOptions,
               out: AssistantMessageEventStream): Promise<void> {
     const { connections, usage, write, tee, clock } = this.#parts;
     const session = options.sessionId;
@@ -318,7 +346,7 @@ export class GatewayProvider implements Provider<Api> {
       ? null : TOOL_SURFACE;
     let authority: () => string | null;
     try {
-      const standing = await this.#parts.authority(session);
+      const standing = await sessionAuthority(session);
       authority = () => surface ?? standing();
     } catch {
       return end(failed(physical, AUTHORITY_RULE, aborted()));

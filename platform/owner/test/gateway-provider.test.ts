@@ -29,7 +29,7 @@ import type { LiveEvent } from "../src/live-tee";
 import { DEFAULT_POLICY_JSON } from "../src/policy";
 import type { Source } from "../../gateway/src/credential";
 import {
-  ANTHROPIC, asked, catalog, direct, type Gated, gated, OPENAI, textOf, until,
+  ANTHROPIC, asked, catalog, direct, type Gated, gated, OPENAI, provider, textOf, until,
 } from "./gateway-support";
 import { MUSE } from "./ledger-support";
 import { failure } from "./support";
@@ -59,7 +59,7 @@ describe("a turn through the gateway Worker", () => {
   it("runs on the owner's connected model, reserved, enveloped and settled", async () => {
     const r = await gated();
     const connection = await r.connect("sk-turn");
-    const answer = await r.in(async (instance) => instance.agent.harness.prompt("cmd:echo"));
+    const answer = await r.in(async (instance) => instance.harness.prompt("cmd:echo"));
     expect(answer.status).toBe("done");
     // The fake upstream echoes what it was sent: the sealed key, in the provider's header.
     const echoed = JSON.parse(answer.text!) as { auth: Record<string, string | null>;
@@ -84,7 +84,7 @@ describe("a turn through the gateway Worker", () => {
                                     tokens: 18 });
     expect(receipt!.cost).toBeGreaterThan(0);
     expect(receipt!.cost).toBeLessThanOrEqual(receipt!.est_cost);
-    const transcript = await r.in(async (instance) => (await instance.agent.harness.messages())
+    const transcript = await r.in(async (instance) => (await instance.harness.messages())
       .flatMap((entry) => entry.model ?? []));
     const last = transcript.at(-1) as { provider: string; model: string };
     expect([last.provider, last.model]).toEqual(["gateway", `${connection}/${receipt!.model}`]);
@@ -94,7 +94,7 @@ describe("a turn through the gateway Worker", () => {
     const r = await gated();
     const answer = await r.in(async (instance) => {
       expect(instance.parts.provider.getModels()).toEqual([]);
-      return instance.agent.harness.prompt("hello");
+      return instance.harness.prompt("hello");
     });
     expect([answer.status, answer.reason]).toEqual(["unanswered", "no_model"]);
     expect(await r.in((instance) => instance.calls)).toEqual([]);
@@ -129,7 +129,7 @@ describe("the live tee", () => {
     const r = await gated();
     await r.connect("sk-tee");
     const out = await r.in(async (instance) => {
-      const pi = await instance.agent.harness.pi();
+      const pi = await instance.harness.pi();
       const root = await pi.root(BG);
       const { sessionId } = (await pi.snapshot(ProviderDoc, root.id, BG))!;
       const seen: LiveEvent[] = [];
@@ -146,7 +146,7 @@ describe("the live tee", () => {
           await new Promise((resolve) => setTimeout(resolve, 25));
         }
       })();
-      const answer = await instance.agent.harness.prompt("cmd:drip");
+      const answer = await instance.harness.prompt("cmd:drip");
       streaming = false;
       await watching;
       unsubscribe();
@@ -172,10 +172,10 @@ describe("an abort", () => {
     const cancelled = async () => ((await (await fetch(`https://status.test/cancelled?id=${id}`))
       .json()) as { cancelled: boolean | null }).cancelled;
     const settled = await r.in(async (instance: GatedOwnerDO) => {
-      const { operationId } = await instance.agent.harness.submit(`cmd:slow-${id}`);
+      const { operationId } = await instance.harness.submit(`cmd:slow-${id}`);
       await until(async () => (await cancelled()) === false, "the upstream stream to open");
-      expect(await instance.agent.harness.abort({ operationId })).toBe(true);
-      return instance.agent.harness.wait(operationId);
+      expect(await instance.harness.abort({ operationId })).toBe(true);
+      return instance.harness.wait(operationId);
     });
     expect(settled.status).not.toBe("done");
     await until(async () => (await cancelled()) === true, "the upstream to be cancelled");
@@ -183,16 +183,6 @@ describe("an abort", () => {
     expect(receipts.map((receipt) => receipt.state)).toEqual(["unknown"]);
   });
 });
-
-/** Hold the queue every unit waits on until `release` is called. */
-function holdQueue(state: DurableObjectState): { release: () => void; done: Promise<void> } {
-  let release!: () => void;
-  const held = new Promise<void>((resolve) => { release = resolve; });
-  const done = new DurableObjectSqliteDatabase(state.storage).transaction(async () => {
-    await held;
-  });
-  return { release, done };
-}
 
 describe("a call never sent", () => {
   it("is not sent once aborted before its dispatch", async () => {
@@ -202,7 +192,7 @@ describe("a call never sent", () => {
       const auto = instance.parts.provider.getModels()[0]!;
       const stop = new AbortController();
       stop.abort();
-      return instance.parts.provider.streamSimple(auto, asked("cmd:echo"),
+      return (await provider(instance)).streamSimple(auto, asked("cmd:echo"),
                                                   { ...await direct(instance), signal: stop.signal })
         .result();
     });
@@ -217,19 +207,26 @@ describe("a call never sent", () => {
      async () => {
     const r = await gated();
     const connection = await r.connect("sk-raced");
-    const answer = await r.in(async (instance, state) => {
+    const answer = await r.in(async (instance) => {
       const auto = instance.parts.provider.getModels()[0]!;
       const options = await direct(instance);
-      const queue = holdQueue(state);
-      const call = instance.parts.provider.streamSimple(auto, asked("cmd:echo"), options)
-        .result();
-      for (let i = 0; i < 50; i++) {
-        await Promise.resolve();
-      }
-      // The call's reserve is queued; the revoke lands behind it, before the dispatch.
-      const revoked = instance.connectionRevoke(r.session(), { connection });
-      queue.release();
-      await queue.done;
+      const pi = await instance.harness.pi();
+      let checks = 0;
+      let revoked: Promise<unknown> = Promise.resolve();
+      // The revoke's unit lands right after the reserve's, before the dispatch's: queued
+      // from inside the reserve's own authority check, it runs once that unit committed.
+      const bound = instance.parts.provider.forSession(async (sessionId) => {
+        const rule = await instance.agent.modelAuthority(pi, sessionId);
+        return () => {
+          if (++checks === 1) {
+            queueMicrotask(() => {
+              revoked = instance.connectionRevoke(r.session(), { connection });
+            });
+          }
+          return rule();
+        };
+      });
+      const call = await bound.streamSimple(auto, asked("cmd:echo"), options).result();
       await revoked;
       return call;
     });
@@ -241,15 +238,13 @@ describe("a call never sent", () => {
      "only for the provider revoke", async () => {
     const r = await gated();
     const connection = await r.connectOAuth();
-    const answer = await r.in(async (instance, state) => {
+    const answer = await r.in(async (instance) => {
       const auto = instance.parts.provider.getModels()[0]!;
       const options = await direct(instance);
-      const queue = holdQueue(state);
+      const bound = await provider(instance);
+      // The call has its target; the revoke's unit commits before the call reserves.
+      const call = bound.streamSimple(auto, asked("cmd:echo"), options).result();
       const revoked = instance.connectionRevoke(r.session(), { connection });
-      const call = instance.parts.provider.streamSimple(auto, asked("cmd:echo"), options)
-        .result();
-      queue.release();
-      await queue.done;
       await revoked;
       return call;
     });
@@ -266,7 +261,7 @@ describe("a call never sent", () => {
     const models = await catalog(ANTHROPIC);
     const missing = { ...models[0]!, id: "no-such-model", name: "None" };
     const connection = await r.connect("sk-missing", ANTHROPIC, "Key", [missing]);
-    const answer = await r.in(async (instance) => instance.parts.provider.streamSimple(
+    const answer = await r.in(async (instance) => (await provider(instance)).streamSimple(
       instance.parts.provider.getModels().find((model) =>
         model.id === `${connection}/no-such-model`)!, asked("hello"),
           await direct(instance)).result());
@@ -284,7 +279,7 @@ describe("the reservation's output cap", () => {
     const r = await gated();
     await r.connect("sk-cap");
     await models(r, { turn_cost: 200_000 });
-    const answer = await r.in((instance) => instance.agent.harness.prompt("cmd:echo"));
+    const answer = await r.in((instance) => instance.harness.prompt("cmd:echo"));
     expect(answer.status).toBe("done");
     const { receipts: [receipt] } = await r.stub.usageReceipts(r.bind());
     const [sent] = await envelopes(r);
@@ -300,7 +295,7 @@ describe("the owner's model budget", () => {
     const r = await gated();
     await r.connect("sk-budget");
     await models(r, { turn_cost: 0 });
-    const answer = await r.in((instance) => instance.agent.harness.prompt("hello"));
+    const answer = await r.in((instance) => instance.harness.prompt("hello"));
     expect([answer.status, answer.reason]).toEqual(["unanswered", "model_error"]);
     const failed = answer.messages.flatMap((entry) => entry.model ?? []).at(-1) as
       { role: string; stopReason: string; errorMessage: string };
@@ -329,7 +324,7 @@ describe("a provider's refusal before any output", () => {
   it("settles failed, at no cost, with the gateway's own code", async () => {
     const r = await gated();
     await r.connect("sk-429");
-    const answer = await r.in(async (instance) => instance.parts.provider.streamSimple(
+    const answer = await r.in(async (instance) => (await provider(instance)).streamSimple(
       instance.parts.provider.getModels()[0]!, asked("cmd:fail-429"), await direct(instance))
       .result());
     expect([answer.stopReason, answer.errorMessage]).toEqual(["error", "upstream_rate_limited"]);
@@ -344,7 +339,7 @@ describe("a provider's refusal before any output", () => {
     const r = await gated();
     await r.connect("sk-429b");
     await models(r, { daily_cost: 20_000_000, retries: 2 });
-    const answer = await r.in((instance) => instance.agent.harness.prompt("cmd:fail-429"));
+    const answer = await r.in((instance) => instance.harness.prompt("cmd:fail-429"));
     expect(answer.status).toBe("unanswered");
     const { receipts } = await r.stub.usageReceipts(r.bind());
     expect(receipts.map((receipt) => [receipt.state, receipt.cost]))
@@ -365,7 +360,7 @@ describe("a provider's refusal before any output", () => {
     const r = await gated();
     await r.connect(`sk-${status}`);
     await models(r, { retries: 1 });
-    const answer = await r.in((instance) => instance.agent.harness.prompt(`cmd:fail-${status}`));
+    const answer = await r.in((instance) => instance.harness.prompt(`cmd:fail-${status}`));
     expect(answer.status).toBe("unanswered");
     const failed = answer.messages.flatMap((entry) => entry.model ?? []).at(-1) as
       { errorMessage: string };
@@ -408,11 +403,11 @@ describe("background work a run starts", () => {
       let release!: () => void;
       instance.probes.backgroundGate = new Promise<void>((resolve) => { release = resolve; });
       // The run calls the `background` tool through `ta`, then answers: two requests.
-      const first = await instance.agent.harness.prompt("cmd:ta-background");
-      const later = await instance.agent.harness.prompt("cmd:echo");
+      const first = await instance.harness.prompt("cmd:ta-background");
+      const later = await instance.harness.prompt("cmd:echo");
       // Its work, two requests more, starts only now: during no run.
       release();
-      const pi = await instance.agent.harness.pi();
+      const pi = await instance.harness.pi();
       const task = await pi.waitForTask(instance.probes.background as never, BG);
       const made = (task.state.outcome as { result: Spawned }).result;
       const work = await (await pi.submission(made.submission as never, BG))!.wait(BG);
@@ -437,9 +432,9 @@ describe("a call with no run", () => {
     await r.connect("sk-norun");
     const answers = await r.in(async (instance) => {
       const auto = instance.parts.provider.getModels()[0]!;
-      return [await instance.parts.provider.streamSimple(auto, asked("cmd:echo"),
+      return [await (await provider(instance)).streamSimple(auto, asked("cmd:echo"),
                                                          { sessionId: "unknown" }).result(),
-              await instance.parts.provider.streamSimple(auto, asked("cmd:echo")).result()];
+              await (await provider(instance)).streamSimple(auto, asked("cmd:echo")).result()];
     });
     expect(answers.map((answer) => answer.errorMessage)).toEqual([NO_RUN, NO_RUN]);
     expect(await r.sql("SELECT id FROM model_reservations")).toEqual([]);
@@ -453,7 +448,7 @@ describe("a call whose own unit cannot be kept", () => {
     await r.connect("sk-settle");
     await r.sql("CREATE TRIGGER fail_settle BEFORE UPDATE OF tokens ON model_reservations " +
                 "WHEN NEW.state = 'succeeded' BEGIN SELECT RAISE(ABORT, 'injected'); END");
-    const answer = await r.in(async (instance) => instance.parts.provider.streamSimple(
+    const answer = await r.in(async (instance) => (await provider(instance)).streamSimple(
       instance.parts.provider.getModels()[0]!, asked("cmd:echo"), await direct(instance)).result());
     expect(answer.stopReason).toBe("stop");
     const { receipts } = await r.stub.usageReceipts(r.bind());
@@ -466,7 +461,7 @@ describe("a call whose own unit cannot be kept", () => {
     await r.connect("sk-dispatch");
     await r.sql("CREATE TRIGGER fail_dispatch BEFORE UPDATE OF state ON model_reservations " +
                 "WHEN NEW.state = 'dispatched' BEGIN SELECT RAISE(ABORT, 'injected'); END");
-    const answer = await r.in(async (instance) => instance.parts.provider.streamSimple(
+    const answer = await r.in(async (instance) => (await provider(instance)).streamSimple(
       instance.parts.provider.getModels()[0]!, asked("cmd:echo"), await direct(instance)).result());
     expect(answer.stopReason).toBe("error");
     expect(await envelopes(r)).toEqual([]);
@@ -495,7 +490,7 @@ describe("the envelope", () => {
     await models(r, { turn_requests: 50 });
     const answer = await r.in(async (instance) => {
       const auto = instance.parts.provider.getModels()[0]!;
-      return instance.parts.provider.streamSimple(auto, asked("cmd:echo"), await direct(instance))
+      return (await provider(instance)).streamSimple(auto, asked("cmd:echo"), await direct(instance))
         .result();
     });
     expect(answer.stopReason).toBe("stop");
@@ -549,7 +544,7 @@ describe("a context too long for its model", () => {
     await r.connect("sk-overflow");
     const id = freshId();
     const out = await r.in(async (instance) => {
-      const pi = instance.agent.harness;
+      const pi = instance.harness;
       await pi.prompt("cmd:echo");
       // Past the 20,000 recent tokens a compaction keeps verbatim, so the first exchange
       // can be summarized.
@@ -590,14 +585,14 @@ describe("a context too long for its model", () => {
       // stronger's. A compaction keeps 20,000 recent tokens, so it cuts before the second.
       instance.probes.holdOutputs = [`${sized(14_000)} cmd:measured-hold`,
                                      `${sized(14_000)} cmd:echo`];
-      const { operationId } = await instance.agent.harness.submit(
+      const { operationId } = await instance.harness.submit(
         `${sized(30_000)} cmd:measured-hold`);
       await until(async () => instance.probes.holds === 1, "the hold to start");
       await connectWithin(instance, r, "sk-strong", [strong]);
       expect(instance.parts.provider.getModels()[1]!.id).not.toBe(target);
       release();
-      const answer = await instance.agent.harness.wait(operationId);
-      const entries = await instance.agent.harness.messages();
+      const answer = await instance.harness.wait(operationId);
+      const entries = await instance.harness.messages();
       return { answer, kinds: entries.map((entry) => entry.kind),
                answers: entries.flatMap((entry) => entry.model ?? [])
                  .filter((message) => message.role === "assistant")
@@ -646,8 +641,9 @@ describe("a context too long for its model", () => {
     const threshold = blockingThreshold(small);
     const answers = await r.in(async (instance) => {
       const [auto] = instance.parts.provider.getModels();
-      const call = async (context: TranscriptContext, model = auto!) => instance.parts.provider
-        .streamSimple(model, context, await direct(instance)).result();
+      const bound = await provider(instance);
+      const call = async (context: TranscriptContext, model = auto!) =>
+        bound.streamSimple(model, context, await direct(instance)).result();
       const physical = instance.parts.provider.getModels().find((model) => model.id === target)!;
       return [await call(continuing(threshold + 1)), await call(continuing(threshold)),
               // The smaller named directly is pi's to hold to its own threshold.
@@ -679,7 +675,7 @@ describe("a context too long for its model", () => {
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
                    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
           timestamp: 2 }] });
-      return instance.parts.provider.streamSimple(auto!, context, await direct(instance)).result();
+      return (await provider(instance)).streamSimple(auto!, context, await direct(instance)).result();
     });
     // Past the routed target's own threshold, but not refused: sent, and answered.
     expect(blockingThreshold(weak)).toBe(threshold);
@@ -727,7 +723,7 @@ describe("a connected model's whole record", () => {
     const listed = await catalog(declared);
     expect(listed).toEqual([tiered]);
     await r.connect("sk-tier", declared, "Key", listed);
-    const answer = await r.in(async (instance) => instance.parts.provider.streamSimple(
+    const answer = await r.in(async (instance) => (await provider(instance)).streamSimple(
       instance.parts.provider.getModels()[0]!, asked(`${"a".repeat(350)} cmd:echo`),
       await direct(instance)).result());
     expect(answer.stopReason).toBe("stop");
@@ -750,7 +746,7 @@ describe("a connected model's whole record", () => {
     // The record as stored before a pi-ai upgrade changed the prices.
     const stale = { ...first!, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
     await r.connect("sk-stale", ANTHROPIC, "Key", [stale]);
-    const answer = await r.in(async (instance) => instance.parts.provider.streamSimple(
+    const answer = await r.in(async (instance) => (await provider(instance)).streamSimple(
       instance.parts.provider.getModels()[0]!, asked("cmd:echo"), await direct(instance))
       .result());
     expect(answer.stopReason).toBe("stop");
@@ -792,7 +788,7 @@ describe("a connected model's whole record", () => {
     expect(compactionFor(only)).toEqual({ reserveTokens: 5_000, keepRecentTokens: 10_000,
                                           backgroundTokens: 5_000 });
     const compacted = await r.in(async (instance) => {
-      const pi = instance.agent.harness;
+      const pi = instance.harness;
       const kinds = async () => (await pi.messages()).map((entry) => entry.kind);
       // A first exchange a summary could cut, under pi's defaults too.
       await pi.prompt("cmd:measured-echo");
@@ -813,7 +809,7 @@ describe("the owner's usage view", () => {
   it("keeps pi's and pi-ai's metrics and pi's own usage, for the owner alone", async () => {
     const r = await gated();
     await r.connect("sk-metrics");
-    const answer = await r.in((instance) => instance.agent.harness.prompt("cmd:echo"));
+    const answer = await r.in((instance) => instance.harness.prompt("cmd:echo"));
     expect(answer.status).toBe("done");
     const view = await r.stub.usageMetrics(r.session());
     const names = new Set(view.metrics.series.map((series) => series.name));

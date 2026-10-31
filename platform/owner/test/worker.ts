@@ -28,9 +28,21 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { type AgentParts, gatewaySource, OwnerAgent } from "../src/agent";
 import type { GatewayService, Resealed } from "../src/connections";
 import { turnOf } from "../src/origin";
-import { type OwnerEnv, OwnerDO, STORAGE_BYTES } from "../src/owner-do";
+import { type OwnerEnv, OwnerDO } from "../src/owner-do";
+import { HOST_TIMING, type HostTiming } from "../src/thread-host";
+import type { StoreRpc, StoreSessionRpc } from "../src/thread-store";
+import { harnessOf, type TestHarness } from "./agent-support";
 
 export { OwnerDO } from "../src/owner-do";
+export { ThreadStore } from "../src/thread-store";
+
+/** The thread host's timings as a test may change them. */
+export type Timing = { -readonly [K in keyof HostTiming]: HostTiming[K] };
+
+/** The thread host's timings in a test: production's, with a one-second heartbeat. */
+export function testTiming(): Timing {
+  return { ...HOST_TIMING, heartbeatMs: 1_000 };
+}
 
 /** One scripted answer: a message, or a function of the conversation so far. */
 export type Step = AssistantMessage | ((messages: Message[]) => AssistantMessage);
@@ -57,6 +69,8 @@ export interface Probes {
   background: number | null;
   /** Awaited by background work before it submits its work, when set. */
   backgroundGate: Promise<void> | null;
+  /** How many times background work has started waiting on `backgroundGate`. */
+  backgroundRuns: number;
   /** Awaited by the test gate's `beforeTool`, after the authority gate's, when set. */
   toolGate: Promise<void> | null;
   /** Each call the test gate saw, in order: the authority gate let it through. */
@@ -76,6 +90,8 @@ export interface Probes {
   writeGate: Promise<void> | null;
   /** How many of the agent's write units have been asked for on this instance. */
   writes: number;
+  /** The store calls the agent's Sessions made on this instance, by method. */
+  storeCalls: Record<string, number>;
 }
 
 /** Probes as a fresh instance has them. */
@@ -83,8 +99,41 @@ export function freshProbes(): Probes {
   return { readGate: null, reads: 0, holdGate: null, holds: 0, holdLinger: 0, holdOutputs: [],
            spawned: null,
            submitted: [],
-           background: null, backgroundGate: null, toolGate: null, gated: [], nestGate: null,
-           rewrite: null, widen: null, inject: null, writeGate: null, writes: 0 };
+           background: null, backgroundGate: null, backgroundRuns: 0, toolGate: null, gated: [], nestGate: null,
+           rewrite: null, widen: null, inject: null, writeGate: null, writes: 0,
+           storeCalls: {} };
+}
+
+/** A store whose sessions' calls are counted into `calls()`, by method. */
+function countedStore(store: StoreRpc, calls: () => Record<string, number>): StoreRpc {
+  const count = (method: string) => {
+    const kept = calls();
+    kept[method] = (kept[method] ?? 0) + 1;
+  };
+  const counted = (session: StoreSessionRpc): StoreSessionRpc => ({
+    commit: (writes) => {
+      count("commit");
+      return session.commit(writes);
+    },
+    read: (method, args) => {
+      count(method);
+      return session.read(method, args);
+    },
+    [Symbol.dispose]: () => (session as Partial<Disposable>)[Symbol.dispose]?.(),
+  } as StoreSessionRpc);
+  return {
+    open: async (holder) => {
+      count("open");
+      const { next, session } = await store.open(holder);
+      return { next, session: counted(session) };
+    },
+    attach: async (holder) => {
+      count("attach");
+      return counted(await store.attach(holder));
+    },
+    size: () => store.size(),
+    destroy: () => store.destroy(),
+  };
 }
 
 /** Resolves when `context`'s abort signal fires: a tool that honours its abort. */
@@ -124,6 +173,7 @@ function conversationWork(probes: () => Probes) {
         return { status: "running", checkpoint: { phase: "made", child: child.id } };
       }, context),
       made: async (task, runtime, context) => {
+        probes().backgroundRuns++;
         await Promise.race([probes().backgroundGate, abortOf(context)]);
         if (context.abortSignal?.aborted) {
           throw new Error("aborted");  // pi runs the abort handler
@@ -144,6 +194,29 @@ function conversationWork(probes: () => Probes) {
 
 /** Background work whose own child task does the work (`conversationWork`). */
 type Nesting = { phase: "run" } | { phase: "waited"; child: number };
+
+/**
+ * A background task that sleeps until `until` with pi's `sleepUntil`, as a reminder due
+ * days out would, then completes (ported from agents' PiHarness tests, MIT).
+ */
+export const Reminder = defineTask<{ until: number }, { phase: "sleep" } | { phase: "due" },
+                                   null>({
+  name: "test.reminder",
+  version: 1,
+  initial: () => ({ phase: "sleep" }),
+  phases: {
+    sleep: async (task, runtime, context) => {
+      await runtime.sleepUntil(task.input.until, { phase: "due" }, context);
+    },
+    due: async (_task, runtime, context) => {
+      await runtime.commit(() => ({ status: "terminal",
+                                    outcome: { status: "completed", result: null } }), context);
+    },
+  },
+  abort: async (_task, runtime, context) => runtime.commit(() => ({
+    status: "terminal", outcome: { status: "failed", error: { message: "aborted" } } }),
+    context),
+});
 
 function nestedWork(work: ReturnType<typeof conversationWork>) {
   return defineTask<{ work: string }, Nesting, Spawned>({
@@ -188,7 +261,7 @@ function testExtensions(probes: () => Probes): { packages: Extension[];
   const nested = nestedWork(work);
   const packages = [defineExtension({
     name: "test.tools",
-    tasks: [work, nested],
+    tasks: [work, nested, Reminder],
     hooks: [hook(ToolTask, {
       beforeTool: async (call) => {
         probes().gated.push({ name: call.name, nested: call.parent !== undefined });
@@ -412,12 +485,15 @@ export class FauxOwnerDO extends OwnerDO {
   readonly turns: string[] = [];
   /** The tools each request offered the model, in order made. */
   readonly offered: string[][] = [];
-  /** The storage the object is limited to, which a test sets smaller. */
-  storageBytes = STORAGE_BYTES;
+  /** The thread host's timings and bound, which a test may change. */
+  readonly timing: Timing;
+  /** The tests' handle on the agent's threads. */
+  readonly harness: TestHarness;
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     const made: { agent?: OwnerAgent; parts?: AgentParts; faux?: FauxProviderHandle;
                   self?: FauxOwnerDO } = {};
+    const timing = testTiming();
     super(ctx, env, (parts) => {
       made.parts = parts;
       made.faux = scripted(() => {
@@ -442,14 +518,18 @@ export class FauxOwnerDO extends OwnerDO {
         await probes.writeGate;
         return parts.write(unit);
       };
-      made.agent = new OwnerAgent({ ...parts, write }, {
-        models: () => models, ...testExtensions(() => made.self!.probes) });
+      const stores: AgentParts["stores"] = (name) =>
+        countedStore(parts.stores(name), () => made.self!.probes.storeCalls);
+      made.agent = new OwnerAgent({ ...parts, write, stores }, {
+        models: () => models, timing, ...testExtensions(() => made.self!.probes) });
       return made.agent;
-    }, () => made.self?.storageBytes ?? STORAGE_BYTES);
+    });
     made.self = this;
     this.agent = made.agent!;
     this.parts = made.parts!;
     this.faux = made.faux!;
+    this.timing = timing;
+    this.harness = harnessOf(this);
   }
 }
 
@@ -462,6 +542,9 @@ export class FauxOwnerDO extends OwnerDO {
  */
 export class MalformedOwnerDO extends OwnerDO {
   readonly agent: OwnerAgent;
+  readonly parts: AgentParts;
+  /** The tests' handle on the agent's threads. */
+  readonly harness: TestHarness;
   script: Step[] = [];
   /** `pkg:late`'s own tools array, which a test pushes onto after the package is installed. */
   readonly late: ToolRegistration[];
@@ -470,8 +553,9 @@ export class MalformedOwnerDO extends OwnerDO {
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     const made: { agent?: OwnerAgent; self?: MalformedOwnerDO; late?: ToolRegistration[];
-                  pushed?: ToolRegistration } = {};
+                  pushed?: ToolRegistration; parts?: AgentParts } = {};
     super(ctx, env, (parts) => {
+      made.parts = parts;
       const models = createModels();
       models.setProvider(scripted(() => made.self?.script ?? []).provider);
       const tool = (name: string, callers?: ("model" | "tools")[]) => defineTool({
@@ -482,7 +566,8 @@ export class MalformedOwnerDO extends OwnerDO {
       const { packages, trusted } = testExtensions(freshProbes);
       made.late = [tool("early", ["tools"])];
       made.pushed = tool("pushed", ["tools"]);
-      made.agent = new OwnerAgent(parts, { models: () => models, trusted: [
+      made.agent = new OwnerAgent(parts, { models: () => models, timing: testTiming(),
+                                            trusted: [
         ...trusted,
         defineExtension({ name: "test.collision", tools: [tool("files:usage", ["tools"])] }),
       ], packages: [
@@ -515,6 +600,8 @@ export class MalformedOwnerDO extends OwnerDO {
     });
     made.self = this;
     this.agent = made.agent!;
+    this.parts = made.parts!;
+    this.harness = harnessOf(this);
     this.late = made.late!;
     this.pushed = made.pushed!;
   }
@@ -575,6 +662,8 @@ function watched(gateway: GatewayService, calls: () => GatewayCall[],
 export class GatedOwnerDO extends OwnerDO {
   readonly agent: OwnerAgent;
   readonly parts: AgentParts;
+  /** The tests' handle on the agent's threads. */
+  readonly harness: TestHarness;
   calls: GatewayCall[] = [];
   readonly faults: GatewayFaults = { refreshGate: null, refreshed: null, revokeGate: null };
   readonly probes: Probes = freshProbes();
@@ -587,6 +676,7 @@ export class GatedOwnerDO extends OwnerDO {
           (parts) => {
             made.parts = parts;
             made.agent = new OwnerAgent(parts, { ...gatewaySource(parts),
+                                                 timing: testTiming(),
                                                  ...testExtensions(() => made.self!.probes) });
             return made.agent;
           });
@@ -594,5 +684,6 @@ export class GatedOwnerDO extends OwnerDO {
     this.calls.push(...pending);
     this.agent = made.agent!;
     this.parts = made.parts!;
+    this.harness = harnessOf(this);
   }
 }

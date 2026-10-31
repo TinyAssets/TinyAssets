@@ -189,14 +189,15 @@ live acceptance is still owed says so.
   new client refused; an egress host the URL parser reads as an IP address waits for
   the gateway's address check (4).
 - [x] 3.6 The schedule: one table, run as jobs on the Agents SDK Lifecycle queue, which
-  owns the single alarm and PiHarness's wake-up job; 3.4's direct `setAlarm`/`deleteAlarm`
+  owns the single alarm and the thread host's wake jobs (one per agent thread, S3); 3.4's direct `setAlarm`/`deleteAlarm`
   move onto it. Built (`schedule.ts`): `OwnerDO` holds a Lifecycle (`agents/lifecycle`,
   agents 0.31.0 pinned exactly, by lockfile integrity too), never the SDK's `Agent`,
   installs none of its runtime handlers, and its `alarm` only hands the runtime's alarm
   to it. Each kind of timed work is a lane with its own rows and one single-flight
   Lifecycle job, `owner-schedule/<lane>`, derived from them: `wakes` (3.4's wakes and
-  revokes), `files` (6.1's housekeeping, with its retention re-apply) and `work`
-  (stamped scheduled work, `scheduled.ts`). Every changing door, and the object's wake,
+  revokes), `files` (6.1's housekeeping, with its retention re-apply), `connections`,
+  `threads` and, until F1 replaces it with a `ta.scheduled` pi task, `work` (stamped
+  scheduled work, `scheduled.ts`). Every changing door, and the object's wake,
   re-derive the jobs, so any door added later that changes a lane's rows calls
   `#schedule.sync()` too; a re-derive keeps a job Lifecycle moved later (the
   memory-limit breaker's backoff) unless the rows have earlier work. A pass is short:
@@ -209,7 +210,8 @@ live acceptance is still owed says so.
   keep sources off `setAlarm`, `deleteAlarm`, `getAlarm`, `disableAlarms` and
   `deleteAll` (the plain spellings and the obvious split ones), off computed access to a
   storage or a Lifecycle, off every `agents` import but `agents/lifecycle`, off
-  Lifecycle's handlers, and off Lifecycle's and pi's tables.
+  Lifecycle's handlers, and off Lifecycle's tables; there is no `pi_` table in the owner's
+  `OwnerDO` database: pi's tables exist only in `ThreadStore` objects (S1-S3).
   Stamped work (owed by 3.5): a scheduled turn or automation carries the outside
   authority it was made under (client, grant generation, sign-in time), rechecked with
   `Grants.standing` when made and before it is handed to pi; a grant change refuses the
@@ -472,9 +474,10 @@ account and no deploy.
   `work_id`), and the door that schedules
   one stamps the caller's authority; a policy write ends the owner's in-flight turns and
   streams, and a grant change ends that client's (the Python's stream cancellation and
-  `_end_outside_streams`). PiHarness installs with `lifecycle.use` beside the schedule.
-  Every owner write goes through the SQLite queue pi's commits use (pi-durable README,
-  "Storage"), so no owner write lands inside a pi transaction.
+  `_end_outside_streams`). The object's `ThreadHost` installs with `lifecycle.use`; each
+  thread is one pi Session over its own `ThreadStore`; owner writes are synchronous gate
+  units. A scheduled turn is a `ta.scheduled` pi task sleeping in its run thread (F1);
+  until F1, the `work` lane's `WorkRunner` above hands it to its thread.
 - [x] A0 pi in the object, on faux models, in workerd, nothing deployed (`agent.ts`,
   `gate.ts`, `notices.ts`, migration 5). PiHarness sits on the object's own Lifecycle
   beside the schedule, no handlers installed, `alarm` the one forwarded; pi opens in
@@ -645,20 +648,10 @@ account and no deploy.
   (1,598 and 329 at A1), local startup 25 ms active in a 59 ms window. Landed with A4
   (below): thread retention by idle age; and the agent's doors address work by
   `thread_id`, resolved against the calling client's own row, never by a pi session
-  string. Still open: deleting the pi conversation a thread drop leaves behind, which
-  pi-durable 1.4.0 and PiHarness 0.31.0 cannot do (no delete on `Harness`, `Session`,
-  `Storage` or `PiSessions`; pi's SQLite store deletes only document revisions), so it
-  stays in pi's tables, holding no live work and named by no row, door or work. pi keeps
-  no retention at all: it never deletes an entry, task, submission or document of any
-  conversation (A4's review measured about 5 KB fixed per fresh conversation and 50 to
-  200 KB per real run), and an object's storage is limited to 10 GB, past which every
-  write fails `SQLITE_FULL` and the owner's object stops; A4's storage gauge refuses new
-  threads and launches loudly at 90% (below). The storage gauge is a safety net only,
-  and superseded: the storage slice (S1 to S3) replaces it with pi's own unit of storage,
-  one pi Session per thread on a `ThreadStore`, its storage scoped to that thread and wiped
-  whole when the thread is dropped, a long thread rotating through `reset(handoff)`, with
-  our own `ThreadHost` in place of PiHarness (the plan doc, rev 70). No further work goes
-  into the gauge. Writing pi's tables directly stays banned. A3's `ta` re-derives its
+  string. A dropped thread's pi records → S4 (drops wipe the thread's store): since S3,
+  each thread is one pi Session in a `ThreadStore` of its own, so a drop closes its Session
+  and S4 wipes the store whole (`deleteAll`); A4's storage gauge is gone (S3), replaced by
+  the owner-bound guard. Writing pi's tables directly stays banned. A3's `ta` re-derives its
   capability in its own `execute` (below).
 - [x] A3 `ta`, in workerd, nothing deployed (`ta.ts`). The model is offered exactly
   `read`, `write`, `edit`, `bash` and `ta`: pi's `modelTools`, written in
@@ -828,7 +821,8 @@ account and no deploy.
   `ThreadHost` in place of PiHarness), so the harder stop at 97% round 2's review suggested
   is moot as well, since nothing deploys before S3; and a scheduled launch's `work` path
   (the `work` row naming a thread, handed by the `WorkRunner`), by a scheduled turn as a
-  pi task (F1). Review round 2 (approved): the owner is told by a notice
+  pi task (F1). Both superseded by S3/F1: the gauge is deleted in S3, and a dropped
+  thread's conversation → S4 (drops wipe the thread's store). Review round 2 (approved): the owner is told by a notice
   (`agent_definition`) each time its agent creates or changes anything under
   `/workspace/agents`, since content another party wrote elsewhere can steer it, and
   tests hold that a name merely starting like a root or the tree (`/workspaceX`,
@@ -906,12 +900,128 @@ account and no deploy.
   `context_length_exceeded`); the gateway's own body bound is the overflow too;
   `AgentParts.provider` is the `GatewayProvider` and `agent.ts` and `owner-do.ts` carry the
   plumbing (`gatewaySource`, `usageMetrics`).
+- [x] S1-S3 The agent's storage and host, in workerd, nothing deployed (`thread-store.ts`,
+  `remote-storage.ts`, `thread-host.ts`, `agent.ts`, `threads.ts`, `origin.ts`, migration 9
+  edited in place, `wrangler.jsonc`). Each agent thread is one pi Session over its own
+  `ThreadStore`, a second SQLite class in the owner Worker bound as `PISTORE` (no
+  `script_name`; the config guard pins it, `disable_ctx_exports` kept), named by a random
+  128-bit `store` its row holds, unique and named before the store exists; pi's
+  `SqliteStorage` under `pi_` in the store's own database, served over RPC, behind a holder
+  fence that refuses a stale Session; `size()`; `destroy()` (`deleteAll`, then a mark that
+  refuses every later call). The store reads no `env` binding (a guard). `RemoteStorage`
+  mints ids locally from the store's next id, retries a read once over a fresh stub, never
+  retries a commit (the Session fails and reopens), checks aborted contexts, and is shaped
+  for pi main's `commit(writes, adopt)`; pi's own storage conformance suite passes through
+  it over RPC. `ThreadHost` replaces PiHarness: our own multi-Session Lifecycle
+  capability, one shared registry, `Map<thread, Session>`, a wake job `pi-wake:<thread>`
+  per thread driven by that Session's `onWake`, each change kept in `agent_live(thread,
+  active, wake_at)` in a gate unit; Sessions opened on demand, closed idle after 2 minutes,
+  least recently used first to make room, and an open past `OPEN_MAX` (64, live probe P4)
+  refused at once, never waited on, a pinned (watched) Session never closed. PiHarness's
+  wake mechanics and recovery tests are ported (MIT), keyed per thread; `agents/harness/pi`
+  is no longer imported. A thread is its Session's root, its stamp written in the root's
+  creating commit; compaction origins are `task:<thread>:<id>`. Status is one read of pi's
+  submission record (F12). `contextRetentionMs` and `documentRetentionMs` are 60 s for many
+  Sessions an isolate (F11, live probe P4). Each open Session calls its store over one
+  `RpcTarget` session, released when the host closes it (live probe P7). The write gate
+  keeps synchronous units and no queue: pi no longer shares the owner's database, so its
+  shared-queue rule and chord dependency are deleted (F13 moot). A4's storage gauge is
+  deleted; the owner-bound guard holds the owner's worst-case rows, at the policy's high bounds, under 50% of 10 GB, and
+  names the tables no byte or count bound covers yet (file paths, chunk references, turn
+  counters). `limits.subrequests` is 1,000,000 (live probe P1). Open: drop wiping, run
+  retention and erasure ordering (S4-S5); scheduled turns as pi tasks (F1); rotation
+  (deferred); live probes P5 and P8 (design-decision §6). P1-P4 and P7 are done
+  (`store-probe.md`, run 1).
+  Review round 1 (CHANGES), all taken: M1 a task pi's restart limit parked held its run
+  forever (input placed, job and live row gone, follow-ups queued); each open now looks
+  for one before it resumes and ends the run it holds up (`#endParked`: its conversations
+  aborted, background included), the input settling `unanswered`, a `run_parked` notice,
+  status `reason: "parked"` meanwhile (PiHarness's `_parked`, ported; the reviewer's
+  repro is a test). L1 an ending is never refused (`ThreadHost.end` opens past `OPEN_MAX`,
+  aborts before it resumes, and closes what it opened), and `endAll` rejects when a thread
+  cannot be ended, so the door does. L3 a read retry attaches a new session for the same
+  holder, never a claim; the host releases the store's session however the Session
+  closes; a pinned Session pins its store's billed duration. L4 the job before the live
+  row. L5 a destroy cut short between wipe and mark cannot revive its store: the owner
+  never opens a dropping thread (tested). L6 the store guard also refuses the `"env"`
+  string, `Reflect` and `this` other than by a member's name. L7 tests for each named gap.
+  L8 `#open` takes the lease before anything runs. L2 conversation records are kept once
+  read: a warm message's store calls (submit, wait, status) fell from 34 to 26, pinned by
+  a test; the host's own `submissionByRequest` in `submit` stays (pi's submit does not say
+  whether an input was new, and a commit count would misread a duplicate). Also: every
+  close cancels a stale wake job when nothing runs or sleeps, so a leftover heartbeat never
+  reopens a Session, taking a place, to find nothing; the owner opens a thread's store
+  while its registry installs. Mutation: ours, 53: 50 killed, 3 alive (`th-sleep-unarmed`
+  and `th-admit-unarmed` as before; caching a not-found conversation, equivalent, since
+  a kept `undefined` reads as not kept); the reviewer's 30 (its 23, two re-anchored to the
+  session API, and 7 for this round): 25 killed, 5 alive and outside the round's list
+  (`#idle`'s admitting and waiting checks, which `wake().active` covers in each test
+  path; the close's wake change; the budget's re-wake, at a 10-minute budget; the open's
+  `wakeFor`, which pi's first `onWake` repeats).
+  Review round 2 (REQUEST CHANGES), all taken: M1 the usage view, merged from 0b, opened
+  and resumed every thread's Session; it now never opens one: an open Session's
+  `pi.usage` is read live, every other thread's from a usage row (`agent_usage`, at most
+  64 KiB, kept in a gate unit as the Session closes, going with its thread; the
+  owner-bound guard counts it), and the reviewer's repro is a test (answered with the
+  bound held, no Session opened). M2 a test holds the commit that carries an input and
+  finds the thread's job already scheduled. L1 a parked task now ends with its own
+  conversation's run (the task aborted, then that conversation), not the run at the top
+  of its owner links: a subagent a tool starts is a nested `ta` call, which pi abandons at
+  its first restart, so its tasks never park, and background work's conversations are
+  where one sits outside the root; aborting the root there would have ended the root's
+  other work. Tested: a read parked in background work's conversation settles that input
+  `unanswered`, the root's sleeping background work survives, and the thread takes its
+  next message. L2 endings run in batches of the bound (tested: at most the bound at once).
+  L3 kept conversation records are frozen deeply (tested). Mutation of the touched code,
+  13: 11 killed; alive, `ag-usage-opens` (it reads only Sessions already open, so it
+  opens none: equivalent) and dropping the parked task's own abort, which round 3 showed
+  was a real gap, not covered as this note first said.
+  Review round 3 (all Low, all taken): L1 a parked background task (pi gives background
+  work no `abandonOnRestart`, and its restart cascade skips it, so it parks) is ended with
+  `abortTask` alone, never its conversation's run, whose inputs a conversation abort would
+  withdraw; tested: the root's parked background work ends terminal and every input
+  submitted as it ends is answered. L2 the root's parked read leaves a root background
+  sleeper untouched (tested). L3 a reopened thread counts once in the usage view (tested).
+  L4 a usage that cannot be kept at close leaves `usage_unkept` (tested). Not taken: the
+  usage row kept also when a Session's wake turns idle, since reading `pi.usage` there
+  adds store reads to every message and cannot share the live row's unit without reading
+  it first. The reviewer's round-3 mutants all killed.
+- [ ] Before any deploy holding real data: S4's drop wipes its store (`destroy()`, the row
+  `dropping` until it returned). Until then, a drop (idle retention, a grant change or a
+  revoke) forgets its row and orphans its store, which nothing can list or reach again.
+- [ ] S4-S5 Drops wipe and run retention: idle, grant change and revoke drops through the
+  `dropping` state with lane retry; `keep_runs` with receipts and the `runs_kept` bound;
+  erasure's store-first order as a tested internal path (its door comes with the §7 doors).
+- [ ] F1 and admission: `ta.scheduled` pi task, `wake:list` from rows, cancel and status
+  paths, cron recurrence; delete the `work` lane, `WorkRunner` and migrations 7-8's work
+  tables; a policy write aborts active Sessions' work only, sleepers enforced in `deliver`;
+  the owner's admission row and `require_work`.
+- [ ] A5 with F5: skills, packages and filters, `parseSkill`, the agents 0.32 bump (diff
+  PiHarness at each agents release and carry its fixes into `thread-host.ts`);
+  `agent:delegate` with task-owned children.
+- [ ] H0 with code mode, H1, H2 (founder for H2).
+- [ ] The pi upgrade, within a slice of pi's release: `adopt` in `RemoteStorage`, the tee
+  deleted, `persistWithinMs`, `maxTurns` from policy, `onReport`, parking code out of the
+  host, the new watch API, the schema re-pinned.
+- [ ] A6: agents `WebSockets` and `Conversation.watch()`; reset, compact, fork, withdraw
+  and the task graph doors.
+- [ ] M (MCP) after G4: SDK v2 client in the owner over G4's forward, `mcp.json` with every
+  server clamped to tools-only, OAuth via G3.
+- [ ] Erasure's store-first order: mark the owner erasing, destroy every store a row names,
+  then `deleteAll()` the owner.
+- [ ] 0c (live): the dark deploy of the owner and gateway Workers, the store probe's cases
+  re-run on the real code (P1-P4, P7; P5 a store reset mid-run).
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
   owner's hook code with the Worker Loader, called over RPC with JSON in and out and a
   timeout. A `beforeTool` timeout or error blocks
   the call; `api.memo` holds decisions that must survive a crash.
 
 ## 6. Files and sandbox
+
+- [ ] Before any deploy holding real data, its own slice: the files byte quota.
+  `file_entries` and `file_history` have no byte bound (a path's bytes are unbounded; the
+  owner-bound guard names both), so a `write_files` client can fill the owner object's
+  10 GB. Count path bytes against a quota.
 
 - [x] 6.1 The trusted file plane, in workerd, nothing deployed: the manifest in the
   owner's object (migration 4: paths, versions and history, chunk references, upload
@@ -986,12 +1096,18 @@ account and no deploy.
   invocation, or a counter each event resets; one rule here: work in flight
   spends the newest event's count), not to the async context that made them. An alarm is
   cut at 15 minutes.
-- [ ] On the owner Worker's first deploy: check that Paid accepts its explicit
-  `limits.subrequests: 10000` (run B ran at the default limit and never set it).
-- [ ] The store probe (slice 0c, batch 1), before the storage slice: P1, P2, P3, P4 and P7
+- [x] On the owner Worker's first deploy: check that Paid accepts its explicit
+  `limits.subrequests` (run B ran at the default limit and never set it). The store
+  probe's run 1 answered it: Paid accepted 10,000 and the raised 1,000,000 (P1c).
+- [x] The store probe (slice 0c, batch 1), before the storage slice: P1, P2, P3, P4 and P7
   for the per-thread `ThreadStore`. Method, cases, reading key and results table:
-  `store-probe.md`; run by the manual `store-probe.yml`. Its main copy deploys with the
-  owner's explicit `limits.subrequests: 10000`, so its first run answers the item above too.
+  `store-probe.md`; run by the manual `store-probe.yml`. Run 1 (41029757222, 2026-10-30):
+  P3 the same-script binding is accepted and reaches only `ThreadStore`; P1 store RPCs
+  count on a separate per-invocation counter, which `limits.subrequests: 1,000,000` lifts,
+  and the count resets across events (P1a and P1b void); P2 a store RPC adds 1-2 ms, a new
+  thread's store opens about 0.3 s cold; P4 128 Sessions held with no break (`OPEN_MAX`
+  64); P7 one `RpcTarget` session bills 2 requests for 200 calls against 202, and pins its
+  store while held.
 - [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
   probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
   does not emulate it); a live probe of the files Worker's create-once put, which

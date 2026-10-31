@@ -28,13 +28,13 @@ import { Policy } from "../src/policy";
 import { namedByOpenWork, Scheduled } from "../src/scheduled";
 import {
   AGENT_FILE_MAX, AGENT_TEXT_MAX, AT_AHEAD_S, type Binding, NO_OPERATION, type Operation,
-  sendRequest, STORAGE_FULL, STORAGE_HIGH, UNTRUSTED_NOTICE, WAIT_DEFAULT_MS, WAIT_MAX_MS,
+  sendRequest, UNTRUSTED_NOTICE, WAIT_DEFAULT_MS, WAIT_MAX_MS,
   waitOf,
 } from "../src/owner-do";
 import { Threads, retainThreads, THREAD_LIMITS, THREAD_RETENTION } from "../src/threads";
 import { until } from "./gateway-support";
 import { DOT, MCP, MUSE, origin, signedIn } from "./ledger-support";
-import { drainDue, failure, filesOn, laneAt } from "./support";
+import { drainDue, failure, filesOn, laneAt, storeSql } from "./support";
 import { type FauxOwnerDO, says } from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
@@ -143,13 +143,13 @@ async function rig() {
         expected_generation: (await row(origin))?.generation ?? 0 });
     },
     threads: async () => (await inside((_instance, state) => state.storage.sql.exec<
-      { thread_id: string; conversation_id: number; agent_id: string; client: string | null;
-        universe: string | null; kind: string; last_active: number }>(
-      "SELECT thread_id, conversation_id, agent_id, client, universe, kind, last_active " +
+      { thread_id: string; store: string; state: string; agent_id: string;
+        client: string | null; universe: string | null; kind: string; last_active: number }>(
+      "SELECT thread_id, store, state, agent_id, client, universe, kind, last_active " +
         "FROM agent_threads ORDER BY created_at").toArray())),
-    /** A conversation's transcript, as pi holds it. */
-    entries: (conversation: number) => inside(async (instance) =>
-      instance.agent.harness.messages({ session: String(conversation) })),
+    /** A thread's root's transcript, as its Session holds it. */
+    entries: (thread: string) => inside(async (instance) =>
+      instance.harness.messages({ session: thread })),
     settled: async (binding: Binding, operation: string): Promise<Operation> => {
       for (let tries = 0; tries < 400; tries++) {
         const status = await stub.agentStatus(binding, { operation_id: operation });
@@ -186,12 +186,12 @@ async function counting(r: Rig) {
   await r.in((instance) => {
     const counts = { threads: 0, submits: 0 };
     const thread = instance.agent.thread.bind(instance.agent);
-    const submit = instance.agent.harness.submit.bind(instance.agent.harness);
+    const submit = instance.agent.submit.bind(instance.agent);
     Object.assign(instance.agent, { thread: (...args: Parameters<typeof thread>) => {
       counts.threads++;
       return thread(...args);
     } });
-    Object.assign(instance.agent.harness, { submit: (...args: Parameters<typeof submit>) => {
+    Object.assign(instance.agent, { submit: (...args: Parameters<typeof submit>) => {
       counts.submits++;
       return submit(...args);
     } });
@@ -216,17 +216,26 @@ describe("a message to an agent (converse)", () => {
                             thread_id: thread!.thread_id, status: "done", text: "echo: hello" });
     expect(second).toMatchObject({ thread_id: thread!.thread_id, status: "done",
                                    text: "echo: again" });
-    expect(shape(await r.entries(thread!.conversation_id))).toEqual([
+    expect(shape(await r.entries(thread!.thread_id))).toEqual([
       "user: hello", "assistant: echo: hello", "user: again", "assistant: echo: again"]);
-    // The owner's message reached pi as typed, and nothing reached the root conversation.
-    const raw = (await r.entries(thread!.conversation_id))[0]!.model![0]!;
+    // The owner's message reached pi as typed, in the thread's own Session's root.
+    const raw = (await r.entries(thread!.thread_id))[0]!.model![0]!;
     expect(raw.content).toBe("hello");
-    expect(await r.entries(1)).toEqual([]);
-    // Another agent is another thread.
+    // Another agent is another thread: another store, and neither's records are the other's.
     await r.stub.agentSubmit(r.bind(null), { message: "hi", client_send_id: "s-3",
                                              agent_id: "helper" });
-    expect((await r.threads()).map((made) => [made.agent_id, made.kind]))
-      .toEqual([["main", "converse"], ["helper", "converse"]]);
+    const made = await r.threads();
+    expect(made.map((one) => [one.agent_id, one.kind, one.state]))
+      .toEqual([["main", "converse", "ready"], ["helper", "converse", "ready"]]);
+    expect(made[0]!.store).toMatch(/^[0-9a-f]{32}$/);
+    expect(made[1]!.store).not.toBe(made[0]!.store);
+    expect(shape(await r.entries(made[1]!.thread_id))).toEqual(["user: hi", "assistant: echo: hi"]);
+    const kept = async (store: string) => (await storeSql(store,
+      "SELECT json_extract(record, '$.model[0].content') AS said FROM pi_entries " +
+        "WHERE json_extract(record, '$.model[0].role') = 'user' ORDER BY id"))
+      .map((row) => row["said"]);
+    expect(await kept(made[0]!.store)).toEqual(["hello", "again"]);
+    expect(await kept(made[1]!.store)).toEqual(["hi"]);
   }, 30_000);
 
   it("is one submission however often the same client_send_id is sent, and the client's " +
@@ -246,7 +255,7 @@ describe("a message to an agent (converse)", () => {
     const theirs = await send(DOT);
     expect(theirs.thread_id).not.toBe(once.thread_id);
     const [mine] = await r.threads();
-    expect(shape(await r.entries(mine!.conversation_id)))
+    expect(shape(await r.entries(mine!.thread_id)))
       .toEqual(["user: only once", "assistant: echo: only once"]);
     // One model request each: the resend asked the model nothing.
     expect(await r.in((instance) => instance.turns.length)).toBe(2);
@@ -263,13 +272,13 @@ describe("a message to an agent (converse)", () => {
       const threads = new Threads(gate.storage);
       const stamp = { client: MUSE.client, generation: 1, authenticated_at: r.at,
                       universe: "alpha", agent: "main" };
-      const made = await gate.write(() => threads.record(2, "main", stamp, clock(), "converse"));
+      const made = await gate.write(() => threads.record("main", stamp, clock(), "converse"));
       const found = (by: typeof stamp | null, agent = "main") =>
         threads.conversing(by, agent)?.thread_id ?? null;
       return { made: made.thread_id, same: found(stamp), beta: found({ ...stamp, universe: "beta" }),
                owner: found(null), other: found({ ...stamp, client: DOT.client }),
                helper: found({ ...stamp, agent: "helper" }, "helper"),
-               again: (await gate.write(() => threads.record(3, "main", stamp, clock(),
+               again: (await gate.write(() => threads.record("main", stamp, clock(),
                                                              "converse"))).thread_id };
     });
     expect(out).toEqual({ made: out.made, same: out.made, beta: null, owner: null, other: null,
@@ -297,7 +306,7 @@ describe("a message to an agent (converse)", () => {
     const [thread] = await r.threads();
     expect(thread).toMatchObject({ client: MUSE.client, agent_id: "main", universe: null,
                                    kind: "converse" });
-    const entries = await r.entries(thread!.conversation_id);
+    const entries = await r.entries(thread!.thread_id);
     expect(entries[0]!.kind).toBe("ta.outside");
     expect(entries[0]!.data).toEqual({ client: MUSE.client, agent: "main" });
     expect(JSON.parse(entries[0]!.model![0]!.content as string)).toEqual({
@@ -338,7 +347,7 @@ describe("a message to an agent (converse)", () => {
       await r.in(() => held.release());
       await r.settled(r.bind(null), joined.operation_id);
       const [thread] = await r.threads();
-      return shape(await r.entries(thread!.conversation_id));
+      return shape(await r.entries(thread!.thread_id));
     };
     expect(await order(true)).toEqual(["user: hold please", "assistant: call hold", "toolResult",
                                        "user: also this", "assistant: echo: also this"]);
@@ -395,8 +404,10 @@ describe("the caller's own operations only", () => {
     expect(await refused(r.bind(DOT), mine.operation_id)).toEqual(no);
     expect(await refused(r.bind(null), mine.operation_id)).toEqual(no);
     expect(await refused(r.bind(MUSE), `thread_${"0".repeat(32)}.${key}`)).toEqual(no);
-    expect(await refused(r.bind(MUSE), String(thread!.conversation_id))).toEqual(no);
-    expect(await refused(r.bind(MUSE), `${thread!.conversation_id}.${key}`)).toEqual(no);
+    expect(await refused(r.bind(MUSE), "1")).toEqual(no);
+    expect(await refused(r.bind(MUSE), `1.${key}`)).toEqual(no);
+    expect(await refused(r.bind(MUSE), thread!.store)).toEqual(no);
+    expect(await refused(r.bind(MUSE), `${thread!.store}.${key}`)).toEqual(no);
     expect(await refused(r.bind(MUSE), `${mine.thread_id}.1`)).toEqual(no);
     expect(await refused(r.bind(MUSE), key)).toEqual(no);
     expect(await refused(r.bind(MUSE), 7)).toEqual(no);
@@ -472,9 +483,12 @@ describe("a grant change", () => {
     const [thread] = await r.threads();
     await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
     expect((await waiting).message).toBe(WAIT_ENDED);
-    // Its run ended: pi holds nothing pending for the thread's conversation.
-    expect(await r.in((instance) => instance.agent.harness.pending({
-      session: String(thread!.conversation_id) }))).toEqual([]);
+    // Its run ended: its store holds nothing pending, and its Session is closed.
+    expect(await storeSql(thread!.store, "SELECT id FROM pi_submissions WHERE " +
+                                         "json_extract(record, '$.status') IN " +
+                                         "('queued', 'placed')")).toEqual([]);
+    expect(await r.in((instance) => instance.agent.host.openThreads()))
+      .not.toContain(thread!.thread_id);
     expect(await r.threads()).toEqual([]);
     const refused = await failure(() => r.stub.agentSubmit(r.bind(MUSE), {
       message: "again", client_send_id: "w2" }));
@@ -499,10 +513,8 @@ describe("a launch (run_graph)", () => {
       .toMatchObject({ status: "done", text: "echo: first" });
     const [first] = await r.threads();
     const instructions = await r.in(async (instance) => {
-      const pi = await instance.agent.harness.pi();
-      const thread = first;
-      return (await (await pi.conversation(thread!.conversation_id as ConversationId, BG))!
-        .agent(BG)).instructions;
+      const pi = await instance.harness.pi({ session: first!.thread_id });
+      return (await (await pi.conversation(1 as ConversationId, BG))!.agent(BG)).instructions;
     });
     expect(instructions).toBe("Be brief.");
     expect((await r.threads()).map((made) => made.kind)).toEqual(["run", "run"]);
@@ -540,7 +552,7 @@ describe("a launch (run_graph)", () => {
     await drainDue(r.stub);
     expect(await r.settled(r.bind(MUSE), later.operation_id))
       .toMatchObject({ status: "done", text: "echo: at last" });
-    const entries = await r.entries(threads[0]!.conversation_id);
+    const entries = await r.entries(threads[0]!.thread_id);
     expect(entries[0]!.kind).toBe("ta.work");
     // Its thread is in use from the hand-off.
     const handed = (await r.threads()).find((made) => made.thread_id === later.thread_id)!;
@@ -565,14 +577,15 @@ describe("ta's agent:run", () => {
     expect(await r.settled(r.bind(MUSE), launched.operation_id))
       .toMatchObject({ status: "done", text: "echo: echo me" });
     // The launched run is the client's own, enveloped as its message is.
-    const entries = await r.entries(threads[1]!.conversation_id);
+    const entries = await r.entries(threads[1]!.thread_id);
     expect(entries[0]!.kind).toBe("ta.run");
     expect(JSON.parse(entries[0]!.model![0]!.content as string)).toMatchObject({
       untrusted: true, content: "echo me" });
-    // An agent the grant holds no run_graph for is refused in the launch itself, before pi
-    // makes any conversation: the calling conversation's run_graph is not the launched one's.
+    // An agent the grant holds no run_graph for is refused in the launch itself, before a
+    // thread or its Session is made: the calling conversation's run_graph is not the
+    // launched one's.
     const conversations = () => r.in(async (instance) =>
-      (await instance.agent.harness.sessions.list()).length);
+      instance.agent.host.openThreads().length);
     const made = await conversations();
     const other = await r.stub.agentSubmit(r.bind(MUSE), { message: "launch helper",
                                                           client_send_id: "l2" });
@@ -604,18 +617,24 @@ describe("idle retention", () => {
   it("is the object's threads lane, due when the longest idle thread's idle age is reached",
      async () => {
     const r = await rig();
-    // A thread idle since long ago, as a week without a door leaves one.
-    await r.in((_instance, state) => {
-      state.storage.sql.exec("INSERT INTO agent_threads (thread_id, conversation_id, agent_id, " +
+    // A thread idle since long ago, as a week without a door leaves one, its Session open.
+    const old = `thread_${"e".repeat(32)}`;
+    await r.in(async (instance, state) => {
+      state.storage.sql.exec("INSERT INTO agent_threads (thread_id, store, state, agent_id, " +
         "client, generation, authenticated_at, universe, created_at, kind, last_active) " +
-        "VALUES (?, 99999, 'main', NULL, NULL, NULL, NULL, 1, 'run', 1)",
-        `thread_${"e".repeat(32)}`);
+        "VALUES (?, ?, 'ready', 'main', NULL, NULL, NULL, NULL, 1, 'run', 1)",
+        old, "e".repeat(32));
+      await instance.agent.host.pi(old);
+      expect(instance.agent.host.openThreads()).toContain(old);
     });
+    // The lane's next work is now: the inserted thread is past its idle age.
+    expect(await r.in((instance) => instance.parts.threads.nextIdle(clock())))
+      .toBeLessThanOrEqual(clock() + 1);
     await r.stub.agentSubmit(r.bind(null), { message: "now", client_send_id: "n" });
-    expect(await laneAt(r.stub, "threads")).toBeLessThanOrEqual(clock() + 1);
     await drainDue(r.stub);
-    expect((await r.threads()).map((made) => made.thread_id))
-      .not.toContain(`thread_${"e".repeat(32)}`);
+    expect((await r.threads()).map((made) => made.thread_id)).not.toContain(old);
+    // Dropped, its Session is closed too.
+    expect(await r.in((instance) => instance.agent.host.openThreads())).not.toContain(old);
     expect(await r.threads()).toHaveLength(1);
     expect(await laneAt(r.stub, "threads")).toBeGreaterThan(clock() + 7 * 86_400 - 60);
   }, 30_000);
@@ -628,14 +647,14 @@ describe("idle retention", () => {
     const dropped = await r.in(async (instance, state) => {
       const gate = new WriteGate(state.storage);
       return retainThreads(new Threads(gate.storage, THREAD_LIMITS, { idleS: 1, perPass: 32 }),
-                           () => instance.agent.liveThreads(), clock, gate.write);
+                           clock, gate.write);
     });
     expect(dropped).toBe(0);
     await sleep(1100);
     expect(await r.in(async (instance, state) => {
       const gate = new WriteGate(state.storage);
       return retainThreads(new Threads(gate.storage, THREAD_LIMITS, { idleS: 1, perPass: 32 }),
-                           () => instance.agent.liveThreads(), clock, gate.write);
+                           clock, gate.write);
     })).toBe(1);
   }, 30_000);
 
@@ -664,8 +683,7 @@ describe("idle retention", () => {
                                                 agent: "main" }); return "room"; }
                            catch (error) { return (error as Error).message; } };
       const before = room();
-      const dropped = await retainThreads(threads, () => instance.agent.liveThreads(), clock,
-                                          gate.write);
+      const dropped = await retainThreads(threads, clock, gate.write);
       return { before, dropped, after: room() };
     });
     expect(out).toEqual({ before: "this client's threads are at their limit", dropped: 1,
@@ -675,16 +693,22 @@ describe("idle retention", () => {
     const kept = await r.threads();
     expect(kept.map((made) => made.thread_id).sort())
       .toEqual([live.thread_id, scheduled.thread_id].sort());
-    // A drop re-checks the activity the pass read: a thread touched since is kept.
+    // A drop re-checks the activity the pass read: a thread touched since is kept; and a
+    // live one is kept whatever the pass read, its activity moved on.
     const recheck = await r.in(async (_instance, state) => {
       const gate = new WriteGate(state.storage);
       const threads = new Threads(gate.storage);
-      const seen = threads.get(live.thread_id)!.last_active;
-      await gate.write(() => threads.touch(live.thread_id, seen + 10));
-      return { dropped: await gate.write(() => threads.drop(live.thread_id, seen)),
-               kept: threads.get(live.thread_id)?.last_active };
+      const seen = threads.get(scheduled.thread_id)!.last_active;
+      await gate.write(() => threads.touch(scheduled.thread_id, seen + 10));
+      const was = threads.get(live.thread_id)!.last_active;
+      return { dropped: await gate.write(() => threads.retain(scheduled.thread_id, seen,
+                                                              clock())),
+               kept: threads.get(scheduled.thread_id)?.last_active,
+               live: await gate.write(() => threads.retain(live.thread_id, was + 1e9,
+                                                           was + 5)),
+               moved: threads.get(live.thread_id)!.last_active - was };
     });
-    expect(recheck.dropped).toBeNull();
+    expect(recheck).toMatchObject({ dropped: "touched", live: "live", moved: 5 });
     expect(recheck.kept).toBeGreaterThan(0);
     // Its operations are no one's now, and its next message is a new thread's.
     expect((await failure(() => r.stub.agentStatus(r.bind(MUSE), {
@@ -707,20 +731,20 @@ describe("idle retention", () => {
     const [thread] = await r.threads();
     // The background task has done its own work, and stays live (completing) while the
     // conversation it made works: pi's own, so the thread's conversation is live through it.
-    expect(await r.in(async (instance) => (await (await instance.agent.harness.pi())
-      .inspect(BG)).tasks.filter((task) => task.record.conversationId === thread!.conversation_id)
+    expect(await r.in(async (instance) => (await (await instance.harness.pi({
+      session: thread!.thread_id })).inspect(BG)).tasks.filter((task) =>
+      task.record.conversationId === 1)
       .map((task) => [task.record.kind, task.record.background, task.state.kind])))
       .toEqual([["test.work", true, "completing"]]);
     await sleep(1100);
     const out = await r.in(async (instance, state) => {
       const gate = new WriteGate(state.storage);
       const threads = new Threads(gate.storage, THREAD_LIMITS, { idleS: 1, perPass: 32 });
-      const live = await instance.agent.liveThreads();
-      const dropped = await retainThreads(threads, () => instance.agent.liveThreads(), clock,
-                                          gate.write);
+      const live = instance.parts.threads.liveThreads();
+      const dropped = await retainThreads(threads, clock, gate.write);
       return { live: [...live], dropped };
     });
-    expect(out.live).toContain(thread!.conversation_id);
+    expect(out.live).toContain(thread!.thread_id);
     expect(out.dropped).toBe(0);
     const [kept] = await r.threads();
     expect(kept!.last_active).toBeGreaterThan(thread!.last_active);
@@ -788,6 +812,9 @@ describe("the owner's agent definitions (review H1)", () => {
                                                            client_send_id: "p" });
     expect(theirs.text).toContain(AGENTS_OWNER_ONLY);
     expect((await r.stub.fileStat(r.bind(null), { path: AGENTS_MD })).entry).toBeNull();
+    // A refused change leaves no notice: the owner is told only of a change made.
+    expect((await r.stub.noticeList(r.bind(null))).notices
+      .filter((notice) => notice.type === AGENT_DEFINITION)).toEqual([]);
     const mine = await r.stub.agentSubmit(r.bind(null), { message: `plant ${AGENTS_MD}`,
                                                          client_send_id: "q" });
     expect(mine.text).not.toContain(AGENTS_OWNER_ONLY);
@@ -805,9 +832,8 @@ describe("the owner's agent definitions (review H1)", () => {
     const run = await r.stub.agentRun(r.bind(null), { agent: "main", input: "hi" });
     const thread = (await r.threads()).find((made) => made.thread_id === run.thread_id)!;
     expect(await r.in(async (instance) => {
-      const pi = await instance.agent.harness.pi();
-      return (await (await pi.conversation(thread.conversation_id as ConversationId, BG))!
-        .agent(BG)).instructions;
+      const pi = await instance.harness.pi({ session: thread.thread_id });
+      return (await (await pi.conversation(1 as ConversationId, BG))!.agent(BG)).instructions;
     })).toBe("PLANTED");
   }, 30_000);
 
@@ -922,7 +948,7 @@ describe("a launch's time (review M1)", () => {
     await sleep(1100);
     const dropped = await r.in(async (instance, state) => {
       const { gate, threads } = quickThreads(state);
-      return retainThreads(threads, () => instance.agent.liveThreads(), clock, gate.write);
+      return retainThreads(threads, clock, gate.write);
     });
     expect(dropped).toBe(2);
     expect((await r.threads()).map((made) => made.thread_id)).toEqual([ops[2]!.thread_id]);
@@ -936,57 +962,7 @@ describe("a launch's time (review M1)", () => {
                                                                       at: clock() + 600 }));
     expect(error.message).toMatch(/a work payload is JSON of at most/);
     expect(await r.threads()).toEqual([]);
-    expect(await r.in(async (instance) => (await instance.agent.harness.sessions.list()).length))
-      .toBe(1);
-  }, 30_000);
-});
-
-describe("the storage gauge (review M2)", () => {
-  it("tells the owner past 70% and refuses new threads and launches past 90%, loudly",
-     async () => {
-    const r = await rig();
-    await r.stub.agentSubmit(r.bind(null), { message: "first", client_send_id: "1" });
-    const limit = (share: number) => r.in((instance, state) => {
-      instance.storageBytes = state.storage.sql.databaseSize / share;
-    });
-    const notices = async () => (await r.stub.noticeList(r.bind(null))).notices
-      .map((notice) => notice.type).filter((type) => type.startsWith("storage_"));
-    await limit(0.75);
-    expect((await r.stub.agentRun(r.bind(null), { agent: "main", input: "x" })).status)
-      .toBe("queued");
-    await r.stub.agentRun(r.bind(null), { agent: "main", input: "y" });
-    expect(await notices()).toEqual([STORAGE_HIGH]);
-    await limit(0.95);
-    const refused = await failure(() => r.stub.agentRun(r.bind(null), { agent: "main",
-                                                                        input: "z" }));
-    expect([refused.name, refused.message.split(":")[0]]).toEqual(["Refused", STORAGE_FULL]);
-    const fresh = await failure(() => r.stub.agentSubmit(r.bind(null), {
-      message: "new", client_send_id: "2", agent_id: "helper" }));
-    expect(fresh.message.split(":")[0]).toBe(STORAGE_FULL);
-    // An existing thread's conversation goes on; the owner was told.
-    expect((await r.stub.agentSubmit(r.bind(null), { message: "again", client_send_id: "3" }))
-      .status).toBe("done");
-    expect(await notices()).toEqual([STORAGE_FULL, STORAGE_HIGH]);
-    expect((await r.threads())).toHaveLength(3);
-  }, 30_000);
-
-  it("is read by the threads lane, which tells the owner", async () => {
-    const r = await rig();
-    await r.stub.agentSubmit(r.bind(null), { message: "first", client_send_id: "1" });
-    await r.in((instance, state) => {
-      instance.storageBytes = state.storage.sql.databaseSize / 0.8;
-      state.storage.sql.exec("INSERT INTO agent_threads (thread_id, conversation_id, " +
-        "agent_id, client, generation, authenticated_at, universe, created_at, kind, " +
-        "last_active) VALUES (?, 99999, 'main', NULL, NULL, NULL, NULL, 1, 'run', 1)",
-        `thread_${"e".repeat(32)}`);
-    });
-    // A door that re-derives the schedule and reads no gauge of its own.
-    await r.stub.fileMkdir(r.bind(null), { path: "/workspace/x", expected_etag: null });
-    await drainDue(r.stub);
-    expect((await r.threads()).map((made) => made.thread_id))
-      .not.toContain(`thread_${"e".repeat(32)}`);
-    expect((await r.stub.noticeList(r.bind(null))).notices.map((notice) => notice.type))
-      .toContain(STORAGE_HIGH);
+    expect(await r.in(async (instance) => instance.agent.host.openThreads())).toEqual([]);
   }, 30_000);
 });
 
@@ -1029,7 +1005,8 @@ describe("the waits (review L1)", () => {
     const waits = origins.slice(0, clients).flatMap((each) => Array.from(
       { length: WAITS_PER_CLIENT }, () => r.stub.agentSubmit(r.bind(each), {
         message: "hold please", client_send_id: "h", wait_ms: 20_000 })));
-    await sleep(1_000);
+    await until(() => r.in((instance) => instance.agent.waitsKept()
+                                         === clients * WAITS_PER_CLIENT), "every client's waits");
     const began = Date.now();
     const crowded = await r.stub.agentSubmit(r.bind(origins[clients]!), {
       message: "hold please", client_send_id: "h", wait_ms: 20_000 });
@@ -1148,6 +1125,28 @@ describe("the doors' remaining edges (review L4)", () => {
   }, 30_000);
 });
 
+describe("a thread being dropped (S4's state)", () => {
+  it("resolves nothing: no operation, no conversation found again, no Session opened",
+     async () => {
+    const r = await rig();
+    const sent = await r.stub.agentSubmit(r.bind(null), { message: "hello",
+                                                         client_send_id: "d1" });
+    await r.in((_instance, state) => {
+      state.storage.sql.exec("UPDATE agent_threads SET state = 'dropping'");
+    });
+    expect((await failure(() => r.stub.agentStatus(r.bind(null), {
+      operation_id: sent.operation_id }))).message).toBe(NO_OPERATION);
+    const again = await r.stub.agentSubmit(r.bind(null), { message: "again",
+                                                          client_send_id: "d2" });
+    expect(again.thread_id).not.toBe(sent.thread_id);
+    expect(await r.in(async (instance) => {
+      await instance.agent.host.close(sent.thread_id);
+      return instance.agent.host.pi(sent.thread_id).then(() => "opened",
+                                                          (error: Error) => error.message);
+    })).toBe("no such thread");
+  }, 30_000);
+});
+
 describe("idle retention's pass (review L4)", () => {
   it("takes the longest idle first, at most its batch, none past its time, and never " +
      "moves a thread's activity back", async () => {
@@ -1159,10 +1158,9 @@ describe("idle retention's pass (review L4)", () => {
     await sleep(1100);
     const out = await r.in(async (instance, state) => {
       const { gate, threads } = quickThreads(state, 1);
-      const late = await retainThreads(threads, () => instance.agent.liveThreads(), clock,
+      const late = await retainThreads(threads, clock,
                                        gate.write, Date.now() - 1);
-      const one = await retainThreads(threads, () => instance.agent.liveThreads(), clock,
-                                      gate.write);
+      const one = await retainThreads(threads, clock, gate.write);
       const back = await gate.write(() => threads.touch(newer!.thread_id, 1));
       return { late, one, back, kept: threads.get(newer!.thread_id)?.last_active };
     });

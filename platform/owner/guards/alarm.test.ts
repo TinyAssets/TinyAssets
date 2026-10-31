@@ -2,11 +2,14 @@
  * The object's one alarm is Lifecycle's (ADR-032, tasks 3.6).
  *
  * A Durable Object has one alarm, and the Agents SDK's Lifecycle owns it: its job queue
- * derives the alarm from every queued job, PiHarness's wake job among them, so a source
- * that set, read or cleared the alarm itself would overwrite theirs. So a Worker source:
+ * derives the alarm from every queued job, each agent thread's wake job among them, so a
+ * source that set, read or cleared the alarm itself would overwrite theirs. So a Worker
+ * source:
  * - never names `setAlarm`, `deleteAlarm`, `getAlarm`, Lifecycle's `disableAlarms` or the
  *   storage's `deleteAll` (which takes the queue with it), as an identifier, a property or
  *   a string, and holds no string with `Alarm` in it, so the obvious split spellings fail;
+ *   one exception: a thread store (`thread-store.ts`), a Durable Object of its own that
+ *   holds no Lifecycle and no alarm, wipes itself whole with `deleteAll`;
  * - reads `ctx.storage` and a Lifecycle only by literal names, never by a computed one,
  *   and gives no class or object member a computed name but a literal;
  * - imports from the `agents` package only what `AGENTS_IMPORTS` lists, and loads no
@@ -14,22 +17,21 @@
  * - never installs Lifecycle's runtime handlers (`Lifecycle.install`, `installHandlers`),
  *   which would add a `fetch` and WebSocket handlers to the object's surface;
  * - has one `alarm`, the hand-off `await this.#lifecycle.alarm();`.
- * Lifecycle's and PiHarness's own tables (`cf_agents_*`, `pi_*`) are named by no source
- * (the policy-boundary guard). The guard is a tripwire for our own code's mistakes, not
- * proof against a source written to evade it.
+ * Lifecycle's own tables (`cf_agents_*`) and pi's (`pi_*`, in thread stores only) are named
+ * by no source (the policy-boundary guard). The guard is a tripwire for our own code's
+ * mistakes, not proof against a source written to evade it.
  *
- * `agents/lifecycle` and `agents/harness/pi` are the Agents SDK modules the object loads,
- * pinned here by version and lockfile integrity (agents 0.31.0, source-read 2026-10-28).
- * Their module-level state, which objects sharing an isolate share, holds no owner's data:
- * `WeakMap`s keyed by each Lifecycle, capability or PiHarness instance (event sinks, route
- * transports, host invokers, bound services, each harness's private fields), one
+ * `agents/lifecycle` is the Agents SDK module the object loads, pinned here by version and
+ * lockfile integrity (agents 0.31.0, source-read 2026-10-28); PiHarness is not loaded (the
+ * thread host, `thread-host.ts`, replaces it). Its module-level state, which objects sharing
+ * an isolate share, holds no owner's data: `WeakMap`s keyed by each Lifecycle or capability
+ * instance (event sinks, route transports, host invokers, bound services), one
  * `AsyncLocalStorage` whose store lives only for the invocation that set it
- * (`current-agent.ts`), constants (PiHarness's wake timings and job id), and
- * `node:diagnostics_channel` channels, which publish only to subscribers and this Worker
- * has none. Lifecycle's `nanoid` pool is never drawn on, since every job id here is given.
- * Neither reads `env` or `exports`. PiHarness opens pi over `ctx.storage` through chord's
- * adapter, whose one queue per storage object (a `WeakMap` keyed by that object) is the
- * write gate's (`gate.ts`); pi's own versions are the pi pin guard's.
+ * (`current-agent.ts`), and `node:diagnostics_channel` channels, which publish only to
+ * subscribers and this Worker has none. Lifecycle's `nanoid` pool is never drawn on, since
+ * every job id here is given. It reads no `env` or `exports`. pi's storage is opened only in
+ * a thread store, over that store's own `ctx.storage`; pi's own versions are the pi pin
+ * guard's.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -41,8 +43,10 @@ import { parse, PLATFORM, reporter, workerSources } from "./sources";
 
 const BANNED: ReadonlySet<string> = new Set(["setAlarm", "deleteAlarm", "getAlarm",
                                              "disableAlarms", "deleteAll"]);
-/** What a source may import from the Agents SDK: Lifecycle, and PiHarness on it. */
-const AGENTS_IMPORTS: ReadonlySet<string> = new Set(["agents/lifecycle", "agents/harness/pi"]);
+/** What a source may import from the Agents SDK: Lifecycle alone. */
+const AGENTS_IMPORTS: ReadonlySet<string> = new Set(["agents/lifecycle"]);
+/** The one source that may name `deleteAll`: a thread store, which holds no Lifecycle. */
+const STORE = "owner/src/thread-store.ts";
 const HAND_OFF = "await this.#lifecycle.alarm();";
 /** The pinned Agents SDK, as the lockfile resolves it. */
 const AGENTS = Object.freeze({
@@ -91,7 +95,8 @@ export function alarmReach(fileName: string, source: string): string[] {
   const report = reporter(file, problems);
   const visit = (node: ts.Node): void => {
     if ((ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteralLike(node))
-        && BANNED.has(node.text)) {
+        && BANNED.has(node.text) && !(fileName === STORE && node.text === "deleteAll"
+                                      && ts.isIdentifier(node))) {
       report(node, `names ${node.text}, which only Lifecycle calls`);
     } else if ((ts.isStringLiteralLike(node) || ts.isTemplateHead(node)
                 || ts.isTemplateMiddle(node) || ts.isTemplateTail(node))
@@ -109,7 +114,7 @@ export function alarmReach(fileName: string, source: string): string[] {
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
         && node.moduleSpecifier !== undefined && agentsModule(node.moduleSpecifier)
         && !AGENTS_IMPORTS.has(node.moduleSpecifier.text)) {
-      report(node, `imports ${node.moduleSpecifier.text}, not Lifecycle or PiHarness`);
+      report(node, `imports ${node.moduleSpecifier.text}, not Lifecycle`);
     }
     if ((ts.isCallExpression(node) && node.arguments.some(agentsModule))
         || (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)
@@ -159,6 +164,16 @@ describe("alarm guard", () => {
     expect(lock.packages["owner"]!.devDependencies!["agents"]).toBe(AGENTS.version);
   });
 
+  it("lets only a thread store, which holds no Lifecycle, wipe itself", () => {
+    const wipe = "export class S { async destroy() { await this.ctx.storage.deleteAll(); } }";
+    expect(alarmReach(STORE, wipe)).toEqual([]);
+    expect(alarmReach("owner/src/owner-do.ts", wipe)).not.toEqual([]);
+    expect(alarmReach(STORE, "export const k = 'deleteAll';")).not.toEqual([]);
+    expect(alarmReach(STORE, "export class S { m() { return this.ctx.storage.setAlarm(1); } }"))
+      .not.toEqual([]);
+    expect(workerSources().get(STORE)).toContain("await this.ctx.storage.deleteAll();");
+  });
+
   it("finds the object's one hand-off", () => {
     const source = workerSources().get("owner/src/owner-do.ts")!;
     expect(source).toContain(`override async alarm(): Promise<void> {\n    ${HAND_OFF}\n  }`);
@@ -175,6 +190,7 @@ describe("alarm guard", () => {
     "export function f(s: DurableObjectStorage) { return Reflect.get(s, 'setAlarm'); }",
     "import { Agent } from 'agents';",
     "import { skills } from 'agents/harness/pi/skills';",
+    "import { PiHarness } from 'agents/harness/pi';",
     "import { Schedule } from 'agents/schedule';",
     "import { createAI } from 'agents/models/pi-ai';",
     "export * from 'agents';",
@@ -212,7 +228,6 @@ describe("alarm guard", () => {
     "import { Lifecycle } from 'agents/lifecycle';",
     "import { LifecycleCapability, type LifecycleJob } from 'agents/lifecycle';",
     "import type { LifecycleJobContext } from 'agents/lifecycle';",
-    "import { PiHarness } from 'agents/harness/pi';",
     "export class O { readonly #lifecycle = new Lifecycle(this); " +
       "override async alarm(): Promise<void> { await this.#lifecycle.alarm(); } }",
     "export function f(lane: { nextDue(n: number): number }) { return lane.nextDue(0); }",
