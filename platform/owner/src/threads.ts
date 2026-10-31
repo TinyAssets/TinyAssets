@@ -837,6 +837,17 @@ export class Threads {
       .map((row) => row.thread_id);
   }
 
+  /**
+   * The live threads working, or whose wake is past due at `now` (s): those whose wake job
+   * an admission may have held (`ThreadHost`'s step), which the readmission wakes; one
+   * working is one a crash cut off. A read.
+   */
+  overdue(now: number): string[] {
+    return this.#storage.sql.exec<{ thread_id: string }>(
+      "SELECT thread_id FROM agent_live WHERE active = 1 OR wake_at <= ?", now).toArray()
+      .map((row) => row.thread_id);
+  }
+
   /** Every live thread: work running, or a task sleeping. A read. */
   liveThreads(): Set<string> {
     return new Set(this.#storage.sql.exec<{ thread_id: string }>(

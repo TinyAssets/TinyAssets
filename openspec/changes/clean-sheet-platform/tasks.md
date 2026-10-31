@@ -1135,7 +1135,18 @@ account and no deploy.
   migration is 13, and every stamp check and scheduled refusal reads the generation, so
   a rename keeps a client's schedules (tested); a grant set is `work`, a revoke `reduce`.
   Two mutants on the merge (a rename moving the generation, the set's class), both killed,
-  the second by a test added for it.
+  the second by a test added for it. Review round 2 (APPROVE, two fixes): the tombstone's
+  window is named (`erase.ts`) and gates the erasure door (slice 10's item below); an
+  admission hold does not poll: while the owner is not admitted a wake job opens nothing
+  and looks again in a day (`ADMISSION_HOLD_MS`), the readmission sets due every live
+  thread working or past its wake (`wakeHeld`, in batches of the host's bound, waited on
+  at most `END_WAIT_MS`), and a launch not yet delivered reads held by the admission;
+  run-policy and room holds keep their 30 s to 10 min backoff. Tested: a suspension
+  holding with no Session opened past the backoff's cap, the readmission delivering at
+  once, the day's hold delivering once when the wake is lost, a schedule not yet due left
+  alone, a row a crash left working woken. Mutation: 7 on the hold (the step's check, the
+  cap, the door's wake, `overdue`'s two terms, the held status, `wakeNow`'s time), all
+  killed, two by tests added for them.
   Cron is ours: five numeric UTC fields, at most 64 characters
   and 16 items a field, occurrences at least 15 minutes apart, one within eight years; each
   delivery sleeps until the next, until a re-check refuses or a cancel. Cancel is
@@ -1210,7 +1221,9 @@ account and no deploy.
   (the directory's or the identity's deletion: the owner's AuthKit identity and directory
   entries removed, so no sign-in or inbound route resolves the name again), or explicit
   platform admit at sign-up; the live store probe's Q8 (a write in `deleteAll`'s killed
-  turn lost in workerd) is the deciding input.
+  turn lost in workerd) is the deciding input. Gate: the erasure door SHALL NOT ship
+  before that outside record, or the explicit platform admit, exists; until then no door
+  reaches erasure, so production cannot meet the window (`erase.ts`).
 - [ ] 0c (live): the dark deploy of the owner and gateway Workers, the store probe's cases
   re-run on the real code (P1-P4, P7; P5 a store reset mid-run).
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each

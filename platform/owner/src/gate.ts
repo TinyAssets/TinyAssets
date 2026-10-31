@@ -82,7 +82,8 @@ export class WriteGate {
    * once. A SQLite object's `deleteAll` wipes at once, so the tombstone lands in the same
    * synchronous turn, nothing else running between the two; it is run again once the wipe
    * resolves, so a wipe that took longer is tombstoned all the same, and one that failed is
-   * not. Never inside a unit; nothing else writes after it.
+   * not. A turn killed after the wipe can still lose it (the window `erase.ts` names).
+   * Never inside a unit; nothing else writes after it.
    */
   wipe(tombstone: (sql: Pick<SqlStorage, "exec">) => void): Promise<void> {
     if (this.#holding) {

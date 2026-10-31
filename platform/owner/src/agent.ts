@@ -1270,6 +1270,25 @@ export class OwnerAgent {
   }
 
   /**
+   * A readmission wakes each thread whose wake job its admission held (`Threads.overdue`:
+   * a scheduled launch's held delivery), so it delivers now, not at the hold's end. Each
+   * job is set due in batches of the host's bound; the alarm then opens them as it opens
+   * every wake, never more at once than the bound. The door waits at most `END_WAIT_MS`; a
+   * wake missed is found by its job at `ADMISSION_HOLD_MS`.
+   */
+  async wakeHeld(): Promise<void> {
+    // On pi's clock, which its wakes are stored on.
+    const threads = this.#parts.threads.overdue((this.#source.now ?? Date.now)() / 1000);
+    await this.#within((async () => {
+      for (let at = 0, size = Math.max(1, this.host.openMax); at < threads.length;
+           at += size) {
+        await Promise.all(threads.slice(at, at + size).map((thread) =>
+          this.host.wakeNow(thread)));
+      }
+    })());
+  }
+
+  /**
    * End `threads`' work, keeping what `keep` says: every wait and view first, then each
    * thread opened if need be: an ending's open is never refused, and aborts before the
    * Session resumes (`ThreadHost.end`), so the endings run in batches of the host's bound,

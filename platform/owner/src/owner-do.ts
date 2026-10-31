@@ -105,7 +105,8 @@ import {
   WAITS_FULL,
 } from "./agent";
 import {
-  AGENT_DIR, Authority, AUTHORITY_RULE, type AuthorityState, NO_AUTHORITY, type Stamped, stampOf,
+  AGENT_DIR, Authority, AUTHORITY_RULE, type AuthorityState, NO_AUTHORITY, refusalCode,
+  type Stamped, stampOf,
 } from "./authority";
 import {
   admission, type Admission, doorRefusal, type DoorClass, OWNER_ERASED, PLATFORM_CALLER,
@@ -1624,6 +1625,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * A scheduled launch's status, by a pure read of its store: `scheduled` until it first
    * delivers, then how its last delivery stands, with when it next delivers while it recurs;
    * once its task ended for a reason (refused, cancelled), `unanswered` with that reason.
+   * While the owner is not admitted a launch not yet delivered is held by it, though its job
+   * never opened it to find so (`ThreadHost`'s step).
    */
   async #scheduledStatus(thread: Thread, key: string):
       Promise<Omit<Operation, "operation_id" | "thread_id">> {
@@ -1632,14 +1635,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return { status: "unanswered", reason: "not_found" };
     }
     const { standing: stands, last } = read;
+    const unadmitted = workRefusal(admission(this.#storage));
+    const held = unadmitted === null ? stands.held : refusalCode(unadmitted);
     const due = stands.due === null ? {} : { due: stands.due };
     if (stands.ended !== null && stands.ended.reason !== null) {
       return { status: "unanswered", reason: stands.ended.reason };
     }
     if (last === null) {
       return stands.delivered === 0
-        ? { status: "scheduled", ...due,
-            ...(stands.held === null ? {} : { reason: `held: ${stands.held}` }) }
+        ? { status: "scheduled", ...due, ...(held === null ? {} : { reason: `held: ${held}` }) }
         : { status: "unanswered", reason: "not_found" };
     }
     switch (last.status) {
@@ -1879,6 +1883,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
     if (set.state !== "admitted") {
       await this.#agent.endUnadmitted();
+    } else {
+      await this.#agent.wakeHeld();
     }
     return set;
   }

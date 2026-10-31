@@ -318,9 +318,13 @@ A scheduled launch SHALL be one background `ta.scheduled` pi task in its run's r
 - **WHEN** the object dies after a delivery's submit and before its task commits
 - **THEN** the reopened task finds the submission by its request id, and the thread holds one submission and one answer
 
-#### Scenario: A full thread, a suspension or a lowered policy at its delivery
-- **WHEN** a launch is due while its thread holds `THREAD_INPUTS` open inputs, the owner is suspended, or the run policy has no room for it
-- **THEN** its task sleeps again, backing off, its status `scheduled` and held with the reason, and delivers once that lifts
+#### Scenario: A full thread or a lowered policy at its delivery
+- **WHEN** a launch is due while its thread holds `THREAD_INPUTS` open inputs, or the run policy has no room for it
+- **THEN** its task sleeps again, backing off from 30 s to 10 min, its status `scheduled` and held with the reason, and delivers once that lifts
+
+#### Scenario: A launch due while the owner is suspended
+- **WHEN** a launch falls due while the owner is suspended
+- **THEN** its job opens nothing and looks again a day later, its status `scheduled` and held `owner_suspended`, and the readmission wakes it, so it delivers at once
 
 #### Scenario: A refusal for good
 - **WHEN** a launch is due after its thread was dropped or its stamp stopped standing

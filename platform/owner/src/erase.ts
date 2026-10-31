@@ -10,10 +10,14 @@
  * alarm is disabled for good first (`disableAlarms`, which also clears the alarm), so
  * Lifecycle writes nothing after the wipe, then the write gate deletes the whole database
  * (`WriteGate.wipe`), its job row with it, and writes the tombstone into it in the same
- * synchronous turn (`ErasureParts.wipe`: the erased admission row, `admission.ts`), so no
- * crash can leave the wiped database without it. A thread store wipes itself in
- * `thread-store.ts`; no other source disables Lifecycle's alarm or wipes a database (the
- * alarm guard).
+ * synchronous turn (`ErasureParts.wipe`: the erased admission row, `admission.ts`), and
+ * again once the wipe resolves. That leaves a window: the store probe's Q8 lost a write
+ * made in `deleteAll`'s turn when workerd killed the turn, so a crash there can leave the
+ * wiped database with no tombstone, and a later `getByName` makes the owner afresh,
+ * admitted. Closing it is slice 10's (a record outside the object, or an explicit
+ * platform admit), and the erasure door waits for it (`tasks.md`). A thread store wipes
+ * itself in `thread-store.ts`; no other source disables Lifecycle's alarm or wipes a
+ * database (the alarm guard).
  */
 import {
   LifecycleCapability, type LifecycleJobContext, type LifecycleJobOutcome,

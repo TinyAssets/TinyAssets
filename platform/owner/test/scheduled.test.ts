@@ -37,7 +37,7 @@ import {
 } from "../src/scheduled";
 import { sameStamp } from "../src/agent";
 import { THREAD_INPUTS } from "../src/schema";
-import { wakeJob } from "../src/thread-host";
+import { ADMISSION_HOLD_MS, wakeJob } from "../src/thread-host";
 import { RUNS_LIVE, RUNS_SCHEDULED } from "../src/threads";
 import { gated, until } from "./gateway-support";
 import { DOT, MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
@@ -374,19 +374,100 @@ describe("a scheduled launch's sleep (F1)", () => {
     expect(await r.stub().agentCancel(r.bind(null), { operation_id: other.operation_id }))
       .toMatchObject({ cancelled: true });
     expect((await r.task(op.thread_id))!.status).toBe("sleeping");
+    // Due while suspended: its job opens nothing, and looks again in a day.
     await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
     await drainDue(r.stub());
-    await until(async () => (await r.task(op.thread_id))?.record.state.checkpoint?.tries === 1,
-                "the hold");
+    expect(await r.job(op.thread_id)).toBeGreaterThan(Date.now() + ADMISSION_HOLD_MS - 60_000);
     expect((await r.task(op.thread_id))!.record.state.checkpoint)
-      .toMatchObject({ n: 1, held: "owner_suspended" });
+      .toEqual({ phase: "deliver", n: 1, tries: 0 });
     expect(await r.status(op)).toMatchObject({ status: "scheduled",
                                                reason: "held: owner_suspended" });
     expect(await r.delivered(op)).toEqual([]);
+    // The readmission wakes it: it delivers now, not at the day's end.
     await r.stub().admissionSet(r.platform, { reason: "billing", suspended: false });
-    await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
+    expect(await r.job(op.thread_id)).toBeLessThanOrEqual(Date.now());
     await drainDue(r.stub());
     expect(await r.settled(op)).toMatchObject({ status: "done", text: "echo: wake up" });
+  }, 60_000);
+
+  /**
+   * `op` due while the owner is suspended, its Session closed: its job opens nothing and
+   * looks again in a day. Answers pi's time it fell due at (ms).
+   */
+  async function heldDay(r: Rig, op: Operation): Promise<number> {
+    await r.stub().admissionSet(r.platform, { reason: "billing", suspended: true });
+    await r.in((instance) => instance.agent.host.close(op.thread_id));
+    const due = (await r.task(op.thread_id))!.record.state.until!;
+    await r.pass(op.thread_id, due);
+    await drainDue(r.stub());
+    expect(await r.job(op.thread_id)).toBeGreaterThan(Date.now() + ADMISSION_HOLD_MS - 60_000);
+    return due;
+  }
+
+  it("holds a schedule due while the owner is suspended with no wake and no Session " +
+     "opened, and the readmission delivers it at once (review round 2)", async () => {
+    expect(ADMISSION_HOLD_MS).toBe(DAY_S * 1000);  // the cap a lost wake waits
+    const r = await rig();
+    const op = await later(r);
+    const due = await heldDay(r, op);
+    // Past the run-policy backoff's cap, again and again: nothing opens, nothing retries.
+    for (let n = 1; n <= 3; n++) {
+      await r.pass(op.thread_id, due + n * RETRY_LAST_MS);
+      await drainDue(r.stub());
+      expect(await r.job(op.thread_id)).toBeGreaterThan(Date.now() + ADMISSION_HOLD_MS - 60_000);
+      expect(await r.in((instance) => instance.agent.host.openThreads())).toEqual([]);
+    }
+    expect((await r.task(op.thread_id))!.record.state).toMatchObject({ status: "sleeping" });
+    expect((await r.task(op.thread_id))!.record.state.checkpoint)
+      .toEqual({ phase: "deliver", n: 1, tries: 0 });
+    expect(await r.delivered(op)).toEqual([]);
+    await r.stub().admissionSet(r.platform, { reason: "billing", suspended: false });
+    expect(await r.job(op.thread_id)).toBeLessThanOrEqual(Date.now());
+    await drainDue(r.stub());
+    expect(await r.settled(op)).toMatchObject({ status: "done", text: "echo: wake up" });
+    expect(await r.delivered(op)).toHaveLength(1);
+  }, 60_000);
+
+  it("wakes at readmission a thread its live row says works, as a crash leaves it",
+     async () => {
+    const r = await rig();
+    const op = await later(r);
+    await r.stub().admissionSet(r.platform, { reason: "billing", suspended: true });
+    await r.in((instance) => instance.agent.host.close(op.thread_id));
+    await sqlIn(r.stub(), "UPDATE agent_live SET active = 1 WHERE thread_id = ?", op.thread_id);
+    await sqlIn(r.stub(), "UPDATE cf_agents_jobs SET time = ? WHERE id = ?", Date.now(),
+                wakeJob(op.thread_id));
+    await drainDue(r.stub());
+    expect(await r.job(op.thread_id)).toBeGreaterThan(Date.now() + ADMISSION_HOLD_MS - 60_000);
+    await r.stub().admissionSet(r.platform, { reason: "billing", suspended: false });
+    expect(await r.job(op.thread_id)).toBeLessThanOrEqual(Date.now());
+  }, 30_000);
+
+  it("delivers a held schedule once at the day's hold when its readmission wake is lost, " +
+     "and wakes no schedule not yet due", async () => {
+    const r = await rig();
+    const op = await later(r);
+    const other = await later(r, null, 3 * DAY_S);
+    await heldDay(r, op);
+    const otherJob = await r.job(other.thread_id);
+    // Readmitted with no wake (the door's lost): nothing is due before the day passes.
+    await sqlIn(r.stub(), "UPDATE owner_admission SET state = 'admitted', reasons = '[]'");
+    await drainDue(r.stub());
+    expect(await r.delivered(op)).toEqual([]);
+    expect(await r.job(op.thread_id)).toBeGreaterThan(Date.now() + ADMISSION_HOLD_MS - 60_000);
+    // The day passes: its job opens it, and it delivers once.
+    await sqlIn(r.stub(), "UPDATE cf_agents_jobs SET time = ? WHERE id = ?", Date.now(),
+                wakeJob(op.thread_id));
+    await drainDue(r.stub());
+    expect(await r.settled(op)).toMatchObject({ status: "done", text: "echo: wake up" });
+    expect(await r.delivered(op)).toHaveLength(1);
+    await until(async () => (await r.job(op.thread_id)) === undefined, "its job to go");
+    // A readmission wakes only what its admission held: a schedule not yet due keeps its job.
+    await r.stub().admissionSet(r.platform, { reason: "billing", suspended: true });
+    await r.stub().admissionSet(r.platform, { reason: "billing", suspended: false });
+    expect(await r.job(other.thread_id)).toBe(otherJob);
+    expect((await r.task(other.thread_id))!.status).toBe("sleeping");
+    expect(await r.delivered(other)).toEqual([]);
   }, 60_000);
 
   it("delivers once though the object dies inside its delivery, after the submit: pi's " +
@@ -423,10 +504,11 @@ describe("a scheduled launch's sleep (F1)", () => {
       await sleep(10);
     }
     // Suspended since: the delivery pi already holds is not checked again, so its task
-    // completes as delivered, never refused after the fact.
-    await sqlIn(r.stub(), "UPDATE cf_agents_jobs SET time = ? WHERE id = ?", Date.now(),
-                wakeJob(op.thread_id));
-    await drainDue(r.stub());
+    // completes as delivered, never refused after the fact. Its job opens nothing while the
+    // owner is suspended, so the Session is opened here, as a read opens it.
+    await r.in(async (instance) => {
+      await instance.agent.host.pi(op.thread_id);
+    });
     await until(async () => (await r.task(op.thread_id))?.status === "terminal", "its end");
     // Its one submission stands, delivered though the owner is suspended since.
     expect((await r.delivered(op)).map((row) => row["request"]))
@@ -751,12 +833,10 @@ describe("cron recurrence", () => {
     await sleeping("sleep 2");
     await r.stub().admissionSet(r.platform, { reason: "billing", suspended: true });
     await due();
-    await until(async () => (await r.task(op.thread_id))?.record.state.checkpoint?.held
-      === "owner_suspended", "the suspension's hold");
+    expect(await r.job(op.thread_id)).toBeGreaterThan(Date.now() + ADMISSION_HOLD_MS - 60_000);
     expect(await r.delivered(op)).toHaveLength(1);
     await r.stub().admissionSet(r.platform, { reason: "billing", suspended: false });
-    await sleeping("the held sleep");
-    await due();
+    await drainDue(r.stub());
     await delivered(2);
     // A lowered policy holds the next one; raised again, it delivers.
     await sleeping("sleep 3");

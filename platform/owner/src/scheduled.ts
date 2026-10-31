@@ -32,9 +32,11 @@
  *   delivered. A delivery held back (the owner suspended, the run policy or the thread or
  *   the object with no room for it) sleeps again, backing off from `RETRY_FIRST_MS` to
  *   `RETRY_LAST_MS`, its reason kept in its checkpoint (`held`), so a schedule survives a
- *   suspension or a lowered policy and delivers once they lift. Only a refusal for good
- *   ends it terminal (`failed`, the refusal its message): its thread dropped, its stamp no
- *   longer standing or not its thread's, its run settled.
+ *   suspension or a lowered policy and delivers once they lift. While the owner is not
+ *   admitted its job opens nothing (`ThreadHost`'s step, `ADMISSION_HOLD_MS`, a day), so a
+ *   suspension's hold costs no wakes: the readmission wakes it (`OwnerAgent.wakeHeld`).
+ *   Only a refusal for good ends it terminal (`failed`, the refusal its message): its
+ *   thread dropped, its stamp no longer standing or not its thread's, its run settled.
  * - **Recurrence** (`cron`, `cron.ts`): a delivery ends by sleeping until the next
  *   occurrence, each delivered under its own request id (`requestOf`), until the grant,
  *   the policy or the admission refuses one, or it is cancelled.
