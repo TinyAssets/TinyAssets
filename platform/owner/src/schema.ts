@@ -1224,7 +1224,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // failures counted (`drop_failures`). A dropping thread holds its client's grant row, and
   // counts against its bounds, until its row is forgotten. A run settles once
   // (`settled_at`, which never changes once set), and its receipt (`run_receipts`: how its
-  // input settled, the first 2 KiB of its answer and whether that was all of it) is kept
+  // input settled, the first 768 bytes of its answer and whether that was all of it) is kept
   // in the same unit; a run handed an input names it (`request`) from then on; a run's
   // retention reads that time alone. The kept usage rows' bytes are counted
   // (`agent_usage_space`), so their sum has a bound of its own, and a dropped thread's usage,
@@ -1254,8 +1254,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "client TEXT CHECK (client IS NULL OR length(client) = 64), " +
       "request TEXT CHECK (request IS NULL OR length(request) BETWEEN 1 AND 128), " +
       "status TEXT NOT NULL CHECK (status IN ('done', 'unanswered')), " +
-      "reason TEXT CHECK (reason IS NULL OR length(reason) BETWEEN 1 AND 256), " +
-      "text TEXT NOT NULL CHECK (length(CAST(text AS BLOB)) <= 2048), " +
+      "reason TEXT CHECK (reason IS NULL OR length(reason) BETWEEN 1 AND 64), " +
+      "text TEXT NOT NULL CHECK (length(CAST(text AS BLOB)) <= 768), " +
       "truncated INTEGER NOT NULL DEFAULT 0 CHECK (truncated IN (0, 1)), " +
       "settled_at REAL NOT NULL, CHECK ((status = 'done') = (reason IS NULL)))",
     "CREATE INDEX run_receipts_by_age ON run_receipts (settled_at)",

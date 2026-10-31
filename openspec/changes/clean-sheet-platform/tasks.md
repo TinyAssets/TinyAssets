@@ -1012,7 +1012,8 @@ account and no deploy.
   `agent:run`, a scheduled launch), `converse` the door's conversation; none was left
   unmapped. A run settles once: when its Session reports nothing running and nothing
   asleep with its input settled, one unit keeps `settled_at` and its receipt
-  (`run_receipts`: status, reason, the first 2 KiB of its answer), read from that Session,
+  (`run_receipts`: status, a reason of 64 characters at most, the first 768 bytes of its
+  answer, two receipts a page), read from that Session,
   and adds its usage into the owner's total, keeping no usage row (counted once, the usage
   view the same before and after). A settled run takes no input: a new one is refused
   `run_settled` at the host's admission before pi commits it (a guard), from the doors,
@@ -1023,7 +1024,7 @@ account and no deploy.
   sleeps.
   A settled run's status and cancel are answered from the receipt, its Session never
   opened (F12's one read holds, polls move nothing), before its drop, during it and after;
-  while its store is there an answer past the receipt's 2 KiB is read whole from it by a
+  while its store is there an answer past the receipt's 768 bytes is read whole from it by a
   pure read (`ThreadStore.answer`: no holder claim, refused for a store never opened), and
   once it is wiped the receipt answers marked `truncated: true`;
   its store is wiped `keep_runs` after it settled (owner policy `runs.keep_runs`, 7 d, 1 to
@@ -1035,14 +1036,14 @@ account and no deploy.
   run; a run is told its input's request id as it is handed it, so a receipt kept without
   its settling names it (`dropped`). Bounds: conversations 64 a client, 1,024 every client's,
   10,000 the owner's; runs their own, `runs_kept` 25,000 kept stores and `runs.runs_live`
-  (owner policy, 2,000, 1 to 10,000) runs not yet settled, a sleeping one among them, each
+  (owner policy, 2,000, 1 to 2,000) runs not yet settled, a sleeping one among them, each
   refused at launch with a fixed code (`runs_live` for the live ones), an outside client
   holding at most `runs.client_share` (25%) of each and every client together what
   `runs.owner_reserve` (25%) leaves, so the owner can always launch. Receipts are a history
   with a row bound, never a refusal: 50,000, shared the same way, each scope's oldest let
   go past its share, kept `keep_run_receipts` from settling (90 d, 1 to 365, never under
   `keep_runs`); a client's receipts go with its grant's change. Every thread's kept usage is
-  bounded at 256 MiB in all (a backstop). Erasure as a tested internal path (its door comes
+  bounded at 64 MiB in all (a backstop, told as `usage_unkept`). Erasure as a tested internal path (its door comes
   in slice 10): one unit marks the owner erasing (`owner_erasure`) and every thread
   dropping, and pushes the erasure's Lifecycle job; every door then refuses (`ERASING`, in
   the binding check), lanes run nothing, no thread is recorded and no Session opens; every
@@ -1059,7 +1060,7 @@ account and no deploy.
   `gate.ts`'s `deleteAll` beside the store's. Declared differences from the design: a
   closed dropping Session is not reopened to end it (nothing of it runs in memory); client
   runs share `runs_kept` rather than counting in the conversation bounds; a settled run's
-  answer read after its store is wiped is its receipt's first 2 KiB, marked. A rename (`grantSet` with only the
+  answer read after its store is wiped is its receipt's first 768 bytes, marked. A rename (`grantSet` with only the
   name changed) still ends the client's work and drops its threads: every owner set moves
   the grant's generation, which is both the change's concurrency token and the stamp every
   thread and tool call is checked against, so a name-only change needs its own door (a

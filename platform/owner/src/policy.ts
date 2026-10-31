@@ -238,7 +238,7 @@ export const RUN_SETTINGS: { readonly [K in keyof RunSettings]: readonly [number
     keep_run_receipts: Object.freeze([1, 365] as const),
     client_share: Object.freeze([0, 100] as const),
     owner_reserve: Object.freeze([0, 100] as const),
-    runs_live: Object.freeze([1, 10_000] as const),
+    runs_live: Object.freeze([1, 2_000] as const),
   });
 const DAY_S = 86_400;
 

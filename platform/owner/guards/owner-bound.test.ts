@@ -512,7 +512,7 @@ describe("the owner's database bound", () => {
     expect(threadRows).toBe(THREAD_LIMITS.owner + THREAD_LIMITS.clients + THREAD_LIMITS.runs);
     expect(TERMS["agent_threads"]!.bytes).toBeGreaterThan(2_700);
     expect(RUNTIME["cf_agents_jobs"]!.rows).toBeGreaterThan(liveRows);
-    expect(RUNS_LIVE).toBe(10_000);
+    expect(RUNS_LIVE).toBe(2_000);
     expect(worstCase()).toBe(worstCase(TERMS) + worstCase(RUNTIME));
     expect(TERMS["run_receipts"]!.rows).toBe(THREAD_LIMITS.receipts);
     expect(TERMS["run_receipts"]!.bytes).toBeGreaterThan(RECEIPT_TEXT_MAX);

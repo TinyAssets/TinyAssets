@@ -31,7 +31,7 @@
  * `run_graph` door, `ta`'s `agent:run`, and a scheduled launch, whose work names it). A run
  * settles once: when its Session reports nothing running and nothing asleep with its input
  * settled, one unit keeps the time (`settled_at`) and its receipt (`settle`: status,
- * reason, the first 2 KiB of its answer), read from the Session that reported it, and adds
+ * reason, the first 768 bytes of its answer), read from the Session that reported it, and adds
  * its usage into the owner's total, keeping no usage row of its own. From then on its
  * status is answered from the receipt, its Session is never opened for it, and it takes no
  * input (`run_settled`, refused at the host's admission): a settled run holds no work, only
@@ -140,16 +140,23 @@ export type UsageTotals = { models: Record<string, unknown>; tools: Record<strin
  * a thread's models make, and inside the owner-bound guard's worst case at every thread.
  */
 export const USAGE_ROW_MAX = 16 * 1024;
-/** The most bytes every thread's kept usage takes together: 256 MiB, a backstop. */
-export const USAGE_SPACE_MAX = 256 * 1024 * 1024;
+/**
+ * The most bytes every thread's kept usage takes together: 64 MiB, a backstop (a row is
+ * kept only for a thread not settled, and a real one is a few hundred bytes); past it a
+ * closing Session's usage is not kept, and the owner is told (`usage_unkept`).
+ */
+export const USAGE_SPACE_MAX = 64 * 1024 * 1024;
 /** The most keys each bucket of the owner's usage total keeps apart; the rest sum in one. */
 export const USAGE_TOTAL_KEYS = 48;
 /** The key the usage total sums the rest into. */
 export const USAGE_OTHER = "other";
-/** A receipt's text: the first 2 KiB of the run's answer. */
-export const RECEIPT_TEXT_MAX = 2048;
-/** A receipt's reason, at most, in characters. */
-export const RECEIPT_REASON_MAX = 256;
+/**
+ * A receipt's text: the first 768 bytes of the run's answer, a summary (the whole answer is
+ * read from the store until it is wiped); with its reason, two receipts fit a page.
+ */
+export const RECEIPT_TEXT_MAX = 768;
+/** A receipt's reason, at most, in characters: a fixed code and a short detail. */
+export const RECEIPT_REASON_MAX = 64;
 /** How long one drop's outside calls may take in a lane pass before it is tried later. */
 export const DROP_MS = 10_000;
 /** How long a drop that did not finish waits before the lane tries it again. */
