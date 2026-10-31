@@ -221,7 +221,7 @@ export interface GrantRequest {
   readonly source: string;
   readonly mode: string;
   readonly scopes: Scope[];
-  readonly expected_generation: number;
+  readonly expected_revision: number;
   readonly name: string;
 }
 
@@ -1262,24 +1262,28 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * The owner's widening, in its session; the client's agents' wakes end with it, and once
-   * it committed, the client's agent work (`OwnerAgent.endClient`), as `grantRevoke`
-   * ends it.
+   * The owner's widening, in its session, against the grant's revision. A set that moves
+   * the grant's authority (its mode or scopes) ends the client's agents' wakes with it,
+   * and once it committed, the client's agent work (`OwnerAgent.endClient`), as
+   * `grantRevoke` ends it; one that moves only the revision, a rename, ends nothing: every
+   * stamp of the client's still stands.
    */
-  async grantSet(binding: Binding, request: GrantRequest):
-      Promise<{ client: string; mode: string; scopes: Scope[]; generation: number }> {
+  async grantSet(binding: Binding, request: GrantRequest): Promise<
+      { client: string; mode: string; scopes: Scope[]; generation: number; revision: number }> {
     const changed = await this.#synced(() => this.#widening(binding, "outside_set", request,
                                                             "change an outside client's grant",
                                                             (_account, id) => {
       const r = policyFields(request, ["client", "source", "mode", "scopes",
-                                       "expected_generation", "name"]);
+                                       "expected_revision", "name"]);
       return this.#storage.transactionSync(() => {
-        const set = this.#grants.set(id, r as unknown as GrantRequest, clock());
-        return { ...set, threads: this.#endClient(set.client) };
+        const { moved, ...set } = this.#grants.set(id, r as unknown as GrantRequest, clock());
+        return { ...set, threads: moved ? this.#endClient(set.client) : null };
       });
     }));
     const { threads, ...answer } = changed;
-    await this.#agent.endClient(answer.client, threads);
+    if (threads !== null) {
+      await this.#agent.endClient(answer.client, threads);
+    }
     return answer;
   }
 

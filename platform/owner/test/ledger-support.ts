@@ -160,7 +160,7 @@ export async function rig() {
     const origin = apiKeyOrigin(keyId);
     await stub.grantSet(session(null), {
       client: origin.client, source: "api_key", mode: "full", scopes: [],
-      expected_generation: 0, name: "",
+      expected_revision: 0, name: "",
     });
     return { origin, source: { kind: "api_key", ref: keyId } as const };
   };

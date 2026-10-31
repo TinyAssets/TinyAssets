@@ -153,7 +153,7 @@ async function agentRig() {
         client: origin.client, source: "mcp", mode: "scoped", name: "",
         scopes: capabilities.map((capability) => ({ universe: "alpha", agent: "main",
                                                     capability })),
-        expected_generation: row?.generation ?? 0 })).generation;
+        expected_revision: row?.revision ?? 0 })).generation;
     },
     stampOf: (origin: Origin, generation: number): Stamped => ({
       client: origin.client, generation, authenticated_at: at, universe: "alpha", agent: "main",
@@ -314,7 +314,7 @@ describe("a scoped client's conversation", () => {
     // and one after it stands.
     await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
     await r.stub.grantSet(r.session(), { client: MUSE.client, source: "mcp", mode: "full",
-                                         scopes: [], expected_generation: 2, name: "" });
+                                         scopes: [], expected_revision: 2, name: "" });
     const again = r.stampOf(MUSE, 3);
     expect([await tried("main", again),
             await tried("main", { ...again, authenticated_at: r.at + 100 })])
@@ -498,7 +498,7 @@ describe("a grant change", () => {
       const { operationId } = await instance.harness.submit("hold please", { session });
       await until(() => instance.probes.holds === 1, "the hold to start");
       await instance.grantSet(r.session(), { client: MUSE.client, source: "mcp",
-                                             mode: "scoped", name: "", expected_generation: 1,
+                                             mode: "scoped", name: "", expected_revision: 1,
                                              scopes: [{ universe: "alpha", agent: "main",
                                                         capability: "write_files" }] });
       return wipedSubmission(instance.probes, thread.store, { request: operationId })!;

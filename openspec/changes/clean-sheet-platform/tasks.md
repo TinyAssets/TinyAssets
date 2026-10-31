@@ -989,9 +989,14 @@ account and no deploy.
   it first. The reviewer's round-3 mutants all killed.
 - [x] Before any deploy holding real data: S4's drop wipes its store (`destroy()`, the row
   `dropping` until it returned). Done in S4-S5 (below).
-- [ ] Before any deploy holding real data: a grant rename, or any set that changes neither
+- [x] Before any deploy holding real data: a grant rename, or any set that changes neither
   mode, scope nor revocation, must not move the authority generation or drop threads;
-  split the revision token from the authority generation (S4-S5 review round 2, L1).
+  split the revision token from the authority generation (S4-S5 review round 2, L1). Done
+  in workerd, nothing deployed (`grants.ts`, `owner-do.ts` `grantSet`, `api-keys.ts`,
+  migration 12): `revision` moves on every set and revoke and is what the owner's set
+  names (`expected_revision`); `generation` moves only when the mode or the set of scopes
+  does, and stamps and `standing` read it alone, so only such a set, or a revoke, drops.
+  A revoked grant set revoked again keeps its fence.
 - [x] S4-S5 Drops wipe and run retention, in workerd, nothing deployed (`threads.ts`,
   `agent.ts`, `thread-host.ts`, `thread-store.ts`, `erasure.ts`, `erase.ts`, `policy.ts`,
   migration 10). One drop path for every reason (idle retention, a run's retention, a

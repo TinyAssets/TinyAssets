@@ -26,12 +26,20 @@ async function clients(r: Rig) {
   return (await r.stub.grantList(r.bind(null))).clients;
 }
 
-/** The owner sets a client's grant, against the generation it stands at. */
+/** The owner sets a client's grant, against the revision it stands at. */
 async function grant(r: Rig, origin: Origin, mode: string, scopes: object[] = []) {
   const row = (await clients(r)).find((c) => c.client === origin.client);
   return r.stub.grantSet(r.session(null), {
     client: origin.client, source: row?.source ?? "mcp", mode, scopes: scopes as never,
-    expected_generation: row?.generation ?? 0, name: "" });
+    expected_revision: row?.revision ?? 0, name: "" });
+}
+
+/** The owner renames a client's grant: the same mode and scopes, against its revision. */
+async function rename(r: Rig, origin: Origin, name: string) {
+  const row = (await clients(r)).find((c) => c.client === origin.client)!;
+  return r.stub.grantSet(r.session(null), {
+    client: origin.client, source: row.source, mode: row.mode, scopes: row.scopes as never,
+    expected_revision: row.revision, name });
 }
 
 async function kindsOf(r: Rig, kind: string) {
@@ -119,7 +127,7 @@ describe("an outside client's grant", () => {
     await r.stub.outsideAgents(r.bind(CHATGPT));
     const moved = await failure(() => r.stub.grantSet(r.session(null), {
       client: CHATGPT.client, source: "api_key", mode: "full", scopes: [],
-      expected_generation: 1, name: "" }));
+      expected_revision: 1, name: "" }));
     expect(moved.message).toBe("outside client source changed");
   });
 
@@ -127,7 +135,7 @@ describe("an outside client's grant", () => {
     const r = await rig();
     await r.stub.outsideAgents(r.bind(CHATGPT));
     const change = { client: CHATGPT.client, source: "mcp", mode: "revoked", scopes: [],
-                     expected_generation: 1, name: "" };
+                     expected_revision: 1, name: "" };
     for (const [binding, reason] of [
       [r.bind(CHATGPT), "only the owner may change an outside client's grant"],
       [r.bind(null), "interactive owner session required"],
@@ -148,9 +156,9 @@ describe("an outside client's grant", () => {
         "outside scopes require exact universe, agent and capability"],
       [{ mode: "scoped", scopes: Array.from({ length: GRANT_LIMITS.maxScopes + 1 }, () => READ) },
         "Invalid", "outside scopes require exact universe, agent and capability"],
-      [{ expected_generation: -1 }, "Invalid", "expected outside grant generation required"],
+      [{ expected_revision: -1 }, "Invalid", "expected outside grant revision required"],
       [{ name: "n".repeat(81) }, "Invalid", "invalid outside client name"],
-      [{ expected_generation: 0 }, "Refused", "outside grant changed"],
+      [{ expected_revision: 0 }, "Refused", "outside grant changed"],
     ] as const) {
       const refused = await failure(() => r.stub.grantSet(r.session(null),
                                                           { ...change, ...extra } as never));
@@ -161,7 +169,7 @@ describe("an outside client's grant", () => {
     const named = await r.stub.grantSet(r.session(null), { ...change, mode: "scoped",
                                                            scopes: [READ], name: "ChatGPT" });
     expect(named).toEqual({ client: CHATGPT.client, mode: "scoped", scopes: [READ],
-                            generation: 2 });
+                            generation: 2, revision: 2 });
     await grant(r, CHATGPT, "full");  // an empty name keeps the one given
     expect((await clients(r))[0]!.name).toBe("ChatGPT");
     expect((await kindsOf(r, "outside_grant")).map((row) => [
@@ -275,7 +283,7 @@ describe("an outside client's grant", () => {
       const grants = new Grants(state.storage, new Policy(state.storage),
                                 { ...GRANT_LIMITS, maxOwnerClients: 1 });
       const change = (client: string, expected: number) => ({
-        client, source: "mcp", mode: "full", scopes: [], expected_generation: expected, name: "" });
+        client, source: "mcp", mode: "full", scopes: [], expected_revision: expected, name: "" });
       grants.set("session", change(CHATGPT.client, 1), clock());
       grants.set("session", change(CHATGPT.client, 2), clock());  // the same row again
       for (const client of [CLAUDE.client, DOT.client]) {
@@ -619,7 +627,7 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
       grants.revoke(CHATGPT.client, t - 31 * DAY);
       try {
         grants.set("session", { client: CLAUDE.client, source: "mcp", mode: "full", scopes: [],
-                                expected_generation: 1, name: "" }, t);
+                                expected_revision: 1, name: "" }, t);
         return "set";
       } catch (error) {
         return (error as Error).message;
@@ -716,5 +724,113 @@ describe("the grant row's own rule (slice 3's review N4)", () => {
                   "revoked_at, name, first_seen, last_seen) VALUES (?, 'mcp', 'full', '[]', 1, " +
                   "NULL, '', 1, 1)", "9".repeat(64));
     expect((await clients(r)).map((c) => c.client)).toEqual(["9".repeat(64)]);
+  });
+});
+
+describe("a grant's revision apart from its authority (S4-S5 review round 2, L1)", () => {
+  it("moves the revision on every set and revoke, the generation only with the mode or " +
+     "scopes", async () => {
+    const r = await rig();
+    await r.stub.outsideAgents(r.bind(CHATGPT));
+    const set = (mode: string, scopes: object[], name: string, expected: number) =>
+      r.stub.grantSet(r.session(null), { client: CHATGPT.client, source: "mcp", mode,
+                                         scopes: scopes as never, expected_revision: expected,
+                                         name });
+    expect(await set("full", [], "ChatGPT", 1)).toEqual({
+      client: CHATGPT.client, mode: "full", scopes: [], generation: 1, revision: 2 });
+    expect(await set("scoped", [READ, WRITE], "", 2))
+      .toMatchObject({ generation: 2, revision: 3 });
+    // The same triples, reordered and repeated, hold the same: a rename.
+    expect(await set("scoped", [WRITE, READ, WRITE], "Chat", 3))
+      .toMatchObject({ generation: 2, revision: 4 });
+    expect(await set("scoped", [READ], "", 4)).toMatchObject({ generation: 3, revision: 5 });
+    expect(await set("full", [], "", 5)).toMatchObject({ generation: 4, revision: 6 });
+    expect((await r.stub.grantRevoke(r.bind(null), { client: CHATGPT.client })).generation)
+      .toBe(5);
+    expect((await clients(r)).map((c) => [c.generation, c.revision])).toEqual([[5, 7]]);
+    expect(await set("revoked", [], "Old", 7)).toMatchObject({ generation: 5, revision: 8 });
+    expect((await clients(r)).map((c) => [c.name, c.mode, c.generation, c.revision]))
+      .toEqual([["Old", "revoked", 5, 8]]);
+    expect((await kindsOf(r, "outside_grant")).map((row) => row["generation"]))
+      .toEqual([1, 2, 2, 3, 4, 5, 5]);
+  });
+
+  it("keeps a revoked grant's fence when it is set revoked again, and times a new revoke",
+     async () => {
+    const r = await rig();
+    await r.stub.outsideAgents(r.bind(CHATGPT));
+    expect(await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
+      const grants = new Grants(state.storage, new Policy(state.storage));
+      const set = (mode: string, expected: number, name: string, now: number) =>
+        grants.set("session", { client: CHATGPT.client, source: "mcp", mode, scopes: [],
+                                expected_revision: expected, name }, now);
+      const fence = () => grants.list()[0]!.revoked_at;
+      const out = [set("revoked", 1, "", 100).moved, fence()];
+      out.push(set("revoked", 2, "Old", 200).moved, fence());
+      out.push(set("full", 3, "", 300).moved, fence());
+      out.push(set("revoked", 4, "", 400).moved, fence());
+      return out;
+    })).toEqual([true, 100, false, 100, true, 100, true, 400]);
+  });
+
+  it("refuses a stale revision on every set, a rename included", async () => {
+    const r = await rig();
+    await r.stub.outsideAgents(r.bind(CHATGPT));
+    const set = (change: object, expected: number) => r.stub.grantSet(r.session(null), {
+      client: CHATGPT.client, source: "mcp", mode: "full", scopes: [], name: "",
+      expected_revision: expected, ...change });
+    await set({ name: "ChatGPT" }, 1);
+    const changes = [{ name: "Again" }, { mode: "scoped", scopes: [READ] }, {},
+                     { mode: "revoked" }];
+    for (const [change, expected] of [...changes.map((one) => [one, 1] as const),
+                                      [{ name: "Ahead" }, 3] as const]) {
+      const refused = await failure(() => set(change, expected));
+      expect([refused.name, refused.message]).toEqual(["Refused", "outside grant changed"]);
+    }
+    await r.stub.grantRevoke(r.bind(null), { client: CHATGPT.client });
+    expect((await failure(() => set({ mode: "revoked", name: "Old" }, 2))).message)
+      .toBe("outside grant changed");
+    expect((await clients(r)).map((c) => [c.name, c.mode, c.generation, c.revision]))
+      .toEqual([["ChatGPT", "revoked", 2, 3]]);
+    expect(await set({ mode: "revoked", name: "Old" }, 3)).toMatchObject({ revision: 4 });
+  });
+
+  it("keeps a stamp made before a rename standing, and refuses one made before a scope " +
+     "change", async () => {
+    const r = await rig();
+    await r.stub.outsideAgents(r.bind(CHATGPT));
+    const standing = (generation: number) => runInDurableObject(r.stub, (_i: OwnerDO, state) => {
+      try {
+        return new Grants(state.storage, new Policy(state.storage))
+          .standing(CHATGPT.client, generation, 100).mode;
+      } catch (error) {
+        return (error as Error).message;
+      }
+    });
+    await grant(r, CHATGPT, "scoped", [READ]);
+    expect(await standing(2)).toBe("scoped");
+    await rename(r, CHATGPT, "ChatGPT");
+    expect(await standing(2)).toBe("scoped");
+    await grant(r, CHATGPT, "scoped", [WRITE]);
+    expect(await standing(2)).toBe("outside client authority changed");
+    expect(await standing(3)).toBe("scoped");
+  });
+
+  it("leaves a renamed client's wakes and callback as they were, and ends them on a scope " +
+     "change", async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
+    await r.subscribe(MUSE, muse);
+    await r.post(null, `dm:${muse}`, { cmid: "c1" });
+    await rename(r, MUSE, "Muse");
+    expect((await r.table("ledger_wakes")).map((w) => [w["kind"], w["state"]]))
+      .toEqual([["wake", "pending"]]);
+    expect(await r.tick(clock() + 1)).toBe(1);
+    expect([r.sender.sent.map((target) => target.agent_id), r.sender.revoked])
+      .toEqual([[muse], []]);
+    await r.post(null, `dm:${muse}`, { cmid: "c2" });
+    await grant(r, MUSE, "scoped", [READ]);
+    expect((await r.table("ledger_wakes")).map((w) => [w["kind"], w["state"]]).slice(1))
+      .toEqual([["wake", "suppressed"], ["revoke", "pending"]]);
   });
 });

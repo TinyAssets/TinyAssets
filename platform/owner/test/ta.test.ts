@@ -111,7 +111,7 @@ async function rig() {
         client: origin.client, source: "mcp", mode: "scoped", name: "",
         scopes: capabilities.map((capability) => ({ universe: "alpha", agent: "main",
                                                     capability })),
-        expected_generation: row?.generation ?? 0 })).generation;
+        expected_revision: row?.revision ?? 0 })).generation;
     },
     stampOf: (origin: Origin, generation: number): Stamped => ({
       client: origin.client, generation, authenticated_at: at, universe: "alpha", agent: "main",
