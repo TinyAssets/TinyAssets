@@ -511,6 +511,22 @@ describe("a store reset mid-run", () => {
   }, 30_000);
 });
 
+/**
+ * Watch pi's `Conversation.abort` for every Session in the isolate: the ids of the
+ * conversations aborted from now until `stop`. `conversation` is any conversation, for its
+ * class.
+ */
+function abortsOf(conversation: object): { ids: number[]; stop: () => void } {
+  const proto = Object.getPrototypeOf(conversation) as { abort: (...args: unknown[]) => unknown };
+  const original = proto.abort;
+  const ids: number[] = [];
+  proto.abort = function (this: { id: number }, ...args: unknown[]) {
+    ids.push(Number(this.id));
+    return original.apply(this, args);
+  };
+  return { ids, stop: () => { proto.abort = original; } };
+}
+
 /** Kill `stub`'s object again and again mid-read, until pi's restart limit parks it. */
 async function parkTheRead(stub: () => DurableObjectStub<FauxOwnerDO>,
                            inside: <R>(act: (i: FauxOwnerDO) => R | Promise<R>) => Promise<R>) {
@@ -619,6 +635,7 @@ describe("a task pi's restart limit parked", () => {
                            { path: "/workspace/a.md", expected_etag: null,
                              content: new TextEncoder().encode("alpha") });
     const thread = await inside(async (i) => (await i.agent.thread("main", null)).thread_id);
+    let aborts: ReturnType<typeof abortsOf> | undefined;
     await inside(async (i) => {
       // A sleeper in the root, as background work leaves one (review round 3, L2).
       const pi = await i.agent.host.pi(thread);
@@ -628,7 +645,8 @@ describe("a task pi's restart limit parked", () => {
                                                 background: true }), BG);
       await i.agent.host.submit(thread, "look", { operationId: "op-park" });
       await until(() => i.probes.reads === 1, "the read to start");
-    });
+      return root;
+    }).then((root) => { aborts = abortsOf(root); });
     // The object dies mid-read, again and again, until pi's restart limit parks the read.
     const parked = async () => (await inside((i) => i.parts.notices.list()))
       .some((notice) => notice.type === PARKED);
@@ -646,6 +664,9 @@ describe("a task pi's restart limit parked", () => {
     const store = await storeOf(stub(), thread);
     await until(async () => (await storeSubmission(store, { request: "op-park" }))?.status
                             === "unanswered", "the parked run's input to settle");
+    aborts!.stop();
+    // A parked task of the root's run ends that run: the root is aborted (review round 4).
+    expect(aborts!.ids).toContain(1);
     const out = await inside(async (i) => {
       const status = await i.agent.host.status(thread, "op-park");
       await i.agent.host.submit(thread, "hello", { operationId: "op-next" });
@@ -686,9 +707,10 @@ describe("a task pi's restart limit parked", () => {
         return act(i);
       });
     const thread = await inside(async (i) => (await i.agent.thread("main", null)).thread_id);
-    await inside(async (i) => {
+    const aborts = await inside(async (i) => {
       await i.agent.host.submit(thread, "start it", { operationId: "op-start" });
       await until(() => i.probes.backgroundRuns === 1, "the background work to start");
+      return abortsOf((await (await i.agent.host.pi(thread)).conversation(1 as never, BG))!);
     });
     // The object dies while the work runs, again and again; each time a door's input opens
     // the thread again, so one of them is in flight as the parked task is ended.
@@ -709,6 +731,9 @@ describe("a task pi's restart limit parked", () => {
     const work = async () => (await storeSql(store, "SELECT status FROM pi_tasks WHERE " +
       "json_extract(record, '$.kind') = 'test.work'"))[0]?.["status"];
     await until(async () => await work() === "terminal", "the parked work to end");
+    aborts.stop();
+    // Ended alone: no conversation's run was aborted for it (review round 4).
+    expect(aborts.ids).toEqual([]);
     for (const op of ops) {
       await until(async () => (await storeSubmission(store, { request: op }))?.status === "done",
                   `input ${op} to be answered`);
