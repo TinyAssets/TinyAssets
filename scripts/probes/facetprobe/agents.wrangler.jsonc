@@ -1,0 +1,19 @@
+// Q7 of the facet probe (facet-probe.md): an Agents SDK root agent hosting a PiHarness
+// child as a facet. Throwaway: config.mjs bundles agents.js against platform/'s pinned
+// agents and pi packages and writes a second copy with ctx.exports on
+// (ta-facetprobe-agents-exports); facet-probe.yml deploys and deletes both. This copy
+// has the owner Worker's runtime. ROOT binds the root class in its own script, as the SDK
+// asks; PiChild is not migrated. No route, no workers.dev URL.
+{
+  "name": "ta-facetprobe-agents",
+  "main": "agents.js",
+  "compatibility_date": "2026-10-23",
+  "compatibility_flags": ["nodejs_compat", "disable_ctx_exports"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "limits": { "subrequests": 1000000 },
+  "durable_objects": {
+    "bindings": [{ "name": "ROOT", "class_name": "Root" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Root"] }]
+}

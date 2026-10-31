@@ -1,0 +1,24 @@
+// The owner-like half of the facet probe (facet-probe.md). Throwaway: facet-probe.yml
+// deploys it through config.mjs, which bundles parent.js and writes the other copies
+// (exports, classbind, unsafe), and deletes every copy. The runtime is the owner Worker's
+// (platform/owner/wrangler.jsonc): the same date and flags, `disable_ctx_exports` among
+// them, no workers.dev URL, no route, `limits.subrequests: 1000000`, and PISTORE ->
+// ThreadStore in this same script. The probe adds three bindings: SVC, the dummy service,
+// for Q3 (and KV, the dummy namespace, when the run could make one); and LOADER, Worker
+// Loader, a facet class source for Q2. Parent stands in for OwnerDO: the door binds it by
+// script_name. Child, the facet class, is deliberately not migrated.
+{
+  "name": "ta-facetprobe",
+  "main": "parent.js",
+  "compatibility_date": "2026-10-23",
+  "compatibility_flags": ["nodejs_compat", "disable_ctx_exports"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "limits": { "subrequests": 1000000 },
+  "services": [{ "binding": "SVC", "service": "ta-facetprobe-dummy" }],
+  "durable_objects": {
+    "bindings": [{ "name": "PISTORE", "class_name": "ThreadStore" }]
+  },
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Parent", "ThreadStore"] }]
+}

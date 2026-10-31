@@ -1,0 +1,347 @@
+name: Facet probe
+
+# The live probe P13 of Durable Object facets: does a facet's database count against its
+# parent's 10 GB (Q1), do facets work under disable_ctx_exports (Q2), what a facet can reach
+# (Q3), does a busy or broken facet block or break its parent (Q4), does delete wipe it (Q5),
+# parent -> facet latency and billing (Q6), and PiHarness in an Agents SDK dynamic agent
+# (Q7); and Q8, on the main copy: does a write made in the same turn as deleteAll()
+# survive a crash right after? openspec/changes/clean-sheet-platform/facet-probe.md has
+# the method, the questions, the reading key and the results.
+#
+# Manual only, and the founder approves each run: type facet-probe into `confirm`. It
+# deploys eight throwaway Workers named ta-facetprobe* to the production Cloudflare account,
+# none with a route or a workers.dev URL: they are reached only through the
+# ta-facetprobe-door Workflow, which drive.mjs starts through the Cloudflare API. It drives
+# every question, prints the results into the job summary, and deletes every Worker, its
+# Durable Object namespaces (every object's storage, about 29 GB of random bytes at the
+# peak, goes with them), the Workflow and the dummy KV namespace whatever happened, then
+# proves through the API that nothing named ta-facetprobe* is left. No route, zone or DNS
+# record is touched, no owner data exists there, and no model credential is used: pi runs
+# on pi-ai's faux provider.
+#
+# Cost: Q1 writes about 15,300 rows (29 GB) for at most a few hours. At list price, storage
+# ($0.20 per GB-month, prorated), rows written ($1.00 per million), Durable Object duration
+# and the Workflow instances come to about $0.05, all inside Workers Paid's included usage.
+# Negligible.
+#
+# Token scope (the CLOUDFLARE_API_TOKEN repo secret deploy-worker.yml, cap-probe.yml and
+# store-probe.yml use):
+#   Account -> Workers Scripts: Edit       upload, DO class migrations, the Workflow and its
+#                                          instances, delete, the Worker, namespace and
+#                                          Workflow lists
+#   Account -> Workers KV Storage: Edit    optional: the dummy KV namespace (Q3); without
+#                                          it the copies deploy with no KV binding
+#   Account -> Billing: Read               optional: names the account's plan
+#   Account -> Account Analytics: Read     optional: Q6's billing, and the storage datasets
+#                                          kept to the run's own objects (the repository
+#                                          and its job summaries are public: no
+#                                          account-wide number is read or printed)
+#
+# A run takes about 3 hours at most at the default fill_minutes of 150 (Q1's fill stops
+# there), and less if the fill finishes first.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type facet-probe to deploy throwaway Workers to the production account and run P13'
+        required: true
+        type: string
+      fill_minutes:
+        description: 'Q1: the most minutes the storage fill may write, 10 to 150'
+        required: false
+        default: '150'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # One run at a time: every run deploys the same script names.
+  group: facet-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    # Checkout and node <=10, install <=10, harness <=15, account <=3, deploy <=20,
+    # questions <=205: cleanup starts by minute 263. Cleanup <=10, analytics <=15, and the rest.
+    timeout-minutes: 300
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+      WRANGLER: ${{ github.workspace }}/platform/node_modules/.bin/wrangler
+      # The door first (it binds the others' classes), the dummy last (the others bind it).
+      SCRIPTS: >-
+        ta-facetprobe-door ta-facetprobe-agents ta-facetprobe-agents-exports ta-facetprobe
+        ta-facetprobe-exports ta-facetprobe-classbind ta-facetprobe-unsafe ta-facetprobe-dummy
+      COPIES: main exports classbind unsafe agents agents-exports
+    steps:
+      - name: Check the input
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          FILL_MINUTES: ${{ inputs.fill_minutes }}
+        run: |
+          if [ "${CONFIRM}" != "facet-probe" ]; then
+            echo "::error::Refusing to run: type facet-probe in the confirm input to proceed."
+            exit 1
+          fi
+          # Digits of a bounded length first, so a huge or odd value fails before any compare.
+          if ! [[ "${FILL_MINUTES}" =~ ^[0-9]{2,3}$ ]] || [ "$((10#${FILL_MINUTES}))" -lt 10 ] || [ "$((10#${FILL_MINUTES}))" -gt 150 ]; then
+            echo "::error::fill_minutes must be a whole number from 10 to 150"
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        timeout-minutes: 5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        timeout-minutes: 5
+        with:
+          node-version: '22'
+
+      # The platform lockfile pins wrangler, miniflare, agents and the pi packages; the probe
+      # bundles against them rather than a toolchain of its own.
+      - name: Install the pinned toolchain
+        working-directory: platform
+        timeout-minutes: 10
+        run: npm ci --no-audit --no-fund
+
+      - name: Harness check in miniflare (proves the harness, not a reading)
+        timeout-minutes: 15
+        run: node scripts/probes/facetprobe/local.mjs
+
+      - name: Check the account
+        id: account
+        timeout-minutes: 3
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID_SECRET: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN secret is not set (needs Account: Workers Scripts: Edit)."
+            exit 1
+          fi
+          api() {
+            curl -sS --max-time 60 -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -o "${RUNNER_TEMP}/api.json" -w '%{http_code}' "https://api.cloudflare.com/client/v4$1"
+          }
+
+          account_id="${CLOUDFLARE_ACCOUNT_ID_SECRET}"
+          if [ -z "${account_id}" ]; then
+            echo "CLOUDFLARE_ACCOUNT_ID secret is not set; resolving from the tinyassets.io zone."
+            api "/zones?name=tinyassets.io" > /dev/null
+            account_id="$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])).get("result") or []; print(((r[0].get("account") or {}).get("id") or "") if r else "")' "${RUNNER_TEMP}/api.json")"
+          fi
+          if [ -z "${account_id}" ]; then
+            echo "::error::Could not resolve the Cloudflare account id."
+            exit 1
+          fi
+          echo "::add-mask::${account_id}"
+          echo "CLOUDFLARE_ACCOUNT_ID=${account_id}" >> "${GITHUB_ENV}"
+
+          # The door is a Workflow started through the API: without it nothing can be driven,
+          # so a token that cannot reach the Workflows API stops the run before any deploy.
+          status="$(api "/accounts/${account_id}/workflows?per_page=1")"
+          if [ "${status}" != "200" ]; then
+            echo "::error::The token cannot use the Workflows API (HTTP ${status}); nothing was deployed. It needs Account: Workers Scripts: Edit."
+            exit 1
+          fi
+          echo "Workflows API: readable"
+
+          status="$(api "/accounts/${account_id}/subscriptions")"
+          plan="$(python3 - "${RUNNER_TEMP}/api.json" "${status}" <<'PY'
+          import json, sys
+          path, status = sys.argv[1], sys.argv[2]
+          if status != "200":
+              print(f"unknown (HTTP {status}: the token cannot read billing)")
+              sys.exit()
+          subs = json.load(open(path)).get("result") or []
+          names = [((sub.get("rate_plan") or {}).get("public_name") or (sub.get("rate_plan") or {}).get("id") or "?") for sub in subs]
+          workers = [n for n in names if "worker" in n.lower()]
+          print("Workers: " + ", ".join(workers) if workers else "Free (no Workers subscription among: " + (", ".join(names) or "none") + ")")
+          PY
+          )"
+          echo "Workers plan: ${plan}"
+          echo "plan=${plan}" >> "${GITHUB_OUTPUT}"
+
+      # Q2's first readings are this step: whether wrangler and production take each copy's
+      # config. A refused copy is recorded, not fatal; the door then binds only what
+      # deployed. The dummy and the door must deploy.
+      - name: Deploy the copies and the door
+        id: deploy
+        timeout-minutes: 20
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -uo pipefail
+          probe=scripts/probes/facetprobe
+          # Clear anything an earlier run left, Durable Object state included.
+          # shellcheck disable=SC2086
+          bash "${probe}/delete.sh" ${SCRIPTS} || exit 1
+
+          # The dummy KV namespace (Q3), if the token may make one.
+          kv_file="${RUNNER_TEMP}/facetprobe-kv-id"
+          : > "${kv_file}"
+          status="$(curl -sS --max-time 60 -X POST -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H 'content-type: application/json' -d '{"title":"ta-facetprobe-kv"}' -o "${RUNNER_TEMP}/kv.json" -w '%{http_code}' \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces")" || status="curl failed"
+          kv_id=""
+          if [ "${status}" = "200" ]; then
+            kv_id="$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("result") or {}).get("id") or "")' "${RUNNER_TEMP}/kv.json")"
+          fi
+          if [ -n "${kv_id}" ]; then
+            echo "${kv_id}" > "${kv_file}"
+            echo "made (ta-facetprobe-kv)" > "${RUNNER_TEMP}/facetprobe-kv.txt"
+          else
+            echo "not made (HTTP ${status}): the copies have no KV binding" > "${RUNNER_TEMP}/facetprobe-kv.txt"
+          fi
+          echo "KV: $(cat "${RUNNER_TEMP}/facetprobe-kv.txt")"
+
+          config="${RUNNER_TEMP}/facetprobe-config"
+          node "${probe}/config.mjs" --out "${config}" --kv "${kv_id}" || exit 1
+          "${WRANGLER}" deploy --config "${config}/dummy.wrangler.json" || exit 1
+
+          deploy_json="${RUNNER_TEMP}/facetprobe-deploy.json"
+          echo '{}' > "${deploy_json}"
+          record() {
+            python3 - "${deploy_json}" "$1" "$2" "$3" <<'PY'
+          import json, os, re, sys
+          path, copy, status, log = sys.argv[1:5]
+          data = json.load(open(path))
+          entry = {"status": status}
+          if status != "accepted":
+              lines = [l.strip() for l in open(log, errors="replace") if re.search(r"error|refused|invalid|unknown|not ", l, re.I)]
+              text = " / ".join(lines[-6:])[:600]
+              # The summary is not masked like the log: no account id in it.
+              needle = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+              if needle:
+                  text = text.replace(needle, "<redacted>")
+              entry["error"] = text
+          data[copy] = entry
+          json.dump(data, open(path, "w"))
+          PY
+          }
+          deployed=""
+          for copy in ${COPIES}; do
+            log="${RUNNER_TEMP}/deploy-${copy}.log"
+            if "${WRANGLER}" deploy --config "${config}/${copy}.wrangler.json" > "${log}" 2>&1; then
+              status="accepted"
+              deployed="${deployed:+${deployed},}${copy}"
+            else
+              status="refused"
+            fi
+            cat "${log}"
+            record "${copy}" "${status}" "${log}"
+            echo "${copy}: ${status}"
+          done
+          if [ -z "${deployed}" ]; then
+            echo "::warning title=Q2::production refused every copy; see the summary"
+            echo "deployed=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          node "${probe}/config.mjs" --out "${config}" --kv "${kv_id}" --copies "${deployed}" || exit 1
+          "${WRANGLER}" deploy --config "${config}/door.wrangler.json" || exit 1
+
+          # The namespaces' ids, for analytics.mjs's storage rows (ids are not secrets).
+          curl -sS --max-time 60 -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -o "${RUNNER_TEMP}/ns.json" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/durable_objects/namespaces?per_page=1000" || true
+          python3 - "${RUNNER_TEMP}/ns.json" "${RUNNER_TEMP}/facetprobe-namespaces.json" <<'PY' || true
+          import json, sys
+          rows = json.load(open(sys.argv[1])).get("result") or []
+          keep = [{"id": r.get("id"), "script": r.get("script"), "class": r.get("class")}
+                  for r in rows if str(r.get("script") or "").startswith("ta-facetprobe")]
+          json.dump(keep, open(sys.argv[2], "w"))
+          PY
+          echo "deployed=true" >> "${GITHUB_OUTPUT}"
+
+      # fill_minutes plus about 30: Q2-Q6, Q8 and Q7 take a few minutes each and Q4 about
+      # seven, every call is bounded at 17 minutes, and Q1 stops at fill_minutes plus a
+      # 5-minute grace. The driver rewrites the results after each phase and prints the whole report
+      # to this log, so a step killed here still leaves what it had.
+      - name: Run every question
+        id: drive
+        if: steps.deploy.outputs.deployed == 'true'
+        timeout-minutes: 205
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          FILL_MINUTES: ${{ inputs.fill_minutes }}
+        run: |
+          set -euo pipefail
+          node scripts/probes/facetprobe/drive.mjs \
+            --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --out "${RUNNER_TEMP}/facetprobe.json" --summary "${RUNNER_TEMP}/facetprobe.md" \
+            --fill-minutes "$((10#${FILL_MINUTES}))" --deploy "${RUNNER_TEMP}/facetprobe-deploy.json" \
+            --kv "${RUNNER_TEMP}/facetprobe-kv.txt"
+
+      # Right after the questions, whatever happened: nothing after this needs the Workers
+      # (analytics reads by object and namespace id).
+      - name: Delete every probe Worker, namespace, Workflow and KV namespace
+        if: always()
+        timeout-minutes: 10
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "The account step never resolved an account, so nothing was deployed."
+            exit 0
+          fi
+          # shellcheck disable=SC2086
+          FACETPROBE_KV_FILE="${RUNNER_TEMP}/facetprobe-kv-id" bash scripts/probes/facetprobe/delete.sh ${SCRIPTS}
+          failed=$?
+          if [ "${failed}" = "0" ]; then
+            echo "- **cleanup:** every probe Worker, Durable Object namespace, the Workflow and the KV namespace deleted, and checked gone" > "${RUNNER_TEMP}/facetprobe-cleanup.md"
+          else
+            echo "- **cleanup:** FAILED; something named ta-facetprobe* is still there or unproven (see the step log)" > "${RUNNER_TEMP}/facetprobe-cleanup.md"
+          fi
+          exit "${failed}"
+
+      # Optional (Account Analytics: Read): a refusal is a line in the summary.
+      - name: Billing-side readings
+        if: always() && steps.drive.outcome != 'skipped'
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -f "${RUNNER_TEMP}/facetprobe.json" ]; then
+            node scripts/probes/facetprobe/analytics.mjs --results "${RUNNER_TEMP}/facetprobe.json" \
+              --summary "${RUNNER_TEMP}/facetprobe.md" --namespaces "${RUNNER_TEMP}/facetprobe-namespaces.json"
+          fi
+
+      - name: Results into the job summary
+        if: always()
+        env:
+          PLAN: ${{ steps.account.outputs.plan }}
+        run: |
+          {
+            echo "### Facet probe"
+            echo ""
+            echo "- **Workers plan (API):** ${PLAN:-not read}"
+            echo "- **sha:** \`${GITHUB_SHA}\`"
+            if [ -f "${RUNNER_TEMP}/facetprobe-cleanup.md" ]; then
+              cat "${RUNNER_TEMP}/facetprobe-cleanup.md"
+            fi
+            if [ -f "${RUNNER_TEMP}/facetprobe-kv.txt" ]; then
+              echo "- **KV:** $(cat "${RUNNER_TEMP}/facetprobe-kv.txt")"
+            fi
+            if [ -f "${RUNNER_TEMP}/facetprobe-deploy.json" ]; then
+              echo "- **deploy (Q2):** \`$(cat "${RUNNER_TEMP}/facetprobe-deploy.json")\`"
+            fi
+            echo ""
+            if [ -f "${RUNNER_TEMP}/facetprobe.md" ]; then
+              cat "${RUNNER_TEMP}/facetprobe.md"
+              echo ""
+              echo "<details><summary>results JSON</summary>"
+              echo ""
+              echo '```json'
+              cat "${RUNNER_TEMP}/facetprobe.json"
+              echo '```'
+              echo "</details>"
+            else
+              echo "No results: the run stopped before the first phase finished."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
