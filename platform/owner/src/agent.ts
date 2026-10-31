@@ -125,7 +125,7 @@ import {
 } from "./thread-host";
 import { type Answer, assistantText, type StoreRpc } from "./thread-store";
 import {
-  addedUsage, type Settled, type Thread, threadAuthority, type ThreadKind, type Threads,
+  addedUsage, type Settled, type Thread, type ThreadKind, type Threads,
 } from "./threads";
 
 const BG = BACKGROUND_CONTEXT;
@@ -516,7 +516,7 @@ export class OwnerAgent {
     try {
       if (await storage.conversation(ROOT, BG) === undefined) {
         const config = await this.#parts.config(row.agent_id);
-        const state = copy(threadAuthority(row));
+        const state = copy(this.#parts.threads.authority(row));
         await pi.root(BG, {
           agent: { model: { provider: AUTO.provider, modelId: AUTO.id },
                    ...(config.instructions === undefined ? {}

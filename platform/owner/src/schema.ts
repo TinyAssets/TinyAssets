@@ -1232,13 +1232,88 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // settled run keeps no usage row (`keepUsage` keeps none). The owner being erased is one row
   // (`owner_erasure`, with the step it reached), the mark every door, lane and new thread
   // refuses on.
+  //
+  // A thread row no longer copies its stamp's universe: it names the outside agent's
+  // registration it was stamped from (`registration`, `outside_agents.agent_id`), whose
+  // universe (`command_center_id`) and client never change (a trigger), and which is never
+  // deleted while a thread names it (a delete of it is ignored; the owner's delete leaves it
+  // a tombstone, which goes with the last thread that names it). So a stamp reads as it was
+  // made, after its client registers again elsewhere. A thread's agent id is its directory's
+  // name, letters, digits, dots, dashes and underscores, as the doors already hold it. The
+  // table is made again to drop the universe's column; nothing is deployed, so a row whose
+  // universe no registration of its client names fails this loudly.
   Object.freeze([
-    "ALTER TABLE agent_threads ADD COLUMN drop_retry REAL",
-    "ALTER TABLE agent_threads ADD COLUMN drop_failures INTEGER NOT NULL DEFAULT 0 " +
-      "CHECK (drop_failures >= 0)",
-    "ALTER TABLE agent_threads ADD COLUMN settled_at REAL",
-    "ALTER TABLE agent_threads ADD COLUMN request TEXT " +
-      "CHECK (request IS NULL OR length(request) BETWEEN 1 AND 128)",
+    "DROP TRIGGER outside_clients_held",
+    "CREATE TABLE agent_threads_next (thread_id TEXT PRIMARY KEY " +
+      "CHECK (length(thread_id) = 39), " +
+      "store TEXT NOT NULL UNIQUE CHECK (length(store) = 32 AND store NOT GLOB '*[^0-9a-f]*'), " +
+      "state TEXT NOT NULL CHECK (state IN ('ready', 'dropping')), " +
+      "agent_id TEXT NOT NULL CHECK (length(agent_id) BETWEEN 1 AND 128 " +
+      "AND agent_id NOT GLOB '*[^A-Za-z0-9._-]*'), " +
+      "client TEXT CHECK (client IS NULL OR length(client) = 64), generation INTEGER, " +
+      "authenticated_at REAL, registration TEXT CHECK (registration IS NULL " +
+      "OR length(registration) BETWEEN 1 AND 32), created_at REAL NOT NULL, " +
+      "kind TEXT NOT NULL CHECK (kind IN ('converse', 'run')), last_active REAL NOT NULL, " +
+      "drop_retry REAL, drop_failures INTEGER NOT NULL DEFAULT 0 CHECK (drop_failures >= 0), " +
+      "settled_at REAL, " +
+      "request TEXT CHECK (request IS NULL OR length(request) BETWEEN 1 AND 128), " +
+      "CHECK ((client IS NULL) = (generation IS NULL)), " +
+      "CHECK (client IS NOT NULL OR (authenticated_at IS NULL AND registration IS NULL))) " +
+      "WITHOUT ROWID",
+    "INSERT INTO agent_threads_next (thread_id, store, state, agent_id, client, generation, " +
+      "authenticated_at, registration, created_at, kind, last_active) SELECT t.thread_id, " +
+      "t.store, t.state, t.agent_id, t.client, t.generation, t.authenticated_at, " +
+      "CASE WHEN t.universe IS NULL THEN NULL ELSE IFNULL((SELECT a.agent_id FROM " +
+      "outside_agents a WHERE a.outside_client = t.client AND a.command_center_id = " +
+      "t.universe ORDER BY a.created_at, a.agent_id LIMIT 1), '') END, t.created_at, t.kind, " +
+      "t.last_active FROM agent_threads t",
+    "DROP TABLE agent_threads",
+    "ALTER TABLE agent_threads_next RENAME TO agent_threads",
+    "CREATE INDEX agent_threads_by_client ON agent_threads (client, created_at)",
+    "CREATE INDEX agent_threads_by_activity ON agent_threads (last_active)",
+    "CREATE UNIQUE INDEX agent_threads_conversing ON agent_threads " +
+      "(IFNULL(client, ''), agent_id, IFNULL(registration, '')) " +
+      "WHERE kind = 'converse' AND state = 'ready'",
+    "CREATE INDEX agent_threads_by_registration ON agent_threads (registration) " +
+      "WHERE registration IS NOT NULL",
+    "CREATE TRIGGER agent_threads_kept BEFORE UPDATE ON agent_threads WHEN " +
+      "NEW.thread_id IS NOT OLD.thread_id OR NEW.store IS NOT OLD.store " +
+      "OR (NEW.state IS NOT OLD.state AND NEW.state != 'dropping') " +
+      "OR NEW.agent_id IS NOT OLD.agent_id OR NEW.client IS NOT OLD.client " +
+      "OR NEW.generation IS NOT OLD.generation " +
+      "OR NEW.authenticated_at IS NOT OLD.authenticated_at " +
+      "OR NEW.registration IS NOT OLD.registration OR NEW.created_at IS NOT OLD.created_at " +
+      "OR NEW.kind IS NOT OLD.kind OR NEW.last_active < OLD.last_active BEGIN " +
+      "SELECT RAISE(ABORT, 'a thread never changes the stamp it was made under'); END",
+    `CREATE TRIGGER agent_threads_held AFTER INSERT ON agent_threads BEGIN ${
+      HOLD("NEW", "+")} END`,
+    `CREATE TRIGGER agent_threads_released AFTER DELETE ON agent_threads BEGIN ${
+      HOLD("OLD", "-")} DELETE FROM agent_live WHERE thread_id = OLD.thread_id; ` +
+      "DELETE FROM agent_usage WHERE thread_id = OLD.thread_id; END",
+    "CREATE TRIGGER agent_threads_turns_dropped AFTER DELETE ON agent_threads BEGIN " +
+      "DELETE FROM model_turn_owners WHERE thread = OLD.thread_id; END",
+    "CREATE TRIGGER outside_clients_held AFTER INSERT ON outside_clients BEGIN " +
+      "UPDATE outside_clients SET agents = (SELECT COUNT(*) FROM outside_agents " +
+      "WHERE outside_client = NEW.client), held = (SELECT COUNT(*) FROM scheduled_work " +
+      "WHERE client = NEW.client AND settled_at IS NULL) + (SELECT COUNT(*) FROM " +
+      "agent_cards WHERE client = NEW.client) + (SELECT COUNT(*) FROM agent_threads " +
+      "WHERE client = NEW.client) WHERE client = NEW.client; END",
+    // A registration a thread names: its id, universe and client never change, and a delete
+    // of it is ignored while any thread names it; it goes with the last thread that names
+    // it, once a tombstone with no revoke of its callbacks left to run.
+    "CREATE TRIGGER outside_agents_stamped BEFORE UPDATE OF agent_id, command_center_id, " +
+      "outside_client ON outside_agents WHEN NEW.agent_id IS NOT OLD.agent_id " +
+      "OR NEW.command_center_id IS NOT OLD.command_center_id " +
+      "OR NEW.outside_client IS NOT OLD.outside_client BEGIN " +
+      "SELECT RAISE(ABORT, 'a registration never changes its id, universe or client'); END",
+    "CREATE TRIGGER outside_agents_named BEFORE DELETE ON outside_agents WHEN EXISTS " +
+      "(SELECT 1 FROM agent_threads WHERE registration = OLD.agent_id) BEGIN " +
+      "SELECT RAISE(IGNORE); END",
+    "CREATE TRIGGER agent_threads_unnamed AFTER DELETE ON agent_threads " +
+      "WHEN OLD.registration IS NOT NULL BEGIN DELETE FROM outside_agents " +
+      "WHERE agent_id = OLD.registration AND deleted_at IS NOT NULL AND NOT EXISTS " +
+      "(SELECT 1 FROM ledger_wakes WHERE agent_id = OLD.registration AND kind = 'revoke' " +
+      "AND state IN ('pending', 'rate_limited', 'sending')); END",
     "CREATE TRIGGER agent_threads_settled BEFORE UPDATE OF settled_at ON agent_threads " +
       "WHEN OLD.settled_at IS NOT NULL AND NEW.settled_at IS NOT OLD.settled_at BEGIN " +
       "SELECT RAISE(ABORT, 'a run settles once'); END",

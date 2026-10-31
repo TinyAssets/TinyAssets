@@ -32,7 +32,9 @@ import { Scheduled, type WorkTarget } from "../src/scheduled";
 import { DESTROYED } from "../src/thread-store";
 import { type Thread, THREAD_LIMITS, type ThreadKind, Threads } from "../src/threads";
 import { asked, gated, provider, until } from "./gateway-support";
-import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
+import {
+  DOT, ledgerOn, MCP, MUSE, registeredElsewhere, registeredOn, signedIn,
+} from "./ledger-support";
 import { drainDue, failure, storeSubmission } from "./support";
 import {
   type FauxOwnerDO, type GatedOwnerDO, says, storeScript, wipedSubmission,
@@ -133,8 +135,15 @@ async function agentRig() {
   return {
     owner, stub, bind, session, at,
     /** The client's first verified call records its grant: full, generation 1. */
+    /**
+     * The client's first verified call records its grant: full, generation 1; and its agent
+     * registered in universe `alpha`, where its stamps act.
+     */
     admit: async (origin: Origin) => {
       await stub.outsideAgents(bind(origin, { authenticated_at: at }));
+      await runInDurableObject(stub, (_instance, state) => ledgerOn(state.storage).register(
+        origin, MCP, { command_center_id: "alpha", display_name: "Muse",
+                       delivery_method: "pull", recipe_id: null }));
     },
     /** The owner scopes the client to `capabilities` in universe `alpha`, as agent `main`. */
     scoped: async (origin: Origin, capabilities: string[]) => {
@@ -268,7 +277,8 @@ describe("a scoped client's conversation", () => {
                                            content: text("remember the milk") });
     await r.admit(MUSE);
     const generation = await r.scoped(MUSE, ["write_files"]);
-    const out = await r.in(async (instance) => {
+    const out = await r.in(async (instance, state) => {
+      registeredElsewhere(state.storage, MUSE, "beta");
       const { session } = await threadFor(instance, r.stampOf(MUSE, generation));
       const mine = await instance.harness.prompt("write it", { session });
       // The same grant, for a thread in another universe, and for another agent: no
@@ -1163,7 +1173,8 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
     await r.admit(DOT);
     const made = await r.in(async (instance, state) => {
       const threads = new Threads(state.storage, { ...THREAD_LIMITS, perClient: 3, clients: 5,
-                                                   owner: 2 });
+                                                   owner: 2 }, undefined, undefined, undefined,
+                                  registeredOn(state.storage));
       // The owner's bound is its conversations', one an agent: its runs have their own.
       const tried = async (stamp: Stamped | null, times: number, kind: ThreadKind = "run") => {
         const out: string[] = [];
@@ -1191,7 +1202,15 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
     expect(await held()).toBe(3);
     await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
     expect(await held()).toBe(0);
-    // Its threads gone with its grant, the owner may forget the revoked client.
+    // Its threads gone with its grant, the registration they named goes at the owner's
+    // delete, and the owner may forget the revoked client.
+    const [registration] = await r.in((_instance, state) => state.storage.sql.exec<
+      { agent_id: string }>("SELECT agent_id FROM outside_agents WHERE outside_client = ?",
+                            MUSE.client).toArray());
+    await r.stub.deleteAgent(r.session(), { agent_id: registration!.agent_id });
+    expect(await r.in((_instance, state) => state.storage.sql.exec(
+      "SELECT 1 FROM outside_agents WHERE outside_client = ?", MUSE.client).toArray()))
+      .toEqual([]);
     expect((await r.stub.grantForgetRevoked(r.session(), { clients: [MUSE.client] })).forgotten)
       .toEqual([MUSE.client]);
   });
@@ -1309,7 +1328,7 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
     await r.admit(MUSE);
     const out = await r.in(async (instance, state) => {
       const { thread, session } = await threadFor(instance, r.stampOf(MUSE, 1));
-      const runner = workRunner(new Threads(state.storage), instance.agent,
+      const runner = workRunner(instance.parts.threads, instance.agent,
                                 instance.parts.authority);
       let marked = 0;
       const mark = async () => {

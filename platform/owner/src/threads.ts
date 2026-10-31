@@ -96,7 +96,12 @@ export type Thread = {
   readonly client: string | null;
   readonly generation: number | null;
   readonly authenticated_at: number | null;
-  readonly universe: string | null;
+  /**
+   * The outside agent's registration the stamp was made from (the ledger's agent id):
+   * its universe is that row's command center, which never changes, and the row stays while
+   * a thread names it. None for the owner's thread, or a full grant's (no universe).
+   */
+  readonly registration: string | null;
   readonly created_at: number;
   readonly kind: ThreadKind;
   readonly last_active: number;
@@ -170,9 +175,29 @@ const DROP_STUCK_DETAIL = "a dropped thread's store could not be wiped after sev
 /** Receipts one pass lets go. */
 export const RECEIPTS_PER_PASS = 1_000;
 
+/**
+ * The outside agents' registrations a stamp's universe is made from, as the ledger keeps
+ * them (`Ledger.registered`): a registration's universe and client never change, and the
+ * row stays while a thread names it (the schema's triggers).
+ */
+export interface Registered {
+  /** `client`'s registrations in `universe`, oldest first. A read. */
+  in(client: string, universe: string): readonly string[];
+  /** The universe `registration` is in; undefined when there is no such row. A read. */
+  universe(registration: string): string | undefined;
+}
+
+/** No registrations: a stamp with a universe is refused, as one with no registration. */
+export const NO_REGISTRATIONS: Registered = Object.freeze({
+  in: () => [],
+  universe: () => undefined,
+});
+
 /** What scheduled work reads of the threads: one, by its id; and moves on its activity. */
 export interface ThreadReader {
   get(threadId: unknown): Thread | null;
+  /** The authority `thread` was stamped with, its universe read from its registration. */
+  authority(thread: Thread): AuthorityState;
   /** In a unit: the thread is active until at least `at`; whether it is still there. */
   touch(threadId: string, at: number): boolean;
 }
@@ -306,12 +331,14 @@ export function foldedUsage(total: UsageTotals, usage: Partial<UsageTotals>): Us
   return folded;
 }
 
-/** A thread's authority, as its root's `ta.authority` document holds it. */
-export function threadAuthority(thread: Thread): AuthorityState {
+/**
+ * A thread's authority, as its root's `ta.authority` document holds it: its stamp, in
+ * `universe`, its registration's (`Threads.authority` reads it).
+ */
+export function threadAuthority(thread: Thread, universe: string | null): AuthorityState {
   return authorityOf(thread.client === null ? null
     : { client: thread.client, generation: thread.generation!,
-        authenticated_at: thread.authenticated_at, universe: thread.universe,
-        agent: thread.agent_id });
+        authenticated_at: thread.authenticated_at, universe, agent: thread.agent_id });
 }
 
 /** The SQL condition that what holds a thread (its open work) names the thread in `column`. */
@@ -326,6 +353,7 @@ const RETAINED_AT = "CASE kind WHEN 'run' THEN IFNULL(settled_at, last_active) "
 
 export class Threads implements ThreadReader {
   readonly #storage: OwnerStorage;
+  readonly #registered: Registered;
   readonly #limits: ThreadLimits;
   readonly #retention: ThreadRetention;
   readonly #runs: () => RunPolicy;
@@ -339,7 +367,9 @@ export class Threads implements ThreadReader {
    */
   constructor(storage: OwnerStorage, limits: ThreadLimits = THREAD_LIMITS,
               retention: ThreadRetention = THREAD_RETENTION, held?: HeldBy,
-              runs: () => RunPolicy = () => RUN_POLICY) {
+              runs: () => RunPolicy = () => RUN_POLICY,
+              registered: Registered = NO_REGISTRATIONS) {
+    this.#registered = registered;
     this.#storage = storage;
     this.#limits = limits;
     this.#retention = retention;
@@ -373,11 +403,47 @@ export class Threads implements ThreadReader {
     this.room(by, kind);
     return this.#storage.sql.exec<Thread>(
       "INSERT INTO agent_threads (thread_id, store, state, agent_id, client, generation, " +
-        "authenticated_at, universe, created_at, kind, last_active) " +
+        "authenticated_at, registration, created_at, kind, last_active) " +
         "VALUES (?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
       `thread_${randomHex(16)}`, randomHex(16), id, by?.client ?? null,
-      by?.generation ?? null, by?.authenticated_at ?? null, by?.universe ?? null, now, kind,
+      by?.generation ?? null, by?.authenticated_at ?? null, this.#registration(by), now, kind,
       now).one();
+  }
+
+  /**
+   * The registration a stamp in a universe was made from: its client's outside agent in
+   * that command center (the oldest, when several of its families are; each names the same
+   * universe). Refused loudly when none is left; none for a stamp with no universe.
+   */
+  #registration(by: Stamped | null): string | null {
+    if (by === null || by.universe === null) {
+      return null;
+    }
+    const registration = this.#registered.in(by.client, by.universe)[0];
+    if (registration === undefined) {
+      throw new Refused("a stamp's universe names no registration of its client");
+    }
+    return registration;
+  }
+
+  /**
+   * The universe `thread` was stamped in: its registration's command center, which never
+   * changes and stays while the thread names it; null for none. A read.
+   */
+  universe(thread: Thread): string | null {
+    if (thread.registration === null) {
+      return null;
+    }
+    const universe = this.#registered.universe(thread.registration);
+    if (universe === undefined) {
+      throw new Error("a thread's registration is gone");  // the schema keeps it: a bug
+    }
+    return universe;
+  }
+
+  /** The authority `thread` was stamped with (`threadAuthority`), its universe read. */
+  authority(thread: Thread): AuthorityState {
+    return threadAuthority(thread, this.universe(thread));
   }
 
   /**
@@ -455,10 +521,15 @@ export class Threads implements ThreadReader {
    * stamp acts, or null. A read.
    */
   conversing(by: Stamped | null, agent: string): Thread | null {
+    // Its universe as its registration names it: any of the client's there will do.
+    const where = by === null || by.universe === null ? "registration IS NULL"
+      : "registration IN (SELECT value FROM json_each(?))";
+    const registrations = by === null || by.universe === null ? []
+      : [JSON.stringify(this.#registered.in(by.client, by.universe))];
     return this.#storage.sql.exec<Thread>(
       "SELECT * FROM agent_threads WHERE kind = 'converse' AND IFNULL(client, '') = ? " +
-        "AND agent_id = ? AND IFNULL(universe, '') = ? AND state = 'ready'",
-      by?.client ?? "", agent, by?.universe ?? "").toArray()[0] ?? null;
+        `AND agent_id = ? AND ${where} AND state = 'ready'`,
+      by?.client ?? "", agent, ...registrations).toArray()[0] ?? null;
   }
 
   /**

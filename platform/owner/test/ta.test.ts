@@ -33,7 +33,7 @@ import {
 } from "../src/ta";
 import { Threads } from "../src/threads";
 import { asked, direct, gated, OAUTH, provider, until } from "./gateway-support";
-import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
+import { DOT, ledgerOn, MCP, MUSE, signedIn } from "./ledger-support";
 import { failure } from "./support";
 import { keepsFive } from "../src/agent";
 import {
@@ -93,8 +93,15 @@ async function rig() {
   const session = (): Binding => bind(null, { session: cookie });
   return {
     owner, stub, bind, at,
+    /**
+     * The client's first verified call records its grant: full, generation 1; and its agent
+     * registered in universe `alpha`, where its stamps act.
+     */
     admit: async (origin: Origin) => {
       await stub.outsideAgents(bind(origin, { authenticated_at: at }));
+      await runInDurableObject(stub, (_instance, state) => ledgerOn(state.storage).register(
+        origin, MCP, { command_center_id: "alpha", display_name: "Muse",
+                       delivery_method: "pull", recipe_id: null }));
     },
     /** The owner scopes the client to `capabilities` in universe `alpha`, as agent `main`. */
     scoped: async (origin: Origin, capabilities: string[]) => {

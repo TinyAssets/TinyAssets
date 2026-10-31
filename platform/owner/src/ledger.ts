@@ -518,6 +518,21 @@ export class Ledger {
   }
 
   /** A registered agent, enabled or not; never a deleted agent's tombstone. */
+  /**
+   * The registrations a stamp's universe is made from (`threads.ts`'s `Registered`): a
+   * client's agents in a command center, oldest first, tombstones too; and the command
+   * center of one. A row's id, universe and client never change, and the schema keeps it
+   * while a thread names it.
+   */
+  readonly registered = Object.freeze({
+    in: (client: string, universe: string): string[] => this.#sql.exec<{ agent_id: string }>(
+      "SELECT agent_id FROM outside_agents WHERE outside_client = ? AND command_center_id = ? " +
+        "ORDER BY created_at, agent_id", client, universe).toArray().map((row) => row.agent_id),
+    universe: (registration: string): string | undefined => this.#sql.exec<
+      { command_center_id: string }>("SELECT command_center_id FROM outside_agents " +
+        "WHERE agent_id = ?", registration).toArray()[0]?.command_center_id,
+  });
+
   #agent(agentId: string): Agent | undefined {
     return this.#sql.exec<Agent>(
       "SELECT * FROM outside_agents WHERE agent_id = ? AND deleted_at IS NULL", agentId,
@@ -653,8 +668,9 @@ export class Ledger {
    * The owner deletes an agent: every message in its dm room with their bodies and
    * recipients, its cursor, wakes, rings and receipts, the owner's own read and reply
    * receipts for those messages, and its registry row. While a revoke of its callbacks
-   * is still to run, the row stays as a tombstone until that revoke settles. Each step is
-   * an index range of that agent's rows.
+   * is still to run, or a thread names the row as the registration it was stamped from (the
+   * schema ignores its delete then), the row stays as a tombstone until that revoke
+   * settles, or that thread goes. Each step is an index range of that agent's rows.
    */
   remove(agentId: unknown, now: number = clock()): { agent_id: string; messages: number } {
     if (typeof agentId !== "string") {
@@ -683,10 +699,9 @@ export class Ledger {
       sql.exec("DELETE FROM ledger_readers WHERE reader = ?", agentId);
       sql.exec("DELETE FROM ledger_wakes WHERE agent_id = ? AND kind = 'wake'", agentId);
       sql.exec("DELETE FROM ledger_rings WHERE agent_id = ?", agentId);
-      if (this.#revokePending(agentId)) {
-        sql.exec("UPDATE outside_agents SET disabled_reason = 'deleted', deleted_at = ?, " +
-                   "revision = revision + 1 WHERE agent_id = ?", now, agentId);
-      } else {
+      sql.exec("UPDATE outside_agents SET disabled_reason = 'deleted', deleted_at = ?, " +
+                 "revision = revision + 1 WHERE agent_id = ?", now, agentId);
+      if (!this.#revokePending(agentId)) {
         sql.exec("DELETE FROM outside_agents WHERE agent_id = ?", agentId);
       }
       return { agent_id: agentId, messages: ids.length };

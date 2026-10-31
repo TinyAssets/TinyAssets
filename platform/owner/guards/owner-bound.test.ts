@@ -24,9 +24,10 @@
  * database, so what the owner's object holds is its own bounded rows only, whatever its
  * agents do; this guard replaced A4's runtime storage gauge.
  *
- * The headroom is thin: the worst case is 46.3% of the limit (migration 10), about 371 MB
- * under half. A new table, or a raised bound, must come out of an existing term: lower
- * another bound in the same change, or the guard fails.
+ * The headroom is thin: the worst case is 49.3% of the limit (migration 11, S4-S5:
+ * 4,933,044,828 bytes), about 67 MB under half. A new table, or a raised bound, must come
+ * out of an existing term: lower another bound in the same change, or the guard fails. F1
+ * and every later slice trade terms so; none has room of its own left.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -237,11 +238,12 @@ const RUNS_LIVE = declared("policy", "RUN_SETTINGS", "runs_live").runs_live;
  */
 const liveRows = THREAD_LIMITS.owner + THREAD_LIMITS.clients + RUNS_LIVE;
 /**
- * A thread row at its widest: its ids and store, an agent id of 128 and a universe of 512
- * code points at 4 bytes each, its client hash, a run's request id, and its numbers and
- * words.
+ * A thread row at its widest: its ids and store, an agent id of 128 bytes (its directory's
+ * name, ASCII, a CHECK), its client hash, the registration its stamp was made from (an
+ * outside agent's id, at most 32: the universe is that row's, counted in `outside_agents`),
+ * a run's request id, and its numbers and words. It fits in place in its b-tree page.
  */
-const THREAD_ROW = THREAD_ID + 32 + 128 * 4 + 64 + 512 * 4 + 128 + 10 * 8 + 2 * 8;
+const THREAD_ROW = THREAD_ID + 32 + 128 + 64 + 32 + 128 + 10 * 8 + 2 * 8;
 /**
  * Every thread's turn owners at once: each live thread's open inputs and live compactions,
  * a dropping one's too until its row is forgotten.
@@ -510,7 +512,13 @@ describe("the owner's database bound", () => {
      "Lifecycle's own rows", () => {
     expect(TERMS["agent_threads"]!.rows).toBe(threadRows);
     expect(threadRows).toBe(THREAD_LIMITS.owner + THREAD_LIMITS.clients + THREAD_LIMITS.runs);
-    expect(TERMS["agent_threads"]!.bytes).toBeGreaterThan(2_700);
+    // A thread row names its registration, never a universe: it fits in place, at its widest.
+    expect(KEPT_AS_INDEX.has("agent_threads")).toBe(true);
+    expect(TERMS["agent_threads"]!.bytes).toBeGreaterThan(700);
+    expect(TERMS["agent_threads"]!.bytes).toBeLessThanOrEqual(INDEX_KEPT);
+    expect(source("schema")).toContain("\"authenticated_at REAL, registration TEXT CHECK " +
+                                       "(registration IS NULL \" +");
+    expect(source("schema")).toContain("\"AND agent_id NOT GLOB '*[^A-Za-z0-9._-]*'), \" +");
     expect(RUNTIME["cf_agents_jobs"]!.rows).toBeGreaterThan(liveRows);
     expect(RUNS_LIVE).toBe(2_000);
     expect(worstCase()).toBe(worstCase(TERMS) + worstCase(RUNTIME));

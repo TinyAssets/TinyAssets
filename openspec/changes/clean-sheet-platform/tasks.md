@@ -1053,10 +1053,16 @@ account and no deploy.
   (`WriteGate.wipe`, whose only caller is the erasure's wiring, a guard). Each step resumes
   from the recorded one at the object's next start, by the job, and at every refused door:
   a crash after the alarm's disabling, or a failed wipe, finishes at the next start. The
-  owner-bound guard counts by state: every thread row at its widest (about 3 KB), and only
+  owner-bound guard counts by state: every thread row at its widest (775 bytes, in place:
+  a row names the outside agent's registration its stamp was made from, never a copy of the
+  universe, and its agent id is its directory's ASCII name), and only
   the live ones (conversations and `runs_live`) with turn owners, `model_turns`, usage and
   live rows, wake jobs and keys; a settled run by its row and its receipt; the usage space
-  and total and the erasure mark (worst case in the live/settled report); the alarm guard admits only `erase.ts`'s `disableAlarms` and
+  and total and the erasure mark: 4,933,044,828 bytes, 49.3%, about 67 MB of headroom, so
+  F1 and later slices trade terms. A registration a thread names never changes its id,
+  universe or client (a trigger), and its delete is ignored while a thread names it; the
+  owner's delete leaves a tombstone that goes with the last such thread (it counts against
+  the registry's rows meanwhile); the alarm guard admits only `erase.ts`'s `disableAlarms` and
   `gate.ts`'s `deleteAll` beside the store's. Declared differences from the design: a
   closed dropping Session is not reopened to end it (nothing of it runs in memory); client
   runs share `runs_kept` rather than counting in the conversation bounds; a settled run's
