@@ -5,13 +5,20 @@
  *
  * pi resolves its model `{provider: "gateway", modelId}` at each request against
  * `getModels`, which lists, from the owner's active connections (`connections.ts`), each
- * connected model as `<connection>/<model>` with the metadata the gateway's setup check
- * gave, and `auto` (`auto.ts`) when there is at least one. With none, pi settles the turn
+ * connected model as `<connection>/<model>` with its whole pi-ai record as the gateway's
+ * setup check gave it (thinking-level map, input limits, prices with their tiers), and
+ * `auto` (`auto.ts`) when there is at least one. With none, pi settles the turn
  * `unanswered: no_model`, loudly. The object loads no provider SDK and no catalog: provider
- * code is the gateway's, inside pi-ai.
+ * code is the gateway's, inside pi-ai. pi's compaction thresholds are each listed model's
+ * own (`compaction`, computed from its context window; pi audit F6).
  *
  * Each call, in order:
- * 1. The target: the model named, or `auto`'s route over the request's transcript.
+ * 1. The target: the model named, or `auto`'s route over the request's transcript. A
+ *    request `auto` routes to a model other than the one it mirrors is held to that
+ *    target's own compaction threshold: over it, the call is refused as
+ *    `context_length_exceeded` before anything is reserved, so pi compacts and retries
+ *    once, as for a provider's overflow (pi's settings key `auto`'s thresholds by `auto`
+ *    alone, which mirrors the strongest).
  * 2. The turn: the submitted input at the origin of the request's causal chain, from the
  *    telemetry context pi gives it (`origin.ts`); none is the call's error, `no_run`, and
  *    nothing is reserved.
@@ -41,7 +48,9 @@
  *    request's `sessionId`, so the owner's views stream token by token while pi commits
  *    once a second.
  * 8. **Settle**, in a unit, before pi sees the end, so the turn's next reservation reads it
- *    (`outcomeOf`): `succeeded` with pi-ai's `Usage` from `done`; `failed` when the gateway
+ *    (`outcomeOf`): `succeeded` with pi-ai's `Usage` from `done`, at the cost the gateway's
+ *    own pi-ai adapter priced (its current catalog record, with pi-ai's service-tier and
+ *    fallback adjustments), the number pi's own `pi.usage` records; `failed` when the gateway
  *    answered with a refusal's status, its own or the provider's before any output;
  *    `unknown` for anything else, keeping the reservation. A blob the gateway resealed
  *    under a newer kid is stored by compare-and-swap. Once reserved, a call never leaves
@@ -54,8 +63,9 @@
  * `<status> <text>: ...` wording, whose status would make every one of them retryable. So
  * pi's own classifier (`isRetryableAssistantError`) decides on the gateway's words: it
  * retries a rate limit, a timeout, an overload and a server error, and no refusal of the
- * key or the request (the gateway's `upstreamCode`). No secret is ever in this module's
- * hands but the sealed blob it forwards.
+ * key or the request (the gateway's `upstreamCode`), and it compacts and retries once on
+ * an overflow (`context_length_exceeded`, the gateway's `modelRefusalCode`). No secret is
+ * ever in this module's hands but the sealed blob it forwards.
  */
 import {
   type Api, type AssistantMessage, type AssistantMessageEvent,
@@ -66,9 +76,12 @@ import {
 import { streamSimple as piMessages } from "@earendil-works/pi-ai/api/pi-messages";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
+import type { CompactionSettings } from "@earendil-works/pi-durable";
 
 import { AUTHORITY_RULE, NO_CONVERSATION, offersFive, TOOL_SURFACE } from "./authority";
-import { type Candidate, physicalId, ranked, route } from "./auto";
+import {
+  blockingThreshold, type Candidate, CONTEXT_OVERFLOW, compactionFor, physicalId, ranked, route,
+} from "./auto";
 import type { Connections, Credential, GatewayService, Usable } from "./connections";
 import type { Write } from "./gate";
 import type { LiveTee } from "./live-tee";
@@ -127,17 +140,17 @@ export function envelopeHeader(fields: EnvelopeFields): string {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 }
 
-/** A connected model as pi lists it: pi-messages to the gateway, with its own metadata. */
+/**
+ * A connected model as pi lists it: pi-messages to the gateway, with its whole record (a
+ * copy, so nothing pi does to a model it was handed reaches the connection's).
+ */
 export function listed(candidate: Candidate, id: string = physicalId(candidate),
                        name = `${candidate.display_name}: ${candidate.model.name}`):
     Model<"pi-messages"> {
-  const model = candidate.model;
   return {
+    ...structuredClone(candidate.model) as Omit<Model<"pi-messages">,
+                                               "api" | "provider" | "baseUrl">,
     id, name, api: "pi-messages", provider: GATEWAY_PROVIDER, baseUrl: GATEWAY_BASE_URL,
-    reasoning: model.reasoning, input: [...model.input],
-    cost: { input: model.cost.input, output: model.cost.output,
-            cacheRead: model.cost.cacheRead, cacheWrite: model.cost.cacheWrite },
-    contextWindow: model.contextWindow, maxTokens: model.maxTokens,
   };
 }
 
@@ -197,6 +210,8 @@ export class GatewayProvider implements Provider<Api> {
   readonly #parts: ProviderParts;
   /** The ranking of the connections as last read: re-ranked only when they change. */
   #ranked: { usable: readonly Usable[]; candidates: readonly Candidate[] } | null = null;
+  /** The compaction settings of the models as last ranked: recomputed only when they change. */
+  #compaction: { candidates: readonly Candidate[]; settings: CompactionSettings } | null = null;
 
   constructor(parts: ProviderParts) {
     this.#parts = parts;
@@ -220,6 +235,28 @@ export class GatewayProvider implements Provider<Api> {
     }
     return [listed(strongest, AUTO_MODEL, `Auto (${strongest.model.name})`),
             ...candidates.map((candidate) => listed(candidate))];
+  }
+
+  /**
+   * pi's compaction settings for the listed models (`HarnessSettings.compaction`, read at
+   * each use): each model's thresholds from its own context window (`compactionFor`),
+   * keyed `gateway/<id>` as pi keys its overrides, `auto`'s from the strongest it mirrors.
+   */
+  compaction(): CompactionSettings {
+    const candidates = this.#candidates();
+    if (this.#compaction?.candidates !== candidates) {
+      const overrides: Record<string, ReturnType<typeof compactionFor>> = {};
+      const strongest = candidates[0];
+      if (strongest !== undefined) {
+        overrides[`${GATEWAY_PROVIDER}/${AUTO_MODEL}`] = compactionFor(strongest.model);
+      }
+      for (const candidate of candidates) {
+        overrides[`${GATEWAY_PROVIDER}/${physicalId(candidate)}`] = compactionFor(candidate.model);
+      }
+      this.#compaction = { candidates, settings: Object.freeze({
+        modelOverrides: Object.freeze(overrides) }) };
+    }
+    return this.#compaction.settings;
   }
 
   /** A full-options request is served as a simple one: pi-messages carries the same. */
@@ -259,6 +296,15 @@ export class GatewayProvider implements Provider<Api> {
       return end(failed(model, "no_connected_model", aborted()));
     }
     const physical = listed(target);
+    // `auto` mirrors the strongest, so pi held the request to the strongest's threshold; a
+    // target with a lower one holds it to its own, through pi's overflow recovery. Nothing
+    // is reserved or sent.
+    const mirrored = candidates[0];
+    if (model.id === AUTO_MODEL && mirrored !== undefined
+        && blockingThreshold(target.model) < blockingThreshold(mirrored.model)
+        && estimateContextTokens(context).tokens > blockingThreshold(target.model)) {
+      return end(failed(physical, CONTEXT_OVERFLOW, aborted()));
+    }
     let turn: string;
     try {
       turn = turnOf(options.telemetry);
@@ -294,7 +340,7 @@ export class GatewayProvider implements Provider<Api> {
           model: target.model.id, inputTokens: estimateContextTokens(context).tokens,
           maxOutputTokens: Math.max(1, asked),
           reasoning: options.reasoning !== undefined && physical.reasoning,
-          price: { input: target.model.cost.input, output: target.model.cost.output },
+          rates: physical,
         }, clock(), authority);
         return { credential, reserved };
       });

@@ -19,8 +19,9 @@
  *    authorize URL from the state and the challenge.
  * 2. For OAuth, the callback's `flowFinish`, in the same session, uses the flow up and
  *    hands back the verifier for the gateway's exchange.
- * 3. `commit`: the sealed blob, its kid, the models the gateway's setup check listed (with
- *    the metadata the object has no catalog for) and, for OAuth, the access expiry in clear.
+ * 3. `commit`: the sealed blob, its kid, the models the gateway's setup check listed (each
+ *    its whole pi-ai capability record, which the object has no catalog for: `ModelInfo`)
+ *    and, for OAuth, the access expiry in clear.
  *    A credential the provider issued whose setup check then failed is committed `failed`:
  *    the connection is in `error`, and a revocable one's blob is kept for the lane's
  *    provider revoke; an unrevocable one's is deleted, with an owner notice to delete it
@@ -58,6 +59,8 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 
+import type { Api, Model } from "@earendil-works/pi-ai";
+
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage, Write } from "./gate";
 import type { Notices } from "./notices";
@@ -86,7 +89,8 @@ export interface ConnectionLimits {
  * Flows last 10 minutes and at most 10 are open (the Python's `MAX_PER_OWNER`); a refresh
  * starts 3 minutes before the access token expires (research §2.6); a lease outlasts the
  * gateway's 15 s token-endpoint bound. A connection keeps up to 1,024 models: the largest
- * built-in catalog of pi-ai 1.4.0 has 386 (the connections test finds it by a scan).
+ * built-in catalog of pi-ai 1.4.0 has 386 (the connections test finds it by a scan, and
+ * holds `MODELS_JSON_MAX` to 1,024 of the largest built-in record).
  */
 export const CONNECTION_LIMITS: ConnectionLimits = Object.freeze({
   maxConnections: 50,
@@ -104,17 +108,18 @@ export const CONNECTION_LIMITS: ConnectionLimits = Object.freeze({
   revokesPerPass: 8,
 });
 
-/** A model a connection serves, as the gateway's setup check lists it. */
-export interface ModelInfo {
-  readonly id: string;
-  readonly name: string;
-  readonly reasoning: boolean;
-  readonly input: readonly ("text" | "image")[];
-  readonly contextWindow: number;
-  readonly maxTokens: number;
-  readonly cost: { readonly input: number; readonly output: number;
-                   readonly cacheRead: number; readonly cacheWrite: number };
-}
+/**
+ * A model a connection serves, as the gateway's setup check lists it: pi-ai's own `Model`
+ * record whole (pi audit F6), but for what is the gateway's (`provider`, `api`, `baseUrl`,
+ * and the request shaping its adapter applies: `headers`, `compat`, sampling parameters;
+ * the gateway's `model-record.ts`). So pi offers the thinking levels its map allows
+ * (`getSupportedThinkingLevels`: `xhigh` and `max` only when mapped), `read` resizes images
+ * to its `inputLimits`, and a call is reserved and settled at its own prices, long-context
+ * tiers included (pi-ai's `calculateCost`, `usage.ts`).
+ */
+export type ModelInfo = Readonly<Pick<Model<Api>,
+  "id" | "name" | "reasoning" | "thinkingLevelMap" | "promptCache" | "input" | "inputLimits"
+  | "contextWindow" | "maxTokens" | "cost">>;
 
 /** A sealed blob the gateway hands back at the next version (a reseal or a refresh). */
 export interface Resealed {
@@ -201,13 +206,19 @@ const FAILURE = /^[a-z][a-z_]{0,63}$/;
 const MODEL_ID = /^[\x21-\x7e]{1,200}$/;
 const BLOB_MAX = 64 * 1024;
 /**
- * The models a connection keeps, as JSON: the schema's own ceiling. The largest built-in
- * catalog is about 83 KB for 386 models, 216 bytes a model, so `maxModels` of them is
- * about 220 KB.
+ * The models a connection keeps, as JSON: the schema's own ceiling. The largest record of
+ * pi-ai 1.4.0's built-in catalogs, whole, is 607 bytes, so `maxModels` of the largest are
+ * about 607 KiB (the largest catalog is about 142 KB for its 386 models).
  */
-const MODELS_JSON_MAX = 256 * 1024;
+export const MODELS_JSON_MAX = 640 * 1024;
 const COST_MAX = 1_000_000;
 const TOKENS_MAX = 100_000_000;
+/** pi-ai's thinking levels a map may name (`MODEL_THINKING_LEVELS`), and a value's grammar. */
+const LEVELS: readonly string[] = Object.freeze(["off", "minimal", "low", "medium", "high",
+                                                 "xhigh", "max"]);
+const LEVEL_VALUE = /^[\x21-\x7e]{1,64}$/;
+const TIERS_MAX = 16;
+const RATES: readonly string[] = Object.freeze(["input", "output", "cacheRead", "cacheWrite"]);
 
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -250,20 +261,83 @@ function price(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= COST_MAX;
 }
 
-/** One model of the gateway's setup check, checked whole. */
+/** Its keys are all of `required` and any of `optional`. */
+function keyed(value: Record<string, unknown>, required: readonly string[],
+               optional: readonly string[] = []): boolean {
+  const keys = Object.keys(value);
+  return required.every((key) => keys.includes(key))
+    && keys.every((key) => required.includes(key) || optional.includes(key));
+}
+
+/** A record of the named fields, each a positive integer of at most `max`. */
+function integers(value: unknown, named: readonly string[], max = Number.MAX_SAFE_INTEGER):
+    boolean {
+  return object(value) && keyed(value, [], named) && Object.values(value)
+    .every((entry) => count(entry, max) && entry >= 1);
+}
+
+/** pi-ai's `ModelCost`: four rates, and long-context tiers each above an input count. */
+function cost(value: unknown): boolean {
+  if (!object(value) || !keyed(value, RATES, ["tiers"])
+      || !RATES.every((rate) => price(value[rate]))) {
+    return false;
+  }
+  const tiers = value["tiers"];
+  return tiers === undefined || (Array.isArray(tiers) && tiers.length >= 1
+    && tiers.length <= TIERS_MAX && tiers.every((tier) => object(tier)
+      && keyed(tier, [...RATES, "inputTokensAbove"])
+      && RATES.every((rate) => price(tier[rate]))
+      && count(tier["inputTokensAbove"], TOKENS_MAX)));
+}
+
+function thinkingLevelMap(value: unknown): boolean {
+  return object(value) && keyed(value, [], LEVELS) && Object.values(value)
+    .every((level) => level === null || (typeof level === "string" && LEVEL_VALUE.test(level)));
+}
+
+function promptCache(value: unknown): boolean {
+  return object(value) && keyed(value, [], ["short", "long"]) && Object.values(value)
+    .every((lifetime) => typeof lifetime === "number" && Number.isFinite(lifetime)
+      && lifetime > 0);
+}
+
+function inputLimits(value: unknown): boolean {
+  if (!object(value) || !keyed(value, [], ["maxRequestBytes", "images"])
+      || (value["maxRequestBytes"] !== undefined
+        && !integers({ bytes: value["maxRequestBytes"] }, ["bytes"]))) {
+    return false;
+  }
+  const images = value["images"];
+  if (images === undefined) {
+    return true;
+  }
+  if (!object(images) || !keyed(images, [], ["resize", "maxPerMessage", "maxPerRequest"])) {
+    return false;
+  }
+  const { resize, ...counts } = images;
+  return integers(counts, ["maxPerMessage", "maxPerRequest"])
+    && (resize === undefined || (object(resize)
+      && keyed(resize, [], ["maxWidth", "maxHeight", "maxBytes", "jpegQuality"])
+      && Object.entries(resize).every(([key, entry]) =>
+        count(entry, key === "jpegQuality" ? 100 : Number.MAX_SAFE_INTEGER) && entry >= 1)));
+}
+
+/** One model of the gateway's setup check, its whole record checked. */
 function modelInfo(value: unknown): ModelInfo {
   const ok = object(value)
-    && Object.keys(value).sort().join() === "contextWindow,cost,id,input,maxTokens,name,reasoning"
+    && keyed(value, ["contextWindow", "cost", "id", "input", "maxTokens", "name", "reasoning"],
+             ["thinkingLevelMap", "promptCache", "inputLimits"])
     && typeof value["id"] === "string" && MODEL_ID.test(value["id"])
     && typeof value["name"] === "string" && value["name"].length <= 200
     && typeof value["reasoning"] === "boolean"
     && Array.isArray(value["input"]) && value["input"].length <= 2
     && value["input"].every((kind) => kind === "text" || kind === "image")
     && count(value["contextWindow"], TOKENS_MAX) && count(value["maxTokens"], TOKENS_MAX)
-    && value["maxTokens"] >= 1
-    && object(value["cost"])
-    && Object.keys(value["cost"]).sort().join() === "cacheRead,cacheWrite,input,output"
-    && Object.values(value["cost"]).every(price);
+    && value["contextWindow"] >= 1 && value["maxTokens"] >= 1
+    && cost(value["cost"])
+    && (value["thinkingLevelMap"] === undefined || thinkingLevelMap(value["thinkingLevelMap"]))
+    && (value["promptCache"] === undefined || promptCache(value["promptCache"]))
+    && (value["inputLimits"] === undefined || inputLimits(value["inputLimits"]));
   if (!ok) {
     throw new Invalid("invalid connection model");
   }

@@ -5,7 +5,10 @@
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 
-import { type Candidate, physicalId, rankOf, ranked, route } from "../src/auto";
+import {
+  blockingThreshold, type Candidate, CONTEXT_OVERFLOW, compactionFor, physicalId, rankOf, ranked,
+  route,
+} from "../src/auto";
 import type { ModelInfo, Usable } from "../src/connections";
 import { LiveTee, type LiveEvent } from "../src/live-tee";
 import ranking from "../src/model-ranking.json" with { type: "json" };
@@ -151,5 +154,33 @@ describe("the live tee", () => {
     expect(seen.at(-1)).toEqual({ type: "end" });
     off();
     tee.subscribe("t", () => undefined);  // closed sessions free their room
+  });
+});
+
+describe("each model's compaction thresholds", () => {
+  it("are pi's defaults from 256K tokens, and in proportion to a smaller window", () => {
+    expect(compactionFor({ contextWindow: 1_000_000 })).toEqual(
+      { reserveTokens: 16_384, keepRecentTokens: 20_000, backgroundTokens: 32_768 });
+    expect(compactionFor({ contextWindow: 262_144 })).toEqual(
+      { reserveTokens: 16_384, keepRecentTokens: 20_000, backgroundTokens: 32_768 });
+    expect(compactionFor({ contextWindow: 200_000 })).toEqual(
+      { reserveTokens: 16_384, keepRecentTokens: 20_000, backgroundTokens: 25_000 });
+    expect(compactionFor({ contextWindow: 32_000 })).toEqual(
+      { reserveTokens: 4_000, keepRecentTokens: 8_000, backgroundTokens: 4_000 });
+    expect(compactionFor({ contextWindow: 8_191 })).toEqual(
+      { reserveTokens: 1_023, keepRecentTokens: 2_047, backgroundTokens: 1_023 });
+    expect(blockingThreshold({ contextWindow: 64_000 })).toBe(56_000);
+    expect(blockingThreshold({ contextWindow: 1_000_000 })).toBe(1_000_000 - 16_384);
+  });
+});
+
+describe("a retry after an overflow", () => {
+  it("stays on the model whose context was compacted, where another failure moves on", () => {
+    const candidates = ranked(CONNECTED);
+    const [, second] = candidates;
+    const failed = (errorMessage: string) => answer(second!, { content: [], stopReason: "error",
+                                                                errorMessage });
+    expect(route(candidates, [user("q"), failed(CONTEXT_OVERFLOW)])).toBe(second);
+    expect(route(candidates, [user("q"), failed("upstream_overloaded")])).toBe(candidates[2]);
   });
 });

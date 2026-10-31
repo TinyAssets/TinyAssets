@@ -81,7 +81,7 @@ The gateway SHALL clamp a call's output tokens, on the request and on the model,
 - **THEN** the upstream request is cancelled, and the stream ends with an `error` event of `aborted` or `deadline`
 
 ### Requirement: Gateway errors are fixed codes
-Every error the gateway returns, throws or streams SHALL be one of its fixed codes, carrying no secret, no upstream body or message and no text of an exception it caught; an upstream failure SHALL be classified from the HTTP status the gateway saw.
+Every error the gateway returns, throws or streams SHALL be one of its fixed codes, carrying no secret, no upstream body or message and no text of an exception it caught; an upstream failure SHALL be classified from the HTTP status the gateway saw, and the adapter's message SHALL be read only by pi-ai's own overflow detection, never shown.
 
 #### Scenario: An upstream refusal quotes the key
 - **WHEN** a provider answers 401, 403, 429 or another 4xx with a body that quotes the credential
@@ -100,6 +100,24 @@ An upstream status SHALL be named so that pi-ai's own retry classifier reads it 
 #### Scenario: An overloaded provider
 - **WHEN** a provider answers 529 before any output
 - **THEN** the gateway answers `upstream_overloaded`, and pi's agent, allowed a retry, tries the call again
+
+### Requirement: A context too long for the model reaches pi as an overflow
+A model call's refusal SHALL be read for an overflow before the generic mapping: any 413, and any refusal but a 401, 403 or 429 whose adapter message pi-ai's `isContextOverflow` reads as one, SHALL be answered `context_length_exceeded` with status 413, the phrase pi's overflow detection matches, so pi compacts and retries once.
+
+#### Scenario: Anthropic's "prompt is too long"
+- **WHEN** a provider refuses a call in its own words for its context's length, in any of the Anthropic, OpenAI Responses or Google wire formats
+- **THEN** the gateway answers `context_length_exceeded` with status 413, pi-ai's own client reads the answer as an overflow, and none of the provider's words appear in it
+
+#### Scenario: A tokens-per-minute limit
+- **WHEN** a provider answers 429 with words that read like an overflow ("too many tokens")
+- **THEN** the gateway answers `upstream_rate_limited`, by its status
+
+### Requirement: Every other overflow is the same refusal
+A stream the provider fails for its context's length after a 2xx SHALL end with an `error` event of `context_length_exceeded`, and a request body past the gateway's bound SHALL be refused with it.
+
+#### Scenario: A response that fails mid-stream
+- **WHEN** the OpenAI Responses API answers 200 and then fails the response with `context_length_exceeded`
+- **THEN** the stream ends with an `error` event of `context_length_exceeded`, and none of the provider's words
 
 ### Requirement: Sandbox egress is forwarded raw under the sealed endpoints
 `forward` SHALL send a sandbox request's method, path, query, headers and body to the credential's sealed origin only, strip every inbound credential (authorization and API-key headers, cookies, method overrides, the API-key query parameters, our own `x-ta-` headers and Cloudflare's), inject the sealed secret by the sealed auth template, cut the request at five minutes, and pass the provider's answer through.
@@ -152,8 +170,15 @@ The gateway Worker's config SHALL bind nothing and serve no URL: no binding of a
 - **THEN** the isolation guard fails CI
 
 ### Requirement: The setup check lists each model with the metadata the owner needs
-`verify` SHALL answer a working credential with the models its source serves (pi-ai's catalog for a built-in provider, the declared list for a custom endpoint), each with its id, name, reasoning flag, input types, context window, output limit and prices, since the owner object holds no catalog of its own and estimates, lists and compacts by them.
+`verify` SHALL answer a working credential with the models its source serves (pi-ai's catalog for a built-in provider, the declared list for a custom endpoint), each its whole pi-ai record but for what is the gateway's own (provider, API, base URL, headers, compatibility and sampling parameters), since the owner object holds no catalog of its own and lists, prices, compacts and offers thinking levels by them.
 
 #### Scenario: A key is checked at connect time
 - **WHEN** the binder verifies a sealed Anthropic key that the provider accepts
-- **THEN** the answer lists pi-ai's Anthropic models with their catalog metadata, in catalog order
+- **THEN** the answer lists pi-ai's Anthropic models with their whole catalog records, in catalog order
+
+### Requirement: A declared endpoint's models are whole records
+A declared endpoint's models SHALL be pi-ai records of the same fields, each checked whole when it is sealed and again when it is opened, within the owner object's own bounds (ids and names of 200 characters, prices of $1M a million tokens, token counts of 100M), so a record sealed here commits there.
+
+#### Scenario: A declared model names a field pi-ai's record does not have
+- **WHEN** a custom source declares a model with a compatibility block, a thinking level pi-ai does not have, a price tier whose threshold is missing or not a whole count of tokens, or a price or token count past the owner's bounds
+- **THEN** the source is refused `invalid_source`

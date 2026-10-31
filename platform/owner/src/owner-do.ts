@@ -82,7 +82,8 @@ import { DurableObject } from "cloudflare:workers";
 import { type PiOperationResult } from "agents/harness/pi";
 
 import {
-  type AgentConfig, type AgentParts, gatewayAgent, type OwnerAgent, WAITS_FULL,
+  type AgentConfig, type AgentParts, gatewayAgent, type OwnerAgent, type UsageView,
+  WAITS_FULL,
 } from "./agent";
 import {
   Authority, AUTHORITY_RULE, type AuthorityState, NO_AUTHORITY, type Stamped, stampOf,
@@ -1418,6 +1419,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#synced(() => this.#widening(binding, "flow_finish", { state: "[state]" },
                                              "connect a model source", (_account, id) =>
       this.#connections.flowFinish(id, request, clock())));
+  }
+
+  /**
+   * The owner's model usage as pi records it: pi's `pi.usage` summed over its
+   * conversations, and the metrics pi and pi-ai recorded through the telemetry adapter
+   * (`OwnerAgent.usage`), for G5's measurement. The owner's alone; no cap reads it.
+   */
+  async usageMetrics(binding: Binding): Promise<UsageView & { owner: string }> {
+    const { owner } = await this.#door(() => this.#owner(binding, "read its model usage"));
+    return { owner, ...await this.#agent.usage() };
   }
 
   /** The owner's newest model-call receipts: what each call reserved, and what it cost. */

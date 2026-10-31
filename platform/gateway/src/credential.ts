@@ -13,6 +13,7 @@
  * by older code that no longer fits fails loudly rather than being half-read.
  */
 import { Failure } from "./failure";
+import { checkedRecord, type ModelRecord } from "./model-record";
 
 /** One place a credential may be sent: an HTTPS origin, its paths and its methods. */
 export interface Endpoint {
@@ -28,18 +29,6 @@ export interface AuthTemplate {
   readonly scheme: string;
 }
 
-/** A model a custom endpoint serves: the metadata pi-ai's catalog holds for built-ins. */
-export interface CustomModel {
-  readonly id: string;
-  readonly name: string;
-  readonly reasoning: boolean;
-  readonly input: readonly ("text" | "image")[];
-  readonly contextWindow: number;
-  readonly maxTokens: number;
-  readonly cost: { readonly input: number; readonly output: number;
-                   readonly cacheRead: number; readonly cacheWrite: number };
-}
-
 /** The source data sealed with the secret (§2.4). */
 export interface Upstream {
   /** A pi-ai provider id, or `custom` for a declared endpoint. */
@@ -50,8 +39,8 @@ export interface Upstream {
   readonly auth: AuthTemplate;
   /** A `GET` that answers 2xx when the secret is good; one of the endpoints. */
   readonly verify_url?: string;
-  /** For `custom` only: the models it serves. */
-  readonly models?: readonly CustomModel[];
+  /** For `custom` only: the models it serves, each its whole record (`model-record.ts`). */
+  readonly models?: readonly ModelRecord[];
 }
 
 /** How the gateway authenticates to a token endpoint (RFC 6749 §2.3). */
@@ -131,7 +120,6 @@ const SCHEME = /^(?:[A-Za-z][A-Za-z0-9-]{0,31})?$/;
 const TOKEN = /^[\x21-\x7e]+$/;
 /** An exact path, or a prefix ending `/*` (`/*` alone is every path at the origin). */
 const PATH = /^\/(?:[A-Za-z0-9._~!$&'()+,;=:@-][A-Za-z0-9._~!$&'()+,;=:@/-]*)?(?:\/?\*)?$/;
-const MODEL_ID = /^[\x21-\x7e]{1,256}$/;
 const METHODS: readonly string[] = Object.freeze(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
 /** Encoded separators and dots, which an upstream may decode past a path check. */
 const ENCODED = /%(?:2f|5c|2e)|\\/i;
@@ -169,13 +157,6 @@ function text(value: unknown, pattern: RegExp, max = 1024): string {
 
 function count(value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max) {
-    throw new Failure("invalid_source");
-  }
-  return value;
-}
-
-function price(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
     throw new Failure("invalid_source");
   }
   return value;
@@ -253,32 +234,6 @@ function endpoint(value: unknown): Endpoint {
   });
 }
 
-function customModel(value: unknown): CustomModel {
-  const fields = shape(value, ["id", "name", "reasoning", "input", "contextWindow", "maxTokens",
-                               "cost"]);
-  const cost = shape(fields["cost"], ["input", "output", "cacheRead", "cacheWrite"]);
-  if (typeof fields["reasoning"] !== "boolean") {
-    throw new Failure("invalid_source");
-  }
-  const input = list(fields["input"], 1, 2, (kind) => {
-    if (kind !== "text" && kind !== "image") {
-      throw new Failure("invalid_source");
-    }
-    return kind;
-  });
-  return Object.freeze({
-    id: text(fields["id"], MODEL_ID),
-    name: text(fields["name"], /^[^\p{Cc}]{1,256}$/u),
-    reasoning: fields["reasoning"],
-    input: Object.freeze(input),
-    contextWindow: count(fields["contextWindow"], 1),
-    maxTokens: count(fields["maxTokens"], 1),
-    cost: Object.freeze({ input: price(cost["input"]), output: price(cost["output"]),
-                          cacheRead: price(cost["cacheRead"]),
-                          cacheWrite: price(cost["cacheWrite"]) }),
-  });
-}
-
 /** An API id the gateway runs; any other is refused when it is sealed. */
 function supported(api: string): string {
   if (!SUPPORTED_APIS.includes(api)) {
@@ -309,7 +264,7 @@ function upstream(value: unknown, endpoints: readonly Endpoint[]): Upstream {
     base_url: fields["base_url"] as string,
     auth: Object.freeze({ header: text(auth["header"], HEADER), scheme: text(auth["scheme"], SCHEME) }),
     ...(verify === undefined ? {} : { verify_url: verify as string }),
-    ...(custom ? { models: Object.freeze(list(fields["models"], 1, MODELS_MAX, customModel)) } : {}),
+    ...(custom ? { models: Object.freeze(list(fields["models"], 1, MODELS_MAX, checkedRecord)) } : {}),
   });
 }
 

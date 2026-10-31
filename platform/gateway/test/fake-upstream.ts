@@ -23,6 +23,16 @@
  *   a stream that lasts longer than the owner object's one-second partial commits.
  *
  * - `cmd:redirect307`: a 307 to another host.
+ * - `cmd:overflow`: the provider's own refusal of a context too long for the model (HTTP
+ *   400, in its own words); `cmd:overflow-<id>` refuses so the first time `<id>` is asked
+ *   and answers as `cmd:echo` after, as a provider does once the context was compacted.
+ * - `cmd:streamoverflow`: a 200 stream that then fails for the context's length, as the
+ *   OpenAI Responses API reports it (`response.failed`, `context_length_exceeded`).
+ * - `cmd:tpm`: a 429 whose words read like an overflow ("too many tokens"), as a
+ *   tokens-per-minute limit does.
+ * - `cmd:measured-<name>`: as `cmd:ta-<name>` (Anthropic), its usage counting the request's
+ *   own size as its input, as a provider bills it; `cmd:measured-echo`, and any request
+ *   that offers no tools (a compaction's summary), is answered as `cmd:echo`, billed so too.
  *
  * `x-fake-mode` drives the raw passthrough tests (`echo`, `quote`, `hang`, `redirect`,
  * `say`, `decoded`, `hdr`, `jsonesc`); `auth.test` and `auth.openai.com` are token
@@ -32,6 +42,8 @@
  * gateway's.
  */
 const cancelled = new Map<string, boolean>();
+/** The `cmd:overflow-<id>` ids already refused once. */
+const overflowed = new Set<string>();
 /** What `cmd:ta-model` hands `ta`'s nested model call besides its question. */
 const TA_SYSTEM = "answer in one word";
 const TA_MAX_TOKENS = 77;
@@ -56,17 +68,20 @@ function command(body: string): string {
 }
 
 interface Format {
-  readonly start: (model: string) => string;
+  /** Its first frames; `input` the input tokens it bills, where its format bills them first. */
+  readonly start: (model: string, input?: number) => string;
   readonly text: (delta: string) => string;
   readonly finish: (text: string) => string;
+  /** The provider's refusal of a context too long for the model: its status 400 body. */
+  readonly overflow: unknown;
 }
 
 function anthropicFormat(): Format {
   return {
-    start: (model) => sse([
+    start: (model, input = USAGE.input) => sse([
       ["message_start", { type: "message_start", message: {
         id: "msg_fake", type: "message", role: "assistant", model, content: [],
-        stop_reason: null, usage: { input_tokens: USAGE.input, output_tokens: 1 } } }],
+        stop_reason: null, usage: { input_tokens: input, output_tokens: 1 } } }],
       ["content_block_start", { type: "content_block_start", index: 0,
                                 content_block: { type: "text", text: "" } }]]),
     text: (delta) => sse([["content_block_delta", { type: "content_block_delta", index: 0,
@@ -76,6 +91,8 @@ function anthropicFormat(): Format {
       ["message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" },
                           usage: { output_tokens: USAGE.output } }],
       ["message_stop", { type: "message_stop" }]]),
+    overflow: { type: "error", error: { type: "invalid_request_error",
+                                        message: "prompt is too long: 213462 tokens > 200000 maximum" } },
   };
 }
 
@@ -95,6 +112,10 @@ function openaiFormat(): Format {
         id: "resp_fake", status: "completed",
         usage: { input_tokens: USAGE.input, output_tokens: USAGE.output,
                  total_tokens: USAGE.input + USAGE.output } } }]]),
+    overflow: { error: {
+      message: "Your input exceeds the context window of this model. Please adjust your input " +
+        "and try again.",
+      type: "invalid_request_error", param: "input", code: "context_length_exceeded" } },
   };
 }
 
@@ -107,6 +128,9 @@ function googleFormat(): Format {
       content: { role: "model", parts: [{ text: "" }] }, finishReason: "STOP" }],
       usageMetadata: { promptTokenCount: USAGE.input, candidatesTokenCount: USAGE.output,
                        totalTokenCount: USAGE.input + USAGE.output } }]]),
+    overflow: { error: { code: 400, status: "INVALID_ARGUMENT",
+                         message: "The input token count (1196265) exceeds the maximum number " +
+                           "of tokens allowed (1048575)." } },
   };
 }
 
@@ -115,7 +139,7 @@ function outputCap(body: Record<string, unknown>): unknown {
   return body["max_tokens"] ?? body["max_output_tokens"] ?? config?.["maxOutputTokens"] ?? null;
 }
 
-async function model(request: Request, format: Format): Promise<Response> {
+async function model(request: Request, format: Format, input?: number): Promise<Response> {
   const text = await request.text();
   const body = JSON.parse(text) as Record<string, unknown>;
   const cmd = command(text);
@@ -125,6 +149,26 @@ async function model(request: Request, format: Format): Promise<Response> {
   if (failing) {
     return Response.json({ error: { type: "fake", message: `bad key ${credential}` } },
                          { status: Number(failing[1]) });
+  }
+  const overflow = /^overflow(?:-([a-z0-9]+))?$/.exec(cmd);
+  if (overflow && (overflow[1] === undefined || !overflowed.has(overflow[1]))) {
+    if (overflow[1] !== undefined) {
+      overflowed.add(overflow[1]);
+    }
+    return Response.json(format.overflow, { status: 400 });
+  }
+  if (cmd === "tpm") {
+    return Response.json({ error: { message: "Too many tokens per minute for this key" } },
+                         { status: 429 });
+  }
+  if (cmd === "streamoverflow") {
+    return new Response(sse([
+      ["response.created", { type: "response.created", response: { id: "resp_fake" } }],
+      ["response.failed", { type: "response.failed", response: {
+        id: "resp_fake", status: "failed",
+        error: { code: "context_length_exceeded",
+                 message: "Your input exceeds the context window of this model." } } }]]),
+                        { headers: { "content-type": "text/event-stream" } });
   }
   if (cmd === "redirect307") {
     return new Response(null, { status: 307, headers: { location: "https://evil.test/steal" } });
@@ -193,13 +237,13 @@ async function model(request: Request, format: Format): Promise<Response> {
     max: outputCap(body),
   });
   const half = Math.floor(reply.length / 2);
-  const payload = format.start(name) + format.text(reply.slice(0, half))
+  const payload = format.start(name, input) + format.text(reply.slice(0, half))
     + format.text(reply.slice(half)) + format.finish(reply);
   return new Response(payload, { headers: { "content-type": "text/event-stream" } });
 }
 
 function anthropicTool(request: Request, body: Record<string, unknown>,
-                       tool?: string, args?: unknown): Response {
+                       tool?: string, args?: unknown, inputTokens = USAGE.input): Response {
   const name = String(body["model"]);
   const json = args === undefined ? "" : JSON.stringify(args);
   const input = tool === undefined ? ["{\"q\":", "\"pi\"}"]
@@ -207,7 +251,7 @@ function anthropicTool(request: Request, body: Record<string, unknown>,
   return new Response(sse([
     ["message_start", { type: "message_start", message: {
       id: "msg_tool", type: "message", role: "assistant", model: name, content: [],
-      stop_reason: null, usage: { input_tokens: USAGE.input, output_tokens: 1 } } }],
+      stop_reason: null, usage: { input_tokens: inputTokens, output_tokens: 1 } } }],
     ["content_block_start", { type: "content_block_start", index: 0,
                               content_block: { type: "thinking", thinking: "", signature: "" } }],
     ["content_block_delta", { type: "content_block_delta", index: 0,
@@ -400,6 +444,15 @@ export default {
       const calling = /^call-([a-z]+)$/.exec(command(text));
       if (command(text) === "tool" || calling !== null) {
         return anthropicTool(request, JSON.parse(text) as Record<string, unknown>, calling?.[1]);
+      }
+      const measured = /^measured-([a-z]+)$/.exec(command(text));
+      if (measured !== null) {
+        const body = JSON.parse(text) as Record<string, unknown>;
+        const billed = Math.ceil(text.length / 3.5);
+        return Array.isArray(body["tools"]) && body["tools"].length > 0 && measured[1] !== "echo"
+          ? anthropicTool(request, body, "ta", { op: "call", name: measured[1], arguments: {} },
+                          billed)
+          : model(request, anthropicFormat(), billed);
       }
       const through = /^ta-([a-z]+)(?:-([a-z0-9-]+))?$/.exec(command(text));
       if (through !== null) {
