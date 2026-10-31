@@ -30,6 +30,7 @@ import type { GatewayService, Resealed } from "../src/connections";
 import { turnOf } from "../src/origin";
 import { type OwnerEnv, OwnerDO } from "../src/owner-do";
 import { HOST_TIMING, type HostTiming } from "../src/thread-host";
+import type { StoreRpc, StoreSessionRpc } from "../src/thread-store";
 import { harnessOf, type TestHarness } from "./agent-support";
 
 export { OwnerDO } from "../src/owner-do";
@@ -85,6 +86,8 @@ export interface Probes {
   writeGate: Promise<void> | null;
   /** How many of the agent's write units have been asked for on this instance. */
   writes: number;
+  /** The store calls the agent's Sessions made on this instance, by method. */
+  storeCalls: Record<string, number>;
 }
 
 /** Probes as a fresh instance has them. */
@@ -92,7 +95,40 @@ export function freshProbes(): Probes {
   return { readGate: null, reads: 0, holdGate: null, holds: 0, holdLinger: 0, spawned: null,
            submitted: [],
            background: null, backgroundGate: null, toolGate: null, gated: [], nestGate: null,
-           rewrite: null, widen: null, inject: null, writeGate: null, writes: 0 };
+           rewrite: null, widen: null, inject: null, writeGate: null, writes: 0,
+           storeCalls: {} };
+}
+
+/** A store whose sessions' calls are counted into `calls()`, by method. */
+function countedStore(store: StoreRpc, calls: () => Record<string, number>): StoreRpc {
+  const count = (method: string) => {
+    const kept = calls();
+    kept[method] = (kept[method] ?? 0) + 1;
+  };
+  const counted = (session: StoreSessionRpc): StoreSessionRpc => ({
+    commit: (writes) => {
+      count("commit");
+      return session.commit(writes);
+    },
+    read: (method, args) => {
+      count(method);
+      return session.read(method, args);
+    },
+    [Symbol.dispose]: () => (session as Partial<Disposable>)[Symbol.dispose]?.(),
+  } as StoreSessionRpc);
+  return {
+    open: async (holder) => {
+      count("open");
+      const { next, session } = await store.open(holder);
+      return { next, session: counted(session) };
+    },
+    attach: async (holder) => {
+      count("attach");
+      return counted(await store.attach(holder));
+    },
+    size: () => store.size(),
+    destroy: () => store.destroy(),
+  };
 }
 
 /** Resolves when `context`'s abort signal fires: a tool that honours its abort. */
@@ -476,7 +512,9 @@ export class FauxOwnerDO extends OwnerDO {
         await probes.writeGate;
         return parts.write(unit);
       };
-      made.agent = new OwnerAgent({ ...parts, write }, {
+      const stores: AgentParts["stores"] = (name) =>
+        countedStore(parts.stores(name), () => made.self!.probes.storeCalls);
+      made.agent = new OwnerAgent({ ...parts, write, stores }, {
         models: () => models, timing, ...testExtensions(() => made.self!.probes) });
       return made.agent;
     });

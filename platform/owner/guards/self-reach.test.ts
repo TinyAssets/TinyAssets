@@ -65,22 +65,32 @@ export function selfReach(fileName: string, source: string): string[] {
 /** The thread store's source: its own object, which serves pi's records and reaches nothing. */
 const STORE = "owner/src/thread-store.ts";
 
-/**
- * Each way a thread store's source could reach past its own storage: any `env` (a binding,
- * `this.env`, a destructured one), any import of the owner's own modules but the store
- * types' (`import type`), or a runtime name but the class it extends and `RpcTarget` (its
- * sessions).
- */
 /** The runtime names a thread store may import: its class, and its sessions'. */
 const STORE_IMPORTS = new Set(["DurableObject", "DurableObject,RpcTarget"]);
 
+/**
+ * Each way a thread store's source could reach past its own storage: any `env` (a binding,
+ * `this.env`, a destructured one, or the string, as `this["env"]` or `Reflect.get(this,
+ * "env")` would name it), `this` other than as a property access by name (`this[...]`,
+ * `const { ... } = this`, `this` handed to a call), `Reflect`, any import of the owner's own
+ * modules but the store types' (`import type`), or a runtime name but the class it extends
+ * and `RpcTarget` (its sessions).
+ */
 export function storeReach(fileName: string, source: string): string[] {
   const file = parse(fileName, source);
   const problems: string[] = [];
   const report = reporter(file, problems);
   const visit = (node: ts.Node): void => {
-    if ((ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) && node.text === "env") {
+    if ((ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteralLike(node))
+        && node.text === "env") {
       report(node, "names `env`: a thread store reads no binding");
+    }
+    if (ts.isIdentifier(node) && node.text === "Reflect") {
+      report(node, "names `Reflect`: a thread store reads its own members by name only");
+    }
+    if (node.kind === ts.SyntaxKind.ThisKeyword
+        && !(ts.isPropertyAccessExpression(node.parent) && node.parent.expression === node)) {
+      report(node, "uses `this` but by a member's name: a thread store reads no binding");
     }
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
       const from = node.moduleSpecifier.text;
@@ -118,6 +128,11 @@ describe("thread-store guard", () => {
     "import { RpcTarget } from 'cloudflare:workers';",
     "import { Files } from './files';",
     "export class S { m(o: { env: unknown }) { const { env } = o; return env; } }",
+    "export class S extends DurableObject { m() { return this[\"env\"]; } }",
+    "export class S extends DurableObject { m() { return this[`e${'nv'}`]; } }",
+    "export class S extends DurableObject { m() { return Reflect.get(this, 'e' + 'nv'); } }",
+    "export class S extends DurableObject { m() { const { ...all } = this; return all; } }",
+    "export class S extends DurableObject { m() { return Object.values(this); } }",
   ])("sees %s", (source) => {
     expect(storeReach(STORE, source)).not.toEqual([]);
   });

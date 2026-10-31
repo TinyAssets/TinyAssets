@@ -29,6 +29,7 @@ import { originContext } from "../src/origin";
 import { type Binding, workRunner } from "../src/owner-do";
 import { Policy, policyDigest } from "../src/policy";
 import { Scheduled, type WorkTarget } from "../src/scheduled";
+import { DESTROYED } from "../src/thread-store";
 import { type Thread, Threads } from "../src/threads";
 import { asked, gated, provider, until } from "./gateway-support";
 import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
@@ -590,6 +591,82 @@ describe("a policy write", () => {
     expect(out.background).toMatchObject({ status: "failed" });
     expect(out.heard).toEqual(["end"]);
     expect(out.waited).toBe(WAIT_ENDED);
+  });
+
+  it("ends a thread its live row says is working, its Session closed: opened past the " +
+     "bound, aborted before it resumes, so no model request starts, then closed", async () => {
+    const r = await agentRig();
+    const op = await r.in(async (instance) => {
+      instance.probes.holdGate = new Promise(() => undefined);
+      await threadFor(instance, null);
+      const { operationId } = await instance.harness.submit("hold please");
+      await until(() => instance.probes.holds === 1, "the hold to start");
+      return operationId;
+    });
+    // The object dies mid-run: its row still says the thread is working.
+    await runInDurableObject(r.stub, (_i, state) => state.abort("crash")).catch(() => undefined);
+    const again = <R>(act: (instance: FauxOwnerDO) => Promise<R>) =>
+      runInDurableObject(env.AGENT.getByName(r.owner), act);
+    const out = await again(async (instance) => {
+      const requests: number[] = [];
+      instance.script = Array.from({ length: 4 }, () => (messages: Message[]) => {
+        requests.push(messages.length);
+        return says("resumed");
+      });
+      instance.timing.openMax = 0;  // every other open is refused: an ending's is not
+      const thread = await ownRow(instance);
+      const before = { open: instance.agent.host.openThreads(),
+                       active: instance.parts.threads.active() };
+      const { generation, policy } = await instance.policyRead(r.bind(null));
+      await instance.policyWrite(r.session(), { expected_generation: generation, policy });
+      return { before, thread: thread.thread_id, requests,
+               after: instance.agent.host.openThreads() };
+    });
+    expect(out.before).toEqual({ open: [], active: [out.thread] });
+    expect(out.requests).toEqual([]);
+    expect(out.after).toEqual([]);
+    const settled = await again(async (instance) => {
+      instance.timing.openMax = 4;
+      return instance.agent.status(await ownRow(instance), op);
+    });
+    expect([settled.status, settled.reason]).toEqual(["unanswered", "aborted"]);
+  });
+
+  it("ends a thread whose open Session is working though its live row is gone", async () => {
+    const r = await agentRig();
+    const out = await r.in(async (instance, state) => {
+      instance.probes.holdGate = new Promise(() => undefined);
+      await threadFor(instance, null);
+      const { operationId } = await instance.harness.submit("hold please");
+      await until(() => instance.probes.holds === 1, "the hold to start");
+      state.storage.sql.exec("DELETE FROM agent_live");
+      const { generation, policy } = await instance.policyRead(r.bind(null));
+      await instance.policyWrite(r.session(), { expected_generation: generation, policy });
+      return instance.harness.wait(operationId);
+    });
+    expect([out.status, out.reason]).toEqual(["unanswered", "aborted"]);
+  });
+
+  it("rejects, loudly, when a working thread's work cannot be ended; the write stands",
+     async () => {
+    const r = await agentRig();
+    const thread = await r.in(async (instance) => {
+      const { thread: row } = await threadFor(instance, null);
+      expect((await instance.harness.prompt("hi")).status).toBe("done");
+      await instance.agent.host.close(row.thread_id);
+      return row;
+    });
+    // Its store is gone, and its row says it is working: it cannot be opened to end it.
+    await env.PISTORE.getByName(thread.store).destroy();
+    await r.in((_instance, state) => {
+      state.storage.sql.exec("INSERT INTO agent_live (thread_id, active, wake_at) " +
+                             "VALUES (?, 1, NULL)", thread.thread_id);
+    });
+    const { generation, policy } = await r.stub.policyRead(r.bind(null));
+    const refused = await failure(() => r.stub.policyWrite(r.session(), {
+      expected_generation: generation, policy }));
+    expect(refused.message).toContain(DESTROYED);
+    expect((await r.stub.policyRead(r.bind(null))).generation).toBe(generation + 1);
   });
 });
 

@@ -398,6 +398,7 @@ export class OwnerAgent {
       open: (thread, onWake) => this.#open(thread, onWake),
       exists: (thread) => parts.threads.get(thread) !== null,
       live: (thread, wake) => parts.live(thread, wake),
+      notice: (type, detail) => this.#report(type, detail),
     }, source.timing ?? HOST_TIMING);
   }
 
@@ -781,7 +782,10 @@ export class OwnerAgent {
 
   /**
    * A policy write ends every thread's work: every wait, every view, and the work of each
-   * thread with work running (its live row, or an open Session), opened if need be.
+   * thread with work running (its live row, or an open Session), opened if need be: an
+   * ending's open is never refused, and aborts before the Session resumes
+   * (`ThreadHost.end`). A thread whose work could not be ended rejects this, so the door
+   * rejects too.
    */
   async endAll(): Promise<void> {
     this.#endWaits();
@@ -789,8 +793,7 @@ export class OwnerAgent {
     const running = new Set([...this.#parts.threads.active(),
       ...this.host.openThreads().filter((thread) => this.host.peek(thread)?.pi.wake().active)]);
     await this.#within(Promise.all([...running].map((thread) =>
-      this.host.use(thread, ({ pi }) => this.#endSession(pi, false))
-        .catch(() => console.error("a thread's work could not be ended")))));
+      this.host.end(thread, ({ pi }) => this.#endSession(pi, false)))));
   }
 }
 

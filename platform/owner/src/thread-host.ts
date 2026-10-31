@@ -33,12 +33,24 @@
  * one has closed, over what it committed, and pi resumes its tasks (an unsafe tool cut off
  * comes back `interrupted`). A wait the failure cut short waits again on the new Session.
  *
+ * A task pi's restart limit parked (cut off `restartLimit` times in a row without progress)
+ * would hold its thread's run forever: its input placed, its job gone, every follow-up
+ * queued behind it. Each open looks for one (`inspect`) before it resumes the Session; one
+ * found ends the run it is in (`#endParked`): its conversations are aborted, background work
+ * included, so the input settles `unanswered`, and the owner is told (`PARKED`). While it
+ * ends, the operation's status says so (`reason: "parked"`).
+ *
+ * Each open Session holds its store's one RPC session (`remote-storage.ts`), released when
+ * the Session closes, however it closes. Holding it keeps the store in memory, billed: a
+ * pinned (watched, A6) Session pins its store's duration for as long as it is pinned.
+ *
  * Ported from agents 0.31.0 `harness/pi` (PiHarness): `_admit`, `_wake`/`_wakeFor`,
  * `_wakeStep`, `_waitWhileActive`, `onJobError` with its backoff, `_open`/`_doOpen`/
- * `_piClosing`, `enqueue`, `withdraw` and `settled`, each keyed by thread. Dropped: the
- * `sessions` API, `prompt`, `messages`, `events()` (removed on pi main), parking and
- * `retryTask` (removed on pi main), `skills()` (it adds model tools). Each agents release:
- * diff PiHarness and carry the fixes that apply (tasks 5).
+ * `_piClosing`, `enqueue`, `withdraw`, `settled` and `_parked`, each keyed by thread.
+ * Dropped: the `sessions` API, `prompt`, `messages`, `events()` (removed on pi main),
+ * `retryTask` (removed on pi main: a parked run is ended, not retried), `skills()` (it adds
+ * model tools). Each agents release: diff PiHarness and carry the fixes that apply
+ * (tasks 5).
  *
  * The ported parts: Copyright (c) 2025 Cloudflare, Inc. MIT License. Permission is hereby
  * granted, free of charge, to any person obtaining a copy of this software and associated
@@ -56,7 +68,7 @@
  */
 import { BACKGROUND_CONTEXT, type Context, withAbortSignal } from "@earendil-works/chord/context";
 import {
-  type EntryRecord, type Harness, type JsonObject, ROOT_CONVERSATION_ID,
+  type ConversationId, type EntryRecord, type Harness, type JsonObject, ROOT_CONVERSATION_ID,
   type SettledSubmissionRecord, type Storage, type Wake,
 } from "@earendil-works/pi-durable";
 import {
@@ -104,6 +116,10 @@ export const MAX_WAKE_BACKOFF_MS = 10 * 60_000;
 const SESSION_CLOSE_MS = 1_000;
 /** An open refused past `openMax` with no idle Session to close. */
 export const SESSIONS_FULL = "too many of the agent's threads are working at once";
+/** The owner notice a parked task's ended run leaves (`#endParked`). */
+export const PARKED = "run_parked";
+const PARKED_DETAIL = "a task was cut off too many times in a row without progress, so " +
+  "pi parked it; the run it was in was ended, and its input left unanswered";
 
 /** The host's timings and bound; production's are the constants, a test's shorter. */
 export interface HostTiming {
@@ -135,6 +151,8 @@ export interface HostParts {
   exists(thread: string): boolean;
   /** Keep `thread`'s wake in the owner's rows, in a unit of the write gate. */
   live(thread: string, wake: Wake): Promise<void>;
+  /** Keep an owner notice (`notices.ts`). */
+  notice(type: string, detail: string): void;
 }
 
 /** An operation, as pi's submission record says it stands. */
@@ -167,6 +185,10 @@ class Slot {
   admitting = 0;
   leases = 0;
   pins = 0;
+  /** Endings in flight (`end`): the job never resumes the Session under one. */
+  ending = 0;
+  /** A parked task's run is being ended (`#endParked`). */
+  parked = false;
   lastUsed = Date.now();
 }
 
@@ -303,7 +325,9 @@ export class ThreadHost extends LifecycleCapability {
         case "queued":
           return { operationId, status: "queued" };
         case "placed":
-          return { operationId, status: "running" };
+          return this.#slots.get(thread)?.parked === true
+            ? { operationId, status: "running", reason: "parked" }
+            : { operationId, status: "running" };
         default:
           return this.#result(pi, operationId, record as SettledSubmissionRecord, BG);
       }
@@ -350,21 +374,48 @@ export class ThreadHost extends LifecycleCapability {
     return this.#use(thread, (opened) => act(opened));
   }
 
-  async #use<T>(thread: string, act: (opened: Opened, slot: Slot) => Promise<T>): Promise<T> {
-    const { opened, slot } = await this.#open(thread);
-    slot.leases++;
-    slot.lastUsed = Date.now();
+  async #use<T>(thread: string, act: (opened: Opened, slot: Slot) => Promise<T>,
+                ending = false): Promise<T> {
+    const { opened, slot } = await this.#open(thread, ending);
     try {
       return await act(opened, slot);
     } finally {
-      slot.leases--;
-      slot.lastUsed = Date.now();
+      this.#release(slot);
+    }
+  }
+
+  /** Give back a lease `#open` took. */
+  #release(slot: Slot): void {
+    slot.leases--;
+    slot.lastUsed = Date.now();
+  }
+
+  /**
+   * End `thread`'s work with `act` (which only aborts): its Session opened if need be, past
+   * `openMax`, since an ending is never refused, and never resumed before `act` ran, so a
+   * stale run starts no model request first. A Session opened only to end closes after.
+   */
+  async end(thread: string, act: (opened: Opened) => Promise<void>): Promise<void> {
+    const wasOpen = this.#slots.get(thread)?.opening !== undefined;
+    await this.#use(thread, async (opened, slot) => {
+      slot.ending++;
+      try {
+        await act(opened);
+      } finally {
+        slot.ending--;
+      }
+    }, true);
+    const slot = this.#slots.get(thread);
+    if (!wasOpen && slot !== undefined && this.#idle(slot)) {
+      await this.#closeSlot(slot);
     }
   }
 
   /** `thread`'s Session, opened if it is not (a test's, and the agent's brief reads). */
   async pi(thread: string): Promise<Harness> {
-    return (await this.#open(thread)).opened.pi;
+    const { opened, slot } = await this.#open(thread);
+    this.#release(slot);
+    return opened.pi;
   }
 
   /** `thread`'s Session if it is open now; never opens one. */
@@ -382,6 +433,7 @@ export class ThreadHost extends LifecycleCapability {
   async pin(thread: string): Promise<void> {
     const { slot } = await this.#open(thread);
     slot.pins++;
+    this.#release(slot);
   }
 
   unpin(thread: string): void {
@@ -401,10 +453,13 @@ export class ThreadHost extends LifecycleCapability {
   // -- Opening and closing -------------------------------------------------------------
 
   /**
-   * `thread`'s Session, opened. Waits for Lifecycle's startup first, so a Session is never
-   * opened inside it. An open that fails is not kept, so the next call tries again.
+   * `thread`'s Session, opened, with a lease on it taken before anything can run, so no
+   * other call's room-making closes it between its open and its use; the caller gives the
+   * lease back (`#release`). Waits for Lifecycle's startup first, so a Session is never
+   * opened inside it. An open that fails is not kept, so the next call tries again. An
+   * ending's open (`end`) takes no room, and does not resume the Session.
    */
-  async #open(thread: string): Promise<{ opened: Opened; slot: Slot }> {
+  async #open(thread: string, ending = false): Promise<{ opened: Opened; slot: Slot }> {
     await this.lifecycle.ready();
     let slot = this.#slots.get(thread);
     if (slot === undefined) {
@@ -416,12 +471,14 @@ export class ThreadHost extends LifecycleCapability {
     if (current.opening === undefined) {
       try {
         this.#sweep();
-        this.#room();
+        if (!ending) {
+          this.#room();
+        }
       } catch (error) {
         this.#forget(thread, current);
         throw error;
       }
-      const opening: Promise<Opened> = this.#doOpen(thread, current, () => opening)
+      const opening: Promise<Opened> = this.#doOpen(thread, current, () => opening, ending)
         .catch((error: unknown) => {
           if (current.opening === opening) {
             current.opening = undefined;
@@ -431,19 +488,33 @@ export class ThreadHost extends LifecycleCapability {
         });
       current.opening = opening;
     }
-    return { opened: await current.opening, slot: current };
+    current.leases++;
+    try {
+      return { opened: await current.opening, slot: current };
+    } catch (error) {
+      current.leases--;
+      this.#forget(thread, current);
+      throw error;
+    }
   }
 
-  async #doOpen(thread: string, slot: Slot, current: () => Promise<Opened>): Promise<Opened> {
+  async #doOpen(thread: string, slot: Slot, current: () => Promise<Opened>,
+                ending: boolean): Promise<Opened> {
     await slot.lastClose;
     const opened = await this.#parts.open(thread, (wake) => this.#onWake(thread, slot, wake));
     const { pi } = opened;
     try {
       const closed = pi.closed;
-      pi.subscribeClose(() => this.#piClosing(thread, slot, current(), pi, closed));
-      pi.resume();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      await this.#wakeFor(thread, pi.wake());
+      pi.subscribeClose(() => this.#piClosing(thread, slot, current(), opened, closed));
+      const parked = await this.#parked(opened);
+      if (parked.size > 0) {
+        this.#endParked(thread, slot, pi, parked);
+      }
+      if (!ending) {
+        pi.resume();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await this.#wakeFor(thread, pi.wake());
+      }
     } catch (error) {
       pi.close(BG).catch(() => {});
       throw error;
@@ -454,10 +525,60 @@ export class ThreadHost extends LifecycleCapability {
     return opened;
   }
 
-  /** A Session began closing: on its own, as a storage error makes it, or by the host. */
-  #piClosing(thread: string, slot: Slot, opening: Promise<Opened>, pi: Harness,
+  /**
+   * The conversations a task pi's restart limit parked holds up, each the ownerless one
+   * whose run it is in (its own, or the one owning it through a tool that started it).
+   */
+  async #parked({ pi, storage }: Opened): Promise<Set<ConversationId>> {
+    const inspection = await pi.inspect(BG);
+    const tops = new Set<ConversationId>();
+    for (const { record, state } of inspection.tasks) {
+      if (state.kind !== "blocked" || state.reason !== "restart_limit") {
+        continue;
+      }
+      let id: ConversationId | undefined = record.conversationId;
+      const seen = new Set<ConversationId>();
+      while (id !== undefined && !seen.has(id)) {
+        seen.add(id);
+        const owner: ConversationId | undefined =
+          (await storage.conversation(id, BG))?.owner?.conversationId;
+        if (owner === undefined) {
+          tops.add(id);
+        }
+        id = owner;
+      }
+    }
+    return tops;
+  }
+
+  /**
+   * End the runs a parked task holds up: each conversation aborted, background work
+   * included (pi withdraws its queued inputs and settles its placed one `unanswered`), and
+   * an owner notice kept. Off the open's line: an abort resolves once the run is idle. One
+   * that fails is told loudly; the next open finds the task still parked and tries again.
+   */
+  #endParked(thread: string, slot: Slot, pi: Harness, tops: Set<ConversationId>): void {
+    slot.parked = true;
+    this.#parts.notice(PARKED, PARKED_DETAIL);
+    void Promise.all([...tops].map(async (id) =>
+      (await pi.conversation(id, BG))?.abort(BG, { background: true })))
+      .catch(() => console.error("a parked task's run could not be ended"))  // no ids
+      .finally(() => {
+        slot.parked = false;
+      });
+  }
+
+  /**
+   * A Session began closing: on its own, as a storage error makes it, or by the host. Its
+   * store's session is released once it closed.
+   */
+  #piClosing(thread: string, slot: Slot, opening: Promise<Opened>, opened: Opened,
              closed: Promise<unknown>): void {
+    const { pi } = opened;
     this.#closing.add(pi);
+    void closed.catch(() => undefined)
+      .then(() => opened.storage.close(BG))
+      .catch(() => console.error("a closed Session's store could not be released"));
     slot.changed?.();
     if (slot.opening !== opening) {
       return;
@@ -474,15 +595,27 @@ export class ThreadHost extends LifecycleCapability {
     if (opening === undefined) {
       return slot.lastClose.then(() => undefined);
     }
+    const thread = [...this.#slots].find(([, held]) => held === slot)?.[0];
+    const wake = slot.opened?.pi.wake();
+    if (thread !== undefined && wake !== undefined && !wake.active && wake.at === undefined) {
+      // Nothing runs and nothing sleeps: the thread's job is stale (one a heartbeat left
+      // due), and is cancelled, so it never reopens the Session, taking a place among the
+      // open, only to find nothing. A job with work to wake for is kept.
+      this.lifecycle.jobs.cancel(wakeJob(thread))
+        .catch(() => console.error("a thread's stale wake could not be cancelled"));  // no ids
+    }
     slot.opening = undefined;
     slot.opened = undefined;
-    const closing = opening.then(({ pi }) => {
+    const closing = opening.then(async ({ pi, storage }) => {
       this.#closing.add(pi);
-      return pi.close(BG);
+      try {
+        await pi.close(BG);
+      } finally {
+        await storage.close(BG);  // its store's session, released
+      }
     }).catch(() => undefined);
     slot.lastClose = closing;
     slot.changed?.();
-    const thread = [...this.#slots].find(([, held]) => held === slot)?.[0];
     void closing.then(() => {
       if (thread !== undefined) {
         this.#forget(thread, slot);
@@ -510,7 +643,7 @@ export class ThreadHost extends LifecycleCapability {
     const now = Date.now();
     for (const slot of this.#slots.values()) {
       if (this.#idle(slot) && now - slot.lastUsed >= this.#timing.idleCloseMs) {
-        void this.#closeIdle(slot);
+        void this.#closeSlot(slot);
       }
     }
   }
@@ -529,23 +662,7 @@ export class ThreadHost extends LifecycleCapability {
     if (idle === undefined) {
       throw new Refused(SESSIONS_FULL);
     }
-    void this.#closeIdle(idle);
-  }
-
-  /**
-   * Close an idle Session. With no work and no task sleeping, its wake job is stale (one a
-   * heartbeat left due) and is cancelled, so it never reopens the Session, and takes a
-   * place among the open, only to find nothing; a sleeping task's job stays, due when it
-   * wakes.
-   */
-  #closeIdle(slot: Slot): Promise<void> {
-    const wake = slot.opened?.pi.wake();
-    const thread = [...this.#slots].find(([, held]) => held === slot)?.[0];
-    if (thread !== undefined && wake !== undefined && !wake.active && wake.at === undefined) {
-      this.lifecycle.jobs.cancel(wakeJob(thread))
-        .catch(() => console.error("a thread's stale wake could not be cancelled"));  // no ids
-    }
-    return this.#closeSlot(slot);
+    void this.#closeSlot(idle);
   }
 
   // -- Waking ------------------------------------------------------------------------
@@ -575,14 +692,18 @@ export class ThreadHost extends LifecycleCapability {
                                       singleflight: true, recoveryLoop: true });
   }
 
-  /** Keep `wake` in the owner's rows, and schedule the thread's job for it, if it needs one. */
+  /**
+   * Schedule the thread's job for `wake`, if it needs one, and then keep `wake` in the
+   * owner's rows: the job first, so a row that fails to land leaves a job that finds the
+   * work itself, and never a live row with no job to wake it.
+   */
   async #wakeFor(thread: string, wake: Wake): Promise<void> {
-    await this.#parts.live(thread, wake);
     if (wake.active) {
       await this.#wake(thread);
     } else if (wake.at !== undefined) {
       await this.#wake(thread, wake.at);
     }
+    await this.#parts.live(thread, wake);
   }
 
   /** A Session's `onWake`: off its line, never blocking. */
@@ -602,13 +723,15 @@ export class ThreadHost extends LifecycleCapability {
    */
   async #step(thread: string): Promise<LifecycleJobOutcome> {
     const heartbeat = { rescheduleAt: Date.now() + this.#timing.heartbeatMs };
-    if (this.#slots.get(thread)?.waiting !== undefined) {
+    const held = this.#slots.get(thread);
+    if (held?.waiting !== undefined || (held?.ending ?? 0) > 0) {
       return heartbeat;
     }
     if (!this.#parts.exists(thread)) {
       return undefined;
     }
     const { opened: { pi }, slot } = await this.#open(thread);
+    this.#release(slot);
     pi.resume();
     const wake = pi.wake();
     if (wake.active) {

@@ -200,7 +200,7 @@ describe("pi's storage over a store", () => {
       () => faulty(store as unknown as StoreRpc, { reads: 0, commits: 0 }, seen));
     await storage.commit(root, BG);
     for (let i = 0; i < 5; i++) {
-      expect(await storage.conversation(ROOT, BG)).toEqual({ id: ROOT });
+      expect(await storage.conversation(100 + i as ConversationId, BG)).toBeUndefined();
     }
     expect(seen).toEqual({ sessions: 1, released: 0, reads: 5, commits: 1 });
     await storage.close(BG);
@@ -223,8 +223,20 @@ describe("pi's storage over a store", () => {
     expect(await storage.conversation(ROOT, BG)).toEqual({ id: ROOT });
     expect(seen).toMatchObject({ sessions: 2, released: 1 });
     fails.reads = 2;
-    expect(await failed(storage.conversation(ROOT, BG)))
+    expect(await failed(storage.conversation(77 as ConversationId, BG)))
       .toBe("network connection lost");
+  });
+
+  it("keeps a conversation record once read, never one not found", async () => {
+    const store = freshStore();
+    const seen = tally();
+    const storage = await RemoteStorage.open(
+      () => faulty(store as unknown as StoreRpc, { reads: 0, commits: 0 }, seen));
+    expect(await storage.conversation(ROOT, BG)).toBeUndefined();
+    await storage.commit(root, BG);
+    expect(await storage.conversation(ROOT, BG)).toEqual({ id: ROOT });  // read again
+    expect(await storage.conversation(ROOT, BG)).toEqual({ id: ROOT });  // kept
+    expect(seen.reads).toBe(2);
   });
 
   it("never retries a commit: one that failed fails loudly, and nothing is written twice",

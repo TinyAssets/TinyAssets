@@ -37,12 +37,17 @@
  *   throws is final").
  * - **`size()`** is the store's database size in bytes (its 10 GB is its own: a full store
  *   fails only its own thread).
- * - **`destroy()`** wipes the store whole (`deleteAll()`, atomic) and leaves only a mark
- *   that it was destroyed, so every later call, `open` included, is refused: a destroyed
- *   store's Session can never be opened again, and a late call from a closed one never
- *   resurrects it. Names are never reused, so nothing needs it back. Its caller (the drop
- *   and erasure paths, S4) names the store in a row before it is made and wipes it before
- *   that row is forgotten, since a namespace's objects cannot be listed.
+ * - **`destroy()`** wipes the store whole (`deleteAll()`, atomic) and then leaves only a
+ *   mark that it was destroyed, so every later call, `open` included, is refused: a
+ *   destroyed store's Session can never be opened again, and a late call from a closed one
+ *   never resurrects it. Names are never reused, so nothing needs it back. The wipe and the
+ *   mark are two steps (`deleteAll` takes the mark with it), so a destroy cut short between
+ *   them leaves an empty store with no mark. The owner keeps that store from reviving: its
+ *   caller (the drop and erasure paths, S4) names the store in a row before it is made,
+ *   marks the row `dropping` before it calls `destroy()`, and forgets the row only once
+ *   `destroy()` returned, retrying it until then; the owner never opens a dropping thread
+ *   (`Threads.get` reads ready rows only). A namespace's objects cannot be listed, so the
+ *   row is the only way back to a store.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {

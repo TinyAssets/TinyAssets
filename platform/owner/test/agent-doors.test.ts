@@ -617,20 +617,24 @@ describe("idle retention", () => {
   it("is the object's threads lane, due when the longest idle thread's idle age is reached",
      async () => {
     const r = await rig();
-    // A thread idle since long ago, as a week without a door leaves one.
-    await r.in((_instance, state) => {
+    // A thread idle since long ago, as a week without a door leaves one, its Session open.
+    const old = `thread_${"e".repeat(32)}`;
+    await r.in(async (instance, state) => {
       state.storage.sql.exec("INSERT INTO agent_threads (thread_id, store, state, agent_id, " +
         "client, generation, authenticated_at, universe, created_at, kind, last_active) " +
         "VALUES (?, ?, 'ready', 'main', NULL, NULL, NULL, NULL, 1, 'run', 1)",
-        `thread_${"e".repeat(32)}`, "e".repeat(32));
+        old, "e".repeat(32));
+      await instance.agent.host.pi(old);
+      expect(instance.agent.host.openThreads()).toContain(old);
     });
     // The lane's next work is now: the inserted thread is past its idle age.
     expect(await r.in((instance) => instance.parts.threads.nextIdle(clock())))
       .toBeLessThanOrEqual(clock() + 1);
     await r.stub.agentSubmit(r.bind(null), { message: "now", client_send_id: "n" });
     await drainDue(r.stub);
-    expect((await r.threads()).map((made) => made.thread_id))
-      .not.toContain(`thread_${"e".repeat(32)}`);
+    expect((await r.threads()).map((made) => made.thread_id)).not.toContain(old);
+    // Dropped, its Session is closed too.
+    expect(await r.in((instance) => instance.agent.host.openThreads())).not.toContain(old);
     expect(await r.threads()).toHaveLength(1);
     expect(await laneAt(r.stub, "threads")).toBeGreaterThan(clock() + 7 * 86_400 - 60);
   }, 30_000);

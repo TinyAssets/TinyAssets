@@ -27,6 +27,9 @@
  *   Session's adoption: `commitAdopting` calls `adopt(seq)` once the RPC resolved, once and
  *   before the next commit starts (pi serializes its commits), and never for one that
  *   failed.
+ * - **Conversation records are kept** once read: pi never changes one (an id, once a
+ *   conversation's, is refused to any other write), and a message reads its conversations
+ *   several times. One not found is never kept: it may be made next.
  * - **Close** releases the session, so the store may hibernate, and makes every later call
  *   reject; the store keeps nothing of this Session but the fence.
  */
@@ -91,6 +94,8 @@ export class RemoteStorage implements Storage {
   readonly #holder: string;
   #next: number;
   #closed = false;
+  /** Conversation records read, by id: pi's records never change. */
+  readonly #conversations = new Map<ConversationId, ConversationRecord>();
 
   private constructor(connect: () => StoreRpc, session: StoreSessionRpc, holder: string,
                       next: number) {
@@ -150,8 +155,20 @@ export class RemoteStorage implements Storage {
     return this.#next++ as unknown as I;
   }
 
-  conversation(id: ConversationId, context: Context): Promise<ConversationRecord | undefined> {
-    return this.#read("conversation", [id], context);
+  async conversation(id: ConversationId, context: Context):
+      Promise<ConversationRecord | undefined> {
+    this.#open();
+    aborted(context);
+    const kept = this.#conversations.get(id);
+    if (kept !== undefined) {
+      return kept;
+    }
+    const record = await this.#read<ConversationRecord | undefined>("conversation", [id],
+                                                                     context);
+    if (record !== undefined) {
+      this.#conversations.set(id, record);
+    }
+    return record;
   }
 
   scanConversations(query: ConversationQuery, limit: number, cursor: Cursor | undefined,

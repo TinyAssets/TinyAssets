@@ -4,7 +4,8 @@
  * Session's wake and kept in `agent_live`; Sessions opened on demand and closed idle, least
  * recently used first; an open past the bound refused at once, a pinned Session never
  * closed; a store reset mid-run recovered by the thread's own job; a destroyed store never
- * opened again. The wake and recovery cases are ported from agents' PiHarness tests
+ * opened again; a task pi's restart limit parked ends its run, and leaves its thread usable.
+ * The wake, recovery and parking cases are ported from agents' PiHarness tests
  * (agents `harness/pi/tests/harness.test.ts`, MIT, Copyright (c) 2025 Cloudflare, Inc.),
  * keyed per thread.
  */
@@ -18,8 +19,11 @@ import {
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
+import { NO_THREAD } from "../src/agent";
 import { DESTROYED } from "../src/thread-store";
-import { HOST, MAX_WAKE_BACKOFF_MS, OPEN_MAX, SESSIONS_FULL, wakeJob } from "../src/thread-host";
+import {
+  HOST, MAX_WAKE_BACKOFF_MS, OPEN_MAX, PARKED, SESSIONS_FULL, wakeJob,
+} from "../src/thread-host";
 import { until } from "./gateway-support";
 import { sqlIn, storeOf, storeSql, storeSubmission } from "./support";
 import { type FauxOwnerDO, Reminder, says } from "./worker";
@@ -171,42 +175,126 @@ describe("a wake job per thread", () => {
   it("keeps a thread's job when its open keeps failing, backing off per thread, and opens " +
      "a destroyed store never again", async () => {
     const r = rig();
-    const [gone, kept] = [await r.thread(), await r.thread()];
+    const [gone, other, kept] = [await r.thread(), await r.thread(), await r.thread()];
     await r.in(async (instance) => {
-      await instance.harness.prompt("noted", { session: gone });
-      await instance.harness.prompt("noted", { session: kept });
+      for (const thread of [gone, other, kept]) {
+        await instance.harness.prompt("noted", { session: thread });
+      }
       await instance.agent.host.close(gone);
+      await instance.agent.host.close(other);
     });
-    await env.PISTORE.getByName(await storeOf(r.stub(), gone)).destroy();
+    for (const thread of [gone, other]) {
+      await env.PISTORE.getByName(await storeOf(r.stub(), thread)).destroy();
+    }
     expect(await r.in((instance) => instance.agent.host.pi(gone)
       .then(() => "opened", (error: Error) => error.message))).toContain(DESTROYED);
     // Its job, due now, fails through Lifecycle's retries, then backs off from the heartbeat.
-    const delays: number[] = [];
-    for (let n = 0; n < 3; n++) {
+    const failing = async (thread: string) => {
       const before = Date.now();
       await r.in(async (instance) => {
         await (instance.agent.host as unknown as { lifecycle: { jobs: {
           push(job: object): Promise<unknown> } } }).lifecycle.jobs.push({
-          id: wakeJob(gone), fn: "wake", time: Date.now(), singleflight: true,
+          id: wakeJob(thread), fn: "wake", time: Date.now(), singleflight: true,
           recoveryLoop: true });
       });
       await runDurableObjectAlarm(r.stub());
-      let job = (await r.jobs()).find((one) => one.id === wakeJob(gone));
+      let job = (await r.jobs()).find((one) => one.id === wakeJob(thread));
       for (let i = 0; i < 200 && (job === undefined || job.time <= Date.now()); i++) {
         await new Promise((resolve) => setTimeout(resolve, 20));
-        job = (await r.jobs()).find((one) => one.id === wakeJob(gone));
+        job = (await r.jobs()).find((one) => one.id === wakeJob(thread));
       }
-      delays.push(job!.time - before);
+      return job!.time - before;
+    };
+    const delays: number[] = [];
+    for (let n = 0; n < 3; n++) {
+      delays.push(await failing(gone));
     }
     expect(delays[0]).toBeGreaterThanOrEqual(1_000);
     expect(delays[1]).toBeGreaterThanOrEqual(2_000);
     expect(delays[2]).toBeGreaterThanOrEqual(4_000);
     expect(delays[2]).toBeLessThan(MAX_WAKE_BACKOFF_MS);
+    // Each thread's backoff is its own: another failing thread starts from the heartbeat.
+    const first = await failing(other);
+    expect(first).toBeGreaterThanOrEqual(1_000);
+    expect(first).toBeLessThan(4_000);  // a shared count would be at 8 s by now
     // Another thread is untouched by it.
     expect(await r.in(async (instance) => (await instance.harness.prompt("again",
                                                                         { session: kept }))
       .status)).toBe("done");
   }, 60_000);
+});
+
+describe("a wake job's ends", () => {
+  it("never opens a dropping thread, so a store wiped by a destroy cut short never revives",
+     async () => {
+    const r = rig();
+    const thread = await r.thread();
+    await r.in(async (instance) => {
+      expect((await instance.harness.prompt("noted", { session: thread })).status).toBe("done");
+      await instance.agent.host.close(thread);
+    });
+    const store = await storeOf(r.stub(), thread);
+    // The drop path marks the row, then wipes the store; the object dies before the mark.
+    await sqlIn(r.stub(), "UPDATE agent_threads SET state = 'dropping' WHERE thread_id = ?",
+                thread);
+    await runInDurableObject(env.PISTORE.getByName(store), (_instance, state) =>
+      state.storage.deleteAll());
+    expect(await r.in((instance) => instance.agent.host.pi(thread)
+      .then(() => "opened", (error: Error) => error.message))).toBe(NO_THREAD);
+    expect(await storeSql(store, "SELECT name FROM sqlite_master WHERE name LIKE 'pi_%'"))
+      .toEqual([]);
+  }, 30_000);
+
+  it("completes a dropped thread's job, never opening it, rather than backing off forever",
+     async () => {
+    const r = rig();
+    const thread = await r.thread();
+    await r.in(async (instance, state) => {
+      await (instance.agent.host as unknown as { lifecycle: { jobs: {
+        push(job: object): Promise<unknown> } } }).lifecycle.jobs.push({
+        id: wakeJob(thread), fn: "wake", time: Date.now(), singleflight: true,
+        recoveryLoop: true });
+      state.storage.sql.exec("DELETE FROM agent_threads WHERE thread_id = ?", thread);
+    });
+    await runDurableObjectAlarm(r.stub());
+    await until(async () => (await r.jobs()).length === 0, "the dropped thread's job to end");
+    expect(await r.in((instance) => instance.agent.host.openThreads())).toEqual([]);
+  }, 30_000);
+
+  it("rethrows a memory-limit reset from a wait, so the alarm's breaker counts it",
+     async () => {
+    // Ported from PiHarness's memory-limit breaker test (agents #1825), per thread.
+    const r = rig();
+    const thread = await r.thread();
+    const held = gate();
+    await r.in(async (instance) => {
+      instance.probes.holdGate = held.promise;
+      await instance.agent.host.submit(thread, "hold it", { operationId: "op-m" });
+      await until(() => instance.probes.holds === 1, "the hold to start");
+    });
+    // The job waits on the run; then the isolate runs out of memory while it waits.
+    await runDurableObjectAlarm(r.stub());
+    const STRIKES = "cf_agents:oom_alarm_strikes";
+    await r.in(async (instance, state) => {
+      const pi = instance.agent.host.peek(thread)!.pi;
+      const wake = pi.wake.bind(pi);
+      let thrown = false;
+      pi.wake = () => {
+        if (!thrown) {
+          thrown = true;
+          throw new Error("Durable Object's isolate exceeded its memory limit and was reset.");
+        }
+        return wake();
+      };
+      held.release();
+      await until(async () => thrown, "the wait to see the reset");
+      for (let n = 0; n < 50 && await state.storage.get(STRIKES) === undefined; n++) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }).catch(() => undefined);  // the breaker resets the isolate
+    const read = () => r.in((_instance, state) => state.storage.get(STRIKES));
+    expect(await read().catch(read)).toBe(1);  // the first call may meet the reset
+  }, 30_000);
 });
 
 describe("the open Sessions", () => {
@@ -358,5 +446,91 @@ describe("a store reset mid-run", () => {
     const notices = await r.in((instance) => instance.parts.notices.list().map((notice) =>
       notice.type));
     expect(notices).toContain("session_failed");
+  }, 30_000);
+});
+
+describe("a task pi's restart limit parked", () => {
+  // PiHarness reported a parked task (`pending()`: "parked") and ran it again on request
+  // (`retry()`); pi main removes `retryTask`, so the host ends the run it holds up instead.
+  // Found by review (S1-S3, M1): before, the input stayed placed and every follow-up queued
+  // behind it, with no job and no live row left to show it.
+  it("ends the run it held up: its input unanswered, the owner told, the thread usable",
+     async () => {
+    const name = `owner-${crypto.randomUUID()}`;
+    const stub = () => env.AGENT.getByName(name);
+    const reply = (messages: Message[]) => {
+      const last = messages.at(-1);
+      if (last?.role === "toolResult") {
+        return says("tool done");
+      }
+      return JSON.stringify(last).includes("look")
+        ? fauxAssistantMessage([fauxToolCall("read", { path: "a.md" })],
+                               { stopReason: "toolUse" })
+        : says("noted");
+    };
+    const inside = <R>(act: (i: FauxOwnerDO) => R | Promise<R>) =>
+      runInDurableObject(stub(), async (i: FauxOwnerDO) => {
+        i.script = Array.from({ length: 200 }, () => reply);
+        i.probes.readGate = new Promise(() => undefined);  // the read never ends
+        return act(i);
+      });
+    await stub().fileWrite({ owner: name, caller: name, origin: null },
+                           { path: "/workspace/a.md", expected_etag: null,
+                             content: new TextEncoder().encode("alpha") });
+    const thread = await inside(async (i) => (await i.agent.thread("main", null)).thread_id);
+    await inside(async (i) => {
+      await i.agent.host.submit(thread, "look", { operationId: "op-park" });
+      await until(() => i.probes.reads === 1, "the read to start");
+    });
+    // The object dies mid-read, again and again, until pi's restart limit parks the read.
+    const parked = async () => (await inside((i) => i.parts.notices.list()))
+      .some((notice) => notice.type === PARKED);
+    for (let n = 0; n < 8 && !await parked(); n++) {
+      await runInDurableObject(stub(), (_i, state) => state.abort("crash"))
+        .catch(() => undefined);
+      await inside(() => undefined);
+      for (let k = 0, got = 0; k < 20 && got === 0; k++) {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        await runDurableObjectAlarm(stub());
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        got = await inside((i) => i.probes.reads);
+      }
+    }
+    const store = await storeOf(stub(), thread);
+    await until(async () => (await storeSubmission(store, { request: "op-park" }))?.status
+                            === "unanswered", "the parked run's input to settle");
+    const out = await inside(async (i) => {
+      const status = await i.agent.host.status(thread, "op-park");
+      await i.agent.host.submit(thread, "hello", { operationId: "op-next" });
+      const next = await i.agent.host.settled(thread, "op-next", AbortSignal.timeout(5_000))
+        .then((result) => result.status, () => "still waiting");
+      return { status, next, notices: i.parts.notices.list().map((notice) => notice.type) };
+    });
+    expect(out.status).toMatchObject({ status: "unanswered" });
+    expect(out.status.reason).toBeTruthy();
+    expect(out.notices).toEqual(expect.arrayContaining(["task_parked", PARKED]));
+    expect(out.next).toBe("done");
+  }, 120_000);
+});
+
+describe("a message's store calls", () => {
+  it("are few once warm: no conversation is read twice, and one message costs at most 26",
+     async () => {
+    // Measured at the review round (S1-S3, L2): 34 calls a warm message (submit, wait and
+    // status) before conversation records were kept, 26 after.
+    const r = rig();
+    const thread = await r.thread();
+    const out = await r.in(async (instance) => {
+      const host = instance.agent.host;
+      await host.submit(thread, "first", { operationId: "op-1" });
+      await host.settled(thread, "op-1");
+      instance.probes.storeCalls = {};
+      await host.submit(thread, "again", { operationId: "op-2" });
+      await host.settled(thread, "op-2");
+      await host.status(thread, "op-2");
+      return instance.probes.storeCalls;
+    });
+    expect(out["conversation"] ?? 0).toBe(0);
+    expect(Object.values(out).reduce((sum, n) => sum + n, 0)).toBeLessThanOrEqual(26);
   }, 30_000);
 });
