@@ -498,6 +498,14 @@ Each thread's Session SHALL be woken by a job of its own (`pi-wake:<thread>`), d
 - **WHEN** a thread's store refuses its Session's commit while an unsafe tool runs
 - **THEN** the Session fails, its job opens it again, committed work stands, and the tool comes back `interrupted`, never run twice
 
+#### Scenario: A task parked by pi's restart limit
+- **WHEN** a thread's task is cut off pi's restart limit times in a row and pi parks it
+- **THEN** the next open of its Session ends the run it holds up, its input settles `unanswered`, the owner is told, and the thread's next input is answered
+
+#### Scenario: A policy write while every Session is working
+- **WHEN** a policy write ends a thread whose live row says it is working, its Session closed and no Session idle
+- **THEN** the ending opens it past the bound, aborts its work before it resumes, starts no model request, and closes it again
+
 ### Requirement: pi opens with the object's registry, tools and settings
 The object SHALL open pi with one registry per object, pi's coding tools with `read` alone replay-safe, settings read at each use (progress committed at most once a second, a failed run's queued inputs withdrawn, owner policy's part beneath those), TinyAssets' attribution, and one model provider, `gateway`, listing only the owner's connected models.
 

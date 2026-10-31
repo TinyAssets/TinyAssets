@@ -925,13 +925,42 @@ account and no deploy.
   Sessions an isolate (F11, live probe P4). Each open Session calls its store over one
   `RpcTarget` session, released when the host closes it (live probe P7). The write gate
   keeps synchronous units and no queue: pi no longer shares the owner's database, so its
-  shared-queue rule and chord dependency are deleted (F13 moot). A4's storage gauge is deleted; the owner-bound guard
-  holds the owner's worst-case rows, at the policy's high bounds, under 50% of 10 GB, and
+  shared-queue rule and chord dependency are deleted (F13 moot). A4's storage gauge is
+  deleted; the owner-bound guard holds the owner's worst-case rows, at the policy's high bounds, under 50% of 10 GB, and
   names the tables no byte or count bound covers yet (file paths, chunk references, turn
   counters). `limits.subrequests` is 1,000,000 (live probe P1). Open: drop wiping, run
   retention and erasure ordering (S4-S5); scheduled turns as pi tasks (F1); rotation
   (deferred); live probes P5 and P8 (design-decision §6). P1-P4 and P7 are done
   (`store-probe.md`, run 1).
+  Review round 1 (CHANGES), all taken: M1 a task pi's restart limit parked held its run
+  forever (input placed, job and live row gone, follow-ups queued); each open now looks
+  for one before it resumes and ends the run it holds up (`#endParked`: its conversations
+  aborted, background included), the input settling `unanswered`, a `run_parked` notice,
+  status `reason: "parked"` meanwhile (PiHarness's `_parked`, ported; the reviewer's
+  repro is a test). L1 an ending is never refused (`ThreadHost.end` opens past `OPEN_MAX`,
+  aborts before it resumes, and closes what it opened), and `endAll` rejects when a thread
+  cannot be ended, so the door does. L3 a read retry attaches a new session for the same
+  holder, never a claim; the host releases the store's session however the Session
+  closes; a pinned Session pins its store's billed duration. L4 the job before the live
+  row. L5 a destroy cut short between wipe and mark cannot revive its store: the owner
+  never opens a dropping thread (tested). L6 the store guard also refuses the `"env"`
+  string, `Reflect` and `this` other than by a member's name. L7 tests for each named gap.
+  L8 `#open` takes the lease before anything runs. L2 conversation records are kept once
+  read: a warm message's store calls (submit, wait, status) fell from 34 to 26, pinned by
+  a test; the host's own `submissionByRequest` in `submit` stays (pi's submit does not say
+  whether an input was new, and a commit count would misread a duplicate). Also: every
+  close cancels a stale wake job when nothing runs or sleeps, so a leftover heartbeat never
+  reopens a Session, taking a place, to find nothing; the owner opens a thread's store
+  while its registry installs. Mutation: ours, 53: 50 killed, 3 alive (`th-sleep-unarmed`
+  and `th-admit-unarmed` as before; caching a not-found conversation, equivalent, since
+  a kept `undefined` reads as not kept); the reviewer's 30 (its 23, two re-anchored to the
+  session API, and 7 for this round): 25 killed, 5 alive and outside the round's list
+  (`#idle`'s admitting and waiting checks, which `wake().active` covers in each test
+  path; the close's wake change; the budget's re-wake, at a 10-minute budget; the open's
+  `wakeFor`, which pi's first `onWake` repeats).
+- [ ] Before any deploy holding real data: S4's drop wipes its store (`destroy()`, the row
+  `dropping` until it returned). Until then, a drop (idle retention, a grant change or a
+  revoke) forgets its row and orphans its store, which nothing can list or reach again.
 - [ ] S4-S5 Drops wipe and run retention: idle, grant change and revoke drops through the
   `dropping` state with lane retry; `keep_runs` with receipts and the `runs_kept` bound;
   erasure's store-first order as a tested internal path (its door comes with the §7 doors).
@@ -960,6 +989,11 @@ account and no deploy.
   the call; `api.memo` holds decisions that must survive a crash.
 
 ## 6. Files and sandbox
+
+- [ ] Before any deploy holding real data, its own slice: the files byte quota.
+  `file_entries` and `file_history` have no byte bound (a path's bytes are unbounded; the
+  owner-bound guard names both), so a `write_files` client can fill the owner object's
+  10 GB. Count path bytes against a quota.
 
 - [x] 6.1 The trusted file plane, in workerd, nothing deployed: the manifest in the
   owner's object (migration 4: paths, versions and history, chunk references, upload

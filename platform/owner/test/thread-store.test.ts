@@ -274,6 +274,9 @@ describe("pi's storage over a store", () => {
       env.PISTORE.getByName(name) as unknown as StoreRpc, { reads: 0, commits: 0 }, counted));
     expect(await failed(counting.conversation(ROOT, withAbortSignal(stop.signal, BG))))
       .toBe("stopped");
+    expect(await failed(counting.scanConversations({}, 10, undefined,
+                                                   withAbortSignal(stop.signal, BG))))
+      .toBe("stopped");
     expect(counted.reads).toBe(0);
     const late = new AbortController();
     const reading = storage.conversation(ROOT, withAbortSignal(late.signal, BG));

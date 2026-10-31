@@ -225,6 +225,33 @@ describe("a wake job per thread", () => {
 });
 
 describe("a wake job's ends", () => {
+  it("is put off to a sleeping task's deadline when it runs early, never completed",
+     async () => {
+    const r = rig();
+    const thread = await r.thread();
+    const due = Date.now() + 60_000;
+    await r.in(async (instance) => {
+      const pi = await instance.agent.host.pi(thread);
+      const root = (await pi.conversation(1 as never, BG))!;
+      await root.commit((tx) => tx.createTask(Reminder, { until: due },
+                                              { ownership: { kind: "conversation" },
+                                                background: true }), BG);
+      pi.resume();
+    });
+    await until(async () => (await r.jobs()).some((job) => job.time === due),
+                "the job at the deadline");
+    // Due now instead, as an early alarm runs it: the step finds the task still asleep.
+    await r.in(async (instance) => {
+      await (instance.agent.host as unknown as { lifecycle: { jobs: {
+        push(job: object): Promise<unknown> } } }).lifecycle.jobs.push({
+        id: wakeJob(thread), fn: "wake", time: Date.now(), singleflight: true,
+        recoveryLoop: true });
+    });
+    await runDurableObjectAlarm(r.stub());
+    await until(async () => (await r.jobs()).some((job) => job.time === due),
+                "the job put off to the deadline again");
+  }, 30_000);
+
   it("never opens a dropping thread, so a store wiped by a destroy cut short never revives",
      async () => {
     const r = rig();
