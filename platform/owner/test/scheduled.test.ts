@@ -243,6 +243,25 @@ describe("a scheduled launch's sleep (F1)", () => {
     expect((await failure(() => r.status(op))).message).toBe(NO_OPERATION);
   }, 30_000);
 
+  it("is kept by a rename of its client's grant, which leaves the generation, and " +
+     "delivers", async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    const op = await later(r, MUSE);
+    const [grant] = (await r.stub().grantList(r.bind(null))).clients
+      .filter((c) => c.client === MUSE.client);
+    const renamed = await r.stub().grantSet(r.session(), {
+      client: MUSE.client, source: grant!.source, mode: grant!.mode, scopes: grant!.scopes,
+      expected_revision: grant!.revision, name: "Muse" } as never);
+    expect([renamed.generation, renamed.revision])
+      .toEqual([grant!.generation, grant!.revision + 1]);
+    const { until: due } = (await r.task(op.thread_id))!.record.state;
+    await r.pass(op.thread_id, due!);
+    await drainDue(r.stub());
+    expect(await r.settled(op, MUSE)).toMatchObject({ status: "done", text: "echo: wake up" });
+    expect(await r.delivered(op)).toHaveLength(1);
+  }, 30_000);
+
   it("is left asleep by a policy write, which ends its thread's running work only; its " +
      "delivery then meets the policy as it stands, held until the policy has room", async () => {
     const r = await rig();
@@ -329,10 +348,20 @@ describe("a scheduled launch's sleep (F1)", () => {
   it("is held at its delivery while the owner is suspended for billing, the owner's reads " +
      "and reductions still served, and delivers once the suspension lifts", async () => {
     const r = await rig();
+    await r.admit(MUSE);
     const op = await later(r);
     const other = await later(r);
     expect(await r.stub().admissionSet(r.platform, { reason: "billing", suspended: true }))
       .toEqual({ state: "suspended", reasons: ["billing"] });
+    // A grant's set may widen it, so it is work; a revoke only narrows.
+    const [muse] = (await r.stub().grantList(r.bind(null))).clients
+      .filter((c) => c.client === MUSE.client);
+    expect((await failure(() => r.stub().grantSet(r.session(), {
+      client: MUSE.client, source: muse!.source, mode: "full", scopes: [],
+      expected_revision: muse!.revision, name: "Muse" } as never))).message)
+      .toMatch(new RegExp(`^${OWNER_SUSPENDED}`));
+    expect(await r.stub().grantRevoke(r.bind(null), { client: MUSE.client }))
+      .toMatchObject({ client: MUSE.client, revoked: true });
     // Work is refused; reads and what only lowers risk are not.
     expect((await failure(() => r.stub().agentRun(r.bind(null), { agent: "main", input: "x" })))
       .message).toMatch(new RegExp(`^${OWNER_SUSPENDED}`));

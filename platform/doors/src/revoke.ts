@@ -22,6 +22,8 @@ export interface Revoked {
   readonly client: string;
   readonly revoked: boolean;
   readonly generation: number;
+  /** The grant's revision after it, which the owner's next set names. */
+  readonly revision: number;
   /** The provider grants revoked with it. */
   readonly grants: number;
 }

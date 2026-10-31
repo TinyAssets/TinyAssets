@@ -1376,7 +1376,16 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TABLE owner_erasure (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "started_at REAL NOT NULL, step INTEGER NOT NULL DEFAULT 1 CHECK (step IN (1, 2)))",
   ]),
-  // 12: scheduled turns as pi tasks, and the owner's admission (tasks 5, F1). A scheduled
+  // 12: a grant's revision apart from its authority (grants.ts). `revision` is the owner's
+  // concurrency token, moved by every set and revoke and named by the owner's set;
+  // `generation` moves only when the grant's mode or scopes do, and is what every stamp is
+  // checked against, so a rename keeps the client's threads. A free row is never set, so it
+  // stays at revision 1. Nothing is deployed, so no row is backfilled.
+  Object.freeze([
+    "ALTER TABLE outside_clients ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 " +
+      "CHECK (revision >= 1)",
+  ]),
+  // 13: scheduled turns as pi tasks, and the owner's admission (tasks 5, F1). A scheduled
   // launch is a `ta.scheduled` pi task sleeping in its run thread's own Session
   // (`scheduled.ts`), so the `work` lane's table goes, with its counters and its part of a
   // client's held count: the run's thread row holds its client's grant row, as every

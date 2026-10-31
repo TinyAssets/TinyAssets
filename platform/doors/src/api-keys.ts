@@ -9,7 +9,7 @@
  * owner's object is its metadata (name, scopes, revoke).
  *
  * - **Mint**, from the owner's browser in session: at most 25 live keys, then the grant
- *   (`grantSet`: the key's own origin, source `api_key`, scoped, generation 0), then the
+ *   (`grantSet`: the key's own origin, source `api_key`, scoped, revision 0), then the
  *   directory entry, then the secret, once. A refused grant writes no entry; an entry
  *   that fails to write leaves a grant the owner can revoke.
  * - **Use**: parse, read the entry, compare hashes, then the kill switch. A wrong key is
@@ -138,7 +138,7 @@ export async function mintKey(env: DoorsEnv, { binding, stub }: Bound, request: 
   const createdAt = now();
   await stub.grantSet(binding, {
     client: apiKeyOrigin(minted.keyId).client, source: "api_key", mode: "scoped",
-    scopes: scopes as never, expected_generation: 0, name: label,
+    scopes: scopes as never, expected_revision: 0, name: label,
   });
   await putKey(env, minted.keyId,
                { o: binding.owner, h: await secretHash(minted.secret), c: createdAt });

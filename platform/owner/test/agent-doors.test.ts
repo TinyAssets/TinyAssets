@@ -129,7 +129,7 @@ async function rig() {
       const held = (await row(origin))!;
       await stub.grantSet(session(), { client: origin.client, source: "mcp", mode: held.mode,
                                        scopes: held.scopes, name,
-                                       expected_generation: held.generation });
+                                       expected_revision: held.revision });
     },
     /** The client's agent registered in universe `alpha`, as a scoped grant's acts there. */
     register: async (origin: Origin, center = "alpha") => {
@@ -144,7 +144,7 @@ async function rig() {
         client: origin.client, source: "mcp", mode: "scoped", name: "",
         scopes: agents.flatMap((agent) => capabilities.map((capability) =>
           ({ universe: "alpha", agent, capability }))),
-        expected_generation: (await row(origin))?.generation ?? 0 });
+        expected_revision: (await row(origin))?.revision ?? 0 });
     },
     threads: async () => (await inside((_instance, state) => state.storage.sql.exec<
       { thread_id: string; store: string; state: string; agent_id: string;
@@ -633,7 +633,7 @@ describe("a stamp's registration (S4-S5)", () => {
       client: origin.client, source: "mcp", mode: "scoped", name: "",
       scopes: scopes.map((one) => ({ universe: one.split(":")[0]!, agent: "main",
                                      capability: one.split(":")[1]! })),
-      expected_generation: held?.generation ?? 0 });
+      expected_revision: held?.revision ?? 0 });
   };
 
   it("keeps a thread stamped in one universe acting there after its client moves to another, " +

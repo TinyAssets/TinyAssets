@@ -137,7 +137,7 @@ describe("admission caller guard", () => {
   });
 
   it("pins the tombstone's shape, which an erased owner's database keeps unmigrated", () => {
-    // A tombstone is never migrated, and migration 12 and the erasure share the table's
+    // A tombstone is never migrated, and migration 13 and the erasure share the table's
     // text: changing either is a new migration and a tombstone reader that still reads this.
     const schema = readFileSync(join(PLATFORM, "owner", "src", "schema.ts"), "utf8");
     expect(schema).toContain(

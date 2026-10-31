@@ -4,7 +4,7 @@
  * it from anywhere else and the alarm reads it locally. The Python's `owner_admission`
  * record (`tinyassets/broker/admission.py`), ported:
  *
- * - `admitted`: the owner's object was made (migration 12 writes the row with the
+ * - `admitted`: the owner's object was made (migration 13 writes the row with the
  *   schema), or every suspension was lifted;
  * - `suspended`, for `billing`, `abuse` or both: the platform's word, and no work runs.
  *   Each door declares its class (`DoorClass`) in its binding check (`OwnerDO`'s `#bind`):

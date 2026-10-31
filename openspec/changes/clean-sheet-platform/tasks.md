@@ -50,6 +50,9 @@ live acceptance is still owed says so.
   bounded; no token exchange callback is installed; and the owner is named from the
   sign-in's issuer against an explicit list (`OWNER_ISSUER`, and `FOREIGN_ISSUERS`, empty
   until a provider's slice lists its issuer), any other issuer refused loudly.
+- [ ] An owner's `grantSet` to `revoked` (the object's set door) revokes no OAuth provider
+  grant: only the doors' `grantRevoke` path (`revoke.ts`) kills the client's refresh
+  tokens. Route a set to `revoked` through the same provider revoke (rename review N1).
 - [ ] Live AuthKit wiring: an `Upstream` (`doors/src/upstream.ts`) for AuthKit's
   production environment, with its redirect URI `https://tinyassets.io/oauth/upstream/callback`,
   the code exchange and the ID token's signature, issuer, audience and `auth_time`
@@ -986,9 +989,14 @@ account and no deploy.
   it first. The reviewer's round-3 mutants all killed.
 - [x] Before any deploy holding real data: S4's drop wipes its store (`destroy()`, the row
   `dropping` until it returned). Done in S4-S5 (below).
-- [ ] Before any deploy holding real data: a grant rename, or any set that changes neither
+- [x] Before any deploy holding real data: a grant rename, or any set that changes neither
   mode, scope nor revocation, must not move the authority generation or drop threads;
-  split the revision token from the authority generation (S4-S5 review round 2, L1).
+  split the revision token from the authority generation (S4-S5 review round 2, L1). Done
+  in workerd, nothing deployed (`grants.ts`, `owner-do.ts` `grantSet`, `api-keys.ts`,
+  migration 12): `revision` moves on every set and revoke and is what the owner's set
+  names (`expected_revision`); `generation` moves only when the mode or the set of scopes
+  does, and stamps and `standing` read it alone, so only such a set, or a revoke, drops.
+  A revoked grant set revoked again keeps its fence.
 - [x] S4-S5 Drops wipe and run retention, in workerd, nothing deployed (`threads.ts`,
   `agent.ts`, `thread-host.ts`, `thread-store.ts`, `erasure.ts`, `erase.ts`, `policy.ts`,
   migration 10). One drop path for every reason (idle retention, a run's retention, a
@@ -1063,12 +1071,9 @@ account and no deploy.
   `gate.ts`'s `deleteAll` beside the store's. Declared differences from the design: a
   closed dropping Session is not reopened to end it (nothing of it runs in memory); client
   runs share `runs_kept` rather than counting in the conversation bounds; a settled run's
-  answer read after its store is wiped is its receipt's first 768 bytes, marked. A rename (`grantSet` with only the
-  name changed) still ends the client's work and drops its threads: every owner set moves
-  the grant's generation, which is both the change's concurrency token and the stamp every
-  thread and tool call is checked against, so a name-only change needs its own door (a
-  follow-up for grants). Review round 1 (REQUEST CHANGES), all taken but the rename
-  (explained above): H1 erasure's wipe resumes at start; H2 settling and status as above;
+  answer read after its store is wiped is its receipt's first 768 bytes, marked. Review
+  round 1 (REQUEST CHANGES), all taken but the rename (since fixed: the rename blocker
+  above): H1 erasure's wipe resumes at start; H2 settling and status as above;
   M1 run shares; M2 receipts as history; M3 no destroyed mark; M4 the usage total; the
   lows (retry and erasure tests, receipts during a drop, bounded drops with the notice,
   the wipe caller guard, receipts with the grant, slice 10, the guard's row width and
@@ -1091,7 +1096,7 @@ account and no deploy.
   tables; a policy write aborts active Sessions' work only, sleepers enforced in `deliver`;
   the owner's admission row and `require_work`. Built in workerd, nothing deployed
   (`scheduled.ts`, `cron.ts`, `admission.ts`, `agent.ts`, `thread-host.ts`,
-  `thread-store.ts`, `threads.ts`, `owner-do.ts`, `ledger.ts`, `gate.ts`, migration 12).
+  `thread-store.ts`, `threads.ts`, `owner-do.ts`, `ledger.ts`, `gate.ts`, migration 13).
   A scheduled launch (`agentRun` with `at` or `cron`, `ta`'s `agent:run`) records its run
   thread naming its work (`request`, `work_…`) and its store, then makes its `ta.scheduled`
   task in the thread's root inside the thread's wake (`ThreadHost.admitted`), owned by the
@@ -1121,7 +1126,16 @@ account and no deploy.
   dropped thread, a stamp that no longer stands or a settled run ends it. Lows: the
   `THREAD_DROPPED` branch is live and tested; a parked schedule ends `restart_limit`; a
   launch whose task cannot be made drops its run; `createScheduled` makes only
-  `ta.scheduled`; the tombstone's shape is pinned (a guard); cron is UTC only.
+  `ta.scheduled`; the tombstone's shape is pinned (a guard); cron is UTC only. Mutation
+  after round 1: 30 on the fixes (admission in `require`, `modelRule` and the host, the
+  suspension's ending and what it keeps, the door classes, cancel's wait and withdraw,
+  the held re-sleep, its doubling and cap, `sameStamp`'s fields, the `request` check,
+  `scheduledOf`'s state, the parked end, the dropped launch), 30 killed; three first
+  alive were killed by tests added for them. Merged with the grant rename (#5377): the
+  migration is 13, and every stamp check and scheduled refusal reads the generation, so
+  a rename keeps a client's schedules (tested); a grant set is `work`, a revoke `reduce`.
+  Two mutants on the merge (a rename moving the generation, the set's class), both killed,
+  the second by a test added for it.
   Cron is ours: five numeric UTC fields, at most 64 characters
   and 16 items a field, occurrences at least 15 minutes apart, one within eight years; each
   delivery sleeps until the next, until a re-check refuses or a cancel. Cancel is
@@ -1129,12 +1143,13 @@ account and no deploy.
   delivery's, by a pure store read (`ThreadStore.task`, `answer`) that opens no Session,
   then the run's receipt; `wake:list` reads `Threads.scheduledOf` (the thread row, its live
   row, its receipt). A policy write aborts active Sessions' work only, never a sleeping
-  task nor a scheduled launch's; grant changes still drop and wipe the client's threads,
+  task nor a scheduled launch's; a grant change (a set that moves the generation, or a
+  revoke) still drops and wipes the client's threads,
   sleepers included. The scheduled launches hold at most `SCHEDULED_SHARE` (50%) of
   `runs_live`, shared by `client_share` and `owner_reserve`, refused `runs_scheduled` at the
   launch (S4-S5 review L4: a scheduled backlog never starves a launch made now; `runs_live`
   stays 2,000 default and high). Deleted: the `work` lane, `WorkRunner`, `Scheduled` and
-  their tests, and threads' held-by-work retention case; migration 12 drops
+  their tests, and threads' held-by-work retention case; migration 13 drops
   `scheduled_work` (migrations 9 to 11 name it, so it is dropped rather than edited out).
   Admission: `owner_admission`, admitted when the object is made, refused at every door in
   `#bind` (`owner_suspended`, `owner_erased`) and by `deliver` and the `wakes` claim (held,
@@ -1162,8 +1177,8 @@ account and no deploy.
   went as dead code. Declared differences: the task's input also
   names its thread and cron (the registry is shared by every Session); a scheduled run's
   `request` is its work id from its recording, so its receipt names it however it ends; an
-  owner absent an admission row is admitted (migration 12 writes it), the platform
-  suspending; every door refuses a suspended owner, reads too. Live probe P10 still owed:
+  owner absent an admission row is admitted (migration 13 writes it), the platform
+  suspending. Live probe P10 still owed:
   a days-long sleep across hibernation and a deploy, and `deleteAll` and the tombstone in
   one turn on production storage.
 - [ ] A5 with F5: skills, packages and filters, `parseSkill`, the agents 0.32 bump (diff

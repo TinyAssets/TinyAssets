@@ -23,12 +23,19 @@
  *   the revoke, even once it is granted again.
  * - Only the owner, in its protected session, changes a grant (`set`); revoking one is
  *   a narrowing the owner's account makes without a session (`revoke`), as a key's
- *   revoke does. Both are receipted, and the object ends the client's agents' open
+ *   revoke does. Both are receipted, and a grant change ends the client's agents' open
  *   wakes and revokes their doorbell subscriptions in the same transaction (the
  *   Python's M3), so the agent subscribes again under the new grant.
+ * - A grant has two numbers. Its `revision` is the owner's concurrency token: every set
+ *   and every revoke moves it, and a set names the one it was made against
+ *   (`expected_revision`), so a set from a stale view is refused, a rename included. Its
+ *   `generation` is its authority: it moves only when what the grant holds does, its mode
+ *   or its scopes (a revoke is a mode), so a set that changes neither, a rename, moves
+ *   only the revision. "A grant change" below is one that moves the generation.
  * - Work saved under a grant is rechecked with `standing` against the generation it
- *   was stamped with: a changed, revoked or fenced grant refuses it. The schedule's
- *   stamped work (`scheduled.ts`) and an MCP client's held registration
+ *   was stamped with: a changed, revoked or fenced grant refuses it. Stamps carry no
+ *   scopes: a scoped grant's are read live from the row, so a rename needs no new stamp.
+ *   The schedule's stamped work (`scheduled.ts`) and an MCP client's held registration
  *   (`registrations.ts`) carry that stamp and hold their client's row (`held`), as an
  *   agent does, so the free-row bound can never forget it and turn a standing grant
  *   into "no grant".
@@ -126,7 +133,10 @@ export type Client = {
   readonly source: string;
   readonly mode: string;
   readonly scopes: Scope[];
+  /** Its authority: moves only with its mode or scopes, a revoke among them. */
   readonly generation: number;
+  /** Its concurrency token: moves on every owner set and every revoke. */
+  readonly revision: number;
   readonly revoked_at: number | null;
   readonly name: string;
   readonly first_seen: number;
@@ -146,8 +156,13 @@ export interface GrantChange {
   readonly source: unknown;
   readonly mode: unknown;
   readonly scopes: unknown;
-  readonly expected_generation: unknown;
+  readonly expected_revision: unknown;
   readonly name: unknown;
+}
+
+/** What a grant holds, as one value: equal exactly when `holds` answers alike. */
+function authority(mode: string, held: readonly Scope[]): string {
+  return canonical([mode, [...new Set(held.map((scope) => canonical(scope)))].sort()]);
 }
 
 /**
@@ -300,13 +315,16 @@ export class Grants {
   }
 
   /**
-   * `outside_set`, an owner widening from its protected session: one client's mode.
-   * `expected_generation` 0 creates the row, as a key's mint does.
+   * `outside_set`, an owner widening from its protected session: one client's mode, scopes
+   * and name, against the revision the owner was shown; `expected_revision` 0 creates the
+   * row, as a key's mint does. The revision always moves; the generation only when the
+   * authority does (`moved`), which is when the caller ends the client's work.
    */
   set(sessionId: string, change: GrantChange, now: number):
-      { client: string; mode: string; scopes: Scope[]; generation: number } {
+      { client: string; mode: string; scopes: Scope[]; generation: number; revision: number;
+        moved: boolean } {
     const client = outsideClient(change.client, change.source);
-    const { mode, expected_generation: expected, name } = change;
+    const { mode, expected_revision: expected, name } = change;
     const source = change.source as string;
     if (typeof mode !== "string" || !OUTSIDE_MODES.includes(mode)) {
       throw new Invalid("invalid outside grant mode");
@@ -316,7 +334,7 @@ export class Grants {
       throw new Invalid("a scoped grant, and only a scoped one, names scopes");
     }
     if (typeof expected !== "number" || !Number.isSafeInteger(expected) || expected < 0) {
-      throw new Invalid("expected outside grant generation required");
+      throw new Invalid("expected outside grant revision required");
     }
     if (typeof name !== "string" || codePoints(name) > 80) {
       throw new Invalid("invalid outside client name");
@@ -324,7 +342,7 @@ export class Grants {
     const sql = this.#sql;
     return this.#storage.transactionSync(() => {
       const row = this.#row(client);
-      if ((row?.generation ?? 0) !== expected) {
+      if ((row?.revision ?? 0) !== expected) {
         throw new Refused("outside grant changed");
       }
       if (row !== undefined && row.source !== source) {
@@ -334,21 +352,31 @@ export class Grants {
         throw new Refused("the owner's managed outside clients are at their limit; forget " +
                           "revoked clients to make room");
       }
-      const generation = expected + 1;
-      const revokedAt = mode === "revoked" ? now : row?.revoked_at ?? null;
+      const moved = row === undefined
+        || authority(row.mode, JSON.parse(row.scopes) as Scope[]) !== authority(mode, held);
+      const generation = (row?.generation ?? 0) + (moved ? 1 : 0);
+      const revision = expected + 1;
+      // A revoke is timed when it lands; a revoked grant set again keeps its fence.
+      const revokedAt = mode === "revoked" && moved ? now : row?.revoked_at ?? null;
+      const named = name === "" ? row?.name ?? "" : name;
       sql.exec(
-        "INSERT INTO outside_clients (client, source, mode, scopes, generation, revoked_at, " +
-          "name, first_seen, last_seen, owner_set) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1) " +
+        "INSERT INTO outside_clients (client, source, mode, scopes, generation, revision, " +
+          "revoked_at, name, first_seen, last_seen, owner_set) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1) " +
           "ON CONFLICT (client) DO UPDATE SET mode = excluded.mode, scopes = excluded.scopes, " +
-          "generation = excluded.generation, revoked_at = excluded.revoked_at, owner_set = 1, " +
+          "generation = excluded.generation, revision = excluded.revision, " +
+          "revoked_at = excluded.revoked_at, owner_set = 1, " +
           "name = CASE WHEN excluded.name = '' THEN name ELSE excluded.name END",
-        client, source, mode, canonical(held), generation, revokedAt, name, now, now,
+        client, source, mode, canonical(held), generation, revision, revokedAt, name, now, now,
       );
+      // The receipt's digest names the set whole, so a rename's differs from a set that
+      // changes nothing; its generation is the authority's.
       this.#policy.receipt("outside_grant", {
-        session_id: sessionId, request_digest: policyDigest({ client, mode, scopes: held }),
+        session_id: sessionId,
+        request_digest: policyDigest({ client, mode, scopes: held, name: named, revision }),
         generation, rule: client, decision: mode, outcome: "committed",
       }, now);
-      return { client, mode, scopes: held, generation };
+      return { client, mode, scopes: held, generation, revision, moved };
     });
   }
 
@@ -420,22 +448,25 @@ export class Grants {
    * `outside_revoke`, a narrowing: revoke one client's grant now, never refused for a
    * bound. A client with no grant has nothing to revoke; a revoked one stays as it is.
    */
-  revoke(clientId: unknown, now: number): { client: string; revoked: boolean; generation: number } {
+  revoke(clientId: unknown, now: number):
+      { client: string; revoked: boolean; generation: number; revision: number } {
     const client = outsideClient(clientId);
     return this.#storage.transactionSync(() => {
       const row = this.#row(client);
       if (row === undefined || row.mode === "revoked") {
-        return { client, revoked: row !== undefined, generation: row?.generation ?? 0 };
+        return { client, revoked: row !== undefined, generation: row?.generation ?? 0,
+                 revision: row?.revision ?? 0 };
       }
       const generation = row.generation + 1;
       this.#sql.exec("UPDATE outside_clients SET mode = 'revoked', scopes = '[]', " +
-                       "generation = ?, revoked_at = ?, owner_set = 1 WHERE client = ?",
+                       "generation = ?, revision = revision + 1, revoked_at = ?, " +
+                       "owner_set = 1 WHERE client = ?",
                      generation, now, client);
       this.#policy.receipt("outside_grant", {
         request_digest: policyDigest({ client, mode: "revoked" }), generation, rule: client,
         decision: "revoked", outcome: "committed",
       }, now);
-      return { client, revoked: true, generation };
+      return { client, revoked: true, generation, revision: row.revision + 1 };
     });
   }
 }

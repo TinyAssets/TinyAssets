@@ -70,7 +70,7 @@
  * the object makes a conversation (a guard holds it).
  *
  * Ending work (agent research §4.2), each in the door of the change, after its own unit
- * committed: a grant set or revoke ends its client's work (`endClient`, the client's
+ * committed: a grant change or revoke ends its client's work (`endClient`, the client's
  * threads, which the unit marked dropping), a policy write every thread's with work running
  * (`endAll`, from the threads' live rows: active Sessions only). Each ends the pending waits
  * it covers (`wait`), closes the live views of the conversations it covers (`live-tee.ts`),

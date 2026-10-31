@@ -40,7 +40,7 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   grant_fences: Object.freeze(["owner/src/grants.ts", SCHEMA]),
   policy_usage: Object.freeze(["owner/src/grants.ts", "owner/src/policy.ts",
                                "owner/src/registrations.ts", "owner/src/sessions.ts", SCHEMA]),
-  // Its table is dropped (migration 12); only the migrations that made and dropped it name it.
+  // Its table is dropped (migration 13); only the migrations that made and dropped it name it.
   scheduled_work: Object.freeze([SCHEMA]),
   owner_admission: Object.freeze(["owner/src/admission.ts", SCHEMA]),
   agent_cards: Object.freeze(["owner/src/registrations.ts", SCHEMA]),

@@ -24,12 +24,13 @@
  * database, so what the owner's object holds is its own bounded rows only, whatever its
  * agents do; this guard replaced A4's runtime storage gauge.
  *
- * The headroom is thin: the worst case is 49.0% of the limit (migration 12, F1:
+ * The headroom is thin: the worst case is 49.0% of the limit (migration 13, F1:
  * 4,897,208,852 bytes), about 103 MB under half. F1 traded the `work` lane's table (its
  * 2,000 rows of up to 16 KiB) for the admission row; a scheduled launch is a run, counted in
- * the thread terms already. A new table, or a raised bound, must come out of an existing
- * term: lower another bound in the same change, or the guard fails. Every later slice
- * trades terms so; none has room of its own left.
+ * the thread terms already. A grant's revision (migration 12) fit in pages S4-S5 already
+ * counted. A new table, or a raised bound, must come out of an existing term: lower another
+ * bound in the same change, or the guard fails. Every later slice trades terms so; none has
+ * room of its own left.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -287,10 +288,11 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
                      bytes: ROW, by: "one per client" },
   policy_usage: { rows: 1, bytes: ROW, by: "one row" },
   outside_clients: { rows: GRANT_LIMITS.maxFreeClients + GRANT_LIMITS.maxOwnerClients,
-                     bytes: ROW + GRANT_BYTES * GRANT_LIMITS.maxOwnerClients
+                     bytes: ROW + 8 + GRANT_BYTES * GRANT_LIMITS.maxOwnerClients
                        / (GRANT_LIMITS.maxFreeClients + GRANT_LIMITS.maxOwnerClients),
                      by: "free clients (no scopes, no name) and owner-set ones (maxScopes " +
-                       "scopes of three fields, and a name)" },
+                       "scopes of three fields, and a name), each with its revision " +
+                       "(migration 12)" },
   grant_fences: { rows: 1, bytes: ROW, by: "one row" },
   owner_sessions: { rows: SESSION_LIMITS.maxSessions, bytes: ROW, by: "maxSessions" },
   outside_agents: { rows: LEDGER_LIMITS.maxAgentRows, bytes: ROW + 1 * KIB,
@@ -376,7 +378,7 @@ export const RUNTIME: Readonly<Record<string, Term>> = Object.freeze<Record<stri
 
 /**
  * Every table the owner's schema makes, by its final name: its statements in order, a
- * rename moving a table and a drop taking one away (migration 12 drops the `work` lane's).
+ * rename moving a table and a drop taking one away (migration 13 drops the `work` lane's).
  */
 export function ownerTables(schema: string = source("schema")): string[] {
   const tables = new Set<string>();
@@ -524,7 +526,7 @@ describe("the owner's database bound", () => {
     expect(TERMS["ledger_rings"]!.rows).toBe(LEDGER_LIMITS.maxAgentRows * 60);
     expect(TERMS["connection_secrets"]!.bytes).toBe(256 + 4 * 65_536);
     expect(TERMS["outside_clients"]!.rows * TERMS["outside_clients"]!.bytes)
-      .toBe(2000 * 256 + 1000 * (64 * (3 * 512 * 6 + 64) + 80 * 4));
+      .toBe(2000 * (256 + 8) + 1000 * (64 * (3 * 512 * 6 + 64) + 80 * 4));
   });
 
   it("counts every run whose store is kept, every receipt, the usage of each thread and " +

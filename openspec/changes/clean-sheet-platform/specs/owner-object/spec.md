@@ -193,7 +193,7 @@ An agent's wake limits SHALL be stored per agent, 12 wakes an hour and a 60 s ba
 - **THEN** the change is refused, the agent's limits are unchanged, and a refusal receipt is left
 
 ### Requirement: The object checks the owner's session itself
-An agent's register, disable or delete, a policy write, a wake-limits change and a grant change SHALL be served only when the binding's session cookie opens a live session row in the object's own store. The object SHALL mint each session's cookie, keep only its hash, and open a session only for the owner itself from a verified sign-in at most 600 s old. A stored hash, another owner's cookie or an expired or closed session SHALL never be a proof.
+An agent's register, disable or delete, a policy write, a wake-limits change and a grant set (a rename included) SHALL be served only when the binding's session cookie opens a live session row in the object's own store. The object SHALL mint each session's cookie, keep only its hash, and open a session only for the owner itself from a verified sign-in at most 600 s old. A stored hash, another owner's cookie or an expired or closed session SHALL never be a proof.
 
 #### Scenario: A session that has expired
 - **WHEN** the owner writes its policy with the cookie of a session whose row has expired
@@ -227,6 +227,21 @@ The object SHALL admit each call from an outside client against that client's gr
 #### Scenario: A scoped client at a collection door
 - **WHEN** a client scoped to `read_graph` writes a board row through the owner's account
 - **THEN** the write is refused with "outside client capability not granted" and a pull by it is served
+
+### Requirement: A grant's revision is apart from its authority
+A grant's revision SHALL move on every owner set and revoke, and the owner's set SHALL name it, a stale one refused. Its generation SHALL move only with its mode or the set of its scopes (a revoke is a mode), and stamps SHALL carry it alone, scopes read from the grant as it stands. Where this spec ends a client's work on a grant change, a grant change is a set that moves the generation, or a revoke; a set that moves only the revision SHALL end none of it.
+
+#### Scenario: A client renamed
+- **WHEN** the owner renames a client with a conversation, a sleeping task and run receipts
+- **THEN** the generation is unchanged, its threads, sleeper and receipts are kept, and a tool call in the conversation made before the rename runs
+
+#### Scenario: A rename against a stale view
+- **WHEN** the owner renames a client naming a revision that has moved on
+- **THEN** the set is refused with "outside grant changed" and the grant is unchanged
+
+#### Scenario: The same scopes reordered, or a revoked grant set revoked again
+- **WHEN** the owner sets a scoped grant's triples in another order, or sets a revoked grant revoked under a new name
+- **THEN** the generation is unchanged, and a revoked grant keeps its revoke's time as its fence
 
 ### Requirement: A scoped grant names the capabilities the doors check
 A scoped grant SHALL hold exact `{universe, agent, capability}` triples naming only the capabilities the object's doors check: `read_graph` and `write_graph` at the mailbox, its doorbell subscription and the collections; `propose_policy` at an agent's policy proposal; and `read_files` and `write_files` at the file doors.
@@ -850,7 +865,7 @@ Each conversation SHALL carry its authority in pi's own document: the owner's (t
 - **THEN** the fork carries the same stamp, and its next tool call is blocked
 
 ### Requirement: A client's threads are bounded and hold its grant
-`agent_threads` SHALL record a thread in a unit that re-checks its stamp stands, naming a fresh store (128 random bits, unique) before the store exists, SHALL never change a thread's stamp or store, SHALL refuse loudly a conversation past its client's bound (64), all clients' together (1,024) or the owner's (10,000), and a run past the runs' own bound (`runs_kept`, 25,000 stores), past the runs not yet settled, a sleeping one among them (owner policy `runs.runs_live`, 2,000 by default and at most, refused `runs_live`), the scheduled ones within half of it (`runs_scheduled`), an outside client's past its share of either (`runs.client_share`, 25%) and every client's together past what the owner's reserve leaves (`runs.owner_reserve`, 25%), before any store is made; a dropping thread SHALL count against every bound, and SHALL hold its client's grant row (`held`), until its row is forgotten. A thread is its Session's root; its stamp SHALL be written in the root's creating commit. A thread row SHALL NOT copy its stamp's universe: it SHALL name the outside agent's registration the stamp was made from, whose id, universe and client never change and which SHALL NOT be deleted while a thread names it (the owner's delete leaves a tombstone that goes with the last such thread), so a thread acts in the universe it was stamped in after its client registers elsewhere, and a run opens there with no agent of its client enabled. A grant set or revoke SHALL mark its client's threads dropping, and let go of its run receipts, in its own unit, and drop them once it committed.
+`agent_threads` SHALL record a thread in a unit that re-checks its stamp stands, naming a fresh store (128 random bits, unique) before the store exists, SHALL never change a thread's stamp or store, SHALL refuse loudly a conversation past its client's bound (64), all clients' together (1,024) or the owner's (10,000), and a run past the runs' own bound (`runs_kept`, 25,000 stores), past the runs not yet settled, a sleeping one among them (owner policy `runs.runs_live`, 2,000 by default and at most, refused `runs_live`), the scheduled ones within half of it (`runs_scheduled`), an outside client's past its share of either (`runs.client_share`, 25%) and every client's together past what the owner's reserve leaves (`runs.owner_reserve`, 25%), before any store is made; a dropping thread SHALL count against every bound, and SHALL hold its client's grant row (`held`), until its row is forgotten. A thread is its Session's root; its stamp SHALL be written in the root's creating commit. A thread row SHALL NOT copy its stamp's universe: it SHALL name the outside agent's registration the stamp was made from, whose id, universe and client never change and which SHALL NOT be deleted while a thread names it (the owner's delete leaves a tombstone that goes with the last such thread), so a thread acts in the universe it was stamped in after its client registers elsewhere, and a run opens there with no agent of its client enabled. A grant change (a set that moves the generation, or a revoke) SHALL mark its client's threads dropping, and let go of its run receipts, in its own unit, and drop them once it committed.
 
 #### Scenario: A client that moved
 - **WHEN** a client's thread was stamped in universe A, and the owner disables its agent there and the client registers in B
@@ -1058,7 +1073,7 @@ Every agent door SHALL address work by a thread id resolved against the calling 
 
 
 ### Requirement: A grant or policy change ends the agent work it covers
-After its unit commits, a grant set or revoke SHALL end its client's waits, views and work, background work included; a policy write SHALL end the waits, views and running work of every Session with work running, never a sleeping task nor a scheduled launch's, each held to the policy when it wakes. The door SHALL wait at most 5 s, and SHALL reject if the ending fails.
+After its unit commits, a grant change (a set that moves the generation) or revoke SHALL end its client's waits, views and work, background work included; a policy write SHALL end the waits, views and running work of every Session with work running, never a sleeping task nor a scheduled launch's, each held to the policy when it wakes. The door SHALL wait at most 5 s, and SHALL reject if the ending fails.
 
 #### Scenario: A client revoked mid-turn
 - **WHEN** a client is revoked while its turn, its subagent's and another client's run
