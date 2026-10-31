@@ -1120,8 +1120,11 @@ account and no deploy.
   door. M1 `deliver` re-checks inside the host's `admitted` step, which stops on the task's
   abort signal, and the abort handler counts an occurrence pi holds as delivered;
   `cancelScheduled` waits for the task to end, then withdraws its last delivery. M2 kept
-  as built (the coordinator's decision): `deleteAll`, then the `erased` row; its window is
-  the live probe's to measure. M3 a suspension or a run-policy refusal holds a delivery,
+  as built (the coordinator's decision): `deleteAll`, then the `erased` row. The facet
+  probe's Q8 (run 41247617223): with no crash the order is right (20 of 20 wiped and
+  written); production's `ctx.abort()` rolled back everything since the last durable
+  point, even an awaited `deleteAll`, so the crash window was not measured. It stands
+  until slice 10 closes it. M3 a suspension or a run-policy refusal holds a delivery,
   which sleeps again backing off (its checkpoint's `held`, status `held: <code>`); only a
   dropped thread, a stamp that no longer stands or a settled run ends it. Lows: the
   `THREAD_DROPPED` branch is live and tested; a parked schedule ends `restart_limit`; a
@@ -1189,9 +1192,11 @@ account and no deploy.
   names its thread and cron (the registry is shared by every Session); a scheduled run's
   `request` is its work id from its recording, so its receipt names it however it ends; an
   owner absent an admission row is admitted (migration 13 writes it), the platform
-  suspending. Live probe P10 still owed:
-  a days-long sleep across hibernation and a deploy, and `deleteAll` and the tombstone in
-  one turn on production storage.
+  suspending. Live probe P10 still owed: a days-long sleep across hibernation and a
+  deploy. `deleteAll` and the tombstone in one turn on production storage: the facet
+  probe's Q8 (run 41247617223) found the order right and did not measure the crash window
+  (production's abort rolled back even an awaited `deleteAll`); the follow-up crash point
+  is `deleteAll`, then `sync()`, then the write, then the abort.
 - [ ] A5 with F5: skills, packages and filters, `parseSkill`, the agents 0.32 bump (diff
   PiHarness at each agents release and carry its fixes into `thread-host.ts`);
   `agent:delegate` with task-owned children. Tool and package code must never create a
@@ -1220,10 +1225,14 @@ account and no deploy.
   F1; its door is slice 10's. Erasure completeness needs a record outside the owner object
   (the directory's or the identity's deletion: the owner's AuthKit identity and directory
   entries removed, so no sign-in or inbound route resolves the name again), or explicit
-  platform admit at sign-up; the live store probe's Q8 (a write in `deleteAll`'s killed
-  turn lost in workerd) is the deciding input. Gate: the erasure door SHALL NOT ship
-  before that outside record, or the explicit platform admit, exists; until then no door
-  reaches erasure, so production cannot meet the window (`erase.ts`).
+  platform admit at sign-up. The facet probe's Q8 (run 41247617223, `facet-probe.md`):
+  with no crash the order is right (20 of 20 wiped and written); production's
+  `ctx.abort()` rolled back everything since the last durable point, even an awaited
+  `deleteAll`, so the crash window was not measured (workerd shows it: the delete kept,
+  the tombstone lost). The window stands until slice 10's outside record closes it. A
+  future run's crash point: `deleteAll`, then `sync()`, then the write, then the abort.
+  Gate: the erasure door SHALL NOT ship before that outside record, or the explicit
+  platform admit, exists; until then no door reaches erasure (`erase.ts`).
 - [ ] 0c (live): the dark deploy of the owner and gateway Workers, the store probe's cases
   re-run on the real code (P1-P4, P7; P5 a store reset mid-run).
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
@@ -1366,6 +1375,18 @@ account and no deploy.
   thread's store opens about 0.3 s cold; P4 128 Sessions held with no break (`OPEN_MAX`
   64); P7 one `RpcTarget` session bills 2 requests for 200 calls against 202, and pins its
   store while held.
+- [x] The facet probe P13 (with Q8, F1's erasure window). Method, key and results:
+  `facet-probe.md`; run by the manual `facet-probe.yml`. Run 1 (41247617223, 2026-10-31):
+  Q1 a parent and all its facets share one ceiling of about 10 GiB (read by hand; at the
+  ceiling production resets the parent instead of a size error), so the real per-object
+  ceiling is about 10 GiB and the owner-bound guard's 10 × 10^9 denominator is
+  conservative; Q2 under `disable_ctx_exports` only a Worker Loader class works; Q3 a
+  `ctx.exports` facet gets the parent's whole env; Q4 a facet's out-of-memory kills its
+  parent (Q4's no-yield and over-CPU burns not measured: they ran far short of design);
+  Q6 facet calls are under 1 ms and billed on the parent; Q8 the order is right with no
+  crash, and the crash window was not measured (production's abort rolled back even an
+  awaited `deleteAll`). The design stays: top-level
+  `ThreadStore` objects hosted by `ThreadHost`; facets do not replace the store transport.
 - [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
   probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
   does not emulate it); a live probe of the files Worker's create-once put, which
