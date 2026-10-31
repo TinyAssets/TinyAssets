@@ -23,7 +23,7 @@ import { NO_THREAD } from "../src/agent";
 import { DESTROYED, StoreSession } from "../src/thread-store";
 import { USAGE_ROW_MAX } from "../src/threads";
 import {
-  HOST, MAX_WAKE_BACKOFF_MS, OPEN_MAX, PARKED, SESSIONS_FULL, wakeJob,
+  HOST, MAX_WAKE_BACKOFF_MS, OPEN_MAX, PARKED, SESSIONS_FULL, USAGE_UNKEPT, wakeJob,
 } from "../src/thread-host";
 import { until } from "./gateway-support";
 import { sqlIn, storeOf, storeSql, storeSubmission } from "./support";
@@ -595,8 +595,8 @@ describe("a task pi's restart limit parked", () => {
   // (`retry()`); pi main removes `retryTask`, so the host ends the run it holds up instead.
   // Found by review (S1-S3, M1): before, the input stayed placed and every follow-up queued
   // behind it, with no job and no live row left to show it.
-  it("ends the run it held up: its input unanswered, the owner told, the thread usable",
-     async () => {
+  it("ends the run it held up: its input unanswered, the owner told, the thread usable, " +
+     "and the root's sleeping background work untouched", async () => {
     const name = `owner-${crypto.randomUUID()}`;
     const stub = () => env.AGENT.getByName(name);
     const reply = (messages: Message[]) => {
@@ -620,6 +620,12 @@ describe("a task pi's restart limit parked", () => {
                              content: new TextEncoder().encode("alpha") });
     const thread = await inside(async (i) => (await i.agent.thread("main", null)).thread_id);
     await inside(async (i) => {
+      // A sleeper in the root, as background work leaves one (review round 3, L2).
+      const pi = await i.agent.host.pi(thread);
+      const root = (await pi.conversation(1 as never, BG))!;
+      await root.commit((tx) => tx.createTask(Reminder, { until: Date.now() + 3_600_000 },
+                                              { ownership: { kind: "conversation" },
+                                                background: true }), BG);
       await i.agent.host.submit(thread, "look", { operationId: "op-park" });
       await until(() => i.probes.reads === 1, "the read to start");
     });
@@ -651,6 +657,62 @@ describe("a task pi's restart limit parked", () => {
     expect(out.status.reason).toBeTruthy();
     expect(out.notices).toEqual(expect.arrayContaining(["task_parked", PARKED]));
     expect(out.next).toBe("done");
+    const sleeper = await storeSql(store, "SELECT status FROM pi_tasks WHERE " +
+      "json_extract(record, '$.kind') = ?", Reminder.definition.name);
+    expect(sleeper.map((row) => row["status"])).toEqual([expect.not.stringMatching(/terminal/)]);
+  }, 120_000);
+
+  it("in the root's background work ends that task alone: an input submitted as it ends is " +
+     "answered", async () => {
+    // Review round 3 (L1): pi gives background work no abandonOnRestart and its restart
+    // cascade skips it, so it parks; a conversation abort would withdraw the root's input.
+    const name = `owner-${crypto.randomUUID()}`;
+    const stub = () => env.AGENT.getByName(name);
+    const reply = (messages: Message[]) => {
+      const last = messages.at(-1);
+      if (last?.role === "toolResult") {
+        return says("tool done");
+      }
+      return JSON.stringify(last).includes("start it")
+        ? fauxAssistantMessage([fauxToolCall("ta", { op: "call", name: "background",
+                                                     arguments: { work: "noted" } })],
+                               { stopReason: "toolUse" })
+        : says("noted");
+    };
+    const inside = <R>(act: (i: FauxOwnerDO) => R | Promise<R>) =>
+      runInDurableObject(stub(), async (i: FauxOwnerDO) => {
+        i.script = Array.from({ length: 200 }, () => reply);
+        i.probes.backgroundGate = new Promise(() => undefined);  // the work never ends
+        return act(i);
+      });
+    const thread = await inside(async (i) => (await i.agent.thread("main", null)).thread_id);
+    await inside(async (i) => {
+      await i.agent.host.submit(thread, "start it", { operationId: "op-start" });
+      await until(() => i.probes.backgroundRuns === 1, "the background work to start");
+    });
+    // The object dies while the work runs, again and again; each time a door's input opens
+    // the thread again, so one of them is in flight as the parked task is ended.
+    const parked = async () => (await inside((i) => i.parts.notices.list()))
+      .some((notice) => notice.type === PARKED);
+    const ops: string[] = [];
+    for (let n = 0; n < 8 && !await parked(); n++) {
+      await runInDurableObject(stub(), (_i, state) => state.abort("crash"))
+        .catch(() => undefined);
+      ops.push(`op-${n}`);
+      await inside((i) => i.agent.host.submit(thread, `hello ${n}`, { operationId: `op-${n}` }));
+      await until(async () => await parked()
+                              || await inside((i) => i.probes.backgroundRuns) > 0,
+                  "the work to run again, or to be parked");
+    }
+    expect(await parked()).toBe(true);
+    const store = await storeOf(stub(), thread);
+    const work = async () => (await storeSql(store, "SELECT status FROM pi_tasks WHERE " +
+      "json_extract(record, '$.kind') = 'test.work'"))[0]?.["status"];
+    await until(async () => await work() === "terminal", "the parked work to end");
+    for (const op of ops) {
+      await until(async () => (await storeSubmission(store, { request: op }))?.status === "done",
+                  `input ${op} to be answered`);
+    }
   }, 120_000);
 });
 
@@ -699,8 +761,12 @@ describe("the owner's usage view", () => {
       const view = await instance.agent.usage();
       instance.timing.openMax = 64;
       const after = host.openThreads();
+      // Reopened, a thread counts once: live, not again from its row (review round 3, L3).
+      await host.pi(b);
+      const reopened = await instance.agent.usage();
+      await host.close(b);
       held.release();
-      return { before, view, open, after };
+      return { before, view, open, after, reopened };
     });
     // A thread's usage row goes with it.
     expect((await sqlIn(r.stub(), "SELECT thread_id FROM agent_usage")).length).toBe(2);
@@ -716,7 +782,23 @@ describe("the owner's usage view", () => {
         .reduce((sum, used) => sum + used.input + used.output, 0);
     expect(total(out.before)).toBeGreaterThan(0);
     expect(total(out.view)).toBeGreaterThan(total(out.before));
+    expect(total(out.reopened)).toBe(total(out.view));
   }, 30_000);
+
+  it("tells the owner when a closing Session's usage cannot be kept", async () => {
+    // Review round 3 (L4): the loud path.
+    const r = rig();
+    const thread = await r.thread();
+    const notices = await r.in(async (instance) => {
+      const host = instance.agent.host;
+      await instance.harness.prompt("noted", { session: thread });
+      const pi = host.peek(thread)!.pi;
+      pi.usage = () => Promise.reject(new Error("unreadable"));
+      await host.close(thread);
+      return instance.parts.notices.list().map((notice) => notice.type);
+    });
+    expect(notices).toContain(USAGE_UNKEPT);
+  });
 
   it("keeps a thread's usage within its bound, refusing more, loudly", async () => {
     const r = rig();

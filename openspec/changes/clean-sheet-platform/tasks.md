@@ -974,9 +974,18 @@ account and no deploy.
   next message. L2 endings run in batches of the bound (tested: at most the bound at once).
   L3 kept conversation records are frozen deeply (tested). Mutation of the touched code,
   13: 11 killed; alive, `ag-usage-opens` (it reads only Sessions already open, so it
-  opens none: equivalent) and dropping the parked task's own abort (its conversation's
-  abort reaches it in every reachable case; kept for a parked task that is itself
-  background work, which a plain conversation abort does not reach).
+  opens none: equivalent) and dropping the parked task's own abort, which round 3 showed
+  was a real gap, not covered as this note first said.
+  Review round 3 (all Low, all taken): L1 a parked background task (pi gives background
+  work no `abandonOnRestart`, and its restart cascade skips it, so it parks) is ended with
+  `abortTask` alone, never its conversation's run, whose inputs a conversation abort would
+  withdraw; tested: the root's parked background work ends terminal and every input
+  submitted as it ends is answered. L2 the root's parked read leaves a root background
+  sleeper untouched (tested). L3 a reopened thread counts once in the usage view (tested).
+  L4 a usage that cannot be kept at close leaves `usage_unkept` (tested). Not taken: the
+  usage row kept also when a Session's wake turns idle, since reading `pi.usage` there
+  adds store reads to every message and cannot share the live row's unit without reading
+  it first. The reviewer's round-3 mutants all killed.
 - [ ] Before any deploy holding real data: S4's drop wipes its store (`destroy()`, the row
   `dropping` until it returned). Until then, a drop (idle retention, a grant change or a
   revoke) forgets its row and orphans its store, which nothing can list or reach again.

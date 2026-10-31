@@ -177,6 +177,13 @@ export interface SubmitOptions {
   readonly entry?: { readonly kind: string; readonly data: JsonObject };
 }
 
+/** A task pi's restart limit parked: its id, its conversation, and whether background. */
+interface Parked {
+  readonly task: TaskId;
+  readonly conversation: ConversationId;
+  readonly background: boolean;
+}
+
 /** One thread's place in the host: its Session, and what holds it open. */
 class Slot {
   opening: Promise<Opened> | undefined;
@@ -543,27 +550,32 @@ export class ThreadHost extends LifecycleCapability {
    * own input, which nothing in the root waits on (a subagent a tool starts is a nested
    * `ta` call, which pi abandons at its first restart, so its tasks never park).
    */
-  async #parked({ pi }: Opened): Promise<{ task: TaskId; conversation: ConversationId }[]> {
+  async #parked({ pi }: Opened): Promise<Parked[]> {
     const inspection = await pi.inspect(BG);
     return inspection.tasks
       .filter(({ state }) => state.kind === "blocked" && state.reason === "restart_limit")
-      .map(({ record }) => ({ task: record.id, conversation: record.conversationId }));
+      .map(({ record }) => ({ task: record.id, conversation: record.conversationId,
+                              background: record.background === true }));
   }
 
   /**
    * End what each parked task holds up: the task itself marked aborted (pi runs its abort
-   * handler, never its phase again), and its own conversation's run aborted (pi withdraws
-   * its queued inputs and settles its placed one `unanswered`), and an owner notice kept.
-   * Work elsewhere in the thread, the root's background work included, goes on. Off the
+   * handler, never its phase again), and, for a task of its conversation's run, that run
+   * aborted (pi withdraws its queued inputs and settles its placed one `unanswered`); a
+   * parked background task holds up no run, so it alone ends, and the conversation's own
+   * run and inputs go on. An owner notice is kept. Work elsewhere in the thread, the root's
+   * background work included, goes on. Off the
    * open's line: an abort resolves once the run is idle. One that fails is told loudly; the
    * next open finds the task still parked and tries again.
    */
-  #endParked(slot: Slot, pi: Harness,
-             parked: readonly { task: TaskId; conversation: ConversationId }[]): void {
+  #endParked(slot: Slot, pi: Harness, parked: readonly Parked[]): void {
     slot.parked = true;
     this.#parts.notice(PARKED, PARKED_DETAIL);
-    void Promise.all(parked.map(async ({ task, conversation }) => {
+    void Promise.all(parked.map(async ({ task, conversation, background }) => {
       await pi.abortTask(task, BG);
+      if (background) {
+        return;
+      }
       await (await pi.conversation(conversation, BG))?.abort(BG);
     }))
       .catch(() => console.error("a parked task's run could not be ended"))  // no ids

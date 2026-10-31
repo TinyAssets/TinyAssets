@@ -69,6 +69,8 @@ export interface Probes {
   background: number | null;
   /** Awaited by background work before it submits its work, when set. */
   backgroundGate: Promise<void> | null;
+  /** How many times background work has started waiting on `backgroundGate`. */
+  backgroundRuns: number;
   /** Awaited by the test gate's `beforeTool`, after the authority gate's, when set. */
   toolGate: Promise<void> | null;
   /** Each call the test gate saw, in order: the authority gate let it through. */
@@ -97,7 +99,7 @@ export function freshProbes(): Probes {
   return { readGate: null, reads: 0, holdGate: null, holds: 0, holdLinger: 0, holdOutputs: [],
            spawned: null,
            submitted: [],
-           background: null, backgroundGate: null, toolGate: null, gated: [], nestGate: null,
+           background: null, backgroundGate: null, backgroundRuns: 0, toolGate: null, gated: [], nestGate: null,
            rewrite: null, widen: null, inject: null, writeGate: null, writes: 0,
            storeCalls: {} };
 }
@@ -171,6 +173,7 @@ function conversationWork(probes: () => Probes) {
         return { status: "running", checkpoint: { phase: "made", child: child.id } };
       }, context),
       made: async (task, runtime, context) => {
+        probes().backgroundRuns++;
         await Promise.race([probes().backgroundGate, abortOf(context)]);
         if (context.abortSignal?.aborted) {
           throw new Error("aborted");  // pi runs the abort handler
