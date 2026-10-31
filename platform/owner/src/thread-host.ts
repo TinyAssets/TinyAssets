@@ -188,9 +188,16 @@ export interface HostParts {
   /**
    * The owner's admission's refusal, or null while it is admitted: a new input is refused
    * with it, read synchronously right before pi commits the input, and a wake job due
-   * meanwhile opens nothing (`ADMISSION_HOLD_MS`).
+   * meanwhile opens nothing but what is still working (`ADMISSION_HOLD_MS`).
    */
   admission(): string | null;
+  /**
+   * `thread`'s live row as it stands (`threads.ts`): whether its Session last reported work
+   * running, and when it next wakes (ms); null with none. A read.
+   */
+  liveRow(thread: string): { readonly active: boolean; readonly wakeAt: number | null } | null;
+  /** pi's clock (`HarnessOptions.now`), which a Session's wakes, and so its row's, are on. */
+  now(): number;
   /**
    * Keep `thread`'s wake in the owner's rows, in a unit of the write gate; `from` is the
    * Session that reported it, when it is open (a run's settling is read from it).
@@ -374,6 +381,35 @@ export class ThreadHost extends LifecycleCapability {
       });
       return { operationId, accepted };
     });
+  }
+
+  /**
+   * Admit a linked input, one a tool submits under the context pi passed it (a subagent's,
+   * `delegate.ts`), as `submit` admits a door's: inside the thread's wake, counted among the
+   * admissions in flight against the thread's open inputs (`THREAD_INPUTS_FULL`), refused
+   * while the owner is not admitted, and refused by `joined` (the turn it joins has no row:
+   * `turn_ended`) before pi admits it, so no input joins a turn that has ended. A resend of
+   * its own request id is pi's duplicate, and is not checked again. `submit` makes the
+   * submission, under the tool's context, so it joins the tool's turn.
+   */
+  linked<T>(thread: string, request: { readonly conversation: ConversationId;
+                                       readonly requestId: string },
+            joined: () => Promise<void>, submit: () => Promise<T>): Promise<T> {
+    return this.#use(thread, ({ storage }, slot) => this.#admit(thread, slot, async () => {
+      const fresh = await storage.submissionByRequest(request.conversation, request.requestId,
+                                                      BG) === undefined;
+      if (fresh) {
+        if (this.#parts.turns.inputs(thread) + slot.admitting - 1 >= THREAD_INPUTS) {
+          throw new Refused(THREAD_INPUTS_FULL);
+        }
+        const unadmitted = this.#parts.admission();
+        if (unadmitted !== null) {
+          throw new Refused(unadmitted);
+        }
+        await joined();
+      }
+      return submit();
+    }));
   }
 
   /**
@@ -914,11 +950,14 @@ export class ThreadHost extends LifecycleCapability {
    * One step of `thread`'s wake job. It never admits or replays anything: it reads the
    * Session's `wake()`. Running work is waited on; a sleep reschedules the job for when it
    * ends; no work completes the job. A thread with no row (dropped) is never opened again,
-   * and its job completes. While the owner is not admitted the job opens nothing and looks
-   * again after `ADMISSION_HOLD_MS`: what it would run is a scheduled launch's held
-   * delivery (a suspension ended every other thread's work), which would only be held
-   * again; the readmission wakes it (`wakeNow`), and its live row's wake, left past due,
-   * names it.
+   * and its job completes. While the owner is not admitted a thread whose live row is not
+   * working opens nothing: what it would run is a scheduled launch's held delivery (a
+   * suspension ended every other thread's work), which would only be held again, so its job
+   * looks again at its live row's wake, or after `ADMISSION_HOLD_MS` when that is sooner or
+   * past (the readmission wakes it then, `wakeNow`, its row's wake past due naming it), so a
+   * hold set after the readmission's pass never delays a delivery a day. A thread whose row
+   * still says working (an ending, or a cancel's abort handler, an eviction cut off) opens
+   * and finishes it now: a suspension takes no new work, so that is work reducing itself.
    */
   async #step(thread: string): Promise<LifecycleJobOutcome> {
     const heartbeat = { rescheduleAt: Date.now() + this.#timing.heartbeatMs };
@@ -930,7 +969,13 @@ export class ThreadHost extends LifecycleCapability {
       return undefined;
     }
     if (this.#parts.admission() !== null) {
-      return { rescheduleAt: Date.now() + ADMISSION_HOLD_MS };
+      const row = this.#parts.liveRow(thread);
+      if (row?.active !== true) {
+        const hold = Date.now() + ADMISSION_HOLD_MS;
+        const wakeAt = row?.wakeAt ?? null;
+        return { rescheduleAt: wakeAt !== null && wakeAt > this.#parts.now()
+          ? Math.min(hold, wakeAt) : hold };
+      }
     }
     const { opened, slot } = await this.#open(thread);
     const { pi } = opened;

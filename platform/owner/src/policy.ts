@@ -33,6 +33,11 @@
  * - The optional `runs` table is the owner's run policy (`RUN_DEFAULTS`, tasks 5 S5):
  *   how long a settled run's store is kept (`keep_runs`), and its receipt
  *   (`keep_run_receipts`), which the `threads` lane reads (`threads.ts`).
+ * - The optional `packages` list is the owner's package selection (tasks 5, A5), in pi's
+ *   settings form: each a package directory under `/workspace`, or `{source, skills?,
+ *   prompts?}` with pi's filter grammar per resource type (`resources.ts`). There is no
+ *   `extensions` filter: a package's code never loads in the owner's object, so a package
+ *   that declares any is refused where it loads.
  *
  * The Python closed the owner's public egress tunnels before a write committed and
  * cancelled its live streams after. Here each model call carries the policy generation
@@ -70,6 +75,8 @@ import { createHash } from "node:crypto";
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import { CHUNK_BYTES, KEEP_CEILING, MAX_INTENT_CHUNKS } from "./files";
+import { storedPath, within, WORKSPACE } from "./paths";
+import type { PackageSelection } from "./resources";
 import { codePoints, SOURCE_ID } from "./text";
 import type { RunPolicy } from "./threads";
 
@@ -356,9 +363,56 @@ function validModels(models: unknown): boolean {
   });
 }
 
+/** The packages one document selects at most, and the patterns one filter list holds. */
+export const PACKAGES_MAX = 32;
+export const FILTER_PATTERNS = 64;
+/** The keys a package selection's object form takes. */
+const SELECTION_KEYS: readonly string[] = Object.freeze(["source", "skills", "prompts"]);
+
+/** A package's directory: a stored path below `/workspace`. */
+function packageSource(value: unknown): value is string {
+  try {
+    return within(storedPath(value), WORKSPACE) && value !== WORKSPACE;
+  } catch {
+    return false;
+  }
+}
+
+/** A filter list: at most `FILTER_PATTERNS` patterns of 1 to 512 characters. */
+function filterList(value: unknown): boolean {
+  return Array.isArray(value) && value.length <= FILTER_PATTERNS
+    && value.every((entry) => typeof entry === "string" && entry !== ""
+                              && codePoints(entry) <= 512);
+}
+
+/** The `packages` list: each a source, or a selection of known keys; no source twice. */
+function validPackages(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length > PACKAGES_MAX) {
+    return false;
+  }
+  const sources = value.map((entry) => (plain(entry) ? entry["source"] : entry));
+  return new Set(sources).size === sources.length && value.every((entry) =>
+    typeof entry === "string" ? packageSource(entry)
+      : plain(entry) && packageSource(entry["source"])
+        && Object.keys(entry).every((key) => SELECTION_KEYS.includes(key))
+        && (entry["skills"] === undefined || filterList(entry["skills"]))
+        && (entry["prompts"] === undefined || filterList(entry["prompts"])));
+}
+
+/** The packages a document selects, each in the object form, in its order. */
+export function packageSelection(document: PolicyDocument): PackageSelection[] {
+  return (document.packages ?? []).map((entry) => (typeof entry === "string"
+    ? { source: entry } : {
+      source: entry.source,
+      ...(entry.skills === undefined ? {} : { skills: [...entry.skills] }),
+      ...(entry.prompts === undefined ? {} : { prompts: [...entry.prompts] }),
+    }));
+}
+
 /** The document as `validate` leaves it. */
 export interface PolicyDocument {
   readonly files?: Partial<FileSettings>;
+  readonly packages?: readonly (string | PackageSelection)[];
   readonly runs?: Partial<RunSettings>;
   readonly models?: ModelPolicy;
   readonly entries: PolicyEntry[];
@@ -511,9 +565,14 @@ function destination(entry: unknown): void {
 export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS):
     PolicyDocument {
   if (!plain(document) || !keys(document, ["entries", "spend", "egress",
-    ...(["files", "models", "runs"] as const).filter((table) =>
+    ...(["files", "models", "runs", "packages"] as const).filter((table) =>
       Object.hasOwn(document, table))])) {
     throw new Invalid("invalid policy document");
+  }
+  if (document["packages"] !== undefined && !validPackages(document["packages"])) {
+    throw new Invalid("invalid packages policy: at most 32 package directories under " +
+                      "/workspace, each once, as a path or {source, skills, prompts} with " +
+                      "filter lists; package code (extensions) never loads");
   }
   if (document["models"] !== undefined && !validModels(document["models"])) {
     throw new Invalid("invalid models policy");

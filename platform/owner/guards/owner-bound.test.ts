@@ -18,7 +18,9 @@
  * their share of a b-tree page at that worst fill too, their overflow pages whole
  * (`termBytes`). The model turns' counters live as long as the pi records that own them,
  * whose rows the schema refuses past `THREAD_INPUTS` open inputs and `THREAD_COMPACTIONS`
- * live compactions a thread, each turn of at most `TURN_BYTES`; the calls open at once and
+ * live compactions a thread (`CONVERSATION_COMPACTIONS` for each of its
+ * `THREAD_CONVERSATIONS` live conversations: its root and the subagents working in it, A5),
+ * each turn of at most `TURN_BYTES`; the calls open at once and
  * the spend counters are bounded by count (migration 10). pi's
  * records live in the thread stores (`thread-store.ts`, S1-S3), never in the owner's
  * database, so what the owner's object holds is its own bounded rows only, whatever its
@@ -27,7 +29,9 @@
  * The headroom is thin: the worst case is 49.0% of the limit (migration 13, F1:
  * 4,897,208,852 bytes), about 103 MB under half. F1 traded the `work` lane's table (its
  * 2,000 rows of up to 16 KiB) for the admission row; a scheduled launch is a run, counted in
- * the thread terms already. A grant's revision (migration 12) fit in pages S4-S5 already
+ * the thread terms already. A5's subagents trade inside the turn terms, so the figure is
+ * unchanged: a thread's compactions rose from 2 to 6 (two for each of three live
+ * conversations), and its open inputs fell from 8 to 4, ten owners a live thread as before. A grant's revision (migration 12) fit in pages S4-S5 already
  * counted. A new table, or a raised bound, must come out of an existing term: lower another
  * bound in the same change, or the guard fails. Every later slice trades terms so; none has
  * room of its own left.
@@ -149,6 +153,8 @@ const MAX_INTENT_CHUNKS = constant("files", "MAX_INTENT_CHUNKS");
 const MAX_PATH_BYTES = constant("paths", "MAX_PATH_BYTES");
 const THREAD_INPUTS = constant("schema", "THREAD_INPUTS");
 const THREAD_COMPACTIONS = constant("schema", "THREAD_COMPACTIONS");
+const THREAD_CONVERSATIONS = constant("schema", "THREAD_CONVERSATIONS");
+const CONVERSATION_COMPACTIONS = constant("schema", "CONVERSATION_COMPACTIONS");
 const TURN_BYTES = constant("schema", "TURN_BYTES");
 const CALLS_OPEN = constant("schema", "CALLS_OPEN");
 const SPEND_KEPT = constant("schema", "SPEND_KEPT");
@@ -339,7 +345,8 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
   model_spend: { rows: SPEND_KEPT, bytes: ROW, by: "SPEND_KEPT day and month counters" },
   model_turns: { rows: TURN_OWNERS, bytes: ROW + TURN_BYTES + THREAD_ID,
                  by: "a turn per owner at most: THREAD_INPUTS open inputs and " +
-                   "THREAD_COMPACTIONS live compactions a thread, TURN_BYTES each" },
+                   "THREAD_COMPACTIONS live compactions a thread (CONVERSATION_COMPACTIONS " +
+                   "for each of THREAD_CONVERSATIONS live conversations), TURN_BYTES each" },
   model_turn_owners: { rows: TURN_OWNERS, bytes: ROW + TURN_BYTES + 2 * THREAD_ID,
                        by: "one per open input or live compaction, a thread each, indexed" },
   // The agent's threads: rows only, every transcript in its own store.
@@ -510,7 +517,11 @@ describe("the owner's database bound", () => {
     expect([MAX_INTENT_CHUNKS, CHUNK_BYTES, constant("files", "KEEP_CEILING")])
       .toEqual([10_000, 4 * 1024 ** 2, 1000]);
     expect([THREAD_INPUTS, THREAD_COMPACTIONS, CALLS_OPEN, SPEND_KEPT, MODELS_CHARS,
-            BLOB_CHARS]).toEqual([8, 2, 1000, 4300, 655_360, 65_536]);
+            BLOB_CHARS]).toEqual([4, 6, 1000, 4300, 655_360, 65_536]);
+    // A thread's compactions are each of its live conversations' (A5's subagents).
+    expect([THREAD_CONVERSATIONS, CONVERSATION_COMPACTIONS]).toEqual([3, 2]);
+    expect(THREAD_COMPACTIONS).toBe(THREAD_CONVERSATIONS * CONVERSATION_COMPACTIONS);
+    expect(schema).toMatch(/export const THREAD_COMPACTIONS = THREAD_CONVERSATIONS \* /);
     expect([SCOPE_FIELD, CLIENT_NAME, WAKES_AN_HOUR, GRANT_LIMITS.maxScopes])
       .toEqual([512, 80, 60, 64]);
     expect(TERMS["model_turns"]).toMatchObject({

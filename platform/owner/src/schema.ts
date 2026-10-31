@@ -190,18 +190,30 @@ export const CALLS_OPEN = 1000;
 export const SPEND_KEPT = 4300;
 /**
  * Open inputs (queued or placed) a thread holds at once, each owning a turn while it is
- * open: the thread host refuses one past it (`thread_inputs_full`), and migration 10's
- * trigger refuses its owner row past it.
+ * open, a subagent's one input among them: the thread host refuses one past it
+ * (`thread_inputs_full`), and migration 10's trigger refuses its owner row past it. Four
+ * since A5, traded for the subagents' compactions (the owner-bound guard): a thread's root
+ * running, two subagents of it answering, and one input queued.
  */
-export const THREAD_INPUTS = 8;
+export const THREAD_INPUTS = 4;
 /**
- * Compactions a thread's Session holds live at once: pi starts a background one only while
- * none is listed (`generation.js`, `pi.live.compactions`), and a run's blocking one waits
- * in its generation, one run at a time; a thread is one conversation (no owner source
- * creates a task or a conversation), and there is no manual compaction door yet (A6 caps
- * its own). Migration 10's trigger refuses a compaction's owner row past it.
+ * Conversations with live work a thread's Session holds at once: its root, and the
+ * subagents `ta`'s `agent:delegate` made (`delegate.ts`) whose call, or own work, is live;
+ * a delegation past it is refused (`thread_conversations_full`).
  */
-export const THREAD_COMPACTIONS = 2;
+export const THREAD_CONVERSATIONS = 3;
+/**
+ * Compactions one conversation holds live at once: pi starts a background one only while
+ * none is listed (`generation.js`, `pi.live.compactions`), and a run's blocking one waits
+ * in its generation, one run at a time; there is no manual compaction door yet (A6 caps
+ * its own).
+ */
+export const CONVERSATION_COMPACTIONS = 2;
+/**
+ * Compactions a thread's Session holds live at once: each of its live conversations'.
+ * Migration 10's trigger refuses a compaction's owner row past it.
+ */
+export const THREAD_COMPACTIONS = THREAD_CONVERSATIONS * CONVERSATION_COMPACTIONS;
 
 /** A file entry in the temporary area, which keeps no history. */
 export const MIGRATIONS: readonly Migration[] = Object.freeze([

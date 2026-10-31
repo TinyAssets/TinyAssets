@@ -848,6 +848,13 @@ export class Threads {
       .map((row) => row.thread_id);
   }
 
+  /** `threadId`'s live row: whether it is working, and when it next wakes (s). A read. */
+  liveRow(threadId: string): { active: boolean; wake_at: number | null } | null {
+    const row = this.#storage.sql.exec<{ active: number; wake_at: number | null }>(
+      "SELECT active, wake_at FROM agent_live WHERE thread_id = ?", threadId).toArray()[0];
+    return row === undefined ? null : { active: row.active === 1, wake_at: row.wake_at };
+  }
+
   /** Every live thread: work running, or a task sleeping. A read. */
   liveThreads(): Set<string> {
     return new Set(this.#storage.sql.exec<{ thread_id: string }>(

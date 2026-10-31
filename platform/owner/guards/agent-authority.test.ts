@@ -9,10 +9,15 @@
  *   `configure` at all (a call, a destructuring, an import), or names pi's `AgentDoc`,
  *   but the backstop's reads of it;
  * - conversation making: each thread is one pi Session whose root is the thread, its
- *   authority written in the root's creating commit, so the only maker any source names is
- *   pi's `root`, in `OwnerAgent.#open` (the thread host's opener), and no source names
- *   another (`createConversation`, `createRootConversation`, `fork`, `forkConversation`); a
- *   task's conversation takes its owner's in pi's `conversationCreated`;
+ *   authority written in the root's creating commit, so the makers sources name are pi's
+ *   `root`, in `OwnerAgent.#open` (the thread host's opener), and a subagent's
+ *   `createConversation`, exactly at the create-task guard's creation point
+ *   (`delegate.ts`'s `createChild`, A5), and no source names another
+ *   (`createRootConversation`, `fork`, `forkConversation`); a task's conversation takes its
+ *   owner's authority and the five model tools in pi's `conversationCreated`; and the one
+ *   write of a conversation's agent besides its model tools is the subagent's
+ *   `instructions` (its named agent's `AGENTS.md`), in `createChild`, through one draft of
+ *   `AgentDoc` whose every use is its `instructions`;
  * - the model's tools (A3): pi offers the model what a conversation's `modelTools` names,
  *   so it is written in one place, `OwnerAgent.#inherit` (pi's `conversationCreated`, in
  *   every creating commit), as `(await tx.doc(AgentDoc, ...)).modelTools = ...`, that
@@ -20,13 +25,16 @@
  *   `OwnerAgent.modelAuthority` (the backstop, `TOOL_SURFACE`) otherwise reads; and no
  *   source names `addTools`, or builds a `control` key, the result field whose `addTools`
  *   appends to it.
- * A guarded name spelled as a literal key (`x["configure"]`) is refused anywhere. The
+ * A guarded name spelled as a literal key (`x["configure"]`) is refused anywhere but one
+ * read: a package manifest's `pi["extensions"]`, which `resources.ts` reads only to refuse
+ * the package's code (`entriesOf(pi["extensions"], ...)`), selecting nothing. The
  * guard is a tripwire for our own code's mistakes, as the alarm guard is; the backstop
  * and the environment are the enforcement.
  */
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
+import { CHILD, isCreation } from "./creations";
 import { parse, reporter, workerSources } from "./sources";
 
 const SELECTS = "extensions";
@@ -155,6 +163,61 @@ function declaredKey(node: ts.Identifier): boolean {
     && parent.name === node;
 }
 
+/** The function declaration `node` is in, by its name, if any. */
+function declaredIn(node: ts.Node): ts.FunctionDeclaration | undefined {
+  for (let up = node.parent; up !== undefined; up = up.parent) {
+    if (ts.isFunctionDeclaration(up)) {
+      return up;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Whether `node` (an `AgentDoc`) is the subagent's one draft: in `createChild`, its import
+ * in that file, or `const <name> = await tx.doc(AgentDoc, ...)` whose every later use is
+ * `<name>.instructions`, so it writes nothing of the agent but its instructions.
+ */
+function childInstructions(node: ts.Identifier, path: string, file: ts.SourceFile): boolean {
+  if (path !== CHILD.file) {
+    return false;
+  }
+  if (ts.isImportSpecifier(node.parent)) {
+    return true;
+  }
+  const fn = declaredIn(node);
+  const call = node.parent;
+  if (fn?.name?.text !== CHILD.fn || !ts.isCallExpression(call) || call.arguments[0] !== node
+      || !ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== "doc"
+      || !ts.isAwaitExpression(call.parent) || !ts.isVariableDeclaration(call.parent.parent)
+      || !ts.isIdentifier(call.parent.parent.name)) {
+    return false;
+  }
+  const draft = call.parent.parent.name;
+  let only = true;
+  const uses = (inner: ts.Node): void => {
+    if (ts.isIdentifier(inner) && inner !== draft && inner.text === draft.text) {
+      only &&= ts.isPropertyAccessExpression(inner.parent) && inner.parent.expression === inner
+        && inner.parent.name.text === "instructions";
+    }
+    ts.forEachChild(inner, uses);
+  };
+  uses(fn.body ?? file);
+  return only;
+}
+
+/** The resources' one read of a manifest's code list, to refuse it. */
+const RESOURCES = "owner/src/resources.ts";
+
+/** Whether `node` is `entriesOf(pi["extensions"], ...)` in `resources.ts`: a read, never a write. */
+function readsManifestCode(node: ts.ElementAccessExpression, path: string): boolean {
+  const call = node.parent;
+  return path === RESOURCES && ts.isIdentifier(node.expression) && node.expression.text === "pi"
+    && keyOf(node.argumentExpression) === SELECTS && ts.isCallExpression(call)
+    && call.arguments[0] === node && ts.isIdentifier(call.expression)
+    && call.expression.text === "entriesOf";
+}
+
 /** Whether `node` is an argument of a `.snapshot(...)` call: a read of the document. */
 function snapshotted(node: ts.Node): boolean {
   const call = node.parent;
@@ -187,7 +250,7 @@ export function selections(path: string, source: string): string[] {
     }
     if (ts.isElementAccessExpression(node)) {
       const key = keyOf(node.argumentExpression);
-      if (key !== undefined && GUARDED.has(key)) {
+      if (key !== undefined && GUARDED.has(key) && !readsManifestCode(node, path)) {
         report(node, `names ${key} by a literal key`);
       }
     }
@@ -203,12 +266,13 @@ export function selections(path: string, source: string): string[] {
       }
       if (MAKERS.has(node.text) && !declaredKey(node)
           && !(node.text === ROOT && !namesMember(node))
-          && !(path === THREAD && opensRoot(node))) {
-        report(node, `${node.text} outside OwnerAgent.#open's root`);
+          && !(path === THREAD && opensRoot(node)) && !isCreation(path, node, file)) {
+        report(node, `${node.text} outside OwnerAgent.#open's root and the subagent's ` +
+                     "creation point");
       }
       if (node.text === AGENT_DOC && !(path === THREAD
           && (ts.isImportSpecifier(node.parent) || snapshotted(node)
-              || fixesModelTools(node, path)))) {
+              || fixesModelTools(node, path))) && !childInstructions(node, path, file)) {
         report(node, "names pi's AgentDoc past the backstop's reads of it");
       }
       if (node.text === MODEL_TOOLS && !fixesModelTools(node, path)
@@ -235,6 +299,9 @@ describe("agent-authority guard", () => {
     const agent = owner.find(([path]) => path === THREAD)![1];
     expect(agent).toContain("await pi.root(BG, {");
     expect(agent).not.toContain("createConversation(");
+    const child = owner.find(([path]) => path === CHILD.file)![1];
+    expect(child).toContain(CHILD.call);
+    expect(child).toContain("const agent = await tx.doc(AgentDoc, made.id);");
     expect(agent).toContain("pi.snapshot(AgentDoc, ");
     expect(agent).toContain("(await tx.doc(AgentDoc, record.id)).modelTools = [...MODEL_TOOLS];");
   });
@@ -273,6 +340,11 @@ describe("agent-authority guard", () => {
     ["a selection written to pi's AgentDoc", "owner/src/x.ts",
      "(await tx.doc(AgentDoc, id)).extensions = [];"],
     ["a selection written by a literal key", "owner/src/x.ts", "agent[\"extensions\"] = [];"],
+    ["a manifest's code list read anywhere else", "owner/src/x.ts",
+     "entriesOf(pi[\"extensions\"], \"pi.extensions\");"],
+    ["a manifest's code list read past refusing it", RESOURCES,
+     "const e = pi[\"extensions\"];"],
+    ["a manifest's code list written", RESOURCES, "pi[\"extensions\"] = [];"],
     ["a selection written to a draft", "owner/src/x.ts", "draft.extensions = { remove: [g] };"],
     ["AgentDoc written in the backstop's file", THREAD,
      "import { AgentDoc } from \"p\"; await tx.doc(AgentDoc, id);"],
@@ -305,6 +377,24 @@ describe("agent-authority guard", () => {
      "class OwnerAgent { async modelAuthority() { agent.modelTools = []; } }"],
     ["the backstop pushing to the model's tools", THREAD,
      "class OwnerAgent { async modelAuthority() { agent.modelTools.push(x); } }"],
+    // The subagent's maker and its one draft (A5): anywhere else, or past its instructions.
+    ["the subagent's maker outside its function", CHILD.file,
+     `export async function other(tx, taskId) { return ${CHILD.call}; }`],
+    ["the subagent's maker, ownerless", CHILD.file,
+     "export async function createChild(tx, taskId) { return " +
+       "tx.createConversation({ ownership: { kind: \"ownerless\" } }); }"],
+    ["the subagent's draft writing its model", CHILD.file,
+     "export async function createChild(tx, made) { const agent = await tx.doc(AgentDoc, " +
+       "made.id); agent.model = m; }"],
+    ["the subagent's draft writing its extensions", CHILD.file,
+     "export async function createChild(tx, made) { const agent = await tx.doc(AgentDoc, " +
+       "made.id); agent.instructions = i; const a = agent; a.tools = []; }"],
+    ["the subagent's draft outside its function", CHILD.file,
+     "export async function other(tx, made) { const agent = await tx.doc(AgentDoc, " +
+       "made.id); agent.instructions = i; }"],
+    ["the subagent's draft in another file", THREAD,
+     "export async function createChild(tx, made) { const agent = await tx.doc(AgentDoc, " +
+       "made.id); agent.instructions = i; }"],
     ["the model's tools read elsewhere", THREAD,
      "class OwnerAgent { async other() { return keepsFive(agent?.modelTools); } }"],
   ])("sees %s", (_what, path, source) => {
@@ -321,6 +411,10 @@ describe("agent-authority guard", () => {
       "(await tx.doc(AgentDoc, record.id)).modelTools = [...MODEL_TOOLS]; } }"],
     [THREAD, "class OwnerAgent { async modelAuthority() { " +
       "if (!keepsFive(agent?.modelTools)) { return () => TOOL_SURFACE; } } }"],
+    [RESOURCES, "const e = entriesOf(pi[\"extensions\"], \"pi.extensions\");"],
+    [CHILD.file, "import { AgentDoc } from \"p\";\nexport async function createChild(tx, " +
+      `taskId) { const made = await ${CHILD.call}; const agent = await tx.doc(AgentDoc, ` +
+      "made.id); delete agent.instructions; agent.instructions = i; }"],
   ])("allows %s: %s", (path, source) => {
     expect(selections(path, source)).toEqual([]);
   });

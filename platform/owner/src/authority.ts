@@ -80,8 +80,9 @@ export const TOOL_CAPABILITIES: Readonly<Record<string, Need>> = Object.freeze({
  * nested model call spends as the turn's own calls do, under a standing authority, re-
  * checked in its reservation and dispatch; a launch of an agent needs `run_graph`
  * (`agentRun`), here where the calling conversation acts and again, in the launch's own
- * recording unit, where the launched run will act. A name missing is refused to a scoped
- * grant.
+ * recording unit, where the launched run will act; a delegation to a subagent is a launch
+ * too (`run_graph`), its named agent's scope checked where that agent acts as well, in its
+ * admission's unit (A5). A name missing is refused to a scoped grant.
  * The `ta:` names are the ops' own: a call naming one is refused.
  */
 export const TA_CAPABILITIES: Readonly<Record<string, Need>> = Object.freeze({
@@ -92,6 +93,7 @@ export const TA_CAPABILITIES: Readonly<Record<string, Need>> = Object.freeze({
   "files:usage": Object.freeze(["read_files"] as const),
   "model": Object.freeze([] as const),
   "agent:run": Object.freeze(["run_graph"] as const),
+  "agent:delegate": Object.freeze(["run_graph"] as const),
 });
 /** The tool `ta`, and the prefix of its ops' own names. */
 export const TA_TOOL = "ta";

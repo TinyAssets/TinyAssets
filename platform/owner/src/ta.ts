@@ -44,10 +44,27 @@
  * stamped with the calling conversation's authority where the launched agent acts and
  * recorded in a unit that re-checks `run_graph` there: the run's own scope).
  *
+ * And `agent:delegate` (effect, A5 with F5): a subagent, a conversation this call owns in
+ * the thread's own Session, as one of the owner's agents or as this one, given `task` and
+ * waited on; it acts under the calling conversation's authority, so it needs `run_graph`
+ * where the caller acts (`TA_CAPABILITIES`) and, with an agent named, where that agent acts
+ * too: a delegation is a launch of an agent, the scope `agent:run` and the `agentRun` door
+ * hold, and a scoped client never delegates past what it may run (`OwnerAgent.#delegate`,
+ * `delegate.ts`).
+ *
  * `ta` is `callers: ["model"]` (no tool reaches it, so a nested call never nests `ta`) and
- * `replay: "unsafe"`: an eviction mid-call comes back interrupted, never run twice. Its
- * results never carry a `control`, so nothing it returns widens the model's tools.
+ * `replay: "safe"`, with its own rule for a rerun after a restart, so only what may run
+ * twice does: a read runs again (it writes nothing); a delegation runs again and finds its
+ * child and its child's input where the first run left them (pi's ownership index and
+ * request id), so a subagent survives an eviction of its parent, as pi's example 22's
+ * does; a tool reached through `executeTool` is reached again by the same key, which hands
+ * back the nested call itself under its own replay policy (an unsafe one comes back
+ * interrupted); and any other effect is refused on a rerun (`INTERRUPTED`), never run
+ * twice, by a memo it commits before it acts (`once`). Its results never carry a
+ * `control`, so nothing it returns widens the model's tools.
  */
+import { randomUUID } from "node:crypto";
+
 import type { Context } from "@earendil-works/chord/context";
 import {
   type AssistantMessage, type Message, StringEnum, type TSchema, Type, type Usage as PiUsage,
@@ -70,7 +87,8 @@ import { AUTO_MODEL, GATEWAY_PROVIDER } from "./gateway-provider";
 /** The platform capabilities' names, which no package tool may take. */
 export const PLATFORM_NAMES: readonly string[] = Object.freeze(["policy:show", "policy:propose",
                                                                 "wake:list", "files:usage",
-                                                                "model", "agent:run"]);
+                                                                "model", "agent:run",
+                                                                "agent:delegate"]);
 
 /** The capabilities classified as reads; any other is an effect. */
 export const READS: readonly string[] = Object.freeze(["ta:catalog", "policy:show",
@@ -94,6 +112,15 @@ export const INVALID_REQUEST = "invalid ta request";
 export const UNKNOWN_CAPABILITY = "unknown capability";
 export const RESERVED_NAME = "the ta: names are the ops' own";
 export const READ_WRITES = "a read capability writes nothing";
+/** A rerun's refusal of an effect a restart cut off: it may have partly run, never twice. */
+export const INTERRUPTED = "interrupted: ta was cut off by a restart and may have partly " +
+  "run; it is not run again";
+/** The memo an effect commits before it acts, so a rerun finds it (`once`). */
+export const EFFECT_MEMO = "ta.effect";
+/** The longest task a delegation takes, in code points (the doors' own input bound). */
+export const DELEGATE_TASK_MAX = 32_000;
+/** The subagent capability (`delegate.ts`, run by `OwnerAgent.#delegate`). */
+export const DELEGATE = "agent:delegate";
 
 /** What the object's platform capabilities run on: its own modules, read or in a unit. */
 export interface Platform {
@@ -119,9 +146,21 @@ export interface Platform {
       at: unknown, cron: unknown): Promise<unknown>;
 }
 
+/** A delegation's request: the agent named (none: this conversation's), and its task. */
+export interface Delegation {
+  readonly agent: unknown;
+  readonly task: string;
+}
+
 /** What `ta` is built from. */
 export interface TaParts {
   readonly authority: Authority;
+  /**
+   * Delegate `delegation` to a subagent of the calling conversation, under its authority
+   * (`state`), and wait for its answer (`OwnerAgent.#delegate`).
+   */
+  readonly delegate: (state: Readonly<AuthorityState> | undefined, delegation: Delegation,
+                      api: ToolExecutionApi, context: Context) => Promise<unknown>;
   /** The authority the call's conversation runs under, as its `ta.authority` document holds it. */
   readonly state: (api: ToolExecutionApi, context: Context) =>
     Promise<Readonly<AuthorityState> | undefined>;
@@ -245,7 +284,36 @@ function platformCapabilities(): readonly PlatformCapability[] {
                                         args["at"] ?? null, args["cron"] ?? null),
       }),
     },
+    {
+      name: DELEGATE,
+      description: "Delegate a self-contained task to a subagent and wait for its answer: a " +
+        "conversation of its own, with your tools and your authority, configured as one of " +
+        "the owner's agents (/workspace/agents/<agent>/AGENTS.md) or, with no agent, as you.",
+      parameters: Type.Object({
+        agent: Type.Optional(Type.String({ description: "The agent's id, such as main; you " +
+                                                        "when omitted." })),
+        task: Type.String({ minLength: 1, maxLength: DELEGATE_TASK_MAX,
+                            description: "What the subagent is asked to do, in full: it " +
+                              "sees nothing of this conversation." }),
+      }, { additionalProperties: false }),
+      run: async (args, scope, parts) => ({
+        value: await parts.delegate(scope.state, { agent: args["agent"],
+                                                   task: args["task"] as string },
+                                    scope.api, scope.context),
+      }),
+    },
   ];
+}
+
+/**
+ * Before an effect acts: a memo of this attempt committed, so a rerun after a restart (`ta`
+ * is replay-safe) finds the first attempt's and refuses (`INTERRUPTED`), never acting twice.
+ */
+async function once(api: ToolExecutionApi, context: Context): Promise<void> {
+  const attempt = randomUUID();
+  if (await api.memo<string>(EFFECT_MEMO, attempt, context) !== attempt) {
+    throw new Refused(INTERRUPTED);
+  }
 }
 
 /**
@@ -530,6 +598,10 @@ export function taTool(parts: TaParts): ToolRegistration {
         { type: "toolCall", id: scope.api.callId, name: capability.name,
           arguments: called.arguments }) as Record<string, unknown>;
       const required = need(capability.name);
+      // An effect is run once, a rerun refused, but a delegation, which a rerun finds again.
+      if (kindOf(capability.name) === "effect" && capability.name !== DELEGATE) {
+        await once(scope.api, scope.context);
+      }
       // A read writes nothing; an effect's unit re-checks the authority it acts under.
       const write: Write = kindOf(capability.name) === "read"
         ? () => { throw new Error(READ_WRITES); }
@@ -570,7 +642,7 @@ export function taTool(parts: TaParts): ToolRegistration {
                                            { description: "call: its arguments" })),
     }, { additionalProperties: false }),
     callers: ["model"],
-    replay: "unsafe",
+    replay: "safe",
     execute: async (args, api, context) => {
       const state = await parts.state(api, context);
       // The early gate approved some arguments; these are the ones this call runs with.

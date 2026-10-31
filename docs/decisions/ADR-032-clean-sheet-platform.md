@@ -101,7 +101,11 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
      service and its `exec` wakes the microVM, checked with pi's conformance
      tests; `ta` is a trusted pi-durable tool;
    - `replay: "unsafe"` by default, so a call a crash cut off comes back
-     interrupted and is never rerun; only pure reads are marked safe;
+     interrupted and is never rerun; only pure reads are marked safe, and `ta`,
+     by its own rule: its reads and a subagent's delegation (which finds its
+     child and input again, as pi's example 22) rerun, a tool it reaches is
+     reached again under that tool's own policy, and every other effect is
+     refused on a rerun (A5, 2026-10-31);
    - its compaction, steering, subagents and `sleepUntil` wakes;
    - the Agent Skills format for skills;
    - every non-core tool (MCP, package tools, later code mode) registered

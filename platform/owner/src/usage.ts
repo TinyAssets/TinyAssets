@@ -391,6 +391,14 @@ export class Usage {
     });
   }
 
+  /**
+   * Whether `turn` has its row: some pi record still owns it. A linked admission (a
+   * subagent's input) joining a turn without one is refused before pi admits it. A read.
+   */
+  turnLive(turn: string): boolean {
+    return this.#sql.exec("SELECT 1 FROM model_turns WHERE turn = ?", turn).toArray().length > 0;
+  }
+
   /** How many open inputs own turns in `thread`. */
   openInputs(thread: string): number {
     return this.#sql.exec<{ n: number }>(

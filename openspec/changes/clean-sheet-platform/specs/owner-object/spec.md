@@ -160,10 +160,10 @@ A lane's pass SHALL end within its job's single-flight hung timeout by wall cloc
 - **THEN** it takes no more of them, ends before its job's hung timeout, and its job brings the rest at once
 
 ### Requirement: Only Lifecycle touches the object's alarm
-Lifecycle SHALL own the object's single physical alarm, which each agent thread's wake job shares. No source SHALL set, read or clear the alarm itself, import any part of the `agents` package but `agents/lifecycle` (so the object never extends the SDK's `Agent`), or install Lifecycle's runtime `fetch` and WebSocket handlers. The object's `alarm` SHALL only hand the runtime's alarm to Lifecycle.
+Lifecycle SHALL own the object's single physical alarm, which each agent thread's wake job shares. No source SHALL set, read or clear the alarm itself, import any part of the `agents` package but `agents/lifecycle` and `agents/skills` (its Agent Skills parser; so the object never extends the SDK's `Agent`), or install Lifecycle's runtime `fetch` and WebSocket handlers. The object's `alarm` SHALL only hand the runtime's alarm to Lifecycle.
 
 #### Scenario: Source sets the alarm
-- **WHEN** a Worker source names `setAlarm`, `deleteAlarm`, `getAlarm`, `disableAlarms` or `deleteAll`, spells one in pieces through a string, reaches a storage or a Lifecycle by a computed name, imports any part of the `agents` package but `agents/lifecycle` (`agents/harness/pi` included), installs Lifecycle's handlers, or names a Lifecycle or pi table
+- **WHEN** a Worker source names `setAlarm`, `deleteAlarm`, `getAlarm`, `disableAlarms` or `deleteAll`, spells one in pieces through a string, reaches a storage or a Lifecycle by a computed name, imports any part of the `agents` package but `agents/lifecycle` and `agents/skills` (`agents/harness/pi` included), installs Lifecycle's handlers, or names a Lifecycle or pi table
 - **THEN** the alarm guard or the policy-boundary guard fails CI
 
 #### Scenario: A binding fetches the object
@@ -469,7 +469,7 @@ An upload SHALL be told a chunk need not be sent only when the chunk is stored a
 - **THEN** each commit is refused, and once the client sends the bytes it commits
 
 ### Requirement: The owner's database is bounded under half its limit
-Every owner table SHALL be bounded by a count or bytes the code enforces, with no exception, and a guard SHALL compute the worst case from those bounds and the schema, at the policy's high bounds, each row laid out as SQLite lays it at a thinned page's worst fill (`WORST_FILL`), and hold it under half the platform's 10 GB. The schema SHALL refuse a turn owner past `THREAD_INPUTS` open inputs or `THREAD_COMPACTIONS` live compactions a thread.
+Every owner table SHALL be bounded by a count or bytes the code enforces, with no exception, and a guard SHALL compute the worst case from those bounds and the schema, at the policy's high bounds, each row laid out as SQLite lays it at a thinned page's worst fill (`WORST_FILL`), and hold it under half the platform's 10 GB. The schema SHALL refuse a turn owner past `THREAD_INPUTS` open inputs or `THREAD_COMPACTIONS` live compactions a thread, the latter `CONVERSATION_COMPACTIONS` for each of the thread's `THREAD_CONVERSATIONS` working conversations; a new bound SHALL be traded from an existing one in the same change.
 
 #### Scenario: A table no bound covers
 - **WHEN** a migration makes a table the guard has no term for, or a manifest table's charging trigger is missing
@@ -610,7 +610,7 @@ Each thread's Session SHALL be woken by a job of its own (`pi-wake:<thread>`), d
 - **THEN** the ending opens it past the bound, aborts its work before it resumes, starts no model request, and closes it again
 
 ### Requirement: pi opens with the object's registry, tools and settings
-The object SHALL open pi with one registry per object, pi's coding tools with `read` alone replay-safe, settings read at each use (progress committed at most once a second, a failed run's queued inputs withdrawn, owner policy's part beneath those), TinyAssets' attribution, and one model provider, `gateway`, listing only the owner's connected models.
+The object SHALL open pi with one registry per object, pi's coding tools with `read` alone replay-safe, `ta` replay-safe by its own rule (below), settings read at each use (progress committed at most once a second, a failed run's queued inputs withdrawn, owner policy's part beneath those), TinyAssets' attribution, and one model provider, `gateway`, listing only the owner's connected models.
 
 #### Scenario: An eviction mid-tool
 - **WHEN** the object dies while a `read` and an unsafe tool are running, and its alarm starts it again
@@ -1160,7 +1160,7 @@ Each platform capability SHALL be classified a read or an effect, and one not cl
 - **THEN** the unit refuses with "outside client authority no longer stands" and no proposal is held
 
 ### Requirement: The v1 platform capabilities hold to their doors' needs
-The platform capabilities SHALL be `policy:show` (a read, the owner's alone), `policy:propose` (an effect needing `propose_policy`, held for the owner's card under the proposer's own share), `wake:list` (a read of only the calling authority's own scheduled work), `files:usage` (a read needing `read_files`), `model` (an effect) and `agent:run` (an effect needing `run_graph`), each registered in `ta.authority`'s map with that need.
+The platform capabilities SHALL be `policy:show` (a read, the owner's alone), `policy:propose` (an effect needing `propose_policy`, held for the owner's card under the proposer's own share), `wake:list` (a read of only the calling authority's own scheduled work), `files:usage` (a read needing `read_files`), `model` (an effect), `agent:run` (an effect needing `run_graph`) and `agent:delegate` (an effect needing `run_graph`, a delegation being a launch of an agent), each registered in `ta.authority`'s map with that need.
 
 #### Scenario: Outside clients ask for the owner's policy
 - **WHEN** a full client and a scoped client call `policy:show`, and a client without `propose_policy` calls `policy:propose`
@@ -1179,3 +1179,81 @@ The platform capabilities SHALL be `policy:show` (a read, the owner's alone), `p
 #### Scenario: A run that asks a model through ta
 - **WHEN** a run's model calls `ta`'s `model`, then answers
 - **THEN** the run's three gateway requests are reserved and settled on one turn, counted against that turn's caps, and a later input's request is another turn
+
+### Requirement: ta reruns only what may run twice
+`ta` SHALL be registered replay-safe, and on a rerun after a restart SHALL run again only a read, a delegation (which finds its child and its child's input again) and a tool reached through `executeTool` (reached again by the same key, so the nested call answers under its own replay policy); every other effect SHALL commit a memo before it acts and be refused on a rerun that finds it (`interrupted`), never acting twice.
+
+#### Scenario: An eviction while a nested model call is in flight
+- **WHEN** the object dies while `ta`'s `model` call runs, and its alarm starts it again
+- **THEN** the call is refused `interrupted` and no second model call is made
+
+### Requirement: Skills are a prompt section the model reads with read
+A trusted `ta.skills` extension SHALL list, in its `skills` section and in pi-coding-agent's words, each model-invocable skill's name, description and `SKILL.md` path, found under `/workspace/.agents/skills` and `/workspace/skills` at any depth (a directory holding `SKILL.md` not looked into further) and in each selected package, parsed with agents' `parseSkill`; a skill with `disable-model-invocation` SHALL NOT be listed, a name taken twice SHALL keep the first, and a skill the owner's own authority did not write, or that cannot be parsed, SHALL be skipped with a notice. No skill tool SHALL be added.
+
+#### Scenario: A skill listed and read
+- **WHEN** the owner writes a skill and another that disables model invocation, and asks its agent a task the first matches
+- **THEN** the request's section lists the first's name, description and path and not the second, and the model reads the first's `SKILL.md` with `read`
+
+### Requirement: The skills section is rebuilt only by a change to what it lists
+The section SHALL be built at the object's first open and rebuilt, by installing the extension again under its name, only when the files' change feed touches a `SKILL.md` or a template under a root, anything under a selected package's directory, or a directory above them, or a policy write moves the package selection; never per request. Rebuilds SHALL run one at a time, a change during one rebuilding once after it.
+
+#### Scenario: Three requests, then an edit
+- **WHEN** three requests run, a file that is no skill is written, then a `SKILL.md` is edited
+- **THEN** the section is built once for the three requests and the write, and rebuilt once for the edit, the next request showing it
+
+### Requirement: The owner's skill and template commands expand at the doors
+The owner's own input to `agentSubmit`, `agentRun` and `ta`'s `agent:run` SHALL be expanded as pi's `prompt` expands it: `/skill:name args` to the skill's body in pi's `<skill>` block with its arguments after, a skill that disables model invocation included, then `/name args` to a prompt template's body (a direct `.md` child of `/workspace/.agents/prompts`, `/workspace/prompts` or a selected package's prompts) with pi's argument substitution; an unknown name SHALL stay as typed, and an outside client's input, enveloped as data, SHALL NOT be expanded.
+
+#### Scenario: A skill command and a template
+- **WHEN** the owner sends `/skill:pdf-tools extract a.pdf`, then `/review "API shape" speed` with a template `review.md`
+- **THEN** pi is handed the skill's block followed by `extract a.pdf`, then the template's body with `$1` as `API shape` and `$@` as both
+
+### Requirement: Packages are selected by owner policy and contribute data only
+Owner policy's `packages` list SHALL select packages, each a directory under `/workspace`, as a path or `{source, skills?, prompts?}` with pi's filter grammar (plain globs include, `!` excludes, `+` forces an exact path in, `-` out; omitted all, `[]` none), at most 32, each once, with no `extensions` filter. A selected package SHALL contribute only its skills and prompt templates, from its `package.json`'s `pi` key or its conventional directories; its `tinyassets` key's fields SHALL be skipped with a notice until they have a consumer.
+
+#### Scenario: A package filtered
+- **WHEN** the owner selects a package with `skills: ["!beta", "-skills/gamma"]` beside a package it does not select
+- **THEN** the section lists the selected package's other skills and its templates expand, and nothing of `beta`, `gamma` or the unselected package loads
+
+### Requirement: A package that declares code is refused loudly
+A selected package whose manifest lists `pi.extensions`, or that holds a conventional `extensions/` directory, SHALL be refused whole with the fixed code `package_executable` and an owner notice; no package code SHALL run in the owner's object.
+
+#### Scenario: A package with an extension
+- **WHEN** the owner selects a package listing `pi.extensions` and skills
+- **THEN** none of its skills are listed, and a notice names the package and `package_executable`
+
+### Requirement: A subagent is a conversation its delegation owns
+`ta`'s `agent:delegate {agent?, task}` SHALL make its child in its call's own commit, owned by the call's task, found again on a rerun by pi's ownership index, configured as the named agent (its `AGENTS.md`) or as the caller, holding the caller's authority and the five model tools through `conversationCreated`; submit `task` as the child's one input under the call's context, with request id `subagent:<task>`, so it joins the caller's turn; and wait for its answer. Aborting the call SHALL abort the child, the caller SHALL be idle only once the child is, and a revoke, a suspension and a policy write SHALL end it with its thread's work. A scoped client SHALL be refused without `run_graph` where it acts and, with an agent named, where that agent acts.
+
+#### Scenario: A delegation answered
+- **WHEN** the owner's agent delegates to `helper` and the child answers
+- **THEN** the child is the call's conversation with `helper`'s instructions and the owner's authority, offered the five tools, its request on the caller's turn, and the call returns its answer
+
+#### Scenario: An eviction mid-delegation
+- **WHEN** the object dies while the child runs, and its alarm starts it again
+- **THEN** the rerun finds the same child and its one input, the child's unsafe tool comes back interrupted, and the caller gets the child's answer
+
+### Requirement: A thread holds a bounded number of working conversations
+A delegation SHALL be refused, with the fixed code `thread_conversations_full`, when its thread would hold more than `THREAD_CONVERSATIONS` conversations with live work, its root among them; a child SHALL count while the call that owns it, or a task of its own, is live, and SHALL end its lingering work once answered.
+
+#### Scenario: Three delegations at once
+- **WHEN** a run delegates three tasks at once in a thread whose bound is three conversations
+- **THEN** two run beside the root and the third is refused `thread_conversations_full`, and a delegation after both answered is taken
+
+### Requirement: A linked admission joins only a turn that has its row
+A linked input this object makes (a subagent's) SHALL be admitted as a door's input, counted against the thread's open inputs and refused while the owner is not admitted, and SHALL be refused `turn_ended` before pi admits it when the turn it joins has no row.
+
+#### Scenario: The turn ended before the admission
+- **WHEN** a delegation's turn loses its last owner before its child's input is admitted
+- **THEN** the delegation fails `turn_ended` and the child holds no submission
+
+### Requirement: An admission hold never outlasts its thread's wake
+While the owner is not admitted, a thread's wake job SHALL open nothing for a thread whose live row is not working, and SHALL look again at the sooner of a day and the row's wake still ahead; a thread whose live row says working SHALL be opened and its work finished at once.
+
+#### Scenario: A job stepped before its schedule is due
+- **WHEN** a suspended owner's sleeping schedule's job steps an hour before it is due, and the owner is readmitted before then
+- **THEN** the job looks again at the schedule's wake, and the schedule delivers then, not a day later
+
+#### Scenario: An ending an eviction cut off
+- **WHEN** a suspended owner's thread's live row says working after an eviction
+- **THEN** its Session opens at once, its work ends, and its row is the Session's again

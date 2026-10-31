@@ -864,5 +864,5 @@ describe("the plaintext key", () => {
       expect([name, JSON.stringify(rows).includes(key)]).toEqual([name, false]);
     }
     expect(logged.filter((line) => line.includes(key))).toEqual([]);
-  });
+  }, 15_000);  // two drips of 1.8 s each, past the default 5 s under a full run's load
 });
