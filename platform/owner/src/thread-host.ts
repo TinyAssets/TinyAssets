@@ -44,7 +44,8 @@
  * the Session closes, however it closes. Holding it keeps the store in memory, billed: a
  * pinned (watched, A6) Session pins its store's duration for as long as it is pinned.
  *
- * Ported from agents 0.31.0 `harness/pi` (PiHarness): `_admit`, `_wake`/`_wakeFor`,
+ * Ported from agents 0.31.0 `harness/pi` (PiHarness; 0.32.0 diffed in A5: only its
+ * `skills()` changed, so nothing here did): `_admit`, `_wake`/`_wakeFor`,
  * `_wakeStep`, `_waitWhileActive`, `onJobError` with its backoff, `_open`/`_doOpen`/
  * `_piClosing`, `enqueue`, `withdraw`, `settled` and `_parked`, each keyed by thread.
  * Dropped: the `sessions` API, `prompt`, `messages`, `events()` (removed on pi main),
@@ -735,9 +736,10 @@ export class ThreadHost extends LifecycleCapability {
   /**
    * The tasks pi's restart limit parked, each with its own conversation: the run it holds
    * up. A parked task's own conversation is the narrowest end that frees what waits on it:
-   * at the root, the thread's input; in a conversation background work made, that work's
-   * own input, which nothing in the root waits on (a subagent a tool starts is a nested
-   * `ta` call, which pi abandons at its first restart, so its tasks never park).
+   * at the root, the thread's input; in a subagent's conversation (`delegate.ts`), its one
+   * input, so its delegation answers `unanswered` and the run that waits on it goes on; in
+   * a conversation background work made, that work's own input, which nothing in the root
+   * waits on.
    */
   async #parked({ pi }: Opened): Promise<Parked[]> {
     const inspection = await pi.inspect(BG);

@@ -440,6 +440,11 @@ export interface AgentSource {
   readonly models: (session: SessionBinding) => Models;
   /** pi's compaction settings for the catalog's models, read at each use; none: pi's own. */
   readonly compaction?: () => CompactionSettings;
+  /**
+   * Extensions installed under the package rules (`packageRefusal`): a test's. Production
+   * passes none (`gatewayAgent`): no package code runs in the object, a package being data
+   * (`resources.ts`), its code refused.
+   */
   readonly packages: readonly Extension[];
   /**
    * Further extensions of the object's own, installed before the packages and without
@@ -1488,11 +1493,11 @@ export function gatewayModels(parts: AgentParts): (session: SessionBinding) => M
 
 /**
  * The production agent: pi on the object's `gateway` provider, the one model source, with
- * no packages beyond the object's own (`packages` are a test's) and no trusted extension
- * (the ta guard holds `trusted` to `AgentSource` and `#install`).
+ * no extensions beyond the object's own (a package is data, `resources.ts`) and no trusted
+ * extension (the ta guard holds `trusted` to `AgentSource` and `#install`).
  */
-export function gatewayAgent(parts: AgentParts, packages: readonly Extension[] = []): OwnerAgent {
-  return new OwnerAgent(parts, { ...gatewaySource(parts), packages });
+export function gatewayAgent(parts: AgentParts): OwnerAgent {
+  return new OwnerAgent(parts, { ...gatewaySource(parts), packages: [] });
 }
 
 /**
