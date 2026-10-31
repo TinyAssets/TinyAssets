@@ -73,8 +73,9 @@ export function requireWork(storage: OwnerStorage): void {
 
 /**
  * In a unit: the platform suspends (`suspended` true) or resumes the owner for `reason`;
- * the admission as it then stands. The owner is suspended while any reason holds, and an
- * erased owner is never set again.
+ * the admission as it then stands. The owner is suspended while any reason holds. An erased
+ * owner never reaches here: its object holds only the tombstone, which the binding check
+ * refuses before any door acts.
  */
 export function setAdmission(storage: OwnerStorage, request: unknown): Admission {
   if (typeof request !== "object" || request === null || Array.isArray(request)
@@ -87,11 +88,7 @@ export function setAdmission(storage: OwnerStorage, request: unknown): Admission
     throw new Invalid("an admission change is a reason (abuse or billing) and whether it " +
                       "suspends");
   }
-  const current = admission(storage);
-  if (current.state === "erased") {
-    throw new Refused(OWNER_ERASED);
-  }
-  const reasons = new Set(current.reasons);
+  const reasons = new Set(admission(storage).reasons);
   if (suspended) {
     reasons.add(reason);
   } else {

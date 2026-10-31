@@ -239,6 +239,9 @@ describe("a scheduled launch's sleep (F1)", () => {
   it("is left asleep by a policy write, which ends its thread's running work only; its " +
      "delivery then meets the policy as it stands, and is refused", async () => {
     const r = await rig();
+    // Another launch asleep in a closed Session: a policy write never opens it.
+    const asleep = await later(r);
+    await r.in((instance) => instance.agent.host.close(asleep.thread_id));
     const op = await later(r);
     const held = gate();
     await r.in(async (instance) => {
@@ -246,16 +249,21 @@ describe("a scheduled launch's sleep (F1)", () => {
       await instance.agent.host.submit(op.thread_id, "hold please", { operationId: "run_held" });
       await until(() => instance.probes.holds === 1, "the hold to start");
     });
+    const opens = await r.in((instance) => instance.probes.storeCalls["open"] ?? 0);
     const { generation, policy } = await r.stub().policyRead(r.bind(null));
-    // Room for one live run: the scheduled share of it is none.
+    // Room for two live runs, the scheduled share of them one: the two sleepers pass it.
     await r.stub().policyWrite(r.session(), { expected_generation: generation,
-                                              policy: { ...policy, runs: { runs_live: 1 } } });
+                                              policy: { ...policy, runs: { runs_live: 2 } } });
     const ended = await r.in((instance) => instance.agent.host.settled(op.thread_id,
                                                                        "run_held"));
     held.release();
+    expect(await r.in((instance) => instance.agent.host.openThreads()))
+      .not.toContain(asleep.thread_id);
+    expect(await r.in((instance) => instance.probes.storeCalls["open"] ?? 0)).toBe(opens);
+    expect((await r.task(asleep.thread_id))!.status).toBe("sleeping");
     expect([ended.status, ended.reason]).toEqual(["unanswered", "aborted"]);
     expect((await r.task(op.thread_id))!.status).toBe("sleeping");
-    // A new launch is refused at once: the sleeper is the one live run the policy allows.
+    // A new launch is refused at once: the sleepers are the live runs the policy allows.
     expect((await failure(() => r.stub().agentRun(r.bind(null), {
       agent: "main", input: "x", at: clock() + 60 }))).message).toBe(RUNS_LIVE);
     // Due: its delivery is refused, the task ends with the reason, and nothing is submitted.
@@ -266,6 +274,38 @@ describe("a scheduled launch's sleep (F1)", () => {
       status: "failed", error: { message: "runs_scheduled" } });
     expect(await r.delivered(op)).toEqual([]);
   }, 30_000);
+
+  it("delivers on through a policy write that lands while it delivers", async () => {
+    const r = await rig();
+    const op = await later(r);
+    const at = gate();
+    const reached = gate();
+    await r.in((instance) => {
+      const host = instance.agent.host;
+      const submit = host.submit.bind(host);
+      Object.assign(host, { submit: async (...args: Parameters<typeof submit>) => {
+        if (args[2].entry?.kind === "ta.work") {
+          reached.release();
+          await at.promise;
+        }
+        return submit(...args);
+      } });
+    });
+    await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
+    const driving = drainDue(r.stub());
+    await reached.promise;
+    // Its task is running its delivery: the write ends running work, but not the launch's.
+    const { generation, policy } = await r.stub().policyRead(r.bind(null));
+    const writing = r.stub().policyWrite(r.session(), { expected_generation: generation,
+                                                        policy });
+    await sleep(200);
+    at.release();
+    await writing;
+    await driving;
+    expect(await r.settled(op)).toMatchObject({ status: "done", text: "echo: wake up" });
+    expect((await r.task(op.thread_id))!.record.state.outcome).toMatchObject({
+      status: "completed", result: { deliveries: 1 } });
+  }, 60_000);
 
   it("is refused at its delivery while the owner is suspended, ending terminal with that " +
      "reason, and the doors refuse meanwhile", async () => {
@@ -295,6 +335,11 @@ describe("a scheduled launch's sleep (F1)", () => {
       const host = instance.agent.host;
       const submit = host.submit.bind(host);
       Object.assign(host, { submit: async (...args: Parameters<typeof submit>) => {
+        if (args[2].entry?.kind === "ta.work") {
+          // Its re-check passed; the owner is suspended before its submit lands.
+          state.storage.sql.exec("UPDATE owner_admission SET state = 'suspended', " +
+                                   "reasons = '[\"abuse\"]'");
+        }
         const done = await submit(...args);
         if (args[2].entry?.kind === "ta.work") {
           state.abort("evicted inside the delivery");
@@ -314,9 +359,13 @@ describe("a scheduled launch's sleep (F1)", () => {
       }
       await sleep(10);
     }
+    // Suspended since: the delivery pi already holds is not checked again, so its task
+    // completes as delivered, never refused after the fact.
     await sqlIn(r.stub(), "UPDATE cf_agents_jobs SET time = ? WHERE id = ?", Date.now(),
                 wakeJob(op.thread_id));
     await drainDue(r.stub());
+    await until(async () => (await r.task(op.thread_id))?.status === "terminal", "its end");
+    await r.stub().admissionSet(r.platform, { reason: "abuse", suspended: false });
     expect(await r.settled(op)).toMatchObject({ status: "done", text: "echo: wake up" });
     expect(await r.delivered(op)).toEqual([{ request: op.operation_id.split(".")[1], status: "done" }]);
     expect((await r.task(op.thread_id))!.record.state.outcome).toMatchObject({
@@ -456,12 +505,15 @@ describe("a scheduled launch's status, cancel and wake:list", () => {
 });
 
 describe("cron recurrence", () => {
-  /** A deterministic generator, so a failure names its seed. */
+  /** A deterministic generator (mulberry32), so a failure names its seed. */
   function random(seed: number): () => number {
     let state = seed >>> 0;
     return () => {
-      state = (state * 1664525 + 1013904223) >>> 0;
-      return state / 2 ** 32;
+      state = (state + 0x6d2b79f5) >>> 0;
+      let t = state;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 2 ** 32;
     };
   }
   const pick = <T>(next: () => number, items: readonly T[]): T =>
@@ -495,7 +547,7 @@ describe("cron recurrence", () => {
 
   it("answers the first matching minute strictly after a time, for random expressions " +
      "(property tests against a minute-by-minute scan)", () => {
-    const minutes = ["0", "*/15", "5,35", "0-30/10", "7", "*/20", "45"];
+    const minutes = ["0", "*/15", "5,35", "0-30/15", "7", "*/20", "45", "5/20"];
     const hours = ["*", "*/2", "9-17", "3", "1,13", "0-23/6", "22"];
     const days = ["*", "*", "1", "15", "1-7", "*/10", "28-31"];
     const months = ["*", "*", "1", "*/3", "6-8", "2"];
@@ -522,6 +574,19 @@ describe("cron recurrence", () => {
       expect(nextOccurrence(cron, found!)! > found!).toBe(true);
     }
     expect(checked).toBeGreaterThan(100);
+  });
+
+  it("answers the first matching minute at or after the next whole minute, strictly after " +
+     "the time", () => {
+    const hour = Date.UTC(2026, 10, 2, 15) / 1000;
+    const hourly = parseCron("0 * * * *");
+    expect(nextOccurrence(hourly, hour - 30)).toBe(hour);
+    expect(nextOccurrence(hourly, hour - 60)).toBe(hour);
+    expect(nextOccurrence(hourly, hour)).toBe(hour + 3600);
+    // `a/n` runs from `a` to the field's end.
+    const stepped = parseCron("5/20 * * * *");
+    expect(stepped.minutes).toEqual([5, 25, 45]);
+    expect(nextOccurrence(stepped, hour + 6 * 60)).toBe(hour + 25 * 60);
   });
 
   it("matches a day by either day field when both are restricted, as classic cron", () => {
@@ -656,8 +721,10 @@ describe("the owner's admission", () => {
         .toBe("Invalid");
     }
     const named = env.AGENT.getByName(PLATFORM_CALLER);
-    expect((await failure(() => named.policyRead(
-      { owner: PLATFORM_CALLER, caller: PLATFORM_CALLER, origin: null }))).message)
+    const platformOwner = { owner: PLATFORM_CALLER, caller: PLATFORM_CALLER, origin: null };
+    expect((await failure(() => named.policyRead(platformOwner))).message)
+      .toBe(PLATFORM_RESERVED);
+    expect((await failure(() => named.admissionSet(platformOwner, set))).message)
       .toBe(PLATFORM_RESERVED);
     // Still admitted: nothing above set it.
     expect((await r.stub().policyRead(r.bind(null))).generation).toBeGreaterThan(0);
