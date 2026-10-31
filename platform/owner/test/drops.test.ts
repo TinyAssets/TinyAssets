@@ -553,10 +553,14 @@ describe("a run's retention (S5)", () => {
     const [thread] = await r.threads();
     expect(thread!.settled_at).toBeNull();
     await sleep(1100);
+    const dropped = clock();
     expect(await r.retain()).toBe(1);
     expect(await r.threads()).toEqual([]);
     expect(await sqlIn(r.stub, "SELECT request, status, reason FROM run_receipts"))
       .toEqual([{ request: null, status: "unanswered", reason: "not_found" }]);
+    // Its receipt is kept as of its drop, its retention counted from then.
+    const [kept] = await sqlIn(r.stub, "SELECT settled_at FROM run_receipts");
+    expect(kept!["settled_at"] as number).toBeCloseTo(dropped, -1);
     // pi never saw it, so its work's own row says how it stands.
     expect(await r.stub.agentStatus(r.bind(null), { operation_id: run.operation_id }))
       .toMatchObject({ status: "unanswered", reason: "cancelled" });
@@ -784,6 +788,34 @@ describe("S4-S5 review round 1", () => {
     await r.in((instance) => instance.erasure.erase());
     expect(await r.in((instance) => instance.erasure.erased)).toBe(true);
   }, 30_000);
+
+  it("resumes an erasure by its own job alone: no restart, no door", async () => {
+    const r = await rig();
+    const out = await r.in(async (instance) => {
+      await instance.agent.thread("main", null);
+      instance.probes.destroyFails = 1;
+      return instance.erasure.erase().then(() => "wiped", (error: Error) => error.message);
+    });
+    expect(out).toBe("some of the owner's thread stores could not be destroyed yet");
+    await sqlIn(r.stub, "UPDATE cf_agents_jobs SET time = 0 WHERE id = 'owner-erasure/erase'");
+    await runDurableObjectAlarm(r.stub);
+    await until(async () => (await r.in((_instance, state) => state.storage.sql.exec<
+      { name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'").toArray()
+      .filter((row) => !row.name.startsWith("_cf")).length)) === 0, "the job's wipe");
+  }, 30_000);
+
+  it("destroys every store past one batch of rows before the wipe", async () => {
+    const r = await rig();
+    const out = await r.in(async (instance) => {
+      const stores: string[] = [];
+      for (let i = 0; i < 70; i++) {
+        stores.push((await instance.agent.thread("main", null)).store);
+      }
+      await instance.erasure.erase();
+      return stores.filter((store) => !instance.probes.wiped.has(store)).length;
+    });
+    expect(out).toBe(0);
+  }, 60_000);
 
   it("ends every pending wait as the owner's erasure begins", async () => {
     const r = await rig();
@@ -1265,9 +1297,13 @@ describe("S4-S5 review round 2", () => {
     const r = await rig();
     await r.admit(MUSE);
     await r.in((instance) => { instance.probes.holdGate = new Promise(() => undefined); });
-    await r.stub.agentRun(r.bind(MUSE), { agent: "main", input: "hold please" });
+    // A conversation's: a run's would settle as its Session ends, its usage folded then.
+    const sending = r.stub.agentSubmit(r.bind(MUSE), { message: "hold please",
+                                                       client_send_id: "c" })
+      .catch(() => undefined);
     await until(() => r.in((instance) => instance.probes.holds === 1), "the hold to start");
     const [thread] = await r.threads();
+    expect(thread!.kind).toBe("converse");
     await r.in((instance) => {
       const host = instance.agent.host;
       Object.defineProperty(host, "drop", { configurable: true,
@@ -1284,6 +1320,7 @@ describe("S4-S5 review round 2", () => {
     await r.in((instance) => {
       delete (instance.agent.host as unknown as Record<string, unknown>)["drop"];
     });
+    await sending;
   }, 30_000);
 
   it("resumes a failed erasure from a refused door, at most once a retry interval",
