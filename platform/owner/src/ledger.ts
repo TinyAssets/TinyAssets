@@ -599,9 +599,11 @@ export class Ledger {
       let agentId: string;
       if (row === undefined) {
         if (usage.agents >= limits.maxAgentRows) {
-          // A deleted agent's tombstone holds its row until its callback revoke settles.
+          // A deleted agent's tombstone holds its row until its callback revoke settles,
+          // and while a thread names it as the registration its stamp was made from.
           throw new Refused(`the owner's agent registry is full (${usage.tombstones} of its ` +
-                            "rows are deleted agents waiting on a pending callback revoke)");
+                            "rows are deleted agents, kept while a revoke of their callbacks " +
+                            "is pending or a thread was stamped from them)");
         }
         agentId = "agent_" + token(8);
         sql.exec(

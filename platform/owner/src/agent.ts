@@ -121,7 +121,7 @@ import { inTime } from "./schedule";
 import { PLATFORM_NAMES, type Platform, reachable, taTool } from "./ta";
 import {
   HOST_TIMING, type HostParts, type HostTiming, type Opened, type OperationResult,
-  type Reported, type SubmitOptions, ThreadHost,
+  type Reported, type SubmitOptions, ThreadHost, USAGE_UNKEPT,
 } from "./thread-host";
 import { type Answer, assistantText, type StoreRpc } from "./thread-store";
 import {
@@ -180,6 +180,9 @@ export const GATE = "ta.authority";
 export const TA_EXTENSION = "ta.tool";
 /** A thread with no row is never opened: it was dropped, or never made. */
 export const NO_THREAD = "no such thread";
+/** The `usage_unkept` notice's detail when a settling run's usage cannot be read. */
+const USAGE_UNREAD_DETAIL = "a run's model usage could not be read as it settled; the " +
+  "owner's total counts it as its Session last closed";
 /** The rule a model call of a dropping thread is refused under: its turns end with its row. */
 export const THREAD_DROPPING = "thread_dropping";
 /** How long a cut-off Session's usage is waited for, before its row is forgotten. */
@@ -789,8 +792,13 @@ export class OwnerAgent {
     if (settled === null) {
       return this.#parts.live(thread, wake);
     }
-    // Its usage as its Session holds it now goes into the owner's total as it settles.
-    const usage = await from.opened.pi.usage(BG).catch(() => undefined);
+    // Its usage as its Session holds it now goes into the owner's total as it settles; a
+    // read that fails leaves the usage it last kept, told loudly.
+    const usage = await from.opened.pi.usage(BG).catch(() => {
+      console.error("a settling run's usage could not be read");  // no ids
+      this.#report(USAGE_UNKEPT, USAGE_UNREAD_DETAIL);
+      return undefined;
+    });
     const kept = settled;
     const done = await write(() => {
       if (!from.quiet()) {

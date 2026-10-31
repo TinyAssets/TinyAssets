@@ -1271,6 +1271,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE agent_threads_next RENAME TO agent_threads",
     "CREATE INDEX agent_threads_by_client ON agent_threads (client, created_at)",
     "CREATE INDEX agent_threads_by_activity ON agent_threads (last_active)",
+    // One conversation a caller, agent and universe: the universe is the registration's,
+    // which an index cannot read, so the recording unit holds the rule (`Threads.record`
+    // finds the caller's conversation there first, a guard), and this index holds it per
+    // registration.
     "CREATE UNIQUE INDEX agent_threads_conversing ON agent_threads " +
       "(IFNULL(client, ''), agent_id, IFNULL(registration, '')) " +
       "WHERE kind = 'converse' AND state = 'ready'",
@@ -1283,7 +1287,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "OR NEW.generation IS NOT OLD.generation " +
       "OR NEW.authenticated_at IS NOT OLD.authenticated_at " +
       "OR NEW.registration IS NOT OLD.registration OR NEW.created_at IS NOT OLD.created_at " +
-      "OR NEW.kind IS NOT OLD.kind OR NEW.last_active < OLD.last_active BEGIN " +
+      "OR NEW.kind IS NOT OLD.kind OR NEW.last_active < OLD.last_active " +
+      "OR (OLD.request IS NOT NULL AND NEW.request IS NOT OLD.request) BEGIN " +
       "SELECT RAISE(ABORT, 'a thread never changes the stamp it was made under'); END",
     `CREATE TRIGGER agent_threads_held AFTER INSERT ON agent_threads BEGIN ${
       HOLD("NEW", "+")} END`,
@@ -1314,6 +1319,12 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "WHERE agent_id = OLD.registration AND deleted_at IS NOT NULL AND NOT EXISTS " +
       "(SELECT 1 FROM ledger_wakes WHERE agent_id = OLD.registration AND kind = 'revoke' " +
       "AND state IN ('pending', 'rate_limited', 'sending')); END",
+    // A run that settles holds no turn: every owner it kept goes in its settling unit, a
+    // lost unit's too, and each turn left with no owner.
+    "CREATE TRIGGER agent_threads_settled_turns AFTER UPDATE OF settled_at ON agent_threads " +
+      "WHEN OLD.settled_at IS NULL AND NEW.settled_at IS NOT NULL BEGIN " +
+      "DELETE FROM model_turn_owners WHERE thread = NEW.thread_id; " +
+      "DELETE FROM model_turns WHERE thread = NEW.thread_id AND owners = 0; END",
     "CREATE TRIGGER agent_threads_settled BEFORE UPDATE OF settled_at ON agent_threads " +
       "WHEN OLD.settled_at IS NOT NULL AND NEW.settled_at IS NOT OLD.settled_at BEGIN " +
       "SELECT RAISE(ABORT, 'a run settles once'); END",

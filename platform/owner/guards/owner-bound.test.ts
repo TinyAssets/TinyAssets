@@ -288,7 +288,7 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
   grant_fences: { rows: 1, bytes: ROW, by: "one row" },
   owner_sessions: { rows: SESSION_LIMITS.maxSessions, bytes: ROW, by: "maxSessions" },
   outside_agents: { rows: LEDGER_LIMITS.maxAgentRows, bytes: ROW + 1 * KIB,
-                    by: "maxAgentRows" },
+                    by: "maxAgentRows, every row: a tombstone a revoke or a thread holds too" },
   ledger_messages: { rows: LEDGER_LIMITS.maxMessages, bytes: ROW + 1 * KIB,
                      by: "maxMessages" },
   message_bodies: { rows: LEDGER_LIMITS.maxMessages,
@@ -530,6 +530,30 @@ describe("the owner's database bound", () => {
     expect(liveRows * USAGE_ROW_MAX).toBeGreaterThan(USAGE_SPACE_MAX);
   });
 
+  it("counts every registration row, a tombstone a revoke or a thread holds among them, " +
+     "which the registry refuses past", () => {
+    // Every row is counted as it is made and refused past maxAgentRows; a tombstone is one.
+    expect(source("schema")).toContain("\"CREATE TRIGGER outside_agents_added AFTER INSERT ON " +
+                                       "outside_agents BEGIN \" +\n      \"UPDATE ledger_usage " +
+                                       "SET agents = agents + 1, \" +");
+    expect(source("ledger")).toContain("if (usage.agents >= limits.maxAgentRows) {");
+    expect(source("schema")).toContain("\"CREATE TRIGGER outside_agents_named BEFORE DELETE ON " +
+                                       "outside_agents WHEN EXISTS \" +");
+  });
+
+  it("holds one conversation a caller, agent and universe in the recording unit, which no " +
+     "index can read the universe for", () => {
+    const threads = source("threads");
+    const record = threads.slice(threads.indexOf("  record(agent: unknown"));
+    const body = record.slice(0, record.indexOf("\n  }\n"));
+    const found = body.indexOf("      const held = this.conversing(by, id);");
+    expect(found).toBeGreaterThan(0);
+    expect(found).toBeLessThan(body.indexOf("INSERT INTO agent_threads"));
+    expect(body.indexOf("if (kind === \"converse\") {")).toBeLessThan(found);
+    expect(source("schema")).toContain("\"(IFNULL(client, ''), agent_id, " +
+                                       "IFNULL(registration, '')) \" +");
+  });
+
   it("holds what it counts settled runs by: a settled run takes no input, refused at the " +
      "host's admission before pi commits one", () => {
     const host = source("thread-host");
@@ -544,6 +568,9 @@ describe("the owner's database bound", () => {
     const quiet = agent.indexOf("      if (!from.quiet()) {\n        return false;");
     expect(quiet).toBeGreaterThan(0);
     expect(quiet).toBeLessThan(agent.indexOf("      threads.settle(thread, kept,"));
+    // Its turn owners go in its settling unit, a lost unit's too.
+    expect(source("schema")).toContain("\"DELETE FROM model_turn_owners WHERE thread = " +
+                                       "NEW.thread_id; \" +");
     // The usage of a settled run goes to the total; no row of its own is kept.
     const threads = source("threads");
     expect(threads).toContain("\"WHERE thread_id = ? AND settled_at IS NULL \" +");

@@ -30,7 +30,7 @@ import {
 } from "../src/policy";
 import { holderId } from "../src/remote-storage";
 import { namedByOpenWork } from "../src/scheduled";
-import { HOST, PARKED, RUN_SETTLED, wakeJob } from "../src/thread-host";
+import { HOST, PARKED, RUN_SETTLED, USAGE_UNKEPT, wakeJob } from "../src/thread-host";
 import { DESTROYED } from "../src/thread-store";
 import {
   DROP_NOTICE_AFTER, DROP_RETRY_S, DROP_STUCK, foldedUsage, RECEIPT_TEXT_MAX, retainThreads,
@@ -1518,6 +1518,67 @@ describe("live and settled runs", () => {
         .catch((error: Error) => error.message);
     });
     expect(sleeping).toBe(RUNS_LIVE);
+  }, 30_000);
+
+  it("lets every turn owner a run kept go as it settles, a lost unit's among them, and " +
+     "each turn left with no owner", async () => {
+    const r = await rig();
+    const held = gate();
+    const out = await r.in(async (instance, state) => {
+      instance.probes.holdGate = held.promise;
+      const thread = await instance.agent.thread("main", null);
+      await instance.agent.submit(thread, "hold please", { operationId: "run_held" });
+      await until(() => instance.probes.holds === 1, "the hold to start");
+      // An owner whose unit was lost: its row stays, as no commit of the Session names it.
+      state.storage.sql.exec("INSERT INTO model_turn_owners (thread, owner, turn) " +
+                               "VALUES (?, 's:9', 'turn_lost')", thread.thread_id);
+      // And a turn its owners left, held for its counters.
+      state.storage.sql.exec("INSERT INTO model_turns (turn, requests, tokens, cost, last_at, " +
+                               "thread, owners) VALUES ('turn_idle', 0, 0, 0, 0, ?, 0)",
+                             thread.thread_id);
+      const before = state.storage.sql.exec("SELECT 1 FROM model_turn_owners WHERE thread = ?",
+                                            thread.thread_id).toArray().length;
+      held.release();
+      await until(() => !instance.parts.threads.unsettledRun(thread.thread_id),
+                  "the run to settle");
+      const left = state.storage.sql.exec(
+        "SELECT owner FROM model_turn_owners WHERE thread = ? UNION ALL " +
+          "SELECT turn FROM model_turns WHERE thread = ?", thread.thread_id,
+        thread.thread_id).toArray();
+      // The request it was handed never changes once kept.
+      const moved = (() => {
+        try {
+          state.storage.sql.exec("UPDATE agent_threads SET request = 'run_other' " +
+                                   "WHERE thread_id = ?", thread.thread_id);
+          return "moved";
+        } catch (error) {
+          return (error as Error).message;
+        }
+      })();
+      return { before: before > 0, left, moved };
+    });
+    expect(out).toMatchObject({ before: true, left: [] });
+    expect(out.moved).toMatch(/never changes the stamp it was made under/);
+  }, 30_000);
+
+  it("tells the owner loudly when a settling run's usage cannot be read", async () => {
+    const r = await rig();
+    const held = gate();
+    const out = await r.in(async (instance) => {
+      instance.probes.holdGate = held.promise;
+      const thread = await instance.agent.thread("main", null);
+      await instance.agent.submit(thread, "hold please", { operationId: "run_held" });
+      await until(() => instance.probes.holds === 1, "the hold to start");
+      const pi = await instance.agent.host.pi(thread.thread_id);
+      Object.defineProperty(pi, "usage", { configurable: true,
+        value: () => Promise.reject(new Error("the usage read failed (the test's)")) });
+      held.release();
+      await until(() => !instance.parts.threads.unsettledRun(thread.thread_id),
+                  "the run to settle");
+      await until(() => instance.parts.notices.list().length > 0, "the notice");
+      return instance.parts.notices.list().map((notice) => notice.type);
+    });
+    expect(out).toContain(USAGE_UNKEPT);
   }, 30_000);
 
   it("keeps a receipt's reason to 64 characters and its text to 768 bytes, and a thread's " +

@@ -1080,7 +1080,14 @@ account and no deploy.
   for a sleeping run, a reopen with background work active, a parked run, and a door's
   resume; L2 a door resumes an erasure at most once a retry interval; L3 a cut-off
   Session's usage kept before its row goes; L4 the handed request; the rename as the
-  blocker above; M1 the re-budget at the files-quota merge. Still owed live: P8, `deleteAll()` frees a store's billed bytes and a
+  blocker above; M1 the re-budget at the files-quota merge. Review round 3 (APPROVE), its
+  lows taken: L1 a settling run's usage that cannot be read is logged and noticed
+  (`usage_unkept`); L2 a run's settling unit lets every turn owner it kept go, a lost
+  unit's too, and each turn left with no owner (a trigger); L3 the registry-full refusal
+  names threads beside revokes as what keeps a tombstone, and the guard counts every
+  registration row; the nits: `request` is frozen once kept, and the recording unit holds
+  one conversation a caller, agent and universe (a guard; no index can read the universe).
+  L4, `runs_live`'s default at its high bound, is F1's. Still owed live: P8, `deleteAll()` frees a store's billed bytes and a
   destroyed store bills nothing (`store-probe.md`).
 - [ ] F1 and admission: `ta.scheduled` pi task, `wake:list` from rows, cancel and status
   paths, cron recurrence; delete the `work` lane, `WorkRunner` and migrations 7-8's work
