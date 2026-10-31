@@ -593,9 +593,9 @@ describe("a run's retention (S5)", () => {
     expect(runPolicy(validate(base))).toEqual(RUN_POLICY);
     expect(runPolicy(validate({ ...base, runs: { keep_runs: 30, keep_run_receipts: 365,
                                                   client_share: 10, owner_reserve: 50,
-                                                  runs_live: 2_000 } })))
+                                                  runs_live: 1_500 } })))
       .toEqual({ keepRunsS: 30 * 86_400, keepReceiptsS: 365 * 86_400, clientShare: 10,
-                 ownerReserve: 50, runsLive: 2_000 });
+                 ownerReserve: 50, runsLive: 1_500 });
     const refused = (runs: unknown) => {
       try {
         validate({ ...base, runs });
