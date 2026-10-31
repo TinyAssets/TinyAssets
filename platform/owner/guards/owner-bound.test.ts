@@ -107,6 +107,8 @@ const MAX_OPEN_INTENTS = constant("files", "MAX_OPEN_INTENTS");
 const MAX_PATH_BYTES = constant("paths", "MAX_PATH_BYTES");
 const TURNS_KEPT = constant("schema", "TURNS_KEPT");
 const TURN_BYTES = constant("schema", "TURN_BYTES");
+/** A connection's models, as the schema's check holds them, in characters. */
+const MODELS_CHARS = Number(/length\(models\) <= ([0-9]+)/.exec(source("schema"))?.[1]);
 
 /** The platform's limit on one object's database. */
 export const DATABASE_BYTES = 10_000_000_000;
@@ -190,8 +192,8 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
                     bytes: ROW + WORK_LIMITS.maxPayload, by: "open and settled work" },
   owner_notices: { rows: NOTICES_KEPT, bytes: ROW + NOTICE_DETAIL * 4, by: "NOTICES_KEPT" },
   connections: { rows: CONNECTION_LIMITS.maxConnections + CONNECTION_LIMITS.maxRevokedKept,
-                 bytes: ROW + CONNECTION_LIMITS.maxModels * 512,
-                 by: "connections and revoked kept, maxModels each" },
+                 bytes: ROW + spilled(4 * MODELS_CHARS),
+                 by: "connections and revoked kept, the schema's models ceiling each" },
   connection_secrets: { rows: CONNECTION_LIMITS.maxConnections
                               + CONNECTION_LIMITS.maxRevokedKept,
                         bytes: ROW + 16 * KIB, by: "one sealed blob a connection" },
@@ -288,6 +290,7 @@ describe("the owner's database bound", () => {
   it("counts the bounds the sources hold, a spilled payload in whole pages", () => {
     expect([spilled(1), spilled(4092), spilled(4093)]).toEqual([4096, 4096, 8192]);
     expect(TURNS_KEPT).toBe(100_000);
+    expect(MODELS_CHARS).toBe(655_360);
     expect(TERMS["model_turns"]).toMatchObject({ rows: TURNS_KEPT, bytes: 256 + 2 * TURN_BYTES });
     expect(TERMS["file_intents"]).toMatchObject({
       rows: MAX_OPEN_INTENTS, bytes: 256 + spilled(640_000) });

@@ -972,7 +972,7 @@ account and no deploy.
   client's own for its share). `model_turns` keeps at most `TURNS_KEPT` (100,000) turns of
   at most 320 bytes, past it dropping the turn idle longest with no call open. The
   owner-bound guard has no exceptions: its worst case at the policy's high bounds is
-  3,099,290,624 bytes, 31% of 10 GB.
+  3,309,415,424 bytes, 33% of 10 GB.
 - [ ] Doors (with tasks 2): the HTTP `/api/files` door and MCP file tools over the
   `file*` RPC doors, the scoped-grant capabilities `read_files` and `write_files` named
   as those tools are, and sandbox lease tokens in the owner directory (a 256-bit bearer
