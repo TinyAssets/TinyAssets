@@ -21,7 +21,7 @@ same throwaway objects. Code: `scripts/probes/facetprobe/`. Workflow:
 | Q5 | Does delete wipe the facet's database; does a later get give a fresh, empty instance? (Read from `databaseSize`: see the key) | The drop and erasure path for a facet store |
 | Q6 | Parent → facet RPC p50/p95/p99 over 1,000 calls, against a top-level `ThreadStore` in the same run; are facet calls billed as requests? | The per-call cost of the transport |
 | Q7 | Optional, only if Q1 and Q2 pass: can an Agents SDK root agent host a child running agents' `PiHarness` (agents 0.31.0, pi-durable 1.4.0) under a config like ours, and what is the minimum config? | Whether a facet could run a whole thread, not just its store |
-| Q8 | On a top-level SQLite object under our owner config: does a write made in the same turn as `ctx.storage.deleteAll()` survive a crash right after? And when `deleteAll()` is awaited first? | Whether F1's erasure (`deleteAll`, then the `erased` admission row) has a crash window in production |
+| Q8 | On a top-level SQLite object under our owner config: does a write made in the same turn as `ctx.storage.deleteAll()` survive a crash right after? With two controls: the same turn with no crash, and the write after an awaited `deleteAll()` | Whether F1's erasure (`deleteAll`, then the `erased` admission row) has a crash window in production |
 
 ## Method
 
@@ -66,7 +66,7 @@ loader's facet runs the same code.
 | Q1 | exports, `q1-bc` and `q1-a`, at once | alarm-driven fills of fresh random 1.9 MB rows, 8 rows (15 MB) per write and sync, 15 s per alarm. `q1-bc`: the parent itself to 6 GB, then facet `q1b` to 6 GB (b), then `q1c` to 6 GB (c, on top of b). `q1-a`: facet `q1a` alone until a limit error or 11 GB (a). A limit error ends its job and the next runs; any other error aborts the plan at once. A point is kept every 0.5 GB with the parent's size. The plan lives in the parent's memory as well as its storage: a write of it that fails (a shared pool full under a facet's limit refuses the parent's own writes too) is caught and kept as `persistError`, and `fillStatus` returns the in-memory plan, so the facet's limit error is never lost. The driver reads progress, waking no facet, every 30 s |
 | Q5 at size | exports, `q1-a` | `deleteFacet` on the filled `q1a`: sizes before and after, the time it took, the parent's size |
 | Q7 | both agents copies, `q7` | `PlainChild.hello()`; then `PiChild`: spawn, prompt, prompt again, list, delete, prompt the fresh one |
-| Q8 | main, 20 fresh objects per variant | per trial: 20 rows of 10 KB, synced; then `deleteAll()` and, in the same synchronous turn, one row into a fresh table (`same-turn`, F1's shape), or the row after awaiting `deleteAll()` (`awaited`); then `ctx.abort()` in the row's own turn, before any later await. The next request, on a new stub, reads the old rows, the new row and `databaseSize`. The trials run inside one door instance |
+| Q8 | main, 20 fresh objects per variant | per trial: 20 rows of 10 KB, synced; then `deleteAll()` and, in the same synchronous turn, one row into a fresh table (`same-turn`, F1's shape), or the row after awaiting `deleteAll()` (`awaited`, the crash model's control); then `ctx.abort()` in the row's own turn, before any later await. A third variant, `same-turn-noabort` (the order's control), is F1's shape with no crash: it awaits the delete after the write and returns. The next request, on a new stub, reads the old rows, the new row and `databaseSize`. The trials run inside one door instance |
 
 Workers clocks advance only across I/O, in whole milliseconds, so every latency is an
 RPC's and burns are sized by iterations. A series also keeps its whole time, and its
@@ -100,8 +100,9 @@ What workerd showed locally (a harness check, never a reading):
 - Q7: the SDK needs `ctx.exports` ("subAgent() is not supported in this runtime");
   with it a plain child works, and the `PiHarness` child fails "Facets currently cannot
   set alarms."
-- Q8: in both variants every trial read wiped and not written: the delete was durable,
-  and the row written in the aborted turn was lost, even after an awaited `deleteAll()`.
+- Q8: with no crash, a same-turn row survives the delete (wiped and written); with the
+  abort, both `same-turn` and `awaited` read wiped and not written: the delete was durable
+  on its own and the aborted turn's row was lost, so workerd reads "crash window".
 
 **Live only.** Every Q1 reading (workerd has no 10 GB limit); Q2's production deploys and
 runtime answers; Q4 (no CPU or memory limits locally, no placement); Q6's latencies and
@@ -109,8 +110,8 @@ billing; Q8's counts (production's storage, not workerd's); the analytics.
 
 ## Reading key
 
-`drive.mjs` holds this key as code (`q1Reading`, `readings`, `q7Gate`); `local.mjs` checks
-it on synthetic plans.
+`drive.mjs` holds this key as code (`q1Reading`, `q8Reading`, `readings`, `q7Gate`);
+`local.mjs` checks it on synthetic plans and counts.
 
 **Q1**, in two parts. The documented 10 GB may be 10^9 bytes or GiB (10.74 × 10^9), so
 every band is checked against both.
@@ -119,8 +120,8 @@ every band is checked against both.
     at least 1.1 times the larger limit (12 GB), with no limit error: a facet's database
     does not count against its parent's.
   - **shared** when `q1b` hit a limit error with the parent and `q1b` together within
-    0.9-1.1 times either limit, or when the parent's own plan write then failed on a limit
-    (`persistError`): one budget.
+    0.9-1.1 times either limit: one budget. A failed plan write (`persistError`) is
+    reported beside it, never read on its own, so it needs the same band.
   - **stalled**: the plan was still running at the end. Never read as separate.
   - **void**: a non-limit error stopped the fill; the error is the reading.
   - **unproven**: anything else, a time cap among them; the sizes and statuses reached are
@@ -164,11 +165,23 @@ per copy: the plain child's and the `PiHarness` child's steps, `ok` or the error
 copy that answers is the minimum config.
 
 **Q8.** Per variant, the counts of 20 trials: wiped and written; wiped and not written;
-not wiped (written or not); and any trial unread or not killed. Under `same-turn`, any
-"wiped and not written" is F1's crash window: the owner erased with no `erased` row to
-say so. Under `awaited`, the same count says an awaited `deleteAll()` closes nothing,
-since the row's own turn is what the crash loses. `killedAndReset` counts the trials whose read
-came from a fresh instance; one that did not was no crash.
+not wiped (written or not); and any trial unread or not killed. `killedAndReset` counts the
+trials whose read came from a fresh instance; one that did not was no crash. Two controls
+gate the reading:
+- **The order** (`same-turn-noabort`) must read 20 of 20 wiped and written. If it reads
+  wiped and not written, the reading is **deleteAll erases a same-turn write**: the
+  un-awaited delete lands after the write, so F1 loses its `erased` row every time, crash
+  or not. A different and worse finding, with a different fix (await the delete).
+- **The crash model** (`awaited`) must read 20 of 20 wiped and not written, each from a
+  fresh instance: `ctx.abort()` drops the aborted turn's uncommitted write, as a crash
+  would. Otherwise Q8 is **void**.
+
+With both controls holding, under `same-turn`:
+- any wiped and not written is **crash window**: the delete commits apart from the
+  same-turn write, so a crash between them leaves the owner erased with no `erased` row;
+- not wiped in every trial is **no window at this crash point**: consistent with one atomic
+  commit there, but not proof that no window exists, since the abort always lands at the
+  same moment and 20 trials sample one crash point, not a spread.
 
 ## Running it
 
@@ -210,8 +223,9 @@ Safety, as the store probe:
   included, go too) and the dummy KV namespace, before the deploy and again at the end
   whatever happened. It refuses any name outside `ta-facetprobe*`, then reads the
   account's Worker, namespace and Workflow lists back until nothing named
-  `ta-facetprobe*` is left (every list page by page, and the door's Workflow must answer
-  404), and fails the run if anything remains or a list cannot be read or parsed.
+  `ta-facetprobe*` is left (the namespace, Workflow and KV lists page by page, the Worker
+  list, which is not paged, in one read with no paging parameters, and the door's Workflow
+  must answer 404), and fails the run if anything remains or a list cannot be read or parsed.
 - After a run that failed or was cancelled, run it again (its first step deletes
   everything before deploying), or run `delete.sh` by hand with the same token and the
   script names from the workflow's `SCRIPTS`.
@@ -225,7 +239,7 @@ The differences from the store probe:
 
 ## Results
 
-| Run | Date | Plan | Commit | Fill minutes | Q1 parent vs facet | Q1 facet vs facet | Q2 under ours | Q4 | Q7 | Q8 same-turn | Q8 awaited |
+| Run | Date | Plan | Commit | Fill minutes | Q1 parent vs facet | Q1 facet vs facet | Q2 under ours | Q4 | Q7 | Q8 | Q8 counts (noabort / same-turn / awaited) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 
 Not run yet.

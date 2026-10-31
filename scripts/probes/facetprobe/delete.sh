@@ -10,7 +10,8 @@
 #      namespace titled ta-facetprobe* that the token can list;
 # then reads back that no Workflow, Worker or Durable Object namespace whose name starts with
 # ta-facetprobe is left anywhere on the account (every list read page by page; the lists
-# may lag, so they are retried for a minute), and that the door's Workflow answers 404.
+# may lag, so they are retried for a minute; the Worker list, which is not paged, in one
+# read), and that the door's Workflow answers 404.
 # Exits 1 if anything remains or a deletion cannot be proven, a list page that answers 200
 # but does not parse among them.
 #
@@ -65,6 +66,33 @@ PY
   done
   echo "list $1: more than 50 pages"
   return 1
+}
+
+# The Worker list in one read, with no paging parameters (it is not paged, and nothing in the
+# repo has sent it any), into $2 as list_all writes. Returns 1 if it is not HTTP 200, does
+# not parse, or its result_info says there is more than this page.
+list_once() {
+  : > "$2"
+  local status
+  status="$(curl -sS --max-time 60 -H "${auth}" -o "${body}" -w '%{http_code}' "${api}/$1")" || status="curl failed"
+  if [ "${status}" != "200" ]; then
+    echo "list $1: HTTP ${status}"
+    return 1
+  fi
+  python3 - "${body}" "$2" <<'PY' || { echo "list $1: answered 200 but did not parse, or says it has more pages"; return 1; }
+import json, sys
+body = json.load(open(sys.argv[1]))
+rows = body.get("result")
+if not isinstance(rows, list):
+    raise SystemExit(1)
+info = body.get("result_info") or {}
+pages = info.get("total_pages")
+total = info.get("total_count")
+if (pages is not None and int(pages) > 1) or (total is not None and int(total) > len(rows)):
+    raise SystemExit(1)
+with open(sys.argv[2], "w") as out:
+    out.writelines(json.dumps(r, sort_keys=True) + "\n" for r in rows)
+PY
 }
 
 # 1. The Workflow. A Workflow never made answers 404; step 4's list is the proof either way.
@@ -131,7 +159,13 @@ for attempt in 1 2 3 4 5 6 7; do
   found=""
   readable=1
   for list in "workers/scripts" "workers/durable_objects/namespaces" "workflows"; do
-    if ! list_all "${list}" "${rows}"; then
+    if [ "${list}" = "workers/scripts" ]; then
+      list_once "${list}" "${rows}"
+    else
+      list_all "${list}" "${rows}"
+    fi
+    # shellcheck disable=SC2181
+    if [ "$?" != "0" ]; then
       readable=0
       continue
     fi

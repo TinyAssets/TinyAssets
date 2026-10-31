@@ -417,7 +417,9 @@ export class Parent extends DurableObject {
   /**
    * Q8, armed: durable old rows, then `deleteAll()` and one new row, then `ctx.abort()` in
    * the new row's own turn, before any later await. `same-turn` does not await the delete
-   * (F1's erasure shape: `deleteAll`, then the `erased` admission row); `awaited` does.
+   * (F1's erasure shape: `deleteAll`, then the `erased` admission row); `awaited` does (the
+   * crash model's control: the aborted turn's row must be lost); `same-turn-noabort` is
+   * F1's shape with no crash (the order's control: the row must survive the delete).
    * The caller sees the abort's error; q8Read, on the next request, sees what survived.
    */
   async q8Arm({ variant, rows = SHAPE.q8Rows }) {
@@ -438,6 +440,11 @@ export class Parent extends DurableObject {
       const pending = this.ctx.storage.deleteAll();
       write();
       Promise.resolve(pending).catch(() => {});
+    } else if (variant === "same-turn-noabort") {
+      const pending = this.ctx.storage.deleteAll();
+      write();
+      await pending;
+      return { notKilled: true, instance: this.#instance };
     } else {
       throw new Error(`unknown Q8 variant ${variant}`);
     }

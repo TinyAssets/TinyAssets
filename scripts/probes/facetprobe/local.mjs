@@ -25,7 +25,7 @@ import { pathToFileURL } from "node:url";
 
 import { billing, collect, objects, table } from "./analytics.mjs";
 import { BUILD, copyConfigs, PLATFORM, readCommitted, writeConfigs } from "./config.mjs";
-import { drive, q1Reading, q7Gate, readings, summarize, workflowCall } from "./drive.mjs";
+import { drive, Q8_VARIANTS, q1Reading, q7Gate, q8Reading, readings, summarize, workflowCall } from "./drive.mjs";
 import { COPIES, DOOR, DUMMY, LIMIT } from "./shape.mjs";
 
 const fromPlatform = createRequire(join(PLATFORM, "package.json"));
@@ -162,9 +162,13 @@ function checkKey() {
      plan([["self", 6 * GB, "reached"], ["q1b", GIB10 - 6 * GB - 15e6, "writing"], ["q1c", null, "pending"]], "running"),
      "stalled"],
     ["H2: shared at 10 GiB, the limit kept in memory, the plan write then failed",
-     plan([["self", 6 * GB, "reached"], ["q1b", 2.5 * GB, "limit", "SQLITE_FULL"], ["q1c", 0, "limit", "SQLITE_FULL"]], "done",
+     plan([["self", 6 * GB, "reached"], ["q1b", GIB10 - 6 * GB, "limit", "SQLITE_FULL"], ["q1c", 0, "limit", "SQLITE_FULL"]], "done",
           { persistError: { error: "Error: SQLITE_FULL: database or disk is full", job: "q1c" } }),
      "shared"],
+    ["Q8-4: a failed plan write does not make a limit outside the band shared",
+     plan([["self", 6 * GB, "reached"], ["q1b", 2 * GB, "limit", "SQLITE_FULL"], ["q1c", 0, "limit", "SQLITE_FULL"]], "done",
+          { persistError: { error: "Error: SQLITE_FULL: database or disk is full", job: "q1c" } }),
+     "unproven"],
     ["M1: shared at 10 GiB, the limit recorded",
      plan([["self", 6 * GB, "reached"], ["q1b", GIB10 - 6 * GB, "limit", "SQLITE_FULL"], ["q1c", 0, "limit", "SQLITE_FULL"]]),
      "shared"],
@@ -186,6 +190,21 @@ function checkKey() {
   }
   const lone = q1Reading(cases[0][1], plan([["q1a", GIB10, "limit", "SQLITE_FULL"]]));
   expect(/limit of its own/.test(lone.facetLimit), `Q1 key, a lone facet at 10 GiB: ${lone.facetLimit}`);
+  // Q8's key: the order control and the crash-model control gate the same-turn reading.
+  const q8 = (counts, n = 20, fresh = n) => ({ n, freshInstances: fresh, counts: { wipedWritten: 0, wipedNotWritten: 0,
+    notWipedWritten: 0, notWipedNotWritten: 0, unread: 0, notKilled: 0, ...counts } });
+  const okControl = q8({ wipedWritten: 20, notKilled: 20 }, 20, 0);
+  const okCrash = q8({ wipedNotWritten: 20 });
+  for (const [name, control, same, awaited, verdict] of [
+    ["a window", okControl, q8({ wipedNotWritten: 3, notWipedNotWritten: 17 }), okCrash, "crash window"],
+    ["no window seen", okControl, q8({ notWipedNotWritten: 20 }), okCrash, "no window at this crash point"],
+    ["the control loses the row", q8({ wipedNotWritten: 20, notKilled: 20 }, 20, 0), q8({ wipedNotWritten: 20 }), okCrash,
+     "deleteAll erases a same-turn write"],
+    ["abort is no crash", okControl, q8({ wipedWritten: 20 }), q8({ wipedWritten: 20 }), "void"],
+  ]) {
+    const got = q8Reading(control, same, awaited);
+    expect(got.verdict === verdict, `Q8 key, ${name}: ${got.verdict} (${got.detail})`);
+  }
   for (const text of ["Error: request too large", "Error: exceeded storage operations per second", "Response too large"]) {
     expect(!LIMIT.test(text), `LIMIT matched a non-size error: ${text}`);
   }
@@ -193,7 +212,7 @@ function checkKey() {
     expect(LIMIT.test(text), `LIMIT missed a size error: ${text}`);
   }
   const separate = read(cases[0][1]);
-  const pooled = read(cases[7][1]);
+  const pooled = read(cases.find(([name]) => name.startsWith("M2"))[1]);
   const shared = read(cases[2][1]);
   expect(!q7Gate({ Q1: shared, Q2: { anyWorks: true } }).run && q7Gate({ Q1: separate, Q2: { anyWorks: true } }).run
          && q7Gate({ Q1: pooled, Q2: { anyWorks: true } }).run && !q7Gate({ Q1: separate, Q2: { anyWorks: false } }).run
@@ -257,14 +276,18 @@ function checkRun(report) {
            `Q4 ${kase}'s outcome: ${x?.outcome}`);
   }
   expect(report.q4Rate > 0, "Q4: no burn rate from the yield case");
-  for (const variant of ["same-turn", "awaited"]) {
+  for (const variant of Q8_VARIANTS) {
     const x = g[`Q8 ${variant}`];
     const c = x?.counts ?? {};
     const sum = c.wipedWritten + c.wipedNotWritten + c.notWipedWritten + c.notWipedNotWritten;
+    const control = variant === "same-turn-noabort";
     // workerd's counts are a reading of workerd, not of production: only the harness is asserted.
-    expect(x && sum === PARAMS.q8N && c.unread === 0 && c.notKilled === 0 && x.freshInstances === PARAMS.q8N
-           && /killed in the write's turn/.test(x.armErrors[0] ?? ""), `Q8 ${variant}: ${show(x)}`);
+    expect(x && sum === PARAMS.q8N && c.unread === 0 && c.notKilled === (control ? PARAMS.q8N : 0)
+           && (control ? x.armErrors[0] === "returned" && x.freshInstances === 0
+             : x.freshInstances === PARAMS.q8N && /killed in the write's turn/.test(x.armErrors[0] ?? "")),
+           `Q8 ${variant}: ${show(x)}`);
   }
+  expect(Boolean(g.Q8?.verdict), `Q8: no reading: ${show(g.Q8)}`);
   expect(g.Q1?.verdict === "separate" && g.Q1.facetVerdict === "separate" && /passed/.test(g.Q1.facetLimit ?? "")
          && g.Q1.rowsWritten > 0 && !g.Q1.persistError,
          `Q1: ${show(g.Q1)}`);

@@ -20,13 +20,14 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-import { DOOR, GB, GIB_RATIO, LIMIT, SHAPE } from "./shape.mjs";
+import { DOOR, GB, GIB_RATIO, SHAPE } from "./shape.mjs";
 import { errText } from "./stats.mjs";
 
 const MINUTE = 60_000;
 export const MIN_FILL_MINUTES = 10;
 export const MAX_FILL_MINUTES = 150;
 const PARENTS = Object.freeze(["main", "exports", "classbind", "unsafe"]);
+export const Q8_VARIANTS = Object.freeze(["same-turn-noabort", "same-turn", "awaited"]);
 
 export const LIVE_TIMING = Object.freeze({
   instancePollMs: 1500, callTimeoutMs: 17 * MINUTE, fillPollMs: 30_000, fillGraceMs: 5 * MINUTE,
@@ -150,7 +151,7 @@ export async function drive({ call, runId, params = {}, timing = {}, deploy = {}
   phase("Q3 Q5 Q6");
 
   if (has("main")) {
-    for (const variant of ["same-turn", "awaited"]) {
+    for (const variant of Q8_VARIANTS) {
       await record(`Q8 ${variant}`, { copy: "main", object: "q8", method: "q8", params: { variant, n: p.q8N } });
     }
     phase("Q8");
@@ -240,7 +241,7 @@ const gb = (bytes) => (typeof bytes === "number" ? `${(bytes / GB).toFixed(2)} G
  * - Parent vs facet (`verdict`, Q7's gate): "separate" only when the parent and `q1b`
  *   both reached their sizes, together at least 1.1 times the larger possible limit;
  *   "shared" when `q1b` hit a limit with the two together within 0.9-1.1 of either
- *   possible limit, or when the parent's own plan write then failed on a limit.
+ *   possible limit (a failed plan write, `persistError`, is reported beside it, never read alone).
  * - Facet vs facet (`facetVerdict`): read only after "separate": "separate" when `q1c`
  *   reached its size too, "pooled" when `q1c` hit a limit with `q1b` and `q1c` together
  *   within 0.9-1.1 of a limit.
@@ -268,7 +269,7 @@ export function q1Reading(bc, a, limitBytes = SHAPE.limitBytes) {
   if (self?.status === "reached" && b?.status === "reached" && pair >= 1.1 * Math.max(...limits)) {
     out.verdict = "separate";
     out.detail = `the parent reached ${gb(self.size)} and its facet q1b ${gb(b.size)}, ${gb(pair)} together, with no limit error: a facet's database does not count against its parent's`;
-  } else if (b?.status === "limit" && (inBand(pair) || (persist && LIMIT.test(persist.error)))) {
+  } else if (b?.status === "limit" && inBand(pair)) {
     out.verdict = "shared";
     out.detail = `q1b hit a limit at ${gb(b.size)} with the parent at ${gb(self?.size)} (${gb(pair)} together)`
       + `${persist ? `, and the parent's own write then failed: ${persist.error}` : ""}: one budget`;
@@ -301,6 +302,42 @@ export function q1Reading(bc, a, limitBytes = SHAPE.limitBytes) {
         : `a lone facet reached ${gb(big.size)} (${big.status}${big.error ? `: ${big.error}` : ""})`;
   }
   return out;
+}
+
+/**
+ * Q8's reading from its three variants. The order control (`same-turn-noabort`) must read
+ * wiped and written in every trial, and the crash-model control (`awaited`) wiped and not
+ * written in every trial; only then is a same-turn "wiped and not written" F1's crash
+ * window. A control that itself loses the row is a different finding.
+ */
+export function q8Reading(control, sameTurn, awaited) {
+  const n = sameTurn?.n ?? 0;
+  const c = control?.counts;
+  const s = sameTurn?.counts;
+  const a = awaited?.counts;
+  const notWiped = s ? s.notWipedWritten + s.notWipedNotWritten : 0;
+  if (!c || !a) {
+    return { verdict: "void", detail: "a control did not run" };
+  }
+  if (c.wipedNotWritten > 0) {
+    return { verdict: "deleteAll erases a same-turn write",
+             detail: `with no crash, ${c.wipedNotWritten} of ${control.n} same-turn rows were lost: the un-awaited deleteAll lands after the write` };
+  }
+  if (c.wipedWritten !== control.n || c.notKilled !== control.n) {
+    return { verdict: "void", detail: `the order control read ${JSON.stringify(c)}, not ${control.n} of ${control.n} wiped and written` };
+  }
+  if (a.wipedNotWritten !== awaited.n || awaited.freshInstances !== awaited.n) {
+    return { verdict: "void", detail: `the crash-model control read ${JSON.stringify(a)}: ctx.abort() did not act as a crash before commit` };
+  }
+  if (s.wipedNotWritten > 0) {
+    return { verdict: "crash window",
+             detail: `${s.wipedNotWritten} of ${n} same-turn trials were wiped with the row lost: the delete commits apart from the same-turn write` };
+  }
+  if (notWiped === n) {
+    return { verdict: "no window at this crash point",
+             detail: `every trial kept the old rows and lost the row: consistent with one atomic commit at this one crash point; 20 trials sample one moment, so this does not prove there is no window` };
+  }
+  return { verdict: "unproven", detail: `same-turn read ${JSON.stringify(s)}` };
 }
 
 /** Each question's reading from the results. */
@@ -391,12 +428,15 @@ export function readings(report) {
                           afterDeleteMessages: q7.afterDelete?.value?.messages ?? null };
     }
   }
-  for (const variant of ["same-turn", "awaited"]) {
+  for (const variant of Q8_VARIANTS) {
     const q8 = r[`Q8 ${variant}`];
     if (q8) {
       g[`Q8 ${variant}`] = { counts: q8.counts, n: q8.n, freshInstances: q8.freshInstances, armErrors: q8.armErrors,
                              sizes: q8.sizes };
     }
+  }
+  if (r["Q8 same-turn"]) {
+    g.Q8 = q8Reading(r["Q8 same-turn-noabort"], r["Q8 same-turn"], r["Q8 awaited"]);
   }
   if (report.q7Skipped) {
     g.Q7 = { skipped: report.q7Skipped };
@@ -453,11 +493,14 @@ export function summarize(report) {
       row("Q6", `${source}: top-level ThreadStore`, x.store);
     }
   }
-  for (const variant of ["same-turn", "awaited"]) {
+  if (g.Q8) {
+    row("Q8", "deleteAll's crash window", g.Q8.verdict, g.Q8.detail);
+  }
+  for (const variant of Q8_VARIANTS) {
     const x = g[`Q8 ${variant}`];
     if (x) {
       const c = x.counts;
-      row("Q8", `deleteAll, ${variant}, then abort`,
+      row("Q8", `deleteAll, ${variant}${variant.endsWith("noabort") ? "" : ", then abort"}`,
           `${c.wipedWritten} wiped and written, ${c.wipedNotWritten} wiped and not written, `
           + `${c.notWipedWritten + c.notWipedNotWritten} not wiped (of ${x.n})`,
           { counts: c, killedAndReset: x.freshInstances, armErrors: x.armErrors, sizes: x.sizes });
