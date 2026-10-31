@@ -2,7 +2,8 @@
  * A thread's store (`thread-store.ts`) and pi's `Storage` over it by RPC
  * (`remote-storage.ts`), in workerd (tasks 5, S1 and S2): pi's own storage conformance
  * suite through the RPC, the holder fence, an unopened and a destroyed store, the store's
- * size, local minting, a read retried once, a commit never retried, and an aborted read.
+ * size, one session per open storage (released at close), local minting, a read retried
+ * once over a session attached anew, a commit never retried, and an aborted read.
  */
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -15,7 +16,8 @@ import { describe, expect, it } from "vitest";
 
 import { holderId, RemoteStorage, STORAGE_CLOSED } from "../src/remote-storage";
 import {
-  DESTROYED, NOT_OPENED, type Read, type Reply, STALE_HOLDER, type StoreRpc, ThreadStore,
+  DESTROYED, NOT_OPENED, type Read, type Reply, STALE_HOLDER, type StoreRpc,
+  type StoreSessionRpc, ThreadStore,
 } from "../src/thread-store";
 
 const BG = BACKGROUND_CONTEXT;
@@ -48,24 +50,47 @@ registerStorageConformance({ describe, expect, it }, "RemoteStorage over a Threa
     }
   });
 
-/** A store whose calls a test can fail, as a reset or a lost RPC fails them. */
-function faulty(store: StoreRpc, fails: { reads: number; commits: number }): StoreRpc {
+/** What a test counts of a store's sessions: those made, released, and the calls made. */
+type Tally = { sessions: number; released: number; reads: number; commits: number };
+const tally = (): Tally => ({ sessions: 0, released: 0, reads: 0, commits: 0 });
+
+/**
+ * A store whose sessions' calls a test can fail, as a reset or a lost RPC fails them, and
+ * whose sessions and calls it counts.
+ */
+function faulty(store: StoreRpc, fails: { reads: number; commits: number },
+                seen: Tally = tally()): StoreRpc {
+  const wrap = (session: StoreSessionRpc): StoreSessionRpc => {
+    seen.sessions++;
+    return {
+      commit: async (writes) => {
+        seen.commits++;
+        if (fails.commits > 0) {
+          fails.commits--;
+          throw new Error("network connection lost");
+        }
+        return session.commit(writes);
+      },
+      read: async (method: Read, args) => {
+        seen.reads++;
+        if (fails.reads > 0) {
+          fails.reads--;
+          throw new Error("network connection lost");
+        }
+        return session.read(method, args) as Promise<Reply>;
+      },
+      [Symbol.dispose]: () => {
+        seen.released++;
+        (session as Partial<Disposable>)[Symbol.dispose]?.();
+      },
+    } as StoreSessionRpc;
+  };
   return {
-    open: (holder) => store.open(holder),
-    commit: async (holder, writes) => {
-      if (fails.commits > 0) {
-        fails.commits--;
-        throw new Error("network connection lost");
-      }
-      return store.commit(holder, writes);
+    open: async (holder) => {
+      const { next, session } = await store.open(holder);
+      return { next, session: wrap(session) };
     },
-    read: async (holder, method: Read, args) => {
-      if (fails.reads > 0) {
-        fails.reads--;
-        throw new Error("network connection lost");
-      }
-      return store.read(holder, method, args) as Promise<Reply>;
-    },
+    attach: async (holder) => wrap(await store.attach(holder)),
     size: () => store.size(),
     destroy: () => store.destroy(),
   };
@@ -75,9 +100,7 @@ describe("a thread store", () => {
   it("refuses every call but open until it is opened, and makes no table", async () => {
     const store = freshStore();
     const holder = holderId();
-    expect(await failed(store.read(holder, "conversation", [ROOT])))
-      .toContain(NOT_OPENED);
-    expect(await failed(store.commit(holder, root)))
+    expect(await failed(store.attach(holder)))
       .toContain(NOT_OPENED);
     const tables = await runInDurableObject(store, (_instance, state) =>
       state.storage.sql.exec("SELECT name FROM sqlite_master WHERE name LIKE 'pi_%'")
@@ -86,11 +109,15 @@ describe("a thread store", () => {
     expect(await failed(store.open("not a holder")))
       .toContain("128 random bits");
     // Only pi's reads are served by name: no other method of the store or of pi's storage.
-    await store.open(holder);
+    const { session } = await store.open(holder);
     for (const method of ["commit", "close", "mintId", "constructor"]) {
-      expect(await failed(store.read(holder, method as Read, [])))
+      expect(await failed(session.read(method as Read, [])))
         .toContain("not a read of pi's storage");
     }
+    // A session attaches only for the store's holder.
+    expect(await failed(store.attach(holderId()))).toContain(STALE_HOLDER);
+    expect(await (await store.attach(holder)).read("conversation", [ROOT]))
+      .toEqual({ value: undefined });
   });
 
   it("serves its holder only: a newer Session's open fences the older one out", async () => {
@@ -110,12 +137,20 @@ describe("a thread store", () => {
     expect(await newer.conversation(99 as ConversationId, BG)).toBeUndefined();
   });
 
-  it("is transparent to its own eviction, and a read survives its reset once", async () => {
+  it("stays in memory while a session holds it, is transparent to its own eviction once " +
+     "released, and a read survives its reset once", async () => {
     const name = holderId();
+    const held = await RemoteStorage.open(named(name));
+    await held.commit(root, BG);
+    // A held session keeps the store in memory (live probe P7): eviction waits for it.
+    const evicting = evictDurableObject(env.PISTORE.getByName(name)).then(() => "evicted");
+    expect(await Promise.race([evicting, new Promise((resolve) =>
+      setTimeout(() => resolve("held"), 500))])).toBe("held");
+    expect(await held.conversation(ROOT, BG)).toEqual({ id: ROOT });
+    // Released at close, it is evicted; a reopen opens pi's storage again over what it holds.
+    await held.close(BG);
+    expect(await evicting).toBe("evicted");
     const storage = await RemoteStorage.open(named(name));
-    await storage.commit(root, BG);
-    // Evicted idle: the holder's next call opens pi's storage again over what it holds.
-    await evictDurableObject(env.PISTORE.getByName(name));
     expect(await storage.conversation(ROOT, BG)).toEqual({ id: ROOT });
     // Reset outright: the old stub is broken; the read is retried once over a fresh one.
     await runInDurableObject(env.PISTORE.getByName(name), (_instance, state) =>
@@ -136,6 +171,7 @@ describe("a thread store", () => {
         .toArray().length);
     expect(left).toBe(0);
     expect(await failed(store.open(holderId()))).toContain(DESTROYED);
+    expect(await failed(store.attach(storage.holder))).toContain(DESTROYED);
     expect(await failed(storage.conversation(ROOT, BG)))
       .toContain(DESTROYED);
     expect(await store.size()).toBeLessThan(before);
@@ -157,13 +193,35 @@ describe("pi's storage over a store", () => {
     expect(await again.mintId()).toBe(5);
   });
 
-  it("retries a failed read once, and fails it the second time", async () => {
+  it("calls over one session while open, and releases it at close", async () => {
+    const store = freshStore();
+    const seen = tally();
+    const storage = await RemoteStorage.open(
+      () => faulty(store as unknown as StoreRpc, { reads: 0, commits: 0 }, seen));
+    await storage.commit(root, BG);
+    for (let i = 0; i < 5; i++) {
+      expect(await storage.conversation(ROOT, BG)).toEqual({ id: ROOT });
+    }
+    expect(seen).toEqual({ sessions: 1, released: 0, reads: 5, commits: 1 });
+    await storage.close(BG);
+    await storage.close(BG);
+    expect(seen).toMatchObject({ sessions: 1, released: 1 });
+  });
+
+  it("retries a failed read once, over a session attached anew, and fails it the second time",
+     async () => {
     const store = freshStore();
     const fails = { reads: 1, commits: 0 };
-    const storage = await RemoteStorage.open(() => faulty(store as unknown as StoreRpc, fails));
+    const seen = tally();
+    const storage = await RemoteStorage.open(
+      () => faulty(store as unknown as StoreRpc, fails, seen));
     await storage.commit(root, BG);
     expect(await storage.conversation(ROOT, BG)).toEqual({ id: ROOT });
     expect(fails.reads).toBe(0);
+    // The broken session was released, and a new one attached for the same holder.
+    expect(seen).toMatchObject({ sessions: 2, released: 1 });
+    expect(await storage.conversation(ROOT, BG)).toEqual({ id: ROOT });
+    expect(seen).toMatchObject({ sessions: 2, released: 1 });
     fails.reads = 2;
     expect(await failed(storage.conversation(ROOT, BG)))
       .toBe("network connection lost");
@@ -198,16 +256,10 @@ describe("pi's storage over a store", () => {
     expect(await failed(storage.conversation(ROOT, withAbortSignal(stop.signal, BG))
       )).toBe("stopped");
     // An aborted read never reaches the store.
-    const counted = { reads: 0 };
+    const counted = tally();
     const name = holderId();
-    const counting = await RemoteStorage.open(() => {
-      const store = env.PISTORE.getByName(name) as unknown as StoreRpc;
-      return { ...faulty(store, { reads: 0, commits: 0 }),
-               read: (holder: string, method: Read, args: readonly unknown[]) => {
-                 counted.reads++;
-                 return store.read(holder, method, args);
-               } };
-    });
+    const counting = await RemoteStorage.open(() => faulty(
+      env.PISTORE.getByName(name) as unknown as StoreRpc, { reads: 0, commits: 0 }, counted));
     expect(await failed(counting.conversation(ROOT, withAbortSignal(stop.signal, BG))))
       .toBe("stopped");
     expect(counted.reads).toBe(0);

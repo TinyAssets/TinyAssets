@@ -8,7 +8,42 @@ reading-key method.
 
 ## Found
 
-Not run yet. The results table at the end is empty until the first run.
+Run 1 (2026-10-30, results at the end) answered P1, P2, P3, P4 and P7. What it set for
+S1-S3: `limits.subrequests` 1,000,000; `OPEN_MAX` 64; `contextRetentionMs` and
+`documentRetentionMs` kept at 60 s; one `RpcTarget` session per open Session, released
+when the thread host closes it. No pre-warm: a new thread's store opens about 0.3 s cold,
+once.
+
+- **P3.** Production accepts the `PISTORE` → `ThreadStore` binding with no `script_name`
+  under `disable_ctx_exports`, and it reaches only `ThreadStore` (`ctx.exports` is
+  `undefined` in both classes; the store's `env` is `["PISTORE"]`). Co-location stands.
+- **P1.** Store RPCs are counted, on a separate per-invocation counter from fetch
+  subrequests ("Too many API requests by single Worker invocation"):
+  - P1c main, pinned at 10,000, stopped 10,100 store calls in one alarm at exactly 10,000.
+    The control stopped fetches at 100 on the low copy, where 150 store calls all passed,
+    so the two counters differ.
+  - Raised: Paid accepts `limits.subrequests: 1,000,000`, and it lifts the store-call
+    count too (10,100 completed).
+  - The P1 runs, at 10,000, passed: 32 threads made 32,697 store calls in 10 minutes with
+    no error, so the starting alarm does not carry every call; the count resets as the
+    work moves across events. About 1.7 store calls per thread per second while
+    streaming (1 s partial commits); the largest 30 s window was 1,886 calls at 32
+    threads; 1 thread made 1,032 calls in 10 minutes, 8 threads 8,209.
+  - P1a and P1b are void: they ran on the low copy, whose 100 governs fetches, not store
+    calls.
+- **P2** (door, owner and stores all in one colo). Owner → store ping, n = 1000: p50 2 ms,
+  p95 3 ms, p99 4 ms per-call stub; p50 1 ms, p95 2 ms, p99 3 ms over a session. Commit
+  while 4 threads stream: p50 24 ms, p95 57 ms, p99 177 ms. A new thread's first message:
+  566 ms in all (store open 294 ms cold, `Harness.open` 19 ms, `root` 60 ms, first admit
+  47 ms, first settle 177 ms). Store open: 54 ms on a warm reopen, 599 ms after a reset.
+- **P4.** 128 Sessions held, each about 316K characters of context (a store of about
+  446 KB), with no break: `exceededMemoryErrors` and `exceededCpuErrors` 0. Open p50
+  138-151 ms and turn p50 269-281 ms, flat from 8 to 128. Every checkpoint came within a
+  minute, so none is void. Workers reads no memory, so 128 is a lower bound, not a break.
+- **P7.** 200 per-call stub calls billed 202 store requests; 200 calls over one session
+  billed 2. The held session kept its store in memory (180 s active); the unheld store
+  was evicted. A session is about 100 times fewer billed requests while a thread is
+  active, and pins its store's duration until released.
 
 ## What each probe decides
 
@@ -253,5 +288,7 @@ The differences from the cap probe:
 
 | Run | Date | Plan | Commit | Run minutes | P4 max | Raised |
 |---|---|---|---|---|---|---|
+| 41029757222 | 2026-10-30 | Paid (billing unreadable to the token: HTTP 403) | `2c4a7d404` | 10 | 128 held, no break | accepted |
 
-No run yet.
+Cleanup: all four `ta-storeprobe*` scripts deleted (HTTP 200) and no namespace left,
+checked at 09:41:42Z.

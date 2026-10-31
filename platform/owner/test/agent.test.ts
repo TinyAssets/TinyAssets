@@ -107,7 +107,10 @@ describe("pi in the owner's object", () => {
     expect(await tablesIn(r.stub, "pi_")).toEqual([]);
     expect((await storeSql(store, "SELECT name FROM sqlite_master WHERE type = 'table' " +
                                   "AND name LIKE 'pi_%'")).length).toBeGreaterThan(5);
-    // Evicted, the object is cold again: its first call opens pi and the turn completes.
+    // Its Session closed idle (an open one holds its store's session, which keeps both in
+    // memory) and then evicted, the object is cold again: its first call opens pi and the
+    // turn completes.
+    await r.in((instance) => instance.agent.host.close(first.session));
     await evictDurableObject(r.stub);
     const again = await r.in(async (instance) => {
       instance.script = [says("hello"), says("again")];

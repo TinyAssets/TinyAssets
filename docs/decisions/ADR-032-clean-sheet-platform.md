@@ -174,9 +174,11 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
      R2's `put` SHA-256 check (not S3 checksum headers, which R2 lists as
      composite only). A call moves at most two chunks' bytes. Subrequests are limited
      per invocation (50 on Free, up to 10,000,000 on Paid; the owner sets
-     `limits.subrequests` to 1,000,000, every thread store RPC being one, until live
-     probe P1 measures a run), and an object's calls count against its newest incoming event, or a
-     count each event resets (the cap probe's M12: newest-or-reset, one of the two). The
+     `limits.subrequests` to 1,000,000, which Paid accepts and which also lifts the separate
+     per-invocation count of thread store RPCs, as live probe P1 measured), and an object's
+     calls count against its newest incoming event, or a count each event resets (the cap
+     probe's M12; P1: 32 streaming threads made 32,697 store calls in 10 minutes at 10,000
+     with no error, so the starting alarm does not carry every call). The
      platform's own error is the loud failure; there is no budget
      of ours. The binder, the trust root, may stream chunks to it with a namespace read
      from the owner's object.
@@ -206,7 +208,9 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
 Each agent thread is one pi Session over its own `ThreadStore`, a second
 SQLite-backed Durable Object class in the owner Worker, named by a random
 128-bit id that only the owner's thread row holds. Only pi's bytes move there,
-over RPC (`RemoteStorage`); the harness, every hook, the environment, the
+over RPC (`RemoteStorage`), one `RpcTarget` session per open Session, released
+when it closes (live probe P7: a session bills one request, not one per call);
+the harness, every hook, the environment, the
 model provider, authority and spend stay in the owner's object, hosted by our
 own multi-Session `ThreadHost` on the Agents SDK Lifecycle, with a wake job per
 thread. A store is named in a row before it is created and wiped

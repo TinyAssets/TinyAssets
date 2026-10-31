@@ -21,8 +21,9 @@
  * `ctx.exports`. Its `limits` are exactly `LIMITS`, set at top level: the platform's count
  * of subrequests per invocation (50 on Free, 10,000 by default on Paid, at most 10,000,000),
  * whose own error is the object's only call limit, so the number the agent's turns rely on
- * is explicit and moves only with a review here; every thread store RPC is one, so it is
- * raised to 1,000,000 until live probe P1 measures a real run's count. It is the only
+ * is explicit and moves only with a review here. It is 1,000,000: live probe P1 found thread
+ * store RPCs on a separate per-invocation count that this setting lifts too (at 10,000 they
+ * stopped at exactly 10,000), and Paid accepts it. It is the only
  * wrangler config in the owner Worker. Edge Workers bind `OWNER` from their own configs.
  */
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -52,7 +53,7 @@ const ENV_KEYS: ReadonlySet<string> = new Set([
   "name", "main", "compatibility_date", "compatibility_flags", "workers_dev", "preview_urls",
   "migrations", "limits",
 ]);
-/** The owner Worker's limits, wherever they are set: subrequests, until P4 measures them. */
+/** The owner Worker's limits, wherever they are set: subrequests, as live probe P1 set them. */
 const LIMITS = Object.freeze({ subrequests: 1_000_000 });
 /**
  * The keys the top level may set: an environment's, the schema, the environments, and the

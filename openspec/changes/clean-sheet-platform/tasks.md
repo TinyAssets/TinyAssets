@@ -848,20 +848,22 @@ account and no deploy.
   capability, one shared registry, `Map<thread, Session>`, a wake job `pi-wake:<thread>`
   per thread driven by that Session's `onWake`, each change kept in `agent_live(thread,
   active, wake_at)` in a gate unit; Sessions opened on demand, closed idle after 2 minutes,
-  least recently used first to make room, and an open past `OPEN_MAX` (32, live probe P4)
+  least recently used first to make room, and an open past `OPEN_MAX` (64, live probe P4)
   refused at once, never waited on, a pinned (watched) Session never closed. PiHarness's
   wake mechanics and recovery tests are ported (MIT), keyed per thread; `agents/harness/pi`
   is no longer imported. A thread is its Session's root, its stamp written in the root's
   creating commit; compaction origins are `task:<thread>:<id>`. Status is one read of pi's
   submission record (F12). `contextRetentionMs` and `documentRetentionMs` are 60 s for many
-  Sessions an isolate (F11, live probe P4). The write gate keeps synchronous units and no
-  queue: pi no longer shares the owner's database, so its shared-queue rule and chord
-  dependency are deleted (F13 moot). A4's storage gauge is deleted; the owner-bound guard
+  Sessions an isolate (F11, live probe P4). Each open Session calls its store over one
+  `RpcTarget` session, released when the host closes it (live probe P7). The write gate
+  keeps synchronous units and no queue: pi no longer shares the owner's database, so its
+  shared-queue rule and chord dependency are deleted (F13 moot). A4's storage gauge is deleted; the owner-bound guard
   holds the owner's worst-case rows, at the policy's high bounds, under 50% of 10 GB, and
   names the tables no byte or count bound covers yet (file paths, chunk references, turn
-  counters). `limits.subrequests` is 1,000,000 until live probe P1. Open: drop wiping, run
+  counters). `limits.subrequests` is 1,000,000 (live probe P1). Open: drop wiping, run
   retention and erasure ordering (S4-S5); scheduled turns as pi tasks (F1); rotation
-  (deferred); live probes P1-P5, P7 and P8 (`store-probe.md`; P5 and P8 design-decision §6).
+  (deferred); live probes P5 and P8 (design-decision §6). P1-P4 and P7 are done
+  (`store-probe.md`, run 1).
 - [ ] S4-S5 Drops wipe and run retention: idle, grant change and revoke drops through the
   `dropping` state with lane retry; `keep_runs` with receipts and the `runs_kept` bound;
   erasure's store-first order as a tested internal path (its door comes with the §7 doors).
@@ -964,12 +966,18 @@ account and no deploy.
   invocation, or a counter each event resets; one rule here: work in flight
   spends the newest event's count), not to the async context that made them. An alarm is
   cut at 15 minutes.
-- [ ] On the owner Worker's first deploy: check that Paid accepts its explicit
-  `limits.subrequests: 10000` (run B ran at the default limit and never set it).
-- [ ] The store probe (slice 0c, batch 1), before the storage slice: P1, P2, P3, P4 and P7
+- [x] On the owner Worker's first deploy: check that Paid accepts its explicit
+  `limits.subrequests` (run B ran at the default limit and never set it). The store
+  probe's run 1 answered it: Paid accepted 10,000 and the raised 1,000,000 (P1c).
+- [x] The store probe (slice 0c, batch 1), before the storage slice: P1, P2, P3, P4 and P7
   for the per-thread `ThreadStore`. Method, cases, reading key and results table:
-  `store-probe.md`; run by the manual `store-probe.yml`. Its main copy deploys with the
-  owner's explicit `limits.subrequests: 10000`, so its first run answers the item above too.
+  `store-probe.md`; run by the manual `store-probe.yml`. Run 1 (41029757222, 2026-10-30):
+  P3 the same-script binding is accepted and reaches only `ThreadStore`; P1 store RPCs
+  count on a separate per-invocation counter, which `limits.subrequests: 1,000,000` lifts,
+  and the count resets across events (P1a and P1b void); P2 a store RPC adds 1-2 ms, a new
+  thread's store opens about 0.3 s cold; P4 128 Sessions held with no break (`OPEN_MAX`
+  64); P7 one `RpcTarget` session bills 2 requests for 200 calls against 202, and pins its
+  store while held.
 - [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
   probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
   does not emulate it); a live probe of the files Worker's create-once put, which

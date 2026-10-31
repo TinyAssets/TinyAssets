@@ -80,11 +80,12 @@ export function wakeJob(thread: string): string {
 const JOB = /^pi-wake:(.+)$/;
 
 /**
- * Sessions open at once, past which an idle one is closed or the open refused. From live
- * probe P4 (the memory of N open Sessions in one 128 MB isolate, `store-probe.md`); 32 until
- * it is measured.
+ * Sessions open at once, past which an idle one is closed or the open refused. Live probe P4
+ * (`store-probe.md`) held 128 Sessions of about 316K characters of context each in one
+ * isolate with no memory or CPU error; half of that, since an isolate may host other
+ * owners' objects too and the break point is not measured.
  */
-export const OPEN_MAX = 32;
+export const OPEN_MAX = 64;
 /** How long an idle Session stays open. */
 export const IDLE_CLOSE_MS = 2 * 60_000;
 /**
@@ -509,7 +510,7 @@ export class ThreadHost extends LifecycleCapability {
     const now = Date.now();
     for (const slot of this.#slots.values()) {
       if (this.#idle(slot) && now - slot.lastUsed >= this.#timing.idleCloseMs) {
-        void this.#closeSlot(slot);
+        void this.#closeIdle(slot);
       }
     }
   }
@@ -528,7 +529,23 @@ export class ThreadHost extends LifecycleCapability {
     if (idle === undefined) {
       throw new Refused(SESSIONS_FULL);
     }
-    void this.#closeSlot(idle);
+    void this.#closeIdle(idle);
+  }
+
+  /**
+   * Close an idle Session. With no work and no task sleeping, its wake job is stale (one a
+   * heartbeat left due) and is cancelled, so it never reopens the Session, and takes a
+   * place among the open, only to find nothing; a sleeping task's job stays, due when it
+   * wakes.
+   */
+  #closeIdle(slot: Slot): Promise<void> {
+    const wake = slot.opened?.pi.wake();
+    const thread = [...this.#slots].find(([, held]) => held === slot)?.[0];
+    if (thread !== undefined && wake !== undefined && !wake.active && wake.at === undefined) {
+      this.lifecycle.jobs.cancel(wakeJob(thread))
+        .catch(() => console.error("a thread's stale wake could not be cancelled"));  // no ids
+    }
+    return this.#closeSlot(slot);
   }
 
   // -- Waking ------------------------------------------------------------------------

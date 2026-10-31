@@ -16,15 +16,21 @@
  * `env` binding (a guard holds it) and reaches nothing: it serves pi's records to the
  * object that names it, and nothing else.
  *
- * - **Holder fence.** `open(holder)` makes the caller the store's one holder: a Session
- *   opens with a fresh random holder, and every later call names it. A call naming any
- *   other holder is refused (`STALE_HOLDER`), so a Session an owner's newer instance
- *   replaced (an owner evicted mid-commit, or a Session failed and reopened) can neither
- *   write nor read here again: its late commit fails rather than interleaves (pi-durable
- *   README: "one process owns a storage at a time"). The holder is durable (key-value
- *   storage), so the store's own eviction between calls is invisible: the next call from
- *   the holder opens pi's storage again over what was committed. A store never opened
- *   refuses every call but `open`, and makes no table.
+ * - **One session per open Session.** `open(holder)` makes the caller the store's one
+ *   holder and answers a `StoreSession`, an `RpcTarget` whose calls carry pi's commits and
+ *   reads: calls on one session are billed as one store request, not one each (live probe
+ *   P7: 200 calls billed 2 requests, against 202 per call), and holding it keeps the store
+ *   in memory while its thread's Session is open; the owner releases it when the Session
+ *   closes, and the store may hibernate. `attach(holder)` answers a new session for the
+ *   holder that already holds the store (a reconnect after the old stub broke), never
+ *   claiming it.
+ * - **Holder fence.** Every session call checks that its holder is still the store's
+ *   holder, as stored. Once a newer Session opened the store (an owner evicted mid-commit,
+ *   or a Session failed and reopened), an older one's calls are refused (`STALE_HOLDER`):
+ *   its late commit fails rather than interleaves (pi-durable README: "one process owns a
+ *   storage at a time"). The holder is durable (key-value storage), so the store's own
+ *   eviction is invisible past a reconnect: pi's storage opens again over what was
+ *   committed. A store never opened refuses every call but `open`, and makes no table.
  * - **Requests.** A read pi rejects as an invalid request (`StorageRequestError`, which
  *   fails only that read) is answered as `{ requestError }`, since RPC keeps no error
  *   class; any other failure is thrown, and fails the Session (pi: "an error a method
@@ -45,7 +51,7 @@ import {
 import {
   openDurableObjectSqliteStorage,
 } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
-import { DurableObject } from "cloudflare:workers";
+import { DurableObject, RpcTarget } from "cloudflare:workers";
 
 /** pi's table prefix in a store: its own default, alone in the database. */
 export const STORE_PREFIX = "pi_";
@@ -70,47 +76,49 @@ export type Read = (typeof READS)[number];
 /** A read's answer: its value, or the request error pi raised for it. */
 export type Reply<T = unknown> = { readonly value: T } | { readonly requestError: string };
 
+/** One open Session's calls on its store: pi's commits and reads, for its holder only. */
+export interface StoreSessionRpc {
+  commit(writes: readonly StorageWrite[]): Promise<Seq>;
+  read(method: Read, args: readonly unknown[]): Promise<Reply>;
+}
+
 /** What the owner's object calls on a store (`ThreadStore`'s RPC surface). */
 export interface StoreRpc {
-  open(holder: string): Promise<number>;
-  commit(holder: string, writes: readonly StorageWrite[]): Promise<Seq>;
-  read(holder: string, method: Read, args: readonly unknown[]): Promise<Reply>;
+  /** Claim the store for `holder`: the next id it would mint, and the holder's session. */
+  open(holder: string): Promise<{ readonly next: number; readonly session: StoreSessionRpc }>;
+  /** A fresh session for the holder that holds the store now; never a claim. */
+  attach(holder: string): Promise<StoreSessionRpc>;
   size(): Promise<number> | number;
   destroy(): Promise<void>;
 }
 
 type Sqlite = Awaited<ReturnType<typeof openDurableObjectSqliteStorage>>;
 
-export class ThreadStore extends DurableObject implements StoreRpc {
-  /** pi's storage over this object's database, opened at the holder's first call. */
-  #storage: Promise<Sqlite> | undefined;
+/** pi's storage, for `holder` only: refused once another holds the store. */
+type Held = (holder: string) => Promise<Sqlite>;
 
-  /**
-   * Make `holder` this store's one holder, opening pi's storage (and making its tables on
-   * first use); answer the next id the store would mint, which seeds the holder's own
-   * minting (`RemoteStorage.mintId`). Refused once destroyed.
-   */
-  async open(holder: string): Promise<number> {
-    if (typeof holder !== "string" || !HOLDER.test(holder)) {
-      throw new Error("a holder is 128 random bits, as hex");
-    }
-    this.#alive();
-    this.ctx.storage.kv.put(HOLDER_KEY, holder);
-    return Number(await (await this.#pi()).mintId());
+/** One open Session's calls, each fenced to its holder. */
+export class StoreSession extends RpcTarget implements StoreSessionRpc {
+  readonly #holder: string;
+  readonly #held: Held;
+
+  constructor(holder: string, held: Held) {
+    super();
+    this.#holder = holder;
+    this.#held = held;
   }
 
-  /** pi's `commit`, for the holder only. */
-  async commit(holder: string, writes: readonly StorageWrite[]): Promise<Seq> {
-    const storage = await this.#held(holder);
-    return storage.commit(writes, BACKGROUND_CONTEXT);
+  /** pi's `commit`. */
+  async commit(writes: readonly StorageWrite[]): Promise<Seq> {
+    return (await this.#held(this.#holder)).commit(writes, BACKGROUND_CONTEXT);
   }
 
-  /** One of pi's reads (`READS`), for the holder only; an invalid request is answered. */
-  async read(holder: string, method: Read, args: readonly unknown[]): Promise<Reply> {
+  /** One of pi's reads (`READS`); an invalid request is answered. */
+  async read(method: Read, args: readonly unknown[]): Promise<Reply> {
     if (!READS.includes(method) || !Array.isArray(args)) {
       throw new Error("not a read of pi's storage");
     }
-    const pi = await this.#held(holder);
+    const pi = await this.#held(this.#holder);
     const call = pi[method] as (...given: unknown[]) => Promise<unknown>;
     try {
       return { value: await call.apply(pi, [...args, BACKGROUND_CONTEXT]) };
@@ -120,6 +128,32 @@ export class ThreadStore extends DurableObject implements StoreRpc {
       }
       throw error;
     }
+  }
+}
+
+export class ThreadStore extends DurableObject implements StoreRpc {
+  /** pi's storage over this object's database, opened at the holder's first call. */
+  #storage: Promise<Sqlite> | undefined;
+
+  /**
+   * Make `holder` this store's one holder, opening pi's storage (and making its tables on
+   * first use); answer the next id the store would mint, which seeds the holder's own
+   * minting (`RemoteStorage.mintId`), and the holder's session. Refused once destroyed.
+   */
+  async open(holder: string): Promise<{ next: number; session: StoreSession }> {
+    if (typeof holder !== "string" || !HOLDER.test(holder)) {
+      throw new Error("a holder is 128 random bits, as hex");
+    }
+    this.#alive();
+    this.ctx.storage.kv.put(HOLDER_KEY, holder);
+    const next = Number(await (await this.#pi()).mintId());
+    return { next, session: this.#session(holder) };
+  }
+
+  /** A fresh session for `holder`, the store's holder now; refused for any other. */
+  async attach(holder: string): Promise<StoreSession> {
+    await this.#held(holder);
+    return this.#session(holder);
   }
 
   /** The store's database size in bytes. */
@@ -137,6 +171,10 @@ export class ThreadStore extends DurableObject implements StoreRpc {
     await (await open?.catch(() => undefined))?.close(BACKGROUND_CONTEXT).catch(() => {});
     await this.ctx.storage.deleteAll();
     this.ctx.storage.kv.put(DESTROYED_KEY, true);
+  }
+
+  #session(holder: string): StoreSession {
+    return new StoreSession(holder, (asking) => this.#held(asking));
   }
 
   #alive(): void {

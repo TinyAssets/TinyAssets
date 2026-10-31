@@ -68,8 +68,12 @@ const STORE = "owner/src/thread-store.ts";
 /**
  * Each way a thread store's source could reach past its own storage: any `env` (a binding,
  * `this.env`, a destructured one), any import of the owner's own modules but the store
- * types' (`import type`), or a runtime name but the class it extends.
+ * types' (`import type`), or a runtime name but the class it extends and `RpcTarget` (its
+ * sessions).
  */
+/** The runtime names a thread store may import: its class, and its sessions'. */
+const STORE_IMPORTS = new Set(["DurableObject", "DurableObject,RpcTarget"]);
+
 export function storeReach(fileName: string, source: string): string[] {
   const file = parse(fileName, source);
   const problems: string[] = [];
@@ -87,7 +91,7 @@ export function storeReach(fileName: string, source: string): string[] {
         const named = node.importClause?.namedBindings;
         const names = named !== undefined && ts.isNamedImports(named)
           ? named.elements.map((element) => (element.propertyName ?? element.name).text) : [];
-        if (names.join() !== "DurableObject") {
+        if (!STORE_IMPORTS.has([...names].sort().join())) {
           report(node, `imports ${names.join(", ") || "all"} from ${RUNTIME}`);
         }
       }
@@ -110,14 +114,18 @@ describe("thread-store guard", () => {
     "export class S extends DurableObject { constructor(ctx, env) { super(ctx, env); } }",
     "import { env } from 'cloudflare:workers';",
     "import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';",
+    "import { DurableObject, RpcTarget, WorkerEntrypoint } from 'cloudflare:workers';",
+    "import { RpcTarget } from 'cloudflare:workers';",
     "import { Files } from './files';",
     "export class S { m(o: { env: unknown }) { const { env } = o; return env; } }",
   ])("sees %s", (source) => {
     expect(storeReach(STORE, source)).not.toEqual([]);
   });
 
-  it("allows the store types' own import", () => {
+  it("allows the store types' own import, and its sessions' class", () => {
     expect(storeReach(STORE, "import type { Read } from './remote-storage';")).toEqual([]);
+    expect(storeReach(STORE, "import { RpcTarget, DurableObject } from 'cloudflare:workers';"))
+      .toEqual([]);
   });
 });
 

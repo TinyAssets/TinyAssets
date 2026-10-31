@@ -241,7 +241,7 @@ describe("the open Sessions", () => {
     expect(out.open).toEqual([a, b].sort());
     expect(out.afterC).toEqual([a, c].sort());
     expect(out.afterD).toEqual([a, d].sort());
-    expect(OPEN_MAX).toBe(32);
+    expect(OPEN_MAX).toBe(64);
   }, 30_000);
 
   it("close the least recently used idle one, never one a call is using", async () => {

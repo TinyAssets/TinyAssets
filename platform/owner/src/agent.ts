@@ -127,11 +127,11 @@ export const IDENTITY: ClientIdentity = Object.freeze({
 /**
  * How long an idle conversation keeps its last context read in memory (F11). pi's default
  * is ten minutes, for one Session per process; the object holds up to `OPEN_MAX` Sessions
- * in an isolate it shares with other owners' objects. From live probe P4 (the memory of
- * open Harnesses); one minute until it is measured.
+ * in an isolate it shares with other owners' objects. One minute: live probe P4
+ * (`store-probe.md`) held 128 Sessions at this setting with no memory pressure.
  */
 export const CONTEXT_RETENTION_MS = 60_000;
-/** How long a loaded document no watch observes stays in memory (F11). From live probe P4. */
+/** How long a loaded document no watch observes stays in memory (F11); as P4 held it. */
 export const DOCUMENT_RETENTION_MS = 60_000;
 
 /** pi's run settings; a function in the options, so it is read at each use. */
@@ -415,14 +415,28 @@ export class OwnerAgent {
       this.#installed = undefined;
       throw error;
     });
-    await this.#installed;
-    const storage = await RemoteStorage.open(() => this.#parts.stores(row.store));
+    // The store opens while the registry installs: a new thread's store opens cold in about
+    // 0.3 s (live probe P2), and neither waits on the other.
+    const [installing, opening] = await Promise.allSettled([
+      this.#installed, RemoteStorage.open(() => this.#parts.stores(row.store))]);
+    if (installing.status === "rejected") {
+      if (opening.status === "fulfilled") {
+        await opening.value.close(BG);
+      }
+      throw installing.reason;
+    }
+    if (opening.status === "rejected") {
+      throw opening.reason;
+    }
+    const storage = opening.value;
     let opened: Harness | undefined;
     const models = this.#source.models({
       thread,
       authority: (sessionId) => (opened === undefined ? Promise.resolve(() => NO_CONVERSATION)
         : this.modelAuthority(opened, sessionId)),
     });
+    // An opened Harness closes its storage; one that failed to open may not have, so its
+    // storage is closed here (twice is once), releasing the store's session.
     const pi = await Harness.open(storage, {
       models: () => models,
       registry: this.#registry,
@@ -433,7 +447,10 @@ export class OwnerAgent {
       conversationCreated: (tx, record) => this.#inherit(tx, record),
       telemetry: originRoot(thread),
       onReport: (error, info) => this.#report(info.type, detailOf(error, info)),
-    }, BG);
+    }, BG).catch(async (error: unknown) => {
+      await storage.close(BG);
+      throw error;
+    });
     opened = pi;
     try {
       if (await storage.conversation(ROOT, BG) === undefined) {

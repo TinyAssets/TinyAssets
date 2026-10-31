@@ -2,15 +2,17 @@
  * pi's `Storage`, over a thread's store (`thread-store.ts`) by RPC: what a thread's Session
  * is opened over in the owner's object (ADR-032 §4, amended 2026-10-30; tasks 5, S2).
  *
- * - **Holder.** Opening draws a fresh random holder and makes it the store's one holder;
- *   every call names it, so once another Session opened the store, this one can no longer
- *   reach it (the store's fence).
+ * - **Holder and session.** Opening draws a fresh random holder, makes it the store's one
+ *   holder, and keeps the store's session for it: every call goes over that one session
+ *   (live probe P7: one billed request per session, not one per call), fenced to the
+ *   holder, so once another Session opened the store, this one can no longer reach it.
  * - **Ids are minted here**, from the store's next id at open, then counted up: pi's
  *   contract is ids "greater than every ID minted since the storage was opened and every ID
  *   stored". A commit advances the store's next id past every id it writes, and this
  *   storage's own count too, so a reopen seeds past everything committed. No RPC per id.
  * - **Reads are retried once** when the call itself fails (a store reset, or an RPC lost in
- *   transit), over a fresh stub, since a reset breaks the old one; a second failure fails
+ *   transit), over a fresh stub and a session attached anew for the same holder (never a
+ *   claim), since a reset breaks the old ones; a second failure fails
  *   the read, and with it the Session (pi: "retry transient failures inside the
  *   method"). An invalid request is pi's `StorageRequestError`, which fails only that
  *   read, never retried. A read whose caller's
@@ -25,8 +27,8 @@
  *   Session's adoption: `commitAdopting` calls `adopt(seq)` once the RPC resolved, once and
  *   before the next commit starts (pi serializes its commits), and never for one that
  *   failed.
- * - **Close** makes every later call reject; the store keeps nothing of this Session but
- *   the fence.
+ * - **Close** releases the session, so the store may hibernate, and makes every later call
+ *   reject; the store keeps nothing of this Session but the fence.
  */
 import type { JsonValue } from "@earendil-works/chord";
 import { awaitWithContext, type Context } from "@earendil-works/chord/context";
@@ -39,7 +41,7 @@ import {
   type TaskRecord,
 } from "@earendil-works/pi-durable";
 
-import type { Read, StoreRpc } from "./thread-store";
+import type { Read, StoreRpc, StoreSessionRpc } from "./thread-store";
 
 /** A closed storage's refusal. */
 export const STORAGE_CLOSED = "this thread's storage is closed";
@@ -58,6 +60,11 @@ function aborted(context: Context): void {
   if (signal?.aborted === true) {
     throw signal.reason ?? new Error("aborted");
   }
+}
+
+/** Release an RPC session's stub, if it is one (a local object has nothing to release). */
+function release(session: StoreSessionRpc): void {
+  (session as Partial<Disposable>)[Symbol.dispose]?.();
 }
 
 /** The id a write claims, as pi's storages read it, if it claims one. */
@@ -79,14 +86,16 @@ function claimed(write: StorageWrite): number | undefined {
 export class RemoteStorage implements Storage {
   /** A stub to the store, made again for a retry. */
   readonly #connect: () => StoreRpc;
-  #store: StoreRpc;
+  /** The store's session for this holder, attached again for a retry. */
+  #session: StoreSessionRpc;
   readonly #holder: string;
   #next: number;
   #closed = false;
 
-  private constructor(connect: () => StoreRpc, store: StoreRpc, holder: string, next: number) {
+  private constructor(connect: () => StoreRpc, session: StoreSessionRpc, holder: string,
+                      next: number) {
     this.#connect = connect;
-    this.#store = store;
+    this.#session = session;
     this.#holder = holder;
     this.#next = next;
   }
@@ -97,12 +106,12 @@ export class RemoteStorage implements Storage {
    */
   static async open(connect: () => StoreRpc, holder: string = holderId()):
       Promise<RemoteStorage> {
-    const store = connect();
-    const next = await store.open(holder);
+    const { next, session } = await connect().open(holder);
     if (!Number.isSafeInteger(next) || next < 2) {
+      release(session);
       throw new Error("a store answered no next id");
     }
-    return new RemoteStorage(connect, store, holder, next);
+    return new RemoteStorage(connect, session, holder, next);
   }
 
   /** The holder this storage opened the store as. */
@@ -122,7 +131,7 @@ export class RemoteStorage implements Storage {
   async commitAdopting(writes: readonly StorageWrite[],
                        adopt: ((seq: Seq) => void) | undefined): Promise<Seq> {
     this.#open();
-    const seq = await this.#store.commit(this.#holder, writes);
+    const seq = await this.#session.commit(writes);
     for (const write of writes) {
       const id = claimed(write);
       if (id !== undefined && id >= this.#next) {
@@ -210,7 +219,10 @@ export class RemoteStorage implements Storage {
   }
 
   async close(_context: Context): Promise<void> {
-    this.#closed = true;
+    if (!this.#closed) {
+      this.#closed = true;
+      release(this.#session);
+    }
   }
 
   #open(): void {
@@ -226,21 +238,32 @@ export class RemoteStorage implements Storage {
   async #read<T>(method: Read, args: readonly unknown[], context: Context): Promise<T> {
     this.#open();
     aborted(context);
-    const call = () => this.#store.read(this.#holder, method, args);
+    const call = () => this.#session.read(method, args);
     let reply;
     try {
       reply = await awaitWithContext(call(), context);
     } catch (error) {
       aborted(context);
       this.#open();
-      this.#store = this.#connect();
-      reply = await awaitWithContext(call(), context).catch((again: unknown) => {
-        throw again instanceof Error ? again : error;
-      });
+      reply = await awaitWithContext(this.#reattach().then(call), context)
+        .catch((again: unknown) => {
+          throw again instanceof Error ? again : error;
+        });
     }
     if ("requestError" in reply) {
       throw new StorageRequestError(reply.requestError);
     }
     return reply.value as T;
+  }
+
+  /** A fresh stub, and a session on it for this holder in place of the broken one. */
+  async #reattach(): Promise<void> {
+    const session = await this.#connect().attach(this.#holder);
+    release(this.#session);
+    if (this.#closed) {
+      release(session);
+      throw new Error(STORAGE_CLOSED);
+    }
+    this.#session = session;
   }
 }
