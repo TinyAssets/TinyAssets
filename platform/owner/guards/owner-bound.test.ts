@@ -531,12 +531,15 @@ describe("the owner's database bound", () => {
                                  "          throw new Refused(RUN_SETTLED);");
     expect(refused).toBeGreaterThan(0);
     expect(refused).toBeLessThan(body.indexOf("await conversation.submit("));
-    expect(body.lastIndexOf("this.#parts.settled(thread)"))
-      .toBeLessThan(body.indexOf("await conversation.submit("));
+    // No run settles in a unit that finds an input being admitted, so none is refused late.
+    const agent = source("agent");
+    const quiet = agent.indexOf("      if (!quiet()) {\n        return false;");
+    expect(quiet).toBeGreaterThan(0);
+    expect(quiet).toBeLessThan(agent.indexOf("      threads.settle(thread, kept,"));
     // The usage of a settled run goes to the total; no row of its own is kept.
     const threads = source("threads");
     expect(threads).toContain("\"WHERE thread_id = ? AND settled_at IS NULL \" +");
-    expect(source("agent")).toContain("settled: (thread) => parts.threads.settledRun(thread),");
+    expect(agent).toContain("settled: (thread) => parts.threads.settledRun(thread),");
   });
 
   it("sees a bound that would pass half the limit, or a table it no longer covers", () => {

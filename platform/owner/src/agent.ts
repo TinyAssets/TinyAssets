@@ -451,7 +451,7 @@ export class OwnerAgent {
       open: (thread, onWake) => this.#open(thread, onWake),
       exists: (thread) => parts.threads.get(thread) !== null,
       settled: (thread) => parts.threads.settledRun(thread),
-      live: (thread, wake, opened) => this.#live(thread, wake, opened),
+      live: (thread, wake, opened, quiet) => this.#live(thread, wake, opened, quiet),
       usage: (thread, usage) => parts.usage(thread, usage),
       turns: parts.turns,
       notice: (type, detail) => this.#report(type, detail),
@@ -773,9 +773,10 @@ export class OwnerAgent {
    * (`Threads.settle`). A read that fails keeps the wake alone, loudly: the run then counts
    * as one never handed an input.
    */
-  async #live(thread: string, wake: Wake, opened: Opened | undefined): Promise<void> {
+  async #live(thread: string, wake: Wake, opened: Opened | undefined,
+              quiet: (() => boolean) | undefined): Promise<void> {
     const { threads, write } = this.#parts;
-    if (wake.active || wake.at !== undefined || opened === undefined
+    if (wake.active || wake.at !== undefined || opened === undefined || quiet === undefined
         || !threads.unsettledRun(thread)) {
       return this.#parts.live(thread, wake);
     }
@@ -792,8 +793,17 @@ export class OwnerAgent {
     // Its usage as its Session holds it now goes into the owner's total as it settles.
     const usage = await opened.pi.usage(BG).catch(() => undefined);
     const kept = settled;
-    await write(() => threads.settle(thread, kept, Date.now() / 1000,
-                                     usage === undefined ? null : JSON.stringify(usage)));
+    const done = await write(() => {
+      if (!quiet()) {
+        return false;  // an input is being admitted: the run works again
+      }
+      threads.settle(thread, kept, Date.now() / 1000,
+                     usage === undefined ? null : JSON.stringify(usage));
+      return true;
+    });
+    if (!done) {
+      return this.#parts.live(thread, wake);
+    }
   }
 
   /**

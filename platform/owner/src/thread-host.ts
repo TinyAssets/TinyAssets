@@ -182,9 +182,11 @@ export interface HostParts {
   settled(thread: string): boolean;
   /**
    * Keep `thread`'s wake in the owner's rows, in a unit of the write gate; `opened` is the
-   * Session that reported it, when it is open (a run's settling is read from it).
+   * Session that reported it, when it is open (a run's settling is read from it), and
+   * `quiet`, read in the settling unit, whether no input is being admitted: a run settles
+   * only then, so an input admitted is never refused for a settling that came after it.
    */
-  live(thread: string, wake: Wake, opened?: Opened): Promise<void>;
+  live(thread: string, wake: Wake, opened?: Opened, quiet?: () => boolean): Promise<void>;
   /** Keep `thread`'s usage (pi's `pi.usage`) as its Session closes, in a unit. */
   usage(thread: string, usage: UsageState): Promise<void>;
   /**
@@ -348,9 +350,6 @@ export class ThreadHost extends LifecycleCapability {
           if (!this.#parts.exists(thread)) {
             // Dropped while it was admitted (a grant change): nothing reaches its store.
             throw new Refused(THREAD_DROPPED);
-          }
-          if (fresh && this.#parts.settled(thread)) {
-            throw new Refused(RUN_SETTLED);
           }
         }
         await conversation.submit({
@@ -634,7 +633,7 @@ export class ThreadHost extends LifecycleCapability {
       if (!ending) {
         pi.resume();
         await new Promise((resolve) => setTimeout(resolve, 0));
-        await this.#wakeFor(thread, pi.wake(), opened);
+        await this.#wakeFor(thread, pi.wake(), opened, slot);
       }
     } catch (error) {
       pi.close(BG).catch(() => {});
@@ -859,7 +858,7 @@ export class ThreadHost extends LifecycleCapability {
    * owner's rows: the job first, so a row that fails to land leaves a job that finds the
    * work itself, and never a live row with no job to wake it.
    */
-  async #wakeFor(thread: string, wake: Wake, opened?: Opened): Promise<void> {
+  async #wakeFor(thread: string, wake: Wake, opened: Opened, slot: Slot): Promise<void> {
     if (wake.active) {
       await this.#wake(thread);
     } else if (wake.at !== undefined) {
@@ -868,17 +867,17 @@ export class ThreadHost extends LifecycleCapability {
     // The wake as it stands once the job is in place, not as it stood before: a Session
     // whose work ended meanwhile (an open's reconcile pass) never has a stale "running"
     // kept after its own later report.
-    await this.#parts.live(thread, opened?.pi.wake() ?? wake, opened);
+    await this.#parts.live(thread, opened.pi.wake(), opened, quietOf(slot));
   }
 
   /** A Session's `onWake`: off its line, never blocking. */
   #onWake(thread: string, slot: Slot, wake: Wake): void {
     slot.lastUsed = Date.now();
     slot.changed?.();
-    // While an input is admitted, no settling is read: the run is about to work again.
-    const opened = slot.admitting > 0 ? undefined : slot.opened;
-    const kept = slot.waiting !== undefined ? this.#parts.live(thread, wake, opened)
-      : this.#wakeFor(thread, wake, opened);
+    const { opened } = slot;
+    const kept = opened === undefined ? this.#parts.live(thread, wake)
+      : slot.waiting !== undefined ? this.#parts.live(thread, wake, opened, quietOf(slot))
+        : this.#wakeFor(thread, wake, opened, slot);
     kept.catch(() => console.error("a thread's wake could not be kept"));  // no ids
   }
 
@@ -927,7 +926,8 @@ export class ThreadHost extends LifecycleCapability {
     // Nothing runs and nothing sleeps: the live row is rewritten from the Session (a stale
     // "running" one cleared, a run that settled kept so) before the job completes; a write
     // whose read does not answer within a heartbeat leaves the job to try again.
-    const kept = this.#parts.live(thread, wake, opened).then(() => true, () => false);
+    const kept = this.#parts.live(thread, wake, opened, quietOf(slot))
+      .then(() => true, () => false);
     if (await inTime(kept, this.#timing.heartbeatMs) !== true) {
       console.error("a thread's wake could not be kept; its job tries again");  // no ids
       return heartbeat;
@@ -1013,6 +1013,11 @@ export interface TurnOwner {
    * the turn, never makes it again.
    */
   readonly joined?: boolean;
+}
+
+/** Whether `slot`'s thread has no input being admitted, read in a settling unit. */
+function quietOf(slot: Slot): () => boolean {
+  return () => slot.admitting === 0;
 }
 
 /** A commit's change, as pi publishes it. */

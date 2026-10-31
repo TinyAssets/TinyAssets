@@ -1016,9 +1016,11 @@ account and no deploy.
   and adds its usage into the owner's total, keeping no usage row (counted once, the usage
   view the same before and after). A settled run takes no input: a new one is refused
   `run_settled` at the host's admission before pi commits it (a guard), from the doors,
-  `ta` and scheduled work alike (the work fails, never retried), and a late commit of its
-  Session lets its turn owners go and keeps none, so it holds no turn, live row, wake job or
-  usage row; F1's scheduled run is unsettled while it sleeps.
+  `ta` and scheduled work alike (the work fails, never retried); a run settles only in a
+  unit that finds no input being admitted (a guard), so an admitted one is never refused
+  late; and a late commit of its Session lets its turn owners go and keeps none, so it
+  holds no turn, live row, wake job or usage row; F1's scheduled run is unsettled while it
+  sleeps.
   A settled run's status and cancel are answered from the receipt, its Session never
   opened (F12's one read holds, polls move nothing), before its drop, during it and after;
   while its store is there an answer past the receipt's 2 KiB is read whole from it by a

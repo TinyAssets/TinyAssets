@@ -1345,6 +1345,42 @@ describe("live and settled runs", () => {
                        thread!.thread_id)).toEqual([]);
   }, 30_000);
 
+  it("settles a run only with no input being admitted: one admitted as its input ends is " +
+     "taken, and the run settles after it", async () => {
+    const r = await rig();
+    const out = await r.in(async (instance, state) => {
+      const held = gate();
+      instance.probes.holdGate = held.promise;
+      const thread = await instance.agent.thread("main", null);
+      await instance.agent.submit(thread, "hold please", { operationId: "run_first" });
+      await until(() => instance.probes.holds === 1, "the hold to start");
+      // Scheduled work for it is admitted, and waits at its mark while the first input ends.
+      const mark = gate();
+      let marked = false;
+      const handing = workRunner(new Threads(state.storage), instance.agent,
+                                 instance.parts.authority).handOff({
+        work_id: "work_next", claim_id: "claim_x", kind: "turn",
+        payload: { thread: thread.thread_id, input: "next" }, stamp: null,
+      }, async () => {
+        marked = true;
+        await mark.promise;
+      });
+      await until(() => marked, "the work to be admitted");
+      held.release();
+      await instance.agent.host.settled(thread.thread_id, "run_first");
+      await sleep(300);
+      const admitting = instance.parts.threads.unsettledRun(thread.thread_id);
+      mark.release();
+      const answer = await handing;
+      await instance.agent.host.settled(thread.thread_id, "work_next");
+      await until(() => !instance.parts.threads.unsettledRun(thread.thread_id),
+                  "the run to settle");
+      return { admitting, answer, receipt: instance.parts.threads.receipt(thread.thread_id,
+                                                                          null)?.status };
+    });
+    expect(out).toEqual({ admitting: true, answer: { state: "handed" }, receipt: "done" });
+  }, 30_000);
+
   it("adds a run's usage into the owner's total as it settles, once, the usage view the " +
      "same before and after", async () => {
     const r = await rig();
