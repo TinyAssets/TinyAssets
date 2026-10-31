@@ -15,7 +15,9 @@ import { ProviderDoc, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
 import { originContext } from "../src/origin";
-import { THREAD_INPUTS, THREAD_INPUTS_FULL, turnOwners } from "../src/thread-host";
+import {
+  keepTurns, THREAD_INPUTS, THREAD_INPUTS_FULL, type TurnOwner, turnOwners,
+} from "../src/thread-host";
 import { TURN_ENDED } from "../src/usage";
 import { asked, gated, type Gated, provider } from "./gateway-support";
 import { failure } from "./support";
@@ -95,6 +97,36 @@ describe("a turn's owners, as the thread host sees them commit", () => {
       { owner: "t:8", turn: `task:${THREAD}:8` },
       { owner: "t:9", turn: null },
     ]);
+  });
+
+  it("are reconciled first, a commit published meanwhile kept after it, never undone",
+     async () => {
+    const steps: string[] = [];
+    let publish: (owner: number) => void = () => {};
+    const kept = keepTurns(THREAD, (listener) => {
+      publish = (id) => listener({ changes: [{ type: "submission", value: {
+        id, type: "input", status: "queued", conversationId: 0,
+        trace: { "ta.origin": `input:${id}` } } }] } as never, BACKGROUND_CONTEXT);
+      return () => {};
+    }, {
+      owned: async (_thread, owners: readonly TurnOwner[]) => {
+        steps.push(`owned ${owners.map(({ owner }) => owner).join()}`);
+      },
+      reconciled: async (_thread, open: readonly TurnOwner[]) => {
+        steps.push(`reconciling ${open.map(({ owner }) => owner).join()}`);
+        publish(2);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        steps.push("reconciled");
+      },
+    }, async () => {
+      publish(1);
+      return [{ owner: "s:1", turn: "input:1", joined: false }];
+    });
+    await kept;
+    steps.push("resumed");
+    publish(3);
+    expect(steps).toEqual(["reconciling s:1", "reconciled", "owned s:1", "owned s:2",
+                           "resumed", "owned s:3"]);
   });
 
   it("hold each open input's turn, a steer's its own, and let them go once answered",

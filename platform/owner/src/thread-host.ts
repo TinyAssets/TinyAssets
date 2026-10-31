@@ -590,28 +590,8 @@ export class ThreadHost extends LifecycleCapability {
    * after it, idempotently, so none is lost.
    */
   async #ownTurns(thread: string, { pi, storage }: Opened): Promise<void> {
-    let held: TurnOwner[][] | undefined = [];
-    const keep = (owners: readonly TurnOwner[]) => {
-      this.#parts.turns.owned(thread, owners)
-        .catch(() => console.error("a thread's turns could not be kept"));  // no ids
-    };
-    pi.subscribeCommits((publication) => {
-      const owners = turnOwners(thread, publication.changes);
-      if (owners.length === 0) {
-        return;
-      }
-      if (held === undefined) {
-        keep(owners);
-      } else {
-        held.push(owners);
-      }
-    });
-    await this.#parts.turns.reconciled(thread, await openOwners(thread, storage));
-    const later = held;
-    held = undefined;
-    for (const owners of later) {
-      keep(owners);
-    }
+    await keepTurns(thread, (listener) => pi.subscribeCommits(listener), this.#parts.turns,
+                    () => openOwners(thread, storage));
   }
 
   /**
@@ -973,6 +953,40 @@ export function turnOwners(thread: string, changes: readonly Change[]): TurnOwne
     }
   }
   return owners;
+}
+
+/**
+ * Keep `thread`'s turn owners from its commits, as `subscribe` publishes them, after first
+ * reconciling them to `open`: a commit published before that is done is held, then kept
+ * after it, so the reconcile never undoes it. Resolves once the reconcile is done.
+ */
+export async function keepTurns(
+  thread: string, subscribe: Harness["subscribeCommits"],
+  turns: Pick<HostParts["turns"], "owned" | "reconciled">,
+  open: () => Promise<readonly TurnOwner[]>,
+): Promise<void> {
+  let held: TurnOwner[][] | undefined = [];
+  const keep = (owners: readonly TurnOwner[]) => {
+    turns.owned(thread, owners)
+      .catch(() => console.error("a thread's turns could not be kept"));  // no ids
+  };
+  subscribe((publication) => {
+    const owners = turnOwners(thread, publication.changes);
+    if (owners.length === 0) {
+      return;
+    }
+    if (held === undefined) {
+      keep(owners);
+    } else {
+      held.push(owners);
+    }
+  });
+  await turns.reconciled(thread, await open());
+  const later = held;
+  held = undefined;
+  for (const owners of later) {
+    keep(owners);
+  }
 }
 
 /** Every page of a scan. */

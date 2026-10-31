@@ -372,7 +372,8 @@ describe("the owner's database bound", () => {
       .toEqual([512, 80, 60, 64]);
     expect(TERMS["model_turns"]).toMatchObject({
       rows: (THREAD_LIMITS.owner + THREAD_LIMITS.clients) * 18, bytes: 256 + TURN_BYTES + 39 });
-    expect(TERMS["model_turn_owners"]!.rows).toBe(TERMS["model_turns"]!.rows);
+    expect(TERMS["model_turn_owners"]).toMatchObject({
+      rows: TERMS["model_turns"]!.rows, bytes: 256 + TURN_BYTES + 2 * 39 });
     expect(TERMS["file_intents"]).toMatchObject({
       rows: MAX_OPEN_INTENTS, bytes: 256 + 2 * spilled(640_000) });
     expect(TERMS["model_reservations"]!.rows).toBe(USAGE_LIMITS.receiptsKept + 1000);

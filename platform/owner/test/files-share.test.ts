@@ -779,6 +779,15 @@ describe("migration 10", () => {
     const guard = MIGRATIONS[9]!.find((statement) => statement.includes("from before"))!;
     expect((await failure(() => sqlIn(r.stub, guard))).message).toMatch(/CHECK constraint/);
   });
+
+  it("fails loudly on a model turn from before it", async () => {
+    const r = await rig();
+    const guard = MIGRATIONS[9]!.find((statement) => statement.includes("a turn from before"))!;
+    await sqlIn(r.stub, guard);
+    await sqlIn(r.stub, "INSERT INTO model_turns (turn, requests, tokens, cost, last_at) " +
+                        "VALUES ('input:old', 0, 0, 0, 0)");
+    expect((await failure(() => sqlIn(r.stub, guard))).message).toMatch(/CHECK constraint/);
+  });
 });
 
 describe("the model turns' counters", () => {
