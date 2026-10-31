@@ -19,6 +19,14 @@ export const DUMMY = "ta-facetprobe-dummy";
 export const DOOR = "ta-facetprobe-door";
 export const KV_TITLE = "ta-facetprobe-kv";
 
+/**
+ * A database-full or size-limit error, as SQLite or the runtime may word it. Only size
+ * words: an error about request sizes or operation counts is not a storage limit.
+ */
+export const LIMIT = /SQLITE_FULL|database or disk is full|disk is full|storage limit|size limit|exceeded.{0,40}(size|database|bytes)|maximum database size/i;
+/** The documented 10 GB may be 10^9 bytes or GiB: a limit reading accepts either. */
+export const GIB_RATIO = 1.073741824;
+
 export const SHAPE = Object.freeze({
   /** Q1: one row's blob, under the 2 MB row limit; fresh random bytes per row. */
   rowBytes: 1_900_000,
@@ -44,6 +52,10 @@ export const SHAPE = Object.freeze({
   q4YieldMs: 10_000,
   q4SolidMs: 5_000,
   q4OverCpuMs: 45_000,
+  /** Q8: trials per variant, and the old rows each trial makes durable first. */
+  q8N: 20,
+  q8Rows: 20,
+  q8RowBytes: 10_000,
   /** Q4: parent pings are spaced this far apart while a facet runs. */
   q4PingGapMs: 100,
 });

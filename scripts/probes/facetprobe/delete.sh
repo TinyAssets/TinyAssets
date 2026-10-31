@@ -9,8 +9,10 @@
 #   3. the dummy KV namespace: the id in $FACETPROBE_KV_FILE when this run made one, and any
 #      namespace titled ta-facetprobe* that the token can list;
 # then reads back that no Workflow, Worker or Durable Object namespace whose name starts with
-# ta-facetprobe is left anywhere on the account (the lists may lag, so they are retried for a
-# minute). Exits 1 if anything remains or a deletion cannot be proven.
+# ta-facetprobe is left anywhere on the account (every list read page by page; the lists
+# may lag, so they are retried for a minute), and that the door's Workflow answers 404.
+# Exits 1 if anything remains or a deletion cannot be proven, a list page that answers 200
+# but does not parse among them.
 #
 #   CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... [FACETPROBE_KV_FILE=...] \
 #       delete.sh ta-facetprobe-door ta-facetprobe ... ta-facetprobe-dummy
@@ -21,10 +23,48 @@ prefix="ta-facetprobe"
 workflow="ta-facetprobe-door"
 failed=0
 body="$(mktemp)"
-trap 'rm -f "${body}"' EXIT
+rows="$(mktemp)"
+trap 'rm -f "${body}" "${rows}"' EXIT
 
 errors_of() {
   python3 -c 'import json,sys; print([e.get("message") for e in json.load(open(sys.argv[1])).get("errors") or []])' "$1" 2>/dev/null || true
+}
+
+# Every row of a list, page by page, into $2 (one JSON object a line). Returns 1 on a page
+# that is not HTTP 200, one that does not parse, or more than 50 pages. An endpoint that
+# ignores `page` repeats its rows, which ends the walk.
+list_all() {
+  : > "$2"
+  local page=1 status more
+  while [ "${page}" -le 50 ]; do
+    status="$(curl -sS --max-time 60 -H "${auth}" -o "${body}" -w '%{http_code}' "${api}/$1?per_page=100&page=${page}")" \
+      || status="curl failed"
+    if [ "${status}" != "200" ]; then
+      echo "list $1: HTTP ${status}"
+      return 1
+    fi
+    more="$(python3 - "${body}" "$2" <<'PY'
+import json, sys
+body = json.load(open(sys.argv[1]))
+rows = body.get("result")
+if not isinstance(rows, list):
+    raise SystemExit(1)
+seen = set(open(sys.argv[2]).read().splitlines())
+fresh = [line for line in (json.dumps(r, sort_keys=True) for r in rows) if line not in seen]
+with open(sys.argv[2], "a") as out:
+    out.writelines(line + "\n" for line in fresh)
+info = body.get("result_info") or {}
+last = info.get("total_pages") is not None and int(info.get("page") or 0) >= int(info["total_pages"])
+print("no" if not fresh or len(rows) < 100 or last else "yes")
+PY
+)" || { echo "list $1: page ${page} answered 200 but did not parse"; return 1; }
+    if [ "${more}" != "yes" ]; then
+      return 0
+    fi
+    page=$((page + 1))
+  done
+  echo "list $1: more than 50 pages"
+  return 1
 }
 
 # 1. The Workflow. A Workflow never made answers 404; step 4's list is the proof either way.
@@ -56,20 +96,21 @@ kv_ids=""
 if [ -n "${FACETPROBE_KV_FILE:-}" ] && [ -s "${FACETPROBE_KV_FILE}" ]; then
   kv_ids="$(cat "${FACETPROBE_KV_FILE}")"
 fi
-status="$(curl -sS --max-time 60 -H "${auth}" -o "${body}" -w '%{http_code}' "${api}/storage/kv/namespaces?per_page=100")" \
-  || status="curl failed"
-if [ "${status}" = "200" ]; then
-  listed="$(python3 - "${body}" "${prefix}" <<'PY'
+if list_all storage/kv/namespaces "${rows}"; then
+  if ! listed="$(python3 - "${rows}" "${prefix}" <<'PY'
 import json, sys
-rows = json.load(open(sys.argv[1])).get("result") or []
+rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
 print(" ".join(r["id"] for r in rows if str(r.get("title", "")).startswith(sys.argv[2])))
 PY
-)"
+)"; then
+    echo "::error::the KV namespace list did not parse"
+    failed=1
+  fi
   kv_ids="$(echo "${kv_ids} ${listed}" | tr ' ' '\n' | sort -u | tr '\n' ' ')"
 elif [ -n "${kv_ids}" ]; then
-  echo "::warning::the KV namespace list is unreadable (HTTP ${status}); deleting this run's namespace by id only"
+  echo "::warning::the KV namespace list is unreadable; deleting this run's namespace by id only"
 else
-  echo "KV: the token cannot list namespaces (HTTP ${status}) and this run made none"
+  echo "KV: the token cannot list namespaces and this run made none"
 fi
 for id in ${kv_ids}; do
   status="$(curl -sS --max-time 60 -X DELETE -H "${auth}" -o "${body}" -w '%{http_code}' "${api}/storage/kv/namespaces/${id}")" \
@@ -83,21 +124,20 @@ for id in ${kv_ids}; do
   fi
 done
 
-# 4. Nothing named ta-facetprobe* left: Workers, Durable Object namespaces, Workflows.
+# 4. Nothing named ta-facetprobe* left: Workers, Durable Object namespaces, Workflows; and
+# the door's Workflow itself answers 404.
 left="unread"
 for attempt in 1 2 3 4 5 6 7; do
   found=""
   readable=1
-  for list in "workers/scripts" "workers/durable_objects/namespaces?per_page=1000" "workflows?per_page=100"; do
-    status="$(curl -sS --max-time 60 -H "${auth}" -o "${body}" -w '%{http_code}' "${api}/${list}")" || status="curl failed"
-    if [ "${status}" != "200" ]; then
+  for list in "workers/scripts" "workers/durable_objects/namespaces" "workflows"; do
+    if ! list_all "${list}" "${rows}"; then
       readable=0
-      echo "list ${list%%\?*}: HTTP ${status}"
       continue
     fi
-    found="${found} $(python3 - "${body}" "${prefix}" "${list%%\?*}" <<'PY'
+    if ! names="$(python3 - "${rows}" "${prefix}" "${list}" <<'PY'
 import json, sys
-rows = json.load(open(sys.argv[1])).get("result") or []
+rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
 prefix, kind = sys.argv[2], sys.argv[3]
 names = []
 for r in rows:
@@ -111,8 +151,20 @@ for r in rows:
         names.append(f"{kind}:{'/'.join(str(n) for n in found if n)}")
 print(" ".join(sorted(names)))
 PY
-)"
+)"; then
+      echo "list ${list}: did not parse"
+      readable=0
+      continue
+    fi
+    found="${found} ${names}"
   done
+  status="$(curl -sS --max-time 60 -H "${auth}" -o "${body}" -w '%{http_code}' "${api}/workflows/${workflow}")" || status="curl failed"
+  if [ "${status}" = "200" ]; then
+    found="${found} workflows:${workflow}"
+  elif [ "${status}" != "404" ]; then
+    echo "workflow ${workflow}: HTTP ${status}"
+    readable=0
+  fi
   found="$(echo "${found}" | xargs)"
   if [ "${readable}" = "1" ]; then
     left="${found}"

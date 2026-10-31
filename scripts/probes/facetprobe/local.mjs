@@ -26,7 +26,7 @@ import { pathToFileURL } from "node:url";
 import { billing, collect, objects, table } from "./analytics.mjs";
 import { BUILD, copyConfigs, PLATFORM, readCommitted, writeConfigs } from "./config.mjs";
 import { drive, q1Reading, q7Gate, readings, summarize, workflowCall } from "./drive.mjs";
-import { COPIES, DOOR, DUMMY } from "./shape.mjs";
+import { COPIES, DOOR, DUMMY, LIMIT } from "./shape.mjs";
 
 const fromPlatform = createRequire(join(PLATFORM, "package.json"));
 const load = async (name) => import(pathToFileURL(fromPlatform.resolve(name)).href);
@@ -37,7 +37,7 @@ const WRANGLER = join(dirname(fromPlatform.resolve("wrangler/package.json")), "b
 const KEY = "local-key";
 const MB = 1_000_000;
 const PARAMS = Object.freeze({
-  fillMinutes: 2, partBytes: 40 * MB, capBytes: 60 * MB, limitBytes: 100 * MB, q6N: 100,
+  fillMinutes: 2, partBytes: 65 * MB, capBytes: 80 * MB, limitBytes: 100 * MB, q6N: 100, q8N: 5,
   q4: { yieldMs: 1500, solidMs: 500, overCpuMs: 1500, cases: ["yield", "solid", "throw", "overcpu"] },
 });
 const TIMING = Object.freeze({ instancePollMs: 50, callTimeoutMs: 120_000, fillPollMs: 1000, fillGraceMs: 30_000 });
@@ -145,21 +145,80 @@ async function checkTransport() {
   await fails([{ success: false, errors: [{ message: "Authentication error" }] }], /Authentication error/, "a refused token");
 }
 
-/** The reading key on synthetic plans: separate, shared, void, and the Q7 gate. */
+/**
+ * The reading key on synthetic plans: the review's cases (H1, M1, M2) and the persist
+ * failure's (H2), each limit read as 10^9 bytes or GiB, and the Q7 gate.
+ */
 function checkKey() {
   const GB = 1_000_000_000;
-  const plan = (jobs, status = "done") => ({ plan: { status, jobs: jobs.map(([target, size, st, error]) =>
+  const GIB10 = 10 * 1024 ** 3;
+  const plan = (jobs, status = "done", extra = {}) => ({ plan: { status, ...extra, jobs: jobs.map(([target, size, st, error]) =>
     ({ target, size, status: st, error, rows: 0 })) } });
-  const separate = q1Reading(plan([["self", 6 * GB, "reached"], ["q1b", 6 * GB, "reached"], ["q1c", 6 * GB, "reached"]]),
-                             plan([["q1a", 10 * GB, "limit", "SQLITE_FULL"]]));
-  expect(separate.verdict === "separate" && /stopped at 10.00 GB/.test(separate.facetLimit), `separate: ${show(separate)}`);
-  const shared = q1Reading(plan([["self", 6 * GB, "reached"], ["q1b", 4 * GB, "limit", "database or disk is full"],
-                                 ["q1c", 0, "limit", "database or disk is full"]]), null);
-  expect(shared.verdict === "shared", `shared: ${show(shared)}`);
-  const aborted = q1Reading(plan([["self", 2 * GB, "error", "Error: network lost"]], "aborted: a non-limit error"), null);
-  expect(aborted.verdict === "void", `void: ${show(aborted)}`);
+  const read = (bc, a = null) => q1Reading(bc, a);
+  const cases = [
+    ["each its own", plan([["self", 6 * GB, "reached"], ["q1b", 6 * GB, "reached"], ["q1c", 6 * GB, "reached"]]),
+     "separate", "separate"],
+    ["H1: shared at 10 GiB, the plan write failed, stored plan stuck running",
+     plan([["self", 6 * GB, "reached"], ["q1b", GIB10 - 6 * GB - 15e6, "writing"], ["q1c", null, "pending"]], "running"),
+     "stalled"],
+    ["H2: shared at 10 GiB, the limit kept in memory, the plan write then failed",
+     plan([["self", 6 * GB, "reached"], ["q1b", 2.5 * GB, "limit", "SQLITE_FULL"], ["q1c", 0, "limit", "SQLITE_FULL"]], "done",
+          { persistError: { error: "Error: SQLITE_FULL: database or disk is full", job: "q1c" } }),
+     "shared"],
+    ["M1: shared at 10 GiB, the limit recorded",
+     plan([["self", 6 * GB, "reached"], ["q1b", GIB10 - 6 * GB, "limit", "SQLITE_FULL"], ["q1c", 0, "limit", "SQLITE_FULL"]]),
+     "shared"],
+    ["M1: shared at 10^10", plan([["self", 6 * GB, "reached"], ["q1b", 4 * GB, "limit", "database or disk is full"],
+                                  ["q1c", 0, "limit", "database or disk is full"]]), "shared"],
+    ["M1: a limit far below 10 GB is not shared",
+     plan([["self", 6 * GB, "reached"], ["q1b", 2 * GB, "limit", "Error: request too large"], ["q1c", 0, "limit", "x too large"]]),
+     "unproven"],
+    ["H1: a time cap at 10.3 GB, no error",
+     plan([["self", 6 * GB, "reached"], ["q1b", 4.3 * GB, "writing"], ["q1c", null, "pending"]], "capped by time"), "unproven"],
+    ["M2: facets pooled, the parent separate",
+     plan([["self", 6 * GB, "reached"], ["q1b", 6 * GB, "reached"], ["q1c", 4 * GB, "limit", "SQLITE_FULL"]]), "separate", "pooled"],
+    ["a non-limit error", plan([["self", 2 * GB, "error", "Error: network lost"]], "aborted: a non-limit error"), "void"],
+  ];
+  for (const [name, bc, verdict, facetVerdict] of cases) {
+    const got = read(bc);
+    expect(got.verdict === verdict && (!facetVerdict || got.facetVerdict === facetVerdict),
+           `Q1 key, ${name}: ${got.verdict} / ${got.facetVerdict} (${got.detail})`);
+  }
+  const lone = q1Reading(cases[0][1], plan([["q1a", GIB10, "limit", "SQLITE_FULL"]]));
+  expect(/limit of its own/.test(lone.facetLimit), `Q1 key, a lone facet at 10 GiB: ${lone.facetLimit}`);
+  for (const text of ["Error: request too large", "Error: exceeded storage operations per second", "Response too large"]) {
+    expect(!LIMIT.test(text), `LIMIT matched a non-size error: ${text}`);
+  }
+  for (const text of ["SQLITE_FULL: database or disk is full", "Durable Object exceeded its maximum database size"]) {
+    expect(LIMIT.test(text), `LIMIT missed a size error: ${text}`);
+  }
+  const separate = read(cases[0][1]);
+  const pooled = read(cases[7][1]);
+  const shared = read(cases[2][1]);
   expect(!q7Gate({ Q1: shared, Q2: { anyWorks: true } }).run && q7Gate({ Q1: separate, Q2: { anyWorks: true } }).run
-         && !q7Gate({ Q1: separate, Q2: { anyWorks: false } }).run, "the Q7 gate");
+         && q7Gate({ Q1: pooled, Q2: { anyWorks: true } }).run && !q7Gate({ Q1: separate, Q2: { anyWorks: false } }).run
+         && !q7Gate({ Q1: read(cases[1][1]), Q2: { anyWorks: true } }).run, "the Q7 gate");
+}
+
+/**
+ * H2 in workerd: a fill whose plan writes fail after the first two (simulated) still
+ * reports its jobs, from memory, with the write's error recorded.
+ */
+async function checkPersistFailure(call) {
+  await call({ copy: "exports", object: "q1-h2", method: "fillStart",
+               params: { jobs: [{ target: "q1b", bytes: 30 * MB }], deadlineMs: 60_000, source: "exports",
+                         simulatePersistFailAfter: 2 } });
+  let status;
+  for (let i = 0; i < 300; i += 1) {
+    status = await call({ copy: "exports", object: "q1-h2", method: "fillStatus" });
+    if (status?.plan?.status !== "running") {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  expect(status?.from === "memory" && status.storedStatus === "running" && status.plan.status === "done"
+         && status.plan.jobs[0].status === "reached" && /SQLITE_FULL/.test(status.plan.persistError?.error ?? "")
+         && status.plan.persistFailures > 1, `H2: the in-memory plan after failed writes: ${show(status)}`);
 }
 
 function checkRun(report) {
@@ -184,6 +243,11 @@ function checkRun(report) {
     expect(q6?.sharedId?.n === PARAMS.q6N && q6.store?.n === PARAMS.q6N && q6.sharedId.errors === 0,
            `Q6 ${source}: ${show(q6)}`);
   }
+  for (const source of ["exports", "loader"]) {
+    const q6 = g[`Q6 ${source}`];
+    expect([q6?.sharedId, q6?.store].every((x) => typeof x?.meanMs === "number" && [x.p50, x.p95, x.p99].every((v) => v !== 0)),
+           `Q6 ${source}: a bare 0 percentile or no meanMs: ${show(q6)}`);
+  }
   expect(g["Q6 exports"]?.ownId?.n === PARAMS.q6N && g["Q6 exports"].ids.ownId !== g["Q6 exports"].ids.sharedId,
          `Q6's own-id facet: ${show(g["Q6 exports"])}`);
   for (const kase of PARAMS.q4.cases) {
@@ -193,7 +257,16 @@ function checkRun(report) {
            `Q4 ${kase}'s outcome: ${x?.outcome}`);
   }
   expect(report.q4Rate > 0, "Q4: no burn rate from the yield case");
-  expect(g.Q1?.verdict === "separate" && /passed/.test(g.Q1.facetLimit ?? "") && g.Q1.rowsWritten > 0,
+  for (const variant of ["same-turn", "awaited"]) {
+    const x = g[`Q8 ${variant}`];
+    const c = x?.counts ?? {};
+    const sum = c.wipedWritten + c.wipedNotWritten + c.notWipedWritten + c.notWipedNotWritten;
+    // workerd's counts are a reading of workerd, not of production: only the harness is asserted.
+    expect(x && sum === PARAMS.q8N && c.unread === 0 && c.notKilled === 0 && x.freshInstances === PARAMS.q8N
+           && /killed in the write's turn/.test(x.armErrors[0] ?? ""), `Q8 ${variant}: ${show(x)}`);
+  }
+  expect(g.Q1?.verdict === "separate" && g.Q1.facetVerdict === "separate" && /passed/.test(g.Q1.facetLimit ?? "")
+         && g.Q1.rowsWritten > 0 && !g.Q1.persistError,
          `Q1: ${show(g.Q1)}`);
   expect(r["Q1 bc"]?.plan?.jobs?.every((job) => job.status === "reached" && job.points.length >= 0), "Q1: a job did not reach its size");
   expect(g["Q5 at size"]?.wiped === true && g["Q5 at size"].before > PARAMS.capBytes, `Q5 at size: ${show(g["Q5 at size"])}`);
@@ -230,8 +303,10 @@ async function checkAnalytics(report) {
     ObjD: { fields: [{ name: "date", type: { name: "Date", kind: "SCALAR" } }, { name: "objectId", type: { name: "String", kind: "SCALAR" } }] },
     ObjF: { inputFields: [{ name: "date_geq" }, { name: "date_leq" }] },
   };
+  const queried = [];
   const fake = async (_url, init) => {
     const { query, variables } = JSON.parse(init.body);
+    queried.push(query);
     if (query.includes("__type")) {
       return Response.json({ data: { __type: types[variables.name] ?? null } });
     }
@@ -255,8 +330,10 @@ async function checkAnalytics(report) {
   expect(got.byObject[q6.ids.ownId]?.requests === 1021 && !("someone-else" in got.byObject)
          && /not authorized/.test(got.errors.errors ?? "") && !/acct-123/.test(got.errors.errors ?? ""),
          `analytics per object: ${show(got)}`);
-  expect(sql?.rows?.length === 1 && sql.rows[0].case && acct?.change?.["max.storedBytes"]?.firstToLast === 800
-         && !JSON.stringify(acct).includes("900"), `analytics storage: ${show(got.storage)}`);
+  // Account-wide rows never reach the (public) summary: such a dataset is not even queried.
+  expect(sql?.rows?.length === 1 && sql.rows[0].case && /^account-wide: not read/.test(acct?.scope ?? "")
+         && !JSON.stringify(got).includes("900") && !queried.some((q) => q.includes("durableObjectsStorageGroups(")),
+         `analytics storage: ${show(got.storage)}`);
   expect(/are billed/.test(billing(got, report)), `Q6 billing: ${billing(got, report)}`);
   expect(table(got, report).includes("| object | requests |"), "analytics' table");
 }
@@ -298,6 +375,7 @@ try {
   report.readings = readings(report);
   checkRun(report);
   await checkAnalytics(report);
+  await checkPersistFailure(call);
   expect(phases.includes("Q1") && phases.at(-1) === "done", `phases: ${show(phases)}`);
   console.log(summarize(report));
   console.log(`local run: ${((Date.now() - started) / 1000).toFixed(0)} s; dummy ${DUMMY}`);

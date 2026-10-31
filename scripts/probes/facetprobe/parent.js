@@ -19,23 +19,26 @@ import { DurableObject } from "cloudflare:workers";
 
 import { Child } from "./child.js";
 import CHILD_SOURCE from "./child.txt";
-import { SHAPE } from "./shape.mjs";
+import { LIMIT, SHAPE } from "./shape.mjs";
 import { errText, stats } from "./stats.mjs";
 
 export { Child };
 
 const LOADER_ID = "ta-facetprobe-child-v1";
 export const SOURCES = Object.freeze(["exports", "loader", "raw", "pistore", "classbind", "unsafe"]);
-/** A database-full or size-limit error, as SQLite or the runtime may word it. */
-export const LIMIT = /SQLITE_FULL|database or disk is full|disk is full|storage limit|size limit|exceeded.{0,40}(storage|size)|too large|maximum database size/i;
 
 const now = () => performance.now();
 
-/** `n` sequential calls of `call`, each timed; every error is counted, the first kept. */
+/**
+ * `n` sequential calls of `call`, each timed; every error is counted, the first kept. The
+ * series' whole time is kept too: the Workers clock moves in whole milliseconds, so a
+ * sub-millisecond call reads 0 alone, and only `meanMs` (the total over the calls) resolves it.
+ */
 async function series(n, call) {
   const samples = [];
   let errors = 0;
   let firstError = null;
+  const started = now();
   for (let i = 0; i < n; i += 1) {
     const at = now();
     try {
@@ -46,7 +49,9 @@ async function series(n, call) {
       firstError ??= errText(error);
     }
   }
-  return { ...stats(samples), errors, firstError };
+  const totalMs = now() - started;
+  return { ...stats(samples), errors, firstError, totalMs: Math.round(totalMs * 1000) / 1000,
+           meanMs: n ? Math.round((totalMs / n) * 1000) / 1000 : null };
 }
 
 function randomBytes(bytes) {
@@ -73,6 +78,8 @@ export class ThreadStore extends DurableObject {
 export class Parent extends DurableObject {
   #instance = crypto.randomUUID();
   #q4 = {};
+  /** Q1's plan as this instance last had it: a full database may refuse the plan's own write. */
+  #plan = null;
 
   constructor(ctx, env) {
     super(ctx, env);
@@ -268,31 +275,56 @@ export class Parent extends DurableObject {
   }
 
   /**
+   * Q1's plan, kept in memory and in storage. A write the database refuses (a shared pool
+   * full under a facet's limit refuses the parent's own write too) is caught and recorded
+   * in the plan as `persistError`, so the facet's limit error is never lost with it.
+   * `simulatePersistFailAfter`, local.mjs's only, makes every write after that many fail.
+   */
+  #savePlan(plan) {
+    this.#plan = plan;
+    plan.persistWrites = (plan.persistWrites ?? 0) + 1;
+    try {
+      if (plan.simulatePersistFailAfter != null && plan.persistWrites > plan.simulatePersistFailAfter) {
+        throw new Error("SQLITE_FULL: database or disk is full (simulated by local.mjs)");
+      }
+      this.#set("fill", plan);
+    } catch (error) {
+      const job = plan.jobs[Math.min(plan.at, plan.jobs.length - 1)];
+      plan.persistFailures = (plan.persistFailures ?? 0) + 1;
+      plan.persistError ??= { error: errText(error), at: Date.now() - plan.startedAt, job: job?.target ?? null,
+                              jobStatus: job?.status ?? null, size: job?.size ?? null,
+                              parent: this.ctx.storage.sql.databaseSize };
+    }
+  }
+
+  /**
    * Q1: write each job's target (`self` or a facet name) up to its bytes, one after another,
    * in alarms. A limit error ends its job and the next runs; any other error aborts the plan.
    */
-  async fillStart({ jobs, deadlineMs, source }) {
-    const existing = this.#get("fill");
+  async fillStart({ jobs, deadlineMs, source, simulatePersistFailAfter = null }) {
+    const existing = this.#plan ?? this.#get("fill");
     if (existing) {
       return { already: true, status: existing.status };
     }
     const plan = {
       source, status: "running", at: 0, startedAt: Date.now(), deadline: Date.now() + deadlineMs,
-      alarms: 0, resets: 0, inAlarm: false,
+      alarms: 0, resets: 0, inAlarm: false, simulatePersistFailAfter,
       jobs: jobs.map((job) => ({ target: job.target, bytes: job.bytes, rows: 0, size: null, status: "pending",
                                   points: [], startedAt: null, endedAt: null })),
     };
+    this.#plan = plan;
     this.#set("fill", plan);
     await this.ctx.storage.setAlarm(Date.now());
     return { started: true, instance: this.#instance };
   }
 
   async alarm() {
-    const plan = this.#get("fill");
+    // This instance's own plan when it has one; a reset instance starts from storage.
+    const plan = this.#plan ?? this.#get("fill");
     if (!plan || plan.status !== "running") {
       return;
     }
-    if (plan.inAlarm) {
+    if (!this.#plan && plan.inAlarm) {
       // The last alarm never finished: the object was reset under it.
       plan.resets += 1;
       if (plan.resets > 3) {
@@ -301,7 +333,7 @@ export class Parent extends DurableObject {
     }
     plan.alarms += 1;
     plan.inAlarm = true;
-    this.#set("fill", plan);
+    this.#savePlan(plan);
     const windowEnd = Date.now() + SHAPE.alarmWindowMs;
     while (plan.status === "running" && Date.now() < windowEnd) {
       if (Date.now() > plan.deadline) {
@@ -347,29 +379,83 @@ export class Parent extends DurableObject {
           plan.status = "aborted: a non-limit error";
         }
       }
-      this.#set("fill", plan);
+      this.#savePlan(plan);
     }
     plan.inAlarm = false;
     if (plan.status === "running" && !plan.jobs[plan.at]) {
       plan.status = "done";
     }
     plan.endedAt = plan.status === "running" ? null : Date.now();
-    this.#set("fill", plan);
     if (plan.status === "running") {
-      await this.ctx.storage.setAlarm(Date.now());
+      try {
+        await this.ctx.storage.setAlarm(Date.now());
+      } catch (error) {
+        plan.status = `stopped: the next alarm could not be set: ${errText(error)}`;
+        plan.endedAt = Date.now();
+      }
     }
+    this.#savePlan(plan);
   }
 
-  /** Q1's progress, from storage only: reading it wakes no facet. */
+  /**
+   * Q1's progress: this instance's plan when it has one (newer than storage's when a write
+   * was refused), else the stored plan. Reading it wakes no facet.
+   */
   fillStatus() {
-    return { plan: this.#get("fill"), parent: this.ctx.storage.sql.databaseSize, instance: this.#instance,
-             id: String(this.ctx.id) };
+    const stored = this.#get("fill");
+    const plan = this.#plan ?? stored;
+    return { plan, from: this.#plan ? "memory" : "storage", storedStatus: stored?.status ?? null,
+             parent: this.ctx.storage.sql.databaseSize, instance: this.#instance, id: String(this.ctx.id) };
   }
 
   /** Q1's end: every database's size, read from each facet. */
   async fillSizes() {
-    const plan = this.#get("fill");
+    const plan = this.#plan ?? this.#get("fill");
     return plan ? this.#sizes(plan) : null;
+  }
+
+  /**
+   * Q8, armed: durable old rows, then `deleteAll()` and one new row, then `ctx.abort()` in
+   * the new row's own turn, before any later await. `same-turn` does not await the delete
+   * (F1's erasure shape: `deleteAll`, then the `erased` admission row); `awaited` does.
+   * The caller sees the abort's error; q8Read, on the next request, sees what survived.
+   */
+  async q8Arm({ variant, rows = SHAPE.q8Rows }) {
+    const sql = this.ctx.storage.sql;
+    sql.exec("CREATE TABLE IF NOT EXISTS q8old (i INTEGER PRIMARY KEY, b BLOB NOT NULL)");
+    for (let i = 0; i < rows; i += 1) {
+      sql.exec("INSERT INTO q8old (b) VALUES (?)", randomBytes(SHAPE.q8RowBytes));
+    }
+    await this.ctx.storage.sync();
+    const write = () => {
+      sql.exec("CREATE TABLE IF NOT EXISTS q8new (v TEXT NOT NULL)");
+      sql.exec("INSERT INTO q8new (v) VALUES ('erased')");
+    };
+    if (variant === "awaited") {
+      await this.ctx.storage.deleteAll();
+      write();
+    } else if (variant === "same-turn") {
+      const pending = this.ctx.storage.deleteAll();
+      write();
+      Promise.resolve(pending).catch(() => {});
+    } else {
+      throw new Error(`unknown Q8 variant ${variant}`);
+    }
+    this.ctx.abort(new Error("facetprobe q8: killed in the write's turn"));
+    return { notKilled: true, instance: this.#instance };
+  }
+
+  /** Q8, read back on the next request: the old rows, the new row, the database's size. */
+  q8Read() {
+    const sql = this.ctx.storage.sql;
+    const count = (table) => {
+      try {
+        return sql.exec(`SELECT count(*) AS n FROM ${table}`).one().n;
+      } catch {
+        return 0;
+      }
+    };
+    return { instance: this.#instance, oldRows: count("q8old"), newRows: count("q8new"), size: sql.databaseSize };
   }
 
   /** Q5, at size: delete a filled facet, then get it again. */

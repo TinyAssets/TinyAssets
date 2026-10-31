@@ -10,7 +10,8 @@
  *
  * `copy` names the probe copy (shape.mjs COPIES), whose root class this Worker binds by
  * script_name, as the doors bind OwnerDO; `method` is one of METHODS. `q4` runs here, in
- * the instance: it pings the parent while a facet burns, throws or runs out of memory.
+ * the instance: it pings the parent while a facet burns, throws or runs out of memory; `q8`
+ * runs its trials there too, each on a fresh object that aborts itself.
  * The output is `{ result }` or `{ error }`; the step is never retried.
  *
  * `fetch` is for local.mjs only: it answers only when LOCAL_KEY is bound, which no deploy
@@ -22,7 +23,7 @@ import { COPIES, SHAPE } from "./shape.mjs";
 import { errText, stats } from "./stats.mjs";
 
 const METHODS = Object.freeze([
-  "whoami", "q2", "q3", "q5", "q6", "q4", "fillStart", "fillStatus", "fillSizes", "deleteFacet", "q7",
+  "whoami", "q2", "q3", "q5", "q6", "q4", "q8", "fillStart", "fillStatus", "fillSizes", "deleteFacet", "q7",
 ]);
 const NAME = /^[\w.-]{1,64}$/;
 
@@ -76,6 +77,51 @@ async function q4(stub, { kase, source, ms, iters, boundMs }) {
            settledInBound: Boolean(settled), after };
 }
 
+/**
+ * Q8, from outside: per trial, a fresh object, armed (it aborts itself, so the call
+ * throws), then read through a new stub, retried while the reset settles.
+ */
+async function q8(binding, prefix, { variant, n, rows }) {
+  const counts = { wipedWritten: 0, wipedNotWritten: 0, notWipedWritten: 0, notWipedNotWritten: 0, unread: 0,
+                   notKilled: 0 };
+  const trials = [];
+  for (let i = 0; i < n; i += 1) {
+    const name = `${prefix}-${variant}-${i}`;
+    let before = null;
+    try {
+      before = (await binding.getByName(name).ping()).instance;
+    } catch {
+      // Read as unknown below.
+    }
+    let arm;
+    try {
+      arm = { ok: true, value: await binding.getByName(name).q8Arm({ variant, rows }) };
+      counts.notKilled += 1;
+    } catch (error) {
+      arm = { ok: false, error: errText(error) };
+    }
+    let read = null;
+    for (let attempt = 0; attempt < 5 && !read?.instance; attempt += 1) {
+      try {
+        read = await binding.getByName(name).q8Read();
+      } catch (error) {
+        read = { error: errText(error) };
+        await sleep(200);
+      }
+    }
+    if (!read?.instance) {
+      counts.unread += 1;
+    } else {
+      const key = `${read.oldRows === 0 ? "wiped" : "notWiped"}${read.newRows > 0 ? "Written" : "NotWritten"}`;
+      counts[key] += 1;
+    }
+    trials.push({ arm: arm.ok ? "returned" : arm.error, read, freshInstance: Boolean(before && read?.instance && read.instance !== before) });
+  }
+  return { variant, n, rows, counts, armErrors: [...new Set(trials.map((t) => t.arm))].slice(0, 3),
+           sizes: [...new Set(trials.map((t) => t.read?.size))].slice(0, 5),
+           freshInstances: trials.filter((t) => t.freshInstance).length, trials };
+}
+
 /** One call, as `{ result }` or `{ error }`. */
 export async function dispatch(env, call) {
   const { copy, object, method, params } = call ?? {};
@@ -85,7 +131,9 @@ export async function dispatch(env, call) {
   }
   try {
     const stub = binding.getByName(object);
-    const result = method === "q4" ? await q4(stub, params ?? {}) : await stub[method](params ?? {});
+    const result = method === "q4" ? await q4(stub, params ?? {})
+      : method === "q8" ? await q8(binding, object, params ?? {})
+        : await stub[method](params ?? {});
     return { result };
   } catch (error) {
     return { error: errText(error) };

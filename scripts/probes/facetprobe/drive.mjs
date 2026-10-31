@@ -10,7 +10,8 @@
  *       --out results.json --summary summary.md --deploy deploy.json [--fill-minutes 100] \
  *       [--redact <text>]
  *
- * Order: Q2 on every parent copy; Q3, Q5 (small) and Q6 on the control and on main; Q4
+ * Order: Q2 on every parent copy; Q3, Q5 (small) and Q6 on the control and on main; Q8 on
+ * main (deleteAll, a write and a crash in one turn, 20 trials per variant); Q4
  * alone on the control, before anything fills, since a broken facet may reset the isolate;
  * Q1's two fills at once, in two parents, polled from storage only; Q5 at size, on Q1's
  * big facet; Q7 if Q1 and Q2 pass. A failing call is recorded and the run goes on; the
@@ -19,7 +20,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-import { DOOR, GB, SHAPE } from "./shape.mjs";
+import { DOOR, GB, GIB_RATIO, LIMIT, SHAPE } from "./shape.mjs";
 import { errText } from "./stats.mjs";
 
 const MINUTE = 60_000;
@@ -28,10 +29,11 @@ export const MAX_FILL_MINUTES = 150;
 const PARENTS = Object.freeze(["main", "exports", "classbind", "unsafe"]);
 
 export const LIVE_TIMING = Object.freeze({
-  instancePollMs: 1500, callTimeoutMs: 17 * MINUTE, fillPollMs: MINUTE, fillGraceMs: 5 * MINUTE,
+  instancePollMs: 1500, callTimeoutMs: 17 * MINUTE, fillPollMs: 30_000, fillGraceMs: 5 * MINUTE,
 });
 export const LIVE_PARAMS = Object.freeze({
-  fillMinutes: 100, partBytes: SHAPE.partBytes, capBytes: SHAPE.capBytes, limitBytes: SHAPE.limitBytes, q6N: SHAPE.q6N,
+  fillMinutes: 150, partBytes: SHAPE.partBytes, capBytes: SHAPE.capBytes, limitBytes: SHAPE.limitBytes, q6N: SHAPE.q6N,
+  q8N: SHAPE.q8N,
   q4: Object.freeze({ yieldMs: SHAPE.q4YieldMs, solidMs: SHAPE.q4SolidMs, overCpuMs: SHAPE.q4OverCpuMs,
                       cases: Object.freeze(["yield", "solid", "throw", "overcpu", "oom"]) }),
 });
@@ -147,6 +149,13 @@ export async function drive({ call, runId, params = {}, timing = {}, deploy = {}
   }
   phase("Q3 Q5 Q6");
 
+  if (has("main")) {
+    for (const variant of ["same-turn", "awaited"]) {
+      await record(`Q8 ${variant}`, { copy: "main", object: "q8", method: "q8", params: { variant, n: p.q8N } });
+    }
+    phase("Q8");
+  }
+
   if (has("exports")) {
     let rate = null;
     for (const kase of p.q4.cases) {
@@ -216,7 +225,7 @@ export async function drive({ call, runId, params = {}, timing = {}, deploy = {}
 /** Q7 runs only if Q1 shows separate databases and Q2 shows a facet working somewhere. */
 export function q7Gate(g) {
   if (g.Q1?.verdict !== "separate") {
-    return { run: false, why: `Q1 did not show separate databases (${g.Q1?.verdict ?? "not read"})` };
+    return { run: false, why: `Q1 did not show a facet outside its parent's budget (${g.Q1?.verdict ?? "not read"})` };
   }
   if (!g.Q2?.anyWorks) {
     return { run: false, why: "Q2 found no facet class source that works" };
@@ -226,35 +235,68 @@ export function q7Gate(g) {
 
 const gb = (bytes) => (typeof bytes === "number" ? `${(bytes / GB).toFixed(2)} GB` : String(bytes));
 
-/** Q1's verdict from the two fill plans. */
+/**
+ * Q1's readings from the two fill plans, in two parts.
+ * - Parent vs facet (`verdict`, Q7's gate): "separate" only when the parent and `q1b`
+ *   both reached their sizes, together at least 1.1 times the larger possible limit;
+ *   "shared" when `q1b` hit a limit with the two together within 0.9-1.1 of either
+ *   possible limit, or when the parent's own plan write then failed on a limit.
+ * - Facet vs facet (`facetVerdict`): read only after "separate": "separate" when `q1c`
+ *   reached its size too, "pooled" when `q1c` hit a limit with `q1b` and `q1c` together
+ *   within 0.9-1.1 of a limit.
+ * A plan still running at the end is "stalled", a non-limit error "void", anything else
+ * (a time cap among them) "unproven".
+ */
 export function q1Reading(bc, a, limitBytes = SHAPE.limitBytes) {
-  const jobs = Object.fromEntries((bc?.plan?.jobs ?? []).map((job) => [job.target, job]));
+  const limits = [limitBytes, limitBytes * GIB_RATIO];
+  const inBand = (bytes) => limits.some((limit) => bytes >= 0.9 * limit && bytes <= 1.1 * limit);
+  const plan = bc?.plan;
+  const jobs = Object.fromEntries((plan?.jobs ?? []).map((job) => [job.target, job]));
   const big = a?.plan?.jobs?.[0];
   const self = jobs.self;
   const b = jobs.q1b;
   const c = jobs.q1c;
-  const aborted = [bc, a].map((x) => x?.plan?.status).find((status) => /^aborted/.test(status ?? ""));
-  const out = { bc: bc?.plan?.status ?? "not read", a: a?.plan?.status ?? "not read", aborted: aborted ?? null };
-  const sum = (self?.size ?? 0) + (b?.size ?? 0) + (c?.size ?? 0);
-  out.combinedBytes = sum;
+  const size = (job) => job?.size ?? 0;
+  const status = plan?.status ?? "not read";
+  const persist = plan?.persistError ?? null;
+  const out = { bc: status, a: a?.plan?.status ?? "not read", persistError: persist,
+                limitsRead: limits.map(gb) };
   out.parts = { self: self?.size ?? null, q1b: b?.size ?? null, q1c: c?.size ?? null, q1a: big?.size ?? null };
+  out.statuses = { self: self?.status ?? null, q1b: b?.status ?? null, q1c: c?.status ?? null, q1a: big?.status ?? null };
   out.errors = Object.fromEntries([self, b, c, big].filter((job) => job?.error).map((job) => [job.target, job.error]));
-  const errored = [self, b, c].some((job) => job?.status === "limit" || job?.status === "error");
-  if (sum > limitBytes && !errored) {
+  const pair = size(self) + size(b);
+  if (self?.status === "reached" && b?.status === "reached" && pair >= 1.1 * Math.max(...limits)) {
     out.verdict = "separate";
-    out.detail = `the parent and its facets held ${gb(sum)} together with no limit error: a facet's database does not count against its parent's ${gb(limitBytes)}`;
-  } else if (b?.status === "limit" && (self?.size ?? 0) + (b?.size ?? 0) <= limitBytes * 1.05) {
+    out.detail = `the parent reached ${gb(self.size)} and its facet q1b ${gb(b.size)}, ${gb(pair)} together, with no limit error: a facet's database does not count against its parent's`;
+  } else if (b?.status === "limit" && (inBand(pair) || (persist && LIMIT.test(persist.error)))) {
     out.verdict = "shared";
-    out.detail = `q1b stopped at ${gb(b.size)} with the parent at ${gb(self?.size)} (${gb((self?.size ?? 0) + (b.size ?? 0))} together): one budget`;
-  } else if (aborted) {
+    out.detail = `q1b hit a limit at ${gb(b.size)} with the parent at ${gb(self?.size)} (${gb(pair)} together)`
+      + `${persist ? `, and the parent's own write then failed: ${persist.error}` : ""}: one budget`;
+  } else if (/^aborted/.test(status)) {
     out.verdict = "void";
-    out.detail = `a non-limit error stopped the fill: ${Object.values(out.errors)[0] ?? aborted}`;
+    out.detail = `a non-limit error stopped the fill: ${Object.values(out.errors)[0] ?? status}`;
+  } else if (status === "running") {
+    out.verdict = "stalled";
+    out.detail = `the plan was still running at the end (parent ${gb(self?.size)}, q1b ${gb(b?.size)}${persist ? `; a plan write failed: ${persist.error}` : ""})`;
   } else {
     out.verdict = "unproven";
-    out.detail = `combined ${gb(sum)} by the end (${out.bc})`;
+    out.detail = `${status}: parent ${gb(self?.size)} (${self?.status ?? "-"}), q1b ${gb(b?.size)} (${b?.status ?? "-"})`;
+  }
+  if (out.verdict !== "separate") {
+    out.facetVerdict = "not read (needs the parent vs facet reading first)";
+  } else if (c?.status === "reached") {
+    out.facetVerdict = "separate";
+    out.facetDetail = `q1c reached ${gb(c.size)} beside q1b's ${gb(b.size)}: facets do not share one pool`;
+  } else if (c?.status === "limit" && inBand(size(b) + size(c))) {
+    out.facetVerdict = "pooled";
+    out.facetDetail = `q1c hit a limit at ${gb(c.size)} with q1b at ${gb(b.size)} (${gb(size(b) + size(c))} together): the facets share one pool`;
+  } else {
+    out.facetVerdict = "unproven";
+    out.facetDetail = `q1c ${gb(c?.size)} (${c?.status ?? "-"}${c?.error ? `: ${c.error}` : ""})`;
   }
   if (big) {
-    out.facetLimit = big.status === "limit" ? `a lone facet stopped at ${gb(big.size)}: ${big.error}`
+    out.facetLimit = big.status === "limit"
+      ? `a lone facet stopped at ${gb(big.size)}${inBand(size(big)) ? ", at a 10 GB limit of its own" : ", not near 10 GB or 10 GiB"}: ${big.error}`
       : big.status === "reached" ? `a lone facet passed ${gb(big.size)} with no limit error`
         : `a lone facet reached ${gb(big.size)} (${big.status}${big.error ? `: ${big.error}` : ""})`;
   }
@@ -300,7 +342,9 @@ export function readings(report) {
     }
     const q6 = r[`Q6 ${source}`];
     if (q6) {
-      const pick = (s) => (s ? { p50: s.p50, p95: s.p95, p99: s.p99, mean: s.mean, n: s.n, errors: s.errors } : null);
+      // The clock moves in whole milliseconds: a 0 percentile reads "<1", and meanMs (the series' total over n) resolves it.
+      const ms = (v) => (v === 0 ? "<1" : v);
+      const pick = (s) => (s ? { p50: ms(s.p50), p95: ms(s.p95), p99: ms(s.p99), meanMs: s.meanMs, n: s.n, errors: s.errors } : null);
       g[`Q6 ${source}`] = { sharedId: pick(q6.sharedId), ownId: pick(q6.ownId), store: pick(q6.store), ids: q6.ids,
                             parentId: q6.parentId };
     }
@@ -347,6 +391,13 @@ export function readings(report) {
                           afterDeleteMessages: q7.afterDelete?.value?.messages ?? null };
     }
   }
+  for (const variant of ["same-turn", "awaited"]) {
+    const q8 = r[`Q8 ${variant}`];
+    if (q8) {
+      g[`Q8 ${variant}`] = { counts: q8.counts, n: q8.n, freshInstances: q8.freshInstances, armErrors: q8.armErrors,
+                             sizes: q8.sizes };
+    }
+  }
   if (report.q7Skipped) {
     g.Q7 = { skipped: report.q7Skipped };
   }
@@ -362,11 +413,13 @@ export function summarize(report) {
   const rows = [];
   const row = (question, kase, reading, detail = "") => rows.push(`| ${question} | ${kase} | ${cell(reading)} | ${cell(detail)} |`);
   if (g.Q1) {
-    row("Q1", "storage limit", g.Q1.verdict, g.Q1.detail);
+    row("Q1", "parent vs facet", g.Q1.verdict, g.Q1.detail);
+    row("Q1", "facet vs facet", g.Q1.facetVerdict, g.Q1.facetDetail ?? "");
     row("Q1", "a lone facet", g.Q1.facetLimit ?? "not read", g.Q1.parts);
-    row("Q1", "written", `${g.Q1.rowsWritten} rows, ${gb(g.Q1.bytesWritten)}`, { bc: g.Q1.bc, a: g.Q1.a, errors: g.Q1.errors });
+    row("Q1", "written", `${g.Q1.rowsWritten} rows, ${gb(g.Q1.bytesWritten)}`,
+        { bc: g.Q1.bc, a: g.Q1.a, statuses: g.Q1.statuses, errors: g.Q1.errors, persistError: g.Q1.persistError });
   } else {
-    row("Q1", "storage limit", "not read");
+    row("Q1", "parent vs facet", "not read");
   }
   for (const [copy, x] of Object.entries(g.Q2.copies)) {
     row("Q2", copy, x.deploy, x.deployError ?? x.error ?? { ctxExports: x.ctxExports, sources: x.sources });
@@ -398,6 +451,16 @@ export function summarize(report) {
         row("Q6", `${source}: facet, own id`, x.ownId);
       }
       row("Q6", `${source}: top-level ThreadStore`, x.store);
+    }
+  }
+  for (const variant of ["same-turn", "awaited"]) {
+    const x = g[`Q8 ${variant}`];
+    if (x) {
+      const c = x.counts;
+      row("Q8", `deleteAll, ${variant}, then abort`,
+          `${c.wipedWritten} wiped and written, ${c.wipedNotWritten} wiped and not written, `
+          + `${c.notWipedWritten + c.notWipedNotWritten} not wiped (of ${x.n})`,
+          { counts: c, killedAndReset: x.freshInstances, armErrors: x.armErrors, sizes: x.sizes });
     }
   }
   for (const copy of ["agents", "agents-exports"]) {

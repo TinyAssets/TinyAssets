@@ -9,9 +9,11 @@
  *   the parent's id or the facet's own?) and Q4's cross-check.
  * - Every Durable Object storage dataset the schema lists (found by introspection, since
  *   their names and dimensions are not documented alike), queried with every dimension and
- *   metric it has. Rows with an object or namespace dimension are kept to the run's own;
- *   rows with neither are account-wide, so only their change over the window is reported,
- *   never a total. Q1 (what storage the API counts per object) and Q5 (bytes freed).
+ *   metric it has, when it has an object or a namespace dimension; rows are kept to the
+ *   run's own objects and namespaces. A dataset with neither is account-wide and is never
+ *   queried: the repository and its job summaries are public. Q1 (what storage the API
+ *   counts per object). Q5 is read from `databaseSize` only: the run's own facet delete and
+ *   the cleanup's namespace deletes land in the same hourly or daily rows.
  *
  *   CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... node analytics.mjs --results F \
  *       [--summary F] [--namespaces F] [--wait-ms 300000] [--redact <text>]
@@ -112,16 +114,21 @@ const dateOf = (iso) => iso.slice(0, 10);
 const asTime = (time, iso) => (time === "date" ? dateOf(iso) : iso);
 
 /**
- * One storage dataset over the window. Rows of the run's own objects or namespaces are
- * kept whole; account-wide rows become each metric's change from the window's first row
- * to its last, and its largest rise, in time order.
+ * One storage dataset over the window, kept to the run's own objects or namespaces. A
+ * dataset with neither dimension is account-wide: it is not queried at all.
  */
 export async function readStorage(gql, set, { account, start, end, ids, namespaces }) {
+  const byObject = set.dimensions.includes("objectId");
+  const byNamespace = set.dimensions.includes("namespaceId");
+  if (!byObject && !byNamespace) {
+    return { dataset: set.dataset, scope: "account-wide: not read (the job summary is public)" };
+  }
   if (!set.time) {
     return { dataset: set.dataset, error: "no time filter the probe knows" };
   }
   const metricText = Object.entries(set.metrics).map(([sub, names]) => `${sub} { ${names.join(" ")} }`).join(" ");
-  const query = `query ($accountTag: string!, $start: ${set.time === "date" ? "Date" : "Time"}!, $end: ${set.time === "date" ? "Date" : "Time"}!) {
+  const kind = set.time === "date" ? "Date" : "Time";
+  const query = `query ($accountTag: string!, $start: ${kind}!, $end: ${kind}!) {
   viewer { accounts(filter: { accountTag: $accountTag }) {
     rows: ${set.dataset}(limit: 10000, filter: { ${set.time}_geq: $start, ${set.time}_leq: $end }) {
       dimensions { ${set.dimensions.join(" ")} }
@@ -131,31 +138,9 @@ export async function readStorage(gql, set, { account, start, end, ids, namespac
 }`;
   const data = await gql(query, { accountTag: account, start: asTime(set.time, start), end: asTime(set.time, end) });
   const rows = data?.viewer?.accounts?.[0]?.rows ?? [];
-  const byObject = set.dimensions.includes("objectId");
-  const byNamespace = set.dimensions.includes("namespaceId");
-  if (byObject || byNamespace) {
-    const kept = rows.filter((row) => (byObject ? row.dimensions.objectId in ids : namespaces.has(row.dimensions.namespaceId)))
-      .map((row) => ({ ...row, case: byObject ? ids[row.dimensions.objectId] : namespaces.get(row.dimensions.namespaceId) }));
-    return { dataset: set.dataset, scope: byObject ? "per object" : "per namespace", rows: kept };
-  }
-  const timeKey = set.dimensions.find((d) => /^(datetime|date)/.test(d));
-  const ordered = timeKey ? [...rows].sort((a, b) => String(a.dimensions[timeKey]).localeCompare(String(b.dimensions[timeKey]))) : rows;
-  const change = {};
-  for (const [sub, names] of Object.entries(set.metrics)) {
-    for (const name of names) {
-      const values = ordered.map((row) => row[sub]?.[name]).filter((v) => typeof v === "number");
-      if (values.length) {
-        let rise = 0;
-        let low = values[0];
-        for (const v of values) {
-          low = Math.min(low, v);
-          rise = Math.max(rise, v - low);
-        }
-        change[`${sub}.${name}`] = { firstToLast: values.at(-1) - values[0], largestRise: rise, points: values.length };
-      }
-    }
-  }
-  return { dataset: set.dataset, scope: "account-wide (change only)", timeKey: timeKey ?? null, change };
+  const kept = rows.filter((row) => (byObject ? row.dimensions.objectId in ids : namespaces.has(row.dimensions.namespaceId)))
+    .map((row) => ({ ...row, case: byObject ? ids[row.dimensions.objectId] : namespaces.get(row.dimensions.namespaceId) }));
+  return { dataset: set.dataset, scope: byObject ? "per object" : "per namespace", rows: kept };
 }
 
 /** Runs every query for the window. Error text is redacted, since it lands in the job summary. */
@@ -231,13 +216,13 @@ export function table(analytics, report) {
   const rows = Object.values(analytics.byObject).map((entry) =>
     `| ${entry.case} | ${fields.map((field) => entry[field] ?? "").join(" | ")} |`);
   const storage = analytics.storage.map((set) => `- **${set.dataset}** (${set.scope ?? "not read"}): `
-    + `\`${JSON.stringify(set.error ?? set.rows ?? set.change).slice(0, 1500)}\``);
+    + `\`${JSON.stringify(set.error ?? set.rows ?? null).slice(0, 1500)}\``);
   return [
     "", "#### Analytics (live only; Account Analytics: Read)", "",
     `Window ${analytics.start} to ${analytics.end}. activeTime and cpuTime are as the API reports them (microseconds).`, "",
     `- **Q6 billing:** ${billing(analytics, report)}`, "",
     `| object | ${fields.join(" | ")} |`, `|---|${fields.map(() => "---").join("|")}|`, ...rows, "",
-    "**Storage datasets (Q1, Q5):**", ...(storage.length ? storage : ["- none listed"]), "",
+    "**Storage datasets (Q1; the run's own objects and namespaces only):**", ...(storage.length ? storage : ["- none listed"]), "",
     ...Object.entries(analytics.errors).map(([name, error]) => `- ${name} not read: ${error}`),
   ].join("\n");
 }

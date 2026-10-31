@@ -4,8 +4,9 @@ name: Facet probe
 # parent's 10 GB (Q1), do facets work under disable_ctx_exports (Q2), what a facet can reach
 # (Q3), does a busy or broken facet block or break its parent (Q4), does delete wipe it (Q5),
 # parent -> facet latency and billing (Q6), and PiHarness in an Agents SDK dynamic agent
-# (Q7). openspec/changes/clean-sheet-platform/facet-probe.md has the method, the questions,
-# the reading key and the results.
+# (Q7); and Q8, on the main copy: does a write made in the same turn as deleteAll()
+# survive a crash right after? openspec/changes/clean-sheet-platform/facet-probe.md has
+# the method, the questions, the reading key and the results.
 #
 # Manual only, and the founder approves each run: type facet-probe into `confirm`. It
 # deploys eight throwaway Workers named ta-facetprobe* to the production Cloudflare account,
@@ -18,9 +19,10 @@ name: Facet probe
 # record is touched, no owner data exists there, and no model credential is used: pi runs
 # on pi-ai's faux provider.
 #
-# Cost: Q1 writes about 15,300 rows (29 GB) for at most a few hours. At $0.20 per GB-month
-# prorated and $1.00 per million rows written that is under $0.05; requests and CPU are
-# within the plan's included usage. Negligible.
+# Cost: Q1 writes about 15,300 rows (29 GB) for at most a few hours. At list price, storage
+# ($0.20 per GB-month, prorated), rows written ($1.00 per million), Durable Object duration
+# and the Workflow instances come to about $0.05, all inside Workers Paid's included usage.
+# Negligible.
 #
 # Token scope (the CLOUDFLARE_API_TOKEN repo secret deploy-worker.yml, cap-probe.yml and
 # store-probe.yml use):
@@ -30,9 +32,13 @@ name: Facet probe
 #   Account -> Workers KV Storage: Edit    optional: the dummy KV namespace (Q3); without
 #                                          it the copies deploy with no KV binding
 #   Account -> Billing: Read               optional: names the account's plan
-#   Account -> Account Analytics: Read     optional: Q6's billing, the storage datasets
+#   Account -> Account Analytics: Read     optional: Q6's billing, and the storage datasets
+#                                          kept to the run's own objects (the repository
+#                                          and its job summaries are public: no
+#                                          account-wide number is read or printed)
 #
-# A default run takes about two hours at most: Q1's fill stops at fill_minutes.
+# A run takes about 3 hours at most at the default fill_minutes of 150 (Q1's fill stops
+# there), and less if the fill finishes first.
 
 on:
   workflow_dispatch:
@@ -44,7 +50,7 @@ on:
       fill_minutes:
         description: 'Q1: the most minutes the storage fill may write, 10 to 150'
         required: false
-        default: '100'
+        default: '150'
         type: string
 
 permissions:
@@ -58,9 +64,9 @@ concurrency:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    # Install <=10, harness <=15, account <=3, deploy <=20, questions <=190, cleanup <=10,
-    # analytics <=15, and the rest.
-    timeout-minutes: 275
+    # Checkout and node <=10, install <=10, harness <=15, account <=3, deploy <=20,
+    # questions <=205: cleanup starts by minute 263. Cleanup <=10, analytics <=15, and the rest.
+    timeout-minutes: 300
     env:
       WRANGLER_SEND_METRICS: 'false'
       WRANGLER: ${{ github.workspace }}/platform/node_modules/.bin/wrangler
@@ -86,10 +92,12 @@ jobs:
           fi
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        timeout-minutes: 5
         with:
           persist-credentials: false
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        timeout-minutes: 5
         with:
           node-version: '22'
 
@@ -249,14 +257,14 @@ jobs:
           PY
           echo "deployed=true" >> "${GITHUB_OUTPUT}"
 
-      # fill_minutes plus about 30: Q2-Q6 and Q7 take a few minutes each and Q4 about six,
-      # every call is bounded at 17 minutes, and Q1 stops at fill_minutes plus a 5-minute
-      # grace. The driver rewrites the results after each phase and prints the whole report
+      # fill_minutes plus about 30: Q2-Q6, Q8 and Q7 take a few minutes each and Q4 about
+      # seven, every call is bounded at 17 minutes, and Q1 stops at fill_minutes plus a
+      # 5-minute grace. The driver rewrites the results after each phase and prints the whole report
       # to this log, so a step killed here still leaves what it had.
       - name: Run every question
         id: drive
         if: steps.deploy.outputs.deployed == 'true'
-        timeout-minutes: 190
+        timeout-minutes: 205
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           FILL_MINUTES: ${{ inputs.fill_minutes }}

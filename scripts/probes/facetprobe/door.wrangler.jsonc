@@ -1,7 +1,8 @@
 // The door of the facet probe (facet-probe.md): a Workflow, started through the
 // Cloudflare API, with no route and no workers.dev URL. It binds each probe copy's root
 // class by script_name, as the doors bind OwnerDO; config.mjs keeps only the copies that
-// deployed. Throwaway: facet-probe.yml deploys it last and deletes the Workflow and the
+// deployed. Its limits.subrequests, as the copies', covers Q4's pings: an over-CPU case
+// that resets the parent can take about 1,300 Durable Object calls in one instance. Throwaway: facet-probe.yml deploys it last and deletes the Workflow and the
 // Worker first.
 {
   "name": "ta-facetprobe-door",
@@ -10,6 +11,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
   "preview_urls": false,
+  "limits": { "subrequests": 1000000 },
   "workflows": [{ "name": "ta-facetprobe-door", "binding": "DRIVE", "class_name": "Drive" }],
   "durable_objects": {
     "bindings": [
