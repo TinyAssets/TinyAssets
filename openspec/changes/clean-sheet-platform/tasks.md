@@ -1133,7 +1133,12 @@ account and no deploy.
   delivered and refused; cron property tests against a minute scan, and a recurring
   launch delivering three times until a grant change; the share; admission at every
   door, its platform-only door, the `wakes` claim; the tombstone across evictions, in the
-  wipe's turn, and after each erasure crash. Declared differences: the task's input also
+  wipe's turn, and after each erasure crash. Mutation: 48 (the re-checks, the re-sleep,
+  the requestId dedupe, cancel, the cron function, the policy-write rule, admission at
+  `#bind` and the lanes, `admissionSet`'s caller, the tombstone's order, the guards'
+  terms, the share), 48 killed; six first alive were killed by tests added for them, and
+  one equivalent (an erased owner's `admissionSet`, which the binding check refuses first)
+  went as dead code. Declared differences: the task's input also
   names its thread and cron (the registry is shared by every Session); a scheduled run's
   `request` is its work id from its recording, so its receipt names it however it ends; an
   owner absent an admission row is admitted (migration 12 writes it), the platform
