@@ -50,6 +50,9 @@ live acceptance is still owed says so.
   bounded; no token exchange callback is installed; and the owner is named from the
   sign-in's issuer against an explicit list (`OWNER_ISSUER`, and `FOREIGN_ISSUERS`, empty
   until a provider's slice lists its issuer), any other issuer refused loudly.
+- [ ] An owner's `grantSet` to `revoked` (the object's set door) revokes no OAuth provider
+  grant: only the doors' `grantRevoke` path (`revoke.ts`) kills the client's refresh
+  tokens. Route a set to `revoked` through the same provider revoke (rename review N1).
 - [ ] Live AuthKit wiring: an `Upstream` (`doors/src/upstream.ts`) for AuthKit's
   production environment, with its redirect URI `https://tinyassets.io/oauth/upstream/callback`,
   the code exchange and the ID token's signature, issuer, audience and `auth_time`
@@ -989,9 +992,14 @@ account and no deploy.
   it first. The reviewer's round-3 mutants all killed.
 - [x] Before any deploy holding real data: S4's drop wipes its store (`destroy()`, the row
   `dropping` until it returned). Done in S4-S5 (below).
-- [ ] Before any deploy holding real data: a grant rename, or any set that changes neither
+- [x] Before any deploy holding real data: a grant rename, or any set that changes neither
   mode, scope nor revocation, must not move the authority generation or drop threads;
-  split the revision token from the authority generation (S4-S5 review round 2, L1).
+  split the revision token from the authority generation (S4-S5 review round 2, L1). Done
+  in workerd, nothing deployed (`grants.ts`, `owner-do.ts` `grantSet`, `api-keys.ts`,
+  migration 12): `revision` moves on every set and revoke and is what the owner's set
+  names (`expected_revision`); `generation` moves only when the mode or the set of scopes
+  does, and stamps and `standing` read it alone, so only such a set, or a revoke, drops.
+  A revoked grant set revoked again keeps its fence.
 - [x] S4-S5 Drops wipe and run retention, in workerd, nothing deployed (`threads.ts`,
   `agent.ts`, `thread-host.ts`, `thread-store.ts`, `erasure.ts`, `erase.ts`, `policy.ts`,
   migration 10). One drop path for every reason (idle retention, a run's retention, a
@@ -1066,12 +1074,9 @@ account and no deploy.
   `gate.ts`'s `deleteAll` beside the store's. Declared differences from the design: a
   closed dropping Session is not reopened to end it (nothing of it runs in memory); client
   runs share `runs_kept` rather than counting in the conversation bounds; a settled run's
-  answer read after its store is wiped is its receipt's first 768 bytes, marked. A rename (`grantSet` with only the
-  name changed) still ends the client's work and drops its threads: every owner set moves
-  the grant's generation, which is both the change's concurrency token and the stamp every
-  thread and tool call is checked against, so a name-only change needs its own door (a
-  follow-up for grants). Review round 1 (REQUEST CHANGES), all taken but the rename
-  (explained above): H1 erasure's wipe resumes at start; H2 settling and status as above;
+  answer read after its store is wiped is its receipt's first 768 bytes, marked. Review
+  round 1 (REQUEST CHANGES), all taken but the rename (since fixed: the rename blocker
+  above): H1 erasure's wipe resumes at start; H2 settling and status as above;
   M1 run shares; M2 receipts as history; M3 no destroyed mark; M4 the usage total; the
   lows (retry and erasure tests, receipts during a drop, bounded drops with the notice,
   the wipe caller guard, receipts with the grant, slice 10, the guard's row width and
