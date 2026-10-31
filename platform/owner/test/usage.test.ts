@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import { agentPolicy, MODEL_DEFAULTS, MODEL_SETTINGS, modelSettings, validate } from "../src/policy";
+import { THREAD_INPUTS } from "../src/schema";
 import {
   type Ask, largestFitting, type ModelCaps, periods, priced, TURN_ENDED, Usage, USAGE_LIMITS,
   type UsageLimits,
@@ -25,8 +26,14 @@ import { failure, ownerObject } from "./support";
 import type { GatedOwnerDO } from "./worker";
 
 const NOW = 1_793_000_000;
-/** The thread the test turns are in, and the turns open in it. */
+/**
+ * The threads the test turns are in, and the turns open in them: `IN_THREAD` in each, in
+ * order, each thread's owners numbered from one, as pi's ids are per store.
+ */
 const THREAD = `thread_${"0".repeat(32)}`;
+const SECOND = `thread_${"2".repeat(32)}`;
+const THREADS = [THREAD, SECOND, `thread_${"3".repeat(32)}`];
+const IN_THREAD = THREAD_INPUTS - 1;
 const OPEN_TURNS = ["t1", "t2", "t3", "t4", "t5", "t9",
                     ...["t0", "s0", "s1", "s2", "s3"],
                     ...Array.from({ length: 6 }, (_, i) => `other${i}`)];
@@ -79,8 +86,11 @@ function withUsage<R>(act: (r: Rig) => Promise<R>, limits: Partial<UsageLimits> 
     const sql = state.storage.sql;
     const usage = make();
     // Each test turn is open, as the thread host keeps them: an input owns it.
-    await gate.write(() => usage.turnOwners(THREAD, OPEN_TURNS.map((turn, i) =>
-      ({ owner: `s:${i + 1}`, turn }))));
+    for (const [k, thread] of THREADS.entries()) {
+      await gate.write(() => usage.turnOwners(thread, OPEN_TURNS
+        .slice(k * IN_THREAD, (k + 1) * IN_THREAD)
+        .map((turn, i) => ({ owner: `s:${i + 1}`, turn }))));
+    }
     return act({
       usage, gate, state, policy, fresh: make,
       rows: () => sql.exec<Record<string, SqlStorageValue>>(
@@ -478,6 +488,29 @@ describe("a turn's counters", () => {
       expect(r.turn("t1")).toMatchObject({ requests: 1 });
       await r.gate.write(() => r.usage.turnOwners(THREAD, [{ owner: "s:100", turn: null }]));
       expect(r.turn("t1")).toBeUndefined();
+      // The other thread's own `s:1` is its own, and keeps its turn.
+      expect(r.turn(OPEN_TURNS[IN_THREAD]!)).toMatchObject({ requests: 0 });
+      expect(r.state.storage.sql.exec("SELECT thread FROM model_turns WHERE turn = ?",
+                                      OPEN_TURNS[IN_THREAD]!).one()).toEqual({ thread: SECOND });
+      expect(r.usage.openInputs(THREAD)).toBe(IN_THREAD - 1);
+      expect(r.usage.openInputs(SECOND)).toBe(IN_THREAD);
+    }));
+
+  it("take a commit's new owner in an ended one's place at a thread's bound, the last " +
+     "naming of an owner standing", () =>
+    withUsage(async (r) => {
+      await r.gate.write(() => r.usage.turnOwners(THREAD, [{ owner: "s:50", turn: "t50" }]));
+      expect(r.usage.openInputs(THREAD)).toBe(THREAD_INPUTS);
+      // One input answered and another queued in one commit: the thread stays at its bound.
+      await r.gate.write(() => r.usage.turnOwners(THREAD, [
+        { owner: "s:51", turn: "t51" }, { owner: "s:50", turn: null }]));
+      expect([r.turn("t50"), r.turn("t51")]).toEqual([undefined, expect.anything()]);
+      // Queued and answered in one commit: it owns nothing.
+      await r.gate.write(() => r.usage.turnOwners(THREAD, [
+        { owner: "s:52", turn: null }, { owner: "s:51", turn: null },
+        { owner: "s:52", turn: "t52" }, { owner: "s:52", turn: null }]));
+      expect([r.turn("t51"), r.turn("t52")]).toEqual([undefined, undefined]);
+      expect(r.usage.openInputs(THREAD)).toBe(THREAD_INPUTS - 1);
     }));
 
   it("refuse a call of a turn that has ended, never starting it over", () =>
@@ -504,6 +537,7 @@ describe("a turn's counters", () => {
       await r.gate.write(() => r.usage.turnsReconciled(THREAD, []));
       expect(r.turn("o1")).toMatchObject({ requests: 0 });
       expect(r.turn("t1")).toBeUndefined();
+      expect(r.turn(OPEN_TURNS[IN_THREAD]!)).toMatchObject({ requests: 0 });
     }));
 
   it("keep the newest call's time when an older call of the turn settles after it", () =>

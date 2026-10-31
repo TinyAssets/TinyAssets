@@ -79,6 +79,7 @@ import {
 import { Refused } from "./errors";
 import { COMPACTION, JOINED } from "./origin";
 import { inTime } from "./schedule";
+import { THREAD_INPUTS } from "./schema";
 
 const BG = BACKGROUND_CONTEXT;
 const ROOT = ROOT_CONVERSATION_ID;
@@ -123,20 +124,11 @@ export const USAGE_UNKEPT = "usage_unkept";
 const USAGE_UNKEPT_DETAIL = "a thread's model usage could not be kept as its Session " +
   "closed; the usage view counts it as it last closed";
 /**
- * Open inputs (queued or placed) a thread holds at once, past which a new one is refused
- * (`THREAD_INPUTS_FULL`), never waited on: each owns a turn's counters while it is open.
+ * The refusal of an input past `THREAD_INPUTS` open ones a thread holds (`schema.ts`), at
+ * once, never waited on: each owns a turn's counters while it is open.
  */
-export const THREAD_INPUTS = 16;
 export const THREAD_INPUTS_FULL = "thread_inputs_full: the thread holds as many open inputs " +
   "as it may; wait for one to be answered";
-/**
- * Compactions a thread's Session holds live at once, each a turn of its own: pi starts a
- * background one only while none is listed (`generation.js`, `pi.live.compactions`), and a
- * run's blocking one waits in its generation, one run at a time; a thread is one
- * conversation (no owner source creates a task or a conversation), and there is no manual
- * compaction door yet (A6 caps its own).
- */
-export const THREAD_COMPACTIONS = 2;
 /** The task states that are still live, as pi's scheduler holds them. */
 const LIVE_TASKS = Object.freeze(["pending", "running", "waiting", "sleeping", "completing"] as const);
 const SCAN_PAGE = 100;
@@ -591,7 +583,11 @@ export class ThreadHost extends LifecycleCapability {
    */
   async #ownTurns(thread: string, { pi, storage }: Opened): Promise<void> {
     await keepTurns(thread, (listener) => pi.subscribeCommits(listener), this.#parts.turns,
-                    () => openOwners(thread, storage));
+                    () => openOwners(thread, storage), () => {
+                      // Loudly: closed, its next open reconciles what this lost.
+                      console.error("a thread's turns could not be kept; its Session closes");
+                      pi.close(BG).catch(() => {});
+                    });
   }
 
   /**
@@ -915,7 +911,10 @@ function errorsKey(thread: string): string {
 export interface TurnOwner {
   readonly owner: string;
   readonly turn: string | null;
-  /** An input that joined another's turn: it keeps the turn, never makes it again. */
+  /**
+   * An owner that joined another's turn (a linked input, a run's compaction): it keeps
+   * the turn, never makes it again.
+   */
   readonly joined?: boolean;
 }
 
@@ -934,7 +933,8 @@ function originOf(trace: unknown): { turn: string; joined: boolean } | undefined
 /**
  * The turn owners a commit opened or ended in `thread`: each input submission while it is
  * queued or placed, and each compaction task while it is live, with its turn; with none
- * once it settled or ended.
+ * once it settled or ended. A compaction a run made joins the run's turn (its carrier's
+ * origin, as its calls are charged); one made outside any run is its own.
  */
 export function turnOwners(thread: string, changes: readonly Change[]): TurnOwner[] {
   const owners: TurnOwner[] = [];
@@ -948,8 +948,11 @@ export function turnOwners(thread: string, changes: readonly Change[]): TurnOwne
       }
     } else if (change.type === "task" && change.value.kind === COMPACTION) {
       const open = (LIVE_TASKS as readonly string[]).includes(change.value.state.status);
-      owners.push({ owner: `t:${change.value.id}`,
-                    turn: open ? `task:${thread}:${change.value.id}` : null });
+      const run = originOf(change.value.trace);
+      owners.push(!open ? { owner: `t:${change.value.id}`, turn: null }
+        : run === undefined ? { owner: `t:${change.value.id}`,
+                                turn: `task:${thread}:${change.value.id}` }
+          : { owner: `t:${change.value.id}`, turn: run.turn, joined: true });
     }
   }
   return owners;
@@ -958,17 +961,17 @@ export function turnOwners(thread: string, changes: readonly Change[]): TurnOwne
 /**
  * Keep `thread`'s turn owners from its commits, as `subscribe` publishes them, after first
  * reconciling them to `open`: a commit published before that is done is held, then kept
- * after it, so the reconcile never undoes it. Resolves once the reconcile is done.
+ * after it, so the reconcile never undoes it. Resolves once the reconcile is done. A
+ * commit's owners that cannot be kept are `lost`, at once.
  */
 export async function keepTurns(
   thread: string, subscribe: Harness["subscribeCommits"],
   turns: Pick<HostParts["turns"], "owned" | "reconciled">,
-  open: () => Promise<readonly TurnOwner[]>,
+  open: () => Promise<readonly TurnOwner[]>, lost: () => void,
 ): Promise<void> {
   let held: TurnOwner[][] | undefined = [];
   const keep = (owners: readonly TurnOwner[]) => {
-    turns.owned(thread, owners)
-      .catch(() => console.error("a thread's turns could not be kept"));  // no ids
+    turns.owned(thread, owners).catch(lost);
   };
   subscribe((publication) => {
     const owners = turnOwners(thread, publication.changes);

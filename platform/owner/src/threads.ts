@@ -76,8 +76,11 @@ export type Thread = {
   readonly last_active: number;
 };
 
-/** The most bytes a thread's kept usage (`keepUsage`) takes: 64 KiB of JSON. */
-export const USAGE_ROW_MAX = 64 * 1024;
+/**
+ * The most bytes a thread's kept usage (`keepUsage`) takes: 16 KiB of JSON, far past what
+ * a thread's models make, and inside the owner-bound guard's worst case at every thread.
+ */
+export const USAGE_ROW_MAX = 16 * 1024;
 
 /** What scheduled work reads of the threads: one, by its id; and moves on its activity. */
 export interface ThreadReader {

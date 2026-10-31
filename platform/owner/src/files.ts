@@ -1109,17 +1109,28 @@ export class Files {
    * references but its open uploads'), or as the garbage it let go last. An open upload
    * holds a chunk without showing its bytes, so it is no proof.
    */
-  #possessed(scope: string, sha256: string): boolean {
+  #possessed(scope: string, sha256: string, uploading: ReadonlyMap<string, number>): boolean {
     const sql = this.#sql;
     const refs = sql.exec<{ refs: number }>(
       "SELECT refs FROM file_scope_chunks WHERE scope = ? AND sha256 = ?", scope, sha256)
       .toArray()[0]?.refs ?? 0;
-    const uploads = sql.exec<{ n: number }>(
-      "SELECT COUNT(*) AS n FROM file_intents WHERE (writer = ? OR (? = ? AND writer NOT GLOB ?)) " +
-        "AND instr(chunks, ?) > 0", scope, scope, OWNER_SCOPE, CLIENT_WRITER, sha256).one().n;
-    return refs > uploads || sql.exec("SELECT 1 FROM file_chunks WHERE sha256 = ? " +
-                                        "AND state = 'garbage' AND holder = ?", sha256, scope)
-      .toArray().length > 0;
+    // An open upload holds a chunk without showing its bytes: its references are no proof.
+    return refs > (uploading.get(sha256) ?? 0)
+      || sql.exec("SELECT 1 FROM file_chunks WHERE sha256 = ? AND state = 'garbage' " +
+                    "AND holder = ?", sha256, scope).toArray().length > 0;
+  }
+
+  /** How many of `scope`'s open uploads hold each chunk, each chunk once an upload. */
+  #uploading(scope: string): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const { chunks } of this.#sql.exec<{ chunks: string }>(
+           "SELECT chunks FROM file_intents WHERE writer = ? OR (? = ? AND writer NOT GLOB ?)",
+           scope, scope, OWNER_SCOPE, CLIENT_WRITER)) {
+      for (const sha256 of new Set(hashes(chunks))) {
+        counts.set(sha256, (counts.get(sha256) ?? 0) + 1);
+      }
+    }
+    return counts;
   }
 
   /** In a unit: count (`1`) or take out (`-1`) a scope reference of `writer`'s to a chunk. */
@@ -1180,6 +1191,7 @@ export class Files {
       this.#uploadShare(writer, plan.length);
       const own = scopesOf(writer).at(-1)!;
       const known = new Set(readable);
+      const uploading = this.#uploading(own);
       const missing: string[] = [];
       for (const [sha256, chunkSize] of wanted) {
         const row = sql.exec<{ state: string; stored: number; size: number }>(
@@ -1187,7 +1199,7 @@ export class Files {
         if (row !== undefined && row.size !== chunkSize) {
           throw new Invalid("a chunk hash names one size");
         }
-        const held = this.#possessed(own, sha256);
+        const held = this.#possessed(own, sha256, uploading);
         if (row === undefined) {
           sql.exec("INSERT INTO file_chunks (sha256, size, state, stored, holds, holder) " +
                      "VALUES (?, ?, 'uploading', 0, 1, ?)", sha256, chunkSize, own);
@@ -1331,7 +1343,8 @@ export class Files {
     }
     // Each chunk this upload was to send it sent, or its writer's scope holds it now.
     const own = scopesOf(intent.writer).at(-1)!;
-    if (intent.pending.some((sha256) => !this.#possessed(own, sha256))) {
+    const uploading = this.#uploading(own);
+    if (intent.pending.some((sha256) => !this.#possessed(own, sha256, uploading))) {
       throw new Refused("a chunk of this commit was not sent by its upload; send its bytes " +
                         "first");
     }

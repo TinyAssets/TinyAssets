@@ -20,7 +20,9 @@ import {
 import type { OwnerDO } from "../src/owner-do";
 import { MAX_PATH_BYTES } from "../src/paths";
 import { FILE_DEFAULTS, FILE_SETTINGS } from "../src/policy";
-import { CALLS_OPEN, MIGRATIONS, SPEND_KEPT, TURN_BYTES } from "../src/schema";
+import {
+  CALLS_OPEN, MIGRATIONS, SPEND_KEPT, THREAD_COMPACTIONS, THREAD_INPUTS, TURN_BYTES,
+} from "../src/schema";
 import { DOT, MUSE, rig, type Rig } from "./ledger-support";
 import { failure, fileCounters, filesOn, inFiles, sqlIn, text } from "./support";
 
@@ -633,6 +635,12 @@ describe("deduplication in each scope", () => {
     // Its committed file and its open uploads hold the one chunk, charged once.
     expect(await share(r, CLIENT)).toMatchObject({ chunk_bytes: piece.length });
     await counted(r);
+    // An open upload whose hashes, end to end, spell the chunk's across their boundary holds
+    // none of it: the client's proof stands.
+    const zeros = "0".repeat(32);
+    await r.stub.fileUploadBegin(r.bind(MUSE), { size: CHUNK_BYTES + 1, chunks: [
+      `${zeros}${sha.slice(0, 32)}`, `${sha.slice(32)}${zeros}`] });
+    expect((await begin()).missing).toEqual([]);
   });
 
   it("holds an owner's write to the whole quota, beside the clients' share", async () => {
@@ -756,8 +764,8 @@ describe("the files policy's byte quota and shares", () => {
     const r = await rig();
     expect(FILE_DEFAULTS).toMatchObject({ max_manifest_bytes: 512 * 1024 ** 2,
                                           client_share: 25, owner_reserve: 25 });
-    expect(FILE_SETTINGS.max_manifest_bytes).toEqual([0, 768 * 1024 ** 2]);
-    for (const files of [{ max_manifest_bytes: 768 * 1024 ** 2 + 1 }, { client_share: 101 },
+    expect(FILE_SETTINGS.max_manifest_bytes).toEqual([0, 512 * 1024 ** 2]);
+    for (const files of [{ max_manifest_bytes: 512 * 1024 ** 2 + 1 }, { client_share: 101 },
                          { owner_reserve: -1 }, { client_share: 2.5 }]) {
       expect((await failure(() => setPolicy(r, files))).message).toBe("invalid files policy");
     }
@@ -823,10 +831,38 @@ describe("the model turns' counters", () => {
     });
   });
 
+  it("are refused a thread's owner past its open inputs or live compactions, no other",
+     async () => {
+    const r = await rig();
+    const [a, b] = [`thread_${"a".repeat(32)}`, `thread_${"b".repeat(32)}`];
+    await runInDurableObject(r.stub, (_instance: OwnerDO, state) => {
+      const sql = state.storage.sql;
+      const own = (thread: string, owner: string) => sql.exec(
+        "INSERT INTO model_turn_owners (thread, owner, turn) VALUES (?, ?, ?) " +
+          "ON CONFLICT (thread, owner) DO NOTHING", thread, owner, `input:${thread}:${owner}`);
+      for (let i = 1; i <= THREAD_INPUTS; i++) {
+        own(a, `s:${i}`);
+      }
+      expect(() => own(a, `s:${THREAD_INPUTS + 1}`)).toThrow(/turn_owners_full/);
+      // One it holds is no new one; another thread's are its own, of the same ids.
+      own(a, "s:1");
+      own(b, `s:${THREAD_INPUTS + 1}`);
+      for (let i = 1; i <= THREAD_COMPACTIONS; i++) {
+        own(a, `t:${i}`);
+      }
+      expect(() => own(a, `t:${THREAD_COMPACTIONS + 1}`)).toThrow(/turn_owners_full/);
+      sql.exec("DELETE FROM model_turn_owners WHERE thread = ? AND owner = 's:2'", a);
+      own(a, `s:${THREAD_INPUTS + 1}`);
+      expect(sql.exec("SELECT thread, COUNT(*) AS n FROM model_turn_owners GROUP BY thread " +
+                      "ORDER BY thread").toArray())
+        .toEqual([{ thread: a, n: THREAD_INPUTS + THREAD_COMPACTIONS }, { thread: b, n: 1 }]);
+    });
+  });
+
   it("refuses a turn past TURN_BYTES", async () => {
     const r = await rig();
     expect((await failure(() => sqlIn(r.stub, reserve(`input:${"é".repeat(TURN_BYTES / 2)}`))))
-      .message).toMatch(/a turn is at most 320 bytes/);
+      .message).toMatch(new RegExp(`a turn is at most ${TURN_BYTES} bytes`));
     await sqlIn(r.stub, reserve(`input:${"a".repeat(TURN_BYTES - 6)}`));
   });
 });

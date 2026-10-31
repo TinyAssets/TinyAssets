@@ -163,7 +163,7 @@ const TURN_MOVED = (row: string, sign: string, at: string) =>
   `tokens = tokens ${sign} ${HELD_TOKENS(row)}, cost = cost ${sign} ${HELD(row)}, ` +
   `last_at = max(last_at, ${at}) WHERE turn = ${row}.turn;`;
 /** A turn's most bytes: an origin (`origin.ts`) is far shorter. */
-export const TURN_BYTES = 320;
+export const TURN_BYTES = 96;
 /**
  * Model calls open at once (`reserved` or `dispatched`), past which a reservation is
  * refused (`model_calls_full`): far above what one object's threads make at once.
@@ -175,6 +175,20 @@ export const CALLS_OPEN = 1000;
  * source's first call in a period is refused (`model_spend_full`).
  */
 export const SPEND_KEPT = 4300;
+/**
+ * Open inputs (queued or placed) a thread holds at once, each owning a turn while it is
+ * open: the thread host refuses one past it (`thread_inputs_full`), and migration 10's
+ * trigger refuses its owner row past it.
+ */
+export const THREAD_INPUTS = 8;
+/**
+ * Compactions a thread's Session holds live at once: pi starts a background one only while
+ * none is listed (`generation.js`, `pi.live.compactions`), and a run's blocking one waits
+ * in its generation, one run at a time; a thread is one conversation (no owner source
+ * creates a task or a conversation), and there is no manual compaction door yet (A6 caps
+ * its own). Migration 10's trigger refuses a compaction's owner row past it.
+ */
+export const THREAD_COMPACTIONS = 2;
 
 /** A file entry in the temporary area, which keeps no history. */
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
@@ -958,15 +972,16 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // loudly, its scope unknown.
   //
   // A turn's counters live exactly as long as its work: `model_turn_owners` holds each pi
-  // record that owns a turn, an open input submission (`s:<id>`, a steer's its own turn)
-  // or a live compaction task (`t:<id>`), kept by the thread host as it
-  // sees them commit (`thread-host.ts`), and a turn's row is made with its first owner and
-  // goes with its last, or with its thread. A call of a turn with no row is refused
-  // (`usage.ts`), and a reservation only moves a row that is there, so no counter ever
-  // starts over. Each thread holds at most `THREAD_INPUTS` open inputs and pi at most
+  // record that owns a turn, by its thread (pi's ids are per store, a store per thread):
+  // an open input submission (`s:<id>`, a steer's its own turn) or a live compaction task
+  // (`t:<id>`, the run's turn when a run made it), kept by the thread host as it sees them
+  // commit (`thread-host.ts`), and a turn's row is made with its first owner and goes with
+  // its last, or with its thread. A call of a turn with no row is refused (`usage.ts`), and
+  // a reservation only moves a row that is there, so no counter ever starts over. A
+  // thread's owner rows are refused past `THREAD_INPUTS` open inputs and
   // `THREAD_COMPACTIONS` live compactions, so the rows are bounded by the threads. A turn
-  // is at most 320 bytes (this check counts bytes; the reservation's own counts
-  // characters). The calls open at once and the spend counters are bounded by count
+  // is at most `TURN_BYTES` (an origin is at most 70; this check counts bytes, the
+  // reservation's own 320 characters). The calls open at once and the spend counters are bounded by count
   // (`CALLS_OPEN`, `SPEND_KEPT`).
   Object.freeze([
     "ALTER TABLE file_space ADD COLUMN manifest_bytes INTEGER NOT NULL DEFAULT 0 " +
@@ -1154,13 +1169,21 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE model_turns ADD COLUMN thread TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE model_turns ADD COLUMN owners INTEGER NOT NULL DEFAULT 0 CHECK (owners >= 0)",
     "DROP INDEX model_turns_by_age",
-    "CREATE TABLE model_turn_owners (owner TEXT PRIMARY KEY CHECK (owner GLOB '[st]:[0-9]*'), " +
-      "thread TEXT NOT NULL CHECK (length(thread) = 39), " +
-      `turn TEXT NOT NULL CHECK (length(CAST(turn AS BLOB)) <= ${TURN_BYTES})) WITHOUT ROWID`,
-    "CREATE INDEX model_turn_owners_by_thread ON model_turn_owners (thread)",
+    "CREATE TABLE model_turn_owners (thread TEXT NOT NULL CHECK (length(thread) = 39), " +
+      "owner TEXT NOT NULL CHECK (owner GLOB '[st]:[0-9]*'), " +
+      `turn TEXT NOT NULL CHECK (length(CAST(turn AS BLOB)) <= ${TURN_BYTES}), ` +
+      "PRIMARY KEY (thread, owner)) WITHOUT ROWID",
     // Fails the owner check when any turn is already kept.
-    "INSERT INTO model_turn_owners SELECT 'a turn from before migration 10', '', '' " +
-      "WHERE EXISTS (SELECT 1 FROM model_turns)",
+    "INSERT INTO model_turn_owners (thread, owner, turn) " +
+      "SELECT '', 'a turn from before migration 10', '' WHERE EXISTS (SELECT 1 FROM model_turns)",
+    // A thread's new owner past its kind's bound is refused; one it holds is no new one.
+    "CREATE TRIGGER model_turn_owners_full BEFORE INSERT ON model_turn_owners " +
+      "WHEN NOT EXISTS (SELECT 1 FROM model_turn_owners WHERE thread = NEW.thread " +
+      "AND owner = NEW.owner) AND (SELECT COUNT(*) FROM model_turn_owners " +
+      "WHERE thread = NEW.thread AND substr(owner, 1, 2) = substr(NEW.owner, 1, 2)) >= " +
+      `(CASE WHEN NEW.owner GLOB 's:*' THEN ${THREAD_INPUTS} ELSE ${THREAD_COMPACTIONS} END) ` +
+      "BEGIN SELECT RAISE(ABORT, 'turn_owners_full: a thread holds as many open inputs " +
+      "and live compactions as it may'); END",
     "CREATE TRIGGER model_turn_owners_added AFTER INSERT ON model_turn_owners BEGIN " +
       "INSERT INTO model_turns (turn, requests, tokens, cost, last_at, thread, owners) " +
       "VALUES (NEW.turn, 0, 0, 0, 0, NEW.thread, 1) " +

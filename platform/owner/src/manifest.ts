@@ -49,11 +49,21 @@ const OVERFLOW = 4092;
 /** A record's header and numbers, at most, past its text. */
 export const RECORD_FIXED = 48;
 
+/**
+ * Where a record of `payload` bytes lies, in a b-tree that keeps `kept` in place: its share
+ * of its b-tree page, and its whole overflow pages.
+ */
+export function recordLayout(payload: number, kept: number):
+    { readonly inPlace: number; readonly overflow: number } {
+  const local = payload <= kept ? payload : SPILL_KEPT;
+  return { inPlace: Math.floor(PAGE_BYTES / Math.max(1, Math.floor(PAGE_ROOM / (local + CELL)))),
+           overflow: PAGE_BYTES * Math.ceil((payload - local) / OVERFLOW) };
+}
+
 /** The bytes a record of `payload` bytes takes, in a b-tree that keeps `kept` in place. */
 export function recordBytes(payload: number, kept: number): number {
-  const local = payload <= kept ? payload : SPILL_KEPT;
-  return Math.floor(PAGE_BYTES / Math.max(1, Math.floor(PAGE_ROOM / (local + CELL))))
-    + PAGE_BYTES * Math.ceil((payload - local) / OVERFLOW);
+  const { inPlace, overflow } = recordLayout(payload, kept);
+  return inPlace + overflow;
 }
 
 /** `recordBytes` in SQL, of an integer expression of text bytes (`RECORD_FIXED` added). */

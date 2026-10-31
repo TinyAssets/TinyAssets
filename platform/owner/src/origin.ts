@@ -26,20 +26,21 @@
  * background work submitting to a subagent's conversation) takes that origin. Every other
  * input is a new origin, a new turn: one a door submits, one the thread host admits,
  * and any input submitted under a context with no origin (`BACKGROUND_CONTEXT`, or a
- * context code made instead of the one pi passed it). Every other span takes its parent's,
- * but a compaction's. So every model call one input caused, through any subagent or tool,
+ * context code made instead of the one pi passed it). Every other span takes its parent's.
+ * So every model call one input caused, through any subagent, tool or compaction,
  * is charged to that input's turn while it is open, as the Python's `_borrowed` charged a
  * child to its parent's budget, and refused `turn_ended` after; a steer's submission is
  * an origin of its own (pi marks it before it links it to the run), while the run's calls
  * that read it stay the run's.
  *
- * Every compaction is its own origin, by its task id named by its thread
- * (`task:<thread>:<id>`), whatever carrier pi created it with: a background one outlives
- * the run it was made in, and phase spans carry no background flag, so blocking ones are
- * their own turns too. Task ids are per Session, and every thread is a Session of its
- * own, so two threads' compactions never share a turn. A turn lives as long as the pi
- * records that own it (`thread-host.ts`, migration 10): its open input submissions, or its
- * compaction task. A task takes whatever other carrier it was created with; one with none
+ * A compaction a run made takes the run's carrier, so its calls are the run's turn, under
+ * its caps; its task owns that turn while it is live (`thread-host.ts`), so a background
+ * one that outlives the run keeps it. One made with no carrier (outside any run) is its
+ * own origin, by its task id named by its thread (`task:<thread>:<id>`): task ids are per
+ * Session, and every thread is a Session of its own, so two threads' compactions never
+ * share a turn. A turn lives as long as the pi records that own it (migration 10): its
+ * open input submissions, and its live compactions. A task takes whatever other carrier it
+ * was created with; one with none
  * (created under a context with no origin) has no origin, and its calls are refused
  * (`no_run`). A task created with a forged `trace` carrier takes the forged origin. No
  * owner source creates a task (the create-task guard), so pi's own are all there are.
@@ -245,10 +246,10 @@ class OriginSpan implements TelemetrySpan {
     }
   }
 
-  /** A span started here: of this context's origin, but a compaction's, its own. */
+  /** A span started here: of this context's origin; a compaction's own when it has none. */
   protected child(options: SpanOptions): OriginSpan {
     const own = compactionOrigin(this.#adapter.thread, options);
-    return new OriginSpan(this.#adapter, own === undefined ? () => this.origin() : () => own);
+    return new OriginSpan(this.#adapter, () => this.origin() ?? own);
   }
 
   addLink(_link: SpanLink): void {}
@@ -258,10 +259,9 @@ class OriginSpan implements TelemetrySpan {
 }
 
 /**
- * A compaction's own origin, named by its task in its thread, for a span of its phase:
- * every compaction is a turn of its own, whatever carrier pi created it with (a background
- * one outlives the run it was made in), owned by its task (`thread-host.ts`); undefined
- * for any other span.
+ * A compaction's own origin, named by its task in its thread, for a span of its phase,
+ * when no run's carrier gives it one: owned by its task (`thread-host.ts`); undefined for
+ * any other span.
  */
 export function compactionOrigin(thread: string, options: SpanOptions): string | undefined {
   const attributes = options.attributes ?? {};

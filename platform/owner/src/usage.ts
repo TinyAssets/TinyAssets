@@ -49,9 +49,9 @@
  * adjustments after it (a service tier's multiplier, a fallback model's prices), so a
  * record the connection stored at connect time never under-records what was spent. A turn is the submitted input
  * at the origin of a call's causal chain, as pi propagates it (`origin.ts`): a subagent a
- * run starts is that run's turn while the run is open, as the Python's `_borrowed` charged
- * a child to its parent, and work joining it after it ended is refused `turn_ended`; every
- * compaction is a turn of its own. A source is a connection's
+ * run starts, and a compaction, are that run's turn while the run is open (a compaction's
+ * task keeping it), as the Python's `_borrowed` charged a child to its parent, and work
+ * joining it after it ended is refused `turn_ended`. A source is a connection's
  * source record (`connections.ts`), so its ceilings survive a reconnect. The day and month
  * are UTC.
  *
@@ -327,22 +327,39 @@ export class Usage {
   }
 
   /**
-   * In a unit: the turn owners of `thread` that opened (kept, once) or ended (let go),
-   * in order; a turn's row comes with its first owner and goes with its last. An input
-   * that joined another's turn keeps it only while it is open: one that ended is never
-   * made again, and the input's calls are refused (`turn_ended`).
+   * In a unit: the turn owners of `thread` that opened (kept, once) or ended (let go); a
+   * turn's row comes with its first owner and goes with its last. An owner that joined
+   * another's turn (a linked input, a run's compaction) keeps it only while it is still
+   * there as the unit begins: one that ended is never made again, and the owner's calls
+   * are refused (`turn_ended`). An owner named twice is as it was named last. The ended
+   * go first, so a thread at its bound can take one in their place, while every turn a new
+   * owner names is held, so its counters never start over.
    */
   turnOwners(thread: string, owners: readonly TurnOwner[]): void {
+    const last = [...new Map(owners.map((owner) => [owner.owner, owner])).values()];
+    this.#ownersMoved(thread, last.filter(({ turn }) => turn === null)
+      .map(({ owner }) => owner), last);
+  }
+
+  /** In a unit: `ended` owners of `thread` let go, then `owners` kept, as `turnOwners`. */
+  #ownersMoved(thread: string, ended: readonly string[], owners: readonly TurnOwner[]): void {
+    const held = [...new Set(owners.flatMap(({ turn }) => turn === null ? [] : [turn]))]
+      .filter((turn) => this.#sql.exec("UPDATE model_turns SET owners = owners + 1 " +
+                                        "WHERE turn = ?", turn).rowsWritten > 0);
+    for (const owner of ended) {
+      this.#sql.exec("DELETE FROM model_turn_owners WHERE thread = ? AND owner = ?", thread,
+                     owner);
+    }
     for (const { owner, turn, joined } of owners) {
-      if (turn === null) {
-        this.#sql.exec("DELETE FROM model_turn_owners WHERE owner = ? AND thread = ?", owner,
-                       thread);
-      } else {
-        this.#sql.exec("INSERT INTO model_turn_owners (owner, thread, turn) SELECT ?, ?, ? " +
+      if (turn !== null) {
+        this.#sql.exec("INSERT INTO model_turn_owners (thread, owner, turn) SELECT ?, ?, ? " +
                          "WHERE NOT ? OR EXISTS (SELECT 1 FROM model_turns WHERE turn = ?) " +
-                         "ON CONFLICT (owner) DO NOTHING", owner, thread, turn,
+                         "ON CONFLICT (thread, owner) DO NOTHING", thread, owner, turn,
                        joined === true ? 1 : 0, turn);
       }
+    }
+    for (const turn of held) {
+      this.#sql.exec("UPDATE model_turns SET owners = owners - 1 WHERE turn = ?", turn);
     }
   }
 
@@ -355,18 +372,15 @@ export class Usage {
 
   /**
    * In a unit: `thread`'s turn owners made exactly `open`, as its store holds them when its
-   * Session opens: one it never kept is kept, then one a lost listener left behind goes, so
-   * a turn kept by both keeps its counters.
+   * Session opens: one a lost listener left behind goes, and one it never kept is kept, a
+   * turn kept by both keeping its counters.
    */
   turnsReconciled(thread: string, open: readonly TurnOwner[]): void {
-    this.turnOwners(thread, open);
     const kept = new Set(open.map(({ owner }) => owner));
-    for (const { owner } of this.#sql.exec<{ owner: string }>(
-           "SELECT owner FROM model_turn_owners WHERE thread = ?", thread).toArray()) {
-      if (!kept.has(owner)) {
-        this.#sql.exec("DELETE FROM model_turn_owners WHERE owner = ?", owner);
-      }
-    }
+    const stale = this.#sql.exec<{ owner: string }>(
+      "SELECT owner FROM model_turn_owners WHERE thread = ?", thread).toArray()
+      .map(({ owner }) => owner).filter((owner) => !kept.has(owner));
+    this.#ownersMoved(thread, stale, open);
   }
 
   /**

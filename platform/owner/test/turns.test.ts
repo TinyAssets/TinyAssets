@@ -15,8 +15,9 @@ import { ProviderDoc, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
 import { originContext } from "../src/origin";
+import { THREAD_INPUTS } from "../src/schema";
 import {
-  keepTurns, THREAD_INPUTS, THREAD_INPUTS_FULL, type TurnOwner, turnOwners,
+  keepTurns, THREAD_INPUTS_FULL, type TurnOwner, turnOwners,
 } from "../src/thread-host";
 import { TURN_ENDED } from "../src/usage";
 import { asked, gated, type Gated, provider } from "./gateway-support";
@@ -74,8 +75,9 @@ describe("a turn's owners, as the thread host sees them commit", () => {
     const input = (id: number, status: string, trace?: Record<string, string>) =>
       ({ type: "submission", value: { id, type: "input", status, conversationId: 0,
                                       ...(trace === undefined ? {} : { trace }) } });
-    const task = (id: number, kind: string, status: string) =>
-      ({ type: "task", value: { id, kind, state: { status } } });
+    const task = (id: number, kind: string, status: string, trace?: Record<string, string>) =>
+      ({ type: "task", value: { id, kind, state: { status },
+                                ...(trace === undefined ? {} : { trace }) } });
     expect(turnOwners(THREAD, [
       input(1, "queued", { "ta.origin": "input:a" }),
       input(2, "placed", { "ta.origin": "input:a", "ta.joined": "1" }),
@@ -88,6 +90,8 @@ describe("a turn's owners, as the thread host sees them commit", () => {
       task(8, "pi.compaction", "completing"),
       task(9, "pi.compaction", "terminal"),
       task(10, "pi.generation", "running"),
+      task(11, "pi.compaction", "running", { "ta.origin": "input:a" }),
+      task(12, "pi.compaction", "terminal", { "ta.origin": "input:a" }),
     ] as never)).toEqual([
       { owner: "s:1", turn: "input:a", joined: false },
       { owner: "s:2", turn: "input:a", joined: true },
@@ -96,6 +100,8 @@ describe("a turn's owners, as the thread host sees them commit", () => {
       { owner: "t:7", turn: `task:${THREAD}:7` },
       { owner: "t:8", turn: `task:${THREAD}:8` },
       { owner: "t:9", turn: null },
+      { owner: "t:11", turn: "input:a", joined: true },
+      { owner: "t:12", turn: null },
     ]);
   });
 
@@ -121,13 +127,97 @@ describe("a turn's owners, as the thread host sees them commit", () => {
     }, async () => {
       publish(1);
       return [{ owner: "s:1", turn: "input:1", joined: false }];
-    });
+    }, () => steps.push("lost"));
     await kept;
     steps.push("resumed");
     publish(3);
     expect(steps).toEqual(["reconciling s:1", "reconciled", "owned s:1", "owned s:2",
                            "resumed", "owned s:3"]);
   });
+
+  it("are lost loudly, at once, when a commit's cannot be kept", async () => {
+    let publish: () => void = () => {};
+    let lost = 0;
+    await keepTurns(THREAD, (listener) => {
+      publish = () => listener({ changes: [{ type: "submission", value: {
+        id: 1, type: "input", status: "queued", conversationId: 0,
+        trace: { "ta.origin": "input:1" } } }] } as never, BACKGROUND_CONTEXT);
+      return () => {};
+    }, {
+      owned: () => Promise.reject(new Error("unkept")),
+      reconciled: async () => {},
+    }, async () => [], () => { lost++; });
+    publish();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(lost).toBe(1);
+  });
+
+  it("close the Session when a commit's cannot be kept, its reopen reconciling them",
+     async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance, state) => {
+      instance.script = Array.from({ length: 12 }, () => (messages: Message[]) =>
+        messages.at(-1)?.role === "toolResult" ? says("done")
+          : JSON.stringify(messages.at(-1)).includes("work") ? holding() : says("noted"));
+      const thread = await instance.harness.thread();
+      const owned = instance.parts.turns.owned;
+      instance.parts.turns.owned = () => Promise.reject(new Error("unkept"));
+      const held = gate();
+      instance.probes.holdGate = held.promise;
+      instance.probes.holdLinger = 200;
+      const { operationId } = await instance.harness.submit("work");
+      await until(async () => instance.agent.host.peek(thread) === undefined,
+                  "the Session to close");
+      instance.parts.turns.owned = owned;
+      const reconciled = instance.parts.turns.reconciled;
+      let healed: Record<string, SqlStorageValue>[] = [];
+      instance.parts.turns.reconciled = async (at, open) => {
+        await reconciled(at, open);
+        healed = owners(state);
+      };
+      await instance.agent.host.pi(thread);
+      held.release();
+      const answer = await instance.harness.wait(operationId);
+      return { healed, answer: answer.status, after: owners(state) };
+    });
+    expect(out.healed).toHaveLength(1);
+    expect(out.answer).toBe("done");
+    expect(out.after).toEqual([]);
+  }, 30_000);
+
+  it("are each thread's own, though pi numbers every thread's records alike", async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance, state) => {
+      instance.script = Array.from({ length: 12 }, () => (messages: Message[]) =>
+        messages.at(-1)?.role === "toolResult" ? says("done")
+          : JSON.stringify(messages.at(-1)).includes("work") ? holding() : says("noted"));
+      const held = gate();
+      instance.probes.holdGate = held.promise;
+      const a = await instance.harness.thread();
+      const b = (await instance.agent.thread("main", null, { kind: "run" })).thread_id;
+      const first = await instance.harness.submit("work", { session: a });
+      await until(async () => instance.probes.holds === 1, "a's hold");
+      const second = await instance.harness.submit("work", { session: b });
+      await until(async () => instance.probes.holds === 2, "b's hold");
+      const during = rowsIn(state, "SELECT thread, owner, turn FROM model_turn_owners " +
+                                   "ORDER BY thread");
+      const turns = rowsIn(state, "SELECT turn, thread, owners FROM model_turns ORDER BY thread");
+      const inputs = [instance.parts.turns.inputs(a), instance.parts.turns.inputs(b)];
+      held.release();
+      await instance.harness.wait(first.operationId, { session: a });
+      await instance.harness.wait(second.operationId, { session: b });
+      return { a, b, during, turns, inputs, after: owners(state) };
+    });
+    const [a, b] = [out.a, out.b].sort();
+    expect(out.during.map((row) => row["thread"])).toEqual([a, b]);
+    // pi's ids are per store: both threads' first input has the same.
+    expect(out.during[0]!["owner"]).toBe(out.during[1]!["owner"]);
+    expect(out.turns.map((row) => [row["thread"], row["owners"]])).toEqual([[a, 1], [b, 1]]);
+    expect(out.during.map((row) => row["turn"]))
+      .toEqual(out.turns.map((row) => row["turn"]));
+    expect(out.inputs).toEqual([1, 1]);
+    expect(out.after).toEqual([]);
+  }, 60_000);
 
   it("hold each open input's turn, a steer's its own, and let them go once answered",
      async () => {
@@ -239,6 +329,28 @@ describe("a turn's owners, as the thread host sees them commit", () => {
 });
 
 describe("a turn through the gateway", () => {
+  it("is each thread's own while two threads work at once", async () => {
+    const r = await gated();
+    await r.connect("sk-two");
+    const out = await r.in(async (instance, state) => {
+      const a = await instance.harness.thread();
+      const b = (await instance.agent.thread("main", null, { kind: "run" })).thread_id;
+      const first = await instance.harness.submit("cmd:drip", { session: a });
+      await until(async () => rowsIn(state, "SELECT 1 FROM model_reservations WHERE state = " +
+                                            "'dispatched'").length > 0, "a's call");
+      const second = await instance.harness.prompt("cmd:echo", { session: b });
+      const answered = await instance.harness.wait(first.operationId, { session: a });
+      return { answers: [answered.status, second.status],
+               turns: rowsIn(state, "SELECT turn FROM model_turns") };
+    });
+    expect(out.answers).toEqual(["done", "done"]);
+    const rows = await r.sql("SELECT turn, state, rule FROM model_reservations ORDER BY seq");
+    expect(rows.map((row) => [row["state"], row["rule"]]))
+      .toEqual([["succeeded", null], ["succeeded", null]]);
+    expect(rows[1]!["turn"]).not.toBe(rows[0]!["turn"]);
+    expect(out.turns).toEqual([]);
+  }, 60_000);
+
   it("is refused turn_ended once its input was answered, its counters never made again",
      async () => {
     const r = await gated();

@@ -432,14 +432,14 @@ An upload SHALL be told a chunk need not be sent only when the chunk is stored a
 - **THEN** each commit is refused, and once the client sends the bytes it commits
 
 ### Requirement: The owner's database is bounded under half its limit
-Every table the owner's schema makes SHALL be bounded by a count or bytes the code enforces, with no exception, and a guard SHALL compute the object's worst case from those bounds and the schema, at the policy's high bounds, and hold it under half of the platform's 10 GB. The model turns' counters SHALL be bounded by the threads: at most `THREAD_INPUTS` open inputs and `THREAD_COMPACTIONS` live compactions a thread, each turn of at most 320 bytes.
+Every owner table SHALL be bounded by a count or bytes the code enforces, with no exception, and a guard SHALL compute the worst case from those bounds and the schema, at the policy's high bounds, each row laid out as SQLite lays it at a thinned page's worst fill (`WORST_FILL`), and hold it under half the platform's 10 GB. The schema SHALL refuse a turn owner past `THREAD_INPUTS` open inputs or `THREAD_COMPACTIONS` live compactions a thread.
 
 #### Scenario: A table no bound covers
 - **WHEN** a migration makes a table the guard has no term for, or a manifest table's charging trigger is missing
 - **THEN** the owner-bound guard fails
 
 ### Requirement: A turn's counters live as long as its work
-The thread host SHALL keep each pi record that owns a turn (an open input, a live compaction) as the Session commits it, in a unit at once, and all again as it opens, before it resumes. A turn's row SHALL come with its first owner and go with its last or its thread; a call of a turn with no row SHALL be refused `turn_ended`. Every compaction SHALL be its own turn; a thread SHALL hold at most `THREAD_INPUTS` open inputs (`thread_inputs_full`).
+The thread host SHALL keep each pi record that owns a turn (an open input, a live compaction), keyed by its thread, as the Session commits it, in a unit at once, closing the Session when one cannot be kept, and all again as it opens, before it resumes. A turn's row SHALL come with its first owner and go with its last or its thread; a call of a turn with no row SHALL be refused `turn_ended`. A thread SHALL hold at most `THREAD_INPUTS` open inputs (`thread_inputs_full`).
 
 #### Scenario: An input answered
 - **WHEN** an input's run answers, and a call later names the input's turn
@@ -452,6 +452,10 @@ The thread host SHALL keep each pi record that owns a turn (an open input, a liv
 #### Scenario: Background work after its run
 - **WHEN** work a run's tool started submits an input after the run answered
 - **THEN** the input's calls are refused `turn_ended`, never starting the run's counters over
+
+#### Scenario: Two threads at once
+- **WHEN** two threads' first inputs, which pi numbers alike in each thread's own store, are open at once, and both call a model
+- **THEN** each input owns its own thread's turn, and both calls are kept
 
 ### Requirement: A quota never blocks a change that frees
 A change that only removes or frees (a remove, a redaction, a purge, an aborted upload, housekeeping) SHALL never be refused by a quota. A policy SHALL be refused unless `max_entries` times the larger of `keep_versions` and `keep_recent` is at most `max_history`, so no churn of live files can fill it, and gone paths' churn makes its own room.
@@ -701,11 +705,11 @@ Every cap SHALL read only counters the schema's triggers write: `model_turns` pe
 - **THEN** the turn's counters hold all 5,000, and a cap of 5,000 refuses the next
 
 ### Requirement: A model call's turn is the input at the origin of its causal chain
-A turn SHALL be the submitted input at the origin of a call's causal chain, carried by pi's own telemetry propagation in its durable records: every call one input caused through a subagent SHALL be charged to that input's turn while it is open, and work joining it after it ended SHALL be refused `turn_ended`. An input under no origin (a door's, an enqueued one, a steer) SHALL begin a turn; every compaction SHALL be its own; a call of any other task with no carrier SHALL be refused `no_run`.
+A turn SHALL be the submitted input at the origin of a call's causal chain, carried by pi's telemetry propagation in its durable records: every call one input caused, through a subagent or a compaction, SHALL be charged to its turn while it is open, and work joining it after it ended refused `turn_ended`. An input under no origin (a door's, a steer) SHALL begin a turn, as SHALL a compaction outside any run; a call of any other task with no carrier SHALL be refused `no_run`.
 
 #### Scenario: A compaction a run starts
 - **WHEN** a run's context passes pi's background threshold, and pi summarizes after the run ended
-- **THEN** the summarization is a turn of its own
+- **THEN** the summarization is the run's turn, under its caps, and the turn ends with the compaction
 
 #### Scenario: A subagent's calls
 - **WHEN** a tool of the root's run makes a conversation and submits its work there, which does the same once more
@@ -767,7 +771,7 @@ pi's compaction thresholds SHALL be each listed model's own, from its context wi
 - **THEN** the call is refused before any reservation, pi compacts, and the retry goes to the same model under its threshold
 
 ### Requirement: pi's and pi-ai's metrics are kept
-The telemetry adapter SHALL carry a metrics capability on its root, every span and every extracted parent, aggregating every metric pi and pi-ai record by name, kind and attributes in the object's memory, at most 1,024 series, a measurement past them counted as dropped. The owner's `usageMetrics` SHALL answer them with pi's own `pi.usage`, summed over every thread: an open Session's read live, any other's from the usage row the owner kept as its Session last closed (at most 64 KiB, going with its thread). The read SHALL never open a Session, and SHALL cover the threads the object holds now, each counted once (a dropped thread's usage goes with its row); no cap reads either.
+The telemetry adapter SHALL carry a metrics capability on its root, every span and every extracted parent, aggregating every metric pi and pi-ai record by name, kind and attributes in the object's memory, at most 1,024 series, a measurement past them counted as dropped. The owner's `usageMetrics` SHALL answer them with pi's own `pi.usage`, summed over every thread: an open Session's read live, any other's from the usage row the owner kept as its Session last closed (at most 16 KiB, going with its thread). The read SHALL never open a Session, and SHALL cover the threads the object holds now, each counted once (a dropped thread's usage goes with its row); no cap reads either.
 
 #### Scenario: A turn's metrics
 - **WHEN** a turn runs through the gateway and the owner reads its usage
