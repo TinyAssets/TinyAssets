@@ -4,10 +4,10 @@
  *
  * The outside-callable doors are read from `owner-do.ts` itself: a public method that
  * binds through `#account`, `#collector` or `#filer`, and never through `#owner` or
- * `#widening`, is reachable by an outside client. Its capability is the one string it
- * hands `#scope`, `#collector` or `#filer`. Each tool must name such a door, with that
- * capability, and arguments exactly the door's request fields; each such door must have
- * a tool, or be named below with the slice that owes it. Only the doors that hand work to
+ * `#widening`, is reachable by an outside client. Its capability is the last string it
+ * hands `#scope`, `#collector` or `#filer` (a door class comes before it). Each tool must
+ * name such a door, with that capability, and arguments exactly the door's request
+ * fields; each such door must have a tool, or be named below with the slice that owes it. Only the doors that hand work to
  * the owner's agent are open world: the agent acts on outside services.
  */
 import { readFileSync } from "node:fs";
@@ -113,7 +113,8 @@ export function outsideDoors(source: string): Map<string, DoorShape> {
         const helper = node.expression.name.text;
         helpers.add(helper);
         if (["#scope", "#collector", "#filer"].includes(helper)) {
-          const literal = node.arguments.find(ts.isStringLiteralLike);
+          // The capability is the call's last string; a door class comes before it.
+          const literal = node.arguments.filter(ts.isStringLiteralLike).at(-1);
           capability = literal?.text ?? capability;
         }
       }
