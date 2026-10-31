@@ -705,7 +705,7 @@ pi's compaction thresholds SHALL be each listed model's own, from its context wi
 - **THEN** the call is refused before any reservation, pi compacts, and the retry goes to the same model under its threshold
 
 ### Requirement: pi's and pi-ai's metrics are kept
-The telemetry adapter SHALL carry a metrics capability on its root, every span and every extracted parent, aggregating every metric pi and pi-ai record by name, kind and attributes in the object's memory, at most 1,024 series, a measurement past them counted as dropped. The owner's `usageMetrics` SHALL answer them with pi's own `pi.usage`, summed over the conversations; no cap reads either.
+The telemetry adapter SHALL carry a metrics capability on its root, every span and every extracted parent, aggregating every metric pi and pi-ai record by name, kind and attributes in the object's memory, at most 1,024 series, a measurement past them counted as dropped. The owner's `usageMetrics` SHALL answer them with pi's own `pi.usage`, summed over every thread: an open Session's read live, any other's from the usage row the owner kept as its Session last closed (at most 64 KiB, going with its thread). The read SHALL never open a Session; no cap reads either.
 
 #### Scenario: A turn's metrics
 - **WHEN** a turn runs through the gateway and the owner reads its usage

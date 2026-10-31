@@ -797,8 +797,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // conversation an agent holds with one caller (`converse`, one per caller, agent and
   // universe) or one run (`run`, a fresh one per launch), and when it was last active, which
   // idle retention reads (the `threads` lane, by its index), with the threads unsettled work
-  // names. `agent_live` is each thread's wake as its Session last reported it, going with
-  // its thread. Nothing is deployed, so this migration is edited in place: the table is made
+  // names. `agent_live` is each thread's wake as its Session last reported it, and
+  // `agent_usage` its Session's `pi.usage` as it last closed (at most 64 KiB), each going
+  // with its thread. Nothing is deployed, so this migration is edited in place: the table is made
   // again, and a row from before stores existed (none can be) fails it loudly, its store
   // missing.
   Object.freeze([
@@ -824,6 +825,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TABLE agent_live (thread_id TEXT PRIMARY KEY, " +
       "active INTEGER NOT NULL CHECK (active IN (0, 1)), wake_at REAL, " +
       "CHECK (active = 1 OR wake_at IS NOT NULL)) WITHOUT ROWID",
+    "CREATE TABLE agent_usage (thread_id TEXT PRIMARY KEY, usage TEXT NOT NULL " +
+      "CHECK (length(CAST(usage AS BLOB)) <= 65536)) WITHOUT ROWID",
     "CREATE INDEX agent_threads_by_client ON agent_threads (client, created_at)",
     "CREATE TRIGGER agent_threads_kept BEFORE UPDATE ON agent_threads WHEN " +
       "NEW.thread_id IS NOT OLD.thread_id OR NEW.store IS NOT OLD.store " +
@@ -837,7 +840,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     `CREATE TRIGGER agent_threads_held AFTER INSERT ON agent_threads BEGIN ${
       HOLD("NEW", "+")} END`,
     `CREATE TRIGGER agent_threads_released AFTER DELETE ON agent_threads BEGIN ${
-      HOLD("OLD", "-")} DELETE FROM agent_live WHERE thread_id = OLD.thread_id; END`,
+      HOLD("OLD", "-")} DELETE FROM agent_live WHERE thread_id = OLD.thread_id; ` +
+      "DELETE FROM agent_usage WHERE thread_id = OLD.thread_id; END",
     "CREATE TRIGGER outside_clients_held AFTER INSERT ON outside_clients BEGIN " +
       "UPDATE outside_clients SET agents = (SELECT COUNT(*) FROM outside_agents " +
       "WHERE outside_client = NEW.client), held = (SELECT COUNT(*) FROM scheduled_work " +

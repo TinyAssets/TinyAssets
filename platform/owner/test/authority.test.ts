@@ -632,6 +632,51 @@ describe("a policy write", () => {
     expect([settled.status, settled.reason]).toEqual(["unanswered", "aborted"]);
   });
 
+  it("ends working threads in batches of the bound, never more opened for it at once",
+     async () => {
+    // Review round 2 (L2): every stale live row after a mass eviction opened at once.
+    const r = await agentRig();
+    const ops = await r.in(async (instance) => {
+      instance.probes.holdGate = new Promise(() => undefined);
+      const made = [];
+      for (let n = 0; n < 3; n++) {
+        const { session } = await threadFor(instance, null);
+        made.push([session, (await instance.harness.submit("hold please", { session }))
+          .operationId] as const);
+      }
+      await until(() => instance.probes.holds === 3, "the holds to start");
+      return made;
+    });
+    await runInDurableObject(r.stub, (_i, state) => state.abort("crash")).catch(() => undefined);
+    const out = await runInDurableObject(env.AGENT.getByName(r.owner),
+                                         async (instance: FauxOwnerDO) => {
+      instance.script = Array.from({ length: 8 }, () => says("resumed"));
+      instance.timing.openMax = 2;
+      const host = instance.agent.host;
+      const end = host.end.bind(host);
+      let ending = 0;
+      let most = 0;
+      host.end = async (thread, act) => {
+        most = Math.max(most, ++ending);
+        try {
+          return await end(thread, act);
+        } finally {
+          ending--;
+        }
+      };
+      const { generation, policy } = await instance.policyRead(r.bind(null));
+      await instance.policyWrite(r.session(), { expected_generation: generation, policy });
+      instance.timing.openMax = 64;
+      const settled = [];
+      for (const [session, operationId] of ops) {
+        settled.push((await instance.harness.wait(operationId, { session })).reason);
+      }
+      return { most, settled };
+    });
+    expect(out.most).toBe(2);
+    expect(out.settled).toEqual(["aborted", "aborted", "aborted"]);
+  });
+
   it("ends a thread whose open Session is working though its live row is gone", async () => {
     const r = await agentRig();
     const out = await r.in(async (instance, state) => {

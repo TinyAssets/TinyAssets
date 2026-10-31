@@ -887,6 +887,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                           config: (agentId) => this.#agentConfig(agentId),
                           live: (thread, wake) => write(() => this.#threads.live(
                             thread, wake.active, wake.at === undefined ? null : wake.at / 1000)),
+                          usage: (thread, usage) => write(() => this.#threads.keepUsage(
+                            thread, JSON.stringify(usage))),
                         });
     this.#runner = workRunner(this.#threads, this.#agent, authority);
     this.#lifecycle = new Lifecycle<OwnerEnv>(this).use(this.#schedule).use(this.#agent.host);

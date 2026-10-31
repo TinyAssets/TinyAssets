@@ -283,6 +283,8 @@ export interface AgentParts {
   readonly config: (agent: string) => Promise<AgentConfig>;
   /** Keep a thread's wake in its live row (`threads.ts`), in a unit of the write gate. */
   readonly live: (thread: string, wake: Wake) => Promise<void>;
+  /** Keep a thread's usage as its Session closes (`threads.ts`), in a unit of the gate. */
+  readonly usage: (thread: string, usage: UsageState) => Promise<void>;
 }
 
 /** What a Session's models are bound to: its thread, and its own authority check. */
@@ -408,6 +410,7 @@ export class OwnerAgent {
       open: (thread, onWake) => this.#open(thread, onWake),
       exists: (thread) => parts.threads.get(thread) !== null,
       live: (thread, wake) => parts.live(thread, wake),
+      usage: (thread, usage) => parts.usage(thread, usage),
       notice: (type, detail) => this.#report(type, detail),
     }, source.timing ?? HOST_TIMING);
   }
@@ -800,33 +803,55 @@ export class OwnerAgent {
    * A policy write ends every thread's work: every wait, every view, and the work of each
    * thread with work running (its live row, or an open Session), opened if need be: an
    * ending's open is never refused, and aborts before the Session resumes
-   * (`ThreadHost.end`). A thread whose work could not be ended rejects this, so the door
-   * rejects too.
+   * (`ThreadHost.end`), so the endings run in batches of the host's bound: never more
+   * Sessions open for them at once than the bound allows. A thread whose work could not be
+   * ended rejects this, so the door rejects too.
    */
   async endAll(): Promise<void> {
     this.#endWaits();
     this.#parts.tee.close();
     const running = new Set([...this.#parts.threads.active(),
       ...this.host.openThreads().filter((thread) => this.host.peek(thread)?.pi.wake().active)]);
-    await this.#within(Promise.all([...running].map((thread) =>
-      this.host.end(thread, ({ pi }) => this.#endSession(pi, false)))));
+    const threads = [...running];
+    await this.#within((async () => {
+      for (let at = 0, size = Math.max(1, this.host.openMax); at < threads.length;
+           at += size) {
+        await Promise.all(threads.slice(at, at + size).map((thread) =>
+          this.host.end(thread, ({ pi }) => this.#endSession(pi, false))));
+      }
+    })());
   }
 
   /**
    * The owner's model usage as pi records it (pi audit F4): pi's own `pi.usage`, every
    * conversation's summed (`Harness.usage`: per `provider/model` and per tool, failed and
-   * aborted attempts included) across every thread's Session, each opened if need be, and
-   * the metrics pi and pi-ai recorded since this instance began. Diagnostic only: every cap
-   * reads `usage.ts`'s counters.
+   * aborted attempts included) across every thread, and the metrics pi and pi-ai recorded
+   * since this instance began. Diagnostic only: every cap reads `usage.ts`'s counters.
+   *
+   * A read never opens a Session: a thread's usage is its open Session's, read live, or
+   * else its usage row, kept as its Session last closed (`ThreadHost`). A thread whose
+   * object died with its Session open counts as it last closed, until it closes again.
    */
   async usage(): Promise<UsageView> {
     const sum: UsageState = { models: {}, tools: {} };
-    for (const thread of this.#parts.threads.ids()) {
-      const usage = await this.host.use(thread, ({ pi }) => pi.usage(BG));
+    const add = (usage: Readonly<UsageState>) => {
       for (const bucket of ["models", "tools"] as const) {
-        for (const [key, counts] of Object.entries(usage[bucket])) {
+        for (const [key, counts] of Object.entries(usage[bucket] ?? {})) {
           sum[bucket][key] = added(sum[bucket][key], counts) as typeof counts;
         }
+      }
+    };
+    const read: string[] = [];  // the threads read live
+    for (const thread of this.host.openThreads()) {
+      const usage = await this.host.peek(thread)?.pi.usage(BG).catch(() => undefined);
+      if (usage !== undefined) {  // one closing counts by the row its close keeps
+        read.push(thread);
+        add(usage);
+      }
+    }
+    for (const kept of this.#parts.threads.keptUsage()) {
+      if (!read.includes(kept.thread_id)) {
+        add(JSON.parse(kept.usage) as UsageState);
       }
     }
     return { models: sum.models, tools: sum.tools, metrics: this.metrics.snapshot() };

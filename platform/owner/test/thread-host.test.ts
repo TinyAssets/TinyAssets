@@ -16,11 +16,12 @@ import {
   type AssistantMessage, fauxAssistantMessage, type FauxContentBlock, fauxToolCall,
   type Message,
 } from "@earendil-works/pi-ai";
-import type { JsonObject } from "@earendil-works/pi-durable";
+import type { JsonObject, StorageWrite } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
 import { NO_THREAD } from "../src/agent";
-import { DESTROYED } from "../src/thread-store";
+import { DESTROYED, StoreSession } from "../src/thread-store";
+import { USAGE_ROW_MAX } from "../src/threads";
 import {
   HOST, MAX_WAKE_BACKOFF_MS, OPEN_MAX, PARKED, SESSIONS_FULL, wakeJob,
 } from "../src/thread-host";
@@ -225,6 +226,40 @@ describe("a wake job per thread", () => {
 });
 
 describe("a wake job's ends", () => {
+  it("is scheduled before the commit that hands pi an input, so a death between leaves it",
+     async () => {
+    // Review round 2 (M2): without the job first, pi's onWake would push it only once the
+    // input's commit landed, and an object that died in between would leave the input with
+    // no job to restart it.
+    const r = rig();
+    const thread = await r.thread();
+    await r.in((instance) => instance.harness.prompt("noted", { session: thread }));
+    await until(async () => (await r.jobs()).length === 0, "the first run's job to complete");
+    const held = gate();
+    let reached = false;
+    const original = StoreSession.prototype.commit;
+    StoreSession.prototype.commit = async function (this: StoreSession,
+                                                    writes: readonly StorageWrite[]) {
+      if (writes.some((write) => write.type === "submission"
+                      && (write.value as { requestId?: string }).requestId === "op-j")) {
+        reached = true;
+        await held.promise;
+      }
+      return original.call(this, writes);
+    };
+    try {
+      const submitted = r.in((instance) =>
+        instance.agent.host.submit(thread, "again", { operationId: "op-j" }));
+      await until(() => reached, "the input's commit to be in flight");
+      const jobs = (await r.jobs()).map((job) => job.id);
+      held.release();
+      await submitted;
+      expect(jobs).toContain(wakeJob(thread));
+    } finally {
+      StoreSession.prototype.commit = original;
+    }
+  }, 30_000);
+
   it("is put off to a sleeping task's deadline when it runs early, never completed",
      async () => {
     const r = rig();
@@ -476,7 +511,86 @@ describe("a store reset mid-run", () => {
   }, 30_000);
 });
 
+/** Kill `stub`'s object again and again mid-read, until pi's restart limit parks it. */
+async function parkTheRead(stub: () => DurableObjectStub<FauxOwnerDO>,
+                           inside: <R>(act: (i: FauxOwnerDO) => R | Promise<R>) => Promise<R>) {
+  const parked = async () => (await inside((i) => i.parts.notices.list()))
+    .some((notice) => notice.type === PARKED);
+  for (let n = 0; n < 8 && !await parked(); n++) {
+    await runInDurableObject(stub(), (_i, state) => state.abort("crash"))
+      .catch(() => undefined);
+    await inside(() => undefined);
+    for (let k = 0, got = 0; k < 20 && got === 0; k++) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      await runDurableObjectAlarm(stub());
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      got = await inside((i) => i.probes.reads);
+    }
+  }
+}
+
 describe("a task pi's restart limit parked", () => {
+  it("in a conversation background work made ends that work's run alone: the root's other " +
+     "background work goes on, and the thread takes its next message", async () => {
+    // Review round 2 (L1). A subagent a tool starts is a nested `ta` call, which pi
+    // abandons at its first restart, so its tasks never park; background work's
+    // conversations are where a parked task sits outside the root.
+    const name = `owner-${crypto.randomUUID()}`;
+    const stub = () => env.AGENT.getByName(name);
+    const reply = (messages: Message[]) => {
+      const last = messages.at(-1);
+      if (last?.role === "toolResult") {
+        return says("tool done");
+      }
+      const said = JSON.stringify(last);
+      return said.includes("start it")
+        ? fauxAssistantMessage([fauxToolCall("ta", { op: "call", name: "background",
+                                                     arguments: { work: "look" } })],
+                               { stopReason: "toolUse" })
+        : said.includes("look")
+          ? fauxAssistantMessage([fauxToolCall("read", { path: "a.md" })],
+                                 { stopReason: "toolUse" })
+          : says("noted");
+    };
+    const inside = <R>(act: (i: FauxOwnerDO) => R | Promise<R>) =>
+      runInDurableObject(stub(), async (i: FauxOwnerDO) => {
+        i.script = Array.from({ length: 200 }, () => reply);
+        i.probes.readGate = new Promise(() => undefined);  // the read never ends
+        return act(i);
+      });
+    await stub().fileWrite({ owner: name, caller: name, origin: null },
+                           { path: "/workspace/a.md", expected_etag: null,
+                             content: new TextEncoder().encode("alpha") });
+    const thread = await inside(async (i) => (await i.agent.thread("main", null)).thread_id);
+    await inside(async (i) => {
+      // The root's own background work, asleep the while: it must outlive the ending.
+      const pi = await i.agent.host.pi(thread);
+      const root = (await pi.conversation(1 as never, BG))!;
+      await root.commit((tx) => tx.createTask(Reminder, { until: Date.now() + 3_600_000 },
+                                              { ownership: { kind: "conversation" },
+                                                background: true }), BG);
+      await i.agent.host.submit(thread, "start it", { operationId: "op-bg" });
+      await until(() => i.probes.reads === 1, "the background work's read to start");
+    });
+    await parkTheRead(stub, inside);
+    const store = await storeOf(stub(), thread);
+    const childInput = async () => (await storeSql(store,
+      "SELECT json_extract(record, '$.status') AS status FROM pi_submissions WHERE " +
+      "json_extract(record, '$.conversationId') != 1"))[0]?.["status"];
+    await until(async () => await childInput() === "unanswered",
+                "the background work's input to settle");
+    expect((await storeSubmission(store, { request: "op-bg" }))?.status).toBe("done");
+    const reminder = await storeSql(store, "SELECT status FROM pi_tasks WHERE " +
+      "json_extract(record, '$.kind') = ?", Reminder.definition.name);
+    expect(reminder.map((row) => row["status"])).not.toContain("terminal");
+    const out = await inside(async (i) => {
+      await i.agent.host.submit(thread, "hello", { operationId: "op-after" });
+      return i.agent.host.settled(thread, "op-after", AbortSignal.timeout(5_000))
+        .then((result) => result.status, () => "still waiting");
+    });
+    expect(out).toBe("done");
+  }, 120_000);
+
   // PiHarness reported a parked task (`pending()`: "parked") and ran it again on request
   // (`retry()`); pi main removes `retryTask`, so the host ends the run it holds up instead.
   // Found by review (S1-S3, M1): before, the input stayed placed and every follow-up queued
@@ -560,4 +674,59 @@ describe("a message's store calls", () => {
     expect(out["conversation"] ?? 0).toBe(0);
     expect(Object.values(out).reduce((sum, n) => sum + n, 0)).toBeLessThanOrEqual(26);
   }, 30_000);
+});
+
+describe("the owner's usage view", () => {
+  // Found by review (S1-S3 round 2, M1): the view opened and resumed every thread's
+  // Session, refused past the bound and left each one open.
+  it("never opens a Session: open ones are read live, closed ones from their rows, and it " +
+     "is answered with the bound held by a working thread", async () => {
+    const r = rig();
+    const [a, b, c] = [await r.thread(), await r.thread(), await r.thread()];
+    const held = gate();
+    const out = await r.in(async (instance) => {
+      const host = instance.agent.host;
+      await instance.harness.prompt("noted", { session: b });
+      await instance.harness.prompt("noted", { session: c });
+      const before = await instance.agent.usage();
+      await host.close(b);
+      await host.close(c);
+      instance.probes.holdGate = held.promise;
+      await host.submit(a, "hold it", { operationId: "op-a" });
+      await until(() => instance.probes.holds === 1, "the hold to start");
+      const open = host.openThreads();
+      instance.timing.openMax = 1;  // the one working thread holds the bound
+      const view = await instance.agent.usage();
+      instance.timing.openMax = 64;
+      const after = host.openThreads();
+      held.release();
+      return { before, view, open, after };
+    });
+    // A thread's usage row goes with it.
+    expect((await sqlIn(r.stub(), "SELECT thread_id FROM agent_usage")).length).toBe(2);
+    await sqlIn(r.stub(), "DELETE FROM agent_threads WHERE thread_id = ?", b);
+    expect(await sqlIn(r.stub(), "SELECT thread_id FROM agent_usage")).toEqual([
+      { thread_id: c }]);
+    expect(out.open).toEqual([a]);
+    expect(out.after).toEqual([a]);
+    // The two closed threads count by their rows, as much as while they were open; the
+    // working one adds its own, read live.
+    const total = (view: { models: Record<string, unknown> }) =>
+      Object.values(view.models as Record<string, { input: number; output: number }>)
+        .reduce((sum, used) => sum + used.input + used.output, 0);
+    expect(total(out.before)).toBeGreaterThan(0);
+    expect(total(out.view)).toBeGreaterThan(total(out.before));
+  }, 30_000);
+
+  it("keeps a thread's usage within its bound, refusing more, loudly", async () => {
+    const r = rig();
+    const thread = await r.thread();
+    const out = await r.in(async (instance) => {
+      const keep = (usage: string) => instance.parts.write(() =>
+        instance.parts.threads.keepUsage(thread, usage)).then(() => "kept",
+                                                              (e: Error) => e.message);
+      return [await keep("x".repeat(USAGE_ROW_MAX)), await keep("x".repeat(USAGE_ROW_MAX + 1))];
+    });
+    expect(out).toEqual(["kept", "a thread's usage is past its bound"]);
+  });
 });

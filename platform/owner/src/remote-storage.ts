@@ -29,7 +29,9 @@
  *   failed.
  * - **Conversation records are kept** once read: pi never changes one (an id, once a
  *   conversation's, is refused to any other write), and a message reads its conversations
- *   several times. One not found is never kept: it may be made next.
+ *   several times. Each is kept frozen, deeply, so the one value every read hands back is
+ *   detached as pi's contract asks: no caller can change what another reads. One not found
+ *   is never kept: it may be made next.
  * - **Close** releases the session, so the store may hibernate, and makes every later call
  *   reject; the store keeps nothing of this Session but the fence.
  */
@@ -68,6 +70,17 @@ function aborted(context: Context): void {
 /** Release an RPC session's stub, if it is one (a local object has nothing to release). */
 function release(session: StoreSessionRpc): void {
   (session as Partial<Disposable>)[Symbol.dispose]?.();
+}
+
+/** `value`, frozen with everything it holds. */
+function frozen<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const held of Object.values(value)) {
+      frozen(held);
+    }
+    Object.freeze(value);
+  }
+  return value;
 }
 
 /** The id a write claims, as pi's storages read it, if it claims one. */
@@ -165,10 +178,12 @@ export class RemoteStorage implements Storage {
     }
     const record = await this.#read<ConversationRecord | undefined>("conversation", [id],
                                                                      context);
-    if (record !== undefined) {
-      this.#conversations.set(id, record);
+    if (record === undefined) {
+      return undefined;
     }
-    return record;
+    const keeping = frozen(record);
+    this.#conversations.set(id, keeping);
+    return keeping;
   }
 
   scanConversations(query: ConversationQuery, limit: number, cursor: Cursor | undefined,

@@ -36,9 +36,9 @@
  * A task pi's restart limit parked (cut off `restartLimit` times in a row without progress)
  * would hold its thread's run forever: its input placed, its job gone, every follow-up
  * queued behind it. Each open looks for one (`inspect`) before it resumes the Session; one
- * found ends the run it is in (`#endParked`): its conversations are aborted, background work
- * included, so the input settles `unanswered`, and the owner is told (`PARKED`). While it
- * ends, the operation's status says so (`reason: "parked"`).
+ * found is aborted with the run of its own conversation (`#endParked`), so that run's
+ * input settles `unanswered`, and the owner is told (`PARKED`). While it ends, the
+ * operation's status says so (`reason: "parked"`).
  *
  * Each open Session holds its store's one RPC session (`remote-storage.ts`), released when
  * the Session closes, however it closes. Holding it keeps the store in memory, billed: a
@@ -69,7 +69,7 @@
 import { BACKGROUND_CONTEXT, type Context, withAbortSignal } from "@earendil-works/chord/context";
 import {
   type ConversationId, type EntryRecord, type Harness, type JsonObject, ROOT_CONVERSATION_ID,
-  type SettledSubmissionRecord, type Storage, type Wake,
+  type SettledSubmissionRecord, type Storage, type TaskId, type UsageState, type Wake,
 } from "@earendil-works/pi-durable";
 import {
   LifecycleCapability, type LifecycleJobContext, type LifecycleJobOutcome,
@@ -116,6 +116,10 @@ export const MAX_WAKE_BACKOFF_MS = 10 * 60_000;
 const SESSION_CLOSE_MS = 1_000;
 /** An open refused past `openMax` with no idle Session to close. */
 export const SESSIONS_FULL = "too many of the agent's threads are working at once";
+/** The owner notice a thread's usage that could not be kept at its close leaves. */
+export const USAGE_UNKEPT = "usage_unkept";
+const USAGE_UNKEPT_DETAIL = "a thread's model usage could not be kept as its Session " +
+  "closed; the usage view counts it as it last closed";
 /** The owner notice a parked task's ended run leaves (`#endParked`). */
 export const PARKED = "run_parked";
 const PARKED_DETAIL = "a task was cut off too many times in a row without progress, so " +
@@ -151,6 +155,8 @@ export interface HostParts {
   exists(thread: string): boolean;
   /** Keep `thread`'s wake in the owner's rows, in a unit of the write gate. */
   live(thread: string, wake: Wake): Promise<void>;
+  /** Keep `thread`'s usage (pi's `pi.usage`) as its Session closes, in a unit. */
+  usage(thread: string, usage: UsageState): Promise<void>;
   /** Keep an owner notice (`notices.ts`). */
   notice(type: string, detail: string): void;
 }
@@ -418,6 +424,11 @@ export class ThreadHost extends LifecycleCapability {
     return opened.pi;
   }
 
+  /** Sessions open at once, past which an open makes room or is refused. */
+  get openMax(): number {
+    return this.#timing.openMax;
+  }
+
   /** `thread`'s Session if it is open now; never opens one. */
   peek(thread: string): Opened | undefined {
     return this.#slots.get(thread)?.opened;
@@ -507,8 +518,8 @@ export class ThreadHost extends LifecycleCapability {
       const closed = pi.closed;
       pi.subscribeClose(() => this.#piClosing(thread, slot, current(), opened, closed));
       const parked = await this.#parked(opened);
-      if (parked.size > 0) {
-        this.#endParked(thread, slot, pi, parked);
+      if (parked.length > 0) {
+        this.#endParked(slot, pi, parked);
       }
       if (!ending) {
         pi.resume();
@@ -526,42 +537,35 @@ export class ThreadHost extends LifecycleCapability {
   }
 
   /**
-   * The conversations a task pi's restart limit parked holds up, each the ownerless one
-   * whose run it is in (its own, or the one owning it through a tool that started it).
+   * The tasks pi's restart limit parked, each with its own conversation: the run it holds
+   * up. A parked task's own conversation is the narrowest end that frees what waits on it:
+   * at the root, the thread's input; in a conversation background work made, that work's
+   * own input, which nothing in the root waits on (a subagent a tool starts is a nested
+   * `ta` call, which pi abandons at its first restart, so its tasks never park).
    */
-  async #parked({ pi, storage }: Opened): Promise<Set<ConversationId>> {
+  async #parked({ pi }: Opened): Promise<{ task: TaskId; conversation: ConversationId }[]> {
     const inspection = await pi.inspect(BG);
-    const tops = new Set<ConversationId>();
-    for (const { record, state } of inspection.tasks) {
-      if (state.kind !== "blocked" || state.reason !== "restart_limit") {
-        continue;
-      }
-      let id: ConversationId | undefined = record.conversationId;
-      const seen = new Set<ConversationId>();
-      while (id !== undefined && !seen.has(id)) {
-        seen.add(id);
-        const owner: ConversationId | undefined =
-          (await storage.conversation(id, BG))?.owner?.conversationId;
-        if (owner === undefined) {
-          tops.add(id);
-        }
-        id = owner;
-      }
-    }
-    return tops;
+    return inspection.tasks
+      .filter(({ state }) => state.kind === "blocked" && state.reason === "restart_limit")
+      .map(({ record }) => ({ task: record.id, conversation: record.conversationId }));
   }
 
   /**
-   * End the runs a parked task holds up: each conversation aborted, background work
-   * included (pi withdraws its queued inputs and settles its placed one `unanswered`), and
-   * an owner notice kept. Off the open's line: an abort resolves once the run is idle. One
-   * that fails is told loudly; the next open finds the task still parked and tries again.
+   * End what each parked task holds up: the task itself marked aborted (pi runs its abort
+   * handler, never its phase again), and its own conversation's run aborted (pi withdraws
+   * its queued inputs and settles its placed one `unanswered`), and an owner notice kept.
+   * Work elsewhere in the thread, the root's background work included, goes on. Off the
+   * open's line: an abort resolves once the run is idle. One that fails is told loudly; the
+   * next open finds the task still parked and tries again.
    */
-  #endParked(thread: string, slot: Slot, pi: Harness, tops: Set<ConversationId>): void {
+  #endParked(slot: Slot, pi: Harness,
+             parked: readonly { task: TaskId; conversation: ConversationId }[]): void {
     slot.parked = true;
     this.#parts.notice(PARKED, PARKED_DETAIL);
-    void Promise.all([...tops].map(async (id) =>
-      (await pi.conversation(id, BG))?.abort(BG, { background: true })))
+    void Promise.all(parked.map(async ({ task, conversation }) => {
+      await pi.abortTask(task, BG);
+      await (await pi.conversation(conversation, BG))?.abort(BG);
+    }))
       .catch(() => console.error("a parked task's run could not be ended"))  // no ids
       .finally(() => {
         slot.parked = false;
@@ -609,6 +613,9 @@ export class ThreadHost extends LifecycleCapability {
     const closing = opening.then(async ({ pi, storage }) => {
       this.#closing.add(pi);
       try {
+        if (thread !== undefined) {
+          await this.#keepUsage(thread, pi);
+        }
         await pi.close(BG);
       } finally {
         await storage.close(BG);  // its store's session, released
@@ -622,6 +629,19 @@ export class ThreadHost extends LifecycleCapability {
       }
     });
     return closing;
+  }
+
+  /**
+   * Keep `thread`'s usage as its Session closes, so the owner's usage view reads rows, never
+   * a closed Session. One that cannot be kept is told loudly; the row keeps the last.
+   */
+  async #keepUsage(thread: string, pi: Harness): Promise<void> {
+    try {
+      await this.#parts.usage(thread, await pi.usage(BG));
+    } catch {
+      console.error("a thread's usage could not be kept");  // no ids
+      this.#parts.notice(USAGE_UNKEPT, USAGE_UNKEPT_DETAIL);
+    }
   }
 
   /** Drop a slot that holds nothing any more: no Session, no wait, no caller. */

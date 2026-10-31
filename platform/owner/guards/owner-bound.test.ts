@@ -22,7 +22,7 @@ import { LIMITS as COLLECTIONS } from "../src/collections";
 import { LEDGER_LIMITS } from "../src/ledger";
 import { NOTICE_DETAIL, NOTICES_KEPT } from "../src/notices";
 import { SESSION_LIMITS } from "../src/sessions";
-import { THREAD_LIMITS } from "../src/threads";
+import { THREAD_LIMITS, USAGE_ROW_MAX } from "../src/threads";
 import { USAGE_LIMITS } from "../src/usage";
 import { PLATFORM } from "./sources";
 
@@ -179,6 +179,8 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
                    by: "THREAD_LIMITS (the owner's, and every client's)" },
   agent_live: { rows: THREAD_LIMITS.owner + THREAD_LIMITS.clients, bytes: ROW,
                 by: "one per thread" },
+  agent_usage: { rows: THREAD_LIMITS.owner + THREAD_LIMITS.clients, bytes: ROW + USAGE_ROW_MAX,
+                 by: "one per thread, USAGE_ROW_MAX each" },
 });
 
 /**

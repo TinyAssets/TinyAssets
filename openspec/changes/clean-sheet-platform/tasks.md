@@ -958,6 +958,25 @@ account and no deploy.
   (`#idle`'s admitting and waiting checks, which `wake().active` covers in each test
   path; the close's wake change; the budget's re-wake, at a 10-minute budget; the open's
   `wakeFor`, which pi's first `onWake` repeats).
+  Review round 2 (REQUEST CHANGES), all taken: M1 the usage view, merged from 0b, opened
+  and resumed every thread's Session; it now never opens one: an open Session's
+  `pi.usage` is read live, every other thread's from a usage row (`agent_usage`, at most
+  64 KiB, kept in a gate unit as the Session closes, going with its thread; the
+  owner-bound guard counts it), and the reviewer's repro is a test (answered with the
+  bound held, no Session opened). M2 a test holds the commit that carries an input and
+  finds the thread's job already scheduled. L1 a parked task now ends with its own
+  conversation's run (the task aborted, then that conversation), not the run at the top
+  of its owner links: a subagent a tool starts is a nested `ta` call, which pi abandons at
+  its first restart, so its tasks never park, and background work's conversations are
+  where one sits outside the root; aborting the root there would have ended the root's
+  other work. Tested: a read parked in background work's conversation settles that input
+  `unanswered`, the root's sleeping background work survives, and the thread takes its
+  next message. L2 endings run in batches of the bound (tested: at most the bound at once).
+  L3 kept conversation records are frozen deeply (tested). Mutation of the touched code,
+  13: 11 killed; alive, `ag-usage-opens` (it reads only Sessions already open, so it
+  opens none: equivalent) and dropping the parked task's own abort (its conversation's
+  abort reaches it in every reachable case; kept for a parked task that is itself
+  background work, which a plain conversation abort does not reach).
 - [ ] Before any deploy holding real data: S4's drop wipes its store (`destroy()`, the row
   `dropping` until it returned). Until then, a drop (idle retention, a grant change or a
   revoke) forgets its row and orphans its store, which nothing can list or reach again.

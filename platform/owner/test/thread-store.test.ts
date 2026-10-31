@@ -239,6 +239,23 @@ describe("pi's storage over a store", () => {
     expect(seen.reads).toBe(2);
   });
 
+  it("keeps each conversation record frozen, deeply: no caller changes what another reads",
+     async () => {
+    const storage = await RemoteStorage.open(named());
+    const child = 7 as ConversationId;
+    await storage.commit([...root, { type: "conversation", value: {
+      id: child, owner: { conversationId: ROOT, taskId: 3 as never } } }], BG);
+    const first = await storage.conversation(child, BG);
+    expect(() => {
+      (first as { id: number }).id = 9;
+    }).toThrow(TypeError);
+    expect(() => {
+      (first!.owner as { conversationId: number }).conversationId = 9;
+    }).toThrow(TypeError);
+    expect(await storage.conversation(child, BG))
+      .toEqual({ id: child, owner: { conversationId: ROOT, taskId: 3 } });
+  });
+
   it("never retries a commit: one that failed fails loudly, and nothing is written twice",
      async () => {
     const store = freshStore();

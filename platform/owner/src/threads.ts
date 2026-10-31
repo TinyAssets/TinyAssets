@@ -76,6 +76,9 @@ export type Thread = {
   readonly last_active: number;
 };
 
+/** The most bytes a thread's kept usage (`keepUsage`) takes: 64 KiB of JSON. */
+export const USAGE_ROW_MAX = 64 * 1024;
+
 /** What scheduled work reads of the threads: one, by its id; and moves on its activity. */
 export interface ThreadReader {
   get(threadId: unknown): Thread | null;
@@ -249,11 +252,27 @@ export class Threads implements ThreadReader {
                "wake_at = excluded.wake_at", active ? 1 : 0, wakeAt, threadId);
   }
 
-  /** Every ready thread's id, the oldest first. A read, within the threads' bounds. */
-  ids(): string[] {
-    return this.#storage.sql.exec<{ thread_id: string }>(
-      "SELECT thread_id FROM agent_threads WHERE state = 'ready' ORDER BY created_at, " +
-        "thread_id").toArray().map((row) => row.thread_id);
+  /**
+   * In a unit: keep the thread's usage (pi's `pi.usage`, as JSON) as its Session closed,
+   * over what was kept. Refused past `USAGE_ROW_MAX`; a thread with no row keeps nothing.
+   */
+  keepUsage(threadId: string, usage: string): void {
+    if (new TextEncoder().encode(usage).length > USAGE_ROW_MAX) {
+      throw new Error("a thread's usage is past its bound");
+    }
+    this.#storage.sql.exec(
+      "INSERT INTO agent_usage (thread_id, usage) SELECT thread_id, ? FROM agent_threads " +
+        "WHERE thread_id = ? ON CONFLICT (thread_id) DO UPDATE SET usage = excluded.usage",
+      usage, threadId);
+  }
+
+  /**
+   * Each thread's usage as its Session last closed, as JSON: a dropping thread's too, until
+   * its row goes, and its usage with it. A read.
+   */
+  keptUsage(): { thread_id: string; usage: string }[] {
+    return this.#storage.sql.exec<{ thread_id: string; usage: string }>(
+      "SELECT thread_id, usage FROM agent_usage").toArray();
   }
 
   /** The threads with work running in their Sessions, as last reported. A read. */
