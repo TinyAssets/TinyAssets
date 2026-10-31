@@ -181,12 +181,10 @@ export interface HostParts {
   /** Whether `thread` is a run that settled: a new input to it is refused (`RUN_SETTLED`). */
   settled(thread: string): boolean;
   /**
-   * Keep `thread`'s wake in the owner's rows, in a unit of the write gate; `opened` is the
-   * Session that reported it, when it is open (a run's settling is read from it), and
-   * `quiet`, read in the settling unit, whether no input is being admitted: a run settles
-   * only then, so an input admitted is never refused for a settling that came after it.
+   * Keep `thread`'s wake in the owner's rows, in a unit of the write gate; `from` is the
+   * Session that reported it, when it is open (a run's settling is read from it).
    */
-  live(thread: string, wake: Wake, opened?: Opened, quiet?: () => boolean): Promise<void>;
+  live(thread: string, wake: Wake, from?: Reported): Promise<void>;
   /** Keep `thread`'s usage (pi's `pi.usage`) as its Session closes, in a unit. */
   usage(thread: string, usage: UsageState): Promise<void>;
   /**
@@ -867,7 +865,7 @@ export class ThreadHost extends LifecycleCapability {
     // The wake as it stands once the job is in place, not as it stood before: a Session
     // whose work ended meanwhile (an open's reconcile pass) never has a stale "running"
     // kept after its own later report.
-    await this.#parts.live(thread, opened.pi.wake(), opened, quietOf(slot));
+    await this.#parts.live(thread, opened.pi.wake(), reported(opened, slot));
   }
 
   /** A Session's `onWake`: off its line, never blocking. */
@@ -876,7 +874,7 @@ export class ThreadHost extends LifecycleCapability {
     slot.changed?.();
     const { opened } = slot;
     const kept = opened === undefined ? this.#parts.live(thread, wake)
-      : slot.waiting !== undefined ? this.#parts.live(thread, wake, opened, quietOf(slot))
+      : slot.waiting !== undefined ? this.#parts.live(thread, wake, reported(opened, slot))
         : this.#wakeFor(thread, wake, opened, slot);
     kept.catch(() => console.error("a thread's wake could not be kept"));  // no ids
   }
@@ -926,7 +924,7 @@ export class ThreadHost extends LifecycleCapability {
     // Nothing runs and nothing sleeps: the live row is rewritten from the Session (a stale
     // "running" one cleared, a run that settled kept so) before the job completes; a write
     // whose read does not answer within a heartbeat leaves the job to try again.
-    const kept = this.#parts.live(thread, wake, opened, quietOf(slot))
+    const kept = this.#parts.live(thread, wake, reported(opened, slot))
       .then(() => true, () => false);
     if (await inTime(kept, this.#timing.heartbeatMs) !== true) {
       console.error("a thread's wake could not be kept; its job tries again");  // no ids
@@ -1015,9 +1013,18 @@ export interface TurnOwner {
   readonly joined?: boolean;
 }
 
-/** Whether `slot`'s thread has no input being admitted, read in a settling unit. */
-function quietOf(slot: Slot): () => boolean {
-  return () => slot.admitting === 0;
+/**
+ * The open Session a wake is reported from, and `quiet`, read in the settling unit:
+ * whether no input is being admitted. A run settles only then, so an admitted input is
+ * never refused for a settling that came after it.
+ */
+export interface Reported {
+  readonly opened: Opened;
+  readonly quiet: () => boolean;
+}
+
+function reported(opened: Opened, slot: Slot): Reported {
+  return { opened, quiet: () => slot.admitting === 0 };
 }
 
 /** A commit's change, as pi publishes it. */

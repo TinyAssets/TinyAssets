@@ -533,7 +533,7 @@ describe("the owner's database bound", () => {
     expect(refused).toBeLessThan(body.indexOf("await conversation.submit("));
     // No run settles in a unit that finds an input being admitted, so none is refused late.
     const agent = source("agent");
-    const quiet = agent.indexOf("      if (!quiet()) {\n        return false;");
+    const quiet = agent.indexOf("      if (!from.quiet()) {\n        return false;");
     expect(quiet).toBeGreaterThan(0);
     expect(quiet).toBeLessThan(agent.indexOf("      threads.settle(thread, kept,"));
     // The usage of a settled run goes to the total; no row of its own is kept.

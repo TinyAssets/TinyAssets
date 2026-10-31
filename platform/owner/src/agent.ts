@@ -121,7 +121,7 @@ import { inTime } from "./schedule";
 import { PLATFORM_NAMES, type Platform, reachable, taTool } from "./ta";
 import {
   HOST_TIMING, type HostParts, type HostTiming, type Opened, type OperationResult,
-  type SubmitOptions, ThreadHost,
+  type Reported, type SubmitOptions, ThreadHost,
 } from "./thread-host";
 import { type Answer, assistantText, type StoreRpc } from "./thread-store";
 import {
@@ -451,7 +451,7 @@ export class OwnerAgent {
       open: (thread, onWake) => this.#open(thread, onWake),
       exists: (thread) => parts.threads.get(thread) !== null,
       settled: (thread) => parts.threads.settledRun(thread),
-      live: (thread, wake, opened, quiet) => this.#live(thread, wake, opened, quiet),
+      live: (thread, wake, from) => this.#live(thread, wake, from),
       usage: (thread, usage) => parts.usage(thread, usage),
       turns: parts.turns,
       notice: (type, detail) => this.#report(type, detail),
@@ -773,16 +773,15 @@ export class OwnerAgent {
    * (`Threads.settle`). A read that fails keeps the wake alone, loudly: the run then counts
    * as one never handed an input.
    */
-  async #live(thread: string, wake: Wake, opened: Opened | undefined,
-              quiet: (() => boolean) | undefined): Promise<void> {
+  async #live(thread: string, wake: Wake, from: Reported | undefined): Promise<void> {
     const { threads, write } = this.#parts;
-    if (wake.active || wake.at !== undefined || opened === undefined || quiet === undefined
+    if (wake.active || wake.at !== undefined || from === undefined
         || !threads.unsettledRun(thread)) {
       return this.#parts.live(thread, wake);
     }
     let settled: Settled | null;
     try {
-      settled = await settledIn(opened.storage);
+      settled = await settledIn(from.opened.storage);
     } catch {
       console.error("a run's settling could not be read");  // no ids
       settled = null;
@@ -791,10 +790,10 @@ export class OwnerAgent {
       return this.#parts.live(thread, wake);
     }
     // Its usage as its Session holds it now goes into the owner's total as it settles.
-    const usage = await opened.pi.usage(BG).catch(() => undefined);
+    const usage = await from.opened.pi.usage(BG).catch(() => undefined);
     const kept = settled;
     const done = await write(() => {
-      if (!quiet()) {
+      if (!from.quiet()) {
         return false;  // an input is being admitted: the run works again
       }
       threads.settle(thread, kept, Date.now() / 1000,

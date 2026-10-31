@@ -583,11 +583,13 @@ describe("a run's retention (S5)", () => {
                           full: USAGE_SPACE_MAX - 6, after: USAGE_SPACE_MAX - 10 });
   }, 30_000);
 
-  it("takes keep_runs and keep_run_receipts from owner policy, within their bounds", () => {
+  it("takes keep_runs, keep_run_receipts, the shares and runs_live from owner policy, " +
+     "within their bounds", () => {
     const base = JSON.parse(DEFAULT_POLICY_JSON) as Record<string, unknown>;
     expect(runPolicy(validate(base))).toEqual(RUN_POLICY);
     expect(runPolicy(validate({ ...base, runs: { keep_runs: 30, keep_run_receipts: 365,
-                                                  client_share: 10, owner_reserve: 50, runs_live: 10_000 } })))
+                                                  client_share: 10, owner_reserve: 50,
+                                                  runs_live: 10_000 } })))
       .toEqual({ keepRunsS: 30 * 86_400, keepReceiptsS: 365 * 86_400, clientShare: 10,
                  ownerReserve: 50, runsLive: 10_000 });
     const refused = (runs: unknown) => {
@@ -601,8 +603,9 @@ describe("a run's retention (S5)", () => {
     expect([refused({ keep_runs: 31 }), refused({ keep_runs: 0 }),
             refused({ keep_run_receipts: 366 }), refused({ keep_runs: 1.5 }),
             refused({ other: 1 }), refused([]), refused({ client_share: 101 }),
-            refused({ owner_reserve: -1 })])
-      .toEqual(Array(8).fill("invalid runs policy"));
+            refused({ owner_reserve: -1 }), refused({ runs_live: 0 }),
+            refused({ runs_live: 10_001 })])
+      .toEqual(Array(10).fill("invalid runs policy"));
     expect(refused({ keep_runs: 10, keep_run_receipts: 9 }))
       .toBe("runs policy: keep_run_receipts is at least keep_runs");
     expect(refused({ keep_runs: 10, keep_run_receipts: 10 })).toBe("valid");
@@ -1404,6 +1407,38 @@ describe("live and settled runs", () => {
     await sleep(1100);
     expect(await r.retain()).toBe(1);
     expect(await view()).toEqual(settled);
+  }, 30_000);
+
+  it("lets the usage row of a run that closed while asleep go as it settles: counted once",
+     async () => {
+    const r = await rig();
+    const due = Date.now() + 1_500;
+    const thread = await r.in(async (instance) => {
+      const made = await instance.agent.thread("main", null);
+      const pi = await instance.agent.host.pi(made.thread_id);
+      const root = (await pi.conversation(1 as never, BG))!;
+      await root.commit((tx) => tx.createTask(Reminder, { until: due },
+                                              { ownership: { kind: "conversation" },
+                                                background: true }), BG);
+      pi.resume();
+      await instance.agent.submit(made, "hello", { operationId: "run_hello" });
+      await instance.agent.host.settled(made.thread_id, "run_hello");
+      await instance.agent.host.close(made.thread_id);  // asleep: its usage row is kept
+      return made.thread_id;
+    });
+    const view = async () => {
+      const { models, tools } = await r.stub.usageMetrics(r.session());
+      return { models, tools };
+    };
+    const asleep = await view();
+    expect(Object.keys(asleep.models).length).toBeGreaterThan(0);
+    expect(await sqlIn(r.stub, "SELECT 1 FROM agent_usage WHERE thread_id = ?", thread))
+      .toHaveLength(1);
+    await until(async () => Date.now() > due + 50, "the deadline");
+    await runDurableObjectAlarm(r.stub);
+    await until(async () => (await r.threads())[0]?.settled_at !== null, "the run to settle");
+    expect(await sqlIn(r.stub, "SELECT 1 FROM agent_usage")).toEqual([]);
+    expect(await view()).toEqual(asleep);
   }, 30_000);
 
   it("bounds the live runs, a sleeping one among them, with each client's share and the " +
