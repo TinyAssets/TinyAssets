@@ -18,8 +18,8 @@ import { FILE_DEFAULTS } from "../src/policy";
 import {
   inTime, type Lane, LANE_HUNG_S, LANE_PASS_S, LANE_RETRY_S, laneJob, Schedule, SCHEDULE,
 } from "../src/schedule";
-import { type Scheduled, WORK_HANDOFF_MS, WORK_PER_PASS, type WorkRunner } from "../src/scheduled";
 import { WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "../src/wakes";
+import { DROP_MS } from "../src/threads";
 import { MUSE, rig } from "./ledger-support";
 import { alarmOf, failure, laneJobs, ownerObject, sqlIn } from "./support";
 
@@ -294,7 +294,7 @@ describe("a lane's run", () => {
     expect(a.untils[0]!).toBeLessThanOrEqual(Date.now() + LANE_PASS_S * 1000);
     // A row's outside call fits in what the budget leaves of the hung timeout.
     expect(LANE_HUNG_S).toBe(60);
-    expect(WORK_HANDOFF_MS).toBeLessThanOrEqual((LANE_HUNG_S - LANE_PASS_S) * 1000);
+    expect(DROP_MS).toBeLessThanOrEqual((LANE_HUNG_S - LANE_PASS_S) * 1000);
     expect(await inTime(new Promise(() => undefined), 10)).toBe("late");
     const slow = new Promise((resolve) => setTimeout(() => resolve("done"), 20));
     expect(await inTime(slow, Infinity)).toBe("done");  // unbounded waits it out
@@ -363,16 +363,12 @@ describe("a lane's run", () => {
 
 describe("the object's lanes", () => {
   /** Recording stand-ins for the stores and passes the lanes run over. */
-  function recorded(sender: () => WakeSender | null, runner: () => WorkRunner | null) {
+  function recorded(sender: () => WakeSender | null, admitted: () => boolean) {
     const seen: unknown[][] = [];
     const ledger = { nextDue: (now: number, ringing: boolean) => {
       seen.push(["ledger.nextDue", now, ringing]);
       return now + 1;
     } } as unknown as Ledger;
-    const work = { nextDue: (now: number, running: boolean) => {
-      seen.push(["work.nextDue", now, running]);
-      return now + 2;
-    } } as unknown as Scheduled;
     const files = {
       nextAlarm: (now: number) => {
         seen.push(["files.nextAlarm", now]);
@@ -403,54 +399,48 @@ describe("the object's lanes", () => {
     const clock = () => 42;
     const write = (() => undefined) as unknown as Write;
     const deps: LaneDeps = {
-      ledger, files, work, connections, threads, sender, runner, clock, write,
+      ledger, files, connections, threads, sender, admitted, clock, write,
       runWakes: async (...args) => {
         seen.push(["runWakes", ...args]);
         return 0;
       },
-      runWork: async (...args) => {
-        seen.push(["runWork", ...args]);
-        return 0;
-      },
     };
-    return { seen, deps, ledger, work, clock, write };
+    return { seen, deps, ledger, clock, write };
   }
 
-  it("hand each pass its until (slice 5 N1)", async () => {
-    const { seen, deps, ledger, work, clock, write } = recorded(() => null, () => null);
+  it("hand each pass its until (slice 5 N1); a scheduled launch is no lane's", async () => {
+    const { seen, deps, ledger, clock, write } = recorded(() => null, () => true);
     const lanes = ownerLanes(deps);
-    expect(Object.keys(lanes)).toEqual(["wakes", "files", "work", "connections", "threads"]);
+    expect(Object.keys(lanes)).toEqual(["wakes", "files", "connections", "threads"]);
     for (const lane of Object.values(lanes)) {
       await lane.run(100, 123_456);
     }
     expect(seen).toEqual([
       ["runWakes", ledger, null, clock, write, WAKES_PER_ALARM, WAKE_SEND_MS, 123_456],
       ["files.collect", 100, 123_456],
-      ["runWork", work, null, clock, write, WORK_PER_PASS, WORK_HANDOFF_MS, 123_456],
       ["connections.run", 100, 123_456],
       ["threads.run", 100, 123_456],
     ]);
   });
 
-  it("count open rows as work only with the doorbell and runner they read at each use " +
-     "(review N3)", () => {
+  it("count open wakes as work only with the doorbell they read at each use (review N3), " +
+     "and only while the owner is admitted (require_work)", () => {
     let sender: WakeSender | null = null;
-    let runner: WorkRunner | null = null;
-    const { seen, deps } = recorded(() => sender, () => runner);
+    let admitted = true;
+    const { seen, deps } = recorded(() => sender, () => admitted);
     const lanes = ownerLanes(deps);
-    for (const ringing of [false, true]) {
-      expect([lanes.wakes.next(7), lanes.files.next(7), lanes.work.next(7),
-              lanes.connections.next(7), lanes.threads.next(7)]).toEqual([8, 10, 9, 11, 12]);
+    for (const [ringing, ask] of [[false, true], [true, true], [false, false]] as const) {
+      admitted = ask;
+      expect([lanes.wakes.next(7), lanes.files.next(7), lanes.connections.next(7),
+              lanes.threads.next(7)]).toEqual([8, 10, 11, 12]);
       expect(seen).toEqual([["ledger.nextDue", 7, ringing], ["files.nextAlarm", 7],
-                            ["work.nextDue", 7, ringing], ["connections.nextDue", 7],
-                            ["threads.nextDue", 7]]);
+                            ["connections.nextDue", 7], ["threads.nextDue", 7]]);
       seen.length = 0;
       void Promise.all(Object.values(lanes).map((lane) => lane.run(1, 2)));
-      expect(seen.map((call) => call[2])).toEqual([sender, 2, runner, 2, 2]);
+      expect(seen.map((call) => call[2])).toEqual([sender, 2, 2, 2]);
       seen.length = 0;
-      // The object gains its doorbell and runner after the lanes were made.
+      // The object gains its doorbell after the lanes were made.
       sender = {} as WakeSender;
-      runner = {} as WorkRunner;
     }
   });
 });

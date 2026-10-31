@@ -311,6 +311,8 @@ export type Claim =
   | { readonly outcome: "capped"; readonly due: number }
   /** The agent is gone, disabled or no longer rings: its open wakes are suppressed. */
   | { readonly outcome: "suppressed"; readonly agent_id: string }
+  /** The owner is not admitted (`require_work`): nothing is claimed, the row waits. */
+  | { readonly outcome: "held" }
   | { readonly outcome: "not_due" };
 
 /** A doorbell's answer. `retry_after` is a 429's, in seconds. */
@@ -497,12 +499,15 @@ export class Ledger {
   readonly #storage: OwnerStorage;
   readonly #grants: GrantReader;
   readonly #limits: LedgerLimits;
+  /** Whether the owner is admitted (`admission.ts`'s `require_work`), read in each claim. */
+  readonly #admitted: () => boolean;
 
   constructor(storage: OwnerStorage, grants: GrantReader,
-              limits: LedgerLimits = LEDGER_LIMITS) {
+              limits: LedgerLimits = LEDGER_LIMITS, admitted: () => boolean = () => true) {
     this.#storage = storage;
     this.#grants = grants;
     this.#limits = checkLimits(limits);
+    this.#admitted = admitted;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -1149,7 +1154,9 @@ export class Ledger {
    * a revoke of its callbacks scheduled. A wake whose agent has rung `max_wakes_per_hour`
    * times in the last hour is pushed to when the oldest of those rings leaves the hour,
    * its queued mail held at `held_cap` (W3). The claim is unmarked: the in-process sender
-   * calls `mark()` before its first byte.
+   * calls `mark()` before its first byte. Nothing is claimed while the owner is not admitted
+   * (`require_work`, read in the claim's own unit): the row waits, `held`, for the owner's
+   * readmission, which gives the lane its job back.
    */
   claim(wakeId: unknown, now: number): Claim {
     if (typeof wakeId !== "string") {
@@ -1162,6 +1169,9 @@ export class Ledger {
       ).toArray()[0];
       if (wake === undefined) {
         return { outcome: "not_due" };
+      }
+      if (!this.#admitted()) {
+        return { outcome: "held" };
       }
       const claimId = "claim_" + token(16);
       if (wake.kind === "revoke") {

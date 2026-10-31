@@ -26,9 +26,8 @@ import { WriteGate } from "../src/gate";
 import { Grants } from "../src/grants";
 import { clock, type Origin } from "../src/ledger";
 import { originContext } from "../src/origin";
-import { type Binding, workRunner } from "../src/owner-do";
+import type { Binding } from "../src/owner-do";
 import { Policy, policyDigest } from "../src/policy";
-import { Scheduled, type WorkTarget } from "../src/scheduled";
 import { DESTROYED } from "../src/thread-store";
 import { type Thread, THREAD_LIMITS, type ThreadKind, Threads } from "../src/threads";
 import { asked, gated, provider, until } from "./gateway-support";
@@ -762,112 +761,6 @@ describe("an operation's status", () => {
   });
 });
 
-describe("the work lane's runner", () => {
-  /** A claimed target for `work_id`, in `thread`, with its input. */
-  const target = (workId: string, thread: string, stamp: WorkTarget["stamp"] = null):
-      WorkTarget => ({ work_id: workId, claim_id: "claim_x", kind: "turn",
-                       payload: { thread, input: "scheduled hello" }, stamp });
-
-  it("hands held work its job: due work runs in the thread it named, as ta.work", async () => {
-    const r = await agentRig();
-    const { workId, session, thread } = await r.in(async (instance, state) => {
-      const { thread, session } = await threadFor(instance, null);
-      const gateway = new WriteGate(state.storage);
-      const threads = new Threads(gateway.storage);
-      const work = new Scheduled(gateway.storage, new Grants(gateway.storage,
-                                                             new Policy(gateway.storage)),
-                                 threads);
-      const { work_id: workId } = await gateway.write(() => work.add(
-        "turn", clock() - 1, { thread: thread.thread_id, input: "scheduled hello" }, null,
-        clock()));
-      return { workId, session, thread };
-    });
-    // Any changing door re-derives the lanes' jobs; the alarm runs the work lane.
-    await r.stub.grantRevoke(r.bind(null), { client: DOT.client });
-    await drainDue(r.stub as never);
-    const out = await r.in(async (instance, state) => ({
-      settled: await instance.harness.wait(workId, { session }),
-      status: await instance.agent.status(thread, workId),
-      row: state.storage.sql.exec("SELECT state, outcome FROM scheduled_work").toArray(),
-      entries: (await instance.harness.messages({ session }))
-        .filter((entry) => entry.kind === "ta.work").map((entry) => entry.data),
-    }));
-    expect([out.settled.status, out.status.status]).toEqual(["done", "done"]);
-    expect(out.row).toEqual([{ state: "handed", outcome: "{}" }]);
-    expect(out.entries).toEqual([{ work_id: workId, client: null }]);
-  });
-
-  it("hands a work_id over once: a second hand-off is pi's duplicate, never run twice",
-     async () => {
-    const r = await agentRig();
-    const out = await r.in(async (instance, state) => {
-      const { thread, session } = await threadFor(instance, null);
-      const runner = workRunner(new Threads(state.storage), instance.agent,
-                                instance.parts.authority);
-      const marks: string[] = [];
-      const mark = async () => {
-        marks.push("mark");
-      };
-      const answers = [await runner.handOff(target("work_a", thread.thread_id), mark),
-                       await runner.handOff(target("work_a", thread.thread_id), mark)];
-      const settled = await instance.harness.wait("work_a", { session });
-      const users = (await instance.harness.messages({ session }))
-        .filter((entry) => entry.kind === "ta.work").length;
-      return { answers, marks, settled, users, requests: instance.turns.length };
-    });
-    expect(out.answers).toEqual([{ state: "handed" }, { state: "handed", reason: "duplicate" }]);
-    expect(out.marks).toEqual(["mark", "mark"]);
-    expect([out.settled.status, out.users, out.requests]).toEqual(["done", 1, 1]);
-  });
-
-  it("queues a hand-off into a busy thread behind its run, as its own run", async () => {
-    const r = await agentRig();
-    const out = await r.in(async (instance, state) => {
-      const held = gate();
-      instance.probes.holdGate = held.promise;
-      const { thread, session } = await threadFor(instance, null);
-      const busy = await instance.harness.submit("hold please", { session });
-      await until(() => instance.probes.holds === 1, "the hold to start");
-      const runner = workRunner(new Threads(state.storage), instance.agent,
-                                instance.parts.authority);
-      const answer = await runner.handOff(target("work_q", thread.thread_id), async () => {});
-      const queued = await instance.agent.status(thread, "work_q");
-      held.release();
-      return { answer, queued, busy: await instance.harness.wait(busy.operationId,
-                                                                      { session }),
-               work: await instance.harness.wait("work_q", { session }) };
-    });
-    expect([out.answer, out.queued.status]).toEqual([{ state: "handed" }, "queued"]);
-    // Its own run: the held run answered its tool round, then the work its own input.
-    expect([out.busy.text, out.work.text]).toEqual([expect.stringContaining("held"), "noted"]);
-  });
-
-  it("stops before any effect when its claim lapsed, and fails work whose thread is gone " +
-     "before its mark", async () => {
-    const r = await agentRig();
-    const out = await r.in(async (instance, state) => {
-      const { thread, session } = await threadFor(instance, null);
-      const runner = workRunner(new Threads(state.storage), instance.agent,
-                                instance.parts.authority);
-      const lapsed = await failure(() => runner.handOff(target("work_b", thread.thread_id),
-        async () => {
-          throw new Error("the work's claim lapsed before its hand-off");
-        }));
-      let marked = false;
-      const gone = await runner.handOff(target("work_c", `thread_${"0".repeat(32)}`), async () => {
-        marked = true;
-      });
-      return { lapsed: lapsed.message, gone, marked,
-               pending: await instance.harness.pending({ session }),
-               status: await instance.agent.status(thread, "work_b") };
-    });
-    expect(out.lapsed).toBe("the work's claim lapsed before its hand-off");
-    expect(out.pending).toEqual([]);
-    expect([out.status.status, out.status.reason]).toEqual(["unanswered", "not_found"]);
-    expect([out.gone, out.marked]).toEqual([{ state: "failed", reason: "no_thread" }, false]);
-  });
-});
-
 describe("an aborted turn's model call", () => {
   it("settles its reservation through the owner's usage when a revoke ends the turn " +
      "mid-stream", async () => {
@@ -1028,39 +921,6 @@ describe("a revoked client's model calls (review M2)", () => {
     return { r, stamp, fetches };
   }
 
-  it.each([["run to its end", true], ["only started", false]])(
-    "never reach a thread a revoke %s between a hand-off's mark and its submit dropped: " +
-    "the hand-off fails, nothing submitted, nothing spent", async (_how, awaited) => {
-    const { r, stamp, fetches } = await spending();
-    const out = await r.in(async (instance, state) => {
-      const thread = await instance.agent.thread("main", stamp);
-      const runner = workRunner(new Threads(state.storage), instance.agent,
-                                instance.parts.authority);
-      const before = fetches(instance);
-      let revoke: Promise<unknown> = Promise.resolve();
-      const answer = await runner.handOff({
-        work_id: "work_r", claim_id: "claim_x", kind: "turn",
-        payload: { thread: thread.thread_id, input: "cmd:echo" },
-        stamp: { client: MUSE.client, generation: 1, authenticated_at: stamp.authenticated_at },
-      }, async () => {
-        revoke = instance.grantRevoke(r.bind(), { client: MUSE.client });
-        if (awaited) {
-          await revoke;
-        }
-      });
-      await revoke;
-      // The revoke dropped the thread in its own unit: its Session is never opened again,
-      // so the work never reached its store.
-      const submitted = await storeSubmission(thread.store, { request: "work_r" })
-        .catch(() => undefined);
-      return { answer, submitted, sent: fetches(instance) - before };
-    });
-    expect(out.answer).toEqual({ state: "failed", reason: "no_thread" });
-    expect([out.submitted, out.sent]).toEqual([undefined, 0]);
-    const { receipts } = await r.stub.usageReceipts(r.bind());
-    expect(receipts).toEqual([]);
-  });
-
   it("are refused while the conversation's selection drops the gate, its grant standing; " +
      "the owner's are not", async () => {
     const { r, stamp, fetches } = await spending();
@@ -1173,7 +1033,7 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
     await r.admit(DOT);
     const made = await r.in(async (instance, state) => {
       const threads = new Threads(state.storage, { ...THREAD_LIMITS, perClient: 3, clients: 5,
-                                                   owner: 2 }, undefined, undefined, undefined,
+                                                   owner: 2 }, undefined, undefined,
                                   registeredOn(state.storage));
       // The owner's bound is its conversations', one an agent: its runs have their own.
       const tried = async (stamp: Stamped | null, times: number, kind: ThreadKind = "run") => {
@@ -1322,37 +1182,6 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
       .rejects.toThrow(/names its own agent/);
   });
 
-  it("hand stamped work over only at the work's own generation, its entry naming the client",
-     async () => {
-    const r = await agentRig();
-    await r.admit(MUSE);
-    const out = await r.in(async (instance, state) => {
-      const { thread, session } = await threadFor(instance, r.stampOf(MUSE, 1));
-      const runner = workRunner(instance.parts.threads, instance.agent,
-                                instance.parts.authority);
-      let marked = 0;
-      const mark = async () => {
-        marked++;
-      };
-      const handOff = (workId: string, generation: number) => runner.handOff({
-        work_id: workId, claim_id: "claim_x", kind: "turn",
-        payload: { thread: thread.thread_id, input: "noted" },
-        stamp: { client: MUSE.client, generation, authenticated_at: r.at } }, mark);
-      const other = await handOff("work_g", 2);
-      const own = await handOff("work_h", 1);
-      await instance.harness.wait("work_h", { session });
-      const entries = (await instance.harness.messages({ session }))
-        .filter((entry) => entry.kind === "ta.work").map((entry) => entry.data);
-      // A grant moved by a writer that kept the thread: its own generation no longer stands.
-      new Grants(state.storage, new Policy(state.storage)).revoke(MUSE.client, clock());
-      const lapsed = await handOff("work_i", 1);
-      return { other, own, lapsed, marked, entries };
-    });
-    expect(out.other).toEqual({ state: "failed", reason: "thread_authority" });
-    expect(out.lapsed).toEqual({ state: "failed", reason: "thread_authority" });
-    expect([out.own, out.marked]).toEqual([{ state: "handed" }, 1]);
-    expect(out.entries).toEqual([{ work_id: "work_h", client: MUSE.client }]);
-  });
 });
 
 describe("the authority's checks", () => {

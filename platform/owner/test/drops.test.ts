@@ -18,24 +18,24 @@ import { describe, expect, it } from "vitest";
 
 import { NO_THREAD, settledIn, WAIT_ENDED } from "../src/agent";
 import type { Stamped } from "../src/authority";
+import { OWNER_ERASED } from "../src/admission";
 import { ERASING } from "../src/erasure";
 import { WriteGate } from "../src/gate";
 import { Notices } from "../src/notices";
 import { clock, type Origin } from "../src/ledger";
 import {
-  type Binding, NO_OPERATION, type Operation, OwnerDO, workRunner,
+  type Binding, NO_OPERATION, type Operation, OwnerDO,
 } from "../src/owner-do";
 import {
   DEFAULT_POLICY_JSON, RUN_DEFAULTS, RUN_SETTINGS, runPolicy, validate,
 } from "../src/policy";
 import { holderId } from "../src/remote-storage";
-import { namedByOpenWork } from "../src/scheduled";
 import { HOST, PARKED, RUN_SETTLED, USAGE_UNKEPT, wakeJob } from "../src/thread-host";
 import { DESTROYED } from "../src/thread-store";
 import {
   DROP_NOTICE_AFTER, DROP_RETRY_S, DROP_STUCK, foldedUsage, RECEIPT_TEXT_MAX, retainThreads,
-  RUNS_LIVE, RUNS_LIVE_CLIENTS, RUNS_LIVE_SHARE, RUN_POLICY, type RunPolicy, type Thread,
-  THREAD_LIMITS, THREAD_RETENTION, Threads,
+  RUNS_LIVE, RUNS_LIVE_CLIENTS, RUNS_LIVE_SHARE, RUN_POLICY, type RunPolicy, SCHEDULED_RUN,
+  type Thread, THREAD_LIMITS, THREAD_RETENTION, Threads,
   USAGE_OTHER, USAGE_SPACE_MAX, USAGE_TOTAL_KEYS, type UsageTotals, utf8Prefix,
 } from "../src/threads";
 import { until } from "./gateway-support";
@@ -135,8 +135,7 @@ async function rig() {
     /** One `threads` lane pass at quick retention, through the object's own drop path. */
     retain: (perPass = 32, runs: RunPolicy = QUICK_RUNS) => inside(async (instance, state) => {
       const gated = new WriteGate(state.storage);
-      const threads = new Threads(gated.storage, THREAD_LIMITS, { ...QUICK, perPass },
-                                  namedByOpenWork, () => runs);
+      const threads = new Threads(gated.storage, THREAD_LIMITS, { ...QUICK, perPass }, () => runs);
       return retainThreads(threads, clock, gated.write, (thread) => instance.agent.drop(thread),
                            noticed(state));
     }),
@@ -532,7 +531,7 @@ describe("a run's retention (S5)", () => {
         }
       });
       const due = instance.parts.threads.nextDue(now);
-      const threads = new Threads(gated.storage, THREAD_LIMITS, QUICK, namedByOpenWork,
+      const threads = new Threads(gated.storage, THREAD_LIMITS, QUICK,
                                   () => RUN_POLICY);
       await retainThreads(threads, clock, gated.write, (thread) => instance.agent.drop(thread),
                           noticed(state));
@@ -544,12 +543,12 @@ describe("a run's retention (S5)", () => {
     expect(out.left).toEqual([`thread_${"2".repeat(32)}`]);
   }, 30_000);
 
-  it("takes a run never handed an input keep_runs after it was made, answered by its work",
-     async () => {
+  it("takes a run never handed an input keep_runs after it was made, answered as one pi " +
+     "never saw", async () => {
     const r = await rig();
-    const run = await r.stub.agentRun(r.bind(null), { agent: "main", input: "later",
-                                                      at: clock() + 86_400 });
-    await r.stub.agentCancel(r.bind(null), { operation_id: run.operation_id });
+    // A launch's run whose input never reached pi (its door died between the two).
+    const made = await r.in((instance) => instance.agent.thread("main", null));
+    const run = { operation_id: `${made.thread_id}.run_${"5".repeat(32)}` };
     const [thread] = await r.threads();
     expect(thread!.settled_at).toBeNull();
     await sleep(1100);
@@ -561,9 +560,9 @@ describe("a run's retention (S5)", () => {
     // Its receipt is kept as of its drop, its retention counted from then.
     const [kept] = await sqlIn(r.stub, "SELECT settled_at FROM run_receipts");
     expect(kept!["settled_at"] as number).toBeCloseTo(dropped, -1);
-    // pi never saw it, so its work's own row says how it stands.
+    // pi never saw it: its receipt says so.
     expect(await r.stub.agentStatus(r.bind(null), { operation_id: run.operation_id }))
-      .toMatchObject({ status: "unanswered", reason: "cancelled" });
+      .toMatchObject({ status: "unanswered", reason: "not_found" });
   }, 30_000);
 
   it("bounds every thread's kept usage together, past each one's own bound", async () => {
@@ -690,9 +689,12 @@ describe("the owner's erasure (S4-S5)", () => {
     for (const store of [...stores, out.making.store]) {
       expect(await storeState(store)).toEqual(WIPED);
     }
-    expect(await tables(r)).toEqual([]);
+    // Only the tombstone is left: the erased admission row.
+    expect(await tables(r)).toEqual(["owner_admission"]);
+    expect(await sqlIn(r.stub, "SELECT state, reasons FROM owner_admission"))
+      .toEqual([{ state: "erased", reasons: "[]" }]);
     expect((await failure(() => r.stub.collectionGet(r.bind(null), {
-      collection: "board", row_id: "t" }))).message).toBe(ERASING);
+      collection: "board", row_id: "t" }))).message).toBe(OWNER_ERASED);
   }, 30_000);
 
   it("resumes after a crash at each step, at the object's next start", async () => {
@@ -720,9 +722,13 @@ describe("the owner's erasure (S4-S5)", () => {
       }
       expect((await failure(() => r.stub.policyRead(r.bind(null)))).message).toBe(ERASING);
       await crash(r);
-      // The new instance's start resumes it from the step it recorded, and refuses meanwhile.
-      expect((await failure(() => r.stub.policyRead(r.bind(null)))).message).toBe(ERASING);
-      await until(async () => (await tables(r)).length === 0, `the wipe after ${step}`);
+      // The new instance's start resumes it from the step it recorded, and refuses meanwhile
+      // (erasing, or erased once the resumed wipe is done).
+      expect([ERASING, OWNER_ERASED]).toContain(
+        (await failure(() => r.stub.policyRead(r.bind(null)))).message);
+      await until(async () => JSON.stringify(await tables(r)) === '["owner_admission"]',
+                  `the wipe after ${step}`);
+      expect((await failure(() => r.stub.policyRead(r.bind(null)))).message).toBe(OWNER_ERASED);
       for (const store of stores) {
         expect(await storeState(store)).toEqual(WIPED);
       }
@@ -764,8 +770,8 @@ describe("S4-S5 review round 1", () => {
       await crash(r);
       await until(async () => (await r.in((_instance, state) => state.storage.sql.exec<
         { name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'").toArray()
-        .filter((row) => !row.name.startsWith("_cf")).length)) === 0, `the wipe that ${how}`);
-      expect((await failure(() => r.stub.policyRead(r.bind(null)))).message).toBe(ERASING);
+        .filter((row) => !row.name.startsWith("_cf")).length)) === 1, `the wipe that ${how}`);
+      expect((await failure(() => r.stub.policyRead(r.bind(null)))).message).toBe(OWNER_ERASED);
     }
   }, 60_000);
 
@@ -801,7 +807,7 @@ describe("S4-S5 review round 1", () => {
     await runDurableObjectAlarm(r.stub);
     await until(async () => (await r.in((_instance, state) => state.storage.sql.exec<
       { name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'").toArray()
-      .filter((row) => !row.name.startsWith("_cf")).length)) === 0, "the job's wipe");
+      .filter((row) => !row.name.startsWith("_cf")).length)) === 1, "the job's wipe");
   }, 30_000);
 
   it("destroys every store past one batch of rows before the wipe", async () => {
@@ -835,7 +841,7 @@ describe("S4-S5 review round 1", () => {
     const out = await r.in(async (_instance, state) => {
       const gated = new WriteGate(state.storage);
       const threads = new Threads(gated.storage, { ...THREAD_LIMITS, perClient: 1, runs: 8 },
-                                  THREAD_RETENTION, undefined,
+                                  THREAD_RETENTION,
                                   () => ({ ...RUN_POLICY, clientShare: 50, ownerReserve: 50 }));
       const record = (stamp: Stamped | null, kind: "run" | "converse" = "run",
                       agent = "main") => gated.write(() => threads.record(
@@ -866,7 +872,7 @@ describe("S4-S5 review round 1", () => {
     const out = await r.in(async (_instance, state) => {
       const gated = new WriteGate(state.storage);
       const threads = new Threads(gated.storage, { ...THREAD_LIMITS, receipts: 4 },
-                                  THREAD_RETENTION, undefined,
+                                  THREAD_RETENTION,
                                   () => ({ ...RUN_POLICY, clientShare: 50, ownerReserve: 25 }));
       const names = new Map<string, string>();
       const kept = () => state.storage.sql.exec<{ thread_id: string }>(
@@ -935,7 +941,7 @@ describe("S4-S5 review round 1", () => {
     const r = await rig();
     const out = await r.in(async (_instance, state) => {
       const gated = new WriteGate(state.storage);
-      const threads = new Threads(gated.storage, THREAD_LIMITS, THREAD_RETENTION, undefined,
+      const threads = new Threads(gated.storage, THREAD_LIMITS, THREAD_RETENTION,
                                   () => ({ ...RUN_POLICY, keepReceiptsS: 365 * 86_400 }));
       await gated.write(() => {
         for (let i = 0; i < THREAD_LIMITS.receipts; i++) {
@@ -1258,6 +1264,7 @@ describe("S4-S5 review round 2", () => {
 
   it("reads a run as settled only from its input: one placed, or none, is not", async () => {
     const storage = (input: unknown) => ({
+      scanTasks: async () => ({ items: [] }),
       scanSubmissions: async () => ({ items: input === undefined ? [] : [input] }),
       entry: async () => undefined,
     }) as unknown as Parameters<typeof settledIn>[0];
@@ -1361,13 +1368,12 @@ describe("live and settled runs", () => {
       return { again, resend };
     });
     expect(out).toEqual({ again: RUN_SETTLED, resend: false });
-    // Scheduled work naming it ends at once, never retried, and nothing reaches its store.
-    const work = await r.in((instance, state) => workRunner(
-      new Threads(state.storage), instance.agent, instance.parts.authority).handOff({
-      work_id: "work_late", claim_id: "claim_x", kind: "turn",
-      payload: { thread: thread!.thread_id, input: "later" }, stamp: null,
-    }, async () => {}));
-    expect(work).toEqual({ state: "failed", reason: "run_settled" });
+    // A scheduled delivery naming it is refused the same at the host's admission (a
+    // scheduled launch's `deliver` then ends its task), and nothing reaches its store.
+    const work = await r.in((instance) => instance.agent.host.submit(thread!.thread_id, "later", {
+      operationId: `work_${"4".repeat(32)}`, entry: { kind: "ta.work", data: {} },
+    }).then(() => "accepted", (error: Error) => error.message));
+    expect(work).toBe(RUN_SETTLED);
     // A late commit of its Session lets an owner it held go, and keeps none anew.
     const owners = await r.in(async (instance, state) => {
       state.storage.sql.exec("INSERT INTO model_turn_owners (thread, owner, turn) " +
@@ -1394,16 +1400,14 @@ describe("live and settled runs", () => {
       const thread = await instance.agent.thread("main", null);
       await instance.agent.submit(thread, "hold please", { operationId: "run_first" });
       await until(() => instance.probes.holds === 1, "the hold to start");
-      // Scheduled work for it is admitted, and waits at its mark while the first input ends.
+      // A second input is admitted, and waits there while the first input ends.
       const mark = gate();
       let marked = false;
-      const handing = workRunner(new Threads(state.storage), instance.agent,
-                                 instance.parts.authority).handOff({
-        work_id: "work_next", claim_id: "claim_x", kind: "turn",
-        payload: { thread: thread.thread_id, input: "next" }, stamp: null,
-      }, async () => {
-        marked = true;
-        await mark.promise;
+      const handing = instance.agent.host.submit(thread.thread_id, "next", {
+        operationId: "work_next", admitted: async () => {
+          marked = true;
+          await mark.promise;
+        },
       });
       await until(() => marked, "the work to be admitted");
       held.release();
@@ -1418,7 +1422,8 @@ describe("live and settled runs", () => {
       return { admitting, answer, receipt: instance.parts.threads.receipt(thread.thread_id,
                                                                           null)?.status };
     });
-    expect(out).toEqual({ admitting: true, answer: { state: "handed" }, receipt: "done" });
+    expect(out).toEqual({ admitting: true, answer: { operationId: "work_next", accepted: true },
+                          receipt: "done" });
   }, 30_000);
 
   it("adds a run's usage into the owner's total as it settles, once, the usage view the " +
@@ -1483,7 +1488,7 @@ describe("live and settled runs", () => {
     const r = await rig();
     const out = await r.in(async (_instance, state) => {
       const gated = new WriteGate(state.storage);
-      const threads = new Threads(gated.storage, THREAD_LIMITS, THREAD_RETENTION, undefined,
+      const threads = new Threads(gated.storage, THREAD_LIMITS, THREAD_RETENTION,
                                   () => ({ ...RUN_POLICY, runsLive: 4, clientShare: 50,
                                            ownerReserve: 50 }));
       const record = (stamp: Stamped | null) => gated.write(() => threads.record(
@@ -1512,7 +1517,7 @@ describe("live and settled runs", () => {
                                                 background: true }), BG);
       pi.resume();
       const gated = new WriteGate(state.storage);
-      const threads = new Threads(gated.storage, THREAD_LIMITS, THREAD_RETENTION, undefined,
+      const threads = new Threads(gated.storage, THREAD_LIMITS, THREAD_RETENTION,
                                   () => ({ ...RUN_POLICY, runsLive: 1 }));
       return gated.write(() => threads.record("main", null, clock()).kind)
         .catch((error: Error) => error.message);
@@ -1675,11 +1680,11 @@ describe("a grant's rename, apart from a change of its authority (S4-S5 review r
     return { sleeper, work, card };
   }
 
-  /** MUSE's scheduled work as its rows stand, and its pending cards. */
+  /** MUSE's scheduled runs' threads as their rows stand (F1), and its pending cards. */
   async function held(r: Rig) {
     return {
-      work: (await sqlIn(r.stub, "SELECT state FROM scheduled_work WHERE client = ?",
-                         MUSE.client)).map((row) => row["state"]),
+      work: (await sqlIn(r.stub, `SELECT state FROM agent_threads WHERE client = ? AND ${
+        SCHEDULED_RUN}`, MUSE.client)).map((row) => row["state"]),
       cards: (await sqlIn(r.stub, "SELECT 1 FROM agent_cards WHERE client = ?", MUSE.client))
         .length,
     };
@@ -1693,7 +1698,7 @@ describe("a grant's rename, apart from a change of its authority (S4-S5 review r
     const before = await r.threads();
     expect(before.map((thread) => [thread.kind, thread.state, thread.generation])).toEqual([
       ["converse", "ready", 1], ["run", "ready", 1], ["run", "ready", 1], ["run", "ready", 1]]);
-    expect(await held(r)).toEqual({ work: ["pending"], cards: 1 });
+    expect(await held(r)).toEqual({ work: ["ready"], cards: 1 });
     expect(await set(r, "full", [], "Muse")).toEqual({
       client: MUSE.client, mode: "full", scopes: [], generation: 1, revision: 2 });
     expect(await r.threads()).toEqual(before);
@@ -1703,7 +1708,7 @@ describe("a grant's rename, apart from a change of its authority (S4-S5 review r
     expect(await sqlIn(r.stub, "SELECT status FROM run_receipts WHERE client = ?", MUSE.client))
       .toEqual([{ status: "done" }]);
     expect(await r.in((instance) => instance.probes.wiped.size)).toBe(0);
-    expect(await held(r)).toEqual({ work: ["pending"], cards: 1 });
+    expect(await held(r)).toEqual({ work: ["ready"], cards: 1 });
     expect(await r.stub.agentStatus(r.bind(MUSE), { operation_id: work.operation_id }))
       .toMatchObject({ status: "scheduled" });
     // The conversation made before the rename takes its next message, and its tool runs.
@@ -1745,9 +1750,9 @@ describe("a grant's rename, apart from a change of its authority (S4-S5 review r
       expect(before.map((thread) => [thread.kind, thread.generation])).toEqual([
         ["converse", generation], ["run", generation], ["run", generation],
         ["run", generation]]);
-      expect(await held(r)).toEqual({ work: ["pending"], cards: 1 });
+      expect(await held(r)).toEqual({ work: ["ready"], cards: 1 });
       expect(await to(r)).toMatchObject({ generation: generation + 1 });
-      expect(await held(r)).toEqual({ work: ["refused"], cards: 0 });
+      expect(await held(r)).toEqual({ work: [], cards: 0 });
       const apply = { card_id: card.card_id, digest: card.digest };
       expect((await failure(() => r.stub.registerAgent(r.session(), apply))).message)
         .toBe("registration is not the pending card shown");

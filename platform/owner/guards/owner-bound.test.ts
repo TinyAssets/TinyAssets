@@ -24,11 +24,13 @@
  * database, so what the owner's object holds is its own bounded rows only, whatever its
  * agents do; this guard replaced A4's runtime storage gauge.
  *
- * The headroom is thin: the worst case is 49.3% of the limit (migration 12, a grant's
- * revision, whose 8 bytes a row fit in pages S4-S5 already counted: 4,933,044,828 bytes),
- * about 67 MB under half. A new table, or a raised bound, must come
- * out of an existing term: lower another bound in the same change, or the guard fails. F1
- * and every later slice trade terms so; none has room of its own left.
+ * The headroom is thin: the worst case is 49.0% of the limit (migration 13, F1:
+ * 4,897,208,852 bytes), about 103 MB under half. F1 traded the `work` lane's table (its
+ * 2,000 rows of up to 16 KiB) for the admission row; a scheduled launch is a run, counted in
+ * the thread terms already. A grant's revision (migration 12) fit in pages S4-S5 already
+ * counted. A new table, or a raised bound, must come out of an existing term: lower another
+ * bound in the same change, or the guard fails. Every later slice trades terms so; none has
+ * room of its own left.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -142,7 +144,6 @@ const POLICY_LIMITS = declared("policy", "POLICY_LIMITS", "maxDocument", "maxCha
                                "pendingProposals", "appliedProposals", "receiptsPerBucket");
 const FILE_SETTINGS = declared("policy", "FILE_SETTINGS", "max_manifest_bytes");
 const CARD_LIMITS = declared("registrations", "CARD_LIMITS", "maxPending", "maxRequest");
-const WORK_LIMITS = declared("scheduled", "WORK_LIMITS", "maxOpen", "maxSettled", "maxPayload");
 const MAX_OPEN_INTENTS = constant("files", "MAX_OPEN_INTENTS");
 const MAX_INTENT_CHUNKS = constant("files", "MAX_INTENT_CHUNKS");
 const MAX_PATH_BYTES = constant("paths", "MAX_PATH_BYTES");
@@ -188,18 +189,23 @@ export interface Term {
  */
 export function withoutRowid(schema: string = source("schema")): Set<string> {
   const tables = new Set<string>();
-  for (const match of schema.matchAll(/CREATE TABLE ([a-zA-Z_0-9]+) /g)) {
-    const rest = schema.slice(match.index + match[0].length);
-    const next = rest.search(/CREATE |ALTER |DROP |INSERT /);
-    if (rest.slice(0, next < 0 ? rest.length : next).includes("WITHOUT ROWID")) {
-      tables.add(match[1]!);
+  const statements = /CREATE TABLE ([a-zA-Z_0-9]+) |ALTER TABLE ([a-zA-Z_0-9]+) RENAME TO ([a-zA-Z_0-9]+)|DROP TABLE ([a-zA-Z_0-9]+)/g;
+  for (const match of schema.matchAll(statements)) {
+    const [, made, from, to, dropped] = match;
+    if (made !== undefined) {
+      const rest = schema.slice(match.index + match[0].length);
+      const next = rest.search(/CREATE |ALTER |DROP |INSERT /);
+      if (rest.slice(0, next < 0 ? rest.length : next).includes("WITHOUT ROWID")) {
+        tables.add(made);
+      } else {
+        tables.delete(made);
+      }
+    } else if (from !== undefined) {
+      if (tables.delete(from)) {
+        tables.add(to!);
+      }
     } else {
-      tables.delete(match[1]!);
-    }
-  }
-  for (const [, from, to] of schema.matchAll(/ALTER TABLE ([a-zA-Z_0-9]+) RENAME TO ([a-zA-Z_0-9]+)/g)) {
-    if (tables.delete(from!)) {
-      tables.add(to!);
+      tables.delete(dropped!);
     }
   }
   return tables;
@@ -318,8 +324,6 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
                       by: "owner, collection, writer and creator counters" },
   agent_cards: { rows: CARD_LIMITS.maxPending, bytes: ROW + CARD_LIMITS.maxRequest,
                  by: "maxPending cards of maxRequest" },
-  scheduled_work: { rows: WORK_LIMITS.maxOpen + WORK_LIMITS.maxSettled,
-                    bytes: ROW + WORK_LIMITS.maxPayload, by: "open and settled work" },
   owner_notices: { rows: NOTICES_KEPT, bytes: ROW + NOTICE_DETAIL * 4, by: "NOTICES_KEPT" },
   connections: { rows: CONNECTION_LIMITS.maxConnections + CONNECTION_LIMITS.maxRevokedKept,
                  bytes: ROW + 4 * MODELS_CHARS,
@@ -354,6 +358,9 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
                     + 8,
                   by: "THREAD_LIMITS.receipts, RECEIPT_TEXT_MAX of text each" },
   owner_erasure: { rows: 1, bytes: ROW, by: "one row" },
+  // The owner's admission: one row, its reasons a short fixed list; after the erasure, the
+  // erased tombstone, alone in the database.
+  owner_admission: { rows: 1, bytes: ROW + 64, by: "one row (the schema's CHECK)" },
 });
 
 /**
@@ -369,16 +376,24 @@ export const RUNTIME: Readonly<Record<string, Term>> = Object.freeze<Record<stri
             by: "a wake-failure count per live thread, and Lifecycle's own keys" },
 });
 
-/** Every table the owner's schema makes, by its final name. */
+/**
+ * Every table the owner's schema makes, by its final name: its statements in order, a
+ * rename moving a table and a drop taking one away (migration 13 drops the `work` lane's).
+ */
 export function ownerTables(schema: string = source("schema")): string[] {
-  const made = [...schema.matchAll(
-    /CREATE (?:VIRTUAL )?TABLE (?:IF NOT EXISTS )?([a-zA-Z_0-9]+)/g)].map((match) => match[1]!);
-  const renamed = [...schema.matchAll(/ALTER TABLE ([a-zA-Z_0-9]+) RENAME TO ([a-zA-Z_0-9]+)/g)];
-  const tables = new Set(made.filter((name) => name !== "schema_version"));
-  for (const [, from, to] of renamed) {
-    tables.delete(from!);
-    tables.add(to!);
+  const tables = new Set<string>();
+  const statements = /CREATE (?:VIRTUAL )?TABLE (?:IF NOT EXISTS )?([a-zA-Z_0-9]+)|ALTER TABLE ([a-zA-Z_0-9]+) RENAME TO ([a-zA-Z_0-9]+)|DROP TABLE (?:IF EXISTS )?([a-zA-Z_0-9]+)/g;
+  for (const [, made, from, to, dropped] of schema.matchAll(statements)) {
+    if (made !== undefined) {
+      tables.add(made);
+    } else if (from !== undefined) {
+      tables.delete(from);
+      tables.add(to!);
+    } else {
+      tables.delete(dropped!);
+    }
   }
+  tables.delete("schema_version");
   return [...tables].sort();
 }
 
@@ -430,9 +445,13 @@ describe("the owner's database bound", () => {
     expect(named.filter((table) => !tables.includes(table))).toEqual([]);
     expect(new Set(named).size).toBe(named.length);
     expect(tables.filter((table) => table.startsWith("pi_"))).toEqual([]);
-    // A virtual table, or a name with a digit, is a table too.
+    // A virtual table, or a name with a digit, is a table too; a dropped one is not.
     expect(ownerTables('"CREATE VIRTUAL TABLE fts5_index USING fts5(x)", ' +
                        '"CREATE TABLE IF NOT EXISTS t2 (a)"')).toEqual(["fts5_index", "t2"]);
+    expect(ownerTables('"CREATE TABLE a (x)", "CREATE TABLE b (x)", "DROP TABLE a"'))
+      .toEqual(["b"]);
+    expect(tables).not.toContain("scheduled_work");
+    expect(tables).toContain("owner_admission");
   });
 
   it("finds every manifest table charged by the schema's triggers, and every index charged",

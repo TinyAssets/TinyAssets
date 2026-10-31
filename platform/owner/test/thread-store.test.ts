@@ -92,6 +92,7 @@ function faulty(store: StoreRpc, fails: { reads: number; commits: number },
     },
     attach: async (holder) => wrap(await store.attach(holder)),
     answer: (request) => store.answer(request),
+    task: (kind, workId) => store.task(kind, workId),
     size: () => store.size(),
     destroy: () => store.destroy(),
   };

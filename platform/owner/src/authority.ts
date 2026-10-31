@@ -109,6 +109,11 @@ export const AUTHORITY_RULE = "outside_authority";
 /** A model call's refusal code when its request names no conversation the object made. */
 export const NO_CONVERSATION = "no_conversation";
 
+/** A refusal's fixed code: the part before its colon (`owner_suspended: ...`), else itself. */
+export function refusalCode(message: string): string {
+  return /^[a-z_]+:/.exec(message)?.[0].slice(0, -1) ?? message;
+}
+
 /** The tools the model is offered, exactly, on every conversation the object creates. */
 export const MODEL_TOOLS: readonly string[] = Object.freeze(["read", "write", "edit", "bash",
                                                              "ta"]);
@@ -236,6 +241,13 @@ export function capabilityOf(call: GatedCall,
 export interface AuthorityParts {
   readonly grants: AuthorityGrants;
   /**
+   * The owner's admission's `require_work` refusal, or null while it is admitted: a
+   * synchronous read of the object's own row (`admission.ts`). Every operation and model
+   * call is refused while the owner is not admitted, the owner's own too: a suspension's
+   * abort is the prompt stop, this the enforcement.
+   */
+  readonly admission?: () => string | null;
+  /**
    * Keep a refusal receipt of a blocked call, in a unit of its own: the object's policy
    * refusal, under `AUTHORITY_RULE`.
    */
@@ -269,6 +281,10 @@ export class Authority {
    * capability (`null`: never).
    */
   require(state: Readonly<AuthorityState> | undefined, need: Need | undefined): void {
+    const unadmitted = this.#parts.admission?.() ?? null;
+    if (unadmitted !== null) {
+      throw new Refused(unadmitted);
+    }
     if (state?.by === "owner") {
       return;
     }
@@ -320,8 +336,16 @@ export class Authority {
     throw new Refused(first ?? NOT_GRANTED);
   }
 
-  /** A model call's refusal code under `state`, or null when it may spend. */
+  /**
+   * A model call's refusal code under `state`, or null when it may spend: the admission's
+   * code (`owner_suspended`, `owner_erased`) while the owner is not admitted, else the
+   * authority's.
+   */
   modelRule(state: Readonly<AuthorityState> | undefined): string | null {
+    const unadmitted = this.#parts.admission?.() ?? null;
+    if (unadmitted !== null) {
+      return refusalCode(unadmitted);
+    }
     return this.refusal(state, []) === undefined ? null : AUTHORITY_RULE;
   }
 

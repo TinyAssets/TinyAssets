@@ -199,11 +199,14 @@ export function toolTable(): readonly Tool[] {
     { name: "run_graph", door: "agentRun", capability: "run_graph",
       title: "Run an agent", ...AGENT_WORK,
       description: "Launch one of the owner's agents on an input, in a fresh conversation of " +
-        "its own, now or at a time. Answers at once with an operation_id, which run_status " +
-        "reads and run_cancel ends.",
+        "its own, now, at a time, or again at each time a cron expression names. Answers at " +
+        "once with an operation_id, which run_status reads and run_cancel ends.",
       input: args({ agent: str("Which of the owner's agents, such as main"),
                     input: str("What the agent is asked to do") },
-                  { at: num("When to run it, in seconds since the epoch: now when omitted") }) },
+                  { at: num("When to run it, in seconds since the epoch: now when omitted"),
+                    cron: str("Run it again at each time this names: minute, hour, day of " +
+                              "the month, month and day of the week, in UTC only (no " +
+                              "time zone), at least 15 minutes apart") }) },
     { name: "run_status", door: "agentStatus", capability: null,
       title: "Agent run status", ...READ,
       description: "Read how one of your agent operations stands, and its answer once done.",

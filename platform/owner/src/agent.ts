@@ -72,17 +72,25 @@
  * Ending work (agent research §4.2), each in the door of the change, after its own unit
  * committed: a grant change or revoke ends its client's work (`endClient`, the client's
  * threads, which the unit marked dropping), a policy write every thread's with work running
- * (`endAll`, from the threads' live rows). Each ends the pending waits it covers (`wait`),
- * closes the live views of the conversations it covers (`live-tee.ts`), and aborts each of
- * those Sessions' conversations with live work, background work included: pi withdraws its
- * queued inputs, marks and signals its live tasks (a model request in flight sees its abort
+ * (`endAll`, from the threads' live rows: active Sessions only). Each ends the pending waits
+ * it covers (`wait`), closes the live views of the conversations it covers (`live-tee.ts`),
+ * and aborts each of those Sessions' conversations with live work: pi withdraws its queued
+ * inputs, marks and signals its live tasks (a model request in flight sees its abort
  * signal, so the gateway call ends and settles through `usage.ts`), and settles their
- * inputs `unanswered: aborted`. A dropped client's thread then goes the one drop path
+ * inputs `unanswered: aborted`. A grant change's ending takes background work too, sleepers
+ * included; a policy write's takes background work that is running, but never a sleeping
+ * task or a scheduled launch's (`scheduled.ts`), whose delivery re-checks the policy as it
+ * then stands. A dropped client's thread then goes the one drop path
  * (`drop`): its Session closed, a run's receipt kept, its store wiped, its row forgotten.
  * The door waits for that at most `END_WAIT_MS`; pi finishes the abort, and the `threads`
  * lane the drop, on their own past then. The abort is the prompt stop, not the
  * enforcement: an abort missed (work admitted after the end's read, or an eviction between
  * the commit and the abort) still finds every tool operation and every model call refused.
+ *
+ * A scheduled launch (`schedule`, `scheduled.ts`) is a `ta.scheduled` pi task in its run
+ * thread's root, installed here with the object's own extensions; its delivery runs here
+ * (`#deliver`), its status and cancel read its task record (`scheduledStatus`,
+ * `cancelScheduled`).
  *
  * Dropping a thread (`drop`, `threads.ts`), for every reason, is one path: idle retention,
  * a run's retention, a grant change or revoke, and the owner's erasure (`erase.ts`) each
@@ -90,6 +98,7 @@
  * never opened: its work is ended in the Session as it is, if open, and a run's receipt is
  * read from its store directly once the Session closed.
  */
+import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { ClientIdentity, Models, Provider } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -97,15 +106,16 @@ import {
   AgentDoc, type AgentState, type CompactionSettings, type ConversationId,
   type ConversationRecord, createRegistry, defineDoc, defineDocFamily,
   defineExtension, type EnvTarget, type Extension, Harness, type HarnessSettings, hook,
-  ProviderDoc, type ReportInfo, ROOT_CONVERSATION_ID, ToolTask, type Tx, type UsageState,
-  type Storage, type Wake, wrapTool,
+  ProviderDoc, type ReportInfo, ROOT_CONVERSATION_ID,
+  type TaskRecord, ToolTask, type Tx, type UsageState, type Storage, type Wake, wrapTool,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 
 import {
   agentId, type Authority, AUTHORITY_RULE, authorityOf, type AuthorityState, MODEL_TOOLS,
-  type Need, NO_CONVERSATION, offersFive, type Stamped, stamped, stampOf, TA_OP, TOOL_SURFACE,
+  type Need, NO_CONVERSATION, offersFive, refusalCode, type Stamped, stamped, stampOf, TA_OP,
+  TOOL_SURFACE,
 } from "./authority";
 import { Invalid, Refused } from "./errors";
 import type { Files } from "./files";
@@ -118,10 +128,15 @@ import { type MetricsSnapshot, OriginMetrics, originRoot } from "./origin";
 import { AGENTS_DIR, AGENTS_OWNER_ONLY, within, WORKSPACE } from "./paths";
 import { RemoteStorage } from "./remote-storage";
 import { inTime } from "./schedule";
+import {
+  createScheduled, type Delivered, requestOf, SCHEDULED, type ScheduledInput,
+  type ScheduledTask, scheduledTask, standing, type Standing, WORK_ENTRY,
+} from "./scheduled";
 import { PLATFORM_NAMES, type Platform, reachable, taTool } from "./ta";
 import {
   HOST_TIMING, type HostParts, type HostTiming, type Opened, type OperationResult,
-  type Reported, type SubmitOptions, ThreadHost, USAGE_UNKEPT,
+  type Reported, RUN_SETTLED, SESSIONS_FULL, type SubmitOptions, THREAD_DROPPED,
+  THREAD_INPUTS_FULL, ThreadHost, USAGE_UNKEPT,
 } from "./thread-host";
 import { type Answer, assistantText, type StoreRpc } from "./thread-store";
 import {
@@ -178,6 +193,10 @@ export const RESERVED_PREFIX = "ta.";
 export const GATE = "ta.authority";
 /** The extension of the `ta` tool (`ta.ts`). */
 export const TA_EXTENSION = "ta.tool";
+/** The extension of the scheduled launches' task (`scheduled.ts`). */
+export const SCHEDULED_EXTENSION = "ta.scheduled";
+/** A scheduled launch whose thread is no longer the one it was made in, as it delivers. */
+export const THREAD_AUTHORITY = "thread_authority";
 /** A thread with no row is never opened: it was dropped, or never made. */
 export const NO_THREAD = "no such thread";
 /** The `usage_unkept` notice's detail when a settling run's usage cannot be read. */
@@ -195,6 +214,11 @@ const RECEIPT_SCAN = 8;
  * and its answer's text once done; null while it has none, or it has not settled.
  */
 export async function settledIn(storage: Storage): Promise<Settled | null> {
+  const scheduled = (await storage.scanTasks({ conversationId: ROOT, kind: SCHEDULED },
+                                             RECEIPT_SCAN, undefined, BG)).items[0];
+  if (scheduled !== undefined) {
+    return scheduledSettled(storage, scheduled);
+  }
   const page = await storage.scanSubmissions({ conversationId: ROOT, order: "ascending" },
                                              RECEIPT_SCAN, undefined, BG);
   const input = page.items.find((record) => record.type === "input");
@@ -210,6 +234,41 @@ export async function settledIn(storage: Storage): Promise<Settled | null> {
     return { request, status: "unanswered", reason: input.reason, text: "" };
   }
   return null;
+}
+
+/**
+ * How a scheduled launch's run settled, by its task: under its work id, the reason it ended
+ * (refused, cancelled), or, once it completed, how its last delivery was answered; null
+ * while the task, or that delivery, is live.
+ */
+async function scheduledSettled(storage: Storage,
+                                record: TaskRecord<JsonValue, JsonValue, JsonValue>):
+    Promise<Settled | null> {
+  const workId = (record.input as unknown as ScheduledInput).work_id;
+  const stands = standing(record);
+  if (stands.ended === null) {
+    return null;
+  }
+  if (stands.ended.reason !== null) {
+    return { request: workId, status: "unanswered", reason: stands.ended.reason, text: "" };
+  }
+  const last = await storage.submissionByRequest(ROOT, requestOf(workId, stands.delivered), BG);
+  if (last?.type !== "input" || (last.status !== "done" && last.status !== "unanswered")) {
+    return null;
+  }
+  if (last.status === "unanswered") {
+    return { request: workId, status: "unanswered", reason: last.reason, text: "" };
+  }
+  const answer = await storage.entry(last.answer, BG);
+  return { request: workId, status: "done", reason: null, text: assistantText(answer?.entry) };
+}
+
+/** Whether two stamps are the same authority, field by field. */
+export function sameStamp(a: Stamped | null, b: Stamped | null): boolean {
+  return a === null || b === null ? a === b
+    : a.client === b.client && a.generation === b.generation
+      && a.authenticated_at === b.authenticated_at && a.universe === b.universe
+      && a.agent === b.agent;
 }
 
 export type { Stamped };
@@ -262,6 +321,8 @@ export interface ThreadOptions {
   readonly kind?: ThreadKind;
   /** What the stamp must hold where the thread acts, checked before and when it is recorded. */
   readonly need?: Need;
+  /** A scheduled launch's work id, which its run's row names from the start. */
+  readonly work?: string;
 }
 
 /** Who a conversation's file changes are by, in the history. */
@@ -327,6 +388,18 @@ export interface AgentParts {
   readonly usage: (thread: string, usage: UsageState) => Promise<void>;
   /** Keep a thread's turn owners (`Usage.turnOwners`, `Usage.turnsReconciled`), in units. */
   readonly turns: HostParts["turns"];
+  /**
+   * The owner's admission's `require_work` refusal, or null when it is admitted: a read, run
+   * in a scheduled delivery's unit (`admission.ts`).
+   */
+  readonly admission: () => string | null;
+}
+
+/** How a scheduled launch stands, as its store holds it: its task, and its last delivery. */
+export interface ScheduledStatus {
+  readonly standing: Standing;
+  /** How its last delivery stands, once it made one. */
+  readonly last: Answer | null;
 }
 
 /** What a Session's models are bound to: its thread, and its own authority check. */
@@ -349,6 +422,11 @@ export interface AgentSource {
   readonly trusted?: readonly Extension[];
   /** The thread host's timings: production's, or a test's shorter ones. */
   readonly timing?: HostTiming;
+  /**
+   * pi's clock (`HarnessOptions.now`), on which sleeps are stored: production's `Date.now`,
+   * or a test's that moves days ahead.
+   */
+  readonly now?: () => number;
 }
 
 /**
@@ -446,6 +524,11 @@ export class OwnerAgent {
   readonly #drops = new Map<string, Promise<void>>();
   /** The pending waits, by the client they are for ("" for the owner's), on the instance. */
   readonly #waits = new Map<string, Set<AbortController>>();
+  /** The scheduled launches' task, delivering through this agent (`#deliver`). */
+  readonly #scheduled: ScheduledTask = scheduledTask({
+    deliver: (input, n, signal) => this.#deliver(input, n, signal),
+    made: (input, n) => this.#made(input, n),
+  });
 
   constructor(parts: AgentParts, source: AgentSource) {
     this.#parts = parts;
@@ -453,6 +536,7 @@ export class OwnerAgent {
     this.host = new ThreadHost({
       open: (thread, onWake) => this.#open(thread, onWake),
       exists: (thread) => parts.threads.get(thread) !== null,
+      admission: () => parts.admission(),
       settled: (thread) => parts.threads.settledRun(thread),
       live: (thread, wake, from) => this.#live(thread, wake, from),
       usage: (thread, usage) => parts.usage(thread, usage),
@@ -511,6 +595,7 @@ export class OwnerAgent {
       conversationCreated: (tx, record) => this.#inherit(tx, record),
       telemetry: originRoot(thread, this.metrics),
       onReport: (error, info) => this.#report(info.type, detailOf(error, info)),
+      ...(this.#source.now === undefined ? {} : { now: this.#source.now }),
     }, BG).catch(async (error: unknown) => {
       await storage.close(BG);
       throw error;
@@ -574,6 +659,8 @@ export class OwnerAgent {
         state: (api, context) => api.snapshot(this.authority, api.conversationId, context),
       })],
     }));
+    this.#registry.install(defineExtension({ name: SCHEDULED_EXTENSION,
+                                             tasks: [this.#scheduled] }));
     for (const extension of this.#source.trusted ?? []) {
       this.#registry.install(extension);
     }
@@ -668,13 +755,174 @@ export class OwnerAgent {
       throw new Invalid("a thread's stamp names its own agent");
     }
     const { authority, threads, write } = this.#parts;
-    const { kind = "run", need = [] } = options;
+    const { kind = "run", need = [], work = null } = options;
     const state = authorityOf(by);
     authority.require(state, need);
-    threads.room(by, kind);  // a refusal makes nothing; the recording unit checks again
+    threads.room(by, kind, work !== null);  // a refusal makes nothing; the unit checks again
     return write(() => {
       authority.require(state, need);
-      return threads.record(id, by, Date.now() / 1000, kind);
+      return threads.record(id, by, Date.now() / 1000, kind, work);
+    });
+  }
+
+  /**
+   * Make a scheduled launch in its run thread (`scheduled.ts`): its `ta.scheduled` task, in
+   * the thread's root, inside the thread's wake, so its job is set before the commit. The
+   * thread was recorded first, naming its work and its store.
+   */
+  async schedule(thread: Thread, input: ScheduledInput): Promise<void> {
+    if (input.thread !== thread.thread_id || thread.request !== input.work_id) {
+      throw new Error("a scheduled launch is made in the run its row names");
+    }
+    await this.host.admitted(thread.thread_id, async ({ pi }) => {
+      const root = await pi.conversation(ROOT, BG);
+      if (root === undefined) {
+        throw new Error("a thread's Session has no root");
+      }
+      await createScheduled(root, this.#scheduled, input);
+    });
+  }
+
+  /** Whether occurrence `n` of a scheduled launch was submitted: pi holds its request id. */
+  async #made(input: ScheduledInput, n: number): Promise<boolean> {
+    const record = await this.host.use(input.thread, ({ storage }) =>
+      storage.submissionByRequest(ROOT, requestOf(input.work_id, n), BG));
+    return record !== undefined;
+  }
+
+  /**
+   * In a unit: how occurrence `n`'s delivery stands under the owner's rows now. Refused for
+   * good when its thread is gone or dropping, is not the one it was made in under the same
+   * stamp, or its stamp no longer stands or holds `run_graph`; held, to try again, while the
+   * owner is not admitted (`require_work`: an erased owner's object runs nothing, so this is
+   * a suspension) or the run policy as it stands has no room for it
+   * (`Threads.liveRefusal`); else null.
+   */
+  #deliveryCheck(input: ScheduledInput): Exclude<Delivered, { kind: "delivered" }> | null {
+    const { threads, authority } = this.#parts;
+    const row = threads.get(input.thread);
+    if (row === null) {
+      return { kind: "refused", reason: NO_THREAD };  // dropping: its Session ends with it
+    }
+    const state = threads.authority(row);
+    if (row.request !== input.work_id || !sameStamp(stampOf(state), input.stamp)) {
+      return { kind: "refused", reason: THREAD_AUTHORITY };
+    }
+    const unadmitted = this.#parts.admission();
+    if (unadmitted !== null) {
+      return { kind: "held", reason: refusalCode(unadmitted) };
+    }
+    const refused = authority.refusal(state, ["run_graph"]);
+    if (refused !== undefined) {
+      return { kind: "refused", reason: refused };
+    }
+    const room = threads.liveRefusal(row);
+    return room === null ? null : { kind: "held", reason: refusalCode(room) };
+  }
+
+  /**
+   * Deliver occurrence `n` of a scheduled launch, from its task's `deliver` phase. A
+   * delivery its request id finds already made (an eviction between its submit and the
+   * phase's commit) is pi's: it is not checked again, and its submit is pi's duplicate.
+   * Otherwise it is submitted through the host's admission, which holds it to the thread's
+   * open inputs, and whose `admitted` step, right before pi commits it, stops on the
+   * task's abort signal (a cancel) and re-checks, in one unit, what `#deliveryCheck`
+   * reads. A refusal for good ends the task; one held (a suspension, no room in the run
+   * policy or the thread) sleeps again, backing off, so the schedule survives it.
+   */
+  async #deliver(input: ScheduledInput, n: number, signal: AbortSignal): Promise<Delivered> {
+    const request = requestOf(input.work_id, n);
+    const made = await this.#made(input, n);
+    let checked: Delivered | null = null;
+    const admitted = made ? undefined : async () => {
+      if (signal.aborted) {
+        throw signal.reason ?? new Error("the delivery was cancelled");
+      }
+      checked = await this.#parts.write(() => this.#deliveryCheck(input));
+      if (checked !== null) {
+        throw new Refused(checked.reason);
+      }
+    };
+    try {
+      await this.host.submit(input.thread, input.input, {
+        operationId: request, whenBusy: "followUp",
+        entry: { kind: WORK_ENTRY, data: { work_id: input.work_id,
+                                           client: input.stamp?.client ?? null } },
+        ...(admitted === undefined ? {} : { admitted }),
+      });
+    } catch (error) {
+      if (checked !== null) {
+        return checked;
+      }
+      if (signal.aborted) {
+        throw error;
+      }
+      if (error instanceof Refused
+          && (error.message === THREAD_INPUTS_FULL || error.message === SESSIONS_FULL)) {
+        return { kind: "held", reason: refusalCode(error.message) };
+      }
+      if (error instanceof Refused
+          && (error.message === RUN_SETTLED || error.message === THREAD_DROPPED)) {
+        return { kind: "refused", reason: refusalCode(error.message) };
+      }
+      if (error instanceof Refused && error.message === this.#parts.admission()) {
+        return { kind: "held", reason: refusalCode(error.message) };
+      }
+      throw error;
+    }
+    return { kind: "delivered" };
+  }
+
+  /**
+   * How a scheduled launch of `thread` stands, by a pure read of its store
+   * (`ThreadStore.task`, then `answer` for its last delivery): no Session opened, no
+   * holder claimed. Null once its row or store is gone, the store does not answer in time,
+   * or it holds no such task.
+   */
+  async scheduledStatus(thread: Thread, workId: string): Promise<ScheduledStatus | null> {
+    const row = this.#parts.threads.row(thread.thread_id);
+    if (row === null) {
+      return null;
+    }
+    const store = this.#parts.stores(row.store);
+    const read = (async () => {
+      const record = await store.task(SCHEDULED, workId);
+      if (record === null) {
+        return null;
+      }
+      const stands = standing(JSON.parse(record) as TaskRecord<JsonValue, JsonValue,
+                                                                 JsonValue>);
+      const last = stands.delivered === 0 ? null
+        : await store.answer(requestOf(workId, stands.delivered));
+      return { standing: stands, last };
+    })().catch(() => null);
+    const answered = await inTime(read, END_WAIT_MS);
+    return answered === "late" ? null : answered;
+  }
+
+  /**
+   * Cancel a scheduled launch of `thread`: its task aborted (`abortTask`, at once from a
+   * sleep) and waited on until it ends, which says truly how many occurrences it delivered
+   * (one being delivered as the cancel lands, too: its abort handler asks pi); then the
+   * last of them withdrawn, or the run it joined aborted. Whether either did anything.
+   */
+  cancelScheduled(thread: Thread, workId: string): Promise<boolean> {
+    return this.host.use(thread.thread_id, async ({ pi, storage }) => {
+      const record = (await storage.scanTasks({ conversationId: ROOT, kind: SCHEDULED },
+                                              RECEIPT_SCAN, undefined, BG)).items
+        .find((task) => (task.input as unknown as ScheduledInput | null)?.work_id === workId);
+      if (record === undefined) {
+        return false;
+      }
+      let stands = standing(record);
+      let aborted = false;
+      if (stands.ended === null) {
+        aborted = await pi.abortTask(record.id, BG) === "marked";
+        stands = standing(await pi.waitForTask(record.id, BG));
+      }
+      const withdrawn = stands.delivered > 0
+        && await this.host.withdraw(thread.thread_id, requestOf(workId, stands.delivered));
+      return aborted || withdrawn;
     });
   }
 
@@ -920,9 +1168,16 @@ export class OwnerAgent {
 
   /**
    * End one Session's work: the live views of its root and of every conversation with live
-   * work closed (`views`), then each of those aborted, background work included.
+   * work closed (`views`), then each of those aborted, background work included (`keep`
+   * none: a drop's). A policy write's ending (`keep` `sleepers`) aborts each conversation's
+   * ordinary work, a run's own sleeping retry among it, and each background task that is
+   * not asleep, never a scheduled launch's: a sleeping background task and a schedule meet
+   * the policy as it stands when they wake (`#deliver`). A suspension's (`keep`
+   * `scheduled`) aborts all of it, asleep or not, but a scheduled launch's task, whose
+   * delivery re-checks the admission. The tasks it aborts are those live as it looks.
    */
-  async #endSession(pi: Harness, views: boolean): Promise<void> {
+  async #endSession(pi: Harness, views: boolean,
+                    keep: "none" | "sleepers" | "scheduled" = "none"): Promise<void> {
     const inspection = await pi.inspect(BG);
     const live = new Set<ConversationId>([ROOT,
       ...inspection.tasks.map((task) => task.record.conversationId),
@@ -935,8 +1190,20 @@ export class OwnerAgent {
         }
       }
     }
-    await Promise.all([...live].map(async (id) =>
-      (await pi.conversation(id, BG))?.abort(BG, { background: true })));
+    if (keep === "none") {
+      await Promise.all([...live].map(async (id) =>
+        (await pi.conversation(id, BG))?.abort(BG, { background: true })));
+      return;
+    }
+    // Each conversation's ordinary work, its queued inputs and runs; then each task that is
+    // neither asleep nor a scheduled launch's, background ones aborted by their ids, every
+    // one waited on until it is terminal, as an abort across background boundaries waits.
+    const ending = inspection.tasks.filter(({ record, state }) =>
+      record.kind !== SCHEDULED && (keep === "scheduled" || state.kind !== "sleeping"));
+    await Promise.all([...live].map(async (id) => (await pi.conversation(id, BG))?.abort(BG)));
+    await Promise.all(ending.filter(({ record }) => record.background)
+      .map(({ record }) => pi.abortTask(record.id, BG)));
+    await Promise.all(ending.map(({ record }) => pi.waitForTask(record.id, BG)));
   }
 
   /** Run `ending` for at most `END_WAIT_MS`; pi finishes what is past it on its own. */
@@ -978,24 +1245,64 @@ export class OwnerAgent {
   }
 
   /**
-   * A policy write ends every thread's work: every wait, every view, and the work of each
-   * thread with work running (its live row, or an open Session), opened if need be: an
-   * ending's open is never refused, and aborts before the Session resumes
-   * (`ThreadHost.end`), so the endings run in batches of the host's bound: never more
-   * Sessions open for them at once than the bound allows. A thread whose work could not be
-   * ended rejects this, so the door rejects too.
+   * A policy write ends every thread's running work: every wait, every view, and the work
+   * of each thread with work running (its live row active, or an open Session working),
+   * opened if need be, but no sleeping task and no scheduled launch (`#endSession`'s
+   * `sleepers`): each meets the policy as it stands when it wakes.
    */
-  async endAll(): Promise<void> {
-    this.#endWaits();
-    this.#parts.tee.close();
+  endAll(): Promise<void> {
     const running = new Set([...this.#parts.threads.active(),
       ...this.host.openThreads().filter((thread) => this.host.peek(thread)?.pi.wake().active)]);
-    const threads = [...running];
+    return this.#endThreads([...running], "sleepers");
+  }
+
+  /**
+   * A suspension ends the work of every thread with a live row, working or asleep (a run in
+   * pi's retry backoff or deferred poll among them), and of each open Session working:
+   * everything but the scheduled launches' tasks, whose deliveries are held while the owner
+   * is suspended. The abort is the prompt stop: every model call, tool call and new input is
+   * refused while the owner is not admitted.
+   */
+  endUnadmitted(): Promise<void> {
+    const live = new Set([...this.#parts.threads.liveThreads(),
+      ...this.host.openThreads().filter((thread) => this.host.peek(thread)?.pi.wake().active)]);
+    return this.#endThreads([...live], "scheduled");
+  }
+
+  /**
+   * A readmission wakes each thread whose wake job its admission held (`Threads.overdue`:
+   * a scheduled launch's held delivery), so it delivers now, not at the hold's end. Each
+   * job is set due in batches of the host's bound; the alarm then opens them as it opens
+   * every wake, never more at once than the bound. The door waits at most `END_WAIT_MS`; a
+   * wake missed is found by its job at `ADMISSION_HOLD_MS`.
+   */
+  async wakeHeld(): Promise<void> {
+    // On pi's clock, which its wakes are stored on.
+    const threads = this.#parts.threads.overdue((this.#source.now ?? Date.now)() / 1000);
     await this.#within((async () => {
       for (let at = 0, size = Math.max(1, this.host.openMax); at < threads.length;
            at += size) {
         await Promise.all(threads.slice(at, at + size).map((thread) =>
-          this.host.end(thread, ({ pi }) => this.#endSession(pi, false))));
+          this.host.wakeNow(thread)));
+      }
+    })());
+  }
+
+  /**
+   * End `threads`' work, keeping what `keep` says: every wait and view first, then each
+   * thread opened if need be: an ending's open is never refused, and aborts before the
+   * Session resumes (`ThreadHost.end`), so the endings run in batches of the host's bound,
+   * never more Sessions open for them at once than the bound allows. A thread whose work
+   * could not be ended rejects this, so the door rejects too.
+   */
+  async #endThreads(threads: readonly string[], keep: "sleepers" | "scheduled"): Promise<void> {
+    this.#endWaits();
+    this.#parts.tee.close();
+    await this.#within((async () => {
+      for (let at = 0, size = Math.max(1, this.host.openMax); at < threads.length;
+           at += size) {
+        await Promise.all(threads.slice(at, at + size).map((thread) =>
+          this.host.end(thread, ({ pi }) => this.#endSession(pi, false, keep))));
       }
     })());
   }

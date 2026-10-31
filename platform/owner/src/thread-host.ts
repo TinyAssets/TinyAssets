@@ -116,6 +116,11 @@ export const WAIT_BUDGET_MS = 10 * 60_000;
 export const HEARTBEAT_MS = 30_000;
 /** The longest a wake job whose dispatch keeps failing waits before it tries again. */
 export const MAX_WAKE_BACKOFF_MS = 10 * 60_000;
+/**
+ * How long a wake job due while the owner is not admitted waits before it looks again: the
+ * readmission wakes it (`ThreadHost.wakeNow`), so this only covers a wake that was lost.
+ */
+export const ADMISSION_HOLD_MS = 24 * 3_600_000;
 /** How long a wait that failed gives its Session to close before it gives up. */
 const SESSION_CLOSE_MS = 1_000;
 /** An open refused past `openMax` with no idle Session to close. */
@@ -180,6 +185,12 @@ export interface HostParts {
   exists(thread: string): boolean;
   /** Whether `thread` is a run that settled: a new input to it is refused (`RUN_SETTLED`). */
   settled(thread: string): boolean;
+  /**
+   * The owner's admission's refusal, or null while it is admitted: a new input is refused
+   * with it, read synchronously right before pi commits the input, and a wake job due
+   * meanwhile opens nothing (`ADMISSION_HOLD_MS`).
+   */
+  admission(): string | null;
   /**
    * Keep `thread`'s wake in the owner's rows, in a unit of the write gate; `from` is the
    * Session that reported it, when it is open (a run's settling is read from it).
@@ -350,6 +361,11 @@ export class ThreadHost extends LifecycleCapability {
             throw new Refused(THREAD_DROPPED);
           }
         }
+        // A suspension since the door's check refuses it here, before pi holds it.
+        const unadmitted = fresh ? this.#parts.admission() : null;
+        if (unadmitted !== null) {
+          throw new Refused(unadmitted);
+        }
         await conversation.submit({
           type: "input", content: input, whenBusy: options.whenBusy ?? "followUp",
           requestId: operationId, ...(options.entry === undefined ? {} : { entry: options.entry }),
@@ -358,6 +374,16 @@ export class ThreadHost extends LifecycleCapability {
       });
       return { operationId, accepted };
     });
+  }
+
+  /**
+   * Run `act`, which commits work into `thread`'s Session (a scheduled launch's task,
+   * `scheduled.ts`), inside the thread's wake, as an input is admitted: its job is scheduled
+   * before `act` runs, so if the object dies once pi holds the work, that job restarts it,
+   * and the job steps again after, so it sees the work even if it just completed.
+   */
+  admitted<T>(thread: string, act: (opened: Opened) => Promise<T>): Promise<T> {
+    return this.#use(thread, (opened, slot) => this.#admit(thread, slot, () => act(opened)));
   }
 
   /** Withdraw a queued input, or abort the run it joined; false when nothing was. */
@@ -845,6 +871,11 @@ export class ThreadHost extends LifecycleCapability {
     return result;
   }
 
+  /** Schedule `thread`'s wake job now: a readmission's, for a wake its admission held. */
+  wakeNow(thread: string): Promise<unknown> {
+    return this.#wake(thread);
+  }
+
   /** Schedule `thread`'s wake job now, or at `time`. */
   #wake(thread: string, time: number = Date.now()): Promise<unknown> {
     return this.lifecycle.jobs.push({ id: wakeJob(thread), fn: WAKE_FN, time,
@@ -883,7 +914,11 @@ export class ThreadHost extends LifecycleCapability {
    * One step of `thread`'s wake job. It never admits or replays anything: it reads the
    * Session's `wake()`. Running work is waited on; a sleep reschedules the job for when it
    * ends; no work completes the job. A thread with no row (dropped) is never opened again,
-   * and its job completes.
+   * and its job completes. While the owner is not admitted the job opens nothing and looks
+   * again after `ADMISSION_HOLD_MS`: what it would run is a scheduled launch's held
+   * delivery (a suspension ended every other thread's work), which would only be held
+   * again; the readmission wakes it (`wakeNow`), and its live row's wake, left past due,
+   * names it.
    */
   async #step(thread: string): Promise<LifecycleJobOutcome> {
     const heartbeat = { rescheduleAt: Date.now() + this.#timing.heartbeatMs };
@@ -893,6 +928,9 @@ export class ThreadHost extends LifecycleCapability {
     }
     if (!this.#parts.exists(thread)) {
       return undefined;
+    }
+    if (this.#parts.admission() !== null) {
+      return { rescheduleAt: Date.now() + ADMISSION_HOLD_MS };
     }
     const { opened, slot } = await this.#open(thread);
     const { pi } = opened;

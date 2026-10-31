@@ -162,6 +162,10 @@ function countedStore(store: StoreRpc, calls: () => Record<string, number>,
       count("answer");
       return store.answer(request);
     },
+    task: (kind, workId) => {
+      count("task");
+      return store.task(kind, workId);
+    },
     size: () => store.size(),
     destroy: () => store.destroy(),
   };
@@ -178,6 +182,7 @@ export function wipeWatched(store: StoreRpc, name: string, probes: () => Probes,
     open: (holder) => store.open(holder),
     attach: (holder) => store.attach(holder),
     answer: (request) => store.answer(request),
+    task: (kind, workId) => store.task(kind, workId),
     size: () => store.size(),
     destroy: async () => {
       const kept = probes();
@@ -554,6 +559,14 @@ function seeing(provider: Provider, seen: (request: Seen) => void): Provider {
   });
 }
 
+/** Where a test keeps how far pi's clock runs ahead of the wall clock, in ms. */
+const SKEW_KEY = "test:pi-clock-skew";
+
+/** Run pi's clock `ms` ahead of the wall clock in `state`'s object, across its evictions. */
+export function skewClock(state: DurableObjectState, ms: number): void {
+  state.storage.kv.put(SKEW_KEY, ms);
+}
+
 /** The owner object, its agent on the faux model and the test tools. */
 export class FauxOwnerDO extends OwnerDO {
   readonly agent: OwnerAgent;
@@ -606,7 +619,9 @@ export class FauxOwnerDO extends OwnerDO {
                      () => made.self?.probes), name,
         () => made.self!.probes, () => made.agent!.host.openThreads());
       made.agent = new OwnerAgent({ ...parts, write, stores }, {
-        models: () => models, timing, ...testExtensions(() => made.self!.probes) });
+        models: () => models, timing, ...testExtensions(() => made.self!.probes),
+        // pi's clock, which a test moves days ahead (`skewClock`), across evictions.
+        now: () => Date.now() + (ctx.storage.kv.get<number>(SKEW_KEY) ?? 0) });
       return made.agent;
     }, { erasure: (erasure) => { made.erasure = erasure; }, eraseRetryMs: 500 });
     made.self = this;

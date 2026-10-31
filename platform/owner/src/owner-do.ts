@@ -62,16 +62,18 @@
  * The agent's threads run under the authority they were made under (`authority.ts`,
  * `threads.ts`): an outside client's every tool operation and model call is held to its
  * grant as it stands, and a grant change (`grantSet`, `grantRevoke`) or a policy write
- * ends the agent work it covers once its own unit committed (`agent.ts`). The `work` lane
- * hands due turns to pi through the object's `workRunner`. The agent's `ta` (`ta.ts`)
- * reaches the object's policy, a proposal, its scheduled work and its file usage only
+ * ends the agent work it covers once its own unit committed (`agent.ts`). A scheduled
+ * launch is a pi task sleeping in its run thread's Session (`scheduled.ts`), woken by that
+ * thread's own job, never a lane of the schedule. The agent's `ta` (`ta.ts`)
+ * reaches the object's policy, a proposal, its scheduled launches and its file usage only
  * through the narrow `Platform` the object hands it, each held to the conversation's
  * authority as the matching door holds its caller.
  *
  * The agent's doors (agent research §8; tasks 5, A4) are how outside chatbots, through
  * `/mcp` and `/api`, and the owner, through `/app/api`, reach the owner's agent:
  * `agentSubmit` (a message to the caller's one thread with an agent, or a steer of its
- * run, then a bounded wait), `agentRun` (a launch in a fresh thread, now or scheduled),
+ * run, then a bounded wait), `agentRun` (a launch in a fresh thread, now, at a time, or
+ * recurring),
  * `agentStatus` and `agentCancel` (the caller's own operations only). Each admits its
  * caller and checks its scope (`converse`, `run_graph`) in its first unit, before any pi
  * call; each addresses work by a thread id resolved against the caller's own rows, never
@@ -84,19 +86,32 @@
  * Erasing the owner (`erasure.ts`, `erase.ts`) is an internal path, which no door reaches
  * until the erasure door (slice 10): once it marks the owner, every door refuses
  * (`ERASING`, in the binding check every door's first unit runs), no lane runs, and no
- * thread is made; it destroys every store a row names, then wipes the owner whole.
+ * thread is made; it destroys every store a row names, then wipes the owner whole, leaving
+ * only the erased admission row (`admission.ts`). An object that finds that tombstone as it
+ * starts migrates nothing and starts no Lifecycle, and every door refuses it
+ * (`OWNER_ERASED`), so a stale `getByName` never makes owner state again.
+ *
+ * The owner's admission (`admission.ts`) is checked in the same binding check: a suspended
+ * owner's every door refuses, and so do the lanes with `require_work` semantics (a
+ * scheduled delivery, the `wakes` lane's claim). Only the platform, as the reserved
+ * `PLATFORM_CALLER`, sets it, at `admissionSet`, the one door that caller reaches.
  */
 import type { HarnessSettings } from "@earendil-works/pi-durable";
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
 import {
-  type AgentConfig, type AgentParts, gatewayAgent, type OwnerAgent, type UsageView,
+  type AgentConfig, type AgentParts, END_WAIT_MS, gatewayAgent, type OwnerAgent, type UsageView,
   WAITS_FULL,
 } from "./agent";
 import {
-  AGENT_DIR, Authority, AUTHORITY_RULE, type AuthorityState, NO_AUTHORITY, type Stamped, stampOf,
+  AGENT_DIR, Authority, AUTHORITY_RULE, type AuthorityState, NO_AUTHORITY, refusalCode,
+  type Stamped, stampOf,
 } from "./authority";
+import {
+  admission, type Admission, doorRefusal, type DoorClass, OWNER_ERASED, PLATFORM_CALLER,
+  PLATFORM_ONLY, PLATFORM_RESERVED, setAdmission, tombstoned, workRefusal, writeTombstone,
+} from "./admission";
 import { Collections, Conflict, type HistoryEntry, type Page, type Row } from "./collections";
 import { type ConnectionView, Connections, type GatewayService, type Prepared } from "./connections";
 import { Invalid, Refused } from "./errors";
@@ -121,21 +136,17 @@ import {
 import { type Card, Registrations } from "./registrations";
 import { GatewayProvider } from "./gateway-provider";
 import { LiveTee } from "./live-tee";
-import { type Lane, Schedule } from "./schedule";
-import {
-  namedByOpenWork, runWork, Scheduled, WORK_HANDOFF_MS, WORK_PER_PASS, type WorkRunner, workTurn,
-} from "./scheduled";
+import { inTime, type Lane, Schedule } from "./schedule";
+import type { ScheduledInput } from "./scheduled";
+import { nextOccurrence, parseCron } from "./cron";
 import { AGENTS_DIR, AGENTS_OWNER_ONLY, storedPath, within, WORKSPACE } from "./paths";
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
 import {
-  type ReceiptView, retainThreads, type Thread, THREAD_LIMITS, THREAD_RETENTION,
-  type ThreadReader, Threads,
+  type ReceiptView, retainThreads, type Thread, THREAD_LIMITS, THREAD_RETENTION, Threads,
 } from "./threads";
 import { codePoints, principal } from "./text";
-import {
-  type OperationResult, RUN_SETTLED, SESSIONS_FULL, THREAD_INPUTS_FULL,
-} from "./thread-host";
+import type { OperationResult } from "./thread-host";
 import type { ThreadStore } from "./thread-store";
 import { Usage as ModelUsage, type UsageReceipt } from "./usage";
 import { runWakes, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "./wakes";
@@ -268,11 +279,22 @@ export interface SubmitRequest {
   readonly wait_ms?: number;
 }
 
-/** A launch of an agent on an input in a fresh thread: now, or `at` (seconds). */
+/**
+ * A launch of an agent on an input in a fresh thread: now, or `at` (seconds), and again at
+ * each occurrence of `cron` (`cron.ts`, UTC) after the first, which is `at`, or the cron's
+ * next occurrence when `at` is left out.
+ */
 export interface RunRequest {
   readonly agent: string;
   readonly input: string;
   readonly at?: number;
+  readonly cron?: string;
+}
+
+/** The platform's change of the owner's admission (`admission.ts`). */
+export interface AdmissionRequest {
+  readonly reason: string;
+  readonly suspended: boolean;
 }
 
 /** One of the caller's own operations, by the id a submit or a launch answered. */
@@ -280,7 +302,7 @@ export interface OperationRequest {
   readonly operation_id: string;
 }
 
-/** An operation as the agent's doors answer it: pi's receipts, or the scheduled work's. */
+/** An operation as the agent's doors answer it: pi's receipts, or a scheduled launch's task. */
 export interface Operation {
   readonly operation_id: string;
   readonly thread_id: string;
@@ -289,7 +311,7 @@ export interface Operation {
   readonly text?: string;
   /** True when `text` is only the first 4 KiB of a run's answer, its store wiped. */
   readonly truncated?: boolean;
-  /** When scheduled work is due, in seconds. */
+  /** When a scheduled launch next delivers, in seconds. */
   readonly due?: number;
 }
 
@@ -698,6 +720,11 @@ function timeOf(value: unknown, now: number): number {
   return value;
 }
 
+/** A launch's `cron`: an expression `cron.ts` accepts, as it gives it back. */
+function cronOf(value: unknown): string {
+  return parseCron(value).source;
+}
+
 /** What the object's lanes run over: its stores, its in-process callers and the passes. */
 export interface LaneDeps {
   readonly ledger: Ledger;
@@ -705,7 +732,6 @@ export interface LaneDeps {
     nextAlarm(now: number): number | null;
     collect(now: number, until: number): Promise<void>;
   };
-  readonly work: Scheduled;
   readonly connections: {
     nextDue(now: number): number | null;
     run(now: number, until: number): Promise<void>;
@@ -717,97 +743,39 @@ export interface LaneDeps {
   };
   /** The doorbell, or null until tasks 7 constructs one: read at each use, never kept. */
   readonly sender: () => WakeSender | null;
-  /** The scheduled-turn runner (null only in a test's lanes): read at each use. */
-  readonly runner: () => WorkRunner | null;
+  /** Whether the owner is admitted (`require_work`): read at each use. */
+  readonly admitted: () => boolean;
   readonly clock: () => number;
   /** The object's write gate, which every lane write goes through a row at a time. */
   readonly write: Write;
   readonly runWakes: typeof runWakes;
-  readonly runWork: typeof runWork;
 }
 
 /**
  * The lanes of the object's one schedule (`schedule.ts`). Each lane's pass is handed the
  * pass's wall-clock end (`until`) and passes it on, so no lane can outrun its hung
- * timeout; the passes write through the object's gate. The doorbell and runner are read
- * when a lane looks or runs, so one the object gains later is never missed.
+ * timeout; the passes write through the object's gate. The doorbell and the admission are
+ * read when a lane looks or runs, so one the object gains later is never missed.
  * Exported so the wiring is tested with recording passes; `OwnerDO` gives it the real ones.
  */
 export function ownerLanes(deps: LaneDeps):
-    Readonly<Record<"wakes" | "files" | "work" | "connections" | "threads", Lane>> {
+    Readonly<Record<"wakes" | "files" | "connections" | "threads", Lane>> {
   return {
-    // Lapsed claims, then due wakes and revokes; open rows count only with a doorbell.
-    wakes: { next: (now) => deps.ledger.nextDue(now, deps.sender() !== null),
+    // Lapsed claims, then due wakes and revokes; open rows count only with a doorbell, and
+    // only while the owner is admitted (`require_work`): a suspended owner's wait.
+    wakes: { next: (now) => deps.ledger.nextDue(now, deps.sender() !== null
+                                                       && deps.admitted()),
              run: (_now, until) => deps.runWakes(deps.ledger, deps.sender(), deps.clock,
                                                  deps.write, WAKES_PER_ALARM, WAKE_SEND_MS,
                                                  until) },
     files: { next: (now) => deps.files.nextAlarm(now),
              run: (now, until) => deps.files.collect(now, until) },
-    // Stamped scheduled work: lapsed claims, then, with a runner, due work rechecked
-    // against the authority it was made under.
-    work: { next: (now) => deps.work.nextDue(now, deps.runner() !== null),
-            run: (_now, until) => deps.runWork(deps.work, deps.runner(), deps.clock,
-                                               deps.write, WORK_PER_PASS, WORK_HANDOFF_MS,
-                                               until) },
     // Connection housekeeping: expired flows, unclaimed pending rows, provider revokes.
     connections: { next: (now) => deps.connections.nextDue(now),
                    run: (now, until) => deps.connections.run(now, until) },
     // The agent's threads: an idle one dropped, a live one kept.
     threads: { next: (now) => deps.threads.nextDue(now),
                run: (now, until) => deps.threads.run(now, until) },
-  };
-}
-
-/**
- * The `work` lane's runner (agent research §3): a due turn handed to pi in the thread its
- * work named when it was made, since pi dedupes a submission per conversation. It marks
- * the row before any effect (a lapsed claim's mark throws, and nothing is submitted),
- * then submits with the row's `work_id` as the operation id, queued behind a busy run, and
- * returns; pi runs the turn, and its receipts are found by `work_id`. A second hand-off of
- * the same work is pi's duplicate (`accepted: false`): handed all the same, never run
- * twice. A thread that is gone, or whose stamp is not the work's or no longer stands,
- * fails the work before its mark; one dropped between the mark and the submit fails it
- * after (its Session is never opened again).
- */
-export function workRunner(threads: ThreadReader, agent: Pick<OwnerAgent, "submit">,
-                           authority: Pick<Authority, "refusal">): WorkRunner {
-  return {
-    handOff: async (target, mark) => {
-      const turn = workTurn(target.payload);
-      const thread = threads.get(turn.thread);
-      if (thread === null) {
-        return { state: "failed", reason: "no_thread" };
-      }
-      if (thread.client !== (target.stamp?.client ?? null)
-          || thread.generation !== (target.stamp?.generation ?? null)
-          || authority.refusal(threads.authority(thread), []) !== undefined) {
-        return { state: "failed", reason: "thread_authority" };
-      }
-      let receipt: { accepted: boolean };
-      try {
-        // Marked once the host admits it, so a refusal for room leaves it unmarked.
-        receipt = await agent.submit(thread, turn.input, {
-          operationId: target.work_id, whenBusy: "followUp", admitted: mark,
-          entry: { kind: "ta.work", data: { work_id: target.work_id,
-                                            client: target.stamp?.client ?? null } },
-        });
-      } catch (error) {
-        if (threads.get(turn.thread) === null) {
-          // Dropped since the check (a grant change): its Session is never opened again.
-          return { state: "failed", reason: "no_thread" };
-        }
-        if (error instanceof Refused
-            && (error.message === THREAD_INPUTS_FULL || error.message === SESSIONS_FULL)) {
-          return { state: "busy", reason: error.message };
-        }
-        if (error instanceof Refused && error.message === RUN_SETTLED) {
-          // A settled run takes no input, ever: the work ends, never retried.
-          return { state: "failed", reason: "run_settled" };
-        }
-        throw error;
-      }
-      return receipt.accepted ? { state: "handed" } : { state: "handed", reason: "duplicate" };
-    },
   };
 }
 
@@ -831,7 +799,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #sessions: Sessions;
   readonly #ledger: Ledger;
   readonly #files: Files;
-  readonly #work: Scheduled;
   readonly #threads: Threads;
   readonly #registrations: Registrations;
   readonly #notices: Notices;
@@ -851,8 +818,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * recovers lapsed claims, and open wakes and revokes stay pending without a job.
    */
   readonly #sender: WakeSender | null = null;
-  /** What hands due scheduled turns to pi, called in process by the `work` lane. */
-  readonly #runner: WorkRunner;
+  /**
+   * Whether this object's database is an erased owner's tombstone, as the object found it
+   * starting (`admission.ts`): it then migrates nothing, starts no Lifecycle, and every door
+   * refuses.
+   */
+  readonly #tombstone: boolean;
   /**
    * The owner's erasure (`erasure.ts`, `erase.ts`): an internal path, which the erasure
    * door (slice 10) calls; no door reaches it yet.
@@ -870,17 +841,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const storage = this.#gate.storage;
     const write = this.#gate.write;
     this.#storage = storage;
+    this.#tombstone = tombstoned(storage.sql);
+    const admitted = () => workRefusal(admission(storage)) === null;
     this.#collections = new Collections(storage);
     this.#policy = new Policy(storage);
     this.#grants = new Grants(storage, this.#policy);
     this.#sessions = new Sessions(storage);
-    this.#ledger = new Ledger(storage, this.#grants);
+    this.#ledger = new Ledger(storage, this.#grants, undefined, admitted);
     this.#files = new Files(storage, env.FILES,
                             () => fileSettings(this.#policy.read().document), write);
-    this.#threads = new Threads(storage, THREAD_LIMITS, THREAD_RETENTION, namedByOpenWork,
+    this.#threads = new Threads(storage, THREAD_LIMITS, THREAD_RETENTION,
                                 () => runPolicy(this.#policy.read().document),
                                 this.#ledger.registered);
-    this.#work = new Scheduled(storage, this.#grants, this.#threads);
     this.#registrations = new Registrations(storage, this.#grants);
     this.#notices = new Notices(storage);
     const owner = () => {
@@ -899,15 +871,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     // The lanes of the one schedule. There is no global tick; each owner's object
     // schedules only itself.
     this.#schedule = new Schedule(ownerLanes({
-      ledger: this.#ledger, files: this.#files, work: this.#work,
-      connections: this.#connections,
+      ledger: this.#ledger, files: this.#files, connections: this.#connections,
       threads: {
         nextDue: (now) => this.#threads.nextDue(now),
         run: (_now, until) => retainThreads(
           this.#threads, clock, write, (thread) => this.#agent.drop(thread),
           (type, detail) => this.#notices.add(type, detail, clock()), until),
       },
-      sender: () => this.#sender, runner: () => this.#runner, clock, write, runWakes, runWork,
+      sender: () => this.#sender, admitted, clock, write, runWakes,
     }), clock, write, undefined, () => erasing(storage));
     const provider = new GatewayProvider({
       connections: this.#connections, usage: this.#usage, write, gateway: () => env.GATEWAY,
@@ -920,6 +891,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       } },
       receipt: (request) => write(() => this.#policy.refusal("tool_call", request, clock(),
                                                              AUTHORITY_RULE)),
+      admission: () => workRefusal(admission(storage)),
     });
     this.#agent = agent({ files: this.#files, notices: this.#notices, write,
                           rearm: () => this.#schedule.sync(),
@@ -928,10 +900,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                             policy: () => this.#policy.projection(owner()),
                             propose: (change, requestId, proposer) =>
                               this.#policy.propose(change, requestId, proposer, clock()),
-                            work: (client, limit) => this.#work.of(client, limit),
+                            work: (client, limit) => this.#threads.scheduledOf(client, limit),
                             fileUsage: () => this.#files.usage(),
-                            run: (state, agent, input, at) => this.#taRun(state, agent, input,
-                                                                         at),
+                            run: (state, agent, input, at, cron) =>
+                              this.#taRun(state, agent, input, at, cron),
                           },
                           stores: (name) => env.PISTORE.getByName(name),
                           config: (agentId) => this.#agentConfig(agentId),
@@ -953,17 +925,21 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                               this.#usage.turnsReconciled(thread, open)),
                             inputs: (thread) => this.#usage.openInputs(thread),
                           },
+                          admission: () => workRefusal(admission(storage)),
                         });
-    this.#runner = workRunner(this.#threads, this.#agent, authority);
     const lifecycle = new Lifecycle<OwnerEnv>(this);
     this.#erasure = new Erasure({
       storage, write, clock, threads: this.#threads, ended: () => this.#agent.erasing(),
       drop: (thread) => this.#agent.drop(thread), lifecycle,
-      wipe: () => this.#gate.wipe(), retryMs: internals.eraseRetryMs ?? ERASE_RETRY_MS,
+      wipe: () => this.#gate.wipe(writeTombstone),
+      retryMs: internals.eraseRetryMs ?? ERASE_RETRY_MS,
     });
     internals.erasure?.(this.#erasure);
     this.#lifecycle = lifecycle.use(this.#schedule).use(this.#agent.host).use(this.#erasure);
     void ctx.blockConcurrencyWhile(async () => {
+      if (this.#tombstone) {
+        return;  // an erased owner: nothing is made here again
+      }
       await write(() => migrate(storage));
       if (erasing(storage)) {
         // An erasure a crash cut short, from its recorded step: its alarm may be gone.
@@ -1015,8 +991,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * verified outside client, which is admitted here against its grant (P0-3) before any
    * door acts. A refusal here leaves no receipt: the call never reached the account.
    */
-  #account(binding: Binding, serves: Serves = {}): Account {
-    const { owner, caller } = this.#bind(binding);
+  #account(binding: Binding, door: DoorClass, serves: Serves = {}): Account {
+    const { owner, caller } = this.#bind(binding, door);
     if (!("origin" in binding)) {
       throw new Invalid("invalid outside origin");
     }
@@ -1048,8 +1024,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /** The owner itself, on its own account, never an outside client. */
-  #owner(binding: Binding, action: string): Account {
-    const account = this.#account(binding);
+  #owner(binding: Binding, door: DoorClass, action: string): Account {
+    const account = this.#account(binding, door);
     if (account.origin !== null) {
       throw new Refused(`only the owner may ${action}`);
     }
@@ -1062,9 +1038,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * do in it. A refusal after the account is bound leaves a refusal receipt of what was
    * asked, written once the refused change has rolled back.
    */
-  #widening<T>(binding: Binding, action: string, request: unknown, owner: string | null,
+  #widening<T>(binding: Binding, door: DoorClass, action: string, request: unknown,
+               owner: string | null,
                act: (account: Account, sessionId: string) => T, serves: Serves = {}): T {
-    const account = this.#account(binding, serves);
+    const account = this.#account(binding, door, serves);
     try {
       // An outside client holds no owner session, so what only the owner may do is
       // refused as that before the session is looked for.
@@ -1122,14 +1099,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** A verified interactive sign-in opens a session; its cookie is returned once. */
   sessionOpen(binding: Binding): Promise<{ session: string; expires_at: number }> {
     return this.#door(() => {
-      this.#owner(binding, "open its session");
+      this.#owner(binding, "read", "open its session");
       return this.#sessions.open(binding.authenticated_at, clock());
     });
   }
 
   sessionExtend(binding: Binding): Promise<{ expires_at: number }> {
     return this.#door(() => {
-      this.#owner(binding, "renew its session");
+      this.#owner(binding, "read", "renew its session");
       return this.#sessions.extend(binding.session, clock());
     });
   }
@@ -1137,7 +1114,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** One session signed out, and the connection flows it began cancelled with it. */
   sessionClose(binding: Binding): Promise<{ closed: number }> {
     return this.#synced(() => {
-      this.#owner(binding, "sign out");
+      this.#owner(binding, "reduce", "sign out");
       const id = this.#sessions.id(binding.session);
       const closed = this.#sessions.close(binding.session);
       if (id !== null) {
@@ -1153,7 +1130,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   sessionCloseAll(binding: Binding): Promise<{ closed: number }> {
     return this.#synced(() => {
-      this.#owner(binding, "sign out");
+      this.#owner(binding, "reduce", "sign out");
       this.#connections.cancelFlows(null);
       return this.#sessions.closeAll();
     });
@@ -1163,14 +1140,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   policyRead(binding: Binding): Promise<Projection> {
     return this.#door(() => {
-      const { owner } = this.#owner(binding, "read its policy");
+      const { owner } = this.#owner(binding, "read", "read its policy");
       return this.#policy.projection(owner);
     });
   }
 
   policyReceipts(binding: Binding): Promise<{ receipts: Receipt[] }> {
     return this.#door(() => {
-      this.#owner(binding, "read its policy");
+      this.#owner(binding, "read", "read its policy");
       return { receipts: this.#policy.receipts() };
     });
   }
@@ -1186,7 +1163,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * the new policy anyway, and its model calls to the new generation.
    */
   async policyWrite(binding: Binding, request: PolicyWriteRequest): Promise<Projection> {
-    const done = await this.#synced(() => this.#widening(binding, "write", request,
+    const done = await this.#synced(() => this.#widening(binding, "work", "write", request,
                                                          "write its policy", ({ owner }, id) => {
       const r = policyFields(request, ["expected_generation", "policy"], ["proposal"]);
       const written = this.#policy.write(id, r["expected_generation"], r["policy"],
@@ -1205,7 +1182,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   policyPropose(binding: Binding, request: ProposeRequest):
       Promise<{ request_digest: string; generation: number }> {
     return this.#door(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "work");
       const r = policyFields(request, ["change"], ["request_id"]);
       this.#scope(account, "propose_policy");
       return this.#policy.propose(r["change"], r["request_id"] ?? null,
@@ -1217,7 +1194,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   policyProposal(binding: Binding, request: CardRequest):
       Promise<{ change: Change; digest: string }> {
     return this.#door(() => {
-      this.#owner(binding, "read its policy");
+      this.#owner(binding, "read", "read its policy");
       const r = policyFields(request, ["request_id"]);
       const held = this.#policy.held(r["request_id"], clock());
       if (held === null) {
@@ -1235,7 +1212,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   policyWakeLimits(binding: Binding, request: WakeLimitsRequest):
       Promise<{ agent: Agent; generation: number }> {
     return this.#door(() => {
-      return this.#widening(binding, "wake_limits", request, "change its agents' policy",
+      return this.#widening(binding, "work", "wake_limits", request, "change its agents' policy",
                             (_account, id) => {
         const r = policyFields(request, ["agent_id", "max_wakes_per_hour", "batch_window_s",
                                          "expected_generation"]);
@@ -1256,7 +1233,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   grantList(binding: Binding): Promise<{ clients: Client[] }> {
     return this.#door(() => {
-      this.#owner(binding, "read its outside clients");
+      this.#owner(binding, "read", "read its outside clients");
       return { clients: this.#grants.list() };
     });
   }
@@ -1270,7 +1247,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async grantSet(binding: Binding, request: GrantRequest): Promise<
       { client: string; mode: string; scopes: Scope[]; generation: number; revision: number }> {
-    const changed = await this.#synced(() => this.#widening(binding, "outside_set", request,
+    const changed = await this.#synced(() => this.#widening(binding, "work", "outside_set", request,
                                                             "change an outside client's grant",
                                                             (_account, id) => {
       const r = policyFields(request, ["client", "source", "mode", "scopes",
@@ -1297,7 +1274,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async grantRevoke(binding: Binding, request: ClientRequest):
       Promise<{ client: string; revoked: boolean; generation: number; revision: number }> {
     const result = await this.#synced(() => {
-      this.#owner(binding, "revoke an outside client's grant");
+      this.#owner(binding, "reduce", "revoke an outside client's grant");
       const r = policyFields(request, ["client"]);
       return this.#storage.transactionSync(() => {
         const revoked = this.#grants.revoke(r["client"], clock());
@@ -1317,7 +1294,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   grantForget(binding: Binding, request: ClientRequest):
       Promise<{ client: string; forgotten: boolean }> {
     return this.#door(() => {
-      this.#owner(binding, "forget an outside client's grant");
+      this.#owner(binding, "reduce", "forget an outside client's grant");
       const r = policyFields(request, ["client"]);
       return this.#grants.forgetKey(r["client"], clock());
     });
@@ -1331,7 +1308,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   grantForgetRevoked(binding: Binding, request: ForgetRequest):
       Promise<{ forgotten: string[]; mcp_fence: number }> {
     return this.#door(() => {
-      return this.#widening(binding, "outside_forget", request,
+      return this.#widening(binding, "reduce", "outside_forget", request,
                             "forget its revoked outside clients", (_account, id) => {
         const r = policyFields(request, ["clients"]);
         return this.#grants.forgetRevoked(id, r["clients"], clock());
@@ -1341,13 +1318,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /**
    * A grant change ends what its client set going (P0-3's M3): its agents' open wakes and
-   * callbacks, its pending scheduled work and its held registrations, in the caller's
-   * transaction, and its threads, whose Sessions it answers: their live views close, and
-   * their work ends, after that commits (`OwnerAgent.endClient`).
+   * callbacks and its held registrations, in the caller's transaction, and its threads,
+   * whose Sessions it answers, its scheduled launches' among them: their live views close,
+   * and their work ends, after that commits, and each is dropped, its store wiped with the
+   * sleeping task in it (`OwnerAgent.endClient`).
    */
   #endClient(client: string): Thread[] {
     this.#ledger.suppressClient(client, clock());
-    this.#work.endClient(client, clock());
     this.#registrations.endClient(client);
     return this.#threads.endClient(client);
   }
@@ -1357,7 +1334,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** The owner sees every agent; an outside caller only its own identity's. */
   outsideAgents(binding: Binding): Promise<{ agents: Agent[] }> {
     return this.#door(() => {
-      const { origin } = this.#account(binding);
+      const { origin } = this.#account(binding, "read");
       return { agents: this.#ledger.agents(origin) };
     });
   }
@@ -1371,7 +1348,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * together with the owner's session.
    */
   registerAgent(binding: Binding, request: RegisterRequest | CardApply): Promise<Agent> {
-    return this.#synced(() => this.#widening(binding, "OUTSIDE_AGENTS.register", request, null,
+    return this.#synced(() => this.#widening(binding, "work", "OUTSIDE_AGENTS.register", request, null,
                                              ({ origin }) => {
       if (origin === null) {
         const r = ledgerFields(request, ["card_id", "digest"]);
@@ -1395,7 +1372,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   registerPropose(binding: Binding, request: RegisterRequest):
       Promise<{ card_id: string; digest: string; expires_at: number }> {
     return this.#door(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "work");
       if (account.origin === null || account.grant === null) {
         throw new Refused("only an outside client files its own agent's registration");
       }
@@ -1413,7 +1390,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** The pending registration card the owner is shown, and the digest its apply names. */
   registerProposal(binding: Binding, request: RegistrationCardRequest): Promise<Card> {
     return this.#door(() => {
-      this.#owner(binding, "read its agents' registrations");
+      this.#owner(binding, "read", "read its agents' registrations");
       const r = ledgerFields(request, ["card_id"]);
       const card = this.#registrations.card(r["card_id"], clock());
       if (card === null) {
@@ -1428,7 +1405,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * holds no owner session, and its call never carries one.
    */
   disableAgent(binding: Binding, request: DisableRequest): Promise<Agent> {
-    return this.#synced(() => this.#widening(binding, "OUTSIDE_AGENTS.disable", request, null,
+    return this.#synced(() => this.#widening(binding, "reduce", "OUTSIDE_AGENTS.disable", request, null,
                                              ({ origin }) => {
       const r = ledgerFields(request, ["agent_id", "reason"]);
       return this.#ledger.disable(r["agent_id"], r["reason"], origin);
@@ -1438,7 +1415,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** Only the owner itself, in its session, deletes an agent. */
   deleteAgent(binding: Binding, request: AgentRequest):
       Promise<{ agent_id: string; messages: number }> {
-    return this.#synced(() => this.#widening(binding, "OUTSIDE_AGENTS.delete", request,
+    return this.#synced(() => this.#widening(binding, "reduce", "OUTSIDE_AGENTS.delete", request,
                                              "change its agents' policy", () => {
       const r = ledgerFields(request, ["agent_id"]);
       return this.#ledger.remove(r["agent_id"]);
@@ -1449,7 +1426,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   roomPost(binding: Binding, request: PostRequest): Promise<Posted> {
     return this.#synced(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "work");
       const r = ledgerFields(request, ["room_id", "client_message_id", "body", "parent_id"]);
       this.#scope(account, "write_graph");
       return this.#ledger.post(account.origin, r["room_id"], r["client_message_id"],
@@ -1465,14 +1442,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /** A pending connection for the binder to seal a credential for; for OAuth, its flow. */
   connectionPrepare(binding: Binding, request: ConnectionPrepareRequest): Promise<Prepared> {
-    return this.#synced(() => this.#widening(binding, "connection_prepare", request,
+    return this.#synced(() => this.#widening(binding, "work", "connection_prepare", request,
                                              "connect a model source", (_account, id) =>
       this.#connections.prepare(id, request, clock())));
   }
 
   /** The sealed blob the gateway returned, and the models its setup check listed. */
   connectionCommit(binding: Binding, request: ConnectionCommitRequest): Promise<ConnectionView> {
-    return this.#synced(() => this.#widening(binding, "connection_commit", request,
+    return this.#synced(() => this.#widening(binding, "work", "connection_commit", request,
                                              "connect a model source",
                                              () => this.#connections.commit(request, clock())));
   }
@@ -1480,14 +1457,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** A connection unusable at once; its credential deleted here, and at its provider. */
   connectionRevoke(binding: Binding, request: ConnectionRequest):
       Promise<{ connection: string; revoked: boolean; provider_revoke: boolean }> {
-    return this.#synced(() => this.#widening(binding, "connection_revoke", request,
+    return this.#synced(() => this.#widening(binding, "reduce", "connection_revoke", request,
                                              "revoke a model source",
                                              () => this.#connections.revoke(request, clock())));
   }
 
   /** Every connection, newest first, never its blob. */
   connectionList(binding: Binding): Promise<{ connections: ConnectionView[] }> {
-    return this.#door(() => this.#widening(binding, "connection_list", null,
+    return this.#door(() => this.#widening(binding, "read", "connection_list", null,
                                            "read its model sources",
                                            () => ({ connections: this.#connections.list() })));
   }
@@ -1496,7 +1473,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   flowFinish(binding: Binding, request: FlowFinishRequest):
       Promise<{ connection: string; version: number; verifier: string; redirect_uri: string;
                 source: string }> {
-    return this.#synced(() => this.#widening(binding, "flow_finish", { state: "[state]" },
+    return this.#synced(() => this.#widening(binding, "work", "flow_finish", { state: "[state]" },
                                              "connect a model source", (_account, id) =>
       this.#connections.flowFinish(id, request, clock())));
   }
@@ -1507,14 +1484,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * (`OwnerAgent.usage`), for G5's measurement. The owner's alone; no cap reads it.
    */
   async usageMetrics(binding: Binding): Promise<UsageView & { owner: string }> {
-    const { owner } = await this.#door(() => this.#owner(binding, "read its model usage"));
+    const { owner } = await this.#door(() => this.#owner(binding, "read", "read its model usage"));
     return { owner, ...await this.#agent.usage() };
   }
 
   /** The owner's newest model-call receipts: what each call reserved, and what it cost. */
   usageReceipts(binding: Binding): Promise<{ receipts: UsageReceipt[] }> {
     return this.#door(() => {
-      this.#owner(binding, "read its model spend");
+      this.#owner(binding, "read", "read its model spend");
       return { receipts: this.#usage.receipts(clock()) };
     });
   }
@@ -1537,7 +1514,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   async agentSubmit(binding: Binding, request: SubmitRequest): Promise<Operation> {
     const asked = await this.#door(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "work");
       const r = agentFields(request, ["message", "client_send_id"],
                             ["agent_id", "steer", "wait_ms"]);
       const agent = agentDir(r["agent_id"] ?? MAIN_AGENT);
@@ -1572,53 +1549,48 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /**
    * A launch of an agent on an input (`run_graph`): a fresh thread, stamped and configured
-   * from the agent's data files, the input submitted now, or with `at`, a scheduled turn
-   * naming the thread that the `work` lane hands to pi when due. It answers the operation
-   * id at once; `agentStatus` reads how it stands.
+   * from the agent's data files, the input submitted now, or with `at` or `cron`, a
+   * scheduled launch: a `ta.scheduled` pi task sleeping in the thread's own Session until it
+   * is due (`scheduled.ts`). It answers the operation id at once; `agentStatus` reads how it
+   * stands.
    */
   async agentRun(binding: Binding, request: RunRequest): Promise<Operation> {
     const asked = await this.#door(() => {
-      const account = this.#account(binding);
-      const r = agentFields(request, ["agent", "input"], ["at"]);
+      const account = this.#account(binding, "work");
+      const r = agentFields(request, ["agent", "input"], ["at", "cron"]);
       const agent = agentDir(r["agent"]);
       const input = agentText(r["input"], "an input");
       const at = r["at"] === undefined ? null : timeOf(r["at"], clock());
+      const cron = r["cron"] === undefined ? null : cronOf(r["cron"]);
       const universe = this.#universe(account);
       this.#scope(account, "run_graph", universe, agent);
-      return { stamp: this.#stampOf(binding, account, universe, agent), agent, at,
+      return { stamp: this.#stampOf(binding, account, universe, agent), agent, at, cron,
                input: this.#inputOf(account.origin?.client ?? null, input) };
     });
-    return this.#launch(asked.stamp, asked.agent, asked.input, asked.at);
+    return this.#launch(asked.stamp, asked.agent, asked.input, asked.at, asked.cron);
   }
 
   /**
    * How one of the caller's own operations stands, from pi's receipts (`OwnerAgent.status`:
-   * pending, else how it settled), or, for scheduled work pi has not been handed yet, its
-   * row. Any operation that is not the caller's is refused as no operation at all.
+   * pending, else how it settled), or, for a scheduled launch not yet settled, its task's
+   * record and the delivery it last made, read from its store without opening a Session
+   * (`OwnerAgent.scheduledStatus`). Any operation that is not the caller's is refused as no
+   * operation at all.
    */
   async agentStatus(binding: Binding, request: OperationRequest): Promise<Operation> {
     const found = await this.#door(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "read");
       const r = agentFields(request, ["operation_id"]);
-      const operation = this.#operation(account, r["operation_id"]);
-      const work = operation.key.startsWith("work_")
-        ? this.#work.view(operation.key, operation.client) : null;
-      return { ...operation, work };
+      return this.#operation(account, r["operation_id"]);
     });
-    const { thread, receipt, key, work } = found;
+    const { thread, receipt, key } = found;
     const id = thread?.thread_id ?? receipt!.thread_id;
     const base = { operation_id: operationOf(id, key), thread_id: id };
+    if (thread !== null && thread.request === key && key.startsWith("work_")) {
+      return { ...base, ...await this.#scheduledStatus(thread, key) };
+    }
     const status = thread !== null ? await this.#agent.status(thread, key)
       : await this.#settledStatus(receipt!, key);
-    if (status.status === "unanswered" && status.reason === "not_found" && work !== null) {
-      // Not handed to pi yet, or never to be: the work row says how it stands.
-      if (work.state === "pending" || work.state === "running") {
-        return { ...base, status: "scheduled", due: work.due };
-      }
-      const reason = (work.outcome as { reason?: unknown } | null)?.reason;
-      return { ...base, status: "unanswered",
-               reason: typeof reason === "string" ? reason : work.state };
-    }
     return { ...base, status: status.status,
              ...(status.reason === undefined ? {} : { reason: status.reason }),
              ...(status.text === undefined ? {} : { text: status.text }),
@@ -1626,33 +1598,74 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * Withdraw one of the caller's own operations: scheduled work not handed yet is refused
-   * `cancelled`; an input pi holds is withdrawn while queued, or the run it joined in the
-   * caller's thread is aborted (`ThreadHost.withdraw`). Cancelling again, or a
-   * settled operation, cancels nothing.
+   * Withdraw one of the caller's own operations: a scheduled launch's task is aborted
+   * (`abortTask`, at once from its sleep) and the delivery it last made withdrawn; an input
+   * pi holds is withdrawn while queued, or the run it joined in the caller's thread is
+   * aborted (`ThreadHost.withdraw`). Cancelling again, or a settled operation, cancels
+   * nothing.
    */
   async agentCancel(binding: Binding, request: OperationRequest):
       Promise<{ operation_id: string; cancelled: boolean }> {
     const found = await this.#synced(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "reduce");
       const r = agentFields(request, ["operation_id"]);
-      const { thread, receipt, client, key } = this.#operation(account, r["operation_id"]);
-      const withdrawn = key.startsWith("work_") && this.#work.cancel(key, client, clock());
-      return { thread, receipt, key, withdrawn };
+      return this.#operation(account, r["operation_id"]);
     });
+    const { thread, key } = found;
     // A run its receipt answers for has nothing left to abort: its store is wiped.
-    const aborted = found.thread !== null && await this.#agent.cancel(found.thread, found.key);
-    return { operation_id: operationOf(found.thread?.thread_id ?? found.receipt!.thread_id,
-                                       found.key),
-             cancelled: found.withdrawn || aborted };
+    const cancelled = thread === null ? false
+      : thread.request === key && key.startsWith("work_")
+        ? await this.#agent.cancelScheduled(thread, key)
+        : await this.#agent.cancel(thread, key);
+    return { operation_id: operationOf(thread?.thread_id ?? found.receipt!.thread_id, key),
+             cancelled };
+  }
+
+  /**
+   * A scheduled launch's status, by a pure read of its store: `scheduled` until it first
+   * delivers, then how its last delivery stands, with when it next delivers while it recurs;
+   * once its task ended for a reason (refused, cancelled), `unanswered` with that reason.
+   * While the owner is not admitted a launch not yet delivered is held by it, though its job
+   * never opened it to find so (`ThreadHost`'s step).
+   */
+  async #scheduledStatus(thread: Thread, key: string):
+      Promise<Omit<Operation, "operation_id" | "thread_id">> {
+    const read = await this.#agent.scheduledStatus(thread, key);
+    if (read === null) {
+      return { status: "unanswered", reason: "not_found" };
+    }
+    const { standing: stands, last } = read;
+    const unadmitted = workRefusal(admission(this.#storage));
+    const held = unadmitted === null ? stands.held : refusalCode(unadmitted);
+    const due = stands.due === null ? {} : { due: stands.due };
+    if (stands.ended !== null && stands.ended.reason !== null) {
+      return { status: "unanswered", reason: stands.ended.reason };
+    }
+    if (last === null) {
+      return stands.delivered === 0
+        ? { status: "scheduled", ...due, ...(held === null ? {} : { reason: `held: ${held}` }) }
+        : { status: "unanswered", reason: "not_found" };
+    }
+    switch (last.status) {
+      case "queued":
+        return { status: "queued", ...due };
+      case "placed":
+        return { status: "running", ...due };
+      case "done":
+        return { status: "done", ...(last.text === undefined ? {} : { text: last.text }), ...due };
+      default:
+        return { status: "unanswered", ...(last.reason === undefined ? {}
+          : { reason: last.reason }), ...due };
+    }
   }
 
   /** `ta`'s `agent:run`: the conversation's authority launches, as the agent it names. */
   async #taRun(state: Readonly<AuthorityState> | undefined, agent: unknown, input: unknown,
-               at: unknown): Promise<Operation> {
+               at: unknown, cron: unknown): Promise<Operation> {
     const id = agentDir(agent);
     const text = agentText(input, "an input");
     const when = at === null ? null : timeOf(at, clock());
+    const recurring = cron === null ? null : cronOf(cron);
     let stamp: Stamped | null = null;
     if (state?.by !== "owner") {
       const by = stampOf(state);
@@ -1662,33 +1675,46 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       stamp = { ...by, agent: id };
     }
     const wrapped = await this.#door(() => this.#inputOf(stamp?.client ?? null, text));
-    return this.#launch(stamp, id, wrapped, when);
+    return this.#launch(stamp, id, wrapped, when, recurring);
   }
 
   /**
-   * A launch, the door's and `ta`'s one path: for scheduled work, its room, refused before
-   * anything is made, and the agent's data files, a bad one refused the same; a fresh `run`
-   * thread, recorded in a unit that re-checks `run_graph` where it acts; then the input
-   * submitted, or scheduled.
+   * A launch, the door's and `ta`'s one path: the agent's data files, a bad one refused
+   * before anything is made; a fresh `run` thread, recorded in a unit that re-checks
+   * `run_graph` where it acts; then the input submitted now, or, with an `at` ahead or a
+   * `cron`, a scheduled launch: its work id named in the thread's row as it is recorded
+   * (held to the scheduled share of the live runs), then its `ta.scheduled` task made in
+   * the thread's root, sleeping until its first delivery (`at`, else the cron's next
+   * occurrence).
    */
-  async #launch(stamp: Stamped | null, agent: string, input: string, at: number | null):
-      Promise<Operation> {
-    await this.#door(() => {
-      if (at !== null && at > clock()) {
-        this.#work.room(stamp?.client ?? null, input);
-      }
-    });
+  async #launch(stamp: Stamped | null, agent: string, input: string, at: number | null,
+                cron: string | null = null): Promise<Operation> {
     await this.#agentConfig(agent);
-    const thread = await this.#agent.thread(agent, stamp, { kind: "run", need: ["run_graph"] });
-    if (at !== null && at > clock()) {
-      const { work_id: work } = await this.#door(() => this.#work.add(
-        "turn", at, { thread: thread.thread_id, input },
-        stamp === null ? null : { client: stamp.client, generation: stamp.generation,
-                                  authenticated_at: stamp.authenticated_at }, clock()));
+    const now = clock();
+    const due = at !== null && at > now ? at
+      : cron !== null ? (at ?? nextOccurrence(parseCron(cron), now)) : null;
+    if (due !== null) {
+      const work = `work_${hex(16)}`;
+      const thread = await this.#agent.thread(agent, stamp, { kind: "run", need: ["run_graph"],
+                                                              work });
       await this.#schedule.sync();
+      const scheduled: ScheduledInput = { work_id: work, thread: thread.thread_id, at: due,
+                                          stamp, input, cron };
+      try {
+        await this.#agent.schedule(thread, scheduled);
+      } catch (error) {
+        // No task: the run is dropped in order (marked, its store wiped, its row forgotten),
+        // so no row is left holding a share of the live runs; the lane finishes a cut drop.
+        const marked = await this.#door(() => this.#threads.abandon(thread.thread_id));
+        if (marked !== null) {
+          await inTime(this.#agent.drop(marked).catch(() => undefined), END_WAIT_MS);
+        }
+        throw error;
+      }
       return { operation_id: operationOf(thread.thread_id, work), thread_id: thread.thread_id,
-               status: "scheduled", due: at };
+               status: "scheduled", due };
     }
+    const thread = await this.#agent.thread(agent, stamp, { kind: "run", need: ["run_graph"] });
     await this.#schedule.sync();
     const key = `run_${hex(16)}`;
     await this.#agent.submit(thread, input, {
@@ -1830,14 +1856,42 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** The owner's notices, newest first (`notices.ts`). */
   noticeList(binding: Binding): Promise<{ notices: Notice[] }> {
     return this.#door(() => {
-      this.#owner(binding, "read its notices");
+      this.#owner(binding, "read", "read its notices");
       return { notices: this.#notices.list() };
     });
   }
 
+  // -- ADMISSION: the platform's word on the owner's account -------------------------
+
+  /**
+   * The platform suspends the owner for a reason (`billing`, `abuse`), or lifts it
+   * (`admission.ts`): taken only from the reserved `PLATFORM_CALLER`, with no outside client
+   * and no session, whatever the owner's admission is now; an erased owner is never set
+   * again. A suspension then ends the work of every thread with a live row, asleep or not,
+   * but the scheduled launches' tasks (`OwnerAgent.endUnadmitted`): the prompt stop, since
+   * every model call, tool call, new input and delivery is refused while it lasts. Lifting
+   * one gives the `wakes` lane its job back, and held deliveries deliver at their next try.
+   */
+  async admissionSet(binding: Binding, request: AdmissionRequest): Promise<Admission> {
+    const set = await this.#synced(() => {
+      const { caller } = this.#bind(binding, "admission");
+      if (caller !== PLATFORM_CALLER || !("origin" in binding) || binding.origin !== null
+          || binding.session !== undefined || binding.source !== undefined) {
+        throw new Refused(PLATFORM_ONLY);
+      }
+      return setAdmission(this.#storage, request);
+    });
+    if (set.state !== "admitted") {
+      await this.#agent.endUnadmitted();
+    } else {
+      await this.#agent.wakeHeld();
+    }
+    return set;
+  }
+
   mailboxRead(binding: Binding, request: ReadRequest): Promise<MailPage> {
     return this.#door(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "read");
       const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes"]);
       this.#scope(account, "read_graph");
       return this.#ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null,
@@ -1847,7 +1901,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   mailboxAck(binding: Binding, request: AckRequest): Promise<{ reader: string; through: number }> {
     return this.#door(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "reduce");
       const r = ledgerFields(request, ["through"]);
       this.#scope(account, "write_graph");
       return this.#ledger.ack(account.origin, r["through"]);
@@ -1863,7 +1917,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   mailboxSubscriber(binding: Binding, request: SubscriberRequest):
       Promise<{ agent_id: string; generation: number }> {
     return this.#door(() => {
-      const account = this.#account(binding);
+      const account = this.#account(binding, "work");
       const r = ledgerFields(request, ["command_center_id", "agent_id"]);
       this.#scope(account, "read_graph", r["command_center_id"]);
       const generation = this.#ledger.subscriber(account.origin, r["command_center_id"],
@@ -1874,10 +1928,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /**
    * The owner this object serves: the name it was reached by, and every other one
-   * refused. The stored owner, fixed at first use, is a second check of the same.
+   * refused. The stored owner, fixed at first use, is a second check of the same. An
+   * erased owner's tombstone refuses every call (`OWNER_ERASED`), an erasure under way too
+   * (`ERASING`), and so does an owner not admitted (`require_work`), unless `admission` is
+   * false: the platform's own door, which sets it. The platform's reserved caller reaches
+   * no other door, and no owner is named so.
    */
-  #bind(binding: Binding): { owner: string; caller: string } {
-    if (this.#erasure.erased || erasing(this.#storage)) {
+  #bind(binding: Binding, door: DoorClass | "admission"): { owner: string; caller: string } {
+    if (this.#tombstone || this.#erasure.erased) {
+      throw new Refused(OWNER_ERASED);
+    }
+    if (erasing(this.#storage)) {
       this.#erasure.resume(true);
       throw new Refused(ERASING);
     }
@@ -1886,6 +1947,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
     const owner = principal(binding.owner);
     const caller = principal(binding.caller);
+    if (owner === PLATFORM_CALLER || (door !== "admission" && caller === PLATFORM_CALLER)) {
+      throw new Refused(PLATFORM_RESERVED);
+    }
+    if (door !== "admission") {
+      const refusal = doorRefusal(admission(this.#storage), door);
+      if (refusal !== null) {
+        throw new Refused(refusal);
+      }
+    }
     const named = this.ctx.id.name;
     if (named === undefined) {
       throw new Refused("this object is not named by an owner");
@@ -1913,15 +1983,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * A collection door's caller: the owner, a visiting owner, or an outside client the
    * owner's account acts through, admitted against its grant and held to `capability`.
    */
-  #collector(binding: Binding, capability: Capability): { owner: string; caller: string } {
-    const account = this.#account(binding, { visitors: true });
+  #collector(binding: Binding, door: DoorClass, capability: Capability):
+      { owner: string; caller: string } {
+    const account = this.#account(binding, door, { visitors: true });
     this.#scope(account, capability);
     return account;
   }
 
   collectionWrite(binding: Binding, request: WriteRequest): Promise<{ row: Row } | Conflicted> {
     return this.#door(() => {
-      const { owner, caller } = this.#collector(binding, "write_graph");
+      const { owner, caller } = this.#collector(binding, "work", "write_graph");
       const r = fields(request, ["collection", "row_id", "body", "expected_etag", "private"],
                        ["history_op"]);
       return conflicted(() => ({
@@ -1934,7 +2005,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   collectionPull(binding: Binding, request: PullRequest): Promise<Page> {
     return this.#door(() => {
-      const { caller } = this.#collector(binding, "read_graph");
+      const { caller } = this.#collector(binding, "read", "read_graph");
       const r = fields(request, ["collection", "after", "limit"]);
       return this.#collections.pull(caller, r["collection"] as string, r["after"], r["limit"]);
     });
@@ -1942,7 +2013,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   collectionGet(binding: Binding, request: KeyRequest): Promise<{ row: Row | null }> {
     return this.#door(() => {
-      const { caller } = this.#collector(binding, "read_graph");
+      const { caller } = this.#collector(binding, "read", "read_graph");
       const r = fields(request, ["collection", "row_id"]);
       return this.#collections.get(caller, r["collection"] as string, r["row_id"] as string);
     });
@@ -1950,7 +2021,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   collectionHistory(binding: Binding, request: KeyRequest): Promise<{ entries: HistoryEntry[] }> {
     return this.#door(() => {
-      const { caller } = this.#collector(binding, "read_graph");
+      const { caller } = this.#collector(binding, "read", "read_graph");
       const r = fields(request, ["collection", "row_id"]);
       return this.#collections.history(caller, r["collection"] as string, r["row_id"] as string);
     });
@@ -1959,7 +2030,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   collectionDelete(binding: Binding, request: DeleteRequest):
       Promise<{ deleted: number } | Conflicted> {
     return this.#door(() => {
-      const { owner, caller } = this.#collector(binding, "write_graph");
+      const { owner, caller } = this.#collector(binding, "reduce", "write_graph");
       this.#ownerOnly(owner, caller, "delete");
       const r = fields(request, ["collection", "row_id", "expected_etag"]);
       return conflicted(() => this.#collections.delete(
@@ -1970,7 +2041,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   collectionClear(binding: Binding, request: ClearRequest): Promise<{ deleted: number }> {
     return this.#door(() => {
-      const { owner, caller } = this.#collector(binding, "write_graph");
+      const { owner, caller } = this.#collector(binding, "reduce", "write_graph");
       this.#ownerOnly(owner, caller, "clear");
       const r = fields(request, ["collection", "writer"]);
       return this.#collections.clear(caller, r["collection"] as string, r["writer"]);
@@ -1989,8 +2060,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * grant and held to `read_files` or `write_files`. No visiting owner reaches another's
    * files.
    */
-  #filer(binding: Binding, capability: "read_files" | "write_files"): Account {
-    const account = this.#account(binding);
+  #filer(binding: Binding, door: DoorClass, capability: "read_files" | "write_files"):
+      Account {
+    const account = this.#account(binding, door);
     this.#scope(account, capability);
     return account;
   }
@@ -2014,7 +2086,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   fileStat(binding: Binding, request: FileRequest): Promise<{ entry: Entry | null }> {
     return this.#door(() => {
-      this.#filer(binding, "read_files");
+      this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["path"]);
       return { entry: this.#files.stat(r["path"]) };
     });
@@ -2023,7 +2095,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileList(binding: Binding, request: FileListRequest):
       Promise<{ entries: Entry[]; next: string | null }> {
     return this.#door(() => {
-      this.#filer(binding, "read_files");
+      this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["dir", "limit"], ["after"]);
       return this.#files.list(r["dir"], r["after"] ?? null, r["limit"]);
     });
@@ -2036,7 +2108,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileRead(binding: Binding, request: FileReadRequest):
       Promise<{ entry: Entry; not_modified?: true; inline?: Uint8Array; chunks?: ChunkRef[] }> {
     return this.#door(() => {
-      this.#filer(binding, "read_files");
+      this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["path"], ["etag"]);
       const content: Content = this.#files.open(r["path"]);
       if (r["etag"] !== undefined && r["etag"] === content.entry.etag) {
@@ -2051,7 +2123,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async fileReadChunks(binding: Binding, request: FileChunksRequest):
       Promise<{ chunks: Uint8Array[] }> {
     const reads = await this.#door(() => {
-      this.#filer(binding, "read_files");
+      this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["path", "version", "first", "count"]);
       const { chunks = [] } = this.#files.openVersion(r["path"], r["version"]);
       const first = r["first"];
@@ -2070,7 +2142,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async fileWrite(binding: Binding, request: FileWriteRequest):
       Promise<{ entry: Entry } | FileConflicted> {
     const { account, r, content } = await this.#door(() => {
-      const account = this.#filer(binding, "write_files");
+      const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "expected_etag", "content"], ["mode"]);
       this.#ownersTree(account, r["path"]);
       const content = r["content"];
@@ -2084,7 +2156,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return await fileConflictedAfter(async () => ({
         entry: await this.#files.write(r["path"], content, {
           expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account),
-          authorize: () => this.#filer(binding, "write_files") }),
+          authorize: () => this.#filer(binding, "work", "write_files") }),
       }));
     } finally {
       await this.#schedule.sync();
@@ -2098,7 +2170,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileUploadBegin(binding: Binding, request: UploadBeginRequest):
       Promise<{ intent_id: string; missing: string[]; expires_at: number }> {
     return this.#filing(() => {
-      const account = this.#filer(binding, "write_files");
+      const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["size", "chunks"]);
       return this.#files.begin(r["size"], r["chunks"], fileWriter(account));
     });
@@ -2108,7 +2180,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async fileUploadChunks(binding: Binding, request: UploadChunksRequest):
       Promise<{ created: number }> {
     const r = await this.#door(() => {
-      this.#filer(binding, "write_files");
+      this.#filer(binding, "work", "write_files");
       return fileFields(request, ["intent_id", "chunks"]);
     });
     // `Files.upload` records each chunk stored, once `FILES` took it, in a unit of its own.
@@ -2119,7 +2191,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileUploadCommit(binding: Binding, request: UploadCommitRequest):
       Promise<{ entry: Entry } | FileConflicted> {
     return this.#filing(() => {
-      const account = this.#filer(binding, "write_files");
+      const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["intent_id", "path", "expected_etag"], ["mode"]);
       this.#ownersTree(account, r["path"]);
       return fileConflicted(() => ({
@@ -2131,7 +2203,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   fileUploadAbort(binding: Binding, request: IntentRequest): Promise<{ aborted: boolean }> {
     return this.#filing(() => {
-      this.#filer(binding, "write_files");
+      this.#filer(binding, "reduce", "write_files");
       const r = fileFields(request, ["intent_id"]);
       return this.#files.abort(r["intent_id"]);
     });
@@ -2140,7 +2212,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileMkdir(binding: Binding, request: MkdirRequest):
       Promise<{ entry: Entry } | FileConflicted> {
     return this.#filing(() => {
-      const account = this.#filer(binding, "write_files");
+      const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "expected_etag"]);
       this.#ownersTree(account, r["path"]);
       return fileConflicted(() => ({
@@ -2153,7 +2225,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileRemove(binding: Binding, request: RemoveRequest):
       Promise<{ removed: number } | FileConflicted> {
     return this.#filing(() => {
-      const account = this.#filer(binding, "write_files");
+      const account = this.#filer(binding, "reduce", "write_files");
       const r = fileFields(request, ["path", "expected_etag", "recursive"]);
       this.#ownersTree(account, r["path"]);
       return fileConflicted(() => this.#files.remove(r["path"], {
@@ -2165,7 +2237,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileRename(binding: Binding, request: RenameRequest):
       Promise<{ entry: Entry } | FileConflicted> {
     return this.#filing(() => {
-      const account = this.#filer(binding, "write_files");
+      const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["from", "to", "expected_etag", "replace"]);
       this.#ownersTree(account, r["from"], r["to"]);
       return fileConflicted(() => ({
@@ -2179,7 +2251,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileHistory(binding: Binding, request: FileHistoryRequest):
       Promise<{ changes: FileChange[]; next: number | null }> {
     return this.#door(() => {
-      this.#filer(binding, "read_files");
+      this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["path", "limit"], ["before"]);
       return this.#files.history(r["path"], r["before"] ?? null, r["limit"]);
     });
@@ -2188,7 +2260,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileRestore(binding: Binding, request: RestoreRequest):
       Promise<{ entry: Entry } | FileConflicted> {
     return this.#filing(() => {
-      const account = this.#filer(binding, "write_files");
+      const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "version", "expected_etag"]);
       this.#ownersTree(account, r["path"]);
       return fileConflicted(() => ({
@@ -2201,7 +2273,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** Drop a kept version's content: the owner's own act, never an outside client's. */
   fileRedact(binding: Binding, request: VersionRequest): Promise<{ redacted: number }> {
     return this.#filing(() => {
-      this.#owner(binding, "redact its file history");
+      this.#owner(binding, "reduce", "redact its file history");
       const r = fileFields(request, ["path", "version"]);
       return this.#files.redact(r["path"], r["version"]);
     });
@@ -2213,7 +2285,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   fileHistoryPurge(binding: Binding, request: FileRequest): Promise<{ purged: number }> {
     return this.#filing(() => {
-      this.#owner(binding, "purge its file history");
+      this.#owner(binding, "reduce", "purge its file history");
       const r = fileFields(request, ["path"]);
       return this.#files.purge(r["path"]);
     });
@@ -2222,7 +2294,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileChanges(binding: Binding, request: ChangesRequest):
       Promise<{ changes: FileChange[]; cursor: number; reset: boolean }> {
     return this.#door(() => {
-      this.#filer(binding, "read_files");
+      this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["after", "limit"]);
       return this.#files.changes(r["after"], r["limit"]);
     });
@@ -2230,7 +2302,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   fileUsage(binding: Binding): Promise<Usage> {
     return this.#door(() => {
-      return this.#files.usage(fileWriter(this.#filer(binding, "read_files")));
+      return this.#files.usage(fileWriter(this.#filer(binding, "read", "read_files")));
     });
   }
 
@@ -2239,7 +2311,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   fileLeaseAcquire(binding: Binding, request: { holder: string }): Promise<Lease> {
     return this.#door(() => {
-      this.#owner(binding, "hold the file sync lease");
+      this.#owner(binding, "work", "hold the file sync lease");
       const r = fileFields(request, ["holder"]);
       return this.#files.leaseAcquire(r["holder"]);
     });
@@ -2247,7 +2319,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   fileLeaseRenew(binding: Binding, request: LeaseRequest): Promise<Lease> {
     return this.#door(() => {
-      this.#owner(binding, "hold the file sync lease");
+      this.#owner(binding, "work", "hold the file sync lease");
       const r = fileFields(request, ["lease_id", "epoch"]);
       return this.#files.leaseRenew(r["lease_id"], r["epoch"]);
     });
@@ -2255,7 +2327,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   fileLeaseRelease(binding: Binding, request: LeaseRequest): Promise<{ released: boolean }> {
     return this.#door(() => {
-      this.#owner(binding, "hold the file sync lease");
+      this.#owner(binding, "reduce", "hold the file sync lease");
       const r = fileFields(request, ["lease_id", "epoch"]);
       return this.#files.leaseRelease(r["lease_id"], r["epoch"]);
     });
@@ -2264,7 +2336,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileSyncCommit(binding: Binding, request: SyncCommitRequest):
       Promise<{ outcomes: SyncOutcome[] }> {
     return this.#filing(() => {
-      this.#owner(binding, "hold the file sync lease");
+      this.#owner(binding, "work", "hold the file sync lease");
       const r = fileFields(request, ["lease_id", "epoch", "ops"]);
       return this.#files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"],
                                       ops: r["ops"] });

@@ -30,13 +30,13 @@
  *   starve every later job on the object, every thread's wake among them. A pass throws only for
  *   a bug; then, after Lifecycle's in-process retries, its lane backs off `LANE_RETRY_S`.
  * - Passes are inline in Lifecycle's drive loop, which awaits each job in turn, so a pass
- *   is short: it hands long work off (a turn to pi's durable submit, `scheduled.ts`) and
- *   returns. Its job is single-flight, so an overlapping alarm (the deadman wake, a
+ *   is short: it hands long work off (a thread's drop to its own steps, a store's call to
+ *   its bound) and returns. Its job is single-flight, so an overlapping alarm (the deadman wake, a
  *   platform re-fire) skips it while it runs, for up to `LANE_HUNG_S`. Every pass fits
  *   that by wall clock, not by a batch size: it takes no new row once `LANE_PASS_S` has
  *   passed, and each outside call a row makes is bounded by `LANE_HUNG_S - LANE_PASS_S`
- *   (the work hand-off's `WORK_HANDOFF_MS`, each doorbell send's and revoke's
- *   `WAKE_SEND_MS`, which the lane holds itself, a chunk delete's remaining budget, never
+ *   (each doorbell send's and revoke's `WAKE_SEND_MS`, which the lane holds itself, a
+ *   thread drop's `DROP_MS`, a chunk delete's remaining budget, never
  *   begun with less than `DELETE_FLOOR_MS` left), so a pass ends before an overlapping alarm
  *   may run it again. A pass writes its rows through the object's write gate a unit at a
  *   time (`gate.ts`), and so does each job set here: Lifecycle's job row is pushed inside

@@ -603,13 +603,13 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
     const muse = await r.register(MUSE);
     await revokedAt(r, MUSE, clock() - DAY);
     expect((await failure(() => forgetRevoked(r, [MUSE.client]))).message)
-      .toBe("an agent or scheduled work still holds this client's grant");
+      .toBe("an agent, a thread or a held registration still holds this client's grant");
     await expect(r.sql("DELETE FROM outside_clients WHERE client = ?", MUSE.client))
       .rejects.toThrow(/never deleted/);
     await r.stub.deleteAgent(r.session(null), { agent_id: muse });
     await r.sql("UPDATE outside_clients SET held = 1 WHERE client = ?", MUSE.client);
     expect((await failure(() => forgetRevoked(r, [MUSE.client]))).message)
-      .toBe("an agent or scheduled work still holds this client's grant");
+      .toBe("an agent, a thread or a held registration still holds this client's grant");
     await r.sql("UPDATE outside_clients SET held = 0 WHERE client = ?", MUSE.client);
     expect((await forgetRevoked(r, [MUSE.client])).forgotten).toEqual([MUSE.client]);
   });
@@ -758,6 +758,17 @@ describe("a grant's revision apart from its authority (S4-S5 review round 2, L1)
     expect(receipts[0]!["request_digest"]).toBe(policyDigest({
       client: CHATGPT.client, mode: "full", scopes: [], name: "ChatGPT", revision: 2 }));
     expect(new Set(receipts.map((row) => row["request_digest"])).size).toBe(7);
+  });
+
+  it("moves the generation by one when a scope is added", async () => {
+    const r = await rig();
+    await r.stub.outsideAgents(r.bind(CHATGPT));
+    const set = (scopes: object[], expected: number) =>
+      r.stub.grantSet(r.session(null), { client: CHATGPT.client, source: "mcp",
+                                         mode: "scoped", scopes: scopes as never,
+                                         expected_revision: expected, name: "" });
+    expect(await set([READ], 1)).toMatchObject({ generation: 2, revision: 2 });
+    expect(await set([READ, WRITE], 2)).toMatchObject({ generation: 3, revision: 3 });
   });
 
   it("keeps a revoked grant's fence when it is set revoked again, and times a new revoke",

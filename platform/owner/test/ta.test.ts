@@ -27,7 +27,6 @@ import { Grants } from "../src/grants";
 import { clock, type Origin } from "../src/ledger";
 import type { Binding } from "../src/owner-do";
 import { Policy, policyDigest } from "../src/policy";
-import { Scheduled } from "../src/scheduled";
 import {
   INVALID_REQUEST, kindOf, PLATFORM_NAMES, READ_WRITES, RESERVED_NAME, UNKNOWN_CAPABILITY,
 } from "../src/ta";
@@ -309,6 +308,23 @@ describe("ta's catalog", () => {
   });
 });
 
+/**
+ * A scheduled launch of `main` an hour ahead, under `stamp`, made as the doors make one:
+ * its run's row naming its work, then its task sleeping in its root; once it sleeps.
+ */
+async function launchLater(instance: FauxOwnerDO, stamp: Stamped | null):
+    Promise<{ thread: string; operation: string }> {
+  const work = `work_${crypto.randomUUID().replaceAll("-", "")}`;
+  const thread = await instance.agent.thread("main", stamp, { kind: "run", work });
+  await instance.agent.schedule(thread, { work_id: work, thread: thread.thread_id,
+                                          at: clock() + 3600, stamp, input: "later, please",
+                                          cron: null });
+  await until(() => instance.parts.threads.scheduledOf(stamp?.client ?? null, 10)
+    .some((row) => row.thread_id === thread.thread_id && row.state === "sleeping"),
+              "the launch to sleep");
+  return { thread: thread.thread_id, operation: `${thread.thread_id}.${work}` };
+}
+
 describe("ta's call", () => {
   it("runs a platform read: the owner's policy, its file usage, its own scheduled work",
      async () => {
@@ -317,15 +333,9 @@ describe("ta's call", () => {
       instance.script = Array.from({ length: 80 }, () => step);
       const thread = await instance.agent.thread("main", null, { kind: "converse" });
       const session = thread.thread_id;
-      const gate = new WriteGate(state.storage);
-      const threads = new Threads(gate.storage);
-      const work = new Scheduled(gate.storage, new Grants(gate.storage, new Policy(gate.storage)),
-                                 threads);
-      const { work_id: workId } = await gate.write(() => work.add(
-        "turn", clock() + 3600, { thread: thread.thread_id, input: "later, please" }, null,
-        clock()));
+      const later = await launchLater(instance, null);
       return {
-        workId,
+        later,
         policy: await value(instance, call("policy:show"), session),
         usage: await value(instance, call("files:usage"), session),
         wakes: await value(instance, call("wake:list"), session),
@@ -334,9 +344,10 @@ describe("ta's call", () => {
     const read = await r.stub.policyRead(r.bind(null));
     expect(out.policy).toEqual(read);
     expect(out.usage).toEqual(await r.stub.fileUsage(r.bind(null)));
+    // From the owner's rows: the run's thread and its wake, never its store.
     expect(out.wakes.work).toEqual([expect.objectContaining({
-      work_id: out.workId, kind: "turn", state: "pending",
-      payload: expect.objectContaining({ input: "later, please" }) })]);
+      operation_id: out.later.operation, thread_id: out.later.thread, agent_id: "main",
+      state: "sleeping", due: expect.any(Number), status: null })]);
   });
 
   it("runs a platform effect: the owner's proposal held under its card, never applied",
@@ -730,29 +741,21 @@ describe("each principal's own (review M2)", () => {
     await r.admit(MUSE);
     await r.admit(DOT);
     const generation = await r.scoped(MUSE, ["read_files"]);
-    const out = await r.in(async (instance, state) => {
+    const out = await r.in(async (instance) => {
       instance.script = Array.from({ length: 40 }, () => step);
       const own = await instance.agent.thread("main", null);
       const muse = await instance.agent.thread("main", r.stampOf(MUSE, generation));
       const dot = await instance.agent.thread("main", r.stampOf(DOT, 1));
-      const gate = new WriteGate(state.storage);
-      const work = new Scheduled(gate.storage, new Grants(gate.storage, new Policy(gate.storage)),
-                                 new Threads(gate.storage));
-      const add = (thread: { thread_id: string }, input: string, by: Stamped | null) =>
-        gate.write(() => work.add("turn", clock() + 3600, { thread: thread.thread_id, input },
-                                  by === null ? null : { client: by.client,
-                                                         generation: by.generation,
-                                                         authenticated_at: by.authenticated_at },
-                                  clock()));
-      await add(own, "owner work", null);
-      await add(muse, "muse work", r.stampOf(MUSE, generation));
-      await add(dot, "dot work", r.stampOf(DOT, 1));
+      const launched = { owner: await launchLater(instance, null),
+                         muse: await launchLater(instance, r.stampOf(MUSE, generation)),
+                         dot: await launchLater(instance, r.stampOf(DOT, 1)) };
       const list = async (thread: { thread_id: string }) =>
         ((await value(instance, call("wake:list"), thread.thread_id)) as {
-          work: { payload: { input: string } }[] }).work.map((row) => row.payload.input);
-      return { owner: await list(own), muse: await list(muse), dot: await list(dot) };
+          work: { operation_id: string }[] }).work.map((row) => row.operation_id);
+      return { launched, owner: await list(own), muse: await list(muse), dot: await list(dot) };
     });
-    expect(out).toEqual({ owner: ["owner work"], muse: ["muse work"], dot: ["dot work"] });
+    expect(out).toEqual({ launched: out.launched, owner: [out.launched.owner.operation],
+                          muse: [out.launched.muse.operation], dot: [out.launched.dot.operation] });
   });
 
   it("attributes a client's proposal to the client, on its own share, refused at its " +

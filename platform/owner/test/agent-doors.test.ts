@@ -1,7 +1,7 @@
 /**
  * The agent's doors (agent research §8; tasks 5, sub-slice A4), in workerd on faux models:
  * `agentSubmit` (a resend deduplicated, a steer placed after the current tool round, the
- * bounded wait), `agentRun` (now, and scheduled through the work runner), `agentStatus`
+ * bounded wait), `agentRun` (now, and scheduled as a sleeping pi task), `agentStatus`
  * and `agentCancel` held to the caller's own operations, scopes checked before any pi
  * call, a revoke ending a client's wait and run, idle retention of threads, and `ta`'s
  * `agent:run` on the same launch path.
@@ -25,7 +25,7 @@ import { Grants } from "../src/grants";
 import { clock, type Origin } from "../src/ledger";
 import { AGENTS_DIR, AGENTS_OWNER_ONLY, within } from "../src/paths";
 import { Policy } from "../src/policy";
-import { namedByOpenWork, Scheduled } from "../src/scheduled";
+import { wakeJob } from "../src/thread-host";
 import {
   AGENT_FILE_MAX, AGENT_TEXT_MAX, AT_AHEAD_S, type Binding, NO_OPERATION, type Operation,
   sendRequest, UNTRUSTED_NOTICE, WAIT_DEFAULT_MS, WAIT_MAX_MS,
@@ -38,7 +38,7 @@ import { until } from "./gateway-support";
 import {
   DOT, ledgerOn, MCP, MUSE, origin, registeredOn, signedIn,
 } from "./ledger-support";
-import { drainDue, failure, filesOn, laneAt, storeSql } from "./support";
+import { drainDue, failure, filesOn, laneAt, sqlIn, storeSql } from "./support";
 import { type FauxOwnerDO, says } from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
@@ -148,9 +148,10 @@ async function rig() {
     },
     threads: async () => (await inside((_instance, state) => state.storage.sql.exec<
       { thread_id: string; store: string; state: string; agent_id: string;
-        client: string | null; universe: string | null; kind: string; last_active: number }>(
+        client: string | null; universe: string | null; kind: string; last_active: number;
+        settled_at: number | null }>(
       "SELECT thread_id, store, state, t.agent_id, client, command_center_id AS universe, " +
-        "kind, last_active FROM agent_threads t LEFT JOIN outside_agents a " +
+        "kind, last_active, settled_at FROM agent_threads t LEFT JOIN outside_agents a " +
         "ON a.agent_id = t.registration ORDER BY t.created_at").toArray())),
     /** A thread's root's transcript, as its Session holds it. */
     entries: (thread: string) => inside(async (instance) =>
@@ -275,7 +276,7 @@ describe("a message to an agent (converse)", () => {
     await r.register(MUSE);
     const out = await r.in(async (_instance, state) => {
       const gate = new WriteGate(state.storage);
-      const threads = new Threads(gate.storage, undefined, undefined, undefined, undefined,
+      const threads = new Threads(gate.storage, undefined, undefined, undefined,
                                   registeredOn(state.storage));
       const stamp = { client: MUSE.client, generation: 1, authenticated_at: r.at,
                       universe: "alpha", agent: "main" };
@@ -535,8 +536,8 @@ describe("a launch (run_graph)", () => {
       .message).toBe("/workspace/agents/odd/AGENTS.md is not UTF-8 text");
   }, 30_000);
 
-  it("schedules a turn that the work runner hands to pi when due, and a cancel withdraws " +
-     "one not yet handed", async () => {
+  it("schedules a launch its sleeping task delivers to pi when due, and a cancel ends one " +
+     "not yet delivered", async () => {
     const r = await rig();
     await r.admit(MUSE);
     const soon = clock() + 1;
@@ -552,7 +553,7 @@ describe("a launch (run_graph)", () => {
       .toEqual({ operation_id: dropped.operation_id, cancelled: true });
     expect(await r.stub.agentStatus(r.bind(MUSE), { operation_id: dropped.operation_id }))
       .toMatchObject({ status: "unanswered", reason: "cancelled" });
-    // Scheduling moves no thread's activity; the claim does (below).
+    // Scheduling moves no thread's activity.
     const threads = await r.threads();
     expect(threads.find((made) => made.thread_id === later.thread_id)!.last_active)
       .toBeLessThanOrEqual(clock());
@@ -560,11 +561,8 @@ describe("a launch (run_graph)", () => {
     await drainDue(r.stub);
     expect(await r.settled(r.bind(MUSE), later.operation_id))
       .toMatchObject({ status: "done", text: "echo: at last" });
-    const entries = await r.entries(threads[0]!.thread_id);
+    const entries = await r.entries(later.thread_id);
     expect(entries[0]!.kind).toBe("ta.work");
-    // Its thread is in use from the hand-off.
-    const handed = (await r.threads()).find((made) => made.thread_id === later.thread_id)!;
-    expect(handed.last_active).toBeGreaterThan(threads[0]!.last_active);
   }, 30_000);
 });
 
@@ -720,7 +718,7 @@ describe("a stamp's registration (S4-S5)", () => {
     const other = { client: MUSE.client, family: "family-other" };
     const out = await r.in(async (_instance, state) => {
       const gate = new WriteGate(state.storage);
-      const threads = new Threads(gate.storage, undefined, undefined, undefined, undefined,
+      const threads = new Threads(gate.storage, undefined, undefined, undefined,
                                   registeredOn(state.storage));
       const stamp = { client: MUSE.client, generation: 1, authenticated_at: r.at,
                       universe: "alpha", agent: "main" };
@@ -816,7 +814,7 @@ describe("idle retention", () => {
       const gate = new WriteGate(state.storage);
       const threads = new Threads(gate.storage, { ...THREAD_LIMITS, perClient: 1, clients: 1,
                                                   owner: 10 },
-                                  { idleS: 1, perPass: 32 }, namedByOpenWork);
+                                  { idleS: 1, perPass: 32 });
       // Full: its one conversation of one (its runs have their own bound).
       const room = () => { try { threads.room({ client: MUSE.client, generation: 1,
                                                 authenticated_at: r.at, universe: null,
@@ -830,8 +828,8 @@ describe("idle retention", () => {
     });
     expect(out).toEqual({ before: "this client's threads are at their limit", dropped: 1,
                           after: "room" });
-    // The idle one went; the live one and the one its scheduled work holds stayed, the live
-    // one's activity moved on.
+    // The idle one went; the live one and the scheduled one, whose task sleeps in it, stayed,
+    // the live one's activity moved on.
     const kept = await r.threads();
     expect(kept.map((made) => made.thread_id).sort())
       .toEqual([live.thread_id, scheduled.thread_id].sort());
@@ -850,7 +848,8 @@ describe("idle retention", () => {
                                                            was + 5)),
                moved: threads.get(live.thread_id)!.last_active - was };
     });
-    expect(recheck).toMatchObject({ dropped: "touched", live: "live", moved: 5 });
+    // A sleeping schedule's thread is live: kept whatever the pass read.
+    expect(recheck).toMatchObject({ dropped: "live", live: "live", moved: 5 });
     expect(recheck.kept).toBeGreaterThan(0);
     // Its operations are no one's now, and its next message is a new thread's.
     expect((await failure(() => r.stub.agentStatus(r.bind(MUSE), {
@@ -882,7 +881,7 @@ describe("idle retention", () => {
     const out = await r.in(async (instance, state) => {
       const gate = new WriteGate(state.storage);
       const threads = new Threads(gate.storage, THREAD_LIMITS, { idleS: 1, perPass: 32 },
-                                  undefined, () => QUICK_RUNS);
+                                  () => QUICK_RUNS);
       const live = instance.parts.threads.liveThreads();
       const dropped = await retainThreads(threads, clock, gate.write,
                                           (thread) => instance.agent.drop(thread),
@@ -908,8 +907,7 @@ function noticed(instance: FauxOwnerDO) {
 /** Threads over the object's storage with retention's idle age, and `keep_runs`, at a second. */
 function quickThreads(state: DurableObjectState, perPass = 32) {
   const gate = new WriteGate(state.storage);
-  return { gate, threads: new Threads(gate.storage, THREAD_LIMITS, { idleS: 1, perPass },
-                                      namedByOpenWork, () => QUICK_RUNS) };
+  return { gate, threads: new Threads(gate.storage, THREAD_LIMITS, { idleS: 1, perPass }, () => QUICK_RUNS) };
 }
 
 describe("the owner's agent definitions (review H1)", () => {
@@ -1078,13 +1076,15 @@ describe("a launch's time (review M1)", () => {
     expect(now.status).toBe("queued");
     expect(now.operation_id).toMatch(/\.run_[0-9a-f]{32}$/);
     expect((await r.in((_instance, state) => state.storage.sql.exec(
-      "SELECT COUNT(*) AS n FROM scheduled_work").one())).n).toBe(1);
-    // The alarm stays where the platform can set it.
-    expect(await laneAt(r.stub, "work")).toBeLessThan(clock() + AT_AHEAD_S + 1);
+      "SELECT COUNT(*) AS n FROM agent_threads WHERE request GLOB 'work_*'").one())).n).toBe(1);
+    // The alarm stays where the platform can set it: its thread's wake job, at its time.
+    const [job] = await sqlIn(r.stub, "SELECT time FROM cf_agents_jobs WHERE id = ?",
+                              wakeJob(fine.thread_id));
+    expect(job!["time"]).toBeLessThan((clock() + AT_AHEAD_S + 1) * 1000);
   }, 30_000);
 
-  it("holds its thread only while its work is open: a cancel releases it to retention, " +
-     "and the lane waits for no held thread", async () => {
+  it("holds its thread only while its task sleeps: a cancel settles it, and retention then " +
+     "takes it", async () => {
     const r = await rig();
     await r.admit(MUSE);
     const ops: Operation[] = [];
@@ -1092,12 +1092,11 @@ describe("a launch's time (review M1)", () => {
       ops.push(await r.stub.agentRun(r.bind(MUSE), { agent: "main", input: "x",
                                                      at: clock() + 300 * 86_400 }));
     }
-    // Only held threads: none is ever idle, so the lane has no job.
-    expect(await laneAt(r.stub, "threads")).toBeNull();
     for (const op of ops.slice(0, 2)) {
       await r.stub.agentCancel(r.bind(MUSE), { operation_id: op.operation_id });
     }
-    expect(await laneAt(r.stub, "threads")).not.toBeNull();
+    await until(async () => (await r.threads()).filter((made) => made.settled_at !== null)
+      .length === 2, "the cancelled runs to settle");
     await sleep(1100);
     const dropped = await r.in(async (instance, state) => {
       const { gate, threads } = quickThreads(state);
@@ -1106,17 +1105,6 @@ describe("a launch's time (review M1)", () => {
     });
     expect(dropped).toBe(2);
     expect((await r.threads()).map((made) => made.thread_id)).toEqual([ops[2]!.thread_id]);
-  }, 30_000);
-
-  it("is checked for its room before its thread is made", async () => {
-    const r = await rig();
-    const long = "x".repeat(20_000);
-    const error = await failure(() => r.stub.agentRun(r.bind(null), { agent: "main",
-                                                                      input: long,
-                                                                      at: clock() + 600 }));
-    expect(error.message).toMatch(/a work payload is JSON of at most/);
-    expect(await r.threads()).toEqual([]);
-    expect(await r.in(async (instance) => instance.agent.host.openThreads())).toEqual([]);
   }, 30_000);
 });
 
@@ -1212,25 +1200,6 @@ describe("the doors' remaining edges (review L4)", () => {
     const r = await rig();
     await r.stub.agentRun(r.bind(null), { agent: "main", input: "x" });
     expect(await laneAt(r.stub, "threads")).toBeGreaterThan(clock() + 7 * 86_400 - 60);
-  }, 30_000);
-
-  it("cancels only work not yet claimed", async () => {
-    const r = await rig();
-    const later = await r.stub.agentRun(r.bind(null), { agent: "main", input: "x",
-                                                        at: clock() + 3600 });
-    const work = later.operation_id.split(".")[1]!;
-    await r.in(async (_instance, state) => {
-      const gate = new WriteGate(state.storage);
-      const scheduled = new Scheduled(gate.storage, new Grants(gate.storage,
-                                      new Policy(gate.storage)), new Threads(gate.storage));
-      await gate.write(() => state.storage.sql.exec(
-        "UPDATE scheduled_work SET due = ? WHERE work_id = ?", clock() - 1, work));
-      await gate.write(() => scheduled.claim(work, clock()));
-    });
-    expect((await r.stub.agentCancel(r.bind(null), { operation_id: later.operation_id }))
-      .cancelled).toBe(false);
-    expect((await r.in((_instance, state) => state.storage.sql.exec(
-      "SELECT state FROM scheduled_work").one())).state).toBe("running");
   }, 30_000);
 
   it("refuses odd operation ids alike, and answers pi's unknown one in the caller's thread",
