@@ -754,6 +754,26 @@ describe("S4-S5 review round 1", () => {
     }
   }, 60_000);
 
+  it("goes on past a store that refuses its destroy, and fails the step only once every " +
+     "other was tried", async () => {
+    const r = await rig();
+    const out = await r.in(async (instance, state) => {
+      for (const agent of ["agent-a", "agent-b", "agent-c"]) {
+        await instance.agent.thread(agent, null);
+      }
+      instance.probes.destroyFails = 1;
+      const answer = await instance.erasure.erase().then(() => "wiped",
+                                                         (error: Error) => error.message);
+      return { answer, left: state.storage.sql.exec("SELECT 1 FROM agent_threads").toArray()
+        .length, step: state.storage.sql.exec<{ step: number }>(
+          "SELECT step FROM owner_erasure").one().step };
+    });
+    expect(out).toEqual({ answer: "some of the owner's thread stores could not be destroyed yet",
+                          left: 1, step: 1 });
+    await r.in((instance) => instance.erasure.erase());
+    expect(await r.in((instance) => instance.erasure.erased)).toBe(true);
+  }, 30_000);
+
   it("ends every pending wait as the owner's erasure begins", async () => {
     const r = await rig();
     const held = gate();
@@ -806,6 +826,10 @@ describe("S4-S5 review round 1", () => {
                                   THREAD_RETENTION, undefined,
                                   () => ({ ...RUN_POLICY, clientShare: 50, ownerReserve: 25 }));
       const names = new Map<string, string>();
+      const kept = () => state.storage.sql.exec<{ thread_id: string }>(
+        "SELECT thread_id FROM run_receipts ORDER BY settled_at").toArray()
+        .map((row) => names.get(row.thread_id));
+      const seen: (string | undefined)[][] = [];
       let at = 1;
       const settled = async (name: string, stamp: Stamped | null) => {
         const made = await gated.write(() => threads.record("main", stamp, clock()));
@@ -819,12 +843,48 @@ describe("S4-S5 review round 1", () => {
                                    ["d2", stampOf(r, DOT)], ["o1", null], ["o2", null],
                                    ["r4", stampOf(r, MUSE)]] as const) {
         await settled(name, stamp);
+        seen.push(kept());
       }
-      return state.storage.sql.exec<{ thread_id: string }>(
-        "SELECT thread_id FROM run_receipts ORDER BY settled_at").toArray()
-        .map((row) => names.get(row.thread_id));
+      return seen;
     });
-    expect(out).toEqual(["d1", "d2", "o2", "r4"]);
+    expect(out).toEqual([["r1"], ["r1", "r2"], ["r2", "r3"], ["r2", "r3", "d1"],
+                         ["r3", "d1", "d2"], ["r3", "d1", "d2", "o1"],
+                         ["r3", "d1", "d2", "o2"], ["d1", "d2", "o2", "r4"]]);
+  }, 30_000);
+
+  it("keeps a run that settled after the pass read it, by when it settled", async () => {
+    const r = await rig();
+    const out = await r.in(async (_instance, state) => {
+      const gated = new WriteGate(state.storage);
+      const threads = new Threads(gated.storage);
+      const run = await gated.write(() => threads.record("main", null, clock() - 10 * 86_400));
+      const seen = threads.retainedAt(run);
+      await gated.write(() => threads.settle(run.thread_id, {
+        request: "run_x", status: "done", reason: null, text: "ok" }, clock()));
+      return gated.write(() => threads.retain(run.thread_id, seen, clock()));
+    });
+    expect(out).toBe("touched");
+  }, 30_000);
+
+  it("lets a client's receipts go with its grant's change, so a grant made again sees none",
+     async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    const run = await r.stub.agentRun(r.bind(MUSE), { agent: "main", input: "hello" });
+    expect(await r.settled(r.bind(MUSE), run.operation_id)).toMatchObject({ status: "done" });
+    expect(await sqlIn(r.stub, "SELECT 1 FROM run_receipts WHERE client = ?", MUSE.client))
+      .toHaveLength(1);
+    await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
+    expect(await sqlIn(r.stub, "SELECT 1 FROM run_receipts WHERE client = ?", MUSE.client))
+      .toEqual([]);
+    const generation = (await r.stub.grantList(r.bind(null))).clients
+      .find((client) => client.client === MUSE.client)!.generation;
+    await r.stub.grantSet(r.session(), { client: MUSE.client, source: "mcp", mode: "full",
+                                         scopes: [], name: "", expected_generation: generation });
+    // A sign-in past the revoke and its clock margin.
+    const fresh = { ...r.bind(MUSE), authenticated_at: signedIn() + 10 };
+    expect((await failure(() => r.stub.agentStatus(fresh, {
+      operation_id: run.operation_id }))).message).toBe(NO_OPERATION);
   }, 30_000);
 
   it("refuses none of a day's 1,000 launches with its receipts at their bound, as " +
@@ -906,16 +966,21 @@ describe("S4-S5 review round 1", () => {
      "drop that keeps failing", async () => {
     const r = await rig();
     await r.admit(MUSE);
-    await r.in((instance) => {
-      instance.probes.holdGate = new Promise(() => undefined);
-      instance.probes.holdLinger = 30_000;  // its tool ignores the abort for 30 s
-    });
+    await r.in((instance) => { instance.probes.holdGate = new Promise(() => undefined); });
     await r.stub.agentRun(r.bind(MUSE), { agent: "main", input: "hold please" });
     await until(() => r.in((instance) => instance.probes.holds === 1), "the hold to start");
     const [thread] = await r.threads();
+    // Its Session never closes: the drop waits for it no longer than its bound.
+    await r.in((instance) => {
+      Object.defineProperty(instance.agent.host, "drop", { configurable: true,
+                                                         value: () => new Promise(() => {}) });
+    });
     await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
     await until(async () => (await keyed(r, thread!.thread_id)).row === 0, "the drop", 20_000);
     expect(await storeState(thread!.store)).toEqual(WIPED);
+    await r.in((instance) => {
+      delete (instance.agent.host as unknown as Record<string, unknown>)["drop"];
+    });
     // A drop whose store keeps refusing: retried by its row, the owner told once.
     const other = await r.in(async (instance, state) => {
       const made = await instance.agent.thread("helper", null, { kind: "converse" });

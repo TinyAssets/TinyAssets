@@ -989,45 +989,65 @@ account and no deploy.
 - [x] Before any deploy holding real data: S4's drop wipes its store (`destroy()`, the row
   `dropping` until it returned). Done in S4-S5 (below).
 - [x] S4-S5 Drops wipe and run retention, in workerd, nothing deployed (`threads.ts`,
-  `agent.ts`, `thread-host.ts`, `erasure.ts`, `erase.ts`, `policy.ts`, migration 10). One
-  drop path for every reason (idle retention, a run's retention, a grant change or revoke,
-  the owner's erasure): in one unit the row is marked `dropping` (no door resolves it, an
-  operation on it is no such operation, nothing opens its Session); its Session's work is
-  ended and the Session closed through `ThreadHost.drop` (past `OPEN_MAX`, never resumed,
-  never opened for it); a run's receipt is read from its store and kept; `store.destroy()`;
-  then in one unit the row is forgotten with its live and usage rows (by trigger) and its
-  wake job. The `threads` lane finishes any drop cut short, a store that did not answer
-  backed off in its row (`drop_retry`, 60 s; each drop held to 10 s in a pass). A grant
-  change marks its client's threads in its own unit (the mark releases the grant row) and
-  drops them after it commits, sleepers included, ending live work first. Runs and
-  conversations: `run` is every launch's thread (the `run_graph` door, `ta`'s `agent:run`,
-  a scheduled launch), `converse` the door's conversation; no kind was left unmapped.
-  Conversations go at idle retention (7 d); a run's store is wiped `keep_runs` after it
-  settled (owner policy `runs.keep_runs`, 7 d, 1 to 30), its activity moved on by its own
-  work (`agent_live` changes) so settling is its last activity, never while live; its row
-  leaves a receipt (`run_receipts`: status, reason, the first 4 KiB of its answer), kept
-  `keep_run_receipts` from settling (90 d, 1 to 365, never under `keep_runs`), status
-  answered from it to its own caller alone, an input unsettled at the wipe answering
-  `unanswered: dropped`. Bounds: runs have their own (`runs_kept`, 50,000 live stores),
-  the owner's 10,000 now counts its conversations only, and a run is refused once runs and
-  receipts together reach 100,000, so every receipt has room; every thread's kept usage is
-  bounded at 256 MiB in all (`agent_usage_space`, counted by trigger), since 61,024 rows of
-  64 KiB would pass the guard's share. Erasure as a tested internal path (its door comes
-  with the §7 doors): one unit marks the owner erasing (`owner_erasure`) and every thread
-  dropping, and pushes the erasure's own Lifecycle job; every door then refuses
-  (`ERASING`, in the binding check), the schedule's lanes run nothing, no thread is
-  recorded (the recording unit reads the mark) and no Session opens; every store a row
-  names is destroyed through the drop path, each row forgotten after it; then Lifecycle's
+  `agent.ts`, `thread-host.ts`, `thread-store.ts`, `erasure.ts`, `erase.ts`, `policy.ts`,
+  migration 10). One drop path for every reason (idle retention, a run's retention, a
+  grant change or revoke, the owner's erasure): in one unit the row is marked `dropping`
+  (no door resolves a dropping conversation, nothing opens its Session); its Session's
+  work is ended and the Session closed through `ThreadHost.drop` (never resumed, never
+  opened for it), at most `END_WAIT_MS`, past which a Session that will not close is cut
+  off; `store.destroy()`; then in one unit the row is forgotten with its live and usage
+  rows (by trigger), its usage added into the owner's total (`agent_usage_total`, keys
+  past 48 a bucket summed into `other`, exact), and its wake job. The `threads` lane
+  finishes any drop cut short, each held to 10 s and backed off in its row (`drop_retry`,
+  60 s), the owner told once after 5 failures (`thread_drop_stuck`). A dropping thread
+  keeps its client's grant row and counts against every bound until it is forgotten, so a
+  grant made again at once makes none past them. A destroyed store keeps no mark: it is as
+  empty as one never made (`databaseSize` 4,096 in workerd, against the mark's 8,192); the
+  instance that destroyed it refuses at once, and the owner opens only stores its ready
+  rows name. Kinds: `run` is every launch's thread (the `run_graph` door, `ta`'s
+  `agent:run`, a scheduled launch), `converse` the door's conversation; none was left
+  unmapped. A run settles once: when its Session reports nothing running and nothing
+  asleep with its input settled, one unit keeps `settled_at` and its receipt
+  (`run_receipts`: status, reason, the first 4 KiB of its answer), read from that Session.
+  A settled run's status and cancel are answered from the receipt, its Session never
+  opened (F12's one read holds, polls move nothing), before its drop, during it and after;
+  its store is wiped `keep_runs` after it settled (owner policy `runs.keep_runs`, 7 d, 1 to
+  30), never while live; a run never seen settling goes `keep_runs` after its last
+  activity, answering as one pi never saw. Conversations go at idle retention (7 d), and a
+  live row moves no activity. Bounds: conversations 64 a client, 1,024 every client's,
+  10,000 the owner's; runs their own, `runs_kept` 50,000 live stores, an outside client
+  holding at most `runs.client_share` (25%) and every client together what
+  `runs.owner_reserve` (25%) leaves, so the owner can always launch. Receipts are a history
+  with a row bound, never a refusal: 100,000, shared the same way, each scope's oldest let
+  go past its share, kept `keep_run_receipts` from settling (90 d, 1 to 365, never under
+  `keep_runs`); a client's receipts go with its grant's change. Every thread's kept usage is
+  bounded at 256 MiB in all (a backstop). Erasure as a tested internal path (its door comes
+  in slice 10): one unit marks the owner erasing (`owner_erasure`) and every thread
+  dropping, and pushes the erasure's Lifecycle job; every door then refuses (`ERASING`, in
+  the binding check), lanes run nothing, no thread is recorded and no Session opens; every
+  store a row names is destroyed through the drop path, each bounded, past one that fails
+  to the next, the step recorded done (`step` 2) only with no row left; then Lifecycle's
   alarm is disabled for good and the write gate deletes the whole database
-  (`WriteGate.wipe`), so nothing is written after it. Each step resumes after a crash, by
-  the job. The owner-bound guard counts the runs' rows, the receipts, the usage space and
-  the erasure mark (worst case 4.46 GB of its 5 GB); the alarm guard admits only
-  `erase.ts`'s `disableAlarms` and `gate.ts`'s `deleteAll` beside the store's. Declared
-  differences from the design: a run's receipt is kept before its store's destroy rather
-  than in the last unit, since after the wipe there is nothing to read; a status read that
-  reopens a settled run's Session counts as its activity (pi reports an open's reconcile
-  as work), so a run read since is kept from then. Still owed live: P8, `deleteAll()` on a
-  populated store frees billed bytes within a billing day (design-decision §6).
+  (`WriteGate.wipe`, whose only caller is the erasure's wiring, a guard). Each step resumes
+  from the recorded one at the object's next start, by the job, and at every refused door:
+  a crash after the alarm's disabling, or a failed wipe, finishes at the next start. The
+  owner-bound guard counts the runs' rows at their widest (about 3 KB), the receipts, the
+  usage space and total, the erasure mark, and Lifecycle's own job and key rows (worst case
+  in the round-1 report); the alarm guard admits only `erase.ts`'s `disableAlarms` and
+  `gate.ts`'s `deleteAll` beside the store's. Declared differences from the design: a
+  closed dropping Session is not reopened to end it (nothing of it runs in memory); client
+  runs share `runs_kept` rather than counting in the conversation bounds; a settled run's
+  answer past 4 KiB reads as its receipt's first 4 KiB. A rename (`grantSet` with only the
+  name changed) still ends the client's work and drops its threads: every owner set moves
+  the grant's generation, which is both the change's concurrency token and the stamp every
+  thread and tool call is checked against, so a name-only change needs its own door (a
+  follow-up for grants). Review round 1 (REQUEST CHANGES), all taken but the rename
+  (explained above): H1 erasure's wipe resumes at start; H2 settling and status as above;
+  M1 run shares; M2 receipts as history; M3 no destroyed mark; M4 the usage total; the
+  lows (retry and erasure tests, receipts during a drop, bounded drops with the notice,
+  the wipe caller guard, receipts with the grant, slice 10, the guard's row width and
+  Lifecycle's rows). Still owed live: P8, `deleteAll()` frees a store's billed bytes and a
+  destroyed store bills nothing (`store-probe.md`).
 - [ ] F1 and admission: `ta.scheduled` pi task, `wake:list` from rows, cancel and status
   paths, cron recurrence; delete the `work` lane, `WorkRunner` and migrations 7-8's work
   tables; a policy write aborts active Sessions' work only, sleepers enforced in `deliver`;
@@ -1046,7 +1066,7 @@ account and no deploy.
 - [x] Erasure's store-first order: mark the owner erasing, destroy every store a row names,
   then `deleteAll()` the owner. Built as S4-S5's internal path (above); its door, and the
   tombstone that keeps a stale binder from making an erased owner again, come with the
-  admission row and the §7 doors.
+  admission row in slice 10.
 - [ ] 0c (live): the dark deploy of the owner and gateway Workers, the store probe's cases
   re-run on the real code (P1-P4, P7; P5 a store reset mid-run).
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each

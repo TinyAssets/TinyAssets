@@ -291,6 +291,7 @@ describe("the owner's database bound", () => {
     expect(TERMS["agent_threads"]!.rows).toBe(61_024);
     expect(TERMS["agent_threads"]!.bytes).toBeGreaterThan(2_700);
     expect(RUNTIME["cf_agents_jobs"]!.rows).toBeGreaterThan(threadRows);
+    expect(worstCase()).toBe(worstCase(TERMS) + worstCase(RUNTIME));
     expect(TERMS["run_receipts"]!.rows).toBe(100_000);
     expect(TERMS["run_receipts"]!.bytes).toBeGreaterThan(RECEIPT_TEXT_MAX);
     // The usage rows' sum is the space bound, not each row's bound times every thread.
