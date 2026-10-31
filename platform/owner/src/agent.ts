@@ -189,7 +189,7 @@ const RECEIPT_SCAN = 8;
  * How a run's input settled, as its Session's own storage holds it: its root's first input,
  * and its answer's text once done; null while it has none, or it has not settled.
  */
-async function settledIn(storage: Storage): Promise<Settled | null> {
+export async function settledIn(storage: Storage): Promise<Settled | null> {
   const page = await storage.scanSubmissions({ conversationId: ROOT, order: "ascending" },
                                              RECEIPT_SCAN, undefined, BG);
   const input = page.items.find((record) => record.type === "input");

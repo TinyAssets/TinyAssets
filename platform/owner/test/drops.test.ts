@@ -16,7 +16,7 @@ import {
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
-import { NO_THREAD, WAIT_ENDED } from "../src/agent";
+import { NO_THREAD, settledIn, WAIT_ENDED } from "../src/agent";
 import type { Stamped } from "../src/authority";
 import { ERASING } from "../src/erasure";
 import { WriteGate } from "../src/gate";
@@ -928,6 +928,12 @@ describe("S4-S5 review round 1", () => {
     const receipt = await sqlIn(r.stub, "SELECT * FROM run_receipts");
     expect(receipt).toHaveLength(1);
     await r.in((instance) => instance.agent.host.close(thread!.thread_id));
+    // A short answer is its receipt's whole: its status reads no store.
+    const reads = () => r.in((instance) => instance.probes.storeCalls["answer"] ?? 0);
+    const before = await reads();
+    expect(await r.stub.agentStatus(r.bind(null), { operation_id: run.operation_id }))
+      .toEqual(done);
+    expect(await reads()).toBe(before);
     await r.in((instance) => { instance.probes.destroyFails = 1; });
     await sleep(1100);
     expect(await r.retain()).toBe(1);
@@ -1188,6 +1194,43 @@ describe("S4-S5 review round 2", () => {
     expect(await r.stub.agentStatus(r.bind(null), { operation_id: run.operation_id }))
       .toMatchObject({ status: "done", text: "tools answered" });
   }, 30_000);
+
+  it("never settles a run reopened while its background work runs again", async () => {
+    const r = await rig();
+    await r.in((instance) => { instance.probes.backgroundGate = new Promise(() => undefined); });
+    const run = await r.stub.agentRun(r.bind(null), { agent: "main", input: "spawn hold" });
+    expect(await r.settled(r.bind(null), run.operation_id)).toMatchObject({ status: "done" });
+    await until(() => r.in((instance) => instance.probes.backgroundRuns === 1),
+                "the background work to wait");
+    await crash(r);
+    // Reopened by its job, its background work waits again: its input is answered, but the
+    // run is live, so it has not settled.
+    await r.in((instance) => { instance.probes.backgroundGate = new Promise(() => undefined); });
+    await sqlIn(r.stub, "UPDATE cf_agents_jobs SET time = 0 WHERE capability = ?", HOST);
+    await runDurableObjectAlarm(r.stub);
+    await until(() => r.in((instance) => instance.probes.backgroundRuns === 1),
+                "the background work to wait again");
+    await sleep(300);
+    const [row] = await r.threads();
+    expect(row!.settled_at).toBeNull();
+    expect(await sqlIn(r.stub, "SELECT active FROM agent_live")).toEqual([{ active: 1 }]);
+    expect(await sqlIn(r.stub, "SELECT 1 FROM run_receipts")).toEqual([]);
+  }, 30_000);
+
+  it("reads a run as settled only from its input: one placed, or none, is not", async () => {
+    const storage = (input: unknown) => ({
+      scanSubmissions: async () => ({ items: input === undefined ? [] : [input] }),
+      entry: async () => undefined,
+    }) as unknown as Parameters<typeof settledIn>[0];
+    for (const status of ["queued", "placed"]) {
+      expect(await settledIn(storage({ type: "input", status, requestId: "run_x" })))
+        .toBeNull();
+    }
+    expect(await settledIn(storage(undefined))).toBeNull();
+    expect(await settledIn(storage({ type: "input", status: "unanswered", reason: "aborted",
+                                     requestId: "run_x" })))
+      .toEqual({ request: "run_x", status: "unanswered", reason: "aborted", text: "" });
+  });
 
   it("keeps a receipt naming the input of a run whose settling was never seen", async () => {
     const r = await rig();
