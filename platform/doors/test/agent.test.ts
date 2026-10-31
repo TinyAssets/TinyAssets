@@ -136,8 +136,10 @@ describe("the agent's tools on /api", () => {
     const status = await api(key, "run_status", { operation_id: answer.operation_id });
     expect(await status.json()).toEqual(answer);
     expect((await api(key, "run_graph", { agent: "main", input: "go" })).status).toBe(200);
-    expect(await sqlIn(who, "SELECT universe, agent_id, kind FROM agent_threads " +
-                            "ORDER BY created_at")).toEqual([
+    // Each thread names the registration its stamp was made from, whose universe it acts in.
+    expect(await sqlIn(who, "SELECT a.command_center_id AS universe, t.agent_id, kind " +
+                            "FROM agent_threads t JOIN outside_agents a " +
+                            "ON a.agent_id = t.registration ORDER BY t.created_at")).toEqual([
       { universe: "cc", agent_id: "main", kind: "converse" },
       { universe: "cc", agent_id: "main", kind: "run" }]);
   }, 60_000);
