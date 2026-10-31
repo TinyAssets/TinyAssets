@@ -12,6 +12,7 @@
  */
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type AssistantMessage, fauxAssistantMessage, fauxToolCall, type Message,
 } from "@earendil-works/pi-ai";
@@ -41,8 +42,9 @@ import { RUNS_LIVE, RUNS_SCHEDULED } from "../src/threads";
 import { gated, until } from "./gateway-support";
 import { DOT, MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
 import { alarmOf, drainDue, failure, sqlIn, storeOf, storeSql } from "./support";
-import { type FauxOwnerDO, says, skewClock, storeScript } from "./worker";
+import { type FauxOwnerDO, Reminder, says, skewClock, storeScript } from "./worker";
 
+const BG = BACKGROUND_CONTEXT;
 const DAY_S = 86_400;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -334,6 +336,11 @@ describe("a scheduled launch's sleep (F1)", () => {
     // Work is refused; reads and what only lowers risk are not.
     expect((await failure(() => r.stub().agentRun(r.bind(null), { agent: "main", input: "x" })))
       .message).toMatch(new RegExp(`^${OWNER_SUSPENDED}`));
+    expect((await failure(() => r.stub().collectionWrite(r.bind(null), {
+      collection: "board", row_id: "t", body: "1", expected_etag: "", private: false })))
+      .message).toMatch(new RegExp(`^${OWNER_SUSPENDED}`));
+    expect((await r.stub().collectionPull(r.bind(null), { collection: "board", after: 0,
+                                                          limit: 10 })).rows).toEqual([]);
     expect(await r.status(op)).toMatchObject({ status: "scheduled" });
     expect(await r.stub().agentCancel(r.bind(null), { operation_id: other.operation_id }))
       .toMatchObject({ cancelled: true });
@@ -897,6 +904,26 @@ describe("a suspension's enforcement (review round 1, H1)", () => {
       .toBe("owner_suspended");
   }, 30_000);
 
+  it("ends a sleeping background task too, keeping only a scheduled launch's", async () => {
+    const r = await rig();
+    const op = await later(r);
+    const reminder = await r.in(async (instance) => {
+      const pi = await instance.agent.host.pi(op.thread_id);
+      const root = (await pi.conversation(1 as never, BG))!;
+      const id = await root.commit((tx) => tx.createTask(Reminder, { until: Date.now() + 3_600_000 },
+                                                         { ownership: { kind: "conversation" },
+                                                           background: true }), BG);
+      pi.resume();
+      return id as unknown as number;
+    });
+    const reminderStatus = async () => (await storeSql(await storeOf(r.stub(), op.thread_id),
+      "SELECT status FROM pi_tasks WHERE id = ?", reminder))[0]?.["status"];
+    await until(async () => (await reminderStatus()) === "sleeping", "the reminder's sleep");
+    await r.stub().admissionSet(r.platform, { reason: "billing", suspended: true });
+    expect(await reminderStatus()).toBe("terminal");
+    expect((await r.task(op.thread_id))!.status).toBe("sleeping");
+  }, 30_000);
+
   it("ends a run asleep in pi's retry backoff, which no model call follows", async () => {
     const g = await gated();
     await g.connect("sk-429-backoff");
@@ -939,7 +966,10 @@ describe("a cancel of a launch that delivered, or is delivering (review round 1,
      async () => {
     for (const where of ["before", "after"] as const) {
       const r = await rig();
-      const op = await later(r);
+      // The occurrence delivered after the cancel landed holds, so its withdrawal shows.
+      const holding = gate();
+      await r.in((instance) => { instance.probes.holdGate = holding.promise; });
+      const op = await later(r, null, 3600, { input: "hold please" });
       const at = gate();
       const reached = gate();
       await r.in((instance) => {
@@ -971,6 +1001,12 @@ describe("a cancel of a launch that delivered, or is delivering (review round 1,
       expect((await r.task(op.thread_id))!.record.state.outcome, where).toMatchObject({
         status: "aborted", reason: CANCELLED, result: { deliveries: where === "before" ? 0 : 1 } });
       expect((await r.delivered(op)).length, where).toBe(where === "before" ? 0 : 1);
+      if (where === "after") {
+        // The cancel waited for the task's end, then withdrew the occurrence it delivered.
+        await until(async () => (await r.delivered(op))[0]?.["status"] === "unanswered",
+                    "the delivered run's withdrawal");
+      }
+      holding.release();
     }
   }, 90_000);
 });
