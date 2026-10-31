@@ -276,9 +276,11 @@ export function q1Reading(bc, a, limitBytes = SHAPE.limitBytes) {
     out.verdict = "shared";
     out.detail = `q1b hit a limit at ${gb(b.size)} with the parent at ${gb(self?.size)} (${gb(pair)} together)`
       + `${persist ? `, and the parent's own write then failed: ${persist.error}` : ""}: one budget`;
-  } else if (RESET.test(status) && self?.status === "reached" && b?.status === "writing" && inBand(pair)) {
+  } else if (RESET.test(status) && self?.status === "reached" && b?.status === "writing" && inBand(pair)
+             && (!big?.size || Math.abs(big.size - pair) <= 0.01 * pair)) {
     // The limit's reset form (run 41247617223): at the ceiling production resets the parent
-    // again and again instead of returning a size error.
+    // again and again instead of returning a size error. A lone facet's ceiling, when read,
+    // must agree within 1%, so a reset with another cause in the band is not read as one.
     out.verdict = "shared";
     out.detail = `the parent was reset repeatedly with itself at ${gb(self.size)} and q1b at ${gb(b.size)} `
       + `(${gb(pair)} together), at the ceiling: the limit's reset form, one budget`;
@@ -318,15 +320,17 @@ export function q1Reading(bc, a, limitBytes = SHAPE.limitBytes) {
 
 /**
  * Q8's reading from its three variants. The order control (`same-turn-noabort`) must read
- * wiped and written in every trial, and the crash-model control (`awaited`) must lose the
- * row in every trial, all wiped or all not wiped; only then is a same-turn "wiped and not
- * written" F1's crash window. A control that itself loses the row is a different finding.
+ * wiped and written in every trial, and the crash-model control (`awaited`) wiped and not
+ * written in every trial; only then can same-turn's counts say anything about F1's crash
+ * window. An awaited control that lost its delete too is inconclusive; a control that
+ * itself loses the row with no crash is a different finding.
  */
 export function q8Reading(control, sameTurn, awaited) {
-  // The crash model holds when every awaited trial lost the aborted turn's row and came
-  // back as a fresh instance. Its delete either committed at the await (wiped, workerd) or
-  // was held to the turn's commit and lost with it (not wiped, production in run
-  // 41247617223); either form is a crash before commit.
+  // The crash model holds only when every awaited trial kept its (awaited, earlier-turn)
+  // delete and lost the aborted turn's row, each from a fresh instance: the crash then
+  // lands after the delete is durable and before the row is, where a split can show. If
+  // the awaited delete was lost too (production in run 41247617223), the abort rolled back
+  // everything since the last durable point, and atomic and split read the same.
   const n = sameTurn?.n ?? 0;
   const c = control?.counts;
   const s = sameTurn?.counts;
@@ -341,8 +345,11 @@ export function q8Reading(control, sameTurn, awaited) {
   if (c.wipedWritten !== control.n || c.notKilled !== control.n) {
     return { verdict: "void", detail: `the order control read ${JSON.stringify(c)}, not ${control.n} of ${control.n} wiped and written` };
   }
-  const crashLost = a.wipedNotWritten === awaited.n || a.notWipedNotWritten === awaited.n;
-  if (!crashLost || awaited.freshInstances !== awaited.n) {
+  if (a.notWipedNotWritten === awaited.n && awaited.freshInstances === awaited.n) {
+    return { verdict: "inconclusive (the crash lands before the delete is durable)",
+             detail: `the awaited control lost its delete too (${awaited.n} of ${awaited.n} not wiped, not written): the abort rolled back everything since the last durable point, so the window after a confirmed delete was not sampled` };
+  }
+  if (a.wipedNotWritten !== awaited.n || awaited.freshInstances !== awaited.n) {
     return { verdict: "void", detail: `the crash-model control read ${JSON.stringify(a)}: ctx.abort() did not act as a crash before commit` };
   }
   if (s.wipedNotWritten > 0) {

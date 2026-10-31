@@ -12,8 +12,8 @@ same throwaway objects. Code: `scripts/probes/facetprobe/`. Workflow:
 
 ## Found
 
-Run 1 (41247617223, 2026-10-31, results at the end) answered Q1-Q6 and Q8; Q7 was gated
-off. **The design stays: top-level `ThreadStore` objects hosted by our `ThreadHost`.**
+Run 1 (41247617223, 2026-10-31, results at the end) answered Q1-Q3, Q5 and Q6, Q4 in
+part, and Q8's order but not its crash window; Q7 was gated off. **The design stays: top-level `ThreadStore` objects hosted by our `ThreadHost`.**
 Facets do not give a thread storage of its own (one ceiling of about 10 GiB for a parent
 and all its facets); they need `ctx.exports`, which the owner config disables for owner
 isolation, or a Worker Loader class with an empty `env`; a `ctx.exports` facet gets the
@@ -28,14 +28,16 @@ out-of-memory takes its parent with it; and `PiHarness` cannot run in one (local
   - The parent reached 6,002,180,096 B and `q1b` 4,722,520,064 B: 10,724,700,160 B
     together.
   - Both totals stop at one ceiling, within 0.0003% of each other, just under 10 GiB
-    (10,737,418,240 B), one 15 MB write short. One storage budget for a parent and all its
-    facets.
+    (10,737,418,240 B): 12.7 MB short, less than one 15 MB write. One storage budget for a
+    parent and all its facets.
   - At the ceiling production returned no size error: it reset the parent again and again,
     and both plans ended "aborted: the parent was reset more than 3 times", which the key
     then read as void. The key now reads a reset at the band as shared (`RESET` in
     `drive.mjs`, with run 1's numbers as a `local.mjs` case).
-  - The real per-object ceiling is about 10 GiB, so the owner-bound guard's 10 × 10^9
-    denominator is conservative (about 7% under it).
+  - The ceiling was measured on a parent with facets; for a plain top-level object the same
+    ceiling of about 10 GiB is inferred, not measured. On it, the owner-bound guard's
+    10 × 10^9 denominator is conservative (about 7% under it). Since production resets the
+    object at the ceiling rather than returning an error, the guard must stop before it.
   - 11,264 rows, 21.4 GB in all, written in about 8 minutes (about 45 MB/s across the two
     parents).
 - **Q2. Under `disable_ctx_exports` only a Worker Loader class works.**
@@ -53,38 +55,58 @@ out-of-memory takes its parent with it; and `PiHarness` cannot run in one (local
   through `ctx.exports` it reaches `Parent` and `ThreadStore` objects and nested facets,
   none through its parent. A loader facet has an empty `env`, but `fetch` reaches the
   network.
-- **Q4. Isolation is partial.**
-  - A yielding busy loop in a facet stalls the parent: its pings went from p50 3 ms to
-    p50 484 ms, max 602 ms.
-  - A solid burn (5 s), a throw and an over-CPU burn left the parent's pings at baseline
-    (max 38 ms), the parent's instance unchanged, and the facet answering again.
+- **Q4. Partly measured.**
+  - A yielding busy loop in a facet (10 s) stalls the parent: its pings went from p50 3 ms
+    to p50 484 ms, max 602 ms.
+  - A throw leaves the parent at baseline (max 18 ms), its instance unchanged, the facet
+    answering again.
   - Out of memory in a facet: 600 parent pings failed and the case never settled, so the
     parent was lost with it.
+  - **The no-yield (`solid`) and over-CPU burns were not measured.** Both are sized in
+    iterations from the yield case's rate, and in production they ran far shorter than
+    designed: the five Q4 cases took 94 s in all (22:21:25 to 22:22:59Z), the OOM case's
+    ping bound alone 60 s of it, so the over-CPU burn, designed as 45 s past the 30 s CPU
+    limit, cannot have reached the limit (it returned, with no CPU error). Their parents
+    read at baseline (max 38 and 16 ms), which says nothing about a 5 s or 45 s burn. The
+    results JSON with each case's `ms` and `iters` went only to the job summary, which the
+    API does not serve, so the exact lengths are lost. A re-run should size the burns from
+    a solid-loop calibration, not the yield rate.
 - **Q5. Delete wipes.** In every case, at 10.72 GB too, down to 12,288 B with no rows, a
   fresh instance after, and "Facet was deleted." from the old stub. The parent's own size
   did not move (24,576 B).
 - **Q6. A facet call is under a millisecond, and is billed.**
   - Parent → facet, 1,000 calls: every percentile under 1 ms. A top-level `ThreadStore`:
-    p50 3, p95 5, p99 6 ms, mean 2.9 ms.
+    p50 3, p95 5, p99 6 ms, mean 2.9 ms (exports parent); p50 3, p95 4, p99 4 ms, mean
+    3.0 ms (loader parent).
   - Billing: the `q6` parent billed 2,043 requests: its one driver call plus every one of
     the 2,042 calls it made to its two facets (each 20 warm-up, 1,000 pings and one
     `info()`), on the parent's id even for the facet with an id of its own, which billed
-    none. The loader parent likewise billed 1,022 (1 + 1,021). The `ThreadStore` billed
-    296 requests for its 1,021 calls.
+    none. The loader parent likewise billed 1,022 (1 + 1,021).
+  - The two top-level `ThreadStore`s billed 296 and 694 requests for 1,021 calls each,
+    against the store probe's about 1 to 1 (202 for 200). The two disagree with each other
+    and with that run, which points at sampling or the window in the adaptive dataset; this
+    run draws no conclusion about top-level billing.
 - **Q7.** Skipped: Q1 was not separate.
-- **Q8. Production: `deleteAll()` and the same-turn write are atomic at the tested crash
-  point.** This is the result for F1's erasure.
-  - The control with no abort: 20 of 20 wiped and written.
+- **Q8. The order is right; the crash window was not measured.** For F1's erasure:
+  - With no crash, the order is correct: 20 of 20 wiped and written, so an un-awaited
+    `deleteAll` does not erase a write made after it in the same turn.
   - Same-turn, then abort: 20 of 20 not wiped, not written.
-  - Awaited, then abort: 20 of 20 not wiped, not written.
-  - Unlike workerd, production holds `deleteAll`, even awaited, to the turn's output gate:
-    the delete and the write commit together, or are rolled back together when the turn
-    is killed. So there is no crash window at this crash point.
-  - The automatic key read void: its crash-model control expected the awaited delete to
-    survive. It now accepts either form, since both are a crash before commit
-    (`q8Reading`, with run 1's counts as a `local.mjs` case).
-  - The caveat stands: the abort always lands at the same moment, so 20 trials sample one
-    crash point, not a spread.
+  - Awaited, then abort: 20 of 20 not wiped, not written. Here the delete was awaited and
+    had resolved, and the row was written in a later turn, yet the delete was lost too.
+  - So production's `ctx.abort()` rolled back everything since the last durable point,
+    even an awaited `deleteAll`. The crash lands before anything is durable, where an
+    atomic pair and a split pair read the same, and the window F1 cares about, a crash
+    after the delete is confirmed but before the `erased` row is, was never sampled.
+    (workerd differs: it keeps the awaited delete and loses the row.)
+  - The window stands until slice 10's outside record closes it.
+  - The key now reads this form **inconclusive (the crash lands before the delete is
+    durable)** (`q8Reading`, with run 1's counts as a `local.mjs` case); the original
+    key's void was right.
+  - The follow-up crash point for a future run: `deleteAll()`, then `await
+    ctx.storage.sync()`, then the write, then the abort. That pair is split by
+    construction, so it shows only whether a confirmed delete outlives a lost write; F1's
+    real question, whether production ever confirms the delete without the row, needs a
+    crash point between the two inside one turn's commit.
 
 ## What each question decides
 
@@ -200,7 +222,8 @@ every band is checked against both.
     reported beside it, never read on its own, so it needs the same band.
   - **shared**, too, when the plan ended in the parent's own resets ("aborted: the parent
     was reset more than 3 times") with the parent reached and `q1b` still writing, the
-    two together within the band: the limit's reset form, which run 1 met.
+    two together within the band and, when the lone facet was read, within 1% of its
+    ceiling: the limit's reset form, which run 1 met.
   - **stalled**: the plan was still running at the end. Never read as separate.
   - **void**: a non-limit error stopped the fill; the error is the reading.
   - **unproven**: anything else, a time cap among them; the sizes and statuses reached are
@@ -252,11 +275,12 @@ gate the reading:
   wiped and not written, the reading is **deleteAll erases a same-turn write**: the
   un-awaited delete lands after the write, so F1 loses its `erased` row every time, crash
   or not. A different and worse finding, with a different fix (await the delete).
-- **The crash model** (`awaited`) must lose the row in all 20 trials, each from a fresh
-  instance: `ctx.abort()` drops the aborted turn's uncommitted write, as a crash would.
-  Its delete may read wiped in every trial (committed at the await, as workerd does) or
-  not wiped in every trial (held to the turn's commit and lost with it, as production
-  did in run 1). Otherwise Q8 is **void**.
+- **The crash model** (`awaited`) must read 20 of 20 wiped and not written, each from a
+  fresh instance: its awaited delete durable, the aborted turn's row lost, so the crash
+  lands where a split can show. If it reads 20 of 20 not wiped, not written, as
+  production did in run 1, the abort rolled back everything since the last durable point
+  and Q8 is **inconclusive (the crash lands before the delete is durable)**. Anything
+  else is **void**.
 
 With both controls holding, under `same-turn`:
 - any wiped and not written is **crash window**: the delete commits apart from the
@@ -323,7 +347,7 @@ The differences from the store probe:
 
 | Run | Date | Plan | Commit | Fill minutes | Q1 parent vs facet | Q1 facet vs facet | Q2 under ours | Q4 | Q7 | Q8 | Q8 counts (noabort / same-turn / awaited) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 41247617223 | 2026-10-31 | Paid (billing unreadable to the token: HTTP 403) | `679b5dd25` | 150 (the fill ended in about 8) | shared at about 10 GiB, by hand (the key read void) | not read | Worker Loader only | yielding loop stalls; OOM kills the parent | skipped | no window at this crash point, by hand (the key read void) | 20 wiped and written / 20 not wiped, not written / 20 not wiped, not written |
+| 41247617223 | 2026-10-31 | Paid (billing unreadable to the token: HTTP 403) | `679b5dd25` | 150 (the fill ended in about 8) | shared at about 10 GiB, by hand (the key read void) | not read | Worker Loader only | yielding loop stalls; OOM kills the parent; solid and over-CPU not measured | skipped | order right; crash window not measured (the abort rolled back even an awaited delete) | 20 wiped and written / 20 not wiped, not written / 20 not wiped, not written |
 
 Cleanup: all eight `ta-facetprobe*` Workers deleted (HTTP 200, or 404 for the two refused
 copies), the Workflow gone, no namespace or Workflow named `ta-facetprobe*` left, checked

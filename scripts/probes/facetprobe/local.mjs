@@ -196,8 +196,15 @@ function checkKey() {
   }
   const lone = q1Reading(cases[0][1], plan([["q1a", GIB10, "limit", "SQLITE_FULL"]]));
   expect(/at the ceiling/.test(lone.facetLimit), `Q1 key, a lone facet at 10 GiB: ${lone.facetLimit}`);
-  const loneReset = q1Reading(cases[0][1], plan([["q1a", 10_724_667_392, "writing"]], "aborted: the parent was reset more than 3 times"));
-  expect(/reset form/.test(loneReset.facetLimit), `Q1 key, run 41247617223's lone facet: ${loneReset.facetLimit}`);
+  const resetAt = (q1aBytes) => q1Reading(
+    plan([["self", 6_002_180_096, "reached"], ["q1b", 4_722_520_064, "writing"], ["q1c", null, "pending"]],
+         "aborted: the parent was reset more than 3 times"),
+    plan([["q1a", q1aBytes, "writing"]], "aborted: the parent was reset more than 3 times"));
+  const run1 = resetAt(10_724_667_392);
+  expect(run1.verdict === "shared" && /reset form/.test(run1.facetLimit),
+         `Q1 key, run 41247617223 with its lone facet: ${run1.verdict}; ${run1.facetLimit}`);
+  expect(resetAt(10_000_000_000).verdict === "void",
+         "Q1 key: a reset in the band whose lone facet stopped 7% away is not the reset form");
   // Q8's key: the order control and the crash-model control gate the same-turn reading.
   const q8 = (counts, n = 20, fresh = n) => ({ n, freshInstances: fresh, counts: { wipedWritten: 0, wipedNotWritten: 0,
     notWipedWritten: 0, notWipedNotWritten: 0, unread: 0, notKilled: 0, ...counts } });
@@ -206,11 +213,13 @@ function checkKey() {
   for (const [name, control, same, awaited, verdict] of [
     ["a window", okControl, q8({ wipedNotWritten: 3, notWipedNotWritten: 17 }), okCrash, "crash window"],
     ["no window seen", okControl, q8({ notWipedNotWritten: 20 }), okCrash, "no window at this crash point"],
+    ["a window after a confirmed delete", okControl, q8({ wipedNotWritten: 20 }), okCrash, "crash window"],
     ["the control loses the row", q8({ wipedNotWritten: 20, notKilled: 20 }, 20, 0), q8({ wipedNotWritten: 20 }), okCrash,
      "deleteAll erases a same-turn write"],
     ["abort is no crash", okControl, q8({ wipedWritten: 20 }), q8({ wipedWritten: 20 }), "void"],
-    ["run 41247617223: the delete held to the turn's commit and lost with it", okControl,
-     q8({ notWipedNotWritten: 20 }), q8({ notWipedNotWritten: 20 }), "no window at this crash point"],
+    ["run 41247617223: the awaited delete was lost too", okControl,
+     q8({ notWipedNotWritten: 20 }), q8({ notWipedNotWritten: 20 }),
+     "inconclusive (the crash lands before the delete is durable)"],
     ["a mixed crash-model control is void", okControl, q8({ notWipedNotWritten: 20 }),
      q8({ notWipedNotWritten: 10, wipedNotWritten: 10 }), "void"],
   ]) {

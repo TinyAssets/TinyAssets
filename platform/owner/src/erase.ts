@@ -11,14 +11,14 @@
  * Lifecycle writes nothing after the wipe, then the write gate deletes the whole database
  * (`WriteGate.wipe`), its job row with it, and writes the tombstone into it in the same
  * synchronous turn (`ErasureParts.wipe`: the erased admission row, `admission.ts`), and
- * again once the wipe resolves. In workerd that leaves a window: a turn killed after the
- * wipe keeps the wipe and loses the tombstone, and a later `getByName` makes the owner
- * afresh, admitted. Production did not show it: the facet probe's Q8 (run 41247617223,
- * `facet-probe.md`) found the wipe held to the turn's commit, so 20 of 20 killed turns
- * kept the database and lost the tombstone together, atomic at the one crash point it
- * tested. What remains is a crash inside the commit itself, unproven. Closing it is still
- * slice 10's (a record outside the object, or an explicit platform admit), and the
- * erasure door waits for it (`tasks.md`). A thread store wipes
+ * again once the wipe resolves. That leaves a window: a crash after the wipe is durable
+ * and before the tombstone is leaves the wiped database with no tombstone, and a later
+ * `getByName` makes the owner afresh, admitted (workerd shows it). The facet probe's Q8
+ * (run 41247617223, `facet-probe.md`) found the order right with no crash, but did not
+ * measure the window: production's `ctx.abort()` rolled back everything since the last
+ * durable point, even an awaited `deleteAll`. The window stands until slice 10 closes it
+ * (a record outside the object, or an explicit platform admit), and the erasure door
+ * waits for it (`tasks.md`). A thread store wipes
  * itself in `thread-store.ts`; no other source disables Lifecycle's alarm or wipes a
  * database (the alarm guard).
  */
