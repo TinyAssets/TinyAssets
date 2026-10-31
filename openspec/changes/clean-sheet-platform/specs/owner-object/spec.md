@@ -356,7 +356,7 @@ History SHALL keep each live path's newest `keep_versions` and its versions youn
 - **THEN** its newest ten versions are kept whatever their age, and the two older ones only for 30 days
 
 ### Requirement: Gone paths' history makes room at the quota
-A change that would take history past `max_history` SHALL first prune that many of the earliest-due rows of paths that are gone, which retention has already let go, raising the change feed's floor past any pruned row that was its path's newest, and never lowering it. It SHALL prune no more rows than it recorded, and never a live path's row.
+A change that would take history rows past `max_history`, the manifest's bytes past `max_manifest_bytes`, or a client's share of either, SHALL first prune the earliest-due rows of gone paths, which retention has already let go, until it fits: the client's own for its share, any client's for all clients', any for the owner's. It SHALL raise the feed's floor past any pruned row that was its path's newest, prune no more than the change took past the bound, and never a live path's row.
 
 #### Scenario: Deleted paths' churn
 - **WHEN** a policy of 5 entries, `keep_versions` 1, `keep_recent` 2 and `max_history` 10 holds, and eight files of unique names are each written and removed
@@ -365,6 +365,10 @@ A change that would take history past `max_history` SHALL first prune that many 
 #### Scenario: A live path's version kept for its age
 - **WHEN** history is at its quota and a live path's oldest kept version is the earliest due
 - **THEN** a change prunes a gone path's row, and the live path keeps its version
+
+#### Scenario: Gone long paths at the byte quota
+- **WHEN** the manifest is at `max_manifest_bytes` with ten deleted 3,000-byte paths' history kept, and five new 3,000-byte files are written
+- **THEN** each write lands after pruning the earliest gone rows, the manifest stays within its quota, and once no gone row is left a write is refused `file_quota`
 
 ### Requirement: Every entry holds its content
 Each file entry SHALL hold a reference to its content, in every root, as each kept history row does, so content any entry or kept row names is never collected. A rename SHALL record its targets before it drops its sources.
@@ -385,11 +389,36 @@ A version MAY be restored as a new one, or have its content redacted unless it i
 - **THEN** every version but its current one goes, never refused for a quota, and a gone path's history goes whole
 
 ### Requirement: File quotas are owner policy, refused loudly
-Chunk bytes, inline bytes, entries, history rows, open uploads and the chunks they hold, and a single file's size SHALL each be bounded by owner policy (the document's optional `files` table over the defaults) or a fixed ceiling, read from counters the schema's triggers keep. A change that takes a counter past its bound SHALL be refused with nothing left behind.
+Chunk, inline and manifest bytes, entries, history rows, open uploads and their chunks, and a file's size SHALL each be bounded by owner policy or a fixed ceiling, read from counters the schema's triggers keep. A change past a bound SHALL be refused in its own unit before it commits (an upload before any byte is sent), leaving nothing, its reason starting with a fixed code: `file_quota` for the owner's bound, `file_share` for a client's share.
 
 #### Scenario: The owner's entries at their quota
 - **WHEN** a write would add an entry past `max_entries`
-- **THEN** it is refused, and no parent directory, history row or content of it is kept
+- **THEN** it is refused `file_quota`, and no parent directory, history row or content of it is kept
+
+### Requirement: Every manifest row is bounded in bytes as the object stores it
+Every row of the file manifest (each entry, history row, content with its inline bytes and its chunk list, chunk, temporary directory and share row) SHALL be charged, by triggers only, what SQLite stores it in: each b-tree record it makes, its text counted in bytes, its page share and overflow pages included, against `max_manifest_bytes`. The charge SHALL be at least what the object's database grows by, for every path length a path may have (up to 4,096 bytes, components of up to 255).
+
+#### Scenario: A client writing 4,096-byte paths
+- **WHEN** an outside client writes file after file at 4,096-byte paths
+- **THEN** each is charged its three spilled copies' overflow pages, the object's database grows by no more than the charge, and the client is refused `file_share` at its share while the owner still writes
+
+### Requirement: An outside client holds a share of every file quota
+Each outside client SHALL hold at most `client_share` percent of every file quota, open uploads included, and all clients together at most what `owner_reserve` percent leaves, both owner policy, so the owner always has room of its own. A client SHALL be charged the entries it last wrote, its history rows, and the contents, chunks, temporary directories and uploads it first stored; a chunk revived from garbage, to the upload that revived it.
+
+#### Scenario: A client fills its share
+- **WHEN** an outside client holding `write_files` writes until it is refused `file_share`
+- **THEN** the owner's writes, grant changes, revokes and policy writes all still land
+
+#### Scenario: Two clients together
+- **WHEN** `client_share` is 40 and `owner_reserve` 50 of ten entries, and two clients write four and one files
+- **THEN** a fifth file of the first, or a second of the other, is refused `file_share`, and the owner writes five more
+
+### Requirement: The owner's database is bounded under half its limit
+Every table the owner's schema makes SHALL be bounded by a count or bytes the code enforces, with no exception, and a guard SHALL compute the object's worst case from those bounds and the schema, at the policy's high bounds, and hold it under half of the platform's 10 GB. The model turns' counters SHALL be bounded too: at most `TURNS_KEPT` turns of at most 320 bytes each, a new turn past it dropping the turn idle longest with no call open.
+
+#### Scenario: A table no bound covers
+- **WHEN** a migration makes a table the guard has no term for, or a manifest table's charging trigger is missing
+- **THEN** the owner-bound guard fails
 
 ### Requirement: A quota never blocks a change that frees
 A change that only removes or frees (a remove, a redaction, a purge, an aborted upload, housekeeping) SHALL never be refused by a quota. A policy SHALL be refused unless `max_entries` times the larger of `keep_versions` and `keep_recent` is at most `max_history`, so no churn of live files can fill it, and gone paths' churn makes its own room.
@@ -598,7 +627,7 @@ Each model call SHALL be reserved in one unit that also reads the connection's b
 - **THEN** three are reserved and five refused, each refusal kept as a receipt
 
 ### Requirement: The caps read counters, never receipts
-Every cap SHALL read only counters the schema's triggers write: `model_turns` per turn, `model_spend` per source, day and month. Receipts SHALL be history only, bounded without freeing any cap; a turn's counters SHALL go only once it has been idle 30 days with no call open.
+Every cap SHALL read only counters the schema's triggers write: `model_turns` per turn, `model_spend` per source, day and month. Receipts SHALL be history only, bounded without freeing any cap; a turn's counters SHALL go only once it has been idle 30 days with no call open, or, past `TURNS_KEPT` turns, once it is the turn idle longest with no call open.
 
 #### Scenario: Many requests in one turn
 - **WHEN** one turn makes 5,000 requests while only the newest 100 receipts are kept

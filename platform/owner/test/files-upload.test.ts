@@ -239,12 +239,12 @@ describe("an upload", () => {
      async () => {
     const r = await rig();
     await expect(inFiles(r.stub, { max_file_bytes: CHUNK_BYTES }, (files) =>
-      files.begin(CHUNK_BYTES + 1, ["a".repeat(64), "b".repeat(64)]))).rejects
+      files.begin(CHUNK_BYTES + 1, ["a".repeat(64), "b".repeat(64)], "owner"))).rejects
       .toThrow("the file is larger than the owner's file size quota");
     const too = (MAX_INTENT_CHUNKS + 1) * CHUNK_BYTES;
     await expect(inFiles(r.stub, { max_file_bytes: too }, (files) =>
       files.begin(too, Array.from({ length: MAX_INTENT_CHUNKS + 1 },
-                                  (_, i) => i.toString(16).padStart(64, "0"))))).rejects
+                                  (_, i) => i.toString(16).padStart(64, "0")), "owner"))).rejects
       .toThrow(`an upload holds at most ${MAX_INTENT_CHUNKS} chunks`);
   });
 
@@ -254,9 +254,9 @@ describe("an upload", () => {
     const reason = "too many uploads are open; commit or abort one first";
     await inFiles(r.stub, {}, (files) => {
       for (let i = 0; i < MAX_OPEN_INTENTS; i++) {
-        files.begin(INLINE_BYTES + 1, [i.toString(16).padStart(64, "0")]);
+        files.begin(INLINE_BYTES + 1, [i.toString(16).padStart(64, "0")], "owner");
       }
-      expect(() => files.begin(INLINE_BYTES + 1, ["f".repeat(64)])).toThrow(reason);
+      expect(() => files.begin(INLINE_BYTES + 1, ["f".repeat(64)], "owner")).toThrow(reason);
     });
     expect((await r.stub.fileUsage(r.bind(null))).intents).toBe(MAX_OPEN_INTENTS);
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
@@ -265,15 +265,15 @@ describe("an upload", () => {
     expect(kept).toEqual(counted);
     // The held-chunk bound reads its counter: one short of it takes one chunk, not two.
     await inFiles(r.stub, {}, (files) => {
-      const two = files.begin(CHUNK_BYTES + 1, ["a".repeat(64), "b".repeat(64)]);
+      const two = files.begin(CHUNK_BYTES + 1, ["a".repeat(64), "b".repeat(64)], "owner");
       expect((files.usage()).intent_chunks).toBe(2);
       files.abort(two.intent_id);
     });
     await sqlIn(r.stub, "UPDATE file_space SET intent_chunks = ?", MAX_HELD_CHUNKS - 1);
     await inFiles(r.stub, {}, (files) => {
-      expect(() => files.begin(CHUNK_BYTES + 1, ["a".repeat(64), "b".repeat(64)]))
+      expect(() => files.begin(CHUNK_BYTES + 1, ["a".repeat(64), "b".repeat(64)], "owner"))
         .toThrow(reason);
-      files.begin(INLINE_BYTES + 1, ["c".repeat(64)]);
+      files.begin(INLINE_BYTES + 1, ["c".repeat(64)], "owner");
     });
   });
 });
@@ -587,7 +587,7 @@ describe("a chunk between a pass's units", () => {
       const held = new Promise<void>((resolve) => { release = resolve; });
       const commit = new DurableObjectSqliteDatabase(state.storage).transaction(() => held);
       const pass = files.collect(Date.now() / 1000 + 10);
-      const again = gate.write(() => files.begin(piece.byteLength, [sha]));
+      const again = gate.write(() => files.begin(piece.byteLength, [sha], "owner"));
       release();
       const begun = await again;
       await gate.write(() => files.commit(begun.intent_id, `${W}/kept.bin`,

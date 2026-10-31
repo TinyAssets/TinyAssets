@@ -1997,9 +1997,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileUploadBegin(binding: Binding, request: UploadBeginRequest):
       Promise<{ intent_id: string; missing: string[]; expires_at: number }> {
     return this.#filing(() => {
-      this.#filer(binding, "write_files");
+      const account = this.#filer(binding, "write_files");
       const r = fileFields(request, ["size", "chunks"]);
-      return this.#files.begin(r["size"], r["chunks"]);
+      return this.#files.begin(r["size"], r["chunks"], fileWriter(account));
     });
   }
 
@@ -2129,8 +2129,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   fileUsage(binding: Binding): Promise<Usage> {
     return this.#door(() => {
-      this.#filer(binding, "read_files");
-      return this.#files.usage();
+      return this.#files.usage(fileWriter(this.#filer(binding, "read_files")));
     });
   }
 

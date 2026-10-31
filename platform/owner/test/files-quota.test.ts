@@ -48,7 +48,7 @@ describe("a file quota", () => {
     });
     await refusedWithNothingLeft(r, { max_entries: 2 }, (files) =>
       files.write(`${W}/d/b`, text("b"), { expected: null, writer: "owner" }),
-    "the owner's file entries are at their quota");
+    "file_quota: the owner's file entries are at their quota");
     await inFiles(r.stub, { max_entries: 2 }, (files) =>
       files.write(`${W}/b`, text("b"), { expected: null, writer: "owner" }));
   });
@@ -61,7 +61,7 @@ describe("a file quota", () => {
     });
     await refusedWithNothingLeft(r, { max_history: 2 }, (files) =>
       files.write(`${W}/a`, text("3"), { expected: null, writer: "owner" }),
-    "the owner's file history is at its quota");
+    "file_quota: the owner's file history rows are at their quota");
   });
 
   it("refuses inline bytes past max_inline_bytes, the history's included", async () => {
@@ -70,7 +70,7 @@ describe("a file quota", () => {
       files.write(`${W}/a`, text("12345678"), { expected: null, writer: "owner" }));
     await refusedWithNothingLeft(r, { max_inline_bytes: 12 }, (files) =>
       files.write(`${W}/a`, text("abcdefgh"), { expected: null, writer: "owner" }),
-    "the owner's small-file bytes are at their quota");
+    "file_quota: the owner's small-file bytes are at their quota");
     // The same content again costs nothing: it is stored once.
     await inFiles(r.stub, { max_inline_bytes: 12 }, (files) =>
       files.write(`${W}/b`, text("12345678"), { expected: null, writer: "owner" }));
@@ -85,20 +85,20 @@ describe("a file quota", () => {
     await refusedWithNothingLeft(r, { max_bytes: INLINE_BYTES + 1 }, (files) =>
       files.write(`${W}/b`, new Uint8Array(INLINE_BYTES + 1).fill(2),
                   { expected: null, writer: "owner" }),
-    "the owner's file bytes are at their quota");
+    "file_quota: the owner's file bytes are at their quota");
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks")).toEqual([{ n: 1 }]);
   });
 
   it("refuses a file past max_file_bytes, through any door", async () => {
     const r = await rig();
-    const reason = "the file is larger than the owner's file size quota";
+    const reason = "file_quota: the file is larger than the owner's file size quota";
     await refusedWithNothingLeft(r, { max_file_bytes: INLINE_BYTES + 1 }, (files) =>
       files.write(`${W}/a`, new Uint8Array(INLINE_BYTES + 2), { expected: null, writer: "o" }),
     reason);
     await refusedWithNothingLeft(r, { max_file_bytes: 3 }, (files) =>
       files.write(`${W}/a`, text("four"), { expected: null, writer: "o" }), reason);
     await refusedWithNothingLeft(r, { max_file_bytes: INLINE_BYTES + 1 }, (files) =>
-      files.begin(INLINE_BYTES + 2, ["a".repeat(64)]), reason);
+      files.begin(INLINE_BYTES + 2, ["a".repeat(64)], "owner"), reason);
   });
 
   it("lets every change that only frees space through a lowered or full quota", async () => {
@@ -123,7 +123,7 @@ describe("a file quota", () => {
 });
 
 describe("a full history", () => {
-  const full = "the owner's file history is at its quota";
+  const full = "file_quota: the owner's file history rows are at their quota";
 
   it("is never filled by live files' churn inside the window", async () => {
     const r = await rig();
@@ -429,7 +429,7 @@ describe("a full history", () => {
       }
       await files.write(`${W}/a`, text("1"), { expected: null, writer: "o" });
       files.remove(`${W}/a`, { expected: null, writer: "o" });
-      files.begin(INLINE_BYTES + 1, ["a".repeat(64)]);
+      files.begin(INLINE_BYTES + 1, ["a".repeat(64)], "owner");
     });
     // The temporary area keeps no history at all.
     expect(await sqlIn(r.stub,
@@ -460,7 +460,7 @@ describe("the files policy", () => {
       .toEqual({ ...FILE_DEFAULTS, max_entries: 1 });
     await write(r, `${W}/a`, "a");
     expect((await failure(() => write(r, `${W}/b`, "b"))).message)
-      .toBe("the owner's file entries are at their quota");
+      .toBe("file_quota: the owner's file entries are at their quota");
     expect(canonical((await r.stub.policyRead(r.bind(null))).policy.files))
       .toBe('{"max_entries":1}');
   });

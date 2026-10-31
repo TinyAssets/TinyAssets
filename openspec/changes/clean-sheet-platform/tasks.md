@@ -881,6 +881,25 @@ account and no deploy.
   `files` lane begins no chunk delete with less than `DELETE_FLOOR_MS` left; the lane table
   is `ownerLanes`, its wiring tested with recording passes, the doorbell and runner read
   through getters.
+- [x] Blocker: the files byte quota, before any deploy with real data (two reviews: an
+  outside client holding `write_files` could fill the owner's 10 GB object through 4 KiB
+  paths and churned history, and at `SQLITE_FULL` grants, revokes and policy writes fail
+  too). In workerd, nothing deployed (`manifest.ts`, `files.ts`, `policy.ts`, migration
+  10, the owner-bound guard). Every manifest row (entries, history, contents with their
+  inline bytes and chunk lists, chunks, temporary directories, share rows) is charged by
+  triggers what SQLite stores it in, path bytes and overflow pages included, to
+  `file_space.manifest_bytes`, against owner policy's `max_manifest_bytes` (1 GiB, high
+  2 GiB); a workerd test measures the object's database growth under the charge for paths
+  of 24 to 4,096 bytes. Each outside client holds at most `client_share` (25%) of every
+  file quota and of the open uploads, all clients together what `owner_reserve` (25%)
+  leaves, counted in `file_shares` (`client:<id>`, `*`): the entries it last wrote, its
+  history rows, and the contents, chunks, temporary directories and uploads it first
+  stored. Refusals carry `file_quota` or `file_share`, in the change's own unit; a change
+  past a byte or row bound first prunes gone paths' history by bytes and rows (the
+  client's own for its share). `model_turns` keeps at most `TURNS_KEPT` (100,000) turns of
+  at most 320 bytes, past it dropping the turn idle longest with no call open. The
+  owner-bound guard has no exceptions: its worst case at the policy's high bounds is
+  3,099,290,624 bytes, 31% of 10 GB.
 - [ ] Doors (with tasks 2): the HTTP `/api/files` door and MCP file tools over the
   `file*` RPC doors, the scoped-grant capabilities `read_files` and `write_files` named
   as those tools are, and sandbox lease tokens in the owner directory (a 256-bit bearer

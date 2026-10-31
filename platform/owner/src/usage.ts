@@ -33,7 +33,8 @@
  * `model_turns` for a turn's requests, tokens and cost, `model_spend` for a source's day
  * and month. The reservation rows are receipts, history only: the newest `receiptsKept`
  * are kept, and pruning one frees nothing. A turn's counters go only once the turn has
- * been idle for `turnIdleS`, with no call of it open.
+ * been idle for `turnIdleS`, with no call of it open; past `TURNS_KEPT` turns, the one
+ * idle longest with no call open goes early (migration 10), so they are bounded in bytes.
  *
  * Money is micro-dollars (µ$): pi-ai's catalog prices are dollars per million tokens, so a
  * token at price `p` costs `p` µ$. An estimate is the context's estimated input at the

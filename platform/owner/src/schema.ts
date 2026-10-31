@@ -17,6 +17,10 @@
  */
 import { GC_GRACE_S } from "./files";
 import type { OwnerStorage } from "./gate";
+import {
+  CHUNK_ROW_BYTES, CLIENT_WRITER, CLIENTS, CONTENT_BYTES, ENTRY_BYTES,
+  HISTORY_BYTES as FILE_HISTORY_BYTES, SHARE_BYTES, TEMP_BYTES,
+} from "./manifest";
 import { DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, FILE_DEFAULTS } from "./policy";
 
 export type Migration = readonly string[];
@@ -92,6 +96,42 @@ const TURN = (row: string, sign: string, at: string) =>
   "ON CONFLICT (turn) DO UPDATE SET requests = requests + excluded.requests, " +
   "tokens = tokens + excluded.tokens, cost = cost + excluded.cost, " +
   "last_at = max(last_at, excluded.last_at);";
+/** A chunk row's bytes that count against the quota: its size, when its state counts. */
+const COUNTED_BYTES = (row: string) => `${row}.size * (${row}.state IN ${COUNTED})`;
+type ShareCounter = "entries" | "history" | "chunk_bytes" | "inline_bytes" | "manifest_bytes";
+const SHARE_COUNTERS: readonly ShareCounter[] =
+  Object.freeze(["entries", "history", "chunk_bytes", "inline_bytes", "manifest_bytes"]);
+/**
+ * Move an outside client's share row and all clients' by `amounts`, charged (`+`) or
+ * credited (`-`), when the row's `writer` is an outside client's; anyone else's change
+ * moves no share. A charge makes the client's row on its first; a credit only ever finds
+ * the row its charge made (the checks hold the counts at zero or more, and a test recounts
+ * them from the rows).
+ */
+const SHARE_USAGE = (row: string, sign: "+" | "-",
+                     amounts: Partial<Record<ShareCounter, string>>) => {
+  const moved = SHARE_COUNTERS.filter((counter) => amounts[counter] !== undefined);
+  const clients = `${row}.writer GLOB '${CLIENT_WRITER}'`;
+  return sign === "-"
+    ? `UPDATE file_shares SET ${moved.map((counter) =>
+        `${counter} = ${counter} - (${amounts[counter]})`).join(", ")} ` +
+      `WHERE who IN ('${CLIENTS}', ${row}.writer) AND ${clients};`
+    : `INSERT INTO file_shares (who, ${SHARE_COUNTERS.join(", ")}) SELECT who, ${
+        SHARE_COUNTERS.map((counter) => amounts[counter] ?? "0").join(", ")} ` +
+      `FROM (SELECT '${CLIENTS}' AS who UNION ALL SELECT ${row}.writer) WHERE ${clients} ` +
+      `ON CONFLICT (who) DO UPDATE SET ${moved.map((counter) =>
+        `${counter} = ${counter} + excluded.${counter}`).join(", ")};`;
+};
+
+/**
+ * The model turns' counters kept at once (`model_turns`, migration 10): past it, the turn
+ * idle longest with no call open goes. A day of a turn every second keeps under it, and
+ * at its most the rows take under 100 MB.
+ */
+export const TURNS_KEPT = 100_000;
+/** A turn's most bytes: an origin (`origin.ts`) is far shorter. */
+export const TURN_BYTES = 320;
+
 /** A file entry in the temporary area, which keeps no history. */
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // 1: the owner this object serves, and the one revision primitive (S34, ADR-032).
@@ -814,6 +854,158 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // The threads unsettled work names, which idle retention never drops.
     "CREATE INDEX work_by_thread ON scheduled_work (json_extract(payload, '$.thread')) " +
       "WHERE settled_at IS NULL",
+  ]),
+  // 10: the files byte quota and each outside client's share of it (files.ts, manifest.ts),
+  // and a bound on the model turns' counters (usage.ts). Every manifest row is charged what
+  // SQLite stores it in, path bytes and overflow pages included, to `file_space`'s
+  // `manifest_bytes`, by triggers only, as the other counters are; and what an outside
+  // client's change made is counted again in its `file_shares` row (`client:<id>`) and in
+  // all clients' (`*`): the entries it last wrote, its history rows, and the contents,
+  // chunks, temporary directories and uploads it first stored, each of which now names its
+  // writer. A share row is charged its own bytes, and goes once it holds nothing else;
+  // all clients' row is never dropped. A file row from before this migration (none can be:
+  // nothing is deployed) fails it loudly, its writer unknown.
+  //
+  // `model_turns` keeps at most `TURNS_KEPT` turns: a new turn past it drops the turn idle
+  // longest with no call open (the usage module's idle pruning, early), and a turn is at
+  // most 320 bytes, so its rows are bounded in bytes, not only by the idle window.
+  Object.freeze([
+    "ALTER TABLE file_space ADD COLUMN manifest_bytes INTEGER NOT NULL DEFAULT 0 " +
+      "CHECK (manifest_bytes >= 0)",
+    "ALTER TABLE file_contents ADD COLUMN writer TEXT NOT NULL DEFAULT 'system'",
+    "ALTER TABLE file_chunks ADD COLUMN writer TEXT NOT NULL DEFAULT 'system'",
+    "ALTER TABLE file_temps ADD COLUMN writer TEXT NOT NULL DEFAULT 'system'",
+    "ALTER TABLE file_intents ADD COLUMN writer TEXT NOT NULL DEFAULT 'system'",
+    "CREATE TABLE file_shares (who TEXT PRIMARY KEY CHECK (who = '*' OR " +
+      "(length(who) = 71 AND who GLOB 'client:*')), " +
+      "entries INTEGER NOT NULL CHECK (entries >= 0), " +
+      "history INTEGER NOT NULL CHECK (history >= 0), " +
+      "chunk_bytes INTEGER NOT NULL CHECK (chunk_bytes >= 0), " +
+      "inline_bytes INTEGER NOT NULL CHECK (inline_bytes >= 0), " +
+      "manifest_bytes INTEGER NOT NULL CHECK (manifest_bytes >= 0)) WITHOUT ROWID",
+    // Fails the `who` check when any file row is already there.
+    "INSERT INTO file_shares (who, entries, history, chunk_bytes, inline_bytes, " +
+      "manifest_bytes) SELECT 'a file row from before migration 10', 0, 0, 0, 0, 0 " +
+      "WHERE EXISTS (SELECT 1 FROM file_entries) OR EXISTS (SELECT 1 FROM file_history) " +
+      "OR EXISTS (SELECT 1 FROM file_chunks) OR EXISTS (SELECT 1 FROM file_temps)",
+    `INSERT INTO file_shares VALUES ('${CLIENTS}', 0, 0, 0, 0, ${SHARE_BYTES})`,
+    `UPDATE file_space SET manifest_bytes = ${SHARE_BYTES}`,
+    `CREATE TRIGGER file_shares_charged AFTER INSERT ON file_shares WHEN NEW.who != '${
+      CLIENTS}' BEGIN UPDATE file_shares SET manifest_bytes = manifest_bytes + ${
+      SHARE_BYTES} WHERE who IN (NEW.who, '${CLIENTS}'); UPDATE file_space SET ` +
+      `manifest_bytes = manifest_bytes + ${SHARE_BYTES}; END`,
+    `CREATE TRIGGER file_shares_emptied AFTER UPDATE ON file_shares WHEN NEW.who != '${
+      CLIENTS}' AND NEW.entries = 0 AND NEW.history = 0 AND NEW.chunk_bytes = 0 ` +
+      `AND NEW.inline_bytes = 0 AND NEW.manifest_bytes = ${SHARE_BYTES} BEGIN ` +
+      "DELETE FROM file_shares WHERE who = NEW.who; END",
+    `CREATE TRIGGER file_shares_credited AFTER DELETE ON file_shares WHEN OLD.who != '${
+      CLIENTS}' BEGIN UPDATE file_shares SET manifest_bytes = manifest_bytes - ${
+      SHARE_BYTES} WHERE who = '${CLIENTS}'; UPDATE file_space SET manifest_bytes = ` +
+      `manifest_bytes - ${SHARE_BYTES}; END`,
+    `CREATE TRIGGER file_shares_kept BEFORE DELETE ON file_shares WHEN OLD.who = '${
+      CLIENTS}' BEGIN SELECT RAISE(ABORT, 'all clients'' share row is never dropped'); END`,
+    "DROP TRIGGER file_entries_added",
+    "DROP TRIGGER file_entries_removed",
+    "DROP TRIGGER file_history_added",
+    "DROP TRIGGER file_history_removed",
+    "DROP TRIGGER file_contents_added",
+    "DROP TRIGGER file_contents_removed",
+    "DROP TRIGGER file_chunks_added",
+    "DROP TRIGGER file_chunks_removed",
+    "DROP TRIGGER file_chunks_moved",
+    "CREATE TRIGGER file_entries_added AFTER INSERT ON file_entries BEGIN " +
+      `UPDATE file_space SET entries = entries + 1, manifest_bytes = manifest_bytes + ${
+        ENTRY_BYTES("NEW")}; ` +
+      "UPDATE file_contents SET refs = refs + 1 WHERE content_id = NEW.content_id; " +
+      `${SHARE_USAGE("NEW", "+", { entries: "1", manifest_bytes: ENTRY_BYTES("NEW") })} END`,
+    "CREATE TRIGGER file_entries_removed AFTER DELETE ON file_entries BEGIN " +
+      `UPDATE file_space SET entries = entries - 1, manifest_bytes = manifest_bytes - ${
+        ENTRY_BYTES("OLD")}; ` +
+      `${SHARE_USAGE("OLD", "-", { entries: "1", manifest_bytes: ENTRY_BYTES("OLD") })} ` +
+      "UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
+    // An overwrite by another writer moves the entry to it.
+    "CREATE TRIGGER file_entries_recharged AFTER UPDATE OF parent, name, kind, writer " +
+      "ON file_entries WHEN NEW.writer IS NOT OLD.writer OR NEW.parent IS NOT OLD.parent " +
+      "OR NEW.name IS NOT OLD.name OR NEW.kind IS NOT OLD.kind BEGIN " +
+      `UPDATE file_space SET manifest_bytes = manifest_bytes + ${ENTRY_BYTES("NEW")} - ${
+        ENTRY_BYTES("OLD")}; ` +
+      `${SHARE_USAGE("OLD", "-", { entries: "1", manifest_bytes: ENTRY_BYTES("OLD") })} ${
+        SHARE_USAGE("NEW", "+", { entries: "1", manifest_bytes: ENTRY_BYTES("NEW") })} END`,
+    "CREATE TRIGGER file_history_added AFTER INSERT ON file_history BEGIN " +
+      `UPDATE file_space SET history = history + 1, manifest_bytes = manifest_bytes + ${
+        FILE_HISTORY_BYTES("NEW")}; ` +
+      "UPDATE file_contents SET refs = refs + 1 WHERE content_id = NEW.content_id; " +
+      `${SHARE_USAGE("NEW", "+", { history: "1", manifest_bytes: FILE_HISTORY_BYTES("NEW") })} END`,
+    "CREATE TRIGGER file_history_removed AFTER DELETE ON file_history BEGIN " +
+      `UPDATE file_space SET history = history - 1, manifest_bytes = manifest_bytes - ${
+        FILE_HISTORY_BYTES("OLD")}; ` +
+      `${SHARE_USAGE("OLD", "-", { history: "1", manifest_bytes: FILE_HISTORY_BYTES("OLD") })} ` +
+      "UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
+    "CREATE TRIGGER file_contents_added AFTER INSERT ON file_contents BEGIN " +
+      "UPDATE file_space SET inline_bytes = inline_bytes + coalesce(length(NEW.inline), 0), " +
+      `manifest_bytes = manifest_bytes + ${CONTENT_BYTES("NEW")}; ${
+        SHARE_USAGE("NEW", "+", { inline_bytes: "coalesce(length(NEW.inline), 0)",
+                                  manifest_bytes: CONTENT_BYTES("NEW") })} END`,
+    "CREATE TRIGGER file_contents_removed AFTER DELETE ON file_contents BEGIN " +
+      "UPDATE file_space SET inline_bytes = inline_bytes - coalesce(length(OLD.inline), 0), " +
+      `manifest_bytes = manifest_bytes - ${CONTENT_BYTES("OLD")}; ${
+        SHARE_USAGE("OLD", "-", { inline_bytes: "coalesce(length(OLD.inline), 0)",
+                                  manifest_bytes: CONTENT_BYTES("OLD") })} ` +
+      "DELETE FROM file_content_chunks WHERE content_id = OLD.content_id; END",
+    "CREATE TRIGGER file_chunks_added AFTER INSERT ON file_chunks BEGIN " +
+      `UPDATE file_space SET ${CHUNK_USAGE("+", "NEW")} UPDATE file_space SET manifest_bytes = ` +
+      `manifest_bytes + ${CHUNK_ROW_BYTES("NEW")}; ${
+        SHARE_USAGE("NEW", "+", { chunk_bytes: COUNTED_BYTES("NEW"),
+                                  manifest_bytes: CHUNK_ROW_BYTES("NEW") })} END`,
+    "CREATE TRIGGER file_chunks_removed AFTER DELETE ON file_chunks BEGIN " +
+      `UPDATE file_space SET ${CHUNK_USAGE("-", "OLD")} UPDATE file_space SET manifest_bytes = ` +
+      `manifest_bytes - ${CHUNK_ROW_BYTES("OLD")}; ${
+        SHARE_USAGE("OLD", "-", { chunk_bytes: COUNTED_BYTES("OLD"),
+                                  manifest_bytes: CHUNK_ROW_BYTES("OLD") })} END`,
+    // A chunk revived from garbage is charged to the upload that revived it: its writer
+    // changes only so, with its state (`file_chunks_writer_kept`).
+    "CREATE TRIGGER file_chunks_moved AFTER UPDATE OF state, writer ON file_chunks " +
+      `WHEN (OLD.state IN ${COUNTED}) != (NEW.state IN ${COUNTED}) BEGIN ` +
+      `UPDATE file_space SET ${CHUNK_USAGE("+", "NEW")} UPDATE file_space SET ${
+        CHUNK_USAGE("-", "OLD")} UPDATE file_space SET manifest_bytes = manifest_bytes + ${
+        CHUNK_ROW_BYTES("NEW")} - ${CHUNK_ROW_BYTES("OLD")}; ${
+        SHARE_USAGE("OLD", "-", { chunk_bytes: COUNTED_BYTES("OLD"),
+                                  manifest_bytes: CHUNK_ROW_BYTES("OLD") })} ${
+        SHARE_USAGE("NEW", "+", { chunk_bytes: COUNTED_BYTES("NEW"),
+                                  manifest_bytes: CHUNK_ROW_BYTES("NEW") })} END`,
+    "CREATE TRIGGER file_temps_added AFTER INSERT ON file_temps BEGIN " +
+      `UPDATE file_space SET manifest_bytes = manifest_bytes + ${TEMP_BYTES("NEW")}; ${
+        SHARE_USAGE("NEW", "+", { manifest_bytes: TEMP_BYTES("NEW") })} END`,
+    "CREATE TRIGGER file_temps_removed AFTER DELETE ON file_temps BEGIN " +
+      `UPDATE file_space SET manifest_bytes = manifest_bytes - ${TEMP_BYTES("OLD")}; ${
+        SHARE_USAGE("OLD", "-", { manifest_bytes: TEMP_BYTES("OLD") })} END`,
+    // The writer each of them is charged to never changes but by a revival (`moved`).
+    "CREATE TRIGGER file_chunks_writer_kept BEFORE UPDATE OF writer ON file_chunks " +
+      "WHEN NEW.writer IS NOT OLD.writer AND NOT (OLD.state = 'garbage' " +
+      "AND NEW.state = 'uploading') BEGIN " +
+      "SELECT RAISE(ABORT, 'a chunk''s writer changes only when an upload revives it'); END",
+    "CREATE TRIGGER file_contents_writer_kept BEFORE UPDATE OF writer ON file_contents BEGIN " +
+      "SELECT RAISE(ABORT, 'a file row''s writer never changes'); END",
+    "CREATE TRIGGER file_temps_writer_kept BEFORE UPDATE OF writer ON file_temps BEGIN " +
+      "SELECT RAISE(ABORT, 'a file row''s writer never changes'); END",
+    "CREATE TRIGGER file_intents_writer_kept BEFORE UPDATE OF writer ON file_intents BEGIN " +
+      "SELECT RAISE(ABORT, 'a file row''s writer never changes'); END",
+    "CREATE TABLE model_usage (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      "turns INTEGER NOT NULL CHECK (turns >= 0))",
+    "INSERT INTO model_usage VALUES (1, (SELECT COUNT(*) FROM model_turns))",
+    "CREATE TRIGGER model_turns_added AFTER INSERT ON model_turns BEGIN " +
+      "UPDATE model_usage SET turns = turns + 1; " +
+      `DELETE FROM model_turns WHERE (SELECT turns FROM model_usage) > ${TURNS_KEPT} ` +
+      "AND turn = (SELECT t.turn FROM model_turns t WHERE t.turn != NEW.turn " +
+      "AND NOT EXISTS (SELECT 1 FROM model_reservations r WHERE r.state IN ('reserved', " +
+      "'dispatched') AND r.turn = t.turn) ORDER BY t.last_at LIMIT 1); " +
+      `SELECT RAISE(ABORT, 'model_turns_full: every kept turn has a call open') ` +
+      `WHERE (SELECT turns FROM model_usage) > ${TURNS_KEPT}; END`,
+    "CREATE TRIGGER model_turns_removed AFTER DELETE ON model_turns BEGIN " +
+      "UPDATE model_usage SET turns = turns - 1; END",
+    `CREATE TRIGGER model_reservations_turn_bytes BEFORE INSERT ON model_reservations ` +
+      `WHEN length(CAST(NEW.turn AS BLOB)) > ${TURN_BYTES} BEGIN ` +
+      `SELECT RAISE(ABORT, 'a turn is at most ${TURN_BYTES} bytes'); END`,
   ]),
 ]);
 

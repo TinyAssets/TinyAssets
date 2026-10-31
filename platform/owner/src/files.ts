@@ -41,10 +41,16 @@
  *   stored garbage chunk revives when wanted again, one never stored is sent again, and
  *   one being deleted is never held.
  * - Quotas (owner policy, `FILE_DEFAULTS`): chunk bytes live and in history, inline
- *   bytes, entries, history rows and a file's size, each refused loudly at its bound,
- *   with nothing left behind. A change that only removes (a delete, a redaction, a purge,
- *   housekeeping) is never refused, so an owner at a bound can always make room. They
- *   read counters the schema's triggers keep, as do the bounds on open uploads.
+ *   bytes, the manifest's own bytes (every row as SQLite stores it, each path byte and
+ *   overflow page included: `manifest.ts`), entries, history rows and a file's size, each
+ *   refused loudly at its bound in the change's own unit, with a fixed code
+ *   (`FILE_QUOTA`) and nothing left behind. A change that only removes (a delete, a
+ *   redaction, a purge, housekeeping) is never refused, so an owner at a bound can always
+ *   make room. They read counters the schema's triggers keep, as do the bounds on open
+ *   uploads. An outside client's change is held to its share of each as well, and all
+ *   clients' to what the owner's reserve leaves (`FILE_SHARE`), so no client fills the
+ *   owner's object: a client is charged the entries it last wrote, its history rows, and
+ *   the contents, chunks, temporary directories and uploads it first stored.
  * - The sync lease, for the sandbox's sync agent (tasks 6): a random `lease_id` is the
  *   claim token and a rising `epoch` the fencing number, as the ledger's claims are. A
  *   sync commit is refused unless both are the live lease's; within it, each op has its
@@ -66,6 +72,7 @@ import { createHash, randomBytes } from "node:crypto";
 
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage, Write } from "./gate";
+import { CHUNK_BYTES, CLIENT_WRITER, CLIENTS, HISTORY_BYTES } from "./manifest";
 import { inTime } from "./schedule";
 import {
   ancestors, isRoot, MAX_NAME_BYTES, MAX_PATH_BYTES, nameOf, parentOf, storedPath, TEMP, within,
@@ -73,8 +80,14 @@ import {
 } from "./paths";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
 
-/** A chunk's most bytes: the files Worker's `CHUNK_BYTES` (a test ties the two). */
-export const CHUNK_BYTES = 4 * 1024 * 1024;
+export { CHUNK_BYTES } from "./manifest";
+/**
+ * The fixed codes a quota's refusal starts with: an owner-wide bound (`file_quota`), and an
+ * outside client's share of one, or all clients' together (`file_share`).
+ */
+export const FILE_QUOTA = "file_quota";
+export const FILE_SHARE = "file_share";
+const FILE_TOO_LARGE = `${FILE_QUOTA}: the file is larger than the owner's file size quota`;
 /**
  * The most bytes one `FILES` call moves, the files Worker's `BATCH_BYTES`: two chunks, so
  * no call holds much of the isolate's memory.
@@ -131,12 +144,27 @@ const HEX32 = /^[0-9a-f]{32}$/;
 export interface FileLimits {
   readonly max_bytes: number;
   readonly max_inline_bytes: number;
+  readonly max_manifest_bytes: number;
   readonly max_entries: number;
   readonly max_file_bytes: number;
   readonly max_history: number;
   readonly retention_days: number;
   readonly keep_versions: number;
   readonly keep_recent: number;
+  /** The percent of every quota one outside client may hold. */
+  readonly client_share: number;
+  /** The percent of every quota kept for the owner: all clients together hold the rest. */
+  readonly owner_reserve: number;
+}
+
+/** `bound`'s part at `percent`. */
+export function shareOf(bound: number, percent: number): number {
+  return Math.floor(bound * percent / 100);
+}
+
+/** Whether a writer is an outside client, whose changes count against its share. */
+export function isClient(writer: string | null): writer is string {
+  return writer !== null && writer.startsWith("client:");
 }
 
 /** What the files Worker does for the object; the `FILES` binding. */
@@ -196,9 +224,13 @@ export interface Usage {
   readonly history: number;
   readonly chunk_bytes: number;
   readonly inline_bytes: number;
+  readonly manifest_bytes: number;
   readonly intents: number;
   readonly intent_chunks: number;
   readonly limits: FileLimits;
+  /** The calling outside client's own counters, held to `client_share` of each quota. */
+  readonly share: Pick<Usage, "entries" | "history" | "chunk_bytes" | "inline_bytes" |
+                              "manifest_bytes"> | null;
 }
 
 export interface Lease {
@@ -259,6 +291,7 @@ type Space = {
   history: number;
   chunk_bytes: number;
   inline_bytes: number;
+  manifest_bytes: number;
   intents: number;
   intent_chunks: number;
   lease_id: string | null;
@@ -271,7 +304,29 @@ type Space = {
   retain_cursor: string | null;
 };
 
-type Counters = Pick<Space, "entries" | "history" | "chunk_bytes" | "inline_bytes">;
+type Counters = Pick<Space, "entries" | "history" | "chunk_bytes" | "inline_bytes" |
+                             "manifest_bytes">;
+
+/** What a change is checked against: the owner's counters, its writer's share and all clients'. */
+interface Before {
+  readonly space: Counters;
+  readonly share: Counters;
+  readonly clients: Counters;
+}
+
+const NO_SHARE: Counters = Object.freeze({ entries: 0, history: 0, chunk_bytes: 0,
+                                           inline_bytes: 0, manifest_bytes: 0 });
+
+/** Each counter a quota bounds: its setting, and what it is called in a refusal. */
+const QUOTAS: readonly (readonly [keyof Counters, keyof FileLimits, string])[] = Object.freeze([
+  Object.freeze(["chunk_bytes", "max_bytes", "file bytes"] as const),
+  Object.freeze(["inline_bytes", "max_inline_bytes", "small-file bytes"] as const),
+  Object.freeze(["manifest_bytes", "max_manifest_bytes", "file manifest bytes"] as const),
+  Object.freeze(["entries", "max_entries", "file entries"] as const),
+  Object.freeze(["history", "max_history", "file history rows"] as const),
+]);
+/** Released history rows one fitting step reads. */
+const FIT_BATCH = 64;
 
 /** Paths each change touched, for the object's watchers. */
 type Touched = string[];
@@ -467,20 +522,23 @@ export class Files {
 
   /**
    * Run `act` in one transaction, then tell watchers. At the end, history is first fitted
-   * to its quota from gone paths' rows (`#fit`); then the quotas are checked (`#bounds`),
+   * to its quotas from gone paths' rows (`#fit`); then the quotas are checked (`#bounds`),
    * which never refuses a change that leaves every counter no higher, so a redaction, a
-   * purge, an abort or housekeeping always passes. `freeing` exempts the changes that free
-   * while writing a record: a remove (its delete row adds to history) and a sync commit
-   * (whose ops are bounded one by one, a remove's among them exempt).
+   * purge, an abort or housekeeping always passes. `writer` is whose change it is: an
+   * outside client's is held to its share too (`client_share`, `owner_reserve`); null is
+   * the owner's or the system's, held to the owner's quotas alone. `freeing` exempts the
+   * changes that free while writing a record: a remove (its delete row adds to history) and
+   * a sync commit (whose ops are bounded one by one, a remove's among them exempt).
    */
-  #change<T>(act: (touched: Touched, now: number) => T, freeing = false): T {
+  #change<T>(writer: string | null, act: (touched: Touched, now: number) => T,
+             freeing = false): T {
     const touched: Touched = [];
     const result = this.#storage.transactionSync(() => {
-      const before = this.#space();
+      const before = this.#before(writer);
       const value = act(touched, Date.now() / 1000);
-      this.#fit(before);
+      this.#fit(before, writer);
       if (!freeing) {
-        this.#bounds(before);
+        this.#bounds(before, writer);
       }
       return value;
     });
@@ -488,42 +546,105 @@ export class Files {
     return result;
   }
 
+  /** One share row's counters (`file_shares`, kept by the schema's triggers), or zeros. */
+  #share(who: string): Counters {
+    return this.#sql.exec<Counters>(
+      "SELECT entries, history, chunk_bytes, inline_bytes, manifest_bytes FROM file_shares " +
+        "WHERE who = ?", who).toArray()[0] ?? NO_SHARE;
+  }
+
+  #before(writer: string | null): Before {
+    const client = isClient(writer);
+    return { space: this.#space(), share: client ? this.#share(writer) : NO_SHARE,
+             clients: client ? this.#share(CLIENTS) : NO_SHARE };
+  }
+
   /**
-   * Refuse a change that took a counter past its bound. A change that leaves a counter
-   * no higher than it found it passes, so an owner over a lowered quota can still delete.
+   * The scopes a change by `writer` is held to, narrowest first, each with the part of
+   * every quota it may hold, its counters now and the released history rows it may prune:
+   * an outside client's own share, all clients' together, then the owner's whole quota.
    */
-  #bounds(before: Counters): void {
-    const after = this.#space();
+  #scopes(before: Before, writer: string | null): {
+    percent: number; before: Counters; now: () => Counters; refusal: (what: string) => string;
+    rows: string; args: SqlStorageValue[];
+  }[] {
     const limits = this.#limits();
-    const checks: [keyof Counters, number, string][] = [
-      ["chunk_bytes", limits.max_bytes, "the owner's file bytes are at their quota"],
-      ["inline_bytes", limits.max_inline_bytes, "the owner's small-file bytes are at their quota"],
-      ["entries", limits.max_entries, "the owner's file entries are at their quota"],
-      ["history", limits.max_history, "the owner's file history is at its quota"],
+    const owner = { percent: 100, before: before.space, now: () => this.#space(),
+                    refusal: (what: string) => `${FILE_QUOTA}: the owner's ${what} are at ` +
+                      "their quota", rows: "1 = 1", args: [] };
+    if (!isClient(writer)) {
+      return [owner];
+    }
+    return [
+      { percent: limits.client_share, before: before.share, now: () => this.#share(writer),
+        refusal: (what) => `${FILE_SHARE}: this client's ${what} are at its share of the ` +
+          "owner's quota", rows: "writer = ?", args: [writer] },
+      { percent: 100 - limits.owner_reserve, before: before.clients,
+        now: () => this.#share(CLIENTS),
+        refusal: (what) => `${FILE_SHARE}: outside clients' ${what} are at their share; ` +
+          "the rest is kept for the owner", rows: "writer GLOB ?", args: [CLIENT_WRITER] },
+      owner,
     ];
-    for (const [counter, bound, reason] of checks) {
-      if (after[counter] > bound && after[counter] > before[counter]) {
-        throw new Refused(reason);
+  }
+
+  /**
+   * Refuse a change that took a counter past its bound, in any scope it is held to. A
+   * change that leaves a counter no higher than it found it passes, so an owner (or a
+   * client) over a lowered quota can still delete.
+   */
+  #bounds(before: Before, writer: string | null): void {
+    const limits = this.#limits();
+    for (const scope of this.#scopes(before, writer)) {
+      const after = scope.now();
+      for (const [counter, setting, what] of QUOTAS) {
+        if (after[counter] > shareOf(limits[setting], scope.percent)
+            && after[counter] > scope.before[counter]) {
+          throw new Refused(scope.refusal(what));
+        }
       }
     }
   }
 
   /**
    * Retention run early, only on rows it has already let go: when a change took history
-   * past `max_history` (or past where it found it, if a lowered policy left it higher),
-   * prune that many of the earliest-due rows of gone paths (`released`), raising the
-   * feed's floor as housekeeping does. A live path's rows are never taken early, and the
+   * rows or manifest bytes past their quota in a scope it is held to (or past where it
+   * found them, if a lowered policy left them higher), prune the earliest-due rows of gone
+   * paths (`released`) that scope holds until it fits, raising the feed's floor as
+   * housekeeping does: a client's own rows for its share, any client's for all clients'
+   * share, any row for the owner's. A live path's rows are never taken early, and the
    * policy keeps every live path's rows within `max_history`, so once housekeeping has
    * applied the retention in force, and with the entries quota met, there are always enough
-   * gone rows and the history quota never refuses a change.
-   * The work is bounded by the change's own: it prunes at most the rows it recorded.
+   * gone rows and the history quota never refuses a change. The work is bounded by the
+   * change's own: it prunes no more rows, nor bytes but its last row's, than the change
+   * took past the bound.
    */
-  #fit(before: Counters): void {
-    const over = this.#space().history - Math.max(this.#limits().max_history, before.history);
-    if (over > 0) {
-      this.#expire(this.#sql.exec<{ version: number; path: string }>(
-        "SELECT version, path FROM file_history WHERE released = 1 " +
-          "ORDER BY prune_after, version LIMIT ?", over).toArray());
+  #fit(before: Before, writer: string | null): void {
+    const limits = this.#limits();
+    for (const scope of this.#scopes(before, writer)) {
+      for (;;) {
+        const now = scope.now();
+        const rows = now.history - Math.max(shareOf(limits.max_history, scope.percent),
+                                            scope.before.history);
+        const bytes = now.manifest_bytes - Math.max(
+          shareOf(limits.max_manifest_bytes, scope.percent), scope.before.manifest_bytes);
+        if (rows <= 0 && bytes <= 0) {
+          break;
+        }
+        const found = this.#sql.exec<{ version: number; path: string; bytes: number }>(
+          `SELECT version, path, ${HISTORY_BYTES("file_history")} AS bytes FROM file_history ` +
+            `WHERE released = 1 AND ${scope.rows} ORDER BY prune_after, version LIMIT ?`,
+          ...scope.args, FIT_BATCH).toArray();
+        if (found.length === 0) {
+          break;
+        }
+        let take = 0;
+        let freed = 0;
+        while (take < found.length && (take < rows || freed < bytes)) {
+          freed += found[take]!.bytes;
+          take++;
+        }
+        this.#expire(found.slice(0, take));
+      }
     }
   }
 
@@ -686,10 +807,13 @@ export class Files {
     };
   }
 
-  usage(): Usage {
-    const { entries, history, chunk_bytes, inline_bytes, intents, intent_chunks } = this.#space();
-    return { entries, history, chunk_bytes, inline_bytes, intents, intent_chunks,
-             limits: this.#limits() };
+  /** The owner's counters and limits, and an outside client caller's own share of them. */
+  usage(writer: string | null = null): Usage {
+    const { entries, history, chunk_bytes, inline_bytes, manifest_bytes, intents,
+            intent_chunks } = this.#space();
+    return { entries, history, chunk_bytes, inline_bytes, manifest_bytes, intents,
+             intent_chunks, limits: this.#limits(),
+             share: isClient(writer) ? this.#share(writer) : null };
   }
 
   // -- WRITING ------------------------------------------------------------------
@@ -826,7 +950,7 @@ export class Files {
     }
     this.#temporary(path);
     if (size > this.#limits().max_file_bytes) {
-      throw new Refused("the file is larger than the owner's file size quota");
+      throw new Refused(FILE_TOO_LARGE);
     }
     this.#parents(path, parents, writer, now, touched);
     const mode = wanted ?? current?.mode ?? 0;
@@ -858,12 +982,12 @@ export class Files {
     return true;
   }
 
-  /** Small content kept inline: its id, the row made when new. */
-  #inline(bytes: Uint8Array): string {
+  /** Small content kept inline: its id, the row made when new, charged to `writer`. */
+  #inline(bytes: Uint8Array, writer: string): string {
     const contentId = inlineId(bytes);
     if (!this.#known(contentId, bytes.byteLength, bytes, null)) {
-      this.#sql.exec("INSERT INTO file_contents (content_id, size, inline) VALUES (?, ?, ?)",
-                     contentId, bytes.byteLength, buffer(bytes));
+      this.#sql.exec("INSERT INTO file_contents (content_id, size, inline, writer) " +
+                       "VALUES (?, ?, ?, ?)", contentId, bytes.byteLength, buffer(bytes), writer);
     }
     return contentId;
   }
@@ -871,8 +995,8 @@ export class Files {
   /** Write small content (at most 4 KiB) in one transaction. */
   #writeInline(path: string, bytes: Uint8Array, expected: string | null, mode: number | null,
                writer: string, parents: boolean): Entry {
-    return this.#change((touched, now) => this.#commit(
-      path, expected, this.#inline(bytes), bytes.byteLength, mode, writer, "write", parents,
+    return this.#change(writer, (touched, now) => this.#commit(
+      path, expected, this.#inline(bytes, writer), bytes.byteLength, mode, writer, "write", parents,
       now, touched));
   }
 
@@ -916,7 +1040,7 @@ export class Files {
     const tail = cut(bytes);
     const { intent_id, missing } = await this.#write(() => {
       authorize();
-      return this.begin(size, [...prefix, ...tail].map((chunk) => chunk.sha256));
+      return this.begin(size, [...prefix, ...tail].map((chunk) => chunk.sha256), options.writer);
     });
     try {
       const wanted = new Set(missing);
@@ -952,13 +1076,17 @@ export class Files {
   /**
    * Record an upload of a file of `size` bytes made of `chunks`, cut at 4 MiB: each chunk
    * held, and the ones whose bytes must be sent. A stored chunk is not sent again; one
-   * being deleted is refused, to begin again.
+   * being deleted is refused, to begin again. `writer` is whose upload it is: the chunks
+   * it brings (new, or revived from garbage) are charged to it, and an outside client holds
+   * at most its share of the open uploads and the chunks they hold, all clients together at
+   * most what the owner's reserve leaves. Every bound is checked here, before any byte is
+   * sent.
    */
-  begin(size: unknown, chunks: unknown): { intent_id: string; missing: string[];
-                                          expires_at: number } {
+  begin(size: unknown, chunks: unknown, writer: string): { intent_id: string; missing: string[];
+                                                          expires_at: number } {
     const bytes = count(size, "size", INLINE_BYTES + 1, Number.MAX_SAFE_INTEGER);
     if (bytes > this.#limits().max_file_bytes) {
-      throw new Refused("the file is larger than the owner's file size quota");
+      throw new Refused(FILE_TOO_LARGE);
     }
     const plan = chunkPlan(bytes);
     if (plan.length > MAX_INTENT_CHUNKS) {
@@ -976,12 +1104,13 @@ export class Files {
       wanted.set(sha256, plan[index]!);
     });
     const intentId = randomBytes(16).toString("hex");
-    return this.#change((_touched, now) => {
+    return this.#change(writer, (_touched, now) => {
       const sql = this.#sql;
       const space = this.#space();
       if (space.intents >= MAX_OPEN_INTENTS || space.intent_chunks + plan.length > MAX_HELD_CHUNKS) {
-        throw new Refused("too many uploads are open; commit or abort one first");
+        throw new Refused(`${FILE_QUOTA}: too many uploads are open; commit or abort one first`);
       }
+      this.#uploadShare(writer, plan.length);
       const missing: string[] = [];
       for (const [sha256, chunkSize] of wanted) {
         const row = sql.exec<{ state: string; stored: number; size: number }>(
@@ -990,13 +1119,13 @@ export class Files {
           throw new Invalid("a chunk hash names one size");
         }
         if (row === undefined) {
-          sql.exec("INSERT INTO file_chunks (sha256, size, state, stored, holds) " +
-                     "VALUES (?, ?, 'uploading', 0, 1)", sha256, chunkSize);
+          sql.exec("INSERT INTO file_chunks (sha256, size, state, stored, holds, writer) " +
+                     "VALUES (?, ?, 'uploading', 0, 1, ?)", sha256, chunkSize, writer);
         } else if (row.state === "deleting") {
           throw new Refused("a chunk of this upload is being deleted; begin again");
         } else if (row.state === "garbage") {
-          sql.exec("UPDATE file_chunks SET state = 'uploading', holds = 1, gc_after = NULL " +
-                     "WHERE sha256 = ?", sha256);
+          sql.exec("UPDATE file_chunks SET state = 'uploading', holds = 1, gc_after = NULL, " +
+                     "writer = ? WHERE sha256 = ?", writer, sha256);
         } else {
           sql.exec("UPDATE file_chunks SET holds = holds + 1 WHERE sha256 = ?", sha256);
         }
@@ -1005,11 +1134,39 @@ export class Files {
         }
       }
       const expiresAt = now + INTENT_TTL_S;
-      sql.exec("INSERT INTO file_intents (intent_id, size, chunks, expires_at) " +
-                 "VALUES (?, ?, ?, ?)", intentId, bytes, (chunks as string[]).join(""),
-               expiresAt);
+      sql.exec("INSERT INTO file_intents (intent_id, size, chunks, expires_at, writer) " +
+                 "VALUES (?, ?, ?, ?, ?)", intentId, bytes, (chunks as string[]).join(""),
+               expiresAt, writer);
       return { intent_id: intentId, missing, expires_at: expiresAt };
     });
+  }
+
+  /**
+   * Refuse an outside client's upload past its share of the open uploads and the chunks
+   * they hold, or all clients' past what the owner's reserve leaves; the owner's own are
+   * held to the whole ceilings alone.
+   */
+  #uploadShare(writer: string, chunks: number): void {
+    if (!isClient(writer)) {
+      return;
+    }
+    const limits = this.#limits();
+    const open = (where: string, who: string) => this.#sql.exec<{ n: number; held: number }>(
+      "SELECT COUNT(*) AS n, coalesce(SUM(length(chunks) / 64), 0) AS held FROM file_intents " +
+        `WHERE ${where}`, who).one();
+    const mine = open("writer = ?", writer);
+    if (mine.n + 1 > shareOf(MAX_OPEN_INTENTS, limits.client_share)
+        || mine.held + chunks > shareOf(MAX_HELD_CHUNKS, limits.client_share)) {
+      throw new Refused(`${FILE_SHARE}: this client's open uploads are at its share; ` +
+                        "commit or abort one first");
+    }
+    const theirs = open("writer GLOB ?", CLIENT_WRITER);
+    const percent = 100 - limits.owner_reserve;
+    if (theirs.n + 1 > shareOf(MAX_OPEN_INTENTS, percent)
+        || theirs.held + chunks > shareOf(MAX_HELD_CHUNKS, percent)) {
+      throw new Refused(`${FILE_SHARE}: outside clients' open uploads are at their share; ` +
+                        "the rest is kept for the owner");
+    }
   }
 
   /** A live intent, or refused. */
@@ -1041,7 +1198,7 @@ export class Files {
     if (typeof intentId !== "string" || !HEX32.test(intentId)) {
       throw new Invalid("an intent id is 32 lowercase hex characters");
     }
-    return this.#change(() => {
+    return this.#change(null, () => {
       const held = this.#sql.exec("SELECT 1 FROM file_intents WHERE intent_id = ?", intentId)
         .toArray().length > 0;
       this.#release(intentId);
@@ -1080,9 +1237,10 @@ export class Files {
   /**
    * The content an intent declared, inside the caller's transaction: every chunk stored,
    * made live, and the content row made or checked. A chunk `FILES` never accepted is
-   * refused: no commit can claim bytes the bucket does not hold.
+   * refused: no commit can claim bytes the bucket does not hold. A new content row is
+   * charged to `writer`.
    */
-  #fromIntent(intent: Intent): { contentId: string; size: number } {
+  #fromIntent(intent: Intent, writer: string): { contentId: string; size: number } {
     const sql = this.#sql;
     for (const sha256 of new Set(intent.chunks)) {
       const row = sql.exec<{ stored: number }>(
@@ -1095,8 +1253,8 @@ export class Files {
     }
     const contentId = chunkedId(intent.size, intent.chunks);
     if (!this.#known(contentId, intent.size, null, intent.chunks)) {
-      sql.exec("INSERT INTO file_contents (content_id, size) VALUES (?, ?)", contentId,
-               intent.size);
+      sql.exec("INSERT INTO file_contents (content_id, size, writer) VALUES (?, ?, ?)",
+               contentId, intent.size, writer);
       intent.chunks.forEach((sha256, index) => sql.exec(
         "INSERT INTO file_content_chunks (content_id, idx, sha256) VALUES (?, ?, ?)",
         contentId, index, sha256));
@@ -1110,8 +1268,9 @@ export class Files {
     const at = storedPath(path);
     const expected = expectedEtag(request.expected);
     const mode = modeOf(request.mode);
-    return this.#change((touched, now) => {
-      const { contentId, size } = this.#fromIntent(this.#intent(intentId, now));
+    return this.#change(request.writer, (touched, now) => {
+      const { contentId, size } = this.#fromIntent(this.#intent(intentId, now),
+                                                         request.writer);
       const entry = this.#commit(at, expected, contentId, size, mode, request.writer, "write",
                                  request.parents ?? true, now, touched);
       this.#release(intentId as string);
@@ -1124,8 +1283,8 @@ export class Files {
       Entry {
     const at = storedPath(path);
     const expected = expectedEtag(options.expected);
-    return this.#change((touched, now) => this.#mkdir(at, expected, options.parents ?? true,
-                                                      options.writer, now, touched));
+    return this.#change(options.writer, (touched, now) => this.#mkdir(
+      at, expected, options.parents ?? true, options.writer, now, touched));
   }
 
   #mkdir(path: string, expected: string | null, parents: boolean, writer: string, now: number,
@@ -1160,8 +1319,8 @@ export class Files {
       { removed: number } {
     const at = storedPath(path);
     const expected = expectedEtag(options.expected);
-    return this.#change((touched, now) => this.#remove(at, expected, options.recursive ?? false,
-                                                       options.writer, now, touched), true);
+    return this.#change(options.writer, (touched, now) => this.#remove(
+      at, expected, options.recursive ?? false, options.writer, now, touched), true);
   }
 
   #remove(path: string, expected: string | null, recursive: boolean, writer: string, now: number,
@@ -1212,7 +1371,7 @@ export class Files {
     if (source !== target && within(target, source)) {
       throw new Invalid("a directory is never moved into itself");
     }
-    return this.#change((touched, now) => {
+    return this.#change(options.writer, (touched, now) => {
       const moving = this.#entry(source);
       if (moving === undefined && expected === null) {
         throw new FileFault("not_found", "no such file or directory");
@@ -1278,7 +1437,7 @@ export class Files {
       Entry {
     const at = storedPath(path);
     const expected = expectedEtag(options.expected);
-    return this.#change((touched, now) => {
+    return this.#change(options.writer, (touched, now) => {
       const row = this.#version(at, version);
       if (row.kind !== "file" || row.content_id === null) {
         throw new Invalid("that version holds no file content");
@@ -1296,7 +1455,7 @@ export class Files {
    */
   redact(path: unknown, version: unknown): { redacted: number } {
     const at = storedPath(path);
-    return this.#change(() => {
+    return this.#change(null, () => {
       const row = this.#version(at, version);
       if (row.content_id === null) {
         throw new Invalid("that version holds no content");
@@ -1316,7 +1475,7 @@ export class Files {
    */
   purge(path: unknown): { purged: number } {
     const at = storedPath(path);
-    return this.#change(() => {
+    return this.#change(null, () => {
       const current = this.#entry(at)?.version ?? 0;
       const gone = this.#sql.exec<{ version: number }>(
         "DELETE FROM file_history WHERE path = ? AND version != ? RETURNING version", at, current,
@@ -1336,9 +1495,9 @@ export class Files {
     }
     const name = `${prefix}${randomBytes(8).toString("hex")}`;
     const path = `${TEMP}/${name}`;
-    this.#change((touched, now) => {
-      this.#sql.exec("INSERT INTO file_temps (name, expires_at) VALUES (?, ?)", name,
-                     now + TEMP_TTL_S);
+    this.#change(writer, (touched, now) => {
+      this.#sql.exec("INSERT INTO file_temps (name, expires_at, writer) VALUES (?, ?, ?)", name,
+                     now + TEMP_TTL_S, writer);
       this.#mkdir(path, "", false, writer, now, touched);
     });
     return path;
@@ -1346,7 +1505,7 @@ export class Files {
 
   /** Remove temporary directories now (an environment's `cleanup`). */
   dropTemps(paths: readonly string[], writer: string): void {
-    this.#change((touched, now) => {
+    this.#change(writer, (touched, now) => {
       for (const path of paths) {
         this.#dropTemp(nameOf(path), writer, now, touched);
       }
@@ -1368,7 +1527,7 @@ export class Files {
         || !isPrintable(holder)) {
       throw new Invalid("a lease holder is 1 to 128 printable characters");
     }
-    return this.#change((_touched, now) => {
+    return this.#change(null, (_touched, now) => {
       const space = this.#space();
       if (space.lease_id !== null && space.lease_expires > now) {
         throw new Refused("the sync lease is held");
@@ -1393,7 +1552,7 @@ export class Files {
   }
 
   leaseRenew(leaseId: unknown, epoch: unknown): Lease {
-    return this.#change((_touched, now) => {
+    return this.#change(null, (_touched, now) => {
       const space = this.#fenced(leaseId, epoch, now);
       this.#sql.exec("UPDATE file_space SET lease_expires = ?", now + LEASE_TTL_S);
       return { lease_id: space.lease_id!, epoch: space.epoch, expires_at: now + LEASE_TTL_S,
@@ -1403,7 +1562,7 @@ export class Files {
 
   /** Give the lease back; one already lost is no error, and changes nothing. */
   leaseRelease(leaseId: unknown, epoch: unknown): { released: boolean } {
-    return this.#change((_touched, now) => {
+    return this.#change(null, (_touched, now) => {
       try {
         this.#fenced(leaseId, epoch, now);
       } catch {
@@ -1429,7 +1588,7 @@ export class Files {
     if (!Array.isArray(ops) || ops.length === 0 || ops.length > MAX_SYNC_OPS) {
       throw new Invalid(`a sync commit holds 1 to ${MAX_SYNC_OPS} ops`);
     }
-    return this.#change((touched, now) => {
+    return this.#change(null, (touched, now) => {
       const { epoch } = this.#fenced(request.lease_id, request.epoch, now);
       const writer = `lease:${epoch}`;
       const seen = new Set<string>();
@@ -1439,16 +1598,16 @@ export class Files {
         const mark = touched.length;
         try {
           return this.#storage.transactionSync(() => {
-            const before = this.#space();
+            const before = this.#before(writer);
             const path = storedPath(op["path"]);
             if (!within(path, WORKSPACE) || isRoot(path) || seen.has(path)) {
               throw new Invalid("a sync op names one workspace path, once");
             }
             seen.add(path);
             const outcome = this.#syncOp(op, path, epoch, writer, now, touched);
-            this.#fit(before);
+            this.#fit(before, writer);
             if (op["op"] !== "remove") {
-              this.#bounds(before);
+              this.#bounds(before, writer);
             }
             return outcome;
           });
@@ -1512,10 +1671,10 @@ export class Files {
               || op["intent_id"] !== undefined) {
             throw new Invalid("an inline sync write is at most 4096 bytes");
           }
-          contentId = this.#inline(bytes);
+          contentId = this.#inline(bytes, writer);
           size = bytes.byteLength;
         } else {
-          ({ contentId, size } = this.#fromIntent(this.#intent(op["intent_id"], now)));
+          ({ contentId, size } = this.#fromIntent(this.#intent(op["intent_id"], now), writer));
           this.#release(op["intent_id"] as string);
         }
         if (moved || current?.kind === "dir" || this.#blocked(path) !== null) {
@@ -1591,7 +1750,7 @@ export class Files {
    */
   async collect(now: number, until: number = Infinity): Promise<void> {
     const sql = this.#sql;
-    await this.#write(() => this.#change((touched) => {
+    await this.#write(() => this.#change(null, (touched) => {
       this.#reretain();
       for (const { intent_id: intentId } of sql.exec<{ intent_id: string }>(
              "SELECT intent_id FROM file_intents WHERE expires_at <= ? ORDER BY expires_at " +

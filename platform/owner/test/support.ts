@@ -4,6 +4,10 @@ import { env } from "cloudflare:workers";
 import { Collections, LIMITS, type Limits } from "../src/collections";
 import { type ChunkStore, type FileLimits, Files } from "../src/files";
 import { type OwnerStorage, type Write, WriteGate } from "../src/gate";
+import {
+  CHUNK_LIST_ROW_BYTES, CHUNK_ROW_BYTES, CONTENT_RECORD_BYTES, ENTRY_BYTES, HISTORY_BYTES,
+  SHARE_BYTES, TEMP_BYTES,
+} from "../src/manifest";
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
 import { SCHEDULE } from "../src/schedule";
@@ -142,19 +146,43 @@ export async function fileCounters(stub: DurableObjectStub<OwnerDO>): Promise<[R
     throw new Error(`content the manifest names is lost: ${JSON.stringify(lost)}`);
   }
   const [kept] = await sqlIn(stub,
-    "SELECT entries, history, chunk_bytes, inline_bytes, intents, intent_chunks, " +
+    "SELECT entries, history, chunk_bytes, inline_bytes, manifest_bytes, intents, " +
+      "intent_chunks, (SELECT json_group_object(who, json_array(entries, history, " +
+      "chunk_bytes, inline_bytes, manifest_bytes)) FROM (SELECT * FROM file_shares " +
+      "ORDER BY who)) AS shares, " +
       "(SELECT json_group_object(content_id, refs) FROM (SELECT * FROM file_contents " +
       "ORDER BY content_id)) AS contents, " +
       "(SELECT json_group_object(sha256, refs || '/' || holds) FROM (SELECT * FROM file_chunks " +
       "ORDER BY sha256)) AS chunks FROM file_space");
   const [counted] = await sqlIn(stub,
-    "SELECT (SELECT COUNT(*) FROM file_entries) AS entries, " +
+    `WITH charged (who, entries, history, chunk_bytes, inline_bytes, manifest_bytes) AS (` +
+      `SELECT writer, 1, 0, 0, 0, ${ENTRY_BYTES("e")} FROM file_entries e UNION ALL ` +
+      `SELECT writer, 0, 1, 0, 0, ${HISTORY_BYTES("h")} FROM file_history h UNION ALL ` +
+      "SELECT writer, 0, 0, 0, coalesce(length(c.inline), 0), " +
+      `${CONTENT_RECORD_BYTES("c")} + ${CHUNK_LIST_ROW_BYTES()} * (SELECT COUNT(*) FROM ` +
+      "file_content_chunks x WHERE x.content_id = c.content_id) FROM file_contents c " +
+      "UNION ALL SELECT writer, 0, 0, size * (state IN ('uploading', 'live')), 0, " +
+      `${CHUNK_ROW_BYTES("k")} FROM file_chunks k UNION ALL ` +
+      `SELECT writer, 0, 0, 0, 0, ${TEMP_BYTES("t")} FROM file_temps t), ` +
+      "clients AS (SELECT who, SUM(entries) AS entries, SUM(history) AS history, " +
+      "SUM(chunk_bytes) AS chunk_bytes, SUM(inline_bytes) AS inline_bytes, " +
+      `SUM(manifest_bytes) + ${SHARE_BYTES} AS manifest_bytes FROM charged ` +
+      "WHERE who GLOB 'client:*' GROUP BY who), " +
+      "shares AS (SELECT * FROM clients UNION ALL SELECT '*', " +
+      "coalesce(SUM(entries), 0), coalesce(SUM(history), 0), coalesce(SUM(chunk_bytes), 0), " +
+      `coalesce(SUM(inline_bytes), 0), coalesce(SUM(manifest_bytes), 0) + ${SHARE_BYTES} ` +
+      "FROM clients) " +
+      "SELECT (SELECT COUNT(*) FROM file_entries) AS entries, " +
       "(SELECT COUNT(*) FROM file_history) AS history, " +
       "(SELECT COALESCE(SUM(size), 0) FROM file_chunks WHERE state IN ('uploading', 'live')) " +
       "AS chunk_bytes, " +
       "(SELECT COALESCE(SUM(length(inline)), 0) FROM file_contents) AS inline_bytes, " +
+      "(SELECT coalesce(SUM(manifest_bytes), 0) FROM charged) + " +
+      `(SELECT COUNT(*) FROM shares) * ${SHARE_BYTES} AS manifest_bytes, ` +
       "(SELECT COUNT(*) FROM file_intents) AS intents, " +
       "(SELECT COALESCE(SUM(length(chunks) / 64), 0) FROM file_intents) AS intent_chunks, " +
+      "(SELECT json_group_object(who, json_array(entries, history, chunk_bytes, " +
+      "inline_bytes, manifest_bytes)) FROM (SELECT * FROM shares ORDER BY who)) AS shares, " +
       "(SELECT json_group_object(content_id, n) FROM (SELECT c.content_id, " +
       "(SELECT COUNT(*) FROM file_history h WHERE h.content_id = c.content_id) + " +
       "(SELECT COUNT(*) FROM file_entries e WHERE e.content_id = c.content_id) AS n " +
