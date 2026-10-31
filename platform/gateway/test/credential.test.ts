@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { allows, credential, type Endpoint, source } from "../src/credential";
 import { DEADLINE_MAX_MS, encodeEnvelope, envelope } from "../src/envelope";
-import { failureResponse, upstreamCode } from "../src/failure";
+import { failureResponse, modelRefusalCode, upstreamCode } from "../src/failure";
 import { ANTHROPIC, apiKey, GOOGLE, OPENAI } from "./support";
 
 const ENDPOINTS: readonly Endpoint[] = Object.freeze([
@@ -117,6 +117,82 @@ describe("source", () => {
     };
     expect(source(custom, false).upstream.models).toHaveLength(1);
   });
+
+  /** A declared endpoint whose one model is `model`. */
+  function declared(model: Record<string, unknown>) {
+    return {
+      upstream: { provider: "custom", api: "openai-completions", base_url: "https://llm.example.com/v1",
+                  auth: { header: "authorization", scheme: "Bearer" }, models: [model] },
+      endpoints: [{ origin: "https://llm.example.com", paths: ["/v1/chat/completions"],
+                    methods: ["POST"] }],
+    };
+  }
+
+  const WHOLE = Object.freeze({
+    id: "local-2", name: "Local 2", reasoning: true, input: ["text", "image"],
+    contextWindow: 400_000, maxTokens: 32_000,
+    thinkingLevelMap: { off: null, minimal: "low", xhigh: "xhigh", max: null },
+    promptCache: { short: 300, long: 3600 },
+    inputLimits: { maxRequestBytes: 33_554_432, images: { maxPerRequest: 100, maxPerMessage: 20,
+      resize: { maxWidth: 2000, maxHeight: 2000, maxBytes: 4_718_592, jpegQuality: 80 } } },
+    cost: { input: 1, output: 4, cacheRead: 0.1, cacheWrite: 1.25,
+            tiers: [{ inputTokensAbove: 272_000, input: 2, output: 8, cacheRead: 0.2,
+                      cacheWrite: 2.5 }] },
+  });
+
+  it("keeps a declared model's whole record: thinking levels, cache, input limits and tiers",
+     () => {
+    expect(source(declared(WHOLE), false).upstream.models).toEqual([WHOLE]);
+    // At the owner's own bounds.
+    const bounded = { ...WHOLE, id: "m".repeat(200), name: "n".repeat(200),
+                      contextWindow: 100_000_000, maxTokens: 100_000_000,
+                      cost: { ...WHOLE.cost, output: 1_000_000, tiers: [{
+                        inputTokensAbove: 100_000_000, input: 2, output: 1_000_000,
+                        cacheRead: 0.2, cacheWrite: 2.5 }] } };
+    expect(source(declared(bounded), false).upstream.models).toEqual([bounded]);
+  });
+
+  it.each([
+    ["an unknown field", { ...WHOLE, compat: {} }],
+    ["an unknown thinking level", { ...WHOLE, thinkingLevelMap: { extreme: "x" } }],
+    ["a thinking value of another type", { ...WHOLE, thinkingLevelMap: { high: 1 } }],
+    ["a thinking value with a space", { ...WHOLE, thinkingLevelMap: { high: "very high" } }],
+    ["a cache lifetime of zero", { ...WHOLE, promptCache: { short: 0 } }],
+    ["an unknown cache tier", { ...WHOLE, promptCache: { forever: 1 } }],
+    ["a request byte limit of zero", { ...WHOLE, inputLimits: { maxRequestBytes: 0 } }],
+    ["an unknown input limit", { ...WHOLE, inputLimits: { maxTokens: 1 } }],
+    ["an unknown image limit", { ...WHOLE, inputLimits: { images: { maxSize: 1 } } }],
+    ["a fractional image count", { ...WHOLE, inputLimits: { images: { maxPerRequest: 1.5 } } }],
+    ["a JPEG quality past 100", { ...WHOLE, inputLimits: { images: {
+      resize: { jpegQuality: 101 } } } }],
+    ["an unknown resize field", { ...WHOLE, inputLimits: { images: { resize: { dpi: 72 } } } }],
+    ["no tiers in a tier list", { ...WHOLE, cost: { ...WHOLE.cost, tiers: [] } }],
+    ["a tier with no threshold", { ...WHOLE, cost: { ...WHOLE.cost, tiers: [{
+      input: 2, output: 8, cacheRead: 0.2, cacheWrite: 2.5 }] } }],
+    ["a tier at a negative price", { ...WHOLE, cost: { ...WHOLE.cost, tiers: [{
+      inputTokensAbove: 1, input: -2, output: 8, cacheRead: 0.2, cacheWrite: 2.5 }] } }],
+    ["seventeen tiers", { ...WHOLE, cost: { ...WHOLE.cost, tiers: Array.from({ length: 17 },
+      (_, i) => ({ inputTokensAbove: i, input: 2, output: 8, cacheRead: 0.2, cacheWrite: 2.5 })) } }],
+    ["a repeated input type", { ...WHOLE, input: ["text", "text"] }],
+    ["no input type", { ...WHOLE, input: [] }],
+    ["a context window of zero", { ...WHOLE, contextWindow: 0 }],
+    ["a thinking level pi-ai does not have", { ...WHOLE, thinkingLevelMap: { ultra: "u" } }],
+    ["a thinking level named none", { ...WHOLE, thinkingLevelMap: { none: "x" } }],
+    ["a negative tier threshold", { ...WHOLE, cost: { ...WHOLE.cost, tiers: [{ inputTokensAbove: -1, input: 2, output: 8, cacheRead: 0.2, cacheWrite: 2.5 }] } }],
+    ["a fractional tier threshold", { ...WHOLE, cost: { ...WHOLE.cost, tiers: [{ inputTokensAbove: 1.5, input: 2, output: 8, cacheRead: 0.2, cacheWrite: 2.5 }] } }],
+    ["a tier threshold in words", { ...WHOLE, cost: { ...WHOLE.cost, tiers: [{ inputTokensAbove: "100", input: 2, output: 8, cacheRead: 0.2, cacheWrite: 2.5 }] } }],
+    ["a tier threshold past the owner's token bound", { ...WHOLE, cost: { ...WHOLE.cost,
+      tiers: [{ inputTokensAbove: 100_000_001, input: 2, output: 8, cacheRead: 0.2, cacheWrite: 2.5 }] } }],
+    ["a price past the owner's bound", { ...WHOLE, cost: { ...WHOLE.cost, output: 1_000_001 } }],
+    ["a tier's price past the owner's bound", { ...WHOLE, cost: { ...WHOLE.cost, tiers: [{
+      inputTokensAbove: 1, input: 2, output: 1_000_001, cacheRead: 0.2, cacheWrite: 2.5 }] } }],
+    ["a context window past the owner's bound", { ...WHOLE, contextWindow: 100_000_001 }],
+    ["an output limit past the owner's bound", { ...WHOLE, maxTokens: 100_000_001 }],
+    ["an id past the owner's bound", { ...WHOLE, id: "m".repeat(201) }],
+    ["a name past the owner's bound", { ...WHOLE, name: "n".repeat(201) }],
+  ])("refuses a declared model with %s", (_what, model) => {
+    expect(() => source(declared(model), false)).toThrow("invalid_source");
+  });
 });
 
 describe("credential", () => {
@@ -180,6 +256,18 @@ describe("fixed codes", () => {
     [504, "upstream_server_error"], [302, "upstream_error"],
   ] as const)("names upstream %d as %s", (status, code) => {
     expect(upstreamCode(status)).toBe(code);
+  });
+
+  it.each([
+    [413, false, "context_length_exceeded"], [413, true, "context_length_exceeded"],
+    [400, true, "context_length_exceeded"], [422, true, "context_length_exceeded"],
+    [408, true, "context_length_exceeded"], [500, true, "context_length_exceeded"],
+    [400, false, "upstream_rejected"], [500, false, "upstream_server_error"],
+    [401, true, "upstream_unauthorized"], [403, true, "upstream_unauthorized"],
+    [429, true, "upstream_rate_limited"],
+  ] as const)("names a model call's refusal %d, read as an overflow: %s, as %s",
+              (status, overflow, code) => {
+    expect(modelRefusalCode(status, overflow)).toBe(code);
   });
 
   it("answers with the code and nothing else", async () => {

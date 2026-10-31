@@ -36,7 +36,7 @@ const RPC_METHODS = Object.freeze([
   "mailboxSubscriber", "noticeList", "outsideAgents", "policyProposal", "policyPropose",
   "policyRead", "policyReceipts", "policyWakeLimits", "policyWrite", "registerAgent",
   "registerProposal", "registerPropose", "roomPost", "sessionClose", "sessionCloseAll",
-  "sessionExtend", "sessionOpen", "usageReceipts",
+  "sessionExtend", "sessionOpen", "usageMetrics", "usageReceipts",
 ]);
 
 describe("schema migration on wake", () => {

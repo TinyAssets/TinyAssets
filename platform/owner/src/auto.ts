@@ -15,21 +15,63 @@
  *   - a retry after an answer that failed before any output (pi's durable retry appends
  *     the failed answer) goes to the next-ranked model after the one that failed (from
  *     the last, round to the strongest), since a model call has no side effect; one that
- *     failed after output stays on its model;
+ *     failed after output stays on its model, and so does one that failed for its
+ *     context's length (`context_length_exceeded`), which pi retries once compacted, so
+ *     the compaction is what makes it fit;
  *   - a user's message routes afresh, to the strongest.
- * - **Metadata mirroring**: `auto` is listed with the strongest model's context window,
- *   output limit, prices, reasoning and input types, so pi's compaction thresholds and
- *   the reservation's estimate are the target's. A continuation kept on an earlier
- *   target after the owner connected a stronger one is estimated and clamped by the
- *   target's own metadata (`gateway-provider.ts`); only pi's compaction threshold reads
- *   the strongest's until the next user message.
+ * - **Metadata mirroring**: `auto` is listed with the strongest model's whole record, so
+ *   pi's compaction thresholds and the reservation's estimate are the target's. A call
+ *   `auto` routes elsewhere (a continuation kept on an earlier target after the owner
+ *   connected a stronger one, or a retry moved down the ranking) is estimated, priced and
+ *   clamped by the target's own record, and held to the target's own compaction threshold
+ *   (`gateway-provider.ts`): pi keys `auto`'s thresholds by `auto` alone, so that one call
+ *   is refused as an overflow, and pi compacts and retries it.
+ * - **Compaction thresholds** are each model's own (`compactionFor`), from its context
+ *   window: pi's defaults are sized for a window of 256K tokens or more, and a smaller one
+ *   gets them in proportion.
  * - With no connected model, `auto` is not listed, so pi settles the turn
  *   `unanswered: no_model`, loudly. There is no platform-paid default (a founder call).
  */
 import type { Message } from "@earendil-works/pi-ai";
+import { type CompactionPolicy, DEFAULT_COMPACTION_POLICY } from "@earendil-works/pi-durable";
 
 import type { ModelInfo, Usable } from "./connections";
 import ranking from "./model-ranking.json" with { type: "json" };
+
+/**
+ * The code of a context too long for its model: the gateway's (`failure.ts`), and the
+ * phrase pi-ai's overflow detection matches (`isContextOverflow`), so pi compacts and
+ * retries once.
+ */
+export const CONTEXT_OVERFLOW = "context_length_exceeded";
+
+/** The compaction thresholds pi's overrides set for one model. */
+export type Thresholds = Required<Pick<CompactionPolicy,
+  "reserveTokens" | "keepRecentTokens" | "backgroundTokens">>;
+
+/**
+ * pi's compaction thresholds for a model, from its own context window (pi audit F6): pi's
+ * defaults (`DEFAULT_COMPACTION_POLICY`: 16,384 tokens kept free for the answer, 20,000
+ * recent ones kept verbatim, a background compaction 32,768 below the blocking threshold)
+ * hold for a window of 256K tokens or more; a smaller window keeps an eighth of itself
+ * free, a quarter verbatim and starts in the background an eighth lower, close to pi's
+ * own example for a 32K model (4,096, 8,000 and 4,096).
+ */
+export function compactionFor(model: Pick<ModelInfo, "contextWindow">): Thresholds {
+  const window = model.contextWindow;
+  return Object.freeze({
+    reserveTokens: Math.min(DEFAULT_COMPACTION_POLICY.reserveTokens, Math.floor(window / 8)),
+    keepRecentTokens: Math.min(DEFAULT_COMPACTION_POLICY.keepRecentTokens,
+                               Math.floor(window / 4)),
+    backgroundTokens: Math.min(DEFAULT_COMPACTION_POLICY.backgroundTokens,
+                               Math.floor(window / 8)),
+  });
+}
+
+/** The context size above which pi blocks a request on `model` for a compaction. */
+export function blockingThreshold(model: Pick<ModelInfo, "contextWindow">): number {
+  return model.contextWindow - compactionFor(model).reserveTokens;
+}
 
 /** One connected model `auto` may route to. */
 export interface Candidate {
@@ -113,7 +155,7 @@ export function route(candidates: readonly Candidate[],
     if (failed === undefined) {
       return strongest;
     }
-    if (last.content.length > 0) {
+    if (last.content.length > 0 || last.errorMessage === CONTEXT_OVERFLOW) {
       return failed;
     }
     // The next-ranked after the one that failed, round to the strongest after the last.

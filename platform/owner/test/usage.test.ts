@@ -18,7 +18,8 @@ import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import { agentPolicy, MODEL_DEFAULTS, MODEL_SETTINGS, modelSettings, validate } from "../src/policy";
 import {
-  type Ask, micros, type ModelCaps, periods, Usage, USAGE_LIMITS, type UsageLimits,
+  type Ask, largestFitting, type ModelCaps, periods, priced, Usage, USAGE_LIMITS,
+  type UsageLimits,
 } from "../src/usage";
 import { gated, until } from "./gateway-support";
 import { failure, ownerObject } from "./support";
@@ -26,9 +27,16 @@ import type { GatedOwnerDO } from "./worker";
 
 const NOW = 1_793_000_000;
 
+/** A model's cost record at `input` and `output` dollars per million tokens, as pi-ai's. */
+function rates(input: number, output: number,
+               tiers?: NonNullable<Ask["rates"]["cost"]["tiers"]>): Ask["rates"] {
+  return { cost: { input, output, cacheRead: 0, cacheWrite: 0,
+                   ...(tiers === undefined ? {} : { tiers }) } };
+}
+
 const ASK: Ask = Object.freeze({
   turn: "t1", connection: "c1", source: "anthropic", model: "m1", inputTokens: 1000,
-  maxOutputTokens: 4000, reasoning: false, price: Object.freeze({ input: 3, output: 15 }),
+  maxOutputTokens: 4000, reasoning: false, rates: rates(3, 15),
 });
 
 /** 1000 input at 3 µ$ and 4000 output at 15 µ$. */
@@ -264,7 +272,7 @@ describe("the per-turn caps", () => {
       expect(MODEL_SETTINGS.turn_requests[1]).toBe(10_000);
       r.policy.caps = { turn_requests: 5_000, turn_tokens: 1_000_000_000,
                         turn_cost: 1_000_000_000_000 };
-      const ask = { ...ASK, inputTokens: 1, maxOutputTokens: 1, price: { input: 0, output: 0 } };
+      const ask = { ...ASK, inputTokens: 1, maxOutputTokens: 1, rates: rates(0, 0) };
       for (let i = 0; i < 5_000; i++) {
         await r.gate.write(() => {
           const reserved = r.usage.reserve(ask, NOW);
@@ -352,20 +360,101 @@ describe("the per-turn caps", () => {
     r.policy.caps = { turn_cost: 2000 };
     expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
       .toEqual({ ok: false, rule: "turn_cost" });
-    expect(await r.gate.write(() => r.usage.reserve({ ...ASK, price: { input: 3, output: 0 } },
-                                                     NOW)))
+    expect(await r.gate.write(() => r.usage.reserve({ ...ASK, rates: rates(3, 0) }, NOW)))
       .toEqual({ ok: false, rule: "turn_cost" });
-    expect(await r.gate.write(() => r.usage.reserve({ ...ASK, price: { input: 1, output: 0 } },
-                                                     NOW)))
+    expect(await r.gate.write(() => r.usage.reserve({ ...ASK, rates: rates(1, 0) }, NOW)))
       .toMatchObject({ ok: true, max_output_tokens: 4000 });
   }));
 
   it("round every estimate up to the next µ$", () => withUsage(async (r) => {
-    expect(micros(3, 0.5)).toBe(2);
-    await r.gate.write(() => r.usage.reserve({ ...ASK, inputTokens: 3, maxOutputTokens: 1030,
-                                               price: { input: 0.5, output: 0.25 } }, NOW));
-    // 1.5 µ$ of input and 257.5 of output.
-    expect(r.rows()[0]).toMatchObject({ est_cost: 2 + 258 });
+    expect(priced(rates(0.5, 0.25), 3, 0)).toBe(2);
+    await r.gate.write(() => r.usage.reserve({ ...ASK, inputTokens: 3, maxOutputTokens: 1031,
+                                               rates: rates(0.5, 0.25) }, NOW));
+    // 1.5 µ$ of input and 257.75 of output.
+    expect(r.rows()[0]).toMatchObject({ est_cost: 260 });
+  }));
+
+  it("find the most output a cost fits by bisection, about log2 of the bound in prices",
+     () => {
+    // The steepest search: the largest output any model takes, at the policy's largest
+    // turn cost, against a cheap record of the real catalog's.
+    const record = rates(0.029, 0.03);
+    let calls = 0;
+    const fits = (output: number) => {
+      calls += 1;
+      return priced(record, 50_000, output) <= MODEL_SETTINGS.turn_cost[1];
+    };
+    expect(largestFitting(100_000_000, fits)).toBe(100_000_000);
+    expect(calls).toBeLessThanOrEqual(28);
+    calls = 0;
+    const room = 1_000_000;
+    const found = largestFitting(100_000_000, (output) => {
+      calls += 1;
+      return priced(record, 50_000, output) <= room;
+    });
+    expect(calls).toBeLessThanOrEqual(28);
+    expect(priced(record, 50_000, found)).toBeLessThanOrEqual(room);
+    expect(priced(record, 50_000, found + 1)).toBeGreaterThan(room);
+    expect(largestFitting(-1, () => true)).toBe(-1);
+    expect(largestFitting(10, () => false)).toBe(-1);
+    expect(largestFitting(0, () => true)).toBe(0);
+  });
+
+  it("reserve a catalog-priced call at the policy's largest turn cost promptly", () =>
+    withUsage(async (r) => {
+      r.policy.caps = { turn_cost: MODEL_SETTINGS.turn_cost[1], turn_tokens: 1_000_000_000 };
+      const began = Date.now();
+      expect(await r.gate.write(() => r.usage.reserve({
+        ...ASK, inputTokens: 50_000, maxOutputTokens: 4_000, rates: rates(0.029, 0.03) }, NOW)))
+        .toMatchObject({ ok: true, max_output_tokens: 4_000 });
+      // A declared price whose output costs a millionth of a µ$ a token.
+      r.policy.caps = { turn_cost: 1_500, turn_tokens: 1_000_000_000 };
+      expect((await r.gate.write(() => r.usage.reserve({
+        ...ASK, turn: "t2", rates: rates(0.1003, 0.0000015) }, NOW))).ok).toBe(true);
+      expect(Date.now() - began).toBeLessThan(500);
+    }));
+
+  it("name the tighter of the turn's tokens and its cost when both leave less than the floor",
+     () => withUsage(async (r) => {
+      // 1000 input leaves 500 tokens; the cost leaves 3000 for the input and 100 output at 15.
+      r.policy.caps = { turn_tokens: 1_500, turn_cost: 3_000 + 100 * 15 };
+      expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
+        .toEqual({ ok: false, rule: "turn_cost" });
+      // The cost takes the 500 the tokens leave: the tokens are the tighter.
+      r.policy.caps = { turn_tokens: 1_500, turn_cost: 3_000 + 600 * 15 };
+      expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
+        .toEqual({ ok: false, rule: "turn_tokens" });
+    }));
+
+  it("keep an estimate rounded up to the µ$ inside the cost it fits", () => withUsage(async (r) => {
+    // Here pi-ai's price of the output that fits by its rate, rounded up, is a µ$ over.
+    r.policy.caps = { turn_cost: 100_700, turn_tokens: 1_000_000_000 };
+    const reserved = await r.gate.write(() => r.usage.reserve({
+      ...ASK, inputTokens: 260, maxOutputTokens: 2_000_000, rates: rates(0.1, 0.1) }, NOW));
+    expect(reserved.ok).toBe(true);
+    const [row] = r.rows();
+    expect(row!["est_cost"]).toBeLessThanOrEqual(100_700);
+    expect(priced(rates(0.1, 0.1), 260, Number(row!["max_output_tokens"]) + 1))
+      .toBeGreaterThan(100_700);
+  }));
+
+  it("price a call by pi-ai's calculateCost, a long-context tier for the whole request once " +
+     "its input passes the threshold", () => withUsage(async (r) => {
+    const tiered = rates(3, 15, [{ inputTokensAbove: 2000, input: 6, output: 30, cacheRead: 0,
+                                   cacheWrite: 0 }]);
+    // At the threshold, the base rates: 2000 at 3 and 4000 at 15.
+    await r.gate.write(() => r.usage.reserve({ ...ASK, inputTokens: 2000, rates: tiered }, NOW));
+    // Past it, every token at the tier's: 2001 at 6 and 4000 at 30.
+    await r.gate.write(() => r.usage.reserve({ ...ASK, inputTokens: 2001, rates: tiered }, NOW));
+    expect(r.rows().map((row) => row["est_cost"])).toEqual([2000 * 3 + 4000 * 15,
+                                                            2001 * 6 + 4000 * 30]);
+    // The output the caps leave is priced at the tier too: 50,000 - 18,000 of input at 6
+    // leaves 32,000 µ$, 1066 output tokens at 30.
+    r.policy.caps = { turn_cost: 50_000 };
+    expect(await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2", inputTokens: 3000,
+                                                      rates: tiered }, NOW)))
+      .toMatchObject({ ok: true, max_output_tokens: 1066 });
+    expect(r.rows()[2]).toMatchObject({ est_cost: 18_000 + 1066 * 30 });
   }));
 });
 

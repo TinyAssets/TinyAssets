@@ -120,6 +120,12 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
    - Our own manifest for executable package parts: pi-durable cannot load
      pi-coding-agent extensions, which target Node and pi's in-process
      extension API.
+   - The turn every spend cap keys on rides pi's telemetry propagation
+     (`origin.ts`), though pi-telemetry calls a span diagnostic data: pi has
+     no durable causal context of its own. The adapter also keeps pi's and
+     pi-ai's metrics, reads only span names pinned to pi's exported
+     `DURABLE_TELEMETRY_SCHEMA`, and never throws, since on pi 1.4 a throwing
+     adapter can reject a durable commit (pi audit F4, slice 0b).
 
    **User hooks run in a separately deployed Worker's Durable Object, which
    loads each owner's hook code with the Worker Loader (Dynamic Workers, open

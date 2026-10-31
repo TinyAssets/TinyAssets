@@ -16,11 +16,12 @@ import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messag
 import { googleGenerativeAIApi } from "@earendil-works/pi-ai/api/google-generative-ai.lazy";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
-import { createProvider } from "@earendil-works/pi-ai/models";
+import { createProvider, isModelType } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
-import { type CustomModel, SUPPORTED_APIS, type Upstream } from "./credential";
+import { SUPPORTED_APIS, type Upstream } from "./credential";
 import { Failure } from "./failure";
+import { type ModelRecord, recordOf } from "./model-record";
 
 /** The providers the gateway can stream through, by pi-ai provider id. */
 export interface Catalog {
@@ -59,16 +60,10 @@ function customProvider(upstream: Upstream): Provider {
     throw new Failure("unsupported_source");
   }
   const models: Model<Api>[] = upstream.models.map((model) => ({
-    id: model.id,
-    name: model.name,
+    ...structuredClone(model) as Omit<Model<Api>, "api" | "provider" | "baseUrl">,
     api: upstream.api,
     provider: "custom",
     baseUrl: upstream.base_url,
-    reasoning: model.reasoning,
-    input: [...model.input],
-    cost: { ...model.cost },
-    contextWindow: model.contextWindow,
-    maxTokens: model.maxTokens,
   }));
   return createProvider({
     id: "custom",
@@ -101,23 +96,15 @@ export function providerFor(catalog: Catalog, upstream: Upstream): Provider {
 }
 
 /**
- * The models a sealed upstream serves, with the metadata the owner object needs to list
- * them, estimate a call and compact (context window, output limit, prices, reasoning,
- * input types): its provider's catalog, or its declared list. The owner object loads no
- * catalog of its own, so this is where it learns them, at connect time.
+ * The models a sealed upstream serves, each with its whole capability record
+ * (`model-record.ts`): its provider's catalog, or its declared list. The owner object
+ * loads no catalog of its own, so this is where it learns them, at connect time: it lists,
+ * prices (pi-ai's `calculateCost`, tiers included), compacts and offers thinking levels by
+ * them.
  */
-export function modelInfos(catalog: Catalog, upstream: Upstream): CustomModel[] {
+export function modelInfos(catalog: Catalog, upstream: Upstream): ModelRecord[] {
   return providerFor(catalog, upstream).getModels()
-    .filter((model) => model.api === upstream.api)
-    .map((model) => Object.freeze({
-      id: model.id,
-      name: model.name,
-      reasoning: model.reasoning,
-      input: Object.freeze(model.input.filter((kind): kind is "text" | "image" =>
-        kind === "text" || kind === "image")),
-      contextWindow: model.contextWindow,
-      maxTokens: model.maxTokens,
-      cost: Object.freeze({ input: model.cost.input, output: model.cost.output,
-                            cacheRead: model.cost.cacheRead, cacheWrite: model.cost.cacheWrite }),
-    }));
+    .filter((model): model is Model<Api> =>
+      model.api === upstream.api && isModelType(model, "chat"))
+    .map(recordOf);
 }

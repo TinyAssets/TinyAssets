@@ -22,8 +22,11 @@
  * provider that refused the call before producing anything (its status is in the
  * answer's, so the owner settles it at no cost); after it starts, the stream ends with a
  * pi-messages `error` event whose text is a fixed code,
- * classified from what the guarded fetch saw (the HTTP status), never from the
- * adapter's message, which can quote the provider's body.
+ * classified from what the guarded fetch saw (the HTTP status). The adapter's message,
+ * which can quote the provider's body, is read only by pi-ai's own overflow detection
+ * (`isContextOverflow`), so a context too long for the model reaches pi as
+ * `context_length_exceeded` and pi compacts and retries once (pi audit F3); the message
+ * itself is never shown. A body past `BODY_MAX` is the same overflow.
  *
  * The call is cut when the caller stops reading (the response stream's cancel), and at
  * the envelope's deadline.
@@ -32,16 +35,21 @@ import type {
   AssistantMessage, AssistantMessageEvent, Context, FetchFunction, SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
+import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 
 import { type Catalog, NO_AMBIENT, providerFor } from "./catalog";
 import { allows, bearer, type Endpoint } from "./credential";
 import { encode, encodeError, frame } from "./encode";
 import { ENVELOPE_HEADER, envelope } from "./envelope";
-import { type Code, codeOf, Failure, failureResponse, upstreamCode } from "./failure";
+import { type Code, codeOf, Failure, failureResponse, modelRefusalCode } from "./failure";
 import { nativeFetch, within } from "./egress";
 import { type KeyringEnv, open } from "./keyring";
 
-/** A request body's bound: a context with images can be large, a whole one never this. */
+/**
+ * A request body's bound: a context with images can be large, a whole one never this. A
+ * body past it is a context the gateway cannot take, `context_length_exceeded`, so pi
+ * compacts it as it would a provider's overflow.
+ */
 export const BODY_MAX = 16 * 1024 * 1024;
 
 /**
@@ -86,11 +94,17 @@ function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The body, read up to `BODY_MAX` bytes; `too_large` past it, without reading the rest. */
+/**
+ * The body, read up to `BODY_MAX` bytes; `context_length_exceeded` past it, without
+ * reading the rest.
+ */
 async function boundedText(request: Request): Promise<string> {
   const declared = request.headers.get("content-length");
-  if (declared !== null && !(/^\d+$/.test(declared) && Number(declared) <= BODY_MAX)) {
-    throw new Failure("too_large");
+  if (declared !== null && !/^\d+$/.test(declared)) {
+    throw new Failure("invalid_request");
+  }
+  if (declared !== null && Number(declared) > BODY_MAX) {
+    throw new Failure("context_length_exceeded");
   }
   if (request.body === null) {
     return "";
@@ -106,7 +120,7 @@ async function boundedText(request: Request): Promise<string> {
     size += value.byteLength;
     if (size > BODY_MAX) {
       await reader.cancel();
-      throw new Failure("too_large");
+      throw new Failure("context_length_exceeded");
     }
     parts.push(value);
   }
@@ -193,9 +207,13 @@ export function guardedFetch(endpoints: readonly Endpoint[], observed: Observed)
   };
 }
 
-/** The fixed code for a stream that ended in an error. */
-function classify(observed: Observed, reason: "aborted" | "error", deadline: AbortSignal,
-                  cancelled: AbortSignal): Code {
+/**
+ * The fixed code for a stream that ended in an error (`error`, the adapter's message): its
+ * status's, read for an overflow first (`modelRefusalCode`), or an overflow the provider
+ * reported in a stream it had begun with a 2xx.
+ */
+function classify(observed: Observed, error: AssistantMessage, reason: "aborted" | "error",
+                  deadline: AbortSignal, cancelled: AbortSignal): Code {
   if (deadline.aborted) {
     return "deadline";
   }
@@ -206,7 +224,10 @@ function classify(observed: Observed, reason: "aborted" | "error", deadline: Abo
     return "endpoint_refused";
   }
   if (observed.status !== undefined && observed.status >= 300) {
-    return upstreamCode(observed.status);
+    return modelRefusalCode(observed.status, isContextOverflow(error));
+  }
+  if (isContextOverflow(error)) {
+    return "context_length_exceeded";
   }
   return observed.unreachable ? "upstream_unreachable" : "upstream_error";
 }
@@ -273,7 +294,8 @@ async function serve(request: Request, env: KeyringEnv, catalog: Catalog): Promi
   // resolved, which throws on a refusal), so an `error` first means nothing was streamed.
   // When the guarded fetch saw the provider refuse (a status of 300 or more) or refused to
   // send it, the answer is that fixed code with its own non-200 status: the provider
-  // produced nothing, and the owner settles the call `failed`, at no cost. Anything else,
+  // produced nothing, and the owner settles the call `failed`, at no cost. An overflow
+  // refusal is `context_length_exceeded`, read by pi-ai's own `isContextOverflow`. Anything else,
   // an abort or the deadline among them, stays a stream that ends with its `error`.
   let first: IteratorResult<AssistantMessageEvent> | undefined;
   try {
@@ -284,7 +306,8 @@ async function serve(request: Request, env: KeyringEnv, catalog: Catalog): Promi
   if (first !== undefined && !first.done && first.value.type === "error"
       && !deadline.aborted && !cancelled.signal.aborted
       && (observed.refused || (observed.status !== undefined && observed.status >= 300))) {
-    return failureResponse(observed.refused ? "endpoint_refused" : upstreamCode(observed.status!));
+    return failureResponse(observed.refused ? "endpoint_refused"
+      : modelRefusalCode(observed.status!, isContextOverflow(first.value.error)));
   }
 
   const encoder = new TextEncoder();
@@ -320,7 +343,7 @@ async function serve(request: Request, env: KeyringEnv, catalog: Catalog): Promi
       const event = next.value;
       if (event.type === "error") {
         end(controller, event.error, event.reason,
-            classify(observed, event.reason, deadline, cancelled.signal));
+            classify(observed, event.error, event.reason, deadline, cancelled.signal));
         return;
       }
       last = event.type === "done" ? event.message : event.partial;
