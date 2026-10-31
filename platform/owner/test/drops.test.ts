@@ -29,8 +29,8 @@ import { namedByOpenWork } from "../src/scheduled";
 import { HOST, wakeJob } from "../src/thread-host";
 import { DESTROYED } from "../src/thread-store";
 import {
-  DROP_RETRY_S, RECEIPT_TEXT_MAX, retainThreads, RUN_RETENTION, type Thread, THREAD_LIMITS,
-  Threads, utf8Prefix,
+  DROP_RETRY_S, RECEIPT_TEXT_MAX, retainThreads, RUN_RETENTION, type RunRetention, type Thread,
+  THREAD_LIMITS, Threads, USAGE_SPACE_MAX, utf8Prefix,
 } from "../src/threads";
 import { until } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
@@ -125,10 +125,10 @@ async function rig() {
       throw new Error("the operation did not settle");
     },
     /** One `threads` lane pass at quick retention, through the object's own drop path. */
-    retain: (perPass = 32) => inside(async (instance, state) => {
+    retain: (perPass = 32, runs: RunRetention = QUICK_RUNS) => inside(async (instance, state) => {
       const gated = new WriteGate(state.storage);
       const threads = new Threads(gated.storage, THREAD_LIMITS, { ...QUICK, perPass },
-                                  namedByOpenWork, () => QUICK_RUNS);
+                                  namedByOpenWork, () => runs);
       return retainThreads(threads, clock, gated.write, (thread) => instance.agent.drop(thread));
     }),
   };
@@ -386,6 +386,8 @@ describe("a run's retention (S5)", () => {
     expect(await r.in((instance) => instance.parts.threads.nextDue(clock())))
       .toBeCloseTo(read.last_active + RUN_RETENTION.keepRunsS, 0);
     await sleep(1100);
+    // A conversation's idle age is not a run's keep_runs: at a week, it is kept.
+    expect(await r.retain(32, RUN_RETENTION)).toBe(0);
     expect(await r.retain()).toBe(1);
     expect(await storeState(thread!.store)).toEqual({ tables: 0, opens: DESTROYED });
     expect(await r.threads()).toEqual([]);
@@ -418,10 +420,13 @@ describe("a run's retention (S5)", () => {
     const [kept] = await r.threads();
     expect(kept!.state).toBe("ready");
     expect(await piTables(kept!.store)).toBeGreaterThan(0);
+    await sleep(1100);
     held.release();
     await until(async () => (await sqlIn(r.stub, "SELECT 1 FROM agent_live")).length === 0,
                 "the background work to settle");
     await r.in((instance) => instance.agent.host.close(kept!.thread_id));
+    // keep_runs runs from when it settled, just now, not from its last mark.
+    expect(await r.retain()).toBe(0);
     await sleep(1100);
     expect(await r.retain()).toBe(1);
     expect(await storeState(kept!.store)).toEqual({ tables: 0, opens: DESTROYED });
@@ -435,9 +440,9 @@ describe("a run's retention (S5)", () => {
     const out = await r.in(async (_instance, state) => {
       const gated = new WriteGate(state.storage);
       const threads = new Threads(gated.storage);
-      // The owner at its conversations' bound.
+      // The owner one conversation short of its conversations' bound.
       await gated.write(() => {
-        for (let i = 0; i < THREAD_LIMITS.owner; i++) {
+        for (let i = 0; i < THREAD_LIMITS.owner - 1; i++) {
           state.storage.sql.exec(
             "INSERT INTO agent_threads (thread_id, store, state, agent_id, created_at, kind, " +
               "last_active) VALUES (?, ?, 'ready', ?, 1, 'converse', 1)",
@@ -453,13 +458,17 @@ describe("a run's retention (S5)", () => {
           return (error as Error).message;
         }
       };
-      const conversation = await gated.write(() => refused(() =>
-        threads.record("another", null, clock(), "converse")));
       let launched = 0;
       for (let i = 0; i < 1_000; i++) {
         await gated.write(() => threads.record("main", null, clock(), "run"));
         launched++;
       }
+      // The runs count in none of the owner's conversations: its last one is still made.
+      const conversation = [
+        await gated.write(() => refused(() => threads.record("another", null, clock(),
+                                                             "converse"))),
+        await gated.write(() => refused(() => threads.record("one-more", null, clock(),
+                                                             "converse")))];
       const runs = new Threads(gated.storage, { ...THREAD_LIMITS, runs: 1_000 });
       const atRuns = await gated.write(() => refused(() => runs.record("main", null, clock())));
       const receipts = new Threads(gated.storage, { ...THREAD_LIMITS, receipts: 1_001 });
@@ -471,7 +480,7 @@ describe("a run's retention (S5)", () => {
         receipts.record("main", null, clock())));
       return { conversation, launched, atRuns, atReceipts };
     });
-    expect(out).toEqual({ conversation: "the owner's threads are at their limit",
+    expect(out).toEqual({ conversation: ["made", "the owner's threads are at their limit"],
                           launched: 1_000, atRuns: "the agent's runs are at their limit",
                           atReceipts: "the runs' receipts are at their limit" });
     // At 1,000 a day, the policy's highest keep_runs and its default receipts fit the bounds.
@@ -511,6 +520,47 @@ describe("a run's retention (S5)", () => {
     expect(out.due).toBeLessThanOrEqual(clock() + 1);
     expect(out.left).toEqual([`thread_${"2".repeat(32)}`]);
     expect(out.past).toBe("the runs' receipts are past their bound");
+  }, 30_000);
+
+  it("keeps a run whose input never settled, its Session gone with a crash, as dropped",
+     async () => {
+    const r = await rig();
+    const held = gate();
+    await r.in((instance) => { instance.probes.holdGate = held.promise; });
+    const run = await r.stub.agentRun(r.bind(null), { agent: "main", input: "hold please" });
+    await until(() => r.in((instance) => instance.probes.holds === 1), "the hold to start");
+    // Marked as the crash comes: no wake job reopens it, and nothing ends its work first.
+    await r.in((_instance, state) => {
+      state.storage.sql.exec("DELETE FROM cf_agents_jobs WHERE capability = ?", HOST);
+      state.storage.sql.exec("UPDATE agent_threads SET state = 'dropping'");
+    });
+    await crash(r);
+    expect(await r.retain()).toBe(0);
+    expect(await r.threads()).toEqual([]);
+    expect(await r.stub.agentStatus(r.bind(null), { operation_id: run.operation_id }))
+      .toMatchObject({ status: "unanswered", reason: "dropped" });
+    held.release();
+  }, 30_000);
+
+  it("bounds every thread's kept usage together, past each one's own bound", async () => {
+    const r = await rig();
+    const out = await r.in(async (instance, state) => {
+      const made = await instance.agent.thread("main", null);
+      const gated = new WriteGate(state.storage);
+      const threads = new Threads(gated.storage);
+      const space = () => state.storage.sql.exec<{ bytes: number }>(
+        "SELECT bytes FROM agent_usage_space").one().bytes;
+      state.storage.sql.exec("UPDATE agent_usage_space SET bytes = ?", USAGE_SPACE_MAX - 10);
+      const keep = (usage: string) => gated.write(() => threads.keepUsage(made.thread_id, usage))
+        .then(() => "kept", (error: Error) => error.message);
+      const kept = [await keep("x".repeat(10)), await keep("x".repeat(11)),
+                    await keep("x".repeat(4))];
+      const full = space();
+      await gated.write(() => state.storage.sql.exec("DELETE FROM agent_usage"));
+      return { kept, full, after: space() };
+    });
+    expect(out).toEqual({ kept: ["kept", "the threads' kept usage is past its bound", "kept"],
+                          full: USAGE_SPACE_MAX - 6, after: USAGE_SPACE_MAX - 10 });
   }, 30_000);
 
   it("takes keep_runs and keep_run_receipts from owner policy, within their bounds", () => {

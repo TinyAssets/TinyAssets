@@ -986,12 +986,48 @@ account and no deploy.
   usage row kept also when a Session's wake turns idle, since reading `pi.usage` there
   adds store reads to every message and cannot share the live row's unit without reading
   it first. The reviewer's round-3 mutants all killed.
-- [ ] Before any deploy holding real data: S4's drop wipes its store (`destroy()`, the row
-  `dropping` until it returned). Until then, a drop (idle retention, a grant change or a
-  revoke) forgets its row and orphans its store, which nothing can list or reach again.
-- [ ] S4-S5 Drops wipe and run retention: idle, grant change and revoke drops through the
-  `dropping` state with lane retry; `keep_runs` with receipts and the `runs_kept` bound;
-  erasure's store-first order as a tested internal path (its door comes with the §7 doors).
+- [x] Before any deploy holding real data: S4's drop wipes its store (`destroy()`, the row
+  `dropping` until it returned). Done in S4-S5 (below).
+- [x] S4-S5 Drops wipe and run retention, in workerd, nothing deployed (`threads.ts`,
+  `agent.ts`, `thread-host.ts`, `erasure.ts`, `erase.ts`, `policy.ts`, migration 10). One
+  drop path for every reason (idle retention, a run's retention, a grant change or revoke,
+  the owner's erasure): in one unit the row is marked `dropping` (no door resolves it, an
+  operation on it is no such operation, nothing opens its Session); its Session's work is
+  ended and the Session closed through `ThreadHost.drop` (past `OPEN_MAX`, never resumed,
+  never opened for it); a run's receipt is read from its store and kept; `store.destroy()`;
+  then in one unit the row is forgotten with its live and usage rows (by trigger) and its
+  wake job. The `threads` lane finishes any drop cut short, a store that did not answer
+  backed off in its row (`drop_retry`, 60 s; each drop held to 10 s in a pass). A grant
+  change marks its client's threads in its own unit (the mark releases the grant row) and
+  drops them after it commits, sleepers included, ending live work first. Runs and
+  conversations: `run` is every launch's thread (the `run_graph` door, `ta`'s `agent:run`,
+  a scheduled launch), `converse` the door's conversation; no kind was left unmapped.
+  Conversations go at idle retention (7 d); a run's store is wiped `keep_runs` after it
+  settled (owner policy `runs.keep_runs`, 7 d, 1 to 30), its activity moved on by its own
+  work (`agent_live` changes) so settling is its last activity, never while live; its row
+  leaves a receipt (`run_receipts`: status, reason, the first 4 KiB of its answer), kept
+  `keep_run_receipts` from settling (90 d, 1 to 365, never under `keep_runs`), status
+  answered from it to its own caller alone, an input unsettled at the wipe answering
+  `unanswered: dropped`. Bounds: runs have their own (`runs_kept`, 50,000 live stores),
+  the owner's 10,000 now counts its conversations only, and a run is refused once runs and
+  receipts together reach 100,000, so every receipt has room; every thread's kept usage is
+  bounded at 256 MiB in all (`agent_usage_space`, counted by trigger), since 61,024 rows of
+  64 KiB would pass the guard's share. Erasure as a tested internal path (its door comes
+  with the §7 doors): one unit marks the owner erasing (`owner_erasure`) and every thread
+  dropping, and pushes the erasure's own Lifecycle job; every door then refuses
+  (`ERASING`, in the binding check), the schedule's lanes run nothing, no thread is
+  recorded (the recording unit reads the mark) and no Session opens; every store a row
+  names is destroyed through the drop path, each row forgotten after it; then Lifecycle's
+  alarm is disabled for good and the write gate deletes the whole database
+  (`WriteGate.wipe`), so nothing is written after it. Each step resumes after a crash, by
+  the job. The owner-bound guard counts the runs' rows, the receipts, the usage space and
+  the erasure mark (worst case 4.46 GB of its 5 GB); the alarm guard admits only
+  `erase.ts`'s `disableAlarms` and `gate.ts`'s `deleteAll` beside the store's. Declared
+  differences from the design: a run's receipt is kept before its store's destroy rather
+  than in the last unit, since after the wipe there is nothing to read; a status read that
+  reopens a settled run's Session counts as its activity (pi reports an open's reconcile
+  as work), so a run read since is kept from then. Still owed live: P8, `deleteAll()` on a
+  populated store frees billed bytes within a billing day (design-decision §6).
 - [ ] F1 and admission: `ta.scheduled` pi task, `wake:list` from rows, cancel and status
   paths, cron recurrence; delete the `work` lane, `WorkRunner` and migrations 7-8's work
   tables; a policy write aborts active Sessions' work only, sleepers enforced in `deliver`;
@@ -1007,8 +1043,10 @@ account and no deploy.
   and the task graph doors.
 - [ ] M (MCP) after G4: SDK v2 client in the owner over G4's forward, `mcp.json` with every
   server clamped to tools-only, OAuth via G3.
-- [ ] Erasure's store-first order: mark the owner erasing, destroy every store a row names,
-  then `deleteAll()` the owner.
+- [x] Erasure's store-first order: mark the owner erasing, destroy every store a row names,
+  then `deleteAll()` the owner. Built as S4-S5's internal path (above); its door, and the
+  tombstone that keeps a stale binder from making an erased owner again, come with the
+  admission row and the §7 doors.
 - [ ] 0c (live): the dark deploy of the owner and gateway Workers, the store probe's cases
   re-run on the real code (P1-P4, P7; P5 a store reset mid-run).
 - [ ] User hooks in a separately deployed Worker's Durable Object, which loads each
