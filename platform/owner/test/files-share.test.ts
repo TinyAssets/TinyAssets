@@ -10,7 +10,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import {
-  type Files, FILE_QUOTA, FILE_SHARE, INLINE_BYTES, MAX_OPEN_INTENTS, sha256Hex,
+  CHUNK_BYTES, type Files, FILE_QUOTA, FILE_SHARE, INLINE_BYTES, MAX_OPEN_INTENTS, sha256Hex,
 } from "../src/files";
 import { WriteGate } from "../src/gate";
 import {
@@ -569,6 +569,40 @@ describe("deduplication in each scope", () => {
     // The real storage holds them once.
     expect((await sqlIn(r.stub, "SELECT chunk_bytes, inline_bytes FROM file_space"))[0])
       .toEqual({ chunk_bytes: big.length, inline_bytes: small.length });
+    await counted(r);
+  });
+
+  it("lets a write keep the chunks its caller read, sending only its own tail", async () => {
+    const r = await rig();
+    const whole = new Uint8Array(CHUNK_BYTES + 5).fill(3);
+    const head = sha256Hex(whole.subarray(0, CHUNK_BYTES));
+    const entry = await inFiles(r.stub, {}, async (files: Files) => {
+      await files.write(`${W}/log`, whole, { expected: null, writer: "owner" });
+      // A client's append, as the environment makes it: the read head kept, a tail sent.
+      return files.write(`${W}/log`, text("more"), {
+        expected: null, writer: CLIENT, prefix: [{ sha256: head, size: CHUNK_BYTES }] });
+    });
+    expect(entry.size).toBe(CHUNK_BYTES + 4);
+    expect(await share(r, CLIENT)).toMatchObject({ chunk_bytes: CHUNK_BYTES + 4 });
+    await counted(r);
+  });
+
+  it("charges garbage to the scope that let its chunk go last", async () => {
+    const r = await rig();
+    const big = new Uint8Array(INLINE_BYTES + 11).fill(5);
+    await inFiles(r.stub, {}, async (files: Files) => {
+      await files.write(`${W}/owner.bin`, big, { expected: null, writer: "owner" });
+      await files.write(`${W}/client.bin`, big, { expected: null, writer: CLIENT });
+      for (const [path, writer] of [[`${W}/owner.bin`, "owner"], [`${W}/client.bin`, CLIENT]]) {
+        files.remove(path!, { expected: null, writer: writer! });
+        files.purge(path!);
+      }
+    });
+    expect(await sqlIn(r.stub, "SELECT state, holder FROM file_chunks"))
+      .toEqual([{ state: "garbage", holder: CLIENT }]);
+    // Held as garbage, by the client alone: its share keeps the row's bytes.
+    expect(await share(r, CLIENT)).toMatchObject({ chunk_bytes: 0, entries: 0, history: 0 });
+    expect((await share(r, "owner"))!["manifest_bytes"]).toBe(SHARE_BYTES);
     await counted(r);
   });
 
