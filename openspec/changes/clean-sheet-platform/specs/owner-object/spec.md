@@ -396,14 +396,18 @@ Chunk, inline and manifest bytes, entries, history rows, open uploads and their 
 - **THEN** it is refused `file_quota`, and no parent directory, history row or content of it is kept
 
 ### Requirement: Every manifest row is bounded in bytes as the object stores it
-Every row of the file manifest (each entry, history row, content with its inline bytes and its chunk list, chunk, temporary directory and share row) SHALL be charged, by triggers only, what SQLite stores it in: each b-tree record it makes, its text counted in bytes, its page share and overflow pages included, against `max_manifest_bytes`. The charge SHALL be at least what the object's database grows by, for every path length a path may have (up to 4,096 bytes, components of up to 255).
+Every manifest row (entry, history row, content with its inline bytes and chunk list, chunk, temporary directory, share row, scope reference) SHALL be charged, by triggers only, the page bytes of each b-tree record and index entry it makes, its text in bytes and its overflow pages included, against `max_manifest_bytes`. The charge SHALL bound the database's growth within the guard's worst-case fill factor, `WORST_FILL`, for every path length (up to 4,096 bytes).
 
 #### Scenario: A client writing 4,096-byte paths
 - **WHEN** an outside client writes file after file at 4,096-byte paths
-- **THEN** each is charged its three spilled copies' overflow pages, the object's database grows by no more than the charge, and the client is refused `file_share` at its share while the owner still writes
+- **THEN** each is charged its three spilled copies' overflow pages, and the client is refused `file_share` at its share while the owner still writes
+
+#### Scenario: A database filled, thinned and filled again
+- **WHEN** files are written to a charge, every other one removed and purged, and the charge refilled, round after round
+- **THEN** the database grows by more than the charge as pages stay half used, and never by more than the charge times `WORST_FILL`
 
 ### Requirement: An outside client holds a share of every file quota
-Each outside client SHALL hold at most `client_share` percent of every file quota, open uploads included, and all clients together at most what `owner_reserve` percent leaves, both owner policy, so the owner always has room of its own. A client SHALL be charged the entries it last wrote, its history rows, and the contents, chunks, temporary directories and uploads it first stored; a chunk revived from garbage, to the upload that revived it.
+Each outside client SHALL hold at most `client_share` percent of every file quota, open uploads included, and all clients together at most what `owner_reserve` percent leaves, both owner policy, so the owner always has room of its own.
 
 #### Scenario: A client fills its share
 - **WHEN** an outside client holding `write_files` writes until it is refused `file_share`
@@ -412,6 +416,20 @@ Each outside client SHALL hold at most `client_share` percent of every file quot
 #### Scenario: Two clients together
 - **WHEN** `client_share` is 40 and `owner_reserve` 50 of ten entries, and two clients write four and one files
 - **THEN** a fifth file of the first, or a second of the other, is refused `file_share`, and the owner writes five more
+
+### Requirement: Each scope is charged once for what its own rows reference
+Each scope (an outside client's own, all clients', the owner's writers') SHALL be charged its own entries, history rows and temporary directories, and once for each content and chunk its rows or open uploads reference, while any do, deduplicated within the scope and never across scopes; a chunk no scope references SHALL be charged to the scope that let it go last until it is deleted or revived. The owner-wide total SHALL count each stored row once.
+
+#### Scenario: A client copies the owner's file
+- **WHEN** the owner writes a file, a client writes the same bytes, and the owner removes and purges its own
+- **THEN** the client's share holds the bytes and the owner's scope is credited, while the object stores them once
+
+### Requirement: An upload proves the bytes its writer does not hold
+An upload SHALL be told a chunk need not be sent only when the chunk is stored and the writer's own scope holds it through its contents (or let it go last as garbage); a commit SHALL be refused unless the upload sent every other chunk, or the writer's scope holds it by then, so no upload reveals or claims bytes another scope stored.
+
+#### Scenario: A client names a chunk only the owner holds
+- **WHEN** a client begins an upload of a chunk the owner stored and commits without sending it, by one upload or two
+- **THEN** each commit is refused, and once the client sends the bytes it commits
 
 ### Requirement: The owner's database is bounded under half its limit
 Every table the owner's schema makes SHALL be bounded by a count or bytes the code enforces, with no exception, and a guard SHALL compute the object's worst case from those bounds and the schema, at the policy's high bounds, and hold it under half of the platform's 10 GB. The model turns' counters SHALL be bounded too: at most `TURNS_KEPT` turns of at most 320 bytes each, a new turn past it dropping the turn idle longest with no call open.

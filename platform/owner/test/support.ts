@@ -5,8 +5,8 @@ import { Collections, LIMITS, type Limits } from "../src/collections";
 import { type ChunkStore, type FileLimits, Files } from "../src/files";
 import { type OwnerStorage, type Write, WriteGate } from "../src/gate";
 import {
-  CHUNK_LIST_ROW_BYTES, CHUNK_ROW_BYTES, CONTENT_RECORD_BYTES, ENTRY_BYTES, HISTORY_BYTES,
-  SHARE_BYTES, TEMP_BYTES,
+  CHUNK_LIST_ROW_BYTES, CHUNK_ROW_BYTES, CONTENT_BYTES, CONTENT_RECORD_BYTES, ENTRY_BYTES,
+  HISTORY_BYTES, SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
 } from "../src/manifest";
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
@@ -136,6 +136,66 @@ export async function lostContent(stub: DurableObjectStub<OwnerDO>): Promise<Row
 }
 
 /**
+ * Each writer's scopes, as the schema counts them: an outside client's own and all
+ * clients', anyone else's the owner's.
+ */
+const SCOPED = "scoped (writer, scope) AS (SELECT writer, writer FROM writers " +
+  "WHERE writer GLOB 'client:*' UNION ALL SELECT writer, '*' FROM writers " +
+  "WHERE writer GLOB 'client:*' UNION ALL SELECT writer, 'owner' FROM writers " +
+  "WHERE writer NOT GLOB 'client:*')";
+
+/**
+ * The file manifest's counters, recounted from its rows alone: the owner-wide ones, each
+ * scope's references to contents and chunks, and each scope's share, by the charge of
+ * `manifest.ts` but not by its triggers.
+ */
+const RECOUNT =
+  // SQLite here takes few terms in one compound SELECT, so the unions are nested.
+  "WITH RECURSIVE writers (writer) AS (SELECT writer FROM (SELECT writer FROM file_entries " +
+  "UNION SELECT writer FROM file_history UNION SELECT writer FROM file_temps) UNION " +
+  "SELECT writer FROM (SELECT writer FROM file_intents UNION SELECT holder FROM file_chunks)), " +
+  `${SCOPED}, ` +
+  "rows_c (writer, content_id) AS (SELECT writer, content_id FROM file_entries " +
+  "WHERE content_id IS NOT NULL UNION ALL SELECT writer, content_id FROM file_history " +
+  "WHERE content_id IS NOT NULL), " +
+  "refs_c (scope, content_id, refs) AS (SELECT s.scope, r.content_id, COUNT(*) FROM rows_c r " +
+  "JOIN scoped s ON s.writer = r.writer GROUP BY s.scope, r.content_id), " +
+  "cut (intent_id, writer, chunks, i) AS (SELECT intent_id, writer, chunks, 0 FROM " +
+  "file_intents WHERE length(chunks) > 0 UNION ALL SELECT intent_id, writer, chunks, i + 1 " +
+  "FROM cut WHERE (i + 1) * 64 < length(chunks)), " +
+  "held (writer, sha256) AS (SELECT DISTINCT writer, intent_id || ':' || " +
+  "substr(chunks, i * 64 + 1, 64) FROM cut), " +
+  "refs_k (scope, sha256, refs) AS (SELECT scope, sha256, SUM(n) FROM (" +
+  "SELECT c.scope, x.sha256, COUNT(*) AS n FROM refs_c c JOIN file_content_chunks x " +
+  "ON x.content_id = c.content_id GROUP BY c.scope, x.sha256 UNION ALL " +
+  "SELECT s.scope, substr(h.sha256, 34), COUNT(*) FROM held h JOIN scoped s " +
+  "ON s.writer = h.writer GROUP BY s.scope, substr(h.sha256, 34)) GROUP BY scope, sha256), " +
+  "rows_own (who, entries, history, chunk_bytes, inline_bytes, manifest_bytes) AS (" +
+  `SELECT s.scope, 1, 0, 0, 0, ${ENTRY_BYTES("e")} FROM file_entries e JOIN scoped s ` +
+  "ON s.writer = e.writer UNION ALL " +
+  `SELECT s.scope, 0, 1, 0, 0, ${HISTORY_BYTES("h")} FROM file_history h JOIN scoped s ` +
+  "ON s.writer = h.writer UNION ALL " +
+  `SELECT s.scope, 0, 0, 0, 0, ${TEMP_BYTES("t")} FROM file_temps t JOIN scoped s ` +
+  "ON s.writer = t.writer), " +
+  "rows_held (who, entries, history, chunk_bytes, inline_bytes, manifest_bytes) AS (" +
+  "SELECT r.scope, 0, 0, 0, coalesce(length(c.inline), 0), " +
+  `${SCOPE_REF_BYTES("r")} + ${CONTENT_RECORD_BYTES("c")} + ${CHUNK_LIST_ROW_BYTES()} * ` +
+  "(SELECT COUNT(*) FROM file_content_chunks x WHERE x.content_id = c.content_id) " +
+  "FROM refs_c r JOIN file_contents c ON c.content_id = r.content_id UNION ALL " +
+  `SELECT r.scope, 0, 0, k.size, 0, ${SCOPE_REF_BYTES("r")} + ${CHUNK_ROW_BYTES()} ` +
+  "FROM refs_k r JOIN file_chunks k ON k.sha256 = r.sha256 UNION ALL " +
+  `SELECT s.scope, 0, 0, 0, 0, ${CHUNK_ROW_BYTES()} FROM file_chunks k JOIN scoped s ` +
+  "ON s.writer = k.holder WHERE k.state IN ('garbage', 'deleting')), " +
+  "charged AS (SELECT * FROM rows_own UNION ALL SELECT * FROM rows_held), " +
+  "scopes (who) AS (SELECT '*' UNION SELECT 'owner' UNION SELECT who FROM charged), " +
+  "shares AS (SELECT w.who, coalesce(SUM(c.entries), 0) AS entries, " +
+  "coalesce(SUM(c.history), 0) AS history, coalesce(SUM(c.chunk_bytes), 0) AS chunk_bytes, " +
+  "coalesce(SUM(c.inline_bytes), 0) AS inline_bytes, coalesce(SUM(c.manifest_bytes), 0) + " +
+  `${SHARE_BYTES} * (CASE WHEN w.who = '*' THEN (SELECT COUNT(*) FROM scopes ` +
+  "WHERE who GLOB 'client:*') + 1 ELSE 1 END) AS manifest_bytes FROM scopes w " +
+  "LEFT JOIN charged c ON c.who = w.who GROUP BY w.who) ";
+
+/**
  * Every counter and reference count the file manifest keeps, and the same numbers
  * counted from the rows: the two must always be equal. Content anything names is never
  * lost (`lostContent`), checked here too, so every counter check also checks that.
@@ -150,39 +210,36 @@ export async function fileCounters(stub: DurableObjectStub<OwnerDO>): Promise<[R
       "intent_chunks, (SELECT json_group_object(who, json_array(entries, history, " +
       "chunk_bytes, inline_bytes, manifest_bytes)) FROM (SELECT * FROM file_shares " +
       "ORDER BY who)) AS shares, " +
+      "(SELECT json_group_object(scope || '/' || content_id, refs) FROM (SELECT * FROM " +
+      "file_scope_contents ORDER BY scope, content_id)) AS scope_contents, " +
+      "(SELECT json_group_object(scope || '/' || sha256, refs) FROM (SELECT * FROM " +
+      "file_scope_chunks ORDER BY scope, sha256)) AS scope_chunks, " +
       "(SELECT json_group_object(content_id, refs) FROM (SELECT * FROM file_contents " +
       "ORDER BY content_id)) AS contents, " +
       "(SELECT json_group_object(sha256, refs || '/' || holds) FROM (SELECT * FROM file_chunks " +
       "ORDER BY sha256)) AS chunks FROM file_space");
   const [counted] = await sqlIn(stub,
-    `WITH charged (who, entries, history, chunk_bytes, inline_bytes, manifest_bytes) AS (` +
-      `SELECT writer, 1, 0, 0, 0, ${ENTRY_BYTES("e")} FROM file_entries e UNION ALL ` +
-      `SELECT writer, 0, 1, 0, 0, ${HISTORY_BYTES("h")} FROM file_history h UNION ALL ` +
-      "SELECT writer, 0, 0, 0, coalesce(length(c.inline), 0), " +
-      `${CONTENT_RECORD_BYTES("c")} + ${CHUNK_LIST_ROW_BYTES()} * (SELECT COUNT(*) FROM ` +
-      "file_content_chunks x WHERE x.content_id = c.content_id) FROM file_contents c " +
-      "UNION ALL SELECT writer, 0, 0, size * (state IN ('uploading', 'live')), 0, " +
-      `${CHUNK_ROW_BYTES("k")} FROM file_chunks k UNION ALL ` +
-      `SELECT writer, 0, 0, 0, 0, ${TEMP_BYTES("t")} FROM file_temps t), ` +
-      "clients AS (SELECT who, SUM(entries) AS entries, SUM(history) AS history, " +
-      "SUM(chunk_bytes) AS chunk_bytes, SUM(inline_bytes) AS inline_bytes, " +
-      `SUM(manifest_bytes) + ${SHARE_BYTES} AS manifest_bytes FROM charged ` +
-      "WHERE who GLOB 'client:*' GROUP BY who), " +
-      "shares AS (SELECT * FROM clients UNION ALL SELECT '*', " +
-      "coalesce(SUM(entries), 0), coalesce(SUM(history), 0), coalesce(SUM(chunk_bytes), 0), " +
-      `coalesce(SUM(inline_bytes), 0), coalesce(SUM(manifest_bytes), 0) + ${SHARE_BYTES} ` +
-      "FROM clients) " +
-      "SELECT (SELECT COUNT(*) FROM file_entries) AS entries, " +
+    `${RECOUNT}SELECT (SELECT COUNT(*) FROM file_entries) AS entries, ` +
       "(SELECT COUNT(*) FROM file_history) AS history, " +
       "(SELECT COALESCE(SUM(size), 0) FROM file_chunks WHERE state IN ('uploading', 'live')) " +
       "AS chunk_bytes, " +
       "(SELECT COALESCE(SUM(length(inline)), 0) FROM file_contents) AS inline_bytes, " +
-      "(SELECT coalesce(SUM(manifest_bytes), 0) FROM charged) + " +
+      `(SELECT coalesce(SUM(${ENTRY_BYTES("e")}), 0) FROM file_entries e) + ` +
+      `(SELECT coalesce(SUM(${HISTORY_BYTES("h")}), 0) FROM file_history h) + ` +
+      `(SELECT coalesce(SUM(${CONTENT_BYTES("c")}), 0) FROM file_contents c) + ` +
+      `(SELECT COUNT(*) FROM file_chunks) * ${CHUNK_ROW_BYTES()} + ` +
+      `(SELECT coalesce(SUM(${TEMP_BYTES("t")}), 0) FROM file_temps t) + ` +
+      `(SELECT coalesce(SUM(${SCOPE_REF_BYTES("r")}), 0) FROM refs_c r) + ` +
+      `(SELECT coalesce(SUM(${SCOPE_REF_BYTES("r")}), 0) FROM refs_k r) + ` +
       `(SELECT COUNT(*) FROM shares) * ${SHARE_BYTES} AS manifest_bytes, ` +
       "(SELECT COUNT(*) FROM file_intents) AS intents, " +
       "(SELECT COALESCE(SUM(length(chunks) / 64), 0) FROM file_intents) AS intent_chunks, " +
       "(SELECT json_group_object(who, json_array(entries, history, chunk_bytes, " +
       "inline_bytes, manifest_bytes)) FROM (SELECT * FROM shares ORDER BY who)) AS shares, " +
+      "(SELECT json_group_object(scope || '/' || content_id, refs) FROM (SELECT * FROM " +
+      "refs_c ORDER BY scope, content_id)) AS scope_contents, " +
+      "(SELECT json_group_object(scope || '/' || sha256, refs) FROM (SELECT * FROM " +
+      "refs_k ORDER BY scope, sha256)) AS scope_chunks, " +
       "(SELECT json_group_object(content_id, n) FROM (SELECT c.content_id, " +
       "(SELECT COUNT(*) FROM file_history h WHERE h.content_id = c.content_id) + " +
       "(SELECT COUNT(*) FROM file_entries e WHERE e.content_id = c.content_id) AS n " +

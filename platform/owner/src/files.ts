@@ -49,8 +49,11 @@
  *   make room. They read counters the schema's triggers keep, as do the bounds on open
  *   uploads. An outside client's change is held to its share of each as well, and all
  *   clients' to what the owner's reserve leaves (`FILE_SHARE`), so no client fills the
- *   owner's object: a client is charged the entries it last wrote, its history rows, and
- *   the contents, chunks, temporary directories and uploads it first stored.
+ *   owner's object. Each scope (an outside client's own, all clients', the owner's
+ *   writers') is charged its own rows, and once for each content and chunk its rows and
+ *   open uploads reference, deduplicated within the scope and never across, so no scope
+ *   keeps bytes alive at another's cost; an upload is told a chunk need not be sent only
+ *   when its writer's own scope holds it, and commits only the chunks it sent or holds.
  * - The sync lease, for the sandbox's sync agent (tasks 6): a random `lease_id` is the
  *   claim token and a rising `epoch` the fencing number, as the ledger's claims are. A
  *   sync commit is refused unless both are the live lease's; within it, each op has its
@@ -72,7 +75,7 @@ import { createHash, randomBytes } from "node:crypto";
 
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage, Write } from "./gate";
-import { CHUNK_BYTES, CLIENT_WRITER, CLIENTS, HISTORY_BYTES } from "./manifest";
+import { CHUNK_BYTES, CLIENT_WRITER, CLIENTS, HISTORY_BYTES, OWNER_SCOPE } from "./manifest";
 import { inTime } from "./schedule";
 import {
   ancestors, isRoot, MAX_NAME_BYTES, MAX_PATH_BYTES, nameOf, parentOf, storedPath, TEMP, within,
@@ -167,6 +170,14 @@ export function isClient(writer: string | null): writer is string {
   return writer !== null && writer.startsWith("client:");
 }
 
+/**
+ * The scopes a writer's rows count in, its own last: an outside client's all clients'
+ * and its own, anyone else's the owner's.
+ */
+export function scopesOf(writer: string): readonly string[] {
+  return isClient(writer) ? [CLIENTS, writer] : [OWNER_SCOPE];
+}
+
 /** What the files Worker does for the object; the `FILES` binding. */
 export interface ChunkStore {
   putChunks(ns: string, chunks: { sha256: string; bytes: Uint8Array }[]):
@@ -228,9 +239,12 @@ export interface Usage {
   readonly intents: number;
   readonly intent_chunks: number;
   readonly limits: FileLimits;
-  /** The calling outside client's own counters, held to `client_share` of each quota. */
+  /**
+   * The caller's own scope's counters: an outside client's, held to `client_share` of
+   * each quota, or the owner's own writers'.
+   */
   readonly share: Pick<Usage, "entries" | "history" | "chunk_bytes" | "inline_bytes" |
-                              "manifest_bytes"> | null;
+                              "manifest_bytes">;
 }
 
 export interface Lease {
@@ -331,7 +345,7 @@ const FIT_BATCH = 64;
 /** Paths each change touched, for the object's watchers. */
 type Touched = string[];
 
-type Intent = { size: number; chunks: string[] };
+type Intent = { size: number; chunks: string[]; pending: string[]; writer: string };
 
 export function sha256Hex(bytes: Uint8Array | string): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -807,13 +821,15 @@ export class Files {
     };
   }
 
-  /** The owner's counters and limits, and an outside client caller's own share of them. */
-  usage(writer: string | null = null): Usage {
+  /**
+   * The owner's counters (the object's real storage) and limits, and the caller's own
+   * scope's: an outside client's share, or the owner's own writers'.
+   */
+  usage(writer = "owner"): Usage {
     const { entries, history, chunk_bytes, inline_bytes, manifest_bytes, intents,
             intent_chunks } = this.#space();
     return { entries, history, chunk_bytes, inline_bytes, manifest_bytes, intents,
-             intent_chunks, limits: this.#limits(),
-             share: isClient(writer) ? this.#share(writer) : null };
+             intent_chunks, limits: this.#limits(), share: this.#share(scopesOf(writer).at(-1)!) };
   }
 
   // -- WRITING ------------------------------------------------------------------
@@ -982,12 +998,12 @@ export class Files {
     return true;
   }
 
-  /** Small content kept inline: its id, the row made when new, charged to `writer`. */
-  #inline(bytes: Uint8Array, writer: string): string {
+  /** Small content kept inline: its id, the row made when new. */
+  #inline(bytes: Uint8Array): string {
     const contentId = inlineId(bytes);
     if (!this.#known(contentId, bytes.byteLength, bytes, null)) {
-      this.#sql.exec("INSERT INTO file_contents (content_id, size, inline, writer) " +
-                       "VALUES (?, ?, ?, ?)", contentId, bytes.byteLength, buffer(bytes), writer);
+      this.#sql.exec("INSERT INTO file_contents (content_id, size, inline) VALUES (?, ?, ?)",
+                     contentId, bytes.byteLength, buffer(bytes));
     }
     return contentId;
   }
@@ -996,7 +1012,7 @@ export class Files {
   #writeInline(path: string, bytes: Uint8Array, expected: string | null, mode: number | null,
                writer: string, parents: boolean): Entry {
     return this.#change(writer, (touched, now) => this.#commit(
-      path, expected, this.#inline(bytes, writer), bytes.byteLength, mode, writer, "write", parents,
+      path, expected, this.#inline(bytes), bytes.byteLength, mode, writer, "write", parents,
       now, touched));
   }
 
@@ -1004,7 +1020,9 @@ export class Files {
    * Write bytes as `path`: inline, or chunked (intent, bytes to `FILES`, commit), the
    * object's own writes and the doors' small ones, at most `WHOLE_BYTES` at once.
    * `prefix` is whole chunks of content already stored that come first (an append or a
-   * truncate keeps them), so only the chunks after them are cut from `bytes` and sent.
+   * truncate keeps them), so only the chunks after them are cut from `bytes` and sent: the
+   * caller read them (the environment, under the conversation's read access), so they
+   * count as the writer's to hold without being sent again.
    * Called outside a unit: each step that writes (the inline write, or the intent, each
    * put's record and the commit or abort) is a unit of its own, between the calls.
    * `authorize`, a door's check of the caller's authority, runs first in the inline
@@ -1040,7 +1058,8 @@ export class Files {
     const tail = cut(bytes);
     const { intent_id, missing } = await this.#write(() => {
       authorize();
-      return this.begin(size, [...prefix, ...tail].map((chunk) => chunk.sha256), options.writer);
+      return this.begin(size, [...prefix, ...tail].map((chunk) => chunk.sha256), options.writer,
+                        prefix.map((chunk) => chunk.sha256));
     });
     try {
       const wanted = new Set(missing);
@@ -1049,7 +1068,7 @@ export class Files {
         throw new Refused("a kept chunk of this file is gone; write it whole");
       }
       for (const group of batches(puts)) {
-        await this.#put(group);
+        await this.#put(group, intent_id);
       }
       return await this.#write(() => {
         authorize();
@@ -1061,29 +1080,77 @@ export class Files {
     }
   }
 
-  /** Put chunks through `FILES`, then record them stored, in a unit, once it accepted them. */
-  async #put(chunks: readonly { sha256: string; bytes: Uint8Array }[]): Promise<void> {
+  /**
+   * Put chunks through `FILES`, then, in a unit once it accepted them, record them stored
+   * and sent for `intentId`: its writer has shown it holds their bytes.
+   */
+  async #put(chunks: readonly { sha256: string; bytes: Uint8Array }[], intentId: string):
+      Promise<void> {
     await this.#store.putChunks(await this.namespace(),
                                 chunks.map(({ sha256, bytes }) => ({ sha256, bytes })));
     await this.#write(() => this.#storage.transactionSync(() => {
-      for (const { sha256 } of chunks) {
+      const sent = new Set(chunks.map(({ sha256 }) => sha256));
+      for (const sha256 of sent) {
         this.#sql.exec("UPDATE file_chunks SET stored = 1 WHERE sha256 = ? AND stored = 0",
                        sha256);
+      }
+      const row = this.#sql.exec<{ pending: string }>(
+        "SELECT pending FROM file_intents WHERE intent_id = ?", intentId).toArray()[0];
+      if (row !== undefined) {
+        this.#sql.exec("UPDATE file_intents SET pending = ? WHERE intent_id = ?",
+                       hashes(row.pending).filter((sha256) => !sent.has(sha256)).join(""),
+                       intentId);
       }
     }));
   }
 
   /**
-   * Record an upload of a file of `size` bytes made of `chunks`, cut at 4 MiB: each chunk
-   * held, and the ones whose bytes must be sent. A stored chunk is not sent again; one
-   * being deleted is refused, to begin again. `writer` is whose upload it is: the chunks
-   * it brings (new, or revived from garbage) are charged to it, and an outside client holds
-   * at most its share of the open uploads and the chunks they hold, all clients together at
-   * most what the owner's reserve leaves. Every bound is checked here, before any byte is
-   * sent.
+   * Whether `scope` holds a chunk's bytes for its own: through its contents (its
+   * references but its open uploads'), or as the garbage it let go last. An open upload
+   * holds a chunk without showing its bytes, so it is no proof.
    */
-  begin(size: unknown, chunks: unknown, writer: string): { intent_id: string; missing: string[];
-                                                          expires_at: number } {
+  #possessed(scope: string, sha256: string): boolean {
+    const sql = this.#sql;
+    const refs = sql.exec<{ refs: number }>(
+      "SELECT refs FROM file_scope_chunks WHERE scope = ? AND sha256 = ?", scope, sha256)
+      .toArray()[0]?.refs ?? 0;
+    const uploads = sql.exec<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM file_intents WHERE (writer = ? OR (? = ? AND writer NOT GLOB ?)) " +
+        "AND instr(chunks, ?) > 0", scope, scope, OWNER_SCOPE, CLIENT_WRITER, sha256).one().n;
+    return refs > uploads || sql.exec("SELECT 1 FROM file_chunks WHERE sha256 = ? " +
+                                        "AND state = 'garbage' AND holder = ?", sha256, scope)
+      .toArray().length > 0;
+  }
+
+  /** In a unit: count (`1`) or take out (`-1`) a scope reference of `writer`'s to a chunk. */
+  #chunkRef(writer: string, sha256: string, by: 1 | -1): void {
+    for (const scope of scopesOf(writer)) {
+      if (by === 1) {
+        this.#sql.exec("INSERT INTO file_scope_chunks (scope, sha256, refs) VALUES (?, ?, 1) " +
+                         "ON CONFLICT (scope, sha256) DO UPDATE SET refs = refs + 1",
+                       scope, sha256);
+      } else {
+        this.#sql.exec("UPDATE file_scope_chunks SET refs = refs - 1 WHERE scope = ? " +
+                         "AND sha256 = ?", scope, sha256);
+      }
+    }
+  }
+
+  /**
+   * Record an upload of a file of `size` bytes made of `chunks`, cut at 4 MiB: each chunk
+   * held, and the ones whose bytes must be sent. `writer` is whose upload it is: its
+   * scope holds each chunk while the upload is open, charged for it once whatever else
+   * holds it. A chunk is not sent again only when it is stored and the writer's own scope
+   * already holds it, or let it go last and it waits as garbage, or the caller read it
+   * (`readable`): content stored by another scope
+   * is never the writer's without its bytes, and an upload never shows what another
+   * stored. The chunks to send are the upload's to send before it commits. One being
+   * deleted is refused, to begin again. An outside client holds at most its share of the
+   * open uploads and the chunks they hold, all clients together at most what the owner's
+   * reserve leaves. Every bound is checked here, before any byte is sent.
+   */
+  begin(size: unknown, chunks: unknown, writer: string, readable: readonly string[] = []):
+      { intent_id: string; missing: string[]; expires_at: number } {
     const bytes = count(size, "size", INLINE_BYTES + 1, Number.MAX_SAFE_INTEGER);
     if (bytes > this.#limits().max_file_bytes) {
       throw new Refused(FILE_TOO_LARGE);
@@ -1111,6 +1178,8 @@ export class Files {
         throw new Refused(`${FILE_QUOTA}: too many uploads are open; commit or abort one first`);
       }
       this.#uploadShare(writer, plan.length);
+      const own = scopesOf(writer).at(-1)!;
+      const known = new Set(readable);
       const missing: string[] = [];
       for (const [sha256, chunkSize] of wanted) {
         const row = sql.exec<{ state: string; stored: number; size: number }>(
@@ -1118,25 +1187,27 @@ export class Files {
         if (row !== undefined && row.size !== chunkSize) {
           throw new Invalid("a chunk hash names one size");
         }
+        const held = this.#possessed(own, sha256);
         if (row === undefined) {
-          sql.exec("INSERT INTO file_chunks (sha256, size, state, stored, holds, writer) " +
-                     "VALUES (?, ?, 'uploading', 0, 1, ?)", sha256, chunkSize, writer);
+          sql.exec("INSERT INTO file_chunks (sha256, size, state, stored, holds, holder) " +
+                     "VALUES (?, ?, 'uploading', 0, 1, ?)", sha256, chunkSize, own);
         } else if (row.state === "deleting") {
           throw new Refused("a chunk of this upload is being deleted; begin again");
         } else if (row.state === "garbage") {
-          sql.exec("UPDATE file_chunks SET state = 'uploading', holds = 1, gc_after = NULL, " +
-                     "writer = ? WHERE sha256 = ?", writer, sha256);
+          sql.exec("UPDATE file_chunks SET state = 'uploading', holds = 1, gc_after = NULL " +
+                     "WHERE sha256 = ?", sha256);
         } else {
           sql.exec("UPDATE file_chunks SET holds = holds + 1 WHERE sha256 = ?", sha256);
         }
-        if (row === undefined || !row.stored) {
+        this.#chunkRef(writer, sha256, 1);
+        if (row === undefined || !row.stored || !(held || known.has(sha256))) {
           missing.push(sha256);
         }
       }
       const expiresAt = now + INTENT_TTL_S;
-      sql.exec("INSERT INTO file_intents (intent_id, size, chunks, expires_at, writer) " +
-                 "VALUES (?, ?, ?, ?, ?)", intentId, bytes, (chunks as string[]).join(""),
-               expiresAt, writer);
+      sql.exec("INSERT INTO file_intents (intent_id, size, chunks, expires_at, writer, " +
+                 "pending) VALUES (?, ?, ?, ?, ?, ?)", intentId, bytes,
+               (chunks as string[]).join(""), expiresAt, writer, missing.join(""));
       return { intent_id: intentId, missing, expires_at: expiresAt };
     });
   }
@@ -1174,21 +1245,28 @@ export class Files {
     if (typeof intentId !== "string" || !HEX32.test(intentId)) {
       throw new Invalid("an intent id is 32 lowercase hex characters");
     }
-    const row = this.#sql.exec<{ size: number; chunks: string; expires_at: number }>(
-      "SELECT size, chunks, expires_at FROM file_intents WHERE intent_id = ?", intentId)
-      .toArray()[0];
+    const row = this.#sql.exec<{ size: number; chunks: string; expires_at: number;
+                                 pending: string; writer: string }>(
+      "SELECT size, chunks, expires_at, pending, writer FROM file_intents WHERE intent_id = ?",
+      intentId).toArray()[0];
     if (row === undefined || row.expires_at <= now) {
       throw new Refused("no such upload: it was committed, abandoned or has expired");
     }
-    return { size: row.size, chunks: hashes(row.chunks) };
+    return { size: row.size, chunks: hashes(row.chunks), pending: hashes(row.pending),
+             writer: row.writer };
   }
 
-  /** End an intent: its holds go, and chunks nothing else holds become garbage. */
+  /**
+   * End an intent: its writer's scope references go, then its holds, and chunks nothing
+   * else holds become garbage, held by the scope that let them go last.
+   */
   #release(intentId: string): void {
     const sql = this.#sql;
-    const row = sql.exec<{ chunks: string }>(
-      "DELETE FROM file_intents WHERE intent_id = ? RETURNING chunks", intentId).toArray()[0];
+    const row = sql.exec<{ chunks: string; writer: string }>(
+      "DELETE FROM file_intents WHERE intent_id = ? RETURNING chunks, writer", intentId)
+      .toArray()[0];
     for (const sha256 of new Set(hashes(row?.chunks ?? ""))) {
+      this.#chunkRef(row!.writer, sha256, -1);
       sql.exec("UPDATE file_chunks SET holds = holds - 1 WHERE sha256 = ?", sha256);
     }
   }
@@ -1230,17 +1308,17 @@ export class Files {
     if (puts.reduce((sum, put) => sum + put.size, 0) > BATCH_BYTES) {
       throw new Invalid(`an upload sends at most ${BATCH_BYTES} bytes at once`);
     }
-    await this.#put(puts);
+    await this.#put(puts, intentId as string);
     return { created: puts.length };
   }
 
   /**
    * The content an intent declared, inside the caller's transaction: every chunk stored,
    * made live, and the content row made or checked. A chunk `FILES` never accepted is
-   * refused: no commit can claim bytes the bucket does not hold. A new content row is
-   * charged to `writer`.
+   * refused: no commit can claim bytes the bucket does not hold, nor a writer bytes it
+   * was asked to send and did not.
    */
-  #fromIntent(intent: Intent, writer: string): { contentId: string; size: number } {
+  #fromIntent(intent: Intent): { contentId: string; size: number } {
     const sql = this.#sql;
     for (const sha256 of new Set(intent.chunks)) {
       const row = sql.exec<{ stored: number }>(
@@ -1251,10 +1329,16 @@ export class Files {
       sql.exec("UPDATE file_chunks SET state = 'live' WHERE sha256 = ? AND state = 'uploading'",
                sha256);
     }
+    // Each chunk this upload was to send it sent, or its writer's scope holds it now.
+    const own = scopesOf(intent.writer).at(-1)!;
+    if (intent.pending.some((sha256) => !this.#possessed(own, sha256))) {
+      throw new Refused("a chunk of this commit was not sent by its upload; send its bytes " +
+                        "first");
+    }
     const contentId = chunkedId(intent.size, intent.chunks);
     if (!this.#known(contentId, intent.size, null, intent.chunks)) {
-      sql.exec("INSERT INTO file_contents (content_id, size, writer) VALUES (?, ?, ?)",
-               contentId, intent.size, writer);
+      sql.exec("INSERT INTO file_contents (content_id, size) VALUES (?, ?)", contentId,
+               intent.size);
       intent.chunks.forEach((sha256, index) => sql.exec(
         "INSERT INTO file_content_chunks (content_id, idx, sha256) VALUES (?, ?, ?)",
         contentId, index, sha256));
@@ -1269,8 +1353,7 @@ export class Files {
     const expected = expectedEtag(request.expected);
     const mode = modeOf(request.mode);
     return this.#change(request.writer, (touched, now) => {
-      const { contentId, size } = this.#fromIntent(this.#intent(intentId, now),
-                                                         request.writer);
+      const { contentId, size } = this.#fromIntent(this.#intent(intentId, now));
       const entry = this.#commit(at, expected, contentId, size, mode, request.writer, "write",
                                  request.parents ?? true, now, touched);
       this.#release(intentId as string);
@@ -1671,10 +1754,10 @@ export class Files {
               || op["intent_id"] !== undefined) {
             throw new Invalid("an inline sync write is at most 4096 bytes");
           }
-          contentId = this.#inline(bytes, writer);
+          contentId = this.#inline(bytes);
           size = bytes.byteLength;
         } else {
-          ({ contentId, size } = this.#fromIntent(this.#intent(op["intent_id"], now), writer));
+          ({ contentId, size } = this.#fromIntent(this.#intent(op["intent_id"], now)));
           this.#release(op["intent_id"] as string);
         }
         if (moved || current?.kind === "dir" || this.#blocked(path) !== null) {

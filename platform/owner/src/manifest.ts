@@ -13,7 +13,15 @@
  * pages (about 14 KiB a new file), and a short one what its rows take; a test measures the
  * object's own database against the charge. The rows charged, by triggers only: each file
  * entry, history row, content (its inline bytes and its chunk list, whose length the
- * content's size gives), chunk, temporary directory and share row (`MANIFEST_TABLES`).
+ * content's size gives), chunk, temporary directory, share row and scope reference
+ * (`MANIFEST_TABLES`).
+ *
+ * The owner-wide total counts each stored row once: the real storage. Each scope (an
+ * outside client, all clients together, the owner's own writers) is charged its own
+ * rows, and once for each content or chunk its own rows reference, deduplicated within
+ * the scope and never across scopes, so no scope keeps bytes alive at another's cost. A
+ * chunk no scope references any more is garbage until it is deleted, charged to the scope
+ * that let it go last.
  *
  * This module imports nothing, so the owner-bound guard reads the same charge the schema
  * keeps.
@@ -84,7 +92,7 @@ const CHUNK_LIST = (row: string): string =>
 
 /** A content's own record, its inline bytes in it. */
 export const CONTENT_RECORD_BYTES = (row: string): string =>
-  record(`${HASH} + coalesce(length(${row}.inline), 0) + ${bytes(`${row}.writer`)}`, INDEX_KEPT);
+  record(`${HASH} + coalesce(length(${row}.inline), 0)`, INDEX_KEPT);
 /** One row of a content's chunk list: its content id, index and chunk hash. */
 export const CHUNK_LIST_ROW_BYTES = (): string => record(`${HASH} + ${HASH} + 9`, INDEX_KEPT);
 
@@ -92,15 +100,22 @@ export const CHUNK_LIST_ROW_BYTES = (): string => record(`${HASH} + ${HASH} + 9`
 export const CONTENT_BYTES = (row: string): string =>
   `(${CONTENT_RECORD_BYTES(row)} + ${CHUNK_LIST(row)} * ${CHUNK_LIST_ROW_BYTES()})`;
 
-/** A chunk: its record (its state at its longest) and its entry in the due index. */
-export const CHUNK_ROW_BYTES = (row: string): string =>
-  `(${record(`${HASH} + 9 + ${bytes(`${row}.writer`)}`, INDEX_KEPT)} + ${
-    record(`${HASH} + 8`, INDEX_KEPT)})`;
+/**
+ * A chunk: its record (its state at its longest, and the scope that last let it go, which
+ * its garbage is charged to, at a client's 71 bytes) and its entry in the due index. The
+ * same for every chunk, so a change of holder moves no charge.
+ */
+export const CHUNK_ROW_BYTES = (): string =>
+  `(${record(`${HASH} + 9 + 71`, INDEX_KEPT)} + ${record(`${HASH} + 8`, INDEX_KEPT)})`;
 
 /** A temporary directory: its record and its entry in the expiry index. */
 export const TEMP_BYTES = (row: string): string =>
   `(${record(`${bytes(`${row}.name`)} + ${bytes(`${row}.writer`)}`, INDEX_KEPT)} + ${
     record(`${bytes(`${row}.name`)} + 8`, INDEX_KEPT)})`;
+
+/** A scope's reference count on one content or chunk: its scope, the id and the count. */
+export const SCOPE_REF_BYTES = (row: string): string =>
+  record(`${bytes(`${row}.scope`)} + ${HASH} + 9`, INDEX_KEPT);
 
 /** An outside client's writer in the manifest, `client:` and its 64 hex characters. */
 export const CLIENT_WRITER = "client:*";
@@ -111,6 +126,19 @@ export const CLIENT_WRITER = "client:*";
 export const SHARE_BYTES = 227;
 /** The share row every outside client's together is counted in. */
 export const CLIENTS = "*";
+/** The scope of the owner's own writers (the owner, its agent, the sync lease, the system). */
+export const OWNER_SCOPE = "owner";
+
+/**
+ * What the database may grow by for a charge of one byte, at worst: the charge counts each
+ * record's page at `PAGE_ROOM` of room, and SQLite rebalances a b-tree page only once less
+ * than a third of it is used (`balance` runs when its free bytes pass two thirds of the
+ * usable 4,088), so a page thinned by deletes may stay a third full, holding a third of
+ * what a page is charged for. The owner-bound guard counts the manifest at its quota times
+ * this; a test measures a database filled, thinned and filled again against it.
+ */
+export const PAGE_USABLE = 4088;
+export const WORST_FILL = PAGE_ROOM / (PAGE_USABLE / 3);
 
 /**
  * The tables the manifest charge covers, each by the triggers that charge its rows when
@@ -126,4 +154,17 @@ export const MANIFEST_TABLES: Readonly<Record<string, readonly [string, string]>
     file_chunks: Object.freeze(["file_chunks_added", "file_chunks_removed"] as const),
     file_temps: Object.freeze(["file_temps_added", "file_temps_removed"] as const),
     file_shares: Object.freeze(["file_shares_charged", "file_shares_credited"] as const),
+    file_scope_contents: Object.freeze(["file_scope_contents_added",
+                                        "file_scope_contents_removed"] as const),
+    file_scope_chunks: Object.freeze(["file_scope_chunks_added",
+                                      "file_scope_chunks_removed"] as const),
   });
+
+/**
+ * Every index on a manifest table, each charged in its rows' bytes above: a new one is
+ * charged nowhere, so the owner-bound guard and the charge test refuse it until it is.
+ */
+export const MANIFEST_INDEXES: readonly string[] = Object.freeze([
+  "file_chunks_due", "file_history_due", "file_history_paths", "file_history_released",
+  "file_temps_due",
+]);

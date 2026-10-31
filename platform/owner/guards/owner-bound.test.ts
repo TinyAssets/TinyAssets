@@ -4,59 +4,78 @@
  * Past 10 GB every write fails `SQLITE_FULL`, grants, revokes and policy writes with the
  * rest, and the owner's object stops; so no owner table may grow but by a bound the code
  * enforces. This guard computes the worst case of every table the owner's schema makes,
- * from those bounds at the policy's *high* settings where the owner may raise one, each row
- * at its widest, and holds the sum under half the platform's limit. A table no bound
- * covers fails it: there are no exceptions.
+ * from those bounds as their sources spell them, at the policy's *high* settings where the
+ * owner may raise one, each row at its widest, and holds the sum under half the platform's
+ * limit. A table no bound covers fails it: there are no exceptions.
  *
  * The file manifest is bounded in bytes, not rows: every row of its tables is charged what
- * SQLite stores it in, path bytes and overflow pages included (`manifest.ts`), by triggers
- * this guard finds in the schema, against `max_manifest_bytes` (whose high bound it reads),
- * and a workerd test measures the object's database against the charge
+ * SQLite lays it out in, path bytes and overflow pages included (`manifest.ts`), by triggers
+ * this guard finds in the schema, against `max_manifest_bytes`, every index on them charged
+ * too (`MANIFEST_INDEXES`). The charge counts a page at three quarters full; a thinned page
+ * may stay a third full, so the guard counts the manifest at its high bound times
+ * `WORST_FILL`, and a workerd test fills, thins and refills a database against it
  * (`files-share.test.ts`). The model turns' counters are bounded by count and a turn's
- * bytes (migration 10). Until the storage slice (S1-S3) lands, pi's own tables share the
- * object, made by pi rather than this schema, and A4's storage gauge stands for them.
+ * bytes, the calls open at once and the spend counters by count (migration 10). Until the
+ * storage slice (S1-S3) lands, pi's own tables share the object, made by pi rather than
+ * this schema, and A4's storage gauge stands for them.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import { LIMITS as COLLECTIONS } from "../src/collections";
 import { LEDGER_LIMITS } from "../src/ledger";
-import { MANIFEST_TABLES } from "../src/manifest";
+import { CHUNK_BYTES, MANIFEST_INDEXES, MANIFEST_TABLES, WORST_FILL } from "../src/manifest";
 import { NOTICE_DETAIL, NOTICES_KEPT } from "../src/notices";
 import { SESSION_LIMITS } from "../src/sessions";
 import { THREAD_LIMITS } from "../src/threads";
 import { USAGE_LIMITS } from "../src/usage";
 import { PLATFORM } from "./sources";
 
-/** The names the bounds below are spelled with in their sources. */
-const NAMES: Readonly<Record<string, number>> = Object.freeze({
-  KIB: 1024, MIB: 1024 ** 2, HOUR_S: 3600, MAX_INTENT_CHUNKS: 10_000,
-  CHUNK_BYTES: 4 * 1024 ** 2, KEEP_CEILING: 1000, LANE_HUNG_S: 60, LANE_PASS_S: 45,
-});
+const SRC = join(PLATFORM, "owner", "src");
 
 function source(module: string): string {
-  return readFileSync(join(PLATFORM, "owner", "src", `${module}.ts`), "utf8");
+  return readFileSync(join(SRC, `${module}.ts`), "utf8");
 }
 
-/** A numeric expression of `NAMES`, as a source spells it. */
-function evaluate(expression: string, what: string): number {
+/** A numeric constant's expression: `const NAME = <expr>;`, exported or the module's own. */
+const NUMERIC = (name: string) =>
+  new RegExp(`(?:^|\\n)(?:export )?const ${name}(?:: number)? = ([0-9A-Z_ *+()-]+);`);
+
+/**
+ * A name a bound is spelled with, read from its source: the module's own constant, else
+ * the one constant of that name another owner module exports.
+ */
+function named(word: string, module: string): number {
+  const own = NUMERIC(word).exec(source(module));
+  if (own !== null) {
+    return evaluate(own[1]!, word, module);
+  }
+  const found = readdirSync(SRC).filter((file) => file.endsWith(".ts"))
+    .map((file) => [file.slice(0, -3), new RegExp(`(?:^|\\n)export const ${word}(?:: number)? = ` +
+      "([0-9A-Z_ *+()-]+);").exec(readFileSync(join(SRC, file), "utf8"))] as const)
+    .filter(([, match]) => match !== null);
+  if (found.length !== 1) {
+    throw new Error(`${word} is no one numeric constant of the owner's sources`);
+  }
+  return evaluate(found[0]![1]![1]!, word, found[0]![0]);
+}
+
+/** A numeric expression of constants, as `module` spells it. */
+function evaluate(expression: string, what: string, module: string): number {
   const value = expression.replace(/(?<=[0-9])_(?=[0-9])/g, "")
-    .replace(/[A-Z][A-Z0-9_]*/g, (word) => {
-      const known = NAMES[word];
-      if (known === undefined) {
-        throw new Error(`${what} names ${word}`);
-      }
-      return String(known);
-    });
+    .replace(/[A-Z][A-Z0-9_]*/g, (word) => String(named(word, module)));
+  if (!/^[0-9 *+()-]+$/.test(value)) {
+    throw new Error(`${what} is no numeric expression`);
+  }
   return Function(`"use strict"; return (${value});`)() as number;
 }
 
 /**
  * A frozen object of numbers, as its module declares it (`export const name = ...({ ... })`),
  * read from the source, since the module loads the Agents SDK's runtime with it: each
- * field's value, a numeric expression of `NAMES`, or a `[low, high]` range's high.
+ * field's value, a numeric expression of constants, or a `[low, high]` range's high.
  */
 function declared<K extends string>(module: string, name: string, ...keys: K[]):
     Readonly<Record<K, number>> {
@@ -72,9 +91,9 @@ function declared<K extends string>(module: string, name: string, ...keys: K[]):
     const range = /\[\s*[^,]+,\s*(.+?)\]\s*as const/.exec(raw!);
     const expression = (range?.[1] ?? raw!).replace(/(?<=[0-9])_(?=[0-9])/g, "");
     if (!/^[0-9A-Z_ *+()-]+$/.test(expression)) {
-      continue;  // not a number of NAMES: no bound this guard reads
+      continue;  // not a number of constants: no bound this guard reads
     }
-    fields[key!] = evaluate(expression, `${name}.${key}`);
+    fields[key!] = evaluate(expression, `${name}.${key}`, module);
   }
   for (const key of keys) {
     const value = fields[key];
@@ -87,11 +106,16 @@ function declared<K extends string>(module: string, name: string, ...keys: K[]):
 
 /** A module's `export const NAME = <number>;`, read from its source. */
 function constant(module: string, name: string): number {
-  const found = new RegExp(`export const ${name} = ([0-9A-Z_ *+()-]+);`).exec(source(module));
+  return named(name, module);
+}
+
+/** A bound a source spells inline, by the pattern that finds its number. */
+function inline(module: string, pattern: RegExp): number {
+  const found = pattern.exec(source(module));
   if (found === null) {
-    throw new Error(`${module}.ts declares no numeric ${name}`);
+    throw new Error(`${module}.ts holds no ${pattern}`);
   }
-  return evaluate(found[1]!, name);
+  return Number(found[1]);
 }
 
 const CONNECTION_LIMITS = declared("connections", "CONNECTION_LIMITS", "maxConnections",
@@ -104,11 +128,20 @@ const FILE_SETTINGS = declared("policy", "FILE_SETTINGS", "max_manifest_bytes");
 const CARD_LIMITS = declared("registrations", "CARD_LIMITS", "maxPending", "maxRequest");
 const WORK_LIMITS = declared("scheduled", "WORK_LIMITS", "maxOpen", "maxSettled", "maxPayload");
 const MAX_OPEN_INTENTS = constant("files", "MAX_OPEN_INTENTS");
+const MAX_INTENT_CHUNKS = constant("files", "MAX_INTENT_CHUNKS");
 const MAX_PATH_BYTES = constant("paths", "MAX_PATH_BYTES");
 const TURNS_KEPT = constant("schema", "TURNS_KEPT");
 const TURN_BYTES = constant("schema", "TURN_BYTES");
-/** A connection's models, as the schema's check holds them, in characters. */
-const MODELS_CHARS = Number(/length\(models\) <= ([0-9]+)/.exec(source("schema"))?.[1]);
+const CALLS_OPEN = constant("schema", "CALLS_OPEN");
+const SPEND_KEPT = constant("schema", "SPEND_KEPT");
+/** A connection's models, and its sealed blob, as the schema's checks hold them, in characters. */
+const MODELS_CHARS = inline("schema", /length\(models\) <= ([0-9]+)/);
+const BLOB_CHARS = inline("schema", /length\(blob\) <= ([0-9]+)/);
+/** A scope's every field, and an owner-set client's name, in code points (`grants.ts`). */
+const SCOPE_FIELD = inline("grants", /codePoints\(v\) > ([0-9]+)/);
+const CLIENT_NAME = inline("grants", /codePoints\(name\) > ([0-9]+)/);
+/** The most wakes an hour policy lets an agent take, the rings one hour keeps (`ledger.ts`). */
+const WAKES_AN_HOUR = inline("ledger", /maxWakesPerHour: Object\.freeze\(\{ low: [0-9]+, high: ([0-9]+) \}\)/);
 
 /** The platform's limit on one object's database. */
 export const DATABASE_BYTES = 10_000_000_000;
@@ -117,6 +150,8 @@ export const SHARE = 0.5;
 /** A row's fixed overhead past its payload: keys, indexes and SQLite's own record. */
 const ROW = 256;
 const KIB = 1024;
+/** A JSON string's most bytes for each code point: a control character's `\u00XX`. */
+const JSON_POINT = 6;
 /** A payload of `bytes` with the overflow pages one past a page's room takes: whole pages. */
 export const spilled = (bytes: number): number => Math.ceil(bytes / 4092) * 4096;
 
@@ -128,14 +163,15 @@ export interface Term {
   readonly by: string;
 }
 
-const clients = GRANT_LIMITS.maxFreeClients + GRANT_LIMITS.maxOwnerClients;
-
-/** The file manifest's tables, together: `max_manifest_bytes` at its high bound. */
+/** The file manifest's tables, together: `max_manifest_bytes` at its high bound, at worst fill. */
 const MANIFEST: Term = Object.freeze({
-  rows: 1, bytes: FILE_SETTINGS.max_manifest_bytes,
-  by: "max_manifest_bytes (high), charged by triggers to " +
+  rows: 1, bytes: FILE_SETTINGS.max_manifest_bytes * WORST_FILL,
+  by: "max_manifest_bytes (high) at WORST_FILL, charged by triggers to " +
     Object.keys(MANIFEST_TABLES).join(", "),
 });
+/** An owner-set grant: its scopes, each three fields of JSON, and its name. */
+const GRANT_BYTES = spilled(GRANT_LIMITS.maxScopes * (3 * SCOPE_FIELD * JSON_POINT + 64)
+                            + CLIENT_NAME * 4);
 
 /** Every owner table's worst case; the manifest's tables share one term. */
 export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string, Term>>({
@@ -144,8 +180,9 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
   file_space: { rows: 1, bytes: ROW + spilled(MAX_PATH_BYTES) + 4 * KIB,
                 by: "one row; its retention cursor a path" },
   file_intents: { rows: MAX_OPEN_INTENTS,
-                  bytes: ROW + spilled(NAMES["MAX_INTENT_CHUNKS"]! * 64),
-                  by: "MAX_OPEN_INTENTS open uploads, each at most MAX_INTENT_CHUNKS chunk ids" },
+                  bytes: ROW + 2 * spilled(MAX_INTENT_CHUNKS * 64),
+                  by: "MAX_OPEN_INTENTS open uploads, each at most MAX_INTENT_CHUNKS chunk " +
+                    "ids, and as many still to send" },
   owner_policy: { rows: 1, bytes: ROW + POLICY_LIMITS.maxDocument * 4,
                   by: "one document of maxDocument code points" },
   policy_receipts: { rows: 3 * POLICY_LIMITS.receiptsPerBucket, bytes: ROW + 1 * KIB,
@@ -153,11 +190,15 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
   policy_proposals: { rows: POLICY_LIMITS.pendingProposals + POLICY_LIMITS.appliedProposals,
                       bytes: ROW + POLICY_LIMITS.maxChange * 4,
                       by: "pending and applied proposals of maxChange code points" },
-  proposal_shares: { rows: clients, bytes: ROW, by: "one per client" },
+  proposal_shares: { rows: GRANT_LIMITS.maxFreeClients + GRANT_LIMITS.maxOwnerClients,
+                     bytes: ROW, by: "one per client" },
   policy_usage: { rows: 1, bytes: ROW, by: "one row" },
-  outside_clients: { rows: clients, bytes: ROW + GRANT_LIMITS.maxScopes * 512,
-                     by: "free and owner-set clients, maxScopes each" },
-  grant_fences: { rows: clients, bytes: ROW, by: "one per client" },
+  outside_clients: { rows: GRANT_LIMITS.maxFreeClients + GRANT_LIMITS.maxOwnerClients,
+                     bytes: ROW + GRANT_BYTES * GRANT_LIMITS.maxOwnerClients
+                       / (GRANT_LIMITS.maxFreeClients + GRANT_LIMITS.maxOwnerClients),
+                     by: "free clients (no scopes, no name) and owner-set ones (maxScopes " +
+                       "scopes of three fields, and a name)" },
+  grant_fences: { rows: 1, bytes: ROW, by: "one row" },
   owner_sessions: { rows: SESSION_LIMITS.maxSessions, bytes: ROW, by: "maxSessions" },
   outside_agents: { rows: LEDGER_LIMITS.maxAgentRows, bytes: ROW + 1 * KIB,
                     by: "maxAgentRows" },
@@ -171,8 +212,8 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
   ledger_readers: { rows: LEDGER_LIMITS.maxAgentRows, bytes: ROW, by: "one per agent" },
   ledger_receipts: { rows: LEDGER_LIMITS.maxReceipts, bytes: ROW + 1 * KIB,
                      by: "maxReceipts" },
-  ledger_rings: { rows: LEDGER_LIMITS.maxAgentRows * 60, bytes: ROW,
-                  by: "one an hour's wakes per agent" },
+  ledger_rings: { rows: LEDGER_LIMITS.maxAgentRows * WAKES_AN_HOUR, bytes: ROW,
+                  by: "an hour's wakes per agent, at the policy's most an hour" },
   ledger_wakes: { rows: LEDGER_LIMITS.maxAgentRows + LEDGER_LIMITS.maxSettledWakes,
                   bytes: ROW + 1 * KIB, by: "an open wake per agent, maxSettledWakes settled" },
   ledger_usage: { rows: LEDGER_LIMITS.maxAgentRows + 1, bytes: ROW, by: "one per agent" },
@@ -196,13 +237,13 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
                  by: "connections and revoked kept, the schema's models ceiling each" },
   connection_secrets: { rows: CONNECTION_LIMITS.maxConnections
                               + CONNECTION_LIMITS.maxRevokedKept,
-                        bytes: ROW + 16 * KIB, by: "one sealed blob a connection" },
+                        bytes: ROW + spilled(4 * BLOB_CHARS),
+                        by: "one sealed blob a connection, at the schema's ceiling" },
   connection_flows: { rows: CONNECTION_LIMITS.maxFlowRows, bytes: ROW + 4 * KIB,
                       by: "maxFlowRows" },
-  model_reservations: { rows: USAGE_LIMITS.receiptsKept + 1_000, bytes: ROW + 1 * KIB,
-                        by: "receiptsKept settled, and the calls open at once" },
-  model_spend: { rows: (USAGE_LIMITS.daysKept + USAGE_LIMITS.monthsKept) * 64,
-                 bytes: ROW, by: "days and months kept, a row per source" },
+  model_reservations: { rows: USAGE_LIMITS.receiptsKept + CALLS_OPEN, bytes: ROW + 1 * KIB,
+                        by: "receiptsKept settled, and CALLS_OPEN open at once" },
+  model_spend: { rows: SPEND_KEPT, bytes: ROW, by: "SPEND_KEPT day and month counters" },
   model_turns: { rows: TURNS_KEPT, bytes: ROW + 2 * TURN_BYTES,
                  by: "TURNS_KEPT turns of TURN_BYTES, in the row and its age index" },
   model_usage: { rows: 1, bytes: ROW, by: "one row" },
@@ -212,15 +253,22 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
 
 /** Every table the owner's schema makes, by its final name. */
 export function ownerTables(schema: string = source("schema")): string[] {
-  const made = [...schema.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?([a-z_]+)/g)]
-    .map((match) => match[1]!);
-  const renamed = [...schema.matchAll(/ALTER TABLE ([a-z_]+) RENAME TO ([a-z_]+)/g)];
+  const made = [...schema.matchAll(
+    /CREATE (?:VIRTUAL )?TABLE (?:IF NOT EXISTS )?([a-zA-Z_0-9]+)/g)].map((match) => match[1]!);
+  const renamed = [...schema.matchAll(/ALTER TABLE ([a-zA-Z_0-9]+) RENAME TO ([a-zA-Z_0-9]+)/g)];
   const tables = new Set(made.filter((name) => name !== "schema_version"));
   for (const [, from, to] of renamed) {
     tables.delete(from!);
     tables.add(to!);
   }
   return [...tables].sort();
+}
+
+/** The indexes the schema makes on the manifest's tables. */
+export function manifestIndexes(schema: string = source("schema")): string[] {
+  return [...schema.matchAll(/CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([a-zA-Z_0-9]+) ON ([a-zA-Z_0-9]+)/g)]
+    .filter((match) => Object.hasOwn(MANIFEST_TABLES, match[2]!)).map((match) => match[1]!)
+    .sort();
 }
 
 /** The tables the terms cover: each term's own, and the manifest's. */
@@ -263,9 +311,13 @@ describe("the owner's database bound", () => {
     expect(named.filter((table) => !tables.includes(table))).toEqual([]);
     expect(new Set(named).size).toBe(named.length);
     expect(tables.filter((table) => table.startsWith("pi_"))).toEqual([]);
+    // A virtual table, or a name with a digit, is a table too.
+    expect(ownerTables('"CREATE VIRTUAL TABLE fts5_index USING fts5(x)", ' +
+                       '"CREATE TABLE IF NOT EXISTS t2 (a)"')).toEqual(["fts5_index", "t2"]);
   });
 
-  it("finds every manifest table charged by the schema's triggers", () => {
+  it("finds every manifest table charged by the schema's triggers, and every index charged",
+     () => {
     expect(uncharged()).toEqual([]);
     // A trigger that charges nothing, or none, is seen.
     const schema = source("schema");
@@ -274,13 +326,19 @@ describe("the owner's database bound", () => {
     const charge = /(CREATE TRIGGER file_temps_removed AFTER DELETE ON file_temps BEGIN )[^`]*`/;
     expect(uncharged(schema.replace(charge, "$1 END`")))
       .toEqual(["file_temps: file_temps_removed"]);
+    expect(manifestIndexes()).toEqual([...MANIFEST_INDEXES].sort());
+    expect(manifestIndexes(`${schema} "CREATE INDEX file_entries_by_writer ON file_entries ` +
+                           '(writer)"')).toContain("file_entries_by_writer");
   });
 
   it("keeps its worst case, at the policy's high bounds, under half the 10 GB", () => {
     const bytes = worstCase();
     expect(bytes).toBeLessThan(SHARE * DATABASE_BYTES);
-    // The manifest at its high bound, the largest term, is counted whole.
-    expect(FILE_SETTINGS.max_manifest_bytes).toBe(2 * 1024 ** 3);
+    // The manifest at its high bound and its worst fill, the largest term, is counted whole.
+    expect(FILE_SETTINGS.max_manifest_bytes).toBe(1024 ** 3);
+    expect(WORST_FILL).toBe(2.25);
+    expect(TERMS["file_manifest"]!.rows * TERMS["file_manifest"]!.bytes)
+      .toBe(FILE_SETTINGS.max_manifest_bytes * WORST_FILL);
     expect(Object.values(TERMS).every((term) => term.rows * term.bytes
                                          <= MANIFEST.rows * MANIFEST.bytes)).toBe(true);
     console.log(`the owner's worst case: ${bytes} bytes (${(bytes / DATABASE_BYTES * 100)
@@ -289,11 +347,21 @@ describe("the owner's database bound", () => {
 
   it("counts the bounds the sources hold, a spilled payload in whole pages", () => {
     expect([spilled(1), spilled(4092), spilled(4093)]).toEqual([4096, 4096, 8192]);
-    expect(TURNS_KEPT).toBe(100_000);
-    expect(MODELS_CHARS).toBe(655_360);
+    expect([MAX_INTENT_CHUNKS, CHUNK_BYTES, constant("files", "KEEP_CEILING")])
+      .toEqual([10_000, 4 * 1024 ** 2, 1000]);
+    expect([TURNS_KEPT, CALLS_OPEN, SPEND_KEPT, MODELS_CHARS, BLOB_CHARS])
+      .toEqual([100_000, 1000, 4300, 655_360, 65_536]);
+    expect([SCOPE_FIELD, CLIENT_NAME, WAKES_AN_HOUR, GRANT_LIMITS.maxScopes])
+      .toEqual([512, 80, 60, 64]);
     expect(TERMS["model_turns"]).toMatchObject({ rows: TURNS_KEPT, bytes: 256 + 2 * TURN_BYTES });
     expect(TERMS["file_intents"]).toMatchObject({
-      rows: MAX_OPEN_INTENTS, bytes: 256 + spilled(640_000) });
+      rows: MAX_OPEN_INTENTS, bytes: 256 + 2 * spilled(640_000) });
+    expect(TERMS["model_reservations"]!.rows).toBe(USAGE_LIMITS.receiptsKept + 1000);
+    expect(TERMS["model_spend"]!.rows).toBe(4300);
+    expect(TERMS["ledger_rings"]!.rows).toBe(LEDGER_LIMITS.maxAgentRows * 60);
+    expect(TERMS["connection_secrets"]!.bytes).toBe(256 + spilled(4 * 65_536));
+    expect(TERMS["outside_clients"]!.rows * TERMS["outside_clients"]!.bytes)
+      .toBe(2000 * 256 + 1000 * spilled(64 * (3 * 512 * 6 + 64) + 80 * 4));
   });
 
   it("sees a bound that would pass half the limit, or a table it no longer covers", () => {

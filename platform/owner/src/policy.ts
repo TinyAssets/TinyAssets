@@ -143,8 +143,8 @@ export interface PolicyEntry {
  * the small files kept in the object itself; `max_manifest_bytes` everything the manifest
  * takes in the object as SQLite stores it (`manifest.ts`): every entry, history row,
  * content, chunk list, chunk and temporary directory, each path and inline byte in them.
- * Its high bound holds the object's worst case under half its 10 GB (the owner-bound
- * guard). Retention keeps each live path's last `keep_versions`, and its versions younger
+ * Its high bound, at the worst page fill SQLite leaves (`WORST_FILL`), holds the object's
+ * worst case under half its 10 GB (the owner-bound guard). Retention keeps each live path's last `keep_versions`, and its versions younger
  * than `retention_days` up to `keep_recent` in all; a deleted path keeps up to
  * `keep_recent` for `retention_days`. A version past those goes in the change that pushed
  * it out.
@@ -153,8 +153,9 @@ export interface PolicyEntry {
  * open uploads and the chunks they hold), and all of them together at most what
  * `owner_reserve` percent leaves, so no client fills the owner's files and the owner
  * always keeps room of its own, as the wait and thread caps keep the owner's. A client is
- * charged for what its own changes made: the entries it last wrote, its history rows, and
- * the contents, chunks and temporary directories it first stored.
+ * charged its own rows (the entries it last wrote, its history rows, its temporary
+ * directories) and once for each content and chunk they or its open uploads reference,
+ * whoever else references them too (`manifest.ts`).
  *
  * `max_history` is never below `max_entries × max(keep_versions, keep_recent)`, the most
  * rows the live paths can hold at once, so no churn of live files fills it. Deleted
@@ -169,7 +170,7 @@ export interface PolicyEntry {
 export const FILE_DEFAULTS = Object.freeze({
   max_bytes: 1024 ** 3,
   max_inline_bytes: 256 * 1024 ** 2,
-  max_manifest_bytes: 1024 ** 3,
+  max_manifest_bytes: 512 * 1024 ** 2,
   max_entries: 200_000,
   max_file_bytes: 5 * 1024 ** 3,
   max_history: 4_000_000,
@@ -185,7 +186,7 @@ export const FILE_SETTINGS: { readonly [K in keyof FileSettings]: readonly [numb
   Object.freeze({
     max_bytes: Object.freeze([0, 1024 ** 4] as const),
     max_inline_bytes: Object.freeze([0, 1024 ** 3] as const),
-    max_manifest_bytes: Object.freeze([0, 2 * 1024 ** 3] as const),
+    max_manifest_bytes: Object.freeze([0, 1024 ** 3] as const),
     max_entries: Object.freeze([0, 1_000_000] as const),
     max_file_bytes: Object.freeze([0, MAX_INTENT_CHUNKS * CHUNK_BYTES] as const),
     max_history: Object.freeze([0, 5_000_000] as const),
