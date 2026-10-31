@@ -14,14 +14,18 @@ import { fauxAssistantMessage, fauxToolCall, type Message } from "@earendil-work
 import { ProviderDoc, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
+import { Refused } from "../src/errors";
 import { originContext } from "../src/origin";
+import { workRunner } from "../src/owner-do";
+import type { WorkTarget } from "../src/scheduled";
 import { THREAD_INPUTS } from "../src/schema";
 import {
-  keepTurns, THREAD_INPUTS_FULL, type TurnOwner, turnOwners,
+  keepTurns, SESSIONS_FULL, THREAD_INPUTS_FULL, type TurnOwner, turnOwners, TURNS_UNKEPT,
 } from "../src/thread-host";
+import { Threads } from "../src/threads";
 import { TURN_ENDED } from "../src/usage";
 import { asked, gated, type Gated, provider } from "./gateway-support";
-import { failure } from "./support";
+import { capTurnOwners, failure } from "./support";
 import { type FauxOwnerDO, says } from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
@@ -123,6 +127,7 @@ describe("a turn's owners, as the thread host sees them commit", () => {
         publish(2);
         await new Promise((resolve) => setTimeout(resolve, 10));
         steps.push("reconciled");
+        return 0;
       },
     }, async () => {
       publish(1);
@@ -145,7 +150,7 @@ describe("a turn's owners, as the thread host sees them commit", () => {
       return () => {};
     }, {
       owned: () => Promise.reject(new Error("unkept")),
-      reconciled: async () => {},
+      reconciled: async () => 0,
     }, async () => [], () => { lost++; });
     publish();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -172,8 +177,9 @@ describe("a turn's owners, as the thread host sees them commit", () => {
       const reconciled = instance.parts.turns.reconciled;
       let healed: Record<string, SqlStorageValue>[] = [];
       instance.parts.turns.reconciled = async (at, open) => {
-        await reconciled(at, open);
+        const skipped = await reconciled(at, open);
         healed = owners(state);
+        return skipped;
       };
       await instance.agent.host.pi(thread);
       held.release();
@@ -272,8 +278,9 @@ describe("a turn's owners, as the thread host sees them commit", () => {
       const reconciled = instance.parts.turns.reconciled;
       let healed: Record<string, SqlStorageValue>[] = [];
       instance.parts.turns.reconciled = async (at, open) => {
-        await reconciled(at, open);
+        const skipped = await reconciled(at, open);
         healed = owners(state);  // as the Session resumes
+        return skipped;
       };
       await instance.agent.host.close(thread);
       await instance.agent.host.pi(thread);
@@ -286,6 +293,47 @@ describe("a turn's owners, as the thread host sees them commit", () => {
     expect(out.healed[0]!["owner"]).toMatch(/^s:[0-9]+$/);
     expect(out.healed[0]!["turn"]).toMatch(/^input:/);
     expect(out.after).toEqual([]);
+  }, 30_000);
+
+  it("open a thread whose store holds owners past the bound, passing them over loudly",
+     async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance, state) => {
+      instance.script = Array.from({ length: 12 }, () => (messages: Message[]) =>
+        messages.at(-1)?.role === "toolResult" ? says("done")
+          : JSON.stringify(messages.at(-1)).includes("work") ? holding() : says("noted"));
+      const thread = await instance.harness.thread();
+      const owned = instance.parts.turns.owned;
+      // Lost units: the store holds two open inputs the rows never saw.
+      instance.parts.turns.owned = async () => undefined;
+      const held = gate();
+      instance.probes.holdGate = held.promise;
+      instance.probes.holdLinger = 200;
+      const first = await instance.harness.submit("work");
+      await until(async () => instance.probes.holds === 1, "the hold to start");
+      const second = await instance.harness.submit("and then");
+      instance.parts.turns.owned = owned;
+      // A bound of one open input, below what the store holds.
+      capTurnOwners(state.storage.sql, 1, 1);
+      const reconciled = instance.parts.turns.reconciled;
+      let reopened: Record<string, SqlStorageValue>[] = [];
+      let skipped = -1;
+      instance.parts.turns.reconciled = async (at, open) => {
+        skipped = await reconciled(at, open);
+        reopened = owners(state);  // as the Session resumes
+        return skipped;
+      };
+      await instance.agent.host.close(thread);
+      await instance.agent.host.pi(thread);
+      const notices = rowsIn(state, "SELECT type FROM owner_notices").map((row) => row["type"]);
+      held.release();
+      await instance.harness.wait(first.operationId);
+      await instance.harness.wait(second.operationId);
+      return { reopened, notices, skipped };
+    });
+    expect(out.skipped).toBe(1);
+    expect(out.reopened).toHaveLength(1);
+    expect(out.notices).toContain(TURNS_UNKEPT);
   }, 30_000);
 
   it("go with their thread, in its drop's unit", async () => {
@@ -301,6 +349,51 @@ describe("a turn's owners, as the thread host sees them commit", () => {
     });
     expect(out).toEqual({ kept: 2, after: [], turns: [] });
   });
+
+  it("hold a scheduled hand-off unmarked while its thread has no room, and take it once " +
+     "room frees, run once", async () => {
+    const r = agentObject();
+    const out = await r.in(async (instance, state) => {
+      instance.script = Array.from({ length: 40 }, () => (messages: Message[]) =>
+        messages.at(-1)?.role === "toolResult" ? says("done")
+          : JSON.stringify(messages.at(-1)).includes("work") ? holding() : says("noted"));
+      const held = gate();
+      instance.probes.holdGate = held.promise;
+      const thread = await instance.harness.thread();
+      const first = await instance.harness.submit("work");
+      await until(async () => instance.probes.holds === 1, "the hold to start");
+      for (let i = 1; i < THREAD_INPUTS; i++) {
+        await instance.harness.submit(`more ${i}`);
+      }
+      const threads = new Threads(state.storage);
+      const marks: string[] = [];
+      const target: WorkTarget = { work_id: "work_full", claim_id: "claim_x", kind: "turn",
+                                   payload: { thread, input: "scheduled hello" }, stamp: null };
+      const hand = () => workRunner(threads, instance.agent, instance.parts.authority)
+        .handOff(target, async () => { marks.push("marked"); });
+      const full = await hand();
+      const unmarked = [...marks];
+      // Every Session working is room the host lacks too: refused, unmarked.
+      const sessions = await workRunner(threads, {
+        submit: () => Promise.reject(new Refused(SESSIONS_FULL)),
+      }, instance.parts.authority).handOff(target, async () => { marks.push("marked"); });
+      held.release();
+      await instance.harness.wait(first.operationId);
+      await until(async () => instance.parts.turns.inputs(thread) === 0, "room to free");
+      const handed = await hand();
+      const ran = await instance.harness.wait("work_full");
+      const asked = (await instance.harness.messages()).filter((entry) =>
+        JSON.stringify(entry).includes("scheduled hello")).length;
+      return { full, unmarked, sessions, handed, marks, ran: ran.status, asked };
+    });
+    expect(out.full).toEqual({ state: "busy", reason: THREAD_INPUTS_FULL });
+    expect(out.unmarked).toEqual([]);
+    expect(out.sessions).toEqual({ state: "busy", reason: SESSIONS_FULL });
+    expect(out.handed).toEqual({ state: "handed" });
+    expect(out.marks).toEqual(["marked"]);
+    expect(out.ran).toBe("done");
+    expect(out.asked).toBe(1);
+  }, 60_000);
 
   it("are refused past THREAD_INPUTS open inputs a thread, at once and loudly", async () => {
     const r = agentObject();

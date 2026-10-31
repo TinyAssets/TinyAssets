@@ -11,6 +11,7 @@ import {
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
 import { SCHEDULE } from "../src/schedule";
+import { MIGRATIONS } from "../src/schema";
 
 export const text = (value: string): Uint8Array => new TextEncoder().encode(value);
 
@@ -23,6 +24,22 @@ export function inGate<R>(stub: DurableObjectStub<OwnerDO>,
                                 gate: WriteGate) => R | Promise<R>): Promise<R> {
   return runInDurableObject(stub, (instance: OwnerDO, state) =>
     act(instance, state, new WriteGate(state.storage)));
+}
+
+/**
+ * Install migration 10's turn-owner bound at `inputs` open inputs and `compactions` live
+ * compactions a thread, in place of the schema's: a test-only cap, to force the trigger.
+ */
+export function capTurnOwners(sql: SqlStorage, inputs: number, compactions: number): void {
+  const trigger = MIGRATIONS[9]!.find((statement) =>
+    statement.startsWith("CREATE TRIGGER model_turn_owners_full"))!;
+  const capped = trigger.replace(/THEN [0-9]+ ELSE [0-9]+ END/,
+                                 `THEN ${inputs} ELSE ${compactions} END`);
+  if (capped === trigger) {
+    throw new Error("the turn-owner bound is not where the test expects it");
+  }
+  sql.exec("DROP TRIGGER model_turn_owners_full");
+  sql.exec(capped);
 }
 
 /** The fault a `faulty` gate's unit fails with. */

@@ -29,13 +29,17 @@ const ASKED = "check the board";
  */
 class ScriptedRunner implements WorkRunner {
   readonly ran: WorkTarget[] = [];
-  readonly answers: ("handed" | "failed" | "crash" | "early" | "slow" | "stall")[] = [];
+  readonly answers: ("handed" | "failed" | "crash" | "early" | "slow" | "stall" | "busy")[] =
+    [];
   slowMs = 200;
 
   async handOff(target: WorkTarget, mark: () => Promise<void>) {
     const answer = this.answers.shift() ?? "handed";
     if (answer === "early") {
       throw new Error("died before the work began");
+    }
+    if (answer === "busy") {  // refused for room before its mark
+      return { state: "busy" as const, reason: "thread_inputs_full" };
     }
     if (answer === "stall") {  // stalls before its mark, then hands it over
       await new Promise((resolve) => setTimeout(resolve, this.slowMs));
@@ -230,6 +234,29 @@ describe("stamped scheduled work", () => {
     expect(await held(r, CHATGPT)).toBe(0);
     const [kept, counted] = await counters(r);
     expect(kept).toEqual(counted);
+  });
+
+  it("is released unmarked when its thread has no room, and handed once room frees, its " +
+     "attempts given back", async () => {
+    const r = await rig();
+    const runner = new ScriptedRunner();
+    runner.answers.push(...Array.from({ length: WORK_LIMITS.attempts + 1 }, () => "busy" as const));
+    const t = clock();
+    await inWork(r, ({ work, turn }) => work.add("turn", t - 10, turn(null, "one"), null, t));
+    for (let pass = 0; pass <= WORK_LIMITS.attempts; pass++) {
+      const at = t + pass * WORK_RETRY_S;
+      expect(await inWork(r, ({ work, write }) => runWork(work, runner, () => at, write))).toBe(0);
+      expect(await states(r)).toEqual([{ state: "pending", attempts: 0, marked: 0 }]);
+      expect((await r.sql("SELECT due FROM scheduled_work"))[0]!["due"]).toBe(at + WORK_RETRY_S);
+    }
+    // Not due again before its backoff; then handed, once.
+    const freed = t + (WORK_LIMITS.attempts + 1) * WORK_RETRY_S;
+    expect(await inWork(r, ({ work, write }) => runWork(work, runner, () => freed - 1, write)))
+      .toBe(0);
+    expect(await inWork(r, ({ work, write }) => runWork(work, runner, () => freed, write)))
+      .toBe(1);
+    expect(await states(r)).toEqual([{ state: "handed", attempts: 1, marked: 1 }]);
+    expect(runner.ran).toHaveLength(1);
   });
 
   it("is never run again once it may have run; an unmarked lapse runs again, a few times",

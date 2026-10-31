@@ -119,6 +119,12 @@ export const MAX_WAKE_BACKOFF_MS = 10 * 60_000;
 const SESSION_CLOSE_MS = 1_000;
 /** An open refused past `openMax` with no idle Session to close. */
 export const SESSIONS_FULL = "too many of the agent's threads are working at once";
+/** The refusal of a submit whose thread was dropped while it was admitted. */
+export const THREAD_DROPPED = "the thread was dropped";
+/** The owner notice a thread's open owners past its bound leave as it opens. */
+export const TURNS_UNKEPT = "turns_unkept";
+const TURNS_UNKEPT_DETAIL = "a thread held more open inputs or live compactions than it may " +
+  "as its Session opened; the calls of those past the bound are refused turn_ended";
 /** The owner notice a thread's usage that could not be kept at its close leaves. */
 export const USAGE_UNKEPT = "usage_unkept";
 const USAGE_UNKEPT_DETAIL = "a thread's model usage could not be kept as its Session " +
@@ -177,7 +183,8 @@ export interface HostParts {
    */
   turns: {
     owned(thread: string, owners: readonly TurnOwner[]): Promise<void>;
-    reconciled(thread: string, open: readonly TurnOwner[]): Promise<void>;
+    /** How many owners past the thread's bound it passed over. */
+    reconciled(thread: string, open: readonly TurnOwner[]): Promise<number>;
     /** How many open inputs `thread`'s turn owners hold (`Usage.openInputs`). */
     inputs(thread: string): number;
   };
@@ -199,6 +206,12 @@ export interface SubmitOptions {
   readonly whenBusy?: "followUp" | "steer";
   /** The entry the input is placed as (its kind and data), when not pi's plain input. */
   readonly entry?: { readonly kind: string; readonly data: JsonObject };
+  /**
+   * Awaited once the input is admitted, past the open Sessions' and the thread's open
+   * inputs' bounds, before pi's submit commits it; a throw stops the submit, and so does
+   * the thread's drop meanwhile.
+   */
+  readonly admitted?: () => Promise<void>;
 }
 
 /** A task pi's restart limit parked: its id, its conversation, and whether background. */
@@ -324,6 +337,13 @@ export class ThreadHost extends LifecycleCapability {
         // flight beside this one, so none passes the cap.
         if (fresh && this.#parts.turns.inputs(thread) + slot.admitting - 1 >= THREAD_INPUTS) {
           throw new Refused(THREAD_INPUTS_FULL);
+        }
+        if (options.admitted !== undefined) {
+          await options.admitted();
+          if (!this.#parts.exists(thread)) {
+            // Dropped while it was admitted (a grant change): nothing reaches its store.
+            throw new Refused(THREAD_DROPPED);
+          }
         }
         await conversation.submit({
           type: "input", content: input, whenBusy: options.whenBusy ?? "followUp",
@@ -582,7 +602,17 @@ export class ThreadHost extends LifecycleCapability {
    * after it, idempotently, so none is lost.
    */
   async #ownTurns(thread: string, { pi, storage }: Opened): Promise<void> {
-    await keepTurns(thread, (listener) => pi.subscribeCommits(listener), this.#parts.turns,
+    const turns = {
+      owned: (at: string, owners: readonly TurnOwner[]) => this.#parts.turns.owned(at, owners),
+      reconciled: async (at: string, open: readonly TurnOwner[]) => {
+        const skipped = await this.#parts.turns.reconciled(at, open);
+        if (skipped > 0) {
+          this.#parts.notice(TURNS_UNKEPT, TURNS_UNKEPT_DETAIL);
+        }
+        return skipped;
+      },
+    };
+    await keepTurns(thread, (listener) => pi.subscribeCommits(listener), turns,
                     () => openOwners(thread, storage), () => {
                       // Loudly: closed, its next open reconciles what this lost.
                       console.error("a thread's turns could not be kept; its Session closes");

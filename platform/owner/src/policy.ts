@@ -144,7 +144,11 @@ export interface PolicyEntry {
  * takes in the object as SQLite stores it (`manifest.ts`): every entry, history row,
  * content, chunk list, chunk and temporary directory, each path and inline byte in them.
  * Its high bound, at the worst page fill SQLite leaves (`WORST_FILL`), holds the object's
- * worst case under half its 10 GB (the owner-bound guard). Retention keeps each live path's last `keep_versions`, and its versions younger
+ * worst case under half its 10 GB (the owner-bound guard). Every other bound the manifest
+ * holds can bind inside it: a small file at one version takes about 1,070 bytes of it and
+ * each further version about 850, so `max_entries` is at most what fits at one version,
+ * `max_history` what fits as versions, and `max_inline_bytes` leaves a quarter of it to
+ * the rows. Retention keeps each live path's last `keep_versions`, and its versions younger
  * than `retention_days` up to `keep_recent` in all; a deleted path keeps up to
  * `keep_recent` for `retention_days`. A version past those goes in the change that pushed
  * it out.
@@ -171,9 +175,9 @@ export const FILE_DEFAULTS = Object.freeze({
   max_bytes: 1024 ** 3,
   max_inline_bytes: 256 * 1024 ** 2,
   max_manifest_bytes: 512 * 1024 ** 2,
-  max_entries: 200_000,
+  max_entries: 30_000,
   max_file_bytes: 5 * 1024 ** 3,
-  max_history: 4_000_000,
+  max_history: 600_000,
   retention_days: 30,
   keep_versions: 10,
   keep_recent: 20,
@@ -185,11 +189,11 @@ export type FileSettings = { readonly [K in keyof typeof FILE_DEFAULTS]: number 
 export const FILE_SETTINGS: { readonly [K in keyof FileSettings]: readonly [number, number] } =
   Object.freeze({
     max_bytes: Object.freeze([0, 1024 ** 4] as const),
-    max_inline_bytes: Object.freeze([0, 1024 ** 3] as const),
+    max_inline_bytes: Object.freeze([0, 384 * 1024 ** 2] as const),
     max_manifest_bytes: Object.freeze([0, 512 * 1024 ** 2] as const),
-    max_entries: Object.freeze([0, 1_000_000] as const),
+    max_entries: Object.freeze([0, 500_000] as const),
     max_file_bytes: Object.freeze([0, MAX_INTENT_CHUNKS * CHUNK_BYTES] as const),
-    max_history: Object.freeze([0, 5_000_000] as const),
+    max_history: Object.freeze([0, 600_000] as const),
     retention_days: Object.freeze([0, 3650] as const),
     keep_versions: Object.freeze([1, KEEP_CEILING] as const),
     keep_recent: Object.freeze([1, KEEP_CEILING] as const),

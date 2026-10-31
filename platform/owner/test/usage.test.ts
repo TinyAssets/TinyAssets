@@ -18,11 +18,12 @@ import type { OwnerDO } from "../src/owner-do";
 import { agentPolicy, MODEL_DEFAULTS, MODEL_SETTINGS, modelSettings, validate } from "../src/policy";
 import { THREAD_INPUTS } from "../src/schema";
 import {
-  type Ask, largestFitting, type ModelCaps, periods, priced, TURN_ENDED, Usage, USAGE_LIMITS,
+  type Ask, largestFitting, type ModelCaps, periods, priced, TURN_ENDED, TURN_OWNERS_FULL, Usage,
+  USAGE_LIMITS,
   type UsageLimits,
 } from "../src/usage";
 import { gated, provider, until } from "./gateway-support";
-import { failure, ownerObject } from "./support";
+import { capTurnOwners, failure, ownerObject } from "./support";
 import type { GatedOwnerDO } from "./worker";
 
 const NOW = 1_793_000_000;
@@ -511,6 +512,36 @@ describe("a turn's counters", () => {
         { owner: "s:52", turn: "t52" }, { owner: "s:52", turn: null }]));
       expect([r.turn("t51"), r.turn("t52")]).toEqual([undefined, undefined]);
       expect(r.usage.openInputs(THREAD)).toBe(THREAD_INPUTS - 1);
+    }));
+
+  it("are moved all or nothing: a commit's owner past the bound leaves no turn held, no " +
+     "owner gone", () =>
+    withUsage(async (r) => {
+      const sql = r.state.storage.sql;
+      capTurnOwners(sql, 2, 1);
+      const owners = (turn: string) =>
+        sql.exec("SELECT owners FROM model_turns WHERE turn = ?", turn).toArray();
+      // Past the bound, though an owner ends in the same commit: refused whole.
+      await expect(r.gate.write(() => r.usage.turnOwners(THREAD, [
+        { owner: "s:2", turn: null }, { owner: "s:900", turn: "t1" }])))
+        .rejects.toThrow(TURN_OWNERS_FULL);
+      expect([owners("t1"), owners("t2")]).toEqual([[{ owners: 1 }], [{ owners: 1 }]]);
+      // So its last owner's end still drops the turn.
+      await r.gate.write(() => r.usage.turnOwners(THREAD, [{ owner: "s:1", turn: null }]));
+      expect(r.turn("t1")).toBeUndefined();
+    }));
+
+  it("are reconciled past the bound by passing the owners over it, so the thread opens", () =>
+    withUsage(async (r) => {
+      capTurnOwners(r.state.storage.sql, 2, 1);
+      expect(await r.gate.write(() => r.usage.turnsReconciled(THREAD, [
+        { owner: "s:1", turn: "t1" }, { owner: "s:2", turn: "t2" },
+        { owner: "s:800", turn: "n1" }, { owner: "t:801", turn: "n2" },
+        { owner: "t:802", turn: "n3" }]))).toBe(2);
+      expect([r.turn("t1"), r.turn("t2"), r.turn("n2")]).toEqual([
+        expect.anything(), expect.anything(), expect.anything()]);
+      expect([r.turn("n1"), r.turn("n3"), r.turn("t3")]).toEqual([undefined, undefined, undefined]);
+      expect(r.usage.openInputs(THREAD)).toBe(2);
     }));
 
   it("refuse a call of a turn that has ended, never starting it over", () =>

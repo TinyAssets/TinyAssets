@@ -780,6 +780,33 @@ describe("the files policy's byte quota and shares", () => {
   });
 });
 
+describe("the files policy's bounds inside the manifest's", () => {
+  it("let each of them bind before the manifest bound does, at its high and its default",
+     async () => {
+    const r = await rig();
+    const bytes = async () => Number((await sqlIn(r.stub, "SELECT manifest_bytes FROM " +
+                                                        "file_space"))[0]!["manifest_bytes"]);
+    const start = await bytes();
+    const first = await r.stub.fileWrite(r.bind(null), { path: `${W}/a`, expected_etag: null,
+                                                         content: text("1") });
+    const file = await bytes() - start;
+    await r.stub.fileWrite(r.bind(null), { path: `${W}/a`, content: text("2"),
+      expected_etag: (first as { entry: { etag: string } }).entry.etag });
+    const version = await bytes() - start - file;
+    expect([file, version]).toEqual([expect.any(Number), expect.any(Number)]);
+    for (const [entries, history, inline, manifest] of [
+      [FILE_SETTINGS.max_entries[1], FILE_SETTINGS.max_history[1],
+       FILE_SETTINGS.max_inline_bytes[1], FILE_SETTINGS.max_manifest_bytes[1]],
+      [FILE_DEFAULTS.max_entries, FILE_DEFAULTS.max_history, FILE_DEFAULTS.max_inline_bytes,
+       FILE_DEFAULTS.max_manifest_bytes]] as const) {
+      // A small file's least charge, at one version, and each further version's.
+      expect(entries * file).toBeLessThanOrEqual(manifest);
+      expect(history * version).toBeLessThanOrEqual(manifest);
+      expect(inline).toBeLessThanOrEqual(manifest * 3 / 4);
+    }
+  });
+});
+
 describe("migration 10", () => {
   it("fails loudly on a file row from before it", async () => {
     const r = await rig();

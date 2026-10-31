@@ -93,6 +93,8 @@ export const USAGE_LIMITS: UsageLimits = Object.freeze({
 
 /** The fixed rule a call of a turn whose work has ended is refused with. */
 export const TURN_ENDED = "turn_ended";
+/** The schema's refusal of a thread's turn owner past its bound (migration 10). */
+export const TURN_OWNERS_FULL = "turn_owners_full";
 
 
 
@@ -341,26 +343,50 @@ export class Usage {
       .map(({ owner }) => owner), last);
   }
 
-  /** In a unit: `ended` owners of `thread` let go, then `owners` kept, as `turnOwners`. */
-  #ownersMoved(thread: string, ended: readonly string[], owners: readonly TurnOwner[]): void {
-    const held = [...new Set(owners.flatMap(({ turn }) => turn === null ? [] : [turn]))]
-      .filter((turn) => this.#sql.exec("UPDATE model_turns SET owners = owners + 1 " +
-                                        "WHERE turn = ?", turn).rowsWritten > 0);
-    for (const owner of ended) {
-      this.#sql.exec("DELETE FROM model_turn_owners WHERE thread = ? AND owner = ?", thread,
-                     owner);
-    }
-    for (const { owner, turn, joined } of owners) {
-      if (turn !== null) {
-        this.#sql.exec("INSERT INTO model_turn_owners (thread, owner, turn) SELECT ?, ?, ? " +
-                         "WHERE NOT ? OR EXISTS (SELECT 1 FROM model_turns WHERE turn = ?) " +
-                         "ON CONFLICT (thread, owner) DO NOTHING", thread, owner, turn,
-                       joined === true ? 1 : 0, turn);
+  /**
+   * In a unit: `ended` owners of `thread` let go, then `owners` kept, as `turnOwners`, all
+   * or nothing (its own savepoint), so a refused owner leaves no turn held. With `skip`,
+   * an owner past the thread's bound (`turn_owners_full`) is passed over instead, and
+   * counted: how many were.
+   */
+  #ownersMoved(thread: string, ended: readonly string[], owners: readonly TurnOwner[],
+               skip = false): number {
+    return this.#storage.transactionSync(() => {
+      const held = [...new Set(owners.flatMap(({ turn }) => turn === null ? [] : [turn]))]
+        .filter((turn) => this.#sql.exec("UPDATE model_turns SET owners = owners + 1 " +
+                                          "WHERE turn = ?", turn).rowsWritten > 0);
+      for (const owner of ended) {
+        this.#sql.exec("DELETE FROM model_turn_owners WHERE thread = ? AND owner = ?", thread,
+                       owner);
       }
-    }
-    for (const turn of held) {
-      this.#sql.exec("UPDATE model_turns SET owners = owners - 1 WHERE turn = ?", turn);
-    }
+      let skipped = 0;
+      for (const { owner, turn, joined } of owners) {
+        if (turn === null) {
+          continue;
+        }
+        const keep = () => this.#sql.exec(
+          "INSERT INTO model_turn_owners (thread, owner, turn) SELECT ?, ?, ? " +
+            "WHERE NOT ? OR EXISTS (SELECT 1 FROM model_turns WHERE turn = ?) " +
+            "ON CONFLICT (thread, owner) DO NOTHING", thread, owner, turn,
+          joined === true ? 1 : 0, turn);
+        if (!skip) {
+          keep();
+          continue;
+        }
+        try {
+          this.#storage.transactionSync(keep);
+        } catch (error) {
+          if (!(error instanceof Error && error.message.includes(TURN_OWNERS_FULL))) {
+            throw error;
+          }
+          skipped++;
+        }
+      }
+      for (const turn of held) {
+        this.#sql.exec("UPDATE model_turns SET owners = owners - 1 WHERE turn = ?", turn);
+      }
+      return skipped;
+    });
   }
 
   /** How many open inputs own turns in `thread`. */
@@ -373,14 +399,15 @@ export class Usage {
   /**
    * In a unit: `thread`'s turn owners made exactly `open`, as its store holds them when its
    * Session opens: one a lost listener left behind goes, and one it never kept is kept, a
-   * turn kept by both keeping its counters.
+   * turn kept by both keeping its counters. One past the thread's bound is passed over, so
+   * the thread still opens (its calls refused `turn_ended`): how many were.
    */
-  turnsReconciled(thread: string, open: readonly TurnOwner[]): void {
+  turnsReconciled(thread: string, open: readonly TurnOwner[]): number {
     const kept = new Set(open.map(({ owner }) => owner));
     const stale = this.#sql.exec<{ owner: string }>(
       "SELECT owner FROM model_turn_owners WHERE thread = ?", thread).toArray()
       .map(({ owner }) => owner).filter((owner) => !kept.has(owner));
-    this.#ownersMoved(thread, stale, open);
+    return this.#ownersMoved(thread, stale, open, true);
   }
 
   /**

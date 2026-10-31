@@ -22,7 +22,9 @@
  * runner awaits `mark()` before the work can have any effect, and stops if the mark
  * fails (the claim lapsed); a claim abandoned past its lease is `unknown` if it was
  * marked, never handed again, or else due again, at most `WORK_LIMITS.attempts` times. A
- * runner that holds its hand-off past `WORK_HANDOFF_MS` is reported, its row marked as
+ * hand-off the thread host refuses for room before its mark (`busy`: its thread at its
+ * open inputs, or every Session working) releases its claim unmarked, due again after
+ * `WORK_RETRY_S`, its attempt given back. A runner that holds its hand-off past `WORK_HANDOFF_MS` is reported, its row marked as
  * possibly handed and left to its lease, and the pass moves on. Without a
  * {@link WorkRunner} (only a test's lanes lack one), pending work is held and gives the
  * lane no job.
@@ -97,16 +99,21 @@ export interface WorkTarget {
   readonly stamp: Stamp | null;
 }
 
-/** A hand-off's answer: handed to pi (its status is pi's receipts), or refused before. */
+/**
+ * A hand-off's answer: handed to pi (its status is pi's receipts), refused before, or
+ * `busy`: refused for room before its mark (`thread-host.ts`), so its claim is released
+ * unmarked, due again after `WORK_RETRY_S`, its attempt not counted.
+ */
 export interface WorkAnswer {
-  readonly state: "handed" | "failed";
+  readonly state: "handed" | "failed" | "busy";
   readonly reason?: string;
 }
 
 /**
  * What hands a due piece of work to pi: the agent's (`agent.ts`). It never runs the turn
- * inline: it awaits `mark()`, which rejects if the claim lapsed (then it stops), hands the
- * turn to pi's durable submit, and returns within `WORK_HANDOFF_MS`. A throw leaves the
+ * inline: once the thread host admits the turn, it awaits `mark()`, which rejects if the
+ * claim lapsed (then it stops), hands the turn to pi's durable submit, and returns within
+ * `WORK_HANDOFF_MS`; one the host refuses for room answers `busy`, unmarked. A throw leaves the
  * row to its lease. The submit's `operationId` is the row's `work_id`, always: a second
  * hand-off of the same work (a late one, a lease's) is pi's duplicate, deduped, and the
  * turn's receipts are found by `work_id`. The mark is a unit of the write gate, so it
@@ -415,6 +422,14 @@ export class Scheduled {
                      "('pending', 'running')", until, workId);
   }
 
+  /** A claim its hand-off never marked, released: due again at `due`, its attempt back. */
+  release(workId: string, claimId: string, due: number): boolean {
+    return this.#sql.exec("UPDATE scheduled_work SET state = 'pending', claim_id = NULL, " +
+                            "due = ?, attempts = attempts - 1 WHERE work_id = ? AND " +
+                            "claim_id = ? AND state = 'running' AND marked = 0 RETURNING work_id",
+                          due, workId, claimId).toArray().length > 0;
+  }
+
   /** The durable may-have-run mark, written before the work can have any effect. */
   mark(workId: string, claimId: string): boolean {
     return this.#sql.exec("UPDATE scheduled_work SET marked = 1 WHERE work_id = ? AND " +
@@ -545,6 +560,10 @@ export async function runWork(work: Scheduled, runner: WorkRunner | null, clock:
         handing.catch(() => undefined);
         await write(() => work.mark(target.work_id, target.claim_id));
         console.error("a scheduled hand-off ran past its bound; it is left to its lease");
+        continue;
+      }
+      if (answer.state === "busy") {
+        await write(() => work.release(target.work_id, target.claim_id, clock() + WORK_RETRY_S));
         continue;
       }
       if (await write(() => work.settle(target.work_id, target.claim_id, answer, clock()))) {

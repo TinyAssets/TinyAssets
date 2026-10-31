@@ -23,6 +23,10 @@
  * records live in the thread stores (`thread-store.ts`, S1-S3), never in the owner's
  * database, so what the owner's object holds is its own bounded rows only, whatever its
  * agents do; this guard replaced A4's runtime storage gauge.
+ *
+ * The headroom is thin: the worst case is 46.3% of the limit (migration 10), about 371 MB
+ * under half. A new table, or a raised bound, must come out of an existing term: lower
+ * another bound in the same change, or the guard fails.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";

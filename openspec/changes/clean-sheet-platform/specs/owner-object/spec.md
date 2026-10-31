@@ -301,6 +301,10 @@ The `work` lane SHALL only hand a turn to pi's durable submit; pi runs it, and i
 - **WHEN** a runner holds its hand-off past the bound
 - **THEN** the pass reports it, marks the row, moves on to the next, and the row is `unknown` once its lease lapses
 
+#### Scenario: A hand-off with no room in its thread
+- **WHEN** the thread host refuses a due turn's submit for room (its thread at `THREAD_INPUTS` open inputs, or every Session working)
+- **THEN** the refusal comes before the mark, the claim is released unmarked, its attempt given back, and the turn is handed once room frees
+
 ### Requirement: A grant change ends its client's wakes
 A grant change SHALL suppress the client's agents' open wakes and schedule the revoke of their callbacks in the same transaction, and a claim SHALL suppress a wake whose client's grant no longer stands.
 
@@ -397,6 +401,10 @@ Chunk, inline and manifest bytes, entries, history rows, open uploads and their 
 
 ### Requirement: Every manifest row is bounded in bytes as the object stores it
 Every manifest row (entry, history row, content with its inline bytes and chunk list, chunk, temporary directory, share row, scope reference) SHALL be charged, by triggers only, the page bytes of each b-tree record and index entry it makes, its text in bytes and its overflow pages included, against `max_manifest_bytes`. The charge SHALL bound the database's growth within the guard's worst-case fill factor, `WORST_FILL`, for every path length (up to 4,096 bytes).
+
+#### Scenario: The other file bounds inside the manifest's
+- **WHEN** the files policy is at its defaults, or every bound at its high
+- **THEN** `max_entries` small files at one version, `max_history` versions, and `max_inline_bytes` each fit inside `max_manifest_bytes`, so each can bind
 
 #### Scenario: A client writing 4,096-byte paths
 - **WHEN** an outside client writes file after file at 4,096-byte paths

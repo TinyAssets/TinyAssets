@@ -124,7 +124,7 @@ import {
   type ThreadReader, Threads,
 } from "./threads";
 import { codePoints, principal } from "./text";
-import type { OperationResult } from "./thread-host";
+import { type OperationResult, SESSIONS_FULL, THREAD_INPUTS_FULL } from "./thread-host";
 import type { ThreadStore } from "./thread-store";
 import { Usage as ModelUsage, type UsageReceipt } from "./usage";
 import { runWakes, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "./wakes";
@@ -756,11 +756,11 @@ export function workRunner(threads: ThreadReader, agent: Pick<OwnerAgent, "submi
           || authority.refusal(threadAuthority(thread), []) !== undefined) {
         return { state: "failed", reason: "thread_authority" };
       }
-      await mark();
       let receipt: { accepted: boolean };
       try {
+        // Marked once the host admits it, so a refusal for room leaves it unmarked.
         receipt = await agent.submit(thread, turn.input, {
-          operationId: target.work_id, whenBusy: "followUp",
+          operationId: target.work_id, whenBusy: "followUp", admitted: mark,
           entry: { kind: "ta.work", data: { work_id: target.work_id,
                                             client: target.stamp?.client ?? null } },
         });
@@ -768,6 +768,10 @@ export function workRunner(threads: ThreadReader, agent: Pick<OwnerAgent, "submi
         if (threads.get(turn.thread) === null) {
           // Dropped since the check (a grant change): its Session is never opened again.
           return { state: "failed", reason: "no_thread" };
+        }
+        if (error instanceof Refused
+            && (error.message === THREAD_INPUTS_FULL || error.message === SESSIONS_FULL)) {
+          return { state: "busy", reason: error.message };
         }
         throw error;
       }

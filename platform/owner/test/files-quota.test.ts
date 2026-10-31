@@ -469,15 +469,15 @@ describe("the files policy", () => {
     const r = await rig();
     const reason = "files policy: max_history holds max_entries times the larger of " +
       "keep_versions and keep_recent";
-    expect((await failure(() => setPolicy(r, { max_entries: 1000, keep_versions: 1000,
-                                               max_history: 999_999 }))).message).toBe(reason);
-    expect((await failure(() => setPolicy(r, { max_entries: 1000, keep_versions: 1,
-                                               keep_recent: 1000, max_history: 999_999 })))
+    expect((await failure(() => setPolicy(r, { max_entries: 500, keep_versions: 1000,
+                                               max_history: 499_999 }))).message).toBe(reason);
+    expect((await failure(() => setPolicy(r, { max_entries: 500, keep_versions: 1,
+                                               keep_recent: 1000, max_history: 499_999 })))
       .message).toBe(reason);
     expect((await failure(() => setPolicy(r, { keep_recent: 21 }))).message).toBe(reason);
-    await setPolicy(r, { max_entries: 1000, keep_versions: 1000, max_history: 1_000_000 });
-    await setPolicy(r, { max_entries: 1000, keep_versions: 1, keep_recent: 1000,
-                         max_history: 1_000_000 });
+    await setPolicy(r, { max_entries: 500, keep_versions: 1000, max_history: 500_000 });
+    await setPolicy(r, { max_entries: 500, keep_versions: 1, keep_recent: 1000,
+                         max_history: 500_000 });
     expect(FILE_DEFAULTS.max_entries * Math.max(FILE_DEFAULTS.keep_versions,
                                                 FILE_DEFAULTS.keep_recent))
       .toBe(FILE_DEFAULTS.max_history);

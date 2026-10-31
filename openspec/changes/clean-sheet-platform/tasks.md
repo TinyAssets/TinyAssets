@@ -1106,7 +1106,16 @@ account and no deploy.
   is there. A thread holds at most `THREAD_INPUTS` (8) open inputs (`thread_inputs_full`),
   pi at most `THREAD_COMPACTIONS` (2) live compactions, both refused past by the schema
   (`turn_owners_full`); a turn is at most `TURN_BYTES` (96); a dropped thread's turns go
-  in its drop's unit. A thread's kept usage is at most 16 KiB (`USAGE_ROW_MAX`). No owner source creates a
+  in its drop's unit. A thread's kept usage is at most 16 KiB (`USAGE_ROW_MAX`). An owner
+  unit is all or nothing (its own savepoint); a Session's open reconcile passes over an
+  owner past the bound with an owner notice (`turns_unkept`), so the thread still opens. A
+  scheduled hand-off is marked only once the thread host admits it: one refused for room
+  (`thread_inputs_full`, or every Session working) answers `busy`, its claim released
+  unmarked, its attempt given back, due again after `WORK_RETRY_S` (until F1's
+  `sleepUntil` replaces the path). Every files bound can bind inside the manifest's: the
+  defaults are 30,000 entries and 600,000 history rows (highs 500,000 and 600,000), and
+  `max_inline_bytes` is at most 384 MiB. The guard's headroom is about 371 MB: a new table
+  or a raised bound comes out of an existing term. No owner source creates a
   pi task (the create-task guard). The owner-bound guard (`guards/owner-bound.test.ts`) has no exceptions and holds the
   worst case at the policy's high bounds under half of 10 GB.
 - [ ] Doors (with tasks 2): the HTTP `/api/files` door and MCP file tools over the
