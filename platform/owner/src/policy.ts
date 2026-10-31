@@ -30,6 +30,9 @@
  *   daily and monthly cost ceilings, and pi's retry count. `usage.ts` holds every model
  *   call to it, in the unit that reserves the call, and `agentPolicy` hands pi the part
  *   that is pi's. The Python's per-turn limits were code constants; here they are policy.
+ * - The optional `runs` table is the owner's run retention (`RUN_DEFAULTS`, tasks 5 S5):
+ *   how long a settled run's store is kept (`keep_runs`), and its receipt
+ *   (`keep_run_receipts`), which the `threads` lane reads (`threads.ts`).
  *
  * The Python closed the owner's public egress tunnels before a write committed and
  * cancelled its live streams after. Here each model call carries the policy generation
@@ -68,6 +71,7 @@ import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import { CHUNK_BYTES, KEEP_CEILING, MAX_INTENT_CHUNKS } from "./files";
 import { codePoints, SOURCE_ID } from "./text";
+import type { RunRetention } from "./threads";
 
 export const BEHAVIOURS: readonly string[] =
   Object.freeze(["do", "do_if_preapproved", "ask_first", "hand_off"]);
@@ -184,6 +188,38 @@ export function fileSettings(document: PolicyDocument): FileSettings {
 }
 
 /**
+ * Owner run retention (tasks 5, S5): how long a settled run's store is kept (`keep_runs`,
+ * whole days, at most 30), and how long its receipt is kept from when it settled
+ * (`keep_run_receipts`, whole days, at least `keep_runs` and at most 365). The document's
+ * optional `runs` table sets either; the rest keep these values. A run's receipt is how its
+ * status is answered once its store is wiped (`threads.ts`).
+ */
+export const RUN_DEFAULTS = Object.freeze({
+  keep_runs: 7,
+  keep_run_receipts: 90,
+});
+export type RunSettings = { readonly [K in keyof typeof RUN_DEFAULTS]: number };
+/** The range each run setting may take. */
+export const RUN_SETTINGS: { readonly [K in keyof RunSettings]: readonly [number, number] } =
+  Object.freeze({
+    keep_runs: Object.freeze([1, 30] as const),
+    keep_run_receipts: Object.freeze([1, 365] as const),
+  });
+const DAY_S = 86_400;
+
+/** The run settings a document leaves in force: its own, and the defaults for the rest. */
+export function runSettings(document: PolicyDocument): RunSettings {
+  return { ...RUN_DEFAULTS, ...document.runs };
+}
+
+/** The run retention a document leaves in force, in seconds, as the threads read it. */
+export function runRetention(document: PolicyDocument): RunRetention {
+  const settings = runSettings(document);
+  return { keepRunsS: settings.keep_runs * DAY_S,
+           keepReceiptsS: settings.keep_run_receipts * DAY_S };
+}
+
+/**
  * Owner model policy (gateway research §4): what one turn may spend, and what the owner's
  * sources may spend in a UTC day and month. A turn is the submitted input at the origin of
  * a call's causal chain, every subagent's, compaction's and background work's call it
@@ -286,6 +322,7 @@ function validModels(models: unknown): boolean {
 /** The document as `validate` leaves it. */
 export interface PolicyDocument {
   readonly files?: Partial<FileSettings>;
+  readonly runs?: Partial<RunSettings>;
   readonly models?: ModelPolicy;
   readonly entries: PolicyEntry[];
   readonly egress: { readonly mode: string;
@@ -437,7 +474,8 @@ function destination(entry: unknown): void {
 export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS):
     PolicyDocument {
   if (!plain(document) || !keys(document, ["entries", "spend", "egress",
-    ...(["files", "models"] as const).filter((table) => Object.hasOwn(document, table))])) {
+    ...(["files", "models", "runs"] as const).filter((table) =>
+      Object.hasOwn(document, table))])) {
     throw new Invalid("invalid policy document");
   }
   if (document["models"] !== undefined && !validModels(document["models"])) {
@@ -455,6 +493,16 @@ export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS
       > settings.max_history) {
     throw new Invalid("files policy: max_history holds max_entries times the larger of " +
                       "keep_versions and keep_recent");
+  }
+  const runs = document["runs"];
+  if (runs !== undefined && (!plain(runs) || Object.entries(runs).some(([key, value]) =>
+    !Object.hasOwn(RUN_SETTINGS, key)
+    || !bounded(value, RUN_SETTINGS[key as keyof RunSettings])))) {
+    throw new Invalid("invalid runs policy");
+  }
+  const kept = { ...RUN_DEFAULTS, ...(runs as Partial<RunSettings> | undefined) };
+  if (kept.keep_run_receipts < kept.keep_runs) {
+    throw new Invalid("runs policy: keep_run_receipts is at least keep_runs");
   }
   const egress = document["egress"];
   if (!plain(egress) || !keys(egress, ["mode", "destinations"])

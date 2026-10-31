@@ -8,8 +8,12 @@
  * - never names `setAlarm`, `deleteAlarm`, `getAlarm`, Lifecycle's `disableAlarms` or the
  *   storage's `deleteAll` (which takes the queue with it), as an identifier, a property or
  *   a string, and holds no string with `Alarm` in it, so the obvious split spellings fail;
- *   one exception: a thread store (`thread-store.ts`), a Durable Object of its own that
- *   holds no Lifecycle and no alarm, wipes itself whole with `deleteAll`;
+ *   three exceptions (`WIPES`), each by identifier only: a thread store
+ *   (`thread-store.ts`), a Durable Object of its own that holds no Lifecycle and no alarm,
+ *   wipes itself whole with `deleteAll`; and the owner's erasure, whose last step disables
+ *   Lifecycle's alarm for good (`erase.ts`, `disableAlarms`) and then has the write gate,
+ *   the one holder of the owner's raw storage, delete the whole database (`gate.ts`,
+ *   `deleteAll`), so Lifecycle writes nothing after it;
  * - reads `ctx.storage` and a Lifecycle only by literal names, never by a computed one,
  *   and gives no class or object member a computed name but a literal;
  * - imports from the `agents` package only what `AGENTS_IMPORTS` lists, and loads no
@@ -47,6 +51,15 @@ const BANNED: ReadonlySet<string> = new Set(["setAlarm", "deleteAlarm", "getAlar
 const AGENTS_IMPORTS: ReadonlySet<string> = new Set(["agents/lifecycle"]);
 /** The one source that may name `deleteAll`: a thread store, which holds no Lifecycle. */
 const STORE = "owner/src/thread-store.ts";
+/** The erasure's capability and the write gate, whose wipe is the erasure's last step. */
+const ERASE = "owner/src/erase.ts";
+const GATE = "owner/src/gate.ts";
+/** The banned names each source may still use, as an identifier only. */
+const WIPES: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  [STORE]: Object.freeze(["deleteAll"]),
+  [GATE]: Object.freeze(["deleteAll"]),
+  [ERASE]: Object.freeze(["disableAlarms"]),
+});
 const HAND_OFF = "await this.#lifecycle.alarm();";
 /** The pinned Agents SDK, as the lockfile resolves it. */
 const AGENTS = Object.freeze({
@@ -95,7 +108,7 @@ export function alarmReach(fileName: string, source: string): string[] {
   const report = reporter(file, problems);
   const visit = (node: ts.Node): void => {
     if ((ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteralLike(node))
-        && BANNED.has(node.text) && !(fileName === STORE && node.text === "deleteAll"
+        && BANNED.has(node.text) && !((WIPES[fileName] ?? []).includes(node.text)
                                       && ts.isIdentifier(node))) {
       report(node, `names ${node.text}, which only Lifecycle calls`);
     } else if ((ts.isStringLiteralLike(node) || ts.isTemplateHead(node)
@@ -172,6 +185,22 @@ describe("alarm guard", () => {
     expect(alarmReach(STORE, "export class S { m() { return this.ctx.storage.setAlarm(1); } }"))
       .not.toEqual([]);
     expect(workerSources().get(STORE)).toContain("await this.ctx.storage.deleteAll();");
+  });
+
+  it("lets the owner's erasure alone disable Lifecycle's alarm, and its gate alone wipe " +
+     "the owner", () => {
+    const disable = "export class E { async m(l: L) { await l.disableAlarms(); } }";
+    const wipe = "export class G { wipe() { return this.#raw.deleteAll(); } }";
+    expect(alarmReach(ERASE, disable)).toEqual([]);
+    expect(alarmReach(GATE, wipe)).toEqual([]);
+    expect(alarmReach(ERASE, wipe)).not.toEqual([]);
+    expect(alarmReach(GATE, disable)).not.toEqual([]);
+    expect(alarmReach("owner/src/owner-do.ts", disable)).not.toEqual([]);
+    expect(alarmReach(ERASE, "export const k = 'disableAlarms';")).not.toEqual([]);
+    expect(alarmReach(ERASE, "export class E { m(s: S) { return s.setAlarm(1); } }"))
+      .not.toEqual([]);
+    expect(workerSources().get(ERASE)).toContain("await lifecycle.disableAlarms();");
+    expect(workerSources().get(GATE)).toContain("return this.#raw.deleteAll();");
   });
 
   it("finds the object's one hand-off", () => {

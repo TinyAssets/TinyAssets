@@ -76,6 +76,17 @@ export class WriteGate {
   }
 
   /**
+   * The owner's erasure's last step (`erase.ts`): the whole database deleted at once, every
+   * table, key and job of it. Never inside a unit; nothing writes after it.
+   */
+  wipe(): Promise<void> {
+    if (this.#holding) {
+      throw new Error(NESTED_UNIT);
+    }
+    return this.#raw.deleteAll();
+  }
+
+  /**
    * Run `unit` now, in a `transactionSync` of its own. A unit inside another throws at once;
    * one that returns a promise is rolled back.
    */

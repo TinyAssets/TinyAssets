@@ -34,9 +34,11 @@ import {
 import { Threads } from "../src/threads";
 import { asked, direct, gated, OAUTH, provider, until } from "./gateway-support";
 import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
-import { failure, storeSubmission } from "./support";
+import { failure } from "./support";
 import { keepsFive } from "../src/agent";
-import { type FauxOwnerDO, type GatedOwnerDO, type MalformedOwnerDO, says } from "./worker";
+import {
+  type FauxOwnerDO, type GatedOwnerDO, type MalformedOwnerDO, says, wipedSubmission,
+} from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
 /** A third outside client. */
@@ -880,8 +882,8 @@ describe("ta's model call through the gateway (review L4)", () => {
                                                                   { session });
       await until(async () => (await cancelled()) === false, "the nested stream to open");
       await instance.grantRevoke(r.bind(), { client: MUSE.client });
-      // The revoke dropped the thread: its store says how the turn ended.
-      const settled = (await storeSubmission(thread.store, { request: operationId }))!;
+      // The revoke dropped the thread: its store, as it was wiped, says how the turn ended.
+      const settled = wipedSubmission(instance.probes, thread.store, { request: operationId })!;
       return { settled: [settled.status, settled.reason], bodies: instanceCalls(instance.calls) };
     });
     expect(out.settled).toEqual(["unanswered", "aborted"]);

@@ -22,7 +22,9 @@ import { LIMITS as COLLECTIONS } from "../src/collections";
 import { LEDGER_LIMITS } from "../src/ledger";
 import { NOTICE_DETAIL, NOTICES_KEPT } from "../src/notices";
 import { SESSION_LIMITS } from "../src/sessions";
-import { THREAD_LIMITS, USAGE_ROW_MAX } from "../src/threads";
+import {
+  RECEIPT_REASON_MAX, RECEIPT_TEXT_MAX, THREAD_LIMITS, USAGE_ROW_MAX, USAGE_SPACE_MAX,
+} from "../src/threads";
 import { USAGE_LIMITS } from "../src/usage";
 import { PLATFORM } from "./sources";
 
@@ -101,6 +103,12 @@ interface Term {
 
 const high = (setting: keyof typeof FILE_SETTINGS): number => FILE_SETTINGS[setting];
 const clients = GRANT_LIMITS.maxFreeClients + GRANT_LIMITS.maxOwnerClients;
+/**
+ * Every thread row at once: the owner's conversations, every client's threads, and the
+ * runs whose stores are kept (`runs_kept`); a client's run counts in both of its bounds,
+ * so the sum is over, never under.
+ */
+const threadRows = THREAD_LIMITS.owner + THREAD_LIMITS.clients + THREAD_LIMITS.runs;
 
 /** Every owner table's worst case. */
 export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string, Term>>({
@@ -175,12 +183,18 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
   model_spend: { rows: (USAGE_LIMITS.daysKept + USAGE_LIMITS.monthsKept) * 64,
                  bytes: ROW, by: "days and months kept, a row per source" },
   // The agent's threads: rows only, every transcript in its own store.
-  agent_threads: { rows: THREAD_LIMITS.owner + THREAD_LIMITS.clients, bytes: ROW + 1 * KIB,
-                   by: "THREAD_LIMITS (the owner's, and every client's)" },
-  agent_live: { rows: THREAD_LIMITS.owner + THREAD_LIMITS.clients, bytes: ROW,
-                by: "one per thread" },
-  agent_usage: { rows: THREAD_LIMITS.owner + THREAD_LIMITS.clients, bytes: ROW + USAGE_ROW_MAX,
-                 by: "one per thread, USAGE_ROW_MAX each" },
+  agent_threads: { rows: threadRows, bytes: ROW + 1 * KIB,
+                   by: "THREAD_LIMITS (the owner's conversations, every client's, the runs)" },
+  agent_live: { rows: threadRows, bytes: ROW, by: "one per thread" },
+  agent_usage: { rows: threadRows, bytes: ROW + Math.min(USAGE_ROW_MAX,
+                                                         USAGE_SPACE_MAX / threadRows),
+                 by: "one per thread, USAGE_SPACE_MAX of usage in all" },
+  agent_usage_space: { rows: 1, bytes: ROW, by: "one row" },
+  // A run's receipt once its store is wiped: runs and receipts together are bounded.
+  run_receipts: { rows: THREAD_LIMITS.receipts,
+                    bytes: ROW + 39 + 64 + 128 + RECEIPT_REASON_MAX * 4 + RECEIPT_TEXT_MAX,
+                    by: "THREAD_LIMITS.receipts, RECEIPT_TEXT_MAX of text each" },
+  owner_erasure: { rows: 1, bytes: ROW, by: "one row" },
 });
 
 /**
@@ -249,6 +263,17 @@ describe("the owner's database bound", () => {
     expect(high("max_inline_bytes")).toBe(1024 ** 3);
     expect(TERMS["file_contents"]!.rows * TERMS["file_contents"]!.bytes)
       .toBeGreaterThan(high("max_inline_bytes"));
+  });
+
+  it("counts every run whose store is kept, every receipt, and the usage of each thread",
+     () => {
+    expect(TERMS["agent_threads"]!.rows).toBe(61_024);
+    expect(TERMS["run_receipts"]!.rows).toBe(100_000);
+    expect(TERMS["run_receipts"]!.bytes).toBeGreaterThan(RECEIPT_TEXT_MAX);
+    // The usage rows' sum is the space bound, not each row's bound times every thread.
+    expect(TERMS["agent_usage"]!.rows * TERMS["agent_usage"]!.bytes)
+      .toBeLessThanOrEqual(threadRows * ROW + USAGE_SPACE_MAX);
+    expect(threadRows * USAGE_ROW_MAX).toBeGreaterThan(SHARE * DATABASE_BYTES / 2);
   });
 
   it("sees a bound that would pass half the limit", () => {

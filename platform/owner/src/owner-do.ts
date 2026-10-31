@@ -76,8 +76,15 @@
  * caller and checks its scope (`converse`, `run_graph`) in its first unit, before any pi
  * call; each addresses work by a thread id resolved against the caller's own rows, never
  * a pi session string (`threads.ts`), so no door reaches another caller's Session; an outside
- * client's text reaches pi inside the untrusted envelope, naming the client. Idle threads
- * are dropped by the `threads` lane.
+ * client's text reaches pi inside the untrusted envelope, naming the client. Idle
+ * conversations, and runs past `keep_runs`, are dropped by the `threads` lane, each store
+ * wiped before its row is forgotten (`threads.ts`); a run whose store was wiped answers its
+ * status from its receipt.
+ *
+ * Erasing the owner (`erasure.ts`, `erase.ts`) is an internal path, which no door reaches
+ * until the erasure door (tasks 7): once it marks the owner, every door refuses
+ * (`ERASING`, in the binding check every door's first unit runs), no lane runs, and no
+ * thread is made; it destroys every store a row names, then wipes the owner whole.
  */
 import type { HarnessSettings } from "@earendil-works/pi-durable";
 import { Lifecycle } from "agents/lifecycle";
@@ -105,9 +112,11 @@ import {
   registrant, type Source,
 } from "./ledger";
 import { type Notice, Notices } from "./notices";
+import { Erasure } from "./erase";
+import { ERASING, erasing } from "./erasure";
 import {
   agentPolicy, type Change, fileSettings, modelSettings, Policy, type PolicyDocument,
-  type Projection, type Receipt,
+  type Projection, type Receipt, runRetention,
 } from "./policy";
 import { type Card, Registrations } from "./registrations";
 import { GatewayProvider } from "./gateway-provider";
@@ -120,8 +129,8 @@ import { AGENTS_DIR, AGENTS_OWNER_ONLY, storedPath, within, WORKSPACE } from "./
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
 import {
-  retainThreads, type Thread, THREAD_LIMITS, THREAD_RETENTION, threadAuthority,
-  type ThreadReader, Threads,
+  type Receipt as RunReceipt, retainThreads, type Thread, THREAD_LIMITS, THREAD_RETENTION,
+  threadAuthority, type ThreadReader, Threads,
 } from "./threads";
 import { codePoints, principal } from "./text";
 import type { OperationResult } from "./thread-host";
@@ -594,6 +603,19 @@ const AGENT_DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 /** An operation: its thread's id, then pi's request id (a send's, a launch's or a work's). */
 const OPERATION = /^(thread_[0-9a-f]{32})\.([0-9a-f]{64}|run_[0-9a-f]{32}|work_[0-9a-f]{32})$/;
 
+/**
+ * How an operation of a run whose store was wiped stands, from its receipt: its input's
+ * settling; any other request id, pi never saw (`not_found`).
+ */
+function receiptStatus(receipt: RunReceipt, key: string): OperationResult {
+  if (receipt.request !== key) {
+    return { operationId: key, status: "unanswered", reason: "not_found" };
+  }
+  return { operationId: key, status: receipt.status,
+           ...(receipt.reason === null ? {} : { reason: receipt.reason }),
+           ...(receipt.status === "done" ? { text: receipt.text } : {}) };
+}
+
 /** An operation's id: the thread it runs in, and pi's request id in that thread. */
 export function operationOf(thread: string, request: string): string {
   return `${thread}.${request}`;
@@ -813,11 +835,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** What hands due scheduled turns to pi, called in process by the `work` lane. */
   readonly #runner: WorkRunner;
   /**
+   * The owner's erasure (`erasure.ts`, `erase.ts`): an internal path, which the erasure
+   * door (tasks 7) calls; no door reaches it yet.
+   */
+  readonly #erasure: Erasure;
+  /**
    * The runtime constructs it with `ctx` and `env` alone, so the agent is the production
    * one, on the gateway provider; the workerd tests hand a factory that opens it on pi-ai's
-   * faux models.
+   * faux models, and take the erasure's internal path (`erasure`), which no door reaches.
    */
-  constructor(ctx: DurableObjectState, env: OwnerEnv, agent: AgentFactory = gatewayAgent) {
+  constructor(ctx: DurableObjectState, env: OwnerEnv, agent: AgentFactory = gatewayAgent,
+              erasure: (internal: Erasure) => void = () => {}) {
     super(ctx, env);
     this.#gate = new WriteGate(ctx.storage);
     const storage = this.#gate.storage;
@@ -830,7 +858,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#ledger = new Ledger(storage, this.#grants);
     this.#files = new Files(storage, env.FILES,
                             () => fileSettings(this.#policy.read().document), write);
-    this.#threads = new Threads(storage, THREAD_LIMITS, THREAD_RETENTION, namedByOpenWork);
+    this.#threads = new Threads(storage, THREAD_LIMITS, THREAD_RETENTION, namedByOpenWork,
+                                () => runRetention(this.#policy.read().document));
     this.#work = new Scheduled(storage, this.#grants, this.#threads);
     this.#registrations = new Registrations(storage, this.#grants);
     this.#notices = new Notices(storage);
@@ -853,12 +882,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       ledger: this.#ledger, files: this.#files, work: this.#work,
       connections: this.#connections,
       threads: {
-        nextDue: (now) => this.#threads.nextIdle(now),
-        run: (_now, until) => retainThreads(this.#threads, clock, write, until,
-                                            (thread) => this.#agent.dropped(thread)),
+        nextDue: (now) => this.#threads.nextDue(now),
+        run: (_now, until) => retainThreads(this.#threads, clock, write,
+                                            (thread) => this.#agent.drop(thread), until),
       },
       sender: () => this.#sender, runner: () => this.#runner, clock, write, runWakes, runWork,
-    }), clock, write);
+    }), clock, write, undefined, () => erasing(storage));
     const provider = new GatewayProvider({
       connections: this.#connections, usage: this.#usage, write, gateway: () => env.GATEWAY,
       owner, tee: this.#tee, clock,
@@ -886,12 +915,20 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                           stores: (name) => env.PISTORE.getByName(name),
                           config: (agentId) => this.#agentConfig(agentId),
                           live: (thread, wake) => write(() => this.#threads.live(
-                            thread, wake.active, wake.at === undefined ? null : wake.at / 1000)),
+                            thread, wake.active, wake.at === undefined ? null : wake.at / 1000,
+                            clock())),
                           usage: (thread, usage) => write(() => this.#threads.keepUsage(
                             thread, JSON.stringify(usage))),
                         });
     this.#runner = workRunner(this.#threads, this.#agent, authority);
-    this.#lifecycle = new Lifecycle<OwnerEnv>(this).use(this.#schedule).use(this.#agent.host);
+    const lifecycle = new Lifecycle<OwnerEnv>(this);
+    this.#erasure = new Erasure({
+      storage, write, clock, threads: this.#threads, ended: () => this.#agent.erasing(),
+      drop: (thread) => this.#agent.drop(thread, false), lifecycle,
+      wipe: () => this.#gate.wipe(),
+    });
+    erasure(this.#erasure);
+    this.#lifecycle = lifecycle.use(this.#schedule).use(this.#agent.host).use(this.#erasure);
     void ctx.blockConcurrencyWhile(async () => {
       await write(() => migrate(storage));
       // The schedule as stored, for this code's lanes and sender: a deploy that adds a
@@ -1522,12 +1559,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const r = agentFields(request, ["operation_id"]);
       const operation = this.#operation(account, r["operation_id"]);
       const work = operation.key.startsWith("work_")
-        ? this.#work.view(operation.key, operation.thread.client) : null;
+        ? this.#work.view(operation.key, operation.client) : null;
       return { ...operation, work };
     });
-    const { thread, key, work } = found;
-    const base = { operation_id: operationOf(thread.thread_id, key), thread_id: thread.thread_id };
-    const status = await this.#agent.status(thread, key);
+    const { thread, receipt, key, work } = found;
+    const id = thread?.thread_id ?? receipt!.thread_id;
+    const base = { operation_id: operationOf(id, key), thread_id: id };
+    const status = thread !== null ? await this.#agent.status(thread, key)
+      : receiptStatus(receipt!, key);
     if (status.status === "unanswered" && status.reason === "not_found" && work !== null) {
       // Not handed to pi yet, or never to be: the work row says how it stands.
       if (work.state === "pending" || work.state === "running") {
@@ -1553,13 +1592,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const found = await this.#synced(() => {
       const account = this.#account(binding);
       const r = agentFields(request, ["operation_id"]);
-      const { thread, key } = this.#operation(account, r["operation_id"]);
-      const withdrawn = key.startsWith("work_")
-        && this.#work.cancel(key, thread.client, clock());
-      return { thread, key, withdrawn };
+      const { thread, receipt, client, key } = this.#operation(account, r["operation_id"]);
+      const withdrawn = key.startsWith("work_") && this.#work.cancel(key, client, clock());
+      return { thread, receipt, key, withdrawn };
     });
-    const aborted = await this.#agent.cancel(found.thread, found.key);
-    return { operation_id: operationOf(found.thread.thread_id, found.key),
+    // A run its receipt answers for has nothing left to abort: its store is wiped.
+    const aborted = found.thread !== null && await this.#agent.cancel(found.thread, found.key);
+    return { operation_id: operationOf(found.thread?.thread_id ?? found.receipt!.thread_id,
+                                       found.key),
              cancelled: found.withdrawn || aborted };
   }
 
@@ -1636,16 +1676,22 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /**
    * The caller's own operation `value` names: its thread, resolved against the caller's
-   * own rows by thread id, and pi's request id. Anything else is `NO_OPERATION`.
+   * own rows by thread id, or, for a run whose store was wiped, its receipt, the caller's
+   * own alike; and pi's request id. Anything else is `NO_OPERATION`, a dropping thread's
+   * too.
    */
-  #operation(account: Account, value: unknown): { thread: Thread; key: string } {
+  #operation(account: Account, value: unknown):
+      { thread: Thread | null; receipt: RunReceipt | null; client: string | null;
+        key: string } {
     const match = typeof value === "string" ? OPERATION.exec(value) : null;
-    const thread = match === null ? null
-      : this.#threads.mine(match[1], account.origin?.client ?? null);
-    if (thread === null) {
+    const client = account.origin?.client ?? null;
+    const thread = match === null ? null : this.#threads.mine(match[1], client);
+    const receipt = match === null || thread !== null ? null
+      : this.#threads.receipt(match[1], client);
+    if (thread === null && receipt === null) {
       throw new Refused(NO_OPERATION);
     }
-    return { thread, key: match![2]! };
+    return { thread, receipt, client, key: match![2]! };
   }
 
   /** The stamp a caller's thread is made under where it acts; the owner's is none. */
@@ -1768,6 +1814,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * refused. The stored owner, fixed at first use, is a second check of the same.
    */
   #bind(binding: Binding): { owner: string; caller: string } {
+    if (this.#erasure.erased || erasing(this.#storage)) {
+      throw new Refused(ERASING);
+    }
     if (typeof binding !== "object" || binding === null) {
       throw new Invalid("invalid owner principal");
     }

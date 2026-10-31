@@ -856,6 +856,60 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE INDEX work_by_thread ON scheduled_work (json_extract(payload, '$.thread')) " +
       "WHERE settled_at IS NULL",
   ]),
+  // 10: drops wipe, run retention and erasure (threads.ts, erasure.ts; S4-S5). A thread is
+  // marked `dropping`, its Session ended and closed, its store destroyed, and only then
+  // its row forgotten; a drop the store did not answer is tried again at `drop_retry`. A
+  // dropping thread holds its client's grant row no longer: the mark releases it, as the
+  // row's delete did before. A run's row leaves a receipt (`run_receipts`: how its input
+  // settled and the first 4 KiB of its answer), kept by its settling time. The kept usage
+  // rows' bytes are counted (`agent_usage_space`), so their sum has a bound of its own. The
+  // owner being erased is one row (`owner_erasure`), the mark every door, lane and new
+  // thread refuses on.
+  Object.freeze([
+    "ALTER TABLE agent_threads ADD COLUMN drop_retry REAL",
+    "DROP TRIGGER agent_threads_released",
+    "CREATE TRIGGER agent_threads_released AFTER DELETE ON agent_threads BEGIN " +
+      "UPDATE outside_clients SET held = held - 1 WHERE client = OLD.client " +
+      "AND OLD.state = 'ready'; DELETE FROM agent_live WHERE thread_id = OLD.thread_id; " +
+      "DELETE FROM agent_usage WHERE thread_id = OLD.thread_id; END",
+    "CREATE TRIGGER agent_threads_dropping AFTER UPDATE OF state ON agent_threads " +
+      "WHEN OLD.state = 'ready' AND NEW.state = 'dropping' BEGIN " +
+      `${HOLD("OLD", "-")} END`,
+    "DROP TRIGGER outside_clients_held",
+    "CREATE TRIGGER outside_clients_held AFTER INSERT ON outside_clients BEGIN " +
+      "UPDATE outside_clients SET agents = (SELECT COUNT(*) FROM outside_agents " +
+      "WHERE outside_client = NEW.client), held = (SELECT COUNT(*) FROM scheduled_work " +
+      "WHERE client = NEW.client AND settled_at IS NULL) + (SELECT COUNT(*) FROM " +
+      "agent_cards WHERE client = NEW.client) + (SELECT COUNT(*) FROM agent_threads " +
+      "WHERE client = NEW.client AND state = 'ready') WHERE client = NEW.client; END",
+    "CREATE INDEX agent_threads_by_kind ON agent_threads (kind, last_active) " +
+      "WHERE state = 'ready'",
+    "CREATE INDEX agent_threads_by_holder ON agent_threads (kind, client)",
+    "CREATE INDEX agent_threads_dropping ON agent_threads (drop_retry) " +
+      "WHERE state = 'dropping'",
+    "CREATE TABLE run_receipts (thread_id TEXT NOT NULL UNIQUE " +
+      "CHECK (length(thread_id) = 39), " +
+      "client TEXT CHECK (client IS NULL OR length(client) = 64), " +
+      "request TEXT CHECK (request IS NULL OR length(request) BETWEEN 1 AND 128), " +
+      "status TEXT NOT NULL CHECK (status IN ('done', 'unanswered')), " +
+      "reason TEXT CHECK (reason IS NULL OR length(reason) BETWEEN 1 AND 256), " +
+      "text TEXT NOT NULL CHECK (length(CAST(text AS BLOB)) <= 4096), " +
+      "settled_at REAL NOT NULL, CHECK ((status = 'done') = (reason IS NULL)))",
+    "CREATE INDEX run_receipts_by_age ON run_receipts (settled_at)",
+    "CREATE TABLE agent_usage_space (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      "bytes INTEGER NOT NULL CHECK (bytes >= 0))",
+    "INSERT INTO agent_usage_space (only, bytes) SELECT 1, " +
+      "IFNULL(SUM(length(CAST(usage AS BLOB))), 0) FROM agent_usage",
+    "CREATE TRIGGER agent_usage_added AFTER INSERT ON agent_usage BEGIN " +
+      "UPDATE agent_usage_space SET bytes = bytes + length(CAST(NEW.usage AS BLOB)); END",
+    "CREATE TRIGGER agent_usage_changed AFTER UPDATE OF usage ON agent_usage BEGIN " +
+      "UPDATE agent_usage_space SET bytes = bytes - length(CAST(OLD.usage AS BLOB)) " +
+      "+ length(CAST(NEW.usage AS BLOB)); END",
+    "CREATE TRIGGER agent_usage_removed AFTER DELETE ON agent_usage BEGIN " +
+      "UPDATE agent_usage_space SET bytes = bytes - length(CAST(OLD.usage AS BLOB)); END",
+    "CREATE TABLE owner_erasure (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      "started_at REAL NOT NULL)",
+  ]),
 ]);
 
 /** Apply every migration past the stored version; return the version now stored. */

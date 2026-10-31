@@ -71,17 +71,24 @@
  *
  * Ending work (agent research §4.2), each in the door of the change, after its own unit
  * committed: a grant set or revoke ends its client's work (`endClient`, the client's
- * threads, which the unit dropped), a policy write every thread's with work running
- * (`endAll`, from the threads' live rows). Each ends the pending waits it covers (`wait`), closes the
- * live views of the conversations it covers (`live-tee.ts`), and aborts each of those
- * Sessions' conversations with live work, background work included: pi withdraws its
+ * threads, which the unit marked dropping), a policy write every thread's with work running
+ * (`endAll`, from the threads' live rows). Each ends the pending waits it covers (`wait`),
+ * closes the live views of the conversations it covers (`live-tee.ts`), and aborts each of
+ * those Sessions' conversations with live work, background work included: pi withdraws its
  * queued inputs, marks and signals its live tasks (a model request in flight sees its abort
  * signal, so the gateway call ends and settles through `usage.ts`), and settles their
- * inputs `unanswered: aborted`. A dropped client's thread's Session is then closed. The
- * door waits for that at most `END_WAIT_MS`; pi finishes it on its own past then. The
- * abort is the prompt stop, not the enforcement: an abort missed (work admitted after the
- * end's read, or an eviction between the commit and the abort) still finds every tool
- * operation and every model call refused.
+ * inputs `unanswered: aborted`. A dropped client's thread then goes the one drop path
+ * (`drop`): its Session closed, a run's receipt kept, its store wiped, its row forgotten.
+ * The door waits for that at most `END_WAIT_MS`; pi finishes the abort, and the `threads`
+ * lane the drop, on their own past then. The abort is the prompt stop, not the
+ * enforcement: an abort missed (work admitted after the end's read, or an eviction between
+ * the commit and the abort) still finds every tool operation and every model call refused.
+ *
+ * Dropping a thread (`drop`, `threads.ts`), for every reason, is one path: idle retention,
+ * a run's retention, a grant change or revoke, and the owner's erasure (`erase.ts`) each
+ * mark the row `dropping` in a unit of their own, then hand it here. A dropping thread is
+ * never opened: its work is ended in the Session as it is, if open, and a run's receipt is
+ * read from its store directly once the Session closed.
  */
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { ClientIdentity, Models, Provider } from "@earendil-works/pi-ai";
@@ -113,11 +120,13 @@ import { RemoteStorage } from "./remote-storage";
 import { inTime } from "./schedule";
 import { PLATFORM_NAMES, type Platform, reachable, taTool } from "./ta";
 import {
-  HOST_TIMING, type HostTiming, type Opened, type OperationResult, type SubmitOptions,
-  ThreadHost,
+  assistantText, HOST_TIMING, type HostTiming, type Opened, type OperationResult,
+  type SubmitOptions, ThreadHost,
 } from "./thread-host";
 import type { StoreRpc } from "./thread-store";
-import { type Thread, threadAuthority, type ThreadKind, type Threads } from "./threads";
+import {
+  type Receipt, type Thread, threadAuthority, type ThreadKind, type Threads,
+} from "./threads";
 
 const BG = BACKGROUND_CONTEXT;
 const ROOT = ROOT_CONVERSATION_ID;
@@ -171,6 +180,8 @@ export const GATE = "ta.authority";
 export const TA_EXTENSION = "ta.tool";
 /** A thread with no row is never opened: it was dropped, or never made. */
 export const NO_THREAD = "no such thread";
+/** How many of a run's first root submissions its receipt's read looks through. */
+const RECEIPT_SCAN = 8;
 
 export type { Stamped };
 
@@ -400,6 +411,8 @@ export class OwnerAgent {
   /** One registry for every Session (pi keeps each Harness subscribed until it closes). */
   readonly #registry = createRegistry();
   #installed: Promise<void> | undefined;
+  /** The drops in flight, by thread, on the instance: one each at a time. */
+  readonly #drops = new Map<string, Promise<void>>();
   /** The pending waits, by the client they are for ("" for the owner's), on the instance. */
   readonly #waits = new Map<string, Set<AbortController>>();
 
@@ -621,7 +634,7 @@ export class OwnerAgent {
     const { kind = "run", need = [] } = options;
     const state = authorityOf(by);
     authority.require(state, need);
-    threads.room(by);  // a refusal makes nothing; the recording unit checks again
+    threads.room(by, kind);  // a refusal makes nothing; the recording unit checks again
     return write(() => {
       authority.require(state, need);
       return threads.record(id, by, Date.now() / 1000, kind);
@@ -644,9 +657,74 @@ export class OwnerAgent {
     return this.host.withdraw(thread.thread_id, operationId);
   }
 
-  /** Close a thread's Session, once its row was dropped. */
-  dropped(thread: string): Promise<void> {
-    return this.host.close(thread);
+  /**
+   * Drop a thread its row marks `dropping` (`threads.ts`), for whatever reason, the one
+   * path: its Session's live views closed and its work ended, background work included,
+   * then the Session closed (`ThreadHost.drop`: never opened for it); for a run, unless
+   * `receipt` is false (the owner's erasure), its receipt read from its store and kept;
+   * its store destroyed; then, in one unit, its row forgotten with every row keyed to it
+   * and its wake job. Each step is safe to run again, so a drop cut short is finished by
+   * running it again (the `threads` lane, the erasure); one in flight for a thread is
+   * joined, never run twice at once.
+   */
+  drop(thread: Thread, receipt = true): Promise<void> {
+    const id = thread.thread_id;
+    const running = this.#drops.get(id);
+    if (running !== undefined) {
+      return running;
+    }
+    const dropping = this.#drop(thread, receipt).finally(() => {
+      this.#drops.delete(id);
+    });
+    this.#drops.set(id, dropping);
+    return dropping;
+  }
+
+  async #drop(thread: Thread, receipt: boolean): Promise<void> {
+    const { threads, write } = this.#parts;
+    const id = thread.thread_id;
+    if (threads.row(id)?.state !== "dropping") {
+      throw new Error("only a thread marked dropping is dropped");
+    }
+    await this.host.drop(id, ({ pi }) => this.#endSession(pi, true));
+    if (receipt && thread.kind === "run" && !threads.hasReceipt(id)) {
+      const settled = await this.#settled(thread);
+      await write(() => threads.keepReceipt(thread, settled));
+    }
+    await this.#parts.stores(thread.store).destroy();
+    const [rearmed] = await write((): [Promise<unknown>] | [] =>
+      (threads.forget(id) ? [this.host.forgetWake(id)] : []));
+    await rearmed;
+  }
+
+  /**
+   * How a dropping run settled, read from its store once its Session closed (never through
+   * a Session: a dropping thread is never opened): its root's first input, and its
+   * answer's text once done. An input pi had not settled when the run's work was ended is
+   * `unanswered: dropped`; a run pi was never handed an input keeps no request.
+   */
+  async #settled(thread: Thread): Promise<Pick<Receipt, "request" | "status" | "reason" |
+                                                        "text">> {
+    const storage = await RemoteStorage.open(() => this.#parts.stores(thread.store));
+    try {
+      const page = await storage.scanSubmissions({ conversationId: ROOT, order: "ascending" },
+                                                 RECEIPT_SCAN, undefined, BG);
+      const input = page.items.find((record) => record.type === "input");
+      if (input === undefined) {
+        return { request: null, status: "unanswered", reason: "not_found", text: "" };
+      }
+      const request = input.requestId ?? null;
+      if (input.status === "done") {
+        const answer = await storage.entry(input.answer, BG);
+        return { request, status: "done", reason: null, text: assistantText(answer?.entry) };
+      }
+      if (input.status === "unanswered") {
+        return { request, status: "unanswered", reason: input.reason, text: "" };
+      }
+      return { request, status: "unanswered", reason: "dropped", text: "" };
+    } finally {
+      await storage.close(BG);
+    }
   }
 
   /**
@@ -783,20 +861,34 @@ export class OwnerAgent {
   }
 
   /**
-   * A grant change ends its client's work: its pending waits, and in each of `threads`
-   * (the client's threads, which the change's unit dropped) with a Session open, its live
-   * views and its work, then the Session itself. A thread whose Session is closed has
-   * nothing running here, and nothing opens it again: no row names it.
+   * A grant change ends its client's work: its pending waits, then each of `threads` (the
+   * client's threads, which the change's unit marked dropping) dropped: its live views and
+   * work ended, its Session closed, its store wiped, its row forgotten (`drop`), sleepers
+   * included, whose sleeping tasks go with their stores. The door waits for that at most
+   * `END_WAIT_MS`. A thread whose work could not be ended rejects this, so the door does; a
+   * store that did not answer is wiped by the `threads` lane, which finishes every drop.
    */
   async endClient(client: string, threads: readonly Thread[]): Promise<void> {
     this.#endWaits(client);
-    await this.#within(Promise.all(threads.map(async ({ thread_id: thread }) => {
-      const opened = this.host.peek(thread);
-      if (opened !== undefined) {
-        await this.#endSession(opened.pi, true);
+    await this.#within(Promise.all(threads.map(async (thread) => {
+      try {
+        await this.drop(thread);
+      } catch (error) {
+        if (this.host.peek(thread.thread_id) !== undefined) {
+          throw error;
+        }
+        console.error("a dropped thread's store is wiped by the lane");  // no ids
       }
-      await this.host.close(thread);
     })));
+  }
+
+  /**
+   * The owner's erasure began (`erasure.ts`): every pending wait and live view ends; each
+   * thread's work then ends with its drop.
+   */
+  erasing(): void {
+    this.#endWaits();
+    this.#parts.tee.close();
   }
 
   /**

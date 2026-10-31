@@ -220,7 +220,7 @@ export function memoryLimitReset(error: unknown): boolean {
 }
 
 /** The text of an assistant entry, for an operation's result. */
-function assistantText(entry: EntryRecord | undefined): string {
+export function assistantText(entry: EntryRecord | undefined): string {
   const message = (entry as { model?: readonly unknown[] } | undefined)?.model?.[0] as
     { role?: string; content?: readonly { type: string; text?: string }[] } | undefined;
   if (message?.role !== "assistant") {
@@ -422,6 +422,51 @@ export class ThreadHost extends LifecycleCapability {
     if (!wasOpen && slot !== undefined && this.#idle(slot)) {
       await this.#closeSlot(slot);
     }
+  }
+
+  /**
+   * A dropping thread's Session ended and closed (a drop's second step, `threads.ts`): its
+   * work ended by `act` (which only aborts) in the Session as it is, past `openMax` and
+   * never resumed, then the Session closed, however it was held open. One not open is
+   * never opened: nothing of it runs here, and its store is about to be wiped. Resolves
+   * once it closed; an open that was in flight is awaited first, so its store is made, if
+   * it is, before the drop wipes it.
+   */
+  async drop(thread: string, act: (opened: Opened) => Promise<void>): Promise<void> {
+    if (this.#slots.get(thread)?.opening !== undefined) {
+      try {
+        await this.#use(thread, async (opened, slot) => {
+          slot.ending++;
+          try {
+            await act(opened);
+          } finally {
+            slot.ending--;
+          }
+        }, true);
+      } catch (error) {
+        if (this.#slots.get(thread)?.opened !== undefined) {
+          throw error;  // its work could not be ended
+        }
+        // The open in flight failed, or the Session closed meanwhile: nothing runs.
+      }
+    }
+    const slot = this.#slots.get(thread);
+    if (slot !== undefined) {
+      slot.pins = 0;  // a watch ends with its thread
+      await this.#closeSlot(slot);
+    }
+  }
+
+  /**
+   * Inside the drop's last unit: `thread`'s wake job and its failure count, forgotten with
+   * its row; the job row goes in the unit, and the alarm is re-armed after it (the answer).
+   */
+  forgetWake(thread: string): Promise<unknown> {
+    const kv = this.lifecycle.storage.kv;
+    if (kv.get(errorsKey(thread)) !== undefined) {
+      kv.delete(errorsKey(thread));
+    }
+    return this.lifecycle.jobs.cancel(wakeJob(thread));
   }
 
   /** `thread`'s Session, opened if it is not (a test's, and the agent's brief reads). */

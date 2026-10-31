@@ -30,11 +30,13 @@ import { type Binding, workRunner } from "../src/owner-do";
 import { Policy, policyDigest } from "../src/policy";
 import { Scheduled, type WorkTarget } from "../src/scheduled";
 import { DESTROYED } from "../src/thread-store";
-import { type Thread, Threads } from "../src/threads";
+import { type Thread, THREAD_LIMITS, type ThreadKind, Threads } from "../src/threads";
 import { asked, gated, provider, until } from "./gateway-support";
 import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
 import { drainDue, failure, storeSubmission } from "./support";
-import { type FauxOwnerDO, type GatedOwnerDO, says, storeScript } from "./worker";
+import {
+  type FauxOwnerDO, type GatedOwnerDO, says, storeScript, wipedSubmission,
+} from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
 const text = (value: string): Uint8Array => new TextEncoder().encode(value);
@@ -434,15 +436,16 @@ describe("a grant change", () => {
       };
       await instance.grantRevoke(r.bind(null), { client: MUSE.client });
       // The door returned once the work it ended had settled, within its wait: the client's
-      // threads are dropped and their Sessions closed, so their stores say how it ended.
-      const atOnce = (await storeSubmission(muse.thread.store,
-                                            { request: turns.muse.operationId }))?.status;
-      const ended = [await storeSubmission(muse.thread.store,
-                                           { request: turns.muse.operationId }),
-                     await storeSubmission(parent.thread.store,
-                                           { request: turns.parent.operationId }),
-                     await storeSubmission(parent.thread.store,
-                                           { id: instance.probes.submitted[0]! })];
+      // threads are dropped and their Sessions closed, then their stores wiped, so what each
+      // store held as it was wiped says how it ended.
+      const atOnce = wipedSubmission(instance.probes, muse.thread.store,
+                                     { request: turns.muse.operationId })?.status;
+      const ended = [wipedSubmission(instance.probes, muse.thread.store,
+                                     { request: turns.muse.operationId }),
+                     wipedSubmission(instance.probes, parent.thread.store,
+                                     { request: turns.parent.operationId }),
+                     wipedSubmission(instance.probes, parent.thread.store,
+                                     { id: instance.probes.submitted[0]! })];
       const closed = instance.agent.host.openThreads();
       const running = [await instance.agent.status(dot.thread, turns.dot.operationId),
                        await instance.agent.status(await ownRow(instance), turns.own.operationId)];
@@ -484,7 +487,7 @@ describe("a grant change", () => {
                                              mode: "scoped", name: "", expected_generation: 1,
                                              scopes: [{ universe: "alpha", agent: "main",
                                                         capability: "write_files" }] });
-      return (await storeSubmission(thread.store, { request: operationId }))!;
+      return wipedSubmission(instance.probes, thread.store, { request: operationId })!;
     });
     expect([out.status, out.reason]).toEqual(["unanswered", "aborted"]);
   });
@@ -500,7 +503,7 @@ describe("a grant change", () => {
       const { operationId } = await instance.harness.submit("hold please", { session });
       await until(() => instance.probes.holds === 1, "the hold to start");
       await instance.grantRevoke(r.bind(null), { client: MUSE.client });
-      return (await storeSubmission(thread.store, { request: operationId }))!.status;
+      return wipedSubmission(instance.probes, thread.store, { request: operationId })!.status;
     });
     expect(out).toBe("unanswered");
   });
@@ -520,7 +523,7 @@ describe("a grant change", () => {
       const revoke = instance.grantRevoke(r.bind(null), { client: MUSE.client });
       toolGate.release();  // the call goes on to its intent, after the revoke's unit
       await revoke;
-      return (await storeSubmission(thread.store, { request: operationId }))!;
+      return wipedSubmission(instance.probes, thread.store, { request: operationId })!;
     });
     expect(out.status).toBe("unanswered");
     expect((await r.stub.fileStat(r.bind(null), { path: "/workspace/raced.md" })).entry)
@@ -869,7 +872,7 @@ describe("an aborted turn's model call", () => {
       const { operationId } = await instance.harness.submit(`cmd:slow-${id}`, { session });
       await until(async () => (await cancelled()) === false, "the upstream stream to open");
       await instance.grantRevoke(r.bind(), { client: MUSE.client });
-      return (await storeSubmission(thread.store, { request: operationId }))!;
+      return wipedSubmission(instance.probes, thread.store, { request: operationId })!;
     });
     expect([settled.status, settled.reason]).toEqual(["unanswered", "aborted"]);
     await until(async () => (await cancelled()) === true, "the upstream to be cancelled");
@@ -1155,18 +1158,21 @@ describe("the agent's threads (review L3, L4, L5, L8)", () => {
     await r.admit(MUSE);
     await r.admit(DOT);
     const made = await r.in(async (instance, state) => {
-      const threads = new Threads(state.storage, { perClient: 3, clients: 5, owner: 2 });
-      const tried = async (stamp: Stamped | null, times: number) => {
+      const threads = new Threads(state.storage, { ...THREAD_LIMITS, perClient: 3, clients: 5,
+                                                   owner: 2 });
+      // The owner's bound is its conversations', one an agent: its runs have their own.
+      const tried = async (stamp: Stamped | null, times: number, kind: ThreadKind = "run") => {
         const out: string[] = [];
         for (let i = 0; i < times; i++) {
           out.push(await new WriteGate(state.storage).write(() =>
-            threads.record("main", stamp, clock()).thread_id.slice(0, 7))
+            threads.record(kind === "converse" ? `agent${i}` : "main", stamp, clock(), kind)
+              .thread_id.slice(0, 7))
             .catch((error: Error) => error.message));
         }
         return out;
       };
       return { muse: await tried(r.stampOf(MUSE, 1), 4), dot: await tried(r.stampOf(DOT, 1), 3),
-               owner: await tried(null, 3) };
+               owner: await tried(null, 3, "converse") };
     });
     expect(made).toEqual({
       muse: ["thread_", "thread_", "thread_", "this client's threads are at their limit"],
