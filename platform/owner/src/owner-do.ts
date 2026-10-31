@@ -1295,7 +1295,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * refused anyway, at every tool operation and model call (`authority.ts`).
    */
   async grantRevoke(binding: Binding, request: ClientRequest):
-      Promise<{ client: string; revoked: boolean; generation: number }> {
+      Promise<{ client: string; revoked: boolean; generation: number; revision: number }> {
     const result = await this.#synced(() => {
       this.#owner(binding, "revoke an outside client's grant");
       const r = policyFields(request, ["client"]);

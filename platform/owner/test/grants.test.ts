@@ -131,7 +131,7 @@ describe("an outside client's grant", () => {
     expect(moved.message).toBe("outside client source changed");
   });
 
-  it("changes only in the owner's session, against its generation, receipted", async () => {
+  it("changes only in the owner's session, against its revision, receipted", async () => {
     const r = await rig();
     await r.stub.outsideAgents(r.bind(CHATGPT));
     const change = { client: CHATGPT.client, source: "mcp", mode: "revoked", scopes: [],
@@ -175,10 +175,10 @@ describe("an outside client's grant", () => {
     expect((await kindsOf(r, "outside_grant")).map((row) => [
       row["session_id"] !== null, row["rule"], row["decision"], row["generation"],
       row["request_digest"]])).toEqual([
-      [true, CHATGPT.client, "scoped", 2,
-        policyDigest({ client: CHATGPT.client, mode: "scoped", scopes: [READ] })],
-      [true, CHATGPT.client, "full", 3,
-        policyDigest({ client: CHATGPT.client, mode: "full", scopes: [] })]]);
+      [true, CHATGPT.client, "scoped", 2, policyDigest({
+        client: CHATGPT.client, mode: "scoped", scopes: [READ], name: "ChatGPT", revision: 2 })],
+      [true, CHATGPT.client, "full", 3, policyDigest({
+        client: CHATGPT.client, mode: "full", scopes: [], name: "ChatGPT", revision: 3 })]]);
   });
 
   it("is revoked by the owner's account without a session, as a key's revoke is",
@@ -187,14 +187,14 @@ describe("an outside client's grant", () => {
     const revoke = (client: string, from: Origin | null = null) =>
       r.stub.grantRevoke(r.bind(from), { client });
     expect(await revoke(CHATGPT.client)).toEqual({ client: CHATGPT.client, revoked: false,
-                                                   generation: 0 });
+                                                   generation: 0, revision: 0 });
     await r.stub.outsideAgents(r.bind(CHATGPT));
     expect((await failure(() => revoke(CHATGPT.client, CHATGPT))).message)
       .toBe("only the owner may revoke an outside client's grant");
     expect(await revoke(CHATGPT.client)).toEqual({ client: CHATGPT.client, revoked: true,
-                                                   generation: 2 });
+                                                   generation: 2, revision: 2 });
     expect(await revoke(CHATGPT.client)).toEqual({ client: CHATGPT.client, revoked: true,
-                                                   generation: 2 });  // as it stands
+                                                   generation: 2, revision: 2 });  // as it stands
     expect((await failure(() => revoke("nope"))).message).toBe("invalid outside client");
     const [row] = await clients(r);
     expect([row!.mode, row!.scopes, row!.revoked_at !== null]).toEqual(["revoked", [], true]);
@@ -748,11 +748,16 @@ describe("a grant's revision apart from its authority (S4-S5 review round 2, L1)
     expect((await r.stub.grantRevoke(r.bind(null), { client: CHATGPT.client })).generation)
       .toBe(5);
     expect((await clients(r)).map((c) => [c.generation, c.revision])).toEqual([[5, 7]]);
+    expect((await r.stub.grantRevoke(r.bind(null), { client: CHATGPT.client })).revision)
+      .toBe(7);  // as it stands, so the owner's next set names it
     expect(await set("revoked", [], "Old", 7)).toMatchObject({ generation: 5, revision: 8 });
     expect((await clients(r)).map((c) => [c.name, c.mode, c.generation, c.revision]))
       .toEqual([["Old", "revoked", 5, 8]]);
-    expect((await kindsOf(r, "outside_grant")).map((row) => row["generation"]))
-      .toEqual([1, 2, 2, 3, 4, 5, 5]);
+    const receipts = await kindsOf(r, "outside_grant");
+    expect(receipts.map((row) => row["generation"])).toEqual([1, 2, 2, 3, 4, 5, 5]);
+    expect(receipts[0]!["request_digest"]).toBe(policyDigest({
+      client: CHATGPT.client, mode: "full", scopes: [], name: "ChatGPT", revision: 2 }));
+    expect(new Set(receipts.map((row) => row["request_digest"])).size).toBe(7);
   });
 
   it("keeps a revoked grant's fence when it is set revoked again, and times a new revoke",

@@ -193,7 +193,7 @@ An agent's wake limits SHALL be stored per agent, 12 wakes an hour and a 60 s ba
 - **THEN** the change is refused, the agent's limits are unchanged, and a refusal receipt is left
 
 ### Requirement: The object checks the owner's session itself
-An agent's register, disable or delete, a policy write, a wake-limits change and a grant change SHALL be served only when the binding's session cookie opens a live session row in the object's own store. The object SHALL mint each session's cookie, keep only its hash, and open a session only for the owner itself from a verified sign-in at most 600 s old. A stored hash, another owner's cookie or an expired or closed session SHALL never be a proof.
+An agent's register, disable or delete, a policy write, a wake-limits change and a grant set (a rename included) SHALL be served only when the binding's session cookie opens a live session row in the object's own store. The object SHALL mint each session's cookie, keep only its hash, and open a session only for the owner itself from a verified sign-in at most 600 s old. A stored hash, another owner's cookie or an expired or closed session SHALL never be a proof.
 
 #### Scenario: A session that has expired
 - **WHEN** the owner writes its policy with the cookie of a session whose row has expired
@@ -229,7 +229,7 @@ The object SHALL admit each call from an outside client against that client's gr
 - **THEN** the write is refused with "outside client capability not granted" and a pull by it is served
 
 ### Requirement: A grant's revision is apart from its authority
-A grant's revision SHALL move on every owner set and revoke, and the owner's set SHALL name it, a stale one refused. Its generation SHALL move only with its mode or the set of its scopes (a revoke is a mode), and stamps SHALL carry it alone, scopes read from the grant as it stands. A grant change, throughout this spec, is a set that moves the generation, or a revoke; a set that moves only the revision SHALL end none of the client's work.
+A grant's revision SHALL move on every owner set and revoke, and the owner's set SHALL name it, a stale one refused. Its generation SHALL move only with its mode or the set of its scopes (a revoke is a mode), and stamps SHALL carry it alone, scopes read from the grant as it stands. Where this spec ends a client's work on a grant change, a grant change is a set that moves the generation, or a revoke; a set that moves only the revision SHALL end none of it.
 
 #### Scenario: A client renamed
 - **WHEN** the owner renames a client with a conversation, a sleeping task and run receipts
@@ -1029,7 +1029,7 @@ Every agent door SHALL address work by a thread id resolved against the calling 
 - **THEN** the call is refused "outside client capability not granted" before pi makes a conversation
 
 ### Requirement: A grant or policy change ends the agent work it covers
-After its own unit commits, in the same door, a grant set or revoke SHALL end its client's pending waits, close the live views of its threads and of every live conversation stamped for it, and abort each such conversation's work, background work included; a policy write SHALL do so for every conversation with live work and close every view. The door SHALL wait at most 5 s, and SHALL reject if the ending fails.
+After its own unit commits, in the same door, a grant change (a set that moves the generation) or revoke SHALL end its client's pending waits, close the live views of its threads and of every live conversation stamped for it, and abort each such conversation's work, background work included; a policy write SHALL do so for every conversation with live work and close every view. The door SHALL wait at most 5 s, and SHALL reject if the ending fails.
 
 #### Scenario: A client revoked mid-turn
 - **WHEN** a client is revoked while its turn, its subagent's and another client's run

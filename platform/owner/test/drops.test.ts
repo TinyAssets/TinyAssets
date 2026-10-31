@@ -40,7 +40,7 @@ import {
 } from "../src/threads";
 import { until } from "./gateway-support";
 import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
-import { failure, sqlIn, storeSql } from "./support";
+import { drainDue, failure, sqlIn, storeSql } from "./support";
 import { type FauxOwnerDO, Reminder, says } from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
@@ -1638,10 +1638,11 @@ describe("a grant's rename, apart from a change of its authority (S4-S5 review r
 
   /**
    * MUSE's work at its grant's `generation`, stamped in `universe`: a conversation, through
-   * its door, a run whose task sleeps, its Session closed, and a settled run's receipt.
+   * its door, a run whose task sleeps, its Session closed, a settled run's receipt, a turn
+   * it scheduled `in` seconds ahead and an agent registration card it filed.
    */
-  async function clientWork(r: Rig, generation: number, universe: string | null):
-      Promise<Thread> {
+  async function clientWork(r: Rig, generation: number, universe: string | null, ahead = 3600):
+      Promise<{ sleeper: Thread; work: Operation; card: { card_id: string; digest: string } }> {
     const stamp = { client: MUSE.client, generation, authenticated_at: r.at, universe,
                     agent: "main" };
     expect((await r.stub.agentSubmit(r.bind(MUSE), { message: "hello",
@@ -1665,17 +1666,34 @@ describe("a grant's rename, apart from a change of its authority (S4-S5 review r
       await write(() => threads.settle(made.thread_id, {
         request: "run_x", status: "done", reason: null, text: "ok" }, clock()));
     });
-    return sleeper;
+    const work = await r.stub.agentRun(r.bind(MUSE), { agent: "main", input: "at last",
+                                                       at: clock() + ahead });
+    expect(work.status).toBe("scheduled");
+    const card = await r.stub.registerPropose(r.bind(MUSE), {
+      command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
+      recipe_id: null });
+    return { sleeper, work, card };
   }
 
-  it("keeps a renamed client's conversation, sleeping task and receipts, and passes its " +
-     "tool calls", async () => {
+  /** MUSE's scheduled work as its rows stand, and its pending cards. */
+  async function held(r: Rig) {
+    return {
+      work: (await sqlIn(r.stub, "SELECT state FROM scheduled_work WHERE client = ?",
+                         MUSE.client)).map((row) => row["state"]),
+      cards: (await sqlIn(r.stub, "SELECT 1 FROM agent_cards WHERE client = ?", MUSE.client))
+        .length,
+    };
+  }
+
+  it("keeps a renamed client's conversation, sleeping task, receipts, scheduled turn and " +
+     "registration card, and passes its tool calls", async () => {
     const r = await rig();
     await r.admit(MUSE);
-    const sleeper = await clientWork(r, 1, null);
+    const { sleeper, work, card } = await clientWork(r, 1, null, 5);
     const before = await r.threads();
     expect(before.map((thread) => [thread.kind, thread.state, thread.generation])).toEqual([
-      ["converse", "ready", 1], ["run", "ready", 1], ["run", "ready", 1]]);
+      ["converse", "ready", 1], ["run", "ready", 1], ["run", "ready", 1], ["run", "ready", 1]]);
+    expect(await held(r)).toEqual({ work: ["pending"], cards: 1 });
     expect(await set(r, "full", [], "Muse")).toEqual({
       client: MUSE.client, mode: "full", scopes: [], generation: 1, revision: 2 });
     expect(await r.threads()).toEqual(before);
@@ -1685,6 +1703,9 @@ describe("a grant's rename, apart from a change of its authority (S4-S5 review r
     expect(await sqlIn(r.stub, "SELECT status FROM run_receipts WHERE client = ?", MUSE.client))
       .toEqual([{ status: "done" }]);
     expect(await r.in((instance) => instance.probes.wiped.size)).toBe(0);
+    expect(await held(r)).toEqual({ work: ["pending"], cards: 1 });
+    expect(await r.stub.agentStatus(r.bind(MUSE), { operation_id: work.operation_id }))
+      .toMatchObject({ status: "scheduled" });
     // The conversation made before the rename takes its next message, and its tool runs.
     expect(await r.stub.agentSubmit(r.bind(MUSE), { message: "hold please",
                                                     client_send_id: "b" }))
@@ -1692,11 +1713,18 @@ describe("a grant's rename, apart from a change of its authority (S4-S5 review r
     expect(await r.in((instance) => instance.probes.holds)).toBe(1);
     expect((await r.threads()).map((thread) => thread.thread_id))
       .toEqual(before.map((thread) => thread.thread_id));
+    // The card filed before the rename applies, and the turn scheduled before it is handed.
+    const apply = { card_id: card.card_id, digest: card.digest };
+    expect((await r.stub.registerAgent(r.session(), apply)).command_center_id).toBe("alpha");
+    await until(async () => clock() > work.due! + 0.1, "the turn to fall due");
+    await drainDue(r.stub);
+    expect(await r.settled(r.bind(MUSE), work.operation_id))
+      .toMatchObject({ status: "done", text: "echo: at last" });
   }, 30_000);
 
   const changes: Record<string, { from: object[] | null; to: (r: Rig) => Promise<unknown> }> = {
     "a mode change": { from: null, to: (r) => set(r, "scoped", [RUN]) },
-    "a scope change": { from: [CONVERSE], to: (r) => set(r, "scoped", [RUN]) },
+    "a scope change": { from: [CONVERSE, RUN], to: (r) => set(r, "scoped", [RUN]) },
     "a revoke": { from: null,
                   to: (r) => r.stub.grantRevoke(r.bind(null), { client: MUSE.client }) },
   };
@@ -1711,11 +1739,18 @@ describe("a grant's rename, apart from a change of its authority (S4-S5 review r
         await r.stub.registerAgent(r.session(), { card_id, digest });
       }
       const generation = from === null ? 1 : (await set(r, "scoped", from)).generation;
-      const sleeper = await clientWork(r, generation, from === null ? null : "alpha");
+      const { sleeper, card } = await clientWork(r, generation,
+                                                 from === null ? null : "alpha");
       const before = await r.threads();
       expect(before.map((thread) => [thread.kind, thread.generation])).toEqual([
-        ["converse", generation], ["run", generation], ["run", generation]]);
+        ["converse", generation], ["run", generation], ["run", generation],
+        ["run", generation]]);
+      expect(await held(r)).toEqual({ work: ["pending"], cards: 1 });
       expect(await to(r)).toMatchObject({ generation: generation + 1 });
+      expect(await held(r)).toEqual({ work: ["refused"], cards: 0 });
+      const apply = { card_id: card.card_id, digest: card.digest };
+      expect((await failure(() => r.stub.registerAgent(r.session(), apply))).message)
+        .toBe("registration is not the pending card shown");
       expect(await r.threads()).toEqual([]);
       for (const thread of before) {
         expect(await keyed(r, thread.thread_id)).toEqual(GONE);

@@ -358,6 +358,7 @@ export class Grants {
       const revision = expected + 1;
       // A revoke is timed when it lands; a revoked grant set again keeps its fence.
       const revokedAt = mode === "revoked" && moved ? now : row?.revoked_at ?? null;
+      const named = name === "" ? row?.name ?? "" : name;
       sql.exec(
         "INSERT INTO outside_clients (client, source, mode, scopes, generation, revision, " +
           "revoked_at, name, first_seen, last_seen, owner_set) " +
@@ -368,8 +369,11 @@ export class Grants {
           "name = CASE WHEN excluded.name = '' THEN name ELSE excluded.name END",
         client, source, mode, canonical(held), generation, revision, revokedAt, name, now, now,
       );
+      // The receipt's digest names the set whole, so a rename's differs from a set that
+      // changes nothing; its generation is the authority's.
       this.#policy.receipt("outside_grant", {
-        session_id: sessionId, request_digest: policyDigest({ client, mode, scopes: held }),
+        session_id: sessionId,
+        request_digest: policyDigest({ client, mode, scopes: held, name: named, revision }),
         generation, rule: client, decision: mode, outcome: "committed",
       }, now);
       return { client, mode, scopes: held, generation, revision, moved };
@@ -443,12 +447,14 @@ export class Grants {
    * `outside_revoke`, a narrowing: revoke one client's grant now, never refused for a
    * bound. A client with no grant has nothing to revoke; a revoked one stays as it is.
    */
-  revoke(clientId: unknown, now: number): { client: string; revoked: boolean; generation: number } {
+  revoke(clientId: unknown, now: number):
+      { client: string; revoked: boolean; generation: number; revision: number } {
     const client = outsideClient(clientId);
     return this.#storage.transactionSync(() => {
       const row = this.#row(client);
       if (row === undefined || row.mode === "revoked") {
-        return { client, revoked: row !== undefined, generation: row?.generation ?? 0 };
+        return { client, revoked: row !== undefined, generation: row?.generation ?? 0,
+                 revision: row?.revision ?? 0 };
       }
       const generation = row.generation + 1;
       this.#sql.exec("UPDATE outside_clients SET mode = 'revoked', scopes = '[]', " +
@@ -459,7 +465,7 @@ export class Grants {
         request_digest: policyDigest({ client, mode: "revoked" }), generation, rule: client,
         decision: "revoked", outcome: "committed",
       }, now);
-      return { client, revoked: true, generation };
+      return { client, revoked: true, generation, revision: row.revision + 1 };
     });
   }
 }
