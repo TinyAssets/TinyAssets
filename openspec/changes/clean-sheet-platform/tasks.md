@@ -2,6 +2,13 @@ Build order is the plan of record's "Migration and build order" (ADR-032), one
 section per slice. An item is ticked in the PR that lands it. A landed item whose
 live acceptance is still owed says so.
 
+**Re-cut by ADR-034 (2026-11-01).** Agents run on unmodified engines, and pi-durable
+leaves the owner's object. The order from here is `engines-replan.md` §5: finish
+G4, then one deletion slice (its §1.7), engine records, runs, the sandbox (live),
+the MCP door, wakes, doors live, before real data, the founder's live test, cutover.
+Items below for the in-object pi loop, its host, its stores and its hooks are
+superseded, and the deletion slice removes them from this list.
+
 ## 1. Verify the unverified facts
 
 - [x] E2B p50/p95 resume for a 1 GiB sandbox, measured live; paused-storage price

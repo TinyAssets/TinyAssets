@@ -6,6 +6,9 @@ Accepted (founder, 2026-10-27). Supersedes ADR-022. Amends ADR-019, ADR-023
 and ADR-030. Supersedes the single-droplet topology, the box storage model,
 broker-held SQLite as the trusted store technology (ADR-025's), and the router
 and broker serving design, as listed below. Build order: `openspec/changes/clean-sheet-platform/`.
+Amended by ADR-034 (founder, 2026-11-01): pi-durable no longer runs in the
+owner's object as the agent loop; decisions 1, 3, 4 and 5 change as ADR-034
+lists.
 
 ## Date
 

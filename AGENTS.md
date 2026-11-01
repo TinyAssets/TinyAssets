@@ -6,8 +6,8 @@
 The founder owns this section. To re-steer, replace a line; never add one beside it.
 `python scripts/sync_direction.py` copies it verbatim into `AGENTS.md`.
 
-1. Product: a default bubble agent that continuously matches and beats the industry-leading main agents (Grok Bot, Muse, ChatGPT dots, Claude Duet), built as a starter package on a pi.dev-modelled harness; users customize the harness and interface to build anything.
-2. Plumbing: the model sees 4 tools (read/write/edit/bash) plus `ta`; one extension unit; one agent definition for every model provider; no provider-specific code.
+1. Product: a default bubble agent that continuously matches and beats the industry-leading main agents (Grok Bot, Muse, ChatGPT dots, Claude Duet), shipped as a starter package of agent files that runs on the user's own engine: their provider's unmodified CLI on their subscription or key, or their own main agent; users customize the agent's files and interface to build anything.
+2. Plumbing: an agent is files (`AGENTS.md`, skills, MCP config, hooks) plus TinyAssets state, run by an unmodified engine (a provider's CLI in the user's sandbox, the user's main agent over MCP, or pi's CLI); TinyAssets is everything around the engine and reaches every engine through one MCP door; one agent definition for every engine; no provider-specific code: engine differences are data.
 3. The agent's abilities are editable files, skills and packages. The platform does not build feature editors or pre-built features.
 4. Users connect any model source; default to their strongest connected source.
 5. Foundational patches are brought FORWARD, so pre-migration band-aids never delay positive architectural moves. Weigh the totality of pending work, so each module is always pursuing or maintaining its best architecture, and refactor and reorder the remaining work to get there. (Today that foundation is per-owner isolation, as one clean cutover: the isolated path is the only path, one migration in a short maintenance window after a full backup, and cross-owner app checks the OS now enforces are deleted in the same change.)
