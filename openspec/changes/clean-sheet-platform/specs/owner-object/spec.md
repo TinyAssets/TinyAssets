@@ -1345,11 +1345,22 @@ At most `WORKING_THREADS` of an owner's threads SHALL hold turn owners at once. 
 - **THEN** that input is refused `threads_working`, while its working thread and the owner's threads still take inputs
 
 ### Requirement: The owner app's sockets watch a thread through pi's own watch
-The object SHALL serve the owner app's hibernating WebSockets through the Agents SDK's `WebSockets` capability on its one Lifecycle, reached only by the stub's `fetch` (a Workers RPC cannot carry a socket), and SHALL accept an upgrade only in the binder's shape: a `GET` of exactly the socket URL with no query and exactly the `Upgrade`, bound-identity and thread headers. It SHALL attach a socket as a `read` door: the binding's account admitted, no session, the caller's own ready thread, a client's stamp standing; then at most `THREAD_SOCKETS` a thread (`thread_sockets_full`) and `OWNER_SOCKETS` an owner (`sockets_full`), refused at once; then the thread's Session pinned and counted against `OPEN_MAX` (`sessions_full`), never closed idle. A socket's state SHALL live in its attachment alone (owner, client, thread, the authority generation at attach), never in a row. Its first frame SHALL be the conversation's view, each later one a commit's exact Chord ops, each a JSON frame with a version; at most `SOCKET_WINDOW` frames unacknowledged, past which pi's own rule applies (at most 100 pending, then one whole view). Until pi's next minor, the live tee SHALL reach a thread's sockets only, as Chord appends to `pi.live.generation.message`'s blocks over the last commit. Every frame a client sends SHALL be checked against its attachment's authority first. After an eviction a socket SHALL reattach from a fresh view, at its next frame or as its thread's Session opens.
+The object SHALL serve the owner app's hibernating WebSockets through the Agents SDK's `WebSockets` capability on its one Lifecycle, reached only by the stub's `fetch` (a Workers RPC cannot carry a socket), and SHALL accept an upgrade only in the binder's shape: a `GET` of exactly the socket URL with no query and exactly the `Upgrade`, bound-identity, thread and ticket headers. It SHALL attach a socket as a `read` door: the binding's account admitted, the owner's own (no outside client has a socket), no session, the owner's own ready thread, and its socket ticket consumed in the same unit; then at most `THREAD_SOCKETS` a thread (`thread_sockets_full`) and `OWNER_SOCKETS` an owner (`sockets_full`), refused at once; then the thread's Session pinned and counted against `OPEN_MAX` (`sessions_full`), never closed idle. A socket's state SHALL live in its attachment alone (owner, thread, the first-party grant and its token's expiry), never in a row. A failure inside the accept SHALL answer a fixed code, never an error's text. Its first frame SHALL be the conversation's view, each later one a commit's exact Chord ops, each a JSON frame with a version; at most `SOCKET_WINDOW` frames unacknowledged, past which pi's own rule applies (at most 100 pending, then one whole view). Until pi's next minor, the live tee SHALL reach a thread's sockets only, as Chord appends to `pi.live.generation.message`'s blocks over the last commit. Every frame a client sends SHALL be checked against its attachment's authority first. After an eviction a socket SHALL reattach from a fresh view, at its next frame or as its thread's Session opens.
 
 #### Scenario: An upgrade not in the binder's shape
 - **WHEN** a request reaches the object's `fetch` with another URL, a query, a cookie, the SDK's lifecycle props or any header the binder does not set
 - **THEN** it is refused `400` and no socket is accepted
+
+### Requirement: A socket's credential is a single-use ticket bound to its grant
+The object SHALL mint a socket ticket (`socketTicket`) only for the owner's own ready thread, bound to the first-party grant the binder unwrapped from the owner's token and to that token's expiry: random, good for at most `SOCKET_TICKET_S` and never past the token, single-use, with only its SHA-256 kept, at most `SOCKET_TICKETS` outstanding (`socket_tickets_full`). The upgrade SHALL carry the ticket and no bearer, and SHALL be refused `ticket_refused` alike for a ticket reused, expired, for another thread, or of a grant whose sign-out was told.
+
+#### Scenario: A ticket used twice
+- **WHEN** the app opens a socket with a ticket, then presents the same ticket again
+- **THEN** the second upgrade is refused `ticket_refused`
+
+#### Scenario: A ticket for another thread
+- **WHEN** a ticket minted for one thread is presented for another
+- **THEN** it is refused `ticket_refused`, and is spent
 
 #### Scenario: A slow app
 - **WHEN** an app stops acknowledging while its thread commits more than a hundred times
@@ -1359,12 +1370,16 @@ The object SHALL serve the owner app's hibernating WebSockets through the Agents
 - **WHEN** the object is evicted with a socket open and its thread's Session opens again
 - **THEN** the socket gets a fresh view and then that Session's commits; nothing is replayed
 
-### Requirement: A socket's lifetime is its authority's
-A thread's sockets SHALL close with a fixed code when its authority ends: a grant revoke or an authority-generation move (`authority_ended`), the thread's drop (`thread_dropped`), an admission that refuses reads (`owner_suspended`), the owner's erasure (`owner_erased`), and the owner's session's close for the owner's own sockets (`session_closed`). Reads over a socket SHALL be a `read` door's, so a billing suspension SHALL keep them open; a rename, which leaves the generation, SHALL keep them open.
+### Requirement: A socket's lifetime is its credential's and its thread's
+A socket SHALL close with a fixed code at its token's expiry (`token_expired`: by a Lifecycle job at the earliest expiry, and at any frame past it), at its grant's sign-out (`signed_out`: only that grant's sockets, whatever other devices hold), at every session's close (`signed_out`), at its thread's drop (`thread_dropped`), at an admission that refuses reads (`owner_suspended`) and at the owner's erasure (`owner_erased`). Reads over a socket SHALL be a `read` door's, so a billing suspension SHALL keep them open.
 
-#### Scenario: A rename and a scope change
-- **WHEN** the owner renames a client's grant, then changes its scopes
-- **THEN** the client's socket stays open through the rename and closes `authority_ended` at the scope change
+#### Scenario: One device signs out
+- **WHEN** a phone and a laptop each hold a socket on one thread, and the phone signs out with no session cookie
+- **THEN** the phone's socket closes `signed_out` before its grant is revoked, and the laptop's keeps receiving the thread's commits
+
+#### Scenario: A token expires
+- **WHEN** a socket's token expires with no frame sent
+- **THEN** the expiry job closes it `token_expired`, and the job is set again for the next socket's expiry
 
 ### Requirement: The conversation doors are pi's own operations on the caller's threads
 The object SHALL serve `agentReset` (pi's `reset`), `agentCompact` (a manual `compact`, at most `THREAD_MANUAL_COMPACTIONS` live a thread, refused at once `compactions_full`), `agentFork` (a new `fork` thread, under the caller's stamp and within the caller's conversation bounds, its root holding the source's history up to an entry through pi's `context` and `appendEntry` in its creating commit, then its first input, within the working threads), `agentWithdraw` (a queued input withdrawn by `abortSubmission`, one already placed refused `already_placed`) and `agentTaskGraph` (pi's `taskGraph`), each resolving its thread against the caller's own rows and declaring its door class: reset, compact and fork `work`, withdraw `reduce`, the task graph `read`. A refused fork SHALL leave no thread. None SHALL be an MCP tool or a `ta` capability.

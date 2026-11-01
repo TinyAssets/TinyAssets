@@ -28,8 +28,8 @@
  * database, so what the owner's object holds is its own bounded rows only, whatever its
  * agents do; this guard replaced A4's runtime storage gauge.
  *
- * The worst case is 46.0% of the limit (A6: 4,600,178,612 bytes), about 400 MB under half
- * (A5: 4,597,482,932; A6 adds 2,695,680). A6 adds one term's worth: a manual compaction a working thread
+ * The worst case is 46.0% of the limit (A6: 4,600,227,716 bytes), about 400 MB under half
+ * (A5: 4,597,482,932; A6 adds 2,744,784). A6 adds one term's worth: a manual compaction a working thread
  * (`THREAD_MANUAL_COMPACTIONS`), a turn and its owner row each, 1,024 of each, and the
  * socket tickets (`SOCKET_TICKETS` rows, a trigger); its forks are conversations within the
  * conversations' bounds (`THREAD_LIMITS`), and its app sockets hold no rows of their own

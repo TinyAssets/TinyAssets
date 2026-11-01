@@ -1424,13 +1424,13 @@ account and no deploy.
   deleted, `persistWithinMs`, `maxTurns` from policy, `onReport`, parking code out of the
   host, the new watch API, the schema re-pinned. The tee's deletion, exactly (A6): the
   module `owner/src/live-tee.ts` (`LiveTee`, `liveEvent`, `TEE_LIMITS`, `TEE_TEXT_MAX`,
-  `LiveBlock`); the `tee` part of `GatewayProvider` and its two `tee.publish` calls
+  `TEE_BLOCKS_MAX`, `LiveText`, `LiveBlock`); the `tee` part of `GatewayProvider` and its two `tee.publish` calls
   (`gateway-provider.ts`), and of `AgentParts` (`agent.ts`); `OwnerDO`'s `#tee` field and
   its hand-offs to the provider, the agent and the sockets; the tee closes in
   `OwnerAgent.#endSession` (`views`), `erasing` and `#endThreads`; in `sockets.ts`, the
   `live` frame, `liveOps`, `LIVE_CONTENT`, `#follow`'s subscription, `#teed`, `#sendLive`
-  and each socket's `base`, `shown` and `tee`, and `SocketParts.tee`; the owner-bound
-  guard's `teeText` term; and the tests of each (`auto.test.ts`'s tee bounds, the tee
+  and each socket's `base`, `shown` and `tee`, and `SocketParts.tee`; the memory guard's
+  `tee_text` term (`guards/memory-bound.test.ts`); and the tests of each (`auto.test.ts`'s tee bounds, the tee
   tests in `authority.test.ts` and `gateway-provider.test.ts`, and `sockets.test.ts`'s
   live-tee block). `AGENT_SETTINGS.progress` goes back near pi's default with
   `persistWithinMs: 1000`, and the sockets' frames stay the view and its ops, so the app's
@@ -1446,26 +1446,42 @@ account and no deploy.
   cannot carry the socket: a DO RPC returning a `Response` with `webSocket` fails
   `DataCloneError: Could not serialize object of type "WebSocket"` in workerd (the docs list
   `Request`/`Response` among RPC types but no WebSocket), so the upgrade is the stub's
-  `fetch`, the object's one non-RPC entry. `/app/api/agent/socket?thread_id=` takes the
-  first-party token, the maintenance gate and the session rules (a `GET` gets no session),
-  an outside credential `403`; the binder forwards a fresh request of its own
-  (`socketRequest`: `SOCKET_URL`, no query, exactly `Upgrade`, `x-ta-binding` and
-  `x-ta-thread`), and the object refuses anything else `400` before Lifecycle sees it. The
-  attach is a `read` door's unit (the account, no session, the caller's own thread, a
-  client's stamp standing), then `THREAD_SOCKETS` (4, `thread_sockets_full`) and
+  `fetch`, the object's one non-RPC entry. The credential is a socket ticket (review round
+  1, H1 and M2: a browser's `WebSocket` sends no `Authorization`, and the session cookie is
+  for widenings only): `POST /app/api/agent/socket-ticket` behind every first-party token
+  check (an outside credential `403`) has the binder bind the token's grant (the provider's
+  own unwrap) and expiry (`bindOwnerGrant`), and the object mints a random ticket for one of
+  the owner's own threads, single-use, good for `SOCKET_TICKET_S` (30) and never past the
+  token, keeping only its SHA-256 (`socket_tickets`, migration 14, at most `SOCKET_TICKETS`,
+  32, a trigger); the app's upgrade `/app/api/agent/socket?thread_id=&ticket=` reads no
+  bearer, the doors read only the owner the ticket names (`ta1.<owner>.<secret>`), behind
+  the maintenance gate, and the binder forwards a fresh request of its own
+  (`socketRequest`: `SOCKET_URL`, no query, exactly `Upgrade`, `x-ta-binding`,
+  `x-ta-thread` and `x-ta-ticket`); the object refuses anything else `400` before Lifecycle
+  sees it. The attach is a `read` door's unit (the account, the owner's own, no session,
+  the owner's own thread, the ticket consumed: `ticket_refused` alike reused, expired, for
+  another thread or of a signed-out grant), then `THREAD_SOCKETS` (4, `thread_sockets_full`) and
   `OWNER_SOCKETS` (16, `sockets_full`) with the attaches in flight, then the Session pinned
   and counted against `OPEN_MAX` (`sessions_full`), never waited on; state in the socket's
-  attachment only. Frames are versioned JSON: the view, then each commit's exact Chord ops,
+  attachment only (the owner, the thread, the grant, the token's expiry); a fault inside
+  the accept answers a fixed code (`socket_failed`, or a `watch_lost` close), never its text
+  (L4: Lifecycle would answer a throw with its stack, so no handler throws). Frames are versioned JSON: the view, then each commit's exact Chord ops,
   at most `SOCKET_WINDOW` (16) unacknowledged, so pi's 100-frame rule turns a slow app into
   one whole view; the tee, until pi's next minor, as `live` frames of Chord appends to
   `pi.live.generation.message`'s blocks over the last commit (a display copy the app resets
   each commit; the commit's tail sent after it), to the thread's sockets only, followed again
   after a grant or policy change closed it. A socket the instance holds no watch for
   reattaches from a fresh view at its next frame or as its thread's Session opens
-  (`HostParts.opened`). Lifetime: a revoke or a generation move (`authority_ended`), a drop
-  (`thread_dropped`), an abuse suspension (`owner_suspended`; billing leaves reads open),
-  the erasure (`owner_erased`), the owner's session's close for the owner's own sockets
-  (`session_closed`), each frame checked first; a watch pi ends on its own `watch_lost`.
+  (`HostParts.opened`); one whose socket closes while its pin is in flight lets the pin go
+  (M1). Lifetime: the token's expiry (`token_expired`, by the sockets' own Lifecycle job at
+  the earliest expiry, one job row, and at any frame past it); the grant's sign-out
+  (`signed_out`: `signOut` tells the object, `socketsEnd`, before it revokes the grant,
+  cookie or not, and only that grant's sockets close, its tickets forgotten, an attach that
+  raced it closed as it connects, L3); every session's close (`signed_out`); a drop
+  (`thread_dropped`); an abuse suspension (`owner_suspended`; billing leaves reads open);
+  the erasure (`owner_erased`); each frame checked first; a watch pi ends on its own
+  `watch_lost`. The outside-client socket path the binder never makes is gone: a socket is
+  the owner's own (`OWNERS_SOCKET`).
   Doors (owner-object doors on `/app/api/agent/*`, none an MCP tool or `ta` capability, the
   doors' tool guard naming them `APP_DOORS`): `agentReset` (`work`), `agentCompact` (`work`;
   `THREAD_MANUAL_COMPACTIONS` = 1 live a thread, `compactions_full`; `THREAD_COMPACTIONS`
@@ -1477,8 +1493,17 @@ account and no deploy.
   `AGENTS.md` front matter `model: <id>`, set as `pi.agent.model` in each root's creating
   commit. Owner-bound guard: 4,600,178,612 bytes, 46.0% (A5 4,597,482,932): +2,695,680 for
   the manual compactions' turn rows; forks hold no rows of their own past the conversation
-  bounds, and sockets none at all (`SOCKET_MEMORY` names their memory bounds). Tested in
-  workerd: the attach, view and ops; the tee's appends between a drip's commits and a
+  bounds, and the sockets none of their own; the socket tickets add 32 rows: 4,600,227,716
+  bytes, 46.0%, about 400 MB under half. Memory (M3, the memory guard
+  `guards/memory-bound.test.ts`, beside the database bound): the tee keeps text only for a
+  conversation a socket listens to, from the `start` it heard, in a doubling UTF-16 buffer
+  (`LiveText`: an append amortized O(1), a tail read without the rest), at most
+  `TEE_TEXT_MAX` (65,536) code units and `TEE_BLOCKS_MAX` (64) blocks a stream, and at most
+  `TEE_LIMITS.sessions` (16) streams; with the sockets' attachments, watch state, pi's
+  pending frames (100 a watch, values shared with the pinned Session) and the held
+  sign-outs (`SIGNED_OUT_KEPT`, 64), the worst case is 6,275,072 bytes (5.98 MiB), 4.9% of
+  the 128 MB isolate, under the budget of an eighth. A lost fork (its row made, its history
+  never handed over) is dropped as `fork_lost` is found (L1). Tested in workerd: the attach, view and ops; the tee's appends between a drip's commits and a
   commit's tail; the shape refusals; another caller's thread; each cap; the pin against the
   idle LRU and `OPEN_MAX`; a simulated eviction (a new instance over the same storage and
   sockets; workerd's `abort` drops hibernating sockets and `evictDurableObject` hangs with
@@ -1488,20 +1513,26 @@ account and no deploy.
   withdraw queued and placed; every door refused for another caller's thread and by class
   under billing and abuse; the model pin; at the doors, the binder's upgrade, an outside
   credential, a forged identity header, the gate and the five app routes; still exactly
-  read, write, edit, bash and `ta`. Mutation: 60, 55 killed; 5 equivalent: the method check
-  (the runtime hands the object an upgrade as a `GET` whatever was sent), and the work
-  doors' authority re-check with the three work doors' classes, each pair covering the
-  other (`#onThread`'s `Authority.require` reads the admission's work refusal, and every
-  authority change drops the thread). Declared differences from the audit and the design
+  read, write, edit, bash and `ta`. Review round 1 (REQUEST CHANGES), all taken, with the
+  reviewer's tests kept: H1 and M2 the ticket and the grant-bound lifetime above (a socket
+  opened by ticket through the doors closed by a sign-out without a cookie and with one, the
+  other device's left open; a ticket reused, expired, for another thread, and a bearer, each
+  refused; the expiry by job and by frame); M1 the pin race; M3 the tee's memory and its
+  guard; L1 the lost fork; L2 tests for the graph watch's stop and a second ask, the
+  closing check after the watch resolves, the fork's edit remap, the `work_` guard on
+  withdraw and the `dropped` close after an eviction; L3 one device's sign-out alone; L4 the
+  fixed codes; the settled-run refusal of compact and fork. MUTATION_TALLY Declared differences from the audit and the design
   decision: a fork is a thread of its own over a copy of the history (the brief's), so it
   keeps the source agent's current `AGENTS.md`, not pi's fork's copy of the agent as of the
   entry; the fork door takes its first input (edit and resend), which is how it counts
-  against the working threads; a socket rides no session, so a session's close ends every
-  owner socket, each device reattaching with its token; the tee's toolcall deltas are not
-  shown (no string in the committed tool call to append to), nor the text of a block's
-  first second before a commit makes the message. Owed live (P12): the binder-to-object
-  upgrade through deployed Workers, hibernation billing with sockets attached (and a real
-  hibernation's reattach), and the tee's frame rate on a real model.
+  against the working threads; a socket's credential is its ticket, not a session; the
+  tee's toolcall deltas are not shown (no string in the committed tool call to append to),
+  nor the text of a block before a commit makes the message, nor a stream whose start came
+  before its first listener. Owed live (P12): a browser opening the socket with its ticket
+  (the URL's query, as a browser's `WebSocket` takes it) through the deployed doors; the
+  binder-to-object upgrade through deployed Workers; hibernation billing with sockets
+  attached, a real hibernation's reattach, and the isolate's memory with sockets attached;
+  the expiry job's close on a deployed object; and the tee's frame rate on a real model.
 - [ ] M (MCP) after G4: SDK v2 client in the owner over G4's forward, `mcp.json` with every
   server clamped to tools-only, OAuth via G3.
 - [x] Erasure's store-first order: mark the owner erasing, destroy every store a row names,

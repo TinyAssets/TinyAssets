@@ -225,6 +225,25 @@ describe("the socket ticket", () => {
   });
 });
 
+describe("the socket ticket's thread", () => {
+  it("opens only an owner's own thread, even a ticket row naming a client's (a minting bug)",
+     async () => {
+    const r = await rig();
+    const theirs = (await r.stub.agentSubmit({ owner: r.owner, caller: r.owner, origin: MUSE,
+                                               source: MCP, authenticated_at: r.at },
+      { message: "mine", client_send_id: "c", wait_ms: 20_000 })).thread_id;
+    const secret = "a".repeat(64);
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",
+      new TextEncoder().encode(secret))), (b) => b.toString(16).padStart(2, "0")).join("");
+    await r.in((_instance, state) => {
+      state.storage.sql.exec("INSERT INTO socket_tickets (hash, thread, grant_id, expires_at, " +
+                             "token_expires_at) VALUES (?, ?, 'g', ?, ?)", hash, theirs,
+                             Date.now() / 1000 + 30, Date.now() / 1000 + 3600);
+    });
+    expect(await r.refusal(upgrade(r.bind(), theirs, secret))).toEqual([403, "no such thread"]);
+  });
+});
+
 describe("the caps", () => {
   it("refuses past each cap with its code, at once", async () => {
     const r = await rig();
@@ -563,13 +582,14 @@ describe("frames", () => {
      async () => {
     const r = await rig();
     const thread = await r.say("one");
-    const stops = { n: 0 };
+    const stops = { n: 0, calls: 0 };
     await r.in((instance) => {
       instance.probes.holdGate = new Promise(() => undefined);
       instance.script = Array.from({ length: 200 }, () => holding);
       const watchGraph = instance.agent.watchTaskGraph.bind(instance.agent);
       Object.assign(instance.agent, { watchTaskGraph: async (t: string):
           Promise<TaskGraphWatch> => {
+        stops.calls++;
         const made = await watchGraph(t);
         const stop = made.stop.bind(made);
         return Object.assign(made, { stop: () => {
@@ -589,6 +609,7 @@ describe("frames", () => {
       { kind: string }> }).tasks).some((task) => task.kind === "pi.tool"),
                        "a tool task in the graph");
     expect(client.frames.filter((frame) => frame.type === "graph").length).toBe(1);
+    expect(stops).toEqual({ n: 0, calls: 1 });  // the second ask made no second watch
     client.ws.close(1000, "done");
     await until(() => r.in(() => stops.n === 1), "the graph's watch stopped");
   });
@@ -749,6 +770,7 @@ describe("a socket's lifetime is its credential's and its thread's", () => {
       release();
       const client = opened(await upgrading);
       await closedWith(client, "signedOut");
+      expect(client.frames).toEqual([]);  // not one view reached the signed-out device
       Object.assign(instance.agent.host, { pin });
     });
   });

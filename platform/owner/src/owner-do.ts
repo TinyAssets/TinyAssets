@@ -1988,10 +1988,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   #socketCheck(state: SocketState): CloseKind | null {
     try {
-      const account = this.#account(state.binding as unknown as Binding, "read");
-      if (account.owner !== state.owner || account.origin !== null) {
-        return "signedOut";
-      }
+      // The attachment's binding is the owner's own as its attach bound it (`#socketAdmit`),
+      // so its account is checked again as any `read` door's.
+      this.#account(state.binding as unknown as Binding, "read");
       if (this.#threads.mine(state.thread, null) === null) {
         return "dropped";
       }

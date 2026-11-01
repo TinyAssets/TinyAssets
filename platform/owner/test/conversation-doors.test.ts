@@ -212,7 +212,11 @@ describe("fork at an entry", () => {
 
   it("names the copies of its edits' targets: the fork's context is the source's", async () => {
     const r = await rig();
-    const { thread_id: source } = await r.say("one");
+    const { thread_id: source } = await r.say("zero");
+    await r.say("again");
+    // A reset first, so the fork copies only what follows it: its ids are not the source's.
+    await r.stub.agentReset(r.bind(), { thread_id: source, handoff: "we said zero" });
+    await r.say("one");
     await r.say("two");
     // An edit that omits "one" from what the model sees, as a compaction or a hook makes one.
     await r.in(async (instance) => {
