@@ -225,6 +225,12 @@ describe("the hooks Worker", () => {
         "  Object.getPrototypeOf(Object.getPrototypeOf((function* () {})())).next = () => 1;",
         "});",
         "attempt('Promise then', () => { Promise.prototype.then = () => 1; });",
+        "attempt('typed array', () => {",
+        "  Object.getPrototypeOf(Uint8Array.prototype).map = () => 1; });",
+        "attempt('a getter', () => {",
+        "  Object.getOwnPropertyDescriptor(Map.prototype, 'size').get.extra = 1; });",
+        "attempt('a tamed accessor', () => {",
+        "  Object.getOwnPropertyDescriptor(Array.prototype, 'includes').get.extra = 1; });",
         "attempt('a new global over one', () => { globalThis.fetch = () => 1; });",
         "attempt('redefine a global', () => {",
         "  Object.defineProperty(globalThis, 'crypto', { value: {} }); });",
@@ -249,7 +255,8 @@ describe("the hooks Worker", () => {
               "Object.keys refused", "hasOwn refused", "structuredClone refused",
               "digest refused", "setTimeout refused", "Iterator.from refused",
               "array iterator refused", "iterator refused", "generator refused",
-              "Promise then refused", "a new global over one refused",
+              "Promise then refused", "typed array refused", "a getter refused",
+              "a tamed accessor refused", "a new global over one refused",
               "redefine a global refused"],
       own: "own", mine: "mine", plain: "plain" } });
     expect(await ask(guard, "beforeTool", { call: { id: "c", name: "read", arguments: {} } }))
