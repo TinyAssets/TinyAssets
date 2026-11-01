@@ -189,19 +189,45 @@ export const CALLS_OPEN = 1000;
  */
 export const SPEND_KEPT = 4300;
 /**
- * Open inputs (queued or placed) a thread holds at once, each owning a turn while it is
- * open: the thread host refuses one past it (`thread_inputs_full`), and migration 10's
- * trigger refuses its owner row past it.
+ * Open inputs (queued or placed) a thread's root holds at once, each owning a turn while it
+ * is open: the doors' and a scheduled delivery's, never a subagent's (`THREAD_CHILD_INPUTS`
+ * bounds those). The thread host refuses one past it (`thread_inputs_full`), and migration
+ * 10's trigger refuses its owner row past it.
  */
 export const THREAD_INPUTS = 8;
 /**
- * Compactions a thread's Session holds live at once: pi starts a background one only while
- * none is listed (`generation.js`, `pi.live.compactions`), and a run's blocking one waits
- * in its generation, one run at a time; a thread is one conversation (no owner source
- * creates a task or a conversation), and there is no manual compaction door yet (A6 caps
- * its own). Migration 10's trigger refuses a compaction's owner row past it.
+ * Conversations with live work a thread's Session holds at once: its root, and the
+ * subagents `ta`'s `agent:delegate` made (`delegate.ts`) whose call, or own work, is live;
+ * a delegation past it is refused (`thread_conversations_full`).
  */
-export const THREAD_COMPACTIONS = 2;
+export const THREAD_CONVERSATIONS = 3;
+/**
+ * Open subagent inputs a thread holds at once: each live subagent's one (`c:<id>` owners,
+ * an input of a conversation not the root), refused by the host's linked admission past it
+ * and by migration 10's trigger.
+ */
+export const THREAD_CHILD_INPUTS = THREAD_CONVERSATIONS - 1;
+/**
+ * Threads of the owner's that hold turn owners at once (working: an open input or a live
+ * compaction), which bounds the turn rows whatever evictions leave behind. The thread host
+ * admits a door's or a delivery's input to a thread not working only within
+ * `WORKING_THREADS - OPEN_MAX` of them (`threads_working`, a client within its share), so
+ * a compaction pi starts in any open Session always has a place; migration 10's trigger
+ * refuses a thread's first owner past it.
+ */
+export const WORKING_THREADS = 1024;
+/**
+ * Compactions one conversation holds live at once: pi starts a background one only while
+ * none is listed (`generation.js`, `pi.live.compactions`), and a run's blocking one waits
+ * in its generation, one run at a time; there is no manual compaction door yet (A6 caps
+ * its own).
+ */
+export const CONVERSATION_COMPACTIONS = 2;
+/**
+ * Compactions a thread's Session holds live at once: each of its live conversations'.
+ * Migration 10's trigger refuses a compaction's owner row past it.
+ */
+export const THREAD_COMPACTIONS = THREAD_CONVERSATIONS * CONVERSATION_COMPACTIONS;
 
 /** A file entry in the temporary area, which keeps no history. */
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
@@ -986,13 +1012,16 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   //
   // A turn's counters live exactly as long as its work: `model_turn_owners` holds each pi
   // record that owns a turn, by its thread (pi's ids are per store, a store per thread):
-  // an open input submission (`s:<id>`, a steer's its own turn) or a live compaction task
-  // (`t:<id>`, the run's turn when a run made it), kept by the thread host as it sees them
+  // an open input submission of its root (`s:<id>`, a steer's its own turn) or of a
+  // subagent's conversation (`c:<id>`), or a live compaction task (`t:<id>`, the run's turn
+  // when a run made it), kept by the thread host as it sees them
   // commit (`thread-host.ts`), and a turn's row is made with its first owner and goes with
   // its last, or with its thread. A call of a turn with no row is refused (`usage.ts`), and
   // a reservation only moves a row that is there, so no counter ever starts over. A
-  // thread's owner rows are refused past `THREAD_INPUTS` open inputs and
-  // `THREAD_COMPACTIONS` live compactions, so the rows are bounded by the threads. A turn
+  // thread's owner rows are refused past `THREAD_INPUTS` open root inputs,
+  // `THREAD_CHILD_INPUTS` subagent inputs and `THREAD_COMPACTIONS` live compactions, and a
+  // thread's first owner past `WORKING_THREADS` working threads, so the rows are bounded
+  // by the threads at work (edited in place in A5: nothing is deployed). A turn
   // is at most `TURN_BYTES` (an origin is at most 70; this check counts bytes, the
   // reservation's own 320 characters). The calls open at once and the spend counters are bounded by count
   // (`CALLS_OPEN`, `SPEND_KEPT`).
@@ -1183,20 +1212,24 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "ALTER TABLE model_turns ADD COLUMN owners INTEGER NOT NULL DEFAULT 0 CHECK (owners >= 0)",
     "DROP INDEX model_turns_by_age",
     "CREATE TABLE model_turn_owners (thread TEXT NOT NULL CHECK (length(thread) = 39), " +
-      "owner TEXT NOT NULL CHECK (owner GLOB '[st]:[0-9]*'), " +
+      "owner TEXT NOT NULL CHECK (owner GLOB '[sct]:[0-9]*'), " +
       `turn TEXT NOT NULL CHECK (length(CAST(turn AS BLOB)) <= ${TURN_BYTES}), ` +
       "PRIMARY KEY (thread, owner)) WITHOUT ROWID",
     // Fails the owner check when any turn is already kept.
     "INSERT INTO model_turn_owners (thread, owner, turn) " +
       "SELECT '', 'a turn from before migration 10', '' WHERE EXISTS (SELECT 1 FROM model_turns)",
-    // A thread's new owner past its kind's bound is refused; one it holds is no new one.
+    // A thread's new owner past its kind's bound is refused, and a thread's first past the
+    // working threads' bound; one it holds is no new one.
     "CREATE TRIGGER model_turn_owners_full BEFORE INSERT ON model_turn_owners " +
       "WHEN NOT EXISTS (SELECT 1 FROM model_turn_owners WHERE thread = NEW.thread " +
-      "AND owner = NEW.owner) AND (SELECT COUNT(*) FROM model_turn_owners " +
+      "AND owner = NEW.owner) AND ((SELECT COUNT(*) FROM model_turn_owners " +
       "WHERE thread = NEW.thread AND substr(owner, 1, 2) = substr(NEW.owner, 1, 2)) >= " +
-      `(CASE WHEN NEW.owner GLOB 's:*' THEN ${THREAD_INPUTS} ELSE ${THREAD_COMPACTIONS} END) ` +
+      `(CASE substr(NEW.owner, 1, 1) WHEN 's' THEN ${THREAD_INPUTS} WHEN 'c' THEN ${
+        THREAD_CHILD_INPUTS} ELSE ${THREAD_COMPACTIONS} END) ` +
+      "OR (NOT EXISTS (SELECT 1 FROM model_turn_owners WHERE thread = NEW.thread) " +
+      `AND (SELECT COUNT(DISTINCT thread) FROM model_turn_owners) >= ${WORKING_THREADS})) ` +
       "BEGIN SELECT RAISE(ABORT, 'turn_owners_full: a thread holds as many open inputs " +
-      "and live compactions as it may'); END",
+      "and live compactions as it may, or the owner as many working threads'); END",
     "CREATE TRIGGER model_turn_owners_added AFTER INSERT ON model_turn_owners BEGIN " +
       "INSERT INTO model_turns (turn, requests, tokens, cost, last_at, thread, owners) " +
       "VALUES (NEW.turn, 0, 0, 0, 0, NEW.thread, 1) " +

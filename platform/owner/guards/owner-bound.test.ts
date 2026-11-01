@@ -17,18 +17,24 @@
  * (`files-share.test.ts`). Every other table's rows are laid out as SQLite lays them,
  * their share of a b-tree page at that worst fill too, their overflow pages whole
  * (`termBytes`). The model turns' counters live as long as the pi records that own them,
- * whose rows the schema refuses past `THREAD_INPUTS` open inputs and `THREAD_COMPACTIONS`
- * live compactions a thread, each turn of at most `TURN_BYTES`; the calls open at once and
+ * whose rows the schema refuses past `THREAD_INPUTS` open root inputs, `THREAD_CHILD_INPUTS`
+ * subagent inputs and `THREAD_COMPACTIONS` live compactions a thread
+ * (`CONVERSATION_COMPACTIONS` for each of its `THREAD_CONVERSATIONS` live conversations: its
+ * root and the subagents working in it, A5), and past `WORKING_THREADS` threads holding any,
+ * each turn of at most `TURN_BYTES`; the calls open at once and
  * the spend counters are bounded by count (migration 10). pi's
  * records live in the thread stores (`thread-store.ts`, S1-S3), never in the owner's
  * database, so what the owner's object holds is its own bounded rows only, whatever its
  * agents do; this guard replaced A4's runtime storage gauge.
  *
- * The headroom is thin: the worst case is 49.0% of the limit (migration 13, F1:
- * 4,897,208,852 bytes), about 103 MB under half. F1 traded the `work` lane's table (its
- * 2,000 rows of up to 16 KiB) for the admission row; a scheduled launch is a run, counted in
- * the thread terms already. A grant's revision (migration 12) fit in pages S4-S5 already
- * counted. A new table, or a raised bound, must come out of an existing term: lower another
+ * The worst case is 46.0% of the limit (A5: 4,597,482,932 bytes), about 403 MB under half.
+ * F1 (49.0%, 4,897,208,852 bytes) traded the `work` lane's table (its 2,000 rows of up to
+ * 16 KiB) for the admission row; a scheduled launch is a run, counted in the thread terms
+ * already. A5 bounds the turn rows by the threads at work (`WORKING_THREADS`, 1,024) rather
+ * than by every live thread (13,024): sixteen owners a working thread (eight root inputs,
+ * two subagents' and six compactions, two for each of three live conversations) where
+ * every live thread held ten, freeing about 300 MB. A grant's revision (migration 12) fit
+ * in pages S4-S5 already counted. A new table, or a raised bound, must come out of an existing term: lower another
  * bound in the same change, or the guard fails. Every later slice trades terms so; none has
  * room of its own left.
  */
@@ -149,6 +155,10 @@ const MAX_INTENT_CHUNKS = constant("files", "MAX_INTENT_CHUNKS");
 const MAX_PATH_BYTES = constant("paths", "MAX_PATH_BYTES");
 const THREAD_INPUTS = constant("schema", "THREAD_INPUTS");
 const THREAD_COMPACTIONS = constant("schema", "THREAD_COMPACTIONS");
+const THREAD_CONVERSATIONS = constant("schema", "THREAD_CONVERSATIONS");
+const THREAD_CHILD_INPUTS = constant("schema", "THREAD_CHILD_INPUTS");
+const WORKING_THREADS = constant("schema", "WORKING_THREADS");
+const CONVERSATION_COMPACTIONS = constant("schema", "CONVERSATION_COMPACTIONS");
 const TURN_BYTES = constant("schema", "TURN_BYTES");
 const CALLS_OPEN = constant("schema", "CALLS_OPEN");
 const SPEND_KEPT = constant("schema", "SPEND_KEPT");
@@ -252,10 +262,12 @@ const liveRows = THREAD_LIMITS.owner + THREAD_LIMITS.clients + RUNS_LIVE;
  */
 const THREAD_ROW = THREAD_ID + 32 + 128 + 64 + 32 + 128 + 10 * 8 + 2 * 8;
 /**
- * Every thread's turn owners at once: each live thread's open inputs and live compactions,
- * a dropping one's too until its row is forgotten.
+ * Every thread's turn owners at once: each working thread's (`WORKING_THREADS`, the schema's
+ * bound on the threads holding owners, however many are live) open root and subagent
+ * inputs and live compactions, a dropping one's too until its row is forgotten.
  */
-const TURN_OWNERS = liveRows * (THREAD_INPUTS + THREAD_COMPACTIONS);
+const TURN_OWNERS = WORKING_THREADS * (THREAD_INPUTS + THREAD_CHILD_INPUTS
+                                       + THREAD_COMPACTIONS);
 
 /** The file manifest's tables, together: `max_manifest_bytes` at its high bound, at worst fill. */
 const MANIFEST: Term = Object.freeze({
@@ -338,8 +350,10 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
                         by: "receiptsKept settled, and CALLS_OPEN open at once" },
   model_spend: { rows: SPEND_KEPT, bytes: ROW, by: "SPEND_KEPT day and month counters" },
   model_turns: { rows: TURN_OWNERS, bytes: ROW + TURN_BYTES + THREAD_ID,
-                 by: "a turn per owner at most: THREAD_INPUTS open inputs and " +
-                   "THREAD_COMPACTIONS live compactions a thread, TURN_BYTES each" },
+                 by: "a turn per owner at most: WORKING_THREADS threads at work, each with " +
+                   "THREAD_INPUTS open root inputs, THREAD_CHILD_INPUTS subagent inputs and " +
+                   "THREAD_COMPACTIONS live compactions (CONVERSATION_COMPACTIONS for each " +
+                   "of THREAD_CONVERSATIONS live conversations), TURN_BYTES each" },
   model_turn_owners: { rows: TURN_OWNERS, bytes: ROW + TURN_BYTES + 2 * THREAD_ID,
                        by: "one per open input or live compaction, a thread each, indexed" },
   // The agent's threads: rows only, every transcript in its own store.
@@ -505,16 +519,28 @@ describe("the owner's database bound", () => {
     const schema = source("schema");
     const full = schema.slice(schema.indexOf("CREATE TRIGGER model_turn_owners_full BEFORE " +
                                              "INSERT ON model_turn_owners"));
-    expect(full.slice(0, full.indexOf("END\""))).toMatch(
-      /THEN \$\{THREAD_INPUTS\} ELSE \$\{THREAD_COMPACTIONS\} END/);
+    const trigger = full.slice(0, full.indexOf("END\""));
+    expect(trigger).toMatch(/WHEN 's' THEN \$\{THREAD_INPUTS\} WHEN 'c' THEN \$\{\s*THREAD_CHILD_INPUTS\} ELSE \$\{THREAD_COMPACTIONS\} END/);
+    expect(trigger).toMatch(/COUNT\(DISTINCT thread\) FROM model_turn_owners\) >= \$\{WORKING_THREADS\}/);
     expect([MAX_INTENT_CHUNKS, CHUNK_BYTES, constant("files", "KEEP_CEILING")])
       .toEqual([10_000, 4 * 1024 ** 2, 1000]);
     expect([THREAD_INPUTS, THREAD_COMPACTIONS, CALLS_OPEN, SPEND_KEPT, MODELS_CHARS,
-            BLOB_CHARS]).toEqual([8, 2, 1000, 4300, 655_360, 65_536]);
+            BLOB_CHARS]).toEqual([8, 6, 1000, 4300, 655_360, 65_536]);
+    // A thread's compactions are each of its live conversations' (A5's subagents), and the
+    // turn rows are the working threads' (A5), not every live thread's.
+    expect([THREAD_CONVERSATIONS, CONVERSATION_COMPACTIONS, THREAD_CHILD_INPUTS,
+            WORKING_THREADS]).toEqual([3, 2, 2, 1024]);
+    expect(schema).toMatch(/export const THREAD_CHILD_INPUTS = THREAD_CONVERSATIONS - 1;/);
+    // The host admits fresh inputs within all but `OPEN_MAX` of the working threads, so a
+    // compaction pi starts in an open Session always has a place under the trigger's bound.
+    expect(source("thread-host")).toContain("workingMax: WORKING_THREADS - OPEN_MAX,");
+    expect(constant("thread-host", "OPEN_MAX")).toBe(64);
+    expect(THREAD_COMPACTIONS).toBe(THREAD_CONVERSATIONS * CONVERSATION_COMPACTIONS);
+    expect(schema).toMatch(/export const THREAD_COMPACTIONS = THREAD_CONVERSATIONS \* /);
     expect([SCOPE_FIELD, CLIENT_NAME, WAKES_AN_HOUR, GRANT_LIMITS.maxScopes])
       .toEqual([512, 80, 60, 64]);
     expect(TERMS["model_turns"]).toMatchObject({
-      rows: (THREAD_LIMITS.owner + THREAD_LIMITS.clients + RUNS_LIVE) * 10,
+      rows: 1024 * (8 + 2 + 6),
       bytes: 256 + TURN_BYTES + 39 });
     expect([TURN_BYTES, USAGE_ROW_MAX]).toEqual([96, 16 * 1024]);
     expect(TERMS["model_turn_owners"]).toMatchObject({

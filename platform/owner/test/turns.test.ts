@@ -75,7 +75,7 @@ const owners = (state: DurableObjectState) =>
 describe("a turn's owners, as the thread host sees them commit", () => {
   it("are each open input and live compaction, with its turn, and none once it ends", () => {
     const input = (id: number, status: string, trace?: Record<string, string>) =>
-      ({ type: "submission", value: { id, type: "input", status, conversationId: 0,
+      ({ type: "submission", value: { id, type: "input", status, conversationId: 1,
                                       ...(trace === undefined ? {} : { trace }) } });
     const task = (id: number, kind: string, status: string, trace?: Record<string, string>) =>
       ({ type: "task", value: { id, kind, state: { status },
@@ -86,7 +86,7 @@ describe("a turn's owners, as the thread host sees them commit", () => {
       input(3, "done", { "ta.origin": "input:b" }),
       input(4, "unanswered", { "ta.origin": "input:c" }),
       input(5, "queued"),
-      { type: "submission", value: { id: 6, type: "write", status: "queued", conversationId: 0,
+      { type: "submission", value: { id: 6, type: "write", status: "queued", conversationId: 1,
                                      trace: { "ta.origin": "input:d" } } },
       task(7, "pi.compaction", "pending"),
       task(8, "pi.compaction", "completing"),
@@ -94,6 +94,9 @@ describe("a turn's owners, as the thread host sees them commit", () => {
       task(10, "pi.generation", "running"),
       task(11, "pi.compaction", "running", { "ta.origin": "input:a" }),
       task(12, "pi.compaction", "terminal", { "ta.origin": "input:a" }),
+      // A subagent's input: a conversation not the root's (A5), joined to the caller's turn.
+      { type: "submission", value: { id: 13, type: "input", status: "queued", conversationId: 2,
+                                     trace: { "ta.origin": "input:a", "ta.joined": "1" } } },
     ] as never)).toEqual([
       { owner: "s:1", turn: "input:a", joined: false },
       { owner: "s:2", turn: "input:a", joined: true },
@@ -104,6 +107,7 @@ describe("a turn's owners, as the thread host sees them commit", () => {
       { owner: "t:9", turn: null },
       { owner: "t:11", turn: "input:a", joined: true },
       { owner: "t:12", turn: null },
+      { owner: "c:13", turn: "input:a", joined: true },
     ]);
   });
 
@@ -113,7 +117,7 @@ describe("a turn's owners, as the thread host sees them commit", () => {
     let publish: (owner: number) => void = () => {};
     const kept = keepTurns(THREAD, (listener) => {
       publish = (id) => listener({ changes: [{ type: "submission", value: {
-        id, type: "input", status: "queued", conversationId: 0,
+        id, type: "input", status: "queued", conversationId: 1,
         trace: { "ta.origin": `input:${id}` } } }] } as never, BACKGROUND_CONTEXT);
       return () => {};
     }, {
@@ -143,7 +147,7 @@ describe("a turn's owners, as the thread host sees them commit", () => {
     let lost = 0;
     await keepTurns(THREAD, (listener) => {
       publish = () => listener({ changes: [{ type: "submission", value: {
-        id: 1, type: "input", status: "queued", conversationId: 0,
+        id: 1, type: "input", status: "queued", conversationId: 1,
         trace: { "ta.origin": "input:1" } } }] } as never, BACKGROUND_CONTEXT);
       return () => {};
     }, {

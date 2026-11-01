@@ -391,7 +391,28 @@ export class Usage {
     });
   }
 
-  /** How many open inputs own turns in `thread`. */
+  /**
+   * Whether `turn` has its row: some pi record still owns it. A linked admission (a
+   * subagent's input) joining a turn without one is refused before pi admits it. A read.
+   */
+  turnLive(turn: string): boolean {
+    return this.#sql.exec("SELECT 1 FROM model_turns WHERE turn = ?", turn).toArray().length > 0;
+  }
+
+  /** How many open subagent inputs (`c:` owners) own turns in `thread`. */
+  childInputs(thread: string): number {
+    return this.#sql.exec<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM model_turn_owners WHERE thread = ? AND owner GLOB 'c:*'",
+      thread).one().n;
+  }
+
+  /** The threads holding turn owners: those at work. A read. */
+  workingThreads(): string[] {
+    return this.#sql.exec<{ thread: string }>(
+      "SELECT DISTINCT thread FROM model_turn_owners").toArray().map((row) => row.thread);
+  }
+
+  /** How many open root inputs own turns in `thread`. */
   openInputs(thread: string): number {
     return this.#sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM model_turn_owners WHERE thread = ? AND owner GLOB 's:*'",

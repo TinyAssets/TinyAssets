@@ -138,9 +138,12 @@ export async function direct(instance: { harness: TestHarness; parts: AgentParts
     Promise<{ sessionId: string; telemetry: TelemetrySpan }> {
   const pi = await instance.harness.pi();
   const root = await pi.snapshot(ProviderDoc, ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT);
+  // One owner a turn, by its name: a turn asked for again is the one open, as pi's input
+  // that owns it is, and the thread's open inputs stay within their bound.
+  const owner = [...turn].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) % 1_000_000_000,
+                                 7);
   await instance.parts.turns.owned(await instance.harness.thread(), [
-    { owner: `s:${1_000_000_000 + Math.floor(Math.random() * 1_000_000_000)}`,
-      turn: `input:${turn}` }]);
+    { owner: `s:${1_000_000_000 + owner}`, turn: `input:${turn}` }]);
   return { sessionId: root!.sessionId, telemetry: originContext(`input:${turn}`) };
 }
 

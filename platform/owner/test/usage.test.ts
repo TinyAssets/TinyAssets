@@ -33,11 +33,13 @@ const NOW = 1_793_000_000;
  */
 const THREAD = `thread_${"0".repeat(32)}`;
 const SECOND = `thread_${"2".repeat(32)}`;
-const THREADS = [THREAD, SECOND, `thread_${"3".repeat(32)}`];
 const IN_THREAD = THREAD_INPUTS - 1;
 const OPEN_TURNS = ["t1", "t2", "t3", "t4", "t5", "t9",
                     ...["t0", "s0", "s1", "s2", "s3"],
                     ...Array.from({ length: 6 }, (_, i) => `other${i}`)];
+const THREADS = [THREAD, SECOND, ...Array.from(
+  { length: Math.ceil(OPEN_TURNS.length / IN_THREAD) - 2 },
+  (_, i) => `thread_${String(i + 3).repeat(32).slice(0, 32)}`)];
 
 /** A model's cost record at `input` and `output` dollars per million tokens, as pi-ai's. */
 function rates(input: number, output: number,

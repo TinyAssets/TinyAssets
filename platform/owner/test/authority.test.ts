@@ -207,6 +207,7 @@ describe("the authority gate's capability map", () => {
     expect(TA_CAPABILITIES).toEqual({
       "ta:catalog": [], "policy:show": OWNER_ONLY, "policy:propose": ["propose_policy"],
       "wake:list": [], "files:usage": ["read_files"], "model": [], "agent:run": ["run_graph"],
+      "agent:delegate": ["run_graph"],
     });
   });
 

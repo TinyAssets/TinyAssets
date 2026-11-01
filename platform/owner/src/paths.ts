@@ -14,11 +14,14 @@
  * the pi environment's `absolutePath` does against its `cwd`; the RPC doors take only
  * stored paths and refuse anything else.
  *
- * `/workspace/agents` holds the owner's agent definitions (Direction 3: the owner edits
- * its agents' files), which configure every thread the agent's doors make: only the
- * owner's own authority creates, changes, moves into or out of, or removes anything there
- * (`AGENTS_DIR`, held by the file doors and the agent's environment). The roots are never
- * removed or renamed, so no change outside the tree reaches into it.
+ * The owner's agent definitions are the owner's alone (`OWNER_TREES`, Direction 3: the
+ * owner edits its agents' files): `/workspace/agents` (each agent's `AGENTS.md`), and the
+ * agent's abilities, which reach every conversation's prompt or its tools' instructions
+ * (A5): `/workspace/.agents` (its skills, prompt templates and packages),
+ * `/workspace/skills` and `/workspace/prompts`. Only the owner's own authority creates,
+ * changes, moves into or out of, or removes anything there (held by the file doors and the
+ * agent's environment), so no client's file is ever beside an owner's skill. The roots are
+ * never removed or renamed, so no change outside the trees reaches into them.
  */
 import { Invalid } from "./errors";
 import { utf8Bytes } from "./text";
@@ -29,9 +32,21 @@ export const ROOTS: readonly string[] = Object.freeze([WORKSPACE, TEMP]);
 export const MAX_PATH_BYTES = 4096;
 /** The owner's agent definitions, `/workspace/agents/<agent>/`: the owner's alone to change. */
 export const AGENTS_DIR = "/workspace/agents";
-/** The refusal of a change to `AGENTS_DIR` under any authority but the owner's. */
+/** The agent's abilities: its skills, prompt templates and packages (`resources.ts`). */
+export const ABILITIES_DIR = "/workspace/.agents";
+/** Where selected packages live (owner policy's `packages`, `policy.ts`). */
+export const PACKAGES_DIR = "/workspace/.agents/packages";
+/** Every tree only the owner's own authority changes. */
+export const OWNER_TREES: readonly string[] = Object.freeze([
+  AGENTS_DIR, ABILITIES_DIR, "/workspace/skills", "/workspace/prompts"]);
+/** The refusal of a change to an `OWNER_TREES` path under any authority but the owner's. */
 export const AGENTS_OWNER_ONLY = "only the owner changes its agents' files under " +
-  "/workspace/agents";
+  "/workspace/agents, /workspace/.agents, /workspace/skills and /workspace/prompts";
+
+/** Whether `path` is in a tree only the owner's own authority changes. */
+export function ownersOnly(path: string): boolean {
+  return OWNER_TREES.some((tree) => within(path, tree));
+}
 export const MAX_NAME_BYTES = 255;
 const LONE_SURROGATE = /\p{Cs}/u;
 

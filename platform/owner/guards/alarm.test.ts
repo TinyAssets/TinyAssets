@@ -26,9 +26,13 @@
  * by no source (the policy-boundary guard). The guard is a tripwire for our own code's
  * mistakes, not proof against a source written to evade it.
  *
- * `agents/lifecycle` is the Agents SDK module the object loads, pinned here by version and
- * lockfile integrity (agents 0.31.0, source-read 2026-10-28); PiHarness is not loaded (the
- * thread host, `thread-host.ts`, replaces it). Its module-level state, which objects sharing
+ * `agents/lifecycle` is the Agents SDK module the object loads, with `agents/skills` (its
+ * Agent Skills parser, `parseSkill` and `isModelInvocable`, A5), pinned here by version and
+ * lockfile integrity (agents 0.32.0, source-read 2026-10-31: its Lifecycle chunk is
+ * byte-identical to 0.31.0's, and PiHarness's only change is its `skills()` rewrite);
+ * PiHarness is not loaded (the thread host, `thread-host.ts`, replaces it).
+ * `agents/skills` keeps no module-level state but its error classes; it parses with
+ * `yaml`'s `parse`, which keeps none per call either. Its module-level state, which objects sharing
  * an isolate share, holds no owner's data: `WeakMap`s keyed by each Lifecycle or capability
  * instance (event sinks, route transports, host invokers, bound services), one
  * `AsyncLocalStorage` whose store lives only for the invocation that set it
@@ -48,8 +52,8 @@ import { parse, PLATFORM, reporter, workerSources } from "./sources";
 
 const BANNED: ReadonlySet<string> = new Set(["setAlarm", "deleteAlarm", "getAlarm",
                                              "disableAlarms", "deleteAll"]);
-/** What a source may import from the Agents SDK: Lifecycle alone. */
-const AGENTS_IMPORTS: ReadonlySet<string> = new Set(["agents/lifecycle"]);
+/** What a source may import from the Agents SDK: Lifecycle, and the skills parser. */
+const AGENTS_IMPORTS: ReadonlySet<string> = new Set(["agents/lifecycle", "agents/skills"]);
 /** The one source that may name `deleteAll`: a thread store, which holds no Lifecycle. */
 const STORE = "owner/src/thread-store.ts";
 /** The erasure's capability and the write gate, whose wipe is the erasure's last step. */
@@ -62,11 +66,17 @@ const WIPES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   [ERASE]: Object.freeze(["disableAlarms"]),
 });
 const HAND_OFF = "await this.#lifecycle.alarm();";
-/** The pinned Agents SDK, as the lockfile resolves it. */
-const AGENTS = Object.freeze({
-  version: "0.31.0",
-  integrity: "sha512-FQeIsuMXycGPtQUxpRcT3ArVe8tkhGkioGLQ1kKRIzDCbYBOyx3RzAxi+G2dq6pku+" +
-    "uUqR04QYg+i3BzDouMnA==",
+/**
+ * The pinned Agents SDK, as the lockfile resolves it: under the owner's workspace, since its
+ * required peer `@modelcontextprotocol/client` is pinned exactly at 2.4.0 while the doors
+ * pin 2.3.1, so npm nests agents with its own MCP packages (the owner imports none of
+ * them). When the doors move to 2.4.0, agents hoists again and this path moves.
+ */
+export const AGENTS = Object.freeze({
+  version: "0.32.0",
+  integrity: "sha512-5g6w/XwULJrnxuEKlG7EBn4js9DVfyuu+9OhiLgZpUjW89BLhWGWY20hp+3R6U/eeEPrZs6p3RG" +
+    "BfvuKtgI77g==",
+  path: "owner/node_modules/agents",
 });
 
 function agentsModule(node: ts.Node): node is ts.StringLiteralLike {
@@ -170,8 +180,9 @@ describe("alarm guard", () => {
     const lock = JSON.parse(readFileSync(join(PLATFORM, "package-lock.json"), "utf8")) as
       { packages: Record<string, { version?: string; integrity?: string;
                                    devDependencies?: Record<string, string> }> };
-    const resolved = lock.packages["node_modules/agents"]!;
+    const resolved = lock.packages[AGENTS.path]!;
     expect([resolved.version, resolved.integrity]).toEqual([AGENTS.version, AGENTS.integrity]);
+    expect(lock.packages["node_modules/agents"]).toBeUndefined();
     const owner = JSON.parse(readFileSync(join(PLATFORM, "owner", "package.json"), "utf8")) as
       { devDependencies: Record<string, string> };
     expect(owner.devDependencies["agents"]).toBe(AGENTS.version);
@@ -269,6 +280,7 @@ describe("alarm guard", () => {
     "import { Lifecycle } from 'agents/lifecycle';",
     "import { LifecycleCapability, type LifecycleJob } from 'agents/lifecycle';",
     "import type { LifecycleJobContext } from 'agents/lifecycle';",
+    "import { isModelInvocable, parseSkill } from 'agents/skills';",
     "export class O { readonly #lifecycle = new Lifecycle(this); " +
       "override async alarm(): Promise<void> { await this.#lifecycle.alarm(); } }",
     "export function f(lane: { nextDue(n: number): number }) { return lane.nextDue(0); }",

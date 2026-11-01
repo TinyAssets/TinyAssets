@@ -130,7 +130,8 @@ import { type Notice, Notices } from "./notices";
 import { Erasure } from "./erase";
 import { ERASE_RETRY_MS, ERASING, erasing } from "./erasure";
 import {
-  agentPolicy, type Change, fileSettings, modelSettings, Policy, type PolicyDocument,
+  agentPolicy, type Change, fileSettings, modelSettings, packageSelection, Policy,
+  type PolicyDocument,
   type Projection, type Receipt, runPolicy,
 } from "./policy";
 import { type Card, Registrations } from "./registrations";
@@ -139,7 +140,7 @@ import { LiveTee } from "./live-tee";
 import { inTime, type Lane, Schedule } from "./schedule";
 import type { ScheduledInput } from "./scheduled";
 import { nextOccurrence, parseCron } from "./cron";
-import { AGENTS_DIR, AGENTS_OWNER_ONLY, storedPath, within, WORKSPACE } from "./paths";
+import { AGENTS_OWNER_ONLY, ownersOnly, storedPath, WORKSPACE } from "./paths";
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
 import {
@@ -148,7 +149,7 @@ import {
 import { codePoints, principal } from "./text";
 import type { OperationResult } from "./thread-host";
 import type { ThreadStore } from "./thread-store";
-import { Usage as ModelUsage, type UsageReceipt } from "./usage";
+import { TURN_ENDED, Usage as ModelUsage, type UsageReceipt } from "./usage";
 import { runWakes, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "./wakes";
 
 /**
@@ -924,8 +925,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                             reconciled: (thread, open) => write(() =>
                               this.#usage.turnsReconciled(thread, open)),
                             inputs: (thread) => this.#usage.openInputs(thread),
+                            children: (thread) => this.#usage.childInputs(thread),
+                            working: (thread, pending, bound) => write(() =>
+                              this.#threads.workingRefusal(thread, new Set([
+                                ...this.#usage.workingThreads(), ...pending]), bound)),
                           },
                           admission: () => workRefusal(admission(storage)),
+                          packages: () => packageSelection(this.#policy.read().document),
+                          joined: (turn) => (this.#usage.turnLive(turn) ? null : TURN_ENDED),
                         });
     const lifecycle = new Lifecycle<OwnerEnv>(this);
     this.#erasure = new Erasure({
@@ -1171,6 +1178,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return { owner, generation: written.generation, digest: written.digest,
                policy: written.document };
     }));
+    this.#agent.policyChanged();
     await this.#agent.endAll();
     return done;
   }
@@ -1509,8 +1517,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * behind a running turn or, with `steer`, placed after its current tool round; then
    * waited on up to `wait_ms`. Past that it answers `running` with the operation id, which
    * `agentStatus` reads. An outside client's message reaches pi inside the untrusted
-   * envelope, naming the client; the owner's as typed. A grant change of the client, or a
-   * policy write, ends the wait (refused) and the turn.
+   * envelope, naming the client, a command in it only data; the owner's as typed, its
+   * `/skill:name args` or `/template args` expanded as pi's `prompt` expands them
+   * (`OwnerAgent.expand`, A5). A grant change of the client, or a policy write, ends the
+   * wait (refused) and the turn.
    */
   async agentSubmit(binding: Binding, request: SubmitRequest): Promise<Operation> {
     const asked = await this.#door(() => {
@@ -1535,11 +1545,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (asked.thread === null) {
       await this.#agentConfig(asked.agent);  // a bad AGENTS.md is refused before a thread
     }
+    const input = asked.client === null
+      ? agentText(await this.#agent.expand(asked.input), "an expanded input") : asked.input;
     const thread = asked.thread ?? await this.#agent.thread(asked.agent, asked.stamp, {
       kind: "converse", need: ["converse"] });
     await this.#schedule.sync();
     const key = await sendRequest(asked.client, asked.sendId);
-    await this.#agent.submit(thread, asked.input, {
+    await this.#agent.submit(thread, input, {
       operationId: key, whenBusy: asked.steer ? "steer" : "followUp",
       ...(asked.client === null ? {}
         : { entry: { kind: "ta.outside", data: { client: asked.client, agent: asked.agent } } }),
@@ -1685,11 +1697,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * `cron`, a scheduled launch: its work id named in the thread's row as it is recorded
    * (held to the scheduled share of the live runs), then its `ta.scheduled` task made in
    * the thread's root, sleeping until its first delivery (`at`, else the cron's next
-   * occurrence).
+   * occurrence). The owner's own input is expanded as pi's `prompt` expands it
+   * (`OwnerAgent.expand`), once, here; a client's is enveloped already, only data.
    */
-  async #launch(stamp: Stamped | null, agent: string, input: string, at: number | null,
+  async #launch(stamp: Stamped | null, agent: string, given: string, at: number | null,
                 cron: string | null = null): Promise<Operation> {
     await this.#agentConfig(agent);
+    const input = stamp === null
+      ? agentText(await this.#agent.expand(given), "an expanded input") : given;
     const now = clock();
     const due = at !== null && at > now ? at
       : cron !== null ? (at ?? nextOccurrence(parseCron(cron), now)) : null;
@@ -1828,7 +1843,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (content === null) {
       return {};
     }
-    // Only the owner's own authority writes the tree (`AGENTS_DIR`); a file any other
+    // Only the owner's own authority writes the tree (`OWNER_TREES`); a file any other
     // wrote, kept from before that held, configures nothing.
     if (content.entry.writer !== "owner" && content.entry.writer !== "agent") {
       throw new Refused(`${path} was not written by the owner`);
@@ -2067,10 +2082,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return account;
   }
 
-  /** That an outside client's change leaves the owner's agent definitions alone. */
+  /**
+   * That an outside client's change leaves the owner's agent definitions alone: its agents'
+   * files, skills, templates and packages (`OWNER_TREES`).
+   */
   #ownersTree(account: Account, ...paths: unknown[]): void {
-    if (account.origin !== null
-        && paths.some((path) => within(storedPath(path), AGENTS_DIR))) {
+    if (account.origin !== null && paths.some((path) => ownersOnly(storedPath(path)))) {
       throw new Refused(AGENTS_OWNER_ONLY);
     }
   }

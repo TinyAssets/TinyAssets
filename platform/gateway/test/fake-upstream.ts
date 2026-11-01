@@ -19,6 +19,8 @@
  *   arguments; `cmd:ta-model` asks `ta`'s nested model call `cmd:echo`, and
  *   `cmd:ta-model-<rest>` asks it `cmd:<rest>`, each with a system prompt and an output
  *   cap (`TA_SYSTEM`, `TA_MAX_TOKENS`).
+ * - `cmd:delegate-<rest>`: a call of the owner's `ta` capability `agent:delegate`, its task
+ *   `cmd:<rest>`, which the subagent's own request then asks (Anthropic).
  * - `cmd:drip`: `DRIP` text deltas (`d0 ` to `d11 `), `DRIP_MS` apart, then the finish:
  *   a stream that lasts longer than the owner object's one-second partial commits.
  *
@@ -453,6 +455,11 @@ export default {
           ? anthropicTool(request, body, "ta", { op: "call", name: measured[1], arguments: {} },
                           billed)
           : model(request, anthropicFormat(), billed);
+      }
+      const delegated = /^delegate-([a-z0-9-]+)$/.exec(command(text));
+      if (delegated !== null) {
+        return anthropicTool(request, JSON.parse(text) as Record<string, unknown>, "ta", {
+          op: "call", name: "agent:delegate", arguments: { task: `cmd:${delegated[1]}` } });
       }
       const through = /^ta-([a-z]+)(?:-([a-z0-9-]+))?$/.exec(command(text));
       if (through !== null) {

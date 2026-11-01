@@ -313,6 +313,30 @@ describe("a scheduled launch's sleep (F1)", () => {
     expect(await r.delivered(op)).toHaveLength(1);
   }, 60_000);
 
+  it("holds a delivery to a thread not at work while the owner's working threads are full",
+     async () => {
+    const r = await rig();
+    const op = await later(r);
+    const busy = await r.in(async (instance) => {
+      instance.timing.workingMax = 1;
+      const other = await instance.agent.thread("main", null, { kind: "converse" });
+      await instance.parts.turns.owned(other.thread_id, [{ owner: "s:1", turn: "input:busy" }]);
+      return other.thread_id;
+    });
+    await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
+    await drainDue(r.stub());
+    await until(async () => (await r.task(op.thread_id))?.record.state.checkpoint?.tries === 1,
+                "the hold");
+    expect(await r.status(op)).toMatchObject({ status: "scheduled",
+                                               reason: "held: threads_working" });
+    expect(await r.delivered(op)).toEqual([]);
+    // The other thread's work done, its next try delivers.
+    await r.in((instance) => instance.parts.turns.owned(busy, [{ owner: "s:1", turn: null }]));
+    await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
+    await drainDue(r.stub());
+    expect(await r.settled(op)).toMatchObject({ status: "done", text: "echo: wake up" });
+  }, 60_000);
+
   it("delivers on through a policy write that lands while it delivers", async () => {
     const r = await rig();
     const op = await later(r);
@@ -428,19 +452,55 @@ describe("a scheduled launch's sleep (F1)", () => {
     expect(await r.delivered(op)).toHaveLength(1);
   }, 60_000);
 
-  it("wakes at readmission a thread its live row says works, as a crash leaves it",
+  it("finishes at once, while the owner is suspended, the work a thread's live row says " +
+     "is running, as an eviction mid-ending leaves it, then holds the rest (F1 review L2)",
      async () => {
     const r = await rig();
     const op = await later(r);
     await r.stub().admissionSet(r.platform, { reason: "billing", suspended: true });
     await r.in((instance) => instance.agent.host.close(op.thread_id));
+    // A cancel's abort handler cut off: its row says working, its job due.
     await sqlIn(r.stub(), "UPDATE agent_live SET active = 1 WHERE thread_id = ?", op.thread_id);
     await sqlIn(r.stub(), "UPDATE cf_agents_jobs SET time = ? WHERE id = ?", Date.now(),
                 wakeJob(op.thread_id));
     await drainDue(r.stub());
+    // Its Session was opened now, not at the readmission: what runs reduces itself, and the
+    // row is the Session's again, its sleep's wake kept, its job at that wake.
+    const until = (await r.task(op.thread_id))!.record.state.until!;
+    expect(await r.live(op.thread_id)).toEqual({ active: 0, wake_at: until / 1000 });
+    expect(await r.job(op.thread_id)).toBe(until);
+    expect(await r.delivered(op)).toEqual([]);
+    // Its sleep's wake, while still suspended, opens nothing, and holds a day.
+    await r.in((instance) => instance.agent.host.close(op.thread_id));
+    await r.pass(op.thread_id, until);
+    await drainDue(r.stub());
     expect(await r.job(op.thread_id)).toBeGreaterThan(Date.now() + ADMISSION_HOLD_MS - 60_000);
+    expect(await r.in((instance) => instance.agent.host.openThreads())).toEqual([]);
     await r.stub().admissionSet(r.platform, { reason: "billing", suspended: false });
     expect(await r.job(op.thread_id)).toBeLessThanOrEqual(Date.now());
+  }, 30_000);
+
+  it("holds a wake job stepped while the owner is suspended only until its row's wake, " +
+     "never a day past it (F1 review L1)", async () => {
+    const r = await rig();
+    const op = await later(r);
+    await r.stub().admissionSet(r.platform, { reason: "billing", suspended: true });
+    await r.in((instance) => instance.agent.host.close(op.thread_id));
+    const until = (await r.task(op.thread_id))!.record.state.until!;
+    // Its job steps before its schedule is due (a heartbeat, or a readmission's pass that
+    // found it not due yet): it holds until the schedule's wake, the sooner.
+    await sqlIn(r.stub(), "UPDATE cf_agents_jobs SET time = ? WHERE id = ?", Date.now(),
+                wakeJob(op.thread_id));
+    await drainDue(r.stub());
+    expect(await r.job(op.thread_id)).toBe(until);
+    expect(await r.in((instance) => instance.agent.host.openThreads())).toEqual([]);
+    // Readmitted before it is due: nothing is overdue, so the job stays at the wake, and
+    // the schedule delivers then, not a day later.
+    await r.stub().admissionSet(r.platform, { reason: "billing", suspended: false });
+    expect(await r.job(op.thread_id)).toBe(until);
+    await r.pass(op.thread_id, until);
+    await drainDue(r.stub());
+    expect(await r.settled(op)).toMatchObject({ status: "done", text: "echo: wake up" });
   }, 30_000);
 
   it("delivers a held schedule once at the day's hold when its readmission wake is lost, " +

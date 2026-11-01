@@ -30,11 +30,16 @@ export function inGate<R>(stub: DurableObjectStub<OwnerDO>,
  * Install migration 10's turn-owner bound at `inputs` open inputs and `compactions` live
  * compactions a thread, in place of the schema's: a test-only cap, to force the trigger.
  */
-export function capTurnOwners(sql: SqlStorage, inputs: number, compactions: number): void {
+export function capTurnOwners(sql: SqlStorage, inputs: number, compactions: number,
+                              working?: number): void {
   const trigger = MIGRATIONS[9]!.find((statement) =>
     statement.startsWith("CREATE TRIGGER model_turn_owners_full"))!;
-  const capped = trigger.replace(/THEN [0-9]+ ELSE [0-9]+ END/,
-                                 `THEN ${inputs} ELSE ${compactions} END`);
+  let capped = trigger.replace(/WHEN 's' THEN [0-9]+ WHEN 'c' THEN ([0-9]+) ELSE [0-9]+ END/,
+                               `WHEN 's' THEN ${inputs} WHEN 'c' THEN $1 ELSE ${compactions} END`);
+  if (working !== undefined) {
+    capped = capped.replace(/COUNT\(DISTINCT thread\) FROM model_turn_owners\) >= [0-9]+/,
+                            `COUNT(DISTINCT thread) FROM model_turn_owners) >= ${working}`);
+  }
   if (capped === trigger) {
     throw new Error("the turn-owner bound is not where the test expects it");
   }

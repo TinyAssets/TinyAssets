@@ -197,7 +197,7 @@ live acceptance is still owed says so.
 - [x] 3.6 The schedule: one table, run as jobs on the Agents SDK Lifecycle queue, which
   owns the single alarm and the thread host's wake jobs (one per agent thread, S3); 3.4's direct `setAlarm`/`deleteAlarm`
   move onto it. Built (`schedule.ts`): `OwnerDO` holds a Lifecycle (`agents/lifecycle`,
-  agents 0.31.0 pinned exactly, by lockfile integrity too), never the SDK's `Agent`,
+  agents pinned exactly, by lockfile integrity too: 0.31.0, 0.32.0 since A5), never the SDK's `Agent`,
   installs none of its runtime handlers, and its `alarm` only hands the runtime's alarm
   to it. Each kind of timed work is a lane with its own rows and one single-flight
   Lifecycle job, `owner-schedule/<lane>`, derived from them: `wakes` (3.4's wakes and
@@ -675,7 +675,7 @@ account and no deploy.
   as one frozen copy, so a getter cannot bring a shadow in. Tests' probes install as
   `AgentSource.trusted`, which production cannot pass: `gatewayAgent` takes none, and the
   ta guard holds `trusted` to its declaration and `#install`. `ta` is
-  `callers: ["model"]`, `replay: "unsafe"`; its input is one object, `op` an enum and each
+  `callers: ["model"]`, `replay: "unsafe"` (replay-safe by its own rule since A5); its input is one object, `op` an enum and each
   op's fields optional, its shape checked in `execute` (any other field refused). `catalog`
   lists the platform capabilities the conversation's authority may call, then the tools
   registered `callers` naming "tools" (pi's `agent.callable`, deferred ones marked), each
@@ -1197,18 +1197,167 @@ account and no deploy.
   probe's Q8 (run 41247617223) found the order right and did not measure the crash window
   (production's abort rolled back even an awaited `deleteAll`); the follow-up crash point
   is `deleteAll`, then `sync()`, then the write, then the abort.
-- [ ] A5 with F5: skills, packages and filters, `parseSkill`, the agents 0.32 bump (diff
-  PiHarness at each agents release and carry its fixes into `thread-host.ts`);
-  `agent:delegate` with task-owned children. Tool and package code must never create a
-  conversation-owned task that is not background (it would hold a turn's origin past its
-  input, M3), and A5 needs a cap on the conversations of a thread, each counted in the
-  owner-bound guard's `model_turns` term (live compactions are per conversation); the
-  create-task guard is to be changed with them, deliberately. A linked admission whose
-  joined turn has ended is admitted today and refused only at its first call
-  (`turn_ended`): pi owns that admission (a tool's submit under the context pi passed it;
-  the thread host's `submit` always admits under the background context), so the
-  subagent and background-submit paths A5 adds must refuse it at admission, before pi
-  admits it, when its turn has no row.
+- [x] A5 with F5: skills, prompt templates and declarative packages, and `agent:delegate`
+  with task-owned children. Built in workerd, nothing deployed (`resources.ts`,
+  `delegate.ts`, `ta.ts`, `agent.ts`, `thread-host.ts`, `policy.ts`, `origin.ts`,
+  `schema.ts`, `threads.ts`, `usage.ts`, `owner-do.ts`; agents 0.32.0). Skills are the
+  Agent Skills format, pi-coding-agent's way: `SKILL.md` directories under
+  `/workspace/.agents/skills` and `/workspace/skills` at any depth (one holding `SKILL.md`
+  not looked into further, dot directories and `node_modules` skipped), then each selected
+  package's, parsed with agents' `parseSkill`; the trusted `ta.skills` extension's `skills`
+  section lists each `isModelInvocable` skill's name, description and path in pi's own
+  words (`formatSkillsForPrompt`, ported, MIT), at most 128, and the model reads a skill
+  with `read`: no skill tool. A name taken twice keeps the first; a skill the owner's own
+  authority did not write (as `AGENTS.md`), or that does not parse, is skipped with a
+  notice. The section is built at the first open and rebuilt (installed again under its
+  name, pi's in-place reload) only when the files' change feed touches a `SKILL.md` or a
+  template under a root, anything under a selected package's directory, or a directory
+  above them, or a policy write moves the selection: never per request; one rebuild at a
+  time, the asks meanwhile coalesced into one after it. Prompt templates are the direct
+  `.md` children of `/workspace/.agents/prompts`, `/workspace/prompts` and selected
+  packages' prompts; the owner's own input to `agentSubmit`, `agentRun` and `ta`'s
+  `agent:run` expands at the door as pi's `prompt` does (`/skill:name args` into pi's
+  `<skill>` block, a skill that disables model invocation included; then `/name args`
+  with pi's `substituteArgs`, ported), reading the file as it stands; an unknown name
+  stays as typed, and a client's enveloped input is data, never expanded. Packages are
+  pi packages in the workspace, selected by owner policy's `packages` list (pi's settings
+  form, at most 32, each a directory under `/workspace/.agents/packages`, filters per kind with pi's
+  grammar, `applyPatterns` and its exact-path forms ported over a glob subset of
+  minimatch's `**`, `*`, `?`); there is no `extensions` filter. A package contributes its
+  skills and templates only; one that lists `pi.extensions` or holds an `extensions/`
+  directory is refused whole, `package_executable`, with an owner notice. `agent:delegate
+  {agent?, task}` is a `ta` effect under `run_graph` (a delegation launches an agent, the
+  scope `agent:run` and the `agentRun` door hold; a scoped client also needs it where the
+  named agent acts, checked again in the admission's unit): its child is made in the
+  call's commit owned by the call's task (`createChild`, the create-task guard's second
+  creation point and the agent-authority guard's second maker, its one `AgentDoc` draft
+  writing `instructions` only), found again on a rerun by `scanConversations({
+  ownerTaskId})`, configured as the named agent's `AGENTS.md` (no agent: the caller's,
+  pi's copy), its authority and five tools from `conversationCreated`; its one input,
+  `subagent:<task>`, is submitted under the call's context, so it joins the call's turn
+  (its calls charged there, under its caps), admitted by the host's `linked` (the
+  thread's open inputs, the admission, and `turn_ended` before pi admits it when the
+  turn has no row); the call waits, ends the child's lingering work once answered, and
+  answers `{conversation_id, status, text | reason}`. Aborting the call aborts the
+  child and the caller is idle only once it is (pi's ownership); a revoke, a suspension
+  and a policy write end it with its thread. `ta` is now `replay: "safe"` by its own
+  rule, so a subagent survives its parent's eviction as example 22's does: a read and a
+  delegation rerun, a tool reached through `executeTool` is reached again by its key
+  (the nested call answers under its own policy), and every other effect commits a memo
+  before it acts and is refused `interrupted` on a rerun (ADR-032 §4 amended). A thread
+  holds at most `THREAD_CONVERSATIONS` (3) working conversations, its root among them,
+  kept in the session's `ta.delegations` document and pruned in each creating commit
+  (`thread_conversations_full`); compactions are per conversation, so `THREAD_COMPACTIONS`
+  is 3 x 2, and a thread's subagents hold at most `THREAD_CHILD_INPUTS` (2) inputs (`c:`
+  owners), apart from its root's eight (`THREAD_INPUTS`, so steering is never starved by
+  subagents). The turn rows are bounded by the threads at work, not every live thread:
+  `WORKING_THREADS` (1,024) threads may hold turn owners at once; the host admits a fresh
+  input to a thread not at work only within `WORKING_THREADS - OPEN_MAX` of them, in a
+  unit, counting the admissions in flight, a client within `client_share` and the clients
+  within what `owner_reserve` leaves (`threads_working`, refused at once, a scheduled
+  delivery held), so a compaction pi starts in an open Session always has a place;
+  migration 10's trigger refuses a thread's first owner past the bound (edited in place:
+  nothing is deployed). The owner-bound guard's turn terms are the working threads times
+  sixteen owners: 4,597,482,932 bytes, 46.0%, about 403 MB under half (F1: 49.0%). F1 review lows carried: a wake job stepped while
+  the owner is not admitted holds until the sooner of a day and its live row's wake still
+  ahead (on pi's clock), and one whose row says working opens and finishes its work now
+  (a cancel's abort handler an eviction cut off). agents 0.31.0 to 0.32.0: Lifecycle's
+  chunk is byte-identical, and PiHarness's one change is `skills()` (now
+  `loadSkillCatalog`, its tools erroring loudly); its wake and recovery code
+  (`_admit`, `_wake`, `_wakeStep`, `_waitWhileActive`, `onJobError`, `_open`) is
+  unchanged, so `thread-host.ts` takes nothing; `agents/skills` joins the agents import
+  allow-list; agents now resolves under the owner's workspace (its required peer
+  `@modelcontextprotocol/client` is pinned exactly at 2.4.0, the doors at 2.3.1, so npm
+  nests it with its own MCP packages, which the owner never imports; it hoists again when
+  the doors move to 2.4.0). Tested in workerd: a skill listed and read,
+  one that disables model invocation not listed, one rebuild for an edit and none per
+  request, skipped skills noticed, `/skill:` and template expansion, a package filtered
+  by policy, a coded package refused with its notice, the selection's validation; a
+  delegation answered as the named agent on the caller's turn with the five tools, a
+  rerun after an eviction reusing the child and its input, the abort cascade and idle, the
+  conversation cap, `turn_ended` at admission, a scoped client refused without
+  `run_graph` and past its scope, a revoke, a suspension and a policy write ending the
+  child, the caps through the gateway; the two lows. Mutation: 53 (the section's
+  filtering, walk and first-wins, the rebuild trigger and a rebuild per request, the
+  expansions, the package refusal, filters and selection, the delegation's ownership,
+  reuse, request id, wait, instructions, scope and lingering work, the conversation cap and
+  its pruning, the linked admission's inputs and turn checks, `ta`'s rerun rule, the two
+  lows, the guards' terms and creation points), 51 killed: of those first alive, five were
+  killed by tests added for them, and a sixth went with the code it mutated (a second copy
+  of the build's model-invocable filter in the section); two survive as equivalent, each covering the other: the linked
+  admission's own admission check and the admission unit's authority re-check (`require`
+  reads the admission too, and every authority change drops the thread, its abort failing
+  the submit). Declared differences from pi and the
+  audit (F5, F9): standalone `.md` skills are not loaded (the directory form only); the
+  `tinyassets` key's fields (settings, model routing hints) are skipped with a notice
+  until they have a consumer (owner policy is the one settings source; `auto`'s ranking
+  would take hints); no child configuration but its instructions (pi's example also
+  picks a model and drops the subagent tool: the cap bounds nesting instead); templates'
+  descriptions are not read (no command list yet). Review round 1 (REQUEST CHANGES), all
+  taken: M1 the agent's abilities are owner-only trees as `/workspace/agents` is
+  (`OWNER_TREES`: `/workspace/agents`, `/workspace/.agents`, `/workspace/skills`,
+  `/workspace/prompts`), at the file doors and in the agent's environment, a client's
+  change refused with the same code and every change the owner's agent makes there noticed
+  (`agent_definition`), and a selected package must live under `/workspace/.agents/packages`
+  (the policy refuses any other), so no client's file is ever beside an owner's skill or in
+  a selected package; M2 the working-threads bound above, in place of the cut to the doors'
+  inputs; L1 the admission unit's re-check of the named agent's scope is gone, being
+  redundant by construction (a grant's scopes move only with its generation, which the
+  unit's re-check of the caller's stamp reads), the scope checked before the child is made;
+  L2 a package refuses on any npm key but its data (an entry point, `bin`, `scripts`), any
+  `pi` key but `skills` and `prompts` (`themes`, `image` and `video` skipped with a
+  notice; an empty `extensions` list declares none), and a `pi.extensions` string, each
+  `package_executable`; L3 the child's admission checks (its subagent inputs, the
+  admission, the turn) run in the commit that would make it, before it is made, so a
+  refused delegation leaves nothing; L4 a rerun's refused effect answers as pi does an
+  unsafe tool's, the `interrupted` code and pi's words; L5 the skills section reaches a
+  conversation only while its authority holds `read_files`; L6 a resent subagent input is
+  tested to skip the checks; the nits: the MCP peer note, `DELEGATE_TASK_MAX` in code
+  points, an expanded owner input past `AGENT_TEXT_MAX` refused loudly, and every tool a
+  package provides passes the early gate again as it executes, so a replay-safe one pi
+  reruns after a restart (its recovery runs no hook) is held to the authority as it stands.
+  Tested: a client's script beside an owner's skill, a skill at a root, a flood, a template,
+  a package's `extensions/` and manifest each refused at the door and from its
+  conversation; the owner's agent's skill noticed; packages outside the owner's tree
+  refused; every code form of a manifest refused; the section hidden from a client without
+  `read_files`; a client past its share of the working threads while the owner works, two
+  admissions at once taking one place once, a settled thread freeing its place, a held
+  delivery; eight door inputs beside two subagents, and while a delegation is admitted; the
+  subagent inputs' bound refused before the child is made; a resent subagent input not
+  checked again; pi's `interrupted` code on a rerun; a nested replay-safe tool's rerun
+  refused by its own gate while the owner is not admitted; the task's and the expanded
+  input's bounds. Mutation on the round's code: 25, 24 killed (six first alive killed by
+  tests added for them), one equivalent (the linked admission's own admission check,
+  which `Authority.require` reads at the call's start and in the unit); A5's own set re-run:
+  44 still apply, 44 killed (the two that survived went with the code they mutated);
+  the reviewer's runner, its patterns moved to the new lines: 24 apply, 24 killed (its M11
+  went with the redundant line). Review round 2 (APPROVE), its lows: A the compaction
+  reserve pinned (the owner-bound guard holds `workingMax: WORKING_THREADS - OPEN_MAX`) and
+  tested at the limit, a compaction in an open Session still landing its owner; B the
+  owner's reserve across clients tested; C and D owed (below); E the sandbox's sync owed
+  under tasks 6. The reviewer's runner: 35, 34 killed, R13 equivalent (the linked room's
+  admission check, read again by `Authority.require`).
+- [ ] Persistent helpers (example 23): a background anchor task owning long-lived
+  subagents, spawned, messaged, waited on, stopped and listed through one capability, each
+  answer posted back by a background reporter task under a request id. Needs: the anchor
+  and reporter as creation points of the create-task guard (background, carrying no
+  origin), each reporter's submit admitted by `ThreadHost.linked`-style admission (its turn
+  is its own, a fresh origin), and the anchor's children counted in
+  `THREAD_CONVERSATIONS` or a cap of their own, traded in the owner-bound guard.
+- [ ] A5's working places, owed (review round 2):
+  - C, stale places: a crash between pi's commit and its turn-owner unit, with the live row
+    idle, holds a place until the thread's Session reopens, it settles or retention drops
+    it; a mass eviction holds every place until recovery drains them, 64 at a time, fresh
+    inputs refused `threads_working` meanwhile; two fresh admissions for the last place see
+    each other in flight and both are refused. Fix: sweep the owners of threads neither
+    open nor active (by `agent_live`) on the alarm, or count the soft limit by `agent_live`.
+  - D, a held delivery spends a Session open per retry (30 s to 10 min) while the places
+    are full, competing with the recovery that frees them. Fix: have the wake step check
+    the working places before it opens, as the admission hold does, or wake held
+    deliveries as a place frees.
+- [ ] Package data A5 left unloaded: the `tinyassets` key's settings and model routing
+  hints (each skipped with a notice now), when owner policy and `auto` take them;
+  package tool schemas (the plan's declarative tool schemas) reached through `ta`.
 - [ ] H0 with code mode, H1, H2 (founder for H2).
 - [ ] The pi upgrade, within a slice of pi's release: `adopt` in `RemoteStorage`, the tee
   deleted, `persistWithinMs`, `maxTurns` from policy, `onReport`, parking code out of the
@@ -1315,8 +1464,8 @@ account and no deploy.
   with no row is refused `turn_ended`, a reservation's settle only moves a row that is
   there, and the turns' idle pruning is gone. A compaction a run made joins the run's
   turn, one outside any run is its own; an owner that joined a turn keeps it only while it
-  is there. A thread holds at most `THREAD_INPUTS` (8) open inputs (`thread_inputs_full`),
-  pi at most `THREAD_COMPACTIONS` (2) live compactions, both refused past by the schema
+  is there. A thread holds at most `THREAD_INPUTS` (8) open root inputs (`thread_inputs_full`),
+  pi at most `THREAD_COMPACTIONS` (6 since A5: two for each of three working conversations) live compactions, both refused past by the schema
   (`turn_owners_full`); a turn is at most `TURN_BYTES` (96); a dropped thread's turns go
   in its drop's unit. A thread's kept usage is at most 16 KiB (`USAGE_ROW_MAX`). An owner
   unit is all or nothing (its own savepoint); a Session's open reconcile passes over an
@@ -1325,8 +1474,9 @@ account and no deploy.
   sleeps again, backing off, its wake never lost (F1). Every files bound can bind inside the manifest's: the
   defaults are 30,000 entries and 600,000 history rows (highs 500,000 and 600,000), and
   `max_inline_bytes` is at most 384 MiB. The guard's headroom is about 371 MB: a new table
-  or a raised bound comes out of an existing term. No owner source creates a
-  pi task (the create-task guard). The owner-bound guard (`guards/owner-bound.test.ts`) has no exceptions and holds the
+  or a raised bound comes out of an existing term. The owner's sources create pi work at
+  two points only, a scheduled launch's task and a subagent's conversation (the
+  create-task guard). The owner-bound guard (`guards/owner-bound.test.ts`) has no exceptions and holds the
   worst case at the policy's high bounds under half of 10 GB.
 - [ ] Doors (with tasks 2): the HTTP `/api/files` door and MCP file tools over the
   `file*` RPC doors, the scoped-grant capabilities `read_files` and `write_files` named
@@ -1346,6 +1496,10 @@ account and no deploy.
   sync-out refused `file_quota` reports its refused paths as sandbox-only, never drops them
   silently; and the owner is shown the trade between entries and `keep_recent` when it
   first binds (files-quota review, carried by S4-S5).
+  The sync path must hold the owner's trees (`OWNER_TREES`, `paths.ts`, A5) as the doors and
+  the agent's environment do: a sync-in never carries a client's change into them, and a
+  sync-out from a command a client's conversation ran never writes there (refused with
+  `AGENTS_OWNER_ONLY`, reported as sandbox-only).
 - [x] Probe, before the agent (5) runs a turn on the object: the subrequests-per-
   invocation cap (`FILES`, the gateway, hooks) and the 15-minute alarm wall time,
   including whether the cap applies per Durable Object event, before the gateway slice.

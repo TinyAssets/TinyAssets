@@ -18,7 +18,10 @@
  *   before every other extension's, so its block wins; then pi's `CodingTools` with `read`
  *   wrapped `replay: "safe"` (only pure reads are marked safe; `write`, `edit` and `bash`
  *   stay `unsafe`, so a call an eviction cut off comes back `interrupted` and is never run
- *   twice), then `ta` (`ta.ts`, A3), the model's way to every other ability, then the
+ *   twice), then `ta` (`ta.ts`, A3), the model's way to every other ability (replay-safe
+ *   by its own rule: only its reads and a delegation run twice), then `ta.skills`, the
+ *   skills section built from the owner's files (`resources.ts`, A5: rebuilt from the
+ *   files' change feed, never per request), then the
  *   object's packages, whose tools the model is never offered: `ta` reaches those
  *   registered callable by tools. The `ta.` names are the object's: a package named
  *   so is refused, as one pi refuses to install is; each is skipped and kept as an owner
@@ -66,8 +69,21 @@
  * first open, configured from its agent's data files (`AgentConfig`: the instructions an
  * agent's `AGENTS.md` holds, Direction 3) as pi's own conversation agent, with the thread's
  * stamp written into its `ta.authority` document, both in the root's creating commit
- * (`root`'s `init`); never its extensions or its model's tools. `#open` is the one place
- * the object makes a conversation (a guard holds it).
+ * (`root`'s `init`); never its extensions or its model's tools. `#open` makes a thread's
+ * root, and `delegate.ts`'s `createChild` a subagent (`#delegate`, `ta`'s `agent:delegate`,
+ * A5): the object's two conversation makers (a guard holds them).
+ *
+ * A subagent (`#delegate`) is a conversation a `ta` call owns, in its thread's own Session:
+ * made in the call's commit with `ownership: {kind: "task"}`, found again by a rerun (`ta`
+ * is replay-safe for it), configured as the named agent (its `AGENTS.md`) or as the caller,
+ * holding the caller's authority and the five model tools (`#inherit`), within the thread's
+ * cap of live conversations (`THREAD_CONVERSATIONS`). Its one input, `subagent:<task>`, is
+ * submitted under the call's own context, so it joins the call's turn and every call of
+ * the child is charged there, under its caps (`origin.ts`); the host admits it as a door's
+ * input (`ThreadHost.linked`: the thread's open inputs, the admission) and refuses it before
+ * pi does when that turn has no row (`turn_ended`). The call waits for the answer; aborting
+ * the call aborts the child, and the parent is idle only once the child is (pi's ownership);
+ * a revoke, a policy write and a suspension end it with its thread's work.
  *
  * Ending work (agent research §4.2), each in the door of the change, after its own unit
  * committed: a grant change or revoke ends its client's work (`endClient`, the client's
@@ -110,6 +126,7 @@ import {
   type TaskRecord, ToolTask, type Tx, type UsageState, type Storage, type Wake, wrapTool,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import type { ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 
 import {
@@ -117,6 +134,7 @@ import {
   type Need, NO_CONVERSATION, offersFive, refusalCode, type Stamped, stamped, stampOf, TA_OP,
   TOOL_SURFACE,
 } from "./authority";
+import { createChild, delegationsDoc, subagentRequest } from "./delegate";
 import { Invalid, Refused } from "./errors";
 import type { Files } from "./files";
 import { type Access, OwnerFilesEnv } from "./files-env";
@@ -124,15 +142,16 @@ import type { Write } from "./gate";
 import type { GatewayProvider, SessionAuthority } from "./gateway-provider";
 import type { LiveTee } from "./live-tee";
 import type { Notices } from "./notices";
-import { type MetricsSnapshot, OriginMetrics, originRoot } from "./origin";
-import { AGENTS_DIR, AGENTS_OWNER_ONLY, within, WORKSPACE } from "./paths";
+import { type MetricsSnapshot, OriginMetrics, originRoot, threadOf, turnOf } from "./origin";
+import { AGENTS_OWNER_ONLY, ownersOnly, WORKSPACE } from "./paths";
 import { RemoteStorage } from "./remote-storage";
+import { type PackageSelection, Resources } from "./resources";
 import { inTime } from "./schedule";
 import {
   createScheduled, type Delivered, requestOf, SCHEDULED, type ScheduledInput,
   type ScheduledTask, scheduledTask, standing, type Standing, WORK_ENTRY,
 } from "./scheduled";
-import { PLATFORM_NAMES, type Platform, reachable, taTool } from "./ta";
+import { type Delegation, PLATFORM_NAMES, type Platform, reachable, taTool } from "./ta";
 import {
   HOST_TIMING, type HostParts, type HostTiming, type Opened, type OperationResult,
   type Reported, RUN_SETTLED, SESSIONS_FULL, type SubmitOptions, THREAD_DROPPED,
@@ -197,6 +216,8 @@ export const TA_EXTENSION = "ta.tool";
 export const SCHEDULED_EXTENSION = "ta.scheduled";
 /** A scheduled launch whose thread is no longer the one it was made in, as it delivers. */
 export const THREAD_AUTHORITY = "thread_authority";
+/** The code of a fresh input refused past the working threads (`threads.ts`): held. */
+const WORKING = "threads_working";
 /** A thread with no row is never opened: it was dropped, or never made. */
 export const NO_THREAD = "no such thread";
 /** The `usage_unkept` notice's detail when a settling run's usage cannot be read. */
@@ -393,6 +414,13 @@ export interface AgentParts {
    * in a scheduled delivery's unit (`admission.ts`).
    */
   readonly admission: () => string | null;
+  /** The owner's package selection, as policy holds it now (`policy.ts`, `packages`). */
+  readonly packages: () => readonly PackageSelection[];
+  /**
+   * The refusal of an input joining `turn` (`turn_ended`: it has no row, `Usage.turnLive`),
+   * or null while it has one: a read, run in a linked admission's unit.
+   */
+  readonly joined: (turn: string) => string | null;
 }
 
 /** How a scheduled launch stands, as its store holds it: its task, and its last delivery. */
@@ -414,6 +442,11 @@ export interface AgentSource {
   readonly models: (session: SessionBinding) => Models;
   /** pi's compaction settings for the catalog's models, read at each use; none: pi's own. */
   readonly compaction?: () => CompactionSettings;
+  /**
+   * Extensions installed under the package rules (`packageRefusal`): a test's. Production
+   * passes none (`gatewayAgent`): no package code runs in the object, a package being data
+   * (`resources.ts`), its code refused.
+   */
   readonly packages: readonly Extension[];
   /**
    * Further extensions of the object's own, installed before the packages and without
@@ -515,6 +548,10 @@ export class OwnerAgent {
   readonly sessions = sessionDoc();
   /** pi's and pi-ai's metrics, kept by the telemetry adapter for the object's instance. */
   readonly metrics = new OriginMetrics();
+  /** The `ta.delegations` document: each Session's live subagents (`delegate.ts`). */
+  readonly delegations = delegationsDoc();
+  /** The skills, templates and packages, from the owner's files (`resources.ts`). */
+  readonly resources: Resources;
   readonly #parts: AgentParts;
   readonly #source: AgentSource;
   /** One registry for every Session (pi keeps each Harness subscribed until it closes). */
@@ -533,10 +570,24 @@ export class OwnerAgent {
   constructor(parts: AgentParts, source: AgentSource) {
     this.#parts = parts;
     this.#source = source;
+    this.resources = new Resources({
+      files: parts.files, notices: parts.notices, write: parts.write,
+      selection: () => parts.packages(),
+      install: (extension) => this.#registry.install(extension),
+      readable: async (input, context) => parts.authority.refusal(
+        await input.read.snapshot(this.authority, input.conversationId, context),
+        ["read_files"]) === undefined,
+    });
     this.host = new ThreadHost({
       open: (thread, onWake) => this.#open(thread, onWake),
       exists: (thread) => parts.threads.get(thread) !== null,
       admission: () => parts.admission(),
+      liveRow: (thread) => {
+        const row = parts.threads.liveRow(thread);
+        return row === null ? null
+          : { active: row.active, wakeAt: row.wake_at === null ? null : row.wake_at * 1000 };
+      },
+      now: () => (source.now ?? Date.now)(),
       settled: (thread) => parts.threads.settledRun(thread),
       live: (thread, wake, from) => this.#live(thread, wake, from),
       usage: (thread, usage) => parts.usage(thread, usage),
@@ -555,14 +606,10 @@ export class OwnerAgent {
     if (row === null) {
       throw new Error(NO_THREAD);
     }
-    this.#installed ??= this.#install().catch((error: unknown) => {
-      this.#installed = undefined;
-      throw error;
-    });
     // The store opens while the registry installs: a new thread's store opens cold in about
     // 0.3 s (live probe P2), and neither waits on the other.
     const [installing, opening] = await Promise.allSettled([
-      this.#installed, RemoteStorage.open(() => this.#parts.stores(row.store))]);
+      this.#ready(), RemoteStorage.open(() => this.#parts.stores(row.store))]);
     if (installing.status === "rejected") {
       if (opening.status === "fulfilled") {
         await opening.value.close(BG);
@@ -621,6 +668,32 @@ export class OwnerAgent {
     return { pi, storage };
   }
 
+  /** The registry installed, once per instance (again after an install that failed). */
+  #ready(): Promise<void> {
+    this.#installed ??= this.#install().catch((error: unknown) => {
+      this.#installed = undefined;
+      throw error;
+    });
+    return this.#installed;
+  }
+
+  /**
+   * The owner's own input as pi's `prompt` expands it (`Resources.expand`): `/skill:name
+   * args` and `/template args`, at the doors; anything else as typed.
+   */
+  async expand(text: string): Promise<string> {
+    if (!text.startsWith("/")) {
+      return text;
+    }
+    await this.#ready();
+    return this.resources.expand(text);
+  }
+
+  /** The owner's policy was written: its package selection may have moved. */
+  policyChanged(): void {
+    this.resources.selectionChanged();
+  }
+
   /** The model source's compaction settings, when it has any. */
   #compaction(): Pick<HarnessSettings, "compaction"> {
     const compaction = this.#source.compaction;
@@ -657,10 +730,15 @@ export class OwnerAgent {
         authority: this.#parts.authority, platform: this.#parts.platform,
         write: this.#parts.write,
         state: (api, context) => api.snapshot(this.authority, api.conversationId, context),
+        delegate: (state, delegation, api, context) =>
+          this.#delegate(state, delegation, api, context),
       })],
     }));
     this.#registry.install(defineExtension({ name: SCHEDULED_EXTENSION,
                                              tasks: [this.#scheduled] }));
+    // The skills section, built from the owner's files and installed in place here; its
+    // rebuilds install it again under its name, where it is.
+    await this.resources.ready();
     for (const extension of this.#source.trusted ?? []) {
       this.#registry.install(extension);
     }
@@ -675,13 +753,107 @@ export class OwnerAgent {
         if (refused !== undefined) {
           throw new Error(refused);
         }
-        this.#registry.install(snapshot);
+        this.#registry.install(this.#gated(snapshot));
       } catch (error) {
         const why = error instanceof Error ? error.message : String(error);
         await this.#parts.write(() => this.#parts.notices.once(
           "extension_skipped", `${name}: ${why}`, Date.now() / 1000));
       }
     }
+  }
+
+  /**
+   * `ta`'s `agent:delegate`: a subagent of the calling conversation (`delegate.ts`), made or
+   * found again in the call's own commit, configured as the agent named (its `AGENTS.md`) or
+   * as the caller, given `task` as its one input and waited on. Under the caller's
+   * authority, which must hold `run_graph` where the caller acts (`ta`'s gate and its own
+   * check) and, with an agent named, where that agent acts, so a scoped client delegates
+   * only to an agent it may run. What the input's admission checks is asked first, in the
+   * commit that would make the child, so a refused delegation leaves nothing; the input is
+   * then admitted as a door's (`ThreadHost.linked`), in a unit that re-checks the stamp
+   * (its generation: a grant's scopes move with it) and refuses it when the call's turn has
+   * no row; once
+   * answered, the child's lingering work (a background compaction) is ended, so the thread's
+   * live conversations stay within their cap. Its answer: the child's conversation, and its
+   * text, or why it went unanswered.
+   */
+  async #delegate(state: Readonly<AuthorityState> | undefined, delegation: Delegation,
+                  api: ToolExecutionApi, context: Context): Promise<unknown> {
+    const thread = threadOf(context.telemetry);
+    if (thread === undefined) {
+      throw new Error("a delegation runs in a thread's Session");
+    }
+    const turn = turnOf(context.telemetry);
+    const named = delegation.agent === undefined ? null : agentId(delegation.agent);
+    const there: Readonly<AuthorityState> | undefined = named === null
+      || state?.by !== "client" ? state : { by: "client", stamp: { ...state.stamp, agent: named } };
+    const { authority, write } = this.#parts;
+    authority.require(there, ["run_graph"]);
+    const instructions = named === null ? null : (await this.#parts.config(named)).instructions;
+    // What the child's admission will check, asked before it is made (never on a rerun,
+    // which finds it): a delegation refused leaves no conversation behind.
+    const room = () => {
+      this.host.linkedRoom(thread);
+      const ended = this.#parts.joined(turn);
+      if (ended !== null) {
+        throw new Refused(ended);
+      }
+    };
+    const child = await api.commit((tx) => createChild(tx, api.taskId, instructions,
+                                                       this.delegations, room), context);
+    await api.details({ conversation_id: Number(child) }, context);
+    const handle = await api.conversation(child, context);
+    if (handle === undefined) {
+      throw new Error("a subagent's conversation is gone");
+    }
+    const requestId = subagentRequest(api.taskId);
+    const submission = await this.host.linked(thread, { conversation: child, requestId },
+      () => write(() => {
+        // The caller's stamp still standing at its generation: a grant's scopes move only
+        // with its generation, so where the named agent acts holds as it held above.
+        authority.require(state, ["run_graph"]);
+        const ended = this.#parts.joined(turn);
+        if (ended !== null) {
+          throw new Refused(ended);
+        }
+      }),
+      () => handle.submit({ type: "input", content: delegation.task, requestId }, context));
+    const settled = await submission.wait(context);
+    await handle.abort(context, { background: true });
+    if (settled.status === "unanswered") {
+      return { conversation_id: Number(child), status: "unanswered", reason: settled.reason };
+    }
+    const answer = settled.type !== "input" ? undefined
+      : await this.host.use(thread, ({ storage }) => storage.entry(settled.answer, context));
+    return { conversation_id: Number(child), status: "done",
+             text: assistantText(answer?.entry) };
+  }
+
+  /**
+   * A package's tools, each passing the early gate again as it executes (`Authority.decide`,
+   * its refusal receipted): pi's recovery runs no hook, so a replay-safe tool `ta` reached
+   * that a restart cut off is held to the conversation's authority as it stands when it
+   * reruns, as on its first run.
+   */
+  #gated(extension: Extension): Extension {
+    if (extension.tools === undefined) {
+      return extension;
+    }
+    return Object.freeze(defineExtension({
+      ...extension,
+      tools: Object.freeze(extension.tools.map((tool): ToolRegistration => Object.freeze({
+        ...tool,
+        execute: async (args: never, api: ToolExecutionApi, context: Context) => {
+          const state = await api.snapshot(this.authority, api.conversationId, context);
+          const blocked = await this.#parts.authority.decide(state, { name: tool.name,
+                                                                       arguments: args });
+          if (blocked !== undefined) {
+            throw new Refused(blocked.block);
+          }
+          return tool.execute(args, api, context);
+        },
+      }))),
+    }));
   }
 
   /**
@@ -700,13 +872,14 @@ export class OwnerAgent {
   }
 
   /**
-   * In a change's own unit: the owner's agent definitions change only under the owner's own
-   * authority, and the owner is told each time its agent changes them, since content another
-   * party wrote elsewhere can steer the agent (Direction 3 lets it write there). A refused
-   * change leaves no notice.
+   * In a change's own unit: the owner's agent definitions (`OWNER_TREES`: its agents'
+   * files, skills, templates and packages) change only under the owner's own authority, and
+   * the owner is told each time its agent changes them, since content another party wrote
+   * elsewhere can steer the agent (Direction 3 lets it write there). A refused change leaves
+   * no notice.
    */
   #definitions(state: Readonly<AuthorityState> | undefined, path: string): void {
-    if (!within(path, AGENTS_DIR)) {
+    if (!ownersOnly(path)) {
       return;
     }
     if (state?.by !== "owner") {
@@ -858,7 +1031,8 @@ export class OwnerAgent {
         throw error;
       }
       if (error instanceof Refused
-          && (error.message === THREAD_INPUTS_FULL || error.message === SESSIONS_FULL)) {
+          && (error.message === THREAD_INPUTS_FULL || error.message === SESSIONS_FULL
+              || refusalCode(error.message) === WORKING)) {
         return { kind: "held", reason: refusalCode(error.message) };
       }
       if (error instanceof Refused
@@ -1366,11 +1540,11 @@ export function gatewayModels(parts: AgentParts): (session: SessionBinding) => M
 
 /**
  * The production agent: pi on the object's `gateway` provider, the one model source, with
- * no packages beyond the object's own (`packages` are a test's) and no trusted extension
- * (the ta guard holds `trusted` to `AgentSource` and `#install`).
+ * no extensions beyond the object's own (a package is data, `resources.ts`) and no trusted
+ * extension (the ta guard holds `trusted` to `AgentSource` and `#install`).
  */
-export function gatewayAgent(parts: AgentParts, packages: readonly Extension[] = []): OwnerAgent {
-  return new OwnerAgent(parts, { ...gatewaySource(parts), packages });
+export function gatewayAgent(parts: AgentParts): OwnerAgent {
+  return new OwnerAgent(parts, { ...gatewaySource(parts), packages: [] });
 }
 
 /**

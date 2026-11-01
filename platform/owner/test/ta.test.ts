@@ -182,8 +182,9 @@ describe("the model's tools", () => {
                      callable: root.callable.some((offered) => offered.name === "ta") } };
     });
     expect(MODEL_TOOLS).toEqual(FIVE);
-    // ta is the model's alone (no nested call reaches it) and never runs twice.
-    expect(out.ta).toEqual({ callers: ["model"], replay: "unsafe", callable: false });
+    // ta is the model's alone (no nested call reaches it), and replay-safe by its own rule:
+    // only its reads and a delegation run twice (A5).
+    expect(out.ta).toEqual({ callers: ["model"], replay: "safe", callable: false });
     expect(out.offered).toEqual({ root: FIVE, thread: FIVE, subagent: FIVE, fork: FIVE });
     // Every request any of them made offered the five, in that order, and nothing else.
     expect(out.requests.length).toBeGreaterThanOrEqual(8);
@@ -229,16 +230,18 @@ describe("ta's catalog", () => {
                                                       await threadFor(instance, null)));
     const names = page.capabilities.map((entry: { name: string }) => entry.name);
     expect(names).toEqual(["policy:show", "policy:propose", "wake:list", "files:usage", "model",
-                           "agent:run", "hold", "fork", "nest", "spawn", "background", "widen",
-                           "weather_lookup", "pass"]);
+                           "agent:run", "agent:delegate", "hold", "safe_hold", "fork", "nest",
+                           "spawn",
+                           "background", "widen", "weather_lookup", "pass"]);
     expect(page.total).toBe(names.length);
     expect(page.next_offset).toBeUndefined();
     const of = (name: string) => page.capabilities.find((entry: { name: string }) =>
       entry.name === name);
     expect([of("policy:show").effect, of("policy:propose").effect, of("wake:list").effect,
             of("files:usage").effect, of("model").effect, of("agent:run").effect,
-            of("hold").effect])
-      .toEqual([false, true, false, false, true, true, true]);
+            of("agent:delegate").effect, of("hold").effect])
+      .toEqual([false, true, false, false, true, true, true, true]);
+    expect(of("agent:delegate").parameters.required).toEqual(["task"]);
     expect(of("weather_lookup").deferred).toBe(true);
     expect(of("hold").deferred).toBeUndefined();
     for (const entry of page.capabilities) {
@@ -269,11 +272,11 @@ describe("ta's catalog", () => {
     expect(names(out.policy).slice(0, 2).sort()).toEqual(["policy:propose", "policy:show"]);
     expect(out.nothing).toEqual({ capabilities: [], total: 0 });
     expect([names(out.first), out.first.total, out.first.next_offset]).toEqual([
-      ["policy:show", "policy:propose", "wake:list", "files:usage", "model"], 14, 5]);
+      ["policy:show", "policy:propose", "wake:list", "files:usage", "model"], 16, 5]);
     expect([names(out.second), out.second.next_offset])
-      .toEqual([["agent:run", "hold", "fork", "nest", "spawn"], 10]);
+      .toEqual([["agent:run", "agent:delegate", "hold", "safe_hold", "fork"], 10]);
     expect([names(out.last), out.last.next_offset])
-      .toEqual([["background", "widen", "weather_lookup", "pass"], undefined]);
+      .toEqual([["nest", "spawn", "background", "widen", "weather_lookup"], 15]);
   });
 
   it("lists to a scoped client only what its grant reaches, and to a full one all but the " +
@@ -303,8 +306,9 @@ describe("ta's catalog", () => {
     expect(out.usage).toEqual({ text: blocked(NOT_GRANTED), error: true });
     expect(out.fullShows).toEqual({ text: blocked(NOT_OWNER), error: true });
     expect(names(out.full)).toEqual(["policy:propose", "wake:list", "files:usage", "model",
-                                     "agent:run", "hold", "fork", "nest", "spawn", "background",
-                                     "widen", "weather_lookup", "pass"]);
+                                     "agent:run", "agent:delegate", "hold", "safe_hold",
+                                     "fork", "nest",
+                                     "spawn", "background", "widen", "weather_lookup", "pass"]);
   });
 });
 
@@ -537,8 +541,8 @@ describe("ta's own check in execute", () => {
   it("classifies a capability an effect unless it is named a read", () => {
     expect(["ta:catalog", "policy:show", "wake:list", "files:usage"].map(kindOf))
       .toEqual(["read", "read", "read", "read"]);
-    expect(["policy:propose", "model", "agent:run", "anything:new"].map(kindOf))
-      .toEqual(["effect", "effect", "effect", "effect"]);
+    expect(["policy:propose", "model", "agent:run", "agent:delegate", "anything:new"]
+      .map(kindOf)).toEqual(["effect", "effect", "effect", "effect", "effect"]);
     expect(READ_WRITES).toBe("a read capability writes nothing");
   });
 });
@@ -850,7 +854,7 @@ describe("packages and names (review L1, L2, L3)", () => {
                                                       await threadFor(instance, null)));
     expect(page.capabilities.slice(0, PLATFORM_NAMES.length)
       .map((entry: { name: string }) => entry.name)).toEqual(PLATFORM_NAMES);
-    expect(PLATFORM_NAMES).toHaveLength(6);
+    expect(PLATFORM_NAMES).toHaveLength(7);
   });
 
   it("refuses a call that carries a catalog field, a name that is not text and arguments " +
@@ -869,7 +873,7 @@ describe("packages and names (review L1, L2, L3)", () => {
     expect(out.extra).toEqual({ text: threw(INVALID_REQUEST), error: true });
     expect(out.stringName.error).toBe(true);
     expect(out.nullArgs.error).toBe(true);
-    expect(out.past).toEqual({ capabilities: [], total: 14 });
+    expect(out.past).toEqual({ capabilities: [], total: 16 });
   });
 });
 

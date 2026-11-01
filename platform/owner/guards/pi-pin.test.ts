@@ -54,6 +54,6 @@ describe("pi pin guard", () => {
     expect(owner.devDependencies[name]).toBe(VERSION);
     expect(lock.packages["owner"]!.devDependencies![name]).toBe(VERSION);
     // The one minor agents supports (its `~1.4.0` peer range) holds the pinned version.
-    expect(lock.packages["node_modules/agents"]!.peerDependencies![name]).toBe("~1.4.0");
+    expect(lock.packages["owner/node_modules/agents"]!.peerDependencies![name]).toBe("~1.4.0");
   });
 });

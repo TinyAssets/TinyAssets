@@ -217,6 +217,11 @@ class OriginSpan implements TelemetrySpan {
     return this.#adapter;
   }
 
+  /** The thread whose Session this context is in. */
+  get thread(): string {
+    return this.#adapter.thread;
+  }
+
   /** This context's origin, or undefined for the root and a context that has none. */
   origin(): string | undefined {
     return this.#resolve();
@@ -406,6 +411,18 @@ export function turnOf(telemetry: unknown): string {
     throw new Error(NO_RUN);
   }
   return origin;
+}
+
+/**
+ * The thread whose Session a telemetry context pi gives a tool is in (`context.telemetry`):
+ * each Session's adapter is its thread's (`originRoot`). Undefined for any other context.
+ */
+export function threadOf(telemetry: unknown): string | undefined {
+  try {
+    return telemetry instanceof OriginSpan ? telemetry.thread : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** A context of origin `origin` in `thread`'s Session, as a stored carrier extracts to (tests). */
