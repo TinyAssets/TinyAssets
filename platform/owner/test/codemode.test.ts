@@ -160,6 +160,8 @@ describe("code mode", () => {
     const out = await r.in(async (instance) => ({
       scoped: await asked(instance, "CODE text('hi')", scoped),
       full: await asked(instance, "CODE text('hi')", full),
+      // Refused at ta itself, before it runs: no later hook saw a ta call.
+      gated: instance.probes.gated.map((call) => call.name),
       listed: await asked(instance, `TA ${JSON.stringify({ op: "catalog", limit: 100 })}`,
                           scoped),
       owner: await asked(instance, "CODE text('hi')"),
@@ -170,6 +172,7 @@ describe("code mode", () => {
     expect(out.full).toEqual({ error: true, text: expect.stringContaining(
       `Tool call blocked: ${NOT_GRANTED}`) });
     expect(out.listed.text).not.toContain("\"codemode\"");
+    expect(out.gated).toEqual([]);
     expect(out.owner).toEqual({ error: false, text: expect.stringContaining("hi") });
     expect(out.codemodes).toBe(1);
   });

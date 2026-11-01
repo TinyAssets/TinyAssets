@@ -441,8 +441,9 @@ export function hookExtension(parts: HookParts, bundle: Bundle, hooks: PackageHo
   };
   /**
    * The decision for `point` at `key`: the memo's, else the hook's reply as `decide` reads
-   * it, memoized, the durable winner. Any error, the memo's included, is `failure`'s
-   * decision, memoized when the memo still takes it.
+   * it, memoized, the durable winner. An error before the store (the memo's read among them)
+   * is `failure`'s decision, memoized when the memo still takes it; a store that fails
+   * rejects, which the point's `total` makes its failure.
    */
   const decision = async (point: string, key: string, entry: HookEntry, input: unknown,
                           api: HookApi, context: Context, callId: string | undefined,
@@ -474,11 +475,8 @@ export function hookExtension(parts: HookParts, bundle: Bundle, hooks: PackageHo
         return made;  // the failure's decision stands, kept or not
       }
     }
-    try {
-      return await api.memo<JsonObject>(name, made, context);
-    } catch (error) {
-      return failure(failed(point, error));
-    }
+    // A store that fails rejects here, which the point's `total` makes its failure.
+    return api.memo<JsonObject>(name, made, context);
   };
   /** `run`'s answer, or `fallback`'s on any error, with its notice: never a throw. */
   const total = async <T>(point: string, fallback: (message: string) => T,

@@ -692,6 +692,28 @@ describe("the remote wrappers' rules", () => {
       expect(redacting.notices).toEqual([`${HOOK_FAILED} pkg:p afterTool: threw`]);
     });
 
+  it("fails closed, and blocks, on an error before any decision is asked", async () => {
+    const { parts, asked } = fake([{ ok: true, result: null }]);
+    const hooks = tools(parts);
+    // A result pi could never hand a hook: its output is no list.
+    const broken = { output: 7 } as unknown as ToolExecutionResult;
+    expect(await piKeeps(async (call, _result, memo, context) =>
+      hooks.afterTool(call, broken, memo, context), api())).toEqual(failedClosed("pkg:p"));
+    const throwing = Object.defineProperty({ ...CALL }, "name", {
+      get: () => { throw new Error("no name"); } }) as typeof CALL;
+    expect(await hooks.beforeTool(throwing, api(), ctx)).toEqual({ block: expect.stringContaining(
+      `${HOOK_FAILED_CODE}: pkg:p: no name`) });
+    expect(asked).toEqual([]);
+  });
+
+  it("keeps the failure a failed memo read decided, so a rerun replays it", async () => {
+    const { parts, asked } = fake([{ ok: true, result: null }]);
+    const memo = api("reject-read");
+    expect(await tools(parts).afterTool(CALL, RESULT, memo, ctx)).toEqual(failedClosed("pkg:p"));
+    expect([...memo.memos.values()]).toEqual([{ result: failedClosed("pkg:p") }]);
+    expect(asked).toEqual([]);  // no hook asked once the read failed
+  });
+
   it("never fails an afterTool hook open when the notice itself throws", async () => {
     const { parts } = fake([{ ok: false, error: "threw" }]);
     const throwing: HookParts = { ...parts, notice: () => { throw new Error("gate closed"); } };
