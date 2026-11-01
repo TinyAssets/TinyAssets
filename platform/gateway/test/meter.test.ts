@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { calculateCost } from "@earendil-works/pi-ai/models";
 
-import { apiRules, manyChoices, paidTool } from "../src/api-rules";
+import { apiRules, fallbackList, manyChoices, paidTool } from "../src/api-rules";
 import { builtinCatalog } from "../src/catalog";
 import { meteredCall } from "../src/credential";
 import { clamped, describes, learnMeter, meteredModel, meteredRecord, meteredUsage } from "../src/meter";
@@ -218,6 +218,47 @@ describe("the reviewer's escapes, closed (review round 2)", () => {
     expect(describes(rules, ["max_output"], pi)).toBe(false);
   });
 
+  it("prices a dated snapshot the catalog does not list as the concrete model it was asked " +
+     "for, and records it; a router's or a fallback list's stays unknown", async () => {
+    const catalog = builtinCatalog();
+    const usage = { input: 200_000, output: 50_000, cacheRead: 0, cacheWrite: 0,
+                    totalTokens: 250_000,
+                    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+    const [named] = catalog.provider("groq")!.getModels()
+      .filter((model) => model.api === "openai-completions" && model.cost.output > 0);
+    const record = meteredRecord(catalog, GROQ, named!.id)!;
+    const snapshot = `${named!.id}-2026-01-01`;
+    expect(meteredRecord(catalog, GROQ, snapshot)).toBeNull();
+    // A concrete, priced model, answered by its dated snapshot: the named model's price.
+    const dated = await meteredUsage(catalog, GROQ, "gsk-x", record, 200, SSE,
+                                     streamOf(completion(snapshot, BIG)));
+    expect(dated).toEqual({ tokens: 250_000, cost: calculateCost(record, usage).total,
+                            served: snapshot });
+    // The same answer to a call that listed fallbacks: what served it is not known to cost
+    // what the named model costs.
+    expect(await meteredUsage(catalog, GROQ, "gsk-x", record, 200, SSE,
+                              streamOf(completion(snapshot, BIG)), true)).toBeNull();
+    // A zero-priced router served by an unlisted model stays unknown.
+    const router = meteredRecord(catalog, OPENROUTER, "openrouter/auto")!;
+    expect(await meteredUsage(catalog, OPENROUTER, "sk-or-x", router, 200, SSE,
+                              streamOf(completion("someone/unlisted", BIG)), false)).toBeNull();
+    // A served model the catalog lists: the dearer of the two, its id recorded.
+    const listed = catalog.provider("openrouter")!.getModels()
+      .filter((model) => model.api === "openai-completions" && model.cost.output > 0)
+      .sort((a, b) => a.cost.output - b.cost.output);
+    const [cheap, dear] = [listed[0]!, listed.at(-1)!];
+    const priced = await meteredUsage(catalog, OPENROUTER, "sk-or-x",
+                                      meteredRecord(catalog, OPENROUTER, cheap.id)!, 200, SSE,
+                                      streamOf(completion(dear.id, BIG)), true);
+    expect(priced).toMatchObject({ served: dear.id });
+    expect(priced!.cost).toBeCloseTo(calculateCost(meteredRecord(catalog, OPENROUTER, dear.id)!,
+                                                   usage).total, 9);
+    // The named model answering as itself records nothing.
+    expect(await meteredUsage(catalog, GROQ, "gsk-x", record, 200, SSE,
+                              streamOf(completion(named!.id, BIG))))
+      .toEqual({ tokens: 250_000, cost: calculateCost(record, usage).total });
+  });
+
   it("clamps every output-cap alias the API reads, and refuses several choices", async () => {
     const catalog = builtinCatalog();
     const meter = (await learnMeter(catalog, GROQ, "gsk-x"))!;
@@ -228,6 +269,10 @@ describe("the reviewer's escapes, closed (review round 2)", () => {
     expect(sent[other]).toBe(1_000);
     expect(clamped(meter, { model: "m" }, 1_000, "openai-completions")[other]).toBeUndefined();
     const completions = apiRules("openai-completions")!;
+    expect(fallbackList(completions, { models: ["a", "b"] })).toBe(true);
+    expect(fallbackList(completions, { models: [] })).toBe(false);
+    expect(fallbackList(completions, { model: "a" })).toBe(false);
+    expect(fallbackList(apiRules("anthropic-messages")!, { models: ["a"] })).toBe(false);
     expect(manyChoices(completions, { n: 8 })).toBe(true);
     expect(manyChoices(completions, { n: 1 })).toBe(false);
     expect(manyChoices(completions, {})).toBe(false);

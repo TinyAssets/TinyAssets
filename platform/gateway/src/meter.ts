@@ -52,10 +52,12 @@ function context(): Context {
 }
 
 
-/** The usage pi-ai read from the answer: tokens and dollars. */
+/** The usage pi-ai read from the answer: tokens, dollars, and the model the answer named. */
 export interface Metered {
   readonly tokens: number;
   readonly cost: number;
+  /** The served model's id, when the answer named one other than the request's. */
+  readonly served?: string;
 }
 
 /** Every key path in `value` whose leaf is exactly `mark`. */
@@ -254,13 +256,16 @@ type AssistantUsage = Extract<AssistantMessageEvent, { type: "done" }>["message"
  * The usage pi-ai reads from a 2xx answer's body (`status` and `headers` as the provider
  * sent them), priced at the dearer of `model` (the one the request named) and the model
  * the answer says served it: tokens and dollars, or null for anything pi-ai cannot read
- * to its end, a `done` with no usage, a served model the catalog does not price, or a
- * model priced at nothing that names no other model it served.
+ * to its end or a `done` with no usage. A served model the catalog does not price (a
+ * provider's dated snapshot of the named model, most often) is settled at the named
+ * model's price when that one is concrete: priced in the catalog and named alone, not a
+ * `fallbacks` list; else null. A model priced at nothing that names no other is null.
  */
 export async function meteredUsage(catalog: Catalog, upstream: Upstream, apiKey: string,
                                    model: Model<Api>,
                                    status: number, headers: Headers,
-                                   body: ReadableStream<Uint8Array>): Promise<Metered | null> {
+                                   body: ReadableStream<Uint8Array>,
+                                   fallbacks = false): Promise<Metered | null> {
   let handed = false;
   const replay: FetchFunction = async () => {
     if (handed) {
@@ -285,18 +290,22 @@ export async function meteredUsage(catalog: Catalog, upstream: Upstream, apiKey:
   }
   const served = last.message.responseModel;
   const named = costOn(model, usage);
+  const free = model.cost.input === 0 && model.cost.output === 0;
   let cost = named;
-  if (typeof served === "string" && served !== "" && served !== model.id) {
+  const other = typeof served === "string" && served !== "" && served !== model.id;
+  if (other) {
     const record = meteredRecord(catalog, upstream, served);
-    if (record === null) {
-      return null;
+    if (record !== null) {
+      cost = Math.max(named, costOn(record, usage));
+    } else if (free || fallbacks) {
+      return null;  // a router or a fallback list served something the catalog does not price
     }
-    cost = Math.max(named, costOn(record, usage));
-  } else if (served !== model.id && model.cost.input === 0 && model.cost.output === 0) {
+    // Else a concrete named model served by a snapshot the catalog does not list: its price.
+  } else if (served !== model.id && free) {
     return null;  // a router priced at nothing, with no word of what it served
   }
   if (!Number.isFinite(cost) || cost < 0) {
     return null;
   }
-  return Object.freeze({ tokens: usage.totalTokens, cost });
+  return Object.freeze({ tokens: usage.totalTokens, cost, ...(other ? { served } : {}) });
 }

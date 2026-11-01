@@ -26,7 +26,7 @@ import type { ModelRecord } from "./model-record";
 import { type Code, codeOf, Failure, failureResponse, upstreamCode } from "./failure";
 import { nativeFetch } from "./egress";
 import { boundedText } from "./messages";
-import { apiRules, manyChoices, paidTool } from "./api-rules";
+import { apiRules, fallbackList, manyChoices, paidTool } from "./api-rules";
 import { clamped, learnMeter, meteredModel, meteredRecord, meteredUsage } from "./meter";
 import { type Binding, type KeyringEnv, open, type Opened, type Resealed } from "./keyring";
 
@@ -172,7 +172,8 @@ export interface Metering {
 
 /** How a metered call ended, as the owner's object settles it. */
 export type MeterOutcome =
-  | { readonly state: "succeeded"; readonly tokens: number; readonly cost: number }
+  | { readonly state: "succeeded"; readonly tokens: number; readonly cost: number;
+      readonly served?: string }
   | { readonly state: "failed" }
   | { readonly state: "unknown" };
 
@@ -248,6 +249,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   let body: BodyInit | null = request.method === "GET" || request.method === "HEAD"
     ? null : request.body;
   let model: Model<Api> | null = null;
+  let listed = false;
   if (metered !== null) {
     const { metering, catalog } = metered;
     // Only pi-ai's own model call for the sealed API is metered; nothing else is read.
@@ -293,6 +295,7 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     if (paidTool(rules, parsed)) {
       return refused("egress_unmetered_tool", resealed);
     }
+    listed = fallbackList(rules, parsed);
     body = JSON.stringify(clamped(meter, parsed as Record<string, unknown>,
                                   metering.max_output_tokens, credential.upstream.api));
   }
@@ -346,9 +349,10 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
       source = toCaller;
       outcome = meteredUsage(metered.catalog, credential.upstream, bearer(credential), model,
                              upstream.status,
-                             new Headers(upstream.headers), toMeter)
+                             new Headers(upstream.headers), toMeter, listed)
         .then((usage): MeterOutcome => (usage === null ? UNKNOWN
-          : { state: "succeeded", tokens: usage.tokens, cost: usage.cost }), () => UNKNOWN);
+          : { state: "succeeded", tokens: usage.tokens, cost: usage.cost,
+              ...(usage.served === undefined ? {} : { served: usage.served }) }), () => UNKNOWN);
     }
   }
   // The caller's cancel ends the provider's request too, whatever else reads the answer.

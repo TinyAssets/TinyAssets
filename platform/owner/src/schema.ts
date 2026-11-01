@@ -1497,6 +1497,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "est_tokens >= 0), est_cost INTEGER CHECK (est_cost IS NULL OR est_cost >= 0), " +
       "tokens INTEGER CHECK (tokens IS NULL OR tokens >= 0), " +
       "cost INTEGER CHECK (cost IS NULL OR cost >= 0), day TEXT, month TEXT, " +
+      "served TEXT CHECK (served IS NULL OR (length(served) BETWEEN 1 AND 256 " +
+      "AND served NOT GLOB '*[^!-~]*')), " +
       "connection_id TEXT NOT NULL CHECK (length(connection_id) = 25), version INTEGER, " +
       "method TEXT NOT NULL CHECK (length(method) BETWEEN 1 AND 7), " +
       "path TEXT NOT NULL CHECK (length(path) BETWEEN 1 AND 2048 AND " +

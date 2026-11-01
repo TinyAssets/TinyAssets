@@ -364,10 +364,10 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
   egress_reservations: { rows: EGRESS_LIMITS.receiptsKept + EGRESS_LIMITS.refusalsKept
                                 + EGRESS_LIMITS.open,
                          bytes: ROW + EGRESS_PATH_MAX + 32 + 32 + 64 + 64 + 9 + 64 + 10 + 7
-                           + 25 + 7 + 64 + 30 + 16 * 8,
+                           + 256 + 25 + 7 + 64 + 30 + 16 * 8,
                          by: "receiptsKept admitted, refusalsKept refused and open at once, " +
                            "each its path (visible ASCII, a byte a character), ids, source, " +
-                           "charge, rule, periods and numbers" },
+                           "charge, rule, periods, served model and numbers" },
   egress_runs: { rows: EGRESS_LIMITS.open + 1, bytes: ROW + 32 + 4 * 8,
                  by: "the live lease's run, and one for each run an open call still holds" },
   model_turns: { rows: TURN_OWNERS, bytes: ROW + TURN_BYTES + THREAD_ID,

@@ -514,7 +514,9 @@ account and no deploy.
   bills beyond tokens (a web search, code execution, a hosted MCP connector, a plugin) is
   refused `egress_unmetered_tool`, by each API's data (`gateway/src/api-rules.ts`), so the
   charge bounds what the call can cost and the settle gives the difference back; refused
-  below 1,024 output tokens. An endpoint pi-ai cannot meter
+  below 1,024 output tokens. With the defaults about four calls are held at once under a
+  run's cost cap: fail-closed, and CLIs mostly call one after another; **owed to 8b's live
+  measurement** of each CLI's real concurrency. An endpoint pi-ai cannot meter
   is refused, since a run's caps are always set (the stricter of the two rules). Then the
   gateway's `EgressGateway.forward`, **metered** (`gateway/src/meter.ts`): pi-ai's adapter
   for the sealed API, run once against a fetch of ours (no network, the credential's own
@@ -527,8 +529,11 @@ account and no deploy.
   answer with none (zero tokens) is `unknown`. The usage is priced at the dearer of the
   model the call named and the model the answer says served it (pi-ai's
   `responseModel`), so a router (`openrouter/auto`) or a fallback list never settles
-  cheaper than what served; a served model the catalog does not price is `unknown`, and
-  so is a model priced at nothing that names no other. The outcome comes back on a second
+  cheaper than what served. A served id the catalog does not list (most often a dated
+  snapshot of the named model) is settled at the named model's price when that one is
+  concrete (priced in the catalog, and the call listed no fallbacks), the served id kept on
+  the receipt; for a zero-priced router or a fallback list it is `unknown`. A model priced
+  at nothing that names no other is `unknown` too. The outcome comes back on a second
   stream. With no metering (a read) it forwards `GET` and `HEAD` alone
   (`forwardRead`). The answer streams through as the provider writes it (SSE unbuffered,
   but the redaction's hold-back of a secret's length less one). Then `egressSettle` once on

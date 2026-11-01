@@ -543,6 +543,15 @@ describe("the spend caps", () => {
     expect((await failure(() => r.stub.egressSettle(lease.as(), settle(refused.reservation, {
       spend: { state: "succeeded", tokens: -1, cost: 1 } })))).message)
       .toBe("invalid egress settle");
+    // The model the answer says served it is kept on the receipt.
+    const snapshot = await admitted(r, lease, connection);
+    await r.stub.egressSettle(lease.as(), settle(snapshot.reservation, {
+      spend: { ...DONE, served: "model-x-2026-01-01" } }));
+    expect((await r.stub.egressReceipts(r.bind())).receipts[0])
+      .toMatchObject({ reservation: snapshot.reservation, charge: "succeeded",
+                       served: "model-x-2026-01-01" });
+    expect((await failure(() => r.stub.egressSettle(lease.as(), settle(snapshot.reservation, {
+      spend: { ...DONE, served: "a b" } })))).message).toBe("invalid egress settle");
     // A settled charge never moves again.
     await expect(r.sql("UPDATE egress_reservations SET charge = 'held' WHERE charge = 'failed'"))
       .rejects.toThrow(/settled once/);

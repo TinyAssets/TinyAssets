@@ -17,7 +17,8 @@
  * - Groq's chat completions (`api.groq.com/openai/v1/chat/completions`), for the egress
  *   door: `401` but for a bearer key starting `gsk-good`; else, by `x-fake-egress`, three
  *   SSE chunks (`stream`, the default, `EGRESS_CHUNKS`), the same without the usage chunk
- *   (`nousage`), a `429` (`busy`), or one chunk and
+ *   (`nousage`), the same from a dated snapshot of the named model (`snapshot`), a `429`
+ *   (`busy`), or one chunk and
  *   then a stream held
  *   open, an SSE comment every 50 ms for at most 10 s, until its reader cancels it
  *   (`slow-<id>`; the cancel is recorded, read back from
@@ -46,7 +47,7 @@ export const EGRESS_CHUNKS: readonly string[] = Object.freeze([
   "data: [DONE]\n\n",
 ]);
 
-function completions(request: Request): Response {
+async function completions(request: Request): Promise<Response> {
   if (!bearer(request).startsWith("gsk-good")) {
     return Response.json({ error: { message: `invalid key ${bearer(request)}` } }, { status: 401 });
   }
@@ -57,6 +58,13 @@ function completions(request: Request): Response {
   }
   const encoder = new TextEncoder();
   const headers = { "content-type": "text/event-stream", "x-upstream": "fake" };
+  if (mode === "snapshot") {
+    // Answered by a dated snapshot of the model the call named, as providers often answer.
+    const { model } = await request.json<{ model: string }>();
+    return new Response(EGRESS_CHUNKS.map((chunk) => chunk.replace(
+      /^data: \{"id":"c1",/, `data: {"id":"c1","model":"${model}-2026-01-01",`)).join(""),
+                        { headers });
+  }
   if (mode === "nousage") {
     // What a provider streams when the call did not ask for its usage report.
     return new Response(EGRESS_CHUNKS.filter((chunk) => !chunk.includes("\"usage\"")).join(""),

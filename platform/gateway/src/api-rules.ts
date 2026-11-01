@@ -12,6 +12,8 @@
  * - `usage`: the fields that make a streamed answer report its usage, set when the call
  *   streams (`stream`, the body's own flag; none for an API whose path streams). pi-ai's own
  *   streaming call must carry each, at the same value.
+ * - `fallbacks`: where a request lists other models that may serve it (a fallback list),
+ *   so its answer's served model is the only word of what it cost.
  * - `tools` and `paid`: what a client-side tool looks like (its list, and its kind field's
  *   allowed values, or the keys a tool entry may hold), and the top-level fields that enable
  *   a server-side tool the provider bills beyond tokens. A call enabling one, which pi-ai's
@@ -31,6 +33,8 @@ export interface ApiRules {
     readonly keys?: readonly string[];
   };
   readonly paid: readonly (readonly string[])[];
+  /** The fields a request lists fallback models in, any one of which may serve it. */
+  readonly fallbacks: readonly (readonly string[])[];
 }
 
 const COMPLETIONS: ApiRules = Object.freeze({
@@ -41,6 +45,7 @@ const COMPLETIONS: ApiRules = Object.freeze({
   tools: Object.freeze({ list: Object.freeze(["tools"]),
                          kind: Object.freeze({ field: "type", allowed: Object.freeze(["function"]) }) }),
   paid: Object.freeze([Object.freeze(["web_search_options"]), Object.freeze(["plugins"])]),
+  fallbacks: Object.freeze([Object.freeze(["models"])]),
 });
 
 const RESPONSES: ApiRules = Object.freeze({
@@ -52,6 +57,7 @@ const RESPONSES: ApiRules = Object.freeze({
                          kind: Object.freeze({ field: "type",
                                                allowed: Object.freeze(["function", "custom"]) }) }),
   paid: Object.freeze([]),
+  fallbacks: Object.freeze([]),
 });
 
 const GOOGLE: ApiRules = Object.freeze({
@@ -62,6 +68,7 @@ const GOOGLE: ApiRules = Object.freeze({
   tools: Object.freeze({ list: Object.freeze(["tools"]),
                          keys: Object.freeze(["functionDeclarations"]) }),
   paid: Object.freeze([]),
+  fallbacks: Object.freeze([]),
 });
 
 const ANTHROPIC: ApiRules = Object.freeze({
@@ -73,6 +80,7 @@ const ANTHROPIC: ApiRules = Object.freeze({
                          kind: Object.freeze({ field: "type",
                                                allowed: Object.freeze([null, "custom"]) }) }),
   paid: Object.freeze([Object.freeze(["mcp_servers"])]),
+  fallbacks: Object.freeze([]),
 });
 
 /** Mistral's chat completions: as OpenAI's, but its stream reports its usage unasked. */
@@ -84,6 +92,7 @@ const MISTRAL: ApiRules = Object.freeze({
   tools: Object.freeze({ list: Object.freeze(["tools"]),
                          kind: Object.freeze({ field: "type", allowed: Object.freeze(["function"]) }) }),
   paid: Object.freeze([Object.freeze(["web_search_options"]), Object.freeze(["plugins"])]),
+  fallbacks: Object.freeze([Object.freeze(["models"])]),
 });
 
 /** The rules for each API a sandbox call may be metered on; any other is never metered. */
@@ -148,4 +157,12 @@ export function paidTool(rules: ApiRules, body: unknown): boolean {
 /** Whether the request streams its answer: its flag, or the API's streaming path. */
 export function streams(rules: ApiRules, body: unknown): boolean {
   return rules.stream === null || valueAt(body, rules.stream) === true;
+}
+
+/** Whether the request lists fallback models, any of which may serve it. */
+export function fallbackList(rules: ApiRules, body: unknown): boolean {
+  return rules.fallbacks.some((path) => {
+    const listed = valueAt(body, path);
+    return Array.isArray(listed) && listed.length > 0;
+  });
 }

@@ -60,7 +60,8 @@ const STATUS: Readonly<Record<EgressCode, number>> = Object.freeze({
   egress_length_required: 411, egress_rate: 429, egress_spend_refused: 402,
 });
 
-type Spend = { state: "succeeded"; tokens: number; cost: number } | { state: "failed" }
+type Spend = { state: "succeeded"; tokens: number; cost: number; served?: string }
+  | { state: "failed" }
   | { state: "unknown" };
 
 /** A refusal in the gateway's own error shape, so a provider SDK shows its code. */

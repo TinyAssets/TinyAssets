@@ -306,6 +306,26 @@ describe("the egress door", () => {
     expect(spent!["cost"]).toBe(charged.reduce((sum, row) => sum + (row["est_cost"] as number), 0));
   }, 60_000);
 
+  it("prices a dated snapshot as the model the call named, and keeps its id; a call that " +
+     "listed fallbacks stays unknown", async () => {
+    const box = await sandbox();
+    const named = await send(egressRequest(box, COMPLETIONS, {
+      headers: { "x-fake-egress": "snapshot" } }));
+    await named.text();
+    await settledOf(box.owner);
+    const [settled] = await sqlIn(box.owner, "SELECT charge, cost, served FROM " +
+                                              "egress_reservations");
+    expect(settled).toMatchObject({ charge: "succeeded", served: `${box.model}-2026-01-01` });
+    expect(settled!["cost"] as number).toBeGreaterThan(0);
+    const other = await sandbox();
+    const listed = await send(egressRequest(other, COMPLETIONS, {
+      headers: { "x-fake-egress": "snapshot" },
+      body: bodyOf(other, { models: [other.model, "someone/else"] }) }));
+    await listed.text();
+    await settledOf(other.owner);
+    expect(await spends(other.owner)).toMatchObject([{ state: "unknown", cost: null }]);
+  });
+
   it("holds a call to the model policy's caps alone: a purchase threshold refuses nothing",
      async () => {
     const box = await sandbox(true, { turn_requests: 10_000, turn_tokens: 1_000_000_000,

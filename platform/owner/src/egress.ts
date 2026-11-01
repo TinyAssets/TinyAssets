@@ -142,7 +142,9 @@ export interface EgressRefusal {
 
 /** How the gateway's meter saw a call end, as the model reservation settles. */
 export type SpendOutcome =
-  | { readonly state: "succeeded"; readonly tokens: number; readonly cost: number }
+  | { readonly state: "succeeded"; readonly tokens: number; readonly cost: number;
+      /** The model the answer says served it, when other than the one the call named. */
+      readonly served?: string }
   | { readonly state: "failed" }
   | { readonly state: "unknown" };
 
@@ -175,6 +177,8 @@ export interface EgressReceipt {
   readonly est_cost: number | null;
   readonly cost: number | null;
   readonly tokens: number | null;
+  /** The model the answer says served it, when other than the one the call named. */
+  readonly served: string | null;
   readonly opened_at: number;
   readonly settled_at: number | null;
 }
@@ -239,6 +243,8 @@ const METHODS: readonly string[] = Object.freeze(["GET", "HEAD", "POST", "PUT", 
 const CONNECTION = /^c[0-9a-f]{24}$/;
 const HEX32 = /^[0-9a-f]{32}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
+/** A served model's id, as a receipt keeps it: visible ASCII. */
+const SERVED = /^[\x21-\x7e]{1,256}$/;
 
 type Charge = "held" | "succeeded" | "failed" | "unknown";
 
@@ -256,7 +262,7 @@ type Row = {
   id: string; lease_id: string | null; epoch: number | null; token: string;
   source: string | null; charge: Charge | null; rule: string | null;
   max_output_tokens: number | null; est_tokens: number | null; est_cost: number | null;
-  tokens: number | null; cost: number | null;
+  tokens: number | null; cost: number | null; served: string | null;
   connection_id: string; version: number | null; method: string;
   path: string; generation: number; bytes_hint: number | null; opened_at: number;
   state: EgressReceipt["state"]; code: string | null; ended: EndedBy | null;
@@ -303,11 +309,17 @@ function spendOutcome(value: unknown): SpendOutcome {
   if (plain(value, "state") && (value["state"] === "failed" || value["state"] === "unknown")) {
     return { state: value["state"] };
   }
-  if (plain(value, "cost,state,tokens") && value["state"] === "succeeded"
+  const served = typeof value === "object" && value !== null && "served" in value
+    ? (value as { served: unknown }).served : undefined;
+  if ((plain(value, "cost,state,tokens")
+       || (plain(value, "cost,served,state,tokens") && typeof served === "string"
+           && SERVED.test(served)))
+      && value["state"] === "succeeded"
       && typeof value["tokens"] === "number" && Number.isSafeInteger(value["tokens"])
       && value["tokens"] >= 0 && typeof value["cost"] === "number"
       && Number.isFinite(value["cost"]) && value["cost"] >= 0) {
-    return { state: "succeeded", tokens: value["tokens"], cost: value["cost"] };
+    return { state: "succeeded", tokens: value["tokens"], cost: value["cost"],
+             ...(served === undefined ? {} : { served: served as string }) };
   }
   throw new Invalid("invalid egress settle");
 }
@@ -508,12 +520,14 @@ export class Egress {
     if (row.charge === "held") {
       // pi-ai's cost, read and priced by the gateway; what it cannot read keeps it all.
       const spend = request.spend;
-      this.#sql.exec("UPDATE egress_reservations SET charge = ?, tokens = ?, cost = ? " +
-                       "WHERE id = ? AND charge = 'held'", spend.state,
+      this.#sql.exec("UPDATE egress_reservations SET charge = ?, tokens = ?, cost = ?, " +
+                       "served = ? WHERE id = ? AND charge = 'held'", spend.state,
                      spend.state === "succeeded" ? spend.tokens : spend.state === "failed" ? 0
                        : null,
                      spend.state === "succeeded" ? costMicros(spend.cost)
-                       : spend.state === "failed" ? 0 : null, request.reservation);
+                       : spend.state === "failed" ? 0 : null,
+                     spend.state === "succeeded" ? spend.served ?? null : null,
+                     request.reservation);
     }
     this.#release(request.reservation);
     this.#prune();
@@ -558,7 +572,8 @@ export class Egress {
                        outcome: row.outcome, status: row.status, bytes: row.bytes,
                        charge: row.charge, rule: row.rule,
                        max_output_tokens: row.max_output_tokens, est_cost: row.est_cost,
-                       cost: row.cost, tokens: row.tokens, opened_at: row.opened_at,
+                       cost: row.cost, tokens: row.tokens, served: row.served,
+                       opened_at: row.opened_at,
                        settled_at: row.settled_at }));
   }
 
