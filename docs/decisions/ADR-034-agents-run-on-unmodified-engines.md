@@ -3,7 +3,7 @@
 ## Status
 
 Accepted (founder, 2026-11-01).
-- **It amends** ADR-032 decisions 1, 3, 4 and 5, its "Amended 2026-10-30" section, two lines of its "What stands", and two of its Consequences, each listed below. ADR-032 decisions 2 and 6 stand.
+- **It amends** ADR-032 decisions 1, 3, 4 and 5, its "Amended 2026-10-30" section, two lines of its "What stands", and two of its Consequences, each listed below. ADR-032 decision 2 stands with one addition (the egress host also serves the run-scoped MCP door and the runner's event socket), and decision 6 stands.
 - **It also amends** the principle ADR-023 states and ADR-032 kept, that "the core loop runs outside every box".
 - **It builds on** ADR-033 (merged in #5384).
 - **Per ADR-005**, ADR-032's and ADR-023's bodies are not edited. Only their Status lines gain "amended by ADR-034".
@@ -52,7 +52,7 @@ Evidence read for this ADR:
       - the user's subscription, signed in through the vendor's own flow where its terms allow (ADR-033);
       - an API key the sandbox never sees: the CLI's base URL points at the egress door with a placeholder key, and the gateway injects the real one.
    2. The user's own main agent on its vendor's platform, reaching TinyAssets over MCP. It is woken by its vendor's door or runs its own scheduled tasks (ADR-031 decision 4).
-   3. pi's coding-agent CLI in the sandbox, for users who want a fully custom harness.
+   3. pi's coding-agent CLI in the sandbox, on an egress-keyed API key only, never on a consumer subscription's sign-in (ADR-033 decision 1), for users who want a fully custom harness.
 
 2. **An agent is files plus TinyAssets state.**
    - **Files:** under `/workspace/agents/<agent>/`, the owner's alone. They are `AGENTS.md`, `SKILL.md` folders, MCP config and hooks, in the formats these CLIs read, plus one small `agent.json` naming its engine, model and MCP scopes.
@@ -133,7 +133,7 @@ Evidence read for this ADR:
     - The owner Worker's "one Durable Object namespace of its own `ThreadStore` class" is removed. Its Worker binds no Durable Object namespace.
   - **Bound Workers.** The allow-list adds the sandbox Worker, which holds the E2B key and reaches nothing but E2B. The hooks Worker is narrowed to code mode.
   - **Stand:** the binder rules, `disable_ctx_exports`, the `env` rule and the module-state rule.
-- **Decision 2:** stands. It adds only that the egress host also serves the run-scoped MCP door and the runner's event socket, both bound by the sandbox lease's token, which E2B injects outside the VM.
+- **Decision 2:** stands with one addition: the egress host also serves the run-scoped MCP door and the runner's event socket, both bound by the sandbox lease's token, which E2B injects outside the VM.
 - **Decision 3:**
   - **Removed:** the model-call path from the loop ("opens one owner's sealed credential per call, meters usage" for pi's calls).
   - **Stays:** the gateway holds no owner state, seals and opens credentials, runs the connect, refresh and revoke flows, and serves egress, where it meters each call. "No credential sits in the loop or the sandbox" stands for API keys. A subscription's own sign-in sits in the sandbox under ADR-031 decision 2, as before.
@@ -168,11 +168,11 @@ Evidence read for this ADR:
 
 ## Consequences
 
-- **Direction.** The founder replaced Directions 1 and 2 on 2026-11-01 with the text in `openspec/changes/clean-sheet-platform/engines-replan.md` §6 (README § Direction). "The model sees 4 tools plus `ta`" is no longer a platform rule; the default bubble agent may keep that surface as its own setting.
+- **Direction.** The founder replaced Directions 1 and 2 on 2026-11-01 with the text in README § Direction. "The model sees 4 tools plus `ta`" is no longer a platform rule; the default bubble agent may keep that surface as its own setting.
 - **Build order.** `openspec/changes/clean-sheet-platform/tasks.md` is re-cut, in order:
   1. finish G4;
   2. delete in one slice;
-  3. engine records;
+  3. engine records (the `pi` record carries no subscription sign-in);
   4. runs in the owner object;
   5. the sandbox, live;
   6. the MCP door's code mode and digests;
@@ -200,5 +200,5 @@ Evidence read for this ADR:
 - https://developers.cloudflare.com/durable-objects/platform/pricing (read 2026-11-01)
 - pi-coding-agent 1.4.0 `docs/cli.md` (npm `@earendil-works/pi-coding-agent`)
 - `openspec/changes/clean-sheet-platform/e2b-resume-measurement.md`
-- `openspec/changes/clean-sheet-platform/subscription-engines.md`, `main-agents.md`, `replan.md` (2026-11-01)
+- `openspec/changes/clean-sheet-platform/subscription-engines.md`, `main-agents.md`, `engines-replan.md` (2026-11-01)
 - ADR-023, ADR-031, ADR-032, ADR-033

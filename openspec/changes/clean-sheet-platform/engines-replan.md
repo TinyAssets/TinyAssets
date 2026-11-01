@@ -2,43 +2,45 @@
 
 The founder approved this decision on 2026-11-01: **pi stops being the platform's engine.**
 This document turns it into an inventory, a runtime, cost and latency checks, risks and a
-slice order. Its companions are `adr034_draft.md` (the ADR) and `plandoc_changes.md` (the
-plan-of-record edits). Nothing in the repo was changed.
+slice order. The decision is recorded in ADR-034.
 
 ## How to read this
 
 - **[E]** means evidence: a primary source or measurement I read or ran, with its source.
 - **[I]** means my inference. It is never a fact.
-- **[R]** means another research note in `research file ` read it. I did not re-read the
-  primary source myself, and the note's own label applies.
+- **[R]** means another research note read it: `main-agents.md` or `subscription-engines.md`
+  in this directory, or a platform research note cited by name (the agent, files and gateway
+  notes and the G4 review, which are not in the repo). I did not re-read the primary source
+  myself, and the note's own label applies.
 
 **What I read:**
 - `AGENTS.md`/`CLAUDE.md`, `README.md` § Direction.
-- ADRs: ADR-005, ADR-028, ADR-031, ADR-032, and ADR-033 (on `origin/platform-adr031`, PR #5384).
+- ADRs: ADR-005, ADR-028, ADR-031, ADR-032, and ADR-033 (then on `origin/platform-adr031`; merged as #5384).
 - `openspec/changes/clean-sheet-platform/`: `proposal.md`, `tasks.md`, the three specs and
   `e2b-resume-measurement.md`. There is no `design.md`.
-- The `research file ` notes the brief names.
-- The code on `origin/main` (`40c336b4c`), `origin/platform-g4` (`b4ef07f5a`; its worktree
-  holds a local WIP `6f55edb58`), and `origin/platform-a6` (`df0e2ac17`).
+- The research notes `main-agents.md` and `subscription-engines.md` (this directory), and the
+  platform research notes on agents, files and the gateway.
+- The code on `origin/main` (`40c336b4c`), `origin/platform-g4` (`b4ef07f5a`, plus an unpushed
+  work-in-progress commit `6f55edb58`), and `origin/platform-a6` (`df0e2ac17`).
 
 **The plan of record:** I read it with the Claude Docs `read` tool. It was rev 77, the
-revision the brief names, and I read all of it (137 top-level blocks plus the architecture
+current revision, and I read all of it (137 top-level blocks plus the architecture
 diagram's source).
 
-**Web pages fetched through the session proxy on 2026-11-01:**
+**Web pages fetched from the research environment, 2026-11-01:**
 - **Read:**
   - e2b.dev/pricing
   - docs.e2b.dev billing, `sandbox/persistence.md` and `commands/background.md`
   - code.claude.com/docs/en/headless (`.md`)
   - developers.cloudflare.com/durable-objects/platform/pricing (`index.md`)
-- **Blocked:**
+- **Sources the research could not reach on 2026-11-01:**
   - **developers.openai.com:** it redirects to `learn.chatgpt.com`, where the proxy answered
     `CONNECT 403`.
-  - **github.com/anthropics/claude-code/issues/106037:** the proxy said "GitHub access to this
-    repository is not enabled for this session". Its facts below are [R] from
+  - **github.com/anthropics/claude-code/issues/106037:** the proxy refused GitHub access to
+    that repository. Its facts below are [R] from
     `main-agents.md`, read 2026-11-01.
 
-**CLI startup timings:** I measured these myself in this container (4 vCPU, 16 GB). See
+**CLI startup timings:** I measured these myself in the research environment, 2026-11-01 (4 vCPU, 16 GB). See
 §3.4 and its caveat.
 
 ---
@@ -181,7 +183,7 @@ Counts are lines on `origin/main` (`wc -l`). Every verdict assumes the new desig
 ### 1.6 Work in flight on branches
 
 **`origin/platform-g4` (slice 8a, review REQUEST_CHANGES): keep and finish.**
-- Files on the branch: `owner/src/egress.ts` (382), `owner/src/network.ts` (295), `doors/src/egress.ts` (221) and `doors/src/sandbox.ts` (99). The local WIP adds `gateway/src/meter.ts` (227) and grows `owner/src/egress.ts` to 487.
+- Files on the branch: `owner/src/egress.ts` (382), `owner/src/network.ts` (295), `doors/src/egress.ts` (221) and `doors/src/sandbox.ts` (99). The unpushed work-in-progress commit adds `gateway/src/meter.ts` (227) and grows `owner/src/egress.ts` to 487.
 - This is the API-key engine's whole model path. It needs one conceptual change: its reservation keys on "the lease's turn", which becomes the lease's **run** (slice R).
 
 **`origin/platform-a6` (in review, not merged): do not merge as is. Salvage, then close.**
@@ -238,7 +240,7 @@ Counts are lines on `origin/main` (`wc -l`). Every verdict assumes the new desig
 **Engines:**
 1. A vendor CLI in the user's sandbox, on a subscription or an API key.
 2. The user's own main agent on its vendor's platform.
-3. pi's CLI in the sandbox.
+3. pi's CLI in the sandbox, on an egress-keyed API key only, never a subscription's sign-in (ADR-033 decision 1).
 
 **An agent is:**
 - `/workspace/agents/<agent>/`: `AGENTS.md`, `.agents/skills/*/SKILL.md`, `mcp.json` (the user's own servers, in one canonical shape) and hooks (Claude-style `hooks.json`; Codex's are "Claude-style" too [R]);
@@ -490,7 +492,7 @@ All [E] (`e2b-resume-measurement.md`, 2026-10-28, 2 vCPU / 1 GiB, 206 MB of file
 
 ### 3.4 CLI startup time
 
-Measured by me on 2026-11-01 in this container (Linux, 4 vCPU, 16 GB, Node from `/usr/local/bin`), with pinned versions in scratch directories, an empty `HOME`, and `--strict-mcp-config` with no servers (`/tmp/clis_time.py`), n=10 each. [E local; not E2B]
+Measured by me in the research environment, 2026-11-01 (Linux, 4 vCPU, 16 GB, Node from `/usr/local/bin`), with pinned versions in clean directories, an empty `HOME`, and `--strict-mcp-config` with no servers, n=10 each. [E local; not E2B]
 
 | Command | First stdout line | Wall |
 |---|---|---|
@@ -500,7 +502,7 @@ Measured by me on 2026-11-01 in this container (Linux, 4 vCPU, 16 GB, Node from 
 | `codex exec --json` (not signed in) | — | exits 1 in 33 ms |
 
 - **Codex's first event and Claude with a remote MCP server** were not measured. Claude "waits for still-pending servers before running the first turn, up to … 30 seconds by default", unless a cached tool list lets it skip the wait [E: headless docs]. A slow MCP door therefore delays every Claude run.
-- **Caveat: the Claude runs completed real model turns.** With no key or credential supplied by me, the 10 Claude runs returned `result: "ok"`, for example `duration_api_ms` 2,032. This session's environment authenticated them. I did not inspect how, per the brief.
+- **Caveat: the Claude runs completed real model turns.** With no key or credential supplied by me, the 10 Claude runs returned `result: "ok"`, for example `duration_api_ms` 2,032. The research environment authenticated them; how was not inspected.
   - So the 1.86 s wall is a trivial whole turn, and about 11 trivial model calls were made: 10 in the timing loop and 1 to read the output shape.
   - I stopped there. The Codex runs made no model call.
 
@@ -560,7 +562,7 @@ This is a regression against the pi-in-object plan, where a chat turn spent noth
 - A custom remote MCP connector's tools are "missing for the whole run" of a scheduled task, in claude.ai web and Cowork. Built-in connectors load.
 - The issue was filed 2026-10-29, is labelled `regression`, and was open on 2026-11-01.
 - #102388, also open, reports the same for cloud routines.
-- I could not re-read it: GitHub is blocked for this repository in this session.
+- I could not re-read it: GitHub for that repository was among the sources the research could not reach on 2026-11-01.
 
 **Impact** [I]:
 - It breaks engine 2 for Claude, which is a Claude scheduled task pulling TinyAssets on a schedule or on `/fire`. That is TinyAssets' connector case.
@@ -647,10 +649,10 @@ The plan records that OpenAI's directory "rejects a generic executor or discover
 
 | # | Slice | What | Where |
 |---|---|---|---|
-| **0** | **Decide and record** | Merge ADR-033 (PR #5384). Then ADR-034, the Direction 1 and 2 replacements (README § Direction, then `sync_direction.py`), plan doc rev 78 (`plandoc_changes.md`), and `tasks.md` rewritten to this order. Close A6's PR after salvaging its notes. | docs **[F: approve Direction text and ADR-034]** |
+| **0** | **Decide and record** (done) | Done: ADR-033, merged as #5384; ADR-034, the Direction 1 and 2 replacements (README § Direction, synced by `sync_direction.py`) and the `tasks.md` re-cut pointer, in ADR-034's PR. Still open: the plan of record's rev 78, and closing A6's PR once slice R carries its notes. | docs |
 | **G4** | Finish 8a | Land `platform-g4` with its review fixes (H1: drop the edge-expiry check on stale KV; M3: settlement leaks; M5: deviation-8 wording). Keep "turn" in its names until slice R re-keys it. | workerd |
 | **D** | **Deletions, one slice** | Everything in §1.7: source, tests, guards and specs. Remove the `PISTORE`/`ThreadStore` binding and class (the config guard updated, the owner-bound guard recomputed with fewer tables). Rewrite the pi migrations in place (nothing deployed). Remove `pi-durable`, `chord` and `pi-telemetry`. Remove `run`, `protocol.ts` and `runner.ts` from the hooks Worker. Remove the gateway's `/v1/messages`. The four agent doors and the `converse`/`run_graph` tools leave the tables until slice R (an absent tool, never a stub: Fact 8). | workerd |
-| **E** | Engine records | `CliSpec.engine` (§2.1), `secret_paths`, `session_paths`, the unattended citation, non-npm install, `engines` on API-key sources. Update the Claude Code, Codex, Gemini and Kimi records. New `anthropic` and `openai` API-key records and a `pi` CLI record. Park `chatgpt.json`. The checker in `doors/src/sources.ts` and its guard. | data + workerd |
+| **E** | Engine records | `CliSpec.engine` (§2.1), `secret_paths`, `session_paths`, the unattended citation, non-npm install, `engines` on API-key sources. Update the Claude Code, Codex, Gemini and Kimi records. New `anthropic` and `openai` API-key records and a `pi` CLI record that runs on an egress-keyed API key only, with no subscription sign-in (ADR-033 decision 1). Park `chatgpt.json`. The checker in `doors/src/sources.ts` and its guard. | data + workerd |
 | **R** | Runs in the owner object | `runs`, `run_grants` and `conversations` (schema), the `runs` lane with doorbell-on-change, admission and caps (§2.5), run-level `auto`. The run-scoped MCP profile and grant checks. `usage.ts` and G4's reservation re-keyed to runs. The four agent doors and the `converse`/`run_graph` tools back, starting runs. `SANDBOX` binding behind an interface whose absence refuses loudly. The run-event relay to app sockets (A6's salvaged ticket and binder path). | workerd |
 | **S** | **Sandbox (8b), live** | The `tinyassets-sandbox` Worker (E2B key; create, connect, pause, update the network, start the runner). The versioned template (pinned CLIs, the runner, `resolv.conf` on the pinned resolver). The **runner**: sync in and out with secret-path refusal, projection, invocation from the record, event framing, socket or POST, SIGTERM. Live probes: G4's owed list (private CIDRs, transform readability, `/etc/hosts`, IPv6, DNS); a transform over WebSocket and over MCP; resume after hours and days; CLI memory for S1 sizing; per-run overhead; keep-warm. | **[F: E2B Pro $150/mo; E2B workload-identity beta request; accept Anthropic Commercial Terms; founder's Claude, ChatGPT and API keys for the probes]** |
 | **M** | MCP door for engines and main agents | `code` (code mode at the door, the hooks Worker narrowed to its sandbox, H2's probe cut to code mode), `inbox_digest`/`board_digest`, tool profiles (directory, custom, run). Live connector tests from Claude and ChatGPT (`ui-test`). | workerd + live **[F: live connector accounts. Dynamic Workers (open beta) are no longer needed once the loader goes]** |
@@ -672,20 +674,20 @@ The plan records that OpenAI's directory "rejects a generic executor or discover
 
 ---
 
-## 6. Proposed Direction replacements (founder approves; README § Direction, then `sync_direction.py`)
+## 6. Directions 1 and 2 (adopted 2026-11-01)
 
-Only Directions 1 and 2 name pi. The block stays at 18 lines and well under its 4,096-byte cap (2,014 bytes today).
+Only Directions 1 and 2 named pi. The founder adopted the replacements below on 2026-11-01 (README § Direction, synced by `sync_direction.py`). The block stays at 18 lines and well under its 4,096-byte cap.
 
-**Direction 1, current:**
+**Direction 1, before:**
 > 1. Product: a default bubble agent that continuously matches and beats the industry-leading main agents (Grok Bot, Muse, ChatGPT dots, Claude Duet), built as a starter package on a pi.dev-modelled harness; users customize the harness and interface to build anything.
 
-**Direction 1, replacement:**
+**Direction 1, adopted:**
 > 1. Product: a default bubble agent that continuously matches and beats the industry-leading main agents (Grok Bot, Muse, ChatGPT dots, Claude Duet), shipped as a starter package of agent files that runs on the user's own engine: their provider's unmodified CLI on their subscription or key, or their own main agent; users customize the agent's files and interface to build anything.
 
-**Direction 2, current:**
+**Direction 2, before:**
 > 2. Plumbing: the model sees 4 tools (read/write/edit/bash) plus `ta`; one extension unit; one agent definition for every model provider; no provider-specific code.
 
-**Direction 2, replacement:**
+**Direction 2, adopted:**
 > 2. Plumbing: an agent is files (`AGENTS.md`, skills, MCP config, hooks) plus TinyAssets state, run by an unmodified engine (a provider's CLI in the user's sandbox, the user's main agent over MCP, or pi's CLI); TinyAssets is everything around the engine and reaches every engine through one MCP door; one agent definition for every engine; no provider-specific code: engine differences are data.
 
-**Note for the founder:** this drops "the model sees 4 tools plus `ta`". Each engine's tools are its vendor's. TinyAssets adds one MCP server, and an agent's `agent.json` may filter built-ins. If the founder wants the 4+`ta` surface kept as the *default bubble agent's* configuration, that is a line in the starter package's `agent.json`, not a platform rule.
+The adopted text drops "the model sees 4 tools plus `ta`" as a platform rule. Each engine's tools are its vendor's. TinyAssets adds one MCP server, and an agent's `agent.json` may filter built-ins. The default bubble agent may keep the 4 tools plus `ta` as a line in the starter package's `agent.json`.

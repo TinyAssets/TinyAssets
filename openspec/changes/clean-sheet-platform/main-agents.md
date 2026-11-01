@@ -10,18 +10,19 @@ Claude Channels, Claude Tag, ChatGPT MCP Events and workspace agents).
 
 Evidence labels:
 
-- **[V]** Vendor page fetched and read in full in this session.
+- **[V]** Vendor page fetched and read in full on 2026-11-01.
 - **[VS]** Vendor page seen only through the search engine's extract, because its
-  host is blocked from this session (list below). The URL is the vendor's own page.
+  host was among the sources the research could not reach on 2026-11-01 (list below).
+  The URL is the vendor's own page.
   The wording is the search tool's summary or quote, not a full read: confirm before
   relying on fine detail.
 - **[3P]** Third-party page (press, forum, integrator), seen through search.
 - **[REPO]** TinyAssets repo text, including research recovered from git history.
 - **[INF]** My inference. Never a fact.
 
-### Hosts blocked from this session (they need allowing)
+### Sources the research could not reach on 2026-11-01
 
-WebFetch returned `getaddrinfo ENOTFOUND` (outside the allowed network domains) for:
+From the research environment, 2026-11-01, WebFetch returned `getaddrinfo ENOTFOUND` for:
 `x.ai`, `developers.openai.com`, `openai.com`, `learn.chatgpt.com`,
 `community.openai.com`, `siliconangle.com`. Curl also got proxy `403` for
 `help.openai.com`, `docs.x.ai`, `grok.com`, `help.x.com`, `about.fb.com`,
@@ -32,10 +33,10 @@ So **everything about OpenAI, xAI, Meta, Google and Microsoft is [VS] at best.**
 Anthropic hosts (`claude.com`, `support.claude.com`, `code.claude.com`,
 `www.anthropic.com`) and `github.com` were readable, so Claude facts are [V].
 
-Also blocked: the GitHub REST API for `anthropics/claude-code` (session not enabled).
+Also unreachable: the GitHub REST API for `anthropics/claude-code`.
 The github.com web page was readable.
 
-### Corrections to the brief and the repo (evidence first)
+### Corrections to the plan and the repo (evidence first)
 
 1. **ChatGPT.** ADR-031 says "ChatGPT scheduled tasks have no webhooks". That is now
    out of date. Since **2026-09-29**, supported plugins can start an automation

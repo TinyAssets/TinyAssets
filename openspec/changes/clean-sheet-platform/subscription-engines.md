@@ -6,7 +6,7 @@ All reads are dated 2026-11-01 unless marked otherwise.
 
 How the evidence is labelled:
 - **[E]** quotes or paraphrases a primary source that was actually read.
-- **[S]** is primary-site text seen only through the web-search index, because the site was blocked from this session.
+- **[S]** is primary-site text seen only through the web-search index, because the site was among the sources the research could not reach on 2026-11-01.
 - **[3P]** is a third-party source.
 - **[I]** is my inference.
 
@@ -15,7 +15,7 @@ Repo sources read: `platform/sources/{claude-code,codex,gemini,kimi}.json` and `
 
 ## 0. Access notes
 
-These hosts failed with ENOTFOUND, so they need to be allowed in this session's network settings:
+Sources the research could not reach on 2026-11-01. These hosts failed with ENOTFOUND from the research environment:
 - developers.openai.com, help.openai.com, openai.com, learn.chatgpt.com
 - developers.google.com
 - www.kimi.com
