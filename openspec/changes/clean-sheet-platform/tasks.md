@@ -1422,11 +1422,86 @@ account and no deploy.
   selection), which runs its hooks after every other package's (H1, review round 3).
 - [ ] The pi upgrade, within a slice of pi's release: `adopt` in `RemoteStorage`, the tee
   deleted, `persistWithinMs`, `maxTurns` from policy, `onReport`, parking code out of the
-  host, the new watch API, the schema re-pinned.
-- [ ] A6: agents `WebSockets` and `Conversation.watch()`; reset, compact, fork, withdraw
-  and the task graph doors. The compact door must enforce a per-thread cap on manual
-  compactions with a fixed refusal code, and update the owner-bound guard's `model_turns`
-  term (`THREAD_COMPACTIONS` counts no manual one, since no such path exists yet).
+  host, the new watch API, the schema re-pinned. The tee's deletion, exactly (A6): the
+  module `owner/src/live-tee.ts` (`LiveTee`, `liveEvent`, `TEE_LIMITS`, `TEE_TEXT_MAX`,
+  `LiveBlock`); the `tee` part of `GatewayProvider` and its two `tee.publish` calls
+  (`gateway-provider.ts`), and of `AgentParts` (`agent.ts`); `OwnerDO`'s `#tee` field and
+  its hand-offs to the provider, the agent and the sockets; the tee closes in
+  `OwnerAgent.#endSession` (`views`), `erasing` and `#endThreads`; in `sockets.ts`, the
+  `live` frame, `liveOps`, `LIVE_CONTENT`, `#follow`'s subscription, `#teed`, `#sendLive`
+  and each socket's `base`, `shown` and `tee`, and `SocketParts.tee`; the owner-bound
+  guard's `teeText` term; and the tests of each (`auto.test.ts`'s tee bounds, the tee
+  tests in `authority.test.ts` and `gateway-provider.test.ts`, and `sockets.test.ts`'s
+  live-tee block). `AGENT_SETTINGS.progress` goes back near pi's default with
+  `persistWithinMs: 1000`, and the sockets' frames stay the view and its ops, so the app's
+  reducer is unchanged by construction.
+- [x] A6: the owner app's live socket on pi's `Conversation.watch()`, and doors for the
+  conversation operations pi already has, in workerd, nothing deployed (`sockets.ts`,
+  `socket-shape.ts`; `owner-do.ts`, `agent.ts`, `thread-host.ts`, `threads.ts`,
+  `live-tee.ts`, migration 12's `kind` CHECK edited in place for `fork`; the doors'
+  `app.ts` and `binder.ts`). Sockets: agents 0.32's `WebSockets` capability on the
+  object's one Lifecycle (`agents/websockets` joins the alarm guard's imports), the object
+  forwarding `fetch` and the three `webSocket*` reserved methods to Lifecycle's of the same
+  name, still without `installHandlers` (the alarm guard pins each hand-off). A Workers RPC
+  cannot carry the socket: a DO RPC returning a `Response` with `webSocket` fails
+  `DataCloneError: Could not serialize object of type "WebSocket"` in workerd (the docs list
+  `Request`/`Response` among RPC types but no WebSocket), so the upgrade is the stub's
+  `fetch`, the object's one non-RPC entry. `/app/api/agent/socket?thread_id=` takes the
+  first-party token, the maintenance gate and the session rules (a `GET` gets no session),
+  an outside credential `403`; the binder forwards a fresh request of its own
+  (`socketRequest`: `SOCKET_URL`, no query, exactly `Upgrade`, `x-ta-binding` and
+  `x-ta-thread`), and the object refuses anything else `400` before Lifecycle sees it. The
+  attach is a `read` door's unit (the account, no session, the caller's own thread, a
+  client's stamp standing), then `THREAD_SOCKETS` (4, `thread_sockets_full`) and
+  `OWNER_SOCKETS` (16, `sockets_full`) with the attaches in flight, then the Session pinned
+  and counted against `OPEN_MAX` (`sessions_full`), never waited on; state in the socket's
+  attachment only. Frames are versioned JSON: the view, then each commit's exact Chord ops,
+  at most `SOCKET_WINDOW` (16) unacknowledged, so pi's 100-frame rule turns a slow app into
+  one whole view; the tee, until pi's next minor, as `live` frames of Chord appends to
+  `pi.live.generation.message`'s blocks over the last commit (a display copy the app resets
+  each commit; the commit's tail sent after it), to the thread's sockets only, followed again
+  after a grant or policy change closed it. A socket the instance holds no watch for
+  reattaches from a fresh view at its next frame or as its thread's Session opens
+  (`HostParts.opened`). Lifetime: a revoke or a generation move (`authority_ended`), a drop
+  (`thread_dropped`), an abuse suspension (`owner_suspended`; billing leaves reads open),
+  the erasure (`owner_erased`), the owner's session's close for the owner's own sockets
+  (`session_closed`), each frame checked first; a watch pi ends on its own `watch_lost`.
+  Doors (owner-object doors on `/app/api/agent/*`, none an MCP tool or `ta` capability, the
+  doors' tool guard naming them `APP_DOORS`): `agentReset` (`work`), `agentCompact` (`work`;
+  `THREAD_MANUAL_COMPACTIONS` = 1 live a thread, `compactions_full`; `THREAD_COMPACTIONS`
+  = 3 x 2 + 1), `agentFork` (`work`; a `fork` thread under the caller's stamp within its
+  conversation bounds and the working threads, its history pi's `context({at})` appended
+  through pi's `appendEntry` in its root's creating commit, a refused fork dropped; it goes
+  on through `agentSubmit`'s `thread_id`), `agentWithdraw` (`reduce`; `abortSubmission`, one
+  placed refused `already_placed`), `agentTaskGraph` (`read`). The per-agent model pin:
+  `AGENTS.md` front matter `model: <id>`, set as `pi.agent.model` in each root's creating
+  commit. Owner-bound guard: 4,600,178,612 bytes, 46.0% (A5 4,597,482,932): +2,695,680 for
+  the manual compactions' turn rows; forks hold no rows of their own past the conversation
+  bounds, and sockets none at all (`SOCKET_MEMORY` names their memory bounds). Tested in
+  workerd: the attach, view and ops; the tee's appends between a drip's commits and a
+  commit's tail; the shape refusals; another caller's thread; each cap; the pin against the
+  idle LRU and `OPEN_MAX`; a simulated eviction (a new instance over the same storage and
+  sockets; workerd's `abort` drops hibernating sockets and `evictDurableObject` hangs with
+  one open) reattaching from a fresh view, pinned again; a slow app's whole view; each
+  lifetime close and the rename that keeps one open; the task graph read and watch; reset,
+  compact and its cap, fork with its history, head, stamp and working-thread refusal,
+  withdraw queued and placed; every door refused for another caller's thread and by class
+  under billing and abuse; the model pin; at the doors, the binder's upgrade, an outside
+  credential, a forged identity header, the gate and the five app routes; still exactly
+  read, write, edit, bash and `ta`. Mutation: 60, 55 killed; 5 equivalent: the method check
+  (the runtime hands the object an upgrade as a `GET` whatever was sent), and the work
+  doors' authority re-check with the three work doors' classes, each pair covering the
+  other (`#onThread`'s `Authority.require` reads the admission's work refusal, and every
+  authority change drops the thread). Declared differences from the audit and the design
+  decision: a fork is a thread of its own over a copy of the history (the brief's), so it
+  keeps the source agent's current `AGENTS.md`, not pi's fork's copy of the agent as of the
+  entry; the fork door takes its first input (edit and resend), which is how it counts
+  against the working threads; a socket rides no session, so a session's close ends every
+  owner socket, each device reattaching with its token; the tee's toolcall deltas are not
+  shown (no string in the committed tool call to append to), nor the text of a block's
+  first second before a commit makes the message. Owed live (P12): the binder-to-object
+  upgrade through deployed Workers, hibernation billing with sockets attached (and a real
+  hibernation's reattach), and the tee's frame rate on a real model.
 - [ ] M (MCP) after G4: SDK v2 client in the owner over G4's forward, `mcp.json` with every
   server clamped to tools-only, OAuth via G3.
 - [x] Erasure's store-first order: mark the owner erasing, destroy every store a row names,
