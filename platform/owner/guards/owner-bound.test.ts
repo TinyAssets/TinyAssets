@@ -20,14 +20,20 @@
  * whose rows the schema refuses past `THREAD_INPUTS` open root inputs, `THREAD_CHILD_INPUTS`
  * subagent inputs and `THREAD_COMPACTIONS` live compactions a thread
  * (`CONVERSATION_COMPACTIONS` for each of its `THREAD_CONVERSATIONS` live conversations: its
- * root and the subagents working in it, A5), and past `WORKING_THREADS` threads holding any,
+ * root and the subagents working in it, A5; and `THREAD_MANUAL_COMPACTIONS` the compact door
+ * starts, A6), and past `WORKING_THREADS` threads holding any,
  * each turn of at most `TURN_BYTES`; the calls open at once and
  * the spend counters are bounded by count (migration 10). pi's
  * records live in the thread stores (`thread-store.ts`, S1-S3), never in the owner's
  * database, so what the owner's object holds is its own bounded rows only, whatever its
  * agents do; this guard replaced A4's runtime storage gauge.
  *
- * The worst case is 46.0% of the limit (A5: 4,597,482,932 bytes), about 403 MB under half.
+ * The worst case is 46.0% of the limit (A6: 4,600,178,612 bytes), about 400 MB under half
+ * (A5: 4,597,482,932; A6 adds 2,695,680). A6 adds one term's worth: a manual compaction a working thread
+ * (`THREAD_MANUAL_COMPACTIONS`), a turn and its owner row each, 1,024 of each; its forks are
+ * conversations within the conversations' bounds (`THREAD_LIMITS`), and its app sockets hold
+ * no rows at all (their state is each socket's attachment), only memory, bounded by the
+ * constants this guard names (`SOCKET_MEMORY`).
  * F1 (49.0%, 4,897,208,852 bytes) traded the `work` lane's table (its 2,000 rows of up to
  * 16 KiB) for the admission row; a scheduled launch is a run, counted in the thread terms
  * already. A5 bounds the turn rows by the threads at work (`WORKING_THREADS`, 1,024) rather
@@ -159,6 +165,7 @@ const THREAD_CONVERSATIONS = constant("schema", "THREAD_CONVERSATIONS");
 const THREAD_CHILD_INPUTS = constant("schema", "THREAD_CHILD_INPUTS");
 const WORKING_THREADS = constant("schema", "WORKING_THREADS");
 const CONVERSATION_COMPACTIONS = constant("schema", "CONVERSATION_COMPACTIONS");
+const THREAD_MANUAL_COMPACTIONS = constant("schema", "THREAD_MANUAL_COMPACTIONS");
 const TURN_BYTES = constant("schema", "TURN_BYTES");
 const CALLS_OPEN = constant("schema", "CALLS_OPEN");
 const SPEND_KEPT = constant("schema", "SPEND_KEPT");
@@ -170,6 +177,21 @@ const SCOPE_FIELD = inline("grants", /codePoints\(v\) > ([0-9]+)/);
 const CLIENT_NAME = inline("grants", /codePoints\(name\) > ([0-9]+)/);
 /** The most wakes an hour policy lets an agent take, the rings one hour keeps (`ledger.ts`). */
 const WAKES_AN_HOUR = inline("ledger", /maxWakesPerHour: Object\.freeze\(\{ low: [0-9]+, high: ([0-9]+) \}\)/);
+
+/**
+ * The owner app's sockets (A6, `sockets.ts`): no rows, only memory, each bounded here: the
+ * sockets an owner and a thread hold open (each pinning its thread's Session, counted
+ * against `OPEN_MAX`), the frames a socket holds unacknowledged before its watch waits (pi
+ * then keeps at most 100 and catches up with one whole view), the longest frame a client
+ * sends, and the live tee's text a stream keeps (`live-tee.ts`).
+ */
+export const SOCKET_MEMORY = Object.freeze({
+  ownerSockets: constant("sockets", "OWNER_SOCKETS"),
+  threadSockets: constant("sockets", "THREAD_SOCKETS"),
+  window: constant("sockets", "SOCKET_WINDOW"),
+  clientFrame: constant("sockets", "CLIENT_FRAME_MAX"),
+  teeText: constant("live-tee", "TEE_TEXT_MAX"),
+});
 
 /** The platform's limit on one object's database. */
 export const DATABASE_BYTES = 10_000_000_000;
@@ -353,7 +375,8 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
                  by: "a turn per owner at most: WORKING_THREADS threads at work, each with " +
                    "THREAD_INPUTS open root inputs, THREAD_CHILD_INPUTS subagent inputs and " +
                    "THREAD_COMPACTIONS live compactions (CONVERSATION_COMPACTIONS for each " +
-                   "of THREAD_CONVERSATIONS live conversations), TURN_BYTES each" },
+                   "of THREAD_CONVERSATIONS live conversations, and THREAD_MANUAL_COMPACTIONS " +
+                   "the compact door starts), TURN_BYTES each" },
   model_turn_owners: { rows: TURN_OWNERS, bytes: ROW + TURN_BYTES + 2 * THREAD_ID,
                        by: "one per open input or live compaction, a thread each, indexed" },
   // The agent's threads: rows only, every transcript in its own store.
@@ -525,7 +548,7 @@ describe("the owner's database bound", () => {
     expect([MAX_INTENT_CHUNKS, CHUNK_BYTES, constant("files", "KEEP_CEILING")])
       .toEqual([10_000, 4 * 1024 ** 2, 1000]);
     expect([THREAD_INPUTS, THREAD_COMPACTIONS, CALLS_OPEN, SPEND_KEPT, MODELS_CHARS,
-            BLOB_CHARS]).toEqual([8, 6, 1000, 4300, 655_360, 65_536]);
+            BLOB_CHARS]).toEqual([8, 7, 1000, 4300, 655_360, 65_536]);
     // A thread's compactions are each of its live conversations' (A5's subagents), and the
     // turn rows are the working threads' (A5), not every live thread's.
     expect([THREAD_CONVERSATIONS, CONVERSATION_COMPACTIONS, THREAD_CHILD_INPUTS,
@@ -535,12 +558,18 @@ describe("the owner's database bound", () => {
     // compaction pi starts in an open Session always has a place under the trigger's bound.
     expect(source("thread-host")).toContain("workingMax: WORKING_THREADS - OPEN_MAX,");
     expect(constant("thread-host", "OPEN_MAX")).toBe(64);
-    expect(THREAD_COMPACTIONS).toBe(THREAD_CONVERSATIONS * CONVERSATION_COMPACTIONS);
+    // A6: the compact door's manual compactions, a thread's own bound, counted with them.
+    expect(THREAD_MANUAL_COMPACTIONS).toBe(1);
+    expect(THREAD_COMPACTIONS).toBe(THREAD_CONVERSATIONS * CONVERSATION_COMPACTIONS
+                                    + THREAD_MANUAL_COMPACTIONS);
     expect(schema).toMatch(/export const THREAD_COMPACTIONS = THREAD_CONVERSATIONS \* /);
+    expect(source("thread-host")).toContain(
+      "if (manual + slot.compacting >= THREAD_MANUAL_COMPACTIONS) {\n" +
+      "          throw new Refused(COMPACTIONS_FULL);");
     expect([SCOPE_FIELD, CLIENT_NAME, WAKES_AN_HOUR, GRANT_LIMITS.maxScopes])
       .toEqual([512, 80, 60, 64]);
     expect(TERMS["model_turns"]).toMatchObject({
-      rows: 1024 * (8 + 2 + 6),
+      rows: 1024 * (8 + 2 + 7),
       bytes: 256 + TURN_BYTES + 39 });
     expect([TURN_BYTES, USAGE_ROW_MAX]).toEqual([96, 16 * 1024]);
     expect(TERMS["model_turn_owners"]).toMatchObject({
@@ -622,6 +651,19 @@ describe("the owner's database bound", () => {
     const threads = source("threads");
     expect(threads).toContain("\"WHERE thread_id = ? AND settled_at IS NULL \" +");
     expect(agent).toContain("settled: (thread) => parts.threads.settledRun(thread),");
+  });
+
+  it("names the app sockets' bounds, which hold memory and no rows (A6)", () => {
+    // Their state is each socket's attachment: the sockets module writes no table.
+    const sockets = source("sockets");
+    expect(sockets).not.toMatch(/\.sql\b|storage\.|CREATE TABLE|kv\./);
+    expect(ownerTables().filter((table) => /socket/.test(table))).toEqual([]);
+    expect(SOCKET_MEMORY).toEqual({ ownerSockets: 16, threadSockets: 4, window: 16,
+                                    clientFrame: 1024, teeText: 1_048_576 });
+    // Each watched Session is pinned and counted against OPEN_MAX: an owner's sockets,
+    // however many threads they watch, pin at most a quarter of the open Sessions.
+    expect(SOCKET_MEMORY.ownerSockets * 4).toBeLessThanOrEqual(constant("thread-host", "OPEN_MAX"));
+    expect(SOCKET_MEMORY.threadSockets).toBeLessThanOrEqual(SOCKET_MEMORY.ownerSockets);
   });
 
   it("sees a bound that would pass half the limit, or a table it no longer covers", () => {

@@ -35,13 +35,17 @@
  * guard), since objects of one class can share an isolate.
  *
  * Every public method is an RPC any binding can call, so the class has no public method
- * but its doors (`RPC_METHODS` in the tests pins the list). Its timed work is the one
- * schedule's (`schedule.ts`): lanes on the Agents SDK Lifecycle job queue, which owns the
- * object's single physical alarm, beside each agent thread's wake job (`thread-host.ts`:
- * pi-durable in the object, one Session per thread). The object is a plain Durable
- * Object that holds a Lifecycle, never the SDK's `Agent`, and installs none of Lifecycle's
- * runtime handlers: `alarm` alone hands the runtime's alarm to it, so no `fetch` or
- * WebSocket handler joins the surface.
+ * but its doors (`RPC_METHODS` in the tests pins the list) and the runtime's reserved
+ * methods. Its timed work is the one schedule's (`schedule.ts`): lanes on the Agents SDK
+ * Lifecycle job queue, which owns the object's single physical alarm, beside each agent
+ * thread's wake job (`thread-host.ts`: pi-durable in the object, one Session per thread).
+ * The object is a plain Durable Object that holds a Lifecycle, never the SDK's `Agent`, and
+ * installs none of Lifecycle's runtime handlers: `alarm` hands the runtime's alarm to it,
+ * and the owner app's hibernating sockets (`sockets.ts`, A6) are the SDK's `WebSockets`
+ * capability on the same Lifecycle, reached by the object's `fetch`, which accepts only the
+ * binder's upgrade (a Workers RPC cannot carry a socket) and hands it to Lifecycle's
+ * `fetch`, and by the three `webSocket*` reserved methods, each handed to Lifecycle's method
+ * of the same name. Those four and `alarm` are the reserved methods; none is an RPC.
  * Claiming and settling wakes is the `wakes` lane's own, in process, with the doorbell's
  * {@link WakeSender}; file housekeeping (expired uploads and temporary directories,
  * history prunes, garbage chunk deletes) is the `files` lane's. No door reaches either.
@@ -68,6 +72,15 @@
  * reaches the object's policy, a proposal, its scheduled launches and its file usage only
  * through the narrow `Platform` the object hands it, each held to the conversation's
  * authority as the matching door holds its caller.
+ *
+ * The conversation doors (A6) are pi's own operations on one of the caller's threads,
+ * through `/app/api/agent/*`, each taking the binding `agentSubmit` takes, so an outside
+ * client acts only on its own threads: `agentReset` (pi's `reset`), `agentCompact` (a
+ * manual `compact`, within `THREAD_MANUAL_COMPACTIONS` live ones a thread), `agentFork`
+ * (a new thread, a `fork`, over the source's history up to an entry, then its first input),
+ * `agentWithdraw` (a queued input withdrawn by `abortSubmission`) and `agentTaskGraph` (the
+ * thread's live task graph); a socket watches the graph too. Each declares its door class
+ * and is admitted as the other doors are; none is an MCP tool or a `ta` capability.
  *
  * The agent's doors (agent research §8; tasks 5, A4) are how outside chatbots, through
  * `/mcp` and `/api`, and the owner, through `/app/api`, reach the owner's agent:
@@ -96,21 +109,22 @@
  * scheduled delivery, the `wakes` lane's claim). Only the platform, as the reserved
  * `PLATFORM_CALLER`, sets it, at `admissionSet`, the one door that caller reaches.
  */
-import type { HarnessSettings } from "@earendil-works/pi-durable";
+import type { HarnessSettings, TaskGraph } from "@earendil-works/pi-durable";
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
 import {
-  type AgentConfig, type AgentParts, END_WAIT_MS, gatewayAgent, type OwnerAgent, type UsageView,
-  WAITS_FULL,
+  type AgentConfig, type AgentParts, AUTO, END_WAIT_MS, gatewayAgent, type OwnerAgent,
+  type UsageView, WAITS_FULL,
 } from "./agent";
 import {
   AGENT_DIR, Authority, AUTHORITY_RULE, type AuthorityState, NO_AUTHORITY, refusalCode,
   type Stamped, stampOf,
 } from "./authority";
 import {
-  admission, type Admission, doorRefusal, type DoorClass, OWNER_ERASED, PLATFORM_CALLER,
-  PLATFORM_ONLY, PLATFORM_RESERVED, setAdmission, tombstoned, workRefusal, writeTombstone,
+  admission, type Admission, doorRefusal, type DoorClass, OWNER_ERASED, OWNER_SUSPENDED,
+  PLATFORM_CALLER, PLATFORM_ONLY, PLATFORM_RESERVED, setAdmission, tombstoned, workRefusal,
+  writeTombstone,
 } from "./admission";
 import { Collections, Conflict, type HistoryEntry, type Page, type Row } from "./collections";
 import { type ConnectionView, Connections, type GatewayService, type Prepared } from "./connections";
@@ -138,6 +152,7 @@ import { type Card, Registrations } from "./registrations";
 import { GatewayProvider } from "./gateway-provider";
 import { LiveTee } from "./live-tee";
 import { inTime, type Lane, Schedule } from "./schedule";
+import { AppSockets, type CloseKind, type SocketState } from "./sockets";
 import type { ScheduledInput } from "./scheduled";
 import { nextOccurrence, parseCron } from "./cron";
 import { AGENTS_OWNER_ONLY, ownersOnly, storedPath, WORKSPACE } from "./paths";
@@ -147,7 +162,7 @@ import {
   type ReceiptView, retainThreads, type Thread, THREAD_LIMITS, THREAD_RETENTION, Threads,
 } from "./threads";
 import { codePoints, principal } from "./text";
-import type { OperationResult } from "./thread-host";
+import { type OperationResult, RUN_SETTLED } from "./thread-host";
 import type { ThreadStore } from "./thread-store";
 import { TURN_ENDED, Usage as ModelUsage, type UsageReceipt } from "./usage";
 import { runWakes, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "./wakes";
@@ -276,6 +291,8 @@ export interface SubmitRequest {
   readonly message: string;
   readonly client_send_id: string;
   readonly agent_id?: string;
+  /** A fork of the caller's (A6) to go on in, instead of its one conversation with the agent. */
+  readonly thread_id?: string;
   readonly steer?: boolean;
   readonly wait_ms?: number;
 }
@@ -293,6 +310,27 @@ export interface RunRequest {
 }
 
 /** The platform's change of the owner's admission (`admission.ts`). */
+/** A conversation door's thread: one of the caller's own. */
+export interface ThreadRequest {
+  readonly thread_id: string;
+}
+
+export interface ResetRequest extends ThreadRequest {
+  readonly handoff?: string;
+}
+
+export interface CompactRequest extends ThreadRequest {
+  readonly instructions?: string;
+}
+
+/** A fork of one of the caller's threads at a visible entry of its root, then its first input. */
+export interface ForkRequest extends ThreadRequest {
+  readonly entry_id: number;
+  readonly message: string;
+  readonly client_send_id: string;
+  readonly wait_ms?: number;
+}
+
 export interface AdmissionRequest {
   readonly reason: string;
   readonly suspended: boolean;
@@ -524,6 +562,36 @@ export const OUTSIDE_SESSION = "an outside client's call never carries the owner
 export const MCP_REGISTERS_BY_CARD = "an MCP client's agent registers through the card it files";
 
 /**
+ * An agent's `AGENTS.md` as its configuration: its instructions, and, in front matter as
+ * pi-coding-agent's agent files hold it (`---`, `model: <id>`, `---`), its model pin, one of
+ * the gateway provider's models, set as `pi.agent.model` in each root's creating commit. Any
+ * other front matter is refused loudly, as an unclosed one is: no setting is half-read.
+ */
+export function agentFile(path: string, text: string): AgentConfig {
+  if (!text.startsWith("---\n")) {
+    return { instructions: text };
+  }
+  const end = text.indexOf("\n---\n", 3);
+  if (end < 0) {
+    throw new Invalid(`${path}'s front matter is not closed`);
+  }
+  let model: string | undefined;
+  for (const line of text.slice(4, end).split("\n")) {
+    if (line.trim() === "") {
+      continue;
+    }
+    const pin = /^model:[ \t]*(\S+)[ \t]*$/.exec(line);
+    if (pin === null || model !== undefined || !AGENT_MODEL.test(pin[1]!)) {
+      throw new Invalid(`${path}'s front matter names one model and nothing else`);
+    }
+    model = pin[1]!;
+  }
+  const instructions = text.slice(end + 5);
+  return { ...(instructions === "" ? {} : { instructions }),
+           ...(model === undefined ? {} : { model: { provider: AUTO.provider, modelId: model } }) };
+}
+
+/**
  * The request's fields are exactly `required`, plus any of `optional`, and none is
  * `undefined`: a field sent is a value, as the Python door refused `None`.
  */
@@ -617,6 +685,11 @@ export const AGENT_FILE_MAX = 65_536;
 export const AT_AHEAD_S = 366 * 86_400;
 /** Every operation the caller does not own, or that is no operation: one refusal, alike. */
 export const NO_OPERATION = "no such operation";
+/** A conversation door's thread that is not the caller's own ready one: alike, whatever it is. */
+export const NO_THREAD = "no such thread";
+/** A model pin's id, as an agent's `AGENTS.md` front matter names one of the gateway's. */
+export const AGENT_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}$/;
+
 /**
  * The untrusted envelope's notice (the Python's `tinyassets/untrusted.py`), fixed so it
  * cannot be tuned per call into something weaker.
@@ -810,6 +883,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** The agent's settings from owner policy, kept for the policy generation they are of. */
   #agentSettings: { generation: number; settings: HarnessSettings } | null = null;
   readonly #schedule: Schedule;
+  /** The authority checks, over the object's grants (`authority.ts`). */
+  readonly #authority: Authority;
+  /** The owner app's hibernating sockets, a capability of the one Lifecycle (`sockets.ts`). */
+  readonly #sockets: AppSockets;
   /** pi-durable, one Session per thread on the thread host, a capability of the one Lifecycle. */
   readonly #agent: OwnerAgent;
   readonly #lifecycle: Lifecycle<OwnerEnv>;
@@ -894,6 +971,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                                                              AUTHORITY_RULE)),
       admission: () => workRefusal(admission(storage)),
     });
+    this.#authority = authority;
+    this.#sockets = new AppSockets({
+      admit: (binding, thread) => this.#door(() => this.#socketAdmit(binding, thread)),
+      check: (state) => this.#door(() => this.#socketCheck(state)),
+      pin: (thread) => this.#agent.host.pin(thread),
+      unpin: (thread) => this.#agent.host.unpin(thread),
+      watch: (thread) => this.#agent.watch(thread),
+      watchTaskGraph: (thread) => this.#agent.watchTaskGraph(thread),
+      tee: this.#tee,
+    });
     this.#agent = agent({ files: this.#files, notices: this.#notices, write,
                           rearm: () => this.#schedule.sync(),
                           policy: () => this.#agentPolicy(), provider, tee: this.#tee,
@@ -933,16 +1020,24 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                           admission: () => workRefusal(admission(storage)),
                           packages: () => packageSelection(this.#policy.read().document),
                           joined: (turn) => (this.#usage.turnLive(turn) ? null : TURN_ENDED),
+                          sockets: {
+                            opened: (thread) => this.#sockets.opened(thread),
+                            dropped: (thread) => this.#sockets.closeThread(thread, "dropped"),
+                          },
                         });
     const lifecycle = new Lifecycle<OwnerEnv>(this);
     this.#erasure = new Erasure({
-      storage, write, clock, threads: this.#threads, ended: () => this.#agent.erasing(),
+      storage, write, clock, threads: this.#threads, ended: () => {
+        this.#sockets.closeAll("erased");
+        this.#agent.erasing();
+      },
       drop: (thread) => this.#agent.drop(thread), lifecycle,
       wipe: () => this.#gate.wipe(writeTombstone),
       retryMs: internals.eraseRetryMs ?? ERASE_RETRY_MS,
     });
     internals.erasure?.(this.#erasure);
-    this.#lifecycle = lifecycle.use(this.#schedule).use(this.#agent.host).use(this.#erasure);
+    this.#lifecycle = lifecycle.use(this.#schedule).use(this.#agent.host).use(this.#erasure)
+      .use(this.#sockets.capability);
     void ctx.blockConcurrencyWhile(async () => {
       if (this.#tombstone) {
         return;  // an erased owner: nothing is made here again
@@ -965,6 +1060,31 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   override async alarm(): Promise<void> {
     await this.#lifecycle.alarm();
+  }
+
+  /**
+   * The runtime's `fetch`, the object's one non-RPC entry: only the binder's socket upgrade
+   * (`sockets.ts`), attached and then handed to Lifecycle's `fetch`, whose `WebSockets`
+   * accepts it; anything else is refused with its fixed code.
+   */
+  override async fetch(request: Request): Promise<Response> {
+    return this.#sockets.serve(request, (upgrade) => this.#lifecycle.fetch(upgrade));
+  }
+
+  /** A hibernating socket's frame, handed to Lifecycle (`sockets.ts` reads it). */
+  override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    await this.#lifecycle.webSocketMessage(ws, message);
+  }
+
+  /** A hibernating socket's close, handed to Lifecycle. */
+  override async webSocketClose(ws: WebSocket, code: number, reason: string,
+                                wasClean: boolean): Promise<void> {
+    await this.#lifecycle.webSocketClose(ws, code, reason, wasClean);
+  }
+
+  /** A hibernating socket's error, handed to Lifecycle. */
+  override async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
+    await this.#lifecycle.webSocketError(ws, error);
   }
 
   /**
@@ -1118,9 +1238,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
   }
 
-  /** One session signed out, and the connection flows it began cancelled with it. */
-  sessionClose(binding: Binding): Promise<{ closed: number }> {
-    return this.#synced(() => {
+  /**
+   * One session signed out, and the connection flows it began cancelled with it. The owner's
+   * app sockets ride no session (they widen nothing), so a sign-out closes every one of the
+   * owner's own (`session_closed`): each device's app attaches again with its token, and the
+   * one signed out, its grant revoked, cannot.
+   */
+  async sessionClose(binding: Binding): Promise<{ closed: number }> {
+    const closed = await this.#synced(() => {
       this.#owner(binding, "reduce", "sign out");
       const id = this.#sessions.id(binding.session);
       const closed = this.#sessions.close(binding.session);
@@ -1129,18 +1254,22 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       return closed;
     });
+    this.#sockets.closeOwner("session");
+    return closed;
   }
 
   /**
    * Every session signed out: account revocation and deletion (`revoke_owner`), every open
    * connection flow cancelled in the same unit, so a late callback finds none.
    */
-  sessionCloseAll(binding: Binding): Promise<{ closed: number }> {
-    return this.#synced(() => {
+  async sessionCloseAll(binding: Binding): Promise<{ closed: number }> {
+    const closed = await this.#synced(() => {
       this.#owner(binding, "reduce", "sign out");
       this.#connections.cancelFlows(null);
       return this.#sessions.closeAll();
     });
+    this.#sockets.closeOwner("session");
+    return closed;
   }
 
   // -- OWNER_POLICY ------------------------------------------------------------
@@ -1267,6 +1396,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }));
     const { threads, ...answer } = changed;
     if (threads !== null) {
+      this.#sockets.closeClient(answer.client, "authority");
       await this.#agent.endClient(answer.client, threads);
     }
     return answer;
@@ -1290,6 +1420,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       });
     });
     const { threads, ...answer } = result;
+    this.#sockets.closeClient(answer.client, "authority");
     await this.#agent.endClient(answer.client, threads);
     return answer;
   }
@@ -1526,8 +1657,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const asked = await this.#door(() => {
       const account = this.#account(binding, "work");
       const r = agentFields(request, ["message", "client_send_id"],
-                            ["agent_id", "steer", "wait_ms"]);
-      const agent = agentDir(r["agent_id"] ?? MAIN_AGENT);
+                            ["agent_id", "steer", "wait_ms", "thread_id"]);
+      // A fork goes on by its id (A6); the caller's one conversation by its agent.
+      const forked = r["thread_id"] === undefined ? null
+        : this.#forkOf(account, r["thread_id"]);
+      const agent = agentDir(r["agent_id"] ?? forked?.agent_id ?? MAIN_AGENT);
+      if (forked !== null && agent !== forked.agent_id) {
+        throw new Invalid("a fork goes on as its own agent");
+      }
       const message = agentText(r["message"], "a message");
       const sendId = sendIdOf(r["client_send_id"]);
       const steer = r["steer"] === undefined ? false : flag(r["steer"], "steer");
@@ -1535,7 +1672,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const universe = this.#universe(account);
       this.#scope(account, "converse", universe, agent);
       const stamp = this.#stampOf(binding, account, universe, agent);
-      const thread = this.#threads.conversing(stamp, agent);
+      const thread = forked ?? this.#threads.conversing(stamp, agent);
       if (thread !== null) {
         this.#threads.touch(thread.thread_id, clock());
       }
@@ -1557,6 +1694,221 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         : { entry: { kind: "ta.outside", data: { client: asked.client, agent: asked.agent } } }),
     });
     return this.#awaited(thread, key, asked.client, asked.waitMs);
+  }
+
+  // -- CONVERSATION: pi's operations on one of the caller's threads (A6, pi audit F10) ----
+
+  /**
+   * In a unit: the caller's own ready thread `value` names, for a door of class `door`: its
+   * account admitted, the thread resolved against the caller's own rows (`NO_THREAD` for any
+   * other, alike), and, for a `work` door, the thread's authority still holding what it acts
+   * by where it acts (`converse` for a conversation or a fork, `run_graph` for a run, a
+   * scoped client's), as an input to it would need; a settled run takes no work
+   * (`RUN_SETTLED`).
+   */
+  #onThread(binding: Binding, door: DoorClass, request: unknown, required: readonly string[],
+            optional: readonly string[]):
+      { account: Account; thread: Thread; r: Record<string, unknown> } {
+    const account = this.#account(binding, door);
+    const r = agentFields(request, ["thread_id", ...required], optional);
+    const thread = this.#threads.mine(r["thread_id"], account.origin?.client ?? null);
+    if (thread === null) {
+      throw new Refused(NO_THREAD);
+    }
+    if (door === "work") {
+      if (this.#threads.settledRun(thread.thread_id)) {
+        throw new Refused(RUN_SETTLED);
+      }
+      this.#authority.require(this.#threads.authority(thread),
+                              [thread.kind === "run" ? "run_graph" : "converse"]);
+    }
+    return { account, thread, r };
+  }
+
+  /** In a unit: the caller's own fork `value` names, to go on in; `NO_THREAD` otherwise. */
+  #forkOf(account: Account, value: unknown): Thread {
+    const thread = this.#threads.mine(value, account.origin?.client ?? null);
+    if (thread === null || thread.kind !== "fork") {
+      throw new Refused(NO_THREAD);
+    }
+    return thread;
+  }
+
+  /**
+   * pi's `reset` of one of the caller's threads (`work`): a new context, the model no longer
+   * seeing older entries (they stay in storage), from `handoff` when given, an outside
+   * client's inside the untrusted envelope. Queued like a write while the thread works.
+   */
+  async agentReset(binding: Binding, request: ResetRequest):
+      Promise<{ thread_id: string; reset: true }> {
+    const asked = await this.#door(() => {
+      const { account, thread, r } = this.#onThread(binding, "work", request, [], ["handoff"]);
+      const client = account.origin?.client ?? null;
+      this.#threads.touch(thread.thread_id, clock());
+      return { thread, handoff: r["handoff"] === undefined ? undefined
+        : this.#inputOf(client, agentText(r["handoff"], "a handoff")) };
+    });
+    await this.#agent.reset(asked.thread, asked.handoff);
+    return { thread_id: asked.thread.thread_id, reset: true };
+  }
+
+  /**
+   * pi's manual `compact` of one of the caller's threads (`work`: its summary is a model
+   * call, reserved as any is): within `THREAD_MANUAL_COMPACTIONS` live manual compactions a
+   * thread, refused at once past it (`COMPACTIONS_FULL`), and within the working threads, as
+   * an input is. An outside client's instructions reach the summary inside the envelope.
+   */
+  async agentCompact(binding: Binding, request: CompactRequest):
+      Promise<{ thread_id: string; task_id: number }> {
+    const asked = await this.#door(() => {
+      const { account, thread, r } = this.#onThread(binding, "work", request, [],
+                                                    ["instructions"]);
+      const client = account.origin?.client ?? null;
+      this.#threads.touch(thread.thread_id, clock());
+      return { thread, instructions: r["instructions"] === undefined ? undefined
+        : this.#inputOf(client, agentText(r["instructions"], "instructions")) };
+    });
+    const task = await this.#agent.compact(asked.thread, asked.instructions);
+    return { thread_id: asked.thread.thread_id, task_id: Number(task) };
+  }
+
+  /**
+   * A fork of one of the caller's threads at entry `entry_id` of its root (`work`), with its
+   * first input, as an edit and resend: a new thread, a `fork`, of the source's agent,
+   * under the caller's own stamp where it acts now (`converse` held there), within the
+   * caller's conversation bounds; its Session's history is the source's as of the entry
+   * (pi's `context({at})`, appended into the fork's root in its creating commit through pi's
+   * `appendEntry`, `seeded`), then `message` is its input, admitted as any fresh input to a
+   * thread not at work is (`threads_working` past the working threads), and waited on as
+   * `agentSubmit` waits. A fork whose history or first input is refused is dropped, so a
+   * refused fork leaves nothing. It goes on through `agentSubmit` with its `thread_id`.
+   */
+  async agentFork(binding: Binding, request: ForkRequest): Promise<Operation> {
+    const asked = await this.#door(() => {
+      const { account, thread, r } = this.#onThread(binding, "work", request,
+                                                    ["entry_id", "message", "client_send_id"],
+                                                    ["wait_ms"]);
+      const entry = r["entry_id"];
+      if (typeof entry !== "number" || !Number.isSafeInteger(entry) || entry < 1) {
+        throw new Invalid("entry_id is an entry of the thread");
+      }
+      const client = account.origin?.client ?? null;
+      const agent = thread.agent_id;
+      const universe = this.#universe(account);
+      this.#scope(account, "converse", universe, agent);
+      return { source: thread, entry, client, agent, waitMs: waitOf(r["wait_ms"]),
+               sendId: sendIdOf(r["client_send_id"]),
+               stamp: this.#stampOf(binding, account, universe, agent),
+               input: this.#inputOf(client, agentText(r["message"], "a message")) };
+    });
+    await this.#agentConfig(asked.agent);  // a bad AGENTS.md is refused before a thread
+    const input = asked.client === null
+      ? agentText(await this.#agent.expand(asked.input), "an expanded input") : asked.input;
+    const history = await this.#agent.forkContext(asked.source, asked.entry as never);
+    const made = await this.#agent.thread(asked.agent, asked.stamp, {
+      kind: "fork", need: ["converse"] });
+    await this.#schedule.sync();
+    const key = await sendRequest(asked.client, asked.sendId);
+    try {
+      await this.#agent.forked(made, history);
+      await this.#agent.submit(made, input, {
+        operationId: key, whenBusy: "followUp",
+        ...(asked.client === null ? {}
+          : { entry: { kind: "ta.outside", data: { client: asked.client, agent: asked.agent } } }),
+      });
+    } catch (error) {
+      const marked = await this.#door(() => this.#threads.abandon(made.thread_id));
+      if (marked !== null) {
+        await inTime(this.#agent.drop(marked).catch(() => undefined), END_WAIT_MS);
+      }
+      throw error;
+    }
+    return this.#awaited(made, key, asked.client, asked.waitMs);
+  }
+
+  /**
+   * Withdraw one of the caller's own queued inputs by its operation (`reduce`): pi's
+   * `abortSubmission`, by its request id; one pi has placed already is refused
+   * (`ALREADY_PLACED`: it runs, and aborting it is `agentCancel`'s); one settled, or a
+   * scheduled launch's (cancelled by `agentCancel`), withdraws nothing.
+   */
+  async agentWithdraw(binding: Binding, request: OperationRequest):
+      Promise<{ operation_id: string; withdrawn: boolean }> {
+    const found = await this.#door(() => {
+      const account = this.#account(binding, "reduce");
+      const r = agentFields(request, ["operation_id"]);
+      return this.#operation(account, r["operation_id"]);
+    });
+    const { thread, key } = found;
+    const id = thread?.thread_id ?? found.receipt!.thread_id;
+    const withdrawn = thread === null || key.startsWith("work_") ? false
+      : await this.#agent.withdraw(thread, key);
+    return { operation_id: operationOf(id, key), withdrawn };
+  }
+
+  /** One of the caller's threads' live task graph, as it stands now (`read`, pi's `taskGraph`). */
+  async agentTaskGraph(binding: Binding, request: ThreadRequest):
+      Promise<{ thread_id: string; graph: TaskGraph }> {
+    const { thread } = await this.#door(() => this.#onThread(binding, "read", request, [], []));
+    return { thread_id: thread.thread_id, graph: await this.#agent.taskGraph(thread) };
+  }
+
+  // -- SOCKETS: the owner app's live view of a thread (A6, `sockets.ts`) -----------------
+
+  /**
+   * In a unit: a socket's attach, as a `read` door: the binding's account (no session: a
+   * socket widens nothing), the caller's own ready thread, and a client's stamp standing at
+   * its generation; its attachment.
+   */
+  #socketAdmit(binding: unknown, threadId: string): SocketState {
+    const account = this.#account(binding as Binding, "read");
+    if ((binding as Binding).session !== undefined) {
+      throw new Invalid("an app socket carries no session");
+    }
+    const client = account.origin?.client ?? null;
+    const thread = this.#threads.mine(threadId, client);
+    if (thread === null) {
+      throw new Refused(NO_THREAD);
+    }
+    if (client !== null) {
+      this.#grants.standing(client, thread.generation, thread.authenticated_at);
+    }
+    const { owner, caller, origin, source, authenticated_at: signedIn } = binding as Binding;
+    return {
+      v: 1, owner: account.owner, client, thread: thread.thread_id,
+      generation: thread.generation,
+      binding: { owner, caller, origin, ...(source === undefined ? {} : { source }),
+                 ...(signedIn === undefined ? {} : { authenticated_at: signedIn }) },
+    };
+  }
+
+  /**
+   * In a unit: whether a socket's attachment still holds, as at its attach, for each frame it
+   * sends and each reattach: its close when it does not (the owner erased or erasing, reads
+   * refused by its admission, the thread gone, the client's authority moved), else null.
+   */
+  #socketCheck(state: SocketState): CloseKind | null {
+    try {
+      const account = this.#account(state.binding as unknown as Binding, "read");
+      if (account.owner !== state.owner || (account.origin?.client ?? null) !== state.client) {
+        return "authority";
+      }
+      const thread = this.#threads.mine(state.thread, state.client);
+      if (thread === null) {
+        return "dropped";
+      }
+      if (state.client !== null) {
+        this.#grants.standing(state.client, state.generation, thread.authenticated_at);
+      }
+      return null;
+    } catch (error) {
+      if (!(error instanceof Refused || error instanceof Invalid)) {
+        throw error;
+      }
+      const message = error.message;
+      return message === OWNER_ERASED || message === ERASING ? "erased"
+        : message.startsWith(OWNER_SUSPENDED) ? "suspended" : "authority";
+    }
   }
 
   /**
@@ -1859,11 +2211,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       bytes.set(part, at);
       at += part.byteLength;
     }
+    let text: string;
     try {
-      return { instructions: new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes) };
+      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
     } catch {
       throw new Invalid(`${path} is not UTF-8 text`);
     }
+    return agentFile(path, text);
   }
 
   // -- NOTICES: what the agent's runtime reported to the owner ----------------------
@@ -1896,6 +2250,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       return setAdmission(this.#storage, request);
     });
+    if (doorRefusal(set, "read") !== null) {
+      this.#sockets.closeAll("suspended");  // reads refused: an abuse suspension
+    }
     if (set.state !== "admitted") {
       await this.#agent.endUnadmitted();
     } else {

@@ -24,9 +24,19 @@
  * the open is refused at once, loudly (`SESSIONS_FULL`), and never waits for a slot: a
  * wait could deadlock when every open Session is working on a tool that opens another
  * thread (`agent:run`). A Session idle for `idleCloseMs` is closed at the host's next
- * activity. A watched Session (A6) is pinned open and counted. Closing never loses work:
- * what was committed is in the store, and a sleeping task's job reopens its Session when it
- * is due.
+ * activity. A watched Session (an owner app socket's, `sockets.ts`, A6) is pinned open and
+ * counted against `openMax`, so a watch past it is refused as any open is; it is never
+ * closed idle. Each open tells the host's parts (`opened`), so a socket a hibernation or an
+ * eviction cut off its watch reattaches from a fresh view as its thread's Session comes
+ * back. Closing never loses work: what was committed is in the store, and a sleeping task's
+ * job reopens its Session when it is due.
+ *
+ * The conversation operations pi already has, for the owner's doors (A6): a reset and a
+ * manual compaction of a thread's root, each handed to pi inside the thread's wake, the
+ * compaction within `THREAD_MANUAL_COMPACTIONS` live ones a thread (`COMPACTIONS_FULL`) and
+ * the working threads' places, as an input is; a queued input withdrawn by its request id
+ * (`abortSubmission`), one already placed refused (`ALREADY_PLACED`); the root's context
+ * as of an entry, which a fork starts from.
  *
  * A Session fails for good at its first storage error (a store reset, or a stale holder
  * refused by the store's fence); its job, or the next call, opens it again once the failed
@@ -69,8 +79,8 @@
  */
 import { BACKGROUND_CONTEXT, type Context, withAbortSignal } from "@earendil-works/chord/context";
 import {
-  type ConversationId, type Cursor, type EntryRecord, type Harness, type JsonObject, type Page,
-  ROOT_CONVERSATION_ID,
+  type ContextView, type ConversationId, type Cursor, type EntryId, type EntryRecord,
+  type Harness, type JsonObject, LiveDoc, type Page, ROOT_CONVERSATION_ID,
   type SettledSubmissionRecord, type Storage, type TaskId, type UsageState, type Wake,
 } from "@earendil-works/pi-durable";
 import {
@@ -81,7 +91,9 @@ import { Refused } from "./errors";
 import { COMPACTION, JOINED } from "./origin";
 import { inTime } from "./schedule";
 import { assistantText } from "./thread-store";
-import { THREAD_CHILD_INPUTS, THREAD_INPUTS, WORKING_THREADS } from "./schema";
+import {
+  THREAD_CHILD_INPUTS, THREAD_INPUTS, THREAD_MANUAL_COMPACTIONS, WORKING_THREADS,
+} from "./schema";
 
 const BG = BACKGROUND_CONTEXT;
 const ROOT = ROOT_CONVERSATION_ID;
@@ -150,6 +162,12 @@ export const THREAD_INPUTS_FULL = "thread_inputs_full: the thread holds as many 
 /** The refusal of a subagent's input past `THREAD_CHILD_INPUTS` open ones a thread holds. */
 export const THREAD_CHILD_INPUTS_FULL = "thread_inputs_full: the thread's subagents hold as " +
   "many open inputs as they may; wait for one to answer";
+/** The refusal of a manual compaction past `THREAD_MANUAL_COMPACTIONS` live ones a thread. */
+export const COMPACTIONS_FULL = "compactions_full: the thread holds as many manual " +
+  "compactions as it may; wait for one to finish";
+/** The refusal of a withdrawal of an input pi has already placed: it is running. */
+export const ALREADY_PLACED = "already_placed: the input is running and can no longer be " +
+  "withdrawn; cancel the operation to abort it";
 /** The task states that are still live, as pi's scheduler holds them. */
 const LIVE_TASKS = Object.freeze(["pending", "running", "waiting", "sleeping", "completing"] as const);
 const SCAN_PAGE = 100;
@@ -235,6 +253,11 @@ export interface HostParts {
   };
   /** Keep an owner notice (`notices.ts`). */
   notice(type: string, detail: string): void;
+  /**
+   * `thread`'s Session opened (not for an ending): its watchers reattach from a fresh view
+   * (`sockets.ts`). Called off the open's line, once it resolved.
+   */
+  opened?(thread: string): void;
 }
 
 /** An operation, as pi's submission record says it stands. */
@@ -280,6 +303,8 @@ class Slot {
   admitting = 0;
   /** Linked admissions in flight (`linked`): a subagent's input each. */
   linking = 0;
+  /** Manual compactions being admitted (`compact`). */
+  compacting = 0;
   leases = 0;
   pins = 0;
   /** Endings in flight (`end`): the job never resumes the Session under one. */
@@ -466,6 +491,98 @@ export class ThreadHost extends LifecycleCapability {
    */
   admitted<T>(thread: string, act: (opened: Opened) => Promise<T>): Promise<T> {
     return this.#use(thread, (opened, slot) => this.#admit(thread, slot, () => act(opened)));
+  }
+
+  /**
+   * Withdraw a queued input of the root by its request id (pi's `abortSubmission`): true
+   * once withdrawn, false for one settled or never seen; one already placed is refused
+   * (`ALREADY_PLACED`), since it runs: aborting it is a cancel's.
+   */
+  withdrawQueued(thread: string, requestId: string): Promise<boolean> {
+    return this.use(thread, async ({ pi, storage }) => {
+      const record = await storage.submissionByRequest(ROOT, requestId, BG);
+      if (record === undefined) {
+        return false;
+      }
+      switch (await pi.abortSubmission(record.id, BG, ROOT)) {
+        case "aborted":
+          return true;
+        case "already_placed":
+          throw new Refused(ALREADY_PLACED);
+        default:
+          return false;
+      }
+    });
+  }
+
+  /**
+   * pi's `reset` of the root, inside the thread's wake (it may end a run when it is placed):
+   * a new context, from `handoff` when given; refused while the owner is not admitted.
+   */
+  reset(thread: string, handoff: string | undefined): Promise<void> {
+    return this.#use(thread, async ({ pi }, slot) => {
+      const root = await pi.conversation(ROOT, BG);
+      if (root === undefined) {
+        throw new Error("a thread's Session has no root");
+      }
+      await this.#admit(thread, slot, async () => {
+        const unadmitted = this.#parts.admission();
+        if (unadmitted !== null) {
+          throw new Refused(unadmitted);
+        }
+        await root.reset(handoff, BG);
+      });
+    });
+  }
+
+  /**
+   * pi's manual `compact` of the root, inside the thread's wake: within
+   * `THREAD_MANUAL_COMPACTIONS` live manual compactions (its root's `pi.live.compactions`,
+   * listed in the creating commit, with those being admitted), refused at once past it
+   * (`COMPACTIONS_FULL`); a thread not at work takes a place among the working threads, as
+   * an input does, since a compaction owns a turn; refused while the owner is not admitted.
+   * Its task's id.
+   */
+  compact(thread: string, instructions: string | undefined): Promise<TaskId> {
+    return this.#use(thread, async ({ pi }, slot) => {
+      const root = await pi.conversation(ROOT, BG);
+      if (root === undefined) {
+        throw new Error("a thread's Session has no root");
+      }
+      return this.#admit(thread, slot, async () => {
+        const live = (await pi.snapshot(LiveDoc, ROOT, BG))?.compactions ?? [];
+        const manual = live.filter((status) => status.reason === "manual").length;
+        if (manual + slot.compacting >= THREAD_MANUAL_COMPACTIONS) {
+          throw new Refused(COMPACTIONS_FULL);
+        }
+        slot.compacting++;
+        try {
+          const busy = await this.#parts.turns.working(thread, this.#pending(thread),
+                                                       this.#timing.workingMax);
+          if (busy !== null) {
+            throw new Refused(busy);
+          }
+          const unadmitted = this.#parts.admission();
+          if (unadmitted !== null) {
+            throw new Refused(unadmitted);
+          }
+          return await root.compact(instructions, BG);
+        } finally {
+          slot.compacting--;
+        }
+      });
+    });
+  }
+
+  /** The root's committed context as of entry `at` (pi's `context`): what a fork starts from. */
+  context(thread: string, at: EntryId): Promise<ContextView> {
+    return this.use(thread, async ({ pi }) => {
+      const root = await pi.conversation(ROOT, BG);
+      if (root === undefined) {
+        throw new Error("a thread's Session has no root");
+      }
+      return root.context(BG, { at });
+    });
   }
 
   /** Withdraw a queued input, or abort the run it joined; false when nothing was. */
@@ -712,6 +829,9 @@ export class ThreadHost extends LifecycleCapability {
           throw error;
         });
       current.opening = opening;
+      if (!ending) {
+        void opening.then(() => this.#parts.opened?.(thread), () => undefined);
+      }
     }
     current.leases++;
     try {

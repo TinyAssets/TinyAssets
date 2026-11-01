@@ -16,6 +16,7 @@ import {
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
+import { RESERVED_METHODS } from "./sockets-support";
 import { NO_THREAD, settledIn, WAIT_ENDED } from "../src/agent";
 import type { Stamped } from "../src/authority";
 import { OWNER_ERASED } from "../src/admission";
@@ -668,7 +669,7 @@ describe("the owner's erasure (S4-S5)", () => {
     }
     // Every door of the object's, before anything it was asked is read.
     const doors = Object.getOwnPropertyNames(OwnerDO.prototype)
-      .filter((door) => door !== "constructor" && door !== "alarm");
+      .filter((door) => door !== "constructor" && !RESERVED_METHODS.includes(door));
     expect(doors.length).toBeGreaterThan(60);
     const answers = new Map<string, string>();
     for (const door of doors) {

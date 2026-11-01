@@ -20,6 +20,7 @@ import { createHash } from "node:crypto";
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
 import type { Binding, Origin, OwnerDO } from "../../owner/src/owner-do";
+import { BINDING_HEADER, SOCKET_URL, THREAD_HEADER } from "../../owner/src/socket-shape";
 import { principal } from "../../owner/src/text";
 
 import {
@@ -239,6 +240,20 @@ export async function bindSignIn(env: DoorsEnv, signIn: SignIn): Promise<Bound> 
   const owner = await ownerOf(env, signIn.issuer, signIn.subject);
   return bound(env, { owner, caller: owner, origin: null,
                       authenticated_at: seconds(signIn.authenticated_at, "a sign-in's time") });
+}
+
+/**
+ * The owner app's socket upgrade, as the binder forwards it to the bound object's `fetch`
+ * (`owner/src/sockets.ts`): a fresh request it builds itself, so no header the client sent
+ * survives the hop, a client's own `x-ta-binding` least of all. Its identity is the bound
+ * `binding`, set from the verified credential; its one other field, the thread, is the
+ * object's to resolve against the caller's own rows.
+ */
+export function socketRequest({ binding }: Bound, thread: string): Request {
+  const headers = new Headers({ Upgrade: "websocket" });
+  headers.set(BINDING_HEADER, JSON.stringify(binding));
+  headers.set(THREAD_HEADER, thread);
+  return new Request(SOCKET_URL, { headers });
 }
 
 function appOwner(token: ValidatedAccessToken<unknown>): string {

@@ -3,12 +3,15 @@
  * outside-callable owner door, every hint explicit and right, and never the model's own.
  *
  * The outside-callable doors are read from `owner-do.ts` itself: a public method that
- * binds through `#account`, `#collector` or `#filer`, and never through `#owner` or
- * `#widening`, is reachable by an outside client. Its capability is the last string it
- * hands `#scope`, `#collector` or `#filer` (a door class comes before it). Each tool must
- * name such a door, with that capability, and arguments exactly the door's request
- * fields; each such door must have a tool, or be named below with the slice that owes it. Only the doors that hand work to
- * the owner's agent are open world: the agent acts on outside services.
+ * binds through `#account`, `#collector`, `#filer` or `#onThread` (the conversation doors'),
+ * and never through `#owner` or `#widening`, is reachable by an outside client. Its
+ * capability is the last string it hands `#scope`, `#collector` or `#filer` (a door class
+ * comes before it). Each tool must name such a door, with that capability, and arguments
+ * exactly the door's request fields but those only the owner's app sends (`APP_FIELDS`);
+ * each such door must have a tool, or be named below with the slice that owes it, or be one
+ * of the owner app's conversation doors (`APP_DOORS`, A6), which the plan names no tool for.
+ * Only the doors that hand work to the owner's agent are open world: the agent acts on
+ * outside services.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -30,6 +33,21 @@ const DEFERRED: Readonly<Record<string, string>> = Object.freeze({
   fileUploadAbort: "tasks 2, owed by 6.1: file bytes streamed by the binder",
   fileChanges: "tasks 6: the sandbox's sync feed, reached by its lease token",
   mailboxSubscriber: "tasks 7: the MCP Events subscribe door",
+});
+/**
+ * The owner app's conversation doors (A6, pi audit F10), reached through `/app/api/agent/*`
+ * only: each takes the binding `agentSubmit` takes, so an outside client would act only on
+ * its own threads, but neither the plan nor the tasks name an MCP tool or a `ta` capability
+ * for them, so none is served.
+ */
+const APP_DOORS: readonly string[] = Object.freeze(["agentReset", "agentCompact", "agentFork",
+                                                    "agentWithdraw", "agentTaskGraph"]);
+/**
+ * Request fields only the owner's app sends, which no tool takes: a fork's `thread_id` on
+ * `agentSubmit`, since only the app's fork door makes a fork (A6).
+ */
+const APP_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  agentSubmit: Object.freeze(["thread_id"]),
 });
 /** The model's own tools: pi's, inside the object, never served outside. */
 const MODEL_TOOLS: readonly string[] = Object.freeze(["read", "write", "edit", "bash", "ta"]);
@@ -121,7 +139,7 @@ export function outsideDoors(source: string): Map<string, DoorShape> {
       ts.forEachChild(node, visit);
     };
     visit(member.body);
-    const outside = ["#account", "#collector", "#filer"].some((h) => helpers.has(h))
+    const outside = ["#account", "#collector", "#filer", "#onThread"].some((h) => helpers.has(h))
       && !helpers.has("#owner") && !helpers.has("#widening");
     if (!outside) {
       continue;
@@ -205,7 +223,8 @@ export function toolProblems(tools: readonly Tool[], doors: ReadonlyMap<string, 
         say(`a ${field} field selects an operation`);
       }
     }
-    const expected = door.fields ?? new Map<string, boolean>();
+    const expected = new Map([...door.fields ?? new Map<string, boolean>()].filter(([field]) =>
+      !(APP_FIELDS[tool.door] ?? []).includes(field)));
     const given = new Map(Object.keys(properties).map((key) => [key, !required.includes(key)]));
     if (JSON.stringify([...given].sort()) !== JSON.stringify([...expected].sort())) {
       say(`arguments ${JSON.stringify([...given])} are not ${tool.door}'s ` +
@@ -213,8 +232,15 @@ export function toolProblems(tools: readonly Tool[], doors: ReadonlyMap<string, 
     }
   }
   for (const door of doors.keys()) {
-    if (!used.has(door) && !Object.hasOwn(DEFERRED, door)) {
+    if (!used.has(door) && !Object.hasOwn(DEFERRED, door) && !APP_DOORS.includes(door)) {
       problems.push(`${door}: an outside-callable door with no tool, and none owed`);
+    }
+  }
+  for (const door of APP_DOORS) {
+    if (!doors.has(door)) {
+      problems.push(`${door}: an app door, but not an outside-callable door`);
+    } else if (used.has(door)) {
+      problems.push(`${door}: an app door, but it has a tool`);
     }
   }
   for (const door of Object.keys(DEFERRED)) {

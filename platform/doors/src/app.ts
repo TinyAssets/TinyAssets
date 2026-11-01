@@ -24,9 +24,16 @@
  *   (`agentSubmit`, `agentRun`, `agentStatus`, `agentCancel`) on the owner's own threads,
  *   the same doors `converse`, `run_graph`, `run_status` and `run_cancel` call for an
  *   outside client.
+ * - `agent/reset`, `agent/compact`, `agent/fork`, `agent/withdraw`, `agent/task-graph`: the
+ *   conversation doors (A6), pi's own operations on the owner's own threads.
+ * - `agent/socket`: the owner app's live socket on one of its threads (A6): a `GET` with
+ *   `Upgrade: websocket` and `?thread_id=`, behind the same token check and maintenance
+ *   gate, the session rules attaching no session to it (a `GET`); the binder forwards it to
+ *   the object's `fetch` as a fresh request (`socketRequest`), and the object's answer,
+ *   the socket or its refusal, is the door's.
  */
 import {
-  type Bound, bindKeyRegistration, bindOwner,
+  type Bound, bindKeyRegistration, bindOwner, socketRequest,
 } from "./binder";
 import { jsonObject } from "./body";
 import {
@@ -106,7 +113,40 @@ const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
     json(200, await stub.agentStatus(binding, request as never)),
   "agent/cancel": async (_env, { binding, stub }, request) =>
     json(200, await stub.agentCancel(binding, request as never)),
+  "agent/reset": async (_env, { binding, stub }, request) =>
+    json(200, await stub.agentReset(binding, request as never)),
+  "agent/compact": async (_env, { binding, stub }, request) =>
+    json(200, await stub.agentCompact(binding, request as never)),
+  "agent/fork": async (_env, { binding, stub }, request) =>
+    json(200, await stub.agentFork(binding, request as never)),
+  "agent/withdraw": async (_env, { binding, stub }, request) =>
+    json(200, await stub.agentWithdraw(binding, request as never)),
+  "agent/task-graph": async (_env, { binding, stub }, request) =>
+    json(200, await stub.agentTaskGraph(binding, request as never)),
 });
+
+/** The owner app's socket door's path under the owner surface. */
+export const SOCKET_PATH = "agent/socket";
+
+/**
+ * The owner app's live socket: a `GET` upgrade (`Upgrade: websocket`) naming one of the
+ * owner's threads (`?thread_id=`), with no body, forwarded by the binder to the object's
+ * `fetch` (`socketRequest`), whose answer is returned as it is: the socket, or its refusal.
+ */
+async function socketUpgrade(request: Request, owner: Bound): Promise<Response> {
+  if (request.method !== "GET") {
+    return failure(405, "method not allowed");
+  }
+  if ((request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") {
+    return failure(426, "the socket door takes a WebSocket upgrade");
+  }
+  const query = new URL(request.url).searchParams;
+  const thread = query.get("thread_id");
+  if (thread === null || [...query.keys()].length !== 1) {
+    return failure(400, "the socket door takes one thread_id");
+  }
+  return owner.stub.fetch(socketRequest(owner, thread));
+}
 
 /** The owner's first-party token, or the refusal for what came instead. */
 async function ownerToken(env: DoorsEnv, token: string | null) {
@@ -138,6 +178,10 @@ export async function serveApp(request: Request, env: DoorsEnv, sources: Sources
   }
   const session = sessionOf(request);
   const path = new URL(request.url).pathname.slice(OWNER_SURFACE.length);
+  if (path === SOCKET_PATH) {
+    const owner = bindOwner(env, token, session);
+    return await ownerGate(env, owner.binding.owner) ?? socketUpgrade(request, owner);
+  }
   const registering = path === "outside-agents";
   const route = Object.hasOwn(ROUTES, path) ? ROUTES[path] : undefined;
   const connect = Object.hasOwn(CONNECT_ROUTES, path) ? CONNECT_ROUTES[path] : undefined;

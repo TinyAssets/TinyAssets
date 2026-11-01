@@ -11,6 +11,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { Lifecycle, LifecycleCapability } from "agents/lifecycle";
 import { describe, expect, it } from "vitest";
 
+import { NOT_BINDER_SHAPE } from "../src/sockets";
 import { type Write, WriteGate } from "../src/gate";
 import type { Ledger } from "../src/ledger";
 import { type LaneDeps, type OwnerDO, ownerLanes } from "../src/owner-do";
@@ -492,14 +493,14 @@ describe("the object's schedule", () => {
       .toEqual([]);
   });
 
-  it("is driven by the object's alarm alone: no fetch or WebSocket handler is installed",
-     async () => {
+  it("is driven by the object's alarm alone: Lifecycle installs no handler, and the object's " +
+     "fetch answers only the binder's socket upgrade", async () => {
     const { stub, as, name } = ownerObject();
     await stub.policyRead(as(name));
     // The base class's own two, and none of Lifecycle's handlers (fetch, alarm, webSocket*).
     expect(await runInDurableObject(stub, (instance: OwnerDO) =>
       Object.getOwnPropertyNames(instance).sort())).toEqual(["ctx", "env"]);
-    expect((await failure(() => stub.fetch("https://owner.example/"))).message)
-      .toMatch(/does not define a `fetch\(\)` method/);
+    const answer = await stub.fetch("https://owner.example/");
+    expect([answer.status, await answer.json()]).toEqual([400, { error: NOT_BINDER_SHAPE }]);
   });
 });

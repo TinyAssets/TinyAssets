@@ -217,17 +217,22 @@ export const THREAD_CHILD_INPUTS = THREAD_CONVERSATIONS - 1;
  */
 export const WORKING_THREADS = 1024;
 /**
- * Compactions one conversation holds live at once: pi starts a background one only while
- * none is listed (`generation.js`, `pi.live.compactions`), and a run's blocking one waits
- * in its generation, one run at a time; there is no manual compaction door yet (A6 caps
- * its own).
+ * Compactions one conversation holds live at once on its own: pi starts a background one
+ * only while none is listed (`generation.js`, `pi.live.compactions`), and a run's blocking
+ * one waits in its generation, one run at a time.
  */
 export const CONVERSATION_COMPACTIONS = 2;
 /**
- * Compactions a thread's Session holds live at once: each of its live conversations'.
- * Migration 10's trigger refuses a compaction's owner row past it.
+ * Manual compactions (A6's compact door, pi's `compact()`) a thread holds live at once,
+ * past which the door refuses at once (`compactions_full`), counted from its root's
+ * `pi.live.compactions` with those being admitted.
  */
-export const THREAD_COMPACTIONS = THREAD_CONVERSATIONS * CONVERSATION_COMPACTIONS;
+export const THREAD_MANUAL_COMPACTIONS = 1;
+/**
+ * Compactions a thread's Session holds live at once: each of its live conversations' own,
+ * and its manual ones. Migration 10's trigger refuses a compaction's owner row past it.
+ */
+export const THREAD_COMPACTIONS = THREAD_CONVERSATIONS * CONVERSATION_COMPACTIONS + THREAD_MANUAL_COMPACTIONS;
 
 /** A file entry in the temporary area, which keeps no history. */
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
@@ -1299,7 +1304,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "client TEXT CHECK (client IS NULL OR length(client) = 64), generation INTEGER, " +
       "authenticated_at REAL, registration TEXT CHECK (registration IS NULL " +
       "OR length(registration) BETWEEN 1 AND 32), created_at REAL NOT NULL, " +
-      "kind TEXT NOT NULL CHECK (kind IN ('converse', 'run')), last_active REAL NOT NULL, " +
+      "kind TEXT NOT NULL CHECK (kind IN ('converse', 'run', 'fork')), " +
+      "last_active REAL NOT NULL, " +
       "drop_retry REAL, drop_failures INTEGER NOT NULL DEFAULT 0 CHECK (drop_failures >= 0), " +
       "settled_at REAL, " +
       "request TEXT CHECK (request IS NULL OR length(request) BETWEEN 1 AND 128), " +

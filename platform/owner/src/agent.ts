@@ -119,10 +119,11 @@ import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context"
 import type { ClientIdentity, Models, Provider } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
-  AgentDoc, type AgentState, type CompactionSettings, type ConversationId,
-  type ConversationRecord, createRegistry, defineDoc, defineDocFamily,
-  defineExtension, type EnvTarget, type Extension, Harness, type HarnessSettings, hook,
-  ProviderDoc, type ReportInfo, ROOT_CONVERSATION_ID,
+  AgentDoc, type AgentState, type CompactionSettings, type ContextEdit, type ContextView,
+  type ConversationId, type ConversationRecord, type ConversationWatch, createRegistry,
+  defineDoc, defineDocFamily, defineExtension, type EntryId, type EnvTarget, type Extension,
+  Harness, type HarnessSettings, hook, type ModelRef, ProviderDoc, type ReportInfo,
+  ROOT_CONVERSATION_ID, type TaskGraph, type TaskGraphWatch, type TaskId,
   type TaskRecord, ToolTask, type Tx, type UsageState, type Storage, type Wake, wrapTool,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
@@ -284,6 +285,33 @@ async function scheduledSettled(storage: Storage,
   return { request: workId, status: "done", reason: null, text: assistantText(answer?.entry) };
 }
 
+/**
+ * In a fork's root's creating commit: the source's history as of the fork's entry (pi's
+ * `context({at})`, the view `fork(at)` starts with), appended entry by entry through pi's
+ * own `appendEntry`, so its new store holds pi's own records. Its head marker (a compaction's
+ * summary, a reset) heads the new context from itself, the entries it kept following it as
+ * they followed it; each entry's edits name the copies of their targets, an edit of an entry
+ * left behind is dropped. Each copy is the root's own: it keeps its kind, its model messages
+ * and its data, never its source's ids or task.
+ */
+export async function seeded(tx: Tx, made: ConversationId, history: ContextView):
+    Promise<void> {
+  const ids = new Map<EntryId, EntryId>();
+  for (const [index, entry] of history.entries.entries()) {
+    const { id, kind, model, data, edits } = entry;
+    const kept = (edits ?? []).filter((edit) => ids.has(edit.target))
+      .map((edit): ContextEdit => ({ ...edit, target: ids.get(edit.target)! }));
+    const copy = await tx.appendEntry(made, {
+      kind,
+      ...(model === undefined ? {} : { model }),
+      ...(data === undefined ? {} : { data }),
+      ...(kept.length === 0 ? {} : { edits: kept }),
+      ...(index === 0 && history.head !== undefined ? { head: "self" as const } : {}),
+    });
+    ids.set(id, copy.id);
+  }
+}
+
 /** Whether two stamps are the same authority, field by field. */
 export function sameStamp(a: Stamped | null, b: Stamped | null): boolean {
   return a === null || b === null ? a === b
@@ -335,7 +363,17 @@ export function sessionDoc() {
 export interface AgentConfig {
   /** The agent's instructions (`AGENTS.md`), rendered after every extension's section. */
   readonly instructions?: string;
+  /**
+   * The agent's model pin (its `AGENTS.md` front matter's `model`, pi-coding-agent's agent
+   * file convention): one of the gateway's models, set as `pi.agent.model` in each root's
+   * creating commit; none starts the thread on `auto`.
+   */
+  readonly model?: ModelRef;
 }
+
+/** The refusal of a fork's open whose history its door never handed over (a crash between). */
+export const FORK_LOST = "fork_lost: the fork's history was not handed over before its " +
+  "Session first opened; the fork is dropped";
 
 /** How a thread is made: what it is for, and what its stamp needs where it acts. */
 export interface ThreadOptions {
@@ -421,6 +459,15 @@ export interface AgentParts {
    * or null while it has one: a read, run in a linked admission's unit.
    */
   readonly joined: (turn: string) => string | null;
+  /**
+   * The owner app's sockets on the agent's threads (`sockets.ts`, A6): told as a thread's
+   * Session opens, so a watch an eviction cut off reattaches, and as a thread is dropped,
+   * so its sockets close with its drop. None: no sockets (a test's agent alone).
+   */
+  readonly sockets?: {
+    opened(thread: string): void;
+    dropped(thread: string): void;
+  };
 }
 
 /** How a scheduled launch stands, as its store holds it: its task, and its last delivery. */
@@ -561,6 +608,11 @@ export class OwnerAgent {
   readonly #drops = new Map<string, Promise<void>>();
   /** The pending waits, by the client they are for ("" for the owner's), on the instance. */
   readonly #waits = new Map<string, Set<AbortController>>();
+  /**
+   * Each fork's history, as its door read it from the source (pi's `context` at the entry),
+   * held from the fork's row until its root's creating commit takes it, on the instance.
+   */
+  readonly #seeds = new Map<string, ContextView>();
   /** The scheduled launches' task, delivering through this agent (`#deliver`). */
   readonly #scheduled: ScheduledTask = scheduledTask({
     deliver: (input, n, signal) => this.#deliver(input, n, signal),
@@ -593,6 +645,7 @@ export class OwnerAgent {
       usage: (thread, usage) => parts.usage(thread, usage),
       turns: parts.turns,
       notice: (type, detail) => this.#report(type, detail),
+      opened: (thread) => parts.sockets?.opened(thread),
     }, source.timing ?? HOST_TIMING);
   }
 
@@ -650,16 +703,24 @@ export class OwnerAgent {
     opened = pi;
     try {
       if (await storage.conversation(ROOT, BG) === undefined) {
+        const seed = this.#seeds.get(thread);
+        if (row.kind === "fork" && seed === undefined) {
+          throw new Refused(FORK_LOST);
+        }
         const config = await this.#parts.config(row.agent_id);
         const state = copy(this.#parts.threads.authority(row));
         await pi.root(BG, {
-          agent: { model: { provider: AUTO.provider, modelId: AUTO.id },
+          agent: { model: config.model ?? { provider: AUTO.provider, modelId: AUTO.id },
                    ...(config.instructions === undefined ? {}
                      : { instructions: config.instructions }) },
           init: async (tx, made) => {
             Object.assign(await tx.doc(this.authority, made), state);
+            if (seed !== undefined) {
+              await seeded(tx, made, seed);
+            }
           },
         });
+        this.#seeds.delete(thread);
       }
     } catch (error) {
       await pi.close(BG).catch(() => {});
@@ -1100,6 +1161,82 @@ export class OwnerAgent {
     });
   }
 
+  // -- The conversation operations pi already has (A6) ---------------------------------
+
+  /** pi's `reset` of a thread's root: a new context, from `handoff` when given. */
+  reset(thread: Thread, handoff: string | undefined): Promise<void> {
+    return this.host.reset(thread.thread_id, handoff);
+  }
+
+  /** pi's manual `compact` of a thread's root, within the host's cap; its task's id. */
+  compact(thread: Thread, instructions: string | undefined): Promise<TaskId> {
+    return this.host.compact(thread.thread_id, instructions);
+  }
+
+  /** Withdraw a queued input of a thread by its request id; one placed is refused. */
+  withdraw(thread: Thread, requestId: string): Promise<boolean> {
+    return this.host.withdrawQueued(thread.thread_id, requestId);
+  }
+
+  /**
+   * A thread's root's committed context as of entry `at`: a fork's history. An entry its
+   * root's history does not hold is refused (`Invalid`) before pi is asked.
+   */
+  async forkContext(thread: Thread, at: EntryId): Promise<ContextView> {
+    const held = await this.host.use(thread.thread_id, async ({ pi }) =>
+      (await (await pi.conversation(ROOT, BG))?.entries({ minEntryId: at, maxEntryId: at }, 1,
+                                                        undefined, BG))?.items.length === 1);
+    if (!held) {
+      throw new Invalid("entry_id is not an entry of the thread");
+    }
+    return this.host.context(thread.thread_id, at);
+  }
+
+  /**
+   * Make a fork's Session over its history: `made` (a `fork` row, just recorded) opened, its
+   * root made with `history`'s entries in its creating commit (`seeded`), configured and
+   * stamped as every root is. A fork whose open fails is the door's to drop.
+   */
+  async forked(made: Thread, history: ContextView): Promise<void> {
+    if (made.kind !== "fork") {
+      throw new Error("only a fork's row takes a history");
+    }
+    this.#seeds.set(made.thread_id, history);
+    try {
+      await this.host.pi(made.thread_id);
+    } finally {
+      this.#seeds.delete(made.thread_id);
+    }
+  }
+
+  /** The live task graph of a thread's Session, as it stands now (pi's `taskGraph`). */
+  taskGraph(thread: Thread): Promise<TaskGraph> {
+    return this.host.use(thread.thread_id, async ({ pi }) => {
+      const graph = await pi.taskGraph(BG);
+      try {
+        return graph.value;
+      } finally {
+        graph.dispose();
+      }
+    });
+  }
+
+  /** A watch of a thread's root (pi's `watch()`): the view, then each commit's exact ops. */
+  watch(thread: string): Promise<ConversationWatch> {
+    return this.host.use(thread, async ({ pi }) => {
+      const root = await pi.conversation(ROOT, BG);
+      if (root === undefined) {
+        throw new Error("a thread's Session has no root");
+      }
+      return root.watch(BG);
+    });
+  }
+
+  /** A watch of a thread's task graph (pi's `watchTaskGraph`). */
+  watchTaskGraph(thread: string): Promise<TaskGraphWatch> {
+    return this.host.use(thread, ({ pi }) => pi.watchTaskGraph(BG));
+  }
+
   /** `thread`'s Session, opened if it is not. */
   pi(thread: Thread | string): Promise<Harness> {
     return this.host.pi(typeof thread === "string" ? thread : thread.thread_id);
@@ -1169,6 +1306,8 @@ export class OwnerAgent {
     if (threads.row(id)?.state !== "dropping") {
       throw new Error("only a thread marked dropping is dropped");
     }
+    this.#seeds.delete(id);
+    this.#parts.sockets?.dropped(id);
     let ended: Harness | undefined;
     const ending = this.host.drop(id, ({ pi }) => {
       ended = pi;

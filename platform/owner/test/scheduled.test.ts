@@ -18,6 +18,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 
+import { RESERVED_METHODS } from "./sockets-support";
 import {
   OWNER_ERASED, OWNER_SUSPENDED, PLATFORM_CALLER, PLATFORM_ONLY, PLATFORM_RESERVED,
   tombstoned, writeTombstone,
@@ -926,7 +927,8 @@ describe("cron recurrence", () => {
 
 describe("the owner's admission", () => {
   const doors = () => Object.getOwnPropertyNames(OwnerDO.prototype)
-    .filter((door) => door !== "constructor" && door !== "alarm" && door !== "admissionSet");
+    .filter((door) => door !== "constructor" && !RESERVED_METHODS.includes(door)
+                      && door !== "admissionSet");
   const call = (r: Rig, door: string, binding: Binding) =>
     (r.stub() as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[door]!(
       binding, {});

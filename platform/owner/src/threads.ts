@@ -25,9 +25,11 @@
  * is how retention and the end of the owner's work know a thread is live without opening
  * every store; a row goes with its thread. It moves no activity.
  *
- * Two kinds: a `converse` thread is the one conversation an agent holds with one caller
+ * Three kinds: a `converse` thread is the one conversation an agent holds with one caller
  * (the owner, or an outside client, in one universe), found again by those
- * (`conversing`, a unique index); a `run` thread is made fresh for each launch (the
+ * (`conversing`, a unique index); a `fork` is a conversation the caller made from one of
+ * its own threads at an entry (A6's fork door), addressed by its id, within the same
+ * conversation bounds and idle retention as the caller's conversations; a `run` thread is made fresh for each launch (the
  * `run_graph` door, `ta`'s `agent:run`, and a scheduled launch, whose row names its work by
  * its `work_` request id from the unit that records it, its `ta.scheduled` task sleeping in
  * the thread's own Session until it delivers, `scheduled.ts`). A run
@@ -86,8 +88,11 @@ import { refuseErasing } from "./erasure";
 import { Refused } from "./errors";
 import type { OwnerStorage, Write } from "./gate";
 
-/** What a thread is for: one caller's conversation with an agent, or one run. */
-export type ThreadKind = "converse" | "run";
+/**
+ * What a thread is for: one caller's conversation with an agent, one run, or a fork of a
+ * caller's thread at one of its entries (A6), a conversation of its own.
+ */
+export type ThreadKind = "converse" | "run" | "fork";
 
 /** One thread as stored. */
 export type Thread = {
@@ -425,8 +430,8 @@ export class Threads {
     if (by !== null && by.agent !== id) {
       throw new Error("a thread's stamp names its own agent");
     }
-    if (kind !== "converse" && kind !== "run") {
-      throw new Error("a thread is a caller's conversation or a run");
+    if (kind !== "converse" && kind !== "run" && kind !== "fork") {
+      throw new Error("a thread is a caller's conversation, a run or a fork");
     }
     if (work !== null && (kind !== "run" || !WORK_ID.test(work))) {
       throw new Error("a scheduled launch is a run named by its work id");
@@ -495,9 +500,10 @@ export class Threads {
    */
   room(by: Stamped | null, kind: ThreadKind = "run", scheduled = false): void {
     const sql = this.#storage.sql;
+    // A fork is a conversation: the conversations' bounds count both kinds together.
     const count = (where: string, ...bound: (string | null)[]) => sql.exec<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM agent_threads WHERE kind = ? AND ${where}`, kind, ...bound)
-      .one().n;
+      `SELECT COUNT(*) AS n FROM agent_threads WHERE ${kind === "run" ? "kind = 'run'"
+        : "kind <> 'run'"} AND ${where}`, ...bound).one().n;
     if (kind === "run") {
       const { clientShare, ownerReserve, runsLive } = this.#runs();
       const runs = this.#limits.runs;
@@ -902,7 +908,7 @@ export class Threads {
   /** The longest idle conversation: its activity, or undefined. */
   #oldestConversation(): number | undefined {
     return this.#storage.sql.exec<{ at: number }>(
-      `SELECT last_active AS at FROM agent_threads WHERE kind = 'converse' AND ` +
+      `SELECT last_active AS at FROM agent_threads WHERE kind <> 'run' AND ` +
         `state = 'ready' ORDER BY last_active LIMIT 1`).toArray()[0]?.at;
   }
 
@@ -960,7 +966,7 @@ export class Threads {
    */
   idle(now: number): Thread[] {
     return this.#storage.sql.exec<Thread>(
-      `SELECT * FROM agent_threads WHERE kind = 'converse' AND state = 'ready' AND ` +
+      `SELECT * FROM agent_threads WHERE kind <> 'run' AND state = 'ready' AND ` +
         `last_active <= ? ORDER BY last_active LIMIT ?`,
       now - this.#retention.idleS, this.#retention.perPass).toArray();
   }

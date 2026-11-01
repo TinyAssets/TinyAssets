@@ -17,14 +17,19 @@ const PULL = { collection: "board", after: 0, limit: 1 };
 
 /**
  * Every public method of the class is an RPC any binding can call, so this list is the
- * object's whole surface: its collection, ledger, policy, file, notice, model-connection and
- * model-spend doors. `alarm` is the
- * runtime's, handed to Lifecycle, and refused over RPC. Claiming, marking and settling a
- * wake have no door: only the `wakes` lane runs them, in process, with the doorbell's
- * sender. The list only grows by a door.
+ * object's whole surface: its collection, ledger, policy, file, notice, model-connection,
+ * model-spend, agent and conversation doors. The runtime's reserved methods are not RPCs:
+ * `alarm`, handed to Lifecycle, and the owner app's sockets' `fetch` and `webSocket*` (A6),
+ * each handed to Lifecycle's method of the same name, `fetch` only past the binder's shape
+ * (`sockets.ts`); each is refused over RPC. Claiming, marking and settling a wake have no
+ * door: only the `wakes` lane runs them, in process, with the doorbell's sender. The list
+ * only grows by a door.
  */
+const RESERVED = Object.freeze(["alarm", "fetch", "webSocketClose", "webSocketError",
+                                "webSocketMessage"]);
 const RPC_METHODS = Object.freeze([
-  "admissionSet", "agentCancel", "agentRun", "agentStatus", "agentSubmit", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory", "collectionPull",
+  "admissionSet", "agentCancel", "agentCompact", "agentFork", "agentReset", "agentRun",
+  "agentStatus", "agentSubmit", "agentTaskGraph", "agentWithdraw", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory", "collectionPull",
   "collectionWrite", "connectionCommit", "connectionList", "connectionPrepare",
   "connectionRevoke", "deleteAgent", "disableAgent", "fileChanges", "fileHistory",
   "fileHistoryPurge", "fileLeaseAcquire", "fileLeaseRelease", "fileLeaseRenew", "fileList",
@@ -204,8 +209,9 @@ describe("the object's stored owner", () => {
 describe("the object's RPC surface", () => {
   it("is exactly its doors: nothing claims, marks or settles a wake", async () => {
     const methods = Object.getOwnPropertyNames(OwnerDO.prototype)
-      .filter((method) => method !== "constructor" && method !== "alarm").sort();
+      .filter((method) => method !== "constructor" && !RESERVED.includes(method)).sort();
     expect(methods).toEqual(RPC_METHODS);
+    expect(RESERVED.every((method) => Object.hasOwn(OwnerDO.prototype, method))).toBe(true);
     expect(Object.getOwnPropertyNames(DurableObject.prototype)).toEqual(["constructor"]);
     const { stub, name } = ownerObject();
     const call = (method: string) => (stub as unknown as
@@ -215,7 +221,9 @@ describe("the object's RPC surface", () => {
       expect((await failure(() => call(method))).message)
         .toBe(`The RPC receiver does not implement "${method}".`);
     }
-    expect((await failure(() => call("alarm"))).message).toMatch(/reserved method/);
+    for (const method of ["alarm", "webSocketMessage", "webSocketClose", "webSocketError"]) {
+      expect((await failure(() => call(method))).message).toMatch(/reserved method/);
+    }
   });
 });
 
