@@ -440,20 +440,55 @@ describe("a tier left to the account (review round 3, Anthropic)", () => {
       ["message_start", { type: "message_start", message: { id: "m1", usage: start } }],
       ["message_delta", { type: "message_delta", usage: delta }],
       ["message_stop", { type: "message_stop" }]]));
-    expect(await servedPriced(rules, answer({ input_tokens: 1 }, { output_tokens: 1 })))
-      .toBe(true);
-    expect(await servedPriced(rules, answer({ input_tokens: 1, service_tier: "standard" },
-                                            { output_tokens: 1 }))).toBe(true);
-    expect(await servedPriced(rules, answer({ input_tokens: 1, service_tier: "priority" },
-                                            { output_tokens: 1 }))).toBe(false);
-    expect(await servedPriced(rules, answer({ input_tokens: 1 },
-                                            { output_tokens: 1, service_tier: "batch" })))
+    const priced = async (stream: ReadableStream<Uint8Array>, api = rules) =>
+      (await servedPriced(api, stream)).priced;
+    expect(await priced(answer({ input_tokens: 1 }, { output_tokens: 1 }))).toBe(true);
+    expect(await priced(answer({ input_tokens: 1, service_tier: "standard" },
+                               { output_tokens: 1 }))).toBe(true);
+    expect(await priced(answer({ input_tokens: 1, service_tier: "priority" },
+                               { output_tokens: 1 }))).toBe(false);
+    expect(await priced(answer({ input_tokens: 1 }, { output_tokens: 1, service_tier: "batch" })))
       .toBe(false);
-    expect(await servedPriced(rules, answer({ input_tokens: 1, service_tier: 2 }, {})))
-      .toBe(false);
+    expect(await priced(answer({ input_tokens: 1, service_tier: 2 }, {}))).toBe(false);
     // An API with no such rule: whatever its answer says.
-    expect(await servedPriced(apiRules("google-generative-ai")!,
-                              answer({ service_tier: "priority" }, {}))).toBe(true);
+    expect(await priced(answer({ service_tier: "priority" }, {}),
+                        apiRules("google-generative-ai")!)).toBe(true);
+  });
+
+  it("decodes SSE as its specification does: CR, LF and CRLF endings, multi-line data",
+     async () => {
+    const rules = apiRules("anthropic-messages")!;
+    const event = { type: "message_delta", usage: { output_tokens: 1, service_tier: "priority" } };
+    const json = JSON.stringify(event, null, 1);
+    const multi = json.split("\n").map((part) => `data: ${part}`);
+    for (const ending of ["\n", "\r\n", "\r"]) {
+      const one = `event: message_delta${ending}data: ${JSON.stringify(event)}${ending}${ending}`;
+      const split = `event: message_delta${ending}${multi.join(ending)}${ending}${ending}`;
+      for (const text of [one, split]) {
+        // Whole, and split at every byte boundary, as chunks may fall.
+        for (let at = 0; at <= text.length; at++) {
+          const chunks = [text.slice(0, at), text.slice(at)];
+          const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              for (const chunk of chunks) {
+                controller.enqueue(new TextEncoder().encode(chunk));
+              }
+              controller.close();
+            },
+          });
+          expect(await servedPriced(rules, stream)).toEqual({ priced: false, seen: true });
+        }
+      }
+    }
+    // A stream that names no tier: priced, unseen; and an event the stream ended without
+    // its blank line is still read.
+    expect(await servedPriced(rules, streamOf(`data: ${JSON.stringify({ usage: {} })}\n\n`)))
+      .toEqual({ priced: true, seen: false });
+    expect(await servedPriced(rules, streamOf(`data: ${JSON.stringify(event)}`)))
+      .toEqual({ priced: false, seen: true });
+    // A field with no space after its colon, as the specification allows.
+    expect(await servedPriced(rules, streamOf(`data:${JSON.stringify(event)}\n\n`)))
+      .toEqual({ priced: false, seen: true });
   });
 
   it("settles a chat-completions answer served at a tier other than the standard unknown",
@@ -464,10 +499,10 @@ describe("a tier left to the account (review round 3, Anthropic)", () => {
                                 ...(tier === undefined ? {} : { service_tier: tier }) })}\n\n` +
       "data: [DONE]\n\n");
     for (const tier of [undefined, "default", "on_demand"]) {
-      expect(await servedPriced(rules, answer(tier))).toBe(true);
+      expect((await servedPriced(rules, answer(tier))).priced).toBe(true);
     }
     for (const tier of ["priority", "flex", "scale", "performance", 1]) {
-      expect(await servedPriced(rules, answer(tier))).toBe(false);
+      expect((await servedPriced(rules, answer(tier))).priced).toBe(false);
     }
   });
 });

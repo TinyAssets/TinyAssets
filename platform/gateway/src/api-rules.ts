@@ -35,7 +35,11 @@
  *   leaves it out, which changes only how the provider serves the call, never its price.
  * - `served`: where an answer reports the tier it was served at (an SSE event's JSON, at
  *   any of `paths`), and the values pi-ai prices: an answer served at any other settles
- *   `unknown`, keeping its whole charge.
+ *   `unknown`, keeping its whole charge; one that reports none settles at `absent` times
+ *   pi-ai's price, where the account's own default may be dear.
+ * - `betas`: the provider beta headers (`anthropic-beta`, `openai-beta`, any `*-beta`) a
+ *   call may carry; every other is stripped, since a beta can widen a call past what it
+ *   was reserved for (a longer context). None today.
  */
 
 export interface ApiRules {
@@ -61,7 +65,11 @@ export interface ApiRules {
                                 readonly allowed: readonly string[];
                                 readonly default_when_absent?: string }[];
   readonly served: { readonly paths: readonly (readonly string[])[];
-                     readonly priced: readonly string[] } | null;
+                     readonly priced: readonly string[];
+                     /** The multiplier an answer that reports no tier settles at. */
+                     readonly absent?: number } | null;
+  /** The beta headers a call may carry, each one its reservation accounts for. */
+  readonly betas: readonly string[];
 }
 
 /** The top-level body keys the egress door reads for the owner's object: model and tier. */
@@ -87,6 +95,7 @@ const COMPLETIONS: ApiRules = Object.freeze({
   // name for the same standard tier) are what pi-ai prices; any other is unknown.
   served: Object.freeze({ paths: Object.freeze([Object.freeze(["service_tier"])]),
                           priced: Object.freeze(["default", "on_demand"]) }),
+  betas: Object.freeze([]),
 });
 
 const RESPONSES: ApiRules = Object.freeze({
@@ -107,7 +116,12 @@ const RESPONSES: ApiRules = Object.freeze({
                                                      priority: 2.5 }),
                         absent: 2.5 }),
   unpriced: Object.freeze([]),
-  served: null,
+  // The tier the answer was served at, which pi-ai prices; an answer naming none was
+  // served at the account's own default, which may be priority: settled at the dearest.
+  served: Object.freeze({ paths: Object.freeze([Object.freeze(["response", "service_tier"])]),
+                          priced: Object.freeze(["default", "flex", "priority"]),
+                          absent: 2.5 }),
+  betas: Object.freeze([]),
 });
 
 const GOOGLE: ApiRules = Object.freeze({
@@ -130,6 +144,7 @@ const GOOGLE: ApiRules = Object.freeze({
                     allowed: Object.freeze([]) }),
   ]),
   served: null,
+  betas: Object.freeze([]),
 });
 
 const ANTHROPIC: ApiRules = Object.freeze({
@@ -155,6 +170,7 @@ const ANTHROPIC: ApiRules = Object.freeze({
                                                 Object.freeze(["message", "usage",
                                                                "service_tier"])]),
                           priced: Object.freeze(["standard"]) }),
+  betas: Object.freeze([]),
 });
 
 /** Mistral's chat completions: as OpenAI's, but its stream reports its usage unasked. */
@@ -175,6 +191,7 @@ const MISTRAL: ApiRules = Object.freeze({
     Object.freeze({ path: Object.freeze(["audio"]), allowed: Object.freeze([]) }),
   ]),
   served: null,
+  betas: Object.freeze([]),
 });
 
 /** The rules for each API a sandbox call may be metered on; any other is never metered. */
@@ -281,48 +298,74 @@ export function tierMultiplier(rules: ApiRules, value: string | null): number | 
 }
 
 /**
- * Whether every tier the answer's stream reports it was served at is one pi-ai prices,
- * read from each SSE event's JSON at the rules' `served` paths; true for an API with no
- * such rule. Reads the stream to its end, a line at a time.
+ * What the answer's stream reports of the tier it was served at, read from each SSE
+ * event's data (its `data:` lines joined, as the SSE specification decodes them: lines
+ * ended by CR, LF or CRLF, one leading space after the colon dropped, an event dispatched
+ * at a blank line) at the rules' `served` paths: `priced`, whether every tier reported is
+ * one pi-ai prices, and `seen`, whether any was. An API with no such rule: priced, seen.
  */
 export async function servedPriced(rules: ApiRules, body: ReadableStream<Uint8Array>):
-    Promise<boolean> {
+    Promise<{ readonly priced: boolean; readonly seen: boolean }> {
   const served = rules.served;
   if (served === null) {
     await body.cancel();
-    return true;
+    return { priced: true, seen: true };
   }
   const decoder = new TextDecoder();
   const reader = body.getReader();
   let pending = "";
+  let data: string[] = [];
   let priced = true;
-  const line = (text: string) => {
-    if (!text.startsWith("data:")) {
+  let seen = false;
+  const dispatch = () => {
+    if (data.length === 0) {
       return;
     }
+    const text = data.join("\n");
+    data = [];
     let event: unknown;
     try {
-      event = JSON.parse(text.slice(5));
+      event = JSON.parse(text);
     } catch {
       return;  // not JSON (`[DONE]`): no tier in it
     }
     for (const path of served.paths) {
       const tier = valueAt(event, path);
-      if (tier !== undefined && (typeof tier !== "string" || !served.priced.includes(tier))) {
-        priced = false;
+      if (tier !== undefined) {
+        seen = true;
+        if (typeof tier !== "string" || !served.priced.includes(tier)) {
+          priced = false;
+        }
       }
+    }
+  };
+  const line = (text: string) => {
+    if (text === "") {
+      dispatch();
+      return;
+    }
+    const colon = text.indexOf(":");
+    const field = colon === -1 ? text : text.slice(0, colon);
+    if (field === "data") {
+      const value = colon === -1 ? "" : text.slice(colon + 1);
+      data.push(value.startsWith(" ") ? value.slice(1) : value);
     }
   };
   for (;;) {
     const { done, value } = await reader.read();
     pending += done ? decoder.decode() : decoder.decode(value, { stream: true });
-    const lines = pending.split("\n");
+    // A line ends at CRLF, LF or CR; a CR at the chunk's end may be a CRLF's first half.
+    const lines = pending.split(/\r\n|\n|\r(?!$)/);
     pending = done ? "" : lines.pop()!;
+    if (done && lines.at(-1)?.endsWith("\r")) {
+      lines[lines.length - 1] = lines.at(-1)!.slice(0, -1);
+    }
     for (const text of lines) {
-      line(text.trim());
+      line(text);
     }
     if (done) {
-      return priced;
+      dispatch();  // an event the stream ended without its blank line: read, to fail closed
+      return { priced, seen };
     }
   }
 }

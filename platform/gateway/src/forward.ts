@@ -318,8 +318,11 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
                                   metering.max_output_tokens, credential.upstream.api));
   }
   const headers = new Headers();
+  // A metered call's provider beta headers go only where its API's rules account for them.
+  const betas = metered === null ? null : apiRules(credential.upstream.api)?.betas ?? [];
   for (const [name, value] of request.headers) {
-    if (!CREDENTIAL_HEADERS.includes(name) && !HOP_HEADERS.includes(name) && !internal(name)) {
+    if (!CREDENTIAL_HEADERS.includes(name) && !HOP_HEADERS.includes(name) && !internal(name)
+        && !(betas !== null && /-beta$/.test(name) && !betas.includes(name))) {
       headers.append(name, value);
     }
   }
@@ -374,8 +377,10 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
                                           bearer(credential), model, upstream.status,
                                           new Headers(upstream.headers), toMeter, listed),
                              tierPriced])
-        .then(([usage, priced]): MeterOutcome => (usage === null || !priced ? UNKNOWN
-          : { state: "succeeded", tokens: usage.tokens, cost: usage.cost,
+        .then(([usage, tier]): MeterOutcome => (usage === null || !tier.priced ? UNKNOWN
+          : { state: "succeeded", tokens: usage.tokens,
+              // An answer naming no tier was served at the account's default: the dearest.
+              cost: usage.cost * (tier.seen ? 1 : rules.served?.absent ?? 1),
               ...(usage.served === undefined ? {} : { served: usage.served }) }), () => UNKNOWN);
     }
   }

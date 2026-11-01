@@ -351,6 +351,25 @@ describe("the egress door", () => {
     expect(await forwarded()).toEqual([]);
   });
 
+  it("passes the object the tier the body names, beside its model", async () => {
+    const box = await sandbox();
+    const asked: unknown[] = [];
+    const getByName = doorsEnv.OWNER.getByName.bind(doorsEnv.OWNER);
+    vi.spyOn(doorsEnv.OWNER, "getByName").mockImplementation((name: string) => {
+      const real = getByName(name);
+      return { egressOpen: (binding: Binding, request: unknown) => {
+                 asked.push(request);
+                 return real.egressOpen(binding, request);
+               },
+               egressSettle: (binding: Binding, request: Record<string, unknown>) =>
+                 real.egressSettle(binding, request) } as unknown as typeof real;
+    });
+    const response = await send(egressRequest(box, COMPLETIONS, {
+      body: bodyOf(box, { service_tier: "flex" }) }));
+    await response.text();
+    expect(asked).toMatchObject([{ model: box.model, tier: "flex" }]);
+  });
+
   it("hands the object the body's model and tier as the body names them, or none", () => {
     expect(hintsOf(JSON.stringify({ model: "m-1", service_tier: "priority", input: "x" })))
       .toEqual({ model: "m-1", tier: "priority" });

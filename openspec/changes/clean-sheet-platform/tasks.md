@@ -534,7 +534,13 @@ account and no deploy.
   `default` or Groq's `on_demand`) settles `unknown`, its whole charge kept. The residual:
   a chat-completions provider that reports no tier in its answer. That is safe only
   because those providers' paid tiers are request-opt-in, and requests naming a tier are
-  already refused (`egress_unpriced_option`); every option pi-ai does not price is refused `egress_unpriced_option`: chat
+  already refused (`egress_unpriced_option`). A Responses answer that reports no tier
+  settles at the absent multiplier (×2.5), not ×1, failing closed. The `served` scan
+  decodes SSE as its specification does (CR, LF and CRLF endings, multi-line `data:`
+  fields). Provider beta headers (`anthropic-beta`, `openai-beta`, any `*-beta`) are
+  stripped from every metered call unless the API's rules list one its reservation
+  accounts for (`betas`; none today), since a beta can widen a call past its
+  reservation (a longer context); every option pi-ai does not price is refused `egress_unpriced_option`: chat
   completions' `service_tier`, `modalities` beyond `text` and `audio`; Anthropic's
   `speed` but `standard`, `inference_geo` but `global` and `service_tier` but
   `standard_only`; Google's `responseModalities` beyond text, `speechConfig` and
@@ -604,7 +610,11 @@ account and no deploy.
   (a redirect would carry the egress token to the VM's choice), and SNI-fronting under
   allowlist; that the project's API key can read transforms (above); that the sandbox
   resolves only through the pinned resolver (its `/etc/resolv.conf`); whether the VM has
-  IPv6 (`denyOut` holds IPv4's all-traffic only); that a request in flight across
+  IPv6 (`denyOut` holds IPv4's all-traffic only); whether calls on frontier models
+  serialize under the default caps (a 1M-window model's charge holds most of a $25 run
+  cap, so parallel calls wait); whether Gemini's `thinkingBudget` counts inside
+  `maxOutputTokens` (if not, its output can pass the reservation, settled at the real
+  cost); that a request in flight across
   `updateNetwork` carries the old generation; and each CLI's base-URL variables (the
   subscription research names only Grok's) against the CLI itself. **Out of v1**, each
   waiting for a TLS-terminating proxy (a founder call: a host, against Direction 8) or a

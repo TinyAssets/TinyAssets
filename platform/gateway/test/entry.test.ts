@@ -195,11 +195,29 @@ describe("the gateway Worker", () => {
       return JSON.parse(await new Response(answer.outcome).text()) as
         { state: string; cost: number };
     };
-    const standard = await settledAt(await sent({}, null));
+    const standard = await settledAt(await sent({ service_tier: "default" }, "default"));
     const priority = await settledAt(await sent({ service_tier: "priority" }, "priority"));
     expect(standard.state).toBe("succeeded");
     expect(priority.state).toBe("succeeded");
     expect(priority.cost).toBeGreaterThanOrEqual(standard.cost * 2 - 1e-12);
+    // An answer naming no tier was served at the account's default, maybe priority: it
+    // settles at the dearest the API allows.
+    const unnamed = await settledAt(await sent({}, null));
+    expect(unnamed.state).toBe("succeeded");
+    expect(unnamed.cost).toBeCloseTo(standard.cost * 2.5, 12);
+    // Provider beta headers, which can widen a call past its reservation, are stripped.
+    const betaText = JSON.stringify({ model: model!.id, input: "hi" });
+    const beta = await egress.forward("alice", "c1", 1, blob, new Request(
+      "https://egress/v1/responses", { method: "POST", body: betaText, headers: {
+        "x-fake-mode": "echo", "anthropic-beta": "context-1m", "openai-beta": "assistants=v2",
+        "x-vendor-beta": "on", "x-kept": "yes" } }),
+      { max_output_tokens: 100, input_bytes: betaText.length, model: model!.id, tier: null },
+      new ReadableStream());
+    const echoed = await beta.response.json() as { headers: Record<string, string> };
+    expect(echoed.headers["x-kept"]).toBe("yes");
+    for (const name of ["anthropic-beta", "openai-beta", "x-vendor-beta"]) {
+      expect(echoed.headers[name]).toBeUndefined();
+    }
     // Anthropic: a call naming no tier is sent at the one pi-ai prices, and an answer served
     // at another is unknown.
     const anthropic = (await gateway.seal("alice", "c2", 1, "sk-good", ANTHROPIC)).blob;
