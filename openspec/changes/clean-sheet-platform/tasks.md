@@ -1397,7 +1397,13 @@ account and no deploy.
   script past its interrupt budget against the Worker's `cpu_ms`), the blocking isolation
   (10 s of compute in a hook or a script against the owner object's latency), and the
   Dynamic Worker count per day (one per owner per active day expected), with module state
-  across isolates of one loader name. And (review round 1): another owner's hook latency
+  across isolates of one loader name. And the prelude's startup cost (review round 2): it
+  hardens the whole global environment once per isolate, about 13 ms of a first call in
+  workerd (17 ms against 3 to 4 ms without it, warm calls unchanged); SES's `lockdown()`
+  measured about 30 ms and 236 KB a bundle and left host globals writable, so it was not
+  taken. Live: that cost per isolate start against `cpu_ms` (whether startup counts toward
+  a call's `cpuMs`) and the Dynamic Worker CPU billed. And (review round 1): another
+  owner's hook latency
   while one owner's script computes about 10 s in the same Worker (M-3; if it blocks, H2's
   design takes it: separate Workers for hooks and code mode, or a sandbox class per shard);
   an `afterTool` memo near the 256 KiB bound, and a decision over 2 MB refused, in real

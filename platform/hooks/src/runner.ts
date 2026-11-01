@@ -17,14 +17,18 @@
  *   yield the same code; each call asks its own `cpu_ms` (the owner's policy, 50 by
  *   default), and the lower applies;
  * - our trusted shim (`shimSource`) as its main module. Its first import is our prelude
- *   (`preludeSource`), which runs before any package's module: it freezes the shared
- *   intrinsics (each constructor, its prototype and the global binding naming it), each
- *   prototype's data properties made accessors that define an own property on the object
- *   written, as SES does, so a module's own `toString` still works; and it hands the shim
- *   `JSON` and `Object.hasOwn` as they were. So one package cannot patch what another's
- *   guard relies on. The shim's dispatch table is frozen too; it dispatches the point to
- *   the module's export of that name, takes the input as JSON, holds the reply to JSON
- *   within `JSON_MAX`, and catches what the hook throws.
+ *   (`preludeSource`), which runs before any package's module: it hardens the whole
+ *   global environment (every global binding fixed, everything reachable from them
+ *   frozen, prototypes' data properties made accessors as SES's override taming does, so
+ *   a module's own `toString` still works), and hands the shim `JSON` and `Object.hasOwn`
+ *   as they were. The shim hardens its own dispatch path before any hook runs (`HookShim`,
+ *   its prototype and `call`, what they close over; its table frozen), so a package that
+ *   imports the shim changes nothing of it. So one package cannot patch what another's
+ *   guard relies on. A package may still import another's module namespace and mutate an
+ *   object that module exports: the owner's packages share one isolate, the owner's own
+ *   trust. The shim dispatches the point to the module's export of that name, takes the
+ *   input as JSON, holds the reply to JSON within `JSON_MAX`, and catches what the hook
+ *   throws.
  *
  * A call past `deadline_ms` answers `timeout` here and is dropped: its entrypoint stub is
  * disposed, and at most `INFLIGHT_MAX` calls are pending at once, past which a call is
@@ -57,31 +61,33 @@ export function loaderName(owner: string, id: string): string {
 }
 
 /**
- * The prelude, the bundle's first module to run: it freezes the shared intrinsics before
- * any package's module evaluates, and exports what the shim uses as it was.
+ * The prelude, the bundle's first module to run: before any package's module evaluates, it
+ * hardens the whole global environment. Every own property of `globalThis` becomes a
+ * binding that cannot be written or redefined, and everything reachable from them is
+ * frozen, transitively: each value, getter and setter, each prototype chain, the state a
+ * host object keeps behind its prototype's getters (`crypto.subtle`), the shared iterator,
+ * generator and async prototypes no global names, and `WorkerEntrypoint`. A prototype's
+ * data properties become accessors that define an own property on the object written, as
+ * SES's override taming does, so a module's own `toString` still works. It exports `harden`
+ * for the shim's own dispatch path, and what the shim uses as it was. (SES's `lockdown()`
+ * was measured instead: it runs in workerd, adds about 236 KB to every bundle and about
+ * 30 ms to an isolate's first call, and leaves host globals such as `structuredClone`,
+ * `setTimeout` and `crypto.subtle.digest` writable, so this walk would be needed anyway.)
  */
 export function preludeSource(): string {
   return [
+    "import { WorkerEntrypoint } from 'cloudflare:workers';",
     "const { freeze, getOwnPropertyNames, getOwnPropertySymbols, getOwnPropertyDescriptor,",
-    "        defineProperty, getPrototypeOf } = Object;",
+    "        defineProperty, getPrototypeOf, isFrozen } = Object;",
+    "const ownKeys = (value) => [...getOwnPropertyNames(value), ...getOwnPropertySymbols(value)];",
+    "const reference = (value) => (typeof value === 'object' && value !== null)",
+    "  || typeof value === 'function';",
     "export const parse = JSON.parse;",
     "export const stringify = JSON.stringify;",
     "export const hasOwn = Object.hasOwn;",
     "export const freezeTable = freeze;",
-    "const NAMES = ['Object', 'Function', 'Array', 'String', 'Number', 'Boolean', 'Symbol',",
-    "  'BigInt', 'Date', 'RegExp', 'Error', 'TypeError', 'RangeError', 'SyntaxError',",
-    "  'ReferenceError', 'EvalError', 'URIError', 'AggregateError', 'Map', 'Set', 'WeakMap',",
-    "  'WeakSet', 'WeakRef', 'Promise', 'JSON', 'Math', 'Reflect', 'Proxy', 'ArrayBuffer',",
-    "  'DataView', 'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array',",
-    "  'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array', 'BigInt64Array',",
-    "  'BigUint64Array', 'TextEncoder', 'TextDecoder', 'URL', 'URLSearchParams'];",
-    "const iterator = (value) => getPrototypeOf(value[Symbol.iterator]());",
-    "const SHARED = [getPrototypeOf(Uint8Array), getPrototypeOf(Uint8Array.prototype),",
-    "  iterator([]), getPrototypeOf(iterator([])), iterator(new Map()), iterator(new Set()),",
-    "  iterator(''), getPrototypeOf(function* () {}), getPrototypeOf(async function () {}),",
-    "  getPrototypeOf(async function* () {})];",
     "function overridable(object) {",
-    "  for (const key of [...getOwnPropertyNames(object), ...getOwnPropertySymbols(object)]) {",
+    "  for (const key of ownKeys(object)) {",
     "    const held = getOwnPropertyDescriptor(object, key);",
     "    if (held === undefined || !('value' in held) || !held.configurable) continue;",
     "    const value = held.value;",
@@ -95,30 +101,73 @@ export function preludeSource(): string {
     "      },",
     "    });",
     "  }",
-    "  freeze(object);",
     "}",
-    "function harden(value) {",
-    "  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return;",
-    "  for (const key of getOwnPropertyNames(value)) {",
-    "    const held = getOwnPropertyDescriptor(value, key);",
-    "    if (key !== 'prototype' && typeof held?.value === 'function') freeze(held.value);",
+    "export function harden(roots, prototypes = []) {",
+    "  const found = new Map();",
+    "  const work = [...roots.map((root) => [root, false]),",
+    "                ...prototypes.map((prototype) => [prototype, true])];",
+    "  while (work.length > 0) {",
+    "    const [value, prototype] = work.pop();",
+    "    if (!reference(value) || value === globalThis) continue;",
+    "    if (found.has(value)) {",
+    "      if (prototype) found.set(value, true);",
+    "      continue;",
+    "    }",
+    "    found.set(value, prototype);",
+    "    work.push([getPrototypeOf(value), true]);",
+    "    for (const key of ownKeys(value)) {",
+    "      const held = getOwnPropertyDescriptor(value, key);",
+    "      if (held === undefined) continue;",
+    "      work.push([held.value, key === 'prototype'], [held.get, false], [held.set, false]);",
+    "    }",
     "  }",
-    "  freeze(value);",
-    "  if (typeof value === 'function' && value.prototype !== undefined) {",
-    "    overridable(value.prototype);",
+    "  for (const [value, prototype] of found) {",
+    "    if (isFrozen(value)) continue;",
+    "    if (prototype) overridable(value);",
+    "    freeze(value);",
     "  }",
     "}",
-    "for (const name of NAMES) {",
-    "  const value = globalThis[name];",
-    "  if (value === undefined) continue;",
-    "  harden(value);",
-    "  const held = getOwnPropertyDescriptor(globalThis, name);",
-    "  if (held !== undefined && held.configurable) {",
-    "    defineProperty(globalThis, name, { value, writable: false, configurable: false,",
-    "                                       enumerable: held.enumerable });",
+    "const iterator = (value) => getPrototypeOf(value[Symbol.iterator]());",
+    "const SHARED = [iterator([]), iterator(new Map()), iterator(new Set()), iterator(''),",
+    "  iterator('a'.matchAll(/a/g)), getPrototypeOf(function* () {}),",
+    "  getPrototypeOf(async function () {}), getPrototypeOf(async function* () {}),",
+    "  getPrototypeOf(getPrototypeOf((function* () {})())),",
+    "  getPrototypeOf(getPrototypeOf((async function* () {})()))];",
+    "// The global object and its prototype chain (the runtime keeps `fetch`, `structuredClone`",
+    "// and more on the global scope's prototype): each key becomes an own fixed binding.",
+    "const SCOPES = [];",
+    "for (let at = globalThis; at !== null && at !== Object.prototype; at = getPrototypeOf(at)) {",
+    "  SCOPES.push(at);",
+    "}",
+    "const GETTERS = [];",
+    "for (const key of new Set(SCOPES.flatMap(ownKeys))) {",
+    "  const held = getOwnPropertyDescriptor(globalThis, key);",
+    "  let value;",
+    "  try {",
+    "    value = held === undefined ? globalThis[key]",
+    "      : held.get !== undefined ? held.get.call(globalThis) : held.value;",
+    "  } catch {",
+    "    value = undefined;",
+    "  }",
+    "  if (reference(value) && typeof value !== 'function') {",
+    "    // A host object's own state behind its prototype's getters: `crypto.subtle`, ...",
+    "    for (let at = getPrototypeOf(value); at !== null; at = getPrototypeOf(at)) {",
+    "      for (const name of ownKeys(at)) {",
+    "        const getter = getOwnPropertyDescriptor(at, name)?.get;",
+    "        if (getter === undefined) continue;",
+    "        try { GETTERS.push(getter.call(value)); } catch { /* not this object's */ }",
+    "      }",
+    "    }",
+    "  }",
+    "  GETTERS.push(value, held?.get, held?.set);",
+    "  if (held === undefined || ('value' in held && held.configurable)) {",
+    "    defineProperty(globalThis, key, { value, writable: false, configurable: false,",
+    "                                      enumerable: held?.enumerable ?? false });",
+    "  } else if (held.configurable) {",
+    "    defineProperty(globalThis, key, { configurable: false });",
     "  }",
     "}",
-    "for (const shared of SHARED) overridable(shared);",
+    "harden([...GETTERS, WorkerEntrypoint], [...SHARED, ...SCOPES.slice(1)]);",
   ].join("\n");
 }
 
@@ -128,7 +177,7 @@ export function shimSource(paths: readonly string[]): string {
   const table = paths.map((path, at) => `[${JSON.stringify(path)}]: m${at}`);
   return [
     // The prelude first: it runs before any package's module.
-    `import { freezeTable, hasOwn, parse, stringify } from "./prelude.js";`,
+    `import { freezeTable, harden, hasOwn, parse, stringify } from "./prelude.js";`,
     `import { WorkerEntrypoint } from "cloudflare:workers";`,
     ...imports,
     `const MODULES = freezeTable({ __proto__: null, ${table.join(", ")} });`,
@@ -162,6 +211,9 @@ export function shimSource(paths: readonly string[]): string {
     "    return { ok: true, result: text };",
     "  }",
     "}",
+    // The dispatch path, frozen before any package's hook can run: the class, its
+    // prototype and `call`, and what they close over (`said`; the table is frozen above).
+    "harden([HookShim, said]);",
   ].join("\n");
 }
 

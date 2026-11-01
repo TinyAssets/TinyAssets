@@ -1218,4 +1218,32 @@ describe("the authority's checks", () => {
       under(mode).refusal(client, ["read_files"]) ?? "runs"))
       .toEqual(["runs", NOT_GRANTED, NOT_GRANTED, NOT_GRANTED]);
   });
+
+  it("hold code mode, and a script's model call, to run_code at every call: a grant that " +
+     "no longer names it refuses the next one, a full grant never holds it", async () => {
+    // A scoped grant whose run_code a test takes away between two calls of one script, its
+    // generation unchanged (so only the need, not the stamp's standing, can refuse).
+    let named = true;
+    const authority = new Authority({
+      grants: { standing: (_client, _generation, _at) => ({
+        mode: "scoped",
+        holds: (scope: { capability: string }) => scope.capability !== "run_code" || named }) },
+      receipt: async () => undefined,
+    });
+    const client = { by: "client" as const, stamp: { client: MUSE.client, generation: 1,
+                                                     authenticated_at: null, universe: "alpha",
+                                                     agent: "main" } };
+    const complete = { id: "c/codemode/c2", name: "model_complete", arguments: {},
+                       parent: { callId: "c/codemode" } };
+    expect(capabilityOf(complete)).toEqual(["run_code"]);
+    expect(capabilityOf({ name: "codemode", arguments: {} })).toEqual(["run_code"]);
+    expect(await authority.decide(client, complete)).toBeUndefined();
+    named = false;
+    expect(await authority.decide(client, complete)).toEqual({ block: NOT_GRANTED });
+    expect(await authority.decide({ by: "owner" }, complete)).toBeUndefined();
+    const full = new Authority({ grants: { standing: () => ({ mode: "full", holds: () => true }) },
+                                 receipt: async () => undefined });
+    expect(await full.decide(client, complete)).toEqual({ block: NOT_GRANTED });
+    expect(full.refusal(client, ["read_files"])).toBeUndefined();
+  });
 });
