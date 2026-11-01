@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted (founder, 2026-11-01). Amends ADR-031 decisions 1 and 3. Its other
-decisions stand.
+Accepted (founder, 2026-11-01). Amends ADR-031 decisions 1 and 3, and the
+Consequences bullets that follow from them (the paid hosted-CLI tier for
+interactive work only; `trigger: human`). Its other decisions stand.
 
 ## Date
 
@@ -15,16 +16,16 @@ The founder ruled on 2026-11-01 that users may power their agents with
 whatever model source they choose. Most users who hold a subscription, from
 any provider, will use it for all their agents, scheduled and unattended ones
 included. ADR-031 had made API keys the default for unattended work and
-limited hosted CLIs to turns their owner started. Neither limit came from a
-vendor's terms for the hosted, unmodified CLI.
+limited hosted CLIs to turns their owner started. Anthropic's terms set
+neither limit for the hosted, unmodified CLI.
 
-A 2026-11-01 read of each vendor's own pages
-(`openspec/changes/clean-sheet-platform/` will carry the per-vendor table):
+A 2026-11-01 read of the vendors' own pages:
 
 - **Anthropic** (https://code.claude.com/docs/en/legal-and-compliance, read
-  directly) allows "an end user signing in to the unmodified Claude Code
-  binary with their own Claude subscription, including where a platform
-  hosts Claude Code", under the Commercial Terms. It sets no limit to
+  directly): its credential rules do not prevent "an end user from signing
+  in to the unmodified Claude Code binary with their own Claude
+  subscription, including where a platform hosts Claude Code", under the
+  Commercial Terms. It sets no limit to
   human-started turns, and its usage limits "assume ordinary, individual
   usage". It forbids third parties to offer Claude.ai login, to route
   requests through Free, Pro, Max or Ultra credentials on users' behalf, to
@@ -35,10 +36,8 @@ A 2026-11-01 read of each vendor's own pages
   automation only on trusted private infrastructure, and Sign in with ChatGPT
   for hosted apps goes through an interest form.
 - **Google's** Gemini CLI terms forbid third-party software using Gemini CLI
-  OAuth. Alibaba's Qwen Coding Plan, Z.ai's GLM Coding Plan and MiniMax's plan
-  limit use to interactive or officially supported tools. These four read
-  from vendor repositories and search snippets, because the vendor sites are
-  blocked from the research session.
+  OAuth (read through the vendor's repository, because its site is blocked
+  from the research session).
 
 ## Decision
 
@@ -68,8 +67,9 @@ A 2026-11-01 read of each vendor's own pages
    - A record that cannot cite such a page is refused for unattended hosted
      turns.
    - That vendor's subscription then runs unattended on the user's device or
-     as the vendor's own agent over MCP. OpenAI's, Google's, Qwen's, Z.ai's
-     and MiniMax's plans are in this case on the 2026-11-01 reading.
+     as the vendor's own agent over MCP. OpenAI's and Google's plans are in
+     this case on the 2026-11-01 reading, as is any vendor with no citable
+     page.
 
 ## Consequences
 
