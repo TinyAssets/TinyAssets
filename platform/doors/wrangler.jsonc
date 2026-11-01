@@ -6,6 +6,9 @@
 // - GATEWAY: the model gateway's ConnectGateway entrypoint, which serves only the connect
 //   steps (seal, exchange, verify): no model call, no egress forwarding, and the keyring
 //   stays in the gateway. Only src/connect.ts reaches it.
+// - EGRESS: the model gateway's EgressGateway entrypoint, which serves only forward: the
+//   egress door streams a sandbox request the owner's object admitted through it. Only
+//   src/egress.ts reaches it.
 // - OAUTH_KV: the OAuth provider's own store; DIRECTORY: the owner directory (routing
 //   hints and the control record). Two namespaces, so their schemas never collide.
 // - DCR_ENABLED: the deprecated dynamic-registration fallback, off. OWNER_ISSUER:
@@ -30,7 +33,8 @@
     ]
   },
   "services": [
-    { "binding": "GATEWAY", "service": "tinyassets-gateway", "entrypoint": "ConnectGateway" }
+    { "binding": "GATEWAY", "service": "tinyassets-gateway", "entrypoint": "ConnectGateway" },
+    { "binding": "EGRESS", "service": "tinyassets-gateway", "entrypoint": "EgressGateway" }
   ],
   "kv_namespaces": [
     { "binding": "OAUTH_KV", "id": "not-provisioned-oauth" },

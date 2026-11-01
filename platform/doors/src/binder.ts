@@ -26,7 +26,7 @@ import {
   APP_RESOURCE, type DoorsEnv, FIRST_PARTY_CLIENTS, foreignIssuers, ISSUER, MCP_RESOURCE,
   ownerIssuer,
 } from "./config";
-import type { KeyEntry } from "./directory";
+import type { KeyEntry, LeaseEntry } from "./directory";
 import type { SignIn } from "./upstream";
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -196,6 +196,23 @@ export function bindApiKey(env: DoorsEnv, keyId: string, entry: KeyEntry): Bound
     source: { kind: "api_key", ref: keyId },
     authenticated_at: seconds(entry.c, "an API key's mint time"),
   });
+}
+
+/**
+ * A sandbox's lease token, found in the directory (`egress.ts`): the entry's owner, on its
+ * own account (the sandbox runs the owner's own commands), with what the object checks the
+ * lease by: the lease id the entry names, the SHA-256 of the token the request presented,
+ * and the policy generation E2B's transform set beside it. The object refuses this binding
+ * at every door but the egress doors.
+ */
+export function bindSandbox(env: DoorsEnv, tokenHash: string, entry: LeaseEntry,
+                            generation: number): Bound {
+  if (!HEX64.test(tokenHash) || !Number.isSafeInteger(generation) || generation < 1) {
+    throw new Error("a sandbox binding needs its token's hash and its network's generation");
+  }
+  const owner = principal(entry.o);
+  return bound(env, { owner, caller: owner, origin: null,
+                      sandbox: { lease: entry.l, token: tokenHash, generation } });
 }
 
 /**

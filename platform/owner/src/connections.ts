@@ -20,8 +20,10 @@
  * 2. For OAuth, the callback's `flowFinish`, in the same session, uses the flow up and
  *    hands back the verifier for the gateway's exchange.
  * 3. `commit`: the sealed blob, its kid, the models the gateway's setup check listed (each
- *    its whole pi-ai capability record, which the object has no catalog for: `ModelInfo`)
- *    and, for OAuth, the access expiry in clear.
+ *    its whole pi-ai capability record, which the object has no catalog for: `ModelInfo`),
+ *    where sandbox egress may forward its credential (`egress`: the sealed base URL and
+ *    endpoints the check read from the blob, no secret; the egress door's admission reads
+ *    it, G4) and, for OAuth, the access expiry in clear.
  *    A credential the provider issued whose setup check then failed is committed `failed`:
  *    the connection is in `error`, and a revocable one's blob is kept for the lane's
  *    provider revoke; an unrevocable one's is deleted, with an owner notice to delete it
@@ -60,6 +62,8 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import type { Api, Model } from "@earendil-works/pi-ai";
+
+import { type EgressScope, egressScope } from "../../gateway/src/credential";
 
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage, Write } from "./gate";
@@ -188,6 +192,7 @@ type Row = {
   expires_at: number | null; lease_id: string | null; lease_until: number | null;
   created_at: number; pending_until: number | null; revoked_at: number | null;
   revoke_due: number | null; revoke_tries: number; revocable: number;
+  egress: string | null;
 };
 
 /** How a provider revoke ended: confirmed, impossible (no endpoint), or not confirmed. */
@@ -211,6 +216,12 @@ const BLOB_MAX = 64 * 1024;
  * about 607 KiB (the largest catalog is about 142 KB for its 386 models).
  */
 export const MODELS_JSON_MAX = 640 * 1024;
+/**
+ * Where a connection's credential may be forwarded, as JSON: the schema's own ceiling. A
+ * source record's endpoints are a few short paths (the largest bundled one is under 1 KiB),
+ * so a scope past it is refused at commit, loudly, rather than kept half.
+ */
+export const EGRESS_JSON_MAX = 16 * 1024;
 const COST_MAX = 1_000_000;
 const TOKENS_MAX = 100_000_000;
 /** pi-ai's thinking levels a map may name (`MODEL_THINKING_LEVELS`), and a value's grammar. */
@@ -357,6 +368,24 @@ function blobOf(value: unknown, kid: string): string {
   return value;
 }
 
+/**
+ * A committed connection's egress scope as stored: the gateway's own grammar
+ * (`egressScope`), whole, within `EGRESS_JSON_MAX`.
+ */
+function scopeJson(value: unknown): string {
+  let scope: EgressScope;
+  try {
+    scope = egressScope(value);
+  } catch {
+    throw new Invalid("invalid connection egress scope");
+  }
+  const json = JSON.stringify(scope);
+  if (json.length > EGRESS_JSON_MAX) {
+    throw new Invalid("invalid connection egress scope");
+  }
+  return json;
+}
+
 function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
@@ -496,7 +525,7 @@ export class Connections {
    */
   commit(request: unknown, now: number): ConnectionView {
     const r = fields(request, ["connection", "version", "blob", "kid", "models"],
-                     ["expires_at", "failed"]);
+                     ["expires_at", "failed", "egress"]);
     const id = grammar(r["connection"], ID, "connection");
     const kid = grammar(r["kid"], KID, "kid");
     const blob = blobOf(r["blob"], kid);
@@ -525,16 +554,20 @@ export class Connections {
           || row.kind !== "oauth2") {
         throw new Invalid("a failed setup commits an issued credential, its code and no models");
       }
+      if (r["egress"] !== undefined) {
+        throw new Invalid("a failed setup commits no egress scope");
+      }
       return this.#storage.transactionSync(() => this.#failed(row, kid, blob, expires, failed,
                                                               now));
     }
+    const egress = scopeJson(r["egress"]);
     return this.#storage.transactionSync(() => {
       this.#sql.exec("DELETE FROM connection_secrets WHERE connection_id = ?", id);
       this.#sql.exec("INSERT INTO connection_secrets (connection_id, version, kid, blob) " +
                        "VALUES (?, ?, ?, ?)", id, row.version, kid, blob);
       this.#sql.exec("UPDATE connections SET status = 'active', pending_until = NULL, " +
-                       "models = ?, expires_at = ? WHERE id = ?",
-                     JSON.stringify(checked), expires, id);
+                       "models = ?, expires_at = ?, egress = ? WHERE id = ?",
+                     JSON.stringify(checked), expires, egress, id);
       this.#sql.exec("UPDATE connection_flows SET status = 'cancelled', verifier = NULL " +
                        "WHERE connection_id = ? AND status = 'open'", id);
       this.#changed();
@@ -595,7 +628,7 @@ export class Connections {
                             "it was deleted here, so delete it at the provider", now);
       }
       this.#sql.exec("UPDATE connections SET status = 'revoked', revoked_at = ?, " +
-                       "pending_until = NULL, lease_id = NULL, lease_until = NULL, " +
+                       "pending_until = NULL, lease_id = NULL, lease_until = NULL, egress = NULL, " +
                        "revoke_due = ?, revoke_tries = 0 WHERE id = ?",
                      now, owed ? now : null, id);
       if (!owed) {
@@ -713,6 +746,25 @@ export class Connections {
       throw new Refused(CONNECTION_UNAVAILABLE);
     }
     return { connection: id, version: row.version, blob: secret.blob };
+  }
+
+  /**
+   * Where an active connection's credential may be forwarded (its sealed base URL and
+   * endpoints, as its setup check listed them), or null: no such active connection.
+   */
+  egressScope(id: string): EgressScope | null {
+    const row = this.#row(id);
+    return row === undefined || row.status !== "active" || row.egress === null ? null
+      : egressScope(JSON.parse(row.egress));
+  }
+
+  /** The active connections the sandbox may reach, oldest first, each with its scope. */
+  egressible(): readonly { readonly connection: string; readonly provider: string;
+                          readonly egress: EgressScope }[] {
+    return this.#sql.exec<Row>("SELECT * FROM connections WHERE status = 'active' AND " +
+                                 "egress IS NOT NULL ORDER BY created_at, id").toArray()
+      .map((row) => Object.freeze({ connection: row.id, provider: row.provider,
+                                    egress: egressScope(JSON.parse(row.egress!)) }));
   }
 
   /** Whether the connection is still active at `version` (a dispatch's re-check). */

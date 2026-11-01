@@ -4,10 +4,13 @@
  * `guards/config.test.ts`).
  */
 import type { Source } from "../../gateway/src/credential";
+import type { EgressService } from "../../owner/src/network";
 import type { Verified } from "../../gateway/src/forward";
 import type { Sealed } from "../../gateway/src/keyring";
 import type { Exchanged } from "../../gateway/src/oauth";
 import type { OwnerDO } from "../../owner/src/owner-do";
+
+export { EGRESS_HOST, EGRESS_ORIGIN } from "../../owner/src/network";
 
 /** The one configured public origin; the Capacitor WebView loads it too. */
 export const PUBLIC_HOST = "tinyassets.io";
@@ -91,6 +94,8 @@ export interface DoorsEnv {
   readonly OWNER: DurableObjectNamespace<OwnerDO>;
   /** The gateway's connect entrypoint; reached only in `connect.ts`. */
   readonly GATEWAY: ConnectService;
+  /** The gateway's egress entrypoint, which serves only `forward`; reached only in `egress.ts`. */
+  readonly EGRESS: EgressService;
   /** The OAuth provider's own store (its schema; never ours). */
   readonly OAUTH_KV: KVNamespace;
   /** The owner directory: routing hints and the `control` record (`directory.ts`). */

@@ -49,6 +49,11 @@ export const OAUTH: Source = Object.freeze({
 
 export const REDIRECT = "https://tinyassets.io/oauth/connect/callback";
 
+/** Where a credential sealed for `record` may be forwarded, as its setup check lists it. */
+export function scopeOf(record: Source): { base_url: string; endpoints: Source["endpoints"] } {
+  return { base_url: record.upstream.base_url, endpoints: record.endpoints };
+}
+
 /**
  * The models the gateway's setup check lists for a source: its provider's catalog, once
  * its verify URL answers 2xx. Only the fake's Anthropic models endpoint answers a check, so
@@ -95,7 +100,7 @@ export async function gated() {
     const sealed = await env.GATEWAY.seal(name, prepared.connection, 1, key, record);
     const committed = await stub.connectionCommit(session(), {
       connection: prepared.connection, version: 1, blob: sealed.blob, kid: sealed.kid,
-      models: models ?? await catalog(record) });
+      models: models ?? await catalog(record), egress: scopeOf(record) });
     return committed.connection;
   };
 
@@ -110,7 +115,8 @@ export async function gated() {
       record);
     await stub.connectionCommit(session(), {
       connection: prepared.connection, version: 1, blob: exchanged.blob, kid: exchanged.kid,
-      models: await catalog(record), expires_at: expiresAt ?? exchanged.expires_at });
+      models: await catalog(record), expires_at: expiresAt ?? exchanged.expires_at,
+      egress: scopeOf(record) });
     return prepared.connection;
   };
 

@@ -15,8 +15,8 @@ import { describe, expect, it } from "vitest";
 import { clock } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import {
-  canonical, DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, Policy, POLICY_LIMITS, policyDigest,
-  validate,
+  canonical, DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, EGRESS_IP_LITERAL, Policy,
+  POLICY_LIMITS, policyDigest, validate,
 } from "../src/policy";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import { failure } from "./support";
@@ -185,7 +185,7 @@ describe("an owner write", () => {
         "0x7f.1", "127.1", "1.2.3.04", "0177.0.0.1"]
       .map((host) => [{ ...defaults(), egress: { mode: "allowlist", destinations: [
         { host, port: 443 }] } }, "Refused",
-        "an egress IP literal waits for the gateway's address check"] as const),
+        EGRESS_IP_LITERAL] as const),
     [{ ...defaults(), entries: {} }, "Invalid", "invalid policy entries"],
     ...[{ scope: "agent", table: "rules", values: {} },
         { scope: "account", table: "secrets", values: {} },

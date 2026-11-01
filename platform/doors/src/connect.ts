@@ -51,6 +51,7 @@
  * dropped silently.
  */
 import { secret } from "../../gateway/src/credential";
+import type { Verified } from "../../gateway/src/forward";
 
 import type { Bound } from "./binder";
 import { navigation } from "./authorize";
@@ -194,17 +195,17 @@ async function connectKey(context: ConnectContext): Promise<Response> {
     provider: record.upstream!.provider, revocable: false });
   let blob: string;
   let kid: string;
-  let models: unknown[];
+  let verified: Verified;
   try {
     ({ blob, kid } = await env.GATEWAY.seal(binding.owner, connection, version, key as string,
                                             sealing));
-    models = [...(await env.GATEWAY.verify(binding.owner, connection, version, blob)).models];
+    verified = await env.GATEWAY.verify(binding.owner, connection, version, blob);
   } catch (error) {
     // The owner holds the key: nothing was issued here, so the connection is given up.
     return abandoned(context, connection, error);
   }
-  return json(200, await stub.connectionCommit(binding, { connection, version, blob, kid,
-                                                          models }));
+  return json(200, await stub.connectionCommit(binding, {
+    connection, version, blob, kid, models: [...verified.models], egress: verified.egress }));
 }
 
 /** The provider's authorize URL for this flow: its record's endpoint and parameters, then ours. */
@@ -368,9 +369,9 @@ async function finishOAuth(context: ConnectContext): Promise<Response> {
     return abandoned(context, connection, error);
   }
   const { blob, kid, expires_at } = exchanged;
-  let models: unknown[];
+  let verified: Verified;
   try {
-    models = [...(await env.GATEWAY.verify(binding.owner, connection, version, blob)).models];
+    verified = await env.GATEWAY.verify(binding.owner, connection, version, blob);
   } catch (error) {
     // The provider issued a credential: it is committed failed, never dropped, so the
     // object revokes it at the provider or tells the owner to delete it there.
@@ -380,8 +381,9 @@ async function finishOAuth(context: ConnectContext): Promise<Response> {
       failed: ANY_CODE.test(message) ? message : "internal" });
     return answered(error);
   }
-  const view = await stub.connectionCommit(binding, { connection, version, blob, kid, models,
-                                                      expires_at });
+  const view = await stub.connectionCommit(binding, {
+    connection, version, blob, kid, models: [...verified.models], expires_at,
+    egress: verified.egress });
   return json(200, view, { "Set-Cookie": await clearedConnectCookie(state) });
 }
 

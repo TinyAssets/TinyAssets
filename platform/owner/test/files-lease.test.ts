@@ -20,7 +20,7 @@ function entryOf(answer: { entry: Entry } | { conflict: Entry | null }): Entry {
 }
 
 const acquire = (r: Rig, holder = "sandbox-1") =>
-  r.stub.fileLeaseAcquire(r.bind(null), { holder });
+  r.stub.sandboxLeaseOpen(r.bind(null), { holder, token: "a".repeat(64) });
 const sync = (r: Rig, lease: Pick<Lease, "lease_id" | "epoch">, ops: SyncOp[]) =>
   r.stub.fileSyncCommit(r.bind(null), { lease_id: lease.lease_id, epoch: lease.epoch, ops });
 const write = (r: Rig, path: string, body: string) => r.stub.fileWrite(
@@ -38,10 +38,10 @@ describe("the sync lease", () => {
     expect(first.lease_id).toMatch(/^[0-9a-f]{32}$/);
     expect(first.epoch).toBe(1);
     expect((await failure(() => acquire(r, "sandbox-2"))).message).toBe("the sync lease is held");
-    const renewed = await r.stub.fileLeaseRenew(r.bind(null), held(first));
+    const renewed = await r.stub.sandboxLeaseRenew(r.bind(null), held(first));
     expect(renewed.expires_at).toBeGreaterThanOrEqual(first.expires_at);
     await sqlIn(r.stub, "UPDATE file_space SET lease_expires = 1");
-    expect((await failure(() => r.stub.fileLeaseRenew(r.bind(null), held(first)))).message)
+    expect((await failure(() => r.stub.sandboxLeaseRenew(r.bind(null), held(first)))).message)
       .toBe(FENCED);
     const second = await acquire(r, "sandbox-2");
     expect(second.epoch).toBe(2);
@@ -64,8 +64,10 @@ describe("the sync lease", () => {
                          { ...lease, lease_id: "0".repeat(32) }]) {
       expect((await failure(() => sync(r, stale, [op]))).message).toBe(FENCED);
     }
-    expect(await r.stub.fileLeaseRelease(r.bind(null), held(lease))).toEqual({ released: true });
-    expect(await r.stub.fileLeaseRelease(r.bind(null), held(lease))).toEqual({ released: false });
+    expect(await r.stub.sandboxLeaseClose(r.bind(null), held(lease)))
+      .toEqual({ released: true, token: "a".repeat(64) });
+    expect(await r.stub.sandboxLeaseClose(r.bind(null), held(lease)))
+      .toEqual({ released: false, token: null });
     expect((await failure(() => sync(r, lease, [op]))).message).toBe(FENCED);
     const next = await acquire(r);
     await sqlIn(r.stub, "UPDATE file_space SET lease_expires = 1");
@@ -82,8 +84,9 @@ describe("the sync lease", () => {
   it("is the owner's own: an outside client never reaches it", async () => {
     const r = await rig();
     await r.register(MUSE);
-    expect((await failure(() => r.stub.fileLeaseAcquire(r.bind(MUSE), { holder: "x" }))).message)
-      .toBe("only the owner may hold the file sync lease");
+    expect((await failure(() => r.stub.sandboxLeaseOpen(r.bind(MUSE),
+                                                        { holder: "x", token: "a".repeat(64) })))
+      .message).toBe("only the owner may hold the sandbox lease");
     for (const holder of ["", "x".repeat(129), "a\nb", 7]) {
       expect((await failure(() => acquire(r, holder as string))).message)
         .toBe("a lease holder is 1 to 128 printable characters");

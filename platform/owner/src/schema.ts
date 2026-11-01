@@ -1444,6 +1444,43 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     ADMISSION_TABLE,
     "INSERT INTO owner_admission (only, state, reasons) VALUES (1, 'admitted', '[]')",
   ]),
+  // 14: the egress door (tasks 4 G4; egress.ts). The sandbox's one lease (`file_space`'s
+  // sync lease) also holds the SHA-256 of its lease token, which the owner directory maps
+  // to this owner as a routing hint (`l:`), and the policy generation its sandbox's
+  // network was last applied under, null until the sandbox slice applies one. A connection
+  // keeps where its credential may be forwarded (`egress`: its sealed base URL and
+  // endpoints, no secret), from its setup check. Each sandbox request the object admits is
+  // an open reservation until the egress door settles it; a refused one is kept as its
+  // receipt. The newest `EGRESS_LIMITS.receiptsKept` closed rows are kept, and at most
+  // `EGRESS_LIMITS.open` are open at once.
+  Object.freeze([
+    "ALTER TABLE file_space ADD COLUMN lease_token TEXT CHECK (lease_token IS NULL OR " +
+      "(length(lease_token) = 64 AND lease_token NOT GLOB '*[^0-9a-f]*'))",
+    "ALTER TABLE file_space ADD COLUMN network_generation INTEGER CHECK " +
+      "(network_generation IS NULL OR network_generation >= 1)",
+    "ALTER TABLE connections ADD COLUMN egress TEXT CHECK (egress IS NULL OR " +
+      "length(egress) <= 16384)",
+    "CREATE TABLE egress_reservations (id TEXT PRIMARY KEY CHECK (length(id) = 32), " +
+      "lease_id TEXT NOT NULL CHECK (length(lease_id) = 32), epoch INTEGER, " +
+      "connection_id TEXT NOT NULL CHECK (length(connection_id) = 25), version INTEGER, " +
+      "method TEXT NOT NULL CHECK (length(method) BETWEEN 1 AND 7), " +
+      "path TEXT NOT NULL CHECK (length(path) BETWEEN 1 AND 2048), " +
+      "generation INTEGER NOT NULL, bytes_hint INTEGER CHECK (bytes_hint IS NULL OR " +
+      "bytes_hint >= 0), opened_at REAL NOT NULL, " +
+      "state TEXT NOT NULL CHECK (state IN ('open', 'settled', 'refused')), " +
+      "code TEXT CHECK (code IS NULL OR length(code) <= 64), " +
+      "ended TEXT CHECK (ended IS NULL OR ended IN ('policy', 'lease', 'connection', " +
+      "'admission', 'erasure')), " +
+      "outcome TEXT CHECK (outcome IS NULL OR outcome IN ('complete', 'aborted', 'failed', " +
+      "'deadline', 'ended', 'lost')), " +
+      "status INTEGER CHECK (status IS NULL OR status BETWEEN 100 AND 599), " +
+      "bytes INTEGER CHECK (bytes IS NULL OR bytes >= 0), settled_at REAL, " +
+      "CHECK ((state = 'refused') = (code IS NOT NULL)), " +
+      "CHECK ((state = 'settled') = (outcome IS NOT NULL)), " +
+      "CHECK ((state = 'open') = (settled_at IS NULL)))",
+    "CREATE INDEX egress_reservations_by_state ON egress_reservations (state, opened_at)",
+    "CREATE INDEX egress_reservations_by_time ON egress_reservations (opened_at)",
+  ]),
 ]);
 
 /** Apply every migration past the stored version; return the version now stored. */

@@ -9,6 +9,7 @@ declare namespace Cloudflare {
     OWNER_ISSUER: string;
     FOREIGN_ISSUERS: string;
     GATEWAY: import("../src/config").ConnectService;
+    EGRESS: import("../../owner/src/network").EgressService;
     /** The fake providers (test/fake-providers.ts), for the tests to read back. */
     PROVIDERS: Fetcher;
   }

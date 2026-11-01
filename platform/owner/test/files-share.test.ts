@@ -314,7 +314,7 @@ describe("an outside client's share", () => {
   it("keeps every share and the manifest's bytes equal to a recount of the rows",
      async () => {
     const r = await rig();
-    const lease = await r.stub.fileLeaseAcquire(r.bind(null), { holder: "sync" });
+    const lease = await r.stub.sandboxLeaseOpen(r.bind(null), { holder: "sync", token: "a".repeat(64) });
     await inFiles(r.stub, { client_share: 100, owner_reserve: 0 }, async (files: Files) => {
       await files.write(`${W}/d/a.txt`, text("a"), { expected: null, writer: CLIENT });
       await files.write(`${W}/d/b.bin`, new Uint8Array(INLINE_BYTES + 10),

@@ -17,7 +17,7 @@
  * streams and settles the owner's reservation.
  */
 import { type Catalog, modelInfos } from "./catalog";
-import { allows, bearer, type Credential } from "./credential";
+import { bearer, type Credential, type EgressScope, egressTarget } from "./credential";
 import type { ModelRecord } from "./model-record";
 import { type Code, codeOf, Failure, failureResponse, upstreamCode } from "./failure";
 import { nativeFetch } from "./egress";
@@ -167,14 +167,13 @@ export async function forward(env: KeyringEnv, bound: Binding, blob: unknown,
   } catch {
     return refusal("invalid_request", resealed);
   }
-  const target = new URL(`${incoming.pathname}${incoming.search}`,
-                         new URL(credential.upstream.base_url).origin);
+  const target = egressTarget(scopeOf(credential), request.method,
+                              `${incoming.pathname}${incoming.search}`);
+  if (target === null) {
+    return refusal("endpoint_refused", resealed);
+  }
   for (const name of CREDENTIAL_PARAMS) {
     target.searchParams.delete(name);
-  }
-  if (target.origin !== new URL(credential.upstream.base_url).origin
-      || !allows(credential.endpoints, request.method, target)) {
-    return refusal("endpoint_refused", resealed);
   }
   const headers = new Headers();
   for (const [name, value] of request.headers) {
@@ -217,9 +216,20 @@ export async function forward(env: KeyringEnv, bound: Binding, blob: unknown,
                               headers: answer });
 }
 
-/** What a setup check found: the credential works, and the models it can be asked for. */
+/** Where a credential may be forwarded: its sealed base URL and endpoints, no secret. */
+function scopeOf(credential: Credential): EgressScope {
+  return Object.freeze({ base_url: credential.upstream.base_url,
+                         endpoints: credential.endpoints });
+}
+
+/**
+ * What a setup check found: the credential works, the models it can be asked for, and
+ * where sandbox egress may forward it (`egress`, its sealed base URL and endpoints), which
+ * the owner's object keeps to refuse an endpoint not sealed before any forward (G4).
+ */
 export interface Verified {
   readonly models: readonly ModelRecord[];
+  readonly egress: EgressScope;
   readonly resealed?: Resealed;
 }
 
@@ -227,7 +237,8 @@ export interface Verified {
  * Checks an opened credential against its sealed `verify_url` (a `GET` among its
  * endpoints, sent like `forward` sends): a 2xx answer is a working credential, and the
  * models are pi-ai's catalog for its provider (or its declared models), with their
- * metadata, which the binder hands the owner object's `connectionCommit`. Anything else is
+ * metadata, and its egress scope, which the binder hands the owner object's
+ * `connectionCommit`. Anything else is
  * the upstream outcome's fixed code; the answer's body is never read.
  */
 export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
@@ -256,5 +267,6 @@ export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
     throw new Failure(upstreamCode(answer.status));
   }
   return Object.freeze({ models: Object.freeze(modelInfos(catalog, credential.upstream)),
+                         egress: scopeOf(credential),
                          ...(resealed === undefined ? {} : { resealed }) });
 }

@@ -98,6 +98,8 @@
  * scheduled delivery, the `wakes` lane's claim). Only the platform, as the reserved
  * `PLATFORM_CALLER`, sets it, at `admissionSet`, the one door that caller reaches.
  */
+import { randomBytes } from "node:crypto";
+
 import type { HarnessSettings } from "@earendil-works/pi-durable";
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
@@ -115,7 +117,10 @@ import {
   PLATFORM_ONLY, PLATFORM_RESERVED, setAdmission, tombstoned, workRefusal, writeTombstone,
 } from "./admission";
 import { Collections, Conflict, type HistoryEntry, type Page, type Row } from "./collections";
-import { type ConnectionView, Connections, type GatewayService, type Prepared } from "./connections";
+import {
+  CONNECTION_UNAVAILABLE, type ConnectionView, Connections, CREDENTIAL_EXPIRED,
+  type GatewayService, type Prepared,
+} from "./connections";
 import { Invalid, Refused } from "./errors";
 import {
   type Change as FileChange, CHUNK_BYTES, type ChunkRef, type ChunkStore, type Content,
@@ -153,6 +158,11 @@ import { codePoints, principal } from "./text";
 import type { OperationResult } from "./thread-host";
 import type { ThreadStore } from "./thread-store";
 import { TURN_ENDED, Usage as ModelUsage, type UsageReceipt } from "./usage";
+import {
+  Egress, type EgressOpened, type EgressReceipt, type EgressRefusal, egressRequest,
+  type SandboxBinding, sandboxBinding, settleRequest,
+} from "./egress";
+import { type EgressPolicy, sandboxEnv } from "./network";
 import { runWakes, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "./wakes";
 
 /**
@@ -179,6 +189,12 @@ export interface Binding {
   readonly authenticated_at?: number;
   /** The owner's protected-session cookie, as the browser presented it. */
   readonly session?: string;
+  /**
+   * The sandbox, as the egress door resolved its lease token (`egress.ts`): the lease the
+   * owner directory's entry names, the token's SHA-256 and the policy generation its
+   * network's transform set. Only the egress doors take it; every other door refuses it.
+   */
+  readonly sandbox?: SandboxBinding;
 }
 
 export type { Origin, Source, WakeSender };
@@ -358,6 +374,11 @@ export interface ConnectionCommitRequest {
   readonly expires_at?: number | null;
   /** The setup check's code, when it failed after the provider issued the credential. */
   readonly failed?: string;
+  /**
+   * Where the credential may be forwarded (the setup check's `egress`: its sealed base URL
+   * and endpoints); every commit but a failed one carries it.
+   */
+  readonly egress?: unknown;
 }
 
 export interface ConnectionRequest {
@@ -462,6 +483,26 @@ export interface LeaseRequest {
   readonly epoch: number;
 }
 
+export interface SandboxLeaseRequest {
+  readonly holder: string;
+  /** The SHA-256 hex of the lease token the binder minted. */
+  readonly token: string;
+}
+
+export interface NetworkAppliedRequest extends LeaseRequest {
+  readonly generation: number;
+}
+
+/** A lease as the binder keeps the directory by it: with its token's hash. */
+export type HeldLease = Lease & { readonly token: string };
+
+/** What the sandbox slice sets up a sandbox from (`network.ts`). */
+export interface SandboxConfig {
+  readonly generation: number;
+  readonly egress: EgressPolicy;
+  readonly env: Readonly<Record<string, string>>;
+}
+
 export interface SyncCommitRequest extends LeaseRequest {
   readonly ops: SyncOp[];
 }
@@ -527,6 +568,9 @@ interface Serves {
 
 export const OUTSIDE_SESSION = "an outside client's call never carries the owner's session";
 export const MCP_REGISTERS_BY_CARD = "an MCP client's agent registers through the card it files";
+/** A lease token's binding at any door but the egress doors, and any other at those. */
+export const SANDBOX_DOORS = "a sandbox's lease token reaches the egress doors only";
+export const SANDBOX_ONLY = "the egress doors take a sandbox's lease token only";
 
 /**
  * The request's fields are exactly `required`, plus any of `optional`, and none is
@@ -810,6 +854,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #notices: Notices;
   readonly #connections: Connections;
   readonly #usage: ModelUsage;
+  /** Sandbox egress: each request admitted at open and settled once it ends (`egress.ts`). */
+  readonly #egress: Egress;
   /** Live model events for the owner's views, in memory only (`live-tee.ts`). */
   readonly #tee = new LiveTee();
   /** The agent's settings from owner policy, kept for the policy generation they are of. */
@@ -870,6 +916,22 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     };
     this.#connections = new Connections(storage, write, () => env.GATEWAY, owner,
                                         this.#notices, clock);
+    this.#egress = new Egress(storage, {
+      lease: (now) => this.#files.sandboxLease(now),
+      generation: () => this.#policy.generation(),
+      credential: (connection, nowMs) => {
+        try {
+          return this.#connections.credential(connection, nowMs);
+        } catch (error) {
+          if (error instanceof Refused && (error.message === CONNECTION_UNAVAILABLE
+                                           || error.message === CREDENTIAL_EXPIRED)) {
+            return null;  // not the owner's, not active, or expired: refused at the open
+          }
+          throw error;
+        }
+      },
+      scope: (connection) => this.#connections.egressScope(connection),
+    });
     this.#usage = new ModelUsage(storage, () => {
       const { generation, document } = this.#policy.read();
       return { generation, settings: modelSettings(document) };
@@ -943,7 +1005,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                         });
     const lifecycle = new Lifecycle<OwnerEnv>(this);
     this.#erasure = new Erasure({
-      storage, write, clock, threads: this.#threads, ended: () => this.#agent.erasing(),
+      storage, write, clock, threads: this.#threads, ended: () => {
+        this.#agent.erasing();
+        this.#egress.drop();
+      },
       drop: (thread) => this.#agent.drop(thread), lifecycle,
       wipe: () => this.#gate.wipe(writeTombstone),
       retryMs: internals.eraseRetryMs ?? ERASE_RETRY_MS,
@@ -1186,6 +1251,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                policy: written.document };
     }));
     this.#agent.policyChanged();
+    await this.#door(() => this.#egress.end("policy"));
     await this.#agent.endAll();
     return done;
   }
@@ -1469,12 +1535,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                                              () => this.#connections.commit(request, clock())));
   }
 
-  /** A connection unusable at once; its credential deleted here, and at its provider. */
-  connectionRevoke(binding: Binding, request: ConnectionRequest):
+  /**
+   * A connection unusable at once; its credential deleted here, and at its provider. Its
+   * sandbox egress streams end once the revoke committed.
+   */
+  async connectionRevoke(binding: Binding, request: ConnectionRequest):
       Promise<{ connection: string; revoked: boolean; provider_revoke: boolean }> {
-    return this.#synced(() => this.#widening(binding, "reduce", "connection_revoke", request,
-                                             "revoke a model source",
-                                             () => this.#connections.revoke(request, clock())));
+    const revoked = await this.#synced(() => this.#widening(binding, "reduce",
+                                                            "connection_revoke", request,
+                                                            "revoke a model source",
+      () => this.#connections.revoke(request, clock())));
+    await this.#door(() => this.#egress.end("connection",
+                                            (live) => live.connection === revoked.connection));
+    return revoked;
   }
 
   /** Every connection, newest first, never its blob. */
@@ -1904,6 +1977,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return setAdmission(this.#storage, request);
     });
     if (set.state !== "admitted") {
+      await this.#door(() => this.#egress.end("admission"));
       await this.#agent.endUnadmitted();
     } else {
       await this.#agent.wakeHeld();
@@ -1956,7 +2030,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * false: the platform's own door, which sets it. The platform's reserved caller reaches
    * no other door, and no owner is named so.
    */
-  #bind(binding: Binding, door: DoorClass | "admission"): { owner: string; caller: string } {
+  #bind(binding: Binding, door: DoorClass | "admission", sandbox = false):
+      { owner: string; caller: string } {
     if (this.#tombstone || this.#erasure.erased) {
       throw new Refused(OWNER_ERASED);
     }
@@ -1977,6 +2052,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       if (refusal !== null) {
         throw new Refused(refusal);
       }
+    }
+    // A lease token reaches the egress doors and nothing else; they take nothing else.
+    if (sandbox !== ("sandbox" in binding)) {
+      throw new Refused(sandbox ? SANDBOX_ONLY : SANDBOX_DOORS);
     }
     const named = this.ctx.id.name;
     if (named === undefined) {
@@ -2330,30 +2409,154 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
   }
 
-  // The sync lease is the owner's own: the sandbox's sync agent reaches it through the
-  // binder with a lease token (tasks 2), as the owner, never as an outside client.
+  // -- THE SANDBOX: its one lease, its network and its egress (tasks 4 G4) -----------
+  //
+  // The sandbox holds one lease, the file sync lease (`files.ts`): its id is the claim
+  // token and its epoch the fencing number, for the sync commits and the egress alike, and
+  // it holds the hash of the lease token the binder minted, which E2B's transform sets on
+  // the sandbox's requests to the egress door. The lease's doors are the owner's own, as
+  // the binder reaches them (`doors/src/sandbox.ts`), never an outside client's; the
+  // egress doors take the sandbox binding the egress door resolved from the token, and no
+  // other door takes one.
 
-  fileLeaseAcquire(binding: Binding, request: { holder: string }): Promise<Lease> {
+  /**
+   * The sandbox's lease taken, bound to its token's hash; any stream another lease still
+   * holds is ended, since that lease has lapsed.
+   */
+  sandboxLeaseOpen(binding: Binding, request: SandboxLeaseRequest): Promise<HeldLease> {
     return this.#door(() => {
-      this.#owner(binding, "work", "hold the file sync lease");
-      const r = fileFields(request, ["holder"]);
-      return this.#files.leaseAcquire(r["holder"]);
+      this.#owner(binding, "work", "hold the sandbox lease");
+      const r = fileFields(request, ["holder", "token"]);
+      const lease = this.#files.leaseAcquire(r["holder"], r["token"]);
+      this.#egress.end("lease", (live) => live.lease !== lease.lease_id);
+      return { ...lease, token: r["token"] as string };
     });
   }
 
-  fileLeaseRenew(binding: Binding, request: LeaseRequest): Promise<Lease> {
+  /** The lease renewed; with its token's hash, for the binder's directory entry. */
+  sandboxLeaseRenew(binding: Binding, request: LeaseRequest): Promise<HeldLease> {
     return this.#door(() => {
-      this.#owner(binding, "work", "hold the file sync lease");
+      this.#owner(binding, "work", "hold the sandbox lease");
       const r = fileFields(request, ["lease_id", "epoch"]);
-      return this.#files.leaseRenew(r["lease_id"], r["epoch"]);
+      const lease = this.#files.leaseRenew(r["lease_id"], r["epoch"]);
+      return { ...lease, token: this.#files.sandboxLease(clock())!.token };
     });
   }
 
-  fileLeaseRelease(binding: Binding, request: LeaseRequest): Promise<{ released: boolean }> {
+  /**
+   * The lease given back, its token unusable from this unit on and its streams ended; with
+   * its token's hash, for the binder to delete its directory entry after. One already lost
+   * changes nothing.
+   */
+  sandboxLeaseClose(binding: Binding, request: LeaseRequest):
+      Promise<{ released: boolean; token: string | null }> {
     return this.#door(() => {
-      this.#owner(binding, "reduce", "hold the file sync lease");
+      this.#owner(binding, "reduce", "hold the sandbox lease");
       const r = fileFields(request, ["lease_id", "epoch"]);
-      return this.#files.leaseRelease(r["lease_id"], r["epoch"]);
+      const held = this.#files.sandboxLease(clock());
+      const { released } = this.#files.leaseRelease(r["lease_id"], r["epoch"]);
+      if (!released) {
+        return { released, token: null };
+      }
+      this.#egress.end("lease", (live) => live.lease === r["lease_id"]);
+      return { released, token: held!.token };
+    });
+  }
+
+  /**
+   * The sandbox's network applied under policy `generation` (the sandbox slice's
+   * `updateNetwork` returned): egress opens again, if that is still the current generation.
+   * In `ask` mode, what the network does not list is refused, with a refusal receipt.
+   */
+  sandboxNetworkApplied(binding: Binding, request: NetworkAppliedRequest): Promise<Lease> {
+    return this.#door(() => {
+      this.#owner(binding, "work", "apply the sandbox's network");
+      const r = fileFields(request, ["lease_id", "epoch", "generation"]);
+      const { generation, document } = this.#policy.read();
+      if (r["generation"] !== generation) {
+        throw new Refused("egress_policy_stale: the network was made under another policy " +
+                          "generation");
+      }
+      const lease = this.#files.networkApplied(r["lease_id"], r["epoch"], generation);
+      if (document.egress.mode === "ask") {
+        this.#policy.refusal("sandbox_network", { mode: "ask", generation }, clock(),
+                             "egress.ask");
+      }
+      return lease;
+    });
+  }
+
+  /**
+   * What the sandbox slice sets up a sandbox from: the owner's egress policy at its
+   * generation (`networkDocument` makes E2B's network of it, with the lease's token), and
+   * the model clients' environment, a base URL on the egress door and a placeholder key
+   * for each active connection (`sandboxEnv`).
+   */
+  sandboxConfig(binding: Binding): Promise<SandboxConfig> {
+    return this.#door(() => {
+      this.#owner(binding, "read", "read its sandbox's configuration");
+      const { generation, document } = this.#policy.read();
+      return { generation, egress: document.egress,
+               env: sandboxEnv(this.#connections.egressible(),
+                               () => randomBytes(16).toString("hex")) };
+    });
+  }
+
+  /**
+   * One sandbox request, admitted at open (`Egress.open`): its blob, version, generation,
+   * reservation and end signal, or its refusal's fixed code and receipt. An OAuth
+   * credential about to expire is refreshed first, as a model call's is.
+   */
+  async egressOpen(binding: Binding, request: unknown): Promise<EgressOpened | EgressRefusal> {
+    const r = await this.#door(() => {
+      this.#bind(binding, "work", true);
+      return egressRequest(request);
+    });
+    try {
+      await this.#connections.fresh(r.connection);
+    } catch {
+      // A refresh that failed leaves the credential as it was: the open below refuses it
+      // if it has expired, and uses it while it has not.
+    }
+    return this.#door(() => {
+      this.#bind(binding, "work", true);
+      return this.#egress.open(sandboxBinding(binding.sandbox), r, clock());
+    });
+  }
+
+  /**
+   * One reservation's end, as the egress door saw it: its outcome, the provider's status
+   * and the bytes it streamed; a blob the gateway resealed meanwhile is kept by the
+   * connection's compare-and-swap.
+   */
+  egressSettle(binding: Binding, request: Record<string, unknown>):
+      Promise<{ settled: boolean }> {
+    return this.#door(() => {
+      this.#bind(binding, "reduce", true);
+      const { resealed, ...rest } = request ?? {};
+      const settled = this.#egress.settle(sandboxBinding(binding.sandbox),
+                                          settleRequest(rest), clock());
+      if (settled.settled && resealed !== undefined) {
+        try {
+          this.#connections.resealed(settled.connection, settled.version, resealed, Date.now());
+        } catch (error) {
+          if (!(error instanceof Invalid)) {
+            throw error;
+          }
+          // A malformed reseal is the gateway's bug: the call still settles, and the
+          // gateway reseals again at the next one.
+          console.error("a resealed blob the egress door handed back was malformed");
+        }
+      }
+      return { settled: settled.settled };
+    });
+  }
+
+  /** The owner's newest egress receipts: what the sandbox asked, and how each ended. */
+  egressReceipts(binding: Binding): Promise<{ receipts: EgressReceipt[] }> {
+    return this.#door(() => {
+      this.#owner(binding, "read", "read its sandbox's egress");
+      return { receipts: this.#egress.receipts() };
     });
   }
 

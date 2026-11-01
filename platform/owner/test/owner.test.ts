@@ -26,8 +26,8 @@ const PULL = { collection: "board", after: 0, limit: 1 };
 const RPC_METHODS = Object.freeze([
   "admissionSet", "agentCancel", "agentRun", "agentStatus", "agentSubmit", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory", "collectionPull",
   "collectionWrite", "connectionCommit", "connectionList", "connectionPrepare",
-  "connectionRevoke", "deleteAgent", "disableAgent", "fileChanges", "fileHistory",
-  "fileHistoryPurge", "fileLeaseAcquire", "fileLeaseRelease", "fileLeaseRenew", "fileList",
+  "connectionRevoke", "deleteAgent", "disableAgent", "egressOpen", "egressReceipts",
+  "egressSettle", "fileChanges", "fileHistory", "fileHistoryPurge", "fileList",
   "fileMkdir", "fileRead", "fileReadChunks", "fileRedact", "fileRemove", "fileRename",
   "fileRestore", "fileStat", "fileSyncCommit", "fileUploadAbort", "fileUploadBegin",
   "fileUploadChunks", "fileUploadCommit", "fileUsage", "fileWrite",
@@ -35,8 +35,9 @@ const RPC_METHODS = Object.freeze([
   "grantForgetRevoked", "grantList", "grantRevoke", "grantSet", "mailboxAck", "mailboxRead",
   "mailboxSubscriber", "noticeList", "outsideAgents", "policyProposal", "policyPropose",
   "policyRead", "policyReceipts", "policyWakeLimits", "policyWrite", "registerAgent",
-  "registerProposal", "registerPropose", "roomPost", "sessionClose", "sessionCloseAll",
-  "sessionExtend", "sessionOpen", "usageMetrics", "usageReceipts",
+  "registerProposal", "registerPropose", "roomPost", "sandboxConfig", "sandboxLeaseClose",
+  "sandboxLeaseOpen", "sandboxLeaseRenew", "sandboxNetworkApplied", "sessionClose",
+  "sessionCloseAll", "sessionExtend", "sessionOpen", "usageMetrics", "usageReceipts",
 ]);
 
 describe("schema migration on wake", () => {

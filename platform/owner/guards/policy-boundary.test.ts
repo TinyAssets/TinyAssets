@@ -56,6 +56,7 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   model_spend: Object.freeze(["owner/src/usage.ts", SCHEMA]),
   model_turns: Object.freeze(["owner/src/usage.ts", SCHEMA]),
   model_turn_owners: Object.freeze(["owner/src/usage.ts", SCHEMA]),
+  egress_reservations: Object.freeze(["owner/src/egress.ts", SCHEMA]),
 });
 
 /**

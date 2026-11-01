@@ -9,8 +9,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { Failure, guarded } from "../src/failure";
-import type Gateway from "../src/index";
-import { ConnectGateway } from "../src/index";
+import Gateway, { ConnectGateway, EgressGateway } from "../src/index";
 import { open } from "../src/keyring";
 import { ALICE, ANTHROPIC, envelopeOf, OPENAI, sealed } from "./support";
 
@@ -86,13 +85,20 @@ describe("the gateway Worker", () => {
       .toBe("oauth_invalid_grant");
   });
 
-  it("forwards a sandbox request over RPC, a Request in and a Response out", async () => {
+  it("forwards a sandbox request on the egress entrypoint alone, a Request in and a Response out",
+     async () => {
+    // The doors' egress door reaches it over their real `EGRESS` binding; here, its surface.
+    expect(Object.getOwnPropertyNames(EgressGateway.prototype).sort())
+      .toEqual(["constructor", "forward"]);
+    // The owner's entrypoint forwards nothing: only the egress door does.
+    expect(Object.getOwnPropertyNames(Gateway.prototype)).not.toContain("forward");
+    const egress = new EgressGateway(createExecutionContext(), env);
     const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
-    const response = await gateway.forward("alice", "c1", 1, blob, new Request(
+    const response = await egress.forward("alice", "c1", 1, blob, new Request(
       "https://egress/v1/models", { headers: { "x-fake-mode": "echo", authorization: "Bearer ph" } }));
     expect(response.status).toBe(200);
     expect(((await response.json()) as { path: string }).path).toBe("/v1/models");
-    const refused = await gateway.forward("", "c1", 1, blob, new Request("https://egress/v1/models"));
+    const refused = await egress.forward("", "c1", 1, blob, new Request("https://egress/v1/models"));
     expect(refused.status).toBe(400);
   });
 

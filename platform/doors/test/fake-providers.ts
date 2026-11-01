@@ -14,10 +14,70 @@
  * - A test OAuth server (`auth.test/token`): the code `good-code` gets `at-good`, any
  *   other `invalid_grant`. OpenAI's model list (`api.openai.com/v1/models`): `200` for
  *   the bearer `at-good`.
+ * - Groq's chat completions (`api.groq.com/openai/v1/chat/completions`), for the egress
+ *   door: `401` but for a bearer key starting `gsk-good`; else, by `x-fake-egress`, three
+ *   SSE chunks (`stream`, the default, `EGRESS_CHUNKS`), a `429` (`busy`), or one chunk and
+ *   then a stream held
+ *   open, an SSE comment every 50 ms for at most 10 s, until its reader cancels it
+ *   (`slow-<id>`; the cancel is recorded, read back from
+ *   `https://status.test/cancelled?id=<id>`).
  *
  * It is test code: its module state (the log) is the fake's own.
  */
 const log: unknown[] = [];
+const cancelled = new Set<string>();
+
+/** What the egress fake streams, in order. */
+export const EGRESS_CHUNKS: readonly string[] = Object.freeze([
+  "data: {\"choices\":[{\"delta\":{\"content\":\"one \"}}]}\n\n",
+  "data: {\"choices\":[{\"delta\":{\"content\":\"two\"}}]}\n\n",
+  "data: [DONE]\n\n",
+]);
+
+function completions(request: Request): Response {
+  if (!bearer(request).startsWith("gsk-good")) {
+    return Response.json({ error: { message: `invalid key ${bearer(request)}` } }, { status: 401 });
+  }
+  const mode = request.headers.get("x-fake-egress") ?? "stream";
+  if (mode === "busy") {
+    return Response.json({ error: { message: "rate limited" } },
+                         { status: 429, headers: { "retry-after": "7" } });
+  }
+  const encoder = new TextEncoder();
+  const headers = { "content-type": "text/event-stream", "x-upstream": "fake" };
+  if (mode.startsWith("slow-")) {
+    const id = mode.slice("slow-".length);
+    // A comment every 50 ms keeps the stream open without ending it (a stream with nothing
+    // pending would be cut by workerd's hang detection), for at most 10 s.
+    let timer: ReturnType<typeof setInterval> | undefined;
+    return new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(EGRESS_CHUNKS[0]!));
+        let ticks = 0;
+        timer = setInterval(() => {
+          if (++ticks > 200) {
+            clearInterval(timer);
+            controller.close();
+            return;
+          }
+          controller.enqueue(encoder.encode(": ping\n\n"));
+        }, 50);
+      },
+      cancel() {
+        clearInterval(timer);
+        cancelled.add(id);
+      },
+    }), { headers });
+  }
+  return new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of EGRESS_CHUNKS) {
+        controller.enqueue(encoder.encode(chunk));
+      }
+      controller.close();
+    },
+  }), { headers });
+}
 
 function bearer(request: Request): string {
   return (request.headers.get("authorization") ?? "").replace(/^Bearer /, "");
@@ -57,6 +117,9 @@ export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.hostname === "status.test") {
+      if (url.pathname === "/cancelled") {
+        return Response.json({ cancelled: cancelled.has(url.searchParams.get("id") ?? "") });
+      }
       if (request.method === "DELETE") {
         log.length = 0;
         return new Response(null, { status: 204 });
@@ -82,6 +145,8 @@ export default {
         return token(request);
       case "api.openai.com/v1/models":
         return listed(bearer(request) === "at-good", bearer(request));
+      case "api.groq.com/openai/v1/chat/completions":
+        return completions(request);
       default:
         return new Response(`no fake for ${where}`, { status: 599 });
     }

@@ -411,3 +411,45 @@ export function allows(endpoints: readonly Endpoint[], method: string, url: URL)
                                    && entry.methods.includes(method)
                                    && pathAllowed(entry.paths, url.pathname));
 }
+
+/**
+ * Where a sealed credential may be forwarded (G4): its base URL and its endpoints, none of
+ * them secret. The setup check hands them to the binder, which commits them with the
+ * connection, so the owner's object can refuse a sandbox request to an endpoint that is not
+ * sealed before anything reaches the gateway; the gateway still checks the sealed ones.
+ */
+export interface EgressScope {
+  readonly base_url: string;
+  readonly endpoints: readonly Endpoint[];
+}
+
+/** A scope checked whole, by the grammar a seal is held to; anything else is `invalid_source`. */
+export function egressScope(value: unknown): EgressScope {
+  const fields = shape(value, ["base_url", "endpoints"]);
+  const endpoints = Object.freeze(list(fields["endpoints"], 1, ENDPOINTS_MAX, endpoint));
+  const base = httpsUrl(fields["base_url"]);
+  if (!endpoints.some((entry) => entry.origin === base.origin)) {
+    throw new Failure("invalid_source");
+  }
+  return Object.freeze({ base_url: fields["base_url"] as string, endpoints });
+}
+
+/**
+ * The URL a sandbox request for `path` (its path and query, as the egress door hands it
+ * on) is sent to: the path at the base URL's origin, and only when it stays there and
+ * `method` and the path are sealed (`allows`). Null otherwise. The gateway's `forward` and
+ * the owner's `egressOpen` both ask this, so the two can never disagree.
+ */
+export function egressTarget(scope: EgressScope, method: string, path: string): URL | null {
+  if (!path.startsWith("/")) {
+    return null;
+  }
+  const origin = new URL(scope.base_url).origin;
+  let target: URL;
+  try {
+    target = new URL(path, origin);
+  } catch {
+    return null;
+  }
+  return target.origin === origin && allows(scope.endpoints, method, target) ? target : null;
+}

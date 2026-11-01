@@ -8,12 +8,16 @@
  * - `seal`: a pasted API key, sealed with its source record (§7.2 inline connect).
  * - `exchange`, `refresh`, `revokeAtProvider`: OAuth connections (`oauth.ts`).
  * - `verify`: the connection's setup check, and the models it can be asked for.
- * - `forward`: raw passthrough for sandbox egress (`forward.ts`).
+ * - `forward`: raw passthrough for sandbox egress (`forward.ts`), on its own entrypoint.
  * - `reseal`: a blob resealed under the active kid at the next version (the sweep that
  *   retires a kid).
  *
  * The owner Worker binds the default entrypoint. The doors Worker binds `ConnectGateway`,
- * which serves only `seal`, `exchange` and `verify`, the steps of a connect.
+ * which serves only `seal`, `exchange` and `verify`, the steps of a connect, and
+ * `EgressGateway`, which serves only `forward`: the egress door (the binder) streams a
+ * sandbox's request through it once the owner's object admitted the request, so the
+ * object sleeps while the bytes flow (research §5.4 step 4). Neither doors entrypoint can
+ * make a model call, refresh, reseal or revoke, and the owner's needs no `forward`.
  *
  * Every method takes the owner, connection and version the blob is bound to from its
  * caller, and the seal holds the call to them: the gateway never chooses an owner. Each
@@ -82,6 +86,24 @@ export class ConnectGateway extends WorkerEntrypoint<GatewayEnv> {
   }
 }
 
+/**
+ * What the egress door binds, as the named entrypoint `EgressGateway`: `forward` and
+ * nothing else (G4). The caller names the owner, connection and version the owner's object
+ * admitted the request under and hands the blob the object returned; the seal holds the
+ * call to them, and the sealed endpoints to where it may go.
+ */
+export class EgressGateway extends WorkerEntrypoint<GatewayEnv> {
+  /** Forwards one sandbox egress request under the sealed endpoints. */
+  async forward(owner: string, connection: string, version: number, blob: string,
+                request: Request): Promise<Response> {
+    try {
+      return await forward(this.env, binding(owner, connection, version), blob, request);
+    } catch (error) {
+      return failureResponse(codeOf(error, "internal"));
+    }
+  }
+}
+
 export default class Gateway extends WorkerEntrypoint<GatewayEnv> {
   override async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
@@ -114,16 +136,6 @@ export default class Gateway extends WorkerEntrypoint<GatewayEnv> {
   async verify(owner: string, connection: string, version: number,
                blob: string): Promise<Verified> {
     return verifySealed(this.env, owner, connection, version, blob);
-  }
-
-  /** Forwards one sandbox egress request under the sealed endpoints. */
-  async forward(owner: string, connection: string, version: number, blob: string,
-                request: Request): Promise<Response> {
-    try {
-      return await forward(this.env, binding(owner, connection, version), blob, request);
-    } catch (error) {
-      return failureResponse(codeOf(error, "internal"));
-    }
   }
 
   /** Asks the provider to revoke an OAuth credential (RFC 7009). */

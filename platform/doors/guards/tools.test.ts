@@ -242,7 +242,9 @@ describe("tool table guard", () => {
     expect(DOORS.get("agentCancel")?.capability).toBeNull();
     for (const ownerOnly of ["policyWrite", "grantSet", "grantRevoke", "grantForget",
                              "sessionOpen", "registerAgent", "fileRedact", "fileHistoryPurge",
-                             "fileLeaseAcquire", "fileSyncCommit", "policyRead",
+                             "sandboxLeaseOpen", "fileSyncCommit", "policyRead",
+                             "sandboxConfig", "sandboxNetworkApplied", "egressOpen",
+                             "egressSettle", "egressReceipts",
                              "connectionPrepare", "connectionCommit", "connectionRevoke",
                              "connectionList", "flowFinish"]) {
       expect(DOORS.has(ownerOnly)).toBe(false);

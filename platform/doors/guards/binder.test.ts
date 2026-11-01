@@ -13,7 +13,8 @@
  * - Only `session.ts` reads the `Cookie` header, and only `directory.ts` touches the
  *   directory, whose keys hold no cookie or session hash.
  * - Only `connect.ts` reaches the gateway (`GATEWAY`), so a pasted key or an OAuth code
- *   has one path, to the gateway's connect entrypoint.
+ *   has one path, to the gateway's connect entrypoint; only `egress.ts` reaches its egress
+ *   entrypoint (`EGRESS`), so a blob the owner's object handed out is forwarded on one path.
  * - Consent is never remembered: no source names `remember` or `isConsentRemembered`.
  *
  * A tripwire for our own code, read from the syntax tree, not proof against deliberate
@@ -33,6 +34,7 @@ const HOOKS_OWN = new Set(["this.env.RUNNER", "this.env.CODEMODE"]);
 const SESSION = "doors/src/session.ts";
 const DIRECTORY = "doors/src/directory.ts";
 const CONNECT = "doors/src/connect.ts";
+const EGRESS = "doors/src/egress.ts";
 const OBJECT_IDS = new Set(["idFromName", "idFromString", "newUniqueId"]);
 const REMEMBERING = new Set(["remember", "isConsentRemembered"]);
 
@@ -76,6 +78,10 @@ export function binderProblems(fileName: string, source: string): string[] {
         && fileName !== "doors/src/config.ts") {
       report(node, "reaches the gateway outside connect.ts");
     }
+    if (doors && ts.isIdentifier(node) && node.text === "EGRESS" && fileName !== EGRESS
+        && fileName !== "doors/src/config.ts") {
+      report(node, "forwards egress outside egress.ts");
+    }
     if (doors && fileName !== BINDER && ts.isObjectLiteralExpression(node)
         && node.properties.some((p) => p.name !== undefined && nameOf(p.name) === "caller")) {
       report(node, "builds a binding outside the binder");
@@ -117,6 +123,8 @@ describe("binder guard", () => {
     ["doors/src/directory.ts", "export const k = 's:session';"],
     ["doors/src/app.ts", "export const f = (env: any) => env.GATEWAY.seal('a', 'c', 1, 'k', {});"],
     ["doors/src/binder.ts", "export const f = ({ GATEWAY }: any) => GATEWAY;"],
+    ["doors/src/connect.ts", "export const f = (env: any) => env.EGRESS.forward('a', 'c', 1, 'b', r);"],
+    ["doors/src/sandbox.ts", "export const f = ({ EGRESS }: any) => EGRESS;"],
     [HOOKS_ENTRY, "export const f = (env: any) => env.OWNER.getByName('bob');"],
     [HOOKS_ENTRY, "export const f = (env: any) => env.RUNNER.getByName('bob');"],
     ["hooks/src/runner.ts", "export const f = (o: any) => o.env.RUNNER.getByName('bob');"],
@@ -134,6 +142,7 @@ describe("binder guard", () => {
     ["doors/src/app.ts", "export const h = { 'Set-Cookie': 'x' };"],
     ["doors/src/directory.ts", "export const f = (env: any) => env.DIRECTORY.get('c:control');"],
     ["doors/src/connect.ts", "export const f = (env: any) => env.GATEWAY.verify('a', 'c', 1, 'b');"],
+    ["doors/src/egress.ts", "export const f = (env: any) => env.EGRESS.forward('a', 'c', 1, 'b', r);"],
   ])("allows, in %s, %s", (fileName, source) => {
     expect(binderProblems(fileName, source)).toEqual([]);
   });
