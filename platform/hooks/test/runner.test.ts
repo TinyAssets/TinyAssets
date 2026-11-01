@@ -297,6 +297,8 @@ describe("the hooks Worker", () => {
         "  attempt('form', () => { proto(new FormData().entries()).next = () => 1; });",
         "  attempt('segments', () => {",
         "    proto(new Intl.Segmenter().segment('')).containing = () => 1; });",
+        "  attempt('stream iterator', () => {",
+        "    proto(new ReadableStream()[Symbol.asyncIterator]()).next = () => 1; });",
         "  attempt('segment iterator', () => {",
         "    proto(new Intl.Segmenter().segment('')[Symbol.iterator]()).next = () => 1; });",
         "  return { tried };",
@@ -314,9 +316,31 @@ describe("the hooks Worker", () => {
       .toEqual({ ok: true, result: { block: "no shell" } });
     expect(await ask(patcher, "afterTool", {})).toEqual({ ok: true, result: { tried: [
       "helper refused", "wrap refused", "headers refused", "params refused", "form refused",
-      "segments refused", "segment iterator refused"] } });
+      "segments refused", "stream iterator refused", "segment iterator refused"] } });
     expect(await ask(guard, "beforeTool", bash))
       .toEqual({ ok: true, result: { block: "no shell" } });
+  });
+
+  it("starts a hook isolate whole: process's stdio set itself up, so console.log and " +
+     "process.stdout still work, and neither can be replaced", async () => {
+    const who = owner();
+    const modules = { [MODULE]: [
+      "export function beforeTool() {",
+      "  console.log('a hook logs');",
+      "  const wrote = process.stdout.write('a hook writes\\n');",
+      "  const tried = [];",
+      "  const attempt = (what, change) => { try { change(); tried.push(what + ' patched'); }",
+      "    catch { tried.push(what + ' refused'); } };",
+      "  attempt('stdout', () => { process.stdout = { write() { return true; } }; });",
+      "  attempt('env', () => { process.env.MODE = 'x'; });",
+      "  attempt('nextTick', () => { process.nextTick = () => 1; });",
+      "  return { block: JSON.stringify({ wrote, tried }) };",
+      "}",
+    ].join("\n") };
+    const reply = await run(who, await request(who, modules, {}));
+    expect(reply.ok).toBe(true);
+    expect(JSON.parse((reply as { result: { block: string } }).result.block)).toEqual({
+      wrote: true, tried: ["stdout refused", "env refused", "nextTick refused"] });
   });
 
   it("freezes the shim's dispatch path, so a package that imports the shim cannot switch " +
