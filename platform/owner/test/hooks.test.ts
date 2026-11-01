@@ -345,7 +345,9 @@ describe("a package's remote hooks", () => {
                  { "hooks/guard.js": GUARD, "extensions/x.ts": "export default 1;" });
     await r.pack("request", [{ module: "hooks/guard.js", points: ["beforeRequest"] }],
                  { "hooks/guard.js": GUARD });
-    await r.pack("outside", [{ module: "../guard/hooks/guard.js", points: ["beforeTool"] }],
+    // A module of another package (which exists, the owner's): outside this one.
+    await r.write(`${P}/other/hooks/guard.js`, GUARD);
+    await r.pack("outside", [{ module: "../other/hooks/guard.js", points: ["beforeTool"] }],
                  {});
     await r.select(["both", "main", "folder", "request", "outside"]);
     const out = await r.in(async (instance) => {
@@ -360,6 +362,24 @@ describe("a package's remote hooks", () => {
     expect(by).toEqual({ [`${P}/both`]: PACKAGE_EXECUTABLE, [`${P}/main`]: PACKAGE_EXECUTABLE,
                          [`${P}/folder`]: PACKAGE_EXECUTABLE, [`${P}/request`]: PACKAGE_INVALID,
                          [`${P}/outside`]: PACKAGE_INVALID });
+  });
+
+  it("refuses a package whose modules would take the owner's bundle past a MiB", async () => {
+    const r = await rig();
+    const big = (n: number) => `// ${String(n).repeat(600_000)}\n` +
+      "export function beforeTool() { return null; }\n";
+    await r.pack("first", [{ module: "a.js", points: ["beforeTool"] }], { "a.js": big(1) });
+    await r.pack("second", [{ module: "b.js", points: ["beforeTool"] }], { "b.js": big(2) });
+    await r.select(["first", "second"]);
+    const out = await r.in(async (instance) => {
+      instance.script = [says("hi")];
+      await instance.harness.prompt("hi");
+      return { refused: noticesOf(instance, PACKAGE_REFUSED),
+               hooks: instance.agent.resources.index.hooks.map((hooked) => hooked.extension) };
+    });
+    expect(out.hooks).toEqual(["pkg:first"]);
+    expect(out.refused).toEqual([`${P}/second: ${PACKAGE_INVALID}: its hook modules take the ` +
+                                 "owner's bundle past 1048576 bytes"]);
   });
 
   it("makes one bundle per owner, its id the owner's and its code's, as the hooks Worker " +
@@ -581,6 +601,8 @@ describe("the remote wrappers' rules", () => {
     ["it answers a control", [{ ok: true, result: { output: [], control: { x: 1 } } }] as Answer[]],
     ["it answers an image", [{ ok: true, result: { output: [{ type: "image", data: "x",
                                                                 mimeType: "image/png" }] } }] as Answer[]],
+    ["it answers a part that is no text", [{ ok: true, result: { output: [
+      { type: "thinking", text: "x" }] } }] as Answer[]],
   ])("fails an afterTool result closed when %s", async (_what, answers) => {
     const { parts, notices } = fake(answers, { timeout: 100 });
     const replaced = await tools(parts).afterTool(CALL, RESULT, api(), ctx);
