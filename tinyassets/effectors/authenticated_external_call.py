@@ -1307,10 +1307,12 @@ def _run(
             connection_id=connection_id,
             owner_user_id=getattr(grant, "owner_user_id", ""),
         )
-        from tinyassets.outside_authority import effect_admission
+        from tinyassets.outside_authority import recheck
 
-        with effect_admission():
-            response = proxy.request(verb, wire_request, authority=authority)
+        outside = recheck()  # an outside client's revoke since its call stops the effect
+        if outside is not None:
+            authority["outside"] = outside
+        response = proxy.request(verb, wire_request, authority=authority)
     except Exception as exc:
         # Secret-free by construction: the proxy/broker raise only sanitized,
         # credential-free errors across the governed boundary.

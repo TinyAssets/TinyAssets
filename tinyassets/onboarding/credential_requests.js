@@ -25,7 +25,7 @@ const CredentialRequests = {
       status.textContent=doc.keys.length?'Secrets cannot be displayed again.':'No API keys yet.';
       for(const key of doc.keys){
         const row=document.createElement('div'),label=document.createElement('p');
-        const scope=key.scopes.map(s=>s.universe+' / '+s.agent+' / '+s.capability).join('; ');
+        const scope=key.mode==='full'?'Full access':key.mode?key.scopes.map(s=>s.universe+' / '+s.agent+' / '+s.capability).join('; '):'No grant';
         label.textContent=key.name+' — '+(key.revoked_at!==null?'Revoked':'Active')+' — '+scope+
           (key.last_used_at?' — Last used '+new Date(key.last_used_at*1000).toLocaleString():' — Never used');
         row.appendChild(label);host.appendChild(row);
@@ -97,7 +97,15 @@ const CredentialRequests = {
         body:JSON.stringify({operation:'request_'+operation,universe_id:req.universe_id||home,request_id:req.request_id,
           ...(operation==='create'?{expected_digest:preview.digest}:{})})});
       if(!response.ok){const error=new Error('refused');error.signIn=response.status===401||response.status===403;throw error;}
-      const doc=await response.json();if(doc.error)throw new Error('refused');return doc;
+      const doc=await response.json();if(doc.error)throw new Error('refused');
+      if(operation!=='create')return doc;
+      // The box holds the reviewed request; the router mints the key and its grant.
+      const minted=await fetch('/app/api-keys/mint',{method:'POST',credentials:'same-origin',
+        cache:'no-store',referrerPolicy:'no-referrer',redirect:'error',
+        headers:{...authHeaders(),'Content-Type':'application/json'},
+        body:JSON.stringify({request_id:doc.request_id,digest:doc.digest})});
+      if(!minted.ok){const error=new Error('refused');error.signIn=minted.status===401||minted.status===403;throw error;}
+      const key=await minted.json();if(key.error)throw new Error('refused');return key;
     }
     function describe(doc){
       const a=doc.action,caps=new Set(a.scopes.map(s=>s.capability)),center=a.scopes[0].universe;

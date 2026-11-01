@@ -149,11 +149,14 @@ class Capabilities:
         return await self._dispatch(message)
 
     async def _dispatch(self, message):
-        from tinyassets.outside_authority import check_identity
+        from tinyassets.outside_authority import check_identity, refreshed
 
         identity = self.outside_identity
         if identity is not None and identity.metadata.get("outside_origin") is not None:
             try:
+                # Each dispatch reads the grant as it stands: a revoke or a rescope
+                # since the launch refuses the next call (A1).
+                identity = await asyncio.to_thread(refreshed, identity)
                 check_identity(identity, universe=self.context.universe,
                                agent=self.context.initiating_agent,
                                capability=message.get("name") if isinstance(message, dict)

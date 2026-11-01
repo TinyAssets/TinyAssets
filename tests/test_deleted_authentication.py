@@ -106,7 +106,7 @@ def test_api_key_and_hook_token_refuse_after_credential_revocation(deleted):
     from tinyassets.router_credentials import HookOwners
 
     keys = ApiKeyStore(deleted)
-    key = keys.mint("alice", name="fixture", scopes=[], authority=None)["key"]
+    key = keys.mint("alice", name="fixture")["key"]
     hooks = HookOwners(deleted)
     hooks.publish(hashlib.sha256(b"hook").hexdigest(), "alice")
     revoke_account(deleted, "alice")

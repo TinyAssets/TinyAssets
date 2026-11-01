@@ -27,8 +27,7 @@ def test_no_credential_survives_withdrawal_and_step_six(tmp_path, monkeypatch, k
     if kind == "key":
         target, name = ApiKeyStore, "mint"
         def mint():
-            return credentials.dispatch(tmp_path, "alice", {
-                "operation": "key_mint", "name": "race", "request_ref": "race"})
+            return credentials.mint_key(tmp_path, "alice", name="race", request_ref="race")
     elif kind == "hook":
         target, name = credentials.HookOwners, "publish"
         def mint():
@@ -72,7 +71,7 @@ def test_no_credential_survives_withdrawal_and_step_six(tmp_path, monkeypatch, k
             with pytest.raises((LookupError, PermissionError)):
                 pending.result(5)
     assert all(row["revoked_at"] is not None for row in ApiKeyStore(tmp_path).list(
-        "alice", authority=None)["keys"])
+        "alice")["keys"])
     hooks = credentials.HookOwners(tmp_path)
     if hooks.path.exists():
         with sqlite3.connect(hooks.path) as db:

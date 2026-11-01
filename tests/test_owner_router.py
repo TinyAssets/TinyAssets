@@ -80,6 +80,27 @@ def test_route_operation_rejects_forged_authority_or_socket_overrides(
     assert before == admitted.box_route("alice")
 
 
+def _router_key(data_root, owner, root):
+    """The suite's API key, as the router mints it with its grant (P0-3): scoped to
+    the owner's center. ``key.json`` in the box root is only where tests find it."""
+    import hashlib
+
+    from tests.test_owner_policy import _session
+    from tinyassets.api_keys import ApiKeyStore, _client
+    from tinyassets.broker.policy_submit import submit
+
+    cookie = "router-key-session-" + owner + "-" + "k" * 32
+    _session(data_root, owner, cookie)
+    key = ApiKeyStore(data_root).mint(owner, name="router acceptance")
+    submit(data_root, owner, "outside_set", session_proof={
+        "session_hash": hashlib.sha256(cookie.encode()).hexdigest()},
+        client=_client(key["key_id"]), source="api_key", mode="scoped",
+        scopes=[{"universe": "cc-" + owner, "agent": "main", "capability": "read_graph"}],
+        expected_generation=0, name="")
+    (root / "key.json").write_text(json.dumps(key))
+    return key["key"]
+
+
 @pytest.fixture
 def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
     monkeypatch.setenv("UNIVERSE_SERVER_URL", "https://tinyassets.io")
@@ -96,6 +117,11 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
     monkeypatch.setattr(relay_module, "peer", lambda sock: (os.getpid(), 1002, 1002))
     monkeypatch.setattr(relay_module, "os", SimpleNamespace(
         chown=lambda *args: None, chmod=os.chmod))
+    from tinyassets.broker.policy import PolicyStore
+
+    # Outside-client grants are owner policy in the broker (P0-3).
+    broker.server._policy_store = PolicyStore(tmp_path, admitted)
+    broker.server._policy_store.bootstrap()
     host_broker = BrokerServer(
         ledger_for=broker.server._ledger_for, dispatch_for=broker.server._dispatch_for,
         ops=broker.ops, fence=broker.fence, roles={os.getuid(): BOX_HOST},
@@ -104,6 +130,7 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
     # Two same-UID listeners model the production server's two kernel roles;
     # their channels belong to the same admission authority.
     host_broker._connections = broker.server._connections
+    host_broker._policy_store = broker.server._policy_store
     host_broker._public_egress = broker.server._public_egress
     host_path = tmp_path / "host.sock"
     listener = asyncio.run_coroutine_threadsafe(host_broker.serve(host_path),
@@ -183,8 +210,7 @@ def boxes(admitted, broker, tmp_path, monkeypatch):  # noqa: F811
                 drive(broker.server.routing.wake(owner))
             secrets = {owner: manager.boxes[admitted.owner_machine(owner)].secret
                        for owner in roots}
-            keys = {owner: json.loads((root / "key.json").read_text())["key"]
-                    for owner, root in roots.items()}
+            keys = {owner: _router_key(tmp_path, owner, root) for owner, root in roots.items()}
             assert all(not (root / ".api-keys.sqlite3").exists() for root in roots.values())
             yield SimpleNamespace(run=run, roots=roots, secrets=secrets, keys=keys,
                                   manager=manager, runtime=runtime, relays=relays,
@@ -209,8 +235,7 @@ def router(boxes, cloud_runtime, monkeypatch):  # noqa: F811
     from tinyassets.storage import data_dir
 
     keys = ApiKeyStore(data_dir())
-    tokens = {owner: keys.mint(owner, name="authentication fixture", scopes=[],
-                              authority=None)["key"]
+    tokens = {owner: keys.mint(owner, name="authentication fixture")["key"]
               for owner in ("alice", "bob", "reserved", "unknown")}
     class Provider:
         def resolve_token(self, token):
@@ -240,7 +265,7 @@ def router(boxes, cloud_runtime, monkeypatch):  # noqa: F811
             if callable(value) and getattr(value, "__module__", "") == module.__name__:
                 monkeypatch.setattr(module, name, forbidden)
     monkeypatch.setattr(owners, "_connect", forbidden)
-    monkeypatch.setattr(outside_authority, "current_store", forbidden)
+    monkeypatch.setattr(outside_authority, "refresh", forbidden)  # the box's broker read
     yield app
     assert owner_calls == [], "even a swallowed owner-store read violates router mode"
 
@@ -691,7 +716,7 @@ def test_hook_map_is_router_state_and_unknown_owners_open_no_socket(admitted, tm
 
 
 @pytest.mark.verifies('owner-daemon-in-box:C13')
-def test_box_minted_key_authenticates_router_until_box_revokes_it(router, boxes):
+def test_a_router_minted_key_authenticates_until_the_box_revokes_it(router, boxes):
     async def exercise():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=router),
                                      base_url="http://test") as client:

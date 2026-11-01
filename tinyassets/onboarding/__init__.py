@@ -1985,6 +1985,7 @@ def onboarding_routes() -> list[Any]:
     from tinyassets.mailbox_door import agent_messages, outside_agents
     from tinyassets.onboarding import approval_handoff, native_sign_in
     from tinyassets.onboarding.api_keys import handle as handle_api_keys
+    from tinyassets.onboarding.api_keys import mint as mint_api_key
     from tinyassets.onboarding.app_modules import handle_app_module
     from tinyassets.onboarding.app_play import handle_app_document, handle_app_publish
     from tinyassets.onboarding.connections import handle_connections
@@ -2030,6 +2031,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/approval-handoff/{ref}", approval_handoff.launch, methods=["GET"]),
         Route("/app/outside-clients", handle_outside_clients, methods=["POST"]),
         Route("/app/api-keys", handle_api_keys, methods=["POST"]),
+        Route("/app/api-keys/mint", mint_api_key, methods=["POST"]),
         Route("/app/ui-frame", handle_ui_frame, methods=["GET", "HEAD"]),
         Route("/app/connection-discovery", handle_connection_discovery, methods=["POST"]),
         Route("/app/model-discovery", handle_model_discovery, methods=["POST"]),

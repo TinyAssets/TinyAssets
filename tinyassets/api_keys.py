@@ -1,12 +1,12 @@
 """Per-user API keys for the REST API (``/api``).
 
 A key is a long-lived, revocable bearer an owner mints from the protected owner
-view. It never becomes an unrestricted owner login: each key IS one outside
-client in ``tinyassets.outside_authority``, holding exact
-``{universe, agent, capability}`` grants. The identity a key resolves to carries
-``outside_origin``, so every existing outside confinement -- resource checks,
-run capture, effect admission, the kill switch -- applies to REST calls with no
-second authority path.
+view. Each key IS one outside client (``tinyassets.outside_authority``): the router
+mints it and writes its grant in the broker together (``onboarding/api_keys.mint``),
+``full`` unless the owner names exact ``{universe, agent, capability}`` scopes
+(decision A1). A key with no grant is refused, never widened. The identity a key
+resolves to carries ``outside_origin``, so the router's admission and every outside
+confinement apply to REST calls with no second authority path.
 
 Only a SHA-256 digest of the secret is stored. The full key is returned once, at
 mint, and is never readable again.
@@ -104,18 +104,12 @@ class ApiKeyStore:
         return hashlib.sha256(("tinyassets-key-request\0" + owner + "\0" + request_ref)
                               .encode()).hexdigest()[:16]
 
-    def mint(self, owner: str, *, name: str, scopes: list[dict[str, str]],
-             authority: Any, request_ref: str = "") -> dict[str, Any]:
-        """Create a key and its exact outside grant; return the secret once."""
+    def mint(self, owner: str, *, name: str, request_ref: str = "") -> dict[str, Any]:
+        """Create a key and return its secret once; its grant is the broker's (router)."""
         if not isinstance(owner, str) or not owner:
             raise ValueError("owner required")
         if not isinstance(name, str) or not name.strip() or len(name) > MAX_NAME:
             raise ValueError("key name required (at most 80 characters)")
-        if authority is not None and (not isinstance(scopes, list) or not scopes):
-            raise ValueError("at least one scope required")
-        for scope in scopes:
-            if not isinstance(scope, dict) or scope.get("capability") not in CAPABILITIES:
-                raise ValueError("unknown API capability")
         key_id = self.request_key_id(owner, request_ref) if request_ref else secrets.token_hex(8)
         secret = secrets.token_urlsafe(32)
         now = time.time()
@@ -129,19 +123,17 @@ class ApiKeyStore:
                                 "IS NULL", (owner,)).fetchone()[0]
             if live >= MAX_KEYS_PER_OWNER:
                 raise ValueError("too many live API keys; revoke one first")
-            bound = {"client": _client(key_id), "family": _family(key_id),
-                     "authenticated_at": int(now)}
-            if authority is not None:
-                authority.observe(owner, bound)
-                # Raises before the row commits, so a refused grant leaves no key.
-                authority.change(owner, bound["client"], expected_generation=0,
-                                 family=bound["family"], scopes=scopes)
             conn.execute("INSERT INTO api_keys VALUES (?,?,?,?,?,NULL,NULL)",
                          (key_id, owner, name.strip(), _digest(secret), now))
         return {"key": f"{PREFIX}{key_id}_{secret}", "key_id": key_id, "name": name.strip(),
-                "created_at": now, "scopes": scopes}
+                "created_at": now}
 
-    def revoke(self, owner: str, key_id: str, *, authority: Any) -> dict[str, Any]:
+    def discard(self, owner: str, key_id: str) -> None:
+        """Undo a mint whose grant was refused: never a key without its grant."""
+        with self.db() as conn:
+            conn.execute("DELETE FROM api_keys WHERE key_id=? AND owner=?", (key_id, owner))
+
+    def revoke(self, owner: str, key_id: str) -> dict[str, Any]:
         with self.db() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT revoked_at FROM api_keys WHERE key_id=? AND owner=?",
@@ -159,12 +151,6 @@ class ApiKeyStore:
                     conn.execute("DELETE FROM api_keys WHERE key_id=?", (stale_id,))
                     conn.execute("DELETE FROM api_key_request_counts WHERE kind='key' "
                                  "AND subject=?", (stale_id,))
-                client = _client(key_id)
-                grant = next((c for c in authority.inspect(owner)["clients"]
-                              if c["client"] == client), None) if authority is not None else None
-                if grant is not None and not grant["revoked"]:
-                    authority.change(owner, client, expected_generation=grant["generation"],
-                                     family=grant["family"], scopes=[], revoke=True)
         return {"key_id": key_id, "revoked": True}
 
     def agent_origin(self, owner: str, key_id: str) -> dict[str, str]:
@@ -177,19 +163,11 @@ class ApiKeyStore:
             raise ApiKeyRefused("the API key is not this owner's live key")
         return {"client": _client(key_id), "family": _family(key_id)}
 
-    def list(self, owner: str, *, authority: Any) -> dict[str, Any]:
-        import json
-
-        grants = ({c["client"]: c for c in authority.inspect(owner)["clients"]}
-                  if authority is not None else {})
+    def list(self, owner: str) -> dict[str, Any]:
         with self.db() as conn:
             rows = conn.execute("SELECT key_id,name,created_at,last_used_at,revoked_at FROM "
                                 "api_keys WHERE owner=? ORDER BY created_at", (owner,)).fetchall()
-        keys = []
-        for row in rows:
-            grant = grants.get(_client(row["key_id"]))
-            keys.append({**dict(row), "scopes": json.loads(grant["scopes"]) if grant else []})
-        return {"keys": keys}
+        return {"keys": [dict(row) for row in rows]}
 
     def resolve(self, token: str, *, touch: bool = True) -> tuple[str, dict[str, Any]] | None:
         """Return ``(owner, bound)`` for a live key, else None. Never raises on input."""
@@ -277,7 +255,7 @@ class ApiKeyStore:
 
 
 class OwnerApiKeys:
-    """Key metadata lives at the router; only outside grants live in this box."""
+    """Key metadata lives at the router and each key's grant in the broker."""
 
     @staticmethod
     def request_key_id(owner: str, request_ref: str) -> str:
@@ -285,51 +263,24 @@ class OwnerApiKeys:
 
         return ApiKeyStore.request_key_id(current().principal, request_ref)
 
-    def mint(self, owner, *, name, scopes, authority, request_ref=""):
+    def list(self, owner):
+        from tinyassets.broker.client import owner_policy_operation
         from tinyassets.owner_runtime import current, router_credential
 
-        owner = current().principal
-        if (not isinstance(scopes, list) or not scopes
-                or any(not isinstance(s, dict) or s.get("capability") not in CAPABILITIES
-                       for s in scopes)):
-            raise ValueError("valid API scopes required")
-        result = router_credential("key_mint", name=name, request_ref=request_ref)
-        if result.get("already_created"):
-            return result
-        bound = {"client": _client(result["key_id"]), "family": _family(result["key_id"]),
-                 "authenticated_at": int(result["created_at"])}
-        try:
-            authority.observe(owner, bound)
-            authority.change(owner, bound["client"], expected_generation=0,
-                             family=bound["family"], scopes=scopes)
-        except Exception:
-            router_credential("key_revoke", key_id=result["key_id"])
-            raise
-        return {**result, "scopes": scopes}
-
-    def list(self, owner, *, authority):
-        import json
-
-        from tinyassets.owner_runtime import current, router_credential
-
+        runtime = current()
         result = router_credential("key_list")
-        grants = {c["client"]: c for c in authority.inspect(current().principal)["clients"]}
+        grants = {row["client"]: row for row in owner_policy_operation(
+            runtime.root, runtime.principal, "outside_list")["clients"]}
         for key in result["keys"]:
             grant = grants.get(_client(key["key_id"]))
-            key["scopes"] = json.loads(grant["scopes"]) if grant else []
+            key["mode"] = grant["mode"] if grant else None
+            key["scopes"] = grant["scopes"] if grant else []
         return result
 
-    def revoke(self, owner, key_id, *, authority):
-        from tinyassets.owner_runtime import current, router_credential
+    def revoke(self, owner, key_id):
+        from tinyassets.owner_runtime import router_credential
 
-        result = router_credential("key_revoke", key_id=key_id)
-        owner = current().principal
-        grant = next((c for c in authority.inspect(owner)["clients"]
-                      if c["client"] == _client(key_id)), None)
-        if grant is not None and not grant["revoked"]:
-            authority.change(owner, grant["client"], expected_generation=grant["generation"],
-                             family=grant["family"], scopes=[], revoke=True)
-        return result
+        return router_credential("key_revoke", key_id=key_id)
 
 
 def current_store(base: Path | None = None) -> ApiKeyStore | OwnerApiKeys:
@@ -344,9 +295,8 @@ def current_store(base: Path | None = None) -> ApiKeyStore | OwnerApiKeys:
 def resolve_identity(token: str):
     """Resolve a REST bearer to a confined outside Identity, or None.
 
-    Router mode reads only the shared key map and rate counters. The owner
-    daemon admits the outside grant before dispatch; direct unit consumers
-    retain that admission here as well.
+    Router mode reads only the shared key map and rate counters; the router's
+    outside admission then stamps the key's grant (P0-3) before any answer.
     """
     from tinyassets.auth.provider import Identity
 
@@ -359,34 +309,10 @@ def resolve_identity(token: str):
     last_used_at = bound.pop("last_used_at")
     if not store.admit_request(key_id, owner):
         return None
-    from tinyassets.auth.middleware import router_authentication
-
     identity = Identity(
         user_id=owner, username=owner,
         capabilities=["read", "write", "costly", "submit_request", "list"],
         metadata={"auth_provider": "api_key", "api_key_id": key_id, "outside_origin": bound},
     )
-    if not router_authentication.get() and not admit_forwarded_identity(identity):
-        return None
     store._touch(key_id, last_used_at)
     return identity
-
-
-def admit_forwarded_identity(identity) -> bool:
-    """The router verified the key; its capabilities belong to this owner's store."""
-    from tinyassets.outside_authority import OutsideRefused
-    from tinyassets.outside_authority import current_store as outside_store
-
-    bound = identity.metadata["outside_origin"]
-    try:
-        with outside_store().db() as conn:
-            row = conn.execute("SELECT authenticated_at FROM outside_families WHERE owner=? "
-                               "AND client=? AND family=?",
-                               (identity.user_id, bound["client"], bound["family"])).fetchone()
-        if row is None:
-            return False
-        bound["authenticated_at"] = row["authenticated_at"]
-        identity.metadata["outside_origin"] = outside_store().admit(identity.user_id, bound)
-        return True
-    except (OutsideRefused, sqlite3.Error, OSError):
-        return False

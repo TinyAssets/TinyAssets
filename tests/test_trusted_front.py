@@ -21,7 +21,9 @@ from tinyassets.auth.provider import Identity
 
 ROUTER = Path(__file__).resolve().parents[1] / "tinyassets" / "owner_router.py"
 # What OwnerRouter.__call__ may await. Anything else there is a second way to answer.
-_CALL_AWAITS = {"refuse_non_http", "JSONResponse", "match", "_owner", "answer", "app"}
+# ``_admit_outside`` is the outside callers' one admission (P0-3), before ``match``.
+_CALL_AWAITS = {"refuse_non_http", "JSONResponse", "_admit_outside", "match", "_owner",
+                "answer", "app"}
 _OWNER_AWAITS = {"inbound", "JSONResponse", "run_in_threadpool", "_unavailable", "forward"}
 
 

@@ -310,7 +310,7 @@ def test_door_deletion_removes_only_bound_owners_data_and_router_state(
                 owner, owner, "request", "digest", "challenge", "client", "redirect",
                 now, now + 500, owner))
     # Multiple live keys must all be revoked, including keys beyond the fixture key.
-    extra = ApiKeyStore(tmp_path).mint("alice", name="extra", scopes=[], authority=None)
+    extra = ApiKeyStore(tmp_path).mint("alice", name="extra")
     resource = urlsplit(app_config()["resource"])
     origin = resource.scheme + "://" + resource.netloc
 
