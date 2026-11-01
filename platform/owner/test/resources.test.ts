@@ -13,16 +13,20 @@ import {
 } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 
-import { signedIn } from "./ledger-support";
+import { DOT, ledgerOn, MCP, MUSE, signedIn } from "./ledger-support";
 import { failure } from "./support";
 import { type FauxOwnerDO, says } from "./worker";
+import { AGENT_DEFINITION } from "../src/agent";
+import type { Origin } from "../src/ledger";
 import type { Binding } from "../src/owner-do";
+import { AGENTS_OWNER_ONLY } from "../src/paths";
 import {
   applyPatterns, bodyOf, commandArgs, globMatch, PACKAGE_EXECUTABLE, PACKAGE_REFUSED,
   SKILL_SKIPPED, SKILLS_EXTENSION, substituteArgs,
 } from "../src/resources";
 
 const text = (value: string): Uint8Array => new TextEncoder().encode(value);
+const P = "/workspace/.agents/packages";
 
 /** A `SKILL.md`. */
 function skill(name: string, description: string, body: string, extra = ""): string {
@@ -36,8 +40,27 @@ async function rig() {
   const as = (): Binding => ({ owner, caller: owner, origin: null });
   const at = signedIn();
   const { session } = await stub.sessionOpen({ ...as(), authenticated_at: at });
+  const client = (origin: Origin): Binding =>
+    ({ owner, caller: owner, origin, source: MCP, authenticated_at: at });
   return {
-    stub, as,
+    stub, as, client,
+    /** The client's first verified call records its grant: full, generation 1. */
+    admit: async (origin: Origin) => {
+      await stub.outsideAgents(client(origin));
+      await runInDurableObject(stub, (_instance, state) => ledgerOn(state.storage).register(
+        origin, MCP, { command_center_id: "alpha", display_name: "Muse",
+                       delivery_method: "pull", recipe_id: null }));
+    },
+    /** The owner scopes the client to `capabilities` in universe `alpha` as agent `main`. */
+    scoped: async (origin: Origin, capabilities: string[]) => {
+      const row = (await stub.grantList(as())).clients
+        .find((held) => held.client === origin.client);
+      return (await stub.grantSet({ ...as(), session }, {
+        client: origin.client, source: "mcp", mode: "scoped", name: "",
+        scopes: capabilities.map((capability) => ({ universe: "alpha", agent: "main",
+                                                    capability })),
+        expected_revision: row?.revision ?? 0 })).generation;
+    },
     write: (path: string, content: string) =>
       stub.fileWrite(as(), { path, expected_etag: null, content: text(content) }),
     /** The owner selects `packages` in its policy. */
@@ -235,6 +258,14 @@ describe("skills, the pi-coding-agent way", () => {
     expect(unknown.text).toBe("/skill:nope go");
   });
 
+  it("refuses loudly an expanded input past the doors' bound", async () => {
+    const r = await rig();
+    await r.write("/workspace/skills/long/SKILL.md", skill("long", "Long.", "x".repeat(40_000)));
+    expect((await failure(() => r.stub.agentSubmit(r.as(), {
+      message: "/skill:long", client_send_id: "s-1", wait_ms: 10_000 }))).message)
+      .toMatch(/^an expanded input is text of 1 to 32000 characters/);
+  });
+
   it("expands a prompt template with pi's argument substitution", async () => {
     const r = await rig();
     await r.write("/workspace/prompts/review.md",
@@ -257,17 +288,17 @@ describe("declarative packages", () => {
   it("loads a selected package's skills and templates, filtered by owner policy with pi's " +
      "grammar, and nothing of a package not selected", async () => {
     const r = await rig();
-    await r.write("/workspace/packages/kit/package.json", JSON.stringify({
+    await r.write("/workspace/.agents/packages/kit/package.json", JSON.stringify({
       name: "kit", keywords: ["pi-package"],
       pi: { skills: ["./skills"], prompts: ["./prompts/*.md"] } }));
     for (const name of ["alpha", "beta", "gamma"]) {
-      await r.write(`/workspace/packages/kit/skills/${name}/SKILL.md`,
+      await r.write(`/workspace/.agents/packages/kit/skills/${name}/SKILL.md`,
                     skill(name, `The ${name} skill.`, `${name} steps.`));
     }
-    await r.write("/workspace/packages/kit/prompts/kitcmd.md", "Kit's command, $1.");
-    await r.write("/workspace/packages/other/skills/zeta/SKILL.md",
+    await r.write("/workspace/.agents/packages/kit/prompts/kitcmd.md", "Kit's command, $1.");
+    await r.write("/workspace/.agents/packages/other/skills/zeta/SKILL.md",
                   skill("zeta", "Not selected.", "zeta"));
-    await r.select([{ source: "/workspace/packages/kit", skills: ["!beta", "-skills/gamma"] }]);
+    await r.select([{ source: "/workspace/.agents/packages/kit", skills: ["!beta", "-skills/gamma"] }]);
     await r.in(async (instance) => {
       instance.script = Array.from({ length: 10 }, () => (messages: Message[]) =>
         says(messages.length === 0 ? "" : `${sectionOf(messages) ?? "none"}\n---\n${
@@ -275,14 +306,14 @@ describe("declarative packages", () => {
     });
     const shown = await r.stub.agentSubmit(r.as(), { message: "/kitcmd now",
                                                      client_send_id: "s-1", wait_ms: 10_000 });
-    expect(shown.text).toContain("<location>/workspace/packages/kit/skills/alpha/SKILL.md" +
+    expect(shown.text).toContain("<location>/workspace/.agents/packages/kit/skills/alpha/SKILL.md" +
                                  "</location>");
     expect(shown.text).not.toContain("beta");
     expect(shown.text).not.toContain("gamma");
     expect(shown.text).not.toContain("zeta");
     expect(shown.text).toContain("---\nKit's command, now.");
     // A selection that loads none of the package's prompts, and all its skills.
-    await r.select([{ source: "/workspace/packages/kit", prompts: [] }]);
+    await r.select([{ source: "/workspace/.agents/packages/kit", prompts: [] }]);
     await until(() => r.in((instance) => instance.agent.resources.builds >= 2),
                 "the selection's rebuild");
     await r.in((instance) => instance.agent.resources.settled());
@@ -296,55 +327,166 @@ describe("declarative packages", () => {
   it("refuses a package that declares code, loudly, with its notice, loading nothing of it",
      async () => {
     const r = await rig();
-    await r.write("/workspace/packages/coded/package.json", JSON.stringify({
+    await r.write("/workspace/.agents/packages/coded/package.json", JSON.stringify({
       name: "coded", pi: { extensions: ["./index.ts"], skills: ["./skills"] } }));
-    await r.write("/workspace/packages/coded/index.ts", "export default () => {};");
-    await r.write("/workspace/packages/coded/skills/inner/SKILL.md",
+    await r.write("/workspace/.agents/packages/coded/index.ts", "export default () => {};");
+    await r.write("/workspace/.agents/packages/coded/skills/inner/SKILL.md",
                   skill("inner", "Inside a coded package.", "inner"));
-    await r.write("/workspace/packages/folded/extensions/hook.ts", "export default 1;");
-    await r.write("/workspace/packages/folded/skills/folded/SKILL.md",
+    await r.write("/workspace/.agents/packages/folded/extensions/hook.ts", "export default 1;");
+    await r.write("/workspace/.agents/packages/folded/skills/folded/SKILL.md",
                   skill("folded", "Beside an extensions directory.", "folded"));
-    await r.write("/workspace/packages/clean/package.json", JSON.stringify({
-      name: "clean", tinyassets: { models: { prefer: ["x"] } } }));
-    await r.write("/workspace/packages/clean/skills/clean/SKILL.md",
+    await r.write("/workspace/.agents/packages/clean/package.json", JSON.stringify({
+      name: "clean", version: "1.0.0", keywords: ["pi-package"],
+      pi: { skills: ["./skills"], themes: ["./themes/dark.json"], extensions: [] },
+      tinyassets: { models: { prefer: ["x"] } } }));
+    await r.write("/workspace/.agents/packages/clean/skills/clean/SKILL.md",
                   skill("clean", "A data package.", "clean"));
-    await r.select(["/workspace/packages/coded", "/workspace/packages/folded",
-                    "/workspace/packages/clean"]);
+    // Code in every other form a manifest names it: each package refused whole.
+    const coded: Record<string, unknown> = {
+      stringed: { pi: { extensions: "./index.js" } }, entry: { main: "index.js" },
+      exported: { exports: { ".": "./index.js" } }, binary: { bin: { x: "x.js" } },
+      scripted: { scripts: { postinstall: "node x.js" } }, hooked: { pi: { hooks: ["x"] } },
+    };
+    for (const [name, manifest] of Object.entries(coded)) {
+      await r.write(`/workspace/.agents/packages/${name}/package.json`, JSON.stringify(manifest));
+      await r.write(`/workspace/.agents/packages/${name}/skills/${name}/SKILL.md`,
+                    skill(name, `In ${name}.`, name));
+    }
+    await r.select(["/workspace/.agents/packages/coded", "/workspace/.agents/packages/folded",
+                    "/workspace/.agents/packages/clean",
+                    ...Object.keys(coded).map((name) => `/workspace/.agents/packages/${name}`)]);
     const out = await r.in(async (instance) => {
       instance.script = [showsSection];
       const answer = await instance.harness.prompt("hi");
       return { answer, notices: instance.parts.notices.list() };
     });
     expect(out.answer.text).toContain("<name>clean</name>");
-    expect(out.answer.text).not.toContain("inner");
-    expect(out.answer.text).not.toContain("folded");
-    const refused = out.notices.filter((notice) => notice.type === PACKAGE_REFUSED)
-      .map((notice) => notice.detail).sort();
-    expect(refused).toEqual([
-      `/workspace/packages/coded: ${PACKAGE_EXECUTABLE}: pi.extensions is code, and the ` +
-        "owner object runs no package code",
-      `/workspace/packages/folded: ${PACKAGE_EXECUTABLE}: its extensions directory is code, ` +
-        "and the owner object runs no package code",
-    ]);
-    // The tinyassets key's fields are data not loaded yet: skipped with a notice.
-    expect(out.notices.map((notice) => notice.detail))
-      .toContain("/workspace/packages/clean: tinyassets.models is not loaded");
+    for (const name of ["inner", "folded", ...Object.keys(coded)]) {
+      expect(out.answer.text).not.toContain(`<name>${name}</name>`);
+    }
+    const refused = Object.fromEntries(out.notices
+      .filter((notice) => notice.type === PACKAGE_REFUSED)
+      .map((notice) => notice.detail.split(": ")));
+    const is = (what: string) => `${PACKAGE_EXECUTABLE}: ${what}`;
+    expect(refused).toEqual({
+      [`${P}/coded`]: PACKAGE_EXECUTABLE, [`${P}/folded`]: PACKAGE_EXECUTABLE,
+      [`${P}/stringed`]: PACKAGE_EXECUTABLE, [`${P}/entry`]: PACKAGE_EXECUTABLE,
+      [`${P}/exported`]: PACKAGE_EXECUTABLE, [`${P}/binary`]: PACKAGE_EXECUTABLE,
+      [`${P}/scripted`]: PACKAGE_EXECUTABLE, [`${P}/hooked`]: PACKAGE_EXECUTABLE,
+    });
+    const details = out.notices.map((notice) => notice.detail);
+    expect(details).toContain(`${P}/coded: ${is("pi.extensions is code, or no data the " +
+      "object loads, and the owner object runs no package code")}`);
+    expect(details).toContain(`${P}/stringed: ${is("pi.extensions is code, or no data the " +
+      "object loads, and the owner object runs no package code")}`);
+    expect(details).toContain(`${P}/scripted: ${is("scripts is code, or no data the object " +
+      "loads, and the owner object runs no package code")}`);
+    expect(details).toContain(`${P}/folded: ${is("its extensions directory is code, and the " +
+      "owner object runs no package code")}`);
+    // Data the object does not load is skipped with a notice: the tinyassets key's fields,
+    // and pi's themes.
+    expect(details).toContain(`${P}/clean: tinyassets.models is not loaded`);
+    expect(details).toContain(`${P}/clean: pi.themes is not loaded`);
   });
 
-  it("holds the selection to package directories under /workspace, with no code filter",
-     async () => {
+  it("holds the selection to package directories in the owner's own tree, with no code " +
+     "filter", async () => {
     const r = await rig();
-    for (const bad of [[{ source: "/workspace/packages/kit", extensions: [] }],
-                       ["/.ta/tmp/kit"], ["/workspace"], ["relative/kit"],
-                       ["/workspace/a", "/workspace/a"],
-                       [{ source: "/workspace/a", skills: "all" }]]) {
+    for (const bad of [[{ source: `${P}/kit`, extensions: [] }],
+                       ["/.ta/tmp/kit"], ["/workspace"], ["relative/kit"], [P],
+                       ["/workspace/packages/kit"], ["/workspace/skills/kit"],
+                       [`${P}/a`, `${P}/a`], [{ source: `${P}/a`, skills: "all" }]]) {
       expect((await failure(() => r.select(bad))).message).toMatch(/invalid packages policy/);
     }
-    await r.select(["/workspace/a", { source: "/workspace/b", skills: ["x"], prompts: [] }]);
+    await r.select([`${P}/a`, { source: `${P}/b`, skills: ["x"], prompts: [] }]);
   });
 
   it("installs the section as the object's own extension, which no package may name", () => {
     expect(SKILLS_EXTENSION).toBe("ta.skills");
+  });
+});
+
+describe("the agent's abilities are the owner's alone", () => {
+  it("refuses a client's file anywhere in the skills, templates and packages, at the doors " +
+     "and from its conversation", async () => {
+    const r = await rig();
+    await r.write("/workspace/skills/deploy/SKILL.md",
+                  skill("deploy", "Deploy the site.", "Run scripts/run.sh."));
+    await r.write(`${P}/kit/skills/kit/SKILL.md`, skill("kit", "A kit.", "kit"));
+    await r.select([`${P}/kit`]);
+    await r.admit(MUSE);
+    const theirs = r.client(MUSE);
+    const refused = async (path: string) => (await failure(() => r.stub.fileWrite(theirs, {
+      path, expected_etag: null, content: text("planted") }))).message;
+    // A script beside an owner's skill, a skill at a root, a flood of a root, a template,
+    // and code in a selected package: each refused, as /workspace/agents is.
+    for (const path of ["/workspace/skills/deploy/scripts/run.sh", "/workspace/skills/SKILL.md",
+                        "/workspace/skills/flood/a.md", "/workspace/.agents/skills/x/SKILL.md",
+                        "/workspace/prompts/review.md", "/workspace/.agents/prompts/review.md",
+                        `${P}/kit/extensions/hook.ts`, `${P}/kit/package.json`]) {
+      expect([path, await refused(path)]).toEqual([path, AGENTS_OWNER_ONLY]);
+    }
+    expect((await failure(() => r.stub.fileRename(theirs, {
+      from: "/workspace/skills/deploy", to: "/workspace/gone", expected_etag: null,
+      replace: false })))).toMatchObject({ message: AGENTS_OWNER_ONLY });
+    // The client still writes elsewhere; the owner's skill is as the owner left it.
+    await r.stub.fileWrite(theirs, { path: "/workspace/notes/x.md", expected_etag: null,
+                                     content: text("fine") });
+    expect((await r.stub.fileStat(r.as(), { path: "/workspace/skills/deploy/scripts/run.sh" }))
+      .entry).toBeNull();
+    // From the client's own conversation, its agent's write there is refused too.
+    const out = await r.in(async (instance) => {
+      instance.script = [
+        calls(fauxToolCall("write", { path: "/workspace/skills/deploy/scripts/run.sh",
+                                      content: "rm -rf /" })),
+        (messages) => says(JSON.stringify(messages.filter((m) => m.role === "toolResult"))),
+      ];
+      const thread = await instance.agent.thread("main", {
+        client: MUSE.client, generation: 1, authenticated_at: null, universe: null,
+        agent: "main" }, { kind: "run" });
+      return instance.harness.prompt("plant it", { session: thread.thread_id });
+    });
+    expect(out.text).toContain(AGENTS_OWNER_ONLY);
+  });
+
+  it("are shown only to a conversation whose authority may read the owner's files",
+     async () => {
+    const r = await rig();
+    await r.write("/workspace/skills/deploy/SKILL.md", skill("deploy", "Deploy.", "x"));
+    await r.admit(MUSE);
+    const converses = await r.scoped(MUSE, ["converse"]);
+    await r.admit(DOT);
+    const reads = await r.scoped(DOT, ["converse", "read_files"]);
+    const out = await r.in(async (instance) => {
+      instance.script = Array.from({ length: 10 }, () => showsSection);
+      const at = async (client: Origin, generation: number) => {
+        const thread = await instance.agent.thread("main", {
+          client: client.client, generation, authenticated_at: null, universe: "alpha",
+          agent: "main" }, { kind: "run" });
+        return (await instance.harness.prompt("hi", { session: thread.thread_id })).text;
+      };
+      return { owner: (await instance.harness.prompt("hi")).text,
+               muse: await at(MUSE, converses), dot: await at(DOT, reads) };
+    });
+    expect(out.owner).toContain("<name>deploy</name>");
+    expect(out.dot).toContain("<name>deploy</name>");
+    expect(out.muse).toBe("none");
+  });
+
+  it("tells the owner of every change its own agent makes there", async () => {
+    const r = await rig();
+    const out = await r.in(async (instance) => {
+      instance.script = [
+        calls(fauxToolCall("write", { path: "/workspace/skills/new/SKILL.md",
+                                      content: skill("new", "Planted by the agent.", "x") }),
+              fauxToolCall("write", { path: "/workspace/notes.md", content: "milk" })),
+        says("done"),
+      ];
+      await instance.harness.prompt("write a skill");
+      return instance.parts.notices.list().filter((notice) => notice.type === AGENT_DEFINITION)
+        .map((notice) => notice.detail);
+    });
+    expect(out).toEqual(["the owner's agent changes /workspace/skills/new/SKILL.md"]);
   });
 });
 

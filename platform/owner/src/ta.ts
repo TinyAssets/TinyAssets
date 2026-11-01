@@ -59,8 +59,9 @@
  * request id), so a subagent survives an eviction of its parent, as pi's example 22's
  * does; a tool reached through `executeTool` is reached again by the same key, which hands
  * back the nested call itself under its own replay policy (an unsafe one comes back
- * interrupted); and any other effect is refused on a rerun (`INTERRUPTED`), never run
- * twice, by a memo it commits before it acts (`once`). Its results never carry a
+ * interrupted); and any other effect answers a rerun as pi answers an unsafe tool's,
+ * `interrupted` (its code and words, and whatever output the call kept, `ta` streaming
+ * none), never run twice, by a memo it commits before it acts (`once`). Its results never carry a
  * `control`, so nothing it returns widens the model's tools.
  */
 import { randomUUID } from "node:crypto";
@@ -83,6 +84,7 @@ import { Invalid, Refused } from "./errors";
 import type { Usage as FileUsage } from "./files";
 import type { Write } from "./gate";
 import { AUTO_MODEL, GATEWAY_PROVIDER } from "./gateway-provider";
+import { codePoints } from "./text";
 
 /** The platform capabilities' names, which no package tool may take. */
 export const PLATFORM_NAMES: readonly string[] = Object.freeze(["policy:show", "policy:propose",
@@ -112,9 +114,12 @@ export const INVALID_REQUEST = "invalid ta request";
 export const UNKNOWN_CAPABILITY = "unknown capability";
 export const RESERVED_NAME = "the ta: names are the ops' own";
 export const READ_WRITES = "a read capability writes nothing";
-/** A rerun's refusal of an effect a restart cut off: it may have partly run, never twice. */
-export const INTERRUPTED = "interrupted: ta was cut off by a restart and may have partly " +
-  "run; it is not run again";
+/**
+ * A rerun's answer for an effect a restart cut off, as pi's own for an unsafe tool: its
+ * diagnostic code and its words. It may have partly run; it never runs twice.
+ */
+export const INTERRUPTED_CODE = "interrupted";
+export const INTERRUPTED = "Tool ta was interrupted and may have partially run";
 /** The memo an effect commits before it acts, so a rerun finds it (`once`). */
 export const EFFECT_MEMO = "ta.effect";
 /** The longest task a delegation takes, in code points (the doors' own input bound). */
@@ -292,28 +297,40 @@ function platformCapabilities(): readonly PlatformCapability[] {
       parameters: Type.Object({
         agent: Type.Optional(Type.String({ description: "The agent's id, such as main; you " +
                                                         "when omitted." })),
-        task: Type.String({ minLength: 1, maxLength: DELEGATE_TASK_MAX,
+        task: Type.String({ minLength: 1,
                             description: "What the subagent is asked to do, in full: it " +
                               "sees nothing of this conversation." }),
       }, { additionalProperties: false }),
-      run: async (args, scope, parts) => ({
-        value: await parts.delegate(scope.state, { agent: args["agent"],
-                                                   task: args["task"] as string },
-                                    scope.api, scope.context),
-      }),
+      run: async (args, scope, parts) => {
+        const task = args["task"] as string;
+        // In code points, as the doors bound their own inputs (a schema counts UTF-16 units).
+        if (codePoints(task) > DELEGATE_TASK_MAX) {
+          throw new Invalid(`a delegation's task is at most ${DELEGATE_TASK_MAX} characters`);
+        }
+        return { value: await parts.delegate(scope.state, { agent: args["agent"], task },
+                                             scope.api, scope.context) };
+      },
     },
   ];
 }
 
 /**
  * Before an effect acts: a memo of this attempt committed, so a rerun after a restart (`ta`
- * is replay-safe) finds the first attempt's and refuses (`INTERRUPTED`), never acting twice.
+ * is replay-safe) finds the first attempt's. Whether this is the first: a rerun is answered
+ * `interrupted` (`interrupted`), never acting twice.
  */
-async function once(api: ToolExecutionApi, context: Context): Promise<void> {
+async function once(api: ToolExecutionApi, context: Context): Promise<boolean> {
   const attempt = randomUUID();
-  if (await api.memo<string>(EFFECT_MEMO, attempt, context) !== attempt) {
-    throw new Refused(INTERRUPTED);
-  }
+  return await api.memo<string>(EFFECT_MEMO, attempt, context) === attempt;
+}
+
+/**
+ * pi's answer for a call a restart cut off (`tool.js`, an unsafe tool's recovery): an error
+ * with the `interrupted` code, its output what the call kept (`ta` streams none).
+ */
+function interrupted(): ToolExecutionResult {
+  return { isError: true,
+           diagnostics: [{ severity: "error", code: INTERRUPTED_CODE, message: INTERRUPTED }] };
 }
 
 /**
@@ -599,8 +616,9 @@ export function taTool(parts: TaParts): ToolRegistration {
           arguments: called.arguments }) as Record<string, unknown>;
       const required = need(capability.name);
       // An effect is run once, a rerun refused, but a delegation, which a rerun finds again.
-      if (kindOf(capability.name) === "effect" && capability.name !== DELEGATE) {
-        await once(scope.api, scope.context);
+      if (kindOf(capability.name) === "effect" && capability.name !== DELEGATE
+          && !await once(scope.api, scope.context)) {
+        return interrupted();
       }
       // A read writes nothing; an effect's unit re-checks the authority it acts under.
       const write: Write = kindOf(capability.name) === "read"

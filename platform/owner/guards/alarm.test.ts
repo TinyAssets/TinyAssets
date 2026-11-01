@@ -67,8 +67,10 @@ const WIPES: Readonly<Record<string, readonly string[]>> = Object.freeze({
 });
 const HAND_OFF = "await this.#lifecycle.alarm();";
 /**
- * The pinned Agents SDK, as the lockfile resolves it: under the owner's workspace, since
- * its optional MCP peers are a newer minor than the doors' own.
+ * The pinned Agents SDK, as the lockfile resolves it: under the owner's workspace, since its
+ * required peer `@modelcontextprotocol/client` is pinned exactly at 2.4.0 while the doors
+ * pin 2.3.1, so npm nests agents with its own MCP packages (the owner imports none of
+ * them). When the doors move to 2.4.0, agents hoists again and this path moves.
  */
 export const AGENTS = Object.freeze({
   version: "0.32.0",

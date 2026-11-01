@@ -313,6 +313,30 @@ describe("a scheduled launch's sleep (F1)", () => {
     expect(await r.delivered(op)).toHaveLength(1);
   }, 60_000);
 
+  it("holds a delivery to a thread not at work while the owner's working threads are full",
+     async () => {
+    const r = await rig();
+    const op = await later(r);
+    const busy = await r.in(async (instance) => {
+      instance.timing.workingMax = 1;
+      const other = await instance.agent.thread("main", null, { kind: "converse" });
+      await instance.parts.turns.owned(other.thread_id, [{ owner: "s:1", turn: "input:busy" }]);
+      return other.thread_id;
+    });
+    await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
+    await drainDue(r.stub());
+    await until(async () => (await r.task(op.thread_id))?.record.state.checkpoint?.tries === 1,
+                "the hold");
+    expect(await r.status(op)).toMatchObject({ status: "scheduled",
+                                               reason: "held: threads_working" });
+    expect(await r.delivered(op)).toEqual([]);
+    // The other thread's work done, its next try delivers.
+    await r.in((instance) => instance.parts.turns.owned(busy, [{ owner: "s:1", turn: null }]));
+    await r.pass(op.thread_id, (await r.task(op.thread_id))!.record.state.until!);
+    await drainDue(r.stub());
+    expect(await r.settled(op)).toMatchObject({ status: "done", text: "echo: wake up" });
+  }, 60_000);
+
   it("delivers on through a policy write that lands while it delivers", async () => {
     const r = await rig();
     const op = await later(r);

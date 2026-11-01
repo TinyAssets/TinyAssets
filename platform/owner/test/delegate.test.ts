@@ -26,8 +26,10 @@ import { NOT_GRANTED, type Stamped } from "../src/authority";
 import { THREAD_CONVERSATIONS_FULL } from "../src/delegate";
 import { type Origin } from "../src/ledger";
 import type { Binding } from "../src/owner-do";
-import { THREAD_CONVERSATIONS, THREAD_INPUTS } from "../src/schema";
-import { THREAD_INPUTS_FULL } from "../src/thread-host";
+import { THREAD_CHILD_INPUTS, THREAD_CONVERSATIONS, THREAD_INPUTS } from "../src/schema";
+import { THREAD_CHILD_INPUTS_FULL, THREAD_INPUTS_FULL } from "../src/thread-host";
+import { THREADS_WORKING, THREADS_WORKING_SHARE } from "../src/threads";
+import { failure } from "./support";
 import { gated } from "./gateway-support";
 import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
 import { sqlIn } from "./support";
@@ -93,6 +95,8 @@ const HOLD = viaTa("hold", {});
 const ASKS: readonly [string, (messages: Message[]) => AssistantMessage][] = [
   ["delegate thrice", () => calls(...Array.from({ length: THREAD_CONVERSATIONS }, () =>
     viaTa("agent:delegate", { task: "hold please" })))],
+  ["delegate twice", () => calls(...Array.from({ length: THREAD_CONVERSATIONS - 1 }, () =>
+    viaTa("agent:delegate", { task: "hold please" })))],
   ["delegate to helper", () => calls(viaTa("agent:delegate", { agent: "helper",
                                                                task: "who are you" }))],
   ["delegate hold", () => calls(viaTa("agent:delegate", { task: "hold please" }))],
@@ -103,6 +107,8 @@ const ASKS: readonly [string, (messages: Message[]) => AssistantMessage][] = [
   ["background and hold", () => calls(viaTa("background", { work: "late work" }), HOLD)],
   ["hold please", () => calls(HOLD)],
   ["propose it", () => calls(viaTa("policy:propose", { change: { note: "x" } }))],
+  ["hold safely", () => calls(viaTa("safe_hold", {}))],
+  ["delegate too much", () => calls(viaTa("agent:delegate", { task: "\u{1F600}".repeat(32_001) }))],
   ["who are you", (messages) => says(`I am: ${sectionOf(messages, "instructions") ?? "none"}`)],
 ];
 
@@ -396,22 +402,100 @@ describe("a delegation to a subagent", () => {
     expect(out.child).toEqual([]);
   });
 
-  it("counts its child's input among the thread's open inputs, refused past them at " +
-     "admission", async () => {
+  it("counts its child's input among the thread's subagent inputs, refused past them " +
+     "before its child is made", async () => {
     const r = await rig();
     const out = await r.in(async (instance) => {
       const thread = await instance.harness.thread();
       await instance.harness.pi();  // open, so its reconcile has run
-      // The thread holds all but one of its open inputs: the delegating one takes the last.
-      await instance.parts.turns.owned(thread, Array.from({ length: THREAD_INPUTS - 1 },
-        (_, n) => ({ owner: `s:${900_000 + n}`, turn: `input:held-${n}` })));
+      // The thread's subagents hold all their inputs (an eviction's leftovers, say).
+      await instance.parts.turns.owned(thread, Array.from({ length: THREAD_CHILD_INPUTS },
+        (_, n) => ({ owner: `c:${900_000 + n}`, turn: `input:held-${n}` })));
       const answer = await instance.harness.prompt("delegate it");
-      return { answer, notices: instance.parts.notices.list().map((notice) => notice.type) };
+      return { answer, notices: instance.parts.notices.list().map((notice) => notice.type),
+               conversations: (await conversationsOf(instance, thread)).length };
     });
     expect(delegated(out.answer)).toEqual([
-      { text: expect.stringContaining(THREAD_INPUTS_FULL), error: true }]);
+      { text: expect.stringContaining(THREAD_CHILD_INPUTS_FULL), error: true }]);
+    // Refused before its child was made: nothing of it is left in the thread.
+    expect(out.conversations).toBe(1);
     // Refused by the host, never by the schema's bound, which would fail the Session.
     expect(out.notices).not.toContain("session_failed");
+  });
+
+  it("leaves a thread's eight inputs to its doors while two subagents work", async () => {
+    const r = await rig();
+    const out = await r.in(async (instance) => {
+      const held = gate();
+      instance.probes.holdGate = held.promise;
+      const { operationId } = await instance.harness.submit("delegate twice");
+      await until(() => instance.probes.holds === THREAD_CONVERSATIONS - 1, "two holds");
+      // The root's input and seven more fill the doors' bound beside the subagents' inputs.
+      const steers = [];
+      for (let n = 1; n < THREAD_INPUTS; n++) {
+        steers.push((await instance.harness.submit(`steer ${n}`, { whenBusy: n % 2 === 0
+          ? "steer" : "followUp" })).accepted);
+      }
+      const past = await failure(() => instance.harness.submit("one too many"));
+      const children = instance.parts.turns.children(await instance.harness.thread());
+      held.release();
+      await instance.harness.wait(operationId);
+      return { steers, past: past.message, children };
+    });
+    expect(out.steers).toEqual(Array.from({ length: THREAD_INPUTS - 1 }, () => true));
+    expect(out.past).toBe(THREAD_INPUTS_FULL);
+    expect(out.children).toBe(THREAD_CONVERSATIONS - 1);
+  });
+
+  it("takes a task of at most 32,000 code points, an astral one counted once", async () => {
+    const r = await rig();
+    const answer = await r.in((instance) => instance.harness.prompt("delegate too much"));
+    expect(delegated(answer)).toEqual([
+      { text: expect.stringContaining("at most 32000 characters"), error: true }]);
+  });
+
+  it("leaves the doors' inputs their bound while a delegation's admission is in flight",
+     async () => {
+    const r = await rig();
+    const out = await r.in(async (instance) => {
+      await instance.harness.thread();
+      const writes = instance.probes.writes;
+      const held = gate();
+      instance.probes.writeGate = held.promise;
+      const { operationId } = await instance.harness.submit("delegate it");
+      await until(() => instance.probes.writes > writes, "the admission's unit");
+      const steers = [];
+      for (let n = 1; n < THREAD_INPUTS; n++) {
+        steers.push((await instance.harness.submit(`follow up ${n}`)).accepted);
+      }
+      instance.probes.writeGate = null;
+      held.release();
+      await instance.harness.wait(operationId);
+      return steers;
+    });
+    expect(out).toEqual(Array.from({ length: THREAD_INPUTS - 1 }, () => true));
+  });
+
+  it("does not check a resent subagent input again: it is pi's duplicate", async () => {
+    const r = await rig();
+    const out = await r.in(async (instance) => {
+      await instance.harness.prompt("delegate it");
+      const thread = await instance.harness.thread();
+      const child = (await conversationsOf(instance, thread)).find((record) =>
+        record.id !== ROOT)!;
+      const [sent] = await submissionsOf(instance, thread, child.id);
+      // The owner suspended and the turn gone: a fresh input would be refused both ways.
+      await sqlIn(r.stub(), "UPDATE owner_admission SET state = 'suspended', " +
+                            "reasons = '[\"billing\"]'");
+      let asked = 0;
+      const resent = await instance.agent.host.linked(thread, {
+        conversation: child.id, requestId: sent!.requestId! }, async () => {
+        asked++;
+        throw new Error("the turn is gone");
+      }, async () => "resent");
+      return { resent, asked };
+    });
+    expect(out).toEqual({ resent: "resent", asked: 0 });
   });
 
   it("is refused to a scoped client without run_graph, and past its scope to another " +
@@ -489,6 +573,83 @@ describe("a delegation to a subagent", () => {
   }, 30_000);
 });
 
+describe("the owner's working threads", () => {
+  it("refuse a client past its share while the owner still works", async () => {
+    const r = await rig();
+    await r.admit(MUSE);
+    const out = await r.in(async (instance) => {
+      instance.timing.workingMax = 4;  // a client's share a quarter: one thread
+      instance.probes.holdGate = new Promise(() => undefined);
+      const stamp = { client: MUSE.client, generation: 1, authenticated_at: null,
+                      universe: null, agent: "main" };
+      const first = await instance.agent.thread("main", stamp, { kind: "run" });
+      const second = await instance.agent.thread("main", stamp, { kind: "run" });
+      await instance.harness.submit("hold please", { session: first.thread_id });
+      await until(() => instance.probes.holds === 1, "the client's first hold");
+      const refused = await failure(() => instance.harness.submit("hold please",
+                                                                  { session: second.thread_id }));
+      // Its working thread takes another input; the owner's threads still work.
+      const again = await instance.harness.submit("more", { session: first.thread_id });
+      const own = await instance.harness.submit("hold please");
+      return { refused: refused.message, again: again.accepted, own: own.accepted };
+    });
+    expect(out).toEqual({ refused: THREADS_WORKING_SHARE, again: true, own: true });
+  });
+
+  it("count the admissions in flight, so two at once take one place once", async () => {
+    const r = await rig();
+    const out = await r.in(async (instance) => {
+      instance.timing.workingMax = 1;
+      const one = (await instance.agent.thread("main", null, { kind: "run" })).thread_id;
+      const two = (await instance.agent.thread("main", null, { kind: "run" })).thread_id;
+      // The first admission waits between its check and its commit, its thread not yet
+      // holding a turn owner.
+      const turns = instance.parts.turns as { working: typeof instance.parts.turns.working };
+      const original = turns.working;
+      const reached = gate();
+      const paused = gate();
+      turns.working = async (...args) => {
+        const answer = await original(...args);
+        turns.working = original;
+        reached.release();
+        await paused.promise;
+        return answer;
+      };
+      const first = instance.harness.submit("hi", { session: one });
+      await reached.promise;
+      const second = await failure(() => instance.harness.submit("hi", { session: two }));
+      paused.release();
+      return [(await first).accepted, second.message];
+    });
+    expect(out).toEqual([true, THREADS_WORKING]);
+  });
+
+  it("free a working thread's place once its work settles", async () => {
+    const r = await rig();
+    const out = await r.in(async (instance) => {
+      instance.timing.workingMax = 2;
+      const held = gate();
+      instance.probes.holdGate = held.promise;
+      const threads: string[] = [];
+      for (let n = 0; n < 3; n++) {
+        threads.push((await instance.agent.thread("main", null, { kind: "run" })).thread_id);
+      }
+      const [one, two, three] = threads as [string, string, string];
+      const first = await instance.harness.submit("hold please", { session: one });
+      await instance.harness.submit("hold please", { session: two });
+      await until(() => instance.probes.holds === 2, "two holds");
+      const refused = await failure(() => instance.harness.submit("hi", { session: three }));
+      instance.probes.holdGate = null;
+      held.release();
+      await instance.harness.wait(first.operationId, { session: one });
+      await until(() => instance.parts.threads.settledRun(one), "the first run settled");
+      const admitted = await instance.harness.submit("hi", { session: three });
+      return { refused: refused.message, admitted: admitted.accepted };
+    });
+    expect(out).toEqual({ refused: THREADS_WORKING, admitted: true });
+  });
+});
+
 describe("ta's rerun after a restart", () => {
   it("refuses an effect a restart cut off, never acting twice, where a delegation is found " +
      "again", async () => {
@@ -512,9 +673,47 @@ describe("ta's rerun after a restart", () => {
     expect(out.status).toBe("done");
     const [result] = (JSON.parse(out.text!) as { name: string; text: string; error: boolean }[])
       .filter((shown) => shown.name === "policy:propose");
-    expect(result).toMatchObject({ error: true, text: expect.stringContaining("interrupted") });
+    // pi's own answer for a call cut off: its code and its words.
+    expect(result).toMatchObject({ error: true, text: expect.stringContaining(
+      "[error] Tool ta was interrupted and may have partially run") });
+    const codes = await r.in(async (instance) => (await instance.harness.messages())
+      .flatMap((entry) => ((entry.data as { diagnostics?: { code?: string }[] } | undefined)
+        ?.diagnostics ?? []).map((diagnostic) => diagnostic.code)));
+    expect(codes).toContain("interrupted");
     expect(await sqlIn(r.stub(), "SELECT COUNT(*) AS n FROM policy_proposals"))
       .toEqual([{ n: 0 }]);
+  }, 30_000);
+});
+
+describe("a replay-safe tool ta reached, rerun after a restart", () => {
+  it("passes the early gate again: refused while the owner is not admitted", async () => {
+    const r = await rig();
+    const before = await r.in(async (instance) => {
+      instance.probes.holdGate = new Promise(() => undefined);
+      const { operationId } = await instance.harness.submit("hold safely");
+      await until(() => instance.probes.safeHolds === 1, "the safe hold");
+      return operationId;
+    });
+    expect(await r.in((_instance, state) => state.abort("evicted mid-hold"))
+      .then(() => "alive", (error: Error) => error.message)).toBe("evicted mid-hold");
+    // Suspended while it was down: its live row says working, so its job opens it now.
+    await sqlIn(r.stub(), "UPDATE owner_admission SET state = 'suspended', " +
+                          "reasons = '[\"billing\"]'");
+    await r.in((instance) => {
+      instance.script = Array.from({ length: 200 }, () => byAsk);
+    });
+    expect(await runDurableObjectAlarm(r.stub())).toBe(true);
+    const out = await r.in(async (instance) => {
+      const settled = await instance.harness.wait(before);
+      const shown = resultsOf((await instance.harness.messages())
+        .flatMap((entry) => (entry.model ?? []) as Message[]));
+      return { settled, shown, safeHolds: instance.probes.safeHolds };
+    });
+    // pi's recovery reran it with no hook; its own gate refused it before it ran.
+    expect(out.safeHolds).toBe(0);
+    expect(out.shown.find((result) => result.name === "safe_hold"))
+      .toMatchObject({ error: true, text: expect.stringContaining("owner_suspended") });
+    expect(out.settled.status).toBe("done");  // the faux model is held to no admission
   }, 30_000);
 });
 

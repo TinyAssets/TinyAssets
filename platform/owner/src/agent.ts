@@ -126,7 +126,7 @@ import {
   type TaskRecord, ToolTask, type Tx, type UsageState, type Storage, type Wake, wrapTool,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import type { ToolExecutionApi } from "@earendil-works/pi-durable";
+import type { ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 
 import {
@@ -143,7 +143,7 @@ import type { GatewayProvider, SessionAuthority } from "./gateway-provider";
 import type { LiveTee } from "./live-tee";
 import type { Notices } from "./notices";
 import { type MetricsSnapshot, OriginMetrics, originRoot, threadOf, turnOf } from "./origin";
-import { AGENTS_DIR, AGENTS_OWNER_ONLY, within, WORKSPACE } from "./paths";
+import { AGENTS_OWNER_ONLY, ownersOnly, WORKSPACE } from "./paths";
 import { RemoteStorage } from "./remote-storage";
 import { type PackageSelection, Resources } from "./resources";
 import { inTime } from "./schedule";
@@ -216,6 +216,8 @@ export const TA_EXTENSION = "ta.tool";
 export const SCHEDULED_EXTENSION = "ta.scheduled";
 /** A scheduled launch whose thread is no longer the one it was made in, as it delivers. */
 export const THREAD_AUTHORITY = "thread_authority";
+/** The code of a fresh input refused past the working threads (`threads.ts`): held. */
+const WORKING = "threads_working";
 /** A thread with no row is never opened: it was dropped, or never made. */
 export const NO_THREAD = "no such thread";
 /** The `usage_unkept` notice's detail when a settling run's usage cannot be read. */
@@ -572,6 +574,9 @@ export class OwnerAgent {
       files: parts.files, notices: parts.notices, write: parts.write,
       selection: () => parts.packages(),
       install: (extension) => this.#registry.install(extension),
+      readable: async (input, context) => parts.authority.refusal(
+        await input.read.snapshot(this.authority, input.conversationId, context),
+        ["read_files"]) === undefined,
     });
     this.host = new ThreadHost({
       open: (thread, onWake) => this.#open(thread, onWake),
@@ -748,7 +753,7 @@ export class OwnerAgent {
         if (refused !== undefined) {
           throw new Error(refused);
         }
-        this.#registry.install(snapshot);
+        this.#registry.install(this.#gated(snapshot));
       } catch (error) {
         const why = error instanceof Error ? error.message : String(error);
         await this.#parts.write(() => this.#parts.notices.once(
@@ -763,8 +768,11 @@ export class OwnerAgent {
    * as the caller, given `task` as its one input and waited on. Under the caller's
    * authority, which must hold `run_graph` where the caller acts (`ta`'s gate and its own
    * check) and, with an agent named, where that agent acts, so a scoped client delegates
-   * only to an agent it may run. The input is admitted as a door's (`ThreadHost.linked`),
-   * in a unit that re-checks both and refuses it when the call's turn has no row; once
+   * only to an agent it may run. What the input's admission checks is asked first, in the
+   * commit that would make the child, so a refused delegation leaves nothing; the input is
+   * then admitted as a door's (`ThreadHost.linked`), in a unit that re-checks the stamp
+   * (its generation: a grant's scopes move with it) and refuses it when the call's turn has
+   * no row; once
    * answered, the child's lingering work (a background compaction) is ended, so the thread's
    * live conversations stay within their cap. Its answer: the child's conversation, and its
    * text, or why it went unanswered.
@@ -782,8 +790,17 @@ export class OwnerAgent {
     const { authority, write } = this.#parts;
     authority.require(there, ["run_graph"]);
     const instructions = named === null ? null : (await this.#parts.config(named)).instructions;
+    // What the child's admission will check, asked before it is made (never on a rerun,
+    // which finds it): a delegation refused leaves no conversation behind.
+    const room = () => {
+      this.host.linkedRoom(thread);
+      const ended = this.#parts.joined(turn);
+      if (ended !== null) {
+        throw new Refused(ended);
+      }
+    };
     const child = await api.commit((tx) => createChild(tx, api.taskId, instructions,
-                                                       this.delegations), context);
+                                                       this.delegations, room), context);
     await api.details({ conversation_id: Number(child) }, context);
     const handle = await api.conversation(child, context);
     if (handle === undefined) {
@@ -792,8 +809,9 @@ export class OwnerAgent {
     const requestId = subagentRequest(api.taskId);
     const submission = await this.host.linked(thread, { conversation: child, requestId },
       () => write(() => {
+        // The caller's stamp still standing at its generation: a grant's scopes move only
+        // with its generation, so where the named agent acts holds as it held above.
         authority.require(state, ["run_graph"]);
-        authority.require(there, ["run_graph"]);
         const ended = this.#parts.joined(turn);
         if (ended !== null) {
           throw new Refused(ended);
@@ -812,6 +830,33 @@ export class OwnerAgent {
   }
 
   /**
+   * A package's tools, each passing the early gate again as it executes (`Authority.decide`,
+   * its refusal receipted): pi's recovery runs no hook, so a replay-safe tool `ta` reached
+   * that a restart cut off is held to the conversation's authority as it stands when it
+   * reruns, as on its first run.
+   */
+  #gated(extension: Extension): Extension {
+    if (extension.tools === undefined) {
+      return extension;
+    }
+    return Object.freeze(defineExtension({
+      ...extension,
+      tools: Object.freeze(extension.tools.map((tool): ToolRegistration => Object.freeze({
+        ...tool,
+        execute: async (args: never, api: ToolExecutionApi, context: Context) => {
+          const state = await api.snapshot(this.authority, api.conversationId, context);
+          const blocked = await this.#parts.authority.decide(state, { name: tool.name,
+                                                                       arguments: args });
+          if (blocked !== undefined) {
+            throw new Refused(blocked.block);
+          }
+          return tool.execute(args, api, context);
+        },
+      }))),
+    }));
+  }
+
+  /**
    * One environment per call, replays included, over the owner's files, as the
    * conversation's writer, holding every operation to the conversation's authority.
    */
@@ -827,13 +872,14 @@ export class OwnerAgent {
   }
 
   /**
-   * In a change's own unit: the owner's agent definitions change only under the owner's own
-   * authority, and the owner is told each time its agent changes them, since content another
-   * party wrote elsewhere can steer the agent (Direction 3 lets it write there). A refused
-   * change leaves no notice.
+   * In a change's own unit: the owner's agent definitions (`OWNER_TREES`: its agents'
+   * files, skills, templates and packages) change only under the owner's own authority, and
+   * the owner is told each time its agent changes them, since content another party wrote
+   * elsewhere can steer the agent (Direction 3 lets it write there). A refused change leaves
+   * no notice.
    */
   #definitions(state: Readonly<AuthorityState> | undefined, path: string): void {
-    if (!within(path, AGENTS_DIR)) {
+    if (!ownersOnly(path)) {
       return;
     }
     if (state?.by !== "owner") {
@@ -985,7 +1031,8 @@ export class OwnerAgent {
         throw error;
       }
       if (error instanceof Refused
-          && (error.message === THREAD_INPUTS_FULL || error.message === SESSIONS_FULL)) {
+          && (error.message === THREAD_INPUTS_FULL || error.message === SESSIONS_FULL
+              || refusalCode(error.message) === WORKING)) {
         return { kind: "held", reason: refusalCode(error.message) };
       }
       if (error instanceof Refused

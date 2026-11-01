@@ -81,7 +81,7 @@ import { Refused } from "./errors";
 import { COMPACTION, JOINED } from "./origin";
 import { inTime } from "./schedule";
 import { assistantText } from "./thread-store";
-import { THREAD_INPUTS } from "./schema";
+import { THREAD_CHILD_INPUTS, THREAD_INPUTS, WORKING_THREADS } from "./schema";
 
 const BG = BACKGROUND_CONTEXT;
 const ROOT = ROOT_CONVERSATION_ID;
@@ -147,6 +147,9 @@ const USAGE_UNKEPT_DETAIL = "a thread's model usage could not be kept as its Ses
  */
 export const THREAD_INPUTS_FULL = "thread_inputs_full: the thread holds as many open inputs " +
   "as it may; wait for one to be answered";
+/** The refusal of a subagent's input past `THREAD_CHILD_INPUTS` open ones a thread holds. */
+export const THREAD_CHILD_INPUTS_FULL = "thread_inputs_full: the thread's subagents hold as " +
+  "many open inputs as they may; wait for one to answer";
 /** The task states that are still live, as pi's scheduler holds them. */
 const LIVE_TASKS = Object.freeze(["pending", "running", "waiting", "sleeping", "completing"] as const);
 const SCAN_PAGE = 100;
@@ -159,13 +162,16 @@ const PARKED_DETAIL = "a task was cut off too many times in a row without progre
 /** The host's timings and bound; production's are the constants, a test's shorter. */
 export interface HostTiming {
   readonly openMax: number;
+  /** Working threads a fresh input may make (`WORKING_THREADS - OPEN_MAX`); a test's fewer. */
+  readonly workingMax: number;
   readonly idleCloseMs: number;
   readonly waitBudgetMs: number;
   readonly heartbeatMs: number;
 }
 
 export const HOST_TIMING: HostTiming = Object.freeze({
-  openMax: OPEN_MAX, idleCloseMs: IDLE_CLOSE_MS, waitBudgetMs: WAIT_BUDGET_MS,
+  openMax: OPEN_MAX, workingMax: WORKING_THREADS - OPEN_MAX, idleCloseMs: IDLE_CLOSE_MS,
+  waitBudgetMs: WAIT_BUDGET_MS,
   heartbeatMs: HEARTBEAT_MS,
 });
 
@@ -215,8 +221,17 @@ export interface HostParts {
     owned(thread: string, owners: readonly TurnOwner[]): Promise<void>;
     /** How many owners past the thread's bound it passed over. */
     reconciled(thread: string, open: readonly TurnOwner[]): Promise<number>;
-    /** How many open inputs `thread`'s turn owners hold (`Usage.openInputs`). */
+    /** How many open root inputs `thread`'s turn owners hold (`Usage.openInputs`). */
     inputs(thread: string): number;
+    /** How many open subagent inputs `thread`'s turn owners hold (`Usage.childInputs`). */
+    children(thread: string): number;
+    /**
+     * In a unit: why a fresh input to `thread` would put the owner past `bound` working
+     * threads (those holding turn owners, with `pending`, the threads whose admissions are
+     * in flight), a client within its share and every client within what the owner's
+     * reserve leaves; null when it fits, `thread` working already among them.
+     */
+    working(thread: string, pending: readonly string[], bound: number): Promise<string | null>;
   };
   /** Keep an owner notice (`notices.ts`). */
   notice(type: string, detail: string): void;
@@ -263,6 +278,8 @@ class Slot {
   /** Ends the wait's current sleep: the Session's wake changed, or it is closing. */
   changed: (() => void) | undefined;
   admitting = 0;
+  /** Linked admissions in flight (`linked`): a subagent's input each. */
+  linking = 0;
   leases = 0;
   pins = 0;
   /** Endings in flight (`end`): the job never resumes the Session under one. */
@@ -359,8 +376,15 @@ export class ThreadHost extends LifecycleCapability {
         }
         // The thread's open inputs as its turn owners hold them, with every admission in
         // flight beside this one, so none passes the cap.
-        if (fresh && this.#parts.turns.inputs(thread) + slot.admitting - 1 >= THREAD_INPUTS) {
+        if (fresh && this.#parts.turns.inputs(thread) + slot.admitting - slot.linking - 1
+            >= THREAD_INPUTS) {
           throw new Refused(THREAD_INPUTS_FULL);
+        }
+        // A thread not at work takes a place among the working threads, in a unit.
+        const busy = fresh ? await this.#parts.turns.working(thread, this.#pending(thread),
+                                                             this.#timing.workingMax) : null;
+        if (busy !== null) {
+          throw new Refused(busy);
         }
         if (options.admitted !== undefined) {
           await options.admitted();
@@ -397,20 +421,41 @@ export class ThreadHost extends LifecycleCapability {
                                        readonly requestId: string },
             joined: () => Promise<void>, submit: () => Promise<T>): Promise<T> {
     return this.#use(thread, ({ storage }, slot) => this.#admit(thread, slot, async () => {
-      const fresh = await storage.submissionByRequest(request.conversation, request.requestId,
-                                                      BG) === undefined;
-      if (fresh) {
-        if (this.#parts.turns.inputs(thread) + slot.admitting - 1 >= THREAD_INPUTS) {
-          throw new Refused(THREAD_INPUTS_FULL);
+      slot.linking++;
+      try {
+        const fresh = await storage.submissionByRequest(request.conversation,
+                                                        request.requestId, BG) === undefined;
+        if (fresh) {
+          this.linkedRoom(thread, slot.linking - 1);
+          await joined();
         }
-        const unadmitted = this.#parts.admission();
-        if (unadmitted !== null) {
-          throw new Refused(unadmitted);
-        }
-        await joined();
+        return await submit();
+      } finally {
+        slot.linking--;
       }
-      return submit();
     }));
+  }
+
+  /**
+   * Why a linked input to `thread` has no room, thrown: the thread's subagent inputs with
+   * `inFlight` more admitted beside it (`THREAD_CHILD_INPUTS_FULL`), or the owner not
+   * admitted. A read; a delegation asks it before it makes its child, and the admission again.
+   */
+  linkedRoom(thread: string, inFlight = this.#slots.get(thread)?.linking ?? 0): void {
+    if (this.#parts.turns.children(thread) + inFlight >= THREAD_CHILD_INPUTS) {
+      throw new Refused(THREAD_CHILD_INPUTS_FULL);
+    }
+    const unadmitted = this.#parts.admission();
+    if (unadmitted !== null) {
+      throw new Refused(unadmitted);
+    }
+  }
+
+  /** The threads but `thread` whose admissions are in flight: each may take a working place. */
+  #pending(thread: string): string[] {
+    return [...this.#slots].filter(([held, slot]) => held !== thread
+                                                     && slot.admitting > slot.linking)
+      .map(([held]) => held);
   }
 
   /**
@@ -1137,8 +1182,9 @@ export function turnOwners(thread: string, changes: readonly Change[]): TurnOwne
       const origin = originOf(change.value.trace);
       if (origin !== undefined) {
         const open = change.value.status === "queued" || change.value.status === "placed";
-        owners.push(open ? { owner: `s:${change.value.id}`, ...origin }
-          : { owner: `s:${change.value.id}`, turn: null });
+        // A root input is a door's or a delivery's; any other conversation's, a subagent's.
+        const owner = `${change.value.conversationId === ROOT ? "s" : "c"}:${change.value.id}`;
+        owners.push(open ? { owner, ...origin } : { owner, turn: null });
       }
     } else if (change.type === "task" && change.value.kind === COMPACTION) {
       const open = (LIVE_TASKS as readonly string[]).includes(change.value.state.status);

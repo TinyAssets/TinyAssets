@@ -73,15 +73,18 @@ async function live(tx: Tx, delegation: Delegation): Promise<boolean> {
 /**
  * In the calling tool's commit: its child, found again by the ownership index, or made, owned
  * by `taskId`, with `instructions` (a named agent's; null keeps the caller's copied ones, and
- * undefined is an agent with none), within the thread's cap.
+ * undefined is an agent with none), within the thread's cap, and only once `room` (the
+ * admission's own checks, asked first: the thread's subagent inputs, the owner's admission,
+ * the call's turn) holds, so a delegation refused leaves nothing behind.
  */
 export async function createChild(tx: Tx, taskId: TaskId, instructions: string | null | undefined,
-                                  delegations: ReturnType<typeof delegationsDoc>):
-    Promise<ConversationId> {
+                                  delegations: ReturnType<typeof delegationsDoc>,
+                                  room: () => void): Promise<ConversationId> {
   const existing = (await tx.scanConversations({ ownerTaskId: taskId }, 1)).items[0];
   if (existing !== undefined) {
     return existing.id;
   }
+  room();
   const kept = await tx.doc(delegations);
   const still: Delegation[] = [];
   for (const delegation of kept.live) {

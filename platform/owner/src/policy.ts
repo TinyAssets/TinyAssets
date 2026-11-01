@@ -34,7 +34,8 @@
  *   how long a settled run's store is kept (`keep_runs`), and its receipt
  *   (`keep_run_receipts`), which the `threads` lane reads (`threads.ts`).
  * - The optional `packages` list is the owner's package selection (tasks 5, A5), in pi's
- *   settings form: each a package directory under `/workspace`, or `{source, skills?,
+ *   settings form: each a package directory under `/workspace/.agents/packages`, a tree
+ *   only the owner changes, or `{source, skills?,
  *   prompts?}` with pi's filter grammar per resource type (`resources.ts`). There is no
  *   `extensions` filter: a package's code never loads in the owner's object, so a package
  *   that declares any is refused where it loads.
@@ -75,7 +76,7 @@ import { createHash } from "node:crypto";
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import { CHUNK_BYTES, KEEP_CEILING, MAX_INTENT_CHUNKS } from "./files";
-import { storedPath, within, WORKSPACE } from "./paths";
+import { PACKAGES_DIR, storedPath, within } from "./paths";
 import type { PackageSelection } from "./resources";
 import { codePoints, SOURCE_ID } from "./text";
 import type { RunPolicy } from "./threads";
@@ -369,10 +370,13 @@ export const FILTER_PATTERNS = 64;
 /** The keys a package selection's object form takes. */
 const SELECTION_KEYS: readonly string[] = Object.freeze(["source", "skills", "prompts"]);
 
-/** A package's directory: a stored path below `/workspace`. */
+/**
+ * A package's directory: a stored path below `PACKAGES_DIR`, a tree only the owner's own
+ * authority changes (`paths.ts`), so no client's file is ever in a selected package.
+ */
 function packageSource(value: unknown): value is string {
   try {
-    return within(storedPath(value), WORKSPACE) && value !== WORKSPACE;
+    return within(storedPath(value), PACKAGES_DIR) && value !== PACKAGES_DIR;
   } catch {
     return false;
   }
@@ -571,8 +575,8 @@ export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS
   }
   if (document["packages"] !== undefined && !validPackages(document["packages"])) {
     throw new Invalid("invalid packages policy: at most 32 package directories under " +
-                      "/workspace, each once, as a path or {source, skills, prompts} with " +
-                      "filter lists; package code (extensions) never loads");
+                      "/workspace/.agents/packages, each once, as a path or {source, skills, " +
+                      "prompts} with filter lists; package code (extensions) never loads");
   }
   if (document["models"] !== undefined && !validModels(document["models"])) {
     throw new Invalid("invalid models policy");

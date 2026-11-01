@@ -548,7 +548,7 @@ export interface FilesEnvOptions {
   readonly authorize?: (access: Access) => void;
   /**
    * Each stored path a change touches, in the change's own unit: it throws a refusal for a
-   * path only another authority may change (`AGENTS_DIR`, the owner's alone). Always set by
+   * path only another authority may change (`OWNER_TREES`, the owner's alone). Always set by
    * the object's agent; a test of the environment alone may leave it.
    */
   readonly guard?: (path: string) => void;

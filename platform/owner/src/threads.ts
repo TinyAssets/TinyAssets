@@ -247,6 +247,13 @@ export const RUN_POLICY: RunPolicy = Object.freeze({ keepRunsS: 7 * 86_400,
 
 /** The refusals of a launch past the live runs' bound, or a share of it. */
 export const RUNS_LIVE = "runs_live: the agent has as many live runs as it may";
+/** The refusals of an input to a thread not at work past the working threads' bounds. */
+export const THREADS_WORKING = "threads_working: the agent has as many threads at work as it " +
+  "may; wait for one to be answered";
+export const THREADS_WORKING_SHARE = "threads_working: this client has its share of the " +
+  "threads at work";
+export const THREADS_WORKING_CLIENTS = "threads_working: the outside clients have their " +
+  "share of the threads at work";
 export const RUNS_LIVE_SHARE = "runs_live: this client has its share of the live runs";
 export const RUNS_LIVE_CLIENTS = "runs_live: the outside clients have their share of the " +
   "live runs";
@@ -846,6 +853,37 @@ export class Threads {
     return this.#storage.sql.exec<{ thread_id: string }>(
       "SELECT thread_id FROM agent_live WHERE active = 1 OR wake_at <= ?", now).toArray()
       .map((row) => row.thread_id);
+  }
+
+  /**
+   * Why a fresh input to `threadId` would put the owner past `bound` working threads
+   * (`working`: those holding turn owners and those being admitted), or null: one already
+   * working takes no new place; past `bound` in all, past a client's share of it
+   * (`client_share`), or past what the owner's reserve leaves every client
+   * (`owner_reserve`), it is refused, so clients never fill the owner's places. A read.
+   */
+  workingRefusal(threadId: string, working: ReadonlySet<string>, bound: number):
+      string | null {
+    if (working.has(threadId)) {
+      return null;
+    }
+    if (working.size >= bound) {
+      return THREADS_WORKING;
+    }
+    const client = this.get(threadId)?.client ?? null;
+    if (client === null) {
+      return null;
+    }
+    const { clientShare, ownerReserve } = this.#runs();
+    const clients = [...working].map((thread) => this.get(thread)?.client ?? null);
+    if (clients.filter((held) => held === client).length >= shareOf(bound, clientShare)) {
+      return THREADS_WORKING_SHARE;
+    }
+    if (clients.filter((held) => held !== null).length
+        >= shareOf(bound, 100 - ownerReserve)) {
+      return THREADS_WORKING_CLIENTS;
+    }
+    return null;
   }
 
   /** `threadId`'s live row: whether it is working, and when it next wakes (s). A read. */

@@ -140,7 +140,7 @@ import { LiveTee } from "./live-tee";
 import { inTime, type Lane, Schedule } from "./schedule";
 import type { ScheduledInput } from "./scheduled";
 import { nextOccurrence, parseCron } from "./cron";
-import { AGENTS_DIR, AGENTS_OWNER_ONLY, storedPath, within, WORKSPACE } from "./paths";
+import { AGENTS_OWNER_ONLY, ownersOnly, storedPath, WORKSPACE } from "./paths";
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
 import {
@@ -925,6 +925,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                             reconciled: (thread, open) => write(() =>
                               this.#usage.turnsReconciled(thread, open)),
                             inputs: (thread) => this.#usage.openInputs(thread),
+                            children: (thread) => this.#usage.childInputs(thread),
+                            working: (thread, pending, bound) => write(() =>
+                              this.#threads.workingRefusal(thread, new Set([
+                                ...this.#usage.workingThreads(), ...pending]), bound)),
                           },
                           admission: () => workRefusal(admission(storage)),
                           packages: () => packageSelection(this.#policy.read().document),
@@ -1541,7 +1545,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (asked.thread === null) {
       await this.#agentConfig(asked.agent);  // a bad AGENTS.md is refused before a thread
     }
-    const input = asked.client === null ? await this.#agent.expand(asked.input) : asked.input;
+    const input = asked.client === null
+      ? agentText(await this.#agent.expand(asked.input), "an expanded input") : asked.input;
     const thread = asked.thread ?? await this.#agent.thread(asked.agent, asked.stamp, {
       kind: "converse", need: ["converse"] });
     await this.#schedule.sync();
@@ -1698,7 +1703,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async #launch(stamp: Stamped | null, agent: string, given: string, at: number | null,
                 cron: string | null = null): Promise<Operation> {
     await this.#agentConfig(agent);
-    const input = stamp === null ? await this.#agent.expand(given) : given;
+    const input = stamp === null
+      ? agentText(await this.#agent.expand(given), "an expanded input") : given;
     const now = clock();
     const due = at !== null && at > now ? at
       : cron !== null ? (at ?? nextOccurrence(parseCron(cron), now)) : null;
@@ -1837,7 +1843,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (content === null) {
       return {};
     }
-    // Only the owner's own authority writes the tree (`AGENTS_DIR`); a file any other
+    // Only the owner's own authority writes the tree (`OWNER_TREES`); a file any other
     // wrote, kept from before that held, configures nothing.
     if (content.entry.writer !== "owner" && content.entry.writer !== "agent") {
       throw new Refused(`${path} was not written by the owner`);
@@ -2076,10 +2082,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return account;
   }
 
-  /** That an outside client's change leaves the owner's agent definitions alone. */
+  /**
+   * That an outside client's change leaves the owner's agent definitions alone: its agents'
+   * files, skills, templates and packages (`OWNER_TREES`).
+   */
   #ownersTree(account: Account, ...paths: unknown[]): void {
-    if (account.origin !== null
-        && paths.some((path) => within(storedPath(path), AGENTS_DIR))) {
+    if (account.origin !== null && paths.some((path) => ownersOnly(storedPath(path)))) {
       throw new Refused(AGENTS_OWNER_ONLY);
     }
   }

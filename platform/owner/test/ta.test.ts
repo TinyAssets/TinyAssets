@@ -230,7 +230,8 @@ describe("ta's catalog", () => {
                                                       await threadFor(instance, null)));
     const names = page.capabilities.map((entry: { name: string }) => entry.name);
     expect(names).toEqual(["policy:show", "policy:propose", "wake:list", "files:usage", "model",
-                           "agent:run", "agent:delegate", "hold", "fork", "nest", "spawn",
+                           "agent:run", "agent:delegate", "hold", "safe_hold", "fork", "nest",
+                           "spawn",
                            "background", "widen", "weather_lookup", "pass"]);
     expect(page.total).toBe(names.length);
     expect(page.next_offset).toBeUndefined();
@@ -271,11 +272,11 @@ describe("ta's catalog", () => {
     expect(names(out.policy).slice(0, 2).sort()).toEqual(["policy:propose", "policy:show"]);
     expect(out.nothing).toEqual({ capabilities: [], total: 0 });
     expect([names(out.first), out.first.total, out.first.next_offset]).toEqual([
-      ["policy:show", "policy:propose", "wake:list", "files:usage", "model"], 15, 5]);
+      ["policy:show", "policy:propose", "wake:list", "files:usage", "model"], 16, 5]);
     expect([names(out.second), out.second.next_offset])
-      .toEqual([["agent:run", "agent:delegate", "hold", "fork", "nest"], 10]);
+      .toEqual([["agent:run", "agent:delegate", "hold", "safe_hold", "fork"], 10]);
     expect([names(out.last), out.last.next_offset])
-      .toEqual([["spawn", "background", "widen", "weather_lookup", "pass"], undefined]);
+      .toEqual([["nest", "spawn", "background", "widen", "weather_lookup"], 15]);
   });
 
   it("lists to a scoped client only what its grant reaches, and to a full one all but the " +
@@ -305,7 +306,8 @@ describe("ta's catalog", () => {
     expect(out.usage).toEqual({ text: blocked(NOT_GRANTED), error: true });
     expect(out.fullShows).toEqual({ text: blocked(NOT_OWNER), error: true });
     expect(names(out.full)).toEqual(["policy:propose", "wake:list", "files:usage", "model",
-                                     "agent:run", "agent:delegate", "hold", "fork", "nest",
+                                     "agent:run", "agent:delegate", "hold", "safe_hold",
+                                     "fork", "nest",
                                      "spawn", "background", "widen", "weather_lookup", "pass"]);
   });
 });
@@ -871,7 +873,7 @@ describe("packages and names (review L1, L2, L3)", () => {
     expect(out.extra).toEqual({ text: threw(INVALID_REQUEST), error: true });
     expect(out.stringName.error).toBe(true);
     expect(out.nullArgs.error).toBe(true);
-    expect(out.past).toEqual({ capabilities: [], total: 15 });
+    expect(out.past).toEqual({ capabilities: [], total: 16 });
   });
 });
 

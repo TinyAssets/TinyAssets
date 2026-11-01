@@ -20,21 +20,28 @@
  *   block, its arguments after it; a template's body with pi's argument substitution
  *   (`$1`, `$@`, `${1:-default}`, `${@:N:L}`). An unknown name is left as typed. Both read
  *   the file as it stands at expansion, as pi reads it then.
- * - **Packages** are pi packages in the owner's workspace (a directory, its `package.json`
- *   holding the `pi` and `tinyassets` keys), selected by owner policy (`policy.ts`, the
- *   `packages` table, pi's settings form) with pi's filter grammar per resource type
- *   (`applyPatterns`: plain globs include, `!` excludes, `+` forces an exact path in, `-`
- *   out; omitted loads all, `[]` none). A package contributes data only: skills and prompt
- *   templates. One that declares code (`pi.extensions`, or a conventional `extensions/`
- *   directory) is refused whole, loudly, with the fixed code `package_executable` and an
- *   owner notice: the owner object runs no package code (hooks are H1's, remote). The
- *   `tinyassets` key's fields are not loaded yet (settings and model routing hints have no
- *   consumer: owner policy is the one settings source, tasks 5): each is skipped with a
- *   notice, the package's skills and prompts still loading.
+ * - **Packages** are pi packages under `/workspace/.agents/packages` (a directory, its
+ *   `package.json` holding the `pi` and `tinyassets` keys), selected by owner policy
+ *   (`policy.ts`, the `packages` table, pi's settings form) with pi's filter grammar per
+ *   resource type (`applyPatterns`: plain globs include, `!` excludes, `+` forces an exact
+ *   path in, `-` out; omitted loads all, `[]` none). A package contributes data only: skills
+ *   and prompt templates. One that declares code is refused whole, loudly, with the fixed
+ *   code `package_executable` and an owner notice: any npm key but its data (an entry
+ *   point, a binary, a script), any `pi` key but its skills and prompts (pi's UI data,
+ *   `themes`, `image` and `video`, skipped with a notice), a `pi.extensions` that is not an
+ *   empty list, or a conventional `extensions/` directory. The owner object runs no package
+ *   code (hooks are H1's, remote). The `tinyassets` key's fields are not loaded yet
+ *   (settings and model routing hints have no consumer: owner policy is the one settings
+ *   source, tasks 5): each is skipped with a notice, the package's skills and prompts still
+ *   loading.
  *
- * Only what the owner's own authority wrote configures the agent, as `AGENTS.md` does
- * (`OwnerDO.#agentConfig`): a skill, template or manifest an outside client wrote is
- * skipped with a notice, since a skill is instructions the owner's agent follows.
+ * Every root here, and every package, is in a tree only the owner's own authority changes
+ * (`OWNER_TREES`, `paths.ts`: refused to a client at the file doors and in the agent's
+ * environment, each change the owner's agent makes noticed), so no client's file is ever
+ * beside an owner's skill or in a selected package. As a second layer, only a skill,
+ * template or manifest the owner's own authority wrote configures the agent, as `AGENTS.md`
+ * does (`OwnerDO.#agentConfig`), any other skipped with a notice. The section reaches a
+ * conversation only while its authority may read the owner's files (`read_files`).
  *
  * The section is built once at the first open and rebuilt only when the files' change feed
  * (`Files.watch`) touches a `SKILL.md` or a template under a root, or anything under a
@@ -47,7 +54,8 @@
  */
 import { isModelInvocable, parseSkill } from "agents/skills";
 
-import { defineExtension, type Extension } from "@earendil-works/pi-durable";
+import { type Context } from "@earendil-works/chord/context";
+import { defineExtension, type Extension, type PromptInput } from "@earendil-works/pi-durable";
 
 import { Invalid, Refused } from "./errors";
 import { type Content, type Entry, FileFault, type Files, MAX_LIST } from "./files";
@@ -80,6 +88,21 @@ export const WALK_MAX = 2_048;
 export const WALK_DEPTH = 8;
 /** The entries one manifest list holds at most. */
 export const MANIFEST_ENTRIES = 64;
+/**
+ * A manifest's npm keys that are only data about the package: any other (an entry point, its
+ * conditional entry points, a binary, a lifecycle script, a bundler's field) names code, or
+ * nothing the object knows, and refuses the package.
+ */
+const NPM_DATA: readonly string[] = Object.freeze([
+  "name", "version", "description", "keywords", "license", "author", "contributors",
+  "maintainers", "repository", "homepage", "bugs", "funding", "private", "type", "engines",
+  "files", "dependencies", "devDependencies", "peerDependencies", "peerDependenciesMeta",
+  "optionalDependencies", "publishConfig", "types", "typings", "pi", "tinyassets"]);
+/** The `pi` keys the object loads, and those it knows as data it does not load (UI). */
+const PI_DATA: readonly string[] = Object.freeze(["skills", "prompts"]);
+const PI_UNLOADED: readonly string[] = Object.freeze(["themes", "image", "video"]);
+/** The `pi` key that lists a package's extensions: code. */
+const PI_CODE = "extensions";
 
 /** A package refused for declaring code: the owner object runs none. */
 export const PACKAGE_EXECUTABLE = "package_executable";
@@ -443,12 +466,28 @@ export async function loadPackage(files: Files, selection: PackageSelection):
     return { refused: `${PACKAGE_INVALID}: the pi and tinyassets keys are objects` };
   }
   const budget: Budget = { left: WALK_MAX, truncated: false };
+  const skipped: string[] = [];
   try {
-    // Code is refused whole: pi.extensions, or (with none listed) an extensions directory.
-    const extensions = entriesOf(pi["extensions"], "pi.extensions");
-    if (extensions !== undefined && extensions.length > 0) {
-      return { refused: `${PACKAGE_EXECUTABLE}: pi.extensions is code, and the owner ` +
-                        "object runs no package code" };
+    // Code is refused whole: any npm key but its data (an entry point, a binary, a script),
+    // any `pi` key but the data the
+    // object loads (an empty `extensions` list declares none), or, with none listed, an
+    // extensions directory.
+    const entry = Object.keys(manifest).find((key) => !NPM_DATA.includes(key));
+    if (entry !== undefined) {
+      return { refused: `${PACKAGE_EXECUTABLE}: ${entry} is code, or no data the object ` +
+                        "loads, and the owner object runs no package code" };
+    }
+    for (const [key, value] of Object.entries(pi)) {
+      if (PI_DATA.includes(key) || (key === PI_CODE && Array.isArray(value)
+                                    && value.length === 0)) {
+        continue;
+      }
+      if (PI_UNLOADED.includes(key)) {
+        skipped.push(`pi.${key}`);
+        continue;
+      }
+      return { refused: `${PACKAGE_EXECUTABLE}: pi.${key} is code, or no data the object ` +
+                        "loads, and the owner object runs no package code" };
     }
     if (listed(files, `${root}/extensions`, budget).length > 0) {
       return { refused: `${PACKAGE_EXECUTABLE}: its extensions directory is code, and the ` +
@@ -465,7 +504,7 @@ export async function loadPackage(files: Files, selection: PackageSelection):
       const enabled = applyPatterns(paths, filter, root);
       return paths.filter((path) => enabled.has(path));
     };
-    const skipped = Object.keys(ours).map((key) => `tinyassets.${key}`);
+    skipped.push(...Object.keys(ours).map((key) => `tinyassets.${key}`));
     if (budget.truncated) {
       skipped.push(`files past the first ${WALK_MAX}`);
     }
@@ -510,12 +549,20 @@ export function skillsSection(visible: readonly Skill[]): string | undefined {
   return lines.join("\n");
 }
 
-/** The extension that carries `section` (none: no section). */
-export function skillsExtension(section: string | undefined): Extension {
+/**
+ * The extension that carries `section` (none: no section), rendered for a conversation only
+ * when `readable` says its authority may read the owner's files, where the skills are: a
+ * client granted no `read_files` is shown none of the owner's skills.
+ */
+export function skillsExtension(section: string | undefined,
+                                readable: (input: PromptInput, context: Context) =>
+                                  Promise<boolean>): Extension {
   return defineExtension({
     name: SKILLS_EXTENSION,
-    sections: section === undefined ? [] : [{ key: SKILLS_SECTION, tag: false,
-                                               render: () => section }],
+    sections: section === undefined ? [] : [{
+      key: SKILLS_SECTION, tag: false,
+      render: async (input, context) => (await readable(input, context) ? section : undefined),
+    }],
   });
 }
 
@@ -594,6 +641,8 @@ export interface ResourceParts {
   readonly selection: () => readonly PackageSelection[];
   /** Install an extension on the object's registry, replacing one of its name. */
   readonly install: (extension: Extension) => void;
+  /** Whether a request's conversation may read the owner's files: it is shown the skills. */
+  readonly readable: (input: PromptInput, context: Context) => Promise<boolean>;
 }
 
 /**
@@ -796,7 +845,7 @@ export class Resources {
       templates: templates.slice(0, TEMPLATES_KEPT),
       section: skillsSection(kept),
     };
-    this.#parts.install(skillsExtension(index.section));
+    this.#parts.install(skillsExtension(index.section, this.#parts.readable));
     this.#index = index;
     this.#selected = selected;
     this.#builds++;

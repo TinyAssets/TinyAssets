@@ -1216,7 +1216,7 @@ account and no deploy.
   with pi's `substituteArgs`, ported), reading the file as it stands; an unknown name
   stays as typed, and a client's enveloped input is data, never expanded. Packages are
   pi packages in the workspace, selected by owner policy's `packages` list (pi's settings
-  form, at most 32, each a directory under `/workspace`, filters per kind with pi's
+  form, at most 32, each a directory under `/workspace/.agents/packages`, filters per kind with pi's
   grammar, `applyPatterns` and its exact-path forms ported over a glob subset of
   minimatch's `**`, `*`, `?`); there is no `extensions` filter. A package contributes its
   skills and templates only; one that lists `pi.extensions` or holds an `extensions/`
@@ -1243,9 +1243,17 @@ account and no deploy.
   holds at most `THREAD_CONVERSATIONS` (3) working conversations, its root among them,
   kept in the session's `ta.delegations` document and pruned in each creating commit
   (`thread_conversations_full`); compactions are per conversation, so `THREAD_COMPACTIONS`
-  is 3 x 2, traded against `THREAD_INPUTS` (8 to 4) in the owner-bound guard, whose figure
-  is unchanged: 4,897,208,852 bytes, 49.0% (migration 10's trigger reads the constants;
-  nothing is deployed, so no migration). F1 review lows carried: a wake job stepped while
+  is 3 x 2, and a thread's subagents hold at most `THREAD_CHILD_INPUTS` (2) inputs (`c:`
+  owners), apart from its root's eight (`THREAD_INPUTS`, so steering is never starved by
+  subagents). The turn rows are bounded by the threads at work, not every live thread:
+  `WORKING_THREADS` (1,024) threads may hold turn owners at once; the host admits a fresh
+  input to a thread not at work only within `WORKING_THREADS - OPEN_MAX` of them, in a
+  unit, counting the admissions in flight, a client within `client_share` and the clients
+  within what `owner_reserve` leaves (`threads_working`, refused at once, a scheduled
+  delivery held), so a compaction pi starts in an open Session always has a place;
+  migration 10's trigger refuses a thread's first owner past the bound (edited in place:
+  nothing is deployed). The owner-bound guard's turn terms are the working threads times
+  sixteen owners: 4,597,482,932 bytes, 46.0%, about 403 MB under half (F1: 49.0%). F1 review lows carried: a wake job stepped while
   the owner is not admitted holds until the sooner of a day and its live row's wake still
   ahead (on pi's clock), and one whose row says working opens and finishes its work now
   (a cancel's abort handler an eviction cut off). agents 0.31.0 to 0.32.0: Lifecycle's
@@ -1253,8 +1261,10 @@ account and no deploy.
   `loadSkillCatalog`, its tools erroring loudly); its wake and recovery code
   (`_admit`, `_wake`, `_wakeStep`, `_waitWhileActive`, `onJobError`, `_open`) is
   unchanged, so `thread-host.ts` takes nothing; `agents/skills` joins the agents import
-  allow-list; agents now resolves under the owner's workspace (its optional MCP peers
-  are a newer minor than the doors' pin). Tested in workerd: a skill listed and read,
+  allow-list; agents now resolves under the owner's workspace (its required peer
+  `@modelcontextprotocol/client` is pinned exactly at 2.4.0, the doors at 2.3.1, so npm
+  nests it with its own MCP packages, which the owner never imports; it hoists again when
+  the doors move to 2.4.0). Tested in workerd: a skill listed and read,
   one that disables model invocation not listed, one rebuild for an edit and none per
   request, skipped skills noticed, `/skill:` and template expansion, a package filtered
   by policy, a coded package refused with its notice, the selection's validation; a
@@ -1278,7 +1288,45 @@ account and no deploy.
   until they have a consumer (owner policy is the one settings source; `auto`'s ranking
   would take hints); no child configuration but its instructions (pi's example also
   picks a model and drops the subagent tool: the cap bounds nesting instead); templates'
-  descriptions are not read (no command list yet).
+  descriptions are not read (no command list yet). Review round 1 (REQUEST CHANGES), all
+  taken: M1 the agent's abilities are owner-only trees as `/workspace/agents` is
+  (`OWNER_TREES`: `/workspace/agents`, `/workspace/.agents`, `/workspace/skills`,
+  `/workspace/prompts`), at the file doors and in the agent's environment, a client's
+  change refused with the same code and every change the owner's agent makes there noticed
+  (`agent_definition`), and a selected package must live under `/workspace/.agents/packages`
+  (the policy refuses any other), so no client's file is ever beside an owner's skill or in
+  a selected package; M2 the working-threads bound above, in place of the cut to the doors'
+  inputs; L1 the admission unit's re-check of the named agent's scope is gone, being
+  redundant by construction (a grant's scopes move only with its generation, which the
+  unit's re-check of the caller's stamp reads), the scope checked before the child is made;
+  L2 a package refuses on any npm key but its data (an entry point, `bin`, `scripts`), any
+  `pi` key but `skills` and `prompts` (`themes`, `image` and `video` skipped with a
+  notice; an empty `extensions` list declares none), and a `pi.extensions` string, each
+  `package_executable`; L3 the child's admission checks (its subagent inputs, the
+  admission, the turn) run in the commit that would make it, before it is made, so a
+  refused delegation leaves nothing; L4 a rerun's refused effect answers as pi does an
+  unsafe tool's, the `interrupted` code and pi's words; L5 the skills section reaches a
+  conversation only while its authority holds `read_files`; L6 a resent subagent input is
+  tested to skip the checks; the nits: the MCP peer note, `DELEGATE_TASK_MAX` in code
+  points, an expanded owner input past `AGENT_TEXT_MAX` refused loudly, and every tool a
+  package provides passes the early gate again as it executes, so a replay-safe one pi
+  reruns after a restart (its recovery runs no hook) is held to the authority as it stands.
+  Tested: a client's script beside an owner's skill, a skill at a root, a flood, a template,
+  a package's `extensions/` and manifest each refused at the door and from its
+  conversation; the owner's agent's skill noticed; packages outside the owner's tree
+  refused; every code form of a manifest refused; the section hidden from a client without
+  `read_files`; a client past its share of the working threads while the owner works, two
+  admissions at once taking one place once, a settled thread freeing its place, a held
+  delivery; eight door inputs beside two subagents, and while a delegation is admitted; the
+  subagent inputs' bound refused before the child is made; a resent subagent input not
+  checked again; pi's `interrupted` code on a rerun; a nested replay-safe tool's rerun
+  refused by its own gate while the owner is not admitted; the task's and the expanded
+  input's bounds. Mutation on the round's code: 25, 24 killed (six first alive killed by
+  tests added for them), one equivalent (the linked admission's own admission check,
+  which `Authority.require` reads at the call's start and in the unit); A5's own set re-run:
+  44 still apply, 44 killed (the two that survived went with the code they mutated);
+  the reviewer's runner, its patterns moved to the new lines: 24 apply, 24 killed (its M11
+  went with the redundant line).
 - [ ] Persistent helpers (example 23): a background anchor task owning long-lived
   subagents, spawned, messaged, waited on, stopped and listed through one capability, each
   answer posted back by a background reporter task under a request id. Needs: the anchor
@@ -1391,7 +1439,7 @@ account and no deploy.
   with no row is refused `turn_ended`, a reservation's settle only moves a row that is
   there, and the turns' idle pruning is gone. A compaction a run made joins the run's
   turn, one outside any run is its own; an owner that joined a turn keeps it only while it
-  is there. A thread holds at most `THREAD_INPUTS` (4 since A5) open inputs (`thread_inputs_full`),
+  is there. A thread holds at most `THREAD_INPUTS` (8) open root inputs (`thread_inputs_full`),
   pi at most `THREAD_COMPACTIONS` (6 since A5: two for each of three working conversations) live compactions, both refused past by the schema
   (`turn_owners_full`); a turn is at most `TURN_BYTES` (96); a dropped thread's turns go
   in its drop's unit. A thread's kept usage is at most 16 KiB (`USAGE_ROW_MAX`). An owner

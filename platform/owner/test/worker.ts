@@ -59,6 +59,8 @@ export interface Probes {
   holdGate: Promise<void> | null;
   /** How many times `hold` has started on this instance. */
   holds: number;
+  /** How many times `safe_hold`, replay-safe, has started on this instance. */
+  safeHolds: number;
   /** How long `hold` lingers once aborted before it returns, in ms. */
   holdLinger: number;
   /** What `hold` answers, one each call while any is left; then `held`. */
@@ -115,7 +117,8 @@ export interface Wiped {
 
 /** Probes as a fresh instance has them. */
 export function freshProbes(): Probes {
-  return { readGate: null, reads: 0, holdGate: null, holds: 0, holdLinger: 0, holdOutputs: [],
+  return { readGate: null, reads: 0, holdGate: null, holds: 0, safeHolds: 0, holdLinger: 0,
+           holdOutputs: [],
            spawned: null,
            submitted: [],
            background: null, backgroundGate: null, backgroundRuns: 0, toolGate: null, gated: [], nestGate: null,
@@ -385,6 +388,18 @@ function testExtensions(probes: () => Probes): { packages: Extension[];
             await new Promise((resolve) => setTimeout(resolve, probes().holdLinger));
           }
           return { output: [{ type: "text", text: probes().holdOutputs.shift() ?? "held" }] };
+        },
+      }),
+      defineTool({
+        name: "safe_hold",
+        callers: ["tools"],
+        replay: "safe",
+        description: "Hold until the test lets go, run again after a restart.",
+        parameters: Type.Object({}),
+        execute: async (_args, _api, context: Context) => {
+          probes().safeHolds++;
+          await Promise.race([probes().holdGate, abortOf(context)]);
+          return { output: [{ type: "text", text: "safely held" }] };
         },
       }),
       defineTool({

@@ -586,7 +586,7 @@ describe("a package pi refuses to install", () => {
     // the five tools alone.
     expect(rows.tools).toEqual(["background", "bash", "benign", "early", "edit", "files:usage",
                                "fork",
-                               "hold", "nest", "pass", "read", "sixth", "spawn",
+                               "hold", "nest", "pass", "read", "safe_hold", "sixth", "spawn",
                                "weather_lookup", "widen", "write"]);
     expect(rows.offered).toEqual(["read", "write", "edit", "bash", "ta"]);
     // A package named as the object's gate is refused, and the gate stays the object's.

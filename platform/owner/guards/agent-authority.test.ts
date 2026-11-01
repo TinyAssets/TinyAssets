@@ -25,9 +25,7 @@
  *   `OwnerAgent.modelAuthority` (the backstop, `TOOL_SURFACE`) otherwise reads; and no
  *   source names `addTools`, or builds a `control` key, the result field whose `addTools`
  *   appends to it.
- * A guarded name spelled as a literal key (`x["configure"]`) is refused anywhere but one
- * read: a package manifest's `pi["extensions"]`, which `resources.ts` reads only to refuse
- * the package's code (`entriesOf(pi["extensions"], ...)`), selecting nothing. The
+ * A guarded name spelled as a literal key (`x["configure"]`) is refused anywhere. The
  * guard is a tripwire for our own code's mistakes, as the alarm guard is; the backstop
  * and the environment are the enforcement.
  */
@@ -206,18 +204,6 @@ function childInstructions(node: ts.Identifier, path: string, file: ts.SourceFil
   return only;
 }
 
-/** The resources' one read of a manifest's code list, to refuse it. */
-const RESOURCES = "owner/src/resources.ts";
-
-/** Whether `node` is `entriesOf(pi["extensions"], ...)` in `resources.ts`: a read, never a write. */
-function readsManifestCode(node: ts.ElementAccessExpression, path: string): boolean {
-  const call = node.parent;
-  return path === RESOURCES && ts.isIdentifier(node.expression) && node.expression.text === "pi"
-    && keyOf(node.argumentExpression) === SELECTS && ts.isCallExpression(call)
-    && call.arguments[0] === node && ts.isIdentifier(call.expression)
-    && call.expression.text === "entriesOf";
-}
-
 /** Whether `node` is an argument of a `.snapshot(...)` call: a read of the document. */
 function snapshotted(node: ts.Node): boolean {
   const call = node.parent;
@@ -250,7 +236,7 @@ export function selections(path: string, source: string): string[] {
     }
     if (ts.isElementAccessExpression(node)) {
       const key = keyOf(node.argumentExpression);
-      if (key !== undefined && GUARDED.has(key) && !readsManifestCode(node, path)) {
+      if (key !== undefined && GUARDED.has(key)) {
         report(node, `names ${key} by a literal key`);
       }
     }
@@ -340,11 +326,8 @@ describe("agent-authority guard", () => {
     ["a selection written to pi's AgentDoc", "owner/src/x.ts",
      "(await tx.doc(AgentDoc, id)).extensions = [];"],
     ["a selection written by a literal key", "owner/src/x.ts", "agent[\"extensions\"] = [];"],
-    ["a manifest's code list read anywhere else", "owner/src/x.ts",
+    ["a manifest's code list read", "owner/src/resources.ts",
      "entriesOf(pi[\"extensions\"], \"pi.extensions\");"],
-    ["a manifest's code list read past refusing it", RESOURCES,
-     "const e = pi[\"extensions\"];"],
-    ["a manifest's code list written", RESOURCES, "pi[\"extensions\"] = [];"],
     ["a selection written to a draft", "owner/src/x.ts", "draft.extensions = { remove: [g] };"],
     ["AgentDoc written in the backstop's file", THREAD,
      "import { AgentDoc } from \"p\"; await tx.doc(AgentDoc, id);"],
@@ -411,7 +394,6 @@ describe("agent-authority guard", () => {
       "(await tx.doc(AgentDoc, record.id)).modelTools = [...MODEL_TOOLS]; } }"],
     [THREAD, "class OwnerAgent { async modelAuthority() { " +
       "if (!keepsFive(agent?.modelTools)) { return () => TOOL_SURFACE; } } }"],
-    [RESOURCES, "const e = entriesOf(pi[\"extensions\"], \"pi.extensions\");"],
     [CHILD.file, "import { AgentDoc } from \"p\";\nexport async function createChild(tx, " +
       `taskId) { const made = await ${CHILD.call}; const agent = await tx.doc(AgentDoc, ` +
       "made.id); delete agent.instructions; agent.instructions = i; }"],

@@ -469,14 +469,14 @@ An upload SHALL be told a chunk need not be sent only when the chunk is stored a
 - **THEN** each commit is refused, and once the client sends the bytes it commits
 
 ### Requirement: The owner's database is bounded under half its limit
-Every owner table SHALL be bounded by a count or bytes the code enforces, with no exception, and a guard SHALL compute the worst case from those bounds and the schema, at the policy's high bounds, each row laid out as SQLite lays it at a thinned page's worst fill (`WORST_FILL`), and hold it under half the platform's 10 GB. The schema SHALL refuse a turn owner past `THREAD_INPUTS` open inputs or `THREAD_COMPACTIONS` live compactions a thread, the latter `CONVERSATION_COMPACTIONS` for each of the thread's `THREAD_CONVERSATIONS` working conversations; a new bound SHALL be traded from an existing one in the same change.
+Every owner table SHALL be bounded by a count or bytes the code enforces, with no exception, and a guard SHALL compute the worst case from those bounds and the schema, at the policy's high bounds, each row laid out as SQLite lays it at a thinned page's worst fill (`WORST_FILL`), and hold it under half the platform's 10 GB. The schema SHALL refuse a turn owner past `THREAD_INPUTS` open root inputs, `THREAD_CHILD_INPUTS` subagent inputs or `THREAD_COMPACTIONS` live compactions a thread (`CONVERSATION_COMPACTIONS` for each of its `THREAD_CONVERSATIONS` working conversations), and a thread's first owner past `WORKING_THREADS` threads holding any.
 
 #### Scenario: A table no bound covers
 - **WHEN** a migration makes a table the guard has no term for, or a manifest table's charging trigger is missing
 - **THEN** the owner-bound guard fails
 
 ### Requirement: A turn's counters live as long as its work
-The thread host SHALL keep each pi record that owns a turn (an open input, a live compaction), keyed by its thread, as the Session commits it, in a unit at once, closing the Session when one cannot be kept, and all again as it opens, before it resumes. A turn's row SHALL come with its first owner and go with its last or its thread; a call of a turn with no row SHALL be refused `turn_ended`. A thread SHALL hold at most `THREAD_INPUTS` open inputs (`thread_inputs_full`).
+The thread host SHALL keep each pi record that owns a turn (an open input, a live compaction), keyed by its thread, as the Session commits it, in a unit at once, closing the Session when one cannot be kept, and all again as it opens, before it resumes. A turn's row SHALL come with its first owner and go with its last or its thread; a call of a turn with no row SHALL be refused `turn_ended`. A thread SHALL hold at most `THREAD_INPUTS` open root inputs (`thread_inputs_full`), a subagent's never among them.
 
 #### Scenario: An input answered
 - **WHEN** an input's run answers, and a call later names the input's turn
@@ -922,11 +922,15 @@ Every door that makes or uses a thread SHALL move its activity on and re-derive 
 - **THEN** the drop re-checks its activity and keeps it
 
 ### Requirement: The owner's agent definitions are the owner's alone
-Only the owner's own authority, the owner at the file doors or its agent under the owner's authority, SHALL create, change, move into or out of, or remove anything under `/workspace/agents`; an outside client SHALL be refused at every file door and every change of the agent's environment, its thread's tools included. A thread SHALL be configured only from an `AGENTS.md` whose recorded writer is the owner or its agent, any other refused loudly.
+Only the owner's own authority, the owner at the file doors or its agent under the owner's authority, SHALL create, change, move into or out of, or remove anything under `/workspace/agents`, `/workspace/.agents`, `/workspace/skills` or `/workspace/prompts` (its agents, skills, templates and packages); an outside client SHALL be refused at every file door and every change of the agent's environment, its thread's tools included, and every change the owner's agent makes there SHALL raise an owner notice. A thread SHALL be configured only from an `AGENTS.md` whose recorded writer is the owner or its agent, any other refused loudly.
 
 #### Scenario: A client plants an agent's instructions
 - **WHEN** a client writes, renames or uploads into `/workspace/agents/main/AGENTS.md` by a door, or its conversation's model calls `write` there
-- **THEN** each is refused "only the owner changes its agents' files under /workspace/agents", and no thread of the owner's or another client's is configured from it
+- **THEN** each is refused "only the owner changes its agents' files under /workspace/agents, /workspace/.agents, /workspace/skills and /workspace/prompts", and no thread of the owner's or another client's is configured from it
+
+#### Scenario: A client plants a script beside an owner's skill
+- **WHEN** a client writes `scripts/run.sh` into an owner's skill directory, a `SKILL.md` at a skills root, or `extensions/` into a selected package
+- **THEN** each is refused with the same code, and the owner's skill and package stand as the owner left them
 
 #### Scenario: A file another wrote is already there
 - **WHEN** an agent's `AGENTS.md` carries a writer other than the owner's
@@ -1181,14 +1185,14 @@ The platform capabilities SHALL be `policy:show` (a read, the owner's alone), `p
 - **THEN** the run's three gateway requests are reserved and settled on one turn, counted against that turn's caps, and a later input's request is another turn
 
 ### Requirement: ta reruns only what may run twice
-`ta` SHALL be registered replay-safe, and on a rerun after a restart SHALL run again only a read, a delegation (which finds its child and its child's input again) and a tool reached through `executeTool` (reached again by the same key, so the nested call answers under its own replay policy); every other effect SHALL commit a memo before it acts and be refused on a rerun that finds it (`interrupted`), never acting twice.
+`ta` SHALL be registered replay-safe, and on a rerun after a restart SHALL run again only a read, a delegation (which finds its child and its child's input again) and a tool reached through `executeTool` (reached again by the same key, so the nested call answers under its own replay policy); every other effect SHALL commit a memo before it acts and answer a rerun that finds it as pi answers an unsafe tool's, with the `interrupted` code, never acting twice.
 
 #### Scenario: An eviction while a nested model call is in flight
 - **WHEN** the object dies while `ta`'s `model` call runs, and its alarm starts it again
 - **THEN** the call is refused `interrupted` and no second model call is made
 
 ### Requirement: Skills are a prompt section the model reads with read
-A trusted `ta.skills` extension SHALL list, in its `skills` section and in pi-coding-agent's words, each model-invocable skill's name, description and `SKILL.md` path, found under `/workspace/.agents/skills` and `/workspace/skills` at any depth (a directory holding `SKILL.md` not looked into further) and in each selected package, parsed with agents' `parseSkill`; a skill with `disable-model-invocation` SHALL NOT be listed, a name taken twice SHALL keep the first, and a skill the owner's own authority did not write, or that cannot be parsed, SHALL be skipped with a notice. No skill tool SHALL be added.
+A trusted `ta.skills` extension SHALL list, in its `skills` section and in pi-coding-agent's words, each model-invocable skill's name, description and `SKILL.md` path, found under `/workspace/.agents/skills` and `/workspace/skills` at any depth (a directory holding `SKILL.md` not looked into further) and in each selected package, parsed with agents' `parseSkill`; a skill with `disable-model-invocation` SHALL NOT be listed, a name taken twice SHALL keep the first, and a skill the owner's own authority did not write, or that cannot be parsed, SHALL be skipped with a notice. No skill tool SHALL be added, and the section SHALL reach a conversation only while its authority holds `read_files`.
 
 #### Scenario: A skill listed and read
 - **WHEN** the owner writes a skill and another that disables model invocation, and asks its agent a task the first matches
@@ -1209,14 +1213,14 @@ The owner's own input to `agentSubmit`, `agentRun` and `ta`'s `agent:run` SHALL 
 - **THEN** pi is handed the skill's block followed by `extract a.pdf`, then the template's body with `$1` as `API shape` and `$@` as both
 
 ### Requirement: Packages are selected by owner policy and contribute data only
-Owner policy's `packages` list SHALL select packages, each a directory under `/workspace`, as a path or `{source, skills?, prompts?}` with pi's filter grammar (plain globs include, `!` excludes, `+` forces an exact path in, `-` out; omitted all, `[]` none), at most 32, each once, with no `extensions` filter. A selected package SHALL contribute only its skills and prompt templates, from its `package.json`'s `pi` key or its conventional directories; its `tinyassets` key's fields SHALL be skipped with a notice until they have a consumer.
+Owner policy's `packages` list SHALL select packages, each a directory under `/workspace/.agents/packages`, as a path or `{source, skills?, prompts?}` with pi's filter grammar (plain globs include, `!` excludes, `+` forces an exact path in, `-` out; omitted all, `[]` none), at most 32, each once, with no `extensions` filter. A selected package SHALL contribute only its skills and prompt templates, from its `package.json`'s `pi` key or its conventional directories; its `tinyassets` key's fields SHALL be skipped with a notice until they have a consumer.
 
 #### Scenario: A package filtered
 - **WHEN** the owner selects a package with `skills: ["!beta", "-skills/gamma"]` beside a package it does not select
 - **THEN** the section lists the selected package's other skills and its templates expand, and nothing of `beta`, `gamma` or the unselected package loads
 
 ### Requirement: A package that declares code is refused loudly
-A selected package whose manifest lists `pi.extensions`, or that holds a conventional `extensions/` directory, SHALL be refused whole with the fixed code `package_executable` and an owner notice; no package code SHALL run in the owner's object.
+A selected package whose manifest holds any npm key but its data (an entry point, `bin`, `scripts`), any `pi` key but its skills and prompts (pi's UI data skipped with a notice), a `pi.extensions` that is not an empty list, or a conventional `extensions/` directory SHALL be refused whole with the fixed code `package_executable` and an owner notice; no package code SHALL run in the owner's object, and every tool the object installs from a package SHALL pass the early gate again as it executes, a rerun after a restart included.
 
 #### Scenario: A package with an extension
 - **WHEN** the owner selects a package listing `pi.extensions` and skills
@@ -1241,7 +1245,7 @@ A delegation SHALL be refused, with the fixed code `thread_conversations_full`, 
 - **THEN** two run beside the root and the third is refused `thread_conversations_full`, and a delegation after both answered is taken
 
 ### Requirement: A linked admission joins only a turn that has its row
-A linked input this object makes (a subagent's) SHALL be admitted as a door's input, counted against the thread's open inputs and refused while the owner is not admitted, and SHALL be refused `turn_ended` before pi admits it when the turn it joins has no row.
+A linked input this object makes (a subagent's) SHALL be admitted as a door's input, counted against the thread's `THREAD_CHILD_INPUTS` and refused while the owner is not admitted, and SHALL be refused `turn_ended` before pi admits it when the turn it joins has no row; a delegation SHALL ask these before it makes its child, so a refused one leaves nothing. A resent input SHALL be pi's duplicate and not checked again.
 
 #### Scenario: The turn ended before the admission
 - **WHEN** a delegation's turn loses its last owner before its child's input is admitted
@@ -1257,3 +1261,10 @@ While the owner is not admitted, a thread's wake job SHALL open nothing for a th
 #### Scenario: An ending an eviction cut off
 - **WHEN** a suspended owner's thread's live row says working after an eviction
 - **THEN** its Session opens at once, its work ends, and its row is the Session's again
+
+### Requirement: The turn rows are bounded by the threads at work
+At most `WORKING_THREADS` of an owner's threads SHALL hold turn owners at once. A fresh door or delivery input to a thread not at work SHALL be refused at the host's admission, in a unit, at once and with the fixed code `threads_working`, when `WORKING_THREADS - OPEN_MAX` threads are at work or being admitted, a client past its `client_share` of them, or the clients past what `owner_reserve` leaves; a scheduled delivery SHALL be held, and a thread whose work settled SHALL free its place.
+
+#### Scenario: A client past its share
+- **WHEN** a client's threads hold its share of the working threads and it sends to another
+- **THEN** that input is refused `threads_working`, while its working thread and the owner's threads still take inputs
