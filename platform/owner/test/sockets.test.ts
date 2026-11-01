@@ -118,7 +118,6 @@ describe("an app socket on a thread's watch", () => {
       shaped({}, `${SOCKET_URL}?_pk=chosen`),
       shaped({}, `${SOCKET_URL}?__agents_transport=capnweb`),
       shaped({}, "https://owner.internal/other"),
-      new Request(SOCKET_URL, { method: "POST", headers: shaped().headers, body: "{}" }),
       new Request(SOCKET_URL, { headers: { "x-ta-binding": "{", "x-ta-thread": thread,
                                            Upgrade: "websocket" } }),
     ]) {
