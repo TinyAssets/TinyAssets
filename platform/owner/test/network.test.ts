@@ -11,7 +11,8 @@ import {
   GENERATION_HEADER, networkDocument, SANDBOX_HEADER, sandboxEnv,
 } from "../src/network";
 
-const TOKEN = `${btoa("owner-1").replace(/=+$/, "")}.${"T".repeat(43)}.${"M".repeat(43)}`;
+const TOKEN = `${btoa("owner-1").replace(/=+$/, "")}.2000000000.${"T".repeat(43)}.${
+  "M".repeat(43)}`;
 /** A routing key, as a deploy generates one: 32 bytes, base64url. */
 const KEY = Buffer.alloc(32, 7).toString("base64url");
 const transform = (generation: number) => ({ [EGRESS_HOST]: [{ transform: { headers: {
@@ -132,43 +133,59 @@ const GOOGLE = { base_url: "https://generativelanguage.googleapis.com/v1beta",
                                paths: ["/v1beta/models/*"], methods: ["POST"] }], meter: null };
 
 describe("a sandbox token", () => {
-  it("names its owner, carries the routing key's MAC, and keeps only its secret's hash", () => {
+  const EXPIRES = 2_000_000_000;
+
+  it("names its owner and expiry, carries the routing key's MAC, and keeps only its " +
+     "secret's hash", () => {
     const owner = "user_01HZ";
-    const minted = mintToken(KEY, "egress", owner);
-    const [routing, secret, mac] = minted.token.split(".");
+    const minted = mintToken(KEY, "egress", owner, EXPIRES);
+    const [routing, expires, secret, mac] = minted.token.split(".");
+    expect(expires).toBe(String(EXPIRES));
     expect(secret).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(mac).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(routing).toBe(Buffer.from(owner).toString("base64url"));
-    expect(verifyToken(KEY, "egress", minted.token)).toEqual({ owner, hash: minted.hash });
+    expect(verifyToken(KEY, "egress", minted.token))
+      .toEqual({ owner, expires: EXPIRES, hash: minted.hash });
     expect(minted.hash).toBe(tokenHash(secret!));
-    expect(mintToken(KEY, "egress", owner).hash).not.toBe(minted.hash);
+    expect(mintToken(KEY, "egress", owner, EXPIRES).hash).not.toBe(minted.hash);
+    for (const bad of [0, 1.5, -1, 99_999_999_999_999]) {
+      expect(() => mintToken(KEY, "egress", owner, bad)).toThrow(/expiry/);
+    }
   });
 
-  it("is refused forged, altered, of the other kind or under another key", () => {
-    const minted = mintToken(KEY, "egress", "user_01HZ");
-    const [routing, secret, mac] = minted.token.split(".") as [string, string, string];
+  it("is refused forged, altered (its expiry too), of the other kind or under another key",
+     () => {
+    const minted = mintToken(KEY, "egress", "user_01HZ", EXPIRES);
+    const [routing, expires, secret, mac] = minted.token.split(".") as
+      [string, string, string, string];
     const flip = (part: string) => `${part.slice(0, -2)}${part.at(-2) === "A" ? "B" : "A"}${
       part.at(-1)}`;
     const other = Buffer.from("user_02XY").toString("base64url");
     const otherKey = Buffer.alloc(32, 9).toString("base64url");
-    for (const bad of ["", secret, `${routing}.${secret}`, `${routing}.${secret}.${mac}x`,
-                       `.${secret}.${mac}`, `${routing}..${mac}`, `${routing}=.${secret}.${mac}`,
-                       `${other}.${secret}.${mac}`, `${flip(routing)}.${secret}.${mac}`,
-                       `${routing}.${flip(secret)}.${mac}`, `${routing}.${secret}.${flip(mac)}`,
-                       `${routing}.${secret}.${"A".repeat(43)}`]) {
+    const later = String(EXPIRES + 86_400);
+    for (const bad of ["", secret, `${routing}.${secret}.${mac}`,
+                       `${routing}.${expires}.${secret}.${mac}x`, `.${expires}.${secret}.${mac}`,
+                       `${routing}.${expires}..${mac}`, `${routing}=.${expires}.${secret}.${mac}`,
+                       `${other}.${expires}.${secret}.${mac}`,
+                       `${flip(routing)}.${expires}.${secret}.${mac}`,
+                       `${routing}.${later}.${secret}.${mac}`,
+                       `${routing}.0${expires}.${secret}.${mac}`,
+                       `${routing}.${expires}.${flip(secret)}.${mac}`,
+                       `${routing}.${expires}.${secret}.${flip(mac)}`,
+                       `${routing}.${expires}.${secret}.${"A".repeat(43)}`]) {
       expect(verifyToken(KEY, "egress", bad)).toBeNull();
     }
     expect(verifyToken(KEY, "sync", minted.token)).toBeNull();
     expect(verifyToken(otherKey, "egress", minted.token)).toBeNull();
-    // A forger who picks a routing part and a secret still needs the key's MAC.
-    const forged = mintToken(otherKey, "egress", "user_02XY").token;
+    // A forger who picks a routing part, an expiry and a secret still needs the key's MAC.
+    const forged = mintToken(otherKey, "egress", "user_02XY", EXPIRES).token;
     expect(verifyToken(KEY, "egress", forged)).toBeNull();
   });
 
   it("fails loudly on a Worker without a usable routing key", () => {
     for (const key of [undefined, "", "short", Buffer.alloc(31).toString("base64url"),
                        `${KEY}=`]) {
-      expect(() => mintToken(key, "egress", "user_01HZ")).toThrow(/ROUTING_MAC_KEY/);
+      expect(() => mintToken(key, "egress", "user_01HZ", EXPIRES)).toThrow(/ROUTING_MAC_KEY/);
       expect(() => verifyToken(key, "egress", TOKEN)).toThrow(/ROUTING_MAC_KEY/);
     }
   });

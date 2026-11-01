@@ -20,6 +20,10 @@ const STATUS = Object.freeze({
   credential_refused: 403,
   endpoint_refused: 403,
   unmetered: 403,
+  // A sandbox call the reservation cannot bound (G4): several choices, or a server-side
+  // tool the provider bills beyond tokens.
+  egress_multiple_choices: 400,
+  egress_unmetered_tool: 403,
   unknown_model: 404,
   unsupported_source: 422,
   reservation_too_small: 422,

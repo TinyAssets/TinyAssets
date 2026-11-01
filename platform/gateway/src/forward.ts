@@ -26,6 +26,7 @@ import type { ModelRecord } from "./model-record";
 import { type Code, codeOf, Failure, failureResponse, upstreamCode } from "./failure";
 import { nativeFetch } from "./egress";
 import { boundedText } from "./messages";
+import { apiRules, manyChoices, paidTool } from "./api-rules";
 import { clamped, learnMeter, meteredModel, meteredRecord, meteredUsage } from "./meter";
 import { type Binding, type KeyringEnv, open, type Opened, type Resealed } from "./keyring";
 
@@ -279,11 +280,21 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
       return refused("unknown_model", resealed);
     }
     const meter = await learnMeter(catalog, credential.upstream, bearer(credential), model);
-    if (meter === null || meteredModel(meter, request.method, target.pathname, parsed) !== id) {
+    const rules = apiRules(credential.upstream.api);
+    if (meter === null || rules === null
+        || meteredModel(meter, request.method, target.pathname, parsed) !== id) {
       return refused("unmetered", resealed);
     }
+    // What the reservation cannot bound: several choices, or a server-side tool the
+    // provider bills beyond the tokens pi-ai prices.
+    if (manyChoices(rules, parsed)) {
+      return refused("egress_multiple_choices", resealed);
+    }
+    if (paidTool(rules, parsed)) {
+      return refused("egress_unmetered_tool", resealed);
+    }
     body = JSON.stringify(clamped(meter, parsed as Record<string, unknown>,
-                                  metering.max_output_tokens));
+                                  metering.max_output_tokens, credential.upstream.api));
   }
   const headers = new Headers();
   for (const [name, value] of request.headers) {

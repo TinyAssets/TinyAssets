@@ -421,6 +421,15 @@ export class Usage {
     this.#sql.exec("DELETE FROM model_reservations WHERE seq <= " +
                      "(SELECT MAX(seq) FROM model_reservations) - ? " +
                      "AND state NOT IN ('reserved', 'dispatched')", this.#limits.receiptsKept);
+    this.spendPruned(now);
+  }
+
+  /**
+   * The spend counters past their window (`daysKept` days, `monthsKept` months), as each
+   * reserve prunes them: the loop's here, a sandbox call's at its open (`egress.ts`), so an
+   * owner who uses only the sandbox never fills them. None in a window is touched.
+   */
+  spendPruned(now: number): void {
     const day = periods(now - this.#limits.daysKept * 86_400).day;
     const month = new Date(now * 1000);
     month.setUTCDate(1);

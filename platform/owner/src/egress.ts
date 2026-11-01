@@ -23,9 +23,10 @@
  * - at most `open` at once and `perMinute` opened a minute (`egress_rate`);
  * - and a model call's charge (`#reserve`), by the loop's rules but on counters of its
  *   own, none of them pi's: its sandbox run's requests, tokens and cost (the run is the
- *   lease and its epoch; the model policy's per-turn limits are its caps), the owner's and
- *   the source's day and month (shared with the loop's calls), and `ask_above` for the one
- *   call (`egress_spend_refused`, the binding cap its `rule`).
+ *   lease and its epoch, and 8b opens a lease per engine run; the model policy's per-turn
+ *   limits are its caps), and the owner's and the source's day and month (shared with the
+ *   loop's calls) (`egress_spend_refused`, the binding cap its `rule`). Its input is held
+ *   at the largest context window, so the charge bounds the call's cost.
  *   Then one open row, the blob at its version, the output cap the charge leaves (the
  *   gateway clamps the request's own to it) and the stream's end signal. A refusal is kept
  *   as a receipt row, at most `refusalsPerMinute` a minute, so refused calls can neither
@@ -179,10 +180,10 @@ export interface EgressReceipt {
 }
 
 /**
- * The owner's caps a sandbox model call is held to, in µ$ for money, as its policy leaves
- * them at the open's unit: its run's requests, tokens and cost; the owner's and the
- * call's source's day and month; and the spend table's `ask_above`, a ceiling on the one
- * call (a sandbox call has no one to ask mid-request, so past it is refused).
+ * The owner's model policy caps a sandbox model call is held to, in µ$ for money, as the
+ * policy leaves them at the open's unit: its run's requests, tokens and cost (the `models`
+ * table's per-turn limits), and the owner's and the call's source's day and month. No
+ * more and no less: the spend table is the agent's purchases', not model calls'.
  */
 export interface EgressCaps {
   readonly run_requests: number;
@@ -192,12 +193,12 @@ export interface EgressCaps {
   readonly monthly_cost: number | null;
   readonly source_daily_cost: number | null;
   readonly source_monthly_cost: number | null;
-  readonly ask_above: number | null;
 }
 
-/** A connection's model as a sandbox call is priced by it: opaque here but for its cap. */
+/** A connection's model as a sandbox call is priced by it: opaque here but for its bounds. */
 export interface EgressModel {
   readonly maxTokens: number;
+  readonly contextWindow: number;
 }
 
 /** What `open` reads beside its own rows, each at the open's unit. */
@@ -220,9 +221,12 @@ export interface EgressDeps {
   readonly spent: (period: string, source: string | null) => number;
   /**
    * The most µ$ a call of `input` and `output` tokens on any of `models` can cost (the
-   * catalog's rates, by pi-ai's `calculateCost`): non-decreasing in the output.
+   * catalog's rates, by pi-ai's `calculateCost`, each model's tokens at most its own
+   * context window and output cap): non-decreasing in the output.
    */
   readonly price: (models: readonly EgressModel[], input: number, output: number) => number;
+  /** In the open's unit: the spend counters past their window pruned, as the loop's reserve. */
+  readonly pruned: (now: number) => void;
 }
 
 /** The fewest output tokens a sandbox model call is worth reserving, as a loop call's. */
@@ -407,8 +411,8 @@ export class Egress {
     this.#runsPruned(lease);
     let charge: Charged | null = null;
     if (!free) {
-      const reserved = this.#reserve(lease, connection.source, connection.models,
-                                     request.bytes_hint!, now);
+      this.#deps.pruned(now);
+      const reserved = this.#reserve(lease, connection.source, connection.models, now);
       if (!reserved.ok) {
         return refuse("egress_spend_refused", reserved.rule);
       }
@@ -430,14 +434,18 @@ export class Egress {
   /**
    * The call's charge, against every cap, in the open's unit, so concurrent calls reserve
    * one after another and never pass a cap between them: its run's requests, tokens and
-   * cost (`egress_runs`), the owner's and the source's day and month (the spend counters
-   * the loop's calls hold too, read through `spent`), and `ask_above` for the one call. Its input is bounded by
-   * the body's length (a token is at least a byte), its output by the dearest model's cap
-   * and what the caps leave (the gateway clamps the call's own cap to it), so what it holds
-   * bounds what it can cost. Refused, with the cap that binds, below `MIN_OUTPUT`.
+   * cost (`egress_runs`), and the owner's and the source's day and month (the spend
+   * counters the loop's calls hold too, read through `spent`). Its input is held at the
+   * largest context window of the connection's models (a body's bytes do not bound its
+   * tokens: a file or a cached context it names can be far larger), its output at the
+   * largest output cap and what the caps leave (the gateway clamps every cap alias the
+   * call names to it, and refuses several choices), so what it holds bounds what it can
+   * cost; the settle gives the difference back. Refused, with the cap that binds, below
+   * `MIN_OUTPUT`.
    */
-  #reserve(lease: SandboxLease, source: string, models: readonly EgressModel[], input: number,
-           now: number): ({ ok: true } & Charged) | { ok: false; rule: string } {
+  #reserve(lease: SandboxLease, source: string, models: readonly EgressModel[], now: number):
+      ({ ok: true } & Charged) | { ok: false; rule: string } {
+    const input = Math.max(...models.map((model) => model.contextWindow));
     const caps = this.#deps.caps(source);
     const run = this.#sql.exec<{ requests: number; tokens: number; cost: number }>(
       "SELECT requests, tokens, cost FROM egress_runs WHERE lease_id = ? AND epoch = ?",
@@ -457,9 +465,6 @@ export class Egress {
       if (cap !== null) {
         rooms.push([rule, cap - this.#deps.spent(period, by)]);
       }
-    }
-    if (caps.ask_above !== null) {
-      rooms.push(["ask_above", caps.ask_above]);
     }
     const [costRule, costRoom] = rooms.reduce((a, b) => (b[1] < a[1] ? b : a));
     const most = Math.max(...models.map((model) => model.maxTokens));

@@ -165,7 +165,7 @@ import {
   type SandboxBinding, sandboxBinding, settleRequest,
 } from "./egress";
 import {
-  type EgressPolicy, networkDocument, type NetworkPlan, sandboxEnv,
+  type EgressPolicy, networkDocument, RUN_DEADLINE_S, type NetworkPlan, sandboxEnv,
 } from "./network";
 import { runWakes, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "./wakes";
 
@@ -994,8 +994,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         }
       },
       connection: (connection) => this.#connections.egressOf(connection),
-      // A sandbox run's caps are the model policy's per-turn limits, held per run; the
-      // owner's and the source's ceilings and `ask_above` are the policy's own.
+      // A sandbox run's caps are the model policy's per-turn limits, held per run, and its
+      // daily, monthly and per-source ceilings: the model policy's caps, no more, no less.
       caps: (source) => {
         const { document } = this.#policy.read();
         const settings = modelSettings(document);
@@ -1004,15 +1004,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                  run_cost: settings.turn_cost, daily_cost: settings.daily_cost,
                  monthly_cost: settings.monthly_cost,
                  source_daily_cost: own?.daily_cost ?? null,
-                 source_monthly_cost: own?.monthly_cost ?? null,
-                 ask_above: document.spend.ask_above };
+                 source_monthly_cost: own?.monthly_cost ?? null };
       },
       spent: (period, source) => this.#usage.spent(period, source),
       // The call's model is unknown until the gateway reads the body: priced at the most
       // any of the connection's models charges, input at its dearest of uncached,
       // cache-read and cache-write rates, by pi-ai's `calculateCost` (`priced`).
       price: (models, input, output) => Math.max(...(models as readonly ModelInfo[])
-        .map((model) => priced(dearest(model), input, output))),
+        .map((model) => priced(dearest(model), Math.min(input, model.contextWindow),
+                               Math.min(output, model.maxTokens)))),
+      pruned: (now) => this.#usage.spendPruned(now),
     });
     this.#usage = new ModelUsage(storage, () => {
       const { generation, document } = this.#policy.read();
@@ -2563,8 +2564,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const leases: SandboxLeases = {
       open: (request) => this.#door(() => {
         this.#admitted("work");
-        const egress = mintToken(this.env.ROUTING_MAC_KEY, "egress", owner());
-        const sync = mintToken(this.env.ROUTING_MAC_KEY, "sync", owner());
+        // Both tokens die with the run's deadline, at the door, whatever the lease does.
+        const deadline = Math.floor(clock()) + RUN_DEADLINE_S;
+        const egress = mintToken(this.env.ROUTING_MAC_KEY, "egress", owner(), deadline);
+        const sync = mintToken(this.env.ROUTING_MAC_KEY, "sync", owner(), deadline);
         const lease = this.#files.leaseAcquire(request.holder, egress.hash, sync.hash);
         // A lease that lapsed is replaced: its streams end with it.
         this.#egress.end("lease", (live) => live.lease !== lease.lease_id);

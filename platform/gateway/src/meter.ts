@@ -15,14 +15,24 @@
  *   a model call this module can meter (`unmetered`).
  * - **Reading the answer** (`meteredUsage`): the provider's answer, teed as it streams to
  *   the sandbox, is handed to the same adapter through its fetch, so pi-ai parses the
- *   stream exactly as it parses the loop's, and prices it with the catalog's own record of
- *   the model the request named (`calculateCost`, tiers and fallbacks included). Its final
- *   message's usage is the call's real cost. A stream pi-ai cannot read to a `done` (an
- *   answer that is not its stream format, a cut, an abort) has no usage: `null`, which the
- *   owner's object settles `unknown`, keeping the whole reservation.
+ *   stream exactly as it parses the loop's. Its final message's usage, priced by the
+ *   catalog's records (`calculateCost`, tiers included) of both the model the request named
+ *   and the model the answer says served it, the dearer, is the call's real cost. Anything
+ *   short of that is `null`, which the owner's object settles `unknown`, keeping the whole
+ *   reservation: a stream pi-ai cannot read to a `done` (not its stream format, a cut, an
+ *   abort, a non-streaming JSON answer, which pi-ai's adapters do not parse); a `done` with
+ *   no usage (zero tokens: a stream sent without its usage report); a served model the
+ *   catalog does not price; and a router the catalog prices at nothing (`openrouter/auto`),
+ *   unless the answer names the dearer model it served.
+ *
+ * Each API's rules (`api-rules.ts`) are held against pi-ai's learned call: the output cap
+ * pi-ai sets must be one the rules list, and the usage-report fields the rules set must be
+ * in pi-ai's own streaming call, at the same value; otherwise the API is not metered.
  */
 import type { Api, AssistantMessageEvent, Context, FetchFunction, Model } from "@earendil-works/pi-ai";
-import { createModels } from "@earendil-works/pi-ai/models";
+import { calculateCost, createModels } from "@earendil-works/pi-ai/models";
+
+import { apiRules, valueAt } from "./api-rules";
 
 import { type Catalog, NO_AMBIENT, providerFor } from "./catalog";
 import type { Meter, Upstream } from "./credential";
@@ -134,6 +144,14 @@ async function learned(catalog: Catalog, upstream: Upstream, apiKey: string,
   if (output.length !== 1 || segments.length > 2 || (segments.length === 1 && named.length !== 1)) {
     return null;
   }
+  // The API's rules must describe pi-ai's own call: its output cap among the aliases, and
+  // every usage-report field the gateway sets present in it, at the same value.
+  const rules = apiRules(upstream.api);
+  if (rules === null
+      || !rules.outputs.some((path) => path.join("\0") === output[0]!.join("\0"))
+      || rules.usage.some(([path, value]) => valueAt(body, path) !== value)) {
+    return null;
+  }
   return Object.freeze({
     method: sent.method,
     path: segments.join("{model}"),
@@ -165,22 +183,50 @@ export function meteredModel(meter: Meter, method: string, path: string,
   return /^[^/:?#]+$/.test(named) ? named : null;
 }
 
-/** `body` with its output cap at most `cap` (set to `cap` when it names none). */
-export function clamped(meter: Meter, body: Record<string, unknown>, cap: number):
-    Record<string, unknown> {
-  const copy = structuredClone(body);
-  let at: Record<string, unknown> = copy;
-  for (const key of meter.output_field.slice(0, -1)) {
+/** The object at `path` in `body`, made where it is missing or not an object. */
+function objectAt(body: Record<string, unknown>, path: readonly string[]): Record<string, unknown> {
+  let at = body;
+  for (const key of path) {
     const inner = at[key];
     if (typeof inner !== "object" || inner === null || Array.isArray(inner)) {
       at[key] = {};
     }
     at = at[key] as Record<string, unknown>;
   }
-  const last = meter.output_field.at(-1)!;
-  const asked = at[last];
-  at[last] = typeof asked === "number" && Number.isSafeInteger(asked) && asked >= 1
-    ? Math.min(asked, cap) : cap;
+  return at;
+}
+
+/**
+ * `body` with every output-cap alias the API reads at most `cap` (the one pi-ai sets set to
+ * `cap` when the request names none), and, when it streams, the API's usage-report fields
+ * set, so its answer reports what it used.
+ */
+export function clamped(meter: Meter, body: Record<string, unknown>, cap: number,
+                        api?: string): Record<string, unknown> {
+  const copy = structuredClone(body);
+  const rules = api === undefined ? null : apiRules(api);
+  const aliases = [meter.output_field,
+                   ...(rules?.outputs ?? []).filter((path) =>
+                     path.join("\0") !== meter.output_field.join("\0"))];
+  for (const [index, path] of aliases.entries()) {
+    const owner = index === 0 ? objectAt(copy, path.slice(0, -1)) : valueAt(copy, path.slice(0, -1));
+    if (typeof owner !== "object" || owner === null || Array.isArray(owner)) {
+      continue;
+    }
+    const at = owner as Record<string, unknown>;
+    const last = path.at(-1)!;
+    if (index > 0 && !Object.hasOwn(at, last)) {
+      continue;
+    }
+    const asked = at[last];
+    at[last] = typeof asked === "number" && Number.isSafeInteger(asked) && asked >= 1
+      ? Math.min(asked, cap) : cap;
+  }
+  if (rules !== null && (rules.stream === null || valueAt(copy, rules.stream) === true)) {
+    for (const [path, value] of rules.usage) {
+      objectAt(copy, path.slice(0, -1))[path.at(-1)!] = value;
+    }
+  }
   return copy;
 }
 
@@ -191,10 +237,19 @@ export function meteredRecord(catalog: Catalog, upstream: Upstream, id: string):
   return found === undefined ? null : { ...found, baseUrl: upstream.base_url };
 }
 
+/** Dollars `usage` costs on `model`, by pi-ai's own `calculateCost`. */
+function costOn(model: Model<Api>, usage: AssistantUsage): number {
+  return calculateCost(model, structuredClone(usage)).total;
+}
+
+type AssistantUsage = Extract<AssistantMessageEvent, { type: "done" }>["message"]["usage"];
+
 /**
  * The usage pi-ai reads from a 2xx answer's body (`status` and `headers` as the provider
- * sent them), priced on `model`: tokens and dollars, or null when pi-ai's adapter cannot
- * read it to its end.
+ * sent them), priced at the dearer of `model` (the one the request named) and the model
+ * the answer says served it: tokens and dollars, or null for anything pi-ai cannot read
+ * to its end, a `done` with no usage, a served model the catalog does not price, or a
+ * model priced at nothing that names no other model it served.
  */
 export async function meteredUsage(catalog: Catalog, upstream: Upstream, apiKey: string,
                                    model: Model<Api>,
@@ -219,9 +274,23 @@ export async function meteredUsage(catalog: Catalog, upstream: Upstream, apiKey:
     return null;
   }
   const usage = last.message.usage;
-  if (!Number.isFinite(usage.cost.total) || usage.cost.total < 0
-      || !Number.isSafeInteger(usage.totalTokens) || usage.totalTokens < 0) {
+  if (!Number.isSafeInteger(usage.totalTokens) || usage.totalTokens <= 0) {
+    return null;  // no usage reported: what it cost is unknown
+  }
+  const served = last.message.responseModel;
+  const named = costOn(model, usage);
+  let cost = named;
+  if (typeof served === "string" && served !== "" && served !== model.id) {
+    const record = meteredRecord(catalog, upstream, served);
+    if (record === null) {
+      return null;
+    }
+    cost = Math.max(named, costOn(record, usage));
+  } else if (served !== model.id && model.cost.input === 0 && model.cost.output === 0) {
+    return null;  // a router priced at nothing, with no word of what it served
+  }
+  if (!Number.isFinite(cost) || cost < 0) {
     return null;
   }
-  return Object.freeze({ tokens: usage.totalTokens, cost: usage.cost.total });
+  return Object.freeze({ tokens: usage.totalTokens, cost });
 }

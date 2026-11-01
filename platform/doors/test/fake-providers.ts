@@ -16,7 +16,8 @@
  *   the bearer `at-good`.
  * - Groq's chat completions (`api.groq.com/openai/v1/chat/completions`), for the egress
  *   door: `401` but for a bearer key starting `gsk-good`; else, by `x-fake-egress`, three
- *   SSE chunks (`stream`, the default, `EGRESS_CHUNKS`), a `429` (`busy`), or one chunk and
+ *   SSE chunks (`stream`, the default, `EGRESS_CHUNKS`), the same without the usage chunk
+ *   (`nousage`), a `429` (`busy`), or one chunk and
  *   then a stream held
  *   open, an SSE comment every 50 ms for at most 10 s, until its reader cancels it
  *   (`slow-<id>`; the cancel is recorded, read back from
@@ -56,6 +57,11 @@ function completions(request: Request): Response {
   }
   const encoder = new TextEncoder();
   const headers = { "content-type": "text/event-stream", "x-upstream": "fake" };
+  if (mode === "nousage") {
+    // What a provider streams when the call did not ask for its usage report.
+    return new Response(EGRESS_CHUNKS.filter((chunk) => !chunk.includes("\"usage\"")).join(""),
+                        { headers });
+  }
   if (mode.startsWith("slow-")) {
     const id = mode.slice("slow-".length);
     // A comment every 50 ms keeps the stream open without ending it (a stream with nothing

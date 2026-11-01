@@ -4,6 +4,9 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { calculateCost } from "@earendil-works/pi-ai/models";
+
+import { apiRules, manyChoices, paidTool } from "../src/api-rules";
 import { builtinCatalog } from "../src/catalog";
 import { meteredCall } from "../src/credential";
 import { clamped, learnMeter, meteredModel, meteredRecord, meteredUsage } from "../src/meter";
@@ -12,6 +15,30 @@ import { ANTHROPIC, GOOGLE, OPENAI } from "./support";
 const GROQ = Object.freeze({
   provider: "groq", api: "openai-completions", base_url: "https://api.groq.com/openai/v1",
   auth: { header: "authorization", scheme: "Bearer" } });
+const OPENROUTER = Object.freeze({
+  provider: "openrouter", api: "openai-completions", base_url: "https://openrouter.ai/api/v1",
+  auth: { header: "authorization", scheme: "Bearer" } });
+const SSE = new Headers({ "content-type": "text/event-stream" });
+
+function chunk(data: unknown): string {
+  return `data: ${JSON.stringify(data)}\n\n`;
+}
+
+/** A chat-completions stream from `model` (none named when null), with `usage` or none. */
+function completion(model: string | null, usage: unknown | null): string {
+  const named = model === null ? {} : { model };
+  return [
+    chunk({ id: "c1", object: "chat.completion.chunk", ...named, choices: [
+      { index: 0, delta: { role: "assistant", content: "lots of words" }, finish_reason: null }] }),
+    chunk({ id: "c1", object: "chat.completion.chunk", ...named, choices: [
+      { index: 0, delta: {}, finish_reason: "stop" }] }),
+    ...(usage === null ? [] : [chunk({ id: "c1", object: "chat.completion.chunk", ...named,
+                                       choices: [], usage })]),
+    "data: [DONE]\n\n",
+  ].join("");
+}
+
+const BIG = { prompt_tokens: 200_000, completion_tokens: 50_000, total_tokens: 250_000 };
 
 function sse(frames: readonly (readonly [string | null, unknown])[]): string {
   return frames.map(([event, data]) =>
@@ -115,5 +142,122 @@ describe("the meter pi-ai's adapter teaches", () => {
                                    new ReadableStream({ start(c) { c.error(new Error("cut")); } }));
     expect(cut).toBeNull();
     expect(meteredRecord(catalog, ANTHROPIC.upstream, "no-such-model")).toBeNull();
+  });
+});
+
+describe("the reviewer's escapes, closed (review round 2)", () => {
+  it("settles a stream that reports no usage unknown, and makes a streamed call ask for it",
+     async () => {
+    const catalog = builtinCatalog();
+    const [first] = catalog.provider("groq")!.getModels()
+      .filter((model) => model.api === "openai-completions" && model.cost.output > 0);
+    const model = meteredRecord(catalog, GROQ, first!.id)!;
+    // What a CLI that did not ask for `stream_options.include_usage` gets back.
+    expect(await meteredUsage(catalog, GROQ, "gsk-x", model, 200, SSE,
+                              streamOf(completion(first!.id, null)))).toBeNull();
+    const zero = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+    expect(await meteredUsage(catalog, GROQ, "gsk-x", model, 200, SSE,
+                              streamOf(completion(first!.id, zero)))).toBeNull();
+    const reported = await meteredUsage(catalog, GROQ, "gsk-x", model, 200, SSE,
+                                        streamOf(completion(first!.id, BIG)));
+    expect(reported!.tokens).toBe(250_000);
+    expect(reported!.cost).toBeGreaterThan(0);
+    // The gateway asks for it, as pi-ai's own streaming call does; a call that does not
+    // stream is left as it is.
+    const meter = (await learnMeter(catalog, GROQ, "gsk-x"))!;
+    expect(clamped(meter, { model: "m", stream: true }, 10, "openai-completions"))
+      .toMatchObject({ stream: true, stream_options: { include_usage: true } });
+    expect(clamped(meter, { model: "m", stream: true, stream_options: { include_usage: false } },
+                   10, "openai-completions"))
+      .toMatchObject({ stream_options: { include_usage: true } });
+    expect(clamped(meter, { model: "m" }, 10, "openai-completions")["stream_options"])
+      .toBeUndefined();
+  });
+
+  it("prices a call by the dearer of the model it named and the model that served it",
+     async () => {
+    const catalog = builtinCatalog();
+    const models = catalog.provider("openrouter")!.getModels()
+      .filter((model) => model.api === "openai-completions");
+    const router = meteredRecord(catalog, OPENROUTER, "openrouter/auto")!;
+    expect(router.cost.input + router.cost.output).toBe(0);
+    const paid = models.find((model) => model.cost.output > 0)!;
+    // Routed to a paid model: priced as that model, never at the router's nothing.
+    const routed = await meteredUsage(catalog, OPENROUTER, "sk-or-x", router, 200, SSE,
+                                      streamOf(completion(paid.id, BIG)));
+    const usage = { input: 200_000, output: 50_000, cacheRead: 0, cacheWrite: 0,
+                    totalTokens: 250_000,
+                    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+    expect(routed!.cost).toBeCloseTo(calculateCost(meteredRecord(catalog, OPENROUTER,
+                                                                 paid.id)!, usage).total, 9);
+    expect(routed!.cost).toBeGreaterThan(0);
+    // Served by a model the catalog does not price, or with no word of what served it.
+    expect(await meteredUsage(catalog, OPENROUTER, "sk-or-x", router, 200, SSE,
+                              streamOf(completion("someone/unlisted", BIG)))).toBeNull();
+    expect(await meteredUsage(catalog, OPENROUTER, "sk-or-x", router, 200, SSE,
+                              streamOf(completion(null, BIG)))).toBeNull();
+    // A cheap name that a dearer fallback served is priced as the dearer.
+    const [cheap, dear] = [...models].filter((model) => model.cost.output > 0)
+      .sort((a, b) => a.cost.output - b.cost.output).filter((_m, i, all) =>
+        i === 0 || i === all.length - 1);
+    const fallback = await meteredUsage(catalog, OPENROUTER, "sk-or-x",
+                                        meteredRecord(catalog, OPENROUTER, cheap!.id)!, 200, SSE,
+                                        streamOf(completion(dear!.id, BIG)));
+    expect(fallback!.cost).toBeCloseTo(calculateCost(meteredRecord(catalog, OPENROUTER,
+                                                                   dear!.id)!, usage).total, 9);
+  });
+
+  it("clamps every output-cap alias the API reads, and refuses several choices", async () => {
+    const catalog = builtinCatalog();
+    const meter = (await learnMeter(catalog, GROQ, "gsk-x"))!;
+    const field = meter.output_field.join(".");
+    const other = field === "max_tokens" ? "max_completion_tokens" : "max_tokens";
+    const sent = clamped(meter, { model: "m", [other]: 100_000 }, 1_000, "openai-completions");
+    expect(sent[field]).toBe(1_000);
+    expect(sent[other]).toBe(1_000);
+    expect(clamped(meter, { model: "m" }, 1_000, "openai-completions")[other]).toBeUndefined();
+    const completions = apiRules("openai-completions")!;
+    expect(manyChoices(completions, { n: 8 })).toBe(true);
+    expect(manyChoices(completions, { n: 1 })).toBe(false);
+    expect(manyChoices(completions, {})).toBe(false);
+    const google = apiRules("google-generative-ai")!;
+    expect(manyChoices(google, { generationConfig: { candidateCount: 2 } })).toBe(true);
+    expect(manyChoices(google, { generationConfig: { candidateCount: 1 } })).toBe(false);
+  });
+
+  it.each([
+    ["anthropic-messages", { tools: [{ name: "f", input_schema: {} }] },
+     { tools: [{ type: "web_search_20250305", name: "web_search" }] }],
+    ["anthropic-messages", { tools: [{ type: "custom", name: "f", input_schema: {} }] },
+     { mcp_servers: [{ url: "https://x" }] }],
+    ["openai-responses", { tools: [{ type: "function", name: "f" }] },
+     { tools: [{ type: "web_search" }] }],
+    ["openai-responses", { tools: [{ type: "custom", name: "f" }] },
+     { tools: [{ type: "code_interpreter" }] }],
+    ["openai-completions", { tools: [{ type: "function", function: { name: "f" } }] },
+     { web_search_options: {} }],
+    ["openai-completions", {}, { plugins: [{ id: "web" }] }],
+    ["google-generative-ai", { tools: [{ functionDeclarations: [] }] },
+     { tools: [{ googleSearch: {} }] }],
+    ["google-generative-ai", {}, { tools: [{ codeExecution: {} }] }],
+  ])("on %s, lets a client's own tools through and refuses a server-side paid one",
+     (api, client, paid) => {
+    const rules = apiRules(api)!;
+    expect(paidTool(rules, client)).toBe(false);
+    expect(paidTool(rules, paid)).toBe(true);
+  });
+
+  it("reads no usage from a non-streaming JSON answer, which pi-ai's adapters do not parse",
+     async () => {
+    const catalog = builtinCatalog();
+    const [first] = catalog.provider("anthropic")!.getModels()
+      .filter((model) => model.api === "anthropic-messages");
+    const model = meteredRecord(catalog, ANTHROPIC.upstream, first!.id)!;
+    const message = { id: "m1", type: "message", role: "assistant", model: first!.id,
+                      content: [{ type: "text", text: "hi" }], stop_reason: "end_turn",
+                      usage: { input_tokens: 1000, output_tokens: 500 } };
+    expect(await meteredUsage(catalog, ANTHROPIC.upstream, "sk-x", model, 200,
+                              new Headers({ "content-type": "application/json" }),
+                              streamOf(JSON.stringify(message)))).toBeNull();
   });
 });

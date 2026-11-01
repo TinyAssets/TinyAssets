@@ -28,7 +28,9 @@
  *   Worker's own namespaces), and `global_fetch_strictly_public`, which Client ID Metadata
  *   Documents require: the provider fetches each client's metadata URL, the flag keeps
  *   that fetch off same-zone routing (its SSRF protection), and without it the provider
- *   neither fetches nor advertises CIMD (OP docs/authorization-server.md:62-68).
+ *   neither fetches nor advertises CIMD (OP docs/authorization-server.md:62-68); and
+ *   `enable_request_signal`, so a sandbox client that leaves before the answer aborts the
+ *   egress door's request and its settle comes at once.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -42,7 +44,8 @@ import { PLATFORM } from "../../owner/guards/sources";
 const DOORS = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = "wrangler.jsonc";
 const FLAGS: readonly string[] = Object.freeze(["nodejs_compat", "disable_ctx_exports",
-                                                "global_fetch_strictly_public"]);
+                                                "global_fetch_strictly_public",
+                                                "enable_request_signal"]);
 const KEYS: ReadonlySet<string> = new Set([
   "$schema", "name", "main", "compatibility_date", "compatibility_flags", "workers_dev",
   "preview_urls", "vars", "durable_objects", "services", "kv_namespaces", "secrets",

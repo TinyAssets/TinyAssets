@@ -8,6 +8,8 @@ import { exports } from "cloudflare:workers";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
+import { builtinCatalog } from "../src/catalog";
+import { learnMeter, meteredRecord } from "../src/meter";
 import { Failure, guarded } from "../src/failure";
 import Gateway, { ConnectGateway, EgressGateway } from "../src/index";
 import { open } from "../src/keyring";
@@ -132,6 +134,40 @@ describe("the gateway Worker", () => {
     const stopped = await held;
     expect(await stopped.response.json()).toMatchObject({ error: { code: "upstream_unreachable" } });
     expect(Date.now() - started).toBeLessThan(5000);
+    // A metered call cut before any answer may have reached the provider: never free.
+    const catalog = builtinCatalog();
+    let model: { id: string } | undefined;
+    for (const record of catalog.provider("openai")!.getModels()
+      .filter((candidate) => candidate.api === "openai-responses")) {
+      if (await learnMeter(catalog, OPENAI.upstream, "sk-fwd", meteredRecord(
+        catalog, OPENAI.upstream, record.id)!) !== null) {
+        model = record;  // one whose output cap pi-ai sets, so its calls can be metered
+        break;
+      }
+    }
+    const cutStop = new IdentityTransformStream();
+    const streamed = JSON.stringify({ model: model!.id, input: "hi", stream: true });
+    const cut = egress.forward("alice", "c1", 1, blob, new Request("https://egress/v1/responses", {
+      method: "POST", body: streamed, headers: { "x-fake-mode": "hang" } }),
+      { max_output_tokens: 100, input_bytes: streamed.length }, cutStop.readable);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await cutStop.writable.getWriter().close();
+    expect(await outcome(await cut)).toEqual({ state: "unknown" });
+    // What the reservation cannot bound is refused before anything is sent.
+    for (const [extra, code] of [[{ tools: [{ type: "web_search" }] }, "egress_unmetered_tool"],
+                                 [{ tools: [{ type: "function", name: "f" }] }, null]] as const) {
+      const text = JSON.stringify({ model: model!.id, input: "hi", ...extra });
+      const answer = await egress.forward("alice", "c1", 1, blob, new Request(
+        "https://egress/v1/responses", { method: "POST", body: text,
+                                          headers: { "x-fake-mode": "echo" } }),
+        { max_output_tokens: 100, input_bytes: text.length }, new ReadableStream());
+      if (code === null) {
+        expect(answer.response.status).toBe(200);
+        await answer.response.body?.cancel();
+      } else {
+        expect(await answer.response.json()).toMatchObject({ error: { code } });
+      }
+    }
     const refused = await egress.forward("", "c1", 1, blob, new Request("https://egress/v1/models"),
                                          metering, new ReadableStream());
     expect(refused.response.status).toBe(400);

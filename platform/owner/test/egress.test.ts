@@ -2,7 +2,7 @@
  * Sandbox egress at the owner's object (tasks 4 G4): the sandbox's one lease and its two
  * MAC'd tokens, owner-internal; each call admitted at open (`egressOpen`) by every check in
  * order, a model call charged against its run's, the owner's and the source's caps and
- * `ask_above`, on counters none of them pi's; a refusal kept as a receipt; the streams a
+ * nothing else, on counters none of them pi's; a refusal kept as a receipt; the streams a
  * change ends; and each charge settled once (`egressSettle`) at the cost the gateway's
  * meter read, or kept whole when it could not. The egress door itself is the doors' tests'.
  */
@@ -12,9 +12,13 @@ import { describe, expect, it } from "vitest";
 
 import { verifyToken } from "../../doors/src/routing-mac";
 import { PLATFORM_CALLER } from "../src/admission";
+import type { ModelInfo } from "../src/connections";
 import { EGRESS_LIMITS, type EgressOpened, LOST_AFTER_S } from "../src/egress";
+import { RUN_DEADLINE_S } from "../src/network";
 import type { Binding, OpenedLease } from "../src/owner-do";
 import { NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY, SYNC_FENCED } from "../src/owner-do";
+import { SPEND_KEPT } from "../src/schema";
+import { priced } from "../src/usage";
 import {
   ANTHROPIC, catalog, type Gated, gated, OAUTH, OPENAI, scopeOf, sealedAs,
 } from "./gateway-support";
@@ -35,7 +39,8 @@ interface Leased {
 }
 
 /** Caps roomy enough that a test's every call fits, each charging up to the most it costs. */
-const ROOMY = Object.freeze({ turn_requests: 10_000, turn_cost: 1_000_000_000_000 });
+const ROOMY = Object.freeze({ turn_requests: 10_000, turn_tokens: 1_000_000_000,
+                              turn_cost: 1_000_000_000_000 });
 
 /** A token's secret's hash, once its MAC is the routing key's own for `kind`. */
 function hashOf(kind: "egress" | "sync", token: string): string {
@@ -143,10 +148,9 @@ async function capped(r: Gated, models: Record<string, unknown>,
 }
 
 /** The caps set once the lease is held, its network applied under the new generation. */
-async function cappedLeased(r: Gated, models: Record<string, unknown>,
-                            askAbove: number | null = null): Promise<Leased> {
+async function cappedLeased(r: Gated, models: Record<string, unknown>): Promise<Leased> {
   const lease = await leased(r, false);
-  await capped(r, models, askAbove);
+  await capped(r, models);
   await r.in((instance) => instance.sandbox.networkApplied({ ...held(lease), generation: 1 }));
   return lease;
 }
@@ -165,20 +169,27 @@ describe("an egress call", () => {
     expect(await rows(r)).toEqual([{ state: "open", code: null, ended: null, outcome: null,
                                      status: null, bytes: null, bytes_hint: 120 }]);
     const [charge] = await charges(r);
-    expect(charge).toMatchObject({ source: "anthropic", charge: "held", cost: null,
-                                   max_output_tokens: opened.metering!.max_output_tokens,
-                                   est_tokens: 120 + opened.metering!.max_output_tokens });
-    const estimate = charge!["est_cost"] as number;
-    // Priced at the dearest rate any of the connection's models charges: the body's bytes
-    // at the dearest of uncached, cache-read and cache-write input, the output at its rate.
+    // Its input held at the largest context window of the connection's models, not the
+    // body's bytes, and its output at the largest output cap.
     const [{ models }] = (await r.sql("SELECT models FROM connections WHERE id = ?",
                                       connection)) as [{ models: string }];
+    const records = JSON.parse(models) as ModelInfo[];
+    const window = Math.max(...records.map((model) => model.contextWindow));
     const output = opened.metering!.max_output_tokens;
-    const dearest = Math.max(...(JSON.parse(models) as {
-      cost: { input: number; output: number; cacheRead: number; cacheWrite: number } }[])
-      .map(({ cost }) => 120 * Math.max(cost.input, cost.cacheRead, cost.cacheWrite)
-                         + output * cost.output));
-    expect(Math.abs(estimate - dearest)).toBeLessThanOrEqual(1);
+    expect(output).toBe(Math.max(...records.map((model) => model.maxTokens)));
+    expect(charge).toMatchObject({ source: "anthropic", charge: "held", cost: null,
+                                   max_output_tokens: output, est_tokens: window + output });
+    const estimate = charge!["est_cost"] as number;
+    // Priced at the dearest rate any of the connection's models charges, each to its own
+    // window and cap: input at the dearest of uncached, cache-read and cache-write.
+    const top = (rates: { input: number; cacheRead: number; cacheWrite: number }) =>
+      Math.max(rates.input, rates.cacheRead, rates.cacheWrite);
+    const dearest = Math.max(...records.map((model) => priced(
+      { cost: { ...model.cost, input: top(model.cost),
+                ...(model.cost.tiers === undefined ? {}
+                  : { tiers: model.cost.tiers.map((tier) => ({ ...tier, input: top(tier) })) }) } },
+      Math.min(window, model.contextWindow), Math.min(output, model.maxTokens))));
+    expect(estimate).toBe(dearest);
     expect(estimate).toBeGreaterThan(0);
     // Held, it counts at its estimate, on the run's and the source's counters.
     expect(await runs(r)).toEqual([{ lease_id: lease.lease_id, epoch: lease.epoch, requests: 1,
@@ -370,6 +381,8 @@ describe("an egress call", () => {
     }
     expect((await failure(() => r.stub.egressOpen(lease.as(1, "short"), request(connection))))
       .message).toBe("invalid sandbox binding");
+    // The object's own check: the sync token's hash presented as an egress token.
+    expect(await refusedWith(r, lease.as(1, lease.sync), connection)).toBe("egress_lease_closed");
     for (const bad of [{ method: "OPTIONS" }, { path: "v1/messages" }, { path: `/${"p".repeat(2048)}` },
                        { path: "/v1/€" }, { path: "/v1/a b" }, { bytes_hint: -1 },
                        { connection: "c1" }, { extra: 1 }]) {
@@ -438,19 +451,18 @@ describe("the spend caps", () => {
     ["the run's requests", { turn_requests: 1 }, null, "run_requests"],
     ["the run's cost", { turn_cost: 1 }, null, "run_cost"],
     ["the run's tokens", { turn_tokens: 100 }, null, "run_tokens"],
-    ["the run's tokens, the body counted in them", { turn_tokens: 1_100 }, null, "run_tokens"],
+    ["the run's tokens, the input counted in them", { turn_tokens: 1_100 }, null, "run_tokens"],
     ["the owner's day", { daily_cost: 1 }, null, "daily_cost"],
     ["the owner's month", { monthly_cost: 1 }, null, "monthly_cost"],
     ["the source's day", { sources: { anthropic: { daily_cost: 1 } } }, null,
      "source_daily_cost"],
     ["the source's month", { sources: { anthropic: { monthly_cost: 1 } } }, null,
      "source_monthly_cost"],
-    ["ask_above", {}, 1, "ask_above"],
   ])("refuse a call past %s before any forward, its receipt kept",
-     async (_what, models, askAbove, rule) => {
+     async (_what, models, _none, rule) => {
     const r = await gated();
     const connection = await r.connect("sk-good");
-    const lease = await cappedLeased(r, { ...ROOMY, ...models }, askAbove);
+    const lease = await cappedLeased(r, { ...ROOMY, ...models });
     if (rule === "run_requests") {
       await admitted(r, lease, connection);
     }
@@ -458,21 +470,29 @@ describe("the spend caps", () => {
     expect((await charges(r)).at(-1)).toMatchObject({ state: "refused", charge: null, rule });
   });
 
-  it("shrink a call's output to what `ask_above` leaves it, so the charge stays under it",
+  it("hold nothing of the spend table: an owner's purchase threshold is not a model cap",
      async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
-    const roomy = await cappedLeased(r, ROOMY);
-    const free = await admitted(r, roomy, connection);
-    const most = free.metering!.max_output_tokens;
-    const [{ est_cost: whole }] = (await charges(r)) as [{ est_cost: number }];
-    await r.stub.egressSettle(roomy.as(), settle(free.reservation));
-    const ceiling = Math.floor(whole / 2);
-    await capped(r, ROOMY, ceiling);
-    await r.in((instance) => instance.sandbox.networkApplied({ ...held(roomy), generation: 1 }));
-    const asked = await admitted(r, roomy, connection);
-    expect(asked.metering!.max_output_tokens).toBeLessThan(most);
-    expect((await charges(r)).at(-1)!["est_cost"]).toBeLessThanOrEqual(ceiling);
+    const lease = await leased(r, false);
+    await capped(r, ROOMY, 100);  // "ask me above 100", for the agent's purchases
+    await r.in((instance) => instance.sandbox.networkApplied({ ...held(lease), generation: 1 }));
+    await admitted(r, lease, connection);
+  });
+
+  it("prune the spend counters at each open, so an owner who uses only the sandbox never " +
+     "fills them", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    const lease = await leased(r);
+    // Old counters, long out of the window: as many as the schema keeps.
+    await r.sql("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?) " +
+                  "INSERT INTO model_spend (period, source, cost) SELECT 'd:2019-01-01', " +
+                  "'old-' || i, 1 FROM n", SPEND_KEPT);
+    await admitted(r, lease, connection);
+    expect(await r.sql("SELECT COUNT(*) AS n FROM model_spend WHERE period = 'd:2019-01-01'"))
+      .toEqual([{ n: 0 }]);
+    expect(await sourceSpend(r)).toHaveLength(2);
   });
 
   it("keep the whole charge when the usage cannot be read, and a refusal's at nothing",
@@ -733,7 +753,10 @@ describe("the sandbox's lease", () => {
     const lease = await leased(r, false);
     const tokens = { egress: lease.opened.egress_token, sync: lease.opened.sync_token };
     for (const [kind, token] of Object.entries(tokens) as ["egress" | "sync", string][]) {
-      expect(token).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}$/);
+      expect(token).toMatch(/^[A-Za-z0-9_-]+\.[0-9]{10,11}\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}$/);
+      // It dies with the run's deadline.
+      expect(verifyToken(env.ROUTING_MAC_KEY, kind, token)!.expires)
+        .toBeGreaterThanOrEqual(Math.floor(Date.now() / 1000) + RUN_DEADLINE_S - 5);
       expect(verifyToken(env.ROUTING_MAC_KEY, kind, token)!.owner).toBe(r.name);
       // Each is its own kind's alone.
       expect(verifyToken(env.ROUTING_MAC_KEY, kind === "egress" ? "sync" : "egress", token))
@@ -745,7 +768,7 @@ describe("the sandbox's lease", () => {
       .toEqual([{ lease_id: lease.lease_id, epoch: lease.epoch, egress_token: lease.egress,
                   sync_token: lease.sync, network_generation: null }]);
     expect(JSON.stringify(await r.sql("SELECT * FROM file_space")))
-      .not.toContain(lease.opened.egress_token.split(".")[1]);
+      .not.toContain(lease.opened.egress_token.split(".")[2]);
     const renewed = await r.in((instance) => instance.sandbox.renew(held(lease)));
     expect(renewed).toMatchObject({ lease_id: lease.lease_id, epoch: lease.epoch });
     await r.in((instance) => instance.sandbox.close(held(lease)));

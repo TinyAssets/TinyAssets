@@ -65,10 +65,11 @@ function leases<R>(owner: string, act: (leases: OwnerDO["sandbox"]) => Promise<R
 
 /**
  * A signed-in owner with a Groq key connected, its sandbox's lease open and its network
- * applied; the owner's caps roomy unless `models` sets them.
+ * applied; the owner's caps roomy unless `models` sets them, its spend table as `spend`.
  */
 async function sandbox(apply = true, models: Record<string, unknown> = {
-  turn_requests: 10_000, turn_cost: 1_000_000_000_000 }): Promise<Sandbox> {
+  turn_requests: 10_000, turn_tokens: 1_000_000_000, turn_cost: 1_000_000_000_000 },
+                       spend: Record<string, unknown> = {}): Promise<Sandbox> {
   const owner = `user_${crypto.randomUUID().replace(/-/g, "")}`;
   const app = await signInApp({ owner });
   const key = `gsk-good-${crypto.randomUUID()}`;
@@ -80,7 +81,8 @@ async function sandbox(apply = true, models: Record<string, unknown> = {
   const bound = ownerBound(owner);
   const { generation, policy } = await bound.stub.policyRead(bound.binding);
   await bound.stub.policyWrite({ ...bound.binding, session: app.session }, {
-    expected_generation: generation, policy: { ...policy, models } });
+    expected_generation: generation,
+    policy: { ...policy, models, spend: { ...policy.spend, ...spend } } });
   const opened = await leases(owner, (sandbox) => sandbox.open({ holder: "sandbox-1" }));
   if (apply) {
     await leases(owner, (sandbox) => sandbox.networkApplied({
@@ -228,8 +230,9 @@ describe("the egress door", () => {
     // The output cap the reservation leaves, in place of the 900M the client asked.
     expect(asked["max_completion_tokens"]).toBeLessThan(900_000_000);
     expect(asked["max_completion_tokens"]).toBeGreaterThan(0);
-    expect({ ...asked, max_completion_tokens: 0 }).toEqual({ ...JSON.parse(body),
-                                                            max_completion_tokens: 0 });
+    // The rest as the client sent it, but for the usage report the gateway asks for.
+    expect({ ...asked, max_completion_tokens: 0 }).toEqual({
+      ...JSON.parse(body), max_completion_tokens: 0, stream_options: { include_usage: true } });
     await settledOf(box.owner);
     expect(await reservations(box.owner)).toEqual([{
       state: "settled", code: null, ended: null, outcome: "complete", status: 200,
@@ -284,6 +287,48 @@ describe("the egress door", () => {
                                                cost: null, est_cost: null }]);
   });
 
+  it("settles a stream that reported no usage unknown, keeping its whole charge", async () => {
+    const box = await sandbox();
+    for (let i = 0; i < 3; i++) {
+      const response = await send(egressRequest(box, COMPLETIONS, {
+        headers: { "x-fake-egress": "nousage" } }));
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("one ");
+      await until(async () => (await reservations(box.owner))
+        .filter((row) => row["state"] === "settled").length === i + 1, "the settle");
+    }
+    const charged = await spends(box.owner);
+    for (const row of charged) {
+      expect(row).toMatchObject({ state: "unknown", cost: null, tokens: null });
+    }
+    const [spent] = await sqlIn(box.owner, "SELECT COALESCE(SUM(cost), 0) AS cost " +
+                                            "FROM model_spend WHERE period GLOB 'd:*'");
+    expect(spent!["cost"]).toBe(charged.reduce((sum, row) => sum + (row["est_cost"] as number), 0));
+  }, 60_000);
+
+  it("holds a call to the model policy's caps alone: a purchase threshold refuses nothing",
+     async () => {
+    const box = await sandbox(true, { turn_requests: 10_000, turn_tokens: 1_000_000_000,
+                                      turn_cost: 1_000_000_000_000 }, { ask_above: 100 });
+    const response = await send(egressRequest(box));
+    expect(response.status).toBe(200);
+    await response.text();
+    await settledOf(box.owner);
+  });
+
+  it("refuses what the charge cannot bound before any forward: several choices, a paid " +
+     "server-side tool", async () => {
+    const box = await sandbox();
+    for (const [extra, status, code] of [
+      [{ n: 3 }, 400, "egress_multiple_choices"],
+      [{ web_search_options: {} }, 403, "egress_unmetered_tool"],
+      [{ tools: [{ type: "browser_search" }] }, 403, "egress_unmetered_tool"]] as const) {
+      const response = await send(egressRequest(box, COMPLETIONS, { body: bodyOf(box, extra) }));
+      expect([response.status, await codeOf(response)]).toEqual([status, code]);
+    }
+    expect(await forwarded()).toEqual([]);
+  });
+
   it("passes the provider's own refusal through, and settles it at no cost", async () => {
     const box = await sandbox();
     const response = await send(egressRequest(box, COMPLETIONS, {
@@ -336,7 +381,7 @@ describe("the egress door", () => {
     // No directory entry is written for either token.
     expect((await env.DIRECTORY.list({ prefix: "l:" })).keys).toEqual([]);
     const stored = JSON.stringify(await sqlIn(box.owner, "SELECT * FROM file_space"));
-    expect(stored).not.toContain(box.token.split(".")[1]);
+    expect(stored).not.toContain(box.token.split(".")[2]);
     expect(stored).toContain(verifyToken(env.ROUTING_MAC_KEY, "egress", box.token)!.hash);
   });
 });
@@ -345,9 +390,11 @@ describe("a refused call", () => {
   it.each([
     ["no token", "", 401, "egress_token_missing"],
     ["a malformed token", "not-a-token", 401, "egress_token_unknown"],
-    ["a token naming no owner", `${"!".repeat(4)}.${"A".repeat(43)}.${"A".repeat(43)}`, 401,
+    ["a token naming no owner", `${"!".repeat(4)}.2000000000.${"A".repeat(43)}.${"A".repeat(43)}`, 401,
      "egress_token_unknown"],
     ["the old two-part form", `${btoa("user_x")}.${"A".repeat(43)}`, 401, "egress_token_unknown"],
+    ["the round-1 three-part form", `${btoa("user_x")}.${"A".repeat(43)}.${"A".repeat(43)}`, 401,
+     "egress_token_unknown"],
   ])("with %s is refused before any object, and forwards nothing", async (_what, token, status,
                                                                          code) => {
     const box = await sandbox();
@@ -370,18 +417,21 @@ describe("a refused call", () => {
     const victim = `user_${crypto.randomUUID().replace(/-/g, "")}`;
     const otherKey = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
       .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-    const [routing, secret, mac] = box.token.split(".") as [string, string, string];
+    const [routing, expires, secret, mac] = box.token.split(".") as
+      [string, string, string, string];
     const flip = (part: string) => `${part.slice(0, 5)}${part[5] === "A" ? "B" : "A"}${
       part.slice(6)}`;
     const victimRouting = btoa(victim).replace(/=+$/, "");
+    const later = String(Number(expires) + 86_400);
     const spy = vi.spyOn(doorsEnv.OWNER, "getByName");
     for (const token of [
-      mintToken(otherKey, "egress", victim).token,      // forged: another key's MAC
-      `${victimRouting}.${secret}.${mac}`,               // a real MAC moved to another owner
-      `${routing}.${flip(secret)}.${mac}`,               // the secret altered
-      `${routing}.${secret}.${flip(mac)}`,               // the MAC altered
-      box.opened.sync_token,                             // the other kind's MAC
-      mintToken(env.ROUTING_MAC_KEY, "sync", victim).token]) {
+      mintToken(otherKey, "egress", victim, Number(expires)).token,  // another key's MAC
+      `${victimRouting}.${expires}.${secret}.${mac}`,     // a real MAC moved to another owner
+      `${routing}.${later}.${secret}.${mac}`,             // the expiry pushed out
+      `${routing}.${expires}.${flip(secret)}.${mac}`,     // the secret altered
+      `${routing}.${expires}.${secret}.${flip(mac)}`,     // the MAC altered
+      box.opened.sync_token,                              // the other kind's MAC
+      mintToken(env.ROUTING_MAC_KEY, "sync", victim, Number(expires)).token]) {
       const response = await send(egressRequest({ ...box, token }));
       expect([response.status, await codeOf(response)]).toEqual([401, "egress_token_unknown"]);
     }
@@ -390,15 +440,28 @@ describe("a refused call", () => {
     expect(await forwarded()).toEqual([]);
   });
 
+  it("with a token past its run's deadline is refused at the door, no object reached",
+     async () => {
+    const box = await sandbox();
+    const spy = vi.spyOn(doorsEnv.OWNER, "getByName");
+    const dead = mintToken(env.ROUTING_MAC_KEY, "egress", box.owner,
+                           Math.floor(Date.now() / 1000) - 1).token;
+    const response = await send(egressRequest({ ...box, token: dead }));
+    expect([response.status, await codeOf(response)]).toEqual([401, "egress_token_expired"]);
+    expect(spy).not.toHaveBeenCalled();
+    expect(await reservations(box.owner)).toEqual([]);
+  });
+
   it("with an unknown secret under a true MAC, or a lease that lapsed or closed, is refused " +
      "by the owner's object; a never-seen owner's gets no rows", async () => {
     const box = await sandbox();
-    const unknown = mintToken(env.ROUTING_MAC_KEY, "egress", box.owner).token;
+    const deadline = Math.floor(Date.now() / 1000) + 3600;
+    const unknown = mintToken(env.ROUTING_MAC_KEY, "egress", box.owner, deadline).token;
     const response = await send(egressRequest({ ...box, token: unknown }));
     expect([response.status, await codeOf(response)]).toEqual([401, "egress_lease_closed"]);
     const stranger = `user_${crypto.randomUUID().replace(/-/g, "")}`;
     const theirs = await send(egressRequest({ ...box,
-      token: mintToken(env.ROUTING_MAC_KEY, "egress", stranger).token }));
+      token: mintToken(env.ROUTING_MAC_KEY, "egress", stranger, deadline).token }));
     expect(theirs.status).toBe(403);
     expect(await reached(stranger)).toBe(false);
     expect(await reservations(stranger)).toEqual([]);
@@ -625,6 +688,27 @@ describe("settlement", () => {
     await until(async () => stopped, "the stop");
     await settledOf(box.owner);
     expect(await spends(box.owner)).toMatchObject([{ state: "unknown" }]);
+  });
+
+  it("settles a call whose client left before any answer at once (its request's signal)",
+     async () => {
+    const box = await sandbox();
+    let stopped = false;
+    const holding: DoorsEnv = { ...doorsEnv, EGRESS: {
+      forward: (_owner, _connection, _version, _blob, _request, _metering, stop) => {
+        stop.getReader().read().then(() => { stopped = true; }, () => { stopped = true; });
+        return new Promise(() => undefined);  // the provider never answers
+      } } };
+    const leaving = new AbortController();
+    const request = new Request(egressRequest(box), { signal: leaving.signal });
+    const pending = send(request, holding);
+    await until(async () => (await reservations(box.owner)).length === 1, "the open");
+    leaving.abort();
+    const response = await pending;
+    expect([response.status, await codeOf(response)]).toEqual([503, "egress_aborted"]);
+    await settledOf(box.owner);
+    expect(await reservations(box.owner)).toMatchObject([{ outcome: "aborted" }]);
+    expect(stopped).toBe(true);
   });
 
   it("records the gateway's failure", async () => {

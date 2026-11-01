@@ -453,10 +453,12 @@ account and no deploy.
   The door is the main path for API-key model use: a provider CLI in the sandbox (or pi,
   one optional CLI there) reaches its provider through it with a placeholder key.
   **Identity**: E2B workload identity is a private beta, so v1's is our own. The owner's
-  object mints two tokens per sandbox lease, each `<owner>.<secret>.<mac>`, base64url: the
+  object mints two tokens per sandbox lease, each `<owner>.<expires>.<secret>.<mac>`: the
   owner id as the binder already names owners (`getByName`; AuthKit's opaque `user_…` id),
-  256 random bits, and HMAC-SHA-256 under the routing key over the token's kind, owner and
-  secret (`doors/src/routing-mac.ts`, the one module both Workers use). The routing key,
+  base64url; the run's deadline in Unix seconds (`RUN_DEADLINE_S`, a day from the open);
+  256 random bits; and HMAC-SHA-256 under the routing key over the token's kind, owner,
+  expiry and secret (`doors/src/routing-mac.ts`, the one module both Workers use). Past
+  its expiry the door refuses a token `egress_token_expired` without reaching any object. The routing key,
   `ROUTING_MAC_KEY`, is a Worker secret of the owner Worker (which mints) and the doors
   Worker (which verifies), 32 random bytes generated at deploy, declared in both configs
   (`secrets.required`) and held by both config guards; a Worker without a usable one fails
@@ -493,16 +495,26 @@ account and no deploy.
   its epoch: a new lease is a new run; the model policy's per-turn limits are a run's caps,
   rules `run_requests`, `run_tokens`, `run_cost`), and into `model_spend`, its source's day
   and month, which the owner's and the source's daily and monthly ceilings read and which
-  the loop's calls move too; and the spend table's `ask_above` caps the one call (a sandbox
-  call has no one to ask mid-request, so past it is refused, rule `ask_above`). Nothing of
+  the loop's calls move too: the model policy's caps, no more and no less (the spend
+  table, `ask_above` among it, is the agent's purchases', never a model call's). Each open
+  prunes the spend counters past their window, as the loop's reserve does, so an owner who
+  uses only the sandbox never fills them. **8b opens a lease per engine run**, so a run's
+  caps are per run, not per sandbox life. Nothing of
   it reads or imports pi's engine (a policy-boundary guard holds its runtime imports free
-  of `usage.ts`, the thread host and pi-durable), so it outlives the in-object loop.
-  **The reservation rule**: priced at the dearest rate any of the connection's models
-  charges (input at the dearest of uncached, cache-read and cache-write), by pi-ai's
-  `calculateCost` over the gateway's catalog records; the input bounded by the body's
-  length (a token is at least a byte), and the output by the dearest model's cap and what
-  the caps leave, which the gateway clamps the call's own cap to, so the charge bounds
-  what the call can cost; refused below 1,024 output tokens. An endpoint pi-ai cannot meter
+  of `usage.ts`, the thread host and pi-durable, read by the TypeScript compiler, every
+  import resolved or the guard fails), so it outlives the in-object loop. **The
+  reservation rule**: priced at the dearest rate any of the connection's models charges
+  (input at the dearest of uncached, cache-read and cache-write), by pi-ai's
+  `calculateCost` over the gateway's catalog records, each model to its own window and cap;
+  the input held at the largest context window (a body's bytes do not bound its tokens: a
+  file, a cached context or a prior response it names can be far larger), and the output
+  at the largest output cap and what the caps leave, which the gateway clamps every
+  output-cap alias the API reads to; a call asking several choices (`n`, `candidateCount`)
+  is refused `egress_multiple_choices`, and one enabling a server-side tool the provider
+  bills beyond tokens (a web search, code execution, a hosted MCP connector, a plugin) is
+  refused `egress_unmetered_tool`, by each API's data (`gateway/src/api-rules.ts`), so the
+  charge bounds what the call can cost and the settle gives the difference back; refused
+  below 1,024 output tokens. An endpoint pi-ai cannot meter
   is refused, since a run's caps are always set (the stricter of the two rules). Then the
   gateway's `EgressGateway.forward`, **metered** (`gateway/src/meter.ts`): pi-ai's adapter
   for the sealed API, run once against a fetch of ours (no network, the credential's own
@@ -510,8 +522,14 @@ account and no deploy.
   where the model id goes and which body field caps the output; the gateway reads the
   request's model there, finds the catalog's record, clamps the output cap, refuses a body
   past the reserved length, forwards, and tees the answer through the same adapter (pi-ai's
-  own parser) to read its usage, priced by the catalog record; the outcome comes back on a
-  second stream. With no metering (a read) it forwards `GET` and `HEAD` alone
+  own parser) to read its usage; a streamed call is made to ask for its usage report as
+  pi-ai's own call does (`stream_options.include_usage` for chat completions), and an
+  answer with none (zero tokens) is `unknown`. The usage is priced at the dearer of the
+  model the call named and the model the answer says served it (pi-ai's
+  `responseModel`), so a router (`openrouter/auto`) or a fallback list never settles
+  cheaper than what served; a served model the catalog does not price is `unknown`, and
+  so is a model priced at nothing that names no other. The outcome comes back on a second
+  stream. With no metering (a read) it forwards `GET` and `HEAD` alone
   (`forwardRead`). The answer streams through as the provider writes it (SSE unbuffered,
   but the redaction's hold-back of a secret's length less one). Then `egressSettle` once on
   every end, through a fresh stub with one retry, registered with `waitUntil` at open: the
@@ -561,8 +579,8 @@ account and no deploy.
   credentials (git is the file plane's and the sync agent's), WebSocket APIs, and SigV4; a
   model API's other billed calls pi-ai does not make (`count_tokens`, `countTokens`,
   embeddings), refused `egress_unmetered` until a reviewed record marks one unbilled; and
-  a non-streaming model call's answer, which pi-ai's stream parser cannot read, so it
-  settles `unknown` (its whole charge kept). No API-key source record exists yet for
+  a non-streaming model call's answer: pi-ai's adapters parse their stream only, so a
+  JSON answer has no usage pi-ai can read and settles `unknown`, its whole charge kept. No API-key source record exists yet for
   Anthropic, OpenAI or xAI (Claude Code, Codex and Grok Build by key): each is a record
   file in `platform/sources/`, its endpoints sealed as above.
 - [ ] G5 Measurement and cost: pi-durable's partial commits at most once a second with
@@ -1658,8 +1676,9 @@ account and no deploy.
   run, its egress token in the static transform and its network document and
   environment setting the sandbox up; `networkApplied` after each `updateNetwork`, and
   again whenever `stale` says the egress table moved, since egress is refused until it;
-  `renew` on the 20 s heartbeat; `close` at pause, which ends the run whose caps its model
-  calls were held to), the E2B project API key and `ROUTING_MAC_KEY` held as platform
+  `renew` on the 20 s heartbeat; `close` when the run ends: **a lease per engine run**, so
+  a run's caps (the model policy's per-turn limits) are per run, never one sandbox's whole
+  life, and its tokens die with the run's deadline), the E2B project API key and `ROUTING_MAC_KEY` held as platform
   secrets, the template (its `/etc/resolv.conf` naming
   the pinned resolver), and G4's live probe (above); the
   E2B sandbox through our proxy; the in-VM sync agent (sync in from

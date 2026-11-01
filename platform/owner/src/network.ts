@@ -153,6 +153,13 @@ export type Outcome = "complete" | "aborted" | "failed" | "deadline" | "ended";
  * so a stream the gateway never ends is still settled.
  */
 export const EGRESS_DEADLINE_S = 300;
+/**
+ * A sandbox run's deadline, in seconds from its lease's open: a day, the longest sandbox
+ * life an E2B plan offers (8b's probe confirms it for ours). Both of the run's tokens carry it under their MAC, so the
+ * door refuses a dead run's token without reaching the owner's object; 8b opens a lease
+ * per engine run, and a run that would outlive it opens another.
+ */
+export const RUN_DEADLINE_S = 24 * 60 * 60;
 
 /** The egress door's host: always allowed, the one host the transform is set on. */
 export const EGRESS_HOST = "egress.tinyassets.io";

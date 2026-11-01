@@ -122,6 +122,9 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   if (parsed === null) {
     return refused("egress_token_unknown", 401);
   }
+  if (parsed.expires <= Date.now() / 1000) {
+    return refused("egress_token_expired", 401);  // the run is over: no object is reached
+  }
   const generation = request.headers.get(GENERATION_HEADER) ?? "";
   if (!GENERATION.test(generation)) {
     return refused("egress_policy_stale", 409);
