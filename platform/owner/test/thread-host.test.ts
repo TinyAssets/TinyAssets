@@ -465,6 +465,10 @@ describe("the open Sessions", () => {
     const out = await r.in(async (instance) => {
       instance.timing.idleCloseMs = 50;
       await instance.harness.prompt("noted once", { session: first });
+      // The first's wake job opens and releases its Session once more (`#step`), whenever its
+      // alarm comes, which is a use: its time runs from that job's end, not the prompt's.
+      await until(async () => !(await r.jobs()).some((job) => job.id === wakeJob(first)),
+                  "the first's wake job to complete");
       await new Promise((resolve) => setTimeout(resolve, 100));
       await instance.agent.host.pi(second);  // the host's next activity sweeps
       const closed = !instance.agent.host.openThreads().includes(first);
