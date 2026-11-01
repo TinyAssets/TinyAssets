@@ -26,14 +26,21 @@
  *   outside client.
  * - `agent/reset`, `agent/compact`, `agent/fork`, `agent/withdraw`, `agent/task-graph`: the
  *   conversation doors (A6), pi's own operations on the owner's own threads.
+ * - `agent/socket-ticket`: a single-use socket ticket for one of the owner's threads (A6),
+ *   behind every check above, bound to the token's grant and expiry (`bindOwnerGrant`).
  * - `agent/socket`: the owner app's live socket on one of its threads (A6): a `GET` with
- *   `Upgrade: websocket` and `?thread_id=`, behind the same token check and maintenance
- *   gate, the session rules attaching no session to it (a `GET`); the binder forwards it to
- *   the object's `fetch` as a fresh request (`socketRequest`), and the object's answer,
- *   the socket or its refusal, is the door's.
+ *   `Upgrade: websocket`, `?thread_id=` and `?ticket=`, its one credential the ticket (a
+ *   browser's `WebSocket` sends no `Authorization`; no bearer is read here), behind the
+ *   maintenance gate; the binder forwards it to the object's `fetch` as a fresh request
+ *   (`socketRequest`), the object consumes the ticket, and its answer, the socket or its
+ *   fixed refusal, is the door's.
+ *
+ * Sign-out tells the object first, whether or not a session cookie came, so the sockets
+ * opened under the device's grant close before the grant is revoked (`socketsEnd`).
  */
 import {
-  type Bound, bindKeyRegistration, bindOwner, socketRequest,
+  type Bound, bindKeyRegistration, bindOwner, bindOwnerGrant, bindSignOut, bindTicket,
+  socketRequest,
 } from "./binder";
 import { jsonObject } from "./body";
 import {
@@ -49,6 +56,11 @@ import { authorizationServer } from "./oauth";
 import { clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
 import type { Sources } from "./sources";
 import { refusal } from "./tools";
+import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
+
+import {
+  SOCKET_FAILED, socketTicket as socketTicketOf, TICKET_REFUSED,
+} from "../../owner/src/socket-shape";
 
 export const OUTSIDE_CREDENTIAL = "an outside credential never reaches the owner's surface";
 
@@ -88,6 +100,9 @@ async function signOut(env: DoorsEnv, { binding, stub }: Bound, _request: unknow
   if (presented.userId !== binding.owner) {
     throw new Error("a validated first-party token unwraps to its owner's grant");
   }
+  // The device's sockets first, cookie or not: none outlives its grant's revoke.
+  const ending = bindSignOut({ binding, stub }, presented.grantId);
+  await ending.stub.socketsEnd(ending.binding);
   const closed = binding.session === undefined ? { closed: 0 } : await stub.sessionClose(binding);
   await oauth.revokeGrant(presented.grantId, binding.owner);
   return json(200, { ...closed, signed_out: true }, { "Set-Cookie": clearedCookie() });
@@ -125,15 +140,35 @@ const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
     json(200, await stub.agentTaskGraph(binding, request as never)),
 });
 
-/** The owner app's socket door's path under the owner surface. */
+/** The owner app's socket door's path, and its ticket door's, under the owner surface. */
 export const SOCKET_PATH = "agent/socket";
+export const TICKET_PATH = "agent/socket-ticket";
 
 /**
- * The owner app's live socket: a `GET` upgrade (`Upgrade: websocket`) naming one of the
- * owner's threads (`?thread_id=`), with no body, forwarded by the binder to the object's
- * `fetch` (`socketRequest`), whose answer is returned as it is: the socket, or its refusal.
+ * A socket ticket: the owner's token's grant (the provider's own unwrap of the presented
+ * token) and expiry bound in, then the object mints it for the thread named. The ticket the
+ * app presents at the upgrade names the owner's object, and its secret, once.
  */
-async function socketUpgrade(request: Request, owner: Bound): Promise<Response> {
+async function socketTicket(env: DoorsEnv, token: ValidatedAccessToken<unknown>,
+                            presented: string, request: Record<string, unknown>):
+    Promise<Response> {
+  const unwrapped = await authorizationServer(env).getOAuthApi(env).unwrapToken(presented);
+  if (unwrapped === null) {
+    return failure(401, "sign in required");
+  }
+  const { binding, stub } = bindOwnerGrant(env, token, unwrapped.grantId);
+  const minted = await stub.socketTicket(binding, request as never);
+  return json(200, { ticket: socketTicketOf(binding.owner, minted.secret),
+                     thread_id: minted.thread_id, expires_at: minted.expires_at });
+}
+
+/**
+ * The owner app's live socket: a `GET` upgrade (`Upgrade: websocket`) with exactly
+ * `?thread_id=` and `?ticket=`, its one credential the ticket, forwarded by the binder to the
+ * object's `fetch` (`socketRequest`), whose answer is returned as it is: the socket, or its
+ * fixed refusal. A failure past the doors answers a fixed code, never its text.
+ */
+async function socketUpgrade(request: Request, env: DoorsEnv): Promise<Response> {
   if (request.method !== "GET") {
     return failure(405, "method not allowed");
   }
@@ -142,10 +177,24 @@ async function socketUpgrade(request: Request, owner: Bound): Promise<Response> 
   }
   const query = new URL(request.url).searchParams;
   const thread = query.get("thread_id");
-  if (thread === null || [...query.keys()].length !== 1) {
-    return failure(400, "the socket door takes one thread_id");
+  const ticket = query.get("ticket");
+  if (thread === null || ticket === null || [...query.keys()].length !== 2) {
+    return failure(400, "the socket door takes a thread_id and a ticket");
   }
-  return owner.stub.fetch(socketRequest(owner, thread));
+  const held = bindTicket(env, ticket);
+  if (held === null) {
+    return failure(403, TICKET_REFUSED);
+  }
+  const gated = await ownerGate(env, held.bound.binding.owner);
+  if (gated !== null) {
+    return gated;
+  }
+  try {
+    return await held.bound.stub.fetch(socketRequest(held.bound, thread, held.secret));
+  } catch {
+    console.error("an app socket's upgrade failed past the doors");  // no ids, no text
+    return failure(500, SOCKET_FAILED);
+  }
 }
 
 /** The owner's first-party token, or the refusal for what came instead. */
@@ -171,6 +220,9 @@ async function ownerToken(env: DoorsEnv, token: string | null) {
 
 export async function serveApp(request: Request, env: DoorsEnv, sources: Sources):
     Promise<Response> {
+  if (new URL(request.url).pathname.slice(OWNER_SURFACE.length) === SOCKET_PATH) {
+    return socketUpgrade(request, env);  // its credential is its ticket, never a bearer
+  }
   const presented = bearer(request);
   const token = await ownerToken(env, presented);
   if (token instanceof Response) {
@@ -178,14 +230,11 @@ export async function serveApp(request: Request, env: DoorsEnv, sources: Sources
   }
   const session = sessionOf(request);
   const path = new URL(request.url).pathname.slice(OWNER_SURFACE.length);
-  if (path === SOCKET_PATH) {
-    const owner = bindOwner(env, token, session);
-    return await ownerGate(env, owner.binding.owner) ?? socketUpgrade(request, owner);
-  }
   const registering = path === "outside-agents";
+  const ticketing = path === TICKET_PATH;
   const route = Object.hasOwn(ROUTES, path) ? ROUTES[path] : undefined;
   const connect = Object.hasOwn(CONNECT_ROUTES, path) ? CONNECT_ROUTES[path] : undefined;
-  if (route === undefined && connect === undefined && !registering) {
+  if (route === undefined && connect === undefined && !registering && !ticketing) {
     return failure(404, "not found");
   }
   if (request.method !== "POST") {
@@ -209,6 +258,9 @@ export async function serveApp(request: Request, env: DoorsEnv, sources: Sources
       const { keyId, entry } = await registeringEntry(env, owner.binding.owner, id);
       const { binding, stub } = bindKeyRegistration(env, token, keyId, entry, session);
       return json(200, await stub.registerAgent(binding, register as never));
+    }
+    if (ticketing) {
+      return await socketTicket(env, token, presented!, parsed);
     }
     if (connect !== undefined) {
       return await connect({ env, bound: owner, body: parsed, request, sources });

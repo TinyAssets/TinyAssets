@@ -7,19 +7,35 @@ import { apply } from "@earendil-works/chord/delta";
 import type { ConversationView } from "@earendil-works/pi-durable";
 
 import type { Binding } from "../src/owner-do";
-import { BINDING_HEADER, SOCKET_URL, THREAD_HEADER } from "../src/socket-shape";
+import {
+  BINDING_HEADER, SOCKET_URL, THREAD_HEADER, TICKET_HEADER,
+} from "../src/socket-shape";
 
 /** The runtime's reserved methods on the object: none is a door. */
 export const RESERVED_METHODS: readonly string[] = Object.freeze([
   "alarm", "fetch", "webSocketClose", "webSocketError", "webSocketMessage"]);
 
 /** The binder's upgrade, as `doors/src/binder.ts`'s `socketRequest` builds it. */
-export function upgrade(binding: Binding, thread: string,
+export function upgrade(binding: Binding, thread: string, secret: string,
                         extra: Record<string, string> = {}, url: string = SOCKET_URL): Request {
   const headers = new Headers({ Upgrade: "websocket", ...extra });
   headers.set(BINDING_HEADER, JSON.stringify(binding));
   headers.set(THREAD_HEADER, thread);
+  headers.set(TICKET_HEADER, secret);
   return new Request(url, { headers });
+}
+
+/** The owner's binding as the ticket door binds it: its token's grant and expiry. */
+export function granted(owner: string, grant = "grant-a",
+                        expiresAt = Math.floor(Date.now() / 1000) + 3600): Binding {
+  return { owner, caller: owner, origin: null, grant, expires_at: expiresAt };
+}
+
+/** A ticket's secret for `thread`, minted as the ticket door mints it. */
+export async function mint(stub: { socketTicket: (binding: Binding, request: {
+  thread_id: string }) => Promise<{ secret: string }> }, binding: Binding, thread: string):
+    Promise<string> {
+  return (await stub.socketTicket(binding, { thread_id: thread })).secret;
 }
 
 /** One frame as the object sent it. */

@@ -234,6 +234,12 @@ export const THREAD_MANUAL_COMPACTIONS = 1;
  */
 export const THREAD_COMPACTIONS = THREAD_CONVERSATIONS * CONVERSATION_COMPACTIONS + THREAD_MANUAL_COMPACTIONS;
 
+/**
+ * Socket tickets (`sockets.ts`) outstanding at once, each single-use and at most
+ * `SOCKET_TICKET_S` long; past it a mint is refused (`socket_tickets_full`).
+ */
+export const SOCKET_TICKETS = 32;
+
 /** A file entry in the temporary area, which keeps no history. */
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // 1: the owner this object serves, and the one revision primitive (S34, ADR-032).
@@ -1449,6 +1455,21 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       SCHEDULED_RUN}`,
     ADMISSION_TABLE,
     "INSERT INTO owner_admission (only, state, reasons) VALUES (1, 'admitted', '[]')",
+  ]),
+  // 14: the owner app's socket tickets (A6 round 2, `sockets.ts`): a ticket the socket
+  // door mints for one of the owner's threads, bound to the first-party grant its token was
+  // issued under and that token's expiry, single-use and short-lived. Only its SHA-256 is
+  // kept, never the ticket. At most `SOCKET_TICKETS` rows (a trigger): the minting unit
+  // forgets expired ones first and refuses past it.
+  Object.freeze([
+    "CREATE TABLE socket_tickets (hash TEXT PRIMARY KEY CHECK (length(hash) = 64 " +
+      "AND hash NOT GLOB '*[^0-9a-f]*'), thread TEXT NOT NULL CHECK (length(thread) = 39), " +
+      "grant_id TEXT NOT NULL CHECK (length(grant_id) BETWEEN 1 AND 128), " +
+      "expires_at REAL NOT NULL, token_expires_at REAL NOT NULL) WITHOUT ROWID",
+    "CREATE TRIGGER socket_tickets_full BEFORE INSERT ON socket_tickets " +
+      `WHEN (SELECT COUNT(*) FROM socket_tickets) >= ${SOCKET_TICKETS} ` +
+      "BEGIN SELECT RAISE(ABORT, 'socket_tickets_full: as many socket tickets are " +
+      "outstanding as may be; use one or wait for one to expire'); END",
   ]),
 ]);
 

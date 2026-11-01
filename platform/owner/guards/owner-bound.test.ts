@@ -30,10 +30,11 @@
  *
  * The worst case is 46.0% of the limit (A6: 4,600,178,612 bytes), about 400 MB under half
  * (A5: 4,597,482,932; A6 adds 2,695,680). A6 adds one term's worth: a manual compaction a working thread
- * (`THREAD_MANUAL_COMPACTIONS`), a turn and its owner row each, 1,024 of each; its forks are
- * conversations within the conversations' bounds (`THREAD_LIMITS`), and its app sockets hold
- * no rows at all (their state is each socket's attachment), only memory, bounded by the
- * constants this guard names (`SOCKET_MEMORY`).
+ * (`THREAD_MANUAL_COMPACTIONS`), a turn and its owner row each, 1,024 of each, and the
+ * socket tickets (`SOCKET_TICKETS` rows, a trigger); its forks are conversations within the
+ * conversations' bounds (`THREAD_LIMITS`), and its app sockets hold no rows of their own
+ * (their state is each socket's attachment): their memory is the memory guard's
+ * (`memory-bound.test.ts`), beside this one.
  * F1 (49.0%, 4,897,208,852 bytes) traded the `work` lane's table (its 2,000 rows of up to
  * 16 KiB) for the admission row; a scheduled launch is a run, counted in the thread terms
  * already. A5 bounds the turn rows by the threads at work (`WORKING_THREADS`, 1,024) rather
@@ -178,20 +179,7 @@ const CLIENT_NAME = inline("grants", /codePoints\(name\) > ([0-9]+)/);
 /** The most wakes an hour policy lets an agent take, the rings one hour keeps (`ledger.ts`). */
 const WAKES_AN_HOUR = inline("ledger", /maxWakesPerHour: Object\.freeze\(\{ low: [0-9]+, high: ([0-9]+) \}\)/);
 
-/**
- * The owner app's sockets (A6, `sockets.ts`): no rows, only memory, each bounded here: the
- * sockets an owner and a thread hold open (each pinning its thread's Session, counted
- * against `OPEN_MAX`), the frames a socket holds unacknowledged before its watch waits (pi
- * then keeps at most 100 and catches up with one whole view), the longest frame a client
- * sends, and the live tee's text a stream keeps (`live-tee.ts`).
- */
-export const SOCKET_MEMORY = Object.freeze({
-  ownerSockets: constant("sockets", "OWNER_SOCKETS"),
-  threadSockets: constant("sockets", "THREAD_SOCKETS"),
-  window: constant("sockets", "SOCKET_WINDOW"),
-  clientFrame: constant("sockets", "CLIENT_FRAME_MAX"),
-  teeText: constant("live-tee", "TEE_TEXT_MAX"),
-});
+const SOCKET_TICKETS = constant("schema", "SOCKET_TICKETS");
 
 /** The platform's limit on one object's database. */
 export const DATABASE_BYTES = 10_000_000_000;
@@ -395,6 +383,9 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
                     + 8,
                   by: "THREAD_LIMITS.receipts, RECEIPT_TEXT_MAX of text each" },
   owner_erasure: { rows: 1, bytes: ROW, by: "one row" },
+  // The owner app's socket tickets (A6): a hash, a thread, a grant id and two times each.
+  socket_tickets: { rows: SOCKET_TICKETS, bytes: ROW + 64 + THREAD_ID + 128 + 2 * 8,
+                    by: "SOCKET_TICKETS outstanding (the schema's trigger)" },
   // The owner's admission: one row, its reasons a short fixed list; after the erasure, the
   // erased tombstone, alone in the database.
   owner_admission: { rows: 1, bytes: ROW + 64, by: "one row (the schema's CHECK)" },
@@ -653,17 +644,17 @@ describe("the owner's database bound", () => {
     expect(agent).toContain("settled: (thread) => parts.threads.settledRun(thread),");
   });
 
-  it("names the app sockets' bounds, which hold memory and no rows (A6)", () => {
-    // Their state is each socket's attachment: the sockets module writes no table.
-    const sockets = source("sockets");
-    expect(sockets).not.toMatch(/\.sql\b|storage\.|CREATE TABLE|kv\./);
-    expect(ownerTables().filter((table) => /socket/.test(table))).toEqual([]);
-    expect(SOCKET_MEMORY).toEqual({ ownerSockets: 16, threadSockets: 4, window: 16,
-                                    clientFrame: 1024, teeText: 1_048_576 });
+  it("counts the socket tickets by the schema's bound; the sockets keep no rows (A6)", () => {
+    expect(ownerTables().filter((table) => /socket/.test(table))).toEqual(["socket_tickets"]);
+    expect(SOCKET_TICKETS).toBe(32);
+    expect(source("schema")).toContain("`WHEN (SELECT COUNT(*) FROM socket_tickets) >= ${" +
+                                       "SOCKET_TICKETS} ` +");
+    // A socket's state is its attachment: the sockets module writes no table.
+    expect(source("sockets")).not.toMatch(/\.sql\b|storage\.|CREATE TABLE|kv\./);
     // Each watched Session is pinned and counted against OPEN_MAX: an owner's sockets,
     // however many threads they watch, pin at most a quarter of the open Sessions.
-    expect(SOCKET_MEMORY.ownerSockets * 4).toBeLessThanOrEqual(constant("thread-host", "OPEN_MAX"));
-    expect(SOCKET_MEMORY.threadSockets).toBeLessThanOrEqual(SOCKET_MEMORY.ownerSockets);
+    expect(constant("sockets", "OWNER_SOCKETS") * 4)
+      .toBeLessThanOrEqual(constant("thread-host", "OPEN_MAX"));
   });
 
   it("sees a bound that would pass half the limit, or a table it no longer covers", () => {

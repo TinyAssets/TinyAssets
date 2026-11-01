@@ -740,6 +740,7 @@ export class OwnerAgent {
       if (await storage.conversation(ROOT, BG) === undefined) {
         const seed = this.#seeds.get(thread);
         if (row.kind === "fork" && seed === undefined) {
+          this.#lostFork(thread);
           throw new Refused(FORK_LOST);
         }
         const config = await this.#parts.config(row.agent_id);
@@ -762,6 +763,20 @@ export class OwnerAgent {
       throw error;
     }
     return { pi, storage };
+  }
+
+  /**
+   * A fork whose history never reached its root (a crash between its row and its first
+   * open): dropped, as `FORK_LOST` says, so it holds no place in its caller's bounds. Off the
+   * open's line; a drop that fails is finished by the `threads` lane.
+   */
+  #lostFork(thread: string): void {
+    void (async () => {
+      const marked = await this.#parts.write(() => this.#parts.threads.abandon(thread));
+      if (marked !== null) {
+        await this.drop(marked);
+      }
+    })().catch(() => console.error("a lost fork's drop is finished by the lane"));  // no ids
   }
 
   /** The registry installed, once per instance (again after an install that failed). */

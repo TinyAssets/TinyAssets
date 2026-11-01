@@ -20,7 +20,9 @@ import { createHash } from "node:crypto";
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
 import type { Binding, Origin, OwnerDO } from "../../owner/src/owner-do";
-import { BINDING_HEADER, SOCKET_URL, THREAD_HEADER } from "../../owner/src/socket-shape";
+import {
+  BINDING_HEADER, SOCKET_URL, THREAD_HEADER, TICKET_HEADER, ticketParts,
+} from "../../owner/src/socket-shape";
 import { principal } from "../../owner/src/text";
 
 import {
@@ -243,16 +245,61 @@ export async function bindSignIn(env: DoorsEnv, signIn: SignIn): Promise<Bound> 
 }
 
 /**
+ * The owner's first-party token, bound with the grant it was issued under (`grantId`, from
+ * the provider's own unwrap of that token) and its expiry: the socket ticket's binding, and
+ * a sign-out's, so the object ties sockets to the device's grant.
+ */
+export function bindOwnerGrant(env: DoorsEnv, token: ValidatedAccessToken<unknown>,
+                               grantId: string): Bound {
+  const owner = appOwner(token);
+  if (typeof grantId !== "string" || grantId === "") {
+    throw new Error("a first-party token unwraps to its grant");
+  }
+  return bound(env, { owner, caller: owner, origin: null, grant: grantId,
+                      expires_at: seconds(token.expiresAt, "a token's expiry") });
+}
+
+/** A sign-out's binding: the owner's, with the grant its presented token unwrapped to. */
+export function bindSignOut({ binding, stub }: Bound, grantId: string): Bound {
+  if (typeof grantId !== "string" || grantId === "") {
+    throw new Error("a first-party token unwraps to its grant");
+  }
+  return { binding: { owner: binding.owner, caller: binding.caller, origin: null,
+                      grant: grantId }, stub };
+}
+
+/**
+ * The owner app's socket ticket (`owner/src/socket-shape.ts`), as the upgrade presents it:
+ * the owner's object it names, bound as that owner, and the secret, which only the object
+ * can check (it keeps the one hash); null for anything that is not a ticket. The ticket is
+ * the upgrade's credential: no bearer is read for it.
+ */
+export function bindTicket(env: DoorsEnv, ticket: string): { bound: Bound; secret: string } | null {
+  const parts = ticketParts(ticket);
+  if (parts === null) {
+    return null;
+  }
+  let owner: string;
+  try {
+    owner = principal(parts.owner);
+  } catch {
+    return null;
+  }
+  return { bound: bound(env, { owner, caller: owner, origin: null }), secret: parts.secret };
+}
+
+/**
  * The owner app's socket upgrade, as the binder forwards it to the bound object's `fetch`
  * (`owner/src/sockets.ts`): a fresh request it builds itself, so no header the client sent
  * survives the hop, a client's own `x-ta-binding` least of all. Its identity is the bound
- * `binding`, set from the verified credential; its one other field, the thread, is the
- * object's to resolve against the caller's own rows.
+ * `binding`; its thread and the ticket's secret are the object's to check against its own
+ * rows.
  */
-export function socketRequest({ binding }: Bound, thread: string): Request {
+export function socketRequest({ binding }: Bound, thread: string, secret: string): Request {
   const headers = new Headers({ Upgrade: "websocket" });
   headers.set(BINDING_HEADER, JSON.stringify(binding));
   headers.set(THREAD_HEADER, thread);
+  headers.set(TICKET_HEADER, secret);
   return new Request(SOCKET_URL, { headers });
 }
 

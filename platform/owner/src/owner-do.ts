@@ -155,7 +155,9 @@ import { type Card, Registrations } from "./registrations";
 import { GatewayProvider } from "./gateway-provider";
 import { LiveTee } from "./live-tee";
 import { inTime, type Lane, Schedule } from "./schedule";
-import { AppSockets, type CloseKind, type SocketState } from "./sockets";
+import {
+  AppSockets, type CloseKind, OWNERS_SOCKET, SOCKET_TICKET_S, type SocketState, TICKET_REFUSED,
+} from "./sockets";
 import type { ScheduledInput } from "./scheduled";
 import { nextOccurrence, parseCron } from "./cron";
 import { AGENTS_OWNER_ONLY, ownersOnly, storedPath, WORKSPACE } from "./paths";
@@ -194,6 +196,13 @@ export interface Binding {
   readonly authenticated_at?: number;
   /** The owner's protected-session cookie, as the browser presented it. */
   readonly session?: string;
+  /**
+   * The first-party grant the owner's token was issued under, and that token's expiry in
+   * whole seconds: set by the binder from the verified token where a door binds to it (the
+   * socket ticket, a sign-out); never from a request.
+   */
+  readonly grant?: string;
+  readonly expires_at?: number;
 }
 
 export type { Origin, Source, WakeSender };
@@ -732,6 +741,12 @@ export function operationOf(thread: string, request: string): string {
  * and the caller's thread is fixed): `sha256(client ∥ client_send_id)`, the owner's
  * `client` the word `owner`, which no client id (64 hex) can be.
  */
+/** The SHA-256 of `text`, as hex. */
+async function sha256Hex(text: string): Promise<string> {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export async function sendRequest(client: string | null, sendId: string): Promise<string> {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(
     `${client ?? "owner"}\0${sendId}`));
@@ -978,8 +993,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
     this.#authority = authority;
     this.#sockets = new AppSockets({
-      admit: (binding, thread) => this.#door(() => this.#socketAdmit(binding, thread)),
+      admit: async (binding, thread, ticket) => {
+        const hash = await sha256Hex(ticket);
+        return this.#door(() => this.#socketAdmit(binding, thread, hash));
+      },
       check: (state) => this.#door(() => this.#socketCheck(state)),
+      now: clock,
       pin: (thread) => this.#agent.host.pin(thread),
       unpin: (thread) => this.#agent.host.unpin(thread),
       watch: (thread) => this.#agent.watch(thread),
@@ -1044,7 +1063,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
     internals.erasure?.(this.#erasure);
     this.#lifecycle = lifecycle.use(this.#schedule).use(this.#agent.host).use(this.#erasure)
-      .use(this.#sockets.capability);
+      .use(this.#sockets).use(this.#sockets.capability);
     void ctx.blockConcurrencyWhile(async () => {
       if (this.#tombstone) {
         return;  // an erased owner: nothing is made here again
@@ -1245,14 +1264,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
   }
 
-  /**
-   * One session signed out, and the connection flows it began cancelled with it. The owner's
-   * app sockets ride no session (they widen nothing), so a sign-out closes every one of the
-   * owner's own (`session_closed`): each device's app attaches again with its token, and the
-   * one signed out, its grant revoked, cannot.
-   */
-  async sessionClose(binding: Binding): Promise<{ closed: number }> {
-    const closed = await this.#synced(() => {
+  /** One session signed out, and the connection flows it began cancelled with it. */
+  sessionClose(binding: Binding): Promise<{ closed: number }> {
+    return this.#synced(() => {
       this.#owner(binding, "reduce", "sign out");
       const id = this.#sessions.id(binding.session);
       const closed = this.#sessions.close(binding.session);
@@ -1261,13 +1275,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       return closed;
     });
-    this.#sockets.closeOwner("session");
-    return closed;
   }
 
   /**
    * Every session signed out: account revocation and deletion (`revoke_owner`), every open
-   * connection flow cancelled in the same unit, so a late callback finds none.
+   * connection flow cancelled in the same unit, so a late callback finds none, and every
+   * app socket closed `signed_out`.
    */
   async sessionCloseAll(binding: Binding): Promise<{ closed: number }> {
     const closed = await this.#synced(() => {
@@ -1275,7 +1288,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       this.#connections.cancelFlows(null);
       return this.#sessions.closeAll();
     });
-    this.#sockets.closeOwner("session");
+    this.#sockets.closeAll("signedOut");  // account revocation: every device's sockets
     return closed;
   }
 
@@ -1403,7 +1416,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }));
     const { threads, ...answer } = changed;
     if (threads !== null) {
-      this.#sockets.closeClient(answer.client, "authority");
       await this.#agent.endClient(answer.client, threads);
     }
     return answer;
@@ -1427,7 +1439,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       });
     });
     const { threads, ...answer } = result;
-    this.#sockets.closeClient(answer.client, "authority");
     await this.#agent.endClient(answer.client, threads);
     return answer;
   }
@@ -1863,58 +1874,135 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   // -- SOCKETS: the owner app's live view of a thread (A6, `sockets.ts`) -----------------
 
   /**
-   * In a unit: a socket's attach, as a `read` door: the binding's account (no session: a
-   * socket widens nothing), the caller's own ready thread, and a client's stamp standing at
-   * its generation; its attachment.
+   * A socket ticket for one of the owner's own threads (`read`): random, single-use, good
+   * for `SOCKET_TICKET_S` and never past the token it was asked with, bound to that token's
+   * first-party grant (`binding.grant`, `binding.expires_at`, the binder's from the verified
+   * token). Only its SHA-256 is kept (`socket_tickets`); the minting unit forgets the expired
+   * ones first, and refuses past `SOCKET_TICKETS` (`socket_tickets_full`). The secret, once.
    */
-  #socketAdmit(binding: unknown, threadId: string): SocketState {
-    const account = this.#account(binding as Binding, "read");
-    if ((binding as Binding).session !== undefined) {
-      throw new Invalid("an app socket carries no session");
+  async socketTicket(binding: Binding, request: ThreadRequest):
+      Promise<{ secret: string; thread_id: string; expires_at: number }> {
+    const checked = await this.#door(() => {  // refused before a secret is made
+      this.#owner(binding, "read", "open an app socket");
+      return this.#ticketAsked(binding, request).thread.thread_id;
+    });
+    const secret = hex(32);
+    const hash = await sha256Hex(secret);
+    return this.#door(() => {
+      this.#owner(binding, "read", "open an app socket");
+      const { thread, grant, tokenExpires, now } = this.#ticketAsked(binding, request);
+      if (thread.thread_id !== checked) {
+        throw new Error("a ticket's thread is the one checked");
+      }
+      const sql = this.#storage.sql;
+      sql.exec("DELETE FROM socket_tickets WHERE expires_at <= ? OR token_expires_at <= ?",
+               now, now);
+      const expires = Math.min(now + SOCKET_TICKET_S, tokenExpires);
+      sql.exec("INSERT INTO socket_tickets (hash, thread, grant_id, expires_at, " +
+                 "token_expires_at) VALUES (?, ?, ?, ?, ?)", hash, thread.thread_id, grant,
+               expires, tokenExpires);
+      return { secret, thread_id: thread.thread_id, expires_at: expires };
+    });
+  }
+
+  /** In a unit, the owner's binding checked: what a ticket is asked for; a refusal thrown. */
+  #ticketAsked(binding: Binding, request: unknown):
+      { thread: Thread; grant: string; tokenExpires: number; now: number } {
+    const r = agentFields(request, ["thread_id"]);
+    const grant = binding.grant;
+    const tokenExpires = binding.expires_at;
+    const now = clock();
+    if (typeof grant !== "string" || grant === "" || grant.length > 128
+        || typeof tokenExpires !== "number" || !Number.isFinite(tokenExpires)) {
+      throw new Invalid("a socket ticket is bound to its token's grant and expiry");
     }
-    const client = account.origin?.client ?? null;
-    const thread = this.#threads.mine(threadId, client);
+    if (tokenExpires <= now) {
+      throw new Refused(TICKET_REFUSED);
+    }
+    const thread = this.#threads.mine(r["thread_id"], null);
     if (thread === null) {
       throw new Refused(NO_THREAD);
     }
-    if (client !== null) {
-      this.#grants.standing(client, thread.generation, thread.authenticated_at);
+    return { thread, grant, tokenExpires, now };
+  }
+
+  /**
+   * The first-party grant the binding's token was issued under signed out (`reduce`): its
+   * outstanding tickets forgotten and its app sockets closed `signed_out`, every other
+   * device's left open. The doors tell it before they revoke the grant, whether or not a
+   * session cookie came.
+   */
+  async socketsEnd(binding: Binding): Promise<{ grant: string; ended: true }> {
+    const grant = await this.#door(() => {
+      this.#owner(binding, "reduce", "end its app sockets");
+      const grant = binding.grant;
+      if (typeof grant !== "string" || grant === "" || grant.length > 128) {
+        throw new Invalid("a grant id");
+      }
+      this.#storage.sql.exec("DELETE FROM socket_tickets WHERE grant_id = ?", grant);
+      return grant;
+    });
+    this.#sockets.endGrant(grant);
+    return { grant, ended: true };
+  }
+
+  /**
+   * In a unit: a socket's attach, as a `read` door: the binding's account, the owner's own
+   * (no outside client has a socket), no session (a socket widens nothing), the owner's own
+   * ready thread, and its ticket consumed: found by its hash, for this thread, not expired,
+   * nor its token; refused alike otherwise (`TICKET_REFUSED`). Its attachment.
+   */
+  #socketAdmit(binding: unknown, threadId: string, hash: string): SocketState {
+    const account = this.#account(binding as Binding, "read");
+    if (account.origin !== null) {
+      throw new Refused(OWNERS_SOCKET);
     }
-    const { owner, caller, origin, source, authenticated_at: signedIn } = binding as Binding;
+    if ((binding as Binding).session !== undefined) {
+      throw new Invalid("an app socket carries no session");
+    }
+    const sql = this.#storage.sql;
+    const ticket = sql.exec<{ thread: string; grant_id: string; expires_at: number;
+                              token_expires_at: number }>(
+      "DELETE FROM socket_tickets WHERE hash = ? RETURNING thread, grant_id, expires_at, " +
+        "token_expires_at", hash).toArray()[0];
+    const now = clock();
+    if (ticket === undefined || ticket.thread !== threadId || ticket.expires_at <= now
+        || ticket.token_expires_at <= now) {
+      throw new Refused(TICKET_REFUSED);
+    }
+    const thread = this.#threads.mine(threadId, null);
+    if (thread === null) {
+      throw new Refused(NO_THREAD);
+    }
     return {
-      v: 1, owner: account.owner, client, thread: thread.thread_id,
-      generation: thread.generation,
-      binding: { owner, caller, origin, ...(source === undefined ? {} : { source }),
-                 ...(signedIn === undefined ? {} : { authenticated_at: signedIn }) },
+      v: 1, owner: account.owner, thread: thread.thread_id, grant: ticket.grant_id,
+      expires_at: ticket.token_expires_at,
+      binding: { owner: account.owner, caller: account.caller, origin: null },
     };
   }
 
   /**
    * In a unit: whether a socket's attachment still holds, as at its attach, for each frame it
    * sends and each reattach: its close when it does not (the owner erased or erasing, reads
-   * refused by its admission, the thread gone, the client's authority moved), else null.
+   * refused by its admission, the thread gone, its token expired), else null.
    */
   #socketCheck(state: SocketState): CloseKind | null {
     try {
       const account = this.#account(state.binding as unknown as Binding, "read");
-      if (account.owner !== state.owner || (account.origin?.client ?? null) !== state.client) {
-        return "authority";
+      if (account.owner !== state.owner || account.origin !== null) {
+        return "signedOut";
       }
-      const thread = this.#threads.mine(state.thread, state.client);
-      if (thread === null) {
+      if (this.#threads.mine(state.thread, null) === null) {
         return "dropped";
       }
-      if (state.client !== null) {
-        this.#grants.standing(state.client, state.generation, thread.authenticated_at);
-      }
-      return null;
+      return state.expires_at <= clock() ? "expired" : null;
     } catch (error) {
       if (!(error instanceof Refused || error instanceof Invalid)) {
         throw error;
       }
       const message = error.message;
       return message === OWNER_ERASED || message === ERASING ? "erased"
-        : message.startsWith(OWNER_SUSPENDED) ? "suspended" : "authority";
+        : message.startsWith(OWNER_SUSPENDED) ? "suspended" : "signedOut";
     }
   }
 

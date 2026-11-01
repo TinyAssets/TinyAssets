@@ -1,6 +1,6 @@
 /**
  * The owner's app sockets (tasks 5, A6; pi audit F2, F10): hibernating WebSockets on the
- * object's one Lifecycle, each watching one of the caller's agent threads through pi's own
+ * object's one Lifecycle, each watching one of the owner's agent threads through pi's own
  * `Conversation.watch()`.
  *
  * The transport is the Agents SDK's `WebSockets` capability (`agents/websockets`), installed
@@ -10,27 +10,40 @@
  * and a Workers RPC cannot carry a socket (a `Response` with `webSocket` returned over RPC
  * fails `DataCloneError`, workerd), so the upgrade is the stub's `fetch`, the object's one
  * non-RPC entry. The capability speaks no Agents protocol here (`protocol: false`) and
- * serves no callables: every frame is ours.
+ * serves no callables: every frame is ours. This class is a Lifecycle capability of its
+ * own too, for one job: closing sockets as their tokens expire.
+ *
+ * The credential is a socket ticket. A browser's `WebSocket` sends no `Authorization`, and
+ * the session cookie is only for widenings, so the app first asks
+ * `POST /app/api/agent/socket-ticket` behind every first-party token check, and the object
+ * mints (`socketTicket`) a random, single-use ticket good for `SOCKET_TICKET_S`, bound to
+ * one of the owner's threads, to the first-party grant the token was issued under and to
+ * that token's expiry, keeping only its SHA-256 (`socket_tickets`, at most
+ * `SOCKET_TICKETS`). The upgrade carries the ticket in its query (a browser's `WebSocket`
+ * takes a URL and subprotocols, never headers); the doors read only which owner it names,
+ * and the object consumes it in the attach's unit, refusing it alike (`TICKET_REFUSED`)
+ * reused, expired, for another thread, or for a grant whose sign-out was told.
  *
  * The binder's shape. Only the doors Worker holds `OWNER`, and it forwards an upgrade as a
  * fresh request it builds itself (`doors/src/binder.ts`, `socketRequest`): a `GET` of exactly
  * `SOCKET_URL`, with no query (so neither the SDK's connection id `_pk` nor its Cap'n Web
- * transport can be chosen), and exactly three headers: `Upgrade: websocket`, the bound
- * identity (`BINDING_HEADER`, the `Binding` as JSON, set from the verified credential) and
- * the thread (`THREAD_HEADER`). No header a client sent survives that hop. The object
- * accepts nothing else (`NOT_BINDER_SHAPE`, `400`), so a request carrying the SDK's
+ * transport can be chosen), and exactly four headers: `Upgrade: websocket`, the bound
+ * identity (`BINDING_HEADER`), the thread (`THREAD_HEADER`) and the ticket
+ * (`TICKET_HEADER`). No header a client sent survives that hop. The object accepts nothing
+ * else (`NOT_BINDER_SHAPE`, `400`), so a request carrying the SDK's
  * `x-agents-lifecycle-props` never reaches Lifecycle either.
  *
  * Attaching. In one unit (`SocketParts.admit`): the binding's account, as a `read` door's
- * (a billing suspension leaves reads open), no session (the socket widens nothing), the
- * thread the caller's own (`Threads.mine`), and a client's stamp standing at its generation.
- * Then the caps, counted from the runtime's own sockets by tag with the attaches in flight,
- * refused at once with a fixed code: `OWNER_SOCKETS` an owner (`SOCKETS_FULL`) and
- * `THREAD_SOCKETS` a thread (`THREAD_SOCKETS_FULL`); then the thread's Session pinned
- * (`ThreadHost.pin`), counted against `OPEN_MAX`, past which the upgrade is refused
- * (`SOCKET_SESSIONS_FULL`), never waited on. Connection state lives in the socket's
- * attachment only (`SocketState`: the owner, the client, the thread, the authority
- * generation at attach, and the binding a frame is checked by): no SQL row per socket.
+ * (a billing suspension leaves reads open), the owner's own (an outside client has no
+ * socket), no session, the owner's own ready thread, and the ticket consumed. Then the caps,
+ * counted from the runtime's own sockets by tag with the attaches in flight, refused at
+ * once with a fixed code: `OWNER_SOCKETS` an owner (`SOCKETS_FULL`) and `THREAD_SOCKETS` a
+ * thread (`THREAD_SOCKETS_FULL`); then the thread's Session pinned (`ThreadHost.pin`),
+ * counted against `OPEN_MAX`, past which the upgrade is refused (`SOCKET_SESSIONS_FULL`),
+ * never waited on. Connection state lives in the socket's attachment only (`SocketState`:
+ * the owner, the thread, the grant, the token's expiry, and the binding a frame is checked
+ * by): no SQL row per socket. A failure inside the accept answers a fixed code
+ * (`SOCKET_FAILED`, or a `watch_lost` close), never an error's text.
  *
  * Frames are JSON, each with `v: SOCKET_VERSION`. Server to client:
  * - `{v, type: "view", seq, value}`: pi's `ConversationView`, whole: the first frame of an
@@ -54,12 +67,14 @@
  * door's, in a unit (`SocketParts.check`), before it is acted on; one refused closes the
  * socket with its code, and one malformed closes it `frame_refused`.
  *
- * Lifetime is authority's: a thread's sockets close with a fixed code (`CLOSE`) when its
- * authority ends: a grant revoke or an authority-generation move (`authority_ended`), the
- * thread's drop or wipe (`thread_dropped`), an admission that refuses reads, an abuse
- * suspension (`owner_suspended`), the owner's erasure (`owner_erased`) and the owner's
- * session's close, which ends the owner's own sockets (`session_closed`). A watch pi ends on
- * its own (its Session failed) closes `watch_lost`; the app reconnects from a fresh view.
+ * Lifetime is the credential's and the thread's, each close a fixed code (`CLOSE`): the
+ * token's expiry (`token_expired`, by this capability's job at the earliest expiry, and at
+ * every frame), the sign-out of the grant it was opened under (`signed_out`: the doors tell
+ * the object before they revoke the grant, cookie or not, and only that grant's sockets
+ * close) and every session's close (account revocation), the thread's drop or wipe
+ * (`thread_dropped`), an admission that refuses reads, an abuse suspension
+ * (`owner_suspended`), and the owner's erasure (`owner_erased`). A watch pi ends on its own
+ * (its Session failed) closes `watch_lost`; the app reconnects from a fresh view.
  *
  * Hibernation: a socket outlives the object's eviction, its watch does not. Pi replays
  * nothing, so a socket the instance holds no watch for reattaches from a fresh view: at its
@@ -70,18 +85,30 @@ import type { NonEmptyPath, Op, Path } from "@earendil-works/chord/delta";
 import type {
   ConversationView, ConversationWatch, TaskGraphWatch, WatchEnd,
 } from "@earendil-works/pi-durable";
+import {
+  LifecycleCapability, type LifecycleJobContext, type LifecycleJobOutcome,
+} from "agents/lifecycle";
 import { type WebSocketHandlers, WebSockets } from "agents/websockets";
 
 import { Invalid, Refused } from "./errors";
 import type { LiveBlock, LiveEvent, LiveTee } from "./live-tee";
 import {
-  BINDING_HEADER, SHAPE_HEADERS, SOCKET_URL, SOCKET_VERSION, THREAD_HEADER,
+  BINDING_HEADER, SHAPE_HEADERS, SOCKET_FAILED, SOCKET_URL, SOCKET_VERSION, THREAD_HEADER,
+  TICKET_HEADER, TICKET_REFUSED,
 } from "./socket-shape";
 
-export { BINDING_HEADER, SOCKET_URL, SOCKET_VERSION, THREAD_HEADER };
+export {
+  BINDING_HEADER, SOCKET_FAILED, SOCKET_URL, SOCKET_VERSION, THREAD_HEADER, TICKET_HEADER,
+  TICKET_REFUSED,
+};
 
 /** A connection, as the capability hands it to its handlers. */
 type Connection = Parameters<NonNullable<WebSocketHandlers["onConnect"]>>[0];
+
+/** This capability's Lifecycle id, its one job and the job's function. */
+export const SOCKETS = "ta-sockets";
+export const EXPIRY_JOB = "socket-expiry";
+const EXPIRE_FN = "expire";
 
 /** App sockets an owner holds open at once (every thread's). */
 export const OWNER_SOCKETS = 16;
@@ -91,6 +118,12 @@ export const THREAD_SOCKETS = 4;
 export const SOCKET_WINDOW = 16;
 /** The longest frame a client may send, in UTF-16 code units. */
 export const CLIENT_FRAME_MAX = 1024;
+/** How long a socket ticket is good for, in seconds; it is used once. */
+export const SOCKET_TICKET_S = 30;
+/** How long a told sign-out is held on the instance, for the attaches it raced, in ms. */
+const ENDED_HELD_MS = (SOCKET_TICKET_S + 30) * 1000;
+/** Told sign-outs held at once; past it the oldest goes (its tickets are gone already). */
+export const SIGNED_OUT_KEPT = 64;
 
 export const NOT_BINDER_SHAPE = "only the binder's upgrade reaches the object's socket door";
 export const SOCKETS_FULL = "sockets_full: the owner has as many app sockets open as it may";
@@ -98,16 +131,18 @@ export const THREAD_SOCKETS_FULL = "thread_sockets_full: the thread has as many 
   "open as it may";
 export const SOCKET_SESSIONS_FULL = "sessions_full: too many of the agent's threads are open " +
   "at once to watch another";
+/** A socket's owner only: no outside client has one. */
+export const OWNERS_SOCKET = "an app socket is the owner's own";
 
 /** Why a socket closed, as its code and reason: each fixed. */
-export type CloseKind = "authority" | "dropped" | "suspended" | "erased" | "session" | "frame"
-  | "lost";
+export type CloseKind = "expired" | "signedOut" | "dropped" | "suspended" | "erased"
+  | "frame" | "lost";
 export const CLOSE: Readonly<Record<CloseKind, readonly [number, string]>> = Object.freeze({
-  authority: Object.freeze([4401, "authority_ended"] as const),
+  expired: Object.freeze([4402, "token_expired"] as const),
   suspended: Object.freeze([4403, "owner_suspended"] as const),
   dropped: Object.freeze([4404, "thread_dropped"] as const),
   erased: Object.freeze([4410, "owner_erased"] as const),
-  session: Object.freeze([4440, "session_closed"] as const),
+  signedOut: Object.freeze([4440, "signed_out"] as const),
   frame: Object.freeze([4400, "frame_refused"] as const),
   lost: Object.freeze([4500, "watch_lost"] as const),
 });
@@ -116,15 +151,15 @@ export const CLOSE: Readonly<Record<CloseKind, readonly [number, string]>> = Obj
 export const LIVE_CONTENT: readonly (string | number)[] = Object.freeze([
   "docs", "pi.live", "generation", "message", "content"]);
 
-/** A socket's attachment: who attached it, to what, under which authority generation. */
+/** A socket's attachment: whose, on what, under which grant, until when. */
 export interface SocketState {
   readonly v: number;
   readonly owner: string;
-  /** The outside client the binding came through; null for the owner's own. */
-  readonly client: string | null;
   readonly thread: string;
-  /** The thread's stamp generation at attach (a client's); null for the owner's. */
-  readonly generation: number | null;
+  /** The first-party grant the ticket's token was issued under. */
+  readonly grant: string;
+  /** When that token expires, in whole seconds: the socket closes then. */
+  readonly expires_at: number;
   /** The binding each frame is checked by again, as the binder bound it. */
   readonly binding: Readonly<Record<string, unknown>>;
 }
@@ -132,11 +167,11 @@ export interface SocketState {
 /** What the sockets run on: the object's checks, its thread host and its live tee. */
 export interface SocketParts {
   /**
-   * In a unit: the binding's account, as a `read` door's, the thread the caller's own and
-   * its stamp standing; the attachment, else a refusal thrown.
+   * In a unit: the binding's account, as a `read` door's, the owner's own thread, and the
+   * ticket consumed; the attachment, else a refusal thrown.
    */
-  admit(binding: unknown, thread: string): Promise<SocketState>;
-  /** In a unit: why the attachment's authority no longer holds, as its close; null if it does. */
+  admit(binding: unknown, thread: string, ticket: string): Promise<SocketState>;
+  /** In a unit: why the attachment no longer holds, as its close; null if it does. */
   check(state: SocketState): Promise<CloseKind | null>;
   /** Pin the thread's Session open (counted against `OPEN_MAX`), or the host's refusal. */
   pin(thread: string): Promise<void>;
@@ -144,6 +179,8 @@ export interface SocketParts {
   watch(thread: string): Promise<ConversationWatch>;
   watchTaskGraph(thread: string): Promise<TaskGraphWatch>;
   readonly tee: LiveTee;
+  /** The object's clock, in whole seconds (a test's moves ahead). */
+  now(): number;
 }
 
 /** One socket's watch, on the instance: gone with an eviction, made again at reattach. */
@@ -161,7 +198,10 @@ interface Live {
   waiters: (() => void)[];
   /** The commit the live frames lie over. */
   base: number;
-  /** Per block, how much of the tee's text the client displays past the commit. */
+  /**
+   * Per block, how much of the tee's text the client displays past the commit (-1: a block
+   * the tee's text does not extend, the commits' alone until the next commit).
+   */
   readonly shown: Map<number, number>;
   /** The tee subscription, and the conversation it is of. */
   tee: { off: () => void; session: string } | undefined;
@@ -171,8 +211,9 @@ function threadTag(thread: string): string {
   return `t:${thread}`;
 }
 
-/** The binder's upgrade's binding and thread; anything else refused (`NOT_BINDER_SHAPE`). */
-export function socketShape(request: Request): { binding: unknown; thread: string } {
+/** The binder's upgrade's binding, thread and ticket; anything else refused. */
+export function socketShape(request: Request):
+    { binding: unknown; thread: string; ticket: string } {
   const upgrade = request.headers.get("upgrade");
   if (request.method !== "GET" || request.url !== SOCKET_URL
       || upgrade === null || upgrade.toLowerCase() !== "websocket"
@@ -185,7 +226,8 @@ export function socketShape(request: Request): { binding: unknown; thread: strin
   } catch {
     throw new Invalid(NOT_BINDER_SHAPE);
   }
-  return { binding, thread: request.headers.get(THREAD_HEADER)! };
+  return { binding, thread: request.headers.get(THREAD_HEADER)!,
+           ticket: request.headers.get(TICKET_HEADER)! };
 }
 
 /** A conversation view's streaming answer's blocks, as the last commit holds them. */
@@ -198,11 +240,11 @@ function committedBlocks(view: ConversationView | undefined): unknown[] | undefi
 
 /**
  * The live tee as Chord ops over `view` (the last commit the client applied): for each block
- * the tee holds whose text extends the committed block's, the tail the client does not show
- * yet (`shown`, updated), as an append to that block's `text` or `thinking`; a block no
- * commit holds yet, the next after the committed ones, spliced in whole. A block whose
- * committed text the tee's does not extend (another attempt, a stream seen in part) is left
- * to the commits.
+ * the tee holds whose text extends the committed block's (asked once a block a commit, then
+ * kept in `shown`), the tail the client does not show yet, as an append to that block's
+ * `text` or `thinking`; a block no commit holds yet, the next after the committed ones,
+ * spliced in whole. A block whose committed text the tee's does not extend (another attempt,
+ * a stream heard in part) is left to the commits.
  */
 export function liveOps(view: ConversationView | undefined,
                         blocks: ReadonlyMap<number, LiveBlock> | undefined,
@@ -216,31 +258,30 @@ export function liveOps(view: ConversationView | undefined,
   for (const [index, block] of [...blocks].sort(([a], [b]) => a - b)) {
     const field = block.type;
     const path = [...LIVE_CONTENT, index, field] as unknown as NonEmptyPath;
-    if (index < content.length) {
+    let at = shown.get(index);
+    if (at === undefined && index < content.length) {
       const committed = content[index] as Record<string, unknown> | null;
       const text = committed?.[field];
-      if (committed?.["type"] !== block.type || typeof text !== "string"
-          || !block.text.startsWith(text)) {
-        continue;
-      }
-      const at = shown.get(index) ?? text.length;
-      if (block.text.length > at) {
-        ops.push(["a", path, block.text.slice(at)]);
+      at = committed?.["type"] === block.type && typeof text === "string"
+        && block.text.startsWith(text) ? text.length : -1;
+      shown.set(index, at);
+    }
+    if (at === undefined) {
+      if (index === length) {
+        ops.push(["p", [...LIVE_CONTENT] as Path, index, 0,
+                  [block.type === "text" ? { type: "text", text: block.text.from(0) }
+                    : { type: "thinking", thinking: block.text.from(0) }]]);
         shown.set(index, block.text.length);
+        length++;
       }
-    } else if (shown.has(index)) {
-      const at = shown.get(index)!;
-      if (block.text.length > at) {
-        ops.push(["a", path, block.text.slice(at)]);
-        shown.set(index, block.text.length);
-      }
+      continue;
+    }
+    if (index >= content.length) {
       length = Math.max(length, index + 1);
-    } else if (index === length) {
-      ops.push(["p", [...LIVE_CONTENT] as Path, index, 0,
-                [block.type === "text" ? { type: "text", text: block.text }
-                  : { type: "thinking", thinking: block.text }]]);
+    }
+    if (at >= 0 && block.text.length > at) {
+      ops.push(["a", path, block.text.from(at)]);
       shown.set(index, block.text.length);
-      length++;
     }
   }
   return ops;
@@ -252,11 +293,12 @@ function refusedUpgrade(error: unknown): Response {
     return Response.json({ error: error.message },
                          { status: error instanceof Refused ? 403 : 400 });
   }
-  throw error;
+  console.error("an app socket's upgrade failed");  // no ids, no error text
+  return Response.json({ error: SOCKET_FAILED }, { status: 500 });
 }
 
-export class AppSockets {
-  /** The Lifecycle capability the object installs: the sockets' transport. */
+export class AppSockets extends LifecycleCapability {
+  /** The Lifecycle capability the object installs beside this one: the sockets' transport. */
   readonly capability: WebSockets;
   readonly #parts: SocketParts;
   /** Each socket's watch, by connection id, on the instance. */
@@ -265,17 +307,19 @@ export class AppSockets {
   readonly #accepting = new WeakMap<Request, SocketState>();
   /** Attaches in flight, by thread: counted against the caps until accepted. */
   readonly #pending = new Map<string, number>();
+  /** Grants whose sign-out was told, and when, held a little for the attaches it raced. */
+  readonly #signedOut = new Map<string, number>();
 
   constructor(parts: SocketParts) {
+    super(SOCKETS);
     this.#parts = parts;
     this.capability = new WebSockets({
       protocol: false,
+      // Never a throw: Lifecycle would answer one with its stack. A socket the door did
+      // not attach is closed at once by `#connected`.
       getConnectionTags: (_connection, { request }) => {
         const state = this.#accepting.get(request);
-        if (state === undefined) {
-          throw new Error("an app socket is accepted only as the object's door attached it");
-        }
-        return [threadTag(state.thread)];
+        return state === undefined ? [] : [threadTag(state.thread)];
       },
       handlers: {
         onConnect: (connection, { request }) => this.#connected(connection, request),
@@ -286,17 +330,49 @@ export class AppSockets {
     });
   }
 
+  // -- Lifecycle: the expiry job -----------------------------------------------------
+
+  /** The earliest token expiry is due: close what expired, then wait for the next. */
+  async onJob({ job }: LifecycleJobContext): Promise<LifecycleJobOutcome> {
+    if (job.id !== EXPIRY_JOB) {
+      return undefined;
+    }
+    const now = this.#parts.now();
+    for (const connection of this.#select((state) => state.expires_at <= now)) {
+      this.#close(connection, "expired");
+    }
+    const next = this.#nextExpiry();
+    return next === null ? undefined : { rescheduleAt: next * 1000 };
+  }
+
+  /** The earliest expiry of the sockets open now, in seconds, or null. */
+  #nextExpiry(): number | null {
+    const times = this.#select(() => true).map((connection) =>
+      (connection.state as SocketState).expires_at);
+    return times.length === 0 ? null : Math.min(...times);
+  }
+
+  /** The expiry job set at the earliest expiry of the sockets open now. */
+  async #armExpiry(): Promise<void> {
+    const next = this.#nextExpiry();
+    if (next !== null) {
+      await this.lifecycle.jobs.push({ id: EXPIRY_JOB, fn: EXPIRE_FN, time: next * 1000 });
+    }
+  }
+
+  // -- The door ------------------------------------------------------------------------
+
   /**
-   * The object's `fetch`: the binder's upgrade, attached (its account, thread, caps and
-   * pinned Session), then handed to Lifecycle (`accept`), whose `WebSockets` accepts it; any
-   * other request, and any refusal, answered here with its fixed code.
+   * The object's `fetch`: the binder's upgrade, attached (its account, thread, ticket, caps
+   * and pinned Session), then handed to Lifecycle (`accept`), whose `WebSockets` accepts it;
+   * any other request, and any refusal, answered here with its fixed code.
    */
   async serve(request: Request, accept: (upgrade: Request) => Promise<Response>):
       Promise<Response> {
     let state: SocketState;
     try {
       const shape = socketShape(request);
-      state = await this.#parts.admit(shape.binding, shape.thread);
+      state = await this.#parts.admit(shape.binding, shape.thread, shape.ticket);
       this.#room(state.thread);
     } catch (error) {
       return refusedUpgrade(error);
@@ -306,14 +382,14 @@ export class AppSockets {
       try {
         await this.#parts.pin(state.thread);
       } catch (error) {
-        if (error instanceof Refused) {
-          return refusedUpgrade(new Refused(SOCKET_SESSIONS_FULL));
-        }
-        throw error;
+        return refusedUpgrade(error instanceof Refused ? new Refused(SOCKET_SESSIONS_FULL)
+          : error);
       }
       this.#accepting.set(request, state);
       try {
         return await accept(request);
+      } catch (error) {
+        return refusedUpgrade(error);
       } finally {
         if (this.#accepting.delete(request)) {
           this.#parts.unpin(state.thread);  // never connected: its pin goes
@@ -341,20 +417,39 @@ export class AppSockets {
     }
   }
 
-  /** A socket the door attached, now accepted: its attachment kept, its watch attached. */
+  /**
+   * A socket the door attached, now accepted: its attachment kept, the expiry job set, its
+   * watch attached. One its grant's sign-out raced (told after its ticket was consumed) is
+   * closed `signed_out` at once. Never a throw: Lifecycle would answer it with its stack.
+   */
   async #connected(connection: Connection, request: Request): Promise<void> {
     const state = this.#accepting.get(request);
     this.#accepting.delete(request);
-    if (state === undefined) {
-      throw new Error("an app socket is accepted only as the object's door attached it");
+    try {
+      if (state === undefined) {
+        throw new Error("an app socket is accepted only as the object's door attached it");
+      }
+      connection.setState(state);
+      if (this.#signedOut.has(state.grant)) {
+        this.#parts.unpin(state.thread);
+        this.#close(connection, "signedOut");
+        return;
+      }
+      await this.#armExpiry();
+      await this.#attach(connection, state, true);
+    } catch {
+      console.error("an app socket could not be attached");  // no ids, no error text
+      if (state !== undefined && !this.#live.has(connection.id)) {
+        this.#parts.unpin(state.thread);
+      }
+      this.#close(connection, "lost");
     }
-    connection.setState(state);
-    await this.#attach(connection, state, true);
   }
 
   /**
    * Attach `connection` to its thread's watch from a fresh view: its Session pinned (unless
-   * the door pinned it), the view sent, then each commit's ops, the tee's appends between.
+   * the door pinned it), the view sent, then each commit's ops, the tee's appends between. A
+   * socket closed while the pin or the watch was awaited lets both go.
    */
   async #attach(connection: Connection, state: SocketState, pinned: boolean): Promise<void> {
     const live: Live = {
@@ -363,13 +458,18 @@ export class AppSockets {
       tee: undefined,
     };
     this.#live.set(connection.id, live);
+    const gone = () => live.closing || this.#live.get(connection.id) !== live;
     try {
       if (!live.pinned) {
         await this.#parts.pin(state.thread);
+        if (gone()) {
+          this.#parts.unpin(state.thread);  // closed while it was pinned: the pin goes
+          return;
+        }
         live.pinned = true;
       }
       const watch = await this.#parts.watch(state.thread);
-      if (live.closing) {
+      if (gone()) {
         void watch.stop();
         return;
       }
@@ -495,7 +595,8 @@ export class AppSockets {
       this.#close(connection, "frame");
       return;
     }
-    const refused = await this.#parts.check(state);
+    const refused = this.#signedOut.has(state.grant) ? "signedOut"
+      : await this.#parts.check(state);
     if (refused !== null) {
       this.#close(connection, refused);
       return;
@@ -534,7 +635,7 @@ export class AppSockets {
       this.#close(connection, "lost");
       return;
     }
-    if (live.closing) {
+    if (live.closing || live.graph !== undefined) {
       void graph.stop();
       return;
     }
@@ -598,13 +699,34 @@ export class AppSockets {
       }
       const state = connection.state as SocketState;
       void (async () => {
-        const refused = await this.#parts.check(state);
+        const refused = this.#signedOut.has(state.grant) ? "signedOut"
+          : await this.#parts.check(state);
         if (refused !== null) {
           this.#close(connection, refused);
         } else if (!this.#live.has(connection.id)) {
           await this.#attach(connection, state, false);
         }
       })().catch(() => this.#close(connection, "lost"));
+    }
+  }
+
+  /**
+   * A grant signed out: its sockets closed `signed_out`, and the grant held a little on the
+   * instance, so an attach whose ticket was consumed before is closed as it connects.
+   */
+  endGrant(grant: string): void {
+    const now = Date.now();
+    for (const [held, at] of [...this.#signedOut]) {
+      if (now - at > ENDED_HELD_MS) {
+        this.#signedOut.delete(held);
+      }
+    }
+    this.#signedOut.set(grant, now);
+    while (this.#signedOut.size > SIGNED_OUT_KEPT) {
+      this.#signedOut.delete(this.#signedOut.keys().next().value!);
+    }
+    for (const connection of this.#select((state) => state.grant === grant)) {
+      this.#close(connection, "signedOut");
     }
   }
 
@@ -615,21 +737,7 @@ export class AppSockets {
     }
   }
 
-  /** Close every socket of `client`'s threads: its grant revoked or its generation moved. */
-  closeClient(client: string, kind: CloseKind = "authority"): void {
-    for (const connection of this.#select((state) => state.client === client)) {
-      this.#close(connection, kind);
-    }
-  }
-
-  /** Close the owner's own sockets (no outside client): its session closed. */
-  closeOwner(kind: CloseKind = "session"): void {
-    for (const connection of this.#select((state) => state.client === null)) {
-      this.#close(connection, kind);
-    }
-  }
-
-  /** Close every socket: an admission that refuses reads, or the owner's erasure. */
+  /** Close every socket: every session's close, an admission refusing reads, the erasure. */
   closeAll(kind: CloseKind): void {
     for (const connection of this.#select(() => true)) {
       this.#close(connection, kind);

@@ -210,6 +210,32 @@ describe("fork at an entry", () => {
     expect([more.thread_id, more.text]).toEqual([forked.thread_id, "echo: more"]);
   });
 
+  it("names the copies of its edits' targets: the fork's context is the source's", async () => {
+    const r = await rig();
+    const { thread_id: source } = await r.say("one");
+    await r.say("two");
+    // An edit that omits "one" from what the model sees, as a compaction or a hook makes one.
+    await r.in(async (instance) => {
+      const entries = await instance.harness.messages({ session: source });
+      const one = entries.find((entry) => entry.model?.some((message) =>
+        message.role === "user" && textOf(message) === "one"))!;
+      const root = (await (await instance.agent.pi(source)).conversation(ROOT, BG))!;
+      await root.submit({ type: "write", entry: { kind: "app.edit", data: {},
+                                                  edits: [{ target: one.id, action: "omit" }] } },
+                        BG);
+    });
+    const at = await r.in(async (instance) => Number((await instance.harness.messages(
+      { session: source })).at(-1)!.id));
+    const forked = await r.stub.agentFork(r.bind(), {
+      thread_id: source, entry_id: at, message: "three", client_send_id: "e", wait_ms: 20_000 });
+    const seen = (thread: string, upTo: number) => r.in(async (instance) =>
+      (await (await (await instance.agent.pi(thread)).conversation(ROOT, BG))!.context(BG))
+        .messages.slice(0, upTo).map((message) => `${message.role}: ${textOf(message)}`));
+    const sourceSees = await seen(source, 10);
+    expect(sourceSees).not.toContain("user: one");
+    expect(await seen(forked.thread_id, sourceSees.length)).toEqual(sourceSees);
+  });
+
   it("starts the fork's context at the source's head marker, as the source's starts", async () => {
     const r = await rig();
     const { thread_id: source } = await r.say("one");
@@ -293,7 +319,38 @@ describe("fork at an entry", () => {
   });
 });
 
+describe("a settled run", () => {
+  it("is refused compact and fork (RUN_SETTLED)", async () => {
+    const r = await rig();
+    const run = await r.stub.agentRun(r.bind(), { agent: "main", input: "go" });
+    await until(async () => (await r.stub.agentStatus(r.bind(), {
+      operation_id: run.operation_id })).status === "done"
+      && await r.in((instance) => instance.parts.threads.settledRun(run.thread_id)),
+                "the run to settle");
+    expect((await failure(() => r.stub.agentCompact(r.bind(), { thread_id: run.thread_id })))
+      .message).toBe(RUN_SETTLED);
+    const ids = await entryIds(r, run.thread_id);
+    expect((await failure(() => r.stub.agentFork(r.bind(), {
+      thread_id: run.thread_id, entry_id: ids[0]!, message: "x", client_send_id: "x" })))
+      .message).toBe(RUN_SETTLED);
+  });
+});
+
 describe("withdraw", () => {
+  it("withdraws nothing of a scheduled launch's: its delivery is the cancel's", async () => {
+    const r = await rig();
+    await r.in((instance) => {
+      instance.probes.holdGate = new Promise(() => undefined);
+    });
+    const at = Math.floor(Date.now() / 1000) + 1;
+    const launch = await r.stub.agentRun(r.bind(), { agent: "main", input: "hold please", at });
+    expect(launch.status).toBe("scheduled");
+    await until(() => r.in((instance) => instance.probes.holds === 1), "its delivery to run",
+                1500);
+    expect(await r.stub.agentWithdraw(r.bind(), { operation_id: launch.operation_id }))
+      .toEqual({ operation_id: launch.operation_id, withdrawn: false });
+  }, 30_000);
+
   it("withdraws a queued input, and refuses one already placed", async () => {
     const r = await rig();
     await r.say("one");
