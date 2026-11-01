@@ -230,9 +230,33 @@ describe("an app socket on a thread's watch", () => {
                                    JSON.stringify({ v: 1, type: "ack", seq: 0 }));
       await client.until((c) => c.frames.slice(before).some((frame) => frame.type === "view"),
                          "a view at the client's frame");
+      // The reattached watch pins its Session there too: the idle LRU spares it.
+      fresh.timing.idleCloseMs = 0;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await fresh.agentSubmit(r.bind(), { message: "x", client_send_id: "o", agent_id: "other",
+                                          wait_ms: 20_000 });
+      await fresh.agentSubmit(r.bind(), { message: "y", client_send_id: "p", agent_id: "other",
+                                          wait_ms: 20_000 });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(fresh.agent.host.peek(thread)).toBeDefined();
     });
     expect(client.closed).toBeNull();
     expect(said(client)).toEqual(["one", "echo: one", "two", "echo: two"]);
+  }, 20_000);
+
+  it("closes a socket whose frame finds the owner suspended for abuse", async () => {
+    const r = await rig();
+    const thread = await r.say("one");
+    const client = await r.socket(thread);
+    await client.until((c) => c.frames.length > 0, "the view");
+    // Suspended without the door's close (as an eviction between would leave it).
+    await r.in((_instance, state) => {
+      state.storage.sql.exec("UPDATE owner_admission SET state = 'suspended', " +
+                             "reasons = '[\"abuse\"]'");
+    });
+    client.send({ v: 1, type: "ack", seq: 1 });
+    await client.until((c) => c.closed !== null, "the close");
+    expect(client.closed).toEqual({ code: CLOSE.suspended[0], reason: CLOSE.suspended[1] });
   });
 
   it("holds a slow app to pi's rule: at most the window unacknowledged, then one whole view",
