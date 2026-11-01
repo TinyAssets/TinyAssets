@@ -9,7 +9,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall, type Message } from "@earendil-works/pi-ai";
-import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { LiveDoc, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
 import type { Origin } from "../src/ledger";
@@ -284,6 +284,19 @@ describe("an app socket on a thread's watch", () => {
     expect(later.length).toBeLessThan(notes - SOCKET_WINDOW);
   });
 
+  it("closes a socket whose watch pi ends on its own (its Session gone): watch_lost",
+     async () => {
+    const r = await rig();
+    const thread = await r.say("one");
+    const client = await r.socket(thread);
+    await client.until((c) => c.frames.length > 0, "the view");
+    await r.in(async (instance) => {
+      await instance.agent.host.close(thread);
+    });
+    await client.until((c) => c.closed !== null, "the close");
+    expect(client.closed).toEqual({ code: CLOSE.lost[0], reason: CLOSE.lost[1] });
+  });
+
   it("closes a socket whose frame is malformed or of another version", async () => {
     const r = await rig();
     const thread = await r.say("one");
@@ -322,6 +335,30 @@ describe("an app socket on a thread's watch", () => {
 });
 
 describe("the live tee in the view's vocabulary", () => {
+  it("follows a commit with the tail of the tee's text it does not hold yet", async () => {
+    const r = await rig();
+    const thread = await r.say("one");
+    const client = await r.socket(thread);
+    await client.until((c) => c.frames.length > 0, "the view");
+    const session = (client.conversation.docs["pi.provider"] as { sessionId: string }).sessionId;
+    await r.in(async (instance) => {
+      const tee = instance.parts.tee;
+      tee.publish(session, { type: "start" });
+      tee.publish(session, { type: "text_start", contentIndex: 0 });
+      tee.publish(session, { type: "text_delta", contentIndex: 0, delta: "abcdef" });
+      // pi commits a partial behind the stream: "abc".
+      await (await instance.agent.pi(thread)).commit(async (tx) => {
+        (await tx.doc(LiveDoc, ROOT)).generation = { attempt: 1, message: {
+          role: "assistant", content: [{ type: "text", text: "abc" }] } as never };
+      }, BG);
+    });
+    await client.until((c) => c.frames.at(-1)?.type === "live", "the tail after the commit");
+    expect(client.frames.at(-2)!.type).toBe("ops");
+    expect(client.frames.at(-1)!.ops).toEqual([
+      ["a", ["docs", "pi.live", "generation", "message", "content", 0, "text"], "def"]]);
+    expect([shownText(client.view), shownText(client.display)]).toEqual(["abc", "abcdef"]);
+  });
+
   it("lays the tee's text over the committed partial as appends by content index", () => {
     const view = (text: string | null) => ({
       conversation: {}, entries: [],

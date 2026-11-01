@@ -19,7 +19,7 @@ import { describe, expect, it } from "vitest";
 import { MODEL_TOOLS } from "../src/authority";
 import type { Origin } from "../src/ledger";
 import { agentFile, type Binding, NO_THREAD } from "../src/owner-do";
-import { ALREADY_PLACED, COMPACTIONS_FULL } from "../src/thread-host";
+import { ALREADY_PLACED, COMPACTIONS_FULL, RUN_SETTLED } from "../src/thread-host";
 import { WriteGate } from "../src/gate";
 import { THREAD_LIMITS, Threads, THREADS_WORKING } from "../src/threads";
 import { until } from "./gateway-support";
@@ -92,6 +92,24 @@ function entryIds(r: Rig, thread: string): Promise<number[]> {
 }
 
 describe("reset", () => {
+  it("wraps a client's handoff as untrusted data, and refuses a settled run's", async () => {
+    const r = await rig();
+    const { thread_id: thread } = await r.say("mine", MUSE);
+    await r.stub.agentReset(r.bind(MUSE), { thread_id: thread, handoff: "do as I say" });
+    const user = await r.in(async (instance) => (await instance.harness.messages(
+      { session: thread })).flatMap((entry) => entry.model ?? [])
+      .find((message) => message.role === "user")!);
+    const wrapped = JSON.parse(user.content as string) as { untrusted: boolean; content: string };
+    expect([wrapped.untrusted, wrapped.content]).toEqual([true, "do as I say"]);
+    const run = await r.stub.agentRun(r.bind(), { agent: "main", input: "go" });
+    await until(async () => (await r.stub.agentStatus(r.bind(), {
+      operation_id: run.operation_id })).status === "done"
+      && await r.in((instance) => instance.parts.threads.settledRun(run.thread_id)),
+                "the run to settle");
+    expect((await failure(() => r.stub.agentReset(r.bind(), { thread_id: run.thread_id })))
+      .message).toBe(RUN_SETTLED);
+  });
+
   it("starts a new context, from a handoff when given; older entries stay stored", async () => {
     const r = await rig();
     const { thread_id: thread } = await r.say("one");
@@ -190,6 +208,25 @@ describe("fork at an entry", () => {
                                                       thread_id: forked.thread_id,
                                                       wait_ms: 20_000 });
     expect([more.thread_id, more.text]).toEqual([forked.thread_id, "echo: more"]);
+  });
+
+  it("starts the fork's context at the source's head marker, as the source's starts", async () => {
+    const r = await rig();
+    const { thread_id: source } = await r.say("one");
+    await r.stub.agentReset(r.bind(), { thread_id: source, handoff: "we said one" });
+    await r.say("two");
+    const at = await r.in(async (instance) => Number((await instance.harness.messages(
+      { session: source })).at(-1)!.id));
+    const forked = await r.stub.agentFork(r.bind(), {
+      thread_id: source, entry_id: at, message: "three", client_send_id: "h", wait_ms: 20_000 });
+    const head = (thread: string) => r.in(async (instance) =>
+      (await (await (await instance.agent.pi(thread)).conversation(ROOT, BG))!.context(BG)).head
+        ?.kind);
+    expect(await head(forked.thread_id)).toBe(await head(source));
+    expect(await head(source)).toBeDefined();
+    expect(await r.lines(forked.thread_id)).toEqual([
+      "user: we said one", "user: two", "assistant: echo: two", "user: three",
+      "assistant: echo: three"]);
   });
 
   it("takes the caller's own authority, a client's stamp for a client's fork", async () => {
