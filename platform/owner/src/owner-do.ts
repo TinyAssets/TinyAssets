@@ -25,7 +25,9 @@
  *
  * Its code cannot reach another owner's object: the Worker binds only `FILES`, the files
  * Worker, which itself binds no Durable Object and no service, `GATEWAY`, the model
- * gateway, which binds nothing at all, and `PISTORE`, the namespace of its own agent
+ * gateway, which binds nothing at all, `HOOKS`, the hooks Worker, which binds only its
+ * Worker Loader and its own two classes (`hooks.ts`, `codemode.ts`: packages' remote
+ * hooks and code mode's VMs run there, never here), and `PISTORE`, the namespace of its own agent
  * thread stores (`thread-store.ts`), each named by a random id only this object's rows
  * hold, and none of which reaches anything; the runtime hands it no
  * `ctx.exports` (`disable_ctx_exports`); and its source never names `exports` or imports
@@ -140,11 +142,12 @@ import {
   type Agent, clock, Ledger, type MailPage, type Origin, outsideOrigin, type Posted,
   registrant, type Source,
 } from "./ledger";
+import type { HooksService } from "./hooks";
 import { type Notice, Notices } from "./notices";
 import { Erasure } from "./erase";
 import { ERASE_RETRY_MS, ERASING, erasing } from "./erasure";
 import {
-  agentPolicy, type Change, fileSettings, modelSettings, packageSelection, Policy,
+  agentPolicy, type Change, fileSettings, hookSettings, modelSettings, packageSelection, Policy,
   type PolicyDocument,
   type Projection, type Receipt, runPolicy,
 } from "./policy";
@@ -355,14 +358,16 @@ export interface Operation {
 }
 
 /**
- * The object's environment: two service bindings, `FILES`, to the files Worker, which
- * binds no Durable Object and no service, and `GATEWAY`, to the model gateway, which binds
- * nothing (the config guard checks every config), and never a binding to its own
+ * The object's environment: three service bindings, `FILES`, to the files Worker, which
+ * binds no Durable Object and no service, `GATEWAY`, to the model gateway, which binds
+ * nothing, and `HOOKS`, to the hooks Worker, which binds only its loader and its own
+ * classes (the config guard checks every config), and never a binding to its own
  * namespace.
  */
 export interface OwnerEnv {
   readonly FILES: ChunkStore;
   readonly GATEWAY: GatewayService;
+  readonly HOOKS: HooksService;
   /** The agent's thread stores (`thread-store.ts`), named by their threads' rows. */
   readonly PISTORE: DurableObjectNamespace<ThreadStore>;
 }
@@ -1019,6 +1024,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                           },
                           admission: () => workRefusal(admission(storage)),
                           packages: () => packageSelection(this.#policy.read().document),
+                          hooks: () => env.HOOKS, owner,
+                          hookPolicy: () => hookSettings(this.#policy.read().document),
                           joined: (turn) => (this.#usage.turnLive(turn) ? null : TURN_ENDED),
                           sockets: {
                             opened: (thread) => this.#sockets.opened(thread),

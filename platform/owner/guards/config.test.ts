@@ -15,7 +15,11 @@
  * gains (a Durable Object, a service, a queue, a workflow, a dispatch namespace, a
  * Worker loader, a tail consumer, a shared store, an unsafe binding) refuses the owner's
  * binding. For `GATEWAY`, the model gateway, that is no binding at all, and its one secret,
- * the keyring, declared by name (`secrets.required`), which binds nothing either. Its
+ * the keyring, declared by name (`secrets.required`), which binds nothing either. For
+ * `HOOKS`, the hooks Worker (H0), that is its one Worker Loader and the namespaces of its
+ * own two classes, exactly (`HookRunner` and `CodemodeSandbox`, no `script_name`, so no
+ * other Worker's class), made by its migrations as SQLite, and its `limits` exactly: no
+ * `OWNER`, no storage binding, so a hook or a script reaches no owner. Its
  * compatibility flags carry
  * `disable_ctx_exports`, so the runtime does not hand the object its own namespaces as
  * `ctx.exports`. Its `limits` are exactly `LIMITS`, set at top level: the platform's count
@@ -74,7 +78,22 @@ interface Bound {
   readonly bindings: Readonly<Record<string, number>>;
   /** The secrets its config may declare by name (each binds nothing); none by default. */
   readonly secrets?: readonly string[];
+  /**
+   * The namespaces of its own classes it may bind, exactly as given (none with a
+   * `script_name`), and the classes its migrations make, SQLite; none by default.
+   */
+  readonly own?: { readonly durable_objects: unknown; readonly classes: readonly string[] };
+  /** Its `limits`, exactly, when it may set any; none by default. */
+  readonly limits?: unknown;
 }
+
+/** The hooks Worker's own classes, as its config binds them. */
+const HOOKS_OWN = Object.freeze({
+  durable_objects: Object.freeze({ bindings: Object.freeze([
+    Object.freeze({ name: "RUNNER", class_name: "HookRunner" }),
+    Object.freeze({ name: "CODEMODE", class_name: "CodemodeSandbox" })]) }),
+  classes: Object.freeze(["HookRunner", "CodemodeSandbox"]),
+});
 
 /** The service bindings the owner Worker may hold, by binding name. */
 const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
@@ -82,6 +101,9 @@ const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
                          bindings: Object.freeze({ r2_buckets: 1 }) }),
   GATEWAY: Object.freeze({ service: "tinyassets-gateway", bindings: Object.freeze({}),
                            secrets: Object.freeze(["GATEWAY_KEYRING"]) }),
+  HOOKS: Object.freeze({ service: "tinyassets-hooks",
+                         bindings: Object.freeze({ worker_loaders: 1 }), own: HOOKS_OWN,
+                         limits: Object.freeze({ cpu_ms: 30_000 }) }),
 });
 
 type Config = Record<string, unknown>;
@@ -105,10 +127,28 @@ function object(value: unknown): value is Config {
  */
 export function boundProblems(config: Config, allowed: Bound): string[] {
   const secrets = allowed.secrets ?? [];
+  const own = allowed.own;
   const problems = Object.keys(config)
     .filter((key) => !BOUND_KEYS.has(key) && !Object.hasOwn(allowed.bindings, key)
-                     && !(key === "secrets" && secrets.length > 0))
+                     && !(key === "secrets" && secrets.length > 0)
+                     && !(own !== undefined && (key === "durable_objects"
+                                                || key === "migrations"))
+                     && !(key === "limits" && allowed.limits !== undefined))
     .map((key) => `${key} is not a binding the owner's ${allowed.service} binding allows`);
+  if (own !== undefined) {
+    if (JSON.stringify(config["durable_objects"]) !== JSON.stringify(own.durable_objects)) {
+      problems.push("durable_objects binds other than its own classes");
+    }
+    const made = (Array.isArray(config["migrations"]) ? config["migrations"] as Config[] : [])
+      .flatMap((migration) => Object.entries(migration)).filter(([field]) => field !== "tag");
+    if (JSON.stringify(made) !== JSON.stringify([["new_sqlite_classes", own.classes]])) {
+      problems.push(`migrations make other than ${own.classes.join(" and ")}, SQLite`);
+    }
+  }
+  if (allowed.limits !== undefined && config["limits"] !== undefined
+      && JSON.stringify(config["limits"]) !== JSON.stringify(allowed.limits)) {
+    problems.push(`limits are other than ${JSON.stringify(allowed.limits)}`);
+  }
   const declared = config["secrets"];
   if (declared !== undefined && secrets.length > 0
       && JSON.stringify(declared) !== JSON.stringify({ required: secrets })) {
@@ -227,11 +267,13 @@ const config = parseConfig(readFileSync(join(OWNER, CONFIG), "utf8"));
 
 describe("owner Worker config", () => {
   it("binds only FILES, to a Worker that binds one bucket, GATEWAY, to one that binds " +
-     "nothing, and PISTORE, its own thread stores, and turns ctx.exports off", () => {
+     "nothing, HOOKS, to one that binds its loader and its own classes, and PISTORE, its " +
+     "own thread stores, and turns ctx.exports off", () => {
     expect(configProblems(config, platformConfigs())).toEqual([]);
     expect(config["compatibility_flags"]).toContain(NO_EXPORTS);
     expect(config["services"]).toEqual([{ binding: "FILES", service: "tinyassets-files" },
-                                        { binding: "GATEWAY", service: "tinyassets-gateway" }]);
+                                        { binding: "GATEWAY", service: "tinyassets-gateway" },
+                                        { binding: "HOOKS", service: "tinyassets-hooks" }]);
     expect(config["durable_objects"]).toEqual(
       { bindings: [{ name: "PISTORE", class_name: "ThreadStore" }] });
   });
@@ -319,10 +361,60 @@ describe("owner Worker config", () => {
       .toEqual([`env.prod.limits are not ${JSON.stringify(LIMITS)}`]);
   });
 
-  it("refuses FILES and GATEWAY when their Workers' configs are not in the platform", () => {
+  it("refuses FILES, GATEWAY and HOOKS when their Workers' configs are not in the platform",
+     () => {
     expect(configProblems(config)).toEqual(
       ["services binds tinyassets-files, whose config is not in the platform",
-       "services binds tinyassets-gateway, whose config is not in the platform"]);
+       "services binds tinyassets-gateway, whose config is not in the platform",
+       "services binds tinyassets-hooks, whose config is not in the platform"]);
+  });
+
+  const hooks = { name: "tinyassets-hooks", main: "src/index.ts",
+                  compatibility_flags: ["disable_ctx_exports"], workers_dev: false,
+                  limits: { cpu_ms: 30_000 }, worker_loaders: [{ binding: "LOADER" }],
+                  durable_objects: HOOKS_OWN.durable_objects,
+                  migrations: [{ tag: "v1", new_sqlite_classes: HOOKS_OWN.classes }] };
+  const hooksBinding = [{ binding: "HOOKS", service: "tinyassets-hooks" }];
+
+  it("allows HOOKS to the hooks Worker, which binds its loader and its own two classes",
+     () => {
+    expect(configProblems({ ...config, services: hooksBinding },
+                          new Map([["tinyassets-hooks", hooks as Config]]))).toEqual([]);
+  });
+
+  it.each([
+    ["the owner's class", { durable_objects: { bindings: [
+      ...HOOKS_OWN.durable_objects.bindings,
+      { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-owner" }] } }],
+    ["its runner as another Worker's class", { durable_objects: { bindings: [
+      { name: "RUNNER", class_name: "HookRunner", script_name: "tinyassets-owner" },
+      HOOKS_OWN.durable_objects.bindings[1]] } }],
+    ["the thread stores", { durable_objects: { bindings: [
+      ...HOOKS_OWN.durable_objects.bindings,
+      { name: "PISTORE", class_name: "ThreadStore", script_name: "tinyassets-owner" }] } }],
+    ["no classes", { durable_objects: undefined }],
+    ["a third class made", { migrations: [{ tag: "v1", new_sqlite_classes: [
+      ...HOOKS_OWN.classes, "Other"] }] }],
+    ["classes made without SQLite", { migrations: [{ tag: "v1", new_classes: HOOKS_OWN.classes }] }],
+    ["a second loader", { worker_loaders: [{ binding: "LOADER" }, { binding: "MORE" }] }],
+    ["no loader", { worker_loaders: [] }],
+    ["a service", { services: [{ binding: "OWNER", service: "tinyassets-owner" }] }],
+    ["a bucket", { r2_buckets: [{ binding: "B", bucket_name: "tinyassets-files" }] }],
+    ["a KV namespace", { kv_namespaces: [{ binding: "KV", id: "shared" }] }],
+    ["a var", { vars: { OWNER: "alice" } }],
+    ["a secret", { secrets: { required: ["GATEWAY_KEYRING"] } }],
+    ["other limits", { limits: { cpu_ms: 30_000, subrequests: 10 } }],
+    ["a route", { routes: ["tinyassets.io/hooks/*"] }],
+    ["an environment", { env: { prod: { name: "tinyassets-hooks-prod" } } }],
+  ])("refuses HOOKS when the hooks Worker holds %s", (_what, extra) => {
+    const probe: Config = { ...hooks, ...extra };
+    for (const [key, value] of Object.entries(extra)) {
+      if (value === undefined) {
+        delete probe[key];
+      }
+    }
+    expect(configProblems({ ...config, services: hooksBinding },
+                          new Map([["tinyassets-hooks", probe]]))).not.toEqual([]);
   });
 
   it("refuses FILES bound to another platform Worker, even one that binds nothing", () => {

@@ -52,6 +52,18 @@
  * hold, and a scoped client never delegates past what it may run (`OwnerAgent.#delegate`,
  * `delegate.ts`).
  *
+ * Code mode (`codemode`, pi's, H1, when the owner's policy turns it on) is a tool `ta`
+ * reaches like any other, registered callable by tools only, and listed to a conversation
+ * whose authority holds its need (`run_code`, `TOOL_CAPABILITIES`): its script's `tools.*`
+ * are each a nested call the gate holds to the caller's authority. A script asks the
+ * object's model source with `tools.model_complete` (`modelCompleteTool`), this `model`
+ * capability's call as a tools-only tool, `replay: "unsafe"`, so it passes the gate and the
+ * packages' hooks, is reserved and charged to the turn, counts in `pi.usage`, and a rerun
+ * after a restart answers `interrupted`, never charging twice. `ta` makes its nested call
+ * under `CODEMODE_KEY`, the only key the gate lets a `codemode` call run under, so a
+ * script's own `tools.codemode` is refused. Code mode's own tools (`pi.codemode.*`, and
+ * `model_complete`) are its scripts': `ta` neither lists nor calls them.
+ *
  * `ta` is `callers: ["model"]` (no tool reaches it, so a nested call never nests `ta`) and
  * `replay: "safe"`, with its own rule for a rerun after a restart, so only what may run
  * twice does: a read runs again (it writes nothing); a delegation runs again and finds its
@@ -77,8 +89,8 @@ import {
 } from "@earendil-works/pi-durable";
 
 import {
-  type Authority, type AuthorityState, type Need, stampOf, TA_CAPABILITIES,
-  TA_OP, TA_TOOL,
+  type Authority, type AuthorityState, CODEMODE_KEY, CODEMODE_TOOL, type Need, stampOf,
+  TA_CAPABILITIES, TA_OP, TA_TOOL, TOOL_CAPABILITIES,
 } from "./authority";
 import { Invalid, Refused } from "./errors";
 import type { Usage as FileUsage } from "./files";
@@ -126,6 +138,10 @@ export const EFFECT_MEMO = "ta.effect";
 export const DELEGATE_TASK_MAX = 32_000;
 /** The subagent capability (`delegate.ts`, run by `OwnerAgent.#delegate`). */
 export const DELEGATE = "agent:delegate";
+/** Code mode's internal tools' prefix (pi's `CODEMODE_INTERNAL_PREFIX`): never `ta`'s. */
+export const CODEMODE_INTERNAL = "pi.codemode.";
+/** The tool a code mode script asks the object's model source with, as `model` does. */
+export const MODEL_COMPLETE = "model_complete";
 
 /** What the object's platform capabilities run on: its own modules, read or in a unit. */
 export interface Platform {
@@ -211,6 +227,20 @@ const ZERO: PiUsage = Object.freeze({
 });
 
 /** The v1 platform capabilities, in the catalog's order: made per `ta`, never at load. */
+/** The `model` capability's parameters: what a nested model call takes. */
+function modelParameters(): TSchema {
+  return Type.Object({
+    messages: Type.Array(Type.Object({
+      role: StringEnum(["user", "assistant"] as const),
+      text: Type.String(),
+    }, { additionalProperties: false }), { minItems: 1, maxItems: MODEL_MESSAGES }),
+    system: Type.Optional(Type.String()),
+    model: Type.Optional(Type.String({
+      description: "A connected model's id; auto when omitted." })),
+    max_tokens: Type.Optional(Type.Integer({ minimum: 1 })),
+  }, { additionalProperties: false });
+}
+
 function platformCapabilities(): readonly PlatformCapability[] {
   return [
     {
@@ -257,16 +287,7 @@ function platformCapabilities(): readonly PlatformCapability[] {
       name: "model",
       description: "Ask a connected model, within this turn's budget. The default model is the " +
         "owner's strongest connected one (auto).",
-      parameters: Type.Object({
-        messages: Type.Array(Type.Object({
-          role: StringEnum(["user", "assistant"] as const),
-          text: Type.String(),
-        }, { additionalProperties: false }), { minItems: 1, maxItems: MODEL_MESSAGES }),
-        system: Type.Optional(Type.String()),
-        model: Type.Optional(Type.String({
-          description: "A connected model's id; auto when omitted." })),
-        max_tokens: Type.Optional(Type.Integer({ minimum: 1 })),
-      }, { additionalProperties: false }),
+      parameters: modelParameters(),
       run: async (args, scope) => modelCall(args, scope),
     },
     {
@@ -376,6 +397,34 @@ async function modelCall(args: Record<string, unknown>, scope: Scope):
                       total_tokens: answer.usage.totalTokens } },
     usage: answer.usage,
   };
+}
+
+/**
+ * `model_complete`, a code mode script's `tools.model_complete(request)`: the `model`
+ * capability's call as a tools-only tool, on the script's own conversation and causal chain,
+ * so it is reserved, dispatched and settled as any of the turn's calls, and refused as they
+ * are. It is a nested call of code mode's (pi journals it by its key), `replay: "unsafe"`,
+ * so a rerun after a restart answers `interrupted` and never asks, or charges, twice; its
+ * usage is on its result, which pi counts in `pi.usage`. Its value is what `model` answers.
+ */
+export function modelCompleteTool(): ToolRegistration {
+  return defineTool({
+    name: MODEL_COMPLETE,
+    description: "Ask a connected model, within this turn's budget: {messages: [{role, " +
+      "text}], system?, model?, max_tokens?}; resolves to {text, model, stop_reason, usage}. " +
+      "The default model is the owner's strongest connected one (auto).",
+    parameters: modelParameters(),
+    structuredOutputSchema: Type.Unknown(),
+    callers: ["tools"],
+    replay: "unsafe",
+    execute: async (args, api, context) => {
+      const { value, usage } = await modelCall(args as Record<string, unknown>, {
+        state: undefined, api, context,
+        write: () => { throw new Error(READ_WRITES); } });
+      return { output: [{ type: "text", text: JSON.stringify(value) }],
+               structuredOutput: value as JsonObject, usage };
+    },
+  });
 }
 
 /** A request `ta` takes: a catalog page, or a call. */
@@ -552,6 +601,9 @@ async function tools(api: ToolExecutionApi, context: Context):
   const deferred = new Set(agent.deferred.map((tool) => tool.name));
   const found = new Map<string, { tool: ToolRegistration; deferred: boolean }>();
   for (const tool of agent.callable) {
+    if (tool.name.startsWith(CODEMODE_INTERNAL) || tool.name === MODEL_COMPLETE) {
+      continue;  // code mode's own, reached only by its scripts
+    }
     if (reachable(tool) && (PLATFORM_NAMES.includes(tool.name) || tool.name.startsWith(TA_OP))) {
       // A package may not take one (`packageRefusal`); one of the object's own that does is
       // a fault, never a shadow.
@@ -586,9 +638,12 @@ export function taTool(parts: TaParts): ToolRegistration {
                       parameters: capability.parameters });
       }
     }
-    // A tool has no need of its own in `ta`'s map: a client's grant reaches it only whole.
-    if (parts.authority.refusal(scope.state, undefined) === undefined) {
-      for (const { tool, deferred } of (await tools(scope.api, scope.context)).values()) {
+    // A tool has no need of its own in `ta`'s map but code mode's (`TOOL_CAPABILITIES`): a
+    // client's grant reaches any other only whole.
+    for (const { tool, deferred } of (await tools(scope.api, scope.context)).values()) {
+      const toolNeed = Object.hasOwn(TOOL_CAPABILITIES, tool.name)
+        ? TOOL_CAPABILITIES[tool.name] : undefined;
+      if (parts.authority.refusal(scope.state, toolNeed) === undefined) {
         listed.push({ name: tool.name, description: tool.description, effect: true,
                       ...(deferred ? { deferred: true as const } : {}),
                       parameters: tool.parameters });
@@ -633,7 +688,9 @@ export function taTool(parts: TaParts): ToolRegistration {
     if (!(await tools(scope.api, scope.context)).has(called.name)) {
       throw new Refused(`${UNKNOWN_CAPABILITY}: ${called.name}`);
     }
-    const nested = await scope.api.executeTool(called.name, called.arguments, scope.context);
+    // Code mode under its one key, which the gate holds every `codemode` call to.
+    const nested = await scope.api.executeTool(called.name, called.arguments, scope.context,
+      called.name === CODEMODE_TOOL ? { key: CODEMODE_KEY } : {});
     const out = nested.structuredOutput;
     const text = out === undefined ? "" : typeof out === "string" ? out : JSON.stringify(out);
     return {

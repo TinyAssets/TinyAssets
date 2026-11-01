@@ -33,6 +33,14 @@ const PI = Object.freeze({
     "iQRF+VgRS0fpgAi+iKxjZ3BQA==",
 });
 const VERSION = "1.4.0";
+/**
+ * pi's code mode, whose sandbox client (the owner's `RemoteCodemodeSandbox`) and server (the
+ * hooks Worker's `CodemodeSandboxDurableObject`) speak one protocol across the HOOKS binding:
+ * both Workers pin the one version, by its lockfile integrity, beside pi-durable's own.
+ */
+const CODEMODE = "@earendil-works/pi-codemode";
+const CODEMODE_INTEGRITY = "sha512-23CNAXpS9DuLzPMyYuvrXVVio46x4YhffCgCqaWmF7F5H8PooqjrQvX4" +
+  "ucF6M0BhUd+x2tV6r1J0dv8cCME4Cg==";
 
 type Lock = { packages: Record<string, { version?: string; integrity?: string;
                                          devDependencies?: Record<string, string>;
@@ -55,5 +63,16 @@ describe("pi pin guard", () => {
     expect(lock.packages["owner"]!.devDependencies![name]).toBe(VERSION);
     // The one minor agents supports (its `~1.4.0` peer range) holds the pinned version.
     expect(lock.packages["owner/node_modules/agents"]!.peerDependencies![name]).toBe("~1.4.0");
+  });
+
+  it("pins pi's code mode in the owner and the hooks Worker alike, at pi-durable's", () => {
+    const resolved = lock.packages[`node_modules/${CODEMODE}`]!;
+    expect([resolved.version, resolved.integrity]).toEqual([VERSION, CODEMODE_INTEGRITY]);
+    expect(owner.devDependencies[CODEMODE]).toBe(VERSION);
+    const hooks = JSON.parse(readFileSync(join(PLATFORM, "hooks", "package.json"), "utf8")) as
+      { dependencies: Record<string, string> };
+    expect(hooks.dependencies[CODEMODE]).toBe(VERSION);
+    expect((lock.packages["node_modules/@earendil-works/pi-durable"] as
+      { dependencies?: Record<string, string> }).dependencies?.[CODEMODE]).toBe(VERSION);
   });
 });

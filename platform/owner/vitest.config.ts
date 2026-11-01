@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -13,9 +13,12 @@ import { defineConfig } from "vitest/config";
 const PLATFORM = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FILES = join(PLATFORM, "files");
 const GATEWAY = join(PLATFORM, "gateway");
+const HOOKS = join(PLATFORM, "hooks");
 
 type WorkerConfig = { name: string; compatibility_date: string; compatibility_flags: string[];
-                      r2_buckets?: { binding: string }[] };
+                      r2_buckets?: { binding: string }[];
+                      worker_loaders?: { binding: string }[];
+                      durable_objects?: { bindings: { name: string; class_name: string }[] } };
 
 function config(dir: string): WorkerConfig {
   return ts.parseConfigFileTextToJson(
@@ -81,6 +84,45 @@ function gatewayWorker(keyring: string) {
   }
 }
 
+/**
+ * The real hooks Worker, as the HOOKS service binding's target: bundled by wrangler from its
+ * own config, as a deploy bundles it (its shim and runner, pi's code mode sandbox and the
+ * QuickJS module it compiles), with its own runtime, flags, Worker Loader and two classes.
+ */
+function hooksWorker() {
+  const hooks = config(HOOKS);
+  const out = mkdtempSync(join(tmpdir(), "owner-hooks-"));
+  try {
+    const wrangler = join(dirname(createRequire(join(HOOKS, "package.json"))
+      .resolve("wrangler/package.json")), "bin", "wrangler.js");
+    execFileSync(process.execPath, [wrangler, "deploy", "--dry-run", "--outdir", out,
+                                    "--config", join(HOOKS, "wrangler.jsonc")],
+                 { cwd: HOOKS, stdio: "pipe",
+                   env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
+    // The entry first: miniflare takes the first module as the main one.
+    const built = readdirSync(out).filter((file) => /\.(?:js|wasm)$/.test(file))
+      .sort((a, b) => Number(b === "index.js") - Number(a === "index.js")
+                      || a.localeCompare(b));
+    return {
+      name: hooks.name,
+      modulesRoot: HOOKS,
+      modules: built.map((file) => ({
+        type: file.endsWith(".wasm") ? "CompiledWasm" as const : "ESModule" as const,
+        path: join(HOOKS, file),
+        contents: readFileSync(join(out, file)),
+      })),
+      compatibilityDate: hooks.compatibility_date,
+      compatibilityFlags: hooks.compatibility_flags,
+      workerLoaders: Object.fromEntries((hooks.worker_loaders ?? [])
+        .map((loader) => [loader.binding, {}])),
+      durableObjects: Object.fromEntries((hooks.durable_objects?.bindings ?? [])
+        .map((binding) => [binding.name, { className: binding.class_name, useSQLite: true }])),
+    };
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+}
+
 /** The gateway's fake outside world (`gateway/test/fake-upstream.ts`), transpiled. */
 function fakeUpstream() {
   const path = join(GATEWAY, "test", "fake-upstream.ts");
@@ -107,9 +149,9 @@ export default defineConfig({
         // Worker no binding to its own namespace. AGENT, MALFORMED and GATED are the test
         // Worker's own classes of the object (test/worker.ts): its agent on faux models,
         // with a package pi refuses, and on the production gateway provider with its
-        // gateway calls watched. FILES and GATEWAY are the config's own bindings, to the
-        // files and gateway Workers run beside it; PISTORE is the config's own namespace of
-        // thread stores, the real class. TEST_KEYRING is the gateway's keyring,
+        // gateway calls watched. FILES, GATEWAY and HOOKS are the config's own bindings, to
+        // the files, gateway and hooks Workers run beside it; PISTORE is the config's own
+        // namespace of thread stores, the real class. TEST_KEYRING is the gateway's keyring,
         // so a test can seal under an older kid; the tests' own fetches reach the fake.
         plugins: [
           cloudflareTest({
@@ -125,7 +167,7 @@ export default defineConfig({
               },
               bindings: { TEST_KEYRING: KEYRING },
               outboundService: "fake-upstream",
-              workers: [filesWorker(), gatewayWorker(KEYRING), fakeUpstream()],
+              workers: [filesWorker(), gatewayWorker(KEYRING), hooksWorker(), fakeUpstream()],
             },
           }),
         ],

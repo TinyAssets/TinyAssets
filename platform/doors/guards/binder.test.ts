@@ -3,7 +3,10 @@
  *
  * - `getByName` appears only in `doors/src/binder.ts`, across every Worker's source, but
  *   for the owner's object naming its own thread stores (`env.PISTORE.getByName`, in
- *   `owner-do.ts` alone, by the random ids its rows hold), and no source names another
+ *   `owner-do.ts` alone, by the random ids its rows hold) and for the hooks Worker naming
+ *   its own two classes' objects (`this.env.RUNNER` and `this.env.CODEMODE`, in
+ *   `hooks/src/index.ts` alone: an owner's hook runner and a code mode execution's sandbox,
+ *   which bind nothing of an owner), and no source names another
  *   way to an object id (`idFromName`, `idFromString`, `newUniqueId`).
  * - A `Binding` is built only there: no other doors source writes an object literal with
  *   a `caller`.
@@ -24,6 +27,9 @@ import { parse, reporter, workerSources } from "../../owner/guards/sources";
 const BINDER = "doors/src/binder.ts";
 /** The owner's object, which names its own thread stores and nothing else. */
 const OWNER_DO = "owner/src/owner-do.ts";
+/** The hooks Worker's entry, which names its own two classes' objects and nothing else. */
+const HOOKS_ENTRY = "hooks/src/index.ts";
+const HOOKS_OWN = new Set(["this.env.RUNNER", "this.env.CODEMODE"]);
 const SESSION = "doors/src/session.ts";
 const DIRECTORY = "doors/src/directory.ts";
 const CONNECT = "doors/src/connect.ts";
@@ -45,9 +51,11 @@ export function binderProblems(fileName: string, source: string): string[] {
   const doors = fileName.startsWith("doors/src/");
   const visit = (node: ts.Node): void => {
     const name = nameOf(node);
-    if (name === "getByName" && fileName !== BINDER && !(fileName === OWNER_DO
-        && ts.isPropertyAccessExpression(node.parent) && node.parent.name === node
-        && node.parent.expression.getText(file) === "env.PISTORE")) {
+    const on = name === "getByName" && ts.isPropertyAccessExpression(node.parent)
+      && node.parent.name === node ? node.parent.expression.getText(file) : null;
+    if (name === "getByName" && fileName !== BINDER
+        && !(fileName === OWNER_DO && on === "env.PISTORE")
+        && !(fileName === HOOKS_ENTRY && on !== null && HOOKS_OWN.has(on))) {
       report(node, "names getByName outside the binder");
     }
     if (name !== null && OBJECT_IDS.has(name)) {
@@ -109,6 +117,9 @@ describe("binder guard", () => {
     ["doors/src/directory.ts", "export const k = 's:session';"],
     ["doors/src/app.ts", "export const f = (env: any) => env.GATEWAY.seal('a', 'c', 1, 'k', {});"],
     ["doors/src/binder.ts", "export const f = ({ GATEWAY }: any) => GATEWAY;"],
+    [HOOKS_ENTRY, "export const f = (env: any) => env.OWNER.getByName('bob');"],
+    [HOOKS_ENTRY, "export const f = (env: any) => env.RUNNER.getByName('bob');"],
+    ["hooks/src/runner.ts", "export const f = (o: any) => o.env.RUNNER.getByName('bob');"],
   ])("sees, in %s, %s", (fileName, source) => {
     expect(binderProblems(fileName, source)).not.toEqual([]);
   });
@@ -116,6 +127,8 @@ describe("binder guard", () => {
   it.each([
     ["doors/src/binder.ts", "export const f = (ns: any) => ns.getByName('alice');"],
     [OWNER_DO, "export const f = (env: any, name: string) => env.PISTORE.getByName(name);"],
+    [HOOKS_ENTRY, "class H { env: any; f(n: string) { return this.env.RUNNER.getByName(n); } }"],
+    [HOOKS_ENTRY, "class H { env: any; f(n: string) { return this.env.CODEMODE.getByName(n); } }"],
     ["doors/src/binder.ts", "export const b = { owner: 'a', caller: 'a', origin: null };"],
     ["doors/src/session.ts", "export const f = (r: Request) => r.headers.get('Cookie');"],
     ["doors/src/app.ts", "export const h = { 'Set-Cookie': 'x' };"],
