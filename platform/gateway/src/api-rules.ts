@@ -24,8 +24,9 @@
  *   another.
  * - `tier`: a top-level option that multiplies the price and that pi-ai prices from the
  *   answer (so the settle is right): the call is reserved at its value's multiplier, the
- *   highest pi-ai can apply for it, and a value not listed is refused. Absent, the price is
- *   standard.
+ *   highest pi-ai can apply for it, and a value not listed is refused. Absent, the provider
+ *   applies the account's own default, which may be dear: the call is reserved at `absent`,
+ *   the dearest value the API allows (the settle still charges what pi-ai prices).
  * - `unpriced`: options that change the price beyond tokens and that pi-ai does not price
  *   (a premium speed or geography, another tier, a non-text output): refused
  *   `egress_unpriced_option` unless absent or each value among `allowed`.
@@ -48,7 +49,8 @@ export interface ApiRules {
   readonly fallbacks: readonly (readonly string[])[];
   readonly model: string | null;
   readonly tier: { readonly key: string;
-                   readonly multipliers: Readonly<Record<string, number>> } | null;
+                   readonly multipliers: Readonly<Record<string, number>>;
+                   readonly absent: number } | null;
   readonly unpriced: readonly { readonly path: readonly string[];
                                 readonly allowed: readonly string[] }[];
 }
@@ -89,7 +91,8 @@ const RESPONSES: ApiRules = Object.freeze({
   // models): reserved at the most it applies; flex, half price, is reserved at standard.
   tier: Object.freeze({ key: "service_tier",
                         multipliers: Object.freeze({ default: 1, flex: 1, auto: 2.5,
-                                                     priority: 2.5 }) }),
+                                                     priority: 2.5 }),
+                        absent: 2.5 }),
   unpriced: Object.freeze([]),
 });
 
@@ -242,12 +245,16 @@ export function unpricedOption(rules: ApiRules, body: unknown): boolean {
 
 /**
  * The multiplier the call's tier (`value`, its tier option's value; null when absent)
- * prices it at: 1 when absent, or when the API has no priced tier (its `unpriced` rules
- * hold the key); null for a value not listed (refused).
+ * is reserved at: the tier's `absent` (the dearest the API allows) when absent, 1 when the
+ * API has no priced tier (its `unpriced` rules hold the key), null for a value not listed
+ * (refused).
  */
 export function tierMultiplier(rules: ApiRules, value: string | null): number | null {
-  if (rules.tier === null || value === null) {
+  if (rules.tier === null) {
     return 1;
+  }
+  if (value === null) {
+    return rules.tier.absent;
   }
   return Object.hasOwn(rules.tier.multipliers, value) ? rules.tier.multipliers[value]! : null;
 }

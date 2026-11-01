@@ -369,7 +369,8 @@ describe("the price beyond tokens (review round 3)", () => {
     // The reservation holds the most pi-ai applies for it.
     const rules = apiRules("openai-responses")!;
     expect(tierMultiplier(rules, "priority")).toBeGreaterThanOrEqual(priority!.cost / standard!.cost);
-    expect(tierMultiplier(rules, null)).toBe(1);
+    // Absent, the account's own default may be dear: reserved at the dearest allowed.
+    expect(tierMultiplier(rules, null)).toBe(Math.max(...Object.values(rules.tier!.multipliers)));
     expect(tierMultiplier(rules, "scale")).toBeNull();
     expect(tierMultiplier(apiRules("anthropic-messages")!, "standard_only")).toBe(1);
   });

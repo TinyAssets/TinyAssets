@@ -16,6 +16,7 @@ import type { ModelInfo } from "../src/connections";
 import { EGRESS_LIMITS, type EgressOpened, LOST_AFTER_S } from "../src/egress";
 import { RUN_DEADLINE_S } from "../src/network";
 import type { Binding, OpenedLease } from "../src/owner-do";
+import { apiRules } from "../../gateway/src/api-rules";
 import { egressPrice, NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY, SYNC_FENCED } from "../src/owner-do";
 import { SPEND_KEPT } from "../src/schema";
 import { priced } from "../src/usage";
@@ -503,7 +504,10 @@ describe("a call's reservation (review round 3)", () => {
     const lease = await defaultLease(r);
     const opened = await admitted(r, lease, connection, { path, model: normal.model.id });
     expect(opened.metering).toMatchObject({ model: normal.model.id });
-    expect((await charges(r))[0]).toMatchObject({ est_cost: normal.holds });
+    // A Responses call that names no tier is held at the dearest its API allows.
+    const tiered = apiRules(record.upstream.api)!.tier;
+    expect((await charges(r))[0])
+      .toMatchObject({ est_cost: Math.ceil(normal.holds * (tiered?.absent ?? 1)) });
   });
 
   it("reads a model a path names, as Google's API names it", async () => {
@@ -524,7 +528,8 @@ describe("a call's reservation (review round 3)", () => {
     const connection = await r.connect("sk-good", OPENAI);
     const dearest = (await pricedModels(r, connection)).at(-1)!;
     const lease = await leased(r);
-    await admitted(r, lease, connection, { path: "/v1/responses", model: dearest.model.id });
+    await admitted(r, lease, connection, { path: "/v1/responses", model: dearest.model.id,
+                                           tier: "default" });
     expect((await charges(r))[0]).toMatchObject({ charge: "held", est_cost: dearest.holds,
                                                   max_output_tokens: dearest.model.maxTokens });
   });
@@ -543,21 +548,23 @@ describe("a call's reservation (review round 3)", () => {
     expect(await charges(r)).toHaveLength(3);
   });
 
-  it("holds a priority-tier call at the most pi-ai prices that tier at", async () => {
+  it("holds a priority-tier call, or one naming no tier, at the most pi-ai prices a tier at",
+     async () => {
     const r = await gated();
     const connection = await r.connect("sk-good", OPENAI);
     const named = (await pricedModels(r, connection))[0]!;
     const lease = await leased(r);
-    const standard = await admitted(r, lease, connection, { path: "/v1/responses",
-                                                            model: named.model.id });
-    const priority = await admitted(r, lease, connection, { path: "/v1/responses",
-                                                            model: named.model.id,
-                                                            tier: "priority" });
-    expect(standard.metering).toMatchObject({ tier: null });
+    const call = (tier: string | null) => admitted(r, lease, connection, {
+      path: "/v1/responses", model: named.model.id, tier });
+    const standard = await call("default");
+    const priority = await call("priority");
+    // No tier: the account's own default applies, which may be priority.
+    const unnamed = await call(null);
+    expect(standard.metering).toMatchObject({ tier: "default" });
     expect(priority.metering).toMatchObject({ tier: "priority" });
-    const [held, prioritised] = await charges(r);
-    expect(prioritised!["est_cost"]).toBe(Math.ceil(named.holds * 2.5));
-    expect(held!["est_cost"]).toBe(named.holds);
+    expect(unnamed.metering).toMatchObject({ tier: null });
+    expect((await charges(r)).map((row) => row["est_cost"]))
+      .toEqual([named.holds, Math.ceil(named.holds * 2.5), Math.ceil(named.holds * 2.5)]);
   });
 });
 

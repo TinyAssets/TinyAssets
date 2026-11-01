@@ -522,7 +522,10 @@ account and no deploy.
   beyond tokens**, per field, by whether pi-ai prices it: the Responses API's
   `service_tier`, which pi-ai prices from the answer, is reserved at the most pi-ai
   applies for its value (`priority` and `auto` ×2.5, `default` and `flex` ×1, any other
-  refused); every option pi-ai does not price is refused `egress_unpriced_option`: chat
+  refused), and a call naming none at the dearest its API allows (×2.5: the account's own
+  default may be priority; the settle still charges pi-ai's true price). The rule is
+  general: a price-raising field left absent, where the provider's default may vary by
+  account, is reserved at its dearest allowed value; every option pi-ai does not price is refused `egress_unpriced_option`: chat
   completions' `service_tier`, `modalities` beyond `text` and `audio`; Anthropic's
   `speed` but `standard`, `inference_geo` but `global` and `service_tier` but
   `standard_only`; Google's `responseModalities` beyond text, `speechConfig` and
