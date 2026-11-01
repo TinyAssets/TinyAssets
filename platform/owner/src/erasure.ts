@@ -15,7 +15,8 @@
  * 3. **`deleteAll()` the owner**, Lifecycle's alarm disabled first, so nothing is written
  *    after it but the tombstone: the erased admission row (`admission.ts`), written into the
  *    empty database in the same synchronous turn (`WriteGate.wipe`); a killed turn can
- *    lose it (the window `erase.ts` names, slice 10's to close).
+ *    lose it (the window `erase.ts` names, not measured in production; slice 10's to
+ *    close).
  *
  * A namespace's objects cannot be listed, so a store whose name no row holds could never be
  * found again. Every store is named in its row before it is made, in the same unit that
