@@ -67,7 +67,12 @@ export interface ApiRules {
   readonly served: { readonly paths: readonly (readonly string[])[];
                      readonly priced: readonly string[];
                      /** The multiplier an answer that reports no tier settles at. */
-                     readonly absent?: number } | null;
+                     readonly absent?: number;
+                     /**
+                      * The event types (each event's JSON `type`) whose tier is the served
+                      * one, as pi-ai reads it; every event when absent.
+                      */
+                     readonly events?: readonly string[] } | null;
   /** The beta headers a call may carry, each one its reservation accounts for. */
   readonly betas: readonly string[];
 }
@@ -118,9 +123,13 @@ const RESPONSES: ApiRules = Object.freeze({
   unpriced: Object.freeze([]),
   // The tier the answer was served at, which pi-ai prices; an answer naming none was
   // served at the account's own default, which may be priority: settled at the dearest.
+  // Read from the terminal event alone, as pi-ai does: `response.created` echoes what was
+  // asked (`auto`), not what served.
   served: Object.freeze({ paths: Object.freeze([Object.freeze(["response", "service_tier"])]),
                           priced: Object.freeze(["default", "flex", "priority"]),
-                          absent: 2.5 }),
+                          absent: 2.5,
+                          events: Object.freeze(["response.completed",
+                                                 "response.incomplete"]) }),
   betas: Object.freeze([]),
 });
 
@@ -328,6 +337,9 @@ export async function servedPriced(rules: ApiRules, body: ReadableStream<Uint8Ar
       event = JSON.parse(text);
     } catch {
       return;  // not JSON (`[DONE]`): no tier in it
+    }
+    if (served.events !== undefined && !served.events.includes(valueAt(event, ["type"]) as string)) {
+      return;  // not an event the served tier is read from
     }
     for (const path of served.paths) {
       const tier = valueAt(event, path);

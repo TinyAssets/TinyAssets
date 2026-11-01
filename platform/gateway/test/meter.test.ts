@@ -455,6 +455,27 @@ describe("a tier left to the account (review round 3, Anthropic)", () => {
                         apiRules("google-generative-ai")!)).toBe(true);
   });
 
+  it("reads a Responses answer's tier from its terminal event alone, as pi-ai does", async () => {
+    const rules = apiRules("openai-responses")!;
+    const events = (created: string | null, completed: string | null, terminal =
+      "response.completed") => streamOf(sse([
+      ["response.created", { type: "response.created", response: {
+        id: "r1", ...(created === null ? {} : { service_tier: created }) } }],
+      [terminal, { type: terminal, response: {
+        id: "r1", ...(completed === null ? {} : { service_tier: completed }) } }]]));
+    // An echoed `auto` at the start is what was asked, not what served.
+    expect(await servedPriced(rules, events("auto", "default")))
+      .toEqual({ priced: true, seen: true });
+    expect(await servedPriced(rules, events("auto", "priority")))
+      .toEqual({ priced: true, seen: true });
+    expect(await servedPriced(rules, events("auto", "priority", "response.incomplete")))
+      .toEqual({ priced: true, seen: true });
+    expect(await servedPriced(rules, events("auto", "scale"))).toEqual({ priced: false, seen: true });
+    // No tier at the end: unseen, so settled at the dearest the API allows.
+    expect(await servedPriced(rules, events("priority", null)))
+      .toEqual({ priced: true, seen: false });
+  });
+
   it("decodes SSE as its specification does: CR, LF and CRLF endings, multi-line data",
      async () => {
     const rules = apiRules("anthropic-messages")!;

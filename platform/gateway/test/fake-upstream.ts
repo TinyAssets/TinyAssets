@@ -257,7 +257,11 @@ async function model(request: Request, format: Format, input?: number): Promise<
   const payload = (format.start(name, input) + format.text(reply.slice(0, half))
     + format.text(reply.slice(half)) + format.finish(reply))
     .replace('"status":"completed",', tier === null ? '"status":"completed",'
-      : `"status":"completed","service_tier":${JSON.stringify(tier)},`)
+      : `"status":"completed","service_tier":${JSON.stringify(tier === "auto" ? "default" : tier)},`)
+    // As OpenAI's does, its first event echoes the tier the call asked for, and the last
+    // names the one it served at (`auto` resolved to `default`).
+    .replace('"response":{"id":"resp_fake"}', tier === null ? '"response":{"id":"resp_fake"}'
+      : `"response":{"id":"resp_fake","service_tier":"auto"}`)
     .replace('"usage":{"input_tokens":', served === null ? '"usage":{"input_tokens":'
       : `"usage":{"service_tier":${JSON.stringify(served)},"input_tokens":`);
   return new Response(payload, { headers: { "content-type": "text/event-stream" } });

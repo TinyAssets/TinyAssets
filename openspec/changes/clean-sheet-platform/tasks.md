@@ -535,7 +535,9 @@ account and no deploy.
   a chat-completions provider that reports no tier in its answer. That is safe only
   because those providers' paid tiers are request-opt-in, and requests naming a tier are
   already refused (`egress_unpriced_option`). A Responses answer that reports no tier
-  settles at the absent multiplier (×2.5), not ×1, failing closed. The `served` scan
+  settles at the absent multiplier (×2.5), not ×1, failing closed; its tier is read from
+  the terminal event alone (`response.completed`, `response.incomplete`; the rule's
+  `events`), as pi-ai reads it, since `response.created` echoes what was asked (`auto`). The `served` scan
   decodes SSE as its specification does (CR, LF and CRLF endings, multi-line `data:`
   fields). Provider beta headers (`anthropic-beta`, `openai-beta`, any `*-beta`) are
   stripped from every metered call unless the API's rules list one its reservation

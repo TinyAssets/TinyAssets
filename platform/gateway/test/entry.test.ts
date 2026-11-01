@@ -205,6 +205,10 @@ describe("the gateway Worker", () => {
     const unnamed = await settledAt(await sent({}, null));
     expect(unnamed.state).toBe("succeeded");
     expect(unnamed.cost).toBeCloseTo(standard.cost * 2.5, 12);
+    // The first event's echoed `auto` is not the served tier: `default` at the end is ×1.
+    const auto = await settledAt(await sent({ service_tier: "auto" }, "auto"));
+    expect(auto.state).toBe("succeeded");
+    expect(auto.cost).toBeCloseTo(standard.cost, 12);
     // Provider beta headers, which can widen a call past its reservation, are stripped.
     const betaText = JSON.stringify({ model: model!.id, input: "hi" });
     const beta = await egress.forward("alice", "c1", 1, blob, new Request(
