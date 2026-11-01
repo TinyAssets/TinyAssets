@@ -1,5 +1,11 @@
 /**
- * The doors' router: every path the doors Worker serves on `tinyassets.io`.
+ * The doors' router: every path the doors Worker serves on `tinyassets.io`, and the egress
+ * door on `egress.tinyassets.io`.
+ *
+ * - `egress.tinyassets.io/c/<connection>/*`: the sandbox's model clients, by their egress
+ *   token (`egress.ts`), the `Cookie` header removed. Nothing else is served on that
+ *   origin, and the egress door is served on no other, so a sandbox token reaches no other
+ *   door. No route is deployed for it until the routes slice.
  *
  * - `/mcp`: the `Cookie` header removed, a present `Origin` held to `MCP_ORIGINS`
  *   (`403` otherwise), then the resource host (the token), the kill switch, the binder
@@ -22,11 +28,13 @@
  */
 import { serveApi } from "./api";
 import { serveApp } from "./app";
+import { serveEgress } from "./egress";
 import { authorize, callback } from "./authorize";
 import { connectCallback } from "./connect";
 import { bindMcp } from "./binder";
 import {
-  CONNECT_CALLBACK_PATH, type DoorsEnv, MCP_ORIGINS, PUBLIC_ORIGIN, WEB_CLIENT, WEB_REDIRECT,
+  CONNECT_CALLBACK_PATH, type DoorsEnv, EGRESS_ORIGIN, MCP_ORIGINS, PUBLIC_ORIGIN, WEB_CLIENT,
+  WEB_REDIRECT,
 } from "./config";
 import { outsideGate } from "./control";
 import { serveMcp } from "./mcp";
@@ -64,6 +72,9 @@ async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext):
 export async function serve(request: Request, env: DoorsEnv, ctx: ExecutionContext,
                             upstream: Upstream, sources: Sources): Promise<Response> {
   const url = new URL(request.url);
+  if (url.origin === EGRESS_ORIGIN) {
+    return serveEgress(withoutCookie(request), env, ctx);
+  }
   if (url.origin !== PUBLIC_ORIGIN) {
     return notFound();
   }

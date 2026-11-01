@@ -199,8 +199,8 @@ superseded, and the deletion slice removes them from this list.
   alone is a proof (never its hash); the object mints it; sessions, proposals (with a
   per-client share), each receipt bucket and the grant rows the owner sets are
   bounded, and a grant row nothing depends on is forgotten oldest first rather than a
-  new client refused; an egress host the URL parser reads as an IP address waits for
-  the gateway's address check (4).
+  new client refused; an egress host the URL parser reads as an IP address is refused
+  (G4 keeps it so: the gateway fetches strictly publicly and E2B filters CIDRs).
 - [x] 3.6 The schedule: one table, run as jobs on the Agents SDK Lifecycle queue, which
   owns the single alarm and the thread host's wake jobs (one per agent thread, S3); 3.4's direct `setAlarm`/`deleteAlarm`
   move onto it. Built (`schedule.ts`): `OwnerDO` holds a Lifecycle (`agents/lifecycle`,
@@ -455,15 +455,186 @@ account and no deploy.
   the provider's own upstream binding for the owner's sign-in) does not come back with
   the callback; the app slice decides how (a claimed https redirect into the app, or the
   binding carried another way).
-- [ ] G4 The egress door (with the sandbox slice): `egress.tinyassets.io/c/<connection>/*`,
-  the sandbox identity (E2B workload identity or a lease token), `egressOpen`, `forward`,
-  `egressSettle`; the E2B network document from owner policy. Owed by 3.5: each egress
-  request is admitted at open against the owner's current policy generation, so no
-  tunnel outlives a write; a policy write ends the owner's in-flight turns and re-sets the
-  sandbox's network, fail-closed until it does; resolved addresses are not visible to
-  Workers fetch, so the gateway fetches strictly publicly, the object refuses IP
-  literals, E2B filters CIDRs, and a live probe confirms private addresses are
-  unreachable.
+- [x] G4 (slice 8a) The egress door, the sandbox's identity, its spend and its network
+  document, in workerd, nothing deployed and no E2B call; 8b (the sandbox) only calls it.
+  The door is the main path for API-key model use: a provider CLI in the sandbox (or pi,
+  one optional CLI there) reaches its provider through it with a placeholder key.
+  **Identity**: E2B workload identity is a private beta, so v1's is our own. The owner's
+  object mints two tokens per sandbox lease, each `<owner>.<expires>.<secret>.<mac>`: the
+  owner id as the binder already names owners (`getByName`; AuthKit's opaque `user_…` id),
+  base64url; the run's deadline in Unix seconds (the run's own, which 8b hands
+  `SandboxLeases.open` as `deadline` for each run, at most `RUN_DEADLINE_S`, a day, which
+  is also the default);
+  256 random bits; and HMAC-SHA-256 under the routing key over the token's kind, owner,
+  expiry and secret (`doors/src/routing-mac.ts`, the one module both Workers use). Past
+  its expiry the door refuses a token `egress_token_expired` without reaching any object. The routing key,
+  `ROUTING_MAC_KEY`, is a Worker secret of the owner Worker (which mints) and the doors
+  Worker (which verifies), 32 random bytes generated at deploy, declared in both configs
+  (`secrets.required`) and held by both config guards; a Worker without a usable one fails
+  loudly. Only each secret's SHA-256 is kept, on the lease row. The **egress token** is for
+  E2B's static transform on `egress.tinyassets.io` (`x-ta-sandbox`) alone, never the VM;
+  the **sync token** is the in-VM sync agent's, and works only on the sync doors
+  (`fileChanges`, `fileSyncCommit`) for its lease and epoch; the kind is in the MAC, so
+  neither works on the other's doors. The door verifies the MAC before any stub call, so a
+  forged, altered or other-kind token reaches no object; then routes by the token's own
+  owner part (no directory entry, no KV on the path), and the object checks the hash, the
+  lease and its expiry, strongly consistent. **No writes for strangers**: the object
+  checks a sandbox binding is the binder's exact shape before it writes anything, and
+  refuses one for an owner whose object never opened a lease (`NO_SANDBOX`), writing no row.
+  Workload identity, once E2B grants it (founder, gateway research §13 item 2), swaps the
+  door's identity check only. **One lease**: the sync lease (`files.ts`; its `lease_id` the
+  claim token, its epoch the fencing number, for sync commits and egress alike), which
+  migration 14 binds to the two hashes and the egress generation its network was applied
+  under. The lease API is owner-internal (`SandboxLeases`: open, renew, close, network
+  applied, network, stale, config); no door reaches it, and 8b's `exec`, which runs in the
+  owner's object, gets it with the agent's parts when 8b wires `exec` (the tests take it
+  through `Internals.sandbox`). **The door** (`doors/src/egress.ts`, on
+  `egress.tinyassets.io` only): the token verified, the maintenance gate, then
+  `OwnerDO.egressOpen` (`egress.ts`, `work`): the lease by the egress hash (checked first,
+  so only a live lease's call refreshes OAuth), the transform's and the lease's egress
+  generations, the connection, its sealed endpoints by the gateway's own `egressTarget`;
+  a read (`GET`, `HEAD`: a model list) is free and goes unmetered, and any other call must
+  be pi-ai's metered model call for its API (`meteredCall`) with a declared body length;
+  64 open and 600 a minute; then **the charge**. Each refusal is a fixed code kept as a
+  receipt, at most 60 a minute, in a bucket apart from the admitted calls'. **The charge**
+  (`egress.ts`'s own, in the open's unit, so two calls at once never pass a cap between
+  them): the call's row in `egress_reservations` holds it (`held` to settled once:
+  `succeeded`, `failed` or `unknown`), and the schema's triggers alone count it, into
+  `egress_runs`, its **sandbox run**'s requests, tokens and cost (the run is the lease and
+  its epoch: a new lease is a new run; the model policy's per-turn limits are a run's caps,
+  rules `run_requests`, `run_tokens`, `run_cost`), and into `model_spend`, its source's day
+  and month, which the owner's and the source's daily and monthly ceilings read and which
+  the loop's calls move too: the model policy's caps, no more and no less (the spend
+  table, `ask_above` among it, is the agent's purchases', never a model call's). Each open
+  prunes the spend counters past their window, as the loop's reserve does, so an owner who
+  uses only the sandbox never fills them. **8b opens a lease per engine run**, so a run's
+  caps are per run, not per sandbox life, and sets each run's tokens to expire at that
+  run's own deadline (a closed lease's token is refused by the object until then). Nothing of
+  it reads or imports pi's engine (a policy-boundary guard holds its runtime imports free
+  of `usage.ts`, the thread host and pi-durable, read by the TypeScript compiler, every
+  import resolved or the guard fails), so it outlives the in-object loop. **The
+  reservation rule**: the call is reserved for the model it names, read where its API's
+  rules say (the door reads the body's top-level `model`, `HINT_KEYS`, once, and hands it
+  to `egressOpen` with the body's tier; a path names Google's), refused
+  `egress_unknown_model` when the connection does not list it, and priced at that model's
+  dearest rates (input at the dearest of uncached, cache-read and cache-write) by pi-ai's
+  `calculateCost` over the catalog's records: the input held at that model's context
+  window (a body's bytes do not bound its tokens: a file, a cached context or a prior
+  response it names can be far larger), and the output at that model's cap and what the
+  caps leave, which the gateway clamps every output-cap alias the API reads to; the
+  gateway refuses a body naming another model or tier (`egress_reservation_mismatch`); a call asking several choices (`n`, `candidateCount`)
+  is refused `egress_multiple_choices`, and one enabling a server-side tool the provider
+  bills beyond tokens (a web search, code execution, a hosted MCP connector, a plugin) is
+  refused `egress_unmetered_tool`, by each API's data (`gateway/src/api-rules.ts`). **Price
+  beyond tokens**, per field, by whether pi-ai prices it: the Responses API's
+  `service_tier`, which pi-ai prices from the answer, is reserved at the most pi-ai
+  applies for its value (`priority` and `auto` ×2.5, `default` and `flex` ×1, any other
+  refused), and a call naming none at the dearest its API allows (×2.5: the account's own
+  default may be priority; the settle still charges pi-ai's true price). The rule is
+  general: a price-raising field left absent, where the provider's default may vary by
+  account, is reserved at its dearest allowed value, or, where pi-ai prices no value but
+  one, set to that one (`default_when_absent`: Anthropic's `service_tier` is sent
+  `standard_only` when a call names none, as Claude Code's do, which changes only a
+  priority-commitment account's speed through TinyAssets, never its price); and an answer
+  that reports a served tier pi-ai does not price (`served`: Anthropic's
+  `usage.service_tier` other than `standard`; chat completions' `service_tier` other than
+  `default` or Groq's `on_demand`) settles `unknown`, its whole charge kept. The residual:
+  a chat-completions provider that reports no tier in its answer. That is safe only
+  because those providers' paid tiers are request-opt-in, and requests naming a tier are
+  already refused (`egress_unpriced_option`). A Responses answer that reports no tier
+  settles at the absent multiplier (×2.5), not ×1, failing closed; its tier is read from
+  the terminal event alone (`response.completed`, `response.incomplete`; the rule's
+  `events`), as pi-ai reads it, since `response.created` echoes what was asked (`auto`). The `served` scan
+  decodes SSE as its specification does (CR, LF and CRLF endings, multi-line `data:`
+  fields). Provider beta headers (`anthropic-beta`, `openai-beta`, any `*-beta`) are
+  stripped from every metered call unless the API's rules list one its reservation
+  accounts for (`betas`; none today), since a beta can widen a call past its
+  reservation (a longer context); every option pi-ai does not price is refused `egress_unpriced_option`: chat
+  completions' `service_tier`, `modalities` beyond `text` and `audio`; Anthropic's
+  `speed` but `standard`, `inference_geo` but `global` and `service_tier` but
+  `standard_only`; Google's `responseModalities` beyond text, `speechConfig` and
+  `imageConfig` (an image, audio or agentic answer is priced at no text rate). So the
+  charge bounds what the call can cost and the settle gives the difference back; refused
+  below 1,024 output tokens. With the defaults a run's cost cap holds a few calls of a dear
+  model at once, and many of a cheap one: fail-closed, and CLIs mostly call one after
+  another; **owed to 8b's live measurement** of each CLI's real concurrency. An endpoint pi-ai cannot meter
+  is refused, since a run's caps are always set (the stricter of the two rules). Then the
+  gateway's `EgressGateway.forward`, **metered** (`gateway/src/meter.ts`): pi-ai's adapter
+  for the sealed API, run once against a fetch of ours (no network, the credential's own
+  secret handed in as the loop hands it), says which method and path its model call is,
+  where the model id goes and which body field caps the output; the gateway reads the
+  request's model there, finds the catalog's record, clamps the output cap, refuses a body
+  past the reserved length, forwards, and tees the answer through the same adapter (pi-ai's
+  own parser) to read its usage; a streamed call is made to ask for its usage report as
+  pi-ai's own call does (`stream_options.include_usage` for chat completions), and an
+  answer with none (zero tokens) is `unknown`. The usage is priced at pi-ai's own
+  `usage.cost.total` for the model the call named (every multiplier pi-ai applies, a
+  service tier's among them), or a dearer served model (pi-ai's `responseModel`) scaled by
+  the same ratio, so a router (`openrouter/auto`) or a fallback list never settles cheaper
+  than what served. A served id the catalog does not list settles at the named model's
+  price only when it is that model's dated or versioned snapshot (the named id, a
+  separator, then a date or a version: one pattern, `snapshotOf`) and the named model is
+  concrete (priced, no fallbacks), the served id kept on the receipt; anything else
+  uncatalogued is `unknown`. A model priced
+  at nothing that names no other is `unknown` too. The outcome comes back on a second
+  stream. With no metering (a read) it forwards `GET` and `HEAD` alone
+  (`forwardRead`). The answer streams through as the provider writes it (SSE unbuffered,
+  but the redaction's hold-back of a secret's length less one). Then `egressSettle` once on
+  every end, through a fresh stub with one retry, registered with `waitUntil` at open: the
+  door's outcome and bytes, and the charge `succeeded` at pi-ai's cost, `failed` (nothing
+  sent, or the provider refused before any output) or `unknown` (a cut, an abort, an
+  answer pi-ai cannot read), which keeps the whole charge; one never settled is `lost`
+  past six minutes, its charge `unknown`. Every stop (the object's end signal, the
+  deadline, the client leaving) aborts the provider's request through a stop stream the
+  gateway watches. **Ends**: a policy write, a suspension, the connection's revoke, the
+  lease's close or a successor lease, and the erasure end the streams they cover (research
+  §6 let them finish within five minutes: a declared difference). The object stays
+  resident while it holds a stream's end signal, billed duration for it. **Owed by 3.5,
+  done**: each call is admitted at open against the current **egress generation**, which
+  moves only when the policy's egress table does (the grants' revision/authority split), so
+  a write that changes egress leaves the network stale, egress refused, fail-closed, until
+  8b applies it again (`SandboxLeases.stale` tells 8b's lane), and no other policy change
+  stalls egress; the gateway fetches strictly publicly and the object refuses IP literals
+  (`network.ts`'s `checkDestination`, the policy's own rule). **The network document**
+  (`network.ts`, pure): E2B's `allowOut`, `denyOut`, `dnsServers` and `rules` (e2b SDK
+  2.62.0 `SandboxNetworkOpts`/`SandboxNetworkUpdate`/`SandboxNetworkInfo`;
+  docs.e2b.dev/network/internet-access): deny all, allow `*` in `open` mode or the
+  policy's names on 80 and 443, always `egress.tinyassets.io`, DNS pinned to 1.1.1.1, the
+  transform on the door alone; another port is refused (not expressible by name), and
+  `ask` is an allowlist plus a refusal receipt at each apply. **Allowlist mode is not a
+  data boundary in v1**: E2B allows all traffic to a DNS server, on every port, and its
+  rules name no ports, so the resolver cannot be held to 53 (DNS tunnelling, DoH); the plan
+  says so (`BOUNDARY_NOTE`, every network plan's `note`). **Placeholders** (`sandboxEnv`):
+  `<PROVIDER>_BASE_URL`/`_API_KEY` for each provider's oldest connection (Claude Code's
+  `ANTHROPIC_*`, Codex's and Qwen Code's `OPENAI_*`, `MISTRAL_API_KEY`), `TA_<CONNECTION>_*`
+  for every one, and, as data, the CLIs the rule does not name: Gemini CLI's
+  `GOOGLE_GEMINI_BASE_URL` (the door and the connection alone) and `GEMINI_API_KEY`; keys
+  `ta_ph_<connection>_<random>`; `forward` strips every inbound credential, query keys of
+  any case among them. Owner-bound guard 46.3% (4,627,732,900 bytes, about 372 MB under
+  half), no trade needed. **The E2B project's API key is a platform secret** with the
+  egress token's custody: E2B's sandbox info returns static transform headers. **Owed to
+  8b's live probe**: that E2B filters CIDRs so private addresses (127.0.0.1, 10.0.0.1,
+  169.254.169.254) are unreachable; whether code in the sandbox can read its own transform
+  header; whether E2B's proxy honours the VM's `/etc/hosts` or VM DNS for a transformed host
+  (a redirect would carry the egress token to the VM's choice), and SNI-fronting under
+  allowlist; that the project's API key can read transforms (above); that the sandbox
+  resolves only through the pinned resolver (its `/etc/resolv.conf`); whether the VM has
+  IPv6 (`denyOut` holds IPv4's all-traffic only); whether calls on frontier models
+  serialize under the default caps (a 1M-window model's charge holds most of a $25 run
+  cap, so parallel calls wait); whether Gemini's `thinkingBudget` counts inside
+  `maxOutputTokens` (if not, its output can pass the reservation, settled at the real
+  cost); that a request in flight across
+  `updateNetwork` carries the old generation; and each CLI's base-URL variables (the
+  subscription research names only Grok's) against the CLI itself. **Out of v1**, each
+  waiting for a TLS-terminating proxy (a founder call: a host, against Direction 8) or a
+  tool's base-URL support: non-model credentials (GitHub, Notion and the rest), git through
+  credentials (git is the file plane's and the sync agent's), WebSocket APIs, and SigV4; a
+  model API's other billed calls pi-ai does not make (`count_tokens`, `countTokens`,
+  embeddings), refused `egress_unmetered` until a reviewed record marks one unbilled; and
+  a non-streaming model call's answer: pi-ai's adapters parse their stream only, so a
+  JSON answer has no usage pi-ai can read and settles `unknown`, its whole charge kept. No API-key source record exists yet for
+  Anthropic, OpenAI or xAI (Claude Code, Codex and Grok Build by key): each is a record
+  file in `platform/sources/`, its endpoints sealed as above.
 - [ ] G5 Measurement and cost: pi-durable's partial commits at most once a second with
   the live tee, per-owner busy seconds, rows written, call durations and delta counts, and
   the rule for building the deferred mode for unattended turns; measured through pi's and
@@ -1548,9 +1719,21 @@ account and no deploy.
   worst case at the policy's high bounds under half of 10 GB.
 - [ ] Doors (with tasks 2): the HTTP `/api/files` door and MCP file tools over the
   `file*` RPC doors, the scoped-grant capabilities `read_files` and `write_files` named
-  as those tools are, and sandbox lease tokens in the owner directory (a 256-bit bearer
-  bound to owner, lease id and expiry, resolved by the binder as the owner).
-- [ ] The sandbox: the E2B sandbox through our proxy; the in-VM sync agent (sync in from
+  as those tools are, and the sync agent's HTTP route by its sync token (the token, its
+  binding and its acceptance at `fileChanges` and `fileSyncCommit` are G4's; the route,
+  and the upload and chunk doors' acceptance of it, are this item's). The sync agent reaches
+  the file doors through a transform too, so the VM never holds a token that spends.
+- [ ] The sandbox (slice 8b), calling G4's `SandboxLeases` in the owner's object only (the
+  agent's parts carry it to `exec`): the E2B client and lifecycle (`open` for a sandbox
+  run, its egress token in the static transform and its network document and
+  environment setting the sandbox up; `networkApplied` after each `updateNetwork`, and
+  again whenever `stale` says the egress table moved, since egress is refused until it;
+  `renew` on the 20 s heartbeat; `close` when the run ends: **a lease per engine run**, so
+  a run's caps (the model policy's per-turn limits) are per run, never one sandbox's whole
+  life, and its tokens die with the run's deadline), the E2B project API key and `ROUTING_MAC_KEY` held as platform
+  secrets, the template (its `/etc/resolv.conf` naming
+  the pinned resolver), and G4's live probe (above); the
+  E2B sandbox through our proxy; the in-VM sync agent (sync in from
   the change feed, sync out as one fenced `fileSyncCommit`, a 20 s lease heartbeat and
   15 s checkpoints, `/proc` open-file deferral and SQLite file groups, the cold-create
   size cap); `exec` in the environment (wake, sync in, run, sync out, report conflicts

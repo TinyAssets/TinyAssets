@@ -12,7 +12,7 @@ import { type AssistantMessage, normalizeContext, type TranscriptContext } from 
 import { ProviderDoc, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { TelemetrySpan } from "@earendil-works/pi-telemetry";
 
-import type { Credential, Source } from "../../gateway/src/credential";
+import type { Credential, EgressScope, Source } from "../../gateway/src/credential";
 import { seal } from "../../gateway/src/keyring";
 import type { Provider } from "@earendil-works/pi-ai";
 
@@ -50,19 +50,33 @@ export const OAUTH: Source = Object.freeze({
 export const REDIRECT = "https://tinyassets.io/oauth/connect/callback";
 
 /**
+ * Where a credential sealed for `record` may be forwarded, as the real gateway Worker's
+ * setup check lists it: its base URL, endpoints and pi-ai's own metered call. (The check
+ * runs on `catalog`'s probe, so the endpoints are put back to the record's own; the
+ * owner's test isolate never loads pi-ai's catalog itself.)
+ */
+export async function scopeOf(record: Source): Promise<EgressScope> {
+  return { ...(await checked(record)).egress, endpoints: record.endpoints };
+}
+
+/**
  * The models the gateway's setup check lists for a source: its provider's catalog, once
  * its verify URL answers 2xx. Only the fake's Anthropic models endpoint answers a check, so
  * a throwaway working key is checked there, under the source's own provider and API.
  */
 export async function catalog(record: Source): Promise<ModelInfo[]> {
+  return (await checked(record)).models;
+}
+
+async function checked(record: Source): Promise<{ models: ModelInfo[]; egress: EgressScope }> {
   const probe: Source = {
     upstream: { ...record.upstream, auth: ANTHROPIC.upstream.auth,
                 verify_url: ANTHROPIC.upstream.verify_url! },
     endpoints: [...record.endpoints, ...ANTHROPIC.endpoints],
   };
   const { blob } = await env.GATEWAY.seal("catalog", "c-catalog", 1, "sk-good", probe);
-  return (await env.GATEWAY.verify("catalog", "c-catalog", 1, blob)).models as unknown as
-    ModelInfo[];
+  return await env.GATEWAY.verify("catalog", "c-catalog", 1, blob) as unknown as
+    { models: ModelInfo[]; egress: EgressScope };
 }
 
 /** The keyring the gateway holds, with `active` made the active kid. */
@@ -95,7 +109,7 @@ export async function gated() {
     const sealed = await env.GATEWAY.seal(name, prepared.connection, 1, key, record);
     const committed = await stub.connectionCommit(session(), {
       connection: prepared.connection, version: 1, blob: sealed.blob, kid: sealed.kid,
-      models: models ?? await catalog(record) });
+      models: models ?? await catalog(record), egress: await scopeOf(record) });
     return committed.connection;
   };
 
@@ -110,7 +124,8 @@ export async function gated() {
       record);
     await stub.connectionCommit(session(), {
       connection: prepared.connection, version: 1, blob: exchanged.blob, kid: exchanged.kid,
-      models: await catalog(record), expires_at: expiresAt ?? exchanged.expires_at });
+      models: await catalog(record), expires_at: expiresAt ?? exchanged.expires_at,
+      egress: await scopeOf(record) });
     return prepared.connection;
   };
 

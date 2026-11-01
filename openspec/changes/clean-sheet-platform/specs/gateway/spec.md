@@ -120,11 +120,18 @@ A stream the provider fails for its context's length after a 2xx SHALL end with 
 - **THEN** the stream ends with an `error` event of `context_length_exceeded`, and none of the provider's words
 
 ### Requirement: Sandbox egress is forwarded raw under the sealed endpoints
-`forward` SHALL send a sandbox request's method, path, query, headers and body to the credential's sealed origin only, strip every inbound credential (authorization and API-key headers, cookies, method overrides, the API-key query parameters, our own `x-ta-` headers and Cloudflare's), inject the sealed secret by the sealed auth template, cut the request at five minutes, and pass the provider's answer through.
+`forward` SHALL send a sandbox request's method, path, query, headers and body to the credential's sealed origin only, strip every inbound credential (authorization and API-key headers, cookies, method overrides, the API-key query parameters in any case, our own `x-ta-` headers and Cloudflare's), inject the sealed secret by the sealed auth template, cut the request at five minutes, and pass the provider's answer through.
 
 #### Scenario: A sandbox client sends a placeholder key
 - **WHEN** a request carries a placeholder in `authorization`, `x-api-key` and `?key=`
 - **THEN** the provider receives only the sealed secret, in the sealed header, and none of the placeholders
+
+### Requirement: A sandbox's model call is metered with pi-ai's own adapter
+On the `EgressGateway` entrypoint, `forward` SHALL meter the call: pi-ai's adapter for the sealed API, run once against a fetch of the gateway's own that reaches no network, SHALL say which method and path its model call is, where the model id goes and which body field caps the output. A call on any other path SHALL be refused `unmetered`; the call's model SHALL be read where pi-ai names it and found in the catalog (else `unknown_model`); its body SHALL be within the length its reservation was made for; every output-cap alias its API reads SHALL be clamped to the reservation's `max_output_tokens`; a call asking several choices SHALL be refused `egress_multiple_choices` and one enabling a server-side tool the provider bills beyond tokens `egress_unmetered_tool`, by each API's data; and a streamed call SHALL ask for its usage report as pi-ai's own call does. a body naming another model or tier than the call was reserved for SHALL be refused `egress_reservation_mismatch`, and one setting an option priced beyond tokens that pi-ai does not price `egress_unpriced_option`; an option the rules default when absent (`default_when_absent`) SHALL be sent at that value, the one pi-ai prices, and an answer that reports a served tier pi-ai does not price SHALL be `unknown` (one where its API's rules give an absent multiplier, reporting no tier, settles at it); its SSE SHALL be decoded as the SSE specification does; and a provider beta header (`*-beta`) SHALL be stripped from a metered call unless its API's rules list it. The answer SHALL be teed through the same adapter, so pi-ai's own parser reads its usage, priced at pi-ai's own total for the model the call named, or a dearer served model's price scaled by the same ratio; a served model the catalog does not list SHALL be settled at the named model's price, its id kept on the receipt, only when it is that model's dated or versioned snapshot, the named model is priced and the call listed no fallbacks, and `unknown` otherwise; an answer with no usage, or a model priced at nothing that names no other, SHALL be `unknown`; and the outcome (`succeeded` with tokens and cost, `failed`, or `unknown`) SHALL come back on a second stream once the answer ended. A stop stream the caller closes SHALL abort the provider's request. With no metering, `forward` SHALL send a read (`GET`, `HEAD`) of a sealed endpoint unmetered, and refuse any other method `unmetered`.
+
+#### Scenario: A stream pi-ai cannot read to its end
+- **WHEN** the answer is cut, aborted, or not the adapter's stream format
+- **THEN** the outcome is `unknown`, and the owner keeps the whole reservation
 
 ### Requirement: Forwarded answers never carry a secret
 `forward` SHALL ask the provider for an unencoded answer and SHALL redact every secret the credential holds, as written and JSON-escaped, from the answer's headers and body.
@@ -151,11 +158,11 @@ For a key-exchange source (the Python's `pkce_user_key_v1`, OpenRouter's), `exch
 - **WHEN** a key-exchange endpoint answers other than `200` with a key, or redirects
 - **THEN** the call fails with a fixed code, the redirect is never followed, and nothing is sealed
 
-### Requirement: The doors reach only the connect steps
-The gateway SHALL serve the doors Worker through a named entrypoint, `ConnectGateway`, that offers only `seal`, `exchange` and `verify`; model calls, egress forwarding, refresh, reseal and provider revocation SHALL stay on the entrypoint only the owner Worker binds.
+### Requirement: The doors reach only the connect steps and egress forwarding
+The gateway SHALL serve the doors Worker through two named entrypoints: `ConnectGateway`, which offers only `seal`, `exchange` and `verify`, and `EgressGateway`, which offers only `forward`, metered, for the egress door, once the owner's object admitted and reserved the call. Model calls, refresh, reseal and provider revocation SHALL stay on the entrypoint only the owner Worker binds.
 
-#### Scenario: The doors call a model or forward egress
-- **WHEN** the doors' binding is asked for `fetch`, `forward`, `refresh`, `reseal` or `revokeAtProvider`
+#### Scenario: The doors call a model
+- **WHEN** either doors binding is asked for `fetch`, `refresh`, `reseal` or `revokeAtProvider`, or the connect binding for `forward`
 - **THEN** the entrypoint has no such method
 
 ### Requirement: The gateway binds nothing and chooses no owner
@@ -170,7 +177,7 @@ The gateway Worker's config SHALL bind nothing and serve no URL: no binding of a
 - **THEN** the isolation guard fails CI
 
 ### Requirement: The setup check lists each model with the metadata the owner needs
-`verify` SHALL answer a working credential with the models its source serves (pi-ai's catalog for a built-in provider, the declared list for a custom endpoint), each its whole pi-ai record but for what is the gateway's own (provider, API, base URL, headers, compatibility and sampling parameters), since the owner object holds no catalog of its own and lists, prices, compacts and offers thinking levels by them.
+`verify` SHALL answer a working credential with its egress scope (the sealed base URL and endpoints and pi-ai's metered call, no secret, which the owner's object keeps to refuse an egress call to an endpoint not sealed or not metered before any forward) and the models its source serves (pi-ai's catalog for a built-in provider, the declared list for a custom endpoint), each its whole pi-ai record but for what is the gateway's own (provider, API, base URL, headers, compatibility and sampling parameters), since the owner object holds no catalog of its own and lists, prices, compacts and offers thinking levels by them.
 
 #### Scenario: A key is checked at connect time
 - **WHEN** the binder verifies a sealed Anthropic key that the provider accepts

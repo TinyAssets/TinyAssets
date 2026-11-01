@@ -49,16 +49,19 @@
  * The Python closed the owner's public egress tunnels before a write committed and
  * cancelled its live streams after. Here each model call carries the policy generation
  * its reservation read, in its envelope (`gateway-provider.ts`), and a call reserved
- * under an older one is never sent; owed by the agent (5), a policy write ends the
- * owner's in-flight turns and streams.
+ * under an older one is never sent; a policy write ends the owner's in-flight turns and
+ * streams, and its sandbox egress streams (`egress.ts`): each sandbox request is admitted
+ * at open against the current generation, and the sandbox's network is stale, egress
+ * refused, until the sandbox slice applies it again (G4).
  *
  * Declared differences from the Python:
  * - An egress destination whose host the WHATWG URL parser reads as an IP address
- *   (`8.8.8.8`, `0x7f000001`, `0x7f.1`, `[::1]`) is refused until the gateway's address
- *   check lands (tasks 4); the Python accepted a public one. A host no URL can carry
- *   (a name ending in a number, a malformed `xn--` label) is invalid. Every other DNS
- *   name the Python accepted is accepted here, and what a name resolves to is the
- *   gateway's to check at each call.
+ *   (`8.8.8.8`, `0x7f000001`, `0x7f.1`, `[::1]`) is refused (`EGRESS_IP_LITERAL`); the
+ *   Python accepted a public one. Workers `fetch` shows no resolved address, so the
+ *   gateway fetches strictly publicly, E2B filters the sandbox's CIDRs (its live probe is
+ *   the sandbox slice's), and the sandbox's network admits names by SNI (G4). A host no
+ *   URL can carry (a name ending in a number, a malformed `xn--` label) is invalid. Every
+ *   other DNS name the Python accepted is accepted here.
  * - The document is bounded (`maxDocument`), and receipts are kept per bucket
  *   (`receiptsPerBucket`): owner changes, agent proposals and refusals each apart, so
  *   neither an agent nor a refused stranger can push the owner's changes out. The
@@ -82,10 +85,13 @@ import { createHash } from "node:crypto";
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import { CHUNK_BYTES, KEEP_CEILING, MAX_INTENT_CHUNKS } from "./files";
+import { checkDestination } from "./network";
 import { PACKAGES_DIR, storedPath, within } from "./paths";
 import type { PackageSelection } from "./resources";
 import { codePoints, SOURCE_ID } from "./text";
 import type { RunPolicy } from "./threads";
+
+export { EGRESS_IP_LITERAL } from "./network";
 
 export const BEHAVIOURS: readonly string[] =
   Object.freeze(["do", "do_if_preapproved", "ask_first", "hand_off"]);
@@ -104,10 +110,6 @@ const TABLES: readonly string[] =
   Object.freeze(["rules", "approval_grants", "operation_kinds", "review_on", "review_off"]);
 const EGRESS_MODES: readonly string[] = Object.freeze(["open", "allowlist", "ask"]);
 const CAPS: readonly string[] = Object.freeze(["daily", "monthly", "transaction", "ask_above"]);
-/** `normalize_destination`'s DNS label: underscores allowed, hyphens interior. */
-const LABEL = /^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$/;
-/** A host the URL parser turned into an IPv4 address. */
-const IPV4 = /^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/;
 
 /** The default document as stored, and its digest (a test recomputes both). */
 export const DEFAULT_POLICY_JSON =
@@ -577,38 +579,6 @@ function whole(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-/**
- * `normalize_destination(host, port) == entry`, for a hostname: lowercase ASCII DNS
- * labels with no trailing dot, as the Python's IDNA fast path leaves them. An IP literal
- * waits for the gateway's address check.
- */
-function destination(entry: unknown): void {
-  if (!plain(entry) || !keys(entry, ["host", "port"])) {
-    throw new Invalid("invalid egress destination");
-  }
-  const { host, port } = entry;
-  if (typeof host !== "string" || !whole(port) || port < 1 || port > 65_535) {
-    throw new Invalid("invalid egress destination");
-  }
-  if (host.includes(":") || host.startsWith("[")) {
-    throw new Refused("an egress IP literal waits for the gateway's address check");
-  }
-  if (!host || host.length > 253 || !host.split(".").every((label) => LABEL.test(label))) {
-    throw new Invalid("invalid egress destination");
-  }
-  // The host as a URL reads it: any spelling of an IPv4 address (decimal, hex, octal,
-  // short forms) comes back dotted, and a name ending in a number is no host at all.
-  let parsed: string;
-  try {
-    parsed = new URL(`https://${host}/`).hostname;
-  } catch {
-    throw new Invalid("invalid egress destination");
-  }
-  if (IPV4.test(parsed)) {
-    throw new Refused("an egress IP literal waits for the gateway's address check");
-  }
-}
-
 /** `_validate`: the whole document, or a refusal naming its first fault. */
 export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS):
     PolicyDocument {
@@ -659,7 +629,7 @@ export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS
     throw new Invalid("invalid egress policy");
   }
   for (const entry of egress["destinations"]) {
-    destination(entry);
+    checkDestination(entry);
   }
   const entries = document["entries"];
   if (!Array.isArray(entries)) {
@@ -737,6 +707,16 @@ export class Policy {
   /** The policy generation as stored. */
   generation(): number {
     return this.#generation();
+  }
+
+  /**
+   * The egress generation: moved by a write that changes the egress table, and by nothing
+   * else, as a grant's authority generation moves apart from its revision. The sandbox's
+   * network is made under it, and egress is admitted only under the current one.
+   */
+  egressGeneration(): number {
+    return this.#sql.exec<{ egress_generation: number }>(
+      "SELECT egress_generation FROM owner_policy").one().egress_generation;
   }
 
   #generation(): number {
@@ -834,8 +814,13 @@ export class Policy {
                  proposal["request_id"] as string);
       }
       const digest = policyDigest(document);
-      sql.exec("UPDATE owner_policy SET generation = ?, digest = ?, document = ?",
-               generation + 1, digest, canonical(document));
+      // The egress generation moves only when the egress table does: the sandbox's network
+      // is stale, and egress refused, only for a real network change (G4).
+      const before = JSON.parse(row.document) as { egress?: unknown };
+      const moved = canonical(before.egress) !== canonical((document as { egress?: unknown }).egress);
+      sql.exec("UPDATE owner_policy SET generation = ?, digest = ?, document = ?, " +
+                 "egress_generation = egress_generation + ?",
+               generation + 1, digest, canonical(document), moved ? 1 : 0);
       this.receipt("write", { session_id: sessionId, old_digest: row.digest, new_digest: digest,
                               generation: generation + 1, outcome: "committed" }, now);
       return { generation: generation + 1, digest, document: document as PolicyDocument };

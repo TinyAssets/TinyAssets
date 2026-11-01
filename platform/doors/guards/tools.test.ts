@@ -28,7 +28,7 @@ const DEFERRED: Readonly<Record<string, string>> = Object.freeze({
   fileUploadChunks: "tasks 2, owed by 6.1: file bytes streamed by the binder",
   fileUploadCommit: "tasks 2, owed by 6.1: file bytes streamed by the binder",
   fileUploadAbort: "tasks 2, owed by 6.1: file bytes streamed by the binder",
-  fileChanges: "tasks 6: the sandbox's sync feed, reached by its lease token",
+  fileChanges: "tasks 6: the sandbox's sync feed, reached by its sync token",
   mailboxSubscriber: "tasks 7: the MCP Events subscribe door",
 });
 /** The model's own tools: pi's, inside the object, never served outside. */
@@ -242,7 +242,9 @@ describe("tool table guard", () => {
     expect(DOORS.get("agentCancel")?.capability).toBeNull();
     for (const ownerOnly of ["policyWrite", "grantSet", "grantRevoke", "grantForget",
                              "sessionOpen", "registerAgent", "fileRedact", "fileHistoryPurge",
-                             "fileLeaseAcquire", "fileSyncCommit", "policyRead",
+                             "sandboxLeaseOpen", "fileSyncCommit", "policyRead",
+                             "sandboxConfig", "sandboxNetworkApplied", "egressOpen",
+                             "egressSettle", "egressReceipts",
                              "connectionPrepare", "connectionCommit", "connectionRevoke",
                              "connectionList", "flowFinish"]) {
       expect(DOORS.has(ownerOnly)).toBe(false);

@@ -61,7 +61,7 @@ export const BODY_MAX = 16 * 1024 * 1024;
 export const REASONING_MIN_TOKENS = 2048;
 
 /** The supported APIs whose adapters refuse `options.fetch` (held by `egress.ts`). */
-const GLOBAL_FETCH_APIS: readonly string[] = Object.freeze(["google-generative-ai", "google-vertex"]);
+export const GLOBAL_FETCH_APIS: readonly string[] = Object.freeze(["google-generative-ai", "google-vertex"]);
 
 const THINKING: readonly string[] = Object.freeze(["minimal", "low", "medium", "high", "xhigh", "max"]);
 const RETENTION: readonly string[] = Object.freeze(["none", "short", "long"]);
@@ -98,7 +98,7 @@ function object(value: unknown): value is Record<string, unknown> {
  * The body, read up to `BODY_MAX` bytes; `context_length_exceeded` past it, without
  * reading the rest.
  */
-async function boundedText(request: Request): Promise<string> {
+export async function boundedText(request: Request): Promise<string> {
   const declared = request.headers.get("content-length");
   if (declared !== null && !/^\d+$/.test(declared)) {
     throw new Failure("invalid_request");

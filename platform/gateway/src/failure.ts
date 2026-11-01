@@ -19,6 +19,15 @@ const STATUS = Object.freeze({
   method_not_allowed: 405,
   credential_refused: 403,
   endpoint_refused: 403,
+  unmetered: 403,
+  // A sandbox call the reservation cannot bound (G4): several choices, or a server-side
+  // tool the provider bills beyond tokens.
+  egress_multiple_choices: 400,
+  egress_unmetered_tool: 403,
+  // An option priced beyond tokens that pi-ai does not price; a body that is not the call
+  // the owner's object reserved (another model, another tier).
+  egress_unpriced_option: 403,
+  egress_reservation_mismatch: 400,
   unknown_model: 404,
   unsupported_source: 422,
   reservation_too_small: 422,

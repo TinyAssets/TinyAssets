@@ -14,16 +14,23 @@
  *   issuer is refused, never taken for a new owner.
  * - `GATEWAY`: the gateway Worker's `ConnectGateway` entrypoint, whose class in the
  *   gateway's source serves exactly `seal`, `exchange` and `verify` (the connect steps),
- *   so the doors can make no model call, forward no egress (G4's) and hold no keyring.
- *   Only `src/connect.ts` names it (the binder guard). No other service: `FILES` joins
- *   with the file-bytes door (tasks 2, owed by 6.1), and rate limits with their binding.
+ *   so the doors can make no model call through it and hold no keyring. Only
+ *   `src/connect.ts` names it (the binder guard).
+ * - `EGRESS`: the gateway Worker's `EgressGateway` entrypoint, whose class serves exactly
+ *   `forward` (G4's egress door). Only `src/egress.ts` names it.
+ * - One secret, `ROUTING_MAC_KEY`, declared by name (`secrets.required`, which binds
+ *   nothing): the routing key sandbox tokens are MAC'd under, the owner Worker's too. No other service: `FILES`
+ *   joins with the file-bytes door (tasks 2, owed by 6.1), and rate limits with their
+ *   binding.
  * - No routes, custom domain, workers.dev or preview URL, no environment, no migration
  *   (the doors define no Durable Object class).
  * - Flags: `nodejs_compat` (the owner's shared code), `disable_ctx_exports` (no way to the
  *   Worker's own namespaces), and `global_fetch_strictly_public`, which Client ID Metadata
  *   Documents require: the provider fetches each client's metadata URL, the flag keeps
  *   that fetch off same-zone routing (its SSRF protection), and without it the provider
- *   neither fetches nor advertises CIMD (OP docs/authorization-server.md:62-68).
+ *   neither fetches nor advertises CIMD (OP docs/authorization-server.md:62-68); and
+ *   `enable_request_signal`, so a sandbox client that leaves before the answer aborts the
+ *   egress door's request and its settle comes at once.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -37,15 +44,21 @@ import { PLATFORM } from "../../owner/guards/sources";
 const DOORS = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = "wrangler.jsonc";
 const FLAGS: readonly string[] = Object.freeze(["nodejs_compat", "disable_ctx_exports",
-                                                "global_fetch_strictly_public"]);
+                                                "global_fetch_strictly_public",
+                                                "enable_request_signal"]);
 const KEYS: ReadonlySet<string> = new Set([
   "$schema", "name", "main", "compatibility_date", "compatibility_flags", "workers_dev",
-  "preview_urls", "vars", "durable_objects", "services", "kv_namespaces",
+  "preview_urls", "vars", "durable_objects", "services", "kv_namespaces", "secrets",
 ]);
-/** The doors' one service: the gateway's connect entrypoint, and what it may serve. */
+/** The doors' one secret, the sandbox tokens' routing key (`routing-mac.ts`), and the owner's. */
+const SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY"]) });
+/** The doors' two services: the gateway's connect and egress entrypoints, and what each serves. */
 const GATEWAY = Object.freeze({ binding: "GATEWAY", service: "tinyassets-gateway",
                                 entrypoint: "ConnectGateway" });
 const CONNECT_METHODS: readonly string[] = Object.freeze(["exchange", "seal", "verify"]);
+const EGRESS = Object.freeze({ binding: "EGRESS", service: "tinyassets-gateway",
+                               entrypoint: "EgressGateway" });
+const EGRESS_METHODS: readonly string[] = Object.freeze(["forward"]);
 const KV: readonly string[] = Object.freeze(["DIRECTORY", "OAUTH_KV"]);
 const VARS = Object.freeze({ DCR_ENABLED: "false", OWNER_ISSUER: "not-configured",
                              FOREIGN_ISSUERS: "[]" });
@@ -118,6 +131,13 @@ export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string
       || flags.some((flag) => !FLAGS.includes(String(flag)))) {
     problems.push(`compatibility_flags are exactly ${FLAGS.join(", ")}`);
   }
+  if (JSON.stringify(config["secrets"]) !== JSON.stringify(SECRETS)) {
+    problems.push("secrets declares exactly ROUTING_MAC_KEY");
+  }
+  const ownerConfig = platform.get("tinyassets-owner");
+  if (JSON.stringify(ownerConfig?.["secrets"]) !== JSON.stringify(SECRETS)) {
+    problems.push("the owner Worker declares the same ROUTING_MAC_KEY");
+  }
   if (JSON.stringify(config["vars"]) !== JSON.stringify(VARS)) {
     problems.push("vars are exactly DCR_ENABLED \"false\", OWNER_ISSUER unset and no " +
                   "FOREIGN_ISSUERS");
@@ -138,15 +158,20 @@ export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string
     }
   }
   const services = config["services"];
-  if (!Array.isArray(services) || services.length !== 1
-      || JSON.stringify(services[0]) !== JSON.stringify(GATEWAY)) {
-    problems.push("services binds exactly GATEWAY to tinyassets-gateway's ConnectGateway");
+  if (!Array.isArray(services) || services.length !== 2
+      || JSON.stringify(services[0]) !== JSON.stringify(GATEWAY)
+      || JSON.stringify(services[1]) !== JSON.stringify(EGRESS)) {
+    problems.push("services binds exactly GATEWAY to tinyassets-gateway's ConnectGateway " +
+                  "and EGRESS to its EgressGateway");
   } else if (platform.get(GATEWAY.service) === undefined) {
     problems.push("GATEWAY's service is not the platform's gateway Worker");
-  } else if (JSON.stringify(exportedMethods(gatewaySource).get(GATEWAY.entrypoint))
-             !== JSON.stringify(CONNECT_METHODS)) {
-    problems.push(`the gateway's ${GATEWAY.entrypoint} serves exactly ` +
-                  `${CONNECT_METHODS.join(", ")}`);
+  } else {
+    for (const [service, methods] of [[GATEWAY, CONNECT_METHODS], [EGRESS, EGRESS_METHODS]] as const) {
+      if (JSON.stringify(exportedMethods(gatewaySource).get(service.entrypoint))
+          !== JSON.stringify(methods)) {
+        problems.push(`the gateway's ${service.entrypoint} serves exactly ${methods.join(", ")}`);
+      }
+    }
   }
   const kv = config["kv_namespaces"];
   if (!Array.isArray(kv) || kv.length !== KV.length
@@ -165,11 +190,12 @@ const platform = platformConfigs();
 const gatewaySource = readFileSync(join(PLATFORM, "gateway", "src", "index.ts"), "utf8");
 
 describe("doors Worker config", () => {
-  it("binds OWNER, the gateway's connect entrypoint, OAUTH_KV and DIRECTORY, and cannot deploy",
-     () => {
+  it("binds OWNER, the gateway's connect and egress entrypoints, OAUTH_KV and DIRECTORY, " +
+     "and cannot deploy", () => {
     expect(doorsConfigProblems(config, platform, gatewaySource)).toEqual([]);
     expect(exportedMethods(gatewaySource).get("ConnectGateway"))
       .toEqual(["exchange", "seal", "verify"]);
+    expect(exportedMethods(gatewaySource).get("EgressGateway")).toEqual(["forward"]);
   });
 
   it("is the only wrangler config in the doors Worker", () => {
@@ -186,12 +212,19 @@ describe("doors Worker config", () => {
     ["an environment", { env: { prod: { routes: ["tinyassets.io/*"] } } }],
     ["a service", { services: [{ binding: "FILES", service: "tinyassets-files" }] }],
     ["no service", { services: [] }],
+    ["no egress entrypoint", { services: [GATEWAY] }],
+    ["the egress door on the gateway's default entrypoint", { services: [GATEWAY,
+      { binding: "EGRESS", service: "tinyassets-gateway" }] }],
+    ["the egress door on the connect entrypoint", { services: [GATEWAY,
+      { ...EGRESS, entrypoint: "ConnectGateway" }] }],
+    ["the egress door under another name", { services: [GATEWAY, { ...EGRESS, binding: "OUT" }] }],
     ["the gateway's whole surface", { services: [{ binding: "GATEWAY",
                                                    service: "tinyassets-gateway" }] }],
-    ["the gateway's default entrypoint", { services: [{ ...GATEWAY, entrypoint: "Gateway" }] }],
-    ["the gateway under another name", { services: [{ ...GATEWAY, binding: "MODELS" }] }],
-    ["a second service", { services: [GATEWAY, { binding: "FILES",
-                                                 service: "tinyassets-files" }] }],
+    ["the gateway's default entrypoint", { services: [{ ...GATEWAY, entrypoint: "Gateway" },
+                                                      EGRESS] }],
+    ["the gateway under another name", { services: [{ ...GATEWAY, binding: "MODELS" }, EGRESS] }],
+    ["a third service", { services: [GATEWAY, EGRESS, { binding: "FILES",
+                                                        service: "tinyassets-files" }] }],
     ["a bucket", { r2_buckets: [{ binding: "BLOBS", bucket_name: "tinyassets-files" }] }],
     ["a migration", { migrations: [{ tag: "v1", new_sqlite_classes: ["X"] }] }],
     ["a rate limit", { ratelimits: [{ name: "KEY_RL", namespace_id: "1",
@@ -237,12 +270,15 @@ describe("doors Worker config", () => {
   });
 
   it.each([
-    ["a model call", "fetch(r: Request) { return r; }"],
-    ["egress forwarding", "forward() { return 1; }"],
-    ["a refresh", "async refresh() { return 1; }"],
-    ["a provider revoke", "revokeAtProvider = () => 1;"],
-  ])("sees the connect entrypoint grow %s", (_what, member) => {
-    const head = "export class ConnectGateway extends WorkerEntrypoint<GatewayEnv> {";
+    ["the connect entrypoint", "ConnectGateway", "a model call", "fetch(r: Request) { return r; }"],
+    ["the connect entrypoint", "ConnectGateway", "egress forwarding", "forward() { return 1; }"],
+    ["the connect entrypoint", "ConnectGateway", "a refresh", "async refresh() { return 1; }"],
+    ["the connect entrypoint", "ConnectGateway", "a provider revoke", "revokeAtProvider = () => 1;"],
+    ["the egress entrypoint", "EgressGateway", "a model call", "fetch(r: Request) { return r; }"],
+    ["the egress entrypoint", "EgressGateway", "a seal", "seal() { return 1; }"],
+    ["the egress entrypoint", "EgressGateway", "a refresh", "async refresh() { return 1; }"],
+  ])("sees %s grow %s", (_where, entrypoint, _what, member) => {
+    const head = `export class ${entrypoint} extends WorkerEntrypoint<GatewayEnv> {`;
     const grown = gatewaySource.replace(head, `${head}\n  ${member}`);
     expect(grown).not.toBe(gatewaySource);
     expect(doorsConfigProblems(config, platform, grown)).not.toEqual([]);

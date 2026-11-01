@@ -11,8 +11,10 @@
  *
  * This slice writes `k:` (API keys) and reads `c:control`. Owed by later slices, each in
  * its task: `h:` hook tokens and `i:` shared-app installs (`/hooks/inbound`), `a:`
- * published app slugs (S6), `l:` sandbox lease tokens (6). Nothing here, or anywhere,
- * maps a session cookie or its hash to an owner (the binder guard).
+ * published app slugs (S6). A sandbox's tokens have no entry: each names its owner itself
+ * (G4, `routing-mac.ts`, its MAC verified at the door), and the owner's object checks it.
+ * Nothing here, or anywhere, maps a session cookie or its hash to an owner (the binder
+ * guard).
  */
 import { principal } from "../../owner/src/text";
 

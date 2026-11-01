@@ -31,7 +31,7 @@ import type { HooksService } from "../src/hooks";
 import { turnOf } from "../src/origin";
 import { RemoteStorage } from "../src/remote-storage";
 import type { Erasure } from "../src/erase";
-import { type OwnerEnv, OwnerDO } from "../src/owner-do";
+import { type OwnerEnv, OwnerDO, type SandboxLeases } from "../src/owner-do";
 import { HOST_TIMING, type HostTiming } from "../src/thread-host";
 import type { StoreRpc, StoreSessionRpc } from "../src/thread-store";
 import { harnessOf, type TestHarness } from "./agent-support";
@@ -623,10 +623,12 @@ export class FauxOwnerDO extends OwnerDO {
   readonly harness: TestHarness;
   /** The owner's erasure, the internal path no door reaches yet. */
   readonly erasure: Erasure;
+  /** The sandbox's lease API, owner-internal (`SandboxLeases`). */
+  readonly sandbox: SandboxLeases;
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     const made: { agent?: OwnerAgent; parts?: AgentParts; faux?: FauxProviderHandle;
-                  self?: FauxOwnerDO; erasure?: Erasure } = {};
+                  self?: FauxOwnerDO; erasure?: Erasure; sandbox?: SandboxLeases } = {};
     const timing = testTiming();
     super(ctx, { ...env, HOOKS: countedHooks(env.HOOKS, () => made.self?.probes) }, (parts) => {
       made.parts = parts;
@@ -661,9 +663,11 @@ export class FauxOwnerDO extends OwnerDO {
         // pi's clock, which a test moves days ahead (`skewClock`), across evictions.
         now: () => Date.now() + (ctx.storage.kv.get<number>(SKEW_KEY) ?? 0) });
       return made.agent;
-    }, { erasure: (erasure) => { made.erasure = erasure; }, eraseRetryMs: 500 });
+    }, { erasure: (erasure) => { made.erasure = erasure; }, eraseRetryMs: 500,
+         sandbox: (leases) => { made.sandbox = leases; } });
     made.self = this;
     this.erasure = made.erasure!;
+    this.sandbox = made.sandbox!;
     this.agent = made.agent!;
     this.parts = made.parts!;
     this.faux = made.faux!;
@@ -800,6 +804,8 @@ function watched(gateway: GatewayService, calls: () => GatewayCall[],
  */
 export class GatedOwnerDO extends OwnerDO {
   readonly agent: OwnerAgent;
+  /** The sandbox's lease API, owner-internal (`SandboxLeases`), as 8b's `exec` reaches it. */
+  readonly sandbox: SandboxLeases;
   readonly parts: AgentParts;
   /** The tests' handle on the agent's threads. */
   readonly harness: TestHarness;
@@ -808,7 +814,8 @@ export class GatedOwnerDO extends OwnerDO {
   readonly probes: Probes = freshProbes();
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
-    const made: { agent?: OwnerAgent; parts?: AgentParts; self?: GatedOwnerDO } = {};
+    const made: { agent?: OwnerAgent; parts?: AgentParts; self?: GatedOwnerDO;
+                  sandbox?: SandboxLeases } = {};
     const pending: GatewayCall[] = [];
     super(ctx, { ...env, GATEWAY: watched(env.GATEWAY, () => made.self?.calls ?? pending,
                                           () => made.self?.faults) },
@@ -821,8 +828,9 @@ export class GatedOwnerDO extends OwnerDO {
                                         { ...gatewaySource(parts), timing: testTiming(),
                                           ...testExtensions(() => made.self!.probes) });
             return made.agent;
-          });
+          }, { sandbox: (leases) => { made.sandbox = leases; } });
     made.self = this;
+    this.sandbox = made.sandbox!;
     this.calls.push(...pending);
     this.agent = made.agent!;
     this.parts = made.parts!;

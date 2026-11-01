@@ -310,9 +310,6 @@ function doors(r: Rig): Record<string, (binding: Binding) => Promise<unknown>> {
     fileRestore: (b) => s.fileRestore(b, { path, version: 1, expected_etag: null }),
     fileRedact: (b) => s.fileRedact(b, { path, version: 1 }),
     fileHistoryPurge: (b) => s.fileHistoryPurge(b, { path }),
-    fileLeaseAcquire: (b) => s.fileLeaseAcquire(b, { holder: "sandbox" }),
-    fileLeaseRenew: (b) => s.fileLeaseRenew(b, { lease_id: "0".repeat(32), epoch: 1 }),
-    fileLeaseRelease: (b) => s.fileLeaseRelease(b, { lease_id: "0".repeat(32), epoch: 1 }),
     fileSyncCommit: (b) => s.fileSyncCommit(b, { lease_id: "0".repeat(32), epoch: 1,
       ops: [{ op: "mkdir", path: `${W}/s`, base: null }] }),
   };
@@ -320,8 +317,7 @@ function doors(r: Rig): Record<string, (binding: Binding) => Promise<unknown>> {
 
 const READS = ["fileStat", "fileList", "fileRead", "fileReadChunks", "fileHistory",
                "fileChanges", "fileUsage"];
-const OWNER_ONLY = ["fileRedact", "fileHistoryPurge", "fileLeaseAcquire", "fileLeaseRenew", "fileLeaseRelease",
-                    "fileSyncCommit"];
+const OWNER_ONLY = ["fileRedact", "fileHistoryPurge", "fileSyncCommit"];
 const ADMISSION = /belongs to another owner|not named|own callers only|not granted|only the owner|never carries|not one enabled agent|no grant|revoked/;
 
 async function outcome(call: () => Promise<unknown>): Promise<string> {
