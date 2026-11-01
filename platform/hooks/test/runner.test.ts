@@ -240,8 +240,12 @@ describe("the hooks Worker", () => {
         "class Mine { toString() { return 'mine'; } }",
         "const plain = {}; plain.toString = () => 'plain';",
         "export function afterTool() {",
+        "  const kind = (object, key) =>",
+        "    'value' in Object.getOwnPropertyDescriptor(object, key) ? 'data' : 'accessor';",
         "  return { tried, own: String(new Own()), mine: String(new Mine()),",
-        "           plain: String(plain) };",
+        "           plain: String(plain), kinds: [kind(Object.prototype, 'toString'),",
+        "             kind(Array.prototype, 'map'), kind(Array.prototype, 'constructor'),",
+        "             kind(Object.prototype, 'constructor'), kind(Promise.prototype, 'then')] };",
         "}",
       ].join("\n"),
       [guard]: "export function beforeTool({ call }) {\n" +
@@ -259,7 +263,9 @@ describe("the hooks Worker", () => {
               "Promise then refused", "typed array refused", "a getter refused",
               "a tamed accessor refused", "a new global over one refused",
               "redefine a global refused"],
-      own: "own", mine: "mine", plain: "plain" } });
+      own: "own", mine: "mine", plain: "plain",
+      // Only the override-mistake names are accessors, and no species `constructor`.
+      kinds: ["accessor", "data", "data", "accessor", "data"] } });
     expect(await ask(guard, "beforeTool", { call: { id: "c", name: "read", arguments: {} } }))
       .toEqual({ ok: true, result: null });
     expect(await ask(guard, "beforeTool", { call: { id: "c", name: "bash", arguments: {} } }))
