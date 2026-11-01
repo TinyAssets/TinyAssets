@@ -138,6 +138,11 @@ export interface PackageSelection {
   readonly source: string;
   readonly skills?: readonly string[];
   readonly prompts?: readonly string[];
+  /**
+   * The guard position: this package's hooks run after every other selected package's, in
+   * selection order among guards, so a later package's rewrite cannot follow its approval.
+   */
+  readonly guard?: boolean;
 }
 
 /** A skill as the index holds it. */
@@ -936,15 +941,21 @@ export class Resources {
       hooks, bundle,
     };
     this.#parts.install(skillsExtension(index.section, this.#parts.readable));
-    // Each hooked package's wrappers, in place; a package no longer hooked, gone.
-    const named = hooks.map((hooked) => hooked.extension);
-    for (const hooked of hooks) {
-      this.#parts.install(this.#parts.remote(bundle!, hooked));
-    }
-    for (const name of this.#hooked.filter((name) => !named.includes(name))) {
+    // Each hooked package's wrappers, in the order pi runs them (its registry's install
+    // order): the guards after every other, each in selection order. pi replaces an
+    // installed name in place, so every package's are taken out first and installed again in
+    // that order, in one synchronous step no task phase runs between.
+    const guards = new Set(selection.filter((chosen) => chosen.guard === true)
+      .map((chosen) => packageExtension(chosen.source)));
+    const ordered = [...hooks.filter((hooked) => !guards.has(hooked.extension)),
+                     ...hooks.filter((hooked) => guards.has(hooked.extension))];
+    for (const name of this.#hooked) {
       this.#parts.uninstall(name);
     }
-    this.#hooked = named;
+    for (const hooked of ordered) {
+      this.#parts.install(this.#parts.remote(bundle!, hooked));
+    }
+    this.#hooked = ordered.map((hooked) => hooked.extension);
     this.#index = index;
     this.#selected = selected;
     this.#builds++;

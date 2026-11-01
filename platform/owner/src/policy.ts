@@ -36,7 +36,8 @@
  * - The optional `packages` list is the owner's package selection (tasks 5, A5), in pi's
  *   settings form: each a package directory under `/workspace/.agents/packages`, a tree
  *   only the owner changes, or `{source, skills?,
- *   prompts?}` with pi's filter grammar per resource type (`resources.ts`). There is no
+ *   prompts?, guard?}` with pi's filter grammar per resource type (`resources.ts`); a
+ *   `guard` package's hooks run after every other package's (`resources.ts`). There is no
  *   `extensions` filter: a package's code never loads in the owner's object, so a package
  *   that declares any is refused where it loads.
  * - The optional `hooks` table is the owner's policy for code that runs in the hooks Worker
@@ -407,7 +408,8 @@ function validModels(models: unknown): boolean {
 export const PACKAGES_MAX = 32;
 export const FILTER_PATTERNS = 64;
 /** The keys a package selection's object form takes. */
-const SELECTION_KEYS: readonly string[] = Object.freeze(["source", "skills", "prompts"]);
+const SELECTION_KEYS: readonly string[] = Object.freeze(["source", "skills", "prompts",
+                                                         "guard"]);
 
 /**
  * A package's directory: a stored path below `PACKAGES_DIR`, a tree only the owner's own
@@ -439,7 +441,8 @@ function validPackages(value: unknown): boolean {
       : plain(entry) && packageSource(entry["source"])
         && Object.keys(entry).every((key) => SELECTION_KEYS.includes(key))
         && (entry["skills"] === undefined || filterList(entry["skills"]))
-        && (entry["prompts"] === undefined || filterList(entry["prompts"])));
+        && (entry["prompts"] === undefined || filterList(entry["prompts"]))
+        && (entry["guard"] === undefined || typeof entry["guard"] === "boolean"));
 }
 
 /** The packages a document selects, each in the object form, in its order. */
@@ -449,6 +452,7 @@ export function packageSelection(document: PolicyDocument): PackageSelection[] {
       source: entry.source,
       ...(entry.skills === undefined ? {} : { skills: [...entry.skills] }),
       ...(entry.prompts === undefined ? {} : { prompts: [...entry.prompts] }),
+      ...(entry.guard === true ? { guard: true } : {}),
     }));
 }
 
@@ -616,7 +620,7 @@ export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS
   if (document["packages"] !== undefined && !validPackages(document["packages"])) {
     throw new Invalid("invalid packages policy: at most 32 package directories under " +
                       "/workspace/.agents/packages, each once, as a path or {source, skills, " +
-                      "prompts} with filter lists; package code (extensions) never loads");
+                      "prompts, guard} with filter lists; package code (extensions) never loads");
   }
   if (document["models"] !== undefined && !validModels(document["models"])) {
     throw new Invalid("invalid models policy");

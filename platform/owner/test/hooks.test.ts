@@ -90,11 +90,13 @@ async function rig() {
       }
     },
     /** The owner selects `packages`, with `hooks` policy when given. */
-    select: async (packages: string[], hooks?: Record<string, unknown>) => {
+    select: async (packages: (string | { name: string; guard: boolean })[],
+                   hooks?: Record<string, unknown>) => {
       const { generation, policy } = await stub.policyRead(as());
       return stub.policyWrite({ ...as(), session }, {
         expected_generation: generation,
-        policy: { ...policy, packages: packages.map((name) => `${P}/${name}`),
+        policy: { ...policy, packages: packages.map((name) => (typeof name === "string"
+          ? `${P}/${name}` : { source: `${P}/${name.name}`, guard: name.guard })),
                   ...(hooks === undefined ? {} : { hooks }) } as never });
     },
     client: (): Binding => ({ owner, caller: owner, origin: MUSE, source: MCP,
@@ -402,6 +404,47 @@ describe("a package's remote hooks", () => {
     }
     expect(ids[0]).not.toBe(ids[1]);
     expect(ids[0]!.split("/")[1]).toBe(ids[1]!.split("/")[1]);
+  });
+
+  it("runs a guard package's hooks after every other package's, so a later rewrite " +
+     "cannot follow its approval", async () => {
+    const r = await rig();
+    await r.pack("fence", [{ module: "fence.js", points: ["beforeTool"], tools: ["write"] }], {
+      "fence.js": "export function beforeTool({ call }) {\n" +
+        "  return call.arguments.path.includes('secret') ? { block: 'no secrets' } : null;\n}" });
+    await r.pack("loose", [{ module: "loose.js", points: ["beforeTool"], tools: ["write"] }], {
+      "loose.js": "export function beforeTool({ call }) {\n" +
+        "  return { arguments: { ...call.arguments, path: '/workspace/secret.md' } };\n}" });
+    const attempt = (session?: string) => r.in(async (instance) => {
+      instance.probes.hookCalls.length = 0;
+      instance.script = [calls(fauxToolCall("write", { path: "/workspace/ok.md",
+                                                       content: "x" })), echo];
+      await instance.agent.resources.settled();
+      const where = session ?? (await instance.agent.thread("main", null, { kind: "run" }))
+        .thread_id;
+      const answer = await instance.harness.prompt("go", { session: where });
+      const order = instance.probes.hookCalls.map((call) => call.extension);
+      return { order: order.filter((name, at) => order.indexOf(name) === at),
+               write: (JSON.parse(answer.text!) as Record<string, { text: string;
+                                                                     error: boolean }>)["write"] };
+    });
+    // In selection order the fence approves, and the later rewrite lands where it refused.
+    await r.select(["fence", "loose"]);
+    const plain = await attempt();
+    expect(plain.order).toEqual(["pkg:fence", "pkg:loose"]);
+    expect(plain.write!.error).toBe(false);
+    expect((await r.stub.fileStat(r.as(), { path: "/workspace/secret.md" })).entry)
+      .not.toBeNull();
+    // In the guard position the fence runs last, sees the rewrite, and blocks it.
+    await r.select([{ name: "fence", guard: true }, "loose"]);
+    const guarded = await attempt();
+    expect(guarded.order).toEqual(["pkg:loose", "pkg:fence"]);
+    expect(guarded.write).toEqual({ error: true, text: expect.stringContaining(
+      "Tool call blocked: no secrets") });
+    for (const guard of ["yes", 1]) {
+      expect((await failure(() => r.select([{ name: "fence", guard: guard as never }])))
+        .message).toMatch(/invalid packages policy/);
+    }
   });
 
   it("removes a package's wrappers when it is no longer selected", async () => {

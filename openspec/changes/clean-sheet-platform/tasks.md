@@ -1397,12 +1397,16 @@ account and no deploy.
   script past its interrupt budget against the Worker's `cpu_ms`), the blocking isolation
   (10 s of compute in a hook or a script against the owner object's latency), and the
   Dynamic Worker count per day (one per owner per active day expected), with module state
-  across isolates of one loader name. And the prelude's startup cost (review round 2): it
-  hardens the whole global environment once per isolate, about 13 ms of a first call in
-  workerd (17 ms against 3 to 4 ms without it, warm calls unchanged); SES's `lockdown()`
-  measured about 30 ms and 236 KB a bundle and left host globals writable, so it was not
-  taken. Live: that cost per isolate start against `cpu_ms` (whether startup counts toward
-  a call's `cpuMs`) and the Dynamic Worker CPU billed. And (review round 1): another
+  across isolates of one loader name. And the prelude's cost (review rounds 2 and 3): it
+  hardens the whole global environment once per isolate, about 10 to 18 ms more of a first
+  call in workerd (a method-heavy hook's cold call 25 to 33 ms against 15 ms unhardened).
+  Per call, after round 3 tamed only the override-mistake names (and `constructor` not on
+  the species prototypes), a method-heavy hook's warm call is 8 to 10 ms against 8 to 11 ms
+  unhardened, a ratio of about 1.0; round 2's taming of every prototype property had made
+  it 22 to 24 ms, about 2.4 times. SES's `lockdown()` measured about 30 ms and 236 KB a
+  bundle and left host globals writable, so it was not taken. Live: the startup cost per
+  isolate against `cpu_ms` (whether startup counts toward a call's `cpuMs`), the per-call
+  ratio against the 50 ms default, and the Dynamic Worker CPU billed. And (review round 1): another
   owner's hook latency
   while one owner's script computes about 10 s in the same Worker (M-3; if it blocks, H2's
   design takes it: separate Workers for hooks and code mode, or a sandbox class per shard);
@@ -1411,6 +1415,11 @@ account and no deploy.
   calls leave in the owner's and the runner's invocations; and whether `exchange` calls
   count as subrequests of the owner object or the hooks Worker (which sets no
   `limits.subrequests`).
+- [ ] Per-package isolation (founder's call, later): one isolate per selected package,
+  one loader name each, at $0.002 per package per active day instead of per owner, so one
+  package can no longer change what another exports. Until then an owner's packages are
+  mutually trusted, and a guardrail package takes the guard position (`guard: true` in its
+  selection), which runs its hooks after every other package's (H1, review round 3).
 - [ ] The pi upgrade, within a slice of pi's release: `adopt` in `RemoteStorage`, the tee
   deleted, `persistWithinMs`, `maxTurns` from policy, `onReport`, parking code out of the
   host, the new watch API, the schema re-pinned.

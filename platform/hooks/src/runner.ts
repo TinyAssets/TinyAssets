@@ -19,7 +19,8 @@
  * - our trusted shim (`shimSource`) as its main module. Its first import is our prelude
  *   (`preludeSource`), which runs before any package's module: it hardens the whole
  *   global environment (every global binding fixed, everything reachable from them
- *   frozen, prototypes' data properties made accessors as SES's override taming does, so
+ *   frozen, the override-mistake names of prototypes made accessors as SES's override
+ *   taming does, so
  *   a module's own `toString` still works), and hands the shim `JSON` and `Object.hasOwn`
  *   as they were. The shim hardens its own dispatch path before any hook runs (`HookShim`,
  *   its prototype and `call`, what they close over; its table frozen), so a package that
@@ -67,8 +68,13 @@ export function loaderName(owner: string, id: string): string {
  * frozen, transitively: each value, getter and setter, each prototype chain, the state a
  * host object keeps behind its prototype's getters (`crypto.subtle`), the shared iterator,
  * generator and async prototypes no global names, and `WorkerEntrypoint`. A prototype's
- * data properties become accessors that define an own property on the object written, as
- * SES's override taming does, so a module's own `toString` still works. It exports `harden`
+ * override-mistake names (`constructor`, `toString`, `valueOf`, `toLocaleString`, `name`,
+ * `message`, `Symbol.toStringTag`; `constructor` not on the prototypes the engine reads it
+ * from for species) become accessors that define an own property on the object written,
+ * as SES's override taming does, so a module's own `toString` still works; every other
+ * property stays a frozen data property, so a method lookup costs what it did. The
+ * prototypes only a builtin's return value reaches (iterator helpers, `Iterator.from`'s
+ * wrapper, the host iterators, Intl's segments) are made once and frozen. It exports `harden`
  * for the shim's own dispatch path, and what the shim uses as it was. (SES's `lockdown()`
  * was measured instead: it runs in workerd, adds about 236 KB to every bundle and about
  * 30 ms to an isolate's first call, and leaves host globals such as `structuredClone`,
@@ -86,8 +92,22 @@ export function preludeSource(): string {
     "export const stringify = JSON.stringify;",
     "export const hasOwn = Object.hasOwn;",
     "export const freezeTable = freeze;",
+    "// The names SES's override taming makes accessors: those a module assigns on an object",
+    "// that inherits them (`Foo.prototype.toString = ...`). Every other property stays a",
+    "// frozen data property, so a builtin's method lookup costs what it did.",
+    "const TAMED = ['constructor', 'toString', 'valueOf', 'toLocaleString', 'name', 'message',",
+    "  Symbol.toStringTag];",
+    "// Prototypes whose `constructor` the engine reads on every species lookup (`map`,",
+    "// `filter`, `then`, `exec`, `subarray`): an accessor there turns its fast paths off, so",
+    "// it stays a frozen data property (a module that assigns one gets a loud TypeError).",
+    "const SPECIES = new Set([Array.prototype, Promise.prototype, RegExp.prototype,",
+    "  ArrayBuffer.prototype, getPrototypeOf(Uint8Array.prototype),",
+    "  ...[Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array,",
+    "      Uint32Array, Float32Array, Float64Array, BigInt64Array, BigUint64Array]",
+    "    .map((typed) => typed.prototype)]);",
     "function overridable(object) {",
-    "  for (const key of ownKeys(object)) {",
+    "  for (const key of TAMED) {",
+    "    if (key === 'constructor' && SPECIES.has(object)) continue;",
     "    const held = getOwnPropertyDescriptor(object, key);",
     "    if (held === undefined || !('value' in held) || !held.configurable) continue;",
     "    const value = held.value;",
@@ -136,6 +156,27 @@ export function preludeSource(): string {
     "  getPrototypeOf(async function () {}), getPrototypeOf(async function* () {}),",
     "  getPrototypeOf(getPrototypeOf((function* () {})())),",
     "  getPrototypeOf(getPrototypeOf((async function* () {})()))];",
+    "// Prototypes only a builtin's return value reaches: each sample made once, its",
+    "// prototype chain hardened (iterator helpers, Iterator.from's wrapper, the host",
+    "// iterators, Intl's segments).",
+    "const SAMPLES = [",
+    "  () => [].values().map((x) => x),",
+    "  () => [].values().filter(() => true),",
+    "  () => [].values().take(0),",
+    "  () => [].values().drop(0),",
+    "  () => [].values().flatMap((x) => [x]),",
+    "  () => Iterator.from({ next() { return { done: true }; } }),",
+    "  () => new Headers().entries(),",
+    "  () => new URLSearchParams().entries(),",
+    "  () => new FormData().entries(),",
+    "  () => new Intl.Segmenter().segment(''),",
+    "  () => new Intl.Segmenter().segment('')[Symbol.iterator](),",
+    "  () => new Map().entries()[Symbol.iterator](),",
+    "  () => 'a'.matchAll(/a/g)[Symbol.iterator](),",
+    "];",
+    "for (const sample of SAMPLES) {",
+    "  try { SHARED.push(getPrototypeOf(sample())); } catch { /* not in this runtime */ }",
+    "}",
     "// The global object and its prototype chain (the runtime keeps `fetch`, `structuredClone`",
     "// and more on the global scope's prototype): each key becomes an own fixed binding.",
     "const SCOPES = [];",

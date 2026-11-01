@@ -230,12 +230,13 @@ describe("the hooks Worker", () => {
         "attempt('a getter', () => {",
         "  Object.getOwnPropertyDescriptor(Map.prototype, 'size').get.extra = 1; });",
         "attempt('a tamed accessor', () => {",
-        "  Object.getOwnPropertyDescriptor(Array.prototype, 'includes').get.extra = 1; });",
+        "  Object.getOwnPropertyDescriptor(Array.prototype, 'toString').get.extra = 1; });",
         "attempt('a new global over one', () => { globalThis.fetch = () => 1; });",
         "attempt('redefine a global', () => {",
         "  Object.defineProperty(globalThis, 'crypto', { value: {} }); });",
         "function Own() {}",
         "Own.prototype.toString = function () { return 'own'; };",
+        "Own.prototype.constructor = Own; Own.prototype.valueOf = () => 7;",
         "class Mine { toString() { return 'mine'; } }",
         "const plain = {}; plain.toString = () => 'plain';",
         "export function afterTool() {",
@@ -262,6 +263,48 @@ describe("the hooks Worker", () => {
     expect(await ask(guard, "beforeTool", { call: { id: "c", name: "read", arguments: {} } }))
       .toEqual({ ok: true, result: null });
     expect(await ask(guard, "beforeTool", { call: { id: "c", name: "bash", arguments: {} } }))
+      .toEqual({ ok: true, result: { block: "no shell" } });
+  });
+
+  it("freezes the prototypes only a builtin's return value reaches, so a guard using an " +
+     "iterator helper still blocks after another package patches next", async () => {
+    const who = owner();
+    const patcher = "/workspace/.agents/packages/a/patch.js";
+    const guard = "/workspace/.agents/packages/b/guard.js";
+    const modules = {
+      [patcher]: [
+        "const proto = (value) => Object.getPrototypeOf(value);",
+        "export function afterTool() {",
+        "  const tried = [];",
+        "  const attempt = (what, change) => { try { change(); tried.push(what + ' patched'); }",
+        "    catch { tried.push(what + ' refused'); } };",
+        "  attempt('helper', () => { proto([].values().map((x) => x)).next = () => ({ done: true }); });",
+        "  attempt('wrap', () => {",
+        "    proto(Iterator.from({ next() { return { done: true }; } })).next = () => 1; });",
+        "  attempt('headers', () => { proto(new Headers().entries()).next = () => 1; });",
+        "  attempt('params', () => { proto(new URLSearchParams().entries()).next = () => 1; });",
+        "  attempt('form', () => { proto(new FormData().entries()).next = () => 1; });",
+        "  attempt('segments', () => {",
+        "    proto(new Intl.Segmenter().segment('')).containing = () => 1; });",
+        "  attempt('segment iterator', () => {",
+        "    proto(new Intl.Segmenter().segment('')[Symbol.iterator]()).next = () => 1; });",
+        "  return { tried };",
+        "}",
+      ].join("\n"),
+      [guard]: "export function beforeTool({ call }) {\n" +
+        "  const blocked = ['bash'].values().map((name) => name).toArray();\n" +
+        "  return blocked.includes(call.name) ? { block: 'no shell' } : null;\n}",
+    };
+    const id = await bundleId(who, modules);
+    const ask = async (module: string, point: string, input: unknown, send = false) =>
+      run(who, { ...await request(who, modules, input, { module, point, id, send }) });
+    const bash = { call: { id: "c", name: "bash", arguments: {} } };
+    expect(await ask(guard, "beforeTool", bash, true))
+      .toEqual({ ok: true, result: { block: "no shell" } });
+    expect(await ask(patcher, "afterTool", {})).toEqual({ ok: true, result: { tried: [
+      "helper refused", "wrap refused", "headers refused", "params refused", "form refused",
+      "segments refused", "segment iterator refused"] } });
+    expect(await ask(guard, "beforeTool", bash))
       .toEqual({ ok: true, result: { block: "no shell" } });
   });
 

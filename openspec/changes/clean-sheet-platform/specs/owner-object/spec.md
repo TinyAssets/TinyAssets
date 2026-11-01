@@ -1213,7 +1213,7 @@ The owner's own input to `agentSubmit`, `agentRun` and `ta`'s `agent:run` SHALL 
 - **THEN** pi is handed the skill's block followed by `extract a.pdf`, then the template's body with `$1` as `API shape` and `$@` as both
 
 ### Requirement: Packages are selected by owner policy and contribute data and remote hooks
-Owner policy's `packages` list SHALL select packages, each a directory under `/workspace/.agents/packages`, as a path or `{source, skills?, prompts?}` with pi's filter grammar (plain globs include, `!` excludes, `+` forces an exact path in, `-` out; omitted all, `[]` none), at most 32, each once, with no `extensions` filter. A selected package SHALL contribute its skills and prompt templates, from its `package.json`'s `pi` key or its conventional directories, and its `tinyassets.hooks` entries as remote hooks; its `tinyassets` key's other fields SHALL be skipped with a notice until they have a consumer.
+Owner policy's `packages` list SHALL select packages, each a directory under `/workspace/.agents/packages`, as a path or `{source, skills?, prompts?, guard?}` with pi's filter grammar (plain globs include, `!` excludes, `+` forces an exact path in, `-` out; omitted all, `[]` none), at most 32, each once, with no `extensions` filter; a `guard` package's hooks SHALL run after every other package's, guards among themselves in selection order. A selected package SHALL contribute its skills and prompt templates, from its `package.json`'s `pi` key or its conventional directories, and its `tinyassets.hooks` entries as remote hooks; its `tinyassets` key's other fields SHALL be skipped with a notice until they have a consumer.
 
 #### Scenario: A package filtered
 - **WHEN** the owner selects a package with `skills: ["!beta", "-skills/gamma"]` beside a package it does not select
@@ -1264,15 +1264,19 @@ Each wrapper SHALL read pi's `api.memo("ta.hook/<ext>/<point>/<key>")` first and
 - **THEN** the rerun runs the call with the rewritten arguments and the hooks Worker is not called
 
 ### Requirement: The hooks Worker reaches no owner
-The `tinyassets-hooks` Worker SHALL bind its Worker Loader and the namespaces of its own `HookRunner` and `CodemodeSandbox` classes only, serve no URL, and never use its objects' storage; each bundle SHALL load at the owner Worker's compatibility date with `globalOutbound: null`, `env: {}` and `subRequests: 0`, its prelude freezing the shared intrinsics before any package's module runs, and a runner SHALL drop a call past its deadline and keep at most 16 pending. The owner config guard SHALL admit `HOOKS` only to such a Worker. One owner's packages share one isolate, the owner's own trust; the frozen intrinsics keep one package from patching what another's guard relies on.
+The `tinyassets-hooks` Worker SHALL bind its Worker Loader and the namespaces of its own `HookRunner` and `CodemodeSandbox` classes only, serve no URL, and never use its objects' storage; each bundle SHALL load at the owner Worker's compatibility date with `globalOutbound: null`, `env: {}` and `subRequests: 0`, its prelude hardening the shared runtime (every global binding, everything reachable from them, and the prototypes only a builtin's return value reaches) and its shim its own dispatch path before any package's module runs, and a runner SHALL drop a call past its deadline and keep at most 16 pending. The owner config guard SHALL admit `HOOKS` only to such a Worker. One owner's selected packages share one isolate and SHALL be trusted by the owner alike: a package can change objects another exports, and a later package's `beforeTool` rewrite runs after an earlier one approved; the hardening protects the shared runtime and the dispatch path, not one package from another, so a guardrail package belongs in the guard position.
 
 #### Scenario: A hook that fetches
 - **WHEN** a hook calls `fetch`
 - **THEN** the fetch throws inside the hook
 
 #### Scenario: A package that patches an intrinsic
-- **WHEN** one package's module assigns `Array.prototype.includes` or `globalThis.JSON`
+- **WHEN** one package's module assigns `Array.prototype.includes`, `globalThis.JSON`, the iterator helpers' `next` or the shim's `call`
 - **THEN** the assignment is refused, and another package's guard that uses them answers as written
+
+#### Scenario: A guard package after a rewriting package
+- **WHEN** a guard package refuses writes to a secret path, and another package rewrites a write's path to it
+- **THEN** in selection order the rewrite follows the guard's approval and lands; in the guard position the guard sees the rewrite and blocks it
 
 #### Scenario: The hooks Worker gains a binding
 - **WHEN** the hooks Worker's config binds `OWNER`, a bucket or another Worker's class
