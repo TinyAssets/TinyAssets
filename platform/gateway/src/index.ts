@@ -8,7 +8,8 @@
  * - `seal`: a pasted API key, sealed with its source record (§7.2 inline connect).
  * - `exchange`, `refresh`, `revokeAtProvider`: OAuth connections (`oauth.ts`).
  * - `verify`: the connection's setup check, and the models it can be asked for.
- * - `forward`: raw passthrough for sandbox egress (`forward.ts`), on its own entrypoint.
+ * - `forward`: raw passthrough for sandbox egress (`forward.ts`), also on its own
+ *   entrypoint for the egress door.
  * - `reseal`: a blob resealed under the active kid at the next version (the sweep that
  *   retires a kid).
  *
@@ -17,7 +18,8 @@
  * `EgressGateway`, which serves only `forward`: the egress door (the binder) streams a
  * sandbox's request through it once the owner's object admitted the request, so the
  * object sleeps while the bytes flow (research §5.4 step 4). Neither doors entrypoint can
- * make a model call, refresh, reseal or revoke, and the owner's needs no `forward`.
+ * make a model call, refresh, reseal or revoke. The owner's keeps `forward` for its own MCP
+ * client (tasks 4 M, over G4's forward).
  *
  * Every method takes the owner, connection and version the blob is bound to from its
  * caller, and the seal holds the call to them: the gateway never chooses an owner. Each
@@ -136,6 +138,16 @@ export default class Gateway extends WorkerEntrypoint<GatewayEnv> {
   async verify(owner: string, connection: string, version: number,
                blob: string): Promise<Verified> {
     return verifySealed(this.env, owner, connection, version, blob);
+  }
+
+  /** Forwards one request under the sealed endpoints, for the owner's own MCP client (M). */
+  async forward(owner: string, connection: string, version: number, blob: string,
+                request: Request): Promise<Response> {
+    try {
+      return await forward(this.env, binding(owner, connection, version), blob, request);
+    } catch (error) {
+      return failureResponse(codeOf(error, "internal"));
+    }
   }
 
   /** Asks the provider to revoke an OAuth credential (RFC 7009). */

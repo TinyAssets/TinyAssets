@@ -120,7 +120,7 @@ A stream the provider fails for its context's length after a 2xx SHALL end with 
 - **THEN** the stream ends with an `error` event of `context_length_exceeded`, and none of the provider's words
 
 ### Requirement: Sandbox egress is forwarded raw under the sealed endpoints
-`forward` SHALL send a sandbox request's method, path, query, headers and body to the credential's sealed origin only, strip every inbound credential (authorization and API-key headers, cookies, method overrides, the API-key query parameters, our own `x-ta-` headers and Cloudflare's), inject the sealed secret by the sealed auth template, cut the request at five minutes, and pass the provider's answer through.
+`forward`, served to the egress door on the `EgressGateway` entrypoint, SHALL send a sandbox request's method, path, query, headers and body to the credential's sealed origin only, strip every inbound credential (authorization and API-key headers, cookies, method overrides, the API-key query parameters, our own `x-ta-` headers and Cloudflare's), inject the sealed secret by the sealed auth template, cut the request at five minutes, and pass the provider's answer through.
 
 #### Scenario: A sandbox client sends a placeholder key
 - **WHEN** a request carries a placeholder in `authorization`, `x-api-key` and `?key=`
@@ -151,11 +151,11 @@ For a key-exchange source (the Python's `pkce_user_key_v1`, OpenRouter's), `exch
 - **WHEN** a key-exchange endpoint answers other than `200` with a key, or redirects
 - **THEN** the call fails with a fixed code, the redirect is never followed, and nothing is sealed
 
-### Requirement: The doors reach only the connect steps
-The gateway SHALL serve the doors Worker through a named entrypoint, `ConnectGateway`, that offers only `seal`, `exchange` and `verify`; model calls, egress forwarding, refresh, reseal and provider revocation SHALL stay on the entrypoint only the owner Worker binds.
+### Requirement: The doors reach only the connect steps and egress forwarding
+The gateway SHALL serve the doors Worker through two named entrypoints: `ConnectGateway`, which offers only `seal`, `exchange` and `verify`, and `EgressGateway`, which offers only `forward`, for the egress door, once the owner's object admitted the request. Model calls, refresh, reseal and provider revocation SHALL stay on the entrypoint only the owner Worker binds.
 
-#### Scenario: The doors call a model or forward egress
-- **WHEN** the doors' binding is asked for `fetch`, `forward`, `refresh`, `reseal` or `revokeAtProvider`
+#### Scenario: The doors call a model
+- **WHEN** either doors binding is asked for `fetch`, `refresh`, `reseal` or `revokeAtProvider`, or the connect binding for `forward`
 - **THEN** the entrypoint has no such method
 
 ### Requirement: The gateway binds nothing and chooses no owner
@@ -170,7 +170,7 @@ The gateway Worker's config SHALL bind nothing and serve no URL: no binding of a
 - **THEN** the isolation guard fails CI
 
 ### Requirement: The setup check lists each model with the metadata the owner needs
-`verify` SHALL answer a working credential with the models its source serves (pi-ai's catalog for a built-in provider, the declared list for a custom endpoint), each its whole pi-ai record but for what is the gateway's own (provider, API, base URL, headers, compatibility and sampling parameters), since the owner object holds no catalog of its own and lists, prices, compacts and offers thinking levels by them.
+`verify` SHALL answer a working credential with its egress scope (the sealed base URL and endpoints, no secret, which the owner's object keeps to refuse an egress request to an endpoint not sealed before any forward) and the models its source serves (pi-ai's catalog for a built-in provider, the declared list for a custom endpoint), each its whole pi-ai record but for what is the gateway's own (provider, API, base URL, headers, compatibility and sampling parameters), since the owner object holds no catalog of its own and lists, prices, compacts and offers thinking levels by them.
 
 #### Scenario: A key is checked at connect time
 - **WHEN** the binder verifies a sealed Anthropic key that the provider accepts

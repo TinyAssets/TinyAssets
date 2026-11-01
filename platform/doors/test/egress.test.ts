@@ -253,7 +253,10 @@ describe("the egress door", () => {
     const box = await sandbox();
     const hash = await leaseTokenHash(box.token);
     await sqlIn(box.owner, "UPDATE file_space SET lease_expires = lease_expires - 30");
+    await putLease(doorsEnv, hash, { o: box.owner, l: box.opened.lease.lease_id, e: now() + 5 },
+                   now());
     const renewed = await sandboxLeaseRenew(doorsEnv, box.bound, box.opened.lease);
+    expect(renewed.expires_at).toBeGreaterThanOrEqual(now() + 59);
     expect(await env.DIRECTORY.get(`l:${hash}`, { type: "json" })).toEqual({
       o: box.owner, l: box.opened.lease.lease_id, e: Math.floor(renewed.expires_at) });
     // The object refuses the token before the entry goes: here the entry is put back.
@@ -282,6 +285,21 @@ describe("a refused request", () => {
     const response = await call(egressRequest({ ...box, token }));
     expect([response.status, await codeOf(response)]).toEqual([status, code]);
     expect(spy).not.toHaveBeenCalled();
+    expect(await forwarded()).toEqual([]);
+  });
+
+  it("with an empty or malformed token is refused before the directory is read", async () => {
+    const box = await sandbox();
+    const read = vi.spyOn(doorsEnv.DIRECTORY, "get");
+    for (const [token, code] of [["", "egress_token_missing"], [" ", "egress_token_missing"],
+                                 ["A".repeat(42), "egress_token_unknown"],
+                                 [`${"A".repeat(42)}=`, "egress_token_unknown"]] as const) {
+      const request = egressRequest(box);
+      request.headers.set(SANDBOX_HEADER, token);
+      const response = await call(request);
+      expect([response.status, await codeOf(response)]).toEqual([401, code]);
+    }
+    expect(read.mock.calls.filter(([key]) => String(key).startsWith("l:"))).toEqual([]);
     expect(await forwarded()).toEqual([]);
   });
 

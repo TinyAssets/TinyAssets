@@ -69,6 +69,18 @@ describe("forward", () => {
     expect(response.headers.get("cf-ray")).toBeNull();
   });
 
+  it("replaces a placeholder sent in the sealed header itself, whatever its name", async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, {
+      ...OPENAI, upstream: { ...OPENAI.upstream, auth: { header: "x-custom-key", scheme: "" } } });
+    const response = await call(blob, new Request("https://egress/v1/responses", {
+      method: "POST", headers: { "x-custom-key": "ta_ph_c1_placeholder", "x-fake-mode": "echo" },
+      body: "{}" }), env);
+    const echo = await response.json() as { headers: Record<string, string> };
+    // Only the sealed secret is sent, which the answer redacts: no placeholder beside it.
+    expect(echo.headers["x-custom-key"]).toBe("[redacted]");
+  });
+
   it("injects by the sealed template: a bare header for Anthropic's convention", async () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, ANTHROPIC);

@@ -502,7 +502,7 @@ A change that only removes or frees (a remove, a redaction, a purge, an aborted 
 - **THEN** the remove lands
 
 ### Requirement: The sync lease fences the sandbox's commits
-The sync lease SHALL be a random lease id and a rising epoch, held by one holder until it lapses or is released. A sync commit SHALL be refused whole only when the lease id or epoch is not the live lease's or its op list is empty or too long; each op SHALL otherwise land or be refused on its own, its quota checked alone, and be answered per op. API writes SHALL never take the lease.
+The sync lease SHALL be the sandbox's one lease: a random lease id and a rising epoch, held by one holder until it lapses or is released, bound to the SHA-256 of the lease token the binder minted (never the token) and to the policy generation its sandbox's network was last applied under, none until the sandbox slice applies one. A sync commit SHALL be refused whole only when the lease id or epoch is not the live lease's or its op list is empty or too long; each op SHALL otherwise land or be refused on its own, its quota checked alone, and be answered per op. API writes SHALL never take the lease.
 
 #### Scenario: A sandbox that lost its lease
 - **WHEN** a sync commit carries an earlier epoch or another lease id
@@ -631,7 +631,7 @@ What pi reports through `onReport`, and each extension pi refuses to install whi
 - **THEN** it is skipped and kept as a notice, pi opens with the rest, and the `wakes` and `files` lanes run
 
 ### Requirement: A model connection holds only a blob the gateway sealed
-The object SHALL hold a model connection's credential only as the blob the gateway sealed for that owner, connection and version, never a plaintext key or token: the binder hands a pasted key to the gateway's `seal` and an OAuth code to its `exchange`, and `connectionCommit` takes the blob, its kid, the models the gateway's setup check listed with their metadata, and an OAuth access expiry in clear.
+The object SHALL hold a model connection's credential only as the blob the gateway sealed for that owner, connection and version, never a plaintext key or token: the binder hands a pasted key to the gateway's `seal` and an OAuth code to its `exchange`, and `connectionCommit` takes the blob, its kid, the models the gateway's setup check listed with their metadata, the egress scope it listed (the sealed base URL and endpoints, within 16 KiB, required but for a failed setup), and an OAuth access expiry in clear.
 
 #### Scenario: A pasted key is connected and used
 - **WHEN** the owner connects a key and its agent runs a turn on it
@@ -1343,3 +1343,35 @@ At most `WORKING_THREADS` of an owner's threads SHALL hold turn owners at once. 
 #### Scenario: A client past its share
 - **WHEN** a client's threads hold its share of the working threads and it sends to another
 - **THEN** that input is refused `threads_working`, while its working thread and the owner's threads still take inputs
+
+### Requirement: Each sandbox egress request is admitted at open
+`egressOpen` SHALL take only the sandbox binding the egress door resolved (lease id, token hash, the generation the request's transform carried) and admit a request for `work`, in one unit, by these checks in order, each refusal a fixed code kept as a receipt row: the live lease by its id and token hash (`egress_lease_closed`); the request's generation is the current policy generation (`egress_policy_stale`); the lease's network was applied under it (`egress_network_stale`); the connection is the owner's, active, its credential usable (`egress_connection_refused`); the method and path are among its sealed endpoints, by the gateway's own rule (`egress_endpoint_refused`); at most 64 open and 600 opened a minute (`egress_rate`). An admitted request SHALL be an open reservation, answered with the blob, its version, the generation, the reservation and an end signal. `egressSettle` (`reduce`) SHALL settle a reservation of the binding's lease once; one never settled SHALL be settled `lost` past six minutes. The newest 2,000 closed rows SHALL be kept.
+
+#### Scenario: A request under a stale network
+- **WHEN** the owner's policy moved to generation 2 and the sandbox's network was applied under 1
+- **THEN** a request whose transform carries 1 is refused `egress_policy_stale`, one carrying 2 `egress_network_stale`, until `sandboxNetworkApplied` records 2
+
+#### Scenario: A lease token presented elsewhere
+- **WHEN** the sandbox binding reaches any door but `egressOpen` and `egressSettle`, or another binding reaches those
+- **THEN** it is refused
+
+### Requirement: A change ends the egress streams it covers
+Once its own unit committed, a policy write SHALL end every open egress stream, a suspension every one, a connection's revoke that connection's, the lease's close and a lease that replaces a lapsed one the old lease's, and the owner's erasure every one: the object closes each one's end signal and marks its row with why.
+
+#### Scenario: A connection is revoked while two stream
+- **WHEN** the owner revokes one of two connections each streaming a sandbox request
+- **THEN** only the revoked connection's stream ends
+
+### Requirement: The sandbox's network is made from owner policy
+`networkDocument` SHALL make E2B's network configuration from the owner's egress policy, in E2B's own field names: `denyOut` all traffic; `allowOut` `*` (names by SNI) in `open` mode, else the policy's destinations on ports 80 and 443, and in every mode `egress.tinyassets.io`; `dnsServers` pinned to one resolver; one transform, on `egress.tinyassets.io` only, setting the lease token and the policy generation. A destination on another port SHALL be refused, never widened; an IP literal SHALL be refused; `ask` mode SHALL be an allowlist whose application leaves a refusal receipt.
+
+#### Scenario: An allowlist naming an IP and a database port
+- **WHEN** the policy lists `8.8.8.8:443` or `db.example.com:5432`
+- **THEN** the first is refused as an IP literal and the second left out, reported as not expressible
+
+### Requirement: The sandbox's model clients hold placeholder keys
+`sandboxConfig` SHALL hand the sandbox slice, for each active connection, a base URL on the egress door (`https://egress.tinyassets.io/c/<connection>` and the sealed base URL's path) and a placeholder key `ta_ph_<connection>_<random>` that carries no secret, as `<PROVIDER>_BASE_URL` and `<PROVIDER>_API_KEY` for each provider's oldest connection and `TA_<CONNECTION>_*` for every one.
+
+#### Scenario: Two Anthropic connections
+- **WHEN** the owner has two Anthropic connections
+- **THEN** `ANTHROPIC_BASE_URL` names the older, and each has its own `TA_<CONNECTION>_BASE_URL`

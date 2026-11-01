@@ -6,6 +6,7 @@
  */
 import { createHash } from "node:crypto";
 
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
@@ -14,7 +15,9 @@ import { EGRESS_LIMITS, type EgressOpened, LOST_AFTER_S } from "../src/egress";
 import type { Binding } from "../src/owner-do";
 import { SANDBOX_DOORS, SANDBOX_ONLY } from "../src/owner-do";
 import { ANTHROPIC, type Gated, gated, OPENAI, sealedAs } from "./gateway-support";
+import { signedIn } from "./ledger-support";
 import { failure } from "./support";
+import type { FauxOwnerDO } from "./worker";
 
 const FENCED = "the sync lease was lost; this sync is fenced";
 
@@ -148,6 +151,18 @@ describe("an egress request", () => {
                          { path: "/v1/%2e%2e/admin" }]) {
       expect(await refusedWith(r, lease.as(), connection, extra)).toBe("egress_endpoint_refused");
     }
+    // An active connection whose credential cannot be used (its blob gone, or expired).
+    const [blob] = await r.sql("SELECT * FROM connection_secrets WHERE connection_id = ?",
+                               connection);
+    await r.sql("DELETE FROM connection_secrets WHERE connection_id = ?", connection);
+    expect(await refusedWith(r, lease.as(), connection)).toBe("egress_connection_refused");
+    await r.sql("INSERT INTO connection_secrets (connection_id, version, kid, blob) " +
+                  "VALUES (?, ?, ?, ?)", blob!["connection_id"]!, blob!["version"]!,
+                blob!["kid"]!, blob!["blob"]!);
+    await r.sql("UPDATE connections SET expires_at = 1 WHERE id = ?", connection);
+    expect(await refusedWith(r, lease.as(), connection)).toBe("egress_connection_refused");
+    await r.sql("UPDATE connections SET expires_at = NULL WHERE id = ?", connection);
+    await admitted(r, lease, connection);
     await r.sql("UPDATE file_space SET lease_expires = 1");
     expect(await refusedWith(r, lease.as(), connection)).toBe("egress_lease_closed");
     const revoked = await gated();
@@ -155,8 +170,9 @@ describe("an egress request", () => {
     const live = await leased(revoked);
     await revoked.stub.connectionRevoke(revoked.session(), { connection: gone });
     expect(await refusedWith(revoked, live.as(), gone)).toBe("egress_connection_refused");
+    // Only the one request admitted is open: no refusal left one.
     expect((await r.sql("SELECT COUNT(*) AS n FROM egress_reservations WHERE state = 'open'"))
-      [0]).toEqual({ n: 0 });
+      [0]).toEqual({ n: 1 });
   });
 
   it("is held to the rate: open at once, and opened a minute", async () => {
@@ -173,6 +189,12 @@ describe("an egress request", () => {
     await admitted(r, lease, connection);
     // Settled ones count in the minute's opens, refused ones never.
     await r.sql("UPDATE egress_reservations SET opened_at = opened_at - 61");
+    await r.sql("INSERT INTO egress_reservations (id, lease_id, connection_id, method, path, " +
+                  "generation, opened_at, state, code, settled_at) SELECT " +
+                  "lower(hex(randomblob(16))), ?, ?, 'POST', '/x', 1, ?, 'refused', " +
+                  "'egress_rate', ? FROM (WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT " +
+                  `i + 1 FROM n WHERE i < ${EGRESS_LIMITS.perMinute}) SELECT i FROM n)`,
+                lease.lease_id, connection, Date.now() / 1000, Date.now() / 1000);
     await r.sql("INSERT INTO egress_reservations (id, lease_id, connection_id, version, method, " +
                   "path, generation, opened_at, state, outcome, settled_at) SELECT " +
                   "lower(hex(randomblob(16))), ?, ?, 1, 'POST', '/x', 1, ?, 'settled', " +
@@ -276,6 +298,40 @@ describe("a change that ends egress", () => {
     await leased(r);
     expect(await ended(c)).toBe(true);
     expect((await rows(r)).at(-1)).toMatchObject({ ended: "lease" });
+  });
+});
+
+describe("the owner's erasure", () => {
+  it("ends every stream, and then every door refuses", async () => {
+    // The faux-model class, whose test hook reaches the erasure's internal path.
+    const owner = `owner-${crypto.randomUUID()}`;
+    const stub: DurableObjectStub<FauxOwnerDO> = env.AGENT.getByName(owner);
+    const bind = (extra: Partial<Binding> = {}): Binding =>
+      ({ owner, caller: owner, origin: null, ...extra });
+    const { session: cookie } = await stub.sessionOpen(bind({ authenticated_at: signedIn() }));
+    const r = { stub, bind: (_none: null, extra: Partial<Binding> = {}) => bind(extra),
+                session: (_none: null) => bind({ session: cookie }) };
+    const prepared = await r.stub.connectionPrepare(r.session(null), {
+      source: "anthropic", kind: "api_key", display_name: "Key", provider: "anthropic",
+      revocable: false });
+    const sealed = await env.GATEWAY.seal(owner, prepared.connection, 1, "sk-x", ANTHROPIC);
+    await r.stub.connectionCommit(r.session(null), {
+      connection: prepared.connection, version: 1, blob: sealed.blob, kid: sealed.kid,
+      models: [], egress: { base_url: ANTHROPIC.upstream.base_url,
+                            endpoints: ANTHROPIC.endpoints } });
+    const token = hashOf(crypto.randomUUID());
+    const lease = await r.stub.sandboxLeaseOpen(r.bind(null), { holder: "sandbox-1", token });
+    await r.stub.sandboxNetworkApplied(r.bind(null), { lease_id: lease.lease_id,
+                                                       epoch: lease.epoch, generation: 1 });
+    const sandbox = r.bind(null, { sandbox: { lease: lease.lease_id, token, generation: 1 } });
+    const opened = await r.stub.egressOpen(sandbox, request(prepared.connection));
+    expect(opened.ok).toBe(true);
+    await runInDurableObject(stub, async (instance: FauxOwnerDO) => {
+      await instance.erasure.erase();
+    });
+    expect(await ended(opened as EgressOpened)).toBe(true);
+    expect((await failure(() => r.stub.egressOpen(sandbox, request(prepared.connection))))
+      .message).toMatch(/^owner_erased/);
   });
 });
 

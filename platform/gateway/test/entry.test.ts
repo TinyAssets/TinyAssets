@@ -90,8 +90,8 @@ describe("the gateway Worker", () => {
     // The doors' egress door reaches it over their real `EGRESS` binding; here, its surface.
     expect(Object.getOwnPropertyNames(EgressGateway.prototype).sort())
       .toEqual(["constructor", "forward"]);
-    // The owner's entrypoint forwards nothing: only the egress door does.
-    expect(Object.getOwnPropertyNames(Gateway.prototype)).not.toContain("forward");
+    // The owner's entrypoint keeps it, for the owner's own MCP client (tasks 4 M).
+    expect(Object.getOwnPropertyNames(Gateway.prototype)).toContain("forward");
     const egress = new EgressGateway(createExecutionContext(), env);
     const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
     const response = await egress.forward("alice", "c1", 1, blob, new Request(

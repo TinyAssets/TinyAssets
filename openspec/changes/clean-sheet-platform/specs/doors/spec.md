@@ -134,14 +134,14 @@ Each sign-in of the owner's app SHALL keep its own grant, so devices stay signed
 - **THEN** the phone's token is refused at once and the laptop's still works
 
 ### Requirement: The doors Worker cannot deploy before cutover
-The doors config SHALL bind exactly `OWNER` (the owner Worker's `OwnerDO`, by script name), `GATEWAY` (the gateway Worker's `ConnectGateway` entrypoint), `OAUTH_KV` and `DIRECTORY` (distinct placeholder ids) and the `DCR_ENABLED` var, with no routes, custom domain, workers.dev or preview URL, and the flags `nodejs_compat`, `disable_ctx_exports` and `global_fetch_strictly_public`.
+The doors config SHALL bind exactly `OWNER` (the owner Worker's `OwnerDO`, by script name), `GATEWAY` (the gateway Worker's `ConnectGateway` entrypoint), `EGRESS` (its `EgressGateway` entrypoint), `OAUTH_KV` and `DIRECTORY` (distinct placeholder ids) and the `DCR_ENABLED` var, with no routes, custom domain, workers.dev or preview URL, and the flags `nodejs_compat`, `disable_ctx_exports` and `global_fetch_strictly_public`.
 
 #### Scenario: A route is added
 - **WHEN** a route, another service, a real KV id or another binding is added to the doors config
 - **THEN** the config guard fails CI
 
 #### Scenario: The doors bind more of the gateway
-- **WHEN** `GATEWAY` names the gateway's default entrypoint, or its `ConnectGateway` class serves anything but `seal`, `exchange` and `verify`
+- **WHEN** `GATEWAY` or `EGRESS` names the gateway's default entrypoint, its `ConnectGateway` class serves anything but `seal`, `exchange` and `verify`, or its `EgressGateway` class anything but `forward`
 - **THEN** the config guard fails CI
 
 ### Requirement: A pasted key or OAuth code reaches only the gateway
@@ -227,3 +227,35 @@ Each model source SHALL be an editable JSON record in `platform/sources/` naming
 #### Scenario: Sign in with ChatGPT before OpenAI's approval
 - **WHEN** the owner begins a connect of the `chatgpt` record
 - **THEN** it is refused `501` naming why, before any object call
+
+### Requirement: The egress door admits a sandbox request by its lease token
+The doors SHALL serve `egress.tinyassets.io/c/<connection>/*` and nothing else on that origin, and serve the egress door on no other. A request SHALL carry the sandbox's lease token (`x-ta-sandbox`) and the policy generation its network was made under (`x-ta-policy-generation`), both set by E2B's transform outside the VM; a missing, malformed, unknown or expired token SHALL be refused by its fixed code before any object is reached, and the placeholder key the client sent SHALL never be read. The binder SHALL resolve the token through the directory's `l:` entry to its owner, then the owner's object SHALL admit the request (`egressOpen`) and only then SHALL the request go to the gateway's `EgressGateway.forward`, its path after `/c/<connection>`, the provider's answer streaming back but for the gateway's own headers. Only one doors source SHALL reach `EGRESS`.
+
+#### Scenario: A sandbox client sends its placeholder key
+- **WHEN** a sandbox's client posts to `egress.tinyassets.io/c/<connection>/openai/v1/chat/completions` with a live token and a placeholder in `authorization`, `x-api-key`, a cookie and `?key=`
+- **THEN** the provider receives the sealed key in the sealed header and none of the placeholders, the token or the generation, and the client receives the provider's stream
+
+#### Scenario: A refused request
+- **WHEN** the token is missing, malformed, unknown or expired, or the object refuses the request
+- **THEN** the door answers the refusal's fixed code (and the object's receipt) and nothing is forwarded
+
+### Requirement: Every admitted egress request is settled once
+The egress door SHALL settle every reservation the object admitted, once, with the bytes it streamed and the provider's status, on every end: `complete`, `aborted` (the client stopped reading), `failed` (the gateway failed), `deadline` (the gateway's five minutes, kept by the door too) or `ended` (the object's end signal, which a policy write, a suspension, a revoke, the lease's close and the owner's erasure close). A stream it stops SHALL be cancelled upstream and errored to the client.
+
+#### Scenario: A policy write mid-stream
+- **WHEN** the owner writes its policy while a sandbox response streams
+- **THEN** the stream is cut, its reservation settled `ended`, the upstream request cancelled, and the next request refused until the sandbox's network is applied under the new generation
+
+### Requirement: A lease token reaches no other door
+A lease token SHALL be refused at `/api`, `/mcp` and `/app`, and the owner's object SHALL refuse the sandbox binding at every door but the egress doors.
+
+#### Scenario: A token presented as a bearer
+- **WHEN** a sandbox's token is sent to `/api/tools/*`, `/mcp` or `/app/api/*`
+- **THEN** each answers `401`
+
+### Requirement: A sandbox lease's directory entry follows the object
+Opening the sandbox's lease SHALL mint a 256-bit token, take the lease in the owner's object bound to the token's SHA-256, then write the directory's `l:<sha256>` entry (`{o, l, e}`: owner, lease id, expiry), then return the token once with E2B's network document (the token in its transform) and the model clients' environment. A renewal SHALL rewrite the entry after the object; a close SHALL land in the object, refusing the token and ending its streams, before the entry is deleted.
+
+#### Scenario: A lease the object refuses
+- **WHEN** a lease is opened while another is live
+- **THEN** the object refuses it and no directory entry is written

@@ -192,8 +192,8 @@ live acceptance is still owed says so.
   alone is a proof (never its hash); the object mints it; sessions, proposals (with a
   per-client share), each receipt bucket and the grant rows the owner sets are
   bounded, and a grant row nothing depends on is forgotten oldest first rather than a
-  new client refused; an egress host the URL parser reads as an IP address waits for
-  the gateway's address check (4).
+  new client refused; an egress host the URL parser reads as an IP address is refused
+  (G4 keeps it so: the gateway fetches strictly publicly and E2B filters CIDRs).
 - [x] 3.6 The schedule: one table, run as jobs on the Agents SDK Lifecycle queue, which
   owns the single alarm and the thread host's wake jobs (one per agent thread, S3); 3.4's direct `setAlarm`/`deleteAlarm`
   move onto it. Built (`schedule.ts`): `OwnerDO` holds a Lifecycle (`agents/lifecycle`,
@@ -448,15 +448,67 @@ account and no deploy.
   the provider's own upstream binding for the owner's sign-in) does not come back with
   the callback; the app slice decides how (a claimed https redirect into the app, or the
   binding carried another way).
-- [ ] G4 The egress door (with the sandbox slice): `egress.tinyassets.io/c/<connection>/*`,
-  the sandbox identity (E2B workload identity or a lease token), `egressOpen`, `forward`,
-  `egressSettle`; the E2B network document from owner policy. Owed by 3.5: each egress
-  request is admitted at open against the owner's current policy generation, so no
-  tunnel outlives a write; a policy write ends the owner's in-flight turns and re-sets the
-  sandbox's network, fail-closed until it does; resolved addresses are not visible to
-  Workers fetch, so the gateway fetches strictly publicly, the object refuses IP
-  literals, E2B filters CIDRs, and a live probe confirms private addresses are
-  unreachable.
+- [x] G4 (slice 8a) The egress door, the sandbox's identity and its network document, in
+  workerd, nothing deployed and no E2B call; 8b (the sandbox) only calls it. **Identity**:
+  E2B workload identity is a private beta, so v1's is our own, a random 256-bit lease
+  token per sandbox lease (`doors/src/sandbox.ts`), returned once for 8b's static
+  transform on `egress.tinyassets.io` (`x-ta-sandbox`); only its SHA-256 is kept, on the
+  lease row (the truth) and as the directory's `l:<sha256>` → `{o, l, e}` (a hint, as
+  `k:` is). Workload identity, once E2B grants it (founder, gateway research §13 item 2),
+  swaps the door's identity check only. **One lease**: the sandbox's lease is `files.ts`'s
+  sync lease (its `lease_id` the claim token, its epoch the fencing number, for sync
+  commits and egress alike), which migration 14 binds to the token's hash and to the
+  policy generation its network was last applied under (`network_generation`); a second
+  row would fence nothing more and could disagree with it. The `fileLease*` doors are
+  `sandboxLeaseOpen`, `sandboxLeaseRenew` and `sandboxLeaseClose` now, plus
+  `sandboxNetworkApplied` and `sandboxConfig` (owner's own). Order as the keys': object,
+  then entry, then the token once; renew rewrites the entry; close lands in the object
+  (token refused, its streams ended) before the entry goes. **The door**
+  (`doors/src/egress.ts`, routed on `egress.tinyassets.io` only): the token through `l:`
+  (missing, malformed, unknown or expired refused before any object), the maintenance
+  gate, then `OwnerDO.egressOpen` (`egress.ts`, `work`, one unit: the live lease and
+  hash, the transform's policy generation, the lease's network generation, the
+  connection, its sealed endpoints by the gateway's own `egressTarget`, 64 open and 600 a
+  minute; a reservation, or a fixed code kept as a receipt row), then the gateway's new
+  `EgressGateway.forward` (the doors' second binding, `EGRESS`, reached by `egress.ts`
+  alone; the config guard holds it to `forward`), streaming back, then `egressSettle`
+  once on every end (complete, aborted, failed, deadline, ended), the binder counting the
+  bytes. The object's end signal is a byte stream `egressOpen` hands the door, closed by a
+  policy write, a suspension, the connection's revoke, the lease's close or a successor
+  lease, and the erasure. A connection keeps its egress scope (sealed base URL and
+  endpoints, no secret), which `verify` now returns and `connectionCommit` requires.
+  **Owed by 3.5, done**: each request is admitted at open against the current policy
+  generation; a policy write ends the owner's in-flight egress streams (research §6 let
+  them finish within five minutes: a declared difference) and leaves the network stale,
+  egress refused, until 8b applies it again; the gateway fetches strictly publicly and
+  the object refuses IP literals (`network.ts`'s `checkDestination`, policy's own rule).
+  **The network document** (`network.ts`, pure): E2B's `allowOut`, `denyOut`,
+  `dnsServers` and `rules` (e2b SDK 2.62.0 `SandboxNetworkOpts`/`SandboxNetworkUpdate`;
+  docs.e2b.dev/network/internet-access): deny all, allow `*` in `open` mode or the
+  policy's names on 80 and 443, always `egress.tinyassets.io`, DNS pinned to 1.1.1.1, the
+  transform on the door alone; another port is refused (not expressible by name), and
+  `ask` is an allowlist plus a refusal receipt at each apply. **Placeholders**
+  (`sandboxEnv`): `<PROVIDER>_BASE_URL`/`_API_KEY` for each provider's oldest connection
+  and `TA_<CONNECTION>_*` for every one, `https://egress.tinyassets.io/c/<connection>` and
+  the sealed path, keys `ta_ph_<connection>_<random>`; `forward` already strips every
+  inbound credential (tested with each placeholder, and one sent in the sealed header's
+  own name). Owner-bound guard 46.2% (4,623,058,356 bytes, about 377 MB under half; +25.6
+  MB for 2,064 reservation rows and each connection's 16 KiB scope), no trade needed.
+  Mutation: 80 mutants over the token's resolution and expiry, each admit check, the
+  generation checks, settlement on each end, the strip, the network document's modes and
+  the directory order, 80 killed (8 lived on the first pass: six closed by new tests, the
+  doors-level cookie strip retargeted to the gateway's own test where it acts, and one
+  equivalent mutant replaced). **Owed to 8b's live probe**: that E2B filters CIDRs so private
+  addresses (127.0.0.1, 10.0.0.1, 169.254.169.254) are unreachable from the sandbox;
+  whether code inside the sandbox can read its own transform header (the token); that the
+  sandbox resolves only through the pinned resolver (its `/etc/resolv.conf` set by the
+  template); and that a request in flight across `updateNetwork` carries the old
+  generation. **Out of v1**, each waiting for a TLS-terminating proxy (a founder call: a
+  host, against Direction 8) or a tool's base-URL support: non-model credentials (GitHub,
+  Notion and the rest), git through credentials (git is the file plane's and the sync
+  agent's), WebSocket APIs, and SigV4. Egress requests are counted (requests, bytes),
+  not priced: the raw passthrough reads no usage, so the owner's model spend caps hold the
+  loop's calls only until a slice parses provider usage from the stream.
 - [ ] G5 Measurement and cost: pi-durable's partial commits at most once a second with
   the live tee, per-owner busy seconds, rows written, call durations and delta counts, and
   the rule for building the deferred mode for unattended turns; measured through pi's and
@@ -1541,9 +1593,16 @@ account and no deploy.
   worst case at the policy's high bounds under half of 10 GB.
 - [ ] Doors (with tasks 2): the HTTP `/api/files` door and MCP file tools over the
   `file*` RPC doors, the scoped-grant capabilities `read_files` and `write_files` named
-  as those tools are, and sandbox lease tokens in the owner directory (a 256-bit bearer
-  bound to owner, lease id and expiry, resolved by the binder as the owner).
-- [ ] The sandbox: the E2B sandbox through our proxy; the in-VM sync agent (sync in from
+  as those tools are, and the sync agent's file calls by its lease token (the token, its
+  `l:` entry and its binding are G4's; the file doors' acceptance of the sandbox binding
+  is this item's, as the egress doors' is G4's).
+- [ ] The sandbox (slice 8b), calling G4's doors only: the E2B client and lifecycle (the
+  lease by `sandboxLeaseOpen`, whose token goes in the static transform and whose network
+  document and environment set the sandbox up; `sandboxNetworkApplied` after each
+  `updateNetwork`, and again after every policy write, since egress is refused until it;
+  `sandboxLeaseRenew` on the 20 s heartbeat; `sandboxLeaseClose` at pause), the template
+  (its `/etc/resolv.conf` naming the pinned resolver), and G4's live probe (above); the
+  E2B sandbox through our proxy; the in-VM sync agent (sync in from
   the change feed, sync out as one fenced `fileSyncCommit`, a 20 s lease heartbeat and
   15 s checkpoints, `/proc` open-file deferral and SQLite file groups, the cold-create
   size cap); `exec` in the environment (wake, sync in, run, sync out, report conflicts
