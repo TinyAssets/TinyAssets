@@ -33,7 +33,8 @@
  * other door: the other doors serve `tinyassets.io` alone, and the object refuses the
  * sandbox binding at every door but the egress doors.
  */
-import { EGRESS_DEADLINE_S, type EgressCode, GENERATION_HEADER, type Outcome,
+import { HINT_KEYS } from "../../gateway/src/api-rules";
+import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, type EgressCode, GENERATION_HEADER, type Outcome,
          SANDBOX_HEADER } from "../../owner/src/network";
 
 import { type Bound, bindSandbox, rebound } from "./binder";
@@ -58,7 +59,26 @@ const STATUS: Readonly<Record<EgressCode, number>> = Object.freeze({
   egress_lease_closed: 401, egress_policy_stale: 409, egress_network_stale: 409,
   egress_connection_refused: 403, egress_endpoint_refused: 403, egress_unmetered: 403,
   egress_length_required: 411, egress_rate: 429, egress_spend_refused: 402,
+  egress_unknown_model: 404, egress_unpriced_option: 403, egress_too_large: 413,
 });
+/** A hint the door hands the owner's object: visible ASCII, as the object takes it. */
+const HINT = /^[\x21-\x7e]{1,256}$/;
+
+/** The body's top-level string at each of `HINT_KEYS`, as a reservation reads it, or null. */
+export function hintsOf(text: string): { model: string | null; tier: string | null } {
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return { model: null, tier: null };
+  }
+  const at = (key: string) => {
+    const value = typeof body === "object" && body !== null && !Array.isArray(body)
+      ? (body as Record<string, unknown>)[key] : undefined;
+    return typeof value === "string" && HINT.test(value) ? value : null;
+  };
+  return { model: at(HINT_KEYS[0]!), tier: at(HINT_KEYS[1]!) };
+}
 
 type Spend = { state: "succeeded"; tokens: number; cost: number; served?: string }
   | { state: "failed" }
@@ -139,11 +159,19 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   const connection = route[1]!;
   const path = `${route[2]!}${url.search}`;
   const length = request.headers.get("content-length");
+  const bytesHint = length !== null && LENGTH.test(length) ? Number(length) : null;
+  // A model call's body is read here, once: the object reserves the call for the model it
+  // names (and its tier), and the same bytes go on to the gateway.
+  const reads = request.method !== "GET" && request.method !== "HEAD" && bytesHint !== null;
+  if (reads && bytesHint! > EGRESS_BODY_MAX) {
+    return refused("egress_too_large", STATUS.egress_too_large);
+  }
+  const text = reads ? await request.text() : null;
+  const hints = text === null ? { model: null, tier: null } : hintsOf(text);
   let opened: Awaited<ReturnType<typeof stub.egressOpen>>;
   try {
     opened = await stub.egressOpen(binding, {
-      connection, method: request.method, path,
-      bytes_hint: length !== null && LENGTH.test(length) ? Number(length) : null });
+      connection, method: request.method, path, bytes_hint: bytesHint, ...hints });
   } catch (error) {
     const answer = refusal(error);
     if (answer === null) {
@@ -210,7 +238,7 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
 
   const forwarded = new Request(`${EGRESS_ORIGIN}${path}`, {
     method: request.method, headers: request.headers, redirect: "manual",
-    body: request.method === "GET" || request.method === "HEAD" ? null : request.body,
+    body: request.method === "GET" || request.method === "HEAD" ? null : text ?? request.body,
   });
   const sent = env.EGRESS.forward(binding.owner, connection, version, blob, forwarded,
                                   opened.metering, halt.readable);

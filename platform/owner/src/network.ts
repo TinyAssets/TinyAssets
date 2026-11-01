@@ -75,7 +75,8 @@ import { Invalid, Refused } from "./errors";
  */
 export interface EgressService {
   forward(owner: string, connection: string, version: number, blob: string, request: Request,
-          metering: { readonly max_output_tokens: number; readonly input_bytes: number } | null,
+          metering: { readonly max_output_tokens: number; readonly input_bytes: number;
+                      readonly model: string; readonly tier: string | null } | null,
           stop: ReadableStream<Uint8Array>):
     Promise<{ response: Response; outcome: ReadableStream<Uint8Array> }>;
 }
@@ -138,7 +139,8 @@ export const EGRESS_CODES = Object.freeze([
   "egress_token_missing", "egress_token_unknown", "egress_token_expired",
   "egress_lease_closed", "egress_policy_stale", "egress_network_stale",
   "egress_connection_refused", "egress_endpoint_refused", "egress_unmetered",
-  "egress_length_required", "egress_rate", "egress_spend_refused",
+  "egress_length_required", "egress_rate", "egress_spend_refused", "egress_unknown_model",
+  "egress_unpriced_option", "egress_too_large",
 ] as const);
 export type EgressCode = typeof EGRESS_CODES[number];
 
@@ -153,6 +155,8 @@ export type Outcome = "complete" | "aborted" | "failed" | "deadline" | "ended";
  * so a stream the gateway never ends is still settled.
  */
 export const EGRESS_DEADLINE_S = 300;
+/** The largest model call the egress door reads, as the gateway's own bound (`BODY_MAX`). */
+export const EGRESS_BODY_MAX = 16 * 1024 * 1024;
 /**
  * A sandbox run's deadline, in seconds from its lease's open: a day, the longest sandbox
  * life an E2B plan offers (8b's probe confirms it for ours). Both of the run's tokens carry it under their MAC, so the

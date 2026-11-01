@@ -6,10 +6,12 @@ import { describe, expect, it } from "vitest";
 
 import { calculateCost } from "@earendil-works/pi-ai/models";
 
-import { apiRules, fallbackList, manyChoices, paidTool } from "../src/api-rules";
+import { apiRules, fallbackList, HINT_KEYS, manyChoices, paidTool, tierMultiplier,
+         unpricedOption } from "../src/api-rules";
 import { builtinCatalog } from "../src/catalog";
 import { meteredCall } from "../src/credential";
-import { clamped, describes, learnMeter, meteredModel, meteredRecord, meteredUsage } from "../src/meter";
+import { clamped, describes, learnMeter, meteredModel, meteredRecord, meteredUsage,
+         snapshotOf } from "../src/meter";
 import { ANTHROPIC, GOOGLE, OPENAI } from "./support";
 
 const GROQ = Object.freeze({
@@ -71,11 +73,11 @@ describe("the meter pi-ai's adapter teaches", () => {
     expect(meter.path).toMatch(/^\/v1beta\/models\/\{model\}:streamGenerateContent$/);
     const path = "/v1beta/models/model-a:streamGenerateContent";
     expect(meteredModel(meter, "POST", path, {})).toBe("model-a");
-    expect(meteredCall({ base_url: GOOGLE.upstream.base_url, endpoints: GOOGLE.endpoints, meter },
+    expect(meteredCall({ api: GOOGLE.upstream.api, base_url: GOOGLE.upstream.base_url, endpoints: GOOGLE.endpoints, meter },
                        "POST", `${path}?alt=sse`)).toBe(true);
     expect(meteredModel(meter, "POST", "/v1beta/models/a/b:streamGenerateContent", {})).toBeNull();
     // The owner's open holds the path to one model segment too, as the gateway reads it.
-    const scope = { base_url: GOOGLE.upstream.base_url, endpoints: GOOGLE.endpoints, meter };
+    const scope = { api: GOOGLE.upstream.api, base_url: GOOGLE.upstream.base_url, endpoints: GOOGLE.endpoints, meter };
     for (const other of ["/v1beta/models/a/b:streamGenerateContent",
                          "/v1beta/models/a:b:streamGenerateContent",
                          "/v1beta/models/:streamGenerateContent"]) {
@@ -242,6 +244,9 @@ describe("the reviewer's escapes, closed (review round 2)", () => {
     const router = meteredRecord(catalog, OPENROUTER, "openrouter/auto")!;
     expect(await meteredUsage(catalog, OPENROUTER, "sk-or-x", router, 200, SSE,
                               streamOf(completion("someone/unlisted", BIG)), false)).toBeNull();
+    // Even one shaped as its own snapshot: a router's price is no model's.
+    expect(await meteredUsage(catalog, OPENROUTER, "sk-or-x", router, 200, SSE,
+                              streamOf(completion(`${router.id}-2026-01-01`, BIG)))).toBeNull();
     // A served model the catalog lists: the dearer of the two, its id recorded.
     const listed = catalog.provider("openrouter")!.getModels()
       .filter((model) => model.api === "openai-completions" && model.cost.output > 0)
@@ -315,5 +320,101 @@ describe("the reviewer's escapes, closed (review round 2)", () => {
     expect(await meteredUsage(catalog, ANTHROPIC.upstream, "sk-x", model, 200,
                               new Headers({ "content-type": "application/json" }),
                               streamOf(JSON.stringify(message)))).toBeNull();
+  });
+});
+
+describe("the price beyond tokens (review round 3)", () => {
+  it("takes an uncatalogued served id only as the named model's dated or versioned snapshot",
+     async () => {
+    for (const [served, named, ok] of [
+      ["model-a-2024-08-06", "model-a", true], ["model-a-20250514", "model-a", true],
+      ["model-a@001", "model-a", true], ["model-a-v2", "model-a", true],
+      ["model-a.1", "model-a", true], ["model-ab", "model-a", false],
+      ["model-a-turbo", "model-a", false], ["model-a-", "model-a", false],
+      ["other/model-a-2024", "model-a", false], ["model-a-2024-big", "model-a", false]] as const) {
+      expect(snapshotOf(served, named)).toBe(ok);
+    }
+    const catalog = builtinCatalog();
+    const models = catalog.provider("openrouter")!.getModels()
+      .filter((model) => model.api === "openai-completions" && model.cost.output > 0)
+      .sort((a, b) => a.cost.output - b.cost.output);
+    const cheap = meteredRecord(catalog, OPENROUTER, models[0]!.id)!;
+    // A cheap model named alone, answered as an unrelated dear id the catalog lacks.
+    expect(await meteredUsage(catalog, OPENROUTER, "k", cheap, 200, SSE,
+                              streamOf(completion("someone/dear-uncatalogued-9", BIG))))
+      .toBeNull();
+  });
+
+  it("prices a priority-tier call as pi-ai does, and a dearer served model in proportion",
+     async () => {
+    const catalog = builtinCatalog();
+    const [first] = catalog.provider("openai")!.getModels()
+      .filter((model) => model.api === "openai-responses" && model.cost.output > 0);
+    const record = meteredRecord(catalog, OPENAI.upstream, first!.id)!;
+    const usage = { input_tokens: 10_000, output_tokens: 5_000, total_tokens: 15_000,
+                    input_tokens_details: { cached_tokens: 0 },
+                    output_tokens_details: { reasoning_tokens: 0 } };
+    const body = (tier: string) => [
+      `event: response.created\ndata: ${JSON.stringify({ type: "response.created",
+        response: { id: "r1", status: "in_progress", model: first!.id, output: [] } })}\n\n`,
+      `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed",
+        response: { id: "r1", status: "completed", model: first!.id, output: [], usage,
+                    service_tier: tier } })}\n\n`,
+    ].join("");
+    const standard = await meteredUsage(catalog, OPENAI.upstream, "sk-x", record, 200, SSE,
+                                        streamOf(body("default")));
+    const priority = await meteredUsage(catalog, OPENAI.upstream, "sk-x", record, 200, SSE,
+                                        streamOf(body("priority")));
+    expect(priority!.cost).toBeGreaterThanOrEqual(standard!.cost * 2 - 1e-12);
+    // The reservation holds the most pi-ai applies for it.
+    const rules = apiRules("openai-responses")!;
+    expect(tierMultiplier(rules, "priority")).toBeGreaterThanOrEqual(priority!.cost / standard!.cost);
+    expect(tierMultiplier(rules, null)).toBe(1);
+    expect(tierMultiplier(rules, "scale")).toBeNull();
+    expect(tierMultiplier(apiRules("anthropic-messages")!, "standard_only")).toBe(1);
+  });
+
+  it.each([
+    ["openai-completions", { service_tier: "priority" }],
+    ["openai-completions", { modalities: ["text", "audio"] }],
+    ["openai-completions", { audio: { voice: "x" } }],
+    ["anthropic-messages", { speed: "fast" }],
+    ["anthropic-messages", { inference_geo: "us" }],
+    ["anthropic-messages", { service_tier: "auto" }],
+    ["google-generative-ai", { generationConfig: { responseModalities: ["TEXT", "IMAGE"] } }],
+    ["google-generative-ai", { generationConfig: { speechConfig: {} } }],
+  ])("on %s refuses %j, which pi-ai does not price", (api, body) => {
+    expect(unpricedOption(apiRules(api)!, body)).toBe(true);
+  });
+
+  it.each([
+    ["openai-completions", { modalities: ["text"] }],
+    ["anthropic-messages", { speed: "standard", inference_geo: "global",
+                             service_tier: "standard_only" }],
+    ["google-generative-ai", { generationConfig: { responseModalities: ["TEXT"] } }],
+    ["openai-responses", { service_tier: "priority" }],
+  ])("on %s lets %j through, priced at standard or by pi-ai", (api, body) => {
+    expect(unpricedOption(apiRules(api)!, body)).toBe(false);
+  });
+
+  it("reads the model where every API's rules say, and the door reads the same keys", () => {
+    for (const api of ["anthropic-messages", "openai-completions", "openai-responses",
+                       "mistral-conversations", "google-generative-ai"]) {
+      const rules = apiRules(api)!;
+      if (rules.model !== null) {
+        expect(HINT_KEYS).toContain(rules.model);
+      }
+      if (rules.tier !== null) {
+        expect(HINT_KEYS).toContain(rules.tier.key);
+      }
+    }
+    const completions = apiRules("openai-completions")!;
+    const pi = { stream_options: { include_usage: true } };
+    expect(describes(completions, ["max_tokens"], pi, ["model"])).toBe(true);
+    expect(describes(completions, ["max_tokens"], pi, ["engine"])).toBe(false);
+    expect(describes(completions, ["max_tokens"], pi, null)).toBe(false);
+    const google = apiRules("google-generative-ai")!;
+    expect(describes(google, ["generationConfig", "maxOutputTokens"], {}, null)).toBe(true);
+    expect(describes(google, ["generationConfig", "maxOutputTokens"], {}, ["model"])).toBe(false);
   });
 });

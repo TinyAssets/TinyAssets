@@ -309,7 +309,7 @@ describe("verify", () => {
     expect(verified.models.map((model) => model.id)).toEqual(catalog.map((model) => model.id));
     expect(verified.models.length).toBeGreaterThan(0);
     // Where sandbox egress may forward it: the sealed base URL and endpoints, no secret.
-    expect(verified.egress).toEqual({ base_url: ANTHROPIC.upstream.base_url,
+    expect(verified.egress).toEqual({ api: ANTHROPIC.upstream.api, base_url: ANTHROPIC.upstream.base_url,
                                       endpoints: ANTHROPIC.endpoints, meter: {
                                         method: "POST", path: "/v1/messages",
                                         model_field: ["model"], output_field: ["max_tokens"] } });

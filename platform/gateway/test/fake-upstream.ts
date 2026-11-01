@@ -248,8 +248,12 @@ async function model(request: Request, format: Format, input?: number): Promise<
     max: outputCap(body),
   });
   const half = Math.floor(reply.length / 2);
-  const payload = format.start(name, input) + format.text(reply.slice(0, half))
-    + format.text(reply.slice(half)) + format.finish(reply);
+  const tier = typeof body["service_tier"] === "string" ? body["service_tier"] : null;
+  // OpenAI's Responses answer names the tier it served the call at, as the API does.
+  const payload = (format.start(name, input) + format.text(reply.slice(0, half))
+    + format.text(reply.slice(half)) + format.finish(reply))
+    .replace('"status":"completed",', tier === null ? '"status":"completed",'
+      : `"status":"completed","service_tier":${JSON.stringify(tier)},`);
   return new Response(payload, { headers: { "content-type": "text/event-stream" } });
 }
 

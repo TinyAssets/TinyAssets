@@ -14,11 +14,12 @@ import { createExecutionContext, env, runInDurableObject } from "cloudflare:test
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PLATFORM_CALLER } from "../../owner/src/admission";
-import { EGRESS_DEADLINE_S, GENERATION_HEADER, SANDBOX_HEADER } from "../../owner/src/network";
+import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, GENERATION_HEADER, SANDBOX_HEADER }
+  from "../../owner/src/network";
 import type { Binding, OpenedLease } from "../../owner/src/owner-do";
 import type { Bound } from "../src/binder";
 import { type DoorsEnv, EGRESS_ORIGIN } from "../src/config";
-import { EGRESS_DEADLINE_MS, serveEgress } from "../src/egress";
+import { EGRESS_DEADLINE_MS, hintsOf, serveEgress } from "../src/egress";
 import { mintToken, verifyToken } from "../src/routing-mac";
 import worker, { type OwnerDO } from "./entry";
 import { EGRESS_CHUNKS, EGRESS_USAGE } from "./fake-providers";
@@ -326,6 +327,39 @@ describe("the egress door", () => {
     expect(await spends(other.owner)).toMatchObject([{ state: "unknown", cost: null }]);
   });
 
+  it("reads the model the body names for the object's reservation, and refuses one the " +
+     "connection lacks, or a body too large to read, before any forward", async () => {
+    const box = await sandbox();
+    let metered: unknown;
+    const watching: DoorsEnv = { ...doorsEnv, EGRESS: {
+      forward: async (_owner, _connection, _version, _blob, _request, metering) => {
+        metered = metering;
+        return { response: new Response("ok"),
+                 outcome: new Response("{\"state\":\"unknown\"}\n").body! };
+      } } };
+    const response = await send(egressRequest(box), watching);
+    expect(await response.text()).toBe("ok");
+    expect(metered).toMatchObject({ model: box.model, tier: null });
+    await settledOf(box.owner);
+    const other = await sandbox();
+    const unknown = await send(egressRequest(other, COMPLETIONS, {
+      body: bodyOf(other, { model: "no-such-model" }) }));
+    expect([unknown.status, await codeOf(unknown)]).toEqual([404, "egress_unknown_model"]);
+    const large = await send(egressRequest(other, COMPLETIONS, {
+      headers: { "content-length": String(EGRESS_BODY_MAX + 1) } }));
+    expect([large.status, await codeOf(large)]).toEqual([413, "egress_too_large"]);
+    expect(await forwarded()).toEqual([]);
+  });
+
+  it("hands the object the body's model and tier as the body names them, or none", () => {
+    expect(hintsOf(JSON.stringify({ model: "m-1", service_tier: "priority", input: "x" })))
+      .toEqual({ model: "m-1", tier: "priority" });
+    for (const text of ["", "not json", "[1]", JSON.stringify({ model: 1, service_tier: {} }),
+                        JSON.stringify({ model: "a b", service_tier: "x".repeat(300) })]) {
+      expect(hintsOf(text)).toEqual({ model: null, tier: null });
+    }
+  });
+
   it("holds a call to the model policy's caps alone: a purchase threshold refuses nothing",
      async () => {
     const box = await sandbox(true, { turn_requests: 10_000, turn_tokens: 1_000_000_000,
@@ -342,7 +376,9 @@ describe("the egress door", () => {
     for (const [extra, status, code] of [
       [{ n: 3 }, 400, "egress_multiple_choices"],
       [{ web_search_options: {} }, 403, "egress_unmetered_tool"],
-      [{ tools: [{ type: "browser_search" }] }, 403, "egress_unmetered_tool"]] as const) {
+      [{ tools: [{ type: "browser_search" }] }, 403, "egress_unmetered_tool"],
+      [{ modalities: ["text", "audio"] }, 403, "egress_unpriced_option"],
+      [{ service_tier: "flex" }, 403, "egress_unpriced_option"]] as const) {
       const response = await send(egressRequest(box, COMPLETIONS, { body: bodyOf(box, extra) }));
       expect([response.status, await codeOf(response)]).toEqual([status, code]);
     }

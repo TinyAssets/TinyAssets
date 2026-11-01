@@ -26,7 +26,8 @@ import type { ModelRecord } from "./model-record";
 import { type Code, codeOf, Failure, failureResponse, upstreamCode } from "./failure";
 import { nativeFetch } from "./egress";
 import { boundedText } from "./messages";
-import { apiRules, fallbackList, manyChoices, paidTool } from "./api-rules";
+import { apiRules, fallbackList, manyChoices, paidTool, tierMultiplier, unpricedOption,
+         valueAt } from "./api-rules";
 import { clamped, learnMeter, meteredModel, meteredRecord, meteredUsage } from "./meter";
 import { type Binding, type KeyringEnv, open, type Opened, type Resealed } from "./keyring";
 
@@ -164,10 +165,15 @@ export async function forward(env: KeyringEnv, bound: Binding, blob: unknown,
   return (await send(env, bound, blob, request, deadlineMs, null, null)).response;
 }
 
-/** What a metered call is held to: the output cap its reservation leaves, and its body's size. */
+/**
+ * What a metered call is held to: the output cap its reservation leaves, its body's size,
+ * and the model and tier (its tier option's value, or null) it was reserved for.
+ */
 export interface Metering {
   readonly max_output_tokens: number;
   readonly input_bytes: number;
+  readonly model: string;
+  readonly tier: string | null;
 }
 
 /** How a metered call ended, as the owner's object settles it. */
@@ -295,6 +301,18 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
     if (paidTool(rules, parsed)) {
       return refused("egress_unmetered_tool", resealed);
     }
+    if (unpricedOption(rules, parsed)) {
+      return refused("egress_unpriced_option", resealed);
+    }
+    // The call as the owner's object reserved it: the same model, at the same tier.
+    const tier = rules.tier === null ? undefined : valueAt(parsed, [rules.tier.key]);
+    if (id !== metering.model || (tier !== undefined && typeof tier !== "string")
+        || (rules.tier !== null && (tier ?? null) !== metering.tier)) {
+      return refused("egress_reservation_mismatch", resealed);
+    }
+    if (tierMultiplier(rules, (tier as string | undefined) ?? null) === null) {
+      return refused("egress_unpriced_option", resealed);
+    }
     listed = fallbackList(rules, parsed);
     body = JSON.stringify(clamped(meter, parsed as Record<string, unknown>,
                                   metering.max_output_tokens, credential.upstream.api));
@@ -389,7 +407,7 @@ function abortable(body: ReadableStream<Uint8Array>,
 
 /** Where a credential may be forwarded: its sealed base URL and endpoints, no secret. */
 function scopeOf(credential: Credential, meter: Meter | null = null): EgressScope {
-  return Object.freeze({ base_url: credential.upstream.base_url,
+  return Object.freeze({ api: credential.upstream.api, base_url: credential.upstream.base_url,
                          endpoints: credential.endpoints, meter });
 }
 

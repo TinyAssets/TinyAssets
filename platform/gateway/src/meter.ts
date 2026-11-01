@@ -35,9 +35,10 @@ import { calculateCost, createModels } from "@earendil-works/pi-ai/models";
 import { type ApiRules, apiRules, valueAt } from "./api-rules";
 
 import { type Catalog, NO_AMBIENT, providerFor } from "./catalog";
-import type { Meter, Upstream } from "./credential";
+import { type Meter, meteredModel, type Upstream } from "./credential";
 
 export type { Meter };
+export { meteredModel };
 import { within } from "./egress";
 import { GLOBAL_FETCH_APIS } from "./messages";
 
@@ -147,7 +148,8 @@ async function learned(catalog: Catalog, upstream: Upstream, apiKey: string,
     return null;
   }
   const rules = apiRules(upstream.api);
-  if (rules === null || !describes(rules, output[0]!, body)) {
+  const modelField = segments.length === 2 ? null : named[0]!;
+  if (rules === null || !describes(rules, output[0]!, body, modelField)) {
     return null;
   }
   return Object.freeze({
@@ -160,35 +162,17 @@ async function learned(catalog: Catalog, upstream: Upstream, apiKey: string,
 
 /**
  * Whether an API's rules describe pi-ai's own call (`output`, the cap it set; `body`, all
- * it sent): its output cap among the aliases, and every usage-report field the gateway
+ * it sent; `model`, where it named the model, null for the path): its output cap among the
+ * aliases, its model where the rules read it, and every usage-report field the gateway
  * sets present in it, at the same value.
  */
-export function describes(rules: ApiRules, output: readonly string[], body: unknown): boolean {
+export function describes(rules: ApiRules, output: readonly string[], body: unknown,
+                          model: readonly string[] | null = rules.model === null ? null
+                            : [rules.model]): boolean {
   return rules.outputs.some((path) => path.join("\0") === output.join("\0"))
+    && (rules.model === null ? model === null
+      : model !== null && model.length === 1 && model[0] === rules.model)
     && rules.usage.every(([path, value]) => valueAt(body, path) === value);
-}
-
-/** The model id `path` names under `meter`, or null when it is not the meter's call. */
-export function meteredModel(meter: Meter, method: string, path: string,
-                             body: unknown): string | null {
-  if (method !== meter.method) {
-    return null;
-  }
-  const [head, tail] = meter.path.split("{model}");
-  if (tail === undefined) {
-    if (path !== meter.path || meter.model_field === null) {
-      return null;
-    }
-    const named = meter.model_field.reduce<unknown>((at, key) =>
-      (typeof at === "object" && at !== null && !Array.isArray(at)
-        ? (at as Record<string, unknown>)[key] : undefined), body);
-    return typeof named === "string" && named.length > 0 ? named : null;
-  }
-  if (!path.startsWith(head!) || !path.endsWith(tail) || path.length <= head!.length + tail.length) {
-    return null;
-  }
-  const named = decodeURIComponent(path.slice(head!.length, path.length - tail.length));
-  return /^[^/:?#]+$/.test(named) ? named : null;
 }
 
 /** The object at `path` in `body`, made where it is missing or not an object. */
@@ -245,6 +229,16 @@ export function meteredRecord(catalog: Catalog, upstream: Upstream, id: string):
   return found === undefined ? null : { ...found, baseUrl: upstream.base_url };
 }
 
+/**
+ * Whether `served` is a snapshot of `named`: the named id, then a separator and a date or a
+ * version (`-2024-08-06`, `-20250514`, `@001`, `-v2`, `.1`), by one pattern for every
+ * provider.
+ */
+export function snapshotOf(served: string, named: string): boolean {
+  return served.startsWith(named)
+    && /^[-_@.:](?:v?\d+(?:[-_.]\d+)*)$/.test(served.slice(named.length));
+}
+
 /** Dollars `usage` costs on `model`, by pi-ai's own `calculateCost`. */
 function costOn(model: Model<Api>, usage: AssistantUsage): number {
   return calculateCost(model, structuredClone(usage)).total;
@@ -289,18 +283,24 @@ export async function meteredUsage(catalog: Catalog, upstream: Upstream, apiKey:
     return null;  // no usage reported: what it cost is unknown
   }
   const served = last.message.responseModel;
-  const named = costOn(model, usage);
+  // pi-ai's own price of the named model, with everything it prices beyond the token rates
+  // (a service tier's multiplier among them); a dearer served model is scaled the same.
+  const named = usage.cost.total;
+  const base = costOn(model, usage);
+  const ratio = base > 0 ? named / base : 1;
   const free = model.cost.input === 0 && model.cost.output === 0;
   let cost = named;
   const other = typeof served === "string" && served !== "" && served !== model.id;
   if (other) {
     const record = meteredRecord(catalog, upstream, served);
     if (record !== null) {
-      cost = Math.max(named, costOn(record, usage));
-    } else if (free || fallbacks) {
-      return null;  // a router or a fallback list served something the catalog does not price
+      cost = Math.max(named, costOn(record, usage) * ratio);
+    } else if (free || fallbacks || !snapshotOf(served, model.id)) {
+      // A router, a fallback list, or an id that is not the named one's dated or versioned
+      // snapshot served something the catalog does not price.
+      return null;
     }
-    // Else a concrete named model served by a snapshot the catalog does not list: its price.
+    // Else the named model's own snapshot: the named model's price.
   } else if (served !== model.id && free) {
     return null;  // a router priced at nothing, with no word of what it served
   }

@@ -419,6 +419,8 @@ export function allows(endpoints: readonly Endpoint[], method: string, url: URL)
  * sealed before anything reaches the gateway; the gateway still checks the sealed ones.
  */
 export interface EgressScope {
+  /** The sealed API, pi-ai's id: its rules (`api-rules.ts`) shape every metered call. */
+  readonly api: string;
   readonly base_url: string;
   readonly endpoints: readonly Endpoint[];
   /** pi-ai's own model call for the sealed API (`meter.ts`), or null: none can be metered. */
@@ -463,13 +465,14 @@ function meterOf(value: unknown): Meter | null {
 
 /** A scope checked whole, by the grammar a seal is held to; anything else is `invalid_source`. */
 export function egressScope(value: unknown): EgressScope {
-  const fields = shape(value, ["base_url", "endpoints", "meter"]);
+  const fields = shape(value, ["api", "base_url", "endpoints", "meter"]);
   const endpoints = Object.freeze(list(fields["endpoints"], 1, ENDPOINTS_MAX, endpoint));
   const base = httpsUrl(fields["base_url"]);
   if (!endpoints.some((entry) => entry.origin === base.origin)) {
     throw new Failure("invalid_source");
   }
-  return Object.freeze({ base_url: fields["base_url"] as string, endpoints,
+  return Object.freeze({ api: supported(text(fields["api"], ID, 64)),
+                         base_url: fields["base_url"] as string, endpoints,
                          meter: meterOf(fields["meter"]) });
 }
 
@@ -490,6 +493,39 @@ export function meteredCall(scope: EgressScope, method: string, path: string): b
   }
   return bare.startsWith(head!) && bare.endsWith(tail) && bare.length > head!.length + tail.length
     && /^[^/:?#]+$/.test(bare.slice(head!.length, bare.length - tail.length));
+}
+
+/**
+ * The model id a call names under `meter` (`body`, its JSON; `path` without its query), or
+ * null when it is not the meter's call: read where pi-ai's own call names it, a body field
+ * or a path segment. The owner's object reads it at open to reserve the call for that
+ * model, and the gateway again, to refuse a body naming another.
+ */
+export function meteredModel(meter: Meter, method: string, path: string,
+                             body: unknown): string | null {
+  if (method !== meter.method) {
+    return null;
+  }
+  const [head, tail] = meter.path.split("{model}");
+  if (tail === undefined) {
+    if (path !== meter.path || meter.model_field === null) {
+      return null;
+    }
+    const named = meter.model_field.reduce<unknown>((at, key) =>
+      (typeof at === "object" && at !== null && !Array.isArray(at)
+        ? (at as Record<string, unknown>)[key] : undefined), body);
+    return typeof named === "string" && named.length > 0 ? named : null;
+  }
+  if (!path.startsWith(head!) || !path.endsWith(tail) || path.length <= head!.length + tail.length) {
+    return null;
+  }
+  let named: string;
+  try {
+    named = decodeURIComponent(path.slice(head!.length, path.length - tail.length));
+  } catch {
+    return null;
+  }
+  return /^[^/:?#]+$/.test(named) ? named : null;
 }
 
 /**

@@ -455,7 +455,9 @@ account and no deploy.
   **Identity**: E2B workload identity is a private beta, so v1's is our own. The owner's
   object mints two tokens per sandbox lease, each `<owner>.<expires>.<secret>.<mac>`: the
   owner id as the binder already names owners (`getByName`; AuthKit's opaque `user_…` id),
-  base64url; the run's deadline in Unix seconds (`RUN_DEADLINE_S`, a day from the open);
+  base64url; the run's deadline in Unix seconds (the run's own, which 8b hands
+  `SandboxLeases.open` as `deadline` for each run, at most `RUN_DEADLINE_S`, a day, which
+  is also the default);
   256 random bits; and HMAC-SHA-256 under the routing key over the token's kind, owner,
   expiry and secret (`doors/src/routing-mac.ts`, the one module both Workers use). Past
   its expiry the door refuses a token `egress_token_expired` without reaching any object. The routing key,
@@ -499,24 +501,36 @@ account and no deploy.
   table, `ask_above` among it, is the agent's purchases', never a model call's). Each open
   prunes the spend counters past their window, as the loop's reserve does, so an owner who
   uses only the sandbox never fills them. **8b opens a lease per engine run**, so a run's
-  caps are per run, not per sandbox life. Nothing of
+  caps are per run, not per sandbox life, and sets each run's tokens to expire at that
+  run's own deadline (a closed lease's token is refused by the object until then). Nothing of
   it reads or imports pi's engine (a policy-boundary guard holds its runtime imports free
   of `usage.ts`, the thread host and pi-durable, read by the TypeScript compiler, every
   import resolved or the guard fails), so it outlives the in-object loop. **The
-  reservation rule**: priced at the dearest rate any of the connection's models charges
-  (input at the dearest of uncached, cache-read and cache-write), by pi-ai's
-  `calculateCost` over the gateway's catalog records, each model to its own window and cap;
-  the input held at the largest context window (a body's bytes do not bound its tokens: a
-  file, a cached context or a prior response it names can be far larger), and the output
-  at the largest output cap and what the caps leave, which the gateway clamps every
-  output-cap alias the API reads to; a call asking several choices (`n`, `candidateCount`)
+  reservation rule**: the call is reserved for the model it names, read where its API's
+  rules say (the door reads the body's top-level `model`, `HINT_KEYS`, once, and hands it
+  to `egressOpen` with the body's tier; a path names Google's), refused
+  `egress_unknown_model` when the connection does not list it, and priced at that model's
+  dearest rates (input at the dearest of uncached, cache-read and cache-write) by pi-ai's
+  `calculateCost` over the catalog's records: the input held at that model's context
+  window (a body's bytes do not bound its tokens: a file, a cached context or a prior
+  response it names can be far larger), and the output at that model's cap and what the
+  caps leave, which the gateway clamps every output-cap alias the API reads to; the
+  gateway refuses a body naming another model or tier (`egress_reservation_mismatch`); a call asking several choices (`n`, `candidateCount`)
   is refused `egress_multiple_choices`, and one enabling a server-side tool the provider
   bills beyond tokens (a web search, code execution, a hosted MCP connector, a plugin) is
-  refused `egress_unmetered_tool`, by each API's data (`gateway/src/api-rules.ts`), so the
+  refused `egress_unmetered_tool`, by each API's data (`gateway/src/api-rules.ts`). **Price
+  beyond tokens**, per field, by whether pi-ai prices it: the Responses API's
+  `service_tier`, which pi-ai prices from the answer, is reserved at the most pi-ai
+  applies for its value (`priority` and `auto` ×2.5, `default` and `flex` ×1, any other
+  refused); every option pi-ai does not price is refused `egress_unpriced_option`: chat
+  completions' `service_tier`, `modalities` beyond `text` and `audio`; Anthropic's
+  `speed` but `standard`, `inference_geo` but `global` and `service_tier` but
+  `standard_only`; Google's `responseModalities` beyond text, `speechConfig` and
+  `imageConfig` (an image, audio or agentic answer is priced at no text rate). So the
   charge bounds what the call can cost and the settle gives the difference back; refused
-  below 1,024 output tokens. With the defaults about four calls are held at once under a
-  run's cost cap: fail-closed, and CLIs mostly call one after another; **owed to 8b's live
-  measurement** of each CLI's real concurrency. An endpoint pi-ai cannot meter
+  below 1,024 output tokens. With the defaults a run's cost cap holds a few calls of a dear
+  model at once, and many of a cheap one: fail-closed, and CLIs mostly call one after
+  another; **owed to 8b's live measurement** of each CLI's real concurrency. An endpoint pi-ai cannot meter
   is refused, since a run's caps are always set (the stricter of the two rules). Then the
   gateway's `EgressGateway.forward`, **metered** (`gateway/src/meter.ts`): pi-ai's adapter
   for the sealed API, run once against a fetch of ours (no network, the credential's own
@@ -526,13 +540,15 @@ account and no deploy.
   past the reserved length, forwards, and tees the answer through the same adapter (pi-ai's
   own parser) to read its usage; a streamed call is made to ask for its usage report as
   pi-ai's own call does (`stream_options.include_usage` for chat completions), and an
-  answer with none (zero tokens) is `unknown`. The usage is priced at the dearer of the
-  model the call named and the model the answer says served it (pi-ai's
-  `responseModel`), so a router (`openrouter/auto`) or a fallback list never settles
-  cheaper than what served. A served id the catalog does not list (most often a dated
-  snapshot of the named model) is settled at the named model's price when that one is
-  concrete (priced in the catalog, and the call listed no fallbacks), the served id kept on
-  the receipt; for a zero-priced router or a fallback list it is `unknown`. A model priced
+  answer with none (zero tokens) is `unknown`. The usage is priced at pi-ai's own
+  `usage.cost.total` for the model the call named (every multiplier pi-ai applies, a
+  service tier's among them), or a dearer served model (pi-ai's `responseModel`) scaled by
+  the same ratio, so a router (`openrouter/auto`) or a fallback list never settles cheaper
+  than what served. A served id the catalog does not list settles at the named model's
+  price only when it is that model's dated or versioned snapshot (the named id, a
+  separator, then a date or a version: one pattern, `snapshotOf`) and the named model is
+  concrete (priced, no fallbacks), the served id kept on the receipt; anything else
+  uncatalogued is `unknown`. A model priced
   at nothing that names no other is `unknown` too. The outcome comes back on a second
   stream. With no metering (a read) it forwards `GET` and `HEAD` alone
   (`forwardRead`). The answer streams through as the provider writes it (SSE unbuffered,

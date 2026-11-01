@@ -96,7 +96,7 @@ describe("the gateway Worker", () => {
     expect(Object.getOwnPropertyNames(Gateway.prototype)).toContain("forward");
     const egress = new EgressGateway(createExecutionContext(), env);
     const blob = (await gateway.seal("alice", "c1", 1, "sk-fwd", OPENAI)).blob;
-    const metering = { max_output_tokens: 100, input_bytes: 10_000 };
+    const metering = { max_output_tokens: 100, input_bytes: 10_000, model: "m", tier: null };
     const outcome = async (answer: { outcome: ReadableStream<Uint8Array> }) =>
       JSON.parse(await new Response(answer.outcome).text()) as { state: string };
     // A sealed endpoint that is not pi-ai's model call is never metered, so never sent.
@@ -120,7 +120,7 @@ describe("the gateway Worker", () => {
     const body = JSON.stringify({ model: "no-such-model", input: "hi" });
     const call = (bytes: number) => egress.forward("alice", "c1", 1, blob, new Request(
       "https://egress/v1/responses", { method: "POST", body }),
-      { max_output_tokens: 100, input_bytes: bytes }, new ReadableStream());
+      { max_output_tokens: 100, input_bytes: bytes, model: "no-such-model", tier: null }, new ReadableStream());
     const long = await call(body.length - 1);
     expect(await long.response.json()).toMatchObject({ error: { code: "invalid_request" } });
     const fits = await call(body.length);
@@ -149,7 +149,7 @@ describe("the gateway Worker", () => {
     const streamed = JSON.stringify({ model: model!.id, input: "hi", stream: true });
     const cut = egress.forward("alice", "c1", 1, blob, new Request("https://egress/v1/responses", {
       method: "POST", body: streamed, headers: { "x-fake-mode": "hang" } }),
-      { max_output_tokens: 100, input_bytes: streamed.length }, cutStop.readable);
+      { max_output_tokens: 100, input_bytes: streamed.length, model: model!.id, tier: null }, cutStop.readable);
     await new Promise((resolve) => setTimeout(resolve, 50));
     await cutStop.writable.getWriter().close();
     expect(await outcome(await cut)).toEqual({ state: "unknown" });
@@ -160,7 +160,8 @@ describe("the gateway Worker", () => {
       const answer = await egress.forward("alice", "c1", 1, blob, new Request(
         "https://egress/v1/responses", { method: "POST", body: text,
                                           headers: { "x-fake-mode": "echo" } }),
-        { max_output_tokens: 100, input_bytes: text.length }, new ReadableStream());
+        { max_output_tokens: 100, input_bytes: text.length, model: model!.id, tier: null },
+        new ReadableStream());
       if (code === null) {
         expect(answer.response.status).toBe(200);
         await answer.response.body?.cancel();
@@ -168,11 +169,43 @@ describe("the gateway Worker", () => {
         expect(await answer.response.json()).toMatchObject({ error: { code } });
       }
     }
+    // Only the call the owner's object reserved goes: its model, at its tier.
+    const sent = async (fields: Record<string, unknown>, tier: string | null,
+                        named = model!.id) => {
+      const text = JSON.stringify({ model: model!.id, input: "hi", stream: true, ...fields });
+      const answer = await egress.forward("alice", "c1", 1, blob, new Request(
+        "https://egress/v1/responses", { method: "POST", body: text }),
+        { max_output_tokens: 100, input_bytes: text.length, model: named, tier },
+        new ReadableStream());
+      return answer;
+    };
+    for (const [fields, tier, named] of [[{}, null, "another-model"],
+                                         [{ service_tier: "priority" }, null, model!.id],
+                                         [{}, "priority", model!.id],
+                                         [{ service_tier: 2 }, null, model!.id]] as const) {
+      const answer = await sent(fields, tier, named);
+      expect(await answer.response.json())
+        .toMatchObject({ error: { code: "egress_reservation_mismatch" } });
+    }
+    expect(await (await sent({ service_tier: "scale" }, "scale")).response.json())
+      .toMatchObject({ error: { code: "egress_unpriced_option" } });
+    // A priority call is priced as pi-ai prices it, above the standard call's price.
+    const settledAt = async (answer: Awaited<ReturnType<typeof sent>>) => {
+      await answer.response.text();
+      return JSON.parse(await new Response(answer.outcome).text()) as
+        { state: string; cost: number };
+    };
+    const standard = await settledAt(await sent({}, null));
+    const priority = await settledAt(await sent({ service_tier: "priority" }, "priority"));
+    expect(standard.state).toBe("succeeded");
+    expect(priority.state).toBe("succeeded");
+    expect(priority.cost).toBeGreaterThanOrEqual(standard.cost * 2 - 1e-12);
     const refused = await egress.forward("", "c1", 1, blob, new Request("https://egress/v1/models"),
                                          metering, new ReadableStream());
     expect(refused.response.status).toBe(400);
     await expect(egress.forward("alice", "c1", 1, blob, new Request("https://egress/v1/models"),
-                                { max_output_tokens: 0, input_bytes: 1 }, new ReadableStream()))
+                                { max_output_tokens: 0, input_bytes: 1, model: "m", tier: null },
+                                new ReadableStream()))
       .resolves.toMatchObject({ response: expect.any(Response) });
     // The owner's own entrypoint forwards unmetered (its MCP client's, tasks 4 M).
     const owned = await gateway.forward("alice", "c1", 1, blob, new Request(

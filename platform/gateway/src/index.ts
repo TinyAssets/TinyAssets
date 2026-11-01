@@ -125,16 +125,19 @@ export class EgressGateway extends WorkerEntrypoint<GatewayEnv> {
   }
 }
 
-/** The caller's metering, whole numbers, or `invalid_request`. */
+/** The caller's metering, its whole numbers and its model and tier, or `invalid_request`. */
 function checkedMetering(value: unknown): Metering {
   const fields = value as Partial<Metering> | null;
   const whole = (n: unknown) => typeof n === "number" && Number.isSafeInteger(n) && n >= 1;
+  const named = (s: unknown) => typeof s === "string" && /^[\x21-\x7e]{1,256}$/.test(s);
   if (typeof value !== "object" || value === null
-      || Object.keys(value).sort().join() !== "input_bytes,max_output_tokens"
-      || !whole(fields!.input_bytes) || !whole(fields!.max_output_tokens)) {
+      || Object.keys(value).sort().join() !== "input_bytes,max_output_tokens,model,tier"
+      || !whole(fields!.input_bytes) || !whole(fields!.max_output_tokens)
+      || !named(fields!.model) || (fields!.tier !== null && !named(fields!.tier))) {
     throw new Failure("invalid_request");
   }
-  return { input_bytes: fields!.input_bytes!, max_output_tokens: fields!.max_output_tokens! };
+  return { input_bytes: fields!.input_bytes!, max_output_tokens: fields!.max_output_tokens!,
+           model: fields!.model!, tier: fields!.tier ?? null };
 }
 
 export default class Gateway extends WorkerEntrypoint<GatewayEnv> {

@@ -24,6 +24,10 @@ const STATUS = Object.freeze({
   // tool the provider bills beyond tokens.
   egress_multiple_choices: 400,
   egress_unmetered_tool: 403,
+  // An option priced beyond tokens that pi-ai does not price; a body that is not the call
+  // the owner's object reserved (another model, another tier).
+  egress_unpriced_option: 403,
+  egress_reservation_mismatch: 400,
   unknown_model: 404,
   unsupported_source: 422,
   reservation_too_small: 422,

@@ -892,9 +892,10 @@ export interface OpenedLease {
 export interface SandboxLeases {
   /**
    * Take the lease, minting its two tokens: one sandbox run, its model calls' run caps
-   * counted to the lease and its epoch.
+   * counted to the lease and its epoch. Both tokens expire at the run's `deadline` (Unix
+   * seconds), at most `RUN_DEADLINE_S` away, which is also the default.
    */
-  open(request: { holder: string }): Promise<OpenedLease>;
+  open(request: { holder: string; deadline?: number }): Promise<OpenedLease>;
   /** Renew it (8b's 20 s heartbeat): the same run. */
   renew(request: { lease_id: string; epoch: number }): Promise<Lease>;
   /** Give it back: both tokens refused from this unit on, its streams ended. */
@@ -2575,7 +2576,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       open: (request) => this.#door(() => {
         this.#admitted("work");
         // Both tokens die with the run's deadline, at the door, whatever the lease does.
-        const deadline = Math.floor(clock()) + RUN_DEADLINE_S;
+        const latest = Math.floor(clock()) + RUN_DEADLINE_S;
+        const asked = request.deadline;
+        if (asked !== undefined && (!Number.isSafeInteger(asked) || asked <= clock())) {
+          throw new Invalid("a run's deadline is whole Unix seconds, still ahead");
+        }
+        const deadline = Math.min(asked ?? latest, latest);
         const egress = mintToken(this.env.ROUTING_MAC_KEY, "egress", owner(), deadline);
         const sync = mintToken(this.env.ROUTING_MAC_KEY, "sync", owner(), deadline);
         const lease = this.#files.leaseAcquire(request.holder, egress.hash, sync.hash);

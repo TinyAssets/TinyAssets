@@ -54,7 +54,9 @@
  */
 import { randomBytes } from "node:crypto";
 
-import { type EgressScope, egressTarget, meteredCall } from "../../gateway/src/credential";
+import { apiRules, tierMultiplier } from "../../gateway/src/api-rules";
+import { type EgressScope, egressTarget, meteredCall, meteredModel }
+  from "../../gateway/src/credential";
 
 import { Invalid } from "./errors";
 import type { OwnerStorage } from "./gate";
@@ -113,6 +115,12 @@ export interface EgressRequest {
   readonly path: string;
   /** The request body's declared length, or null. */
   readonly bytes_hint: number | null;
+  /**
+   * What the egress door read of the body for the reservation (`HINT_KEYS`): the model the
+   * body names (its top-level `model`), and its tier option's value; null when absent.
+   */
+  readonly model: string | null;
+  readonly tier: string | null;
 }
 
 /** An admitted call: what the door forwards with, and the object's end signal. */
@@ -128,7 +136,8 @@ export interface EgressOpened {
    * gateway clamps the call to, and the body's length it was reserved for, which the
    * gateway refuses past. Null for a free call (a read), which the gateway sends unmetered.
    */
-  readonly metering: { readonly max_output_tokens: number; readonly input_bytes: number } | null;
+  readonly metering: { readonly max_output_tokens: number; readonly input_bytes: number;
+                        readonly model: string; readonly tier: string | null } | null;
   /** Closed (or errored) when the object ends the stream; the door watches it. */
   readonly ended: ReadableStream<Uint8Array>;
 }
@@ -201,6 +210,7 @@ export interface EgressCaps {
 
 /** A connection's model as a sandbox call is priced by it: opaque here but for its bounds. */
 export interface EgressModel {
+  readonly id: string;
   readonly maxTokens: number;
   readonly contextWindow: number;
 }
@@ -243,6 +253,8 @@ const METHODS: readonly string[] = Object.freeze(["GET", "HEAD", "POST", "PUT", 
 const CONNECTION = /^c[0-9a-f]{24}$/;
 const HEX32 = /^[0-9a-f]{32}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
+/** A model id or a tier value the door read: visible ASCII. */
+const HINT = /^[\x21-\x7e]{1,256}$/;
 /** A served model's id, as a receipt keeps it: visible ASCII. */
 const SERVED = /^[\x21-\x7e]{1,256}$/;
 
@@ -277,17 +289,20 @@ function plain(value: unknown, keys: string): value is Record<string, unknown> {
 
 /** The request's fields, exactly, or `Invalid`. */
 export function egressRequest(value: unknown): EgressRequest {
-  if (!plain(value, "bytes_hint,connection,method,path")) {
+  if (!plain(value, "bytes_hint,connection,method,model,path,tier")) {
     throw new Invalid("invalid egress request");
   }
-  const { connection, method, path, bytes_hint: hint } = value;
+  const { connection, method, path, bytes_hint: hint, model, tier } = value;
+  const named = (text: unknown) => text === null || (typeof text === "string" && HINT.test(text));
   if (typeof connection !== "string" || !CONNECTION.test(connection)
       || typeof method !== "string" || !METHODS.includes(method)
       || typeof path !== "string" || !PATH.test(path) || path.length > EGRESS_PATH_MAX
-      || (hint !== null && (typeof hint !== "number" || !Number.isSafeInteger(hint) || hint < 0))) {
+      || (hint !== null && (typeof hint !== "number" || !Number.isSafeInteger(hint) || hint < 0))
+      || !named(model) || !named(tier)) {
     throw new Invalid("invalid egress request");
   }
-  return { connection, method, path, bytes_hint: hint };
+  return { connection, method, path, bytes_hint: hint, model: model as string | null,
+           tier: tier as string | null };
 }
 
 /** The binding's sandbox fields, exactly, or `Invalid`. */
@@ -422,13 +437,33 @@ export class Egress {
     }
     this.#runsPruned(lease);
     let charge: Charged | null = null;
+    let named: { readonly model: string; readonly tier: string | null } | null = null;
     if (!free) {
+      // The model the call names, where its API's rules read it (the body's top-level key
+      // the door read, or the path), and its tier: the call is reserved for them alone.
+      const rules = apiRules(connection.scope.api);
+      const meter = connection.scope.meter!;
+      if (rules === null || (rules.model !== null && rules.model !== "model")) {
+        return refuse("egress_unmetered");
+      }
+      const id = rules.model === null
+        ? meteredModel(meter, request.method, request.path.split("?")[0]!, {})
+        : request.model;
+      const model = connection.models.find((entry) => entry.id === id);
+      if (model === undefined) {
+        return refuse("egress_unknown_model");
+      }
+      const multiplier = tierMultiplier(rules, request.tier);
+      if (multiplier === null) {
+        return refuse("egress_unpriced_option");
+      }
       this.#deps.pruned(now);
-      const reserved = this.#reserve(lease, connection.source, connection.models, now);
+      const reserved = this.#reserve(lease, connection.source, model, multiplier, now);
       if (!reserved.ok) {
         return refuse("egress_spend_refused", reserved.rule);
       }
       charge = reserved;
+      named = { model: model.id, tier: rules.tier === null ? null : request.tier };
     }
     const reservation = this.#record(sandbox, request, lease, generation, now,
                                      { version: credential.version,
@@ -438,8 +473,9 @@ export class Egress {
                                   end: writable.getWriter() });
     return { ok: true, reservation, connection: request.connection, blob: credential.blob,
              version: credential.version, generation,
-             metering: charge === null ? null
-               : { max_output_tokens: charge.max_output_tokens, input_bytes: request.bytes_hint! },
+             metering: charge === null || named === null ? null
+               : { max_output_tokens: charge.max_output_tokens, input_bytes: request.bytes_hint!,
+                   model: named.model, tier: named.tier },
              ended: readable };
   }
 
@@ -447,17 +483,18 @@ export class Egress {
    * The call's charge, against every cap, in the open's unit, so concurrent calls reserve
    * one after another and never pass a cap between them: its run's requests, tokens and
    * cost (`egress_runs`), and the owner's and the source's day and month (the spend
-   * counters the loop's calls hold too, read through `spent`). Its input is held at the
-   * largest context window of the connection's models (a body's bytes do not bound its
-   * tokens: a file or a cached context it names can be far larger), its output at the
-   * largest output cap and what the caps leave (the gateway clamps every cap alias the
-   * call names to it, and refuses several choices), so what it holds bounds what it can
-   * cost; the settle gives the difference back. Refused, with the cap that binds, below
-   * `MIN_OUTPUT`.
+   * counters the loop's calls hold too, read through `spent`). It is the named model's:
+   * its input held at that model's context window (a body's bytes do not bound its tokens:
+   * a file or a cached context it names can be far larger), its output at that model's cap
+   * and what the caps leave (the gateway clamps every cap alias the call names to it, and
+   * refuses several choices and another model), at that model's dearest rates times its
+   * tier's `multiplier`, so what it holds bounds what it can cost; the settle gives the
+   * difference back. Refused, with the cap that binds, below `MIN_OUTPUT`.
    */
-  #reserve(lease: SandboxLease, source: string, models: readonly EgressModel[], now: number):
-      ({ ok: true } & Charged) | { ok: false; rule: string } {
-    const input = Math.max(...models.map((model) => model.contextWindow));
+  #reserve(lease: SandboxLease, source: string, model: EgressModel, multiplier: number,
+           now: number): ({ ok: true } & Charged) | { ok: false; rule: string } {
+    const models = [model];
+    const input = model.contextWindow;
     const caps = this.#deps.caps(source);
     const run = this.#sql.exec<{ requests: number; tokens: number; cost: number }>(
       "SELECT requests, tokens, cost FROM egress_runs WHERE lease_id = ? AND epoch = ?",
@@ -482,14 +519,16 @@ export class Egress {
     const most = Math.max(...models.map((model) => model.maxTokens));
     const floor = Math.min(most, MIN_OUTPUT);
     const byTokens = caps.run_tokens - run.tokens - input;
-    const fits = (output: number) => this.#deps.price(models, input, output) <= costRoom;
+    const price = (output: number) =>
+      Math.ceil(this.#deps.price(models, input, output) * multiplier);
+    const fits = (output: number) => price(output) <= costRoom;
     const output = largestFitting(Math.min(most, byTokens), fits);
     if (output < floor || output < 1) {
       const byTokensBinds = byTokens < floor && (byTokens < 0 || fits(byTokens));
       return { ok: false, rule: byTokensBinds ? "run_tokens" : costRule };
     }
     return { ok: true, source, max_output_tokens: output, est_tokens: input + output,
-             est_cost: this.#deps.price(models, input, output), day, month };
+             est_cost: price(output), day, month };
   }
 
   /** The run counters of every run but `lease`'s that holds no open call: theirs are over. */

@@ -8,7 +8,7 @@
  */
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import { verifyToken } from "../../doors/src/routing-mac";
 import { PLATFORM_CALLER } from "../src/admission";
@@ -71,8 +71,18 @@ async function leased(r: Gated, apply = true, roomy = true): Promise<Leased> {
   };
 }
 
+/** The model every call names unless it says otherwise, and OpenAI's: each catalog's first. */
+let MODEL = "";
+let OPENAI_MODEL = "";
+
+beforeAll(async () => {
+  MODEL = (await catalog(ANTHROPIC))[0]!.id;
+  OPENAI_MODEL = (await catalog(OPENAI))[0]!.id;
+});
+
 function request(connection: string, extra: Record<string, unknown> = {}) {
-  return { connection, method: "POST", path: "/v1/messages", bytes_hint: 120, ...extra };
+  return { connection, method: "POST", path: "/v1/messages", bytes_hint: 120, model: MODEL,
+           tier: null, ...extra };
 }
 
 async function admitted(r: Gated, lease: Leased, connection: string,
@@ -168,28 +178,28 @@ describe("an egress call", () => {
     expect(opened.blob.startsWith("v1.")).toBe(true);
     expect(await rows(r)).toEqual([{ state: "open", code: null, ended: null, outcome: null,
                                      status: null, bytes: null, bytes_hint: 120 }]);
+    expect(opened.metering).toMatchObject({ model: MODEL, tier: null });
     const [charge] = await charges(r);
-    // Its input held at the largest context window of the connection's models, not the
-    // body's bytes, and its output at the largest output cap.
+    // Held for the model the call names: its input at that model's context window, not the
+    // body's bytes, and its output at that model's cap.
     const [{ models }] = (await r.sql("SELECT models FROM connections WHERE id = ?",
                                       connection)) as [{ models: string }];
-    const records = JSON.parse(models) as ModelInfo[];
-    const window = Math.max(...records.map((model) => model.contextWindow));
+    const named = (JSON.parse(models) as ModelInfo[]).find((model) => model.id === MODEL)!;
     const output = opened.metering!.max_output_tokens;
-    expect(output).toBe(Math.max(...records.map((model) => model.maxTokens)));
+    expect(output).toBe(named.maxTokens);
     expect(charge).toMatchObject({ source: "anthropic", charge: "held", cost: null,
-                                   max_output_tokens: output, est_tokens: window + output });
+                                   max_output_tokens: output,
+                                   est_tokens: named.contextWindow + output });
     const estimate = charge!["est_cost"] as number;
-    // Priced at the dearest rate any of the connection's models charges, each to its own
-    // window and cap: input at the dearest of uncached, cache-read and cache-write.
+    // Priced at that model's dearest rates: input at the dearest of uncached, cache-read
+    // and cache-write.
     const top = (rates: { input: number; cacheRead: number; cacheWrite: number }) =>
       Math.max(rates.input, rates.cacheRead, rates.cacheWrite);
-    const dearest = Math.max(...records.map((model) => priced(
-      { cost: { ...model.cost, input: top(model.cost),
-                ...(model.cost.tiers === undefined ? {}
-                  : { tiers: model.cost.tiers.map((tier) => ({ ...tier, input: top(tier) })) }) } },
-      Math.min(window, model.contextWindow), Math.min(output, model.maxTokens))));
-    expect(estimate).toBe(dearest);
+    expect(estimate).toBe(priced(
+      { cost: { ...named.cost, input: top(named.cost),
+                ...(named.cost.tiers === undefined ? {}
+                  : { tiers: named.cost.tiers.map((tier) => ({ ...tier, input: top(tier) })) }) } },
+      named.contextWindow, output));
     expect(estimate).toBeGreaterThan(0);
     // Held, it counts at its estimate, on the run's and the source's counters.
     expect(await runs(r)).toEqual([{ lease_id: lease.lease_id, epoch: lease.epoch, requests: 1,
@@ -282,10 +292,11 @@ describe("an egress call", () => {
     const lease = await leased(r);
     const version = async () =>
       (await r.sql("SELECT version FROM connections WHERE id = ?", connection))[0]!["version"];
-    expect(await refusedWith(r, lease.as(1, "f".repeat(64)), connection, { path: "/v1/responses" }))
+    expect(await refusedWith(r, lease.as(1, "f".repeat(64)), connection,
+                             { path: "/v1/responses", model: OPENAI_MODEL }))
       .toBe("egress_lease_closed");
     expect(await version()).toBe(1);
-    await admitted(r, lease, connection, { path: "/v1/responses" });
+    await admitted(r, lease, connection, { path: "/v1/responses", model: OPENAI_MODEL });
     expect(await version()).toBe(2);
   });
 
@@ -446,6 +457,110 @@ describe("the sync token", () => {
   });
 });
 
+/** Google's record, as the gateway's tests seal it: its model named in the path. */
+const GOOGLE = Object.freeze({
+  upstream: { provider: "google", api: "google-generative-ai",
+              base_url: "https://generativelanguage.googleapis.com/v1beta",
+              auth: { header: "x-goog-api-key", scheme: "" } },
+  endpoints: [{ origin: "https://generativelanguage.googleapis.com", paths: ["/v1beta/models/*"],
+                methods: ["POST"] }],
+});
+
+/** OpenRouter's record, as the bundled source seals it: chat completions by key. */
+const OPENROUTER = Object.freeze({
+  upstream: { provider: "openrouter", api: "openai-completions",
+              base_url: "https://openrouter.ai/api/v1",
+              auth: { header: "authorization", scheme: "Bearer" } },
+  endpoints: [{ origin: "https://openrouter.ai", paths: ["/api/v1/chat/completions",
+                                                          "/api/v1/models/user"],
+                methods: ["GET", "POST"] }],
+});
+
+/** A connection's priced models, each with what one call of it holds at most (µ$). */
+async function pricedModels(r: Gated, connection: string) {
+  const [{ models }] = (await r.sql("SELECT models FROM connections WHERE id = ?",
+                                    connection)) as [{ models: string }];
+  return (JSON.parse(models) as ModelInfo[]).filter((model) => model.cost.output > 0)
+    .map((model) => ({ model, holds: egressPrice([model], model.contextWindow,
+                                                 model.maxTokens) }))
+    .sort((a, b) => a.holds - b.holds);
+}
+
+/** A lease open and applied on the owner's own caps, and its egress binding. */
+async function defaultLease(r: Gated): Promise<Leased> {
+  return leased(r, true, false);
+}
+
+describe("a call's reservation (review round 3)", () => {
+  it.each([
+    ["OpenRouter", OPENROUTER, "/api/v1/chat/completions"],
+    ["ChatGPT's Responses API", OPENAI, "/v1/responses"],
+  ])("lets a fresh owner on the default caps call a normal %s model", async (_what, record, path) => {
+    const r = await gated();
+    const connection = await r.connect("sk-good", record as never);
+    const priced = await pricedModels(r, connection);
+    const normal = priced[Math.floor(priced.length / 2)]!;
+    const lease = await defaultLease(r);
+    const opened = await admitted(r, lease, connection, { path, model: normal.model.id });
+    expect(opened.metering).toMatchObject({ model: normal.model.id });
+    expect((await charges(r))[0]).toMatchObject({ est_cost: normal.holds });
+  });
+
+  it("reads a model a path names, as Google's API names it", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good", GOOGLE as never);
+    const named = (await pricedModels(r, connection))[0]!;
+    const lease = await leased(r);
+    const opened = await admitted(r, lease, connection, {
+      path: `/v1beta/models/${named.model.id}:streamGenerateContent?alt=sse`, model: null });
+    expect(opened.metering).toMatchObject({ model: named.model.id });
+    expect(await refusedWith(r, lease.as(), connection, {
+      path: "/v1beta/models/no-such-model:streamGenerateContent?alt=sse", model: null }))
+      .toBe("egress_unknown_model");
+  });
+
+  it("holds a call of the dearest model at that model's own price", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good", OPENAI);
+    const dearest = (await pricedModels(r, connection)).at(-1)!;
+    const lease = await leased(r);
+    await admitted(r, lease, connection, { path: "/v1/responses", model: dearest.model.id });
+    expect((await charges(r))[0]).toMatchObject({ charge: "held", est_cost: dearest.holds,
+                                                  max_output_tokens: dearest.model.maxTokens });
+  });
+
+  it("refuses a model the connection does not list, or a tier pi-ai cannot price", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good", OPENAI);
+    const lease = await leased(r);
+    for (const model of ["no-such-model", null]) {
+      expect(await refusedWith(r, lease.as(), connection, { path: "/v1/responses", model }))
+        .toBe("egress_unknown_model");
+    }
+    expect(await refusedWith(r, lease.as(), connection, { path: "/v1/responses",
+                                                         model: OPENAI_MODEL, tier: "scale" }))
+      .toBe("egress_unpriced_option");
+    expect(await charges(r)).toHaveLength(3);
+  });
+
+  it("holds a priority-tier call at the most pi-ai prices that tier at", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good", OPENAI);
+    const named = (await pricedModels(r, connection))[0]!;
+    const lease = await leased(r);
+    const standard = await admitted(r, lease, connection, { path: "/v1/responses",
+                                                            model: named.model.id });
+    const priority = await admitted(r, lease, connection, { path: "/v1/responses",
+                                                            model: named.model.id,
+                                                            tier: "priority" });
+    expect(standard.metering).toMatchObject({ tier: null });
+    expect(priority.metering).toMatchObject({ tier: "priority" });
+    const [held, prioritised] = await charges(r);
+    expect(prioritised!["est_cost"]).toBe(Math.ceil(named.holds * 2.5));
+    expect(held!["est_cost"]).toBe(named.holds);
+  });
+});
+
 describe("the spend caps", () => {
   it.each([
     ["the run's requests", { turn_requests: 1 }, null, "run_requests"],
@@ -486,8 +601,8 @@ describe("the spend caps", () => {
     const connection = await r.connect("sk-good");
     const [{ models }] = (await r.sql("SELECT models FROM connections WHERE id = ?",
                                       connection)) as [{ models: string }];
-    const window = Math.max(...(JSON.parse(models) as ModelInfo[])
-      .map((model) => model.contextWindow));
+    const window = (JSON.parse(models) as ModelInfo[]).find((model) => model.id === MODEL)!
+      .contextWindow;
     // Room for the input and 500 output tokens: under the 1,024 a call is worth.
     const lease = await cappedLeased(r, { ...ROOMY, turn_tokens: window + 500 });
     expect(await refusedWith(r, lease.as(), connection)).toBe("egress_spend_refused");
@@ -776,7 +891,8 @@ describe("a reservation", () => {
       connection: prepared.connection, version: 1, blob, kid: "k1",
       models: await catalog(OPENAI), egress: await scopeOf(OPENAI) });
     const lease = await leased(r);
-    const opened = await admitted(r, lease, prepared.connection, { path: "/v1/responses" });
+    const opened = await admitted(r, lease, prepared.connection,
+                                  { path: "/v1/responses", model: OPENAI_MODEL });
     const resealed = await env.GATEWAY.reseal(r.name, prepared.connection, 1, opened.blob);
     expect(await r.stub.egressSettle(lease.as(), { ...settle(opened.reservation), resealed }))
       .toEqual({ settled: true });
@@ -808,9 +924,25 @@ describe("the sandbox's lease", () => {
                   sync_token: lease.sync, network_generation: null }]);
     expect(JSON.stringify(await r.sql("SELECT * FROM file_space")))
       .not.toContain(lease.opened.egress_token.split(".")[2]);
-    const renewed = await r.in((instance) => instance.sandbox.renew(held(lease)));
-    expect(renewed).toMatchObject({ lease_id: lease.lease_id, epoch: lease.epoch });
+    // A run's own deadline, sooner than the longest, is its tokens' expiry; a later one is
+    // held to the longest, and a past one refused.
     await r.in((instance) => instance.sandbox.close(held(lease)));
+    const soon = Math.floor(Date.now() / 1000) + 600;
+    const short = await r.in((instance) => instance.sandbox.open({ holder: "x", deadline: soon }));
+    expect(verifyToken(env.ROUTING_MAC_KEY, "egress", short.egress_token)!.expires).toBe(soon);
+    expect(verifyToken(env.ROUTING_MAC_KEY, "sync", short.sync_token)!.expires).toBe(soon);
+    await r.in((instance) => instance.sandbox.close(short.lease));
+    const far = await r.in((instance) => instance.sandbox.open({
+      holder: "x", deadline: Math.floor(Date.now() / 1000) + 10 * RUN_DEADLINE_S }));
+    expect(verifyToken(env.ROUTING_MAC_KEY, "egress", far.egress_token)!.expires)
+      .toBeLessThanOrEqual(Math.floor(Date.now() / 1000) + RUN_DEADLINE_S);
+    await r.in((instance) => instance.sandbox.close(far.lease));
+    expect((await failure(() => r.in((instance) => instance.sandbox.open({
+      holder: "x", deadline: 1 })))).message).toMatch(/deadline/);
+    const again = await leased(r, false, false);
+    const renewed = await r.in((instance) => instance.sandbox.renew(held(again)));
+    expect(renewed).toMatchObject({ lease_id: again.lease_id, epoch: again.epoch });
+    await r.in((instance) => instance.sandbox.close(held(again)));
     expect(await r.sql("SELECT lease_id, egress_token, sync_token, " +
                          "network_generation FROM file_space"))
       .toEqual([{ lease_id: null, egress_token: null, sync_token: null,

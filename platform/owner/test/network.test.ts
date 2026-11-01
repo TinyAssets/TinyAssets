@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { mintToken, tokenHash, verifyToken } from "../../doors/src/routing-mac";
+import { KEY_MIN_BYTES, mintToken, tokenHash, verifyToken } from "../../doors/src/routing-mac";
 import { Invalid, Refused } from "../src/errors";
 import {
   ALL_TRAFFIC, BOUNDARY_NOTE, DNS_SERVERS, EGRESS_HOST, EGRESS_IP_LITERAL, egressBaseUrl,
@@ -114,13 +114,13 @@ describe("the network document", () => {
   });
 });
 
-const ANTHROPIC = { base_url: "https://api.anthropic.com",
+const ANTHROPIC = { api: "anthropic-messages", base_url: "https://api.anthropic.com",
                     endpoints: [{ origin: "https://api.anthropic.com", paths: ["/v1/messages"],
                                   methods: ["POST"] }], meter: null };
-const OPENAI = { base_url: "https://api.openai.com/v1",
+const OPENAI = { api: "openai-responses", base_url: "https://api.openai.com/v1",
                  endpoints: [{ origin: "https://api.openai.com", paths: ["/v1/responses"],
                                methods: ["POST"] }], meter: null };
-const GROQ = { base_url: "https://api.groq.com/openai/v1/",
+const GROQ = { api: "openai-completions", base_url: "https://api.groq.com/openai/v1/",
                endpoints: [{ origin: "https://api.groq.com", paths: ["/openai/v1/chat/completions"],
                              methods: ["POST"] }], meter: null };
 const C1 = `c${"1".repeat(24)}`;
@@ -128,7 +128,7 @@ const C2 = `c${"2".repeat(24)}`;
 const C3 = `c${"3".repeat(24)}`;
 const C4 = `c${"4".repeat(24)}`;
 const C5 = `c${"5".repeat(24)}`;
-const GOOGLE = { base_url: "https://generativelanguage.googleapis.com/v1beta",
+const GOOGLE = { api: "google-generative-ai", base_url: "https://generativelanguage.googleapis.com/v1beta",
                  endpoints: [{ origin: "https://generativelanguage.googleapis.com",
                                paths: ["/v1beta/models/*"], methods: ["POST"] }], meter: null };
 
@@ -188,6 +188,17 @@ describe("a sandbox token", () => {
     // A forger who picks a routing part, an expiry and a secret still needs the key's MAC.
     const forged = mintToken(otherKey, "egress", "user_02XY", EXPIRES).token;
     expect(verifyToken(KEY, "egress", forged)).toBeNull();
+  });
+
+  it("takes a routing key of 32 bytes, and none shorter", () => {
+    expect(KEY_MIN_BYTES).toBe(32);
+    const thirtyTwo = Buffer.alloc(32, 3).toString("base64url");
+    const minted = mintToken(thirtyTwo, "egress", "user_01HZ", EXPIRES);
+    expect(verifyToken(thirtyTwo, "egress", minted.token)).not.toBeNull();
+    for (const short of [1, 16, 31]) {
+      expect(() => mintToken(Buffer.alloc(short, 3).toString("base64url"), "egress",
+                             "user_01HZ", EXPIRES)).toThrow(/ROUTING_MAC_KEY/);
+    }
   });
 
   it("fails loudly on a Worker without a usable routing key", () => {
