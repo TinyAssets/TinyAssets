@@ -42,19 +42,26 @@ describe("the meter pi-ai's adapter teaches", () => {
   it("names Google's model in the path, and reads it back", async () => {
     const meter = (await learnMeter(builtinCatalog(), GOOGLE.upstream, "AIza-x"))!;
     expect(meter.path).toMatch(/^\/v1beta\/models\/\{model\}:streamGenerateContent$/);
-    const path = "/v1beta/models/gemini-2.5-flash:streamGenerateContent";
-    expect(meteredModel(meter, "POST", path, {})).toBe("gemini-2.5-flash");
+    const path = "/v1beta/models/model-a:streamGenerateContent";
+    expect(meteredModel(meter, "POST", path, {})).toBe("model-a");
     expect(meteredCall({ base_url: GOOGLE.upstream.base_url, endpoints: GOOGLE.endpoints, meter },
                        "POST", `${path}?alt=sse`)).toBe(true);
     expect(meteredModel(meter, "POST", "/v1beta/models/a/b:streamGenerateContent", {})).toBeNull();
+    // The owner's open holds the path to one model segment too, as the gateway reads it.
+    const scope = { base_url: GOOGLE.upstream.base_url, endpoints: GOOGLE.endpoints, meter };
+    for (const other of ["/v1beta/models/a/b:streamGenerateContent",
+                         "/v1beta/models/a:b:streamGenerateContent",
+                         "/v1beta/models/:streamGenerateContent"]) {
+      expect(meteredCall(scope, "POST", other)).toBe(false);
+    }
     expect(meteredModel(meter, "GET", path, {})).toBeNull();
   });
 
   it("reads the model from the body, and clamps the output cap there", async () => {
     const meter = (await learnMeter(builtinCatalog(), ANTHROPIC.upstream, "sk-x"))!;
-    expect(meteredModel(meter, "POST", "/v1/messages", { model: "claude-x" })).toBe("claude-x");
+    expect(meteredModel(meter, "POST", "/v1/messages", { model: "model-x" })).toBe("model-x");
     expect(meteredModel(meter, "POST", "/v1/messages", {})).toBeNull();
-    expect(meteredModel(meter, "POST", "/v1/models", { model: "claude-x" })).toBeNull();
+    expect(meteredModel(meter, "POST", "/v1/models", { model: "model-x" })).toBeNull();
     expect(clamped(meter, { model: "m", max_tokens: 50_000 }, 1000)).toEqual({ model: "m",
                                                                               max_tokens: 1000 });
     expect(clamped(meter, { model: "m", max_tokens: 10 }, 1000)).toEqual({ model: "m",

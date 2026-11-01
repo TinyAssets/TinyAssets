@@ -16,7 +16,7 @@ import { EGRESS_LIMITS, type EgressOpened, LOST_AFTER_S } from "../src/egress";
 import type { Binding, OpenedLease } from "../src/owner-do";
 import { NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY, SYNC_FENCED } from "../src/owner-do";
 import {
-  ANTHROPIC, catalog, type Gated, gated, OPENAI, scopeOf, sealedAs,
+  ANTHROPIC, catalog, type Gated, gated, OAUTH, OPENAI, scopeOf, sealedAs,
 } from "./gateway-support";
 import { signedIn } from "./ledger-support";
 import { failure } from "./support";
@@ -169,6 +169,16 @@ describe("an egress call", () => {
                                    max_output_tokens: opened.metering!.max_output_tokens,
                                    est_tokens: 120 + opened.metering!.max_output_tokens });
     const estimate = charge!["est_cost"] as number;
+    // Priced at the dearest rate any of the connection's models charges: the body's bytes
+    // at the dearest of uncached, cache-read and cache-write input, the output at its rate.
+    const [{ models }] = (await r.sql("SELECT models FROM connections WHERE id = ?",
+                                      connection)) as [{ models: string }];
+    const output = opened.metering!.max_output_tokens;
+    const dearest = Math.max(...(JSON.parse(models) as {
+      cost: { input: number; output: number; cacheRead: number; cacheWrite: number } }[])
+      .map(({ cost }) => 120 * Math.max(cost.input, cost.cacheRead, cost.cacheWrite)
+                         + output * cost.output));
+    expect(Math.abs(estimate - dearest)).toBeLessThanOrEqual(1);
     expect(estimate).toBeGreaterThan(0);
     // Held, it counts at its estimate, on the run's and the source's counters.
     expect(await runs(r)).toEqual([{ lease_id: lease.lease_id, epoch: lease.epoch, requests: 1,
@@ -253,6 +263,19 @@ describe("an egress call", () => {
     await admitted(r, lease, connection);
     expect((await r.sql("SELECT COUNT(*) AS n FROM egress_reservations WHERE state = 'open'"))
       [0]).toEqual({ n: 1 });
+  });
+
+  it("refreshes an expiring OAuth credential for a live lease's call only", async () => {
+    const r = await gated();
+    const connection = await r.connectOAuth(OAUTH, Date.now() + 60_000);
+    const lease = await leased(r);
+    const version = async () =>
+      (await r.sql("SELECT version FROM connections WHERE id = ?", connection))[0]!["version"];
+    expect(await refusedWith(r, lease.as(1, "f".repeat(64)), connection, { path: "/v1/responses" }))
+      .toBe("egress_lease_closed");
+    expect(await version()).toBe(1);
+    await admitted(r, lease, connection, { path: "/v1/responses" });
+    expect(await version()).toBe(2);
   });
 
   it("is held to the rate: open at once, and opened a minute, to its window's edge",
@@ -415,6 +438,7 @@ describe("the spend caps", () => {
     ["the run's requests", { turn_requests: 1 }, null, "run_requests"],
     ["the run's cost", { turn_cost: 1 }, null, "run_cost"],
     ["the run's tokens", { turn_tokens: 100 }, null, "run_tokens"],
+    ["the run's tokens, the body counted in them", { turn_tokens: 1_100 }, null, "run_tokens"],
     ["the owner's day", { daily_cost: 1 }, null, "daily_cost"],
     ["the owner's month", { monthly_cost: 1 }, null, "monthly_cost"],
     ["the source's day", { sources: { anthropic: { daily_cost: 1 } } }, null,
@@ -552,6 +576,8 @@ describe("the spend caps", () => {
     const counted = await runs(r);
     expect(counted).toContainEqual(expect.objectContaining({ lease_id: next.lease_id,
                                                               epoch: next.epoch, requests: 1 }));
+    expect(counted).toContainEqual(expect.objectContaining({ lease_id: lease.lease_id,
+                                                              epoch: lease.epoch, requests: 2 }));
     // The old run's second call is still open (its stream ended with the lease), so its
     // counters stay until that call settles; then the next open prunes them.
     const [old] = (await r.sql("SELECT id FROM egress_reservations WHERE state = 'open' " +

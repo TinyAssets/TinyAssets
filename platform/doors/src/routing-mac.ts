@@ -81,11 +81,12 @@ export function verifyToken(key: unknown, kind: TokenKind, token: unknown):
       || given.toString("base64url") !== presented) {
     return null;
   }
+  // The MAC covers the routing part exactly as the owner's object wrote it, so it decodes to
+  // the owner that object minted it for.
   try {
     const owner = principal(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false })
       .decode(Buffer.from(routing, "base64url")));
-    return Buffer.from(owner, "utf8").toString("base64url") === routing
-      ? { owner, hash: tokenHash(secret) } : null;
+    return { owner, hash: tokenHash(secret) };
   } catch {
     return null;
   }

@@ -113,6 +113,25 @@ describe("the gateway Worker", () => {
       "https://egress/v1/responses", { method: "POST", body: "{}" }), null, new ReadableStream());
     expect(unmetered.response.status).toBe(403);
     expect(await unmetered.response.json()).toMatchObject({ error: { code: "unmetered" } });
+    // A model call's body past the length it was reserved for is refused before anything is
+    // read of it; within it, the call goes on to its model's check.
+    const body = JSON.stringify({ model: "no-such-model", input: "hi" });
+    const call = (bytes: number) => egress.forward("alice", "c1", 1, blob, new Request(
+      "https://egress/v1/responses", { method: "POST", body }),
+      { max_output_tokens: 100, input_bytes: bytes }, new ReadableStream());
+    const long = await call(body.length - 1);
+    expect(await long.response.json()).toMatchObject({ error: { code: "invalid_request" } });
+    const fits = await call(body.length);
+    expect(await fits.response.json()).toMatchObject({ error: { code: "unknown_model" } });
+    // The caller's stop aborts a provider request that has not answered yet.
+    const started = Date.now();
+    const stop = new IdentityTransformStream();
+    const held = egress.forward("alice", "c1", 1, blob, new Request("https://egress/v1/models", {
+      headers: { "x-fake-mode": "hang" } }), null, stop.readable);
+    await stop.writable.getWriter().close();
+    const stopped = await held;
+    expect(await stopped.response.json()).toMatchObject({ error: { code: "upstream_unreachable" } });
+    expect(Date.now() - started).toBeLessThan(5000);
     const refused = await egress.forward("", "c1", 1, blob, new Request("https://egress/v1/models"),
                                          metering, new ReadableStream());
     expect(refused.response.status).toBe(400);

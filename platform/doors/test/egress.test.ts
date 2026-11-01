@@ -207,7 +207,8 @@ describe("the egress door", () => {
      "output cap clamped, streams the answer back and settles it at pi-ai's cost", async () => {
     const box = await sandbox();
     const body = bodyOf(box);
-    const response = await send(egressRequest(box, `${COMPLETIONS}?key=ta_ph&KEY=ta_ph&stream=true`));
+    const response = await send(egressRequest(
+      box, `${COMPLETIONS}?key=ta_ph&KEY=ta_ph&Access_Token=ta_ph&stream=true`));
     expect(response.status).toBe(200);
     expect(response.headers.get("x-upstream")).toBe("fake");
     expect(response.headers.get("x-ta-resealed")).toBeNull();
@@ -234,7 +235,7 @@ describe("the egress door", () => {
       state: "settled", code: null, ended: null, outcome: "complete", status: 200,
       bytes: new TextEncoder().encode(text).byteLength,
       bytes_hint: new TextEncoder().encode(body).byteLength,
-      path: `${COMPLETIONS}?key=ta_ph&KEY=ta_ph&stream=true`, method: "POST" }]);
+      path: `${COMPLETIONS}?key=ta_ph&KEY=ta_ph&Access_Token=ta_ph&stream=true`, method: "POST" }]);
     // pi-ai's own reading of the stream, priced by the catalog's record of the model.
     const [{ models }] = await sqlIn(box.owner, "SELECT models FROM connections") as
       [{ models: string }];
@@ -355,6 +356,13 @@ describe("a refused call", () => {
     expect([response.status, await codeOf(response)]).toEqual([status, code]);
     expect(spy).not.toHaveBeenCalled();
     expect(await forwarded()).toEqual([]);
+  });
+
+  it("with an empty token header is a missing token", async () => {
+    const box = await sandbox();
+    const response = await send(egressRequest({ ...box, token: "" }, COMPLETIONS, {
+      headers: { [SANDBOX_HEADER]: "" } }));
+    expect([response.status, await codeOf(response)]).toEqual([401, "egress_token_missing"]);
   });
 
   it("with a forged or altered token, or the sync token, never reaches the object", async () => {
@@ -538,6 +546,28 @@ describe("settlement", () => {
     await until(() => upstreamCancelled("abort"), "the upstream cancel");
   });
 
+  it("trusts the meter only for an answer that completed: a cut one keeps its whole charge",
+     async () => {
+    const box = await sandbox();
+    const claiming: DoorsEnv = { ...doorsEnv, EGRESS: {
+      forward: async () => ({
+        response: new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("data: one\n\n"));
+          },
+        })),
+        // A meter that claims a cost however the stream ended.
+        outcome: new Response("{\"state\":\"succeeded\",\"tokens\":1,\"cost\":0.000001}\n")
+          .body! }) } };
+    const response = await send(egressRequest(box), claiming);
+    const reader = response.body!.getReader();
+    await reader.read();
+    await reader.cancel();
+    await settledOf(box.owner);
+    expect(await reservations(box.owner)).toMatchObject([{ outcome: "aborted" }]);
+    expect(await spends(box.owner)).toMatchObject([{ state: "unknown", cost: null }]);
+  });
+
   it("is registered with waitUntil at open, so a client that leaves before the answer " +
      "still settles", async () => {
     const box = await sandbox();
@@ -577,6 +607,25 @@ describe("settlement", () => {
     expect(await reservations(box.owner)).toMatchObject([{ state: "settled",
                                                            outcome: "ended" }]);
   }, 30_000);
+
+  it("closes the gateway's stop stream when the stream ends before any answer", async () => {
+    const box = await sandbox();
+    let stopped = false;
+    const holding: DoorsEnv = { ...doorsEnv, EGRESS: {
+      forward: (_owner, _connection, _version, _blob, _request, _metering, stop) => {
+        stop.getReader().read().then(() => { stopped = true; }, () => { stopped = true; });
+        return new Promise(() => undefined);  // the provider never answers
+      } } };
+    const pending = send(egressRequest(box), holding);
+    await until(async () => (await reservations(box.owner)).length === 1, "the open");
+    expect(stopped).toBe(false);
+    await leases(box.owner, (sandbox) => sandbox.close(box.opened.lease));
+    const response = await pending;
+    expect([response.status, await codeOf(response)]).toEqual([503, "egress_ended"]);
+    await until(async () => stopped, "the stop");
+    await settledOf(box.owner);
+    expect(await spends(box.owner)).toMatchObject([{ state: "unknown" }]);
+  });
 
   it("records the gateway's failure", async () => {
     const box = await sandbox();
