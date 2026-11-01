@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted (founder, 2026-10-26). Amends ADR-022 (its P2b row: "CLI packages
+Accepted (founder, 2026-10-26); decisions 1 and 3, and the Consequences
+bullets that follow from them (paid tier for interactive work; `trigger:
+human`), amended by ADR-033 (founder, 2026-11-01). Amends ADR-022 (its P2b row: "CLI packages
 (token leased for one run, ADR-012 D5)") and ADR-012 D5 for consumer
 subscriptions, and constrains ADR-023 (hosted CLIs), ADR-024 (device
 runner) and the outside-agent wake recipes.
