@@ -339,7 +339,7 @@ describe("the hooks Worker", () => {
     ].join("\n") };
     const reply = await run(who, await request(who, modules, {}));
     expect(reply.ok).toBe(true);
-    expect(JSON.parse((reply as { result: { block: string } }).result.block)).toEqual({
+    expect(JSON.parse((reply as unknown as { result: { block: string } }).result.block)).toEqual({
       wrote: true, tried: ["stdout refused", "env refused", "nextTick refused"] });
   });
 
