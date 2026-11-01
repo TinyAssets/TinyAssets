@@ -36,9 +36,15 @@
  * - The optional `packages` list is the owner's package selection (tasks 5, A5), in pi's
  *   settings form: each a package directory under `/workspace/.agents/packages`, a tree
  *   only the owner changes, or `{source, skills?,
- *   prompts?}` with pi's filter grammar per resource type (`resources.ts`). There is no
+ *   prompts?, guard?}` with pi's filter grammar per resource type (`resources.ts`); a
+ *   `guard` package's hooks run after every other package's (`resources.ts`). There is no
  *   `extensions` filter: a package's code never loads in the owner's object, so a package
  *   that declares any is refused where it loads.
+ * - The optional `hooks` table is the owner's policy for code that runs in the hooks Worker
+ *   (`HOOK_DEFAULTS`, tasks 5 H1): the longest a package's hook is waited for
+ *   (`timeout_ms`, a manifest's own only lowering it), the CPU each hook call may take
+ *   there (`cpu_ms`, 50 to 1,000), and whether the agent may run code mode scripts
+ *   (`codemode`, off by default).
  *
  * The Python closed the owner's public egress tunnels before a write committed and
  * cancelled its live streams after. Here each model call carries the policy generation
@@ -250,6 +256,40 @@ export const RUN_SETTINGS: { readonly [K in keyof RunSettings]: readonly [number
   });
 const DAY_S = 86_400;
 
+/**
+ * Owner hook policy (agent research §6.4): what a package's hook may take in the hooks
+ * Worker, and whether code mode is on. A hook is waited for at most `timeout_ms` (a
+ * manifest's own `timeout_ms` may only lower it) and asks the Worker for `cpu_ms` of CPU a
+ * call; code mode (pi's, its VM in the same Worker) is off until the owner turns it on.
+ */
+export const HOOK_DEFAULTS = Object.freeze({ timeout_ms: 2_000, cpu_ms: 50, codemode: false });
+/** The range each numeric hook setting may take. */
+export const HOOK_SETTINGS = Object.freeze({
+  timeout_ms: Object.freeze([100, 10_000] as const),
+  cpu_ms: Object.freeze([50, 1_000] as const),
+});
+
+/** The document's `hooks` table, as written. */
+export interface HookPolicy {
+  readonly timeout_ms?: number;
+  readonly cpu_ms?: number;
+  readonly codemode?: boolean;
+}
+
+/** The hook settings a document leaves in force: its own, and the defaults for the rest. */
+export function hookSettings(document: PolicyDocument):
+    { readonly timeout_ms: number; readonly cpu_ms: number; readonly codemode: boolean } {
+  return { ...HOOK_DEFAULTS, ...document.hooks };
+}
+
+/** The `hooks` table: known keys only, each number in its range, `codemode` a boolean. */
+function validHooks(hooks: unknown): boolean {
+  return plain(hooks) && Object.entries(hooks).every(([key, value]) =>
+    key === "codemode" ? typeof value === "boolean"
+      : Object.hasOwn(HOOK_SETTINGS, key)
+        && bounded(value, HOOK_SETTINGS[key as keyof typeof HOOK_SETTINGS]));
+}
+
 /** The run settings a document leaves in force: its own, and the defaults for the rest. */
 export function runSettings(document: PolicyDocument): RunSettings {
   return { ...RUN_DEFAULTS, ...document.runs };
@@ -368,7 +408,8 @@ function validModels(models: unknown): boolean {
 export const PACKAGES_MAX = 32;
 export const FILTER_PATTERNS = 64;
 /** The keys a package selection's object form takes. */
-const SELECTION_KEYS: readonly string[] = Object.freeze(["source", "skills", "prompts"]);
+const SELECTION_KEYS: readonly string[] = Object.freeze(["source", "skills", "prompts",
+                                                         "guard"]);
 
 /**
  * A package's directory: a stored path below `PACKAGES_DIR`, a tree only the owner's own
@@ -400,7 +441,8 @@ function validPackages(value: unknown): boolean {
       : plain(entry) && packageSource(entry["source"])
         && Object.keys(entry).every((key) => SELECTION_KEYS.includes(key))
         && (entry["skills"] === undefined || filterList(entry["skills"]))
-        && (entry["prompts"] === undefined || filterList(entry["prompts"])));
+        && (entry["prompts"] === undefined || filterList(entry["prompts"]))
+        && (entry["guard"] === undefined || typeof entry["guard"] === "boolean"));
 }
 
 /** The packages a document selects, each in the object form, in its order. */
@@ -410,6 +452,7 @@ export function packageSelection(document: PolicyDocument): PackageSelection[] {
       source: entry.source,
       ...(entry.skills === undefined ? {} : { skills: [...entry.skills] }),
       ...(entry.prompts === undefined ? {} : { prompts: [...entry.prompts] }),
+      ...(entry.guard === true ? { guard: true } : {}),
     }));
 }
 
@@ -417,6 +460,7 @@ export function packageSelection(document: PolicyDocument): PackageSelection[] {
 export interface PolicyDocument {
   readonly files?: Partial<FileSettings>;
   readonly packages?: readonly (string | PackageSelection)[];
+  readonly hooks?: HookPolicy;
   readonly runs?: Partial<RunSettings>;
   readonly models?: ModelPolicy;
   readonly entries: PolicyEntry[];
@@ -569,17 +613,21 @@ function destination(entry: unknown): void {
 export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS):
     PolicyDocument {
   if (!plain(document) || !keys(document, ["entries", "spend", "egress",
-    ...(["files", "models", "runs", "packages"] as const).filter((table) =>
+    ...(["files", "models", "runs", "packages", "hooks"] as const).filter((table) =>
       Object.hasOwn(document, table))])) {
     throw new Invalid("invalid policy document");
   }
   if (document["packages"] !== undefined && !validPackages(document["packages"])) {
     throw new Invalid("invalid packages policy: at most 32 package directories under " +
                       "/workspace/.agents/packages, each once, as a path or {source, skills, " +
-                      "prompts} with filter lists; package code (extensions) never loads");
+                      "prompts, guard} with filter lists; package code (extensions) never loads");
   }
   if (document["models"] !== undefined && !validModels(document["models"])) {
     throw new Invalid("invalid models policy");
+  }
+  if (document["hooks"] !== undefined && !validHooks(document["hooks"])) {
+    throw new Invalid("invalid hooks policy: timeout_ms 100 to 10,000, cpu_ms 50 to 1,000, " +
+                      "codemode a boolean");
   }
   const files = document["files"];
   if (files !== undefined && (!plain(files) || Object.entries(files).some(([key, value]) =>

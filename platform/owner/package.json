@@ -10,6 +10,7 @@
     "@cloudflare/workers-types": "5.20261027.1",
     "@earendil-works/chord": "1.4.0",
     "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-codemode": "1.4.0",
     "@earendil-works/pi-durable": "1.4.0",
     "@types/node": "22.20.5",
     "agents": "0.32.0",

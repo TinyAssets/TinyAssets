@@ -21,7 +21,10 @@
  *   twice), then `ta` (`ta.ts`, A3), the model's way to every other ability (replay-safe
  *   by its own rule: only its reads and a delegation run twice), then `ta.skills`, the
  *   skills section built from the owner's files (`resources.ts`, A5: rebuilt from the
- *   files' change feed, never per request), then the
+ *   files' change feed, never per request), with each selected package's `pkg:<name>`
+ *   extension of remote hook wrappers (`hooks.ts`, H1: its hooks run in the hooks Worker,
+ *   never here), then `ta.codemode` while the owner's policy turns code mode on
+ *   (`codemode.ts`: pi's code mode, tools-only, its VM in the hooks Worker), then the
  *   object's packages, whose tools the model is never offered: `ta` reaches those
  *   registered callable by tools. The `ta.` names are the object's: a package named
  *   so is refused, as one pi refuses to install is; each is skipped and kept as an owner
@@ -130,16 +133,19 @@ import type { ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-dura
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 
 import {
-  agentId, type Authority, AUTHORITY_RULE, authorityOf, type AuthorityState, MODEL_TOOLS,
+  agentId, type Authority, AUTHORITY_RULE, authorityOf, type AuthorityState, CODEMODE_TOOL,
+  MODEL_TOOLS,
   type Need, NO_CONVERSATION, offersFive, refusalCode, type Stamped, stamped, stampOf, TA_OP,
   TOOL_SURFACE,
 } from "./authority";
+import { CODEMODE_EXTENSION, codemodeExtension } from "./codemode";
 import { createChild, delegationsDoc, subagentRequest } from "./delegate";
 import { Invalid, Refused } from "./errors";
 import type { Files } from "./files";
 import { type Access, OwnerFilesEnv } from "./files-env";
 import type { Write } from "./gate";
 import type { GatewayProvider, SessionAuthority } from "./gateway-provider";
+import { hookExtension, type HookSettings, type HooksService } from "./hooks";
 import type { LiveTee } from "./live-tee";
 import type { Notices } from "./notices";
 import { type MetricsSnapshot, OriginMetrics, originRoot, threadOf, turnOf } from "./origin";
@@ -151,7 +157,9 @@ import {
   createScheduled, type Delivered, requestOf, SCHEDULED, type ScheduledInput,
   type ScheduledTask, scheduledTask, standing, type Standing, WORK_ENTRY,
 } from "./scheduled";
-import { type Delegation, PLATFORM_NAMES, type Platform, reachable, taTool } from "./ta";
+import {
+  type Delegation, MODEL_COMPLETE, PLATFORM_NAMES, type Platform, reachable, taTool,
+} from "./ta";
 import {
   HOST_TIMING, type HostParts, type HostTiming, type Opened, type OperationResult,
   type Reported, RUN_SETTLED, SESSIONS_FULL, type SubmitOptions, THREAD_DROPPED,
@@ -346,10 +354,17 @@ export interface ThreadOptions {
   readonly work?: string;
 }
 
-/** Who a conversation's file changes are by, in the history. */
-export function writerOf(authority: Readonly<AuthorityState> | undefined): string {
+/**
+ * Who a conversation's file changes are by, in the history; with `named`, who it acts as
+ * (a hook's context): `owner`, `client:<id>`, or `none`.
+ */
+export function writerOf(authority: Readonly<AuthorityState> | undefined, named = false):
+    string {
   const client = stampOf(authority)?.client;
-  return client === undefined ? "agent" : `client:${client}`;
+  if (client !== undefined) {
+    return `client:${client}`;
+  }
+  return !named ? "agent" : authority?.by === "owner" ? "owner" : "none";
 }
 
 /** An operation's status, from pi's submission record: pending, or how it settled. */
@@ -416,6 +431,12 @@ export interface AgentParts {
   readonly admission: () => string | null;
   /** The owner's package selection, as policy holds it now (`policy.ts`, `packages`). */
   readonly packages: () => readonly PackageSelection[];
+  /** The hooks Worker (`HOOKS`): packages' remote hooks and code mode's VMs run there. */
+  readonly hooks: () => HooksService | undefined;
+  /** The owner the object is named by. */
+  readonly owner: () => string;
+  /** The owner policy's hook settings and code mode switch, read at each use. */
+  readonly hookPolicy: () => HookSettings & { readonly codemode: boolean };
   /**
    * The refusal of an input joining `turn` (`turn_ended`: it has no row, `Usage.turnLive`),
    * or null while it has one: a read, run in a linked admission's unit.
@@ -492,7 +513,7 @@ export function packageRefusal(extension: Extension): string | undefined {
     return `the ${RESERVED_PREFIX} names are the object's own`;
   }
   const taken = (name: string) => MODEL_TOOLS.includes(name) || PLATFORM_NAMES.includes(name)
-    || name.startsWith(TA_OP);
+    || name.startsWith(TA_OP) || name === CODEMODE_TOOL || name === MODEL_COMPLETE;
   for (const tool of extension.tools ?? []) {
     if (taken(tool.name)) {
       return `a package tool may not take the name ${tool.name}`;
@@ -557,6 +578,8 @@ export class OwnerAgent {
   /** One registry for every Session (pi keeps each Harness subscribed until it closes). */
   readonly #registry = createRegistry();
   #installed: Promise<void> | undefined;
+  /** Whether `ta.codemode` is installed on the registry. */
+  #codemode = false;
   /** The drops in flight, by thread, on the instance: one each at a time. */
   readonly #drops = new Map<string, Promise<void>>();
   /** The pending waits, by the client they are for ("" for the owner's), on the instance. */
@@ -577,6 +600,18 @@ export class OwnerAgent {
       readable: async (input, context) => parts.authority.refusal(
         await input.read.snapshot(this.authority, input.conversationId, context),
         ["read_files"]) === undefined,
+      owner: parts.owner,
+      remote: (bundle, hooks) => hookExtension({
+        service: parts.hooks, owner: parts.owner, settings: parts.hookPolicy,
+        notice: (type, detail) => {
+          parts.write(() => parts.notices.once(type, detail, Date.now() / 1000))
+            .catch(() => console.error("a hook's notice could not be kept"));
+        },
+        authority: async (api, context) =>
+          writerOf(await api.snapshot(this.authority, api.conversationId, context)
+                   ?? { by: "none" }, true),
+      }, bundle, hooks),
+      uninstall: (name) => this.#registry.uninstall({ name }),
     });
     this.host = new ThreadHost({
       open: (thread, onWake) => this.#open(thread, onWake),
@@ -689,9 +724,24 @@ export class OwnerAgent {
     return this.resources.expand(text);
   }
 
-  /** The owner's policy was written: its package selection may have moved. */
+  /** The owner's policy was written: its package selection and code mode may have moved. */
   policyChanged(): void {
     this.resources.selectionChanged();
+    if (this.#installed !== undefined) {
+      this.#codemodeSwitch();
+    }
+  }
+
+  /** `ta.codemode` installed while the owner's policy turns code mode on, else removed. */
+  #codemodeSwitch(): void {
+    const on = this.#parts.hookPolicy().codemode;
+    if (on && !this.#codemode) {
+      this.#registry.install(codemodeExtension({ service: this.#parts.hooks,
+                                                 owner: this.#parts.owner }));
+    } else if (!on && this.#codemode) {
+      this.#registry.uninstall({ name: CODEMODE_EXTENSION });
+    }
+    this.#codemode = on;
   }
 
   /** The model source's compaction settings, when it has any. */
@@ -736,6 +786,8 @@ export class OwnerAgent {
     }));
     this.#registry.install(defineExtension({ name: SCHEDULED_EXTENSION,
                                              tasks: [this.#scheduled] }));
+    this.#codemode = false;
+    this.#codemodeSwitch();
     // The skills section, built from the owner's files and installed in place here; its
     // rebuilds install it again under its name, where it is.
     await this.resources.ready();

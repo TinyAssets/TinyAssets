@@ -1,0 +1,33 @@
+// The hooks Worker (ADR-032 §4; agent research §6.4; pi audit F8): owners' executable hooks,
+// each owner's bundle loaded by the Worker Loader in that owner's `HookRunner`, and pi's
+// code mode VMs in `CodemodeSandbox`. Not deployed: no workflow deploys platform/.
+// It binds its Worker Loader and the namespaces of its own two classes (no `script_name`),
+// and nothing else: no `OWNER`, no thread store, no bucket, no other service, so no hook
+// and no script reaches an owner's object, ledger or policy. It serves no URL (no route,
+// no workers.dev or preview URL): only the owner Worker's `HOOKS` service binding reaches
+// it (guards/config.test.ts).
+// - compatibility_date: the owner Worker's, which every hook bundle runs at too.
+// - disable_ctx_exports: no way to the Worker's own namespaces but its bindings.
+// - limits.cpu_ms: room above code mode's interrupt budget (about 10 s of a tight loop),
+//   since a script that reaches it resets the object instead of failing alone.
+// Both classes are SQLite-backed and never use their storage.
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "tinyassets-hooks",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-23",
+  "compatibility_flags": ["disable_ctx_exports"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "limits": { "cpu_ms": 30000 },
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "RUNNER", "class_name": "HookRunner" },
+      { "name": "CODEMODE", "class_name": "CodemodeSandbox" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["HookRunner", "CodemodeSandbox"] }
+  ]
+}

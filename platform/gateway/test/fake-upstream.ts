@@ -18,7 +18,9 @@
  * - `cmd:ta-<name>`: the same through the owner's `ta` tool, a call of `<name>` with no
  *   arguments; `cmd:ta-model` asks `ta`'s nested model call `cmd:echo`, and
  *   `cmd:ta-model-<rest>` asks it `cmd:<rest>`, each with a system prompt and an output
- *   cap (`TA_SYSTEM`, `TA_MAX_TOKENS`).
+ *   cap (`TA_SYSTEM`, `TA_MAX_TOKENS`). `cmd:ta-codemode` runs a code mode script through
+ *   `ta` whose `tools.model_complete` asks the owner's model source `cmd:echo`
+ *   (`cmd:ta-codemode-<rest>`: `cmd:<rest>`), and shows the answer (`codemodeScript`).
  * - `cmd:delegate-<rest>`: a call of the owner's `ta` capability `agent:delegate`, its task
  *   `cmd:<rest>`, which the subagent's own request then asks (Anthropic).
  * - `cmd:drip`: `DRIP` text deltas (`d0 ` to `d11 `), `DRIP_MS` apart, then the finish:
@@ -49,6 +51,13 @@ const overflowed = new Set<string>();
 /** What `cmd:ta-model` hands `ta`'s nested model call besides its question. */
 const TA_SYSTEM = "answer in one word";
 const TA_MAX_TOKENS = 77;
+
+/** A code mode script that asks the owner's model source `cmd:<asked>` and shows its text. */
+function codemodeScript(asked: string): string {
+  return "try { const answer = await tools.model_complete({ messages: [{ role: 'user', " +
+    `text: 'cmd:${asked}' }] });\ntext('asked: ' + answer.text); } ` +
+    "catch (error) { text('refused: ' + error.message); }";
+}
 const evil: unknown[] = [];
 const USAGE = { input: 11, output: 7 };
 const DRIP = 12;
@@ -468,7 +477,8 @@ export default {
           op: "call", name: called,
           arguments: called === "model" ? {
             messages: [{ role: "user", text: `cmd:${through[2] ?? "echo"}` }],
-            system: TA_SYSTEM, max_tokens: TA_MAX_TOKENS } : {},
+            system: TA_SYSTEM, max_tokens: TA_MAX_TOKENS }
+            : called === "codemode" ? { code: codemodeScript(through[2] ?? "echo") } : {},
         });
       }
       return model(request, anthropicFormat());
