@@ -16,7 +16,7 @@ import type { ModelInfo } from "../src/connections";
 import { EGRESS_LIMITS, type EgressOpened, LOST_AFTER_S } from "../src/egress";
 import { RUN_DEADLINE_S } from "../src/network";
 import type { Binding, OpenedLease } from "../src/owner-do";
-import { NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY, SYNC_FENCED } from "../src/owner-do";
+import { egressPrice, NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY, SYNC_FENCED } from "../src/owner-do";
 import { SPEND_KEPT } from "../src/schema";
 import { priced } from "../src/usage";
 import {
@@ -470,6 +470,30 @@ describe("the spend caps", () => {
     expect((await charges(r)).at(-1)).toMatchObject({ state: "refused", charge: null, rule });
   });
 
+  it("price each model to its own window and cap, at its dearest rates", () => {
+    const rates = { input: 1, output: 10, cacheRead: 0, cacheWrite: 2 };
+    const wide = { cost: rates, contextWindow: 1_000_000, maxTokens: 1_000 } as ModelInfo;
+    const dear = { cost: { ...rates, output: 20, cacheWrite: 3 }, contextWindow: 100_000,
+                   maxTokens: 50_000 } as ModelInfo;
+    // The wide model's million input tokens at 2, its thousand output at 10; the dear one's
+    // hundred thousand at 3 and its 50,000 at 20: the dearer of the two.
+    expect(egressPrice([wide, dear], 1_000_000, 50_000))
+      .toBe(Math.max(1_000_000 * 2 + 1_000 * 10, 100_000 * 3 + 50_000 * 20));
+  });
+
+  it("refuse a call the caps leave fewer than the floor's output tokens", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    const [{ models }] = (await r.sql("SELECT models FROM connections WHERE id = ?",
+                                      connection)) as [{ models: string }];
+    const window = Math.max(...(JSON.parse(models) as ModelInfo[])
+      .map((model) => model.contextWindow));
+    // Room for the input and 500 output tokens: under the 1,024 a call is worth.
+    const lease = await cappedLeased(r, { ...ROOMY, turn_tokens: window + 500 });
+    expect(await refusedWith(r, lease.as(), connection)).toBe("egress_spend_refused");
+    expect((await charges(r)).at(-1)).toMatchObject({ rule: "run_tokens" });
+  });
+
   it("hold nothing of the spend table: an owner's purchase threshold is not a model cap",
      async () => {
     const r = await gated();
@@ -551,10 +575,16 @@ describe("the spend caps", () => {
 
   it("share the source's day and month with the loop's calls, in both directions",
      async () => {
+    // One whole call's charge, as a fresh owner's first call holds it.
+    const probe = await gated();
+    const probed = await probe.connect("sk-good");
+    await admitted(probe, await leased(probe), probed);
+    const [{ est_cost: one }] = (await charges(probe)) as [{ est_cost: number }];
     const r = await gated();
     const connection = await r.connect("sk-good");
+    // Room for that call, but not once the loop has spent as much.
     const lease = await cappedLeased(r, { ...ROOMY,
-                                          sources: { anthropic: { daily_cost: 1_000_000 } } });
+                                          sources: { anthropic: { daily_cost: one + 500_000 } } });
     // A loop call on the same source, settled, as `usage.ts` records one.
     const day = new Date().toISOString().slice(0, 10);
     await r.sql("INSERT INTO model_turns (turn, requests, tokens, cost, last_at, thread, owners) " +
@@ -562,11 +592,11 @@ describe("the spend caps", () => {
     await r.sql("INSERT INTO model_reservations (id, turn, connection_id, source, model, state, " +
                   "max_output_tokens, est_tokens, est_cost, tokens, cost, policy_generation, " +
                   "day, month, created_at, settled_at) VALUES ('r' || lower(hex(randomblob(16))), " +
-                  "'s:t', ?, 'anthropic', 'claude', 'reserved', 1000, 1000, 999000, NULL, NULL, " +
-                  "2, ?, ?, ?, NULL)", connection, day, day.slice(0, 7), Date.now() / 1000);
+                  "'s:t', ?, 'anthropic', 'model-x', 'reserved', 1000, 1000, ?, NULL, NULL, " +
+                  "2, ?, ?, ?, NULL)", connection, one, day, day.slice(0, 7), Date.now() / 1000);
     await r.sql("UPDATE model_reservations SET state = 'dispatched' WHERE state = 'reserved'");
     await r.sql("UPDATE model_reservations SET state = 'succeeded', tokens = 900, " +
-                  "cost = 999000, settled_at = ? WHERE state = 'dispatched'", Date.now() / 1000);
+                  "cost = ?, settled_at = ? WHERE state = 'dispatched'", one, Date.now() / 1000);
     // The loop's spend leaves the source's day no room for the sandbox's call.
     expect(await refusedWith(r, lease.as(), connection)).toBe("egress_spend_refused");
     expect((await charges(r)).at(-1)).toMatchObject({ rule: "source_daily_cost" });
@@ -575,8 +605,8 @@ describe("the spend caps", () => {
     await r.in((instance) => instance.sandbox.networkApplied({ ...held(lease), generation: 1 }));
     const opened = await admitted(r, lease, connection);
     await r.stub.egressSettle(lease.as(), settle(opened.reservation));
-    expect(await sourceSpend(r)).toEqual([{ p: "d", cost: 999_000 + 4200 },
-                                          { p: "m", cost: 999_000 + 4200 }]);
+    expect(await sourceSpend(r)).toEqual([{ p: "d", cost: one + 4200 },
+                                          { p: "m", cost: one + 4200 }]);
   });
 
   it("count a run as its lease and epoch: a new lease's run starts afresh, the old one's " +

@@ -177,6 +177,14 @@ describe("a sandbox token", () => {
     }
     expect(verifyToken(KEY, "sync", minted.token)).toBeNull();
     expect(verifyToken(otherKey, "egress", minted.token)).toBeNull();
+    // Another spelling of the same MAC bytes (the last character's two spare bits set).
+    const last = mac.at(-1)!;
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const respelled = alphabet[alphabet.indexOf(last) ^ 1]!;
+    expect(Buffer.from(`${mac.slice(0, -1)}${respelled}`, "base64url"))
+      .toEqual(Buffer.from(mac, "base64url"));
+    expect(verifyToken(KEY, "egress", `${routing}.${expires}.${secret}.${mac.slice(0, -1)}${
+      respelled}`)).toBeNull();
     // A forger who picks a routing part, an expiry and a secret still needs the key's MAC.
     const forged = mintToken(otherKey, "egress", "user_02XY", EXPIRES).token;
     expect(verifyToken(KEY, "egress", forged)).toBeNull();

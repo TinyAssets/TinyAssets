@@ -9,7 +9,7 @@ import { calculateCost } from "@earendil-works/pi-ai/models";
 import { apiRules, manyChoices, paidTool } from "../src/api-rules";
 import { builtinCatalog } from "../src/catalog";
 import { meteredCall } from "../src/credential";
-import { clamped, learnMeter, meteredModel, meteredRecord, meteredUsage } from "../src/meter";
+import { clamped, describes, learnMeter, meteredModel, meteredRecord, meteredUsage } from "../src/meter";
 import { ANTHROPIC, GOOGLE, OPENAI } from "./support";
 
 const GROQ = Object.freeze({
@@ -205,6 +205,17 @@ describe("the reviewer's escapes, closed (review round 2)", () => {
                                         streamOf(completion(dear!.id, BIG)));
     expect(fallback!.cost).toBeCloseTo(calculateCost(meteredRecord(catalog, OPENROUTER,
                                                                    dear!.id)!, usage).total, 9);
+  });
+
+  it("meters an API only while its rules describe pi-ai's own call", () => {
+    const rules = apiRules("openai-completions")!;
+    const pi = { model: "m", stream: true, stream_options: { include_usage: true },
+                 max_completion_tokens: 4321 };
+    expect(describes(rules, ["max_completion_tokens"], pi)).toBe(true);
+    expect(describes(rules, ["max_tokens"], pi)).toBe(true);
+    // pi-ai stopped asking for usage, or caps the output in a field the rules do not clamp.
+    expect(describes(rules, ["max_completion_tokens"], { ...pi, stream_options: {} })).toBe(false);
+    expect(describes(rules, ["max_output"], pi)).toBe(false);
   });
 
   it("clamps every output-cap alias the API reads, and refuses several choices", async () => {

@@ -32,7 +32,7 @@
 import type { Api, AssistantMessageEvent, Context, FetchFunction, Model } from "@earendil-works/pi-ai";
 import { calculateCost, createModels } from "@earendil-works/pi-ai/models";
 
-import { apiRules, valueAt } from "./api-rules";
+import { type ApiRules, apiRules, valueAt } from "./api-rules";
 
 import { type Catalog, NO_AMBIENT, providerFor } from "./catalog";
 import type { Meter, Upstream } from "./credential";
@@ -144,12 +144,8 @@ async function learned(catalog: Catalog, upstream: Upstream, apiKey: string,
   if (output.length !== 1 || segments.length > 2 || (segments.length === 1 && named.length !== 1)) {
     return null;
   }
-  // The API's rules must describe pi-ai's own call: its output cap among the aliases, and
-  // every usage-report field the gateway sets present in it, at the same value.
   const rules = apiRules(upstream.api);
-  if (rules === null
-      || !rules.outputs.some((path) => path.join("\0") === output[0]!.join("\0"))
-      || rules.usage.some(([path, value]) => valueAt(body, path) !== value)) {
+  if (rules === null || !describes(rules, output[0]!, body)) {
     return null;
   }
   return Object.freeze({
@@ -158,6 +154,16 @@ async function learned(catalog: Catalog, upstream: Upstream, apiKey: string,
     model_field: segments.length === 2 ? null : Object.freeze(named[0]!),
     output_field: Object.freeze(output[0]!),
   });
+}
+
+/**
+ * Whether an API's rules describe pi-ai's own call (`output`, the cap it set; `body`, all
+ * it sent): its output cap among the aliases, and every usage-report field the gateway
+ * sets present in it, at the same value.
+ */
+export function describes(rules: ApiRules, output: readonly string[], body: unknown): boolean {
+  return rules.outputs.some((path) => path.join("\0") === output.join("\0"))
+    && rules.usage.every(([path, value]) => valueAt(body, path) === value);
 }
 
 /** The model id `path` names under `meter`, or null when it is not the meter's call. */

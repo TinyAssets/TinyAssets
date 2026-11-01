@@ -858,6 +858,17 @@ function dearest(model: ModelInfo): ModelInfo {
                                  ({ ...tier, input: top(tier) })) }) } };
 }
 
+/**
+ * The most µ$ a sandbox call of `input` and `output` tokens can cost on any of `models`,
+ * each model's tokens at most its own context window and output cap, at its dearest rates.
+ */
+export function egressPrice(models: readonly ModelInfo[], input: number, output: number):
+    number {
+  return Math.max(...models.map((model) => priced(dearest(model),
+                                                  Math.min(input, model.contextWindow),
+                                                  Math.min(output, model.maxTokens))));
+}
+
 /** What opening the sandbox's lease hands 8b, once: its two tokens and its setup. */
 export interface OpenedLease {
   /** For E2B's transform on `egress.tinyassets.io` only: never in the VM. */
@@ -1010,9 +1021,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       // The call's model is unknown until the gateway reads the body: priced at the most
       // any of the connection's models charges, input at its dearest of uncached,
       // cache-read and cache-write rates, by pi-ai's `calculateCost` (`priced`).
-      price: (models, input, output) => Math.max(...(models as readonly ModelInfo[])
-        .map((model) => priced(dearest(model), Math.min(input, model.contextWindow),
-                               Math.min(output, model.maxTokens)))),
+      price: (models, input, output) => egressPrice(models as readonly ModelInfo[], input,
+                                                    output),
       pruned: (now) => this.#usage.spendPruned(now),
     });
     this.#usage = new ModelUsage(storage, () => {
