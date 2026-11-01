@@ -1364,10 +1364,11 @@ account and no deploy.
   Loader under `<owner>:<bundle id>:shim<n>` (`compatibilityDate` the owner Worker's,
   `globalOutbound: null`, `env: {}`, `limits {cpuMs: 1,000 ceiling, subRequests: 0}`, each
   call asking the policy's `cpu_ms`), our shim dispatching the point to the module's export
-  with JSON in and out, `need_code` and the resend, its own deadline. `Hooks.codemode(name)`
-  hands out pi's `CodemodeRemote` over its `CodemodeSandbox` (a
-  `CodemodeSandboxDurableObject` subclass with its interrupt budget and memory, served by
-  pi's `serveCodemodeRemote`). Config guard: its loader and its own two classes only, no
+  with JSON in and out, `need_code` and the resend, its own deadline, a dropped call's
+  stub disposed and at most 16 pending; its prelude freezes the shared intrinsics before
+  any package's module runs. `Hooks.codemodeExecute(name, request, exchange)` runs one
+  execution in its `CodemodeSandbox` (a `CodemodeSandboxDurableObject` subclass with its
+  interrupt budget and memory, served by pi's `serveCodemodeRemote`), handing out no stub. Config guard: its loader and its own two classes only, no
   `OWNER`, no storage binding, no route, no workers.dev; isolation guard over its source.
   P11's local part passed (`exchange` an RPC function over the `HOOKS` binding, a nested
   call's round trip, the interrupt budget a `timeout`).
@@ -1377,11 +1378,17 @@ account and no deploy.
   1 MiB together, one bundle per owner, its id `<owner>/<sha256>`); `pi.extensions` and
   every other in-process code still `package_executable`. Failure rules: `beforeTool`
   blocks, `afterTool` fails closed redacted, `onYield` continues nothing, `beforeCompact`
-  leaves pi's summary, observe-only points report; each failure a `hook_failed` notice;
+  leaves pi's summary, observe-only points report (250 ms); every wrapper total, a
+  memo's read or store failing by its point's rule; a decision past 256 KiB `invalid`;
+  each failure a `hook_failed` notice;
   each decision memoized (`ta.hook/<ext>/<point>/<key>`), so a rerun asks no hook; the
   deadline `inTime(HOOKS.run(...), deadline_ms + 250)`. Code mode is `ta call codemode`,
-  tools-only, its scripts' tools held to the caller's authority by the gate, a script's own
-  `tools.codemode` refused, `models.complete` reserved and charged to the turn. Policy: the
+  tools-only, needing `run_code` (the owner's; a client's only where a scoped grant names
+  it), its scripts' tools held to the caller's authority by the gate, a script's own
+  `tools.codemode` refused, its model calls `tools.model_complete` (tools-only,
+  replay-unsafe: through the gate and the packages' hooks, reserved and charged to the
+  turn, in `pi.usage`, never twice). Review round 1 (REQUEST CHANGES), all taken: H-1,
+  M-1, M-2, M-3 (owed to H2, below), L-1 to L-6. Policy: the
   `hooks` table (`timeout_ms` 100 to 10,000, default 2,000; `cpu_ms` 50 to 1,000, default
   50; `codemode`, off by default). No owner table added (the owner-bound guard's worst case
   unchanged, 46.0%): memos live in pi's thread stores.
@@ -1390,7 +1397,14 @@ account and no deploy.
   script past its interrupt budget against the Worker's `cpu_ms`), the blocking isolation
   (10 s of compute in a hook or a script against the owner object's latency), and the
   Dynamic Worker count per day (one per owner per active day expected), with module state
-  across isolates of one loader name.
+  across isolates of one loader name. And (review round 1): another owner's hook latency
+  while one owner's script computes about 10 s in the same Worker (M-3; if it blocks, H2's
+  design takes it: separate Workers for hooks and code mode, or a sandbox class per shard);
+  an `afterTool` memo near the 256 KiB bound, and a decision over 2 MB refused, in real
+  SQLite (`SQLITE_TOOBIG`); the lifetime of what `codemodeExecute` and the dropped hook
+  calls leave in the owner's and the runner's invocations; and whether `exchange` calls
+  count as subrequests of the owner object or the hooks Worker (which sets no
+  `limits.subrequests`).
 - [ ] The pi upgrade, within a slice of pi's release: `adopt` in `RemoteStorage`, the tee
   deleted, `persistWithinMs`, `maxTurns` from policy, `onReport`, parking code out of the
   host, the new watch API, the schema re-pinned.

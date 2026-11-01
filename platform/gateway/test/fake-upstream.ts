@@ -19,7 +19,7 @@
  *   arguments; `cmd:ta-model` asks `ta`'s nested model call `cmd:echo`, and
  *   `cmd:ta-model-<rest>` asks it `cmd:<rest>`, each with a system prompt and an output
  *   cap (`TA_SYSTEM`, `TA_MAX_TOKENS`). `cmd:ta-codemode` runs a code mode script through
- *   `ta` whose `models.complete` asks the owner's model source `cmd:echo`
+ *   `ta` whose `tools.model_complete` asks the owner's model source `cmd:echo`
  *   (`cmd:ta-codemode-<rest>`: `cmd:<rest>`), and shows the answer (`codemodeScript`).
  * - `cmd:delegate-<rest>`: a call of the owner's `ta` capability `agent:delegate`, its task
  *   `cmd:<rest>`, which the subagent's own request then asks (Anthropic).
@@ -54,8 +54,9 @@ const TA_MAX_TOKENS = 77;
 
 /** A code mode script that asks the owner's model source `cmd:<asked>` and shows its text. */
 function codemodeScript(asked: string): string {
-  return "const answer = await models.complete({ messages: [{ role: 'user', " +
-    `text: 'cmd:${asked}' }] });\ntext('asked: ' + answer.text);`;
+  return "try { const answer = await tools.model_complete({ messages: [{ role: 'user', " +
+    `text: 'cmd:${asked}' }] });\ntext('asked: ' + answer.text); } ` +
+    "catch (error) { text('refused: ' + error.message); }";
 }
 const evil: unknown[] = [];
 const USAGE = { input: 11, output: 7 };

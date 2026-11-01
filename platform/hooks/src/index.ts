@@ -10,12 +10,13 @@
  *
  * - `run(request)`: one hook call (`protocol.ts`), at the owner's own `HookRunner`
  *   (`getByName(owner)`), which loads the owner's bundle and calls it (`runner.ts`).
- * - `codemode(name)`: the `Codemode` remote of one code mode execution, whose
- *   `execute(request, exchange)` is pi's `CodemodeRemote`, served by the
- *   `CodemodeSandbox` instance of that name (`codemode.ts`); the owner names one per
- *   execution, so scripts never share a thread.
+ * - `codemodeExecute(name, request, exchange)`: one code mode execution, pi's
+ *   `CodemodeRemote.execute`, run by the `CodemodeSandbox` instance of that name
+ *   (`codemode.ts`); the owner names one per execution, so scripts never share a thread.
+ *   It hands out no stub: the call resolves when the VM has stopped, and nothing it made
+ *   outlives it.
  */
-import { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
+import { WorkerEntrypoint } from "cloudflare:workers";
 import type {
   CodemodeRemoteExchange, CodemodeRemoteRequest,
 } from "@earendil-works/pi-codemode/portable";
@@ -32,19 +33,8 @@ export interface HooksEnv extends RunnerEnv {
   readonly CODEMODE: DurableObjectNamespace<CodemodeSandbox>;
 }
 
-/** One code mode execution's remote: pi's `CodemodeRemote`, over its sandbox object. */
-export class Codemode extends RpcTarget {
-  readonly #sandbox: DurableObjectStub<CodemodeSandbox>;
-
-  constructor(sandbox: DurableObjectStub<CodemodeSandbox>) {
-    super();
-    this.#sandbox = sandbox;
-  }
-
-  /** Run one script's VM; every tool call goes back through `exchange`. Never rejects. */
-  execute(request: CodemodeRemoteRequest, exchange: CodemodeRemoteExchange): Promise<void> {
-    return this.#sandbox.execute(request, exchange);
-  }
+function named(value: unknown): value is string {
+  return typeof value === "string" && value !== "" && value.length <= NAME_MAX;
 }
 
 export class Hooks extends WorkerEntrypoint<HooksEnv> {
@@ -52,18 +42,22 @@ export class Hooks extends WorkerEntrypoint<HooksEnv> {
   async run(request: unknown): Promise<HookReply> {
     const owner = typeof request === "object" && request !== null
       ? (request as Record<string, unknown>)["owner"] : undefined;
-    if (typeof owner !== "string" || owner === "" || owner.length > NAME_MAX) {
+    if (!named(owner)) {
       return { ok: false, error: "invalid", message: "a hook request names its owner" };
     }
     return this.env.RUNNER.getByName(owner).run(request);
   }
 
-  /** The remote of one code mode execution, named by the owner. */
-  codemode(name: string): Codemode {
-    if (typeof name !== "string" || name === "" || name.length > NAME_MAX) {
+  /**
+   * One code mode execution, named by the owner: the VM runs in that sandbox object and
+   * every tool call goes back through `exchange`. Resolves once the VM has stopped.
+   */
+  async codemodeExecute(name: string, request: CodemodeRemoteRequest,
+                        exchange: CodemodeRemoteExchange): Promise<void> {
+    if (!named(name)) {
       throw new Error("a code mode execution is named");
     }
-    return new Codemode(this.env.CODEMODE.getByName(name));
+    await this.env.CODEMODE.getByName(name).execute(request, exchange);
   }
 }
 

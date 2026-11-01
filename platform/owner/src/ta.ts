@@ -54,13 +54,15 @@
  *
  * Code mode (`codemode`, pi's, H1, when the owner's policy turns it on) is a tool `ta`
  * reaches like any other, registered callable by tools only, and listed to a conversation
- * whose authority stands (its need, `TOOL_CAPABILITIES`): its script's `tools.*` are each a
- * nested call the gate holds to the caller's authority, and its `models.*` reach the
- * object's model source, `models.complete` (`modelGlobal`) as this `model` capability
- * does, reserved and charged to the turn. `ta` makes its nested call under `CODEMODE_KEY`,
- * the only key the gate lets a `codemode` call run under, so a script's own
- * `tools.codemode` is refused. Code mode's internal tools (`pi.codemode.*`) are its own:
- * `ta` neither lists nor calls them.
+ * whose authority holds its need (`run_code`, `TOOL_CAPABILITIES`): its script's `tools.*`
+ * are each a nested call the gate holds to the caller's authority. A script asks the
+ * object's model source with `tools.model_complete` (`modelCompleteTool`), this `model`
+ * capability's call as a tools-only tool, `replay: "unsafe"`, so it passes the gate and the
+ * packages' hooks, is reserved and charged to the turn, counts in `pi.usage`, and a rerun
+ * after a restart answers `interrupted`, never charging twice. `ta` makes its nested call
+ * under `CODEMODE_KEY`, the only key the gate lets a `codemode` call run under, so a
+ * script's own `tools.codemode` is refused. Code mode's own tools (`pi.codemode.*`, and
+ * `model_complete`) are its scripts': `ta` neither lists nor calls them.
  *
  * `ta` is `callers: ["model"]` (no tool reaches it, so a nested call never nests `ta`) and
  * `replay: "safe"`, with its own rule for a rerun after a restart, so only what may run
@@ -85,7 +87,6 @@ import {
   defineTool, type JsonObject, ProviderDoc, type ToolExecutionApi, type ToolExecutionResult,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
-import type { CodemodeGlobal } from "@earendil-works/pi-durable/codemode";
 
 import {
   type Authority, type AuthorityState, CODEMODE_KEY, CODEMODE_TOOL, type Need, stampOf,
@@ -139,8 +140,8 @@ export const DELEGATE_TASK_MAX = 32_000;
 export const DELEGATE = "agent:delegate";
 /** Code mode's internal tools' prefix (pi's `CODEMODE_INTERNAL_PREFIX`): never `ta`'s. */
 export const CODEMODE_INTERNAL = "pi.codemode.";
-/** The code mode global that asks the object's model source, as `model` does. */
-export const MODEL_GLOBAL = "models.complete";
+/** The tool a code mode script asks the object's model source with, as `model` does. */
+export const MODEL_COMPLETE = "model_complete";
 
 /** What the object's platform capabilities run on: its own modules, read or in a unit. */
 export interface Platform {
@@ -399,27 +400,31 @@ async function modelCall(args: Record<string, unknown>, scope: Scope):
 }
 
 /**
- * Code mode's `models.complete(request)`: the `model` capability's call, from a script, on
- * the code mode call's own conversation and causal chain, so it is reserved, dispatched and
- * settled as any of the turn's calls, and refused as they are. Its value is what `model`
- * answers. Its result is journaled by code mode as a global's: a crash after the answer and
- * before the journal asks again on the rerun, reserved and charged as its own call.
+ * `model_complete`, a code mode script's `tools.model_complete(request)`: the `model`
+ * capability's call as a tools-only tool, on the script's own conversation and causal chain,
+ * so it is reserved, dispatched and settled as any of the turn's calls, and refused as they
+ * are. It is a nested call of code mode's (pi journals it by its key), `replay: "unsafe"`,
+ * so a rerun after a restart answers `interrupted` and never asks, or charges, twice; its
+ * usage is on its result, which pi counts in `pi.usage`. Its value is what `model` answers.
  */
-export function modelGlobal(): CodemodeGlobal {
-  const parameters = modelParameters();
-  return {
-    name: MODEL_GLOBAL,
+export function modelCompleteTool(): ToolRegistration {
+  return defineTool({
+    name: MODEL_COMPLETE,
+    description: "Ask a connected model, within this turn's budget: {messages: [{role, " +
+      "text}], system?, model?, max_tokens?}; resolves to {text, model, stop_reason, usage}. " +
+      "The default model is the owner's strongest connected one (auto).",
+    parameters: modelParameters(),
+    structuredOutputSchema: Type.Unknown(),
+    callers: ["tools"],
+    replay: "unsafe",
     execute: async (args, api, context) => {
-      const checked = validateToolArguments(
-        { name: MODEL_GLOBAL, description: MODEL_GLOBAL, parameters },
-        { type: "toolCall", id: api.callId, name: MODEL_GLOBAL,
-          arguments: (plain(args) ? args : {}) as JsonObject }) as Record<string, unknown>;
-      const { value } = await modelCall(checked, {
+      const { value, usage } = await modelCall(args as Record<string, unknown>, {
         state: undefined, api, context,
         write: () => { throw new Error(READ_WRITES); } });
-      return value as JsonObject;
+      return { output: [{ type: "text", text: JSON.stringify(value) }],
+               structuredOutput: value as JsonObject, usage };
     },
-  };
+  });
 }
 
 /** A request `ta` takes: a catalog page, or a call. */
@@ -596,8 +601,8 @@ async function tools(api: ToolExecutionApi, context: Context):
   const deferred = new Set(agent.deferred.map((tool) => tool.name));
   const found = new Map<string, { tool: ToolRegistration; deferred: boolean }>();
   for (const tool of agent.callable) {
-    if (tool.name.startsWith(CODEMODE_INTERNAL)) {
-      continue;  // code mode's own, reached only by its scripts' `models.*`
+    if (tool.name.startsWith(CODEMODE_INTERNAL) || tool.name === MODEL_COMPLETE) {
+      continue;  // code mode's own, reached only by its scripts
     }
     if (reachable(tool) && (PLATFORM_NAMES.includes(tool.name) || tool.name.startsWith(TA_OP))) {
       // A package may not take one (`packageRefusal`); one of the object's own that does is

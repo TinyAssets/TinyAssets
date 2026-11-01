@@ -133,7 +133,8 @@ import type { ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-dura
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 
 import {
-  agentId, type Authority, AUTHORITY_RULE, authorityOf, type AuthorityState, MODEL_TOOLS,
+  agentId, type Authority, AUTHORITY_RULE, authorityOf, type AuthorityState, CODEMODE_TOOL,
+  MODEL_TOOLS,
   type Need, NO_CONVERSATION, offersFive, refusalCode, type Stamped, stamped, stampOf, TA_OP,
   TOOL_SURFACE,
 } from "./authority";
@@ -156,7 +157,9 @@ import {
   createScheduled, type Delivered, requestOf, SCHEDULED, type ScheduledInput,
   type ScheduledTask, scheduledTask, standing, type Standing, WORK_ENTRY,
 } from "./scheduled";
-import { type Delegation, PLATFORM_NAMES, type Platform, reachable, taTool } from "./ta";
+import {
+  type Delegation, MODEL_COMPLETE, PLATFORM_NAMES, type Platform, reachable, taTool,
+} from "./ta";
 import {
   HOST_TIMING, type HostParts, type HostTiming, type Opened, type OperationResult,
   type Reported, RUN_SETTLED, SESSIONS_FULL, type SubmitOptions, THREAD_DROPPED,
@@ -510,7 +513,7 @@ export function packageRefusal(extension: Extension): string | undefined {
     return `the ${RESERVED_PREFIX} names are the object's own`;
   }
   const taken = (name: string) => MODEL_TOOLS.includes(name) || PLATFORM_NAMES.includes(name)
-    || name.startsWith(TA_OP);
+    || name.startsWith(TA_OP) || name === CODEMODE_TOOL || name === MODEL_COMPLETE;
   for (const tool of extension.tools ?? []) {
     if (taken(tool.name)) {
       return `a package tool may not take the name ${tool.name}`;

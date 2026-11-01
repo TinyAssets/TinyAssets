@@ -13,7 +13,9 @@
  * its doorbell subscription and the collections), `propose_policy` (an agent's policy
  * proposal), `read_files` and `write_files` (the file doors), and `converse` and
  * `run_graph` (the agent's doors: a message to an agent's thread, and a launch of an
- * agent's run, `agentSubmit` and `agentRun`, as the Python's REST scopes named them).
+ * agent's run, `agentSubmit` and `agentRun`, as the Python's REST scopes named them), and
+ * `run_code` (the agent's code mode, H1), which a full grant does not hold: a client holds
+ * it only where a scoped grant names it (`EXPLICIT`, `authority.ts`).
  *
  * Enforced here now:
  * - Every call from an outside client is admitted, in the object that holds its grant,
@@ -84,7 +86,7 @@ export const OUTSIDE_MODES: readonly string[] = Object.freeze(["full", "scoped",
 /** The capabilities a scoped grant's triples name at the object's doors. */
 export const CAPABILITIES = Object.freeze(
   ["read_graph", "write_graph", "propose_policy", "read_files", "write_files", "converse",
-   "run_graph"] as const);
+   "run_graph", "run_code"] as const);
 export type Capability = (typeof CAPABILITIES)[number];
 export const OUTSIDE_SOURCES: readonly string[] = Object.freeze(["mcp", "api_key"]);
 /** Clients one owner forget names at most. */

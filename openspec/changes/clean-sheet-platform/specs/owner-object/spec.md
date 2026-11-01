@@ -1242,7 +1242,7 @@ A selected package's `tinyassets.hooks` entries (`{module, points, tools?, timeo
 - **THEN** their bundle ids differ, each naming its owner, and their hooks share no module state
 
 ### Requirement: A hook's failure follows its point's rule
-A `beforeTool` hook that times out, throws, answers out of shape or cannot be reached SHALL block the call; an `afterTool` hook's failure SHALL fail the result closed (an error, the tool's output withheld); an `onYield` failure SHALL continue nothing; a `beforeCompact` failure SHALL leave pi's own summary; an observe-only point's failure SHALL only be reported. Each failure SHALL leave an owner notice (`hook_failed`).
+A `beforeTool` hook that times out, throws, answers out of shape or cannot be reached SHALL block the call; an `afterTool` hook's failure SHALL fail the result closed (an error, the tool's output withheld); an `onYield` failure SHALL continue nothing; a `beforeCompact` failure SHALL leave pi's own summary; an observe-only point's failure SHALL only be reported, its deadline 250 ms. Every wrapper SHALL be total: any error, its memo's read or store included, SHALL be its point's failure and never a throw pi would skip; a decision past 256 KiB of JSON SHALL be `invalid`, so only bounded decisions are memoized. Each failure SHALL leave an owner notice (`hook_failed`).
 
 #### Scenario: A beforeTool hook past its deadline
 - **WHEN** a `beforeTool` hook computes past the policy's `timeout_ms`
@@ -1252,6 +1252,10 @@ A `beforeTool` hook that times out, throws, answers out of shape or cannot be re
 - **WHEN** an `afterTool` hook throws on a read
 - **THEN** the model sees an error result without the file's text
 
+#### Scenario: A redaction whose memo cannot be stored
+- **WHEN** an `afterTool` hook redacts a result and storing its decision fails
+- **THEN** the result fails closed, never the unredacted one
+
 ### Requirement: A hook's decision survives a crash without asking the hook again
 Each wrapper SHALL read pi's `api.memo("ta.hook/<ext>/<point>/<key>")` first and return a decision it finds; otherwise it SHALL call the hook and store the decision, a failure's included, with `api.memo`, returning the durable winner. The key SHALL be the call's id for `beforeTool`, plus a digest of the result for `afterTool`, and a digest of what the point sees for the others.
 
@@ -1260,30 +1264,38 @@ Each wrapper SHALL read pi's `api.memo("ta.hook/<ext>/<point>/<key>")` first and
 - **THEN** the rerun runs the call with the rewritten arguments and the hooks Worker is not called
 
 ### Requirement: The hooks Worker reaches no owner
-The `tinyassets-hooks` Worker SHALL bind its Worker Loader and the namespaces of its own `HookRunner` and `CodemodeSandbox` classes only, serve no URL, and never use its objects' storage; each bundle SHALL load at the owner Worker's compatibility date with `globalOutbound: null`, `env: {}` and `subRequests: 0`. The owner config guard SHALL admit `HOOKS` only to such a Worker.
+The `tinyassets-hooks` Worker SHALL bind its Worker Loader and the namespaces of its own `HookRunner` and `CodemodeSandbox` classes only, serve no URL, and never use its objects' storage; each bundle SHALL load at the owner Worker's compatibility date with `globalOutbound: null`, `env: {}` and `subRequests: 0`, its prelude freezing the shared intrinsics before any package's module runs, and a runner SHALL drop a call past its deadline and keep at most 16 pending. The owner config guard SHALL admit `HOOKS` only to such a Worker. One owner's packages share one isolate, the owner's own trust; the frozen intrinsics keep one package from patching what another's guard relies on.
 
 #### Scenario: A hook that fetches
 - **WHEN** a hook calls `fetch`
 - **THEN** the fetch throws inside the hook
+
+#### Scenario: A package that patches an intrinsic
+- **WHEN** one package's module assigns `Array.prototype.includes` or `globalThis.JSON`
+- **THEN** the assignment is refused, and another package's guard that uses them answers as written
 
 #### Scenario: The hooks Worker gains a binding
 - **WHEN** the hooks Worker's config binds `OWNER`, a bucket or another Worker's class
 - **THEN** the owner config guard refuses the owner's `HOOKS` binding
 
 ### Requirement: Code mode runs through ta, its VM in the hooks Worker
-While the owner's policy turns `hooks.codemode` on, pi's code mode SHALL be installed as `ta.codemode`, its `codemode` tool callable by tools only, reached as `ta call codemode {code}` under its one nested-call key, its VM run by pi's `RemoteCodemodeSandbox` over the `HOOKS` binding's `Codemode`. A script's `tools.*` SHALL be nested calls the early gate holds to the caller's authority; a `codemode` call that is not `ta`'s own (a script's) SHALL be refused; its `models.complete` SHALL be `ta`'s `model` call, reserved and charged to the turn; code mode's internal tools SHALL never be listed or called by `ta`.
+While the owner's policy turns `hooks.codemode` on, pi's code mode SHALL be installed as `ta.codemode`, its `codemode` tool callable by tools only, reached as `ta call codemode {code}` under its one nested-call key and needing `run_code`, which the owner holds and a client holds only where its scoped grant names it, never by a full grant; its VM SHALL run by pi's `RemoteCodemodeSandbox` through the `HOOKS` binding's `codemodeExecute`, which hands out no stub. A script's `tools.*` SHALL be nested calls the early gate holds to the caller's authority; a `codemode` call that is not `ta`'s own (a script's) SHALL be refused and `codemode` left out of the scripts' section; a script SHALL ask the object's model source only through `tools.model_complete`, a tools-only, replay-unsafe tool running `ta`'s `model` call, so it passes the gate and the packages' hooks, is reserved within and charged to the turn, counts in `pi.usage`, and is never asked twice; code mode's own tools SHALL never be listed or called by `ta`.
 
 #### Scenario: A scoped client's script
-- **WHEN** a client scoped to `read_files` runs a script that reads, runs bash and writes
+- **WHEN** a client scoped to `read_files` and `run_code` runs a script that reads, runs bash and writes
 - **THEN** the read returns the file, and the bash and the write are refused with their fixed reasons
+
+#### Scenario: A client without run_code
+- **WHEN** a client scoped to `read_files`, or one with a full grant, calls `codemode`
+- **THEN** the call is refused and no script runs
 
 #### Scenario: A script that starts a script
 - **WHEN** a script calls `tools.codemode`
 - **THEN** that call is refused and no inner script runs
 
 #### Scenario: A script's model call
-- **WHEN** a script calls `models.complete` through the gateway
-- **THEN** the call is reserved and settled on the run's own turn
+- **WHEN** a script calls `tools.model_complete` through the gateway
+- **THEN** the call is reserved and settled on the run's own turn, refused past the turn's caps
 
 ### Requirement: A subagent is a conversation its delegation owns
 `ta`'s `agent:delegate {agent?, task}` SHALL make its child in its call's own commit, owned by the call's task, found again on a rerun by pi's ownership index, configured as the named agent (its `AGENTS.md`) or as the caller, holding the caller's authority and the five model tools through `conversationCreated`; submit `task` as the child's one input under the call's context, with request id `subagent:<task>`, so it joins the caller's turn; and wait for its answer. Aborting the call SHALL abort the child, the caller SHALL be idle only once the child is, and a revoke, a suspension and a policy write SHALL end it with its thread's work. A scoped client SHALL be refused without `run_graph` where it acts and, with an agent named, where that agent acts.

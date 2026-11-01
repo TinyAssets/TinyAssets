@@ -12,7 +12,9 @@ import { describe, expect, it } from "vitest";
 
 import { Hooks } from "../src/index";
 import { bundleId, canonicalModules, HOOK_POINTS } from "../src/protocol";
-import { COMPATIBILITY_DATE, loaderName, SHIM_VERSION, workerCode } from "../src/runner";
+import {
+  callShim, COMPATIBILITY_DATE, INFLIGHT_MAX, loaderName, SHIM_VERSION, workerCode,
+} from "../src/runner";
 
 const MODULE = "/workspace/.agents/packages/guard/hooks/guard.js";
 
@@ -154,17 +156,104 @@ describe("the hooks Worker", () => {
     expect(await hooks.run({ owner: 7 })).toMatchObject({ ok: false, error: "invalid" });
   });
 
+  it("asks each call's own CPU of its entrypoint, and drops a call past its deadline",
+     async () => {
+    const asked: unknown[] = [];
+    let disposed = 0;
+    let settled = 0;
+    const loader = {
+      get: (_name: string, code: () => WorkerLoaderWorkerCode) => {
+        expect(code().env).toEqual({});
+        return {
+          getEntrypoint: (_entry: string, options: unknown) => {
+            asked.push(options);
+            return { call: () => new Promise(() => undefined),
+                     [Symbol.dispose]: () => { disposed++; } };
+          },
+        };
+      },
+    } as unknown as WorkerLoader;
+    const who = owner();
+    const modules = { [MODULE]: "export function beforeTool() { return null; }" };
+    const asking = { ...await request(who, modules, {}, { deadline: 50 }), cpu_ms: 375 };
+    expect(await callShim(loader, "n", modules, asking as never, () => { settled++; }))
+      .toEqual({ ok: false, error: "timeout" });
+    expect(asked).toEqual([{ limits: { cpuMs: 375, subRequests: 0 } }]);
+    expect([disposed, settled]).toEqual([1, 1]);
+  });
+
+  it("keeps no more than its bound of calls pending, and none it dropped", async () => {
+    const who = owner();
+    const modules = { [MODULE]: "export function beforeTool() {\n" +
+      "  return new Promise((resolve) => setTimeout(() => resolve(null), 400));\n}" };
+    const sent = await request(who, modules, {}, { deadline: 300 });
+    expect(await run(who, sent)).toEqual({ ok: false, error: "timeout" });
+    const unsent = await request(who, modules, {}, { send: false, deadline: 300 });
+    const replies = await Promise.all(Array.from({ length: INFLIGHT_MAX + 1 }, (_x, at) =>
+      new Promise((resolve) => setTimeout(resolve, at)).then(() => run(who, unsent))));
+    const refused = replies.filter((reply) => !reply.ok && reply.message !== undefined);
+    expect(refused).toEqual([{ ok: false, error: "timeout",
+                               message: `${INFLIGHT_MAX} calls are pending` }]);
+    expect(await env.RUNNER.getByName(who).pending()).toBe(0);
+  });
+
+  it("freezes the shared intrinsics before any package's module runs, so one package " +
+     "cannot patch what another's guard relies on", async () => {
+    const who = owner();
+    const patcher = "/workspace/.agents/packages/a/patch.js";
+    const guard = "/workspace/.agents/packages/b/guard.js";
+    const modules = {
+      [patcher]: [
+        "const tried = [];",
+        "const attempt = (what, change) => { try { change(); tried.push(what + ' patched'); }",
+        "  catch { tried.push(what + ' refused'); } };",
+        "attempt('includes', () => { Array.prototype.includes = () => true; });",
+        "attempt('JSON', () => { globalThis.JSON = { parse: () => ({}), stringify: () => '1' }; });",
+        "attempt('parse', () => { JSON.parse = () => ({}); });",
+        "attempt('Map get', () => { Map.prototype.get = () => 'x'; });",
+        "attempt('Object.keys', () => { Object.keys = () => []; });",
+        "attempt('hasOwn', () => { Object.hasOwn = () => true; });",
+        "function Own() {}",
+        "Own.prototype.toString = function () { return 'own'; };",
+        "class Mine { toString() { return 'mine'; } }",
+        "const plain = {}; plain.toString = () => 'plain';",
+        "export function afterTool() {",
+        "  return { tried, own: String(new Own()), mine: String(new Mine()),",
+        "           plain: String(plain) };",
+        "}",
+      ].join("\n"),
+      [guard]: "export function beforeTool({ call }) {\n" +
+        "  return ['bash'].includes(call.name) ? { block: 'no shell' } : null;\n}",
+    };
+    const id = await bundleId(who, modules);
+    const ask = async (module: string, point: string, input: unknown, send = false) =>
+      run(who, { ...await request(who, modules, input, { module, point, id,
+                                                         send }) });
+    expect(await ask(patcher, "afterTool", {}, true)).toEqual({ ok: true, result: {
+      tried: ["includes refused", "JSON refused", "parse refused", "Map get refused",
+              "Object.keys refused", "hasOwn refused"],
+      own: "own", mine: "mine", plain: "plain" } });
+    expect(await ask(guard, "beforeTool", { call: { id: "c", name: "read", arguments: {} } }))
+      .toEqual({ ok: true, result: null });
+    expect(await ask(guard, "beforeTool", { call: { id: "c", name: "bash", arguments: {} } }))
+      .toEqual({ ok: true, result: { block: "no shell" } });
+  });
+
   it("builds a Worker with no way out, at the owner Worker's date", () => {
     const code = workerCode({ "/b.js": "export const b = 1;", "/a.js": "export const a = 1;" });
     expect(code).toMatchObject({
       compatibilityDate: COMPATIBILITY_DATE, compatibilityFlags: [], mainModule: "shim.js",
-      env: {}, globalOutbound: null, limits: { cpuMs: 1_000, subRequests: 0 },
+      globalOutbound: null, limits: { cpuMs: 1_000, subRequests: 0 },
     });
-    expect(Object.keys(code.modules).sort()).toEqual(["m0.js", "m1.js", "shim.js"]);
+    expect(code.env).toEqual({});
+    expect(Object.keys(code.modules).sort()).toEqual(["m0.js", "m1.js", "prelude.js",
+                                                      "shim.js"]);
     expect(code.modules["m0.js"]).toBe("export const a = 1;");
-    expect(String(code.modules["shim.js"])).toContain("\"/a.js\", m0");
+    expect(String(code.modules["shim.js"])).toContain("[\"/a.js\"]: m0");
+    // The prelude is the shim's first import: it runs before any package's module.
+    expect(String(code.modules["shim.js"]).split("\n")[0]).toContain("./prelude.js");
     expect(canonicalModules({ "/b.js": "b", "/a.js": "a" })).toBe('[["/a.js","a"],["/b.js","b"]]');
-    expect(SHIM_VERSION).toBe(1);
+    expect(SHIM_VERSION).toBe(2);
     expect(HOOK_POINTS).not.toContain("beforeRequest");
   });
 });

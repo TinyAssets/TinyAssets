@@ -110,7 +110,7 @@ export interface Probes {
   scanGate: Promise<void> | null;
   /** Each call the agent made to the HOOKS binding's `run`, in order: its point, its code sent. */
   hookCalls: { point: string; extension: string; sent: boolean }[];
-  /** How many code mode remotes the agent asked the HOOKS binding for. */
+  /** How many code mode executions the agent asked the HOOKS binding for. */
   codemodes: number;
 }
 
@@ -230,7 +230,7 @@ export function wipedSubmission(probes: Probes, store: string,
     : { status: found.status, reason: (found as { reason?: string }).reason ?? null };
 }
 
-/** The HOOKS binding with each `run` and code mode remote counted on `probes()`. */
+/** The HOOKS binding with each `run` and code mode execution counted on `probes()`. */
 function countedHooks(hooks: HooksService, probes: () => Probes | undefined): HooksService {
   return {
     run: (request) => {
@@ -238,12 +238,12 @@ function countedHooks(hooks: HooksService, probes: () => Probes | undefined): Ho
                                  sent: request.bundle.modules !== undefined });
       return hooks.run(request);
     },
-    codemode: (name) => {
+    codemodeExecute: (name, request, exchange) => {
       const kept = probes();
       if (kept !== undefined) {
         kept.codemodes++;
       }
-      return hooks.codemode(name);
+      return hooks.codemodeExecute(name, request, exchange);
     },
   };
 }

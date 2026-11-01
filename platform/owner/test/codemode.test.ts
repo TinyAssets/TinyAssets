@@ -1,14 +1,17 @@
 /**
  * Code mode (tasks 5, H1; pi audit F8), in workerd with the real hooks Worker behind
  * `HOOKS`: off until the owner's policy turns it on; reached only as `ta call codemode`,
- * its VM in the hooks Worker; a script's `tools.*` held to its caller's authority (a scoped
- * client's read runs, its shell and write are refused); `models.complete` reserved and
- * charged to the turn, on faux models and through the gateway Worker; a script that starts
- * a script refused. And P11's local part: pi's `RemoteCodemodeSandbox` over the service
+ * its VM in the hooks Worker; `run_code` held explicitly (a scoped client without it, and
+ * a full grant, refused); a script's `tools.*` held to its caller's authority (a scoped
+ * client's read runs, its shell and write are refused); `tools.model_complete` reserved and
+ * charged to the turn, counted in `pi.usage`, held to the turn's caps, through the gate and
+ * the packages' hooks, never rerun; a script that starts a script refused, and `codemode`
+ * kept out of the scripts' section. And P11's local part: pi's `RemoteCodemodeSandbox` over the service
  * binding, `exchange` an RPC function, a nested call's round trip. CPU limits and isolation
  * are not shown by workerd: owed to H2's live probe.
  */
 import { runInDurableObject } from "cloudflare:test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { env } from "cloudflare:workers";
 import {
   type AssistantMessage, fauxAssistantMessage, type FauxContentBlock, fauxToolCall,
@@ -21,12 +24,12 @@ import type { JsonObject } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 
 import { CODEMODE_NESTED, NO_SHELL, NOT_GRANTED, type Stamped } from "../src/authority";
-import { CODEMODE_EXTENSION } from "../src/codemode";
+import { CODEMODE_EXTENSION, codemodeExtension } from "../src/codemode";
 import type { Origin } from "../src/ledger";
 import type { Binding } from "../src/owner-do";
-import { UNKNOWN_CAPABILITY } from "../src/ta";
+import { MODEL_COMPLETE, UNKNOWN_CAPABILITY } from "../src/ta";
 import { gated } from "./gateway-support";
-import { ledgerOn, MCP, MUSE, signedIn } from "./ledger-support";
+import { DOT, ledgerOn, MCP, MUSE, signedIn } from "./ledger-support";
 import { type FauxOwnerDO, says } from "./worker";
 
 const text = (value: string): Uint8Array => new TextEncoder().encode(value);
@@ -80,7 +83,16 @@ async function rig(on = true) {
                                                    policy: { ...policy, hooks: { codemode: true } } });
   }
   return {
-    owner, stub, as,
+    owner, stub, as, session,
+    /** The client admitted with its full grant: its stamp, acting in universe alpha. */
+    full: async (origin: Origin): Promise<Stamped> => {
+      await stub.outsideAgents(as(origin));
+      await runInDurableObject(stub, (_instance, state) => ledgerOn(state.storage).register(
+        origin, MCP, { command_center_id: "alpha", display_name: "Muse",
+                       delivery_method: "pull", recipe_id: null }));
+      return { client: origin.client, generation: 1, authenticated_at: at, universe: "alpha",
+               agent: "main" };
+    },
     /** The client admitted, scoped to `capabilities` in universe alpha as agent main. */
     scoped: async (origin: Origin, capabilities: string[]): Promise<Stamped> => {
       await stub.outsideAgents(as(origin));
@@ -133,18 +145,41 @@ describe("code mode", () => {
       .capabilities.map((entry) => entry.name);
     expect(names).toContain("codemode");
     expect(names.filter((name) => name.startsWith("pi.codemode."))).toEqual([]);
+    expect(names).not.toContain(MODEL_COMPLETE);
     for (const tools of shown.offered) {
       expect([...tools].sort()).toEqual(["bash", "edit", "read", "ta", "write"]);
     }
     expect(CODEMODE_EXTENSION).toBe("ta.codemode");
   });
 
-  it("runs a script whose tools are its caller's: a scoped client's read runs, its shell " +
-     "and its write are refused", async () => {
+  it("is refused to a client its grant does not name run_code for, a full grant's too",
+     async () => {
+    const r = await rig();
+    const scoped = await r.scoped(MUSE, ["converse", "read_files"]);
+    const full = await r.full(DOT);
+    const out = await r.in(async (instance) => ({
+      scoped: await asked(instance, "CODE text('hi')", scoped),
+      full: await asked(instance, "CODE text('hi')", full),
+      listed: await asked(instance, `TA ${JSON.stringify({ op: "catalog", limit: 100 })}`,
+                          scoped),
+      owner: await asked(instance, "CODE text('hi')"),
+      codemodes: instance.probes.codemodes,
+    }));
+    expect(out.scoped).toEqual({ error: true, text: expect.stringContaining(
+      `Tool call blocked: ${NOT_GRANTED}`) });
+    expect(out.full).toEqual({ error: true, text: expect.stringContaining(
+      `Tool call blocked: ${NOT_GRANTED}`) });
+    expect(out.listed.text).not.toContain("\"codemode\"");
+    expect(out.owner).toEqual({ error: false, text: expect.stringContaining("hi") });
+    expect(out.codemodes).toBe(1);
+  });
+
+  it("runs a script whose tools are its caller's: a scoped client with run_code reads, " +
+     "and its shell and its write are refused", async () => {
     const r = await rig();
     await r.stub.fileWrite(r.as(), { path: "/workspace/a.md", expected_etag: null,
                                      content: text("alpha") });
-    const stamp = await r.scoped(MUSE, ["converse", "read_files"]);
+    const stamp = await r.scoped(MUSE, ["converse", "read_files", "run_code"]);
     const script = [
       "const shown = [];",
       "shown.push('read: ' + JSON.stringify(await tools.read({ path: '/workspace/a.md' })));",
@@ -181,11 +216,11 @@ describe("code mode", () => {
     expect(shown.text).not.toContain("nested ran");
   });
 
-  it("asks the object's model source with models.complete, on the run's own turn",
+  it("asks the object's model source with tools.model_complete, on the run's own turn",
      async () => {
     const r = await rig();
     const out = await r.in(async (instance) => {
-      const shown = await asked(instance, "CODE const answer = await models.complete({ " +
+      const shown = await asked(instance, "CODE const answer = await tools.model_complete({ " +
         "messages: [{ role: 'user', text: 'NESTED question' }] });\ntext('asked: ' + answer.text);");
       return { shown, turns: [...instance.turns] };
     });
@@ -194,6 +229,63 @@ describe("code mode", () => {
     // The run's request, the script's, and the run's answer: one turn.
     expect(out.turns).toHaveLength(3);
     expect(new Set(out.turns).size).toBe(1);
+  });
+
+  it("counts a script's model call in pi.usage, and keeps codemode out of the scripts' " +
+     "section", async () => {
+    const r = await rig();
+    const out = await r.in(async (instance) => {
+      let section = "";
+      instance.script = Array.from({ length: 20 }, () => (messages: Message[]) => {
+        for (const message of messages as unknown as { role: string;
+                                                       sections?: Record<string, string> }[]) {
+          if (message.role === "system" && typeof message.sections?.["codemode"] === "string") {
+            section = message.sections["codemode"];
+          }
+        }
+        return step(messages);
+      });
+      const thread = await instance.agent.thread("main", null, { kind: "converse" });
+      const answer = await instance.harness.prompt("CODE const answer = await " +
+        "tools.model_complete({ messages: [{ role: 'user', text: 'count me' }] });\n" +
+        "text(answer.text);", { session: thread.thread_id });
+      const usage = await instance.agent.host.use(thread.thread_id,
+                                                  ({ pi }) => pi.usage(BACKGROUND_CONTEXT));
+      return { answer: answer.text, section, usage };
+    });
+    expect(out.answer).toContain("noted: count me");
+    expect(out.usage.tools[MODEL_COMPLETE]).toBeDefined();
+    expect(out.section).toContain(MODEL_COMPLETE);
+    expect(out.section).not.toMatch(/codemode\s*\(/);
+  });
+
+  it("registers model_complete callable by tools only and never rerun", () => {
+    const extension = codemodeExtension({ service: () => undefined, owner: () => "alice" });
+    const tool = extension.tools!.find((found) => found.name === MODEL_COMPLETE)!;
+    expect([tool.callers, tool.replay]).toEqual([["tools"], "unsafe"]);
+    const codemode = extension.tools!.find((found) => found.name === "codemode")!;
+    expect([codemode.callers, codemode.replay]).toEqual([["tools"], "safe"]);
+  });
+
+  it("holds a script's model call to the packages' hooks", async () => {
+    const r = await rig();
+    const P = "/workspace/.agents/packages";
+    await r.stub.fileWrite(r.as(), { path: `${P}/fence/package.json`, expected_etag: null,
+      content: text(JSON.stringify({ name: "fence", tinyassets: { hooks: [
+        { module: "fence.js", points: ["beforeTool"], tools: [MODEL_COMPLETE] }] } })) });
+    await r.stub.fileWrite(r.as(), { path: `${P}/fence/fence.js`, expected_etag: null,
+      content: text("export function beforeTool() { return { block: 'no models here' }; }") });
+    const { generation, policy } = await r.stub.policyRead(r.as());
+    await r.stub.policyWrite({ ...r.as(), session: r.session }, {
+      expected_generation: generation, policy: { ...policy, packages: [`${P}/fence`] } });
+    const out = await r.in(async (instance) => ({
+      shown: await asked(instance, "CODE try { await tools.model_complete({ messages: [{ " +
+        "role: 'user', text: 'x' }] }); text('asked'); } catch (error) { text('refused: ' + " +
+        "error.message); }"),
+      turns: [...instance.turns],
+    }));
+    expect(out.shown.text).toContain("refused: Tool call blocked: no models here");
+    expect(out.turns).toHaveLength(2);  // the run's two requests: the script asked none
   });
 
   it("reserves and settles a script's model call through the gateway, on its run's turn",
@@ -218,6 +310,25 @@ describe("code mode", () => {
     expect(new Set(rows.map((row) => row["turn"])).size).toBe(1);
     expect(await r.sql("SELECT turn FROM model_turns")).toEqual([]);
   }, 30_000);
+
+  it("holds a script's model call to its run's caps, as the run's own calls are", async () => {
+    const r = await gated();
+    await r.connect("sk-codemode-capped");
+    const { generation, policy } = await r.stub.policyRead(r.bind());
+    await r.stub.policyWrite(r.session(), { expected_generation: generation,
+      policy: { ...policy, hooks: { codemode: true }, models: { turn_requests: 1 } } });
+    const result = await r.in(async (instance) => {
+      await instance.harness.prompt("cmd:ta-codemode");
+      const messages = (await instance.harness.messages())
+        .flatMap((entry) => (entry.model ?? []) as Message[]);
+      return messages.filter((message) => message.role === "toolResult").map(textOf).join("");
+    });
+    expect(result).toContain("refused: ");
+    expect(result).toContain("model_budget: turn_requests");
+    const rows = await r.sql("SELECT state, rule FROM model_reservations ORDER BY seq");
+    expect(rows.slice(0, 2)).toEqual([{ state: "succeeded", rule: null },
+                                      { state: "refused", rule: "turn_requests" }]);
+  }, 30_000);
 });
 
 describe("P11: pi's remote sandbox over the HOOKS service binding", () => {
@@ -232,10 +343,10 @@ describe("P11: pi's remote sandbox over the HOOKS service binding", () => {
         const { a, b } = args as { a: number; b: number };
         return { sum: a + b };
       } }],
-      remote: () => {
-        const remote = env.HOOKS.codemode(`p11/${crypto.randomUUID()}`) as CodemodeRemote;
+      remote: (): CodemodeRemote => {
+        const name = `p11/${crypto.randomUUID()}`;
         return {
-          execute: (request, exchange) => remote.execute(request,
+          execute: (request, exchange) => env.HOOKS.codemodeExecute(name, request,
             async (messages: CodemodeRemoteMessage[]) => {
               exchanges.push(messages.map((message) => message.type));
               return exchange(messages);
@@ -264,7 +375,8 @@ describe("P11: pi's remote sandbox over the HOOKS service binding", () => {
     const sandbox = new RemoteCodemodeSandbox({
       timeoutMs: 30_000,
       interruptBudget: 2_000,
-      remote: () => env.HOOKS.codemode(`p11/${crypto.randomUUID()}`) as CodemodeRemote,
+      remote: (): CodemodeRemote => ({ execute: (request, exchange) =>
+        env.HOOKS.codemodeExecute(`p11/${crypto.randomUUID()}`, request, exchange) }),
     });
     const result = await sandbox.execute("let n = 0; for (;;) { n++; }");
     expect(result).toMatchObject({ ok: false, error: { kind: "timeout" } });

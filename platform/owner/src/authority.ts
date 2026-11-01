@@ -39,9 +39,11 @@
  * own `execute` (`ta.ts`), since a later hook may rewrite a call's arguments after this
  * gate approved them.
  *
- * Code mode (`codemode`, pi's, H1) needs only a standing authority, reached through `ta`
- * alone: each tool a script calls is a nested call this gate holds to its own need, so a
- * script reaches what its caller's authority allows and nothing more. A `codemode` call
+ * Code mode (`codemode`, pi's, H1) needs `run_code`, which the owner holds and a client
+ * holds only where its scoped grant names it (`EXPLICIT`: a full grant does not hold it),
+ * reached through `ta` alone; each tool a script calls
+ * is a nested call this gate holds to its own need, so a script reaches what its caller's
+ * authority allows and nothing more. A `codemode` call
  * that is not `ta`'s own nested call (`call.parent` set by anything but `ta`'s call under
  * `CODEMODE_KEY`: a script's `tools.codemode`) is refused, so scripts cannot start scripts.
  *
@@ -55,7 +57,14 @@ import { codePoints, isPrintable } from "./text";
 
 /** The capabilities of a scoped grant the agent's tools need (`grants.ts`'s `CAPABILITIES`). */
 export type ToolCapability = "read_files" | "write_files" | "propose_policy" | "converse"
-  | "run_graph";
+  | "run_graph" | "run_code";
+
+/**
+ * The capabilities a client holds only where a scoped grant names them, never by a full
+ * grant: code mode's (`run_code`), many tool and model calls in one call with no model
+ * round trip between them.
+ */
+export const EXPLICIT: readonly ToolCapability[] = Object.freeze(["run_code"] as const);
 
 /** The need of what only the owner itself may do, whatever grant a client holds. */
 export const OWNER_ONLY = "owner";
@@ -75,7 +84,8 @@ export const TOOL_CAPABILITIES: Readonly<Record<string, Need>> = Object.freeze({
   write: Object.freeze(["write_files"] as const),
   edit: Object.freeze(["read_files", "write_files"] as const),
   bash: null,
-  codemode: Object.freeze([] as const),
+  codemode: Object.freeze(["run_code"] as const),
+  model_complete: Object.freeze(["run_code"] as const),
 });
 
 /** pi's code mode tool, and the key `ta` makes its nested call under: no other may. */
@@ -105,7 +115,7 @@ export const TA_CAPABILITIES: Readonly<Record<string, Need>> = Object.freeze({
   "model": Object.freeze([] as const),
   "agent:run": Object.freeze(["run_graph"] as const),
   "agent:delegate": Object.freeze(["run_graph"] as const),
-  "codemode": Object.freeze([] as const),
+  "codemode": Object.freeze(["run_code"] as const),
 });
 /** The tool `ta`, and the prefix of its ops' own names. */
 export const TA_TOOL = "ta";
@@ -325,8 +335,13 @@ export class Authority {
     if (need === OWNER_ONLY) {
       throw new Refused(NOT_OWNER);
     }
-    if (grant.mode === "full") {
+    const explicit = Array.isArray(need)
+      && need.some((capability) => EXPLICIT.includes(capability));
+    if (grant.mode === "full" && !explicit) {
       return;
+    }
+    if (grant.mode === "full") {
+      throw new Refused(NOT_GRANTED);  // a full grant names no triple, so no explicit one
     }
     if (need === null) {
       throw new Refused(NO_SHELL);

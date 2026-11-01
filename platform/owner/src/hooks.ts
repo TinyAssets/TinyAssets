@@ -19,12 +19,15 @@
  *   `tools` is called only for those.
  * - **The deadline:** each call waits `inTime(HOOKS.run(...), deadline_ms + 250)`, the
  *   hook's `timeout_ms` (its manifest's, within the owner policy's `hooks.timeout_ms`,
- *   2,000 by default); the call asks `cpu_ms` from policy (`hooks.cpu_ms`, 50 to 1,000).
+ *   2,000 by default; an observe-only point's within `OBSERVE_DEADLINE_MS`, 250); the call
+ *   asks `cpu_ms` from policy (`hooks.cpu_ms`, 50 to 1,000).
  * - **Failure rules (§6.3):** a `beforeTool` timeout or error blocks the call; an
  *   `afterTool` failure fails closed, the result replaced by a redacted error (pi's own rule
  *   would keep the unredacted result); an `onYield` failure continues nothing; a
  *   `beforeCompact` failure leaves pi's own summary; an observe-only failure is reported
- *   only. A reply out of its point's shape is a failure (`invalid`). Each failure is an
+ *   only. A reply out of its point's shape, or a decision past `HOOK_DECISION_MAX`, is a
+ *   failure (`invalid`). Every wrapper is total: any error, the memo's read or store
+ *   included, is its point's failure, never a throw pi would skip. Each failure is an
  *   owner notice (`hook_failed`, once while it is kept).
  * - **Crash survival:** each wrapper reads `api.memo("ta.hook/<ext>/<point>/<key>")`
  *   first and returns a decision found there without calling the hook; otherwise it calls,
@@ -42,6 +45,9 @@ import { createHash } from "node:crypto";
 import type { JsonValue } from "@earendil-works/chord";
 import type { Context } from "@earendil-works/chord/context";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type {
+  CodemodeRemoteExchange, CodemodeRemoteRequest,
+} from "@earendil-works/pi-codemode/portable";
 import {
   CompactionTask, defineExtension, type EntryId, type Extension, GenerationTask, hook,
   type HookApi, type HookRegistration, type JsonObject, type ToolExecutionResult,
@@ -60,6 +66,13 @@ export const TOOL_POINTS: readonly string[] = Object.freeze(["beforeTool", "afte
 export const OBSERVE_POINTS: readonly string[] = Object.freeze(["afterResponse", "afterTools"]);
 /** What the owner waits past a hook's own deadline, for the RPC itself. */
 export const HOOK_SLACK_MS = 250;
+/** An observe-only point's deadline: it only reports, so it never holds a response long. */
+export const OBSERVE_DEADLINE_MS = 250;
+/**
+ * The most a decision holds, in UTF-16 code units of its JSON (256 KiB): a replaced result
+ * or rewritten arguments past it fail as `invalid`, so every memo fits the store's row.
+ */
+export const HOOK_DECISION_MAX = 262_144;
 /** The most one owner's hook modules hold, in bytes (the hooks Worker's bound too). */
 export const BUNDLE_MAX = 1_048_576;
 /** The most a hook's JSON input holds, in code units (the hooks Worker's `JSON_MAX`). */
@@ -88,7 +101,9 @@ export interface HookSettings {
 /** What the owner's `HOOKS` binding serves (`platform/hooks/src/index.ts`'s `Hooks`). */
 export interface HooksService {
   run(request: HookRequest): Promise<HookReply>;
-  codemode(name: string): unknown;
+  /** One code mode execution in the sandbox object `name`: pi's `CodemodeRemote.execute`. */
+  codemodeExecute(name: string, request: CodemodeRemoteRequest,
+                  exchange: CodemodeRemoteExchange): Promise<void>;
 }
 
 export type HookError = "need_code" | "timeout" | "threw" | "invalid";
@@ -394,47 +409,87 @@ export function memoName(extension: string, point: string, key: string): string 
 /**
  * The `pkg:<name>` extension of a package's hooks: one wrapper per declared point, each
  * calling the hooks Worker under its point's failure rule, its decision memoized.
+ *
+ * Every wrapper is total: pi skips a hook that throws, which for `afterTool` would commit
+ * the unredacted result, so nothing a wrapper does throws. Any error (the hook's, a reply
+ * out of shape, a decision past `HOOK_DECISION_MAX`, the memo's read or store, a notice)
+ * is the point's failure: `beforeTool` blocks, `afterTool` fails closed, `onYield`
+ * continues nothing, `beforeCompact` leaves pi's summary, an observe-only point reports.
+ * Only a bounded decision is memoized, so a memo never passes the store's row size.
  */
 export function hookExtension(parts: HookParts, bundle: Bundle, hooks: PackageHooks): Extension {
   const { extension } = hooks;
   const entryOf = (point: string) => hooks.entries.find((entry) => entry.points.includes(point));
-  const deadline = (entry: HookEntry) => {
-    const ceiling = parts.settings().timeout_ms;
+  const deadline = (entry: HookEntry, point: string) => {
+    const ceiling = OBSERVE_POINTS.includes(point) ? OBSERVE_DEADLINE_MS
+      : parts.settings().timeout_ms;
     return Math.min(entry.timeout_ms ?? ceiling, ceiling);
   };
+  /** A failure's notice, kept once; its message. Never throws. */
   const failed = (point: string, error: unknown): string => {
     const code = error instanceof HookFailure ? error.code : "threw";
-    parts.notice(HOOK_FAILED, `${extension} ${point}: ${code}`);
-    return error instanceof Error ? error.message : String(error);
+    try {
+      parts.notice(HOOK_FAILED, `${extension} ${point}: ${code}`);
+    } catch {
+      console.error("a hook's failure notice could not be asked for");
+    }
+    try {
+      return error instanceof Error ? error.message : String(error);
+    } catch {
+      return code;
+    }
   };
   /**
    * The decision for `point` at `key`: the memo's, else the hook's reply as `decide` reads
-   * it (a failure's as `failure` reads it), memoized; the durable winner.
+   * it, memoized, the durable winner. Any error, the memo's included, is `failure`'s
+   * decision, memoized when the memo still takes it.
    */
   const decision = async (point: string, key: string, entry: HookEntry, input: unknown,
                           api: HookApi, context: Context, callId: string | undefined,
                           decide: (reply: unknown) => JsonObject,
                           failure: (message: string) => JsonObject): Promise<JsonObject> => {
     const name = memoName(extension, point, key);
-    const found = await api.memo<JsonObject>(name, context);
-    if (found !== undefined) {
-      return found;
-    }
     let made: JsonObject;
     try {
+      const found = await api.memo<JsonObject>(name, context);
+      if (found !== undefined) {
+        return found;
+      }
       const reply = await callHook(parts, bundle, {
         point, extension, module: entry.module, input: bounded(input),
         context: { conversation_id: Number(api.conversationId), task_id: String(api.taskId),
                    ...(callId === undefined ? {} : { call_id: callId }),
                    authority: await parts.authority(api, context) },
-        deadline_ms: deadline(entry),
+        deadline_ms: deadline(entry, point),
       });
       made = decide(reply);
+      if ((JSON.stringify(made) ?? "").length > HOOK_DECISION_MAX) {
+        throw new HookFailure("invalid", `the decision is past ${HOOK_DECISION_MAX} characters`);
+      }
     } catch (error) {
       made = failure(failed(point, error));
+      try {
+        return await api.memo<JsonObject>(name, made, context);
+      } catch {
+        return made;  // the failure's decision stands, kept or not
+      }
     }
-    return api.memo<JsonObject>(name, made, context);
+    try {
+      return await api.memo<JsonObject>(name, made, context);
+    } catch (error) {
+      return failure(failed(point, error));
+    }
   };
+  /** `run`'s answer, or `fallback`'s on any error, with its notice: never a throw. */
+  const total = async <T>(point: string, fallback: (message: string) => T,
+                          run: () => Promise<T>): Promise<T> => {
+    try {
+      return await run();
+    } catch (error) {
+      return fallback(failed(point, error));
+    }
+  };
+  const blocked = (message: string) => ({ block: `${HOOK_FAILED_CODE}: ${extension}: ${message}` });
   const registrations: HookRegistration[] = [];
   const before = entryOf("beforeTool");
   const after = entryOf("afterTool");
@@ -443,31 +498,37 @@ export function hookExtension(parts: HookParts, bundle: Bundle, hooks: PackageHo
   if (before !== undefined || after !== undefined) {
     registrations.push(hook(ToolTask, {
       ...(before === undefined ? {} : {
-        beforeTool: async (call: ToolHookCall, api: HookApi, context: Context) => {
-          if (!applies(before, call)) {
-            return undefined;
-          }
-          const made = await decision("beforeTool", call.id, before, { call: callJson(call) },
-            api, context, call.id, beforeToolDecision,
-            (message) => ({ block: `${HOOK_FAILED_CODE}: ${extension}: ${message}` }));
-          return made["block"] !== undefined ? { block: made["block"] as string }
-            : made["arguments"] !== undefined ? { arguments: made["arguments"] as JsonObject }
-              : undefined;
-        },
+        beforeTool: (call: ToolHookCall, api: HookApi, context: Context) =>
+          total<{ block: string } | { arguments: JsonObject } | undefined>("beforeTool", blocked,
+                                                                          async () => {
+            if (!applies(before, call)) {
+              return undefined;
+            }
+            const made = await decision("beforeTool", call.id, before, { call: callJson(call) },
+              api, context, call.id, beforeToolDecision, blocked);
+            return typeof made["block"] === "string" ? { block: made["block"] }
+              : plain(made["arguments"]) ? { arguments: made["arguments"] as JsonObject }
+                : undefined;
+          }),
       }),
       ...(after === undefined ? {} : {
-        afterTool: async (call: ToolHookCall, result: ToolExecutionResult, api: HookApi,
-                          context: Context) => {
-          if (!applies(after, call)) {
-            return undefined;
-          }
-          const seen = resultJson(result);
-          const made = await decision("afterTool", `${call.id}/${digestOf(seen)}`, after,
-            { call: callJson(call), result: seen }, api, context, call.id, afterToolDecision,
-            () => ({ result: failedClosed(extension) as unknown as JsonValue }));
-          return made["keep"] === true ? undefined
-            : made["result"] as unknown as ToolExecutionResult;
-        },
+        afterTool: (call: ToolHookCall, result: ToolExecutionResult, api: HookApi,
+                    context: Context) =>
+          total<ToolExecutionResult | undefined>("afterTool", () => failedClosed(extension),
+                                                 async () => {
+            if (!applies(after, call)) {
+              return undefined;
+            }
+            const seen = resultJson(result);
+            const made = await decision("afterTool", `${call.id}/${digestOf(seen)}`, after,
+              { call: callJson(call), result: seen }, api, context, call.id, afterToolDecision,
+              () => ({ result: failedClosed(extension) as unknown as JsonValue }));
+            if (made["keep"] === true) {
+              return undefined;
+            }
+            return plain(made["result"]) ? made["result"] as unknown as ToolExecutionResult
+              : failedClosed(extension);
+          }),
       }),
     }));
   }
@@ -477,50 +538,55 @@ export function hookExtension(parts: HookParts, bundle: Bundle, hooks: PackageHo
   if (yielded !== undefined || response !== undefined || round !== undefined) {
     registrations.push(hook(GenerationTask, {
       ...(yielded === undefined ? {} : {
-        onYield: async (answer: AssistantMessage, api: HookApi, context: Context) => {
-          const seen = answer as unknown as JsonValue;
-          const made = await decision("onYield", digestOf(seen), yielded, { answer: seen }, api,
-                                      context, undefined, onYieldDecision, () => ({}));
-          return typeof made["continue"] === "string"
-            ? { continue: made["continue"] } : undefined;
-        },
+        onYield: (answer: AssistantMessage, api: HookApi, context: Context) =>
+          total<{ continue: string } | undefined>("onYield", () => undefined, async () => {
+            const seen = answer as unknown as JsonValue;
+            const made = await decision("onYield", digestOf(seen), yielded, { answer: seen },
+                                        api, context, undefined, onYieldDecision, () => ({}));
+            return typeof made["continue"] === "string"
+              ? { continue: made["continue"] } : undefined;
+          }),
       }),
       ...(response === undefined ? {} : {
-        afterResponse: async (message: AssistantMessage, api: HookApi, context: Context) => {
-          const seen = message as unknown as JsonValue;
-          await decision("afterResponse", digestOf(seen), response, { message: seen }, api,
-                         context, undefined, () => ({}), () => ({}));
-        },
+        afterResponse: (message: AssistantMessage, api: HookApi, context: Context) =>
+          total<void>("afterResponse", () => undefined, async () => {
+            const seen = message as unknown as JsonValue;
+            await decision("afterResponse", digestOf(seen), response, { message: seen }, api,
+                           context, undefined, () => ({}), () => ({}));
+          }),
       }),
       ...(round === undefined ? {} : {
-        afterTools: async (assistant: EntryId, results: readonly EntryId[], api: HookApi,
-                           context: Context) => {
-          const seen = { assistant: String(assistant), results: results.map(String) };
-          await decision("afterTools", String(assistant), round, seen, api, context,
-                         undefined, () => ({}), () => ({}));
-        },
+        afterTools: (assistant: EntryId, results: readonly EntryId[], api: HookApi,
+                     context: Context) =>
+          total<void>("afterTools", () => undefined, async () => {
+            const seen = { assistant: String(assistant), results: results.map(String) };
+            await decision("afterTools", String(assistant), round, seen, api, context,
+                           undefined, () => ({}), () => ({}));
+          }),
       }),
     }));
   }
   const compact = entryOf("beforeCompact");
   if (compact !== undefined) {
     registrations.push(hook(CompactionTask, {
-      beforeCompact: async (compaction, api: HookApi, context: Context) => {
-        const seen = {
-          reason: compaction.reason as unknown as JsonValue,
-          first_kept: String(compaction.firstKept),
-          entries: compaction.entries.map((entry) => String(entry.id)),
-          messages: compaction.messages as unknown as JsonValue,
-          ...(compaction.instructions === undefined ? {}
-            : { instructions: compaction.instructions }),
-        };
-        const made = await decision("beforeCompact",
-                                    `${seen.first_kept}/${digestOf(seen.entries)}`, compact,
-                                    seen, api, context, undefined, beforeCompactDecision,
-                                    () => ({}));
-        return made["decline"] === true ? { decline: true as const }
-          : typeof made["summary"] === "string" ? { summary: made["summary"] } : undefined;
-      },
+      beforeCompact: (compaction, api: HookApi, context: Context) =>
+        total<{ decline: true } | { summary: string } | undefined>("beforeCompact",
+                                                                   () => undefined, async () => {
+          const seen = {
+            reason: compaction.reason as unknown as JsonValue,
+            first_kept: String(compaction.firstKept),
+            entries: compaction.entries.map((entry) => String(entry.id)),
+            messages: compaction.messages as unknown as JsonValue,
+            ...(compaction.instructions === undefined ? {}
+              : { instructions: compaction.instructions }),
+          };
+          const made = await decision("beforeCompact",
+                                      `${seen.first_kept}/${digestOf(seen.entries)}`, compact,
+                                      seen, api, context, undefined, beforeCompactDecision,
+                                      () => ({}));
+          return made["decline"] === true ? { decline: true as const }
+            : typeof made["summary"] === "string" ? { summary: made["summary"] } : undefined;
+        }),
     }));
   }
   return Object.freeze(defineExtension({ name: extension, hooks: registrations }));

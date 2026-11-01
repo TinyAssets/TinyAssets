@@ -23,8 +23,9 @@ import { describe, expect, it } from "vitest";
 
 import { bundleId as workerBundleId } from "../../hooks/src/protocol";
 import {
-  bundleOf, callHook, failedClosed, HOOK_FAILED, HOOK_FAILED_CODE, HOOK_SLACK_MS,
-  hookExtension, type HookParts, type HookReply, type HookRequest, memoName,
+  bundleOf, callHook, failedClosed, HOOK_DECISION_MAX, HOOK_FAILED, HOOK_FAILED_CODE,
+  HOOK_SLACK_MS, hookExtension, type HookParts, type HookReply, type HookRequest, memoName,
+  OBSERVE_DEADLINE_MS,
 } from "../src/hooks";
 import type { Binding } from "../src/owner-do";
 import { AGENTS_OWNER_ONLY } from "../src/paths";
@@ -471,7 +472,7 @@ function fake(answers: Answer[], options: { timeout?: number; bound?: boolean } 
         }
         return answer;
       },
-      codemode: () => { throw new Error("no code mode here"); },
+      codemodeExecute: () => { throw new Error("no code mode here"); },
     }),
     owner: () => "alice",
     settings: () => ({ timeout_ms: options.timeout ?? 2_000, cpu_ms: 75 }),
@@ -481,22 +482,41 @@ function fake(answers: Answer[], options: { timeout?: number; bound?: boolean } 
   return { parts, asked, notices };
 }
 
-/** A hook API with its memos in memory. */
-function api(): HookApi & { memos: Map<string, unknown> } {
+/**
+ * A hook API with its memos in memory; `memo` says which of its reads or stores reject, as
+ * a store that fails (`SQLITE_TOOBIG` past 2 MB, a transient error) rejects them.
+ */
+function api(memo: "ok" | "reject-read" | "reject-store" = "ok"):
+    HookApi & { memos: Map<string, unknown> } {
   const memos = new Map<string, unknown>();
   return {
     taskId: "7" as never, conversationId: 0 as never, models: undefined as never, memos,
     snapshot: undefined as never, snapshotAsOf: undefined as never,
     memo: (async (name: string, ...rest: unknown[]) => {
       if (rest.length === 2) {
+        if (memo === "reject-store") {
+          throw new Error("SQLITE_TOOBIG: string or blob too big");
+        }
         if (!memos.has(name)) {
           memos.set(name, rest[0]);
         }
         return memos.get(name);
       }
+      if (memo === "reject-read") {
+        throw new Error("the store's read failed");
+      }
       return memos.get(name);
     }) as never,
   } as HookApi & { memos: Map<string, unknown> };
+}
+
+/** pi's `hooks.each` for `afterTool`: a hook that throws is reported and skipped. */
+async function piKeeps(hook: ToolHooks["afterTool"], memo: HookApi): Promise<ToolExecutionResult> {
+  try {
+    return (await hook(CALL, RESULT, memo, ctx)) ?? RESULT;
+  } catch {
+    return RESULT;  // skipped, as pi skips it: the unredacted result is committed
+  }
 }
 
 /** A pi task's name, as a hook registration names it. */
@@ -660,6 +680,78 @@ describe("the remote wrappers' rules", () => {
     expect(await handlers<CompactionHooks>(fine, CompactionTask).beforeCompact({
       reason: "manual" as never, entries: [], messages: [], firstKept: 3 as never }, api(),
       ctx)).toEqual({ decline: true });
+  });
+
+  it.each(["reject-read", "reject-store"] as const)(
+    "never fails an afterTool redaction open when the memo's %s (the reviewer's probe)",
+    async (memo) => {
+      const redacting = fake([{ ok: true, result: { output: [{ type: "text",
+                                                               text: "[redacted]" }] } }]);
+      const out = await piKeeps(tools(redacting.parts).afterTool, api(memo));
+      expect(out).toEqual(failedClosed("pkg:p"));
+      expect(redacting.notices).toEqual([`${HOOK_FAILED} pkg:p afterTool: threw`]);
+    });
+
+  it("never fails an afterTool hook open when the notice itself throws", async () => {
+    const { parts } = fake([{ ok: false, error: "threw" }]);
+    const throwing: HookParts = { ...parts, notice: () => { throw new Error("gate closed"); } };
+    expect(await piKeeps(tools(throwing).afterTool, api())).toEqual(failedClosed("pkg:p"));
+  });
+
+  it.each(["reject-read", "reject-store"] as const)(
+    "falls back by each point's rule when the memo's %s", async (memo) => {
+      const entries = [{ module: "/m.js", points: ["beforeTool", "afterTool", "onYield",
+                                                   "afterResponse", "afterTools",
+                                                   "beforeCompact"] }];
+      const ok: Answer[] = [{ ok: true, result: { arguments: { path: "/y.md" } } },
+                            { ok: true, result: null }, { ok: true, result: { continue: "x" } },
+                            { ok: true, result: null }, { ok: true, result: null },
+                            { ok: true, result: { summary: "s" } }];
+      const { parts, notices } = fake(ok);
+      const extension = hookExtension(parts, BUNDLE, { extension: "pkg:p", entries });
+      const tool = handlers<ToolHooks>(extension, ToolTask);
+      const generation = handlers<GenerationHooks>(extension, GenerationTask);
+      const compaction = handlers<CompactionHooks>(extension, CompactionTask);
+      expect(await tool.beforeTool(CALL, api(memo), ctx)).toEqual({ block: expect.stringMatching(
+        new RegExp(`^${HOOK_FAILED_CODE}: pkg:p: `)) });
+      expect(await tool.afterTool(CALL, RESULT, api(memo), ctx)).toEqual(failedClosed("pkg:p"));
+      expect(await generation.onYield(says("done"), api(memo), ctx)).toBeUndefined();
+      expect(await generation.afterResponse(says("done"), api(memo), ctx)).toBeUndefined();
+      expect(await generation.afterTools(1 as never, [], api(memo), ctx)).toBeUndefined();
+      expect(await compaction.beforeCompact({ reason: "manual" as never, entries: [],
+                                              messages: [], firstKept: 3 as never },
+                                            api(memo), ctx)).toBeUndefined();
+      expect(notices).toHaveLength(6);
+    });
+
+  it("fails a replaced result or rewrite past 256 KiB closed, never memoizing it", async () => {
+    expect(HOOK_DECISION_MAX).toBe(262_144);
+    const huge = "x".repeat(HOOK_DECISION_MAX);
+    const replacing = fake([{ ok: true, result: { output: [{ type: "text", text: huge }] } }]);
+    const memo = api();
+    expect(await tools(replacing.parts).afterTool(CALL, RESULT, memo, ctx))
+      .toEqual(failedClosed("pkg:p"));
+    expect(JSON.stringify([...memo.memos.values()]).length).toBeLessThan(2_000);
+    const rewriting = fake([{ ok: true, result: { arguments: { content: huge } } }]);
+    expect(await tools(rewriting.parts).beforeTool(CALL, api(), ctx))
+      .toEqual({ block: expect.stringContaining(`${HOOK_FAILED_CODE}: pkg:p: invalid`) });
+    // Just inside the bound, a replacement stands.
+    const inside = "y".repeat(HOOK_DECISION_MAX - 200);
+    const fits = fake([{ ok: true, result: { output: [{ type: "text", text: inside }] } }]);
+    expect(await tools(fits.parts).afterTool(CALL, RESULT, api(), ctx))
+      .toMatchObject({ output: [{ type: "text", text: inside }], isError: false });
+  });
+
+  it("gives an observe-only point a short deadline of its own", async () => {
+    expect(OBSERVE_DEADLINE_MS).toBe(250);
+    const { parts, asked } = fake(["hang"]);
+    const extension = hookExtension(parts, BUNDLE, { extension: "pkg:p", entries: [
+      { module: "/m.js", points: ["afterResponse"] }] });
+    const started = Date.now();
+    await handlers<GenerationHooks>(extension, GenerationTask).afterResponse(says("x"), api(),
+                                                                             ctx);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(asked[0]!.deadline_ms).toBe(OBSERVE_DEADLINE_MS);
   });
 
   it("registers no hook of a point no entry declares", () => {
