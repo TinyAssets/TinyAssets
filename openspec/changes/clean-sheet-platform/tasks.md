@@ -1521,7 +1521,17 @@ account and no deploy.
   guard; L1 the lost fork; L2 tests for the graph watch's stop and a second ask, the
   closing check after the watch resolves, the fork's edit remap, the `work_` guard on
   withdraw and the `dropped` close after an eviction; L3 one device's sign-out alone; L4 the
-  fixed codes; the settled-run refusal of compact and fork. MUTATION_TALLY Declared differences from the audit and the design
+  fixed codes; the settled-run refusal of compact and fork. Mutation, re-run at the fixed head: 84, 82 killed. They are round 1's 60 less
+  the 7 whose code went with the outside-client socket and the bearer upgrade (6 more
+  carried to the code that replaced theirs), the reviewer's 18 less the 2 it found equivalent,
+  whose code went (`r-check-owner-off`, `r-admit-standing-off`) and the 7 already among round
+  1's, and the round's own 22 (the ticket, the sign-out, the expiry, the pin race, the lost
+  fork, the fixed codes, the tee's listening). Round 1's claim of 5 equivalent was wrong for
+  3: `door-reset-as-read` was killed by then, and the fork's and compact's `as-reduce` are
+  killed by the settled-run refusal (`RUN_SETTLED`). 2 equivalent, by the reviewer's reasons:
+  the method check (workerd hands the object an upgrade as a `GET` whatever was sent) and
+  the work doors' authority re-check (every generation move marks the client's threads
+  dropping in its own transaction, and `Threads.get` returns only ready rows). Declared differences from the audit and the design
   decision: a fork is a thread of its own over a copy of the history (the brief's), so it
   keeps the source agent's current `AGENTS.md`, not pi's fork's copy of the agent as of the
   entry; the fork door takes its first input (edit and resend), which is how it counts
