@@ -530,7 +530,11 @@ account and no deploy.
   `standard_only` when a call names none, as Claude Code's do, which changes only a
   priority-commitment account's speed through TinyAssets, never its price); and an answer
   that reports a served tier pi-ai does not price (`served`: Anthropic's
-  `usage.service_tier` other than `standard`) settles `unknown`, its whole charge kept; every option pi-ai does not price is refused `egress_unpriced_option`: chat
+  `usage.service_tier` other than `standard`; chat completions' `service_tier` other than
+  `default` or Groq's `on_demand`) settles `unknown`, its whole charge kept. The residual:
+  a chat-completions provider that reports no tier in its answer. That is safe only
+  because those providers' paid tiers are request-opt-in, and requests naming a tier are
+  already refused (`egress_unpriced_option`); every option pi-ai does not price is refused `egress_unpriced_option`: chat
   completions' `service_tier`, `modalities` beyond `text` and `audio`; Anthropic's
   `speed` but `standard`, `inference_geo` but `global` and `service_tier` but
   `standard_only`; Google's `responseModalities` beyond text, `speechConfig` and

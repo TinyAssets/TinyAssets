@@ -452,7 +452,22 @@ describe("a tier left to the account (review round 3, Anthropic)", () => {
     expect(await servedPriced(rules, answer({ input_tokens: 1, service_tier: 2 }, {})))
       .toBe(false);
     // An API with no such rule: whatever its answer says.
-    expect(await servedPriced(apiRules("openai-completions")!,
+    expect(await servedPriced(apiRules("google-generative-ai")!,
                               answer({ service_tier: "priority" }, {}))).toBe(true);
+  });
+
+  it("settles a chat-completions answer served at a tier other than the standard unknown",
+     async () => {
+    const rules = apiRules("openai-completions")!;
+    const answer = (tier: unknown) => streamOf(
+      `data: ${JSON.stringify({ id: "c1", choices: [],
+                                ...(tier === undefined ? {} : { service_tier: tier }) })}\n\n` +
+      "data: [DONE]\n\n");
+    for (const tier of [undefined, "default", "on_demand"]) {
+      expect(await servedPriced(rules, answer(tier))).toBe(true);
+    }
+    for (const tier of ["priority", "flex", "scale", "performance", 1]) {
+      expect(await servedPriced(rules, answer(tier))).toBe(false);
+    }
   });
 });

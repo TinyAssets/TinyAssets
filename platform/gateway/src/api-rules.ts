@@ -83,7 +83,10 @@ const COMPLETIONS: ApiRules = Object.freeze({
     Object.freeze({ path: Object.freeze(["modalities"]), allowed: Object.freeze(["text"]) }),
     Object.freeze({ path: Object.freeze(["audio"]), allowed: Object.freeze([]) }),
   ]),
-  served: null,
+  // The tier an answer says it served at: `default` (OpenAI's) or `on_demand` (Groq's
+  // name for the same standard tier) are what pi-ai prices; any other is unknown.
+  served: Object.freeze({ paths: Object.freeze([Object.freeze(["service_tier"])]),
+                          priced: Object.freeze(["default", "on_demand"]) }),
 });
 
 const RESPONSES: ApiRules = Object.freeze({
