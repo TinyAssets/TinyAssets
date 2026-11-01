@@ -26,8 +26,8 @@ import type { ModelRecord } from "./model-record";
 import { type Code, codeOf, Failure, failureResponse, upstreamCode } from "./failure";
 import { nativeFetch } from "./egress";
 import { boundedText } from "./messages";
-import { apiRules, fallbackList, manyChoices, paidTool, tierMultiplier, unpricedOption,
-         valueAt } from "./api-rules";
+import { apiRules, fallbackList, manyChoices, paidTool, servedPriced, tierMultiplier,
+         unpricedOption, valueAt } from "./api-rules";
 import { clamped, learnMeter, meteredModel, meteredRecord, meteredUsage } from "./meter";
 import { type Binding, type KeyringEnv, open, type Opened, type Resealed } from "./keyring";
 
@@ -363,12 +363,18 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
       // A refusal before any output: the provider produced nothing, as the loop settles it.
       outcome = Promise.resolve(FAILED);
     } else if (source !== null) {
-      const [toCaller, toMeter] = source.tee();
+      const [toCaller, toMeters] = source.tee();
+      const [toMeter, toTier] = toMeters.tee();
       source = toCaller;
-      outcome = meteredUsage(metered.catalog, credential.upstream, bearer(credential), model,
-                             upstream.status,
-                             new Headers(upstream.headers), toMeter, listed)
-        .then((usage): MeterOutcome => (usage === null ? UNKNOWN
+      const rules = apiRules(credential.upstream.api)!;
+      // An answer served at a tier pi-ai does not price is unknown, whatever pi-ai read (and
+      // one whose tier cannot be read, a cut, is unknown by the rejection below).
+      const tierPriced = servedPriced(rules, toTier);
+      outcome = Promise.all([meteredUsage(metered.catalog, credential.upstream,
+                                          bearer(credential), model, upstream.status,
+                                          new Headers(upstream.headers), toMeter, listed),
+                             tierPriced])
+        .then(([usage, priced]): MeterOutcome => (usage === null || !priced ? UNKNOWN
           : { state: "succeeded", tokens: usage.tokens, cost: usage.cost,
               ...(usage.served === undefined ? {} : { served: usage.served }) }), () => UNKNOWN);
     }

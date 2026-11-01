@@ -6,8 +6,8 @@ import { describe, expect, it } from "vitest";
 
 import { calculateCost } from "@earendil-works/pi-ai/models";
 
-import { apiRules, fallbackList, HINT_KEYS, manyChoices, paidTool, tierMultiplier,
-         unpricedOption } from "../src/api-rules";
+import { apiRules, fallbackList, HINT_KEYS, manyChoices, paidTool, servedPriced,
+         tierMultiplier, unpricedOption } from "../src/api-rules";
 import { builtinCatalog } from "../src/catalog";
 import { meteredCall } from "../src/credential";
 import { clamped, describes, learnMeter, meteredModel, meteredRecord, meteredUsage,
@@ -417,5 +417,42 @@ describe("the price beyond tokens (review round 3)", () => {
     const google = apiRules("google-generative-ai")!;
     expect(describes(google, ["generationConfig", "maxOutputTokens"], {}, null)).toBe(true);
     expect(describes(google, ["generationConfig", "maxOutputTokens"], {}, ["model"])).toBe(false);
+  });
+});
+
+describe("a tier left to the account (review round 3, Anthropic)", () => {
+  it("is set to the one pi-ai prices when absent, by the rules' data, and kept when named",
+     async () => {
+    const meter = (await learnMeter(builtinCatalog(), ANTHROPIC.upstream, "sk-x"))!;
+    expect(clamped(meter, { model: "m" }, 10, "anthropic-messages"))
+      .toMatchObject({ service_tier: "standard_only" });
+    expect(clamped(meter, { model: "m", service_tier: "standard_only" }, 10,
+                   "anthropic-messages")).toMatchObject({ service_tier: "standard_only" });
+    // An API whose rules default nothing is left as it is.
+    const google = (await learnMeter(builtinCatalog(), GOOGLE.upstream, "AIza-x"))!;
+    expect(clamped(google, { contents: [] }, 7, "google-generative-ai")["service_tier"])
+      .toBeUndefined();
+  });
+
+  it("settles an answer served at a tier pi-ai does not price unknown", async () => {
+    const rules = apiRules("anthropic-messages")!;
+    const answer = (start: unknown, delta: unknown) => streamOf(sse([
+      ["message_start", { type: "message_start", message: { id: "m1", usage: start } }],
+      ["message_delta", { type: "message_delta", usage: delta }],
+      ["message_stop", { type: "message_stop" }]]));
+    expect(await servedPriced(rules, answer({ input_tokens: 1 }, { output_tokens: 1 })))
+      .toBe(true);
+    expect(await servedPriced(rules, answer({ input_tokens: 1, service_tier: "standard" },
+                                            { output_tokens: 1 }))).toBe(true);
+    expect(await servedPriced(rules, answer({ input_tokens: 1, service_tier: "priority" },
+                                            { output_tokens: 1 }))).toBe(false);
+    expect(await servedPriced(rules, answer({ input_tokens: 1 },
+                                            { output_tokens: 1, service_tier: "batch" })))
+      .toBe(false);
+    expect(await servedPriced(rules, answer({ input_tokens: 1, service_tier: 2 }, {})))
+      .toBe(false);
+    // An API with no such rule: whatever its answer says.
+    expect(await servedPriced(apiRules("openai-completions")!,
+                              answer({ service_tier: "priority" }, {}))).toBe(true);
   });
 });

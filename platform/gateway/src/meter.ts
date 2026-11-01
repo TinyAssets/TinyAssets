@@ -190,8 +190,9 @@ function objectAt(body: Record<string, unknown>, path: readonly string[]): Recor
 
 /**
  * `body` with every output-cap alias the API reads at most `cap` (the one pi-ai sets set to
- * `cap` when the request names none), and, when it streams, the API's usage-report fields
- * set, so its answer reports what it used.
+ * `cap` when the request names none); when it streams, the API's usage-report fields set,
+ * so its answer reports what it used; and each option the API's rules default when absent
+ * (`default_when_absent`) set to that value.
  */
 export function clamped(meter: Meter, body: Record<string, unknown>, cap: number,
                         api?: string): Record<string, unknown> {
@@ -216,6 +217,12 @@ export function clamped(meter: Meter, body: Record<string, unknown>, cap: number
   }
   if (rules !== null && (rules.stream === null || valueAt(copy, rules.stream) === true)) {
     for (const [path, value] of rules.usage) {
+      objectAt(copy, path.slice(0, -1))[path.at(-1)!] = value;
+    }
+  }
+  // An option left to the account's default, which pi-ai cannot price: the priced value.
+  for (const { path, default_when_absent: value } of rules?.unpriced ?? []) {
+    if (value !== undefined && valueAt(copy, path) === undefined) {
       objectAt(copy, path.slice(0, -1))[path.at(-1)!] = value;
     }
   }

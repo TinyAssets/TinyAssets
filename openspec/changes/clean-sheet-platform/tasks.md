@@ -525,7 +525,12 @@ account and no deploy.
   refused), and a call naming none at the dearest its API allows (×2.5: the account's own
   default may be priority; the settle still charges pi-ai's true price). The rule is
   general: a price-raising field left absent, where the provider's default may vary by
-  account, is reserved at its dearest allowed value; every option pi-ai does not price is refused `egress_unpriced_option`: chat
+  account, is reserved at its dearest allowed value, or, where pi-ai prices no value but
+  one, set to that one (`default_when_absent`: Anthropic's `service_tier` is sent
+  `standard_only` when a call names none, as Claude Code's do, which changes only a
+  priority-commitment account's speed through TinyAssets, never its price); and an answer
+  that reports a served tier pi-ai does not price (`served`: Anthropic's
+  `usage.service_tier` other than `standard`) settles `unknown`, its whole charge kept; every option pi-ai does not price is refused `egress_unpriced_option`: chat
   completions' `service_tier`, `modalities` beyond `text` and `audio`; Anthropic's
   `speed` but `standard`, `inference_geo` but `global` and `service_tier` but
   `standard_only`; Google's `responseModalities` beyond text, `speechConfig` and

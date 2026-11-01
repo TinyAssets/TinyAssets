@@ -29,7 +29,13 @@
  *   the dearest value the API allows (the settle still charges what pi-ai prices).
  * - `unpriced`: options that change the price beyond tokens and that pi-ai does not price
  *   (a premium speed or geography, another tier, a non-text output): refused
- *   `egress_unpriced_option` unless absent or each value among `allowed`.
+ *   `egress_unpriced_option` unless absent or each value among `allowed`. One whose
+ *   absence leaves the price to the account's own default, which pi-ai cannot price, has
+ *   `default_when_absent`: the gateway sets that value (one pi-ai prices) when the call
+ *   leaves it out, which changes only how the provider serves the call, never its price.
+ * - `served`: where an answer reports the tier it was served at (an SSE event's JSON, at
+ *   any of `paths`), and the values pi-ai prices: an answer served at any other settles
+ *   `unknown`, keeping its whole charge.
  */
 
 export interface ApiRules {
@@ -52,7 +58,10 @@ export interface ApiRules {
                    readonly multipliers: Readonly<Record<string, number>>;
                    readonly absent: number } | null;
   readonly unpriced: readonly { readonly path: readonly string[];
-                                readonly allowed: readonly string[] }[];
+                                readonly allowed: readonly string[];
+                                readonly default_when_absent?: string }[];
+  readonly served: { readonly paths: readonly (readonly string[])[];
+                     readonly priced: readonly string[] } | null;
 }
 
 /** The top-level body keys the egress door reads for the owner's object: model and tier. */
@@ -74,6 +83,7 @@ const COMPLETIONS: ApiRules = Object.freeze({
     Object.freeze({ path: Object.freeze(["modalities"]), allowed: Object.freeze(["text"]) }),
     Object.freeze({ path: Object.freeze(["audio"]), allowed: Object.freeze([]) }),
   ]),
+  served: null,
 });
 
 const RESPONSES: ApiRules = Object.freeze({
@@ -94,6 +104,7 @@ const RESPONSES: ApiRules = Object.freeze({
                                                      priority: 2.5 }),
                         absent: 2.5 }),
   unpriced: Object.freeze([]),
+  served: null,
 });
 
 const GOOGLE: ApiRules = Object.freeze({
@@ -115,6 +126,7 @@ const GOOGLE: ApiRules = Object.freeze({
     Object.freeze({ path: Object.freeze(["generationConfig", "imageConfig"]),
                     allowed: Object.freeze([]) }),
   ]),
+  served: null,
 });
 
 const ANTHROPIC: ApiRules = Object.freeze({
@@ -133,8 +145,13 @@ const ANTHROPIC: ApiRules = Object.freeze({
     Object.freeze({ path: Object.freeze(["speed"]), allowed: Object.freeze(["standard"]) }),
     Object.freeze({ path: Object.freeze(["inference_geo"]), allowed: Object.freeze(["global"]) }),
     Object.freeze({ path: Object.freeze(["service_tier"]),
-                    allowed: Object.freeze(["standard_only"]) }),
+                    allowed: Object.freeze(["standard_only"]),
+                    default_when_absent: "standard_only" }),
   ]),
+  served: Object.freeze({ paths: Object.freeze([Object.freeze(["usage", "service_tier"]),
+                                                Object.freeze(["message", "usage",
+                                                               "service_tier"])]),
+                          priced: Object.freeze(["standard"]) }),
 });
 
 /** Mistral's chat completions: as OpenAI's, but its stream reports its usage unasked. */
@@ -154,6 +171,7 @@ const MISTRAL: ApiRules = Object.freeze({
     Object.freeze({ path: Object.freeze(["modalities"]), allowed: Object.freeze(["text"]) }),
     Object.freeze({ path: Object.freeze(["audio"]), allowed: Object.freeze([]) }),
   ]),
+  served: null,
 });
 
 /** The rules for each API a sandbox call may be metered on; any other is never metered. */
@@ -257,4 +275,51 @@ export function tierMultiplier(rules: ApiRules, value: string | null): number | 
     return rules.tier.absent;
   }
   return Object.hasOwn(rules.tier.multipliers, value) ? rules.tier.multipliers[value]! : null;
+}
+
+/**
+ * Whether every tier the answer's stream reports it was served at is one pi-ai prices,
+ * read from each SSE event's JSON at the rules' `served` paths; true for an API with no
+ * such rule. Reads the stream to its end, a line at a time.
+ */
+export async function servedPriced(rules: ApiRules, body: ReadableStream<Uint8Array>):
+    Promise<boolean> {
+  const served = rules.served;
+  if (served === null) {
+    await body.cancel();
+    return true;
+  }
+  const decoder = new TextDecoder();
+  const reader = body.getReader();
+  let pending = "";
+  let priced = true;
+  const line = (text: string) => {
+    if (!text.startsWith("data:")) {
+      return;
+    }
+    let event: unknown;
+    try {
+      event = JSON.parse(text.slice(5));
+    } catch {
+      return;  // not JSON (`[DONE]`): no tier in it
+    }
+    for (const path of served.paths) {
+      const tier = valueAt(event, path);
+      if (tier !== undefined && (typeof tier !== "string" || !served.priced.includes(tier))) {
+        priced = false;
+      }
+    }
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    pending += done ? decoder.decode() : decoder.decode(value, { stream: true });
+    const lines = pending.split("\n");
+    pending = done ? "" : lines.pop()!;
+    for (const text of lines) {
+      line(text.trim());
+    }
+    if (done) {
+      return priced;
+    }
+  }
 }

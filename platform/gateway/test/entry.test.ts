@@ -200,6 +200,38 @@ describe("the gateway Worker", () => {
     expect(standard.state).toBe("succeeded");
     expect(priority.state).toBe("succeeded");
     expect(priority.cost).toBeGreaterThanOrEqual(standard.cost * 2 - 1e-12);
+    // Anthropic: a call naming no tier is sent at the one pi-ai prices, and an answer served
+    // at another is unknown.
+    const anthropic = (await gateway.seal("alice", "c2", 1, "sk-good", ANTHROPIC)).blob;
+    const claude = builtinCatalog();
+    let named: { id: string } | undefined;
+    for (const record of claude.provider("anthropic")!.getModels()
+      .filter((candidate) => candidate.api === "anthropic-messages")) {
+      if (await learnMeter(claude, ANTHROPIC.upstream, "sk-good", meteredRecord(
+        claude, ANTHROPIC.upstream, record.id)!) !== null) {
+        named = record;
+        break;
+      }
+    }
+    const message = async (served: string | null, fields: Record<string, unknown> = {}) => {
+      const text = JSON.stringify({ model: named!.id, max_tokens: 50, stream: true,
+                                    messages: [{ role: "user", content: "cmd:echo" }],
+                                    ...fields });
+      const answer = await egress.forward("alice", "c2", 1, anthropic, new Request(
+        "https://egress/v1/messages", { method: "POST", body: text,
+                                         headers: served === null ? {}
+                                           : { "x-fake-served-tier": served } }),
+        { max_output_tokens: 100, input_bytes: text.length, model: named!.id, tier: null },
+        new ReadableStream());
+      const streamed = await answer.response.text();
+      return { streamed, outcome: JSON.parse(await new Response(answer.outcome).text()) as
+        { state: string } };
+    };
+    const plain = await message(null);
+    expect(plain.streamed).toContain("standard_only");
+    expect(plain.outcome.state).toBe("succeeded");
+    expect((await message("standard")).outcome.state).toBe("succeeded");
+    expect((await message("priority")).outcome).toEqual({ state: "unknown" });
     const refused = await egress.forward("", "c1", 1, blob, new Request("https://egress/v1/models"),
                                          metering, new ReadableStream());
     expect(refused.response.status).toBe(400);
