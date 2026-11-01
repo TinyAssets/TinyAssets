@@ -39,6 +39,12 @@
  * own `execute` (`ta.ts`), since a later hook may rewrite a call's arguments after this
  * gate approved them.
  *
+ * Code mode (`codemode`, pi's, H1) needs only a standing authority, reached through `ta`
+ * alone: each tool a script calls is a nested call this gate holds to its own need, so a
+ * script reaches what its caller's authority allows and nothing more. A `codemode` call
+ * that is not `ta`'s own nested call (`call.parent` set by anything but `ta`'s call under
+ * `CODEMODE_KEY`: a script's `tools.codemode`) is refused, so scripts cannot start scripts.
+ *
  * Out of scope now: only platform code makes a top-level conversation (a guard holds it to
  * `OwnerAgent.thread`), and only platform code selects extensions (a guard keeps every
  * selection out of the sources), since a conversation's own selection decides which hooks
@@ -69,7 +75,12 @@ export const TOOL_CAPABILITIES: Readonly<Record<string, Need>> = Object.freeze({
   write: Object.freeze(["write_files"] as const),
   edit: Object.freeze(["read_files", "write_files"] as const),
   bash: null,
+  codemode: Object.freeze([] as const),
 });
+
+/** pi's code mode tool, and the key `ta` makes its nested call under: no other may. */
+export const CODEMODE_TOOL = "codemode";
+export const CODEMODE_KEY = "codemode";
 
 /**
  * Each `ta` capability's need, by the name `ta` calls (`ta:catalog` for the catalog, as the
@@ -94,6 +105,7 @@ export const TA_CAPABILITIES: Readonly<Record<string, Need>> = Object.freeze({
   "model": Object.freeze([] as const),
   "agent:run": Object.freeze(["run_graph"] as const),
   "agent:delegate": Object.freeze(["run_graph"] as const),
+  "codemode": Object.freeze([] as const),
 });
 /** The tool `ta`, and the prefix of its ops' own names. */
 export const TA_TOOL = "ta";
@@ -105,6 +117,7 @@ export const NOT_GRANTED = "outside client capability not granted";
 export const NO_SHELL = "the shell is not granted to a scoped outside client";
 export const NO_AUTHORITY = "this conversation runs under no authority";
 export const NOT_OWNER = "only the owner may use this capability";
+export const CODEMODE_NESTED = "code mode runs only through ta: a script cannot start a script";
 
 /** The receipt's rule for a refused tool call, and a refused model call's code. */
 export const AUTHORITY_RULE = "outside_authority";
@@ -217,9 +230,23 @@ export interface AuthorityGrants {
 
 /** A tool call as the gate sees it: pi's `ToolHookCall`. */
 export interface GatedCall {
+  readonly id?: string;
   readonly name: string;
   readonly arguments: unknown;
-  readonly parent?: unknown;
+  readonly parent?: { readonly callId: string } | undefined;
+}
+
+/**
+ * Why a call may not run whatever its authority, or undefined: a `codemode` call that is
+ * not `ta`'s own nested call (its id `<ta's call>/CODEMODE_KEY`), such as a script's.
+ */
+export function nestingRefusal(call: GatedCall): string | undefined {
+  if (call.name !== CODEMODE_TOOL) {
+    return undefined;
+  }
+  const parent = call.parent;
+  return parent !== undefined && call.id === `${parent.callId}/${CODEMODE_KEY}`
+    ? undefined : CODEMODE_NESTED;
 }
 
 /**
@@ -357,7 +384,7 @@ export class Authority {
    */
   async decide(state: Readonly<AuthorityState> | undefined, call: GatedCall):
       Promise<{ block: string } | undefined> {
-    const reason = this.refusal(state, capabilityOf(call));
+    const reason = nestingRefusal(call) ?? this.refusal(state, capabilityOf(call));
     if (reason === undefined) {
       return undefined;
     }

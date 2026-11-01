@@ -145,9 +145,10 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
      `ta`; not agents' `MCPClientManager`, which keeps tables and credentials
      of its own.
 
-   **User hooks run in a separately deployed Worker's Durable Object, which
-   loads each owner's hook code with the Worker Loader (Dynamic Workers, open
-   beta),** not in a Dynamic Worker inside the owner's object. pi measured on Cloudflare
+   **User hooks, and pi's code mode sandbox, run in a separately deployed
+   Worker's Durable Object, which loads each owner's hook code with the Worker
+   Loader (Dynamic Workers, open beta),** not in a Dynamic Worker inside the
+   owner's object. pi measured on Cloudflare
    (October 2026) that code computing for 10 s in a Dynamic Worker loaded by
    the session object delayed every other request to that object by the full
    10 s; in a separate Worker's object the delay was about 50 ms. The owner's
@@ -156,8 +157,10 @@ exec 7.7 ms against 48 ms p95, workspace builds 6.5 s against 19-32 s).
    must survive a crash are held by `api.memo` on the trusted side.
    Declarative package parts (skills, prompts, model routing, tool schemas,
    settings) load into the loop as data; shell-level code runs in the microVM.
-   After its probe (P11), the hooks Worker also serves pi's code mode sandbox to
-   the owner through a service binding (`CodemodeRemote`).
+   The same Worker serves pi's code mode sandbox to the owner through the `HOOKS`
+   service binding (`CodemodeRemote`, P11's local part passed in workerd, H1,
+   2026-11-01): a script's VM runs there, its tools stay in the owner's object,
+   each held to its caller's authority.
 
    **pi is pinned to 1.4.x by its storage schema,** in one bundle with its store.
    Our own host calls pi's `Harness` API directly, so pi upgrades are not gated

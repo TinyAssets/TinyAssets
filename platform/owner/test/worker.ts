@@ -27,6 +27,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 
 import { type AgentParts, gatewaySource, OwnerAgent } from "../src/agent";
 import type { GatewayService, Resealed } from "../src/connections";
+import type { HooksService } from "../src/hooks";
 import { turnOf } from "../src/origin";
 import { RemoteStorage } from "../src/remote-storage";
 import type { Erasure } from "../src/erase";
@@ -107,6 +108,10 @@ export interface Probes {
   destroyGate: Promise<void> | null;
   /** Awaited by each store read of `scanSubmissions` (a run's settling), when set. */
   scanGate: Promise<void> | null;
+  /** Each call the agent made to the HOOKS binding's `run`, in order: its point, its code sent. */
+  hookCalls: { point: string; extension: string; sent: boolean }[];
+  /** How many code mode remotes the agent asked the HOOKS binding for. */
+  codemodes: number;
 }
 
 /** A store as its destroy found it. */
@@ -124,7 +129,7 @@ export function freshProbes(): Probes {
            background: null, backgroundGate: null, backgroundRuns: 0, toolGate: null, gated: [], nestGate: null,
            rewrite: null, widen: null, inject: null, writeGate: null, writes: 0,
            storeCalls: {}, wiped: new Map(), destroyFails: 0, destroyGate: null,
-           scanGate: null };
+           scanGate: null, hookCalls: [], codemodes: 0 };
 }
 
 /**
@@ -223,6 +228,24 @@ export function wipedSubmission(probes: Probes, store: string,
     || (by.id !== undefined && (record.id as unknown as number) === by.id));
   return found === undefined ? undefined
     : { status: found.status, reason: (found as { reason?: string }).reason ?? null };
+}
+
+/** The HOOKS binding with each `run` and code mode remote counted on `probes()`. */
+function countedHooks(hooks: HooksService, probes: () => Probes | undefined): HooksService {
+  return {
+    run: (request) => {
+      probes()?.hookCalls.push({ point: request.point, extension: request.extension,
+                                 sent: request.bundle.modules !== undefined });
+      return hooks.run(request);
+    },
+    codemode: (name) => {
+      const kept = probes();
+      if (kept !== undefined) {
+        kept.codemodes++;
+      }
+      return hooks.codemode(name);
+    },
+  };
 }
 
 /** Resolves when `context`'s abort signal fires: a tool that honours its abort. */
@@ -605,7 +628,7 @@ export class FauxOwnerDO extends OwnerDO {
     const made: { agent?: OwnerAgent; parts?: AgentParts; faux?: FauxProviderHandle;
                   self?: FauxOwnerDO; erasure?: Erasure } = {};
     const timing = testTiming();
-    super(ctx, env, (parts) => {
+    super(ctx, { ...env, HOOKS: countedHooks(env.HOOKS, () => made.self?.probes) }, (parts) => {
       made.parts = parts;
       made.faux = scripted(() => {
         const self = made.self!;

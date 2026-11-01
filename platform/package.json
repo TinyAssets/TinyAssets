@@ -6,7 +6,8 @@
     "owner",
     "files",
     "doors",
-    "gateway"
+    "gateway",
+    "hooks"
   ],
   "scripts": {
     "test": "npm run test --workspaces",

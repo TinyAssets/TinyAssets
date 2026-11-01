@@ -1,0 +1,170 @@
+/**
+ * The hooks Worker in workerd (H0), with miniflare's Worker Loader: a hook's JSON round
+ * trip through our shim; `fetch` throwing (`globalOutbound: null`); `need_code` and the
+ * resend; no module state shared by two owners with identical code (their ids differ); an
+ * invalid reply, a throw, a module that does not load and a deadline each reported as
+ * theirs; a request refused before anything runs. CPU limits and isolation are not shown
+ * by workerd (its loader enforces neither): owed to H2's live probe.
+ */
+import { createExecutionContext } from "cloudflare:test";
+import { env } from "cloudflare:workers";
+import { describe, expect, it } from "vitest";
+
+import { Hooks } from "../src/index";
+import { bundleId, canonicalModules, HOOK_POINTS } from "../src/protocol";
+import { COMPATIBILITY_DATE, loaderName, SHIM_VERSION, workerCode } from "../src/runner";
+
+const MODULE = "/workspace/.agents/packages/guard/hooks/guard.js";
+
+type Modules = Record<string, string>;
+
+function owner(): string {
+  return `owner-${crypto.randomUUID()}`;
+}
+
+/** A request for `point` of `module` in `who`'s bundle of `modules`, the code sent or not. */
+async function request(who: string, modules: Modules, input: unknown,
+                       options: { send?: boolean; point?: string; module?: string;
+                                  deadline?: number; id?: string } = {}) {
+  const id = options.id ?? await bundleId(who, modules);
+  return {
+    owner: who,
+    bundle: { id, ...(options.send === false ? {} : { modules }) },
+    point: options.point ?? "beforeTool",
+    extension: "pkg:guard",
+    module: options.module ?? MODULE,
+    input,
+    context: { conversation_id: 0, task_id: "t1", call_id: "c1", authority: "owner" },
+    deadline_ms: options.deadline ?? 2_000,
+    cpu_ms: 50,
+  };
+}
+
+function run(who: string, value: unknown) {
+  return env.RUNNER.getByName(who).run(value);
+}
+
+describe("the hooks Worker", () => {
+  it("round-trips a hook's JSON through the shim", async () => {
+    const who = owner();
+    const modules = { [MODULE]: "export function beforeTool(input, context) {\n" +
+      "  return { arguments: { ...input.call.arguments, task: context.task_id } };\n}" };
+    const reply = await run(who, await request(who, modules,
+                                               { call: { id: "c1", name: "bash",
+                                                         arguments: { command: "ls" } } }));
+    expect(reply).toEqual({ ok: true, result: { arguments: { command: "ls", task: "t1" } } });
+  });
+
+  it("gives a hook no network: its fetch throws", async () => {
+    const who = owner();
+    const modules = { [MODULE]: "export async function beforeTool() {\n" +
+      "  try { await fetch('https://example.com/'); return { block: 'fetched' }; }\n" +
+      "  catch (error) { return { block: 'no network' }; }\n}" };
+    expect(await run(who, await request(who, modules, {})))
+      .toEqual({ ok: true, result: { block: "no network" } });
+  });
+
+  it("answers need_code when it holds no code, and runs once the code is resent", async () => {
+    const who = owner();
+    const modules = { [MODULE]: "export function afterTool() { return null; }" };
+    expect(await run(who, await request(who, modules, {}, { send: false, point: "afterTool" })))
+      .toEqual({ ok: false, error: "need_code" });
+    expect(await run(who, await request(who, modules, {}, { point: "afterTool" })))
+      .toEqual({ ok: true, result: null });
+    // Kept in memory now: the next call sends none.
+    expect(await run(who, await request(who, modules, {}, { send: false, point: "afterTool" })))
+      .toEqual({ ok: true, result: null });
+  });
+
+  it("never shares module state between two owners with identical code", async () => {
+    const modules = { [MODULE]: "let calls = 0;\n" +
+      "export function beforeTool() { calls++; return { block: String(calls) }; }" };
+    const [a, b] = [owner(), owner()];
+    expect(await bundleId(a, modules)).not.toBe(await bundleId(b, modules));
+    const blocks = [];
+    for (const who of [a, a, b, a, b]) {
+      const reply = await run(who, await request(who, modules, {})) as
+        { ok: boolean; result?: { block: string }; error?: string };
+      blocks.push(reply.ok ? reply.result!.block : reply.error);
+    }
+    expect(blocks).toEqual(["1", "2", "1", "3", "2"]);
+    expect(loaderName(a, "x")).not.toBe(loaderName(b, "x"));
+  });
+
+  it.each([
+    ["a function", "export function beforeTool() { return () => 1; }", "invalid"],
+    ["a BigInt", "export function beforeTool() { return { n: 1n }; }", "invalid"],
+    ["a cycle", "export function beforeTool() { const a = {}; a.a = a; return a; }", "invalid"],
+    ["no export of the point", "export function afterTool() { return null; }", "invalid"],
+    ["an export that is no function", "export const beforeTool = 1;", "invalid"],
+    ["a throw", "export function beforeTool() { throw new Error('no'); }", "threw"],
+    ["a rejection", "export async function beforeTool() { throw new Error('no'); }", "threw"],
+    ["a module that does not load", "export function beforeTool( {", "threw"],
+    ["a module that throws as it loads", "throw new Error('at load');", "threw"],
+  ])("reports a hook that returns or does %s", async (_what, source, error) => {
+    const who = owner();
+    const reply = await run(who, await request(who, { [MODULE]: source }, {}));
+    expect(reply.ok).toBe(false);
+    expect(!reply.ok && reply.error).toBe(error);
+  });
+
+  it("answers timeout past the request's deadline", async () => {
+    const who = owner();
+    const modules = { [MODULE]: "export function beforeTool() {\n" +
+      "  return new Promise((resolve) => setTimeout(() => resolve(null), 5000));\n}" };
+    const started = Date.now();
+    expect(await run(who, await request(who, modules, {}, { deadline: 100 })))
+      .toEqual({ ok: false, error: "timeout" });
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it.each([
+    ["no owner", (r: Record<string, unknown>) => ({ ...r, owner: "" })],
+    ["an unknown point", (r: Record<string, unknown>) => ({ ...r, point: "beforeRequest" })],
+    ["a deadline past its bound", (r: Record<string, unknown>) => ({ ...r, deadline_ms: 60_000 })],
+    ["CPU under its floor", (r: Record<string, unknown>) => ({ ...r, cpu_ms: 10 })],
+    ["CPU past its ceiling", (r: Record<string, unknown>) => ({ ...r, cpu_ms: 5_000 })],
+    ["no context", (r: Record<string, unknown>) => ({ ...r, context: undefined })],
+    ["a module not in the bundle", (r: Record<string, unknown>) => ({ ...r, module: "/x.js" })],
+    ["a bundle id that is not its code's", (r: Record<string, unknown>) => ({
+      ...r, bundle: { ...(r["bundle"] as object), id: "someone/else" } })],
+    ["code over a MiB", (r: Record<string, unknown>) => ({
+      ...r, bundle: { ...(r["bundle"] as object),
+                      modules: { [MODULE]: `// ${"x".repeat(1_048_576)}` } } })],
+  ])("refuses a request with %s as invalid", async (_what, change) => {
+    const who = owner();
+    const modules = { [MODULE]: "export function beforeTool() { return { block: 'ran' }; }" };
+    const asked = change(await request(who, modules, {}) as unknown as Record<string, unknown>);
+    expect(await run(who, asked)).toMatchObject({ ok: false, error: "invalid" });
+  });
+
+  it("refuses a request for another owner's runner", async () => {
+    const [who, other] = [owner(), owner()];
+    const modules = { [MODULE]: "export function beforeTool() { return { block: 'ran' }; }" };
+    expect(await env.RUNNER.getByName(other).run(await request(who, modules, {})))
+      .toMatchObject({ ok: false, error: "invalid" });
+  });
+
+  it("serves run at the owner's own runner through its entrypoint", async () => {
+    const who = owner();
+    const hooks = new Hooks(createExecutionContext(), env);
+    const modules = { [MODULE]: "export function onYield() { return { continue: 'more' }; }" };
+    expect(await hooks.run(await request(who, modules, {}, { point: "onYield" })))
+      .toEqual({ ok: true, result: { continue: "more" } });
+    expect(await hooks.run({ owner: 7 })).toMatchObject({ ok: false, error: "invalid" });
+  });
+
+  it("builds a Worker with no way out, at the owner Worker's date", () => {
+    const code = workerCode({ "/b.js": "export const b = 1;", "/a.js": "export const a = 1;" });
+    expect(code).toMatchObject({
+      compatibilityDate: COMPATIBILITY_DATE, compatibilityFlags: [], mainModule: "shim.js",
+      env: {}, globalOutbound: null, limits: { cpuMs: 1_000, subRequests: 0 },
+    });
+    expect(Object.keys(code.modules).sort()).toEqual(["m0.js", "m1.js", "shim.js"]);
+    expect(code.modules["m0.js"]).toBe("export const a = 1;");
+    expect(String(code.modules["shim.js"])).toContain("\"/a.js\", m0");
+    expect(canonicalModules({ "/b.js": "b", "/a.js": "a" })).toBe('[["/a.js","a"],["/b.js","b"]]');
+    expect(SHIM_VERSION).toBe(1);
+    expect(HOOK_POINTS).not.toContain("beforeRequest");
+  });
+});

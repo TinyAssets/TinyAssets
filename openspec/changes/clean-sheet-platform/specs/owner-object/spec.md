@@ -580,7 +580,7 @@ A unit SHALL read the rows it decides on, or re-check them in its own statements
 - **THEN** the write is refused and nothing is written
 
 ### Requirement: Each agent thread is one pi Session over its own store
-pi-durable SHALL run in the owner's object, one Session per agent thread, hosted by the object's own `ThreadHost`, a capability of its Lifecycle beside the schedule, with none of Lifecycle's handlers installed. Each Session SHALL be opened over its thread's own `ThreadStore`, a second SQLite class of the owner Worker bound as `PISTORE` (no `script_name`), by RPC over one session per open Session, released when the Session closes; the harness, every hook, the environment, the model provider and every authority check SHALL run in the owner's object. pi's tables SHALL exist only in the stores, under pi's own schema version, which the pi pin guard SHALL hold at 2, with pi-durable, pi-ai and chord pinned by exact version and lockfile integrity. A store SHALL serve only its holder, the Session that last opened it, refuse every call before it is opened, read no binding, and once destroyed refuse every call.
+pi-durable SHALL run in the owner's object, one Session per agent thread, hosted by the object's own `ThreadHost`, a capability of its Lifecycle beside the schedule, with none of Lifecycle's handlers installed. Each Session SHALL be opened over its thread's own `ThreadStore`, a second SQLite class of the owner Worker bound as `PISTORE` (no `script_name`), by RPC over one session per open Session, released when the Session closes; the harness, every hook (a package's executable hook as our remote wrapper, its code in the hooks Worker), the environment, the model provider and every authority check SHALL run in the owner's object. pi's tables SHALL exist only in the stores, under pi's own schema version, which the pi pin guard SHALL hold at 2, with pi-durable, pi-ai and chord pinned by exact version and lockfile integrity. A store SHALL serve only its holder, the Session that last opened it, refuse every call before it is opened, read no binding, and once destroyed refuse every call.
 
 #### Scenario: A cold object's first call
 - **WHEN** a cold object's first call submits a turn
@@ -1212,19 +1212,78 @@ The owner's own input to `agentSubmit`, `agentRun` and `ta`'s `agent:run` SHALL 
 - **WHEN** the owner sends `/skill:pdf-tools extract a.pdf`, then `/review "API shape" speed` with a template `review.md`
 - **THEN** pi is handed the skill's block followed by `extract a.pdf`, then the template's body with `$1` as `API shape` and `$@` as both
 
-### Requirement: Packages are selected by owner policy and contribute data only
-Owner policy's `packages` list SHALL select packages, each a directory under `/workspace/.agents/packages`, as a path or `{source, skills?, prompts?}` with pi's filter grammar (plain globs include, `!` excludes, `+` forces an exact path in, `-` out; omitted all, `[]` none), at most 32, each once, with no `extensions` filter. A selected package SHALL contribute only its skills and prompt templates, from its `package.json`'s `pi` key or its conventional directories; its `tinyassets` key's fields SHALL be skipped with a notice until they have a consumer.
+### Requirement: Packages are selected by owner policy and contribute data and remote hooks
+Owner policy's `packages` list SHALL select packages, each a directory under `/workspace/.agents/packages`, as a path or `{source, skills?, prompts?}` with pi's filter grammar (plain globs include, `!` excludes, `+` forces an exact path in, `-` out; omitted all, `[]` none), at most 32, each once, with no `extensions` filter. A selected package SHALL contribute its skills and prompt templates, from its `package.json`'s `pi` key or its conventional directories, and its `tinyassets.hooks` entries as remote hooks; its `tinyassets` key's other fields SHALL be skipped with a notice until they have a consumer.
 
 #### Scenario: A package filtered
 - **WHEN** the owner selects a package with `skills: ["!beta", "-skills/gamma"]` beside a package it does not select
 - **THEN** the section lists the selected package's other skills and its templates expand, and nothing of `beta`, `gamma` or the unselected package loads
 
 ### Requirement: A package that declares code is refused loudly
-A selected package whose manifest holds any npm key but its data (an entry point, `bin`, `scripts`), any `pi` key but its skills and prompts (pi's UI data skipped with a notice), a `pi.extensions` that is not an empty list, or a conventional `extensions/` directory SHALL be refused whole with the fixed code `package_executable` and an owner notice; no package code SHALL run in the owner's object, and every tool the object installs from a package SHALL pass the early gate again as it executes, a rerun after a restart included.
+A selected package whose manifest holds any npm key but its data (an entry point, `bin`, `scripts`), any `pi` key but its skills and prompts (pi's UI data skipped with a notice), a `pi.extensions` that is not an empty list, or a conventional `extensions/` directory SHALL be refused whole with the fixed code `package_executable` and an owner notice, whatever remote hooks it also declares; no package code SHALL run in the owner's object, and every tool the object installs from a package SHALL pass the early gate again as it executes, a rerun after a restart included.
 
 #### Scenario: A package with an extension
 - **WHEN** the owner selects a package listing `pi.extensions` and skills
 - **THEN** none of its skills are listed, and a notice names the package and `package_executable`
+
+#### Scenario: A package with an extension beside its hooks
+- **WHEN** the owner selects a package listing `pi.extensions` and `tinyassets.hooks`
+- **THEN** it is refused `package_executable` and no wrapper of its hooks is installed
+
+### Requirement: A package's executable hooks run only in the hooks Worker
+A selected package's `tinyassets.hooks` entries (`{module, points, tools?, timeout_ms?}`, each module a prebundled ESM file of the package that the owner's own authority wrote, the points among `beforeTool`, `afterTool`, `onYield`, `beforeCompact`, `afterResponse` and `afterTools`, each once a package) SHALL become remote wrappers on the package's `pkg:<name>` extension, which call the `HOOKS` service binding with JSON in and out, and wait at most `deadline_ms + 250` (the entry's `timeout_ms` within the policy's `hooks.timeout_ms`, 2,000 by default), asking the policy's `hooks.cpu_ms` (50 to 1,000). The owner's selected packages' modules SHALL make one bundle of at most 1 MiB, its id `<owner>/<sha256 of the modules>`, sent only once the hooks Worker answers `need_code`; an entry that is not one, `beforeRequest` among them, or a module not the owner's, SHALL refuse the package `package_invalid`. No call SHALL be made for a point no selected package declares, or for a tool an entry's `tools` does not name.
+
+#### Scenario: A hook that blocks
+- **WHEN** a selected package's `beforeTool` hook blocks a write
+- **THEN** the write is blocked with the hook's reason, and the first call's code was sent only after `need_code`
+
+#### Scenario: Two owners with identical hooks
+- **WHEN** two owners select packages with the same module
+- **THEN** their bundle ids differ, each naming its owner, and their hooks share no module state
+
+### Requirement: A hook's failure follows its point's rule
+A `beforeTool` hook that times out, throws, answers out of shape or cannot be reached SHALL block the call; an `afterTool` hook's failure SHALL fail the result closed (an error, the tool's output withheld); an `onYield` failure SHALL continue nothing; a `beforeCompact` failure SHALL leave pi's own summary; an observe-only point's failure SHALL only be reported. Each failure SHALL leave an owner notice (`hook_failed`).
+
+#### Scenario: A beforeTool hook past its deadline
+- **WHEN** a `beforeTool` hook computes past the policy's `timeout_ms`
+- **THEN** the call is blocked `hook_failed: ... timeout`, the file is not written, and a notice names the package and the point
+
+#### Scenario: An afterTool hook that throws
+- **WHEN** an `afterTool` hook throws on a read
+- **THEN** the model sees an error result without the file's text
+
+### Requirement: A hook's decision survives a crash without asking the hook again
+Each wrapper SHALL read pi's `api.memo("ta.hook/<ext>/<point>/<key>")` first and return a decision it finds; otherwise it SHALL call the hook and store the decision, a failure's included, with `api.memo`, returning the durable winner. The key SHALL be the call's id for `beforeTool`, plus a digest of the result for `afterTool`, and a digest of what the point sees for the others.
+
+#### Scenario: A crash between the decision and the intent
+- **WHEN** a `beforeTool` hook rewrote a call's arguments and the object dies before the tool's intent, and its alarm starts it again
+- **THEN** the rerun runs the call with the rewritten arguments and the hooks Worker is not called
+
+### Requirement: The hooks Worker reaches no owner
+The `tinyassets-hooks` Worker SHALL bind its Worker Loader and the namespaces of its own `HookRunner` and `CodemodeSandbox` classes only, serve no URL, and never use its objects' storage; each bundle SHALL load at the owner Worker's compatibility date with `globalOutbound: null`, `env: {}` and `subRequests: 0`. The owner config guard SHALL admit `HOOKS` only to such a Worker.
+
+#### Scenario: A hook that fetches
+- **WHEN** a hook calls `fetch`
+- **THEN** the fetch throws inside the hook
+
+#### Scenario: The hooks Worker gains a binding
+- **WHEN** the hooks Worker's config binds `OWNER`, a bucket or another Worker's class
+- **THEN** the owner config guard refuses the owner's `HOOKS` binding
+
+### Requirement: Code mode runs through ta, its VM in the hooks Worker
+While the owner's policy turns `hooks.codemode` on, pi's code mode SHALL be installed as `ta.codemode`, its `codemode` tool callable by tools only, reached as `ta call codemode {code}` under its one nested-call key, its VM run by pi's `RemoteCodemodeSandbox` over the `HOOKS` binding's `Codemode`. A script's `tools.*` SHALL be nested calls the early gate holds to the caller's authority; a `codemode` call that is not `ta`'s own (a script's) SHALL be refused; its `models.complete` SHALL be `ta`'s `model` call, reserved and charged to the turn; code mode's internal tools SHALL never be listed or called by `ta`.
+
+#### Scenario: A scoped client's script
+- **WHEN** a client scoped to `read_files` runs a script that reads, runs bash and writes
+- **THEN** the read returns the file, and the bash and the write are refused with their fixed reasons
+
+#### Scenario: A script that starts a script
+- **WHEN** a script calls `tools.codemode`
+- **THEN** that call is refused and no inner script runs
+
+#### Scenario: A script's model call
+- **WHEN** a script calls `models.complete` through the gateway
+- **THEN** the call is reserved and settled on the run's own turn
 
 ### Requirement: A subagent is a conversation its delegation owns
 `ta`'s `agent:delegate {agent?, task}` SHALL make its child in its call's own commit, owned by the call's task, found again on a rerun by pi's ownership index, configured as the named agent (its `AGENTS.md`) or as the caller, holding the caller's authority and the five model tools through `conversationCreated`; submit `task` as the child's one input under the call's context, with request id `subagent:<task>`, so it joins the caller's turn; and wait for its answer. Aborting the call SHALL abort the child, the caller SHALL be idle only once the child is, and a revoke, a suspension and a policy write SHALL end it with its thread's work. A scoped client SHALL be refused without `run_graph` where it acts and, with an agent named, where that agent acts.

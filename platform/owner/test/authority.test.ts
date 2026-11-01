@@ -202,12 +202,13 @@ describe("the authority gate's capability map", () => {
   });
 
   it("holds each ta capability to what its door holds: the owner's policy the owner's, a " +
-     "proposal to propose_policy, file usage to read_files, the rest to a standing grant",
+     "proposal to propose_policy, file usage to read_files, the rest (code mode's among " +
+     "them, each tool its script calls held to its own need) to a standing grant",
      () => {
     expect(TA_CAPABILITIES).toEqual({
       "ta:catalog": [], "policy:show": OWNER_ONLY, "policy:propose": ["propose_policy"],
       "wake:list": [], "files:usage": ["read_files"], "model": [], "agent:run": ["run_graph"],
-      "agent:delegate": ["run_graph"],
+      "agent:delegate": ["run_graph"], "codemode": [],
     });
   });
 

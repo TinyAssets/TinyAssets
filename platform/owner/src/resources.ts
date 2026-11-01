@@ -25,15 +25,23 @@
  *   (`policy.ts`, the `packages` table, pi's settings form) with pi's filter grammar per
  *   resource type (`applyPatterns`: plain globs include, `!` excludes, `+` forces an exact
  *   path in, `-` out; omitted loads all, `[]` none). A package contributes data only: skills
- *   and prompt templates. One that declares code is refused whole, loudly, with the fixed
- *   code `package_executable` and an owner notice: any npm key but its data (an entry
- *   point, a binary, a script), any `pi` key but its skills and prompts (pi's UI data,
- *   `themes`, `image` and `video`, skipped with a notice), a `pi.extensions` that is not an
- *   empty list, or a conventional `extensions/` directory. The owner object runs no package
- *   code (hooks are H1's, remote). The `tinyassets` key's fields are not loaded yet
- *   (settings and model routing hints have no consumer: owner policy is the one settings
- *   source, tasks 5): each is skipped with a notice, the package's skills and prompts still
- *   loading.
+ *   and prompt templates, and executable hooks that run only remotely. One that declares
+ *   code to run in-process is refused whole, loudly, with the fixed code
+ *   `package_executable` and an owner notice: any npm key but its data (an entry point, a
+ *   binary, a script), any `pi` key but its skills and prompts (pi's UI data, `themes`,
+ *   `image` and `video`, skipped with a notice), a `pi.extensions` that is not an empty
+ *   list, or a conventional `extensions/` directory. The owner object runs no package code.
+ * - **Hooks** are the one executable part a package may hold, and only remotely (H1,
+ *   `hooks.ts`): its `tinyassets.hooks` entries (`{module, points, tools?, timeout_ms?}`),
+ *   each module a prebundled ESM file in the package that the owner's own authority wrote,
+ *   become remote wrappers on the package's `pkg:<name>` extension (its directory below
+ *   `/workspace/.agents/packages`), which call the hooks Worker; the modules of every
+ *   selected package make the owner's one bundle, at most `BUNDLE_MAX` bytes (a package
+ *   that would pass it is refused whole, `package_invalid`). An entry that is not one, or a
+ *   module that cannot be read as the owner's, refuses the package whole too. The
+ *   `tinyassets` key's other fields are not loaded yet (settings and model routing hints
+ *   have no consumer: owner policy is the one settings source, tasks 5): each is skipped
+ *   with a notice, the package's skills and prompts still loading.
  *
  * Every root here, and every package, is in a tree only the owner's own authority changes
  * (`OWNER_TREES`, `paths.ts`: refused to a client at the file doors and in the agent's
@@ -60,8 +68,12 @@ import { defineExtension, type Extension, type PromptInput } from "@earendil-wor
 import { Invalid, Refused } from "./errors";
 import { type Content, type Entry, FileFault, type Files, MAX_LIST } from "./files";
 import type { Write } from "./gate";
+import {
+  type Bundle, BUNDLE_MAX, bundleOf, type HookEntry, hookEntries, PACKAGE_EXTENSION,
+  type PackageHooks,
+} from "./hooks";
 import type { Notices } from "./notices";
-import { nameOf, parentOf, resolve, within } from "./paths";
+import { nameOf, PACKAGES_DIR, parentOf, resolve, within } from "./paths";
 import { codePoints } from "./text";
 
 /** Where skills are found, in order: the Agent Skills location, then the workspace's. */
@@ -106,6 +118,9 @@ const PI_CODE = "extensions";
 
 /** A package refused for declaring code: the owner object runs none. */
 export const PACKAGE_EXECUTABLE = "package_executable";
+/** The `tinyassets` key the object loads: a package's remote hooks. */
+const OURS_LOADED = "hooks";
+
 /** A package refused for a manifest or directory that cannot be read as one. */
 export const PACKAGE_INVALID = "package_invalid";
 /** The notices: a skill or template not loaded, a package refused, a field not loaded. */
@@ -142,15 +157,21 @@ export interface Template {
   readonly path: string;
 }
 
-/** What a build found: the skills, the templates and the section they make. */
+/**
+ * What a build found: the skills, the templates and the section they make, and the selected
+ * packages' hooks with the owner's bundle of their modules (none: no package has hooks).
+ */
 export interface Index {
   readonly skills: readonly Skill[];
   readonly templates: readonly Template[];
   readonly section: string | undefined;
+  readonly hooks: readonly PackageHooks[];
+  readonly bundle: Bundle | null;
 }
 
 const EMPTY: Index = Object.freeze({ skills: Object.freeze([]), templates: Object.freeze([]),
-                                     section: undefined });
+                                     section: undefined, hooks: Object.freeze([]),
+                                     bundle: null });
 
 /** Whether a file's writer is the owner's own authority: the owner, or its agent. */
 export function ownersOwn(writer: string): boolean {
@@ -160,8 +181,12 @@ export function ownersOwn(writer: string): boolean {
 /** A file read as the owner's text, or why it is skipped; null when there is none. */
 type Read = { readonly text: string } | { readonly skipped: string };
 
-/** `path`'s text, when the owner's own authority wrote it, it is small and it is UTF-8. */
-export async function ownedText(files: Files, path: string): Promise<Read | null> {
+/**
+ * `path`'s text, when the owner's own authority wrote it, it is within `max` bytes (a
+ * resource's, by default) and it is UTF-8.
+ */
+export async function ownedText(files: Files, path: string, max = RESOURCE_FILE_MAX):
+    Promise<Read | null> {
   let content: Content;
   try {
     content = files.open(path);
@@ -177,8 +202,8 @@ export async function ownedText(files: Files, path: string): Promise<Read | null
   if (!ownersOwn(content.entry.writer)) {
     return { skipped: "not written by the owner" };
   }
-  if (content.entry.size > RESOURCE_FILE_MAX) {
-    return { skipped: `larger than ${RESOURCE_FILE_MAX} bytes` };
+  if (content.entry.size > max) {
+    return { skipped: `larger than ${max} bytes` };
   }
   const parts = content.inline !== undefined ? [content.inline]
     : await files.fetch((content.chunks ?? []).map(({ sha256 }) => ({ sha256 })));
@@ -352,11 +377,44 @@ function override(entry: string): boolean {
 
 // -- Packages.
 
-/** A package's resources, or why it is refused. */
+/** A package's resources and its hooks with their modules' text, or why it is refused. */
 type Loaded =
   | { readonly skills: readonly string[]; readonly templates: readonly string[];
-      readonly skipped: readonly string[] }
+      readonly skipped: readonly string[]; readonly hooks: readonly HookEntry[];
+      readonly modules: Readonly<Record<string, string>> }
   | { readonly refused: string };
+
+/**
+ * The text of each hook module `entries` name, by path: each a file the owner's own
+ * authority wrote, UTF-8, within the bundle's bound; else `Invalid`.
+ */
+async function hookModules(files: Files, entries: readonly HookEntry[]):
+    Promise<Record<string, string>> {
+  const modules: Record<string, string> = {};
+  for (const { module } of entries) {
+    if (Object.hasOwn(modules, module)) {
+      continue;
+    }
+    const read = await ownedText(files, module, BUNDLE_MAX);
+    if (read === null || "skipped" in read) {
+      throw new Invalid(`the hook module ${module} is ${read === null ? "missing"
+        : read.skipped}`);
+    }
+    modules[module] = read.text;
+  }
+  return modules;
+}
+
+/** The size of `modules`, in bytes of UTF-8. */
+function bytesOf(modules: Readonly<Record<string, string>>): number {
+  const encoder = new TextEncoder();
+  return Object.values(modules).reduce((sum, text) => sum + encoder.encode(text).byteLength, 0);
+}
+
+/** A selected package's extension: `pkg:` and its directory below the packages tree. */
+export function packageExtension(source: string): string {
+  return `${PACKAGE_EXTENSION}${source.slice(PACKAGES_DIR.length + 1)}`;
+}
 
 function plain(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -504,13 +562,24 @@ export async function loadPackage(files: Files, selection: PackageSelection):
       const enabled = applyPatterns(paths, filter, root);
       return paths.filter((path) => enabled.has(path));
     };
-    skipped.push(...Object.keys(ours).map((key) => `tinyassets.${key}`));
+    skipped.push(...Object.keys(ours).filter((key) => key !== OURS_LOADED)
+      .map((key) => `tinyassets.${key}`));
+    // Hooks run only remotely, each module a file of this package.
+    const hooks = ours[OURS_LOADED] === undefined ? []
+      : hookEntries(ours[OURS_LOADED], (module) => {
+        const path = resolve(root, module);
+        if (!within(path, root) || path === root) {
+          throw new Invalid(`tinyassets.hooks names ${module}, outside the package`);
+        }
+        return path;
+      });
+    const modules = await hookModules(files, hooks);
     if (budget.truncated) {
       skipped.push(`files past the first ${WALK_MAX}`);
     }
     return { skills: pick(skills, selection.skills), templates: pick(templates,
                                                                      selection.prompts),
-             skipped };
+             skipped, hooks, modules };
   } catch (error) {
     if (error instanceof Invalid) {
       return { refused: `${PACKAGE_INVALID}: ${error.message}` };
@@ -643,6 +712,12 @@ export interface ResourceParts {
   readonly install: (extension: Extension) => void;
   /** Whether a request's conversation may read the owner's files: it is shown the skills. */
   readonly readable: (input: PromptInput, context: Context) => Promise<boolean>;
+  /** The owner the object is named by: its bundle's id names it. */
+  readonly owner: () => string;
+  /** A package's `pkg:<name>` extension of remote hook wrappers, over the owner's bundle. */
+  readonly remote: (bundle: Bundle, hooks: PackageHooks) => Extension;
+  /** Remove the installed extension of a name: a package no longer selected, or hooked. */
+  readonly uninstall: (name: string) => void;
 }
 
 /**
@@ -659,6 +734,8 @@ export class Resources {
   /** The selection the index was built from, as JSON, and its packages' directories. */
   #selected = "[]";
   #packages: readonly string[] = [];
+  /** The packages' hook extensions installed by the last build, by name. */
+  #hooked: readonly string[] = [];
   /** How many times the section was built and installed on this instance (a diagnostic). */
   #builds = 0;
 
@@ -777,6 +854,8 @@ export class Resources {
     this.#packages = selection.map((chosen) => chosen.source);
     const skillPaths: string[] = [];
     const templatePaths: string[] = [];
+    const hooks: PackageHooks[] = [];
+    const modules: Record<string, string> = {};
     let truncated = false;
     for (const root of SKILL_ROOTS) {
       const budget: Budget = { left: WALK_MAX, truncated: false };
@@ -793,6 +872,15 @@ export class Resources {
       if ("refused" in loaded) {
         this.#notice(PACKAGE_REFUSED, `${chosen.source}: ${loaded.refused}`);
         continue;
+      }
+      if (bytesOf({ ...modules, ...loaded.modules }) > BUNDLE_MAX) {
+        this.#notice(PACKAGE_REFUSED, `${chosen.source}: ${PACKAGE_INVALID}: its hook modules ` +
+                     `take the owner's bundle past ${BUNDLE_MAX} bytes`);
+        continue;
+      }
+      if (loaded.hooks.length > 0) {
+        Object.assign(modules, loaded.modules);
+        hooks.push({ extension: packageExtension(chosen.source), entries: loaded.hooks });
       }
       skillPaths.push(...loaded.skills);
       templatePaths.push(...loaded.templates);
@@ -840,12 +928,23 @@ export class Resources {
                    `${TEMPLATES_KEPT} templates and ${WALK_MAX} entries a root are read`);
     }
     const kept = listed.slice(0, SKILLS_LISTED);
+    const bundle = hooks.length === 0 ? null : bundleOf(this.#parts.owner(), modules);
     const index: Index = {
       skills: skills.filter((skill) => !skill.invocable || kept.includes(skill)),
       templates: templates.slice(0, TEMPLATES_KEPT),
       section: skillsSection(kept),
+      hooks, bundle,
     };
     this.#parts.install(skillsExtension(index.section, this.#parts.readable));
+    // Each hooked package's wrappers, in place; a package no longer hooked, gone.
+    const named = hooks.map((hooked) => hooked.extension);
+    for (const hooked of hooks) {
+      this.#parts.install(this.#parts.remote(bundle!, hooked));
+    }
+    for (const name of this.#hooked.filter((name) => !named.includes(name))) {
+      this.#parts.uninstall(name);
+    }
+    this.#hooked = named;
     this.#index = index;
     this.#selected = selected;
     this.#builds++;

@@ -1358,7 +1358,39 @@ account and no deploy.
 - [ ] Package data A5 left unloaded: the `tinyassets` key's settings and model routing
   hints (each skipped with a notice now), when owner policy and `auto` take them;
   package tool schemas (the plan's declarative tool schemas) reached through `ta`.
-- [ ] H0 with code mode, H1, H2 (founder for H2).
+- [x] H0 with code mode (workerd only, nothing deployed): `platform/hooks`, the
+  `tinyassets-hooks` Worker. `Hooks.run(request)` at the owner's own `HookRunner`
+  (`getByName(owner)`, no storage use), which loads the owner's bundle with the Worker
+  Loader under `<owner>:<bundle id>:shim<n>` (`compatibilityDate` the owner Worker's,
+  `globalOutbound: null`, `env: {}`, `limits {cpuMs: 1,000 ceiling, subRequests: 0}`, each
+  call asking the policy's `cpu_ms`), our shim dispatching the point to the module's export
+  with JSON in and out, `need_code` and the resend, its own deadline. `Hooks.codemode(name)`
+  hands out pi's `CodemodeRemote` over its `CodemodeSandbox` (a
+  `CodemodeSandboxDurableObject` subclass with its interrupt budget and memory, served by
+  pi's `serveCodemodeRemote`). Config guard: its loader and its own two classes only, no
+  `OWNER`, no storage binding, no route, no workers.dev; isolation guard over its source.
+  P11's local part passed (`exchange` an RPC function over the `HOOKS` binding, a nested
+  call's round trip, the interrupt budget a `timeout`).
+- [x] H1: owner wiring. `HOOKS` in the owner config guard, its Worker held to its loader,
+  own classes and limits. A selected package's `tinyassets.hooks` entries are remote
+  wrappers on its `pkg:<name>` extension (modules prebundled ESM in the owner's own files,
+  1 MiB together, one bundle per owner, its id `<owner>/<sha256>`); `pi.extensions` and
+  every other in-process code still `package_executable`. Failure rules: `beforeTool`
+  blocks, `afterTool` fails closed redacted, `onYield` continues nothing, `beforeCompact`
+  leaves pi's summary, observe-only points report; each failure a `hook_failed` notice;
+  each decision memoized (`ta.hook/<ext>/<point>/<key>`), so a rerun asks no hook; the
+  deadline `inTime(HOOKS.run(...), deadline_ms + 250)`. Code mode is `ta call codemode`,
+  tools-only, its scripts' tools held to the caller's authority by the gate, a script's own
+  `tools.codemode` refused, `models.complete` reserved and charged to the turn. Policy: the
+  `hooks` table (`timeout_ms` 100 to 10,000, default 2,000; `cpu_ms` 50 to 1,000, default
+  50; `codemode`, off by default). No owner table added (the owner-bound guard's worst case
+  unchanged, 46.0%): memos live in pi's thread stores.
+- [ ] H2 live (founder: Workers Paid, Dynamic Workers in open beta): deploy the hooks Worker
+  and probe what workerd cannot show: `cpuMs` enforcement (a hook past its `cpu_ms`, a
+  script past its interrupt budget against the Worker's `cpu_ms`), the blocking isolation
+  (10 s of compute in a hook or a script against the owner object's latency), and the
+  Dynamic Worker count per day (one per owner per active day expected), with module state
+  across isolates of one loader name.
 - [ ] The pi upgrade, within a slice of pi's release: `adopt` in `RemoteStorage`, the tee
   deleted, `persistWithinMs`, `maxTurns` from policy, `onReport`, parking code out of the
   host, the new watch API, the schema re-pinned.
