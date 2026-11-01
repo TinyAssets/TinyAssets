@@ -255,6 +255,19 @@ export interface Lease {
   readonly base: number;
 }
 
+/** The live sandbox lease as egress and the sync doors check it (`Files.sandboxLease`). */
+export interface SandboxLease {
+  readonly lease_id: string;
+  readonly epoch: number;
+  /** The SHA-256 hex of the egress token's secret, which only E2B's transform carries. */
+  readonly egress_token: string;
+  /** The SHA-256 hex of the sync token's secret, which the in-VM sync agent holds. */
+  readonly sync_token: string;
+  readonly expires_at: number;
+  /** The egress generation the sandbox's network was last applied under, or null. */
+  readonly network_generation: number | null;
+}
+
 /** A sync op: what the sandbox's scan found, against the version it last synced. */
 export type SyncOp =
   | { readonly op: "write"; readonly path: string; readonly base: number | null;
@@ -312,6 +325,9 @@ type Space = {
   epoch: number;
   holder: string | null;
   lease_expires: number;
+  egress_token: string | null;
+  sync_token: string | null;
+  network_generation: number | null;
   retained_keep: number;
   retained_recent: number;
   retained_days: number;
@@ -1617,11 +1633,20 @@ export class Files {
 
   // -- THE SYNC LEASE -------------------------------------------------------------
 
-  /** Take the sync lease, when no live one is held: a new lease id and the next epoch. */
-  leaseAcquire(holder: unknown): Lease {
+  /**
+   * Take the sandbox's one lease, when no live one is held: a new lease id and the next
+   * epoch, bound to the SHA-256 hex of its two tokens' secrets (`egress` and `sync`; the
+   * secrets never stay in the object). Its network is not yet applied
+   * (`network_generation` null), so egress waits until the sandbox slice applies it.
+   */
+  leaseAcquire(holder: unknown, egress: unknown, sync: unknown): Lease {
     if (typeof holder !== "string" || !holder || codePoints(holder) > 128
         || !isPrintable(holder)) {
       throw new Invalid("a lease holder is 1 to 128 printable characters");
+    }
+    if (typeof egress !== "string" || !HEX64.test(egress) || typeof sync !== "string"
+        || !HEX64.test(sync) || egress === sync) {
+      throw new Invalid("a lease's two token hashes are 64 hex, and differ");
     }
     return this.#change(null, (_touched, now) => {
       const space = this.#space();
@@ -1630,10 +1655,41 @@ export class Files {
       }
       const leaseId = randomBytes(16).toString("hex");
       const row = this.#sql.exec<{ epoch: number; seq: number }>(
-        "UPDATE file_space SET lease_id = ?, epoch = epoch + 1, holder = ?, lease_expires = ? " +
-          "RETURNING epoch, seq", leaseId, holder, now + LEASE_TTL_S).one();
+        "UPDATE file_space SET lease_id = ?, epoch = epoch + 1, holder = ?, lease_expires = ?, " +
+          "egress_token = ?, sync_token = ?, network_generation = NULL " +
+          "RETURNING epoch, seq",
+        leaseId, holder, now + LEASE_TTL_S, egress, sync).one();
       return { lease_id: leaseId, epoch: row.epoch, expires_at: now + LEASE_TTL_S,
                base: row.seq };
+    });
+  }
+
+  /**
+   * The live lease, as egress and the sync doors read it: its id, epoch, token hashes,
+   * expiry and the egress generation its sandbox's network was last applied under;
+   * null when none is live.
+   */
+  sandboxLease(now: number): SandboxLease | null {
+    const space = this.#space();
+    if (space.lease_id === null || space.egress_token === null || space.sync_token === null
+        || space.lease_expires <= now) {
+      return null;
+    }
+    return { lease_id: space.lease_id, epoch: space.epoch, egress_token: space.egress_token,
+             sync_token: space.sync_token, expires_at: space.lease_expires, network_generation: space.network_generation };
+  }
+
+  /**
+   * The sandbox's network applied under egress `generation` (the sandbox slice's
+   * `updateNetwork` returned), fenced by the lease: egress opens again only when that is
+   * the current egress generation (`egress.ts`).
+   */
+  networkApplied(leaseId: unknown, epoch: unknown, generation: number): Lease {
+    return this.#change(null, (_touched, now) => {
+      const space = this.#fenced(leaseId, epoch, now);
+      this.#sql.exec("UPDATE file_space SET network_generation = ?", generation);
+      return { lease_id: space.lease_id!, epoch: space.epoch, expires_at: space.lease_expires,
+               base: space.seq };
     });
   }
 
@@ -1664,7 +1720,8 @@ export class Files {
       } catch {
         return { released: false };
       }
-      this.#sql.exec("UPDATE file_space SET lease_id = NULL, holder = NULL, lease_expires = 0");
+      this.#sql.exec("UPDATE file_space SET lease_id = NULL, holder = NULL, lease_expires = 0, " +
+                       "egress_token = NULL, sync_token = NULL, network_generation = NULL");
       return { released: true };
     });
   }

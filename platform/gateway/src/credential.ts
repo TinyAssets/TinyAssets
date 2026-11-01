@@ -411,3 +411,139 @@ export function allows(endpoints: readonly Endpoint[], method: string, url: URL)
                                    && entry.methods.includes(method)
                                    && pathAllowed(entry.paths, url.pathname));
 }
+
+/**
+ * Where a sealed credential may be forwarded (G4): its base URL and its endpoints, none of
+ * them secret. The setup check hands them to the binder, which commits them with the
+ * connection, so the owner's object can refuse a sandbox request to an endpoint that is not
+ * sealed before anything reaches the gateway; the gateway still checks the sealed ones.
+ */
+export interface EgressScope {
+  /** The sealed API, pi-ai's id: its rules (`api-rules.ts`) shape every metered call. */
+  readonly api: string;
+  readonly base_url: string;
+  readonly endpoints: readonly Endpoint[];
+  /** pi-ai's own model call for the sealed API (`meter.ts`), or null: none can be metered. */
+  readonly meter: Meter | null;
+}
+
+/** Where a model call of a sealed API names its model and caps its output (`meter.ts`). */
+export interface Meter {
+  readonly method: string;
+  /** The call's path; `{model}` where the model id is a path segment's text. */
+  readonly path: string;
+  /** The body field naming the model, or null when the path names it. */
+  readonly model_field: readonly string[] | null;
+  /** The body field capping the output tokens. */
+  readonly output_field: readonly string[];
+}
+
+const FIELD = /^[A-Za-z0-9_]{1,64}$/;
+
+function field(value: unknown): readonly string[] {
+  return Object.freeze(list(value, 1, 4, (key) => text(key, FIELD, 64)));
+}
+
+function meterOf(value: unknown): Meter | null {
+  if (value === null) {
+    return null;
+  }
+  const fields = shape(value, ["method", "path", "model_field", "output_field"]);
+  const method = fields["method"];
+  if (typeof method !== "string" || !METHODS.includes(method)) {
+    throw new Failure("invalid_source");
+  }
+  const path = text(fields["path"], /^\/[\x21-\x7e]{0,511}$/, 512);
+  const holes = path.split("{model}").length - 1;
+  const named = fields["model_field"] === null ? null : field(fields["model_field"]);
+  if (holes > 1 || (holes === 1) === (named !== null)) {
+    throw new Failure("invalid_source");
+  }
+  return Object.freeze({ method, path, model_field: named,
+                         output_field: field(fields["output_field"]) });
+}
+
+/** A scope checked whole, by the grammar a seal is held to; anything else is `invalid_source`. */
+export function egressScope(value: unknown): EgressScope {
+  const fields = shape(value, ["api", "base_url", "endpoints", "meter"]);
+  const endpoints = Object.freeze(list(fields["endpoints"], 1, ENDPOINTS_MAX, endpoint));
+  const base = httpsUrl(fields["base_url"]);
+  if (!endpoints.some((entry) => entry.origin === base.origin)) {
+    throw new Failure("invalid_source");
+  }
+  return Object.freeze({ api: supported(text(fields["api"], ID, 64)),
+                         base_url: fields["base_url"] as string, endpoints,
+                         meter: meterOf(fields["meter"]) });
+}
+
+/**
+ * Whether `method path` is the scope's metered model call: its meter's method, and its
+ * path with a model id (no separator) where the meter names one. The gateway reads the
+ * model id the same way (`meteredModel`); this is the owner's check at open.
+ */
+export function meteredCall(scope: EgressScope, method: string, path: string): boolean {
+  const meter = scope.meter;
+  if (meter === null || method !== meter.method) {
+    return false;
+  }
+  const bare = path.split("?")[0]!;
+  const [head, tail] = meter.path.split("{model}");
+  if (tail === undefined) {
+    return bare === meter.path;
+  }
+  return bare.startsWith(head!) && bare.endsWith(tail) && bare.length > head!.length + tail.length
+    && /^[^/:?#]+$/.test(bare.slice(head!.length, bare.length - tail.length));
+}
+
+/**
+ * The model id a call names under `meter` (`body`, its JSON; `path` without its query), or
+ * null when it is not the meter's call: read where pi-ai's own call names it, a body field
+ * or a path segment. The owner's object reads it at open to reserve the call for that
+ * model, and the gateway again, to refuse a body naming another.
+ */
+export function meteredModel(meter: Meter, method: string, path: string,
+                             body: unknown): string | null {
+  if (method !== meter.method) {
+    return null;
+  }
+  const [head, tail] = meter.path.split("{model}");
+  if (tail === undefined) {
+    if (path !== meter.path || meter.model_field === null) {
+      return null;
+    }
+    const named = meter.model_field.reduce<unknown>((at, key) =>
+      (typeof at === "object" && at !== null && !Array.isArray(at)
+        ? (at as Record<string, unknown>)[key] : undefined), body);
+    return typeof named === "string" && named.length > 0 ? named : null;
+  }
+  if (!path.startsWith(head!) || !path.endsWith(tail) || path.length <= head!.length + tail.length) {
+    return null;
+  }
+  let named: string;
+  try {
+    named = decodeURIComponent(path.slice(head!.length, path.length - tail.length));
+  } catch {
+    return null;
+  }
+  return /^[^/:?#]+$/.test(named) ? named : null;
+}
+
+/**
+ * The URL a sandbox request for `path` (its path and query, as the egress door hands it
+ * on) is sent to: the path at the base URL's origin, and only when it stays there and
+ * `method` and the path are sealed (`allows`). Null otherwise. The gateway's `forward` and
+ * the owner's `egressOpen` both ask this, so the two can never disagree.
+ */
+export function egressTarget(scope: EgressScope, method: string, path: string): URL | null {
+  if (!path.startsWith("/")) {
+    return null;
+  }
+  const origin = new URL(scope.base_url).origin;
+  let target: URL;
+  try {
+    target = new URL(path, origin);
+  } catch {
+    return null;
+  }
+  return target.origin === origin && allows(scope.endpoints, method, target) ? target : null;
+}

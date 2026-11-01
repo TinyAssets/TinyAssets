@@ -135,6 +135,9 @@ function fakeUpstream() {
   };
 }
 
+/** The sandbox tokens' routing key (`ROUTING_MAC_KEY`), made fresh for each run. */
+const ROUTING_KEY = randomBytes(32).toString("base64url");
+
 /** A keyring made fresh for each run: a rotated ring, so `k1` is an older kid. */
 const KEYRING = JSON.stringify({
   active: "k2",
@@ -153,6 +156,7 @@ export default defineConfig({
         // the files, gateway and hooks Workers run beside it; PISTORE is the config's own
         // namespace of thread stores, the real class. TEST_KEYRING is the gateway's keyring,
         // so a test can seal under an older kid; the tests' own fetches reach the fake.
+        // ROUTING_MAC_KEY is the config's one secret, the sandbox tokens' routing key.
         plugins: [
           cloudflareTest({
             main: "./test/worker.ts",
@@ -165,7 +169,7 @@ export default defineConfig({
                 GATED: { className: "GatedOwnerDO", useSQLite: true },
                 PISTORE: { className: "ThreadStore", useSQLite: true },
               },
-              bindings: { TEST_KEYRING: KEYRING },
+              bindings: { TEST_KEYRING: KEYRING, ROUTING_MAC_KEY: ROUTING_KEY },
               outboundService: "fake-upstream",
               workers: [filesWorker(), gatewayWorker(KEYRING), hooksWorker(), fakeUpstream()],
             },

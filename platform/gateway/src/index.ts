@@ -8,12 +8,18 @@
  * - `seal`: a pasted API key, sealed with its source record (§7.2 inline connect).
  * - `exchange`, `refresh`, `revokeAtProvider`: OAuth connections (`oauth.ts`).
  * - `verify`: the connection's setup check, and the models it can be asked for.
- * - `forward`: raw passthrough for sandbox egress (`forward.ts`).
+ * - `forward`: raw passthrough for sandbox egress (`forward.ts`), also on its own
+ *   entrypoint for the egress door.
  * - `reseal`: a blob resealed under the active kid at the next version (the sweep that
  *   retires a kid).
  *
  * The owner Worker binds the default entrypoint. The doors Worker binds `ConnectGateway`,
- * which serves only `seal`, `exchange` and `verify`, the steps of a connect.
+ * which serves only `seal`, `exchange` and `verify`, the steps of a connect, and
+ * `EgressGateway`, which serves only `forward`: the egress door (the binder) streams a
+ * sandbox's request through it once the owner's object admitted the request, so the
+ * object sleeps while the bytes flow (research §5.4 step 4). Neither doors entrypoint can
+ * make a model call, refresh, reseal or revoke. The owner's keeps `forward` for its own MCP
+ * client (tasks 4 M, over G4's forward).
  *
  * Every method takes the owner, connection and version the blob is bound to from its
  * caller, and the seal holds the call to them: the gateway never chooses an owner. Each
@@ -24,8 +30,9 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { builtinCatalog } from "./catalog";
 import { type Credential, secret, source } from "./credential";
-import { codeOf, failureResponse, guarded } from "./failure";
-import { forward, type Verified, verify } from "./forward";
+import { codeOf, Failure, failureResponse, guarded } from "./failure";
+import { forward, forwardMetered, forwardRead, type MeterOutcome, type Metering,
+         type Verified, verify } from "./forward";
 import { binding, type KeyringEnv, open, reseal, type Resealed, seal, type Sealed } from "./keyring";
 import { messages } from "./messages";
 import { type Exchanged, exchange, type Refreshed, refresh, type Revoked,
@@ -82,6 +89,57 @@ export class ConnectGateway extends WorkerEntrypoint<GatewayEnv> {
   }
 }
 
+/**
+ * What the egress door binds, as the named entrypoint `EgressGateway`: `forward` and
+ * nothing else (G4). The caller names the owner, connection and version the owner's object
+ * admitted the request under and hands the blob the object returned; the seal holds the
+ * call to them, and the sealed endpoints to where it may go.
+ */
+export class EgressGateway extends WorkerEntrypoint<GatewayEnv> {
+  /**
+   * Forwards one sandbox call under the sealed endpoints: a model call metered
+   * (`forwardMetered`), held to its reservation's output cap and body size, or, with no
+   * `metering`, a read (`forwardRead`). Its answer streams back, and its outcome
+   * (`MeterOutcome`, one JSON line) comes on `outcome` once the answer ended. `stop`,
+   * closed or errored, aborts the provider's request.
+   */
+  async forward(owner: string, connection: string, version: number, blob: string,
+                request: Request, metering: Metering | null, stop: ReadableStream<Uint8Array>):
+      Promise<{ response: Response; outcome: ReadableStream<Uint8Array> }> {
+    let sent: { response: Response; outcome: Promise<MeterOutcome> };
+    try {
+      const bound = binding(owner, connection, version);
+      sent = metering === null
+        ? await forwardRead(this.env, bound, blob, request, stop)
+        : await forwardMetered(this.env, bound, blob, request, checkedMetering(metering), stop,
+                               builtinCatalog());
+    } catch (error) {
+      sent = { response: failureResponse(codeOf(error, "internal")),
+               outcome: Promise.resolve({ state: "unknown" }) };
+    }
+    const { readable, writable } = new IdentityTransformStream();
+    const writer = writable.getWriter();
+    void sent.outcome.then((outcome) => writer.write(new TextEncoder().encode(
+      `${JSON.stringify(outcome)}\n`)).then(() => writer.close())).catch(() => undefined);
+    return { response: sent.response, outcome: readable };
+  }
+}
+
+/** The caller's metering, its whole numbers and its model and tier, or `invalid_request`. */
+function checkedMetering(value: unknown): Metering {
+  const fields = value as Partial<Metering> | null;
+  const whole = (n: unknown) => typeof n === "number" && Number.isSafeInteger(n) && n >= 1;
+  const named = (s: unknown) => typeof s === "string" && /^[\x21-\x7e]{1,256}$/.test(s);
+  if (typeof value !== "object" || value === null
+      || Object.keys(value).sort().join() !== "input_bytes,max_output_tokens,model,tier"
+      || !whole(fields!.input_bytes) || !whole(fields!.max_output_tokens)
+      || !named(fields!.model) || (fields!.tier !== null && !named(fields!.tier))) {
+    throw new Failure("invalid_request");
+  }
+  return { input_bytes: fields!.input_bytes!, max_output_tokens: fields!.max_output_tokens!,
+           model: fields!.model!, tier: fields!.tier ?? null };
+}
+
 export default class Gateway extends WorkerEntrypoint<GatewayEnv> {
   override async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
@@ -116,7 +174,7 @@ export default class Gateway extends WorkerEntrypoint<GatewayEnv> {
     return verifySealed(this.env, owner, connection, version, blob);
   }
 
-  /** Forwards one sandbox egress request under the sealed endpoints. */
+  /** Forwards one request under the sealed endpoints, for the owner's own MCP client (M). */
   async forward(owner: string, connection: string, version: number, blob: string,
                 request: Request): Promise<Response> {
     try {

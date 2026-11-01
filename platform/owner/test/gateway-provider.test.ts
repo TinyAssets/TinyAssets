@@ -30,7 +30,8 @@ import { DEFAULT_POLICY_JSON } from "../src/policy";
 import { TURN_ENDED } from "../src/usage";
 import type { Source } from "../../gateway/src/credential";
 import {
-  ANTHROPIC, asked, catalog, direct, type Gated, gated, OPENAI, provider, textOf, until,
+  ANTHROPIC, asked, catalog, direct, type Gated, gated, OPENAI, provider, scopeOf, textOf,
+  until,
 } from "./gateway-support";
 import { MUSE } from "./ledger-support";
 import { failure } from "./support";
@@ -530,7 +531,8 @@ async function connectWithin(instance: GatedOwnerDO, r: Gated, key: string,
     revocable: false });
   const sealed = await env.GATEWAY.seal(r.name, prepared.connection, 1, key, ANTHROPIC);
   await instance.connectionCommit(r.session(), { connection: prepared.connection, version: 1,
-                                                 blob: sealed.blob, kid: sealed.kid, models });
+                                                 blob: sealed.blob, kid: sealed.kid, models,
+                                                 egress: await scopeOf(ANTHROPIC) });
   return prepared.connection;
 }
 

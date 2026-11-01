@@ -20,7 +20,7 @@ import { MUSE } from "./ledger-support";
 import { failure } from "./support";
 import {
   ANTHROPIC, asked, catalog, direct, type Gated, gated, keyring, OAUTH, OPENAI, REDIRECT,
-  provider, sealedAs, textOf, until,
+  provider, scopeOf, sealedAs, textOf, until,
 } from "./gateway-support";
 
 afterEach(() => {
@@ -92,9 +92,10 @@ describe("connecting a pasted key", () => {
       revocable: false });
     const sealed = await env.GATEWAY.seal(r.name, prepared.connection, 1, "sk-x", ANTHROPIC);
     const models = (await catalog(ANTHROPIC)).slice(0, 2);
+    const scope = await scopeOf(ANTHROPIC);
     const commit = (extra: Record<string, unknown>) => r.stub.connectionCommit(r.session(), {
       connection: prepared.connection, version: 1, blob: sealed.blob, kid: sealed.kid, models,
-      ...extra } as never);
+      egress: scope, ...extra } as never);
     for (const [extra, message] of [
       [{ version: 2 }, "no pending connection at this version"],
       [{ kid: "k9" }, "invalid sealed credential"],
@@ -104,6 +105,14 @@ describe("connecting a pasted key", () => {
       [{ expires_at: Date.now() }, "an OAuth connection's expiry is epoch ms or null; a key " +
                                    "has none"],
       [{ extra: 1 }, "invalid connection request"],
+      [{ egress: undefined }, "invalid connection request"],
+      [{ egress: { base_url: "https://api.anthropic.com" } }, "invalid connection egress scope"],
+      [{ egress: { ...scope, base_url: "https://api.openai.com" } },
+       "invalid connection egress scope"],
+      [{ egress: { ...scope, endpoints: Array.from({ length: 16 }, () => ({
+         origin: "https://api.anthropic.com", paths: Array.from({ length: 64 }, (_, i) =>
+           `/v1/${"p".repeat(200)}${i}`), methods: ["POST"] })) } },
+       "invalid connection egress scope"],
     ] as const) {
       expect((await failure(() => commit(extra))).message).toBe(message);
     }
@@ -303,7 +312,7 @@ describe("a revoke", () => {
     const blob = await sealedAs("k2", r.name, prepared.connection, 1, plaintext);
     await r.stub.connectionCommit(r.session(), { connection: prepared.connection, version: 1,
                                                  blob, kid: "k2", models: [],
-                                                 expires_at: null });
+                                                 expires_at: null, egress: await scopeOf(OAUTH) });
     await r.stub.connectionRevoke(r.session(), { connection: prepared.connection });
     // The first attempt is due at once (the runtime may run it first); each later one waits.
     await lanes(r);
@@ -339,7 +348,8 @@ describe("a credential its provider cannot be asked to revoke", () => {
     const r = await gated();
     const { connection, blob } = await issued(r, false);
     const view = await r.stub.connectionCommit(r.session(), {
-      connection, version: 1, blob, kid: "k2", models: [], expires_at: null });
+      connection, version: 1, blob, kid: "k2", models: [], expires_at: null,
+      egress: await scopeOf(ANTHROPIC) });
     expect(view).toMatchObject({ status: "active", provider_revocable: false });
     expect(await r.stub.connectionRevoke(r.session(), { connection }))
       .toEqual({ connection, revoked: true, provider_revoke: false });
@@ -533,7 +543,7 @@ describe("a provider revoke and a refresh in flight", () => {
       oauth: { ...oauth, access: "at-1", refresh: "rt-1", expires_at: null } });
     await r.stub.connectionCommit(r.session(), { connection: prepared.connection, version: 1,
                                                  blob, kid: "k2", models: [],
-                                                 expires_at: null });
+                                                 expires_at: null, egress: await scopeOf(OAUTH) });
     expect(await r.stub.connectionRevoke(r.session(), { connection: prepared.connection }))
       .toMatchObject({ provider_revoke: true });
     await lanes(r);
@@ -594,7 +604,7 @@ describe("the refresh lease", () => {
     const blob = await sealedAs("k2", r.name, prepared.connection, 1, plaintext);
     await r.stub.connectionCommit(r.session(), {
       connection: prepared.connection, version: 1, blob, kid: "k2",
-      models: await catalog(OPENAI), expires_at: Date.now() + 60_000 });
+      models: await catalog(OPENAI), expires_at: Date.now() + 60_000, egress: await scopeOf(OAUTH) });
     const answers = await calls(r, 3);
     expect(answers.map((answer) => answer.errorMessage)).toEqual(Array(3).fill(
       "credential_refresh_failed: oauth_invalid_grant"));
@@ -697,7 +707,8 @@ describe("a connected model's record", () => {
     const sealed = await env.GATEWAY.seal(r.name, prepared.connection, 1, "sk-x", ANTHROPIC);
     return r.stub.connectionCommit(r.session(), { connection: prepared.connection, version: 1,
                                                   blob: sealed.blob, kid: sealed.kid,
-                                                  models: models as ModelInfo[] })
+                                                  models: models as ModelInfo[],
+                                                  egress: await scopeOf(ANTHROPIC) })
       .then(() => null, (error: Error) => error.message);
   }
 
@@ -767,7 +778,8 @@ describe("a blob resealed under the active kid", () => {
       endpoints: ANTHROPIC.endpoints, sealed_at: 1 });
     await r.stub.connectionCommit(r.session(), { connection: prepared.connection, version: 1,
                                                  blob, kid: "k1",
-                                                 models: await catalog(ANTHROPIC) });
+                                                 models: await catalog(ANTHROPIC),
+                                                 egress: await scopeOf(ANTHROPIC) });
     return prepared.connection;
   }
 
@@ -799,7 +811,8 @@ describe("a blob resealed under the active kid", () => {
       kind: "oauth2", upstream: OAUTH.upstream, endpoints: OAUTH.endpoints, sealed_at: 1,
       oauth: { ...OAUTH.oauth!, access: "at-1", refresh: "rt-1", expires_at: far } });
     await r.stub.connectionCommit(r.session(), { connection, version: 1, blob, kid: "k1",
-                                                 models: await catalog(OPENAI), expires_at: far });
+                                                 models: await catalog(OPENAI), expires_at: far,
+                                                 egress: await scopeOf(OAUTH) });
     const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
     const opened = async () => ((await (await fetch(`https://status.test/cancelled?id=${id}`))
       .json()) as { cancelled: boolean | null }).cancelled === false;

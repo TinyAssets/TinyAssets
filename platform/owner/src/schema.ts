@@ -102,6 +102,22 @@ const SPEND = (row: string, amount: string) =>
   `('d:' || ${row}.day, ${row}.source, ${amount}), ` +
   `('m:' || ${row}.month, ${row}.source, ${amount}) ` +
   "ON CONFLICT (period, source) DO UPDATE SET cost = cost + excluded.cost;";
+/**
+ * What a sandbox call's charge holds (migration 14): its estimate while held or unknown,
+ * what it used once settled, as a model reservation's (`HELD`).
+ */
+const CHARGED = (row: string) =>
+  `(CASE WHEN ${row}.charge IN ('held', 'unknown') THEN ${row}.est_cost ` +
+  `WHEN ${row}.charge IN ('succeeded', 'failed') THEN coalesce(${row}.cost, 0) ELSE 0 END)`;
+const CHARGED_TOKENS = (row: string) =>
+  `(CASE WHEN ${row}.charge IN ('held', 'unknown') THEN ${row}.est_tokens ` +
+  `WHEN ${row}.charge IN ('succeeded', 'failed') THEN coalesce(${row}.tokens, 0) ELSE 0 END)`;
+/** Move the row's sandbox run's counters (its lease and epoch) by these amounts. */
+const RUN = (row: string, requests: string, tokens: string, cost: string) =>
+  "INSERT INTO egress_runs (lease_id, epoch, requests, tokens, cost) VALUES " +
+  `(${row}.lease_id, ${row}.epoch, ${requests}, ${tokens}, ${cost}) ` +
+  "ON CONFLICT (lease_id, epoch) DO UPDATE SET requests = requests + excluded.requests, " +
+  "tokens = tokens + excluded.tokens, cost = cost + excluded.cost;";
 /** Move the row's turn's counters by the row's own, times `sign`, at `at`. */
 const TURN = (row: string, sign: string, at: string) =>
   "INSERT INTO model_turns (turn, requests, tokens, cost, last_at) VALUES " +
@@ -1443,6 +1459,92 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       SCHEDULED_RUN}`,
     ADMISSION_TABLE,
     "INSERT INTO owner_admission (only, state, reasons) VALUES (1, 'admitted', '[]')",
+  ]),
+  // 14: the egress door (tasks 4 G4; egress.ts). The sandbox's one lease (`file_space`'s
+  // sync lease) also holds the SHA-256 of its two tokens' secrets (the egress token, which
+  // only E2B's transform carries, and the sync agent's sync token; each names its owner
+  // itself, so no directory entry maps it), and the egress generation its sandbox's network
+  // was last applied under, null until the sandbox slice applies one. The owner's policy
+  // row keeps that egress generation, moved only by a write that changes the egress table.
+  // A connection keeps where its credential may be forwarded (`egress`: its sealed base
+  // URL, endpoints and pi-ai's metered call, no secret), from its setup check. Each sandbox
+  // call the object admits is an open row until the egress door settles it; a refused one
+  // is kept as its receipt. A model call's row carries its own charge (`charge`, held to
+  // settled once, as a model reservation's states), which the triggers alone count: into
+  // `egress_runs`, its sandbox run's requests, tokens and cost (the run is the lease and its
+  // epoch), and into `model_spend`, its source's day and month, the counters the loop's
+  // calls move too. No counter reads pi's records. The newest `EGRESS_LIMITS.receiptsKept`
+  // admitted and `refusalsKept` refused rows are kept, and at most `EGRESS_LIMITS.open` are
+  // open at once; a path is visible ASCII, as the door sends it.
+  Object.freeze([
+    "ALTER TABLE file_space ADD COLUMN egress_token TEXT CHECK (egress_token IS NULL OR " +
+      "(length(egress_token) = 64 AND egress_token NOT GLOB '*[^0-9a-f]*'))",
+    "ALTER TABLE file_space ADD COLUMN sync_token TEXT CHECK (sync_token IS NULL OR " +
+      "(length(sync_token) = 64 AND sync_token NOT GLOB '*[^0-9a-f]*'))",
+    "ALTER TABLE owner_policy ADD COLUMN egress_generation INTEGER NOT NULL DEFAULT 1 " +
+      "CHECK (egress_generation >= 1)",
+    "ALTER TABLE file_space ADD COLUMN network_generation INTEGER CHECK " +
+      "(network_generation IS NULL OR network_generation >= 1)",
+    "ALTER TABLE connections ADD COLUMN egress TEXT CHECK (egress IS NULL OR " +
+      "length(egress) <= 16384)",
+    "CREATE TABLE egress_reservations (id TEXT PRIMARY KEY CHECK (length(id) = 32), " +
+      "lease_id TEXT CHECK (lease_id IS NULL OR length(lease_id) = 32), epoch INTEGER, " +
+      "token TEXT NOT NULL CHECK (length(token) = 64), " +
+      "source TEXT CHECK (source IS NULL OR length(source) BETWEEN 1 AND 64), " +
+      "charge TEXT CHECK (charge IS NULL OR charge IN ('held', 'succeeded', 'failed', " +
+      "'unknown')), rule TEXT CHECK (rule IS NULL OR length(rule) <= 64), " +
+      "max_output_tokens INTEGER, est_tokens INTEGER CHECK (est_tokens IS NULL OR " +
+      "est_tokens >= 0), est_cost INTEGER CHECK (est_cost IS NULL OR est_cost >= 0), " +
+      "tokens INTEGER CHECK (tokens IS NULL OR tokens >= 0), " +
+      "cost INTEGER CHECK (cost IS NULL OR cost >= 0), day TEXT, month TEXT, " +
+      "served TEXT CHECK (served IS NULL OR (length(served) BETWEEN 1 AND 256 " +
+      "AND served NOT GLOB '*[^!-~]*')), " +
+      "connection_id TEXT NOT NULL CHECK (length(connection_id) = 25), version INTEGER, " +
+      "method TEXT NOT NULL CHECK (length(method) BETWEEN 1 AND 7), " +
+      "path TEXT NOT NULL CHECK (length(path) BETWEEN 1 AND 2048 AND " +
+      "path NOT GLOB '*[^ -~]*'), " +
+      "generation INTEGER NOT NULL, bytes_hint INTEGER CHECK (bytes_hint IS NULL OR " +
+      "bytes_hint >= 0), opened_at REAL NOT NULL, " +
+      "state TEXT NOT NULL CHECK (state IN ('open', 'settled', 'refused')), " +
+      "code TEXT CHECK (code IS NULL OR length(code) <= 64), " +
+      "ended TEXT CHECK (ended IS NULL OR ended IN ('policy', 'lease', 'connection', " +
+      "'admission', 'erasure')), " +
+      "outcome TEXT CHECK (outcome IS NULL OR outcome IN ('complete', 'aborted', 'failed', " +
+      "'deadline', 'ended', 'lost')), " +
+      "status INTEGER CHECK (status IS NULL OR status BETWEEN 100 AND 599), " +
+      "bytes INTEGER CHECK (bytes IS NULL OR bytes >= 0), settled_at REAL, " +
+      "CHECK ((state = 'refused') = (code IS NOT NULL)), " +
+      "CHECK ((state = 'settled') = (outcome IS NOT NULL)), " +
+      "CHECK ((state = 'open') = (settled_at IS NULL)), " +
+      "CHECK ((charge IS NULL) = (est_cost IS NULL) AND (charge IS NULL) = (est_tokens IS NULL) " +
+      "AND (charge IS NULL) = (source IS NULL) AND (charge IS NULL) = (day IS NULL) " +
+      "AND (charge IS NULL) = (month IS NULL) " +
+      "AND (charge IS NULL) = (max_output_tokens IS NULL)), " +
+      "CHECK (charge IS NULL OR (state != 'refused' AND lease_id IS NOT NULL " +
+      "AND epoch IS NOT NULL)), " +
+      "CHECK ((charge IN ('succeeded', 'failed')) = (cost IS NOT NULL)), " +
+      "CHECK ((charge IN ('succeeded', 'failed')) = (tokens IS NOT NULL)))",
+    "CREATE INDEX egress_reservations_by_state ON egress_reservations (state, opened_at)",
+    "CREATE INDEX egress_reservations_by_time ON egress_reservations (opened_at)",
+    "CREATE TABLE egress_runs (lease_id TEXT NOT NULL, epoch INTEGER NOT NULL, " +
+      "requests INTEGER NOT NULL, tokens INTEGER NOT NULL, cost INTEGER NOT NULL, " +
+      "PRIMARY KEY (lease_id, epoch)) WITHOUT ROWID",
+    "CREATE TRIGGER egress_reservations_charged AFTER INSERT ON egress_reservations " +
+      `WHEN NEW.charge IS NOT NULL BEGIN ${SPEND("NEW", CHARGED("NEW"))} ${
+        RUN("NEW", "1", CHARGED_TOKENS("NEW"), CHARGED("NEW"))} END`,
+    "CREATE TRIGGER egress_reservations_recharged AFTER UPDATE OF charge, tokens, cost " +
+      "ON egress_reservations WHEN NEW.charge IS NOT NULL AND OLD.charge IS NOT NULL " +
+      `AND (${CHARGED("NEW")} != ${CHARGED("OLD")} OR ${CHARGED_TOKENS("NEW")} != ${
+        CHARGED_TOKENS("OLD")}) BEGIN ${SPEND("NEW", `${CHARGED("NEW")} - ${CHARGED("OLD")}`)} ${
+        RUN("NEW", "0", `${CHARGED_TOKENS("NEW")} - ${CHARGED_TOKENS("OLD")}`,
+            `${CHARGED("NEW")} - ${CHARGED("OLD")}`)} END`,
+    "CREATE TRIGGER egress_reservations_kept BEFORE UPDATE OF id, lease_id, epoch, token, " +
+      "source, max_output_tokens, est_tokens, est_cost, day, month, connection_id " +
+      "ON egress_reservations BEGIN SELECT RAISE(ABORT, 'a reservation never changes what " +
+      "it reserved'); END",
+    "CREATE TRIGGER egress_reservations_settled_once BEFORE UPDATE OF charge " +
+      "ON egress_reservations WHEN OLD.charge IS NOT NULL AND OLD.charge != 'held' " +
+      "BEGIN SELECT RAISE(ABORT, 'a charge is settled once'); END",
   ]),
 ]);
 

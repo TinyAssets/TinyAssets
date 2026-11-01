@@ -64,7 +64,12 @@ const LIMITS = Object.freeze({ subrequests: 1_000_000 });
  * one store namespace (an environment does not inherit it, and may not set its own).
  */
 const TOP_KEYS: ReadonlySet<string> = new Set([...ENV_KEYS, "$schema", "env",
-                                               "durable_objects"]);
+                                               "durable_objects", "secrets"]);
+/**
+ * The owner Worker's one secret, declared by name (it binds nothing): the routing key the
+ * sandbox tokens are MAC'd under (`doors/src/routing-mac.ts`), the doors Worker's too.
+ */
+const SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY"]) });
 /** The keys a bound Worker may set that bind nothing. */
 const BOUND_KEYS: ReadonlySet<string> = new Set([
   "$schema", "name", "main", "compatibility_date", "compatibility_flags", "workers_dev",
@@ -204,6 +209,8 @@ export function configProblems(config: Config,
         problems.push(`${where}${key} is not an allowed key`);
       } else if (key === "limits" && JSON.stringify(scope[key]) !== JSON.stringify(LIMITS)) {
         problems.push(`${where}limits are not ${JSON.stringify(LIMITS)}`);
+      } else if (key === "secrets" && JSON.stringify(scope[key]) !== JSON.stringify(SECRETS)) {
+        problems.push(`${where}secrets declares other than ROUTING_MAC_KEY`);
       } else if (key === "durable_objects"
                  && JSON.stringify(scope[key]) !== JSON.stringify(STORES)) {
         problems.push(`${where}durable_objects binds other than PISTORE to its own ThreadStore`);

@@ -11,7 +11,8 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { builtinCatalog, modelInfos } from "../src/catalog";
 import { checkedRecord, recordOf } from "../src/model-record";
 import { Failure } from "../src/failure";
-import { forward, redact, verify } from "../src/forward";
+import { FORWARD_DEADLINE_MS, forward, redact, verify } from "../src/forward";
+import { EGRESS_DEADLINE_S } from "../../owner/src/network";
 import { seal } from "../src/keyring";
 import { ALICE, ANTHROPIC, OPENAI, ring, rotate, sealed } from "./support";
 
@@ -28,6 +29,10 @@ async function call(blob: string, request: Request, env = ring("k1"), deadlineMs
 }
 
 describe("forward", () => {
+  it("cuts at the deadline the egress door keeps too", () => {
+    expect(FORWARD_DEADLINE_MS).toBe(EGRESS_DEADLINE_S * 1000);
+  });
+
   it("strips every inbound credential, injects the sealed one, and passes the rest", async () => {
     const env = ring("k1");
     const blob = await sealed(env, ALICE, SECRET, OPENAI);
@@ -62,6 +67,18 @@ describe("forward", () => {
     expect(echo.headers["openai-beta"]).toBe("responses=v1");
     expect(response.headers.get("x-upstream")).toBe("fake");
     expect(response.headers.get("cf-ray")).toBeNull();
+  });
+
+  it("replaces a placeholder sent in the sealed header itself, whatever its name", async () => {
+    const env = ring("k1");
+    const blob = await sealed(env, ALICE, SECRET, {
+      ...OPENAI, upstream: { ...OPENAI.upstream, auth: { header: "x-custom-key", scheme: "" } } });
+    const response = await call(blob, new Request("https://egress/v1/responses", {
+      method: "POST", headers: { "x-custom-key": "ta_ph_c1_placeholder", "x-fake-mode": "echo" },
+      body: "{}" }), env);
+    const echo = await response.json() as { headers: Record<string, string> };
+    // Only the sealed secret is sent, which the answer redacts: no placeholder beside it.
+    expect(echo.headers["x-custom-key"]).toBe("[redacted]");
   });
 
   it("injects by the sealed template: a bare header for Anthropic's convention", async () => {
@@ -291,6 +308,12 @@ describe("verify", () => {
       .filter((model) => model.api === "anthropic-messages");
     expect(verified.models.map((model) => model.id)).toEqual(catalog.map((model) => model.id));
     expect(verified.models.length).toBeGreaterThan(0);
+    // Where sandbox egress may forward it: the sealed base URL and endpoints, no secret.
+    expect(verified.egress).toEqual({ api: ANTHROPIC.upstream.api, base_url: ANTHROPIC.upstream.base_url,
+                                      endpoints: ANTHROPIC.endpoints, meter: {
+                                        method: "POST", path: "/v1/messages",
+                                        model_field: ["model"], output_field: ["max_tokens"] } });
+    expect(JSON.stringify(verified)).not.toContain("sk-good");
     // Each model's whole pi-ai record, but for what is the gateway's: where and how it
     // speaks to the upstream.
     verified.models.forEach((record, index) => {

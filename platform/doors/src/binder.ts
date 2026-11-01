@@ -199,6 +199,31 @@ export function bindApiKey(env: DoorsEnv, keyId: string, entry: KeyEntry): Bound
 }
 
 /**
+ * A sandbox's egress token (`egress.ts`): the owner its own routing part names, on its own
+ * account (the sandbox runs the owner's own commands), with what the object checks the
+ * lease by: the SHA-256 of the token's secret, and the egress generation E2B's transform
+ * set beside it. No directory is read: the object, strongly consistent, checks the hash,
+ * the lease and its expiry. It refuses this binding at every door but the egress doors.
+ */
+export function bindSandbox(env: DoorsEnv, owner: string, tokenHash: string,
+                            generation: number): Bound {
+  if (!HEX64.test(tokenHash) || !Number.isSafeInteger(generation) || generation < 1) {
+    throw new Error("a sandbox binding needs its token's hash and its network's generation");
+  }
+  const named = principal(owner);
+  return bound(env, { owner: named, caller: named, origin: null,
+                      sandbox: { kind: "egress", token: tokenHash, generation } });
+}
+
+/**
+ * The same binding's object again, through a fresh stub: a settle after the object reset
+ * (a deploy) reaches its new instance, never the broken stub.
+ */
+export function rebound(env: DoorsEnv, { binding }: Bound): Bound {
+  return bound(env, binding);
+}
+
+/**
  * The owner's first-party token, validated for `/app` and issued to a first-party
  * client: the owner on its own account, with the browser's session cookie when
  * `session.ts` attached one.

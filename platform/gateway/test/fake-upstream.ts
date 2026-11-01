@@ -7,7 +7,8 @@
  * does is chosen by a `cmd:` word in the request body (the test's user message):
  *
  * - `cmd:echo`: the reply's text is JSON of what it received (path, the credential
- *   headers, the output-token cap), so a test reads back what the gateway sent.
+ *   headers, the output-token cap, the service tier), so a test reads back what the
+ *   gateway sent; `x-fake-served-tier` names the tier an Anthropic answer says it served.
  * - `cmd:fail-<status>`: that status, with a body that quotes the credential.
  * - `cmd:redirect`: a 302 to another host.
  * - `cmd:slow-<id>`: one text delta, then holds the stream open; its cancel is recorded
@@ -246,10 +247,23 @@ async function model(request: Request, format: Format, input?: number): Promise<
             "x-goog-api-key": request.headers.get("x-goog-api-key") },
     envelope: request.headers.get("x-ta-envelope"),
     max: outputCap(body),
+    tier: body["service_tier"] ?? null,
   });
   const half = Math.floor(reply.length / 2);
-  const payload = format.start(name, input) + format.text(reply.slice(0, half))
-    + format.text(reply.slice(half)) + format.finish(reply);
+  const tier = typeof body["service_tier"] === "string" ? body["service_tier"] : null;
+  // OpenAI's Responses answer names the tier it served the call at, as the API does; an
+  // Anthropic answer names its served tier in its usage when `x-fake-served-tier` asks.
+  const served = request.headers.get("x-fake-served-tier");
+  const payload = (format.start(name, input) + format.text(reply.slice(0, half))
+    + format.text(reply.slice(half)) + format.finish(reply))
+    .replace('"status":"completed",', tier === null ? '"status":"completed",'
+      : `"status":"completed","service_tier":${JSON.stringify(tier === "auto" ? "default" : tier)},`)
+    // As OpenAI's does, its first event echoes the tier the call asked for, and the last
+    // names the one it served at (`auto` resolved to `default`).
+    .replace('"response":{"id":"resp_fake"}', tier === null ? '"response":{"id":"resp_fake"}'
+      : `"response":{"id":"resp_fake","service_tier":"auto"}`)
+    .replace('"usage":{"input_tokens":', served === null ? '"usage":{"input_tokens":'
+      : `"usage":{"service_tier":${JSON.stringify(served)},"input_tokens":`);
   return new Response(payload, { headers: { "content-type": "text/event-stream" } });
 }
 
