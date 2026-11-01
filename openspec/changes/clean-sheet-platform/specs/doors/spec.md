@@ -69,7 +69,7 @@ Each external tool SHALL call exactly one owner door an outside client can reach
 - **THEN** the tool guard fails CI
 
 ### Requirement: The agent's tools reach the caller's own agent work
-`converse` (the object's `agentSubmit`, scope `converse`) and `run_graph` (`agentRun`, scope `run_graph`) SHALL be destructive, not idempotent and open world; `run_status` (`agentStatus`) SHALL be a read, idempotent; `run_cancel` (`agentCancel`) SHALL be destructive and idempotent. Each SHALL be served on `/mcp` and as `POST /api/tools/<name>`, and the owner's own surface SHALL serve the same doors as `/app/api/agent/submit`, `run`, `status` and `cancel`, refusing an outside credential there.
+`converse` (the object's `agentSubmit`, scope `converse`) and `run_graph` (`agentRun`, scope `run_graph`) SHALL be destructive, not idempotent and open world; `run_status` (`agentStatus`) SHALL be a read, idempotent; `run_cancel` (`agentCancel`) SHALL be destructive and idempotent. Each SHALL be served on `/mcp` and as `POST /api/tools/<name>`, and the owner's own surface SHALL serve the same doors as `/app/api/agent/submit`, `run`, `status` and `cancel`, refusing an outside credential there. The owner's surface alone SHALL also serve the conversation doors (`/app/api/agent/reset`, `compact`, `fork`, `withdraw`, `task-graph`) and the app's live socket, `GET /app/api/agent/socket?thread_id=` with `Upgrade: websocket`, behind the same token check and maintenance gate, the session rules attaching no session to it; the binder SHALL forward the upgrade to the object's `fetch` as a fresh request it builds, so no header a client sent, a forged identity header included, survives the hop.
 
 #### Scenario: A retry after a week idle
 - **WHEN** a client reads `converse`'s description

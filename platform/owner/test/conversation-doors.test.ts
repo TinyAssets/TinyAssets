@@ -20,7 +20,8 @@ import { MODEL_TOOLS } from "../src/authority";
 import type { Origin } from "../src/ledger";
 import { agentFile, type Binding, NO_THREAD } from "../src/owner-do";
 import { ALREADY_PLACED, COMPACTIONS_FULL } from "../src/thread-host";
-import { THREADS_WORKING } from "../src/threads";
+import { WriteGate } from "../src/gate";
+import { THREAD_LIMITS, Threads, THREADS_WORKING } from "../src/threads";
 import { until } from "./gateway-support";
 import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
 import { failure } from "./support";
@@ -222,6 +223,25 @@ describe("fork at an entry", () => {
     expect(refused.message).toBe(THREADS_WORKING);
     await until(async () => (await r.in((_i, state) => state.storage.sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM agent_threads").one().n)) === before, "the fork dropped");
+  });
+
+  it("counts a fork among its caller's conversations, within their bounds", async () => {
+    const r = await rig();
+    await r.in(async (_instance, state) => {
+      const gate = new WriteGate(state.storage);
+      const threads = new Threads(gate.storage, { ...THREAD_LIMITS, owner: 2, perClient: 1 });
+      await gate.write(() => {
+        threads.record("main", null, 1, "converse");
+        threads.record("main", null, 1, "fork");
+      });
+      await expect(gate.write(() => threads.record("main", null, 1, "fork")))
+        .rejects.toThrow("the owner's threads are at their limit");
+      const stamp = { client: MUSE.client, generation: 1, authenticated_at: null,
+                      universe: null, agent: "main" };
+      await gate.write(() => threads.record("main", stamp, 1, "converse"));
+      await expect(gate.write(() => threads.record("main", stamp, 1, "fork")))
+        .rejects.toThrow("this client's threads are at their limit");
+    });
   });
 
   it("refuses an entry the thread's root does not show", async () => {

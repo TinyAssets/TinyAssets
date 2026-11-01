@@ -160,15 +160,15 @@ A lane's pass SHALL end within its job's single-flight hung timeout by wall cloc
 - **THEN** it takes no more of them, ends before its job's hung timeout, and its job brings the rest at once
 
 ### Requirement: Only Lifecycle touches the object's alarm
-Lifecycle SHALL own the object's single physical alarm, which each agent thread's wake job shares. No source SHALL set, read or clear the alarm itself, import any part of the `agents` package but `agents/lifecycle` and `agents/skills` (its Agent Skills parser; so the object never extends the SDK's `Agent`), or install Lifecycle's runtime `fetch` and WebSocket handlers. The object's `alarm` SHALL only hand the runtime's alarm to Lifecycle.
+Lifecycle SHALL own the object's single physical alarm, which each agent thread's wake job shares. No source SHALL set, read or clear the alarm itself, import any part of the `agents` package but `agents/lifecycle`, `agents/skills` (its Agent Skills parser; so the object never extends the SDK's `Agent`) and `agents/websockets` (its `WebSockets` capability, the owner app's sockets), or install Lifecycle's runtime handlers. The object's `alarm` SHALL only hand the runtime's alarm to Lifecycle; its `fetch` SHALL only hand the binder's socket upgrade, once attached, to Lifecycle's `fetch`, and each `webSocket*` method SHALL only hand its event to Lifecycle's method of the same name.
 
 #### Scenario: Source sets the alarm
-- **WHEN** a Worker source names `setAlarm`, `deleteAlarm`, `getAlarm`, `disableAlarms` or `deleteAll`, spells one in pieces through a string, reaches a storage or a Lifecycle by a computed name, imports any part of the `agents` package but `agents/lifecycle` and `agents/skills` (`agents/harness/pi` included), installs Lifecycle's handlers, or names a Lifecycle or pi table
+- **WHEN** a Worker source names `setAlarm`, `deleteAlarm`, `getAlarm`, `disableAlarms` or `deleteAll`, spells one in pieces through a string, reaches a storage or a Lifecycle by a computed name, imports any part of the `agents` package but `agents/lifecycle`, `agents/skills` and `agents/websockets` (`agents/harness/pi` included), installs Lifecycle's handlers, gives a reserved method more than its hand-off, or names a Lifecycle or pi table
 - **THEN** the alarm guard or the policy-boundary guard fails CI
 
 #### Scenario: A binding fetches the object
-- **WHEN** a binding calls the object's `fetch`
-- **THEN** it fails, since the object defines no `fetch`
+- **WHEN** a binding calls the object's `fetch` with anything but the binder's socket upgrade
+- **THEN** it is answered `400` with the fixed refusal, and nothing reaches Lifecycle
 
 ### Requirement: Only the wakes lane claims and settles wakes
 Wakes, and revokes of an agent's callbacks, SHALL be rows on the object's one schedule, the `wakes` lane. No RPC method SHALL claim, mark or settle one; the lane's pass SHALL, in process, with the doorbell's sender. Each pass SHALL first recover lapsed claims by their own index, then, with a sender, claim due open rows. The lane SHALL have a job for open rows only with a sender, so without one they stay pending and arm nothing.
@@ -1268,3 +1268,43 @@ At most `WORKING_THREADS` of an owner's threads SHALL hold turn owners at once. 
 #### Scenario: A client past its share
 - **WHEN** a client's threads hold its share of the working threads and it sends to another
 - **THEN** that input is refused `threads_working`, while its working thread and the owner's threads still take inputs
+
+### Requirement: The owner app's sockets watch a thread through pi's own watch
+The object SHALL serve the owner app's hibernating WebSockets through the Agents SDK's `WebSockets` capability on its one Lifecycle, reached only by the stub's `fetch` (a Workers RPC cannot carry a socket), and SHALL accept an upgrade only in the binder's shape: a `GET` of exactly the socket URL with no query and exactly the `Upgrade`, bound-identity and thread headers. It SHALL attach a socket as a `read` door: the binding's account admitted, no session, the caller's own ready thread, a client's stamp standing; then at most `THREAD_SOCKETS` a thread (`thread_sockets_full`) and `OWNER_SOCKETS` an owner (`sockets_full`), refused at once; then the thread's Session pinned and counted against `OPEN_MAX` (`sessions_full`), never closed idle. A socket's state SHALL live in its attachment alone (owner, client, thread, the authority generation at attach), never in a row. Its first frame SHALL be the conversation's view, each later one a commit's exact Chord ops, each a JSON frame with a version; at most `SOCKET_WINDOW` frames unacknowledged, past which pi's own rule applies (at most 100 pending, then one whole view). Until pi's next minor, the live tee SHALL reach a thread's sockets only, as Chord appends to `pi.live.generation.message`'s blocks over the last commit. Every frame a client sends SHALL be checked against its attachment's authority first. After an eviction a socket SHALL reattach from a fresh view, at its next frame or as its thread's Session opens.
+
+#### Scenario: An upgrade not in the binder's shape
+- **WHEN** a request reaches the object's `fetch` with another URL, a query, a cookie, the SDK's lifecycle props or any header the binder does not set
+- **THEN** it is refused `400` and no socket is accepted
+
+#### Scenario: A slow app
+- **WHEN** an app stops acknowledging while its thread commits more than a hundred times
+- **THEN** it holds the window's frames, and on acknowledging again gets one whole view and then each new commit
+
+#### Scenario: An eviction
+- **WHEN** the object is evicted with a socket open and its thread's Session opens again
+- **THEN** the socket gets a fresh view and then that Session's commits; nothing is replayed
+
+### Requirement: A socket's lifetime is its authority's
+A thread's sockets SHALL close with a fixed code when its authority ends: a grant revoke or an authority-generation move (`authority_ended`), the thread's drop (`thread_dropped`), an admission that refuses reads (`owner_suspended`), the owner's erasure (`owner_erased`), and the owner's session's close for the owner's own sockets (`session_closed`). Reads over a socket SHALL be a `read` door's, so a billing suspension SHALL keep them open; a rename, which leaves the generation, SHALL keep them open.
+
+#### Scenario: A rename and a scope change
+- **WHEN** the owner renames a client's grant, then changes its scopes
+- **THEN** the client's socket stays open through the rename and closes `authority_ended` at the scope change
+
+### Requirement: The conversation doors are pi's own operations on the caller's threads
+The object SHALL serve `agentReset` (pi's `reset`), `agentCompact` (a manual `compact`, at most `THREAD_MANUAL_COMPACTIONS` live a thread, refused at once `compactions_full`), `agentFork` (a new `fork` thread, under the caller's stamp and within the caller's conversation bounds, its root holding the source's history up to an entry through pi's `context` and `appendEntry` in its creating commit, then its first input, within the working threads), `agentWithdraw` (a queued input withdrawn by `abortSubmission`, one already placed refused `already_placed`) and `agentTaskGraph` (pi's `taskGraph`), each resolving its thread against the caller's own rows and declaring its door class: reset, compact and fork `work`, withdraw `reduce`, the task graph `read`. A refused fork SHALL leave no thread. None SHALL be an MCP tool or a `ta` capability.
+
+#### Scenario: Another client's thread
+- **WHEN** a client names another client's or the owner's thread at any conversation door
+- **THEN** it is refused `no such thread`, as a thread that does not exist is
+
+#### Scenario: A fork past the working threads
+- **WHEN** the working threads are full and the owner forks a thread
+- **THEN** the fork is refused `threads_working` and leaves no thread behind
+
+### Requirement: An agent's model pin is data in its AGENTS.md
+An agent's `AGENTS.md` MAY open with front matter naming exactly one `model`, one of the gateway provider's models; each root's creating commit SHALL set it as `pi.agent.model`, an unpinned agent's root starting on `auto`. Any other front matter SHALL be refused loudly.
+
+#### Scenario: A pinned agent
+- **WHEN** the owner pins an agent to a model its catalog lacks and messages it
+- **THEN** the thread's root holds that model and the turn settles `unanswered`, loudly
