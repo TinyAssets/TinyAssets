@@ -502,7 +502,7 @@ A change that only removes or frees (a remove, a redaction, a purge, an aborted 
 - **THEN** the remove lands
 
 ### Requirement: The sync lease fences the sandbox's commits
-The sync lease SHALL be the sandbox's one lease: a random lease id and a rising epoch, held by one holder until it lapses or is released, bound to the SHA-256 of the lease token the binder minted (never the token) and to the policy generation its sandbox's network was last applied under, none until the sandbox slice applies one. A sync commit SHALL be refused whole only when the lease id or epoch is not the live lease's or its op list is empty or too long; each op SHALL otherwise land or be refused on its own, its quota checked alone, and be answered per op. API writes SHALL never take the lease.
+The sync lease SHALL be the sandbox's one lease: a random lease id and a rising epoch, held by one holder until it lapses or is released, bound to the SHA-256 of its two tokens' secrets (never the tokens) and to the egress generation its sandbox's network was last applied under, none until the sandbox slice applies one. No door SHALL reach the lease: the object's own sandbox lifecycle (`SandboxLeases`) opens, renews and closes it. A sync commit SHALL be refused whole only when the lease id or epoch is not the live lease's or its op list is empty or too long; each op SHALL otherwise land or be refused on its own, its quota checked alone, and be answered per op. API writes SHALL never take the lease.
 
 #### Scenario: A sandbox that lost its lease
 - **WHEN** a sync commit carries an earlier epoch or another lease id
@@ -717,7 +717,7 @@ A blob the gateway resealed under its active kid SHALL be stored by compare-and-
 - **THEN** version 2's tokens stay, and the call's reseal is dropped
 
 ### Requirement: Every model call is reserved against the owner's model policy
-Each model call SHALL be reserved in one unit that also reads the connection's blob and the owner policy's generation and `models` caps: the turn's requests, tokens and cost, and the owner's and the source's daily and monthly cost, each counting what is settled and what is still open. The reservation SHALL bound the call's output tokens. A source's ceilings SHALL be keyed by its source record, so a reconnect keeps them.
+Each loop model call SHALL be reserved in one unit that also reads the connection's blob and the owner policy's generation and `models` caps: the turn's requests, tokens and cost, and the owner's and the source's daily and monthly cost, each counting what is settled and what is still open. The reservation SHALL bound the call's output tokens. A source's ceilings SHALL be keyed by its source record, so a reconnect keeps them.
 
 #### Scenario: Concurrent reserves at a cap
 - **WHEN** eight calls of one turn reserve together against a cap of three requests
@@ -1344,33 +1344,41 @@ At most `WORKING_THREADS` of an owner's threads SHALL hold turn owners at once. 
 - **WHEN** a client's threads hold its share of the working threads and it sends to another
 - **THEN** that input is refused `threads_working`, while its working thread and the owner's threads still take inputs
 
-### Requirement: Each sandbox egress request is admitted at open
-`egressOpen` SHALL take only the sandbox binding the egress door resolved (lease id, token hash, the generation the request's transform carried) and admit a request for `work`, in one unit, by these checks in order, each refusal a fixed code kept as a receipt row: the live lease by its id and token hash (`egress_lease_closed`); the request's generation is the current policy generation (`egress_policy_stale`); the lease's network was applied under it (`egress_network_stale`); the connection is the owner's, active, its credential usable (`egress_connection_refused`); the method and path are among its sealed endpoints, by the gateway's own rule (`egress_endpoint_refused`); at most 64 open and 600 opened a minute (`egress_rate`). An admitted request SHALL be an open reservation, answered with the blob, its version, the generation, the reservation and an end signal. `egressSettle` (`reduce`) SHALL settle a reservation of the binding's lease once; one never settled SHALL be settled `lost` past six minutes. The newest 2,000 closed rows SHALL be kept.
+### Requirement: Each sandbox egress call is admitted and charged at open
+`egressOpen` SHALL take only the egress token's binding (its secret's hash, the egress generation its transform carried), checked to be the binder's exact shape before anything is written, and refused for an owner whose object never opened a lease, writing no row; and admit a call for `work`, in one unit, by these checks in order, each refusal a fixed code kept as a receipt row (at most 60 a minute, apart from the admitted calls' receipts): the live lease by the egress hash (`egress_lease_closed`), checked before anything else, an OAuth refresh among it; the call's egress generation is the current one (`egress_policy_stale`) and the lease's network was applied under it (`egress_network_stale`); the connection is the owner's, active, its credential usable and its scope stored (`egress_connection_refused`); the method and path are among its sealed endpoints, by the gateway's own rule (`egress_endpoint_refused`); a read (`GET`, `HEAD`) is free, and any other call is pi-ai's metered model call (`egress_unmetered`), with a declared body length (`egress_length_required`); at most 64 open and 600 opened a minute (`egress_rate`); and a model call's charge (`egress_spend_refused`, the binding cap its rule): against its sandbox run's requests, tokens and cost (the run is the lease and its epoch; the model policy's per-turn limits are its caps), the owner's and the source's day and month (the spend counters the loop's calls move too), and the spend table's `ask_above` for the one call; priced at the dearest rate of the connection's models by pi-ai's `calculateCost` over the catalog's records, its input bounded by the body's length and its output by the dearest model's cap and what the caps leave. The charge SHALL be the call's own row, counted only by the schema's triggers, and SHALL neither read nor import pi's engine. An admitted call SHALL be an open row, answered with the blob, its version, the generation, its metering (the output cap the gateway clamps to and the body length, or none for a read) and an end signal. `egressSettle` (`reduce`) SHALL settle a reservation of its egress token once, its charge at the metered cost, `failed`, or `unknown` (kept whole); one never settled SHALL be settled `lost`, its charge `unknown`, past six minutes.
 
-#### Scenario: A request under a stale network
-- **WHEN** the owner's policy moved to generation 2 and the sandbox's network was applied under 1
-- **THEN** a request whose transform carries 1 is refused `egress_policy_stale`, one carrying 2 `egress_network_stale`, until `sandboxNetworkApplied` records 2
+#### Scenario: A call past the owner's caps
+- **WHEN** the run's requests, tokens or cost, the owner's day or month, the source's, or `ask_above` leaves less than a call's least charge
+- **THEN** it is refused `egress_spend_refused` before anything is forwarded, its receipt naming the cap
 
-#### Scenario: A lease token presented elsewhere
-- **WHEN** the sandbox binding reaches any door but `egressOpen` and `egressSettle`, or another binding reaches those
+#### Scenario: Two calls at once
+- **WHEN** two sandbox calls open together under a run cap one of them fills
+- **THEN** the second is held to what the first left, or refused, and the run's counters hold both
+
+#### Scenario: A loop call and a sandbox call on one source
+- **WHEN** a loop call and a sandbox call of the same source settle on one day
+- **THEN** the source's daily ceiling holds both, whichever comes second
+
+#### Scenario: A sandbox token presented elsewhere
+- **WHEN** the egress token reaches any door but `egressOpen` and `egressSettle`, the sync token any but the sync doors or another lease or epoch, or another binding those doors
 - **THEN** it is refused
 
 ### Requirement: A change ends the egress streams it covers
-Once its own unit committed, a policy write SHALL end every open egress stream, a suspension every one, a connection's revoke that connection's, the lease's close and a lease that replaces a lapsed one the old lease's, and the owner's erasure every one: the object closes each one's end signal and marks its row with why.
+Once its own unit committed, a policy write SHALL end every open egress stream, and a write that changes the egress table SHALL move the egress generation, leaving the sandbox's network stale, egress refused, until the sandbox slice applies it again (no other policy change moves it); a suspension every one, a connection's revoke that connection's, the lease's close and a lease that replaces a lapsed one the old lease's, and the owner's erasure every one: the object closes each one's end signal and marks its row with why.
 
 #### Scenario: A connection is revoked while two stream
 - **WHEN** the owner revokes one of two connections each streaming a sandbox request
 - **THEN** only the revoked connection's stream ends
 
 ### Requirement: The sandbox's network is made from owner policy
-`networkDocument` SHALL make E2B's network configuration from the owner's egress policy, in E2B's own field names: `denyOut` all traffic; `allowOut` `*` (names by SNI) in `open` mode, else the policy's destinations on ports 80 and 443, and in every mode `egress.tinyassets.io`; `dnsServers` pinned to one resolver; one transform, on `egress.tinyassets.io` only, setting the lease token and the policy generation. A destination on another port SHALL be refused, never widened; an IP literal SHALL be refused; `ask` mode SHALL be an allowlist whose application leaves a refusal receipt.
+`networkDocument` SHALL make E2B's network configuration from the owner's egress policy, in E2B's own field names: `denyOut` all traffic; `allowOut` `*` (names by SNI) in `open` mode, else the policy's destinations on ports 80 and 443, and in every mode `egress.tinyassets.io`; `dnsServers` pinned to one resolver; one transform, on `egress.tinyassets.io` only, setting the egress token and the egress generation. A destination on another port SHALL be refused, never widened; an IP literal SHALL be refused; `ask` mode SHALL be an allowlist whose application leaves a refusal receipt. **An allowlist is not a data boundary in v1**: E2B allows all traffic to a DNS server, on every port, and its rules name no ports, so the pinned resolver cannot be held to port 53; every network plan SHALL say so to the owner (`boundary: false`, its note). The E2B project's API key SHALL be held as a platform secret, since it can read the sandbox's transform, and so the egress token.
 
 #### Scenario: An allowlist naming an IP and a database port
 - **WHEN** the policy lists `8.8.8.8:443` or `db.example.com:5432`
 - **THEN** the first is refused as an IP literal and the second left out, reported as not expressible
 
 ### Requirement: The sandbox's model clients hold placeholder keys
-`sandboxConfig` SHALL hand the sandbox slice, for each active connection, a base URL on the egress door (`https://egress.tinyassets.io/c/<connection>` and the sealed base URL's path) and a placeholder key `ta_ph_<connection>_<random>` that carries no secret, as `<PROVIDER>_BASE_URL` and `<PROVIDER>_API_KEY` for each provider's oldest connection and `TA_<CONNECTION>_*` for every one.
+The sandbox lifecycle's `config` SHALL hand the sandbox slice, for each active connection, a base URL on the egress door (`https://egress.tinyassets.io/c/<connection>` and the sealed base URL's path) and a placeholder key `ta_ph_<connection>_<random>` that carries no secret, as `<PROVIDER>_BASE_URL` and `<PROVIDER>_API_KEY` for each provider's oldest connection and `TA_<CONNECTION>_*` for every one, and the variables a provider CLI reads that this rule does not name, as data (Gemini CLI's `GOOGLE_GEMINI_BASE_URL`, the door and the connection alone, and `GEMINI_API_KEY`).
 
 #### Scenario: Two Anthropic connections
 - **WHEN** the owner has two Anthropic connections

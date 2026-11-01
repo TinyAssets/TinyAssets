@@ -3,32 +3,31 @@
  * gateway Worker (its `EgressGateway` entrypoint, as the config binds it), against the fake
  * providers' Groq.
  *
- * Every test holds the door's rule: a sandbox request reaches its provider only with a
- * live lease token, admitted at the owner's object under the current policy and network
- * generations, to a sealed endpoint of the owner's own connection, with the sealed key in
- * place of every credential it carried; every refusal is a fixed code that forwards
- * nothing; and every admitted request is settled once, however it ends.
+ * Every test holds the door's rule: a sandbox model call reaches its provider only with a
+ * live egress token whose routing MAC the door verified before any object, admitted and
+ * charged at the owner's object under the current generations and the owner's spend caps,
+ * to a metered, sealed endpoint of the owner's own connection (a read of one is free), with the sealed key in place of every credential it carried and its output cap
+ * clamped to its reservation; every refusal is a fixed code that forwards nothing; and every
+ * admitted call is settled once, however it ends, at the cost pi-ai read, or kept whole.
  */
-import { createExecutionContext, env, evictDurableObject } from "cloudflare:test";
+import { createExecutionContext, env, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PLATFORM_CALLER } from "../../owner/src/admission";
 import { EGRESS_DEADLINE_S, GENERATION_HEADER, SANDBOX_HEADER } from "../../owner/src/network";
-import type { Binding } from "../../owner/src/owner-do";
+import type { Binding, OpenedLease } from "../../owner/src/owner-do";
 import type { Bound } from "../src/binder";
-import { type DoorsEnv, EGRESS_ORIGIN, now } from "../src/config";
-import { putLease } from "../src/directory";
+import { type DoorsEnv, EGRESS_ORIGIN } from "../src/config";
 import { EGRESS_DEADLINE_MS, serveEgress } from "../src/egress";
-import { leaseTokenHash, type OpenedLease, sandboxLeaseClose, sandboxLeaseOpen,
-         sandboxLeaseRenew } from "../src/sandbox";
-import { EGRESS_CHUNKS } from "./fake-providers";
+import { mintToken, verifyToken } from "../src/routing-mac";
+import worker, { type OwnerDO } from "./entry";
+import { EGRESS_CHUNKS, EGRESS_USAGE } from "./fake-providers";
 import {
-  appPost, call, doorsEnv, OPEN, serveFirstPartyDocument, setControl, signInApp, sqlIn, url,
+  appPost, call, doorsEnv, OPEN, reached, serveFirstPartyDocument, setControl, signInApp, sqlIn,
+  url,
 } from "./support";
 
 const COMPLETIONS = "/openai/v1/chat/completions";
-const BODY = JSON.stringify({ model: "llama", stream: true,
-                              messages: [{ role: "user", content: "hi" }] });
 
 interface Sandbox {
   readonly owner: string;
@@ -36,9 +35,18 @@ interface Sandbox {
   readonly token: string;
   readonly app: string;
   readonly connection: string;
+  readonly model: string;
   readonly bound: Bound;
   readonly opened: OpenedLease;
   readonly key: string;
+}
+
+/**
+ * One egress call through the doors, its answer handed back at once: the settle it
+ * registers with `waitUntil` resolves only once its stream ended, which the test reads.
+ */
+function send(request: Request, environment: DoorsEnv = doorsEnv): Promise<Response> {
+  return worker.fetch(request, environment, createExecutionContext());
 }
 
 function ownerBound(owner: string): Bound {
@@ -49,35 +57,58 @@ function sessionOf(sandbox: Sandbox): Binding {
   return { owner: sandbox.owner, caller: sandbox.owner, origin: null, session: sandbox.session };
 }
 
-/** A signed-in owner with a Groq key connected, its sandbox's lease open and its network applied. */
-async function sandbox(apply = true): Promise<Sandbox> {
+/** The owner object's own sandbox lease API, as 8b's `exec` reaches it in the object. */
+function leases<R>(owner: string, act: (leases: OwnerDO["sandbox"]) => Promise<R>): Promise<R> {
+  return runInDurableObject(env.OWNER.getByName(owner), (instance: unknown) =>
+    act((instance as OwnerDO).sandbox));
+}
+
+/**
+ * A signed-in owner with a Groq key connected, its sandbox's lease open and its network
+ * applied; the owner's caps roomy unless `models` sets them.
+ */
+async function sandbox(apply = true, models: Record<string, unknown> = {
+  turn_requests: 10_000, turn_cost: 1_000_000_000_000 }): Promise<Sandbox> {
   const owner = `user_${crypto.randomUUID().replace(/-/g, "")}`;
   const app = await signInApp({ owner });
   const key = `gsk-good-${crypto.randomUUID()}`;
   const connected = await appPost("connections/key", app.access_token, app.session,
                                   { source: "groq", key });
   expect(connected.status).toBe(200);
-  const { connection } = await connected.json<{ connection: string }>();
+  const { connection, models: ids } = await connected.json<{ connection: string;
+                                                             models: string[] }>();
   const bound = ownerBound(owner);
-  const opened = await sandboxLeaseOpen(doorsEnv, bound, { holder: "sandbox-1" });
+  const { generation, policy } = await bound.stub.policyRead(bound.binding);
+  await bound.stub.policyWrite({ ...bound.binding, session: app.session }, {
+    expected_generation: generation, policy: { ...policy, models } });
+  const opened = await leases(owner, (sandbox) => sandbox.open({ holder: "sandbox-1" }));
   if (apply) {
-    await bound.stub.sandboxNetworkApplied(bound.binding, {
+    await leases(owner, (sandbox) => sandbox.networkApplied({
       lease_id: opened.lease.lease_id, epoch: opened.lease.epoch,
-      generation: opened.network.generation });
+      generation: opened.network.generation }));
   }
-  return { owner, session: app.session, token: opened.token, app: app.access_token,
-           connection, bound, opened, key };
+  return { owner, session: app.session, token: opened.egress_token, app: app.access_token,
+           connection, model: ids[0]!, bound, opened, key };
 }
 
-function egressRequest(box: Pick<Sandbox, "token" | "connection">, path: string = COMPLETIONS,
+function bodyOf(box: Pick<Sandbox, "model">, extra: Record<string, unknown> = {}): string {
+  return JSON.stringify({ model: box.model, stream: true, max_completion_tokens: 900_000_000,
+                          messages: [{ role: "user", content: "hi" }], ...extra });
+}
+
+function egressRequest(box: Pick<Sandbox, "token" | "connection" | "model">,
+                       path: string = COMPLETIONS,
                        init: { method?: string; headers?: Record<string, string>;
                                body?: string | null; generation?: string | null } = {}):
     Request {
   const generation = init.generation === undefined ? "1" : init.generation;
+  const body = init.body === undefined ? bodyOf(box) : init.body;
   return new Request(`${EGRESS_ORIGIN}/c/${box.connection}${path}`, {
     method: init.method ?? "POST",
     headers: {
       "content-type": "application/json",
+      ...(body === null ? {} : { "content-length": String(new TextEncoder().encode(body)
+        .byteLength) }),
       // What a model client in the sandbox sends: a placeholder in every credential place.
       authorization: `Bearer ta_ph_${box.connection}_0123456789abcdef`,
       "x-api-key": "ta_ph_placeholder", cookie: "session=s",
@@ -85,7 +116,7 @@ function egressRequest(box: Pick<Sandbox, "token" | "connection">, path: string 
       ...(generation === null ? {} : { [GENERATION_HEADER]: generation }),
       ...init.headers,
     },
-    body: init.body === undefined ? BODY : init.body,
+    body,
   });
 }
 
@@ -98,7 +129,13 @@ async function forwarded(): Promise<{ headers: Record<string, string>; url: stri
 }
 
 async function reservations(owner: string) {
-  return sqlIn(owner, "SELECT state, code, ended, outcome, status, bytes, path, method " +
+  return sqlIn(owner, "SELECT state, code, ended, outcome, status, bytes, bytes_hint, path, " +
+                        "method FROM egress_reservations ORDER BY opened_at, rowid");
+}
+
+/** Each call's charge: its state (or the row's, uncharged), its rule, what it held and used. */
+async function spends(owner: string) {
+  return sqlIn(owner, "SELECT coalesce(charge, state) AS state, rule, tokens, cost, est_cost " +
                         "FROM egress_reservations ORDER BY opened_at, rowid");
 }
 
@@ -139,13 +176,13 @@ async function settledOf(owner: string): Promise<void> {
   await until(async () => (await reservations(owner))[0]!["state"] === "settled", "the settle");
 }
 
-/** A policy write in the owner's session: the open-mode document, at the next generation. */
-async function writePolicy(box: Sandbox): Promise<number> {
+/** A policy write in the owner's session that changes the egress table. */
+async function writeEgress(box: Sandbox): Promise<number> {
   const { generation, policy } = await box.bound.stub.policyRead(box.bound.binding);
-  const written = await box.bound.stub.policyWrite(sessionOf(box), {
+  await box.bound.stub.policyWrite(sessionOf(box), {
     expected_generation: generation,
     policy: { ...policy, egress: { mode: "allowlist", destinations: [] } } });
-  return written.generation;
+  return (await leases(box.owner, (sandbox) => sandbox.config())).generation;
 }
 
 let restore: () => void = () => undefined;
@@ -166,10 +203,11 @@ describe("the egress door", () => {
     expect(EGRESS_DEADLINE_MS).toBe(EGRESS_DEADLINE_S * 1000);
   });
 
-  it("forwards a live token's request with the sealed key in place of every credential, " +
-     "streams the answer back and settles its bytes", async () => {
+  it("forwards a live token's call with the sealed key in place of every credential, its " +
+     "output cap clamped, streams the answer back and settles it at pi-ai's cost", async () => {
     const box = await sandbox();
-    const response = await call(egressRequest(box, `${COMPLETIONS}?key=ta_ph&stream=true`));
+    const body = bodyOf(box);
+    const response = await send(egressRequest(box, `${COMPLETIONS}?key=ta_ph&KEY=ta_ph&stream=true`));
     expect(response.status).toBe(200);
     expect(response.headers.get("x-upstream")).toBe("fake");
     expect(response.headers.get("x-ta-resealed")).toBeNull();
@@ -184,54 +222,109 @@ describe("the egress door", () => {
     }
     expect(JSON.stringify(sent)).not.toContain("ta_ph");
     expect(JSON.stringify(sent)).not.toContain(box.token);
-    expect(sent!.body).toBe(BODY);
+    const reserved = (await spends(box.owner))[0]!;
+    const asked = JSON.parse(sent!.body) as Record<string, unknown>;
+    // The output cap the reservation leaves, in place of the 900M the client asked.
+    expect(asked["max_completion_tokens"]).toBeLessThan(900_000_000);
+    expect(asked["max_completion_tokens"]).toBeGreaterThan(0);
+    expect({ ...asked, max_completion_tokens: 0 }).toEqual({ ...JSON.parse(body),
+                                                            max_completion_tokens: 0 });
+    await settledOf(box.owner);
     expect(await reservations(box.owner)).toEqual([{
       state: "settled", code: null, ended: null, outcome: "complete", status: 200,
-      bytes: new TextEncoder().encode(text).byteLength, path: `${COMPLETIONS}?key=ta_ph&stream=true`,
-      method: "POST" }]);
+      bytes: new TextEncoder().encode(text).byteLength,
+      bytes_hint: new TextEncoder().encode(body).byteLength,
+      path: `${COMPLETIONS}?key=ta_ph&KEY=ta_ph&stream=true`, method: "POST" }]);
+    // pi-ai's own reading of the stream, priced by the catalog's record of the model.
+    const [{ models }] = await sqlIn(box.owner, "SELECT models FROM connections") as
+      [{ models: string }];
+    const record = (JSON.parse(models) as { id: string; cost: { input: number;
+                                                                output: number } }[])
+      .find((model) => model.id === box.model)!;
+    const cost = Math.ceil((EGRESS_USAGE.prompt_tokens * record.cost.input
+                            + EGRESS_USAGE.completion_tokens * record.cost.output));
+    expect(await spends(box.owner)).toEqual([{ state: "succeeded", rule: null,
+                                               tokens: EGRESS_USAGE.total_tokens, cost,
+                                               est_cost: reserved["est_cost"] }]);
   });
 
-  it("passes the provider's own refusal through, and settles its status", async () => {
+  it("streams an SSE answer as the provider writes it, unbuffered, its type kept", async () => {
     const box = await sandbox();
-    const response = await call(egressRequest(box, COMPLETIONS, {
+    const response = await send(egressRequest(box, COMPLETIONS, {
+      headers: { "x-fake-egress": "slow-stream" } }));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/event-stream");
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let seen = "";
+    // The first event and the pings after it arrive while the provider is still writing.
+    while (!seen.includes(": ping")) {
+      const { value, done } = await reader.read();
+      expect(done).toBe(false);
+      seen += decoder.decode(value, { stream: true });
+    }
+    expect(seen.startsWith(EGRESS_CHUNKS[0]!.slice(0, 20))).toBe(true);
+    expect(await upstreamCancelled("stream")).toBe(false);
+    await reader.cancel();
+    await settledOf(box.owner);
+    await until(() => upstreamCancelled("stream"), "the upstream cancel");
+  });
+
+  it("forwards a read of a sealed endpoint free: no charge, no metering", async () => {
+    const box = await sandbox();
+    const response = await send(egressRequest(box, "/openai/v1/models",
+                                              { method: "GET", body: null }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ data: [] });
+    await settledOf(box.owner);
+    expect(await reservations(box.owner)).toMatchObject([{ state: "settled", method: "GET",
+                                                           outcome: "complete", status: 200 }]);
+    expect(await spends(box.owner)).toEqual([{ state: "settled", rule: null, tokens: null,
+                                               cost: null, est_cost: null }]);
+  });
+
+  it("passes the provider's own refusal through, and settles it at no cost", async () => {
+    const box = await sandbox();
+    const response = await send(egressRequest(box, COMPLETIONS, {
       headers: { "x-fake-egress": "busy" } }));
     expect(response.status).toBe(429);
     expect(response.headers.get("retry-after")).toBe("7");
     expect(await response.json()).toEqual({ error: { message: "rate limited" } });
-    expect(await reservations(box.owner)).toMatchObject([{ state: "settled",
-                                                           outcome: "complete", status: 429 }]);
+    await settledOf(box.owner);
+    expect(await reservations(box.owner)).toMatchObject([{ outcome: "complete", status: 429 }]);
+    expect(await spends(box.owner)).toMatchObject([{ state: "failed", cost: 0 }]);
   });
 
   it("keeps the gateway's own header from the sandbox, and settles despite a bad one",
      async () => {
     const box = await sandbox();
     const resealing: DoorsEnv = { ...doorsEnv, EGRESS: {
-      forward: async () => new Response("ok", { headers: { "x-ta-resealed": "{\"blob\":1}",
-                                                           "x-upstream": "fake" } }) } };
+      forward: async () => ({
+        response: new Response("ok", { headers: { "x-ta-resealed": "{\"blob\":1}",
+                                                  "x-upstream": "fake" } }),
+        outcome: new Response("{\"state\":\"unknown\"}\n").body! }) } };
     vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const response = await call(egressRequest(box), resealing);
+    const response = await send(egressRequest(box), resealing);
     expect(response.headers.get("x-ta-resealed")).toBeNull();
     expect(response.headers.get("x-upstream")).toBe("fake");
     expect(await response.text()).toBe("ok");
+    await settledOf(box.owner);
     expect(await reservations(box.owner)).toMatchObject([{ state: "settled",
                                                            outcome: "complete", bytes: 2 }]);
+    expect(await spends(box.owner)).toMatchObject([{ state: "unknown", cost: null }]);
   });
 
-  it("writes no directory entry for a lease the object refused", async () => {
-    const box = await sandbox();
-    const entries = async () => (await env.DIRECTORY.list({ prefix: "l:" })).keys.length;
-    const before = await entries();
-    await expect(sandboxLeaseOpen(doorsEnv, box.bound, { holder: "sandbox-2" }))
-      .rejects.toThrow("the sync lease is held");
-    expect(await entries()).toBe(before);
-  });
-
-  it("hands the sandbox slice a token, its network and its clients' environment once", async () => {
+  it("hands the sandbox slice two tokens, its network and its clients' environment once",
+     async () => {
     const box = await sandbox(false);
-    expect(box.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(verifyToken(env.ROUTING_MAC_KEY, "egress", box.opened.egress_token))
+      .toMatchObject({ owner: box.owner });
+    expect(verifyToken(env.ROUTING_MAC_KEY, "sync", box.opened.sync_token))
+      .toMatchObject({ owner: box.owner });
     const { network } = box.opened;
     expect(network.network.rules["egress.tinyassets.io"]).toEqual([{ transform: { headers: {
       [SANDBOX_HEADER]: box.token, [GENERATION_HEADER]: "1" } } }]);
+    expect(JSON.stringify(network)).not.toContain(box.opened.sync_token);
     expect(network.network.denyOut).toEqual(["0.0.0.0/0"]);
     expect(network.network.allowOut).toEqual(["*", "egress.tinyassets.io"]);
     expect(box.opened.env["GROQ_BASE_URL"])
@@ -239,109 +332,105 @@ describe("the egress door", () => {
     expect(box.opened.env["GROQ_API_KEY"]).toMatch(
       new RegExp(`^ta_ph_${box.connection}_[0-9a-f]{32}$`));
     expect(JSON.stringify(box.opened.env)).not.toContain(box.key);
-    // Only the token's hash is kept: in the object and as the directory's key.
-    const hash = await leaseTokenHash(box.token);
-    expect(await sqlIn(box.owner, "SELECT lease_token FROM file_space"))
-      .toEqual([{ lease_token: hash }]);
-    expect(await env.DIRECTORY.get(`l:${hash}`, { type: "json" })).toEqual({
-      o: box.owner, l: box.opened.lease.lease_id, e: Math.floor(box.opened.lease.expires_at) });
+    // No directory entry is written for either token.
+    expect((await env.DIRECTORY.list({ prefix: "l:" })).keys).toEqual([]);
     const stored = JSON.stringify(await sqlIn(box.owner, "SELECT * FROM file_space"));
-    expect(stored).not.toContain(box.token);
-  });
-
-  it("renews the lease's directory entry after the object, and closes the object first", async () => {
-    const box = await sandbox();
-    const hash = await leaseTokenHash(box.token);
-    await sqlIn(box.owner, "UPDATE file_space SET lease_expires = lease_expires - 30");
-    await putLease(doorsEnv, hash, { o: box.owner, l: box.opened.lease.lease_id, e: now() + 5 },
-                   now());
-    const renewed = await sandboxLeaseRenew(doorsEnv, box.bound, box.opened.lease);
-    expect(renewed.expires_at).toBeGreaterThanOrEqual(now() + 59);
-    expect(await env.DIRECTORY.get(`l:${hash}`, { type: "json" })).toEqual({
-      o: box.owner, l: box.opened.lease.lease_id, e: Math.floor(renewed.expires_at) });
-    // The object refuses the token before the entry goes: here the entry is put back.
-    expect(await sandboxLeaseClose(doorsEnv, box.bound, box.opened.lease))
-      .toEqual({ released: true });
-    expect(await env.DIRECTORY.get(`l:${hash}`)).toBeNull();
-    const gone = await call(egressRequest(box));
-    expect([gone.status, await codeOf(gone)]).toEqual([401, "egress_token_unknown"]);
-    await putLease(doorsEnv, hash, { o: box.owner, l: box.opened.lease.lease_id,
-                                     e: now() + 60 }, now());
-    const closed = await call(egressRequest(box));
-    expect([closed.status, await codeOf(closed)]).toEqual([401, "egress_lease_closed"]);
-    expect(await forwarded()).toEqual([]);
+    expect(stored).not.toContain(box.token.split(".")[1]);
+    expect(stored).toContain(verifyToken(env.ROUTING_MAC_KEY, "egress", box.token)!.hash);
   });
 });
 
-describe("a refused request", () => {
+describe("a refused call", () => {
   it.each([
     ["no token", "", 401, "egress_token_missing"],
     ["a malformed token", "not-a-token", 401, "egress_token_unknown"],
-    ["an unknown token", "A".repeat(43), 401, "egress_token_unknown"],
+    ["a token naming no owner", `${"!".repeat(4)}.${"A".repeat(43)}.${"A".repeat(43)}`, 401,
+     "egress_token_unknown"],
+    ["the old two-part form", `${btoa("user_x")}.${"A".repeat(43)}`, 401, "egress_token_unknown"],
   ])("with %s is refused before any object, and forwards nothing", async (_what, token, status,
                                                                          code) => {
     const box = await sandbox();
     const spy = vi.spyOn(doorsEnv.OWNER, "getByName");
-    const response = await call(egressRequest({ ...box, token }));
+    const response = await send(egressRequest({ ...box, token }));
     expect([response.status, await codeOf(response)]).toEqual([status, code]);
     expect(spy).not.toHaveBeenCalled();
     expect(await forwarded()).toEqual([]);
   });
 
-  it("with an empty or malformed token is refused before the directory is read", async () => {
+  it("with a forged or altered token, or the sync token, never reaches the object", async () => {
     const box = await sandbox();
-    const read = vi.spyOn(doorsEnv.DIRECTORY, "get");
-    for (const [token, code] of [["", "egress_token_missing"], [" ", "egress_token_missing"],
-                                 ["A".repeat(42), "egress_token_unknown"],
-                                 [`${"A".repeat(42)}=`, "egress_token_unknown"]] as const) {
-      const request = egressRequest(box);
-      request.headers.set(SANDBOX_HEADER, token);
-      const response = await call(request);
-      expect([response.status, await codeOf(response)]).toEqual([401, code]);
-    }
-    expect(read.mock.calls.filter(([key]) => String(key).startsWith("l:"))).toEqual([]);
-    expect(await forwarded()).toEqual([]);
-  });
-
-  it("with an expired token is refused before any object", async () => {
-    const box = await sandbox();
-    const hash = await leaseTokenHash(box.token);
-    await env.DIRECTORY.put(`l:${hash}`, JSON.stringify({
-      o: box.owner, l: box.opened.lease.lease_id, e: now() - 1 }));
+    const victim = `user_${crypto.randomUUID().replace(/-/g, "")}`;
+    const otherKey = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const [routing, secret, mac] = box.token.split(".") as [string, string, string];
+    const flip = (part: string) => `${part.slice(0, 5)}${part[5] === "A" ? "B" : "A"}${
+      part.slice(6)}`;
+    const victimRouting = btoa(victim).replace(/=+$/, "");
     const spy = vi.spyOn(doorsEnv.OWNER, "getByName");
-    const response = await call(egressRequest(box));
-    expect([response.status, await codeOf(response)]).toEqual([401, "egress_token_expired"]);
+    for (const token of [
+      mintToken(otherKey, "egress", victim).token,      // forged: another key's MAC
+      `${victimRouting}.${secret}.${mac}`,               // a real MAC moved to another owner
+      `${routing}.${flip(secret)}.${mac}`,               // the secret altered
+      `${routing}.${secret}.${flip(mac)}`,               // the MAC altered
+      box.opened.sync_token,                             // the other kind's MAC
+      mintToken(env.ROUTING_MAC_KEY, "sync", victim).token]) {
+      const response = await send(egressRequest({ ...box, token }));
+      expect([response.status, await codeOf(response)]).toEqual([401, "egress_token_unknown"]);
+    }
     expect(spy).not.toHaveBeenCalled();
+    expect(await reached(victim)).toBe(false);
     expect(await forwarded()).toEqual([]);
   });
 
-  it("whose lease the object holds no longer is refused there, with a receipt", async () => {
+  it("with an unknown secret under a true MAC, or a lease that lapsed or closed, is refused " +
+     "by the owner's object; a never-seen owner's gets no rows", async () => {
     const box = await sandbox();
+    const unknown = mintToken(env.ROUTING_MAC_KEY, "egress", box.owner).token;
+    const response = await send(egressRequest({ ...box, token: unknown }));
+    expect([response.status, await codeOf(response)]).toEqual([401, "egress_lease_closed"]);
+    const stranger = `user_${crypto.randomUUID().replace(/-/g, "")}`;
+    const theirs = await send(egressRequest({ ...box,
+      token: mintToken(env.ROUTING_MAC_KEY, "egress", stranger).token }));
+    expect(theirs.status).toBe(403);
+    expect(await reached(stranger)).toBe(false);
+    expect(await reservations(stranger)).toEqual([]);
     await sqlIn(box.owner, "UPDATE file_space SET lease_expires = 1");
-    const response = await call(egressRequest(box));
-    expect(response.status).toBe(401);
-    const answer = await response.json<{ error: { code: string }; receipt: string }>();
-    expect(answer.error.code).toBe("egress_lease_closed");
-    expect(answer.receipt).toMatch(/^[0-9a-f]{32}$/);
-    expect(await reservations(box.owner)).toMatchObject([{ state: "refused",
-                                                           code: "egress_lease_closed" }]);
+    const lapsed = await send(egressRequest(box));
+    expect([lapsed.status, await codeOf(lapsed)]).toEqual([401, "egress_lease_closed"]);
+    const other = await sandbox();
+    await leases(other.owner, (sandbox) => sandbox.close(other.opened.lease));
+    const closed = await send(egressRequest(other));
+    expect([closed.status, await codeOf(closed)]).toEqual([401, "egress_lease_closed"]);
     expect(await forwarded()).toEqual([]);
   });
 
-  it("names a connection that is not the owner's, or an endpoint not sealed", async () => {
+  it("names a connection that is not the owner's, an endpoint not sealed (a write of a read), " +
+     "or no body length", async () => {
     const box = await sandbox();
     const other = await sandbox();
-    for (const [request, code] of [
-      [egressRequest({ ...box, connection: other.connection }), "egress_connection_refused"],
-      [egressRequest({ ...box, connection: `c${"0".repeat(24)}` }), "egress_connection_refused"],
-      [egressRequest(box, "/openai/v1/files"), "egress_endpoint_refused"],
-      [egressRequest(box, COMPLETIONS, { method: "DELETE", body: null }),
+    for (const [request, status, code] of [
+      [egressRequest({ ...box, connection: other.connection }), 403, "egress_connection_refused"],
+      [egressRequest({ ...box, connection: `c${"0".repeat(24)}` }), 403,
+       "egress_connection_refused"],
+      [egressRequest(box, "/openai/v1/files"), 403, "egress_endpoint_refused"],
+      [egressRequest(box, "/openai/v1/chat/completions%2F..%2Fadmin"), 403,
        "egress_endpoint_refused"],
-      [egressRequest(box, "/openai/v1/chat/completions%2F..%2Fadmin"), "egress_endpoint_refused"],
+      [egressRequest(box, "/openai/v1/models", { body: "{}" }), 403, "egress_endpoint_refused"],
+      [egressRequest(box, COMPLETIONS, { headers: { "content-length": "" } }), 411,
+       "egress_length_required"],
     ] as const) {
       const response = await call(request);
-      expect([response.status, await codeOf(response)]).toEqual([403, code]);
+      expect([response.status, await codeOf(response)]).toEqual([status, code]);
     }
+    expect(await forwarded()).toEqual([]);
+  });
+
+  it("past the owner's spend caps is refused before any forward, its receipt kept",
+     async () => {
+    const box = await sandbox(true, { turn_cost: 1 });
+    const response = await send(egressRequest(box));
+    expect([response.status, await codeOf(response)]).toEqual([402, "egress_spend_refused"]);
+    expect(await spends(box.owner)).toMatchObject([{ state: "refused", rule: "run_cost" }]);
     expect(await forwarded()).toEqual([]);
   });
 
@@ -349,108 +438,95 @@ describe("a refused request", () => {
     const box = await sandbox();
     await box.bound.stub.admissionSet({ owner: box.owner, caller: PLATFORM_CALLER, origin: null },
                                       { reason: "billing", suspended: true });
-    const suspended = await call(egressRequest(box));
+    const suspended = await send(egressRequest(box));
     expect([suspended.status, await codeOf(suspended)]).toEqual([403, "owner_suspended"]);
     await sqlIn(box.owner, "UPDATE owner_admission SET state = 'erased', reasons = '[]'");
+    const { evictDurableObject } = await import("cloudflare:test");
     await evictDurableObject(box.bound.stub);
-    const erased = await call(egressRequest(box));
+    const erased = await send(egressRequest(box));
     expect([erased.status, await codeOf(erased)]).toEqual([403, "owner_erased"]);
     expect(await forwarded()).toEqual([]);
   });
 
-  it("under a stale policy generation, or before its network is applied", async () => {
+  it("under a stale egress generation, or before its network is applied", async () => {
     const box = await sandbox(false);
-    const unapplied = await call(egressRequest(box));
+    const unapplied = await send(egressRequest(box));
     expect([unapplied.status, await codeOf(unapplied)]).toEqual([409, "egress_network_stale"]);
     for (const generation of [null, "0", "2", "x"]) {
-      const stale = await call(egressRequest(box, COMPLETIONS, { generation }));
+      const stale = await send(egressRequest(box, COMPLETIONS, { generation }));
       expect([stale.status, await codeOf(stale)]).toEqual([409, "egress_policy_stale"]);
     }
     expect(await forwarded()).toEqual([]);
   });
 
-  it("past the owner's rate", async () => {
+  it("is refused in maintenance before any object", async () => {
     const box = await sandbox();
-    await sqlIn(box.owner, "INSERT INTO egress_reservations (id, lease_id, connection_id, " +
-                  "version, method, path, generation, opened_at, state, outcome, settled_at) " +
-                  "SELECT lower(hex(randomblob(16))), ?, ?, 1, 'POST', '/x', 1, ?, 'settled', " +
-                  "'complete', ? FROM (WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 " +
-                  "FROM n WHERE i < 600) SELECT i FROM n)",
-                box.opened.lease.lease_id, box.connection, Date.now() / 1000,
-                Date.now() / 1000);
-    const response = await call(egressRequest(box));
-    expect([response.status, await codeOf(response)]).toEqual([429, "egress_rate"]);
-    expect(response.headers.get("Retry-After")).toBe("1");
-    expect(await forwarded()).toEqual([]);
+    await setControl({ outside: "on", ordinary: "canary", canary: [], inbound: false });
+    const response = await send(egressRequest(box));
+    expect(response.status).toBe(503);
+    expect(await reservations(box.owner)).toEqual([]);
   });
 });
 
-describe("a lease token", () => {
-  it("is refused at another owner's object", async () => {
-    const box = await sandbox();
-    const other = await sandbox();
-    const hash = await leaseTokenHash(box.token);
-    await env.DIRECTORY.put(`l:${hash}`, JSON.stringify({
-      o: other.owner, l: other.opened.lease.lease_id, e: now() + 60 }));
-    const response = await call(egressRequest({ ...box, connection: other.connection }));
-    expect([response.status, await codeOf(response)]).toEqual([401, "egress_lease_closed"]);
-    expect(await forwarded()).toEqual([]);
-  });
-
+describe("a sandbox token", () => {
   it("reaches no other door: /api, /mcp and /app refuse it, and the egress origin serves " +
      "nothing else", async () => {
     const box = await sandbox();
-    const headers = { [SANDBOX_HEADER]: box.token, [GENERATION_HEADER]: "1",
-                      Authorization: `Bearer ${box.token}`, "Content-Type": "application/json" };
-    for (const path of ["/api/tools/read_graph", "/mcp", "/app/api/agent/status"]) {
-      const response = await call(new Request(url(path), { method: "POST", headers,
-                                                           body: "{}" }));
-      expect(response.status).toBe(401);
-    }
-    for (const path of ["/api/tools/read_graph", "/mcp", "/app/api/agent/status", "/c",
-                        `/c/${box.connection}`]) {
-      const response = await call(new Request(`${EGRESS_ORIGIN}${path}`, { method: "POST",
-                                                                           headers, body: "{}" }));
-      expect(response.status).toBe(404);
+    for (const token of [box.token, box.opened.sync_token]) {
+      const headers = { [SANDBOX_HEADER]: token, [GENERATION_HEADER]: "1",
+                        Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+      for (const path of ["/api/tools/read_graph", "/mcp", "/app/api/agent/status"]) {
+        const response = await call(new Request(url(path), { method: "POST", headers,
+                                                             body: "{}" }));
+        expect(response.status).toBe(401);
+      }
+      for (const path of ["/api/tools/read_graph", "/mcp", "/app/api/agent/status", "/c",
+                          `/c/${box.connection}`]) {
+        const response = await call(new Request(`${EGRESS_ORIGIN}${path}`, {
+          method: "POST", headers, body: "{}" }));
+        expect(response.status).toBe(404);
+      }
     }
     expect(await forwarded()).toEqual([]);
   });
 });
 
 describe("a policy write mid-stream", () => {
-  it("ends the stream and settles it, and the next open waits for the network", async () => {
+  it("ends the stream and settles it; the next call waits for the network only when the " +
+     "write changed egress", async () => {
     const box = await sandbox();
-    const response = await call(egressRequest(box, COMPLETIONS, {
+    const response = await send(egressRequest(box, COMPLETIONS, {
       headers: { "x-fake-egress": "slow-policy" } }));
     expect(response.status).toBe(200);
     const reader = response.body!.getReader();
     // The gateway holds back a secret's length less one, in case a secret spans chunks.
     const first = (await reader.read()).value!.byteLength;
     expect(first).toBeGreaterThan(0);
-    const generation = await writePolicy(box);
+    const generation = await writeEgress(box);
     expect(generation).toBe(2);
     await settledOf(box.owner);
     expect(await drained(reader)).toBe("egress_ended");
     expect(await reservations(box.owner)).toMatchObject([{
       state: "settled", ended: "policy", outcome: "ended", status: 200, bytes: first }]);
+    // A cut stream's usage cannot be read: its whole reservation is kept.
+    expect(await spends(box.owner)).toMatchObject([{ state: "unknown", cost: null }]);
     await until(() => upstreamCancelled("policy"), "the upstream cancel");
-    // The old network's transform carries the old generation; the new one waits to be applied.
-    const old = await call(egressRequest(box));
+    const old = await send(egressRequest(box));
     expect([old.status, await codeOf(old)]).toEqual([409, "egress_policy_stale"]);
-    const waiting = await call(egressRequest(box, COMPLETIONS, { generation: "2" }));
+    const waiting = await send(egressRequest(box, COMPLETIONS, { generation: "2" }));
     expect([waiting.status, await codeOf(waiting)]).toEqual([409, "egress_network_stale"]);
-    await box.bound.stub.sandboxNetworkApplied(box.bound.binding, {
-      lease_id: box.opened.lease.lease_id, epoch: box.opened.lease.epoch, generation: 2 });
-    const applied = await call(egressRequest(box, COMPLETIONS, { generation: "2" }));
+    await leases(box.owner, (sandbox) => sandbox.networkApplied({
+      lease_id: box.opened.lease.lease_id, epoch: box.opened.lease.epoch, generation: 2 }));
+    const applied = await send(egressRequest(box, COMPLETIONS, { generation: "2" }));
     expect(applied.status).toBe(200);
     expect(await applied.text()).toBe(EGRESS_CHUNKS.join(""));
   });
 });
 
 describe("settlement", () => {
-  it("records a client's abort", async () => {
+  it("records a client's abort, the provider's request cancelled", async () => {
     const box = await sandbox();
-    const response = await call(egressRequest(box, COMPLETIONS, {
+    const response = await send(egressRequest(box, COMPLETIONS, {
       headers: { "x-fake-egress": "slow-abort" } }));
     const reader = response.body!.getReader();
     await reader.read();
@@ -458,18 +534,61 @@ describe("settlement", () => {
     await settledOf(box.owner);
     expect(await reservations(box.owner)).toMatchObject([{ outcome: "aborted", ended: null,
                                                            status: 200 }]);
+    expect(await spends(box.owner)).toMatchObject([{ state: "unknown" }]);
     await until(() => upstreamCancelled("abort"), "the upstream cancel");
   });
+
+  it("is registered with waitUntil at open, so a client that leaves before the answer " +
+     "still settles", async () => {
+    const box = await sandbox();
+    let release: (answer: { response: Response; outcome: ReadableStream<Uint8Array> }) => void =
+      () => undefined;
+    const slow: DoorsEnv = { ...doorsEnv, EGRESS: {
+      forward: () => new Promise((resolve) => { release = resolve; }) } };
+    const waits: Promise<unknown>[] = [];
+    const ctx = { waitUntil: (promise: Promise<unknown>) => { waits.push(promise); },
+                  passThroughOnException: () => undefined, props: {} } as unknown as
+      ExecutionContext;
+    const pending = serveEgress(egressRequest(box), slow, ctx);
+    await until(async () => (await reservations(box.owner)).length === 1, "the open");
+    expect(waits.length).toBe(1);
+    expect((await reservations(box.owner))[0]!["state"]).toBe("open");
+    release({ response: new Response("ok"),
+              outcome: new Response("{\"state\":\"failed\"}\n").body! });
+    const response = await pending;
+    expect(await response.text()).toBe("ok");
+    await Promise.all(waits);
+    expect((await reservations(box.owner))[0]!["outcome"]).toBe("complete");
+  });
+
+  it("goes through a fresh stub when the owner's object reset mid-stream", async () => {
+    const box = await sandbox();
+    const response = await send(egressRequest(box, COMPLETIONS, {
+      headers: { "x-fake-egress": "slow-reset" } }));
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    await reader.read();
+    await runInDurableObject(box.bound.stub, (_instance: unknown, state: DurableObjectState) => {
+      state.abort("reset");
+    }).catch(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect(await drained(reader)).toBe("egress_ended");
+    await settledOf(box.owner);
+    expect(await reservations(box.owner)).toMatchObject([{ state: "settled",
+                                                           outcome: "ended" }]);
+  }, 30_000);
 
   it("records the gateway's failure", async () => {
     const box = await sandbox();
     const failing: DoorsEnv = { ...doorsEnv, EGRESS: {
       forward: () => Promise.reject(new Error("the gateway is gone")) } };
     vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const response = await call(egressRequest(box), failing);
+    const response = await send(egressRequest(box), failing);
     expect([response.status, await codeOf(response)]).toEqual([502, "egress_gateway_failed"]);
+    await settledOf(box.owner);
     expect(await reservations(box.owner)).toMatchObject([{ state: "settled", outcome: "failed",
                                                            status: null, bytes: 0 }]);
+    expect(await spends(box.owner)).toMatchObject([{ state: "unknown" }]);
   });
 
   it("records the door's deadline", async () => {
@@ -486,17 +605,17 @@ describe("settlement", () => {
 
   it("ends a stream when its lease closes, or its connection is revoked", async () => {
     const box = await sandbox();
-    const first = await call(egressRequest(box, COMPLETIONS, {
+    const first = await send(egressRequest(box, COMPLETIONS, {
       headers: { "x-fake-egress": "slow-close" } }));
     const reader = first.body!.getReader();
     await reader.read();
-    await sandboxLeaseClose(doorsEnv, box.bound, box.opened.lease);
+    await leases(box.owner, (sandbox) => sandbox.close(box.opened.lease));
     await settledOf(box.owner);
     expect(await drained(reader)).toBe("egress_ended");
     expect(await reservations(box.owner)).toMatchObject([{ ended: "lease", outcome: "ended" }]);
 
     const again = await sandbox();
-    const second = await call(egressRequest(again, COMPLETIONS, {
+    const second = await send(egressRequest(again, COMPLETIONS, {
       headers: { "x-fake-egress": "slow-revoke" } }));
     const held = second.body!.getReader();
     await held.read();
@@ -507,7 +626,7 @@ describe("settlement", () => {
     expect(await drained(held)).toBe("egress_ended");
     expect(await reservations(again.owner)).toMatchObject([{ ended: "connection",
                                                              outcome: "ended" }]);
-    const after = await call(egressRequest(again));
+    const after = await send(egressRequest(again));
     expect([after.status, await codeOf(after)]).toEqual([403, "egress_connection_refused"]);
   });
 });

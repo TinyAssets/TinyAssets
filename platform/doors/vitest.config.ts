@@ -65,6 +65,9 @@ function fakeProviders() {
   };
 }
 
+/** The sandbox tokens' routing key (`ROUTING_MAC_KEY`), made fresh for each run. */
+const ROUTING_KEY = randomBytes(32).toString("base64url");
+
 /** A keyring made fresh for each run. */
 const KEYRING = JSON.stringify({ active: "k1", keys: { k1: randomBytes(32).toString("base64") } });
 
@@ -79,7 +82,8 @@ export default defineConfig({
         // ThreadStore, the owner Worker's own PISTORE, which the object's agent reaches; the fake upstream's
         // issuer stands in for AuthKit's as the owner issuer. GATEWAY reaches the real
         // gateway Worker, whose fetches reach the fake providers; PROVIDERS is the tests'
-        // own way to them, to read back what they received.
+        // own way to them, to read back what they received. ROUTING_MAC_KEY, the config's
+        // one secret, is the owner Worker's too: here both are this Worker.
         plugins: [
           cloudflareTest({
             main: "./test/entry.ts",
@@ -87,7 +91,7 @@ export default defineConfig({
             miniflare: {
               durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true },
                                 PISTORE: { className: "ThreadStore", useSQLite: true } },
-              bindings: { OWNER_ISSUER: "https://upstream.test" },
+              bindings: { OWNER_ISSUER: "https://upstream.test", ROUTING_MAC_KEY: ROUTING_KEY },
               serviceBindings: { PROVIDERS: "fake-providers" },
               workers: [gatewayWorker(KEYRING), fakeProviders()],
             },

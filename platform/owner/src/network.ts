@@ -29,12 +29,25 @@
  * - `dnsServers` is pinned to one resolver (`DNS_SERVERS`), not E2B's default of all
  *   traffic to 8.8.8.8 whenever a domain is allowed. E2B's own note: it opens the firewall
  *   only, and the sandbox's `/etc/resolv.conf` must name the same server (8b's template).
+ * - **Allowlist mode is not a data boundary in v1.** E2B allows *all* traffic to a DNS
+ *   server, on every port (its `dnsServers` text), and its rules name no ports
+ *   (`allowOut`/`denyOut` take CIDRs, IPs and names only), so the pinned resolver cannot be
+ *   held to port 53: code in the sandbox can tunnel data through DNS, or speak DoH (HTTPS
+ *   to an IP) to it, whatever the list says. The list keeps honest tools to the owner's
+ *   hosts; it does not stop a sandbox that means to send data elsewhere (`BOUNDARY_NOTE`).
+ *   An empty `dnsServers` with names pinned in the template's `/etc/hosts` would close it
+ *   for a fixed list; that, and whether E2B's proxy honours the VM's `/etc/hosts` or DNS
+ *   for a transformed host (a redirect would carry the egress token elsewhere), are 8b's
+ *   live probe.
  * - `rules` holds one transform, on `egress.tinyassets.io` only: E2B's egress proxy sets
- *   the sandbox's lease token (`x-ta-sandbox`) and the policy generation this document was
- *   made under (`x-ta-policy-generation`) on every HTTPS request to the door, outside the
+ *   the sandbox's egress token (`x-ta-sandbox`) and the egress generation this document was
+ *   made under (`x-ta-network-generation`) on every HTTPS request to the door, outside the
  *   VM, replacing any header of the same names the sandbox sent. The door admits a request
- *   only under the owner's current generation, so a request through a stale network is
- *   refused until the sandbox slice applies the new one.
+ *   only under the current egress generation, which moves only when the policy's egress
+ *   table does, so a request through a stale network is refused until the sandbox slice
+ *   applies the new one. The token is never in the VM; whoever holds the project's E2B API
+ *   key can read it back from the sandbox's info (`SandboxNetworkRuleInfo`), so that key is
+ *   a platform secret with the token's custody.
  *
  * **The environment** (`sandboxEnv`): for each of the owner's active connections, a base
  * URL on the egress door and a placeholder key, `ta_ph_<connection>_<random>`, which
@@ -49,16 +62,22 @@
  */
 import type { EgressScope } from "../../gateway/src/credential";
 
+import { tokenShaped } from "../../doors/src/routing-mac";
+
 import { Invalid, Refused } from "./errors";
 
 /**
  * The gateway as the egress door binds it (`EGRESS`, its `EgressGateway` entrypoint): one
- * sandbox request forwarded under the sealed endpoints of the blob the owner's object handed
- * out for it. Every refusal is a fixed-code answer; the provider's own answers pass through.
+ * sandbox model call forwarded, metered, under the sealed endpoints of the blob the owner's
+ * object handed out for it; its metered outcome comes as one JSON line on `outcome`, and
+ * closing `stop` aborts it. Every refusal is a fixed-code answer; the provider's own
+ * answers pass through.
  */
 export interface EgressService {
-  forward(owner: string, connection: string, version: number, blob: string,
-          request: Request): Promise<Response>;
+  forward(owner: string, connection: string, version: number, blob: string, request: Request,
+          metering: { readonly max_output_tokens: number; readonly input_bytes: number } | null,
+          stop: ReadableStream<Uint8Array>):
+    Promise<{ response: Response; outcome: ReadableStream<Uint8Array> }>;
 }
 
 /**
@@ -118,7 +137,8 @@ export function checkDestination(entry: unknown): void {
 export const EGRESS_CODES = Object.freeze([
   "egress_token_missing", "egress_token_unknown", "egress_token_expired",
   "egress_lease_closed", "egress_policy_stale", "egress_network_stale",
-  "egress_connection_refused", "egress_endpoint_refused", "egress_rate",
+  "egress_connection_refused", "egress_endpoint_refused", "egress_unmetered",
+  "egress_length_required", "egress_rate", "egress_spend_refused",
 ] as const);
 export type EgressCode = typeof EGRESS_CODES[number];
 
@@ -137,10 +157,15 @@ export const EGRESS_DEADLINE_S = 300;
 /** The egress door's host: always allowed, the one host the transform is set on. */
 export const EGRESS_HOST = "egress.tinyassets.io";
 export const EGRESS_ORIGIN = `https://${EGRESS_HOST}`;
-/** The header the transform sets to the sandbox's lease token. */
+/** The header the transform sets to the sandbox's egress token. */
 export const SANDBOX_HEADER = "x-ta-sandbox";
-/** The header the transform sets to the policy generation its network was made under. */
-export const GENERATION_HEADER = "x-ta-policy-generation";
+/** The header the transform sets to the egress generation its network was made under. */
+export const GENERATION_HEADER = "x-ta-network-generation";
+/** What the owner is told of an allowlist: not a data boundary in v1 (above). */
+export const BOUNDARY_NOTE = "An egress allowlist keeps the sandbox's tools to the listed " +
+  "hosts, but is not a data boundary: the sandbox's DNS resolver is reachable on every port, " +
+  "so code that means to send data elsewhere can.";
+
 /** E2B's `ALL_TRAFFIC`. */
 export const ALL_TRAFFIC = "0.0.0.0/0";
 /**
@@ -150,8 +175,6 @@ export const ALL_TRAFFIC = "0.0.0.0/0";
 export const DNS_SERVERS: readonly string[] = Object.freeze(["1.1.1.1"]);
 /** The ports E2B matches a name on: HTTP's `Host` and TLS's SNI. */
 const NAMED_PORTS: readonly number[] = Object.freeze([80, 443]);
-/** A lease token: 256 random bits, base64url (`doors/src/sandbox.ts`). */
-const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const CONNECTION = /^c[0-9a-f]{24}$/;
 /** The egress door's path segment before a connection id: `/c/<connection>/...`. */
 const CONNECTION_SEGMENT = "c";
@@ -188,6 +211,9 @@ export interface NetworkPlan {
   readonly unexpressed: readonly Unexpressed[];
   /** `ask` mode: what is not listed is refused, with a refusal receipt at each apply. */
   readonly receipt: boolean;
+  /** Whether the network is a data boundary: never, in v1 (`BOUNDARY_NOTE`). */
+  readonly boundary: false;
+  readonly note: string;
 }
 
 /** The owner policy's egress table, as `policy.ts` validates it. */
@@ -197,8 +223,8 @@ export interface EgressPolicy {
 }
 
 /**
- * E2B's network configuration for the owner's egress policy at `generation`, with
- * `token`, the sandbox's lease token, in the egress door's transform.
+ * E2B's network configuration for the owner's egress policy at egress `generation`, with
+ * `token`, the sandbox's egress token, in the egress door's transform.
  */
 export function networkDocument(egress: EgressPolicy, generation: number, token: string):
     NetworkPlan {
@@ -209,8 +235,8 @@ export function networkDocument(egress: EgressPolicy, generation: number, token:
   if (!Number.isSafeInteger(generation) || generation < 1) {
     throw new Invalid("a policy generation is a whole number from 1");
   }
-  if (typeof token !== "string" || !TOKEN.test(token)) {
-    throw new Invalid("a lease token is 43 base64url characters");
+  if (!tokenShaped(token)) {
+    throw new Invalid("a sandbox token is its owner, its secret and its MAC, base64url");
   }
   const allowed = new Set<string>();
   const unexpressed: Unexpressed[] = [];
@@ -241,8 +267,11 @@ export function networkDocument(egress: EgressPolicy, generation: number, token:
     generation,
     unexpressed: Object.freeze(mode === "open" ? [] : unexpressed),
     receipt: mode === "ask",
+    boundary: false,
+    note: BOUNDARY_NOTE,
   });
 }
+
 
 /** A connection the sandbox may reach: its id, its provider and where it may be forwarded. */
 export interface Egressible {
@@ -256,12 +285,30 @@ function stem(name: string): string {
   return name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
 }
 
-/** The base URL a connection's clients use: the door, the connection, the sealed path. */
-export function egressBaseUrl(connection: string, egress: EgressScope): string {
+/**
+ * The provider CLIs whose variables the one rule does not name, as data: for a provider,
+ * each CLI's base-URL and key variables, and whether its base URL is the door and the
+ * connection alone (`bare`: its SDK appends the API version itself). Gemini CLI reads
+ * `GOOGLE_GEMINI_BASE_URL` and `GEMINI_API_KEY`, its `@google/genai` client appending
+ * `/v1beta`. Claude Code (`ANTHROPIC_*`), Codex and Qwen Code (`OPENAI_*`) and Mistral's
+ * `MISTRAL_API_KEY` are the rule's own names.
+ */
+const CLI_ENV: Readonly<Record<string, readonly {
+  readonly base_url: string; readonly api_key: string; readonly bare: boolean }[]>> =
+  Object.freeze({
+    google: Object.freeze([Object.freeze({ base_url: "GOOGLE_GEMINI_BASE_URL",
+                                           api_key: "GEMINI_API_KEY", bare: true })]),
+  });
+
+/**
+ * The base URL a connection's clients use: the door, the connection, the sealed path (or,
+ * with no scope, the door and the connection alone).
+ */
+export function egressBaseUrl(connection: string, egress: EgressScope | null): string {
   if (!CONNECTION.test(connection)) {
     throw new Invalid("invalid connection");
   }
-  const path = new URL(egress.base_url).pathname;
+  const path = egress === null ? "/" : new URL(egress.base_url).pathname;
   return `${EGRESS_ORIGIN}/${CONNECTION_SEGMENT}/${connection}${
     path === "/" ? "/" : path.replace(/\/+$/, "")}`;
 }
@@ -289,6 +336,10 @@ export function sandboxEnv(connections: readonly Egressible[], random: () => str
       named.add(name);
       env[`${name}_BASE_URL`] = base;
       env[`${name}_API_KEY`] = placeholder;
+      for (const names of CLI_ENV[provider] ?? []) {
+        env[names.base_url] = names.bare ? egressBaseUrl(connection, null) : base;
+        env[names.api_key] = placeholder;
+      }
     }
   }
   return Object.freeze(env);

@@ -753,9 +753,22 @@ export class Connections {
    * endpoints, as its setup check listed them), or null: no such active connection.
    */
   egressScope(id: string): EgressScope | null {
+    return this.egressOf(id)?.scope ?? null;
+  }
+
+  /**
+   * What a sandbox call on an active connection is admitted and reserved by: its egress
+   * scope, its source record (whose spend it counts under) and its models (whose prices
+   * bound it); null for no such active connection, or one with no scope stored.
+   */
+  egressOf(id: string): { readonly scope: EgressScope; readonly source: string;
+                          readonly models: readonly ModelInfo[] } | null {
     const row = this.#row(id);
-    return row === undefined || row.status !== "active" || row.egress === null ? null
-      : egressScope(JSON.parse(row.egress));
+    if (row === undefined || row.status !== "active" || row.egress === null) {
+      return null;
+    }
+    return { scope: egressScope(JSON.parse(row.egress)), source: row.source,
+             models: JSON.parse(row.models) as ModelInfo[] };
   }
 
   /** The active connections the sandbox may reach, oldest first, each with its scope. */

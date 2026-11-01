@@ -15,6 +15,10 @@
 //   AuthKit's issuer, whose subjects stay owner ids; unset until the AuthKit slice, so
 //   every sign-in fails loudly. FOREIGN_ISSUERS: the other issuers whose owners are
 //   namespaced, each listed by its own slice; none today, and any unlisted issuer fails.
+// - ROUTING_MAC_KEY: the one secret, the key sandbox tokens are MAC'd under (32 random
+//   bytes, base64url, generated at deploy and set in the owner Worker too); the egress
+//   door verifies a token by it before any stub call (src/routing-mac.ts).
+//   `secrets.required` makes a deploy without it fail.
 // `global_fetch_strictly_public` is required for Client ID Metadata Documents: the
 // provider fetches a client's metadata URL, and the flag keeps that fetch off same-zone
 // routing (its SSRF protection); without it the provider will not advertise CIMD.
@@ -27,6 +31,7 @@
   "workers_dev": false,
   "preview_urls": false,
   "vars": { "DCR_ENABLED": "false", "OWNER_ISSUER": "not-configured", "FOREIGN_ISSUERS": "[]" },
+  "secrets": { "required": ["ROUTING_MAC_KEY"] },
   "durable_objects": {
     "bindings": [
       { "name": "OWNER", "class_name": "OwnerDO", "script_name": "tinyassets-owner" }

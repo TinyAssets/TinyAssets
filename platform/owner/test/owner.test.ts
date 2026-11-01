@@ -35,9 +35,8 @@ const RPC_METHODS = Object.freeze([
   "grantForgetRevoked", "grantList", "grantRevoke", "grantSet", "mailboxAck", "mailboxRead",
   "mailboxSubscriber", "noticeList", "outsideAgents", "policyProposal", "policyPropose",
   "policyRead", "policyReceipts", "policyWakeLimits", "policyWrite", "registerAgent",
-  "registerProposal", "registerPropose", "roomPost", "sandboxConfig", "sandboxLeaseClose",
-  "sandboxLeaseOpen", "sandboxLeaseRenew", "sandboxNetworkApplied", "sessionClose",
-  "sessionCloseAll", "sessionExtend", "sessionOpen", "usageMetrics", "usageReceipts",
+  "registerProposal", "registerPropose", "roomPost", "sessionClose", "sessionCloseAll",
+  "sessionExtend", "sessionOpen", "usageMetrics", "usageReceipts",
 ]);
 
 describe("schema migration on wake", () => {

@@ -96,6 +96,11 @@ export interface DoorsEnv {
   readonly GATEWAY: ConnectService;
   /** The gateway's egress entrypoint, which serves only `forward`; reached only in `egress.ts`. */
   readonly EGRESS: EgressService;
+  /**
+   * The routing key sandbox tokens are MAC'd under (`routing-mac.ts`), a Worker secret the
+   * owner Worker holds too: the egress door verifies a token by it before any stub call.
+   */
+  readonly ROUTING_MAC_KEY: string;
   /** The OAuth provider's own store (its schema; never ours). */
   readonly OAUTH_KV: KVNamespace;
   /** The owner directory: routing hints and the `control` record (`directory.ts`). */

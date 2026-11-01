@@ -17,7 +17,9 @@
  *   so the doors can make no model call through it and hold no keyring. Only
  *   `src/connect.ts` names it (the binder guard).
  * - `EGRESS`: the gateway Worker's `EgressGateway` entrypoint, whose class serves exactly
- *   `forward` (G4's egress door). Only `src/egress.ts` names it. No other service: `FILES`
+ *   `forward` (G4's egress door). Only `src/egress.ts` names it.
+ * - One secret, `ROUTING_MAC_KEY`, declared by name (`secrets.required`, which binds
+ *   nothing): the routing key sandbox tokens are MAC'd under, the owner Worker's too. No other service: `FILES`
  *   joins with the file-bytes door (tasks 2, owed by 6.1), and rate limits with their
  *   binding.
  * - No routes, custom domain, workers.dev or preview URL, no environment, no migration
@@ -43,8 +45,10 @@ const FLAGS: readonly string[] = Object.freeze(["nodejs_compat", "disable_ctx_ex
                                                 "global_fetch_strictly_public"]);
 const KEYS: ReadonlySet<string> = new Set([
   "$schema", "name", "main", "compatibility_date", "compatibility_flags", "workers_dev",
-  "preview_urls", "vars", "durable_objects", "services", "kv_namespaces",
+  "preview_urls", "vars", "durable_objects", "services", "kv_namespaces", "secrets",
 ]);
+/** The doors' one secret, the sandbox tokens' routing key (`routing-mac.ts`), and the owner's. */
+const SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY"]) });
 /** The doors' two services: the gateway's connect and egress entrypoints, and what each serves. */
 const GATEWAY = Object.freeze({ binding: "GATEWAY", service: "tinyassets-gateway",
                                 entrypoint: "ConnectGateway" });
@@ -123,6 +127,13 @@ export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string
   if (!Array.isArray(flags) || FLAGS.some((flag) => !flags.includes(flag))
       || flags.some((flag) => !FLAGS.includes(String(flag)))) {
     problems.push(`compatibility_flags are exactly ${FLAGS.join(", ")}`);
+  }
+  if (JSON.stringify(config["secrets"]) !== JSON.stringify(SECRETS)) {
+    problems.push("secrets declares exactly ROUTING_MAC_KEY");
+  }
+  const ownerConfig = platform.get("tinyassets-owner");
+  if (JSON.stringify(ownerConfig?.["secrets"]) !== JSON.stringify(SECRETS)) {
+    problems.push("the owner Worker declares the same ROUTING_MAC_KEY");
   }
   if (JSON.stringify(config["vars"]) !== JSON.stringify(VARS)) {
     problems.push("vars are exactly DCR_ENABLED \"false\", OWNER_ISSUER unset and no " +

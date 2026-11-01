@@ -27,10 +27,12 @@
  * database, so what the owner's object holds is its own bounded rows only, whatever its
  * agents do; this guard replaced A4's runtime storage gauge.
  *
- * The worst case is 46.2% of the limit (G4: 4,623,058,356 bytes), about 377 MB under half.
- * G4 added the egress reservations (2,064 rows of a path of up to 2 KiB, about 19 MB) and
- * each connection's egress scope (16 KiB a row, about 7 MB); the sandbox's lease token and
- * network generation fit in `file_space`'s one row, counted already. A5 was 46.0%
+ * The worst case is 46.3% of the limit (G4: 4,627,732,900 bytes), about 372 MB under half.
+ * G4 added the egress reservations (2,564 rows: 2,000 admitted, 500 refused and 64 open,
+ * each a visible-ASCII path of up to 2 KiB, about 24 MB) and each connection's egress scope
+ * (16 KiB a row, about 7 MB); the sandbox's two token hashes, its turn and its network
+ * generation fit in `file_space`'s one row, and the egress generation in `owner_policy`'s,
+ * counted already. A5 was 46.0%
  * (4,597,482,932 bytes). F1 (49.0%, 4,897,208,852 bytes) traded the `work` lane's table (its 2,000 rows of up to
  * 16 KiB) for the admission row; a scheduled launch is a run, counted in the thread terms
  * already. A5 bounds the turn rows by the threads at work (`WORKING_THREADS`, 1,024) rather
@@ -147,7 +149,8 @@ function inline(module: string, pattern: RegExp): number {
 
 const CONNECTION_LIMITS = declared("connections", "CONNECTION_LIMITS", "maxConnections",
                                    "maxRevokedKept", "maxModels", "maxFlowRows");
-const EGRESS_LIMITS = declared("egress", "EGRESS_LIMITS", "open", "receiptsKept");
+const EGRESS_LIMITS = declared("egress", "EGRESS_LIMITS", "open", "receiptsKept",
+                               "refusalsKept");
 const EGRESS_PATH_MAX = constant("egress", "EGRESS_PATH_MAX");
 const GRANT_LIMITS = declared("grants", "GRANT_LIMITS", "maxFreeClients", "maxOwnerClients",
                               "maxScopes");
@@ -358,9 +361,15 @@ export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string
                         by: "receiptsKept settled, and CALLS_OPEN open at once" },
   model_spend: { rows: SPEND_KEPT, bytes: ROW, by: "SPEND_KEPT day and month counters" },
   // The sandbox's egress (G4): its lease is `file_space`'s one row; each request a row.
-  egress_reservations: { rows: EGRESS_LIMITS.receiptsKept + EGRESS_LIMITS.open,
-                         bytes: ROW + EGRESS_PATH_MAX + 2 * 32 + 25 + 7 + 64 + 16 + 10 * 8,
-                         by: "receiptsKept closed and open at once, each its path and ids" },
+  egress_reservations: { rows: EGRESS_LIMITS.receiptsKept + EGRESS_LIMITS.refusalsKept
+                                + EGRESS_LIMITS.open,
+                         bytes: ROW + EGRESS_PATH_MAX + 32 + 32 + 64 + 64 + 9 + 64 + 10 + 7
+                           + 25 + 7 + 64 + 30 + 16 * 8,
+                         by: "receiptsKept admitted, refusalsKept refused and open at once, " +
+                           "each its path (visible ASCII, a byte a character), ids, source, " +
+                           "charge, rule, periods and numbers" },
+  egress_runs: { rows: EGRESS_LIMITS.open + 1, bytes: ROW + 32 + 4 * 8,
+                 by: "the live lease's run, and one for each run an open call still holds" },
   model_turns: { rows: TURN_OWNERS, bytes: ROW + TURN_BYTES + THREAD_ID,
                  by: "a turn per owner at most: WORKING_THREADS threads at work, each with " +
                    "THREAD_INPUTS open root inputs, THREAD_CHILD_INPUTS subagent inputs and " +
@@ -564,10 +573,11 @@ describe("the owner's database bound", () => {
     expect(TERMS["ledger_rings"]!.rows).toBe(LEDGER_LIMITS.maxAgentRows * 60);
     expect(TERMS["connection_secrets"]!.bytes).toBe(256 + 4 * 65_536);
     expect(TERMS["connections"]!.bytes).toBe(256 + 4 * 655_360 + 4 * 16_384);
-    expect(TERMS["egress_reservations"]!.rows).toBe(2_000 + 64);
+    expect(TERMS["egress_reservations"]!.rows).toBe(2_000 + 500 + 64);
     expect(EGRESS_PATH_MAX).toBe(2048);
+    // The path is visible ASCII, so a character is a byte (the schema's CHECK).
     expect(source("schema")).toContain("\"path TEXT NOT NULL CHECK (length(path) BETWEEN 1 AND " +
-                                       "2048), \" +");
+                                       "2048 AND \" +\n      \"path NOT GLOB '*[^ -~]*'), \" +");
     expect(TERMS["outside_clients"]!.rows * TERMS["outside_clients"]!.bytes)
       .toBe(2000 * (256 + 8) + 1000 * (64 * (3 * 512 * 6 + 64) + 80 * 4));
   });

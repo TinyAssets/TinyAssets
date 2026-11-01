@@ -67,7 +67,10 @@ import type { Api, Model, Usage as PiUsage } from "@earendil-works/pi-ai";
 import { calculateCost } from "@earendil-works/pi-ai/models";
 
 import type { OwnerStorage } from "./gate";
+import { costMicros, largestFitting, periods } from "./money";
 import type { TurnOwner } from "./thread-host";
+
+export { costMicros, largestFitting, periods };
 
 export interface UsageLimits {
   /** Reservation rows kept, as receipts; no cap reads them. */
@@ -161,12 +164,6 @@ export interface UsageReceipt {
   readonly settled_at: number | null;
 }
 
-/** The UTC day and month of `now` (seconds). */
-export function periods(now: number): { day: string; month: string } {
-  const day = new Date(now * 1000).toISOString().slice(0, 10);
-  return { day, month: day.slice(0, 7) };
-}
-
 /**
  * µ$ of a call of `input` uncached input tokens and `output` output tokens on `model`, by
  * pi-ai's own `calculateCost` (which reads only the model's `cost`, tiers included).
@@ -177,32 +174,6 @@ export function priced(model: Pick<Model<Api>, "cost">, input: number, output: n
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   };
   return costMicros(calculateCost(model as Model<Api>, usage).total);
-}
-
-/** µ$ of a cost pi-ai reports in dollars. */
-export function costMicros(dollars: number): number {
-  return Number.isFinite(dollars) && dollars > 0 ? Math.ceil(dollars * 1_000_000) : 0;
-}
-
-/**
- * The largest `n` in `[0, most]` that `fits`, where `fits` holds from 0 up to some point and
- * not past it; -1 when it holds for none. By bisection: about log2(most) calls of `fits`.
- */
-export function largestFitting(most: number, fits: (n: number) => boolean): number {
-  if (most < 0 || !fits(0)) {
-    return -1;
-  }
-  let low = 0;
-  let high = most;
-  while (low < high) {
-    const middle = low + Math.ceil((high - low) / 2);
-    if (fits(middle)) {
-      low = middle;
-    } else {
-      high = middle - 1;
-    }
-  }
-  return low;
 }
 
 export class Usage {
@@ -281,9 +252,7 @@ export class Usage {
       }
       // The room each cost cap leaves, the tightest first to name.
       const rooms: [string, number][] = [["turn_cost", settings.turn_cost - turn.cost]];
-      const spent = (period: string, source: string | null) => this.#sql.exec<{ cost: number }>(
-        "SELECT COALESCE(SUM(cost), 0) AS cost FROM model_spend WHERE period = ? " +
-          "AND (? IS NULL OR source = ?)", period, source, source).one().cost;
+      const spent = (period: string, source: string | null) => this.spent(period, source);
       const own = settings.sources[ask.source];
       const ceilings: [string, number | null | undefined, string, string | null][] = [
         ["daily_cost", settings.daily_cost, `d:${day}`, null],
@@ -316,6 +285,17 @@ export class Usage {
       this.#live.add(id);
       return { ok: true, id, max_output_tokens: output, policy_generation: generation };
     });
+  }
+
+  /**
+   * The µ$ held in `period` (`d:<day>` or `m:<month>`), by `source` or by every source:
+   * the counters the loop's calls and the sandbox's calls (`egress.ts`, through the
+   * schema's triggers) both move. A read.
+   */
+  spent(period: string, source: string | null): number {
+    return this.#sql.exec<{ cost: number }>(
+      "SELECT COALESCE(SUM(cost), 0) AS cost FROM model_spend WHERE period = ? " +
+        "AND (? IS NULL OR source = ?)", period, source, source).one().cost;
   }
 
   #insert(ask: Ask, state: State, rule: string | null, output: number, tokens: number,

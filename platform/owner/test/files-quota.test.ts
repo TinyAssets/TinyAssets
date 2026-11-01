@@ -267,7 +267,7 @@ describe("a full history", () => {
     expect((await r.stub.fileUsage(r.bind(null))).history).toBe(12);
     // A sync op at the quota makes its room the same way.
     const synced = await inFiles(r.stub, { max_history: 4 }, (files) => {
-      const lease = files.leaseAcquire("sandbox", "a".repeat(64));
+      const lease = files.leaseAcquire("sandbox", "a".repeat(64), "b".repeat(64));
       return files.syncCommit({ lease_id: lease.lease_id, epoch: lease.epoch, ops: [
         { op: "write", path: `${W}/synced`, base: null, inline: text("s") },
       ] });

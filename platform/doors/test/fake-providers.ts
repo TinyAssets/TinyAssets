@@ -27,10 +27,21 @@
 const log: unknown[] = [];
 const cancelled = new Set<string>();
 
-/** What the egress fake streams, in order. */
+/** The usage the egress fake's stream reports, as OpenAI's chat completions report it. */
+export const EGRESS_USAGE = Object.freeze({ prompt_tokens: 1000, completion_tokens: 500,
+                                           total_tokens: 1500 });
+
+function chunk(data: unknown): string {
+  return `data: ${JSON.stringify(data)}\n\n`;
+}
+
+/** What the egress fake streams, in order: OpenAI's chat completions stream, with usage. */
 export const EGRESS_CHUNKS: readonly string[] = Object.freeze([
-  "data: {\"choices\":[{\"delta\":{\"content\":\"one \"}}]}\n\n",
-  "data: {\"choices\":[{\"delta\":{\"content\":\"two\"}}]}\n\n",
+  chunk({ id: "c1", object: "chat.completion.chunk", choices: [
+    { index: 0, delta: { role: "assistant", content: "one " }, finish_reason: null }] }),
+  chunk({ id: "c1", object: "chat.completion.chunk", choices: [
+    { index: 0, delta: { content: "two" }, finish_reason: "stop" }] }),
+  chunk({ id: "c1", object: "chat.completion.chunk", choices: [], usage: EGRESS_USAGE }),
   "data: [DONE]\n\n",
 ]);
 

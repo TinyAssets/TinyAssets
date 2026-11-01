@@ -16,11 +16,17 @@
  * bytes. The gateway measures nothing it would keep: the binder counts the bytes it
  * streams and settles the owner's reservation.
  */
+import type { Api, Model } from "@earendil-works/pi-ai";
+
 import { type Catalog, modelInfos } from "./catalog";
-import { bearer, type Credential, type EgressScope, egressTarget } from "./credential";
+import {
+  bearer, type Credential, type EgressScope, egressTarget, type Meter, meteredCall,
+} from "./credential";
 import type { ModelRecord } from "./model-record";
 import { type Code, codeOf, Failure, failureResponse, upstreamCode } from "./failure";
 import { nativeFetch } from "./egress";
+import { boundedText } from "./messages";
+import { clamped, learnMeter, meteredModel, meteredRecord, meteredUsage } from "./meter";
 import { type Binding, type KeyringEnv, open, type Opened, type Resealed } from "./keyring";
 
 /** The longest one forwarded request may run (§6: a policy write's bound on a stream). */
@@ -154,26 +160,130 @@ function refusal(code: Code, resealed?: Resealed): Response {
 export async function forward(env: KeyringEnv, bound: Binding, blob: unknown,
                               request: Request,
                               deadlineMs: number = FORWARD_DEADLINE_MS): Promise<Response> {
+  return (await send(env, bound, blob, request, deadlineMs, null, null)).response;
+}
+
+/** What a metered call is held to: the output cap its reservation leaves, and its body's size. */
+export interface Metering {
+  readonly max_output_tokens: number;
+  readonly input_bytes: number;
+}
+
+/** How a metered call ended, as the owner's object settles it. */
+export type MeterOutcome =
+  | { readonly state: "succeeded"; readonly tokens: number; readonly cost: number }
+  | { readonly state: "failed" }
+  | { readonly state: "unknown" };
+
+/**
+ * A sandbox's model call, metered (G4): held to pi-ai's own model call for the sealed API
+ * (`learnMeter`), its body within `input_bytes` and its output cap clamped to the
+ * reservation's `max_output_tokens`, so what it can cost is what the owner's object
+ * reserved; then forwarded as `forward` forwards. The outcome comes once the answer ends:
+ * `failed` when nothing was sent or the provider refused before any output, the usage pi-ai
+ * read from the answer, priced by the catalog (`meteredUsage`), or `unknown`. `stop`,
+ * closed or errored by the caller, aborts the provider's request at any point.
+ */
+export async function forwardMetered(env: KeyringEnv, bound: Binding, blob: unknown,
+                                     request: Request, metering: Metering,
+                                     stop: ReadableStream<Uint8Array> | null,
+                                     catalog: Catalog,
+                                     deadlineMs: number = FORWARD_DEADLINE_MS):
+    Promise<{ response: Response; outcome: Promise<MeterOutcome> }> {
+  return send(env, bound, blob, request, deadlineMs, { metering, catalog }, stop);
+}
+
+/**
+ * A sandbox's read of a sealed endpoint (`GET`, `HEAD`: a model list), which carries no
+ * model use, forwarded unmetered as `forward` forwards; any other method is `unmetered`,
+ * so no call the owner's object did not charge reaches a provider's model.
+ */
+export async function forwardRead(env: KeyringEnv, bound: Binding, blob: unknown,
+                                  request: Request, stop: ReadableStream<Uint8Array> | null,
+                                  deadlineMs: number = FORWARD_DEADLINE_MS):
+    Promise<{ response: Response; outcome: Promise<MeterOutcome> }> {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return { response: refusal("unmetered"), outcome: Promise.resolve(FAILED) };
+  }
+  return send(env, bound, blob, request, deadlineMs, null, stop);
+}
+
+const FAILED: MeterOutcome = Object.freeze({ state: "failed" });
+const UNKNOWN: MeterOutcome = Object.freeze({ state: "unknown" });
+
+async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Request,
+                    deadlineMs: number,
+                    metered: { metering: Metering; catalog: Catalog } | null,
+                    stop: ReadableStream<Uint8Array> | null):
+    Promise<{ response: Response; outcome: Promise<MeterOutcome> }> {
+  const refused = (code: Code, resealed?: Resealed) =>
+    ({ response: refusal(code, resealed), outcome: Promise.resolve(FAILED) });
+  const cancelled = new AbortController();
+  stop?.getReader().read().then(() => cancelled.abort(), () => cancelled.abort());
   let opened: Opened;
   try {
     opened = await open(env, bound, blob);
   } catch (error) {
-    return refusal(codeOf(error, "internal"));
+    return refused(codeOf(error, "internal"));
   }
   const { credential, resealed } = opened;
   let incoming: URL;
   try {
     incoming = new URL(request.url);
   } catch {
-    return refusal("invalid_request", resealed);
+    return refused("invalid_request", resealed);
   }
   const target = egressTarget(scopeOf(credential), request.method,
                               `${incoming.pathname}${incoming.search}`);
   if (target === null) {
-    return refusal("endpoint_refused", resealed);
+    return refused("endpoint_refused", resealed);
   }
-  for (const name of CREDENTIAL_PARAMS) {
-    target.searchParams.delete(name);
+  // Every spelling of each credential parameter, as some servers read them case-blind.
+  for (const name of [...target.searchParams.keys()]) {
+    if (CREDENTIAL_PARAMS.includes(name.toLowerCase())) {
+      target.searchParams.delete(name);
+    }
+  }
+  let body: BodyInit | null = request.method === "GET" || request.method === "HEAD"
+    ? null : request.body;
+  let model: Model<Api> | null = null;
+  if (metered !== null) {
+    const { metering, catalog } = metered;
+    // Only pi-ai's own model call for the sealed API is metered; nothing else is read.
+    const any = await learnMeter(catalog, credential.upstream, bearer(credential));
+    if (any === null || !meteredCall(scopeOf(credential, any), request.method,
+                                     target.pathname)) {
+      return refused("unmetered", resealed);
+    }
+    let parsed: unknown;
+    try {
+      const text = await boundedText(request);
+      if (new TextEncoder().encode(text).byteLength > metering.input_bytes) {
+        return refused("invalid_request", resealed);
+      }
+      parsed = JSON.parse(text);
+    } catch {
+      return refused("invalid_request", resealed);
+    }
+    // The model the call names, read where pi-ai names it; then pi-ai's own call for that
+    // model, which says where its output cap goes (a model whose record cannot cap it is
+    // never metered).
+    const id = typeof parsed !== "object" || parsed === null
+      || Array.isArray(parsed) ? null : meteredModel(any, request.method, target.pathname,
+                                                     parsed);
+    if (id === null) {
+      return refused("unmetered", resealed);
+    }
+    model = meteredRecord(catalog, credential.upstream, id);
+    if (model === null) {
+      return refused("unknown_model", resealed);
+    }
+    const meter = await learnMeter(catalog, credential.upstream, bearer(credential), model);
+    if (meter === null || meteredModel(meter, request.method, target.pathname, parsed) !== id) {
+      return refused("unmetered", resealed);
+    }
+    body = JSON.stringify(clamped(meter, parsed as Record<string, unknown>,
+                                  metering.max_output_tokens));
   }
   const headers = new Headers();
   for (const [name, value] of request.headers) {
@@ -185,19 +295,22 @@ export async function forward(env: KeyringEnv, bound: Binding, blob: unknown,
   headers.set(credential.upstream.auth.header, authValue(credential));
   // Plain bytes back, so the redaction reads what the provider wrote.
   headers.set("accept-encoding", "identity");
+  if (metered !== null) {
+    headers.delete("content-length");
+  }
   const deadline = AbortSignal.timeout(deadlineMs);
-  const signal = AbortSignal.any([request.signal, deadline]);
+  const signal = AbortSignal.any([request.signal, deadline, cancelled.signal]);
   let upstream: Response;
   try {
     upstream = await nativeFetch(target, {
-      method: request.method,
-      headers,
-      body: request.method === "GET" || request.method === "HEAD" ? null : request.body,
-      redirect: "manual",
-      signal,
+      method: request.method, headers, body, redirect: "manual", signal,
     });
   } catch {
-    return refusal(deadline.aborted ? "deadline" : "upstream_unreachable", resealed);
+    // Sent or not, nothing came back: a metered call whose request may have reached the
+    // provider is unknown, and keeps its whole reservation.
+    return { response: refusal(deadline.aborted ? "deadline" : "upstream_unreachable",
+                               resealed),
+             outcome: Promise.resolve(metered === null ? FAILED : UNKNOWN) };
   }
   const answer = new Headers();
   const secrets = secretsOf(credential);
@@ -211,15 +324,58 @@ export async function forward(env: KeyringEnv, bound: Binding, blob: unknown,
   if (resealed !== undefined) {
     answer.set("x-ta-resealed", JSON.stringify(resealed));
   }
-  const body = upstream.body === null ? null : redact(upstream.body, secrets);
-  return new Response(body, { status: upstream.status, statusText: upstream.statusText,
-                              headers: answer });
+  let outcome: Promise<MeterOutcome> = Promise.resolve(UNKNOWN);
+  let source = upstream.body;
+  if (metered !== null && model !== null) {
+    if (upstream.status < 200 || upstream.status >= 300) {
+      // A refusal before any output: the provider produced nothing, as the loop settles it.
+      outcome = Promise.resolve(FAILED);
+    } else if (source !== null) {
+      const [toCaller, toMeter] = source.tee();
+      source = toCaller;
+      outcome = meteredUsage(metered.catalog, credential.upstream, bearer(credential), model,
+                             upstream.status,
+                             new Headers(upstream.headers), toMeter)
+        .then((usage): MeterOutcome => (usage === null ? UNKNOWN
+          : { state: "succeeded", tokens: usage.tokens, cost: usage.cost }), () => UNKNOWN);
+    }
+  }
+  // The caller's cancel ends the provider's request too, whatever else reads the answer.
+  const passed = source === null ? null : abortable(source, cancelled);
+  const redacted = passed === null ? null : redact(passed, secrets);
+  return { response: new Response(redacted, { status: upstream.status,
+                                              statusText: upstream.statusText, headers: answer }),
+           outcome };
+}
+
+/** `body`, whose cancel by its reader also aborts the provider's request. */
+function abortable(body: ReadableStream<Uint8Array>,
+                   cancelled: AbortController): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+        } else {
+          controller.enqueue(value);
+        }
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    cancel(reason) {
+      cancelled.abort();
+      return reader.cancel(reason);
+    },
+  });
 }
 
 /** Where a credential may be forwarded: its sealed base URL and endpoints, no secret. */
-function scopeOf(credential: Credential): EgressScope {
+function scopeOf(credential: Credential, meter: Meter | null = null): EgressScope {
   return Object.freeze({ base_url: credential.upstream.base_url,
-                         endpoints: credential.endpoints });
+                         endpoints: credential.endpoints, meter });
 }
 
 /**
@@ -267,6 +423,7 @@ export async function verify(env: KeyringEnv, bound: Binding, blob: unknown,
     throw new Failure(upstreamCode(answer.status));
   }
   return Object.freeze({ models: Object.freeze(modelInfos(catalog, credential.upstream)),
-                         egress: scopeOf(credential),
+                         egress: scopeOf(credential, await learnMeter(catalog, credential.upstream,
+                                                                bearer(credential))),
                          ...(resealed === undefined ? {} : { resealed }) });
 }

@@ -228,34 +228,35 @@ Each model source SHALL be an editable JSON record in `platform/sources/` naming
 - **WHEN** the owner begins a connect of the `chatgpt` record
 - **THEN** it is refused `501` naming why, before any object call
 
-### Requirement: The egress door admits a sandbox request by its lease token
-The doors SHALL serve `egress.tinyassets.io/c/<connection>/*` and nothing else on that origin, and serve the egress door on no other. A request SHALL carry the sandbox's lease token (`x-ta-sandbox`) and the policy generation its network was made under (`x-ta-policy-generation`), both set by E2B's transform outside the VM; a missing, malformed, unknown or expired token SHALL be refused by its fixed code before any object is reached, and the placeholder key the client sent SHALL never be read. The binder SHALL resolve the token through the directory's `l:` entry to its owner, then the owner's object SHALL admit the request (`egressOpen`) and only then SHALL the request go to the gateway's `EgressGateway.forward`, its path after `/c/<connection>`, the provider's answer streaming back but for the gateway's own headers. Only one doors source SHALL reach `EGRESS`.
+### Requirement: The egress door admits a sandbox call by its egress token
+The doors SHALL serve `egress.tinyassets.io/c/<connection>/*` and nothing else on that origin, and serve the egress door on no other. A call SHALL carry the sandbox's egress token (`x-ta-sandbox`) and the egress generation its network was made under (`x-ta-network-generation`), both set by E2B's transform outside the VM. The token SHALL name its owner itself and carry a MAC (`<owner id>.<256-bit secret>.<HMAC-SHA-256 under ROUTING_MAC_KEY over its kind, owner and secret>`, base64url; `routing-mac.ts`, the one module the owner Worker mints with and the doors verify with, the key a Worker secret of both, declared by name in both configs), so the door reaches the owner's object with no directory read; a missing, malformed, forged, altered or other-kind token SHALL be refused by its fixed code before any stub call, the placeholder key the client sent never read, and the object SHALL check the secret's hash, the lease and its expiry. Only once the object admitted and charged the call SHALL it go to the gateway's `EgressGateway.forward`, metered (a read with no metering), its path after `/c/<connection>`, the provider's answer streaming back as it is written (an SSE stream unbuffered) but for the gateway's own headers. Only one doors source SHALL reach `EGRESS`.
 
 #### Scenario: A sandbox client sends its placeholder key
-- **WHEN** a sandbox's client posts to `egress.tinyassets.io/c/<connection>/openai/v1/chat/completions` with a live token and a placeholder in `authorization`, `x-api-key`, a cookie and `?key=`
-- **THEN** the provider receives the sealed key in the sealed header and none of the placeholders, the token or the generation, and the client receives the provider's stream
+- **WHEN** a sandbox's client posts its model call to `egress.tinyassets.io/c/<connection>/openai/v1/chat/completions` with a live egress token and a placeholder in `authorization`, `x-api-key`, a cookie and `?key=` (of any case)
+- **THEN** the provider receives the sealed key in the sealed header, none of the placeholders, the token or the generation, and an output cap no larger than the call's reservation, and the client receives the provider's stream
 
-#### Scenario: A refused request
-- **WHEN** the token is missing, malformed, unknown or expired, or the object refuses the request
+#### Scenario: A refused call
+- **WHEN** the token is missing or malformed, or the object refuses the call
 - **THEN** the door answers the refusal's fixed code (and the object's receipt) and nothing is forwarded
 
-### Requirement: Every admitted egress request is settled once
-The egress door SHALL settle every reservation the object admitted, once, with the bytes it streamed and the provider's status, on every end: `complete`, `aborted` (the client stopped reading), `failed` (the gateway failed), `deadline` (the gateway's five minutes, kept by the door too) or `ended` (the object's end signal, which a policy write, a suspension, a revoke, the lease's close and the owner's erasure close). A stream it stops SHALL be cancelled upstream and errored to the client.
+#### Scenario: A forged token
+- **WHEN** a token's MAC is not the routing key's for an egress token (forged under another key, altered, moved to another owner, or a sync token)
+- **THEN** it is refused `egress_token_unknown` and no owner's object is reached
+
+### Requirement: Every admitted egress call is settled once
+The egress door SHALL settle every reservation the object admitted, once, with the bytes it streamed, the provider's status and the gateway's metered outcome, on every end: `complete`, `aborted` (the client stopped reading, or left before the answer), `failed` (the gateway failed), `deadline` (the gateway's five minutes, kept by the door too) or `ended` (the object's end signal, which a policy write, a suspension, a revoke, the lease's close and the owner's erasure close). The settle SHALL be registered with `waitUntil` when the call is admitted, and go through a fresh stub with one retry, so a client that leaves and an object that resets both settle. Every stop SHALL abort the provider's request and error the client's stream.
 
 #### Scenario: A policy write mid-stream
 - **WHEN** the owner writes its policy while a sandbox response streams
-- **THEN** the stream is cut, its reservation settled `ended`, the upstream request cancelled, and the next request refused until the sandbox's network is applied under the new generation
+- **THEN** the stream is cut, its reservation settled `ended` with its spend `unknown`, the upstream request cancelled, and when the write changed the egress table, the next call refused until the sandbox's network is applied under the new egress generation
 
-### Requirement: A lease token reaches no other door
-A lease token SHALL be refused at `/api`, `/mcp` and `/app`, and the owner's object SHALL refuse the sandbox binding at every door but the egress doors.
+#### Scenario: The owner's object resets mid-stream
+- **WHEN** a deploy resets the owner's object while a sandbox response streams
+- **THEN** the stream ends, and the settle reaches the object's new instance
+
+### Requirement: A sandbox token reaches no other door
+A sandbox token SHALL be refused at `/api`, `/mcp` and `/app`, and the owner's object SHALL refuse a sandbox binding at every door but its own: the egress token at the egress doors alone, the sync token at the sync doors alone, for its lease and epoch.
 
 #### Scenario: A token presented as a bearer
-- **WHEN** a sandbox's token is sent to `/api/tools/*`, `/mcp` or `/app/api/*`
+- **WHEN** a sandbox's egress or sync token is sent to `/api/tools/*`, `/mcp` or `/app/api/*`
 - **THEN** each answers `401`
-
-### Requirement: A sandbox lease's directory entry follows the object
-Opening the sandbox's lease SHALL mint a 256-bit token, take the lease in the owner's object bound to the token's SHA-256, then write the directory's `l:<sha256>` entry (`{o, l, e}`: owner, lease id, expiry), then return the token once with E2B's network document (the token in its transform) and the model clients' environment. A renewal SHALL rewrite the entry after the object; a close SHALL land in the object, refusing the token and ending its streams, before the entry is deleted.
-
-#### Scenario: A lease the object refuses
-- **WHEN** a lease is opened while another is live
-- **THEN** the object refuses it and no directory entry is written

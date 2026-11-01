@@ -30,8 +30,9 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { builtinCatalog } from "./catalog";
 import { type Credential, secret, source } from "./credential";
-import { codeOf, failureResponse, guarded } from "./failure";
-import { forward, type Verified, verify } from "./forward";
+import { codeOf, Failure, failureResponse, guarded } from "./failure";
+import { forward, forwardMetered, forwardRead, type MeterOutcome, type Metering,
+         type Verified, verify } from "./forward";
 import { binding, type KeyringEnv, open, reseal, type Resealed, seal, type Sealed } from "./keyring";
 import { messages } from "./messages";
 import { type Exchanged, exchange, type Refreshed, refresh, type Revoked,
@@ -95,15 +96,45 @@ export class ConnectGateway extends WorkerEntrypoint<GatewayEnv> {
  * call to them, and the sealed endpoints to where it may go.
  */
 export class EgressGateway extends WorkerEntrypoint<GatewayEnv> {
-  /** Forwards one sandbox egress request under the sealed endpoints. */
+  /**
+   * Forwards one sandbox call under the sealed endpoints: a model call metered
+   * (`forwardMetered`), held to its reservation's output cap and body size, or, with no
+   * `metering`, a read (`forwardRead`). Its answer streams back, and its outcome
+   * (`MeterOutcome`, one JSON line) comes on `outcome` once the answer ended. `stop`,
+   * closed or errored, aborts the provider's request.
+   */
   async forward(owner: string, connection: string, version: number, blob: string,
-                request: Request): Promise<Response> {
+                request: Request, metering: Metering | null, stop: ReadableStream<Uint8Array>):
+      Promise<{ response: Response; outcome: ReadableStream<Uint8Array> }> {
+    let sent: { response: Response; outcome: Promise<MeterOutcome> };
     try {
-      return await forward(this.env, binding(owner, connection, version), blob, request);
+      const bound = binding(owner, connection, version);
+      sent = metering === null
+        ? await forwardRead(this.env, bound, blob, request, stop)
+        : await forwardMetered(this.env, bound, blob, request, checkedMetering(metering), stop,
+                               builtinCatalog());
     } catch (error) {
-      return failureResponse(codeOf(error, "internal"));
+      sent = { response: failureResponse(codeOf(error, "internal")),
+               outcome: Promise.resolve({ state: "unknown" }) };
     }
+    const { readable, writable } = new IdentityTransformStream();
+    const writer = writable.getWriter();
+    void sent.outcome.then((outcome) => writer.write(new TextEncoder().encode(
+      `${JSON.stringify(outcome)}\n`)).then(() => writer.close())).catch(() => undefined);
+    return { response: sent.response, outcome: readable };
   }
+}
+
+/** The caller's metering, whole numbers, or `invalid_request`. */
+function checkedMetering(value: unknown): Metering {
+  const fields = value as Partial<Metering> | null;
+  const whole = (n: unknown) => typeof n === "number" && Number.isSafeInteger(n) && n >= 1;
+  if (typeof value !== "object" || value === null
+      || Object.keys(value).sort().join() !== "input_bytes,max_output_tokens"
+      || !whole(fields!.input_bytes) || !whole(fields!.max_output_tokens)) {
+    throw new Failure("invalid_request");
+  }
+  return { input_bytes: fields!.input_bytes!, max_output_tokens: fields!.max_output_tokens! };
 }
 
 export default class Gateway extends WorkerEntrypoint<GatewayEnv> {

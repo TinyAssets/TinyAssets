@@ -421,17 +421,75 @@ export function allows(endpoints: readonly Endpoint[], method: string, url: URL)
 export interface EgressScope {
   readonly base_url: string;
   readonly endpoints: readonly Endpoint[];
+  /** pi-ai's own model call for the sealed API (`meter.ts`), or null: none can be metered. */
+  readonly meter: Meter | null;
+}
+
+/** Where a model call of a sealed API names its model and caps its output (`meter.ts`). */
+export interface Meter {
+  readonly method: string;
+  /** The call's path; `{model}` where the model id is a path segment's text. */
+  readonly path: string;
+  /** The body field naming the model, or null when the path names it. */
+  readonly model_field: readonly string[] | null;
+  /** The body field capping the output tokens. */
+  readonly output_field: readonly string[];
+}
+
+const FIELD = /^[A-Za-z0-9_]{1,64}$/;
+
+function field(value: unknown): readonly string[] {
+  return Object.freeze(list(value, 1, 4, (key) => text(key, FIELD, 64)));
+}
+
+function meterOf(value: unknown): Meter | null {
+  if (value === null) {
+    return null;
+  }
+  const fields = shape(value, ["method", "path", "model_field", "output_field"]);
+  const method = fields["method"];
+  if (typeof method !== "string" || !METHODS.includes(method)) {
+    throw new Failure("invalid_source");
+  }
+  const path = text(fields["path"], /^\/[\x21-\x7e]{0,511}$/, 512);
+  const holes = path.split("{model}").length - 1;
+  const named = fields["model_field"] === null ? null : field(fields["model_field"]);
+  if (holes > 1 || (holes === 1) === (named !== null)) {
+    throw new Failure("invalid_source");
+  }
+  return Object.freeze({ method, path, model_field: named,
+                         output_field: field(fields["output_field"]) });
 }
 
 /** A scope checked whole, by the grammar a seal is held to; anything else is `invalid_source`. */
 export function egressScope(value: unknown): EgressScope {
-  const fields = shape(value, ["base_url", "endpoints"]);
+  const fields = shape(value, ["base_url", "endpoints", "meter"]);
   const endpoints = Object.freeze(list(fields["endpoints"], 1, ENDPOINTS_MAX, endpoint));
   const base = httpsUrl(fields["base_url"]);
   if (!endpoints.some((entry) => entry.origin === base.origin)) {
     throw new Failure("invalid_source");
   }
-  return Object.freeze({ base_url: fields["base_url"] as string, endpoints });
+  return Object.freeze({ base_url: fields["base_url"] as string, endpoints,
+                         meter: meterOf(fields["meter"]) });
+}
+
+/**
+ * Whether `method path` is the scope's metered model call: its meter's method, and its
+ * path with a model id (no separator) where the meter names one. The gateway reads the
+ * model id the same way (`meteredModel`); this is the owner's check at open.
+ */
+export function meteredCall(scope: EgressScope, method: string, path: string): boolean {
+  const meter = scope.meter;
+  if (meter === null || method !== meter.method) {
+    return false;
+  }
+  const bare = path.split("?")[0]!;
+  const [head, tail] = meter.path.split("{model}");
+  if (tail === undefined) {
+    return bare === meter.path;
+  }
+  return bare.startsWith(head!) && bare.endsWith(tail) && bare.length > head!.length + tail.length
+    && /^[^/:?#]+$/.test(bare.slice(head!.length, bare.length - tail.length));
 }
 
 /**

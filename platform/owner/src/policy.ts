@@ -709,6 +709,16 @@ export class Policy {
     return this.#generation();
   }
 
+  /**
+   * The egress generation: moved by a write that changes the egress table, and by nothing
+   * else, as a grant's authority generation moves apart from its revision. The sandbox's
+   * network is made under it, and egress is admitted only under the current one.
+   */
+  egressGeneration(): number {
+    return this.#sql.exec<{ egress_generation: number }>(
+      "SELECT egress_generation FROM owner_policy").one().egress_generation;
+  }
+
   #generation(): number {
     return this.#sql.exec<{ generation: number }>("SELECT generation FROM owner_policy").one()
       .generation;
@@ -804,8 +814,13 @@ export class Policy {
                  proposal["request_id"] as string);
       }
       const digest = policyDigest(document);
-      sql.exec("UPDATE owner_policy SET generation = ?, digest = ?, document = ?",
-               generation + 1, digest, canonical(document));
+      // The egress generation moves only when the egress table does: the sandbox's network
+      // is stale, and egress refused, only for a real network change (G4).
+      const before = JSON.parse(row.document) as { egress?: unknown };
+      const moved = canonical(before.egress) !== canonical((document as { egress?: unknown }).egress);
+      sql.exec("UPDATE owner_policy SET generation = ?, digest = ?, document = ?, " +
+                 "egress_generation = egress_generation + ?",
+               generation + 1, digest, canonical(document), moved ? 1 : 0);
       this.receipt("write", { session_id: sessionId, old_digest: row.digest, new_digest: digest,
                               generation: generation + 1, outcome: "committed" }, now);
       return { generation: generation + 1, digest, document: document as PolicyDocument };

@@ -532,7 +532,7 @@ async function connectWithin(instance: GatedOwnerDO, r: Gated, key: string,
   const sealed = await env.GATEWAY.seal(r.name, prepared.connection, 1, key, ANTHROPIC);
   await instance.connectionCommit(r.session(), { connection: prepared.connection, version: 1,
                                                  blob: sealed.blob, kid: sealed.kid, models,
-                                                 egress: scopeOf(ANTHROPIC) });
+                                                 egress: await scopeOf(ANTHROPIC) });
   return prepared.connection;
 }
 

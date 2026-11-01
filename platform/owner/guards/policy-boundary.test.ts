@@ -15,6 +15,8 @@
  * counters) are their modules' alone, and so are the agent's threads, live, usage and
  * receipt tables, and the owner's erasure mark. The lists only shrink.
  */
+import { posix } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { workerSources } from "./sources";
@@ -57,6 +59,7 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   model_turns: Object.freeze(["owner/src/usage.ts", SCHEMA]),
   model_turn_owners: Object.freeze(["owner/src/usage.ts", SCHEMA]),
   egress_reservations: Object.freeze(["owner/src/egress.ts", SCHEMA]),
+  egress_runs: Object.freeze(["owner/src/egress.ts", SCHEMA]),
 });
 
 /**
@@ -138,5 +141,54 @@ describe("policy-boundary guard", () => {
     expect(reach(new Map([["owner/src/probe.ts",
                            "const connections = new Connections(storage); // connections"]])))
       .toEqual({});
+  });
+});
+
+/**
+ * The modules a source runs, transitively, from `roots`: each relative import that is not
+ * `import type` (erased), by path, and each package it reaches.
+ */
+export function runtimeReach(sources: ReadonlyMap<string, string>, roots: readonly string[]):
+    { modules: string[]; packages: string[] } {
+  const modules = new Set<string>();
+  const packages = new Set<string>();
+  const pending = [...roots];
+  const IMPORT = /^\s*(?:import|export)\s+(?!type\b)[^;]*?from\s+"([^"]+)"/gm;
+  while (pending.length > 0) {
+    const path = pending.pop()!;
+    if (modules.has(path)) {
+      continue;
+    }
+    modules.add(path);
+    for (const [, spec] of (sources.get(path) ?? "").matchAll(IMPORT)) {
+      if (spec!.startsWith(".")) {
+        pending.push(`${posix.join(posix.dirname(path), spec!)}.ts`);
+      } else {
+        packages.add(spec!);
+      }
+    }
+  }
+  return { modules: [...modules].sort(), packages: [...packages].sort() };
+}
+
+describe("the sandbox's spend", () => {
+  it("runs nothing of pi's engine: its rows and counters are its own and the schema's", () => {
+    const { modules, packages } = runtimeReach(workerSources(), ["owner/src/egress.ts",
+                                                                 "owner/src/money.ts"]);
+    expect(modules).toContain("owner/src/money.ts");
+    expect(modules.filter((path) => /\/(usage|thread-host|thread-store|agent|turns)\.ts$/
+      .test(path))).toEqual([]);
+    expect(packages.filter((name) => name.startsWith("@earendil-works/")
+                                      && !name.startsWith("@earendil-works/pi-ai"))).toEqual([]);
+  });
+
+  it("sees an import of pi's engine, and not a type-only one", () => {
+    const probe = new Map([
+      ["owner/src/a.ts", 'import { b } from "./b";\nimport type { T } from "./c";'],
+      ["owner/src/b.ts", 'import { X } from "@earendil-works/pi-durable";'],
+      ["owner/src/c.ts", 'import { Y } from "@earendil-works/pi-agent";']]);
+    expect(runtimeReach(probe, ["owner/src/a.ts"]))
+      .toEqual({ modules: ["owner/src/a.ts", "owner/src/b.ts"],
+                 packages: ["@earendil-works/pi-durable"] });
   });
 });

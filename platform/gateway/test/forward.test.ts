@@ -310,7 +310,9 @@ describe("verify", () => {
     expect(verified.models.length).toBeGreaterThan(0);
     // Where sandbox egress may forward it: the sealed base URL and endpoints, no secret.
     expect(verified.egress).toEqual({ base_url: ANTHROPIC.upstream.base_url,
-                                      endpoints: ANTHROPIC.endpoints });
+                                      endpoints: ANTHROPIC.endpoints, meter: {
+                                        method: "POST", path: "/v1/messages",
+                                        model_field: ["model"], output_field: ["max_tokens"] } });
     expect(JSON.stringify(verified)).not.toContain("sk-good");
     // Each model's whole pi-ai record, but for what is the gateway's: where and how it
     // speaks to the upstream.

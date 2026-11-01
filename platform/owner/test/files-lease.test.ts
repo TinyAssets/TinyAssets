@@ -7,7 +7,8 @@
 import { describe, expect, it } from "vitest";
 
 import { type Entry, INLINE_BYTES, type Lease, sha256Hex, type SyncOp } from "../src/files";
-import { MUSE, rig, type Rig } from "./ledger-support";
+import { OwnerDO } from "../src/owner-do";
+import { rig, type Rig } from "./ledger-support";
 import { failure, fileCounters, inFiles, sqlIn, text } from "./support";
 
 const W = "/workspace";
@@ -20,7 +21,11 @@ function entryOf(answer: { entry: Entry } | { conflict: Entry | null }): Entry {
 }
 
 const acquire = (r: Rig, holder = "sandbox-1") =>
-  r.stub.sandboxLeaseOpen(r.bind(null), { holder, token: "a".repeat(64) });
+  inFiles(r.stub, {}, (files) => files.leaseAcquire(holder, "a".repeat(64), "b".repeat(64)));
+const renew = (r: Rig, lease: Pick<Lease, "lease_id" | "epoch">) =>
+  inFiles(r.stub, {}, (files) => files.leaseRenew(lease.lease_id, lease.epoch));
+const release = (r: Rig, lease: Pick<Lease, "lease_id" | "epoch">) =>
+  inFiles(r.stub, {}, (files) => files.leaseRelease(lease.lease_id, lease.epoch));
 const sync = (r: Rig, lease: Pick<Lease, "lease_id" | "epoch">, ops: SyncOp[]) =>
   r.stub.fileSyncCommit(r.bind(null), { lease_id: lease.lease_id, epoch: lease.epoch, ops });
 const write = (r: Rig, path: string, body: string) => r.stub.fileWrite(
@@ -38,10 +43,10 @@ describe("the sync lease", () => {
     expect(first.lease_id).toMatch(/^[0-9a-f]{32}$/);
     expect(first.epoch).toBe(1);
     expect((await failure(() => acquire(r, "sandbox-2"))).message).toBe("the sync lease is held");
-    const renewed = await r.stub.sandboxLeaseRenew(r.bind(null), held(first));
+    const renewed = await renew(r, first);
     expect(renewed.expires_at).toBeGreaterThanOrEqual(first.expires_at);
     await sqlIn(r.stub, "UPDATE file_space SET lease_expires = 1");
-    expect((await failure(() => r.stub.sandboxLeaseRenew(r.bind(null), held(first)))).message)
+    expect((await failure(() => renew(r, first))).message)
       .toBe(FENCED);
     const second = await acquire(r, "sandbox-2");
     expect(second.epoch).toBe(2);
@@ -64,10 +69,8 @@ describe("the sync lease", () => {
                          { ...lease, lease_id: "0".repeat(32) }]) {
       expect((await failure(() => sync(r, stale, [op]))).message).toBe(FENCED);
     }
-    expect(await r.stub.sandboxLeaseClose(r.bind(null), held(lease)))
-      .toEqual({ released: true, token: "a".repeat(64) });
-    expect(await r.stub.sandboxLeaseClose(r.bind(null), held(lease)))
-      .toEqual({ released: false, token: null });
+    expect(await release(r, lease)).toEqual({ released: true });
+    expect(await release(r, lease)).toEqual({ released: false });
     expect((await failure(() => sync(r, lease, [op]))).message).toBe(FENCED);
     const next = await acquire(r);
     await sqlIn(r.stub, "UPDATE file_space SET lease_expires = 1");
@@ -81,12 +84,11 @@ describe("the sync lease", () => {
     expect(entryOf(await write(r, `${W}/a`, "api")).writer).toBe("owner");
   });
 
-  it("is the owner's own: an outside client never reaches it", async () => {
+  it("has no door: the object's own sandbox lifecycle takes it (`SandboxLeases`)", async () => {
     const r = await rig();
-    await r.register(MUSE);
-    expect((await failure(() => r.stub.sandboxLeaseOpen(r.bind(MUSE),
-                                                        { holder: "x", token: "a".repeat(64) })))
-      .message).toBe("only the owner may hold the sandbox lease");
+    for (const door of ["sandboxLeaseOpen", "fileLeaseAcquire", "sandboxConfig"]) {
+      expect(Object.getOwnPropertyNames(OwnerDO.prototype)).not.toContain(door);
+    }
     for (const holder of ["", "x".repeat(129), "a\nb", 7]) {
       expect((await failure(() => acquire(r, holder as string))).message)
         .toBe("a lease holder is 1 to 128 printable characters");

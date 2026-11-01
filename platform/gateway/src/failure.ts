@@ -19,6 +19,7 @@ const STATUS = Object.freeze({
   method_not_allowed: 405,
   credential_refused: 403,
   endpoint_refused: 403,
+  unmetered: 403,
   unknown_model: 404,
   unsupported_source: 422,
   reservation_too_small: 422,

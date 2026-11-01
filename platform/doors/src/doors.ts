@@ -2,9 +2,9 @@
  * The doors' router: every path the doors Worker serves on `tinyassets.io`, and the egress
  * door on `egress.tinyassets.io`.
  *
- * - `egress.tinyassets.io/c/<connection>/*`: the sandbox's model clients, by their lease
+ * - `egress.tinyassets.io/c/<connection>/*`: the sandbox's model clients, by their egress
  *   token (`egress.ts`), the `Cookie` header removed. Nothing else is served on that
- *   origin, and the egress door is served on no other, so a lease token reaches no other
+ *   origin, and the egress door is served on no other, so a sandbox token reaches no other
  *   door. No route is deployed for it until the routes slice.
  *
  * - `/mcp`: the `Cookie` header removed, a present `Origin` held to `MCP_ORIGINS`

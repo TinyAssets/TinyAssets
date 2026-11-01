@@ -26,7 +26,7 @@ import {
   APP_RESOURCE, type DoorsEnv, FIRST_PARTY_CLIENTS, foreignIssuers, ISSUER, MCP_RESOURCE,
   ownerIssuer,
 } from "./config";
-import type { KeyEntry, LeaseEntry } from "./directory";
+import type { KeyEntry } from "./directory";
 import type { SignIn } from "./upstream";
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -199,20 +199,28 @@ export function bindApiKey(env: DoorsEnv, keyId: string, entry: KeyEntry): Bound
 }
 
 /**
- * A sandbox's lease token, found in the directory (`egress.ts`): the entry's owner, on its
- * own account (the sandbox runs the owner's own commands), with what the object checks the
- * lease by: the lease id the entry names, the SHA-256 of the token the request presented,
- * and the policy generation E2B's transform set beside it. The object refuses this binding
- * at every door but the egress doors.
+ * A sandbox's egress token (`egress.ts`): the owner its own routing part names, on its own
+ * account (the sandbox runs the owner's own commands), with what the object checks the
+ * lease by: the SHA-256 of the token's secret, and the egress generation E2B's transform
+ * set beside it. No directory is read: the object, strongly consistent, checks the hash,
+ * the lease and its expiry. It refuses this binding at every door but the egress doors.
  */
-export function bindSandbox(env: DoorsEnv, tokenHash: string, entry: LeaseEntry,
+export function bindSandbox(env: DoorsEnv, owner: string, tokenHash: string,
                             generation: number): Bound {
   if (!HEX64.test(tokenHash) || !Number.isSafeInteger(generation) || generation < 1) {
     throw new Error("a sandbox binding needs its token's hash and its network's generation");
   }
-  const owner = principal(entry.o);
-  return bound(env, { owner, caller: owner, origin: null,
-                      sandbox: { lease: entry.l, token: tokenHash, generation } });
+  const named = principal(owner);
+  return bound(env, { owner: named, caller: named, origin: null,
+                      sandbox: { kind: "egress", token: tokenHash, generation } });
+}
+
+/**
+ * The same binding's object again, through a fresh stub: a settle after the object reset
+ * (a deploy) reaches its new instance, never the broken stub.
+ */
+export function rebound(env: DoorsEnv, { binding }: Bound): Bound {
+  return bound(env, binding);
 }
 
 /**

@@ -4,13 +4,16 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { mintToken, tokenHash, verifyToken } from "../../doors/src/routing-mac";
 import { Invalid, Refused } from "../src/errors";
 import {
-  ALL_TRAFFIC, DNS_SERVERS, EGRESS_HOST, EGRESS_IP_LITERAL, egressBaseUrl, GENERATION_HEADER,
-  networkDocument, SANDBOX_HEADER, sandboxEnv,
+  ALL_TRAFFIC, BOUNDARY_NOTE, DNS_SERVERS, EGRESS_HOST, EGRESS_IP_LITERAL, egressBaseUrl,
+  GENERATION_HEADER, networkDocument, SANDBOX_HEADER, sandboxEnv,
 } from "../src/network";
 
-const TOKEN = "T".repeat(43);
+const TOKEN = `${btoa("owner-1").replace(/=+$/, "")}.${"T".repeat(43)}.${"M".repeat(43)}`;
+/** A routing key, as a deploy generates one: 32 bytes, base64url. */
+const KEY = Buffer.alloc(32, 7).toString("base64url");
 const transform = (generation: number) => ({ [EGRESS_HOST]: [{ transform: { headers: {
   [SANDBOX_HEADER]: TOKEN, [GENERATION_HEADER]: String(generation) } } }] });
 
@@ -35,7 +38,8 @@ describe("the network document", () => {
     expect(plan).toEqual({
       network: { allowOut: ["*", EGRESS_HOST], denyOut: [ALL_TRAFFIC], dnsServers: ["1.1.1.1"],
                  rules: transform(3) },
-      mode: "open", generation: 3, unexpressed: [], receipt: false });
+      mode: "open", generation: 3, unexpressed: [], receipt: false, boundary: false,
+      note: BOUNDARY_NOTE });
     expect(DNS_SERVERS).toEqual(["1.1.1.1"]);
     expect(ALL_TRAFFIC).toBe("0.0.0.0/0");
   });
@@ -93,6 +97,8 @@ describe("the network document", () => {
       [{ mode: "open", destinations: [] }, 1.5, TOKEN],
       [{ mode: "open", destinations: [] }, 1, "short"],
       [{ mode: "open", destinations: [] }, 1, `${"T".repeat(42)}=`],
+      [{ mode: "open", destinations: [] }, 1, "T".repeat(43)],
+      [{ mode: "open", destinations: [] }, 1, `${btoa("owner-1")}.${"T".repeat(43)}`],
     ] as const) {
       expect(thrown(() => networkDocument(egress as never, generation, token)).name)
         .toBe(Invalid.name);
@@ -109,17 +115,64 @@ describe("the network document", () => {
 
 const ANTHROPIC = { base_url: "https://api.anthropic.com",
                     endpoints: [{ origin: "https://api.anthropic.com", paths: ["/v1/messages"],
-                                  methods: ["POST"] }] };
+                                  methods: ["POST"] }], meter: null };
 const OPENAI = { base_url: "https://api.openai.com/v1",
                  endpoints: [{ origin: "https://api.openai.com", paths: ["/v1/responses"],
-                               methods: ["POST"] }] };
+                               methods: ["POST"] }], meter: null };
 const GROQ = { base_url: "https://api.groq.com/openai/v1/",
                endpoints: [{ origin: "https://api.groq.com", paths: ["/openai/v1/chat/completions"],
-                             methods: ["POST"] }] };
+                             methods: ["POST"] }], meter: null };
 const C1 = `c${"1".repeat(24)}`;
 const C2 = `c${"2".repeat(24)}`;
 const C3 = `c${"3".repeat(24)}`;
 const C4 = `c${"4".repeat(24)}`;
+const C5 = `c${"5".repeat(24)}`;
+const GOOGLE = { base_url: "https://generativelanguage.googleapis.com/v1beta",
+                 endpoints: [{ origin: "https://generativelanguage.googleapis.com",
+                               paths: ["/v1beta/models/*"], methods: ["POST"] }], meter: null };
+
+describe("a sandbox token", () => {
+  it("names its owner, carries the routing key's MAC, and keeps only its secret's hash", () => {
+    const owner = "user_01HZ";
+    const minted = mintToken(KEY, "egress", owner);
+    const [routing, secret, mac] = minted.token.split(".");
+    expect(secret).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(mac).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(routing).toBe(Buffer.from(owner).toString("base64url"));
+    expect(verifyToken(KEY, "egress", minted.token)).toEqual({ owner, hash: minted.hash });
+    expect(minted.hash).toBe(tokenHash(secret!));
+    expect(mintToken(KEY, "egress", owner).hash).not.toBe(minted.hash);
+  });
+
+  it("is refused forged, altered, of the other kind or under another key", () => {
+    const minted = mintToken(KEY, "egress", "user_01HZ");
+    const [routing, secret, mac] = minted.token.split(".") as [string, string, string];
+    const flip = (part: string) => `${part.slice(0, -2)}${part.at(-2) === "A" ? "B" : "A"}${
+      part.at(-1)}`;
+    const other = Buffer.from("user_02XY").toString("base64url");
+    const otherKey = Buffer.alloc(32, 9).toString("base64url");
+    for (const bad of ["", secret, `${routing}.${secret}`, `${routing}.${secret}.${mac}x`,
+                       `.${secret}.${mac}`, `${routing}..${mac}`, `${routing}=.${secret}.${mac}`,
+                       `${other}.${secret}.${mac}`, `${flip(routing)}.${secret}.${mac}`,
+                       `${routing}.${flip(secret)}.${mac}`, `${routing}.${secret}.${flip(mac)}`,
+                       `${routing}.${secret}.${"A".repeat(43)}`]) {
+      expect(verifyToken(KEY, "egress", bad)).toBeNull();
+    }
+    expect(verifyToken(KEY, "sync", minted.token)).toBeNull();
+    expect(verifyToken(otherKey, "egress", minted.token)).toBeNull();
+    // A forger who picks a routing part and a secret still needs the key's MAC.
+    const forged = mintToken(otherKey, "egress", "user_02XY").token;
+    expect(verifyToken(KEY, "egress", forged)).toBeNull();
+  });
+
+  it("fails loudly on a Worker without a usable routing key", () => {
+    for (const key of [undefined, "", "short", Buffer.alloc(31).toString("base64url"),
+                       `${KEY}=`]) {
+      expect(() => mintToken(key, "egress", "user_01HZ")).toThrow(/ROUTING_MAC_KEY/);
+      expect(() => verifyToken(key, "egress", TOKEN)).toThrow(/ROUTING_MAC_KEY/);
+    }
+  });
+});
 
 describe("the sandbox's model clients' environment", () => {
   it("gives each connection a base URL on the door and a placeholder key", () => {
@@ -130,6 +183,7 @@ describe("the sandbox's model clients' environment", () => {
       { connection: C2, provider: "openai", egress: OPENAI },
       { connection: C3, provider: "anthropic", egress: ANTHROPIC },
       { connection: C4, provider: "google-vertex", egress: GROQ },
+      { connection: C5, provider: "google", egress: GOOGLE },
     ], random);
     expect(env).toEqual({
       ANTHROPIC_BASE_URL: `https://egress.tinyassets.io/c/${C1}/`,
@@ -147,6 +201,13 @@ describe("the sandbox's model clients' environment", () => {
       GOOGLE_VERTEX_API_KEY: `ta_ph_${C4}_${"0".repeat(31)}4`,
       [`TA_${C4.toUpperCase()}_BASE_URL`]: `https://egress.tinyassets.io/c/${C4}/openai/v1`,
       [`TA_${C4.toUpperCase()}_API_KEY`]: `ta_ph_${C4}_${"0".repeat(31)}4`,
+      // Gemini CLI's own names, its base URL the door and the connection alone.
+      GOOGLE_BASE_URL: `https://egress.tinyassets.io/c/${C5}/v1beta`,
+      GOOGLE_API_KEY: `ta_ph_${C5}_${"0".repeat(31)}5`,
+      GOOGLE_GEMINI_BASE_URL: `https://egress.tinyassets.io/c/${C5}/`,
+      GEMINI_API_KEY: `ta_ph_${C5}_${"0".repeat(31)}5`,
+      [`TA_${C5.toUpperCase()}_BASE_URL`]: `https://egress.tinyassets.io/c/${C5}/v1beta`,
+      [`TA_${C5.toUpperCase()}_API_KEY`]: `ta_ph_${C5}_${"0".repeat(31)}5`,
     });
     expect(sandboxEnv([], random)).toEqual({});
   });
