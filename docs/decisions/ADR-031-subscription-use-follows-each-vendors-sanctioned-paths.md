@@ -5,11 +5,13 @@
 Accepted (founder, 2026-10-26). Amends ADR-022 (its P2b row: "CLI packages
 (token leased for one run, ADR-012 D5)") and ADR-012 D5 for consumer
 subscriptions, and constrains ADR-023 (hosted CLIs), ADR-024 (device
-runner) and the outside-agent wake recipes.
+runner) and the outside-agent wake recipes. Amended (founder, 2026-11-01):
+a subscription powers any of the user's agents, scheduled and unattended
+included, wherever its vendor's terms allow; decisions 1 and 3 are replaced.
 
 ## Date
 
-2026-10-26
+2026-10-26; amended 2026-11-01
 
 ## Context
 
@@ -42,19 +44,30 @@ the vendors' own terms (sources below) found:
 
 ## Decision
 
-1. **API keys are the default for anything unattended.** A turn nobody at a
-   keyboard started runs on an API key, a free source, or a vendor-native
-   automation the user owns. Never on a consumer subscription driven by
-   TinyAssets.
+1. **Any source the user connects can power any of their agents,** scheduled
+   and unattended work included: an API key, a sign-in, or a subscription.
+   Most users with a subscription will power everything with it. A
+   subscription is used only through a path its vendor sanctions: the
+   vendor's own unmodified CLI in the user's sandbox or on their device, the
+   vendor's own agent on its own platform reaching TinyAssets over MCP, or
+   an approved sign-in program. TinyAssets' own loop never sends requests
+   with a consumer subscription's credentials (Anthropic forbids routing
+   requests through plan credentials on users' behalf).
 2. **TinyAssets never holds consumer login tokens.** Claude.ai login
    tokens, `~/.codex/auth.json` and Grok session tokens are never read,
    copied, stored, proxied or logged by trusted code, and never leave the
    sandbox or device where the vendor's own sign-in wrote them. The
    per-task Claude `/fire` token is the exception, because Anthropic
    documents storing it in the caller's secret store.
-3. **Hosted CLIs (paid tier) are human-started.** On a TinyAssets box a
-   subscription CLI runs only a turn its owner started from the app. The
-   binary is unmodified and its sign-in methods are intact. Vendor names are
+3. **Hosted CLIs run any of the owner's work, scheduled and unattended
+   included, where the vendor's terms allow it.** Each source record states,
+   with the vendor page it cites, whether its vendor allows unattended use
+   of a hosted CLI; a record that cannot cite it is refused for unattended
+   turns until it can. Anthropic's legal page (read 2026-11-01) allows an end
+   user's own sign-in to the unmodified Claude Code binary where a platform
+   hosts it, without limiting it to human-started turns; its usage limits
+   assume ordinary, individual use. The binary is unmodified and its sign-in
+   methods are intact. Vendor names are
    never part of a TinyAssets product or feature name. Accepting
    Anthropic's Commercial Terms is a precondition for hosting Claude Code.
 4. **Room-triggered work reaches subscription agents through the vendor's
@@ -72,9 +85,10 @@ the vendors' own terms (sources below) found:
 
 ## Consequences
 
-- The paid hosted-CLI tier is for interactive work. Unattended agent work
-  is priced in the user's own API usage or the vendor's own automation
-  limits.
+- A subscription user's agents, scheduled ones included, run on their
+  subscription: in the vendor's hosted CLI where its terms allow, or as the
+  vendor's own agent reaching TinyAssets. Usage counts against the user's
+  plan limits, never billed or intermediated by TinyAssets.
 - Broker custody of consumer login tokens is removed: the native
   subscription custody in `tinyassets/broker/subscription_custody.py`, the
   `state.location: broker` declarations in
@@ -83,9 +97,11 @@ the vendors' own terms (sources below) found:
   `box-subscription-sources` change. A hosted CLI keeps its sign-in inside
   the owner's box, written by the vendor's own flow. API keys stay broker
   custody (S28).
-- A source record whose `invoke` drives a subscription CLI declares
-  `trigger: human` and is refused by the placement resolver for unattended
-  turns.
+- A source record whose `invoke` drives a subscription CLI declares whether
+  its vendor allows unattended hosted use, citing the vendor's page; the
+  platform refuses an unattended turn only where that is not allowed or not
+  cited. The record runs the CLI as the agent's engine, never as a hidden
+  completion backend for TinyAssets' own loop.
 - Build order: `openspec/changes/device-first-build/`.
 
 ## Sources
