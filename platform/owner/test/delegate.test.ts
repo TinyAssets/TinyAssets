@@ -26,16 +26,24 @@ import { NOT_GRANTED, type Stamped } from "../src/authority";
 import { THREAD_CONVERSATIONS_FULL } from "../src/delegate";
 import { type Origin } from "../src/ledger";
 import type { Binding } from "../src/owner-do";
-import { THREAD_CHILD_INPUTS, THREAD_CONVERSATIONS, THREAD_INPUTS } from "../src/schema";
-import { THREAD_CHILD_INPUTS_FULL, THREAD_INPUTS_FULL } from "../src/thread-host";
-import { THREADS_WORKING, THREADS_WORKING_SHARE } from "../src/threads";
-import { failure } from "./support";
+import {
+  THREAD_CHILD_INPUTS, THREAD_CONVERSATIONS, THREAD_INPUTS, WORKING_THREADS,
+} from "../src/schema";
+import {
+  HOST_TIMING, OPEN_MAX, THREAD_CHILD_INPUTS_FULL, THREAD_INPUTS_FULL, TURNS_UNKEPT,
+} from "../src/thread-host";
+import {
+  THREADS_WORKING, THREADS_WORKING_CLIENTS, THREADS_WORKING_SHARE,
+} from "../src/threads";
+import { capTurnOwners, failure } from "./support";
 import { gated } from "./gateway-support";
 import { DOT, MCP, MUSE, signedIn } from "./ledger-support";
 import { sqlIn } from "./support";
 import { type FauxOwnerDO, says } from "./worker";
 
 const BG = BACKGROUND_CONTEXT;
+/** The schema's compaction bound, which a capped trigger keeps. */
+const THREAD_COMPACTIONS_ALL = THREAD_CONVERSATIONS * 2;
 const ROOT = ROOT_CONVERSATION_ID;
 const text = (value: string): Uint8Array => new TextEncoder().encode(value);
 
@@ -594,6 +602,63 @@ describe("the owner's working threads", () => {
       return { refused: refused.message, again: again.accepted, own: own.accepted };
     });
     expect(out).toEqual({ refused: THREADS_WORKING_SHARE, again: true, own: true });
+  });
+
+  it("keep a place for a compaction in an open Session when admissions are at their limit",
+     async () => {
+    // Production's reserve: all but the open Sessions' places are the admissions'.
+    expect(HOST_TIMING.workingMax).toBe(WORKING_THREADS - OPEN_MAX);
+    const r = await rig();
+    const out = await r.in(async (instance, state) => {
+      // The trigger's bound three, one Session's reserve: admissions take two places.
+      capTurnOwners(state.storage.sql, THREAD_INPUTS, THREAD_COMPACTIONS_ALL, 3);
+      instance.timing.openMax = 1;
+      instance.timing.workingMax = 3 - instance.timing.openMax;
+      const threads: string[] = [];
+      for (let n = 0; n < 4; n++) {
+        threads.push((await instance.agent.thread("main", null, { kind: "run" })).thread_id);
+      }
+      const [one, two, three, four] = threads as [string, string, string, string];
+      await instance.parts.turns.owned(one, [{ owner: "s:1", turn: "input:one" }]);
+      await instance.parts.turns.owned(two, [{ owner: "s:1", turn: "input:two" }]);
+      const refused = await failure(() => instance.harness.submit("hi", { session: three }));
+      // An open Session with no owner starts a compaction: its owner lands in the reserve.
+      await instance.harness.pi({ session: four });
+      await instance.parts.turns.owned(four, [{ owner: "t:5", turn: `task:${four}:5` }]);
+      return { refused: refused.message,
+               notices: instance.parts.notices.list().map((notice) => notice.type),
+               owners: state.storage.sql.exec<{ n: number }>(
+                 "SELECT COUNT(DISTINCT thread) AS n FROM model_turn_owners").one().n };
+    });
+    expect(out.refused).toBe(THREADS_WORKING);
+    expect(out.owners).toBe(3);
+    expect(out.notices).not.toContain(TURNS_UNKEPT);
+  });
+
+  it("keep the owner's reserve from the clients together", async () => {
+    const r = await rig();
+    const origins = ["1", "2", "3", "4"].map((n) => ({ client: n.repeat(64),
+                                                       family: n.repeat(64) }));
+    for (const origin of origins) {
+      await r.admit(origin);
+    }
+    const out = await r.in(async (instance) => {
+      instance.timing.workingMax = 4;  // a client's share one, the clients' together three
+      const threads: string[] = [];
+      for (const origin of origins) {
+        threads.push((await instance.agent.thread("main", {
+          client: origin.client, generation: 1, authenticated_at: null, universe: null,
+          agent: "main" }, { kind: "run" })).thread_id);
+      }
+      for (const thread of threads.slice(0, 3)) {
+        await instance.parts.turns.owned(thread, [{ owner: "s:1", turn: `input:${thread}` }]);
+      }
+      const fourth = await failure(() => instance.harness.submit("hi",
+                                                                 { session: threads[3]! }));
+      const own = await instance.harness.submit("hi");
+      return { fourth: fourth.message, own: own.accepted };
+    });
+    expect(out).toEqual({ fourth: THREADS_WORKING_CLIENTS, own: true });
   });
 
   it("count the admissions in flight, so two at once take one place once", async () => {

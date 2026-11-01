@@ -531,6 +531,10 @@ describe("the owner's database bound", () => {
     expect([THREAD_CONVERSATIONS, CONVERSATION_COMPACTIONS, THREAD_CHILD_INPUTS,
             WORKING_THREADS]).toEqual([3, 2, 2, 1024]);
     expect(schema).toMatch(/export const THREAD_CHILD_INPUTS = THREAD_CONVERSATIONS - 1;/);
+    // The host admits fresh inputs within all but `OPEN_MAX` of the working threads, so a
+    // compaction pi starts in an open Session always has a place under the trigger's bound.
+    expect(source("thread-host")).toContain("workingMax: WORKING_THREADS - OPEN_MAX,");
+    expect(constant("thread-host", "OPEN_MAX")).toBe(64);
     expect(THREAD_COMPACTIONS).toBe(THREAD_CONVERSATIONS * CONVERSATION_COMPACTIONS);
     expect(schema).toMatch(/export const THREAD_COMPACTIONS = THREAD_CONVERSATIONS \* /);
     expect([SCOPE_FIELD, CLIENT_NAME, WAKES_AN_HOUR, GRANT_LIMITS.maxScopes])

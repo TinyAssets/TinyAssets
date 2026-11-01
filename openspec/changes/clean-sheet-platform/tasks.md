@@ -1331,7 +1331,12 @@ account and no deploy.
   which `Authority.require` reads at the call's start and in the unit); A5's own set re-run:
   44 still apply, 44 killed (the two that survived went with the code they mutated);
   the reviewer's runner, its patterns moved to the new lines: 24 apply, 24 killed (its M11
-  went with the redundant line).
+  went with the redundant line). Review round 2 (APPROVE), its lows: A the compaction
+  reserve pinned (the owner-bound guard holds `workingMax: WORKING_THREADS - OPEN_MAX`) and
+  tested at the limit, a compaction in an open Session still landing its owner; B the
+  owner's reserve across clients tested; C and D owed (below); E the sandbox's sync owed
+  under tasks 6. The reviewer's runner: 35, 34 killed, R13 equivalent (the linked room's
+  admission check, read again by `Authority.require`).
 - [ ] Persistent helpers (example 23): a background anchor task owning long-lived
   subagents, spawned, messaged, waited on, stopped and listed through one capability, each
   answer posted back by a background reporter task under a request id. Needs: the anchor
@@ -1339,6 +1344,17 @@ account and no deploy.
   origin), each reporter's submit admitted by `ThreadHost.linked`-style admission (its turn
   is its own, a fresh origin), and the anchor's children counted in
   `THREAD_CONVERSATIONS` or a cap of their own, traded in the owner-bound guard.
+- [ ] A5's working places, owed (review round 2):
+  - C, stale places: a crash between pi's commit and its turn-owner unit, with the live row
+    idle, holds a place until the thread's Session reopens, it settles or retention drops
+    it; a mass eviction holds every place until recovery drains them, 64 at a time, fresh
+    inputs refused `threads_working` meanwhile; two fresh admissions for the last place see
+    each other in flight and both are refused. Fix: sweep the owners of threads neither
+    open nor active (by `agent_live`) on the alarm, or count the soft limit by `agent_live`.
+  - D, a held delivery spends a Session open per retry (30 s to 10 min) while the places
+    are full, competing with the recovery that frees them. Fix: have the wake step check
+    the working places before it opens, as the admission hold does, or wake held
+    deliveries as a place frees.
 - [ ] Package data A5 left unloaded: the `tinyassets` key's settings and model routing
   hints (each skipped with a notice now), when owner policy and `auto` take them;
   package tool schemas (the plan's declarative tool schemas) reached through `ta`.
@@ -1480,6 +1496,10 @@ account and no deploy.
   sync-out refused `file_quota` reports its refused paths as sandbox-only, never drops them
   silently; and the owner is shown the trade between entries and `keep_recent` when it
   first binds (files-quota review, carried by S4-S5).
+  The sync path must hold the owner's trees (`OWNER_TREES`, `paths.ts`, A5) as the doors and
+  the agent's environment do: a sync-in never carries a client's change into them, and a
+  sync-out from a command a client's conversation ran never writes there (refused with
+  `AGENTS_OWNER_ONLY`, reported as sandbox-only).
 - [x] Probe, before the agent (5) runs a turn on the object: the subrequests-per-
   invocation cap (`FILES`, the gateway, hooks) and the 15-minute alarm wall time,
   including whether the cap applies per Durable Object event, before the gateway slice.
