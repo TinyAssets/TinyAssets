@@ -22,6 +22,7 @@ import type { EgressOpened, EgressRefusal } from "../src/egress";
 import type { Binding } from "../src/owner-do";
 import { MUSE } from "./ledger-support";
 import { failure } from "./support";
+import { hashed, ownerRun, secretOf } from "./runs-support";
 import {
   ANTHROPIC, catalog, type Gated, gated, keyring, OAUTH, OPENAI, REDIRECT, scopeOf, sealedAs,
   until,
@@ -52,14 +53,19 @@ async function lanes(r: Gated): Promise<void> {
 async function sandboxOf(r: Gated): Promise<Binding> {
   const [{ id: connection }] = await r.sql(
     "SELECT id FROM connections ORDER BY created_at, id LIMIT 1") as [{ id: string }];
-  const opened = await r.in((instance) => instance.sandbox.open({
-    holder: "sandbox-1", run: { engine: "pi", credential: "api_key", connection } }));
+  const { start } = await ownerRun(r.stub, r.bind(), { engine: "pi", credential: "api_key",
+                                                       connection, scopes: [] });
+  RUN = start.run;
   await r.in((instance) => instance.sandbox.networkApplied({
-    lease_id: opened.lease.lease_id, epoch: opened.lease.epoch,
-    generation: opened.network.generation }));
-  const token = verifyToken(env.ROUTING_MAC_KEY, "egress", opened.egress_token)!.hash;
-  return r.bind({ sandbox: { kind: "egress", token, generation: opened.network.generation } });
+    lease_id: start.lease.lease_id, epoch: start.lease.epoch,
+    generation: start.network!.generation }));
+  const token = verifyToken(env.ROUTING_MAC_KEY, "egress", start.tokens!.egress_token)!.hash;
+  return r.bind({ sandbox: { kind: "egress", token, generation: start.network!.generation,
+                             secret: hashed(secretOf(start)) } });
 }
+
+/** The run the sandbox's calls name: the one its lease was opened for. */
+let RUN = "";
 
 /** Each owner's one sandbox lease, taken once. */
 const leases = new WeakMap<Gated, Promise<Binding>>();
@@ -75,8 +81,8 @@ function leaseOf(r: Gated): Promise<Binding> {
 
 /** A sandbox's free read of `connection`'s model list, as the egress door opens it. */
 function listing(connection: string) {
-  return { connection, method: "GET", path: "/v1/models", bytes_hint: null, model: null,
-           tier: null };
+  return { run: RUN, connection, method: "GET", path: "/v1/models", bytes_hint: null,
+           model: null, tier: null };
 }
 
 /**
@@ -100,7 +106,8 @@ async function usable(r: Gated): Promise<string[]> {
   const given: string[] = [];
   for (const { id } of rows) {
     const made = await r.in((instance) => instance.sandbox.config({
-      engine: "pi", credential: "api_key", connection: id })).then(() => true, (error: unknown) => {
+      run: `run_${"0".repeat(32)}`, secret: "5e".repeat(32), engine: "pi", credential: "api_key",
+      connection: id })).then(() => true, (error: unknown) => {
       if (!/active connections/.test(String((error as Error).message))) {
         throw error;
       }

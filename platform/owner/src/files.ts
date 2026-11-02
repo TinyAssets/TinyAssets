@@ -54,9 +54,12 @@
  *   open uploads reference, deduplicated within the scope and never across, so no scope
  *   keeps bytes alive at another's cost; an upload is told a chunk need not be sent only
  *   when its writer's own scope holds it, and commits only the chunks it sent or holds.
- * - The sync lease, for the sandbox's sync agent (tasks 6): a random `lease_id` is the
- *   claim token and a rising `epoch` the fencing number, as the ledger's claims are. A
- *   sync commit is refused unless both are the live lease's; within it, each op has its
+ * - The sandbox leases, one an authority (the owner's own work's sandbox, and each outside
+ *   client's own; slice R's review H-1), each for its sandbox's runs and sync agent: a
+ *   random `lease_id` is the claim token and a rising `epoch` (one counter for all) the
+ *   fencing number, as the ledger's claims are. A sync commit is refused unless both are a
+ *   live lease's; a client's sandbox writes as that client (its share) and never into the
+ *   owner's agent definitions (`OWNER_TREES`). Within a commit, each op has its
  *   own outcome and nothing one op does undoes another. API writes never take the
  *   lease. A sync write made against a version that has moved on, or blocked by what the
  *   API made of a parent, leaves the API's state in place and saves the sandbox's content
@@ -77,8 +80,8 @@ import type { OwnerStorage, Write } from "./gate";
 import { CHUNK_BYTES, CLIENT_WRITER, CLIENTS, HISTORY_BYTES, OWNER_SCOPE } from "./manifest";
 import { inTime } from "./schedule";
 import {
-  ancestors, isRoot, MAX_NAME_BYTES, MAX_PATH_BYTES, nameOf, parentOf, storedPath, TEMP, within,
-  WORKSPACE,
+  AGENTS_OWNER_ONLY, ancestors, isRoot, MAX_NAME_BYTES, MAX_PATH_BYTES, nameOf, ownersOnly,
+  parentOf, storedPath, TEMP, within, WORKSPACE,
 } from "./paths";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
 
@@ -108,8 +111,10 @@ export const INTENT_TTL_S = 3600;
 export const GC_GRACE_S = 86_400;
 /** When a failed chunk delete is tried again. */
 export const GC_RETRY_S = 300;
-/** The sync lease's life without a renewal. */
+/** A sandbox lease's life without a renewal; a run's heartbeat lapses as soon. */
 export const LEASE_TTL_S = 60;
+/** The owner's own work's sandbox: the authority every run the owner started holds. */
+export const OWNER_AUTHORITY = "owner";
 /** A temporary directory's life. */
 export const TEMP_TTL_S = 86_400;
 /**
@@ -254,23 +259,51 @@ export interface Lease {
   readonly base: number;
 }
 
-/** The live sandbox lease as egress and the sync doors check it (`Files.sandboxLease`). */
+/** A live sandbox lease as the runs, egress and the sync doors check it. */
 export interface SandboxLease {
+  /** Whose sandbox: the owner's own work's (`OWNER_AUTHORITY`), or an outside client's id. */
+  readonly authority: string;
   readonly lease_id: string;
   readonly epoch: number;
   /** The SHA-256 hex of the egress token's secret, which only E2B's transform carries. */
   readonly egress_token: string;
   /** The SHA-256 hex of the sync token's secret, which the in-VM sync agent holds. */
   readonly sync_token: string;
+  /** The SHA-256 hex of the runner's own secret, which no CLI holds. */
+  readonly runner_token: string;
   readonly expires_at: number;
+  /** When its tokens die: the sandbox's own continuous-runtime ceiling. */
+  readonly deadline: number;
   /** The egress generation the sandbox's network was last applied under, or null. */
   readonly network_generation: number | null;
-  /**
-   * The one connection the lease's engine run may call through the egress door; null for a
-   * run on the vendor's own sign-in, which may call none.
-   */
-  readonly run_connection: string | null;
+  /** The engines its own runner last reported signed in inside it (a client's sandbox's). */
+  readonly signins: readonly string[];
 }
+
+/** The three tokens' hashes a lease is bound to, and their deadline. */
+export interface LeaseTokens {
+  readonly egress: string;
+  readonly sync: string;
+  readonly runner: string;
+  readonly deadline: number;
+}
+
+type LeaseRow = {
+  authority: string; lease_id: string; epoch: number; holder: string; lease_expires: number;
+  deadline: number; egress_token: string; sync_token: string; runner_token: string;
+  network_generation: number | null; signins: string;
+};
+
+function leaseOf(row: LeaseRow): SandboxLease {
+  return { authority: row.authority, lease_id: row.lease_id, epoch: row.epoch,
+           egress_token: row.egress_token, sync_token: row.sync_token,
+           runner_token: row.runner_token, expires_at: row.lease_expires,
+           deadline: row.deadline, network_generation: row.network_generation,
+           signins: row.signins === "" ? [] : row.signins.split(",") };
+}
+
+/** A lease's row is live while neither its renewal nor its tokens' deadline has passed. */
+const LIVE_LEASE = "lease_expires > ? AND deadline > ?";
 
 /** A sync op: what the sandbox's scan found, against the version it last synced. */
 export type SyncOp =
@@ -325,14 +358,7 @@ type Space = {
   manifest_bytes: number;
   intents: number;
   intent_chunks: number;
-  lease_id: string | null;
   epoch: number;
-  holder: string | null;
-  lease_expires: number;
-  egress_token: string | null;
-  sync_token: string | null;
-  network_generation: number | null;
-  run_connection: string | null;
   retained_keep: number;
   retained_recent: number;
   retained_days: number;
@@ -1595,59 +1621,71 @@ export class Files {
     }
   }
 
-  // -- THE SYNC LEASE -------------------------------------------------------------
+  // -- THE SANDBOX LEASES ----------------------------------------------------------
 
   /**
-   * Take the sandbox's one lease, when no live one is held: a new lease id and the next
-   * epoch, bound to the SHA-256 hex of its two tokens' secrets (`egress` and `sync`; the
-   * secrets never stay in the object), and to the one connection its engine run was given
-   * (`runConnection`; null on the vendor's own sign-in). Its network is not yet applied
+   * Take `authority`'s sandbox lease, when it holds no live one: a new lease id and the
+   * next epoch, bound to the SHA-256 hex of its three tokens' secrets (`egress`, `sync` and
+   * the runner's; the secrets never stay in the object) and their deadline. Lapsed leases go
+   * first (a lease is taken only after the runs under a lapsed one were settled), so the
+   * leases are never more than the live runs. Its network is not yet applied
    * (`network_generation` null), so egress waits until the sandbox slice applies it.
    */
-  leaseAcquire(holder: unknown, egress: unknown, sync: unknown,
-               runConnection: string | null): Lease {
+  leaseAcquire(authority: unknown, holder: unknown, tokens: LeaseTokens): Lease {
+    if (typeof authority !== "string"
+        || (authority !== OWNER_AUTHORITY && !/^[!-~]{64}$/.test(authority))) {
+      throw new Invalid("a lease's authority is the owner's or one outside client's");
+    }
     if (typeof holder !== "string" || !holder || codePoints(holder) > 128
         || !isPrintable(holder)) {
       throw new Invalid("a lease holder is 1 to 128 printable characters");
     }
-    if (typeof egress !== "string" || !HEX64.test(egress) || typeof sync !== "string"
-        || !HEX64.test(sync) || egress === sync) {
-      throw new Invalid("a lease's two token hashes are 64 hex, and differ");
-    }
-    if (runConnection !== null && (typeof runConnection !== "string" || !runConnection
-                                   || runConnection.length > 64)) {
-      throw new Invalid("a lease's run connection is a connection id, or none");
+    const hashes = [tokens.egress, tokens.sync, tokens.runner];
+    if (hashes.some((hash) => typeof hash !== "string" || !HEX64.test(hash))
+        || new Set(hashes).size !== 3 || !Number.isFinite(tokens.deadline)) {
+      throw new Invalid("a lease's three token hashes are 64 hex, and differ");
     }
     return this.#change(null, (now) => {
-      const space = this.#space();
-      if (space.lease_id !== null && space.lease_expires > now) {
+      if (this.sandboxLease(now, authority) !== null) {
         throw new Refused("the sync lease is held");
       }
-      const leaseId = randomBytes(16).toString("hex");
+      this.#sql.exec("DELETE FROM sandbox_leases WHERE authority = ? OR NOT " +
+                       `(${LIVE_LEASE})`, authority, now, now);
       const row = this.#sql.exec<{ epoch: number; seq: number }>(
-        "UPDATE file_space SET lease_id = ?, epoch = epoch + 1, holder = ?, lease_expires = ?, " +
-          "egress_token = ?, sync_token = ?, network_generation = NULL, run_connection = ? " +
-          "RETURNING epoch, seq",
-        leaseId, holder, now + LEASE_TTL_S, egress, sync, runConnection).one();
+        "UPDATE file_space SET epoch = epoch + 1 RETURNING epoch, seq").one();
+      const leaseId = randomBytes(16).toString("hex");
+      this.#sql.exec(
+        "INSERT INTO sandbox_leases (authority, lease_id, epoch, holder, lease_expires, " +
+          "deadline, egress_token, sync_token, runner_token) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        authority, leaseId, row.epoch, holder, now + LEASE_TTL_S, tokens.deadline,
+        tokens.egress, tokens.sync, tokens.runner);
       return { lease_id: leaseId, epoch: row.epoch, expires_at: now + LEASE_TTL_S,
                base: row.seq };
     });
   }
 
-  /**
-   * The live lease, as egress and the sync doors read it: its id, epoch, token hashes,
-   * expiry and the egress generation its sandbox's network was last applied under;
-   * null when none is live.
-   */
-  sandboxLease(now: number): SandboxLease | null {
-    const space = this.#space();
-    if (space.lease_id === null || space.egress_token === null || space.sync_token === null
-        || space.lease_expires <= now) {
-      return null;
-    }
-    return { lease_id: space.lease_id, epoch: space.epoch, egress_token: space.egress_token,
-             sync_token: space.sync_token, expires_at: space.lease_expires,
-             network_generation: space.network_generation, run_connection: space.run_connection };
+  /** `authority`'s live lease, or null. A read. */
+  sandboxLease(now: number, authority: string): SandboxLease | null {
+    const row = this.#sql.exec<LeaseRow>(
+      `SELECT * FROM sandbox_leases WHERE authority = ? AND ${LIVE_LEASE}`, authority, now, now)
+      .toArray()[0];
+    return row === undefined ? null : leaseOf(row);
+  }
+
+  /** The live lease one of whose tokens' hash is `hash`, or null. A read. */
+  leaseByToken(kind: "egress" | "sync" | "runner", hash: string, now: number):
+      SandboxLease | null {
+    const row = this.#sql.exec<LeaseRow>(
+      `SELECT * FROM sandbox_leases WHERE ${kind}_token = ? AND ${LIVE_LEASE}`, hash, now, now)
+      .toArray()[0];
+    return row === undefined ? null : leaseOf(row);
+  }
+
+  /** Every live lease. A read. */
+  liveLeases(now: number): SandboxLease[] {
+    return this.#sql.exec<LeaseRow>(
+      `SELECT * FROM sandbox_leases WHERE ${LIVE_LEASE} ORDER BY epoch`, now, now).toArray()
+      .map(leaseOf);
   }
 
   /**
@@ -1657,29 +1695,32 @@ export class Files {
    */
   networkApplied(leaseId: unknown, epoch: unknown, generation: number): Lease {
     return this.#change(null, (now) => {
-      const space = this.#fenced(leaseId, epoch, now);
-      this.#sql.exec("UPDATE file_space SET network_generation = ?", generation);
-      return { lease_id: space.lease_id!, epoch: space.epoch, expires_at: space.lease_expires,
-               base: space.seq };
+      const lease = this.#fenced(leaseId, epoch, now);
+      this.#sql.exec("UPDATE sandbox_leases SET network_generation = ? WHERE lease_id = ?",
+                     generation, lease.lease_id);
+      return { lease_id: lease.lease_id, epoch: lease.epoch, expires_at: lease.lease_expires,
+               base: this.#space().seq };
     });
   }
 
   /** The live lease these name, or refused: a stale epoch or lease id is fenced. */
-  #fenced(leaseId: unknown, epoch: unknown, now: number): Space {
-    const space = this.#space();
-    if (typeof leaseId !== "string" || leaseId !== space.lease_id || epoch !== space.epoch
-        || space.lease_expires <= now) {
+  #fenced(leaseId: unknown, epoch: unknown, now: number): LeaseRow {
+    const row = typeof leaseId !== "string" ? undefined : this.#sql.exec<LeaseRow>(
+      `SELECT * FROM sandbox_leases WHERE lease_id = ? AND ${LIVE_LEASE}`, leaseId, now, now)
+      .toArray()[0];
+    if (row === undefined || row.epoch !== epoch) {
       throw new Refused("the sync lease was lost; this sync is fenced");
     }
-    return space;
+    return row;
   }
 
   leaseRenew(leaseId: unknown, epoch: unknown): Lease {
     return this.#change(null, (now) => {
-      const space = this.#fenced(leaseId, epoch, now);
-      this.#sql.exec("UPDATE file_space SET lease_expires = ?", now + LEASE_TTL_S);
-      return { lease_id: space.lease_id!, epoch: space.epoch, expires_at: now + LEASE_TTL_S,
-               base: space.seq };
+      const lease = this.#fenced(leaseId, epoch, now);
+      this.#sql.exec("UPDATE sandbox_leases SET lease_expires = ? WHERE lease_id = ?",
+                     now + LEASE_TTL_S, lease.lease_id);
+      return { lease_id: lease.lease_id, epoch: lease.epoch, expires_at: now + LEASE_TTL_S,
+               base: this.#space().seq };
     });
   }
 
@@ -1691,11 +1732,42 @@ export class Files {
       } catch {
         return { released: false };
       }
-      this.#sql.exec("UPDATE file_space SET lease_id = NULL, holder = NULL, lease_expires = 0, " +
-                       "egress_token = NULL, sync_token = NULL, network_generation = NULL, " +
-                       "run_connection = NULL");
+      this.#sql.exec("DELETE FROM sandbox_leases WHERE lease_id = ?", leaseId);
       return { released: true };
     });
+  }
+
+  /**
+   * In a unit: the engines signed in inside the live lease `leaseId`'s sandbox, as its own
+   * runner reports them; the ones signed in before. Dies with the lease: a login lives in its
+   * sandbox and is never copied to another.
+   */
+  leaseSignins(leaseId: string, engines: readonly string[]): string[] {
+    const before = this.#sql.exec<{ signins: string }>(
+      "SELECT signins FROM sandbox_leases WHERE lease_id = ?", leaseId).one().signins;
+    this.#sql.exec("UPDATE sandbox_leases SET signins = ? WHERE lease_id = ?",
+                   [...engines].sort().join(","), leaseId);
+    return before === "" ? [] : before.split(",");
+  }
+
+  /**
+   * In a unit: the digest of what the live lease `leaseId`'s sandbox may read, as its sync
+   * agent reads the feed now; whether it changed since its last read (it reads again from
+   * the feed's start).
+   */
+  leaseReadable(leaseId: string, digest: string): boolean {
+    const before = this.#sql.exec<{ readable: string | null }>(
+      "SELECT readable FROM sandbox_leases WHERE lease_id = ?", leaseId).one().readable;
+    if (before === digest) {
+      return false;
+    }
+    this.#sql.exec("UPDATE sandbox_leases SET readable = ? WHERE lease_id = ?", digest, leaseId);
+    return before !== null;
+  }
+
+  /** In a unit: every lapsed lease's row gone (its runs settled first, `Runs.lost`). */
+  leasesLapsed(now: number): void {
+    this.#sql.exec(`DELETE FROM sandbox_leases WHERE NOT (${LIVE_LEASE})`, now, now);
   }
 
   /**
@@ -1714,8 +1786,10 @@ export class Files {
       throw new Invalid(`a sync commit holds 1 to ${MAX_SYNC_OPS} ops`);
     }
     return this.#change(null, (now) => {
-      const { epoch } = this.#fenced(request.lease_id, request.epoch, now);
-      const writer = `lease:${epoch}`;
+      const { epoch, authority } = this.#fenced(request.lease_id, request.epoch, now);
+      // A client's sandbox writes as that client, never into the owner's own trees.
+      const client = authority !== OWNER_AUTHORITY;
+      const writer = client ? `client:${authority}` : `lease:${epoch}`;
       const seen = new Set<string>();
       const outcomes = (ops as unknown[]).map((raw) => {
         const op = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
@@ -1728,6 +1802,9 @@ export class Files {
               throw new Invalid("a sync op names one workspace path, once");
             }
             seen.add(path);
+            if (client && ownersOnly(path)) {
+              throw new Refused(AGENTS_OWNER_ONLY);
+            }
             const outcome = this.#syncOp(op, path, epoch, writer, now);
             this.#fit(before, writer);
             if (op["op"] !== "remove") {

@@ -1,11 +1,7 @@
 /**
- * The agent's doors after ADR-034's deletion slice: `agentSubmit`, `agentRun`,
- * `agentStatus` and `agentCancel` are no doors of the object until the runs slice (R)
- * brings them back as run doors (an absent door, never a stub that answers falsely:
- * AGENTS.md Fact 8), and pi's usage view went with pi. What stays is the agent's
- * definitions, its files under `/workspace/agents` and its skills under
- * `/workspace/.agents`, `/workspace/skills` and `/workspace/prompts`, which every engine
- * reads, the owner's alone to change by any file door (review H1).
+ * The agent's definitions (the run doors themselves are `runs.test.ts`'s): its files
+ * under `/workspace/agents` and its skills under `/workspace/.agents`, `/workspace/skills`
+ * and `/workspace/prompts`, which every engine reads, the owner's alone to change by any file door (review H1).
  */
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
@@ -29,16 +25,6 @@ async function rig() {
   await stub.sessionOpen({ ...bind(null), authenticated_at: at });
   return { stub, bind, admit: (origin: Origin) => stub.outsideAgents(bind(origin)) };
 }
-
-describe("the agent's doors, until runs", () => {
-  it("are no doors of the object, and neither is pi's usage view", () => {
-    const doors = Object.getOwnPropertyNames(OwnerDO.prototype);
-    for (const gone of ["agentSubmit", "agentRun", "agentStatus", "agentCancel",
-                        "usageMetrics"]) {
-      expect(doors).not.toContain(gone);
-    }
-  });
-});
 
 describe("the owner's agent definitions (review H1)", () => {
   const AGENTS_MD = "/workspace/agents/main/AGENTS.md";

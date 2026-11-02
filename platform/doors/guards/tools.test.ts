@@ -8,9 +8,8 @@
  * hands `#scope`, `#collector` or `#filer` (a door class comes before it). Each tool must
  * name such a door, with that capability, and arguments exactly the door's request
  * fields; each such door must have a tool, or be named below with the slice that owes it.
- * Every tool is confined to the owner's own account, so none is open world. The agent's
- * doors and tools are absent until the runs slice (R) brings them back as run doors
- * (ADR-034), so no door of them is read here.
+ * Every tool is confined to the owner's own account, so none is open world. The run doors
+ * (slice R) hand their capability to `#runDoor`, read as `#scope`'s is.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -19,7 +18,7 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { parse, PLATFORM } from "../../owner/guards/sources";
-import { type Tool, toolTable } from "../src/tools";
+import { RUN_TOOLS, runProfile, type Tool, toolTable } from "../src/tools";
 
 /** Outside-callable doors without a tool yet, and what owes each. */
 const DEFERRED: Readonly<Record<string, string>> = Object.freeze({
@@ -41,10 +40,17 @@ const DISPATCH: readonly string[] = Object.freeze(["method", "operation", "tool"
 /** Writes that destroy or send nothing: an ack, a filed card, a proposal, a new directory. */
 const ADDITIVE: readonly string[] = Object.freeze(["mailboxAck", "registerPropose",
                                                    "policyPropose", "fileMkdir"]);
-/** Writes that repeat to the same end: an ack through a sequence, a directory made once. */
-const IDEMPOTENT_WRITES: readonly string[] = Object.freeze(["mailboxAck", "fileMkdir"]);
-/** The outside-callable reads with no scope of their own: an identity's own agents. */
-const UNSCOPED_READS: readonly string[] = Object.freeze(["outsideAgents"]);
+/**
+ * Writes that repeat to the same end: an ack through a sequence, a directory made once, a
+ * run's cancel (a second ends nothing).
+ */
+const IDEMPOTENT_WRITES: readonly string[] = Object.freeze(["mailboxAck", "fileMkdir",
+                                                           "agentCancel"]);
+/**
+ * The outside-callable reads with no scope of their own: an identity's own agents, and its
+ * own runs' receipts.
+ */
+const UNSCOPED_READS: readonly string[] = Object.freeze(["outsideAgents", "agentStatus"]);
 
 interface DoorShape {
   readonly capability: string | null;
@@ -105,7 +111,7 @@ export function outsideDoors(source: string): Map<string, DoorShape> {
           && ts.isPrivateIdentifier(node.expression.name)) {
         const helper = node.expression.name.text;
         helpers.add(helper);
-        if (["#scope", "#collector", "#filer"].includes(helper)) {
+        if (["#scope", "#collector", "#filer", "#runDoor"].includes(helper)) {
           // The capability is the call's last string; a door class comes before it.
           const literal = node.arguments.filter(ts.isStringLiteralLike).at(-1);
           capability = literal?.text ?? capability;
@@ -228,8 +234,13 @@ describe("tool table guard", () => {
     expect(DOORS.get("collectionWrite")?.capability).toBe("write_graph");
     expect(DOORS.get("fileStat")?.capability).toBe("read_files");
     expect(DOORS.get("outsideAgents")?.capability).toBeNull();
-    for (const absent of ["agentSubmit", "agentRun", "agentStatus", "agentCancel"]) {
-      expect(DOORS.has(absent)).toBe(false);
+    // The run doors: a start held to its capability, a read or a cancel to the caller's own.
+    expect(DOORS.get("agentSubmit")?.capability).toBe("converse");
+    expect(DOORS.get("agentRun")?.capability).toBe("run_graph");
+    expect(DOORS.get("agentStatus")?.capability).toBeNull();
+    expect(DOORS.get("agentCancel")?.capability).toBeNull();
+    for (const runner of ["runEvents", "socketTicket", "socketsEnd", "tierSet"]) {
+      expect(DOORS.has(runner), runner).toBe(false);
     }
     for (const ownerOnly of ["policyWrite", "grantSet", "grantRevoke", "grantForget",
                              "sessionOpen", "registerAgent", "fileRedact", "fileHistoryPurge",
@@ -271,10 +282,11 @@ describe("tool table guard", () => {
       .not.toEqual([]);
   });
 
-  it("serves no agent tool until the runs slice: converse, run_graph, run_status and " +
-     "run_cancel are absent", () => {
-    expect(toolTable().filter((tool) => ["converse", "run_graph", "run_status", "run_cancel"]
-      .includes(tool.name))).toEqual([]);
+  it("serves the run tools, and a run's own profile serves none of them", () => {
+    expect(toolTable().filter((tool) => RUN_TOOLS.includes(tool.name)).map((tool) => tool.door))
+      .toEqual(["agentSubmit", "agentRun", "agentStatus", "agentCancel"]);
+    expect(runProfile().filter((tool) => RUN_TOOLS.includes(tool.name))).toEqual([]);
+    expect(runProfile().length).toBe(toolTable().length - 4);
   });
 
   it("sees an ack marked other than idempotent, and a post marked idempotent", () => {

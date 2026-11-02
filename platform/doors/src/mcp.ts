@@ -39,10 +39,13 @@ async function called(bound: Bound, tool: Tool, args: unknown): Promise<CallTool
            structuredContent: result as Record<string, unknown> };
 }
 
-/** The server one request is served by: every tool of the table, bound to this caller. */
-export function server(bound: Bound): McpServer {
+/**
+ * The server one request is served by: every tool of the table (or of a run's profile),
+ * bound to this caller.
+ */
+export function server(bound: Bound, tools: readonly Tool[] = toolTable()): McpServer {
   const mcp = new McpServer({ ...SERVER_INFO }, { capabilities: { tools: {} } });
-  for (const tool of toolTable()) {
+  for (const tool of tools) {
     mcp.registerTool(tool.name, {
       title: tool.title,
       description: tool.description,
@@ -59,7 +62,9 @@ export function server(bound: Bound): McpServer {
   return mcp;
 }
 
-export function serveMcp(request: Request, bound: Bound): Promise<Response> {
-  return createMcpHandler(() => server(bound), { legacy: "stateless", responseMode: "auto" })
+export function serveMcp(request: Request, bound: Bound,
+                         tools: readonly Tool[] = toolTable()): Promise<Response> {
+  return createMcpHandler(() => server(bound, tools), { legacy: "stateless",
+                                                      responseMode: "auto" })
     .fetch(request);
 }

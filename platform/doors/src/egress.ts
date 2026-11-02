@@ -1,7 +1,13 @@
 /**
  * The egress door (gateway research §5.4 step 4; tasks 4 G4):
- * `egress.tinyassets.io/c/<connection>/*`, where the sandbox's model clients send their
- * providers' own APIs with placeholder keys (`network.ts`'s `sandboxEnv`).
+ * `egress.tinyassets.io/r/<run>/<secret>/c/<connection>/*`, where a run's model clients send
+ * their providers' own APIs with placeholder keys (`network.ts`'s `sandboxEnv`). The run in
+ * the path is what the object holds the call to (that run's own connection, slice R), and
+ * the run's own secret beside it is what lets a call act as that run: only the run's CLI
+ * holds its URLs. The same host serves each run's MCP door (`/r/<run>/<secret>/mcp`), and
+ * the runner's own doors, by the runner's secret (`x-ta-runner`), which no CLI holds: a
+ * run's event door (`/r/<run>/events`) and the engines' sign-in report (`/signin`), all by
+ * the same egress token.
  *
  * 1. **The identity.** E2B's transform sets the sandbox's egress token (`x-ta-sandbox`)
  *    and the egress generation its network was made under (`x-ta-network-generation`)
@@ -36,15 +42,42 @@
 import { HINT_KEYS } from "../../gateway/src/api-rules";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, type EgressCode, GENERATION_HEADER, type Outcome,
          SANDBOX_HEADER } from "../../owner/src/network";
+import { EVENTS_BODY_MAX, eventsBounded } from "../../owner/src/run-events";
 
-import { type Bound, bindSandbox, rebound } from "./binder";
+import { type Bound, bindRun, bindSandbox, type Presented, rebound } from "./binder";
+import { jsonObject } from "./body";
 import { type DoorsEnv, EGRESS_ORIGIN } from "./config";
 import { ownerGate } from "./control";
 import { verifyToken } from "./routing-mac";
-import { refusal } from "./tools";
+import { serveMcp } from "./mcp";
+import { refusal, runProfile } from "./tools";
 
-/** The door's one route: a connection id, then the provider's own path. */
-const ROUTE = /^\/c\/(c[0-9a-f]{24})(\/.*)$/;
+/** A run's model call: its run, a connection id, then the provider's own path. */
+const ROUTE = /^\/r\/(run_[0-9a-f]{32})(?:\/([0-9a-f]{64}))?\/c\/(c[0-9a-f]{24})(\/.*)$/;
+/** A run's MCP door, by its own secret. */
+const MCP_DOOR = /^\/r\/(run_[0-9a-f]{32})(?:\/([0-9a-f]{64}))?\/mcp$/;
+/**
+ * The run's own secret as a header, where its CLI sends one (`run_secret_env`, its MCP
+ * file's `headers`); the path carries it otherwise. Never forwarded (`x-ta-*`).
+ */
+export const RUN_HEADER = "x-ta-run";
+const SECRET = /^[0-9a-f]{64}$/;
+
+/** The run's own secret: its path's, else its header's, else none (refused by the object). */
+function secretOf(request: Request, inPath: string | undefined): string | undefined {
+  if (inPath !== undefined) {
+    return inPath;
+  }
+  const header = request.headers.get(RUN_HEADER);
+  return header !== null && SECRET.test(header) ? header : undefined;
+}
+/** A run's event door, the runner's. */
+const EVENTS_DOOR = /^\/r\/(run_[0-9a-f]{32})\/events$/;
+/** The runner's own secret, beside the egress token, on its event and sign-in posts. */
+export const RUNNER_HEADER = "x-ta-runner";
+const RUNNER = /^[0-9a-f]{64}$/;
+/** The runner's report of the engines' sign-ins, for the sandbox as a whole. */
+const SIGNIN_DOOR = "/signin";
 const GENERATION = /^[1-9][0-9]{0,14}$/;
 const LENGTH = /^[0-9]{1,15}$/;
 /** The gateway's own header on its answer, for the object alone. */
@@ -56,7 +89,8 @@ const OUTCOME_WAIT_MS = 10_000;
 /** The HTTP status each refusal is answered with. */
 const STATUS: Readonly<Record<EgressCode, number>> = Object.freeze({
   egress_token_missing: 401, egress_token_unknown: 401, egress_token_expired: 401,
-  egress_lease_closed: 401, egress_run_connection: 403, egress_policy_stale: 409,
+  egress_lease_closed: 401, egress_run_closed: 401, egress_run_connection: 403,
+  egress_policy_stale: 409,
   egress_network_stale: 409,
   egress_connection_refused: 403, egress_endpoint_refused: 403, egress_unmetered: 403,
   egress_length_required: 411, egress_rate: 429, egress_spend_refused: 402,
@@ -90,7 +124,16 @@ function refused(code: string, status: number, receipt?: string | null): Respons
   return Response.json({ error: { code, message: code },
                          ...(receipt === undefined || receipt === null ? {} : { receipt }) },
                        { status, headers: { "Cache-Control": "no-store",
-                                            ...(status === 429 ? { "Retry-After": "1" } : {}) } });
+                                            ...(status === 429 || status === 503
+                                              ? { "Retry-After": "1" } : {}) } });
+}
+
+/**
+ * The status a run door's refusal goes back with: the object's held posts full
+ * (`events_busy`) is a 503 the runner retries after `Retry-After`; any other, its own.
+ */
+export function refusedStatus(code: string, status: number): number {
+  return code === "events_busy" ? 503 : status;
 }
 
 /** A refusal's code from the object's message: its fixed prefix, as the doors keep them. */
@@ -128,24 +171,23 @@ async function settleOnce(env: DoorsEnv, bound: Bound, request: Record<string, u
 }
 
 /** Serve one sandbox call; `deadlineMs` is the door's own bound on its stream. */
-export async function serveEgress(request: Request, env: DoorsEnv, ctx: ExecutionContext,
-                                  deadlineMs: number = EGRESS_DEADLINE_MS): Promise<Response> {
-  const url = new URL(request.url);
-  const route = ROUTE.exec(url.pathname);
-  if (url.origin !== EGRESS_ORIGIN || route === null) {
-    return refused("not_found", 404);
-  }
+/**
+ * The egress token E2B's transform set, verified: its MAC first, so a forged, altered or
+ * sync token reaches no object, not even the gate's; then its expiry, the network's
+ * generation and the maintenance gate. Its owner, hash and generation, or the refusal.
+ */
+async function sandboxToken(request: Request, env: DoorsEnv):
+    Promise<Response | { owner: string; hash: string; generation: number }> {
   const token = request.headers.get(SANDBOX_HEADER);
   if (token === null || token === "") {
     return refused("egress_token_missing", 401);
   }
-  // The MAC first: a forged, altered or sync token reaches no object, not even the gate's.
   const parsed = verifyToken(env.ROUTING_MAC_KEY, "egress", token);
   if (parsed === null) {
     return refused("egress_token_unknown", 401);
   }
   if (parsed.expires <= Date.now() / 1000) {
-    return refused("egress_token_expired", 401);  // the run is over: no object is reached
+    return refused("egress_token_expired", 401);  // the lease is over: no object is reached
   }
   const generation = request.headers.get(GENERATION_HEADER) ?? "";
   if (!GENERATION.test(generation)) {
@@ -155,10 +197,139 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   if (gated !== null) {
     return gated;
   }
-  const bound = bindSandbox(env, parsed.owner, parsed.hash, Number(generation));
+  return { owner: parsed.owner, hash: parsed.hash, generation: Number(generation) };
+}
+
+/** The runner's secret its call presents, or the refusal: none, or not 64 hex. */
+function runnerOf(request: Request): Response | Presented {
+  const runner = request.headers.get(RUNNER_HEADER);
+  return runner !== null && RUNNER.test(runner) ? { runner }
+    : refused("runner_token_missing", 401);
+}
+
+/**
+ * A run's own doors (ADR-034 decisions 6 and 10): its MCP door, the table's tools but the
+ * run tools, every one held by the object to the run's grant (`runProfile`), by the run's
+ * own secret; and its event door, the runner's `POST` of its frames and its end
+ * (`runEvents`), by the runner's secret, each frame and the post bounded (`EVENTS_BODY_MAX`,
+ * `EVENT_FRAMES_MAX`, `FRAME_UNITS_MAX`). Only the engine and the runner in the sandbox call
+ * them, so an `Origin` (a browser's) is refused.
+ */
+async function serveRun(request: Request, env: DoorsEnv, run: string,
+                        door: { mcp: string } | "events"): Promise<Response> {
+  if (request.headers.get("Origin") !== null) {
+    return refused("not_found", 404);
+  }
+  const presented = door === "events" ? runnerOf(request) : { secret: door.mcp };
+  if (presented instanceof Response) {
+    return presented;
+  }
+  const verified = await sandboxToken(request, env);
+  if (verified instanceof Response) {
+    return verified;
+  }
+  const bound = bindRun(env, verified.owner, verified.hash, verified.generation, run,
+                        presented);
+  if (door !== "events") {
+    return serveMcp(request, bound, runProfile());
+  }
+  if (request.method !== "POST") {
+    return refused("method_not_allowed", 405);
+  }
+  const body = await jsonObject(request, EVENTS_BODY_MAX);
+  if (body instanceof Response) {
+    return body;
+  }
+  if (!eventsBounded(body)) {
+    return refused("events_too_large", 413);
+  }
+  try {
+    return Response.json(await bound.stub.runEvents(bound.binding, body as never),
+                         { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    const answer = refusal(error);
+    if (answer === null) {
+      throw error;
+    }
+    return refused(codeOf(answer.message), refusedStatus(codeOf(answer.message),
+                                                       answer.status));
+  }
+}
+
+/**
+ * The runner's report of the engines' sign-ins (`signinReport`): each engine that signs in
+ * with the vendor's own login, whether its record's `status_argv` succeeded, and the models
+ * it offers. Presence only; the runner alone calls it, so an `Origin` is refused.
+ */
+async function serveSignin(request: Request, env: DoorsEnv): Promise<Response> {
+  if (request.headers.get("Origin") !== null) {
+    return refused("not_found", 404);
+  }
+  if (request.method !== "POST") {
+    return refused("method_not_allowed", 405);
+  }
+  const presented = runnerOf(request);
+  if (presented instanceof Response) {
+    return presented;
+  }
+  const verified = await sandboxToken(request, env);
+  if (verified instanceof Response) {
+    return verified;
+  }
+  const bound = bindSandbox(env, verified.owner, verified.hash, verified.generation,
+                            presented);
+  const body = await jsonObject(request, EGRESS_BODY_MAX);
+  if (body instanceof Response) {
+    return body;
+  }
+  try {
+    return Response.json(await bound.stub.signinReport(bound.binding, body as never),
+                         { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    const answer = refusal(error);
+    if (answer === null) {
+      throw error;
+    }
+    return refused(codeOf(answer.message), answer.status);
+  }
+}
+
+export async function serveEgress(request: Request, env: DoorsEnv, ctx: ExecutionContext,
+                                  deadlineMs: number = EGRESS_DEADLINE_MS): Promise<Response> {
+  const url = new URL(request.url);
+  if (url.origin !== EGRESS_ORIGIN) {
+    return refused("not_found", 404);
+  }
+  const mcp = MCP_DOOR.exec(url.pathname);
+  if (mcp !== null && url.search === "") {
+    const secret = secretOf(request, mcp[2]);
+    if (secret === undefined) {
+      return refused("run_secret_missing", 401);
+    }
+    return serveRun(request, env, mcp[1]!, { mcp: secret });
+  }
+  const events = EVENTS_DOOR.exec(url.pathname);
+  if (events !== null && url.search === "") {
+    return serveRun(request, env, events[1]!, "events");
+  }
+  if (url.pathname === SIGNIN_DOOR && url.search === "") {
+    return serveSignin(request, env);
+  }
+  const route = ROUTE.exec(url.pathname);
+  if (route === null) {
+    return refused("not_found", 404);
+  }
+  const verified = await sandboxToken(request, env);
+  if (verified instanceof Response) {
+    return verified;
+  }
+  const bound = bindSandbox(env, verified.owner, verified.hash, verified.generation,
+                            secretOf(request, route[2]) === undefined ? {}
+                              : { secret: secretOf(request, route[2])! });
   const { binding, stub } = bound;
-  const connection = route[1]!;
-  const path = `${route[2]!}${url.search}`;
+  const run = route[1]!;
+  const connection = route[3]!;
+  const path = `${route[4]!}${url.search}`;
   const length = request.headers.get("content-length");
   const bytesHint = length !== null && LENGTH.test(length) ? Number(length) : null;
   // A model call's body is read here, once: the object reserves the call for the model it
@@ -172,7 +343,7 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   let opened: Awaited<ReturnType<typeof stub.egressOpen>>;
   try {
     opened = await stub.egressOpen(binding, {
-      connection, method: request.method, path, bytes_hint: bytesHint, ...hints });
+      run, connection, method: request.method, path, bytes_hint: bytesHint, ...hints });
   } catch (error) {
     const answer = refusal(error);
     if (answer === null) {

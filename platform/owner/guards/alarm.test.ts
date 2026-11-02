@@ -18,13 +18,21 @@
  * - imports from the `agents` package only what `AGENTS_IMPORTS` lists, and loads no
  *   module by a name computed at run time;
  * - never installs Lifecycle's runtime handlers (`Lifecycle.install`, `installHandlers`),
- *   which would add a `fetch` and WebSocket handlers to the object's surface;
- * - has one `alarm`, the hand-off `await this.#lifecycle.alarm();`.
+ *   which would add handlers the object never chose to its surface;
+ * - has one `alarm`, the hand-off `await this.#lifecycle.alarm();`, and the owner app's
+ *   sockets' reserved methods (slice R, salvaged from A6) only as the object's hand-offs
+ *   (`RESERVED`): `fetch`, in `owner-do.ts` alone, the binder's upgrade attached by the
+ *   relay and handed to Lifecycle's `fetch` (`relay.ts` refuses anything else), and each
+ *   `webSocket*` handed to Lifecycle's method of the same name.
  * Lifecycle's own tables (`cf_agents_*`) are named by no source (the policy-boundary
  * guard). The guard is a tripwire for our own code's
  * mistakes, not proof against a source written to evade it.
  *
- * `agents/lifecycle` is the one Agents SDK module the object loads, pinned here by version
+ * `agents/lifecycle` is the Agents SDK module the object loads, with `agents/websockets` (its
+ * `WebSockets` capability, the owner app's hibernating sockets, `relay.ts`: connection state
+ * in each socket's attachment and module-level `WeakMap`s keyed by the live socket, never
+ * SQL; it imports `capnweb`, whose transport the binder's upgrade shape never selects), pinned
+ * here by version
  * and lockfile integrity (agents 0.32.0, source-read 2026-10-31: its Lifecycle chunk is
  * byte-identical to 0.31.0's); PiHarness is not loaded. Its module-level state, which objects sharing
  * an isolate share, holds no owner's data: `WeakMap`s keyed by each Lifecycle or capability
@@ -44,8 +52,8 @@ import { parse, PLATFORM, reporter, workerSources } from "./sources";
 
 const BANNED: ReadonlySet<string> = new Set(["setAlarm", "deleteAlarm", "getAlarm",
                                              "disableAlarms", "deleteAll"]);
-/** What a source may import from the Agents SDK: Lifecycle alone. */
-const AGENTS_IMPORTS: ReadonlySet<string> = new Set(["agents/lifecycle"]);
+/** What a source may import from the Agents SDK: Lifecycle, and its WebSockets capability. */
+const AGENTS_IMPORTS: ReadonlySet<string> = new Set(["agents/lifecycle", "agents/websockets"]);
 /** The erasure's capability and the write gate, whose wipe is the erasure's last step. */
 const ERASE = "owner/src/erase.ts";
 const GATE = "owner/src/gate.ts";
@@ -55,6 +63,15 @@ const WIPES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   [ERASE]: Object.freeze(["disableAlarms"]),
 });
 const HAND_OFF = "await this.#lifecycle.alarm();";
+/** The object's source, the one that may have a `fetch` hand-off. */
+const OBJECT = "owner/src/owner-do.ts";
+/** The sockets' reserved methods, each the one statement it may hold. */
+export const RESERVED: Readonly<Record<string, string>> = Object.freeze({
+  fetch: "return this.#relay.serve(request, (upgrade) => this.#lifecycle.fetch(upgrade));",
+  webSocketMessage: "await this.#lifecycle.webSocketMessage(ws, message);",
+  webSocketClose: "await this.#lifecycle.webSocketClose(ws, code, reason, wasClean);",
+  webSocketError: "await this.#lifecycle.webSocketError(ws, error);",
+});
 /**
  * The pinned Agents SDK, as the lockfile resolves it: under the owner's workspace, since its
  * required peer `@modelcontextprotocol/client` is pinned exactly at 2.4.0 while the doors
@@ -142,10 +159,18 @@ export function alarmReach(fileName: string, source: string): string[] {
         || (node.name.text === "install" && node.expression.getText(file) === "Lifecycle"))) {
       report(node, `calls ${node.name.text}, which installs Lifecycle's runtime handlers`);
     }
-    if ((ts.isMethodDeclaration(node) || ts.isPropertyDeclaration(node)
+    const member = (ts.isMethodDeclaration(node) || ts.isPropertyDeclaration(node)
          || ts.isPropertyAssignment(node) || ts.isGetAccessorDeclaration(node)
-         || ts.isSetAccessorDeclaration(node))
-        && memberName(node.name, file) === "alarm") {
+         || ts.isSetAccessorDeclaration(node)) ? memberName(node.name, file) : null;
+    if (member !== null && Object.hasOwn(RESERVED, member)
+        && (member !== "fetch" || fileName === OBJECT)) {
+      const body = ts.isMethodDeclaration(node) ? node.body : undefined;
+      if (body === undefined || body.statements.length !== 1
+          || body.statements[0]!.getText(file) !== RESERVED[member]) {
+        report(node, `${member} does more than \`${RESERVED[member]}\``);
+      }
+    }
+    if (member === "alarm") {
       const body = ts.isMethodDeclaration(node) ? node.body : undefined;
       if (body === undefined || body.statements.length !== 1
           || body.statements[0]!.getText(file) !== HAND_OFF) {
@@ -216,6 +241,26 @@ describe("alarm guard", () => {
     expect(source).toContain(`override async alarm(): Promise<void> {\n    ${HAND_OFF}\n  }`);
   });
 
+  it("finds the sockets' reserved methods, each only a hand-off to Lifecycle", () => {
+    const source = workerSources().get(OBJECT)!;
+    for (const body of Object.values(RESERVED)) {
+      expect(source).toContain(`
+    ${body}
+  }`);
+    }
+    const object = (fetch: string) =>
+      `export class O { override async fetch(request: Request) { ${fetch} } }`;
+    expect(alarmReach(OBJECT, object(RESERVED["fetch"]!))).toEqual([]);
+    expect(alarmReach(OBJECT, object("return this.#lifecycle.fetch(request);"))).not.toEqual([]);
+    expect(alarmReach(OBJECT, object(`await this.audit(); ${RESERVED["fetch"]}`)))
+      .not.toEqual([]);
+    // Another Worker's own `fetch` is its own; a `webSocket*` anywhere is a hand-off only.
+    expect(alarmReach("doors/src/index.ts", object("return serve(request);"))).toEqual([]);
+    expect(alarmReach("probe.ts",
+      "export class O { async webSocketMessage(ws: WebSocket, m: string) { ws.send(m); } }"))
+      .not.toEqual([]);
+  });
+
   it.each([
     "export async function f(s: DurableObjectStorage) { await s.setAlarm(Date.now()); }",
     "export async function f(s: DurableObjectStorage) { await s.deleteAlarm(); }",
@@ -266,6 +311,7 @@ describe("alarm guard", () => {
     "import { Lifecycle } from 'agents/lifecycle';",
     "import { LifecycleCapability, type LifecycleJob } from 'agents/lifecycle';",
     "import type { LifecycleJobContext } from 'agents/lifecycle';",
+    "import { WebSockets } from 'agents/websockets';",
     "export class O { readonly #lifecycle = new Lifecycle(this); " +
       "override async alarm(): Promise<void> { await this.#lifecycle.alarm(); } }",
     "export function f(lane: { nextDue(n: number): number }) { return lane.nextDue(0); }",

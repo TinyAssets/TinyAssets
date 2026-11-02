@@ -21,13 +21,18 @@
  * unmodified engines, their sessions in the owner's files (ADR-034), so what the owner's
  * object holds is its own bounded rows only, whatever its agents do.
  *
- * The worst case is 40.6% of the limit (slice D: 4,064,822,714 bytes), about 935 MB under
- * half.
+ * The worst case is 42.3% of the limit (slice R: 4,232,733,666.75 bytes), about 767 MB under
+ * half; with every raise the limits audit proposes, 49.98% (4,997,920,528.75 bytes,
+ * `limits-proposed.test.ts`), 2.1 MB under half.
  * ADR-034's deletion slice took out the agent's thread rows, their live and usage rows,
  * the run receipts and the model turns' counters and owners, and Lifecycle's wake job and
- * key per live thread; G4 was 46.3% (4,627,732,900 bytes). The runs slice (R) adds its
- * `runs`, `run_grants` and `conversations` out of this room. A new table, or a raised
- * bound, must stay under half the limit, or the guard fails.
+ * key per live thread (slice D: 40.6%, 4,064,822,714 bytes; G4 was 46.3%). The runs slice
+ * (R) added `runs` (85.0 MB, its waiting runs with it), `run_grants` (9.7 MB),
+ * `conversations` (30.7 MB), `run_schedules` (26.1 MB), `run_inputs` (9.8 MB, the
+ * conversations' input queue, sized to what the rest left), `socket_tickets` (3.1 MB),
+ * `sandbox_leases` (3.1 MB, one sandbox an authority, its own sign-ins on it), `engine_signins` (0.4 MB) and
+ * `platform_tiers`, 168.0 MB in all, and took out `egress_runs`. A new table, or a raised bound, must stay under half the
+ * limit, or the guard fails.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -145,6 +150,25 @@ const MAX_OPEN_INTENTS = constant("files", "MAX_OPEN_INTENTS");
 const MAX_INTENT_CHUNKS = constant("files", "MAX_INTENT_CHUNKS");
 const MAX_PATH_BYTES = constant("paths", "MAX_PATH_BYTES");
 const CALLS_OPEN = constant("schema", "CALLS_OPEN");
+/** The runs' bounds (slice R): live runs, settled receipts kept, and their rows' widths. */
+const RUNS_CEILING = constant("tier", "RUNS_CEILING");
+const RUNS_KEPT = constant("run-rows", "RUNS_KEPT");
+const RUN_ID_CHARS = constant("run-rows", "RUN_ID_CHARS");
+const RESULT_BYTES = constant("run-rows", "RESULT_BYTES");
+const ERROR_BYTES = constant("run-rows", "ERROR_BYTES");
+const CONVERSATIONS_KEPT = constant("run-rows", "CONVERSATIONS_KEPT");
+const SCHEDULES_KEPT = constant("run-rows", "SCHEDULES_KEPT");
+const INPUT_BYTES = constant("run-rows", "INPUT_BYTES");
+const QUEUE_ROWS = constant("run-rows", "QUEUE_ROWS");
+const QUEUE_BYTES = constant("run-rows", "QUEUE_BYTES");
+const ENGINE_SIGNINS = constant("run-rows", "ENGINE_SIGNINS");
+const SIGNIN_MODELS_CHARS = constant("run-rows", "SIGNIN_MODELS_CHARS");
+const SIGNIN_LIST_CHARS = constant("run-rows", "SIGNIN_LIST_CHARS");
+const SOCKET_TICKETS = constant("socket-shape", "SOCKET_TICKETS");
+/** A stamp's JSON, as the schema's check holds it, in characters (each up to 4 bytes). */
+const STAMP_CHARS = inline("schema", /stamp TEXT CHECK \(stamp IS NULL OR length\(stamp\) <= ([0-9]+)\)/);
+/** An origin's JSON is visible ASCII (the schema's check), so a character is a byte. */
+const ORIGIN_CHARS = inline("schema", /origin TEXT CHECK \(origin IS NULL OR \(length\(origin\) <= ([0-9]+) /);
 const SPEND_KEPT = constant("schema", "SPEND_KEPT");
 /** A connection's models, and its sealed blob, as the schema's checks hold them, in characters. */
 const MODELS_CHARS = inline("schema", /length\(models\) <= ([0-9]+)/);
@@ -337,12 +361,47 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     egress_reservations: { rows: E.receiptsKept + E.refusalsKept
                                   + E.open,
                            bytes: ROW + EGRESS_PATH_MAX + 32 + 32 + 64 + 64 + 9 + 64 + 10 + 7
-                             + 256 + 25 + 7 + 64 + 30 + 16 * 8,
+                             + 256 + 25 + 7 + 64 + 30 + 16 * 8 + RUN_ID_CHARS,
                            by: "receiptsKept admitted, refusalsKept refused and open at once, " +
                              "each its path (visible ASCII, a byte a character), ids, source, " +
                              "charge, rule, periods, served model and numbers" },
-    egress_runs: { rows: E.open + 1, bytes: ROW + 32 + 4 * 8,
-                   by: "the live lease's run, and one for each run an open call still holds" },
+    // Runs (slice R): settled receipts kept and the live ones, each its widest; a live run's
+    // grant; the conversations; the runs lane's schedules; the tier numbers kept; tickets.
+    runs: { rows: RUNS_KEPT + RUNS_CEILING + QUEUE_ROWS,
+            bytes: ROW + RESULT_BYTES + ERROR_BYTES + 4 * STAMP_CHARS + 256 + 512 + 32 + 16,
+            by: "RUNS_KEPT settled receipts, RUNS_CEILING live and QUEUE_ROWS waiting, each " +
+              "its result, error, stamp, model, ids, counters, lease and heartbeat at their " +
+              "widest" },
+    // The sandbox leases (review H-1): one an authority, opened only for a live run.
+    sandbox_leases: { rows: RUNS_CEILING,
+                      bytes: ROW + 64 + 32 + 8 + 128 + 16 + 3 * 64 + 8 + SIGNIN_LIST_CHARS
+                        + 16,
+                      by: "RUNS_CEILING, each its authority, lease id, epoch, holder, " +
+                        "times, three token hashes, network generation, its sandbox's " +
+                        "own signed-in engines (visible ASCII) and its readable set's digest" },
+    // The inputs waiting for their conversation (`run_inputs`): QUEUE_ROWS rows holding
+    // QUEUE_BYTES of input in all, however it is spread. Each row is counted at its even
+    // share and two overflow pages more: a row's in-place share is at most a third of a
+    // page (a `WITHOUT ROWID` record keeps 1,002 bytes in place), and its overflow at most a
+    // page past its bytes', which the two pages cover whatever the spread.
+    run_inputs: { rows: QUEUE_ROWS,
+                  bytes: ROW + 36 + ORIGIN_CHARS + QUEUE_BYTES / QUEUE_ROWS + 2 * 4092,
+                  by: "QUEUE_ROWS, QUEUE_BYTES of input in all, each its run and origin" },
+    // Each engine's sign-in as the runner reports it: presence, times and models, no secret.
+    engine_signins: { rows: ENGINE_SIGNINS, bytes: ROW + 64 + SIGNIN_MODELS_CHARS + 16,
+                      by: "ENGINE_SIGNINS, each its engine and models (visible ASCII)" },
+    run_grants: { rows: RUNS_CEILING,
+                  bytes: ROW + 4 * STAMP_CHARS + ORIGIN_CHARS + 512 + 128 + 64,
+                  by: "one a live run, its stamp, origin, scopes, connection and secret's " +
+                    "hash" },
+    conversations: { rows: CONVERSATIONS_KEPT, bytes: ROW + 128 + 64 + 64 + 256 + 128,
+                     by: "CONVERSATIONS_KEPT, each its agent, source, client and session id" },
+    run_schedules: { rows: SCHEDULES_KEPT,
+                     bytes: ROW + INPUT_BYTES + 4 * STAMP_CHARS + ORIGIN_CHARS + 4 * 256 + 256,
+                     by: "SCHEDULES_KEPT, each its input, stamp, origin and last error" },
+    platform_tiers: { rows: 1, bytes: ROW + 4 * KIB, by: "one row" },
+    socket_tickets: { rows: SOCKET_TICKETS, bytes: ROW + 64 + 35 + 4 * 128 + 16,
+                      by: "SOCKET_TICKETS, each a hash, a conversation and a grant id" },
     owner_erasure: { rows: 1, bytes: ROW, by: "one row" },
     // The owner's admission: one row, its reasons a short fixed list; after the erasure, the
     // erased tombstone, alone in the database.
@@ -485,7 +544,7 @@ describe("the owner's database bound", () => {
     // A `WITHOUT ROWID` table's records are kept as an index's: they spill past 1,002.
     expect(termBytes("model_spend", { rows: 1, bytes: 1003, by: "" }))
       .toBe(Math.floor(4096 / Math.floor(3066 / 493)) * WORST_FILL + 4096);
-    expect(["model_spend", "egress_runs", "connections"]
+    expect(["model_spend", "run_grants", "connections"]
       .filter((table) => !withoutRowid().has(table))).toEqual([]);
     expect(withoutRowid().has("model_reservations")).toBe(false);
     expect(withoutRowid('"CREATE TABLE a (x) WITHOUT ROWID", "CREATE TABLE b (x)", ' +

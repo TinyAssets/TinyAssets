@@ -9,7 +9,7 @@ sandbox (live), the MCP door, wakes, doors live, before real data, the founder's
 test, cutover.
 
 - [ ] Limits audit (founder, 2026-11-02: no tiny limits before he has used the platform): every bound in `platform/*/src` is raised to the tier numbers or a generous default, made an owner setting, or kept as a technical ceiling with its reason recorded. The files default (`max_bytes` 1 GiB) is the first to raise. The list goes to the founder before anything ships. Listed, no value changed, in slice D: `limits-audit.md`; the founder's review and the changes are owed.
-- [ ] Tier numbers in the platform control record (ADR-034 decision 8): free 5 simultaneous runs and 25 GB, paid 10 and 250 GB (founder, 2026-11-02), editable without a deploy.
+- [x] Tier numbers in the platform control record (ADR-034 decision 8): free 5 simultaneous runs and 25 GB, paid 10 and 250 GB (founder, 2026-11-02), editable without a deploy. Slice R: `c:control`'s `tiers` (`doors/src/directory.ts`, parsed by `owner/src/tier.ts`), handed by the binder to the run doors, the owner's tier on its own admission row set by the platform alone (`tierSet`); the simultaneous runs held at admission. The storage figure is carried; the files byte quota's slice turns `max_bytes` into it.
 
 ## 1. Verify the unverified facts
 
@@ -211,7 +211,7 @@ test, cutover.
   to it. Each kind of timed work is a lane with its own rows and one single-flight
   Lifecycle job, `owner-schedule/<lane>`, derived from them: `wakes` (3.4's wakes and
   revokes), `files` (6.1's housekeeping, with its retention re-apply) and `connections`
-  (the `threads` lane went with slice D; slice R adds a `runs` lane). Every changing door, and the object's wake,
+  (the `threads` lane went with slice D; slice R added the `runs` lane). Every changing door, and the object's wake,
   re-derive the jobs, so any door added later that changes a lane's rows calls
   `#schedule.sync()` too; a re-derive keeps a job Lifecycle moved later (the
   memory-limit breaker's backoff) unless the rows have earlier work. A pass is short:
@@ -769,11 +769,197 @@ R, S, M and W.
     per-argument limit, `MAX_ARG_STRLEN`, 128 KiB. The bound is the kernel's, not ours: the
     runner refuses a longer prompt for Kimi with its reason, never truncates it, and the
     other engines take theirs on stdin.
-- [ ] Slice R moves the run's connection from the sandbox's one lease to the run grant
-  (`engines-replan.md` §2.4): `file_space.run_connection` holds one run's connection, so a
-  second simultaneous run (ADR-034 decision 8: 5 free, 10 paid) could neither take the
-  lease nor have its own. Each simultaneous run carries its own grant, its own connection
-  (or none, signed in), and its own egress admission check.
+- [x] Slice R moves the run's connection from the sandbox's one lease to the run grant
+  (`engines-replan.md` §2.4): `file_space.run_connection` is gone; the sandbox's lease is
+  shared by its simultaneous runs (opened by the first, joined by the rest, given back with
+  the last), and each run carries its own grant (`run_grants.connection`, or none, signed
+  in). Each call names its run in its path (`/r/<run>/c/<connection>/...`) and the egress
+  door holds it to that run's own connection (`egress_run_connection`), a settled run's
+  call refused (`egress_run_closed`).
+- [x] R Runs in the owner object (`engines-replan.md` §5 row R), in workerd, nothing
+  deployed:
+  - Schema, migration 12 in place: `runs` (the run and its receipt: agent, conversation,
+    engine, credential, model, state, initiator, client and stamp, retry key, usage
+    counters, result cut to 16 KiB, first error, exit code, times), `run_grants` (lease,
+    stamp, origin, scopes, connection), `conversations` (agent, engine, client, the
+    engine's session id, last run), `run_inputs` (a waiting run's input), `engine_signins`
+    (each engine's sign-in, presence only), `run_schedules`, `platform_tiers` and
+    `socket_tickets`; `egress_runs` gone, a call's charge counted to its run's row and its
+    source's day and month; `sandbox_leases` (one an authority). Owner-bound guard:
+    42.3% (4,232,733,666.75 bytes, slice R's tables 168.0 MB); with every proposed raise
+    49.98% (4,997,920,528.75), 2.1 MB under half: the review's sandbox leases took 3.1 MB
+    of the 5.2 MB margin, their sandboxes' own sign-ins with them, nothing shrunk to fit
+    (`limits-audit.md`).
+  - One sandbox an authority (review round 1, H-1): the owner's own runs share the
+    owner's sandbox, and each outside client's runs that client's own, its own lease
+    (`sandbox_leases`, keyed by authority), so runs of different authority never share a
+    VM; the tier's simultaneous runs count across all of an owner's sandboxes, and the
+    run-to-connection binding stays per run. A client's sandbox syncs only while that
+    client's grant (at its live run's stamp) holds `read_files` or `write_files`, writes as
+    that client, and never into `OWNER_TREES`. Each run holds a 256-bit secret of its own,
+    minted at admission (only its SHA-256 on the run grant), which its URLs carry
+    (`/r/<run>/<secret>/mcp`, `/r/<run>/<secret>/c/<connection>/...`, through its config's
+    environment): every call of a run's presents it, so a run id alone authorizes nothing.
+    The runner's own doors (a run's events, the sign-in report) take a runner secret
+    (`x-ta-runner`), minted with the lease, distinct from the egress token and every run
+    secret, so no CLI settles a run or reports a sign-in; only the owner's own sandbox
+    reports the owner's sign-ins (`signin_owners`).
+  - A grant change or revoke settles the client's runs at once, `failed` (`revoked`), live
+    or waiting, frees their tier slots and conversations, drops the client's schedules and
+    leaves the lane no job when nothing is left (H-2); `lost()` reads the runs' own rows
+    (their lease and heartbeat), never their grants. A client's scheduled and mail runs
+    keep its client on their row (the `runs` CHECK now says a client's run names its
+    client and the owner's none), so they start, in the client's sandbox (H-3). A cancel
+    revokes the run's grant at once (M-2). Each run's own heartbeat (`beat_at`, every
+    events post for it) settles it `unknown` when it lapses for the lease's life, though
+    another run keeps the lease (M-3); the object needs no `SANDBOX.status` for it, and
+    stops the lost run's CLI through the sandbox. Every settle and every queued input
+    prunes the receipts to `RUNS_KEPT` (M-1). The events post is bounded so the memory
+    guard counts it whole (M-4). The binder hands `tiers: null` when
+    the record holds none, and the object forgets its kept numbers and refuses (L-1); an
+    absent `SANDBOX` refuses a cancel loudly (L-3); a lease past its tokens' deadline is
+    not live, so no run joins dead tokens (L-4: a run's life is its sandbox's, whose
+    continuous-runtime ceiling the tokens carry; a run that joins late shares what is left);
+    `RUNS_CEILING` and the queue's bounds are classed as budget allocations (L-5).
+  - Review round 2. Sign-ins are per sandbox, and a login is never copied between
+    sandboxes (ADR-031 decision 2): the owner's own sandbox's in `engine_signins`, an
+    outside client's sandbox's on its own lease's row (`signins`), each reported by that
+    sandbox's own runner. `choose` reads the run's own sandbox's: a client's `auto` run
+    takes a plan only where that client's sandbox signed in itself, else the owner's keys
+    (held to the run's grant as every run is); an agent naming the vendor's sign-in in a
+    client's sandbox with none there is refused `signin_required` (sign in inside that
+    sandbox, through the vendor's own flow). A lapse there leaves a notice naming the
+    sandbox. The receipts are pruned by when they settled, the newest `RUNS_KEPT` kept,
+    never the one settling nor a live or waiting one, so a long run's receipt outlives
+    any churn. A client's sandbox always reads its live runs' agents' own definitions
+    (`/workspace/agents/<agent>` and the abilities' trees) read-only, the rest of the
+    owner's files only as the client may read them, and writes only with `write_files`,
+    never into `OWNER_TREES`. The run's secret goes as a header (`x-ta-run`) where the
+    CLI's record says it takes one (`run_secret_env`, Claude Code's
+    `ANTHROPIC_CUSTOM_HEADERS`, and its MCP file's `headers` with `{run_secret}`), the
+    path carrying it otherwise; the doors take either. The events post is bounded
+    (`EVENTS_BODY_MAX` 64 KiB, 64 frames, 32 Ki units a frame).
+  - Review round 3. An agent naming the vendor's sign-in is admitted in a client's sandbox
+    whose sign-in is unknown, as the owner's is; the sandbox's start checks the record's
+    `status_argv` there and answers `{started: false, code: "signin_required"}` when no
+    login is, and the run settles `failed` (`signin_required`) with a notice to sign in
+    inside that sandbox. `auto` takes a client's plan only where it is known signed in. A
+    client's sandbox's readable set is kept as a digest on its lease; when it changes (a
+    new agent's run, a widened file scope) the next feed read answers `reset: true`, so
+    the sync agent reads the feed again from its start. The object holds at most
+    `EVENTS_IN_FLIGHT` (8) events posts at once, whatever the tier; one more is answered
+    `events_busy` (503, `Retry-After`) and posted again; memory guard 15.5 MB worst case,
+    12.1% of the isolate, with no tier number in it.
+  - Admission in one gate unit (`runs.ts`): owner admitted, `SANDBOX` bound, agent's
+    `agent.json` (`agent-file.ts`) read whole and enabled, the stamp standing, the retry
+    key, the caller's conversation, the tier's simultaneous runs, the source chosen (the
+    file's engine and credential, a named or the strongest listing connection, or `auto`),
+    an unattended run only where its record allows it (ADR-033 D3), the owner's own
+    spending caps; then the run, the lease opened or joined, the grant.
+  - One live run a conversation (an engine session's own ceiling), and never a refusal
+    for it: an input to a busy conversation is written `waiting`, its input kept
+    (`run_inputs`), and the `runs` lane starts the waiting runs in order as each run
+    before them settles, admitted whole again (a refused turn settles `failed`, noticed;
+    a cancel settles it at once). The queue is bounded together by `QUEUE_ROWS` 256 and
+    `QUEUE_BYTES` 6 MiB, a technical ceiling sized to the owner-bound guard's remaining
+    budget (16.5 MB, its inputs and its waiting runs' rows; `limits-audit.md`).
+  - `auto` sees subscriptions: the runner reports each engine's sign-in (its record's
+    `status_argv`) at `POST egress.tinyassets.io/signin` (`signinReport`, by the egress
+    token), one `engine_signins` row an engine (signed in or not, when checked and
+    changed, the models it offers; never a credential), and `auto` ranks the signed-in
+    engines with the connections by the same ranking, a subscription preferred to a key of
+    the provider it covers. A lapse (signed in, then not) leaves a `signin_lapsed` notice
+    ("sign in again"), and `auto`, or an agent naming that engine on its sign-in, is
+    refused `signin_lapsed`, never a silent fall back to another source.
+  - Run doors: `agentSubmit`, `agentRun` (now, `at`, `cron`, `on_mail`, `if_mail`),
+    `agentStatus` (from the receipt), `agentCancel` (through the sandbox); MCP `converse`,
+    `run_graph`, `run_status`, `run_cancel`; `/app/api/agent/{submit,run,status,cancel}`.
+  - A run's own doors on the egress host: `/r/<run>/mcp` (the table but the run tools,
+    every door held to the run grant's scopes; a client's run to its intersection with
+    that client's grant, its stamp rechecked, a grant change or revoke ending the run),
+    `/r/<run>/events` (the runner's frames, read by the record's matchers in the object).
+  - The `runs` lane: due schedules and lost runners only, never a poll; a post to the owner
+    rings the run-on-mail schedules; a due run on mail with none unacked starts nothing.
+  - Live output (`relay.ts`), A6 salvaged (its socket ticket, now a routing-MAC token of
+    the `socket` kind; the binder's upgrade path; the ticket's grant and expiry binding;
+    sign-out ending sockets): frames `{v, run, seq, at, kind, event}` relayed to the app's
+    sockets on the conversation, a bounded in-memory tail (memory guard: 13.4 MB worst
+    case, 10.5% of the isolate), never committed. Not A6's pi `watch()` or tee.
+  - Carried: slice E's owed case (a record setting a variable a key's environment sets is
+    refused by the checker, `network.test.ts`), slice D's flakes (`.wrangler` skipped by
+    both config guards; the files-quota pass test's explicit timeout).
+  - Mutation: 126 mutants over admission (12), the tier check (6), grant scoping (7), the
+    doors' authority (7), settle (10), the relay (6), the conversations' queue (13),
+    `auto`'s sign-ins (14), the review's round 1 (23), round 2 (17) and round 3 (11: the
+    sign-in notice, the readable set's reset, the events posts' gate, the busy answer):
+    126 killed, the gate's release on a refusal once tested. The reviewer's 74 and 5 forms
+    the builder ported to the moved code: 12 no longer apply (each replaced by a later form,
+    one, `r3-client-unknown-signin-ok`, now the rule), 5 rejected by `tsc` (their rewrites
+    counted instead) and 2 ports killed by `tsc` alone (their runtime forms among the 126);
+    of the 60 run, 57 killed, the 3 survivors equivalent (`r2-grant-epoch-unchecked`: lease
+    ids are random; `r2-no-prune-wait`: the settle's prune bounds the table alone;
+    `r3-header-unchecked-shape`: a malformed header's hash never matches). The 12 the
+    round-1 review found untested (M-6) each have their test.
+- [ ] Slice S builds against the `SANDBOX` interface (`owner/src/sandbox.ts`), and only it:
+  - the `tinyassets-sandbox` Worker as `SandboxService`: `start(owner, SandboxStart)`
+    answers `{started: true}` or `{started: false, code}` (a fixed code) at once, the runner
+    in the background; `cancel(owner, {run, lease_id})` sends SIGTERM, then a kill;
+    `status(owner, {run, lease_id})`;
+  - a start with `tokens` and `network` (the start that opened the lease) (re)configures
+    the sandbox with that network and hands the sync token to the sync agent; a start
+    without them runs in the configured sandbox;
+  - the runner sets `config.env` and `config.inherit` exactly, invokes the record's
+    `argv` (or `resume_argv` with `session_id`), the prompt on stdin or its argument, the
+    record's `unattended_argv` when `unattended`, and `{mcp_url}` as `urls.mcp`;
+  - it posts `{frames: [{seq, at, event}], end?: {exit_code}}` to `urls.events` (seq from
+    1, rising; a batch at least every 20 s as the heartbeat, which renews the lease; the
+    end once the CLI exited), and reports a vendor error category as an `error` event;
+  - it posts `{signins: [{engine, signed_in, models?}]}` to `urls.signin` for every engine
+    whose record signs in with the vendor's own login: at each start, before the CLI,
+    each record's `status_argv` run (exit 0, or `status_equals`, is signed in), and at the
+    end of a sign-in; models only as the CLI lists them. Presence only: never a credential;
+  - the vendor sign-in flow itself (`cli.login`) opens the sandbox's lease for the owner
+    with no run, so the first sign-in is reported before any run: `auto` sees a
+    subscription-only owner's plan from then on;
+  - one sandbox per (owner, authority) (`SandboxStart.authority`: `owner`, or one outside
+    client's id), each its own lease, tokens and network. A login is never copied between
+    sandboxes (ADR-031 decision 2): a client's sandbox runs on a vendor's sign-in only once
+    the owner signed in inside it, through the vendor's own flow there, its own runner
+    reporting it (`urls.signin`), never with the owner's sandbox's login. The sign-in flow
+    opens a client's sandbox as well as the owner's. A start on the vendor's sign-in first
+    runs the record's `status_argv` in its sandbox and answers `{started: false, code:
+    "signin_required"}` when no login is there;
+  - a client's sandbox syncs in its runs' agents' own definitions always, read-only, and the
+    rest of the owner's files only as the change feed the object filters for it gives; on
+    `reset: true` it reads the feed again from its start. Any content door slice S adds for
+    the sync agent applies the same filter as the feed (`#syncer`'s readable set);
+  - the runner runs as root and keeps the runner secret (`tokens.runner_token`) in a
+    root-only file, posting it as `x-ta-runner` on its event and sign-in posts; each CLI
+    runs under its own unprivileged uid, `/proc` is mounted `hidepid=2`, and the agent user
+    has no sudo: no process reads another run's environment (its secret is in its URLs)
+    nor the runner's secret;
+  - it posts events within `EVENTS_BODY_MAX`, `EVENT_FRAMES_MAX` and `FRAME_UNITS_MAX`
+    (`run-events.ts`), one post in flight a run, cutting a longer CLI event, marked, before
+    it posts it, and posts again after `Retry-After` when answered `events_busy` (503);
+  - it posts an empty batch, the run's first heartbeat, as soon as the sandbox is up and
+    before the initial file sync, since a run with no post within `LEASE_TTL_S` of its
+    admission is settled lost;
+  - a CLI whose record names `run_secret_env` gets the run's secret as that header and its
+    base URL without it; one whose MCP template carries `{run_secret}` gets `urls.mcp_bare`
+    as `{mcp_url}` and the secret in the header; every other CLI, the path forms;
+  - a reported model id goes into argv flag-safe (`--model=<id>`, never a bare argument a
+    leading `-` could turn into a flag);
+  - the owner config guard's `SERVICES` gains `SANDBOX` (a Worker that reaches nothing but
+    E2B), and `wrangler.jsonc` binds it;
+  - owed probes: E2B's transform on `/r/<run>/<secret>/mcp` and `/r/<run>/events`; whether a
+    WebSocket would carry the frames (the POST batches are the path today).
+- [ ] Next slice: TinyAssets agents get an identity in the ledger. Each of the owner's
+  agents (`/workspace/agents/<id>/agent.json`) is a ledger identity beside the main agents
+  (outside clients), so it takes part in mail, rooms and the board as they do, and mail to
+  an agent starts its run (its conversation the thread's, the run's input the mail). This
+  is core to the product: group chats that mix people, main agents and TinyAssets agents.
+  Until it lands, slice R's owner-mail schedules (`on_mail`, `if_mail`) stand in for it;
+  the slice replaces them.
 - [ ] Owed by slice E's review, outside slice S's checks:
   - Price server tools as data (Codex's web search, Anthropic's `mcp_servers`, OpenAI's
     `web_search_options`), so a call that enables one can be metered rather than refused
@@ -848,7 +1034,8 @@ R, S, M and W.
   the blocking isolation (10 s of a script's compute against another owner's), and
   whether `exchange` calls count as subrequests of the owner object or the hooks Worker.
 - [x] Erasure's order: mark the owner erasing, end every run (today the sandbox's egress
-  streams; slices R and S add the sandbox's kill and the session files' purge), then
+  streams, the app's sockets and each live run's cancel through the sandbox, slice R's;
+  slice S adds the sandbox's kill and the session files' purge), then
   `deleteAll()` the owner. The tombstone that keeps a stale binder from making an erased
   owner again came with the admission row in F1; its door is slice 10's. Erasure
   completeness needs a record outside the owner object (the directory's or the

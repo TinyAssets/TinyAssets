@@ -9,7 +9,8 @@
  * - a deleted key's grant is forgotten (`grantForget`) after, and the object refuses an
  *   API key with no grant row, never records one.
  *
- * This slice writes `k:` (API keys) and reads `c:control`. Owed by later slices, each in
+ * This slice writes `k:` (API keys) and reads `c:control` (its gates, and since slice R the
+ * tier numbers, `tiers`, which the founder edits here with no deploy). Owed by later slices, each in
  * its task: `h:` hook tokens and `i:` shared-app installs (`/hooks/inbound`), `a:`
  * published app slugs (S6). A sandbox's tokens have no entry: each names its owner itself
  * (G4, `routing-mac.ts`, its MAC verified at the door), and the owner's object checks it.
@@ -17,6 +18,7 @@
  * guard).
  */
 import { principal } from "../../owner/src/text";
+import { parseTiers, type Tiers } from "../../owner/src/tier";
 
 import type { DoorsEnv } from "./config";
 
@@ -44,6 +46,12 @@ export interface Control {
   readonly ordinary: "all" | "canary" | "none";
   readonly canary: readonly string[];
   readonly inbound: boolean;
+  /**
+   * The tier numbers (ADR-034 decision 8; `owner/src/tier.ts`): each tier's simultaneous
+   * runs and storage, which the founder edits here with no deploy, and the binder hands
+   * the run doors. Null when the record holds none: every run is then refused.
+   */
+  readonly tiers: Tiers | null;
 }
 
 function keyName(keyId: string): string {
@@ -81,17 +89,20 @@ export async function deleteKey(env: DoorsEnv, keyId: string): Promise<void> {
 
 /** The record parsed exactly, or null when it is anything else. */
 export function parseControl(value: unknown): Control | null {
-  if (!exactly(value, "canary,inbound,ordinary,outside")) {
+  if (!exactly(value, "canary,inbound,ordinary,outside")
+      && !exactly(value, "canary,inbound,ordinary,outside,tiers")) {
     return null;
   }
-  const { outside, ordinary, canary, inbound } = value;
+  const { outside, ordinary, canary, inbound, tiers } = value;
   if ((outside !== "on" && outside !== "off")
       || (ordinary !== "all" && ordinary !== "canary" && ordinary !== "none")
       || typeof inbound !== "boolean" || !Array.isArray(canary) || canary.length > MAX_CANARY) {
     return null;
   }
   try {
-    return { outside, ordinary, inbound, canary: Object.freeze(canary.map(principal)) };
+    // A record whose tiers are there but malformed is malformed whole: never a guess.
+    return { outside, ordinary, inbound, canary: Object.freeze(canary.map(principal)),
+             tiers: tiers === undefined ? null : parseTiers(tiers) };
   } catch {
     return null;
   }

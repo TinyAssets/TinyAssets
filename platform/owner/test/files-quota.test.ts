@@ -267,7 +267,7 @@ describe("a full history", () => {
     expect((await r.stub.fileUsage(r.bind(null))).history).toBe(12);
     // A sync op at the quota makes its room the same way.
     const synced = await inFiles(r.stub, { max_history: 4 }, (files) => {
-      const lease = files.leaseAcquire("sandbox", "a".repeat(64), "b".repeat(64), null);
+      const lease = files.leaseAcquire("owner", "sandbox", { egress: "a".repeat(64), sync: "b".repeat(64), runner: "c".repeat(64), deadline: 2e9 });
       return files.syncCommit({ lease_id: lease.lease_id, epoch: lease.epoch, ops: [
         { op: "write", path: `${W}/synced`, base: null, inline: text("s") },
       ] });
@@ -414,7 +414,7 @@ describe("a full history", () => {
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_history " +
                                  "WHERE prune_after IS NULL"))
       .toEqual([{ n: 600 }]);
-  });
+  }, 60_000);  // 600 versions written: past the default timeout under load (slice D)
 
   it("never wedges housekeeping: a pass at every bound still expires, prunes and collects",
      async () => {

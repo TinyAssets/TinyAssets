@@ -20,7 +20,12 @@ import { createHash } from "node:crypto";
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
 import type { Binding, Origin, OwnerDO } from "../../owner/src/owner-do";
+import {
+  BINDING_HEADER, CONVERSATION_HEADER, SOCKET_URL, TICKET_HEADER,
+} from "../../owner/src/socket-shape";
 import { principal } from "../../owner/src/text";
+
+import { verifyToken } from "./routing-mac";
 
 import {
   APP_RESOURCE, type DoorsEnv, FIRST_PARTY_CLIENTS, foreignIssuers, ISSUER, MCP_RESOURCE,
@@ -31,6 +36,7 @@ import type { SignIn } from "./upstream";
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[0-9a-f]{16}$/;
+const RUN = /^run_[0-9a-f]{32}$/;
 
 /** What an MCP grant's props hold (research §1.4), encrypted by the provider. */
 export interface McpProps {
@@ -206,13 +212,104 @@ export function bindApiKey(env: DoorsEnv, keyId: string, entry: KeyEntry): Bound
  * the lease and its expiry. It refuses this binding at every door but the egress doors.
  */
 export function bindSandbox(env: DoorsEnv, owner: string, tokenHash: string,
-                            generation: number): Bound {
+                            generation: number, presented: Presented = {}): Bound {
   if (!HEX64.test(tokenHash) || !Number.isSafeInteger(generation) || generation < 1) {
     throw new Error("a sandbox binding needs its token's hash and its network's generation");
   }
   const named = principal(owner);
+  const extra = presented.secret !== undefined
+    ? { secret: createHash("sha256").update(presented.secret, "utf8").digest("hex") }
+    : presented.runner !== undefined
+      ? { runner: createHash("sha256").update(presented.runner, "utf8").digest("hex") } : {};
   return bound(env, { owner: named, caller: named, origin: null,
-                      sandbox: { kind: "egress", token: tokenHash, generation } });
+                      sandbox: { kind: "egress", token: tokenHash, generation, ...extra } });
+}
+
+/**
+ * What a sandbox's call presents beside its egress token: a run's own secret (its path's,
+ * on its model calls and MCP door), or the runner's (`x-ta-runner`, on its event door and
+ * sign-in report). The binding carries only each one's SHA-256, which the object checks.
+ */
+export interface Presented {
+  readonly secret?: string;
+  readonly runner?: string;
+}
+
+/**
+ * A run's call on the egress host (its MCP door, its event door): the egress token's
+ * binding, as `bindSandbox`'s, with the run its path names and the secret it presented.
+ * The object resolves the live lease, the run under it and its grant (by the run's secret)
+ * or its runner (by the runner's), and holds every door to that grant.
+ */
+export function bindRun(env: DoorsEnv, owner: string, tokenHash: string, generation: number,
+                        run: string, presented: Presented): Bound {
+  if (!RUN.test(run)) {
+    throw new Error("a run binding names its run");
+  }
+  const { binding, stub } = bindSandbox(env, owner, tokenHash, generation, presented);
+  return { binding: { ...binding, run }, stub };
+}
+
+/**
+ * The binding with the platform control record's tier numbers, as the doors read the record
+ * for this call (`control.ts`): the run doors' admission reads them; no request names them.
+ */
+export function withTiers({ binding, stub }: Bound, tiers: unknown): Bound {
+  return { binding: { ...binding, tiers }, stub };
+}
+
+/**
+ * The owner's first-party token, bound with the grant it was issued under (`grantId`, from
+ * the provider's own unwrap of that token) and its expiry: a socket ticket's binding, so
+ * the object ties the socket to the device's grant (A6, salvaged).
+ */
+export function bindOwnerGrant(env: DoorsEnv, token: ValidatedAccessToken<unknown>,
+                               grantId: string): Bound {
+  const owner = appOwner(token);
+  if (typeof grantId !== "string" || grantId === "") {
+    throw new Error("a first-party token unwraps to its grant");
+  }
+  return bound(env, { owner, caller: owner, origin: null, grant: grantId,
+                      expires_at: seconds(token.expiresAt, "a token's expiry") });
+}
+
+/** A sign-out's binding: the owner's, with the grant its presented token unwrapped to. */
+export function bindSignOut({ binding, stub }: Bound, grantId: string): Bound {
+  if (typeof grantId !== "string" || grantId === "") {
+    throw new Error("a first-party token unwraps to its grant");
+  }
+  return { binding: { owner: binding.owner, caller: binding.caller, origin: null,
+                      grant: grantId }, stub };
+}
+
+/**
+ * The owner app's socket ticket, as the upgrade presents it: a routing-MAC token of the
+ * `socket` kind (`routing-mac.ts`), verified here before any object is reached, and not
+ * past its expiry; the owner's object it names, bound as that owner, and its secret's hash,
+ * which only the object can check (it keeps the one row). Null for anything else. The
+ * ticket is the upgrade's credential: no bearer is read for it.
+ */
+export function bindTicket(env: DoorsEnv, ticket: string): { bound: Bound; hash: string } | null {
+  const parsed = verifyToken(env.ROUTING_MAC_KEY, "socket", ticket);
+  if (parsed === null || parsed.expires <= Date.now() / 1000) {
+    return null;
+  }
+  return { bound: bound(env, { owner: parsed.owner, caller: parsed.owner, origin: null }),
+           hash: parsed.hash };
+}
+
+/**
+ * The owner app's socket upgrade, as the binder forwards it to the bound object's `fetch`
+ * (`owner/src/relay.ts`): a fresh request it builds itself, so no header the client sent
+ * survives the hop. Its identity is the bound `binding`; its conversation and the ticket's
+ * hash are the object's to check against its own rows.
+ */
+export function socketRequest({ binding }: Bound, conversation: string, hash: string): Request {
+  const headers = new Headers({ Upgrade: "websocket" });
+  headers.set(BINDING_HEADER, JSON.stringify(binding));
+  headers.set(CONVERSATION_HEADER, conversation);
+  headers.set(TICKET_HEADER, hash);
+  return new Request(SOCKET_URL, { headers });
 }
 
 /**

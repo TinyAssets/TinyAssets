@@ -1,13 +1,15 @@
 /**
  * The owner's model spend: one reservation per model call, held against the owner's
- * model policy, settled from what the call cost (gateway research §4; tasks 4 G2).
+ * model policy, settled from what the call cost (gateway research §4; tasks 4 G2), each
+ * keyed to its run (ADR-034 decision 7).
  *
  * Ported from `TurnRequestBudget` and its ledger (`tinyassets/request_budget.py`) and the
  * spend reservations of `PolicyStore.decide` (`tinyassets/broker/policy.py`), with their
  * states: `reserved` → `dispatched` → `succeeded` | `failed` | `unknown`, or `reserved` →
  * `not_sent`; plus `refused`, a reservation the ceilings turned down, kept as its receipt.
  * The sandbox's egress (`egress.ts`) holds its calls to the same states and counters
- * (`model_spend`); the runs slice (R) keys these reservations to runs (ADR-034 decision 7).
+ * (`model_spend`), and counts each call to its run too (the `runs` row's requests, tokens
+ * and cost, which the schema's triggers move).
  *
  * - **Reserve**, in one unit: it reads the owner's model policy and its generation and the
  *   day's and month's spend, checks every ceiling against what is settled plus what is
@@ -94,11 +96,8 @@ export interface UsagePolicy {
 
 /** What a call asks to reserve. */
 export interface Ask {
-  /**
-   * The work the call is part of, as its receipt names it. The `model_reservations.turn`
-   * column keeps its name until the runs slice (R) keys reservations to runs.
-   */
-  readonly turn: string;
+  /** The run the call is part of, as its receipt names it (`model_reservations.run`). */
+  readonly run: string;
   readonly connection: string;
   /** The connection's source record, which its spend is counted under. */
   readonly source: string;
@@ -262,10 +261,10 @@ export class Usage {
   #insert(ask: Ask, state: State, rule: string | null, output: number, tokens: number,
           cost: number, generation: number, day: string, month: string, now: number,
           id = `r${randomBytes(16).toString("hex")}`): void {
-    this.#sql.exec("INSERT INTO model_reservations (id, turn, connection_id, source, model, " +
+    this.#sql.exec("INSERT INTO model_reservations (id, run, connection_id, source, model, " +
                      "state, rule, max_output_tokens, est_tokens, est_cost, policy_generation, " +
                      "day, month, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                   id, ask.turn, ask.connection, ask.source, ask.model, state, rule, output,
+                   id, ask.run, ask.connection, ask.source, ask.model, state, rule, output,
                    tokens, cost, generation, day, month, now);
   }
 

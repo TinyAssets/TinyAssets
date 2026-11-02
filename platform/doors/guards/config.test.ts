@@ -73,11 +73,15 @@ function parseConfig(text: string): Config {
   return parsed.config as Config;
 }
 
-/** Every wrangler config under `root` (not dependencies), by path from `root`. */
+/**
+ * Every wrangler config under `root` (not dependencies, nor wrangler's own `.wrangler`
+ * state, which a local run leaves), by path from `root`.
+ */
 function wranglerConfigs(root: string): string[] {
   return readdirSync(root, { recursive: true, encoding: "utf8" })
     .map((path) => path.split("\\").join("/"))
     .filter((path) => !path.split("/").includes("node_modules")
+                      && !path.split("/").includes(".wrangler")
                       && /^wrangler\./i.test(path.split("/").at(-1) ?? ""))
     .sort();
 }

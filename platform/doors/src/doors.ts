@@ -2,8 +2,9 @@
  * The doors' router: every path the doors Worker serves on `tinyassets.io`, and the egress
  * door on `egress.tinyassets.io`.
  *
- * - `egress.tinyassets.io/c/<connection>/*`: the sandbox's model clients, by their egress
- *   token (`egress.ts`), the `Cookie` header removed. Nothing else is served on that
+ * - `egress.tinyassets.io/r/<run>/...`: a run's model calls (`c/<connection>/*`), its MCP
+ *   door (`mcp`) and its event door (`events`), by the egress token (`egress.ts`), the
+ *   `Cookie` header removed. Nothing else is served on that
  *   origin, and the egress door is served on no other, so a sandbox token reaches no other
  *   door. No route is deployed for it until the routes slice.
  *
@@ -31,12 +32,12 @@ import { serveApp } from "./app";
 import { serveEgress } from "./egress";
 import { authorize, callback } from "./authorize";
 import { connectCallback } from "./connect";
-import { bindMcp } from "./binder";
+import { bindMcp, withTiers } from "./binder";
 import {
   CONNECT_CALLBACK_PATH, type DoorsEnv, EGRESS_ORIGIN, MCP_ORIGINS, PUBLIC_ORIGIN, WEB_CLIENT,
   WEB_REDIRECT,
 } from "./config";
-import { outsideGate } from "./control";
+import { outsideRead } from "./control";
 import { serveMcp } from "./mcp";
 import { authorizationServer, mcpResource } from "./oauth";
 import { OWNER_SURFACE, withoutCookie } from "./session";
@@ -64,7 +65,8 @@ async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext):
   }
   return mcpResource(async (req, environment, token) => {
     const bound = await bindMcp(environment, token);
-    return await outsideGate(environment, bound.binding.owner) ?? serveMcp(req, bound);
+    const read = await outsideRead(environment, bound.binding.owner);
+    return read instanceof Response ? read : serveMcp(req, withTiers(bound, read.tiers));
   }).fetch(request, env, ctx);
 }
 

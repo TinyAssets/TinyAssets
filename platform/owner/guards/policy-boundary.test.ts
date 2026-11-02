@@ -12,7 +12,9 @@
  * its module's and the schema's alone. So are the model connections and their spend: only the
  * object builds them, `auto` reads their types, and their tables (the connections, their
  * blobs and flows, the reservations and the spend counters) are their modules' alone, and
- * so are the sandbox's egress rows and the owner's erasure mark. The lists only shrink.
+ * so are the sandbox's egress rows and the owner's erasure mark, and the runs' rows (slice R:
+ * runs, their grants, conversations and schedules, the tier numbers kept, the socket
+ * tickets), each its module's and the schema's. The lists only shrink.
  */
 import { posix } from "node:path";
 
@@ -50,7 +52,13 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   model_reservations: Object.freeze(["owner/src/usage.ts", SCHEMA]),
   model_spend: Object.freeze(["owner/src/usage.ts", SCHEMA]),
   egress_reservations: Object.freeze(["owner/src/egress.ts", SCHEMA]),
-  egress_runs: Object.freeze(["owner/src/egress.ts", SCHEMA]),
+  run_grants: Object.freeze(["owner/src/runs.ts", SCHEMA]),
+  run_schedules: Object.freeze(["owner/src/runs.ts", SCHEMA]),
+  platform_tiers: Object.freeze(["owner/src/tier.ts", SCHEMA]),
+  socket_tickets: Object.freeze(["owner/src/tickets.ts", SCHEMA]),
+  run_inputs: Object.freeze(["owner/src/runs.ts", SCHEMA]),
+  sandbox_leases: Object.freeze(["owner/src/files.ts", SCHEMA]),
+  engine_signins: Object.freeze(["owner/src/runs.ts", SCHEMA]),
 });
 
 /**
@@ -59,6 +67,8 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
  */
 const SQL_TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   connections: Object.freeze(["owner/src/connections.ts", SCHEMA]),
+  runs: Object.freeze(["owner/src/runs.ts", SCHEMA]),
+  conversations: Object.freeze(["owner/src/runs.ts", SCHEMA]),
 });
 
 function sqlNaming(table: string): RegExp {

@@ -14,7 +14,13 @@ import { fakeCode, UPSTREAM_AUTHORIZE } from "./fake-upstream";
 
 export const ORIGIN = PUBLIC_ORIGIN;
 export const doorsEnv = env as unknown as DoorsEnv;
-export const OPEN = Object.freeze({ outside: "on", ordinary: "all", canary: [], inbound: false });
+/** The founder's tier numbers (ADR-034 decision 8), as the control record holds them. */
+export const TIERS = Object.freeze({
+  free: Object.freeze({ runs: 5, storage_bytes: 25_000_000_000 }),
+  paid: Object.freeze({ runs: 10, storage_bytes: 250_000_000_000 }),
+});
+export const OPEN = Object.freeze({ outside: "on", ordinary: "all", canary: [], inbound: false,
+                                    tiers: TIERS });
 export const NAVIGATE = Object.freeze({ "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" });
 
 /** One request through the doors, its waitUntil work finished. */
