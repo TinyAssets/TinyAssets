@@ -228,8 +228,20 @@ Each model source SHALL be an editable JSON record in `platform/sources/` naming
 A `cli` record SHALL have no single-inference `invoke` (ADR-033 decision 2). It SHALL declare its pinned install, its credentials, its new-run and resume invocations, event matchers, instruction and skills paths, MCP template and trust handling, tool filters, unattended and no-update flags, its home, its `session_paths` and `secret_paths`, and per credential whether unattended hosted runs are allowed (ADR-034 decision 5).
 
 #### Scenario: A secret path could leave the sandbox
-- **WHEN** a CLI record's `secret_paths` holds a path inside `/workspace`, a relative path, or a path inside (or holding) one of its `session_paths`
+- **WHEN** a CLI record's `secret_paths` or `session_paths` holds a path not under `{home}` (an absolute path, `/proc/self/cwd`, `/workspace`, a relative path), `{home}` itself, a `..` segment or a `*` first segment, or a secret path inside (or holding) a session path
 - **THEN** reading it fails loudly naming the record, and CI fails
+
+#### Scenario: A prompt that could be read as an option
+- **WHEN** a CLI record carries `{prompt}` anywhere but on stdin or as one engine argument joined to its option (`--prompt={prompt}`): bare, after `--`, as `--prompt {prompt}`, in an env value or a template
+- **THEN** reading it fails loudly naming the record, and CI fails
+
+#### Scenario: An engine configured to nothing
+- **WHEN** any argument of a CLI record is empty or bare quotes, sets an option to nothing, or holds an empty list or map (`--tools ""`, `mcp_servers={}`), or an env value or template holds one (`tools.core: []`)
+- **THEN** reading it fails loudly naming the record, and CI fails; the runner fills a tool filter with at least one tool and refuses an empty list, so no run is a backend with its tools off
+
+#### Scenario: A sign-in with regions
+- **WHEN** a CLI record's sign-in serves several regions (`regions`, each with its hosts)
+- **THEN** its sign-in carries `{region}`, the owner's choice fills it and adds that region's hosts, and no region is forced
 
 #### Scenario: An unattended verdict with no citation
 - **WHEN** a CLI record allows unattended runs on a credential without the vendor page that permits them and the day it was read (ADR-033 decision 3)
@@ -246,6 +258,13 @@ A `cli` record SHALL have no single-inference `invoke` (ADR-033 decision 2). It 
 #### Scenario: Sign in with ChatGPT, parked
 - **WHEN** the owner begins a connect of the `chatgpt` record, which served the in-object loop ADR-034 removes
 - **THEN** it is refused `501` naming why, before any object call
+
+### Requirement: The runner never syncs a secret's bytes
+The sandbox runner (slices R and S) SHALL refuse to sync out any file, or any transcript line, that contains the bytes of a file under its engine's `secret_paths`, read from the records, so a secret an engine's own tool printed or copied never leaves the sandbox by its content (ADR-031 decision 2), whatever path it was written to.
+
+#### Scenario: An engine prints its own credential
+- **WHEN** an engine's tool prints a `secret_paths` file into its transcript, or copies it under `/workspace`
+- **THEN** the runner refuses to sync that line or file, and nothing of the secret reaches the owner's files
 
 ### Requirement: The egress door admits a sandbox call by its egress token
 The doors SHALL serve `egress.tinyassets.io/c/<connection>/*` and nothing else on that origin, and serve the egress door on no other. A call SHALL carry the sandbox's egress token (`x-ta-sandbox`) and the egress generation its network was made under (`x-ta-network-generation`), both set by E2B's transform outside the VM. The token SHALL name its owner itself and its run's deadline, and carry a MAC (`<owner id>.<expires>.<256-bit secret>.<HMAC-SHA-256 under ROUTING_MAC_KEY over its kind, owner, expiry and secret>`; `routing-mac.ts`, the one module the owner Worker mints with and the doors verify with, the key a Worker secret of both, declared by name in both configs), so the door reaches the owner's object with no directory read; a missing, malformed, forged, altered, other-kind or expired token SHALL be refused by its fixed code before any stub call, the placeholder key the client sent never read, and the object SHALL check the secret's hash, the lease and its expiry. Only once the object admitted and charged the call SHALL it go to the gateway's `EgressGateway.forward`, metered (a read with no metering), its path after `/c/<connection>`, the provider's answer streaming back as it is written (an SSE stream unbuffered) but for the gateway's own headers. Only one doors source SHALL reach `EGRESS`.

@@ -24,7 +24,7 @@ import { describe, expect, it } from "vitest";
 import { SUPPORTED_APIS } from "../../gateway/src/credential";
 import { PLATFORM } from "../../owner/guards/sources";
 import {
-  bundledRecords, catalogOf, cliEnv, type Install, sealedSource, type SourceRecord,
+  bundledRecords, catalogOf, type Install, runEnv, sealedSource, type SourceRecord,
   SourceRecordError, sourceRecord,
 } from "../src/sources";
 
@@ -184,8 +184,10 @@ describe("the engine records", () => {
       expect(Object.values(lock.packages).every((item) => item["resolved"] === undefined
         || String(item["resolved"]).startsWith("https://registry.npmjs.org/")), record.id)
         .toBe(true);
-      expect(entry["hasInstallScript"] === true && install.lifecycle_scripts === true
-             || install.lifecycle_scripts === undefined, record.id).toBe(true);
+      // The record runs install scripts exactly when its lock holds a package with one.
+      const scripted = Object.values(lock.packages).some((item) =>
+        item["hasInstallScript"] === true);
+      expect(install.lifecycle_scripts === true, record.id).toBe(scripted);
     }
   });
 
@@ -203,6 +205,14 @@ describe("the engine records", () => {
     expect(sourceRecord(claude).cli!.unattended.vendor_login_in_sandbox).toEqual({
       allowed: true, cite: "https://code.claude.com/docs/en/legal-and-compliance",
       read: "2026-11-01" });
+    // A page read only through a search index says so.
+    expect(sourceRecord(records.get("codex")).cli!.unattended.api_key)
+      .toMatchObject({ allowed: true, read_note: expect.stringMatching(/search index/) });
+    // Gemini's refusal says what Google's terms leave open, not that they forbid it.
+    const gemini = sourceRecord(records.get("gemini")).cli!.unattended.vendor_login_in_sandbox!;
+    expect(gemini.allowed).toBe(false);
+    expect(gemini.allowed === false && gemini.reason).toMatch(/^Unclear: /);
+    expect(gemini.allowed === false && gemini.reason).not.toMatch(/forbid/);
   });
 
   it("give pi an API key only, never a subscription's sign-in (ADR-034 decision 1.3)", () => {
@@ -238,14 +248,81 @@ describe("the engine records", () => {
     }
   });
 
-  it("name what sandboxEnv sets for each CLI on each key", () => {
-    const table = cliEnv(catalogOf(bundledRecords()));
-    expect(table["anthropic"]).toContainEqual({ base_url: "ANTHROPIC_BASE_URL",
-                                                api_key: "ANTHROPIC_API_KEY", base: "sealed" });
-    expect(table["openai"]).toContainEqual({ base_url: "OPENAI_BASE_URL",
-                                             api_key: "CODEX_API_KEY", base: "sealed" });
-    expect(table["google"]).toContainEqual({ base_url: "GOOGLE_GEMINI_BASE_URL",
-                                             api_key: "GEMINI_API_KEY", base: "connection" });
+  it("name what an API-key run's environment sets, and nothing for a signed-in run", () => {
+    const catalog = catalogOf(bundledRecords());
+    expect(runEnv(catalog, "claude-code", "api_key").api_key_env["anthropic"])
+      .toEqual({ base_url: "ANTHROPIC_BASE_URL", api_key: "ANTHROPIC_API_KEY", base: "sealed" });
+    expect(runEnv(catalog, "codex", "api_key").api_key_env["openai"])
+      .toEqual({ base_url: "OPENAI_BASE_URL", api_key: "CODEX_API_KEY", base: "sealed" });
+    expect(runEnv(catalog, "gemini", "api_key").api_key_env["google"]).toEqual({
+      base_url: "GOOGLE_GEMINI_BASE_URL", api_key: "GEMINI_API_KEY", base: "connection" });
+    for (const engine of ["claude-code", "codex", "gemini", "kimi"]) {
+      const signedIn = runEnv(catalog, engine, "vendor_login_in_sandbox");
+      expect(signedIn.api_key_env, engine).toEqual({});
+      expect(signedIn.forbid_env.length, engine).toBeGreaterThan(0);
+    }
+    expect(runEnv(catalog, "claude-code", "vendor_login_in_sandbox").forbid_env)
+      .toEqual(expect.arrayContaining(["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
+                                       "ANTHROPIC_AUTH_TOKEN"]));
+    // Only a served CLI record, on a credential it runs on.
+    for (const [engine, credential] of [["kimi", "api_key"], ["pi", "vendor_login_in_sandbox"],
+                                        ["anthropic", "api_key"], ["nope", "api_key"]] as const) {
+      expect(() => runEnv(catalog, engine, credential), engine).toThrow(SourceRecordError);
+    }
+    expect(() => runEnv(catalogOf([...bundledRecords().filter((record) =>
+      (record as Json)["id"] !== "codex"), { ...(records.get("codex") as Json),
+      unwired: "parked" }]), "codex", "vendor_login_in_sandbox")).toThrow(SourceRecordError);
+  });
+
+  it("list every credential file each CLI writes among its secret paths (M1)", () => {
+    const secrets = (id: string) => sourceRecord(records.get(id)).cli!.secret_paths;
+    expect(secrets("claude-code")).toEqual(expect.arrayContaining([
+      "{home}/.claude/.credentials.json", "{home}/.claude/.claude.json"]));
+    expect(secrets("codex")).toEqual(expect.arrayContaining([
+      "{home}/.codex/auth.json", "{home}/.codex/.credentials.json"]));
+    expect(secrets("gemini")).toEqual(expect.arrayContaining([
+      "{home}/.gemini/oauth_creds.json", "{home}/.gemini/mcp-oauth-tokens.json",
+      "{home}/.gemini/a2a-oauth-tokens.json", "{home}/.gemini/gemini-credentials.json"]));
+    expect(secrets("pi")).toEqual(expect.arrayContaining([
+      "{home}/.pi/agent/auth.json", "{home}/.pi/agent/mcp-auth.json"]));
+  });
+
+  it("give pi its MCP door and its agent's own skills in JSON mode (H2)", () => {
+    const spec = sourceRecord(pi).cli!;
+    expect(spec.mcp).toEqual(expect.objectContaining({ file: "{home}/.pi/agent/mcp.json",
+      template: "{\"mcpServers\": {\"tinyassets\": {\"url\": \"{mcp_url}\"}}}" }));
+    // JSON mode cannot show the trust prompt: the run approves the agent's own folder.
+    expect(spec.unattended_argv).toContain("--approve");
+    expect(spec.no_update).toEqual({ env: { PI_SKIP_VERSION_CHECK: "1" } });
+  });
+
+  it("let a Kimi member sign in from either region, its hosts by the choice (M2)", () => {
+    const spec = sourceRecord(records.get("kimi")).cli!;
+    expect(spec.login!["argv"]).toEqual(["{bin}", "login", "--region", "{region}"]);
+    expect(Object.keys(spec.regions!).sort()).toEqual(["global", "mainland-cn"]);
+    expect(spec.regions!["global"]!.hosts.login).toContain("auth.kimi.ai");
+    expect(spec.regions!["mainland-cn"]!.hosts.login).toContain("auth.kimi.com");
+    const pattern = new RegExp(String(spec.login!["url_pattern"]));
+    for (const url of ["https://www.kimi.ai/device?x=1", "https://auth.kimi.com/device"]) {
+      expect(pattern.exec(url)?.[1], url).toBe(url);
+    }
+    expect(spec.no_update).toEqual({ env: { KIMI_CODE_NO_AUTO_UPDATE: "1" } });
+  });
+
+  it("never pass a prompt as a bare argument (M3)", () => {
+    for (const record of engines) {
+      const { engine } = record.cli!;
+      const carried = [...engine.argv, ...engine.resume_argv].filter((item) =>
+        item.includes("{prompt}"));
+      if (engine.stdin === "{prompt}") {
+        expect(carried, record.id).toEqual([]);
+      } else {
+        expect(carried.every((item) => /^--[a-z-]+=\{prompt\}$/.test(item)), record.id)
+          .toBe(true);
+      }
+    }
+    expect(engines.filter((record) => record.cli!.engine.stdin === undefined)
+      .map((record) => record.id)).toEqual(["kimi"]);
   });
 });
 
@@ -343,7 +420,8 @@ describe("an engine record that does not fit", () => {
       at(s, "engine.events")["usage"] = [{ match: { type: "result" }, path: "a..b" }]; })],
     ["an event format that is not one", cli((s) => { at(s, "engine.events")["format"] = "xml"; })],
     ["an MCP config with no door URL", cli((s) => {
-      at(s, "mcp")["template"] = "{\"mcpServers\": {}}"; })],
+      at(s, "mcp")["template"] = "{\"mcpServers\": {\"t\": {\"url\": \"https://example.com/mcp\"}}}";
+    })],
     ["an MCP config flag with no file", cli((s) => {
       delete at(s, "mcp")["file"]; delete at(s, "mcp")["template"];
       (at(s, "mcp")["argv"] as string[]).push("--url", "{mcp_url}"); })],
@@ -379,6 +457,118 @@ describe("an engine record that does not fit", () => {
     ["a binary with no digest", cli((s) => { s["install"] = { manager: "binary",
       url: "https://example.com/grok", version: "1.0.0", bin: "grok",
       verify_argv: ["{bin}", "--version"] }; })],
+    // H1: every secret and session path is under {home}, compared in one namespace.
+    ["an absolute session path holding every top-level directory", cli((s) => {
+      s["session_paths"] = ["/*/"]; })],
+    ["an absolute session path holding the home", cli((s) => { s["session_paths"] = ["/root/"]; })],
+    ["an absolute secret path", cli((s) => { s["secret_paths"] = ["/root/.claude/.credentials.json"]; })],
+    ["a secret path through /proc", cli((s) => {
+      s["secret_paths"] = ["/proc/self/cwd/.credentials.json"]; })],
+    ["a session path through /proc", cli((s) => {
+      s["session_paths"] = ["/proc/1/root/workspace/x/"]; })],
+    ["a session path with * first under home", cli((s) => { s["session_paths"] = ["{home}/*/x/"]; })],
+    ["a secret path with * first under home", cli((s) => { s["secret_paths"] = ["{home}/*"]; })],
+    ["the home itself as a session path", cli((s) => { s["session_paths"] = ["{home}/"]; })],
+    ["a session path that climbs out", cli((s) => {
+      s["session_paths"] = ["{home}/a/../../root/"]; })],
+    ["a written file outside the home", cli((s) => {
+      at(s, "mcp")["file"] = "/etc/claude/mcp.json"; })],
+    ["a written file with a wildcard", cli((s) => {
+      at(s, "mcp")["file"] = "{home}/run/*"; })],
+    ["a home variable outside {home}", cli((s) => {
+      at(s, "home_env")["CLAUDE_CONFIG_DIR"] = "/proc/self/cwd"; })],
+    // M3: the prompt is never a bare argument.
+    ["a bare positional prompt", cli((s) => {
+      delete at(s, "engine")["stdin"];
+      (at(s, "engine")["argv"] as string[]).push("{prompt}");
+      (at(s, "engine")["resume_argv"] as string[]).push("{prompt}"); })],
+    ["a two-token --prompt {prompt}", cli((s) => {
+      delete at(s, "engine")["stdin"];
+      (at(s, "engine")["argv"] as string[]).push("--prompt", "{prompt}");
+      (at(s, "engine")["resume_argv"] as string[]).push("--prompt", "{prompt}"); })],
+    ["a short option joined to the prompt", cli((s) => {
+      delete at(s, "engine")["stdin"];
+      (at(s, "engine")["argv"] as string[]).push("-p={prompt}");
+      (at(s, "engine")["resume_argv"] as string[]).push("-p={prompt}"); })],
+    ["a prompt inside a longer argument", cli((s) => {
+      delete at(s, "engine")["stdin"];
+      (at(s, "engine")["argv"] as string[]).push("--prompt=say {prompt}");
+      (at(s, "engine")["resume_argv"] as string[]).push("--prompt=say {prompt}"); })],
+    ["a prompt in an env value", cli((s) => { at(s, "env")["PROMPT"] = "{prompt}"; })],
+    ["a prompt in the unattended argv", cli((s) => {
+      (s["unattended_argv"] as string[]).push("--prompt={prompt}"); })],
+    // M4: never configured to nothing.
+    ["an empty argument", cli((s) => { (s["unattended_argv"] as string[]).push("--tools", ""); })],
+    ["an argument of bare quotes", cli((s) => {
+      (s["unattended_argv"] as string[]).push("--tools", "\"\""); })],
+    ["an option set to nothing", cli((s) => { (s["unattended_argv"] as string[]).push("--tools="); })],
+    ["an option set to empty quotes", cli((s) => {
+      (s["unattended_argv"] as string[]).push("-c", "model=\"\""); })],
+    ["an empty MCP map in an argument", cli((s) => {
+      (at(s, "engine")["argv"] as string[]).push("-c", "mcp_servers={}"); })],
+    ["an empty list in an argument", cli((s) => {
+      (at(s, "engine")["argv"] as string[]).push("-c", "tools = [ ]"); })],
+    ["an empty tool list in a template", cli((s) => {
+      at(s, "mcp")["template"] = "{\"mcpServers\": {\"t\": {\"url\": \"{mcp_url}\"}}, " +
+        "\"tools\": {\"core\": []}}"; })],
+    ["an empty map in an env value", cli((s) => { at(s, "env")["SETTINGS"] = "{ }"; })],
+    // M5: a signed-in run carries none of its key's variables.
+    ["a sign-in with no forbidden variables", cli((s) => {
+      delete at(s, "per_credential.vendor_login_in_sandbox")["forbid_env"]; })],
+    ["a sign-in whose forbidden variables miss its key variable", cli((s) => {
+      at(s, "per_credential.vendor_login_in_sandbox")["forbid_env"] = ["ANTHROPIC_BASE_URL"]; })],
+    ["a sign-in whose forbidden variables miss its base-URL variable", cli((s) => {
+      at(s, "per_credential.vendor_login_in_sandbox")["forbid_env"] = ["ANTHROPIC_API_KEY"]; })],
+    ["a forbidden variable that is not a name", cli((s) => {
+      (at(s, "per_credential.vendor_login_in_sandbox")["forbid_env"] as string[]).push("x y"); })],
+    ["a record that sets a variable its sign-in forbids", cli((s) => {
+      at(s, "env")["ANTHROPIC_BASE_URL"] = "https://example.com"; })],
+    ["a sign-in part that sets a variable it forbids", cli((s) => {
+      at(s, "per_credential.vendor_login_in_sandbox")["env"] = { ANTHROPIC_API_KEY: "x" }; })],
+    ["a Kimi sign-in with no forbidden variables", cli((s) => { delete s["per_credential"]; },
+                                                      records.get("kimi") as Json)],
+    // M2: regions as data.
+    ["regions on a record that does not sign in", cli((s) => {
+      s["regions"] = { global: { display_name: "G", hosts: { login: [], provider: [] } } }; }, pi)],
+    ["a region with an id outside the grammar", cli((s) => {
+      s["regions"] = { "Global!": { display_name: "G", hosts: { login: [], provider: [] } } };
+    }, records.get("kimi") as Json)],
+    ["a region host that is not a name", cli((s) => {
+      at(s, "regions.global.hosts")["login"] = ["https://auth.kimi.ai"]; },
+    records.get("kimi") as Json)],
+    ["a region with an unknown key", cli((s) => { at(s, "regions.global")["stray"] = 1; },
+                                         records.get("kimi") as Json)],
+    ["no regions", cli((s) => { s["regions"] = {}; }, records.get("kimi") as Json)],
+    ["regions the sign-in does not use", cli((s) => {
+      at(s, "login")["argv"] = ["{bin}", "login"]; }, records.get("kimi") as Json)],
+    ["a region placeholder with no regions", cli((s) => { delete s["regions"]; },
+                                                 records.get("kimi") as Json)],
+    ["a region placeholder outside the sign-in", cli((s) => {
+      (s["unattended_argv"] as string[]).push("--region={region}"); },
+    records.get("kimi") as Json)],
+    // The survivors of this round's own mutation run.
+    ["a wildcard session path that covers a secret below the first segment", cli((s) => {
+      s["session_paths"] = ["{home}/.claude/*/"]; })],
+    ["a prompt with something after it", cli((s) => {
+      delete at(s, "engine")["stdin"];
+      (at(s, "engine")["argv"] as string[]).push("--prompt={prompt}.");
+      (at(s, "engine")["resume_argv"] as string[]).push("--prompt={prompt}."); })],
+    ["an empty list inside an argument's JSON", cli((s) => {
+      (s["unattended_argv"] as string[]).push("--settings",
+                                              "{\"permissions\": {\"allow\": []}}"); })],
+    ["an MCP template with no file, its door URL in the argv", cli((s) => {
+      delete at(s, "mcp")["file"]; at(s, "mcp")["argv"] = ["--mcp-url={mcp_url}"]; }, pi)],
+    // The three mutants the reviewer's run left alive.
+    ["an MCP template with no file", cli((s) => { delete at(s, "mcp")["file"]; }, pi)],
+    ["an npm lock digest that is not one", cli((s) => { at(s, "install")["lock_sha256"] = "xyz"; })],
+    ["a login state check on a secret path's parent", cli((s) => {
+      (at(s, "login")["state_checks"] as Json[])[0]!["path"] = "{home}/.codex"; },
+    records.get("codex") as Json)],
+    // Citations.
+    ["a read note on a refusal that cites nothing", cli((s) => {
+      at(s, "unattended.vendor_login_in_sandbox")["read_note"] = "from memory"; },
+    records.get("kimi") as Json)],
+    ["a read note that is not text", cli((s) => { at(s, "unattended.api_key")["read_note"] = 1; })],
     ["a gateway source with no engines", Object.fromEntries(Object.entries(anthropic)
       .filter(([key]) => key !== "engines"))],
     ["a gateway source naming an engine twice", { ...anthropic, engines: ["pi", "pi"] }],
@@ -402,7 +592,9 @@ describe("an engine record that does not fit", () => {
     ]) {
       expect(sourceRecord(cli((s) => { s["install"] = install; })).cli!.install).toEqual(install);
     }
-    expect(sourceRecord(pi).cli!.mcp).toHaveProperty("unsupported");
+    const unsupported = { unsupported: "No MCP client: TinyAssets is reached another way." };
+    expect(sourceRecord(cli((s) => { s["mcp"] = unsupported; }, pi)).cli!.mcp)
+      .toEqual(unsupported);
     expect(claudeCli["mcp"]).toHaveProperty("file");
   });
 });
@@ -466,6 +658,12 @@ describe("a record that does not fit", () => {
       ...(chatgpt["oauth"] as object), scope: "openid\nprofile" } }],
   ])("fails loudly: %s", (_what, record) => {
     expect(refused(record)).toMatch(/^source record "[^"]*": /);
+  });
+
+  it("refuses a key whose engine is unwired", () => {
+    expect(() => catalogOf([...bundledRecords().filter((record) =>
+      (record as Json)["id"] !== "claude-code"), { ...claude, unwired: "parked" }])
+      .get("anthropic")).toThrow(/^source record "anthropic": engine "claude-code" is unwired/);
   });
 
   it("fails loudly as a second record under one id", () => {

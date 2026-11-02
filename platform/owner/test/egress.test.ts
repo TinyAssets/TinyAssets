@@ -39,6 +39,13 @@ interface Leased {
   readonly synced: (token?: string) => Binding;
 }
 
+/**
+ * The run a lease is for unless a test says otherwise: Claude Code on the owner's own
+ * sign-in, whose environment carries no key at all.
+ */
+const SIGNED_IN = Object.freeze({ engine: "claude-code",
+                                  credential: "vendor_login_in_sandbox" as const });
+
 /** Caps roomy enough that a test's every call fits, each charging up to the most it costs. */
 const ROOMY = Object.freeze({ turn_requests: 10_000, turn_tokens: 1_000_000_000,
                               turn_cost: 1_000_000_000_000 });
@@ -56,7 +63,7 @@ async function leased(r: Gated, apply = true, roomy = true): Promise<Leased> {
   if (roomy) {
     await capped(r, ROOMY);
   }
-  const opened = await r.in((instance) => instance.sandbox.open({ holder: "sandbox-1" }));
+  const opened = await r.in((instance) => instance.sandbox.open({ holder: "sandbox-1", run: SIGNED_IN }));
   const egress = hashOf("egress", opened.egress_token);
   const sync = hashOf("sync", opened.sync_token);
   if (apply) {
@@ -228,6 +235,26 @@ describe("an egress call", () => {
                                       charge: "succeeded", cost: 4200 }]);
   });
 
+  it("that counts tokens on a key that seals it is free, as its API's rules cite it",
+     async () => {
+    const r = await gated();
+    const counted = { ...ANTHROPIC, endpoints: [...ANTHROPIC.endpoints, {
+      origin: "https://api.anthropic.com", paths: ["/v1/messages/count_tokens"],
+      methods: ["POST"] }] };
+    const connection = await r.connect("sk-good", counted);
+    const lease = await leased(r);
+    const opened = await admitted(r, lease, connection, { path: "/v1/messages/count_tokens" });
+    expect(opened.metering).toBeNull();
+    expect(await charges(r)).toMatchObject([{ state: "open", charge: null, est_cost: null }]);
+    // Any other sealed POST that is not the source's model call is still never sent.
+    const other = await r.connect("sk-good-2", { ...ANTHROPIC, endpoints: [
+      ...ANTHROPIC.endpoints, { origin: "https://api.anthropic.com",
+                                paths: ["/v1/messages/batches"], methods: ["POST"] }] },
+                                  "Other");
+    expect(await refusedWith(r, lease.as(), other, { path: "/v1/messages/batches" }))
+      .toBe("egress_unmetered");
+  });
+
   it("that reads a sealed endpoint is free: admitted unmetered, charged nothing", async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
@@ -366,7 +393,7 @@ describe("an egress call", () => {
                                                                          spend: { state: "unknown" } })))
       .toEqual({ settled: true });
     expect(await rows(r)).toMatchObject([{ ended: "admission", outcome: "ended" }]);
-    expect((await failure(() => r.in((instance) => instance.sandbox.open({ holder: "x" }))))
+    expect((await failure(() => r.in((instance) => instance.sandbox.open({ holder: "x", run: SIGNED_IN }))))
       .message).toMatch(/^owner_suspended/);
     await r.stub.admissionSet(platform, { reason: "abuse", suspended: true });
     expect((await failure(() => r.stub.egressSettle(lease.as(), settle(opened.reservation))))
@@ -848,7 +875,7 @@ describe("the owner's erasure", () => {
       connection: prepared.connection, version: 1, blob: sealed.blob, kid: sealed.kid,
       models: await catalog(ANTHROPIC), egress: await scopeOf(ANTHROPIC) });
     const opened = await runInDurableObject(stub, async (instance: FauxOwnerDO) => {
-      const lease = await instance.sandbox.open({ holder: "sandbox-1" });
+      const lease = await instance.sandbox.open({ holder: "sandbox-1", run: SIGNED_IN });
       await instance.sandbox.networkApplied({ lease_id: lease.lease.lease_id,
                                               epoch: lease.lease.epoch, generation: 1 });
       return lease;
@@ -935,17 +962,17 @@ describe("the sandbox's lease", () => {
     // held to the longest, and a past one refused.
     await r.in((instance) => instance.sandbox.close(held(lease)));
     const soon = Math.floor(Date.now() / 1000) + 600;
-    const short = await r.in((instance) => instance.sandbox.open({ holder: "x", deadline: soon }));
+    const short = await r.in((instance) => instance.sandbox.open({ holder: "x", run: SIGNED_IN, deadline: soon }));
     expect(verifyToken(env.ROUTING_MAC_KEY, "egress", short.egress_token)!.expires).toBe(soon);
     expect(verifyToken(env.ROUTING_MAC_KEY, "sync", short.sync_token)!.expires).toBe(soon);
     await r.in((instance) => instance.sandbox.close(short.lease));
     const far = await r.in((instance) => instance.sandbox.open({
-      holder: "x", deadline: Math.floor(Date.now() / 1000) + 10 * RUN_DEADLINE_S }));
+      holder: "x", run: SIGNED_IN, deadline: Math.floor(Date.now() / 1000) + 10 * RUN_DEADLINE_S }));
     expect(verifyToken(env.ROUTING_MAC_KEY, "egress", far.egress_token)!.expires)
       .toBeLessThanOrEqual(Math.floor(Date.now() / 1000) + RUN_DEADLINE_S);
     await r.in((instance) => instance.sandbox.close(far.lease));
     expect((await failure(() => r.in((instance) => instance.sandbox.open({
-      holder: "x", deadline: 1 })))).message).toMatch(/deadline/);
+      holder: "x", run: SIGNED_IN, deadline: 1 })))).message).toMatch(/deadline/);
     const again = await leased(r, false, false);
     const renewed = await r.in((instance) => instance.sandbox.renew(held(again)));
     expect(renewed).toMatchObject({ lease_id: again.lease_id, epoch: again.epoch });
@@ -977,11 +1004,43 @@ describe("the sandbox's lease", () => {
   it("hands the sandbox slice its policy and its clients' environment", async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
-    const config = await r.in((instance) => instance.sandbox.config());
+    const keyed = { engine: "claude-code", credential: "api_key" as const, connection };
+    const config = await r.in((instance) => instance.sandbox.config(keyed));
     expect(config.generation).toBe(1);
     expect(config.egress).toEqual({ mode: "open", destinations: [] });
     expect(config.env["ANTHROPIC_BASE_URL"]).toBe(`https://egress.tinyassets.io/c/${connection}/`);
     expect(config.env["ANTHROPIC_API_KEY"]).toMatch(new RegExp(`^ta_ph_${connection}_[0-9a-f]{32}$`));
     expect(JSON.stringify(config)).not.toContain("sk-good");
+  });
+
+  it("gives a run on the owner's own sign-in no key, though the owner has one", async () => {
+    const r = await gated();
+    await r.connect("sk-good");
+    const config = await r.in((instance) => instance.sandbox.config(SIGNED_IN));
+    expect(config.env).toEqual({});
+    const opened = await r.in((instance) => instance.sandbox.open({ holder: "h",
+                                                                     run: SIGNED_IN }));
+    expect(opened.env).toEqual({});
+  });
+
+  it("refuses a run its record does not allow, before any lease is taken", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    for (const [run, message] of [
+      [{ engine: "kimi", credential: "api_key", connection }, /kimi/],
+      [{ engine: "anthropic", credential: "api_key", connection }, /not a served CLI/],
+      [{ engine: "nope", credential: "vendor_login_in_sandbox" }, /not a served CLI/],
+      [{ engine: "claude-code", credential: "api_key" }, /its connection/],
+      [{ engine: "claude-code", credential: "vendor_login_in_sandbox", connection },
+       /its connection/],
+      [{ engine: "claude-code", credential: "password" }, /its credential/],
+      [{ engine: "codex", credential: "api_key", connection }, /no key of this/],
+      [{ engine: "claude-code", credential: "api_key", connection: `c${"9".repeat(24)}` },
+       /active connections/],
+    ] as const) {
+      expect((await failure(() => r.in((instance) => instance.sandbox.open({
+        holder: "h", run: run as never })))).message, JSON.stringify(run)).toMatch(message);
+    }
+    expect(await r.sql("SELECT lease_id FROM file_space WHERE lease_id IS NOT NULL")).toEqual([]);
   });
 });

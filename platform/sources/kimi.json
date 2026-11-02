@@ -15,7 +15,8 @@
       "verify_argv": [
         "{bin}",
         "--version"
-      ]
+      ],
+      "lifecycle_scripts": true
     },
     "credential": [
       "vendor_login_in_sandbox"
@@ -25,9 +26,9 @@
         "{bin}",
         "login",
         "--region",
-        "mainland-cn"
+        "{region}"
       ],
-      "url_pattern": "(https://(?:www\\.kimi\\.com|auth\\.kimi\\.com)/[^\\s\\u001b]+)",
+      "url_pattern": "(https://(?:www|auth)\\.kimi\\.(?:com|ai)/[^\\s\\u001b]+)",
       "code_pattern": "enter code: ([A-Za-z0-9-]+)",
       "state_checks": [
         {
@@ -39,25 +40,62 @@
         }
       ]
     },
+    "regions": {
+      "mainland-cn": {
+        "display_name": "Kimi (kimi.com)",
+        "hosts": {
+          "login": [
+            "auth.kimi.com",
+            "api.kimi.com",
+            "www.kimi.com"
+          ],
+          "provider": [
+            "auth.kimi.com",
+            "api.kimi.com"
+          ]
+        }
+      },
+      "global": {
+        "display_name": "Kimi (kimi.ai)",
+        "hosts": {
+          "login": [
+            "auth.kimi.ai",
+            "api.kimi.ai",
+            "www.kimi.ai"
+          ],
+          "provider": [
+            "auth.kimi.ai",
+            "api.kimi.ai"
+          ]
+        }
+      }
+    },
     "unattended": {
       "vendor_login_in_sandbox": {
         "allowed": false,
         "reason": "No Kimi page read addresses hosted or unattended use of the CLI on a membership, and its help center warns that use with unauthorized platforms or tools may be a violation (subscription-engines §5, §11)."
       }
     },
+    "per_credential": {
+      "vendor_login_in_sandbox": {
+        "forbid_env": [
+          "KIMI_API_KEY",
+          "KIMI_BASE_URL",
+          "MOONSHOT_API_KEY"
+        ]
+      }
+    },
     "engine": {
       "argv": [
         "{bin}",
-        "--prompt",
-        "{prompt}",
+        "--prompt={prompt}",
         "--output-format",
         "stream-json"
       ],
       "resume_argv": [
         "{bin}",
         "--continue",
-        "--prompt",
-        "{prompt}",
+        "--prompt={prompt}",
         "--output-format",
         "stream-json"
       ],
@@ -111,7 +149,9 @@
       "KIMI_CODE_HOME": "{home}/.kimi-code"
     },
     "no_update": {
-      "reason": "No auto-update switch is documented in what was read; the template pins the npm package and slice S checks the CLI leaves it unchanged."
+      "env": {
+        "KIMI_CODE_NO_AUTO_UPDATE": "1"
+      }
     },
     "secret_paths": [
       "{home}/.kimi-code/credentials/",
@@ -125,15 +165,8 @@
       "registry": [
         "registry.npmjs.org"
       ],
-      "login": [
-        "auth.kimi.com",
-        "api.kimi.com",
-        "www.kimi.com"
-      ],
-      "provider": [
-        "auth.kimi.com",
-        "api.kimi.com"
-      ]
+      "login": [],
+      "provider": []
     }
   }
 }

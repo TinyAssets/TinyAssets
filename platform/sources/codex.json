@@ -65,7 +65,8 @@
       "api_key": {
         "allowed": true,
         "cite": "https://developers.openai.com/codex/auth",
-        "read": "2026-11-01"
+        "read": "2026-11-01",
+        "read_note": "Read through the search index's text of the page only; the page itself was not fetched."
       }
     },
     "per_credential": {
@@ -75,6 +76,11 @@
           "forced_login_method=\"chatgpt\"",
           "-c",
           "cli_auth_credentials_store=\"file\""
+        ],
+        "forbid_env": [
+          "CODEX_API_KEY",
+          "OPENAI_API_KEY",
+          "OPENAI_BASE_URL"
         ]
       },
       "api_key": {
@@ -218,7 +224,8 @@
       ]
     },
     "secret_paths": [
-      "{home}/.codex/auth.json"
+      "{home}/.codex/auth.json",
+      "{home}/.codex/.credentials.json"
     ],
     "session_paths": [
       "{home}/.codex/sessions/"

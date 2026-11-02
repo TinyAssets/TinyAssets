@@ -87,6 +87,34 @@ describe("the gateway Worker", () => {
       .toBe("oauth_invalid_grant");
   });
 
+  it("forwards a cited free call unmetered, as a read, and no other unmetered call", async () => {
+    const egress = new EgressGateway(createExecutionContext(), env);
+    const counted = { ...ANTHROPIC, endpoints: [...ANTHROPIC.endpoints, {
+      origin: "https://api.anthropic.com", paths: ["/v1/messages/count_tokens"],
+      methods: ["POST"] }] };
+    const blob = (await gateway.seal("alice", "c1", 1, "sk-count", counted)).blob;
+    // Claude Code's token count, which Anthropic does not bill: sent with the sealed key.
+    const count = await egress.forward("alice", "c1", 1, blob, new Request(
+      "https://egress/v1/messages/count_tokens", { method: "POST", body: "{}",
+                                                   headers: { "x-fake-mode": "hdr" } }),
+      null, new ReadableStream());
+    expect(count.response.status).toBe(200);
+    // The sealed key reached the provider (the gateway redacts it from the answer).
+    expect(count.response.headers.get("x-echo-key")).toBe("[redacted]");
+    await count.response.body?.cancel();
+    // A model call is never free, nor is a token count on a source that does not seal it.
+    const message = await egress.forward("alice", "c1", 1, blob, new Request(
+      "https://egress/v1/messages", { method: "POST", body: "{}",
+                                      headers: { "x-fake-mode": "hdr" } }),
+      null, new ReadableStream());
+    expect(await message.response.json()).toMatchObject({ error: { code: "unmetered" } });
+    const unsealed = (await gateway.seal("alice", "c1", 1, "sk-count", ANTHROPIC)).blob;
+    const elsewhere = await egress.forward("alice", "c1", 1, unsealed, new Request(
+      "https://egress/v1/messages/count_tokens", { method: "POST", body: "{}" }),
+      null, new ReadableStream());
+    expect(await elsewhere.response.json()).toMatchObject({ error: { code: "endpoint_refused" } });
+  });
+
   it("forwards a sandbox request on the egress entrypoint alone, a Request in and a Response out",
      async () => {
     // The doors' egress door reaches it over their real `EGRESS` binding; here, its surface.

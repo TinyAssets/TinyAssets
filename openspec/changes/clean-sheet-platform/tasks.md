@@ -607,7 +607,8 @@ account and no deploy.
   `ask` is an allowlist plus a refusal receipt at each apply. **Allowlist mode is not a
   data boundary in v1**: E2B allows all traffic to a DNS server, on every port, and its
   rules name no ports, so the resolver cannot be held to 53 (DNS tunnelling, DoH); the plan
-  says so (`BOUNDARY_NOTE`, every network plan's `note`). **Placeholders** (`sandboxEnv`):
+  says so (`BOUNDARY_NOTE`, every network plan's `note`). **Placeholders** (`sandboxEnv`;
+  since slice E's review, one engine run's, its own credential's alone):
   `<PROVIDER>_BASE_URL`/`_API_KEY` for each provider's oldest connection (Claude Code's
   `ANTHROPIC_*`, Codex's and Qwen Code's `OPENAI_*`, `MISTRAL_API_KEY`), `TA_<CONNECTION>_*`
   for every one, and each CLI's own names from its source record (slice E's
@@ -1750,6 +1751,48 @@ account and no deploy.
   refused on a subscription with the reason, Codex and Gemini allowed on a key. New
   `anthropic`, `openai` and `xai` keys; every key names its `engines`. `chatgpt` parked.
   Kimi has no key credential: no Moonshot API-key source and no read page for one.
+  Review round 1 (`ta-work/rve_report.md`), each against the pinned tarball:
+  - Every path a record names is under `{home}`, so secret and session paths compare in
+    one namespace: an absolute root, `/proc`, `/workspace`, `..`, a `*` first segment and
+    `{home}` itself are refused (H1). The reviewer's attacks are a guard,
+    `doors/guards/sources-attacks.test.ts`.
+  - pi has its built-in MCP client: `{home}/.pi/agent/mcp.json`, a user-level server that
+    needs no project trust; `--approve` loads the agent's own `.pi/skills` in JSON mode;
+    `PI_SKIP_VERSION_CHECK` (H2).
+  - More credential files among `secret_paths`: Claude's `.claude.json`, Codex's
+    `.credentials.json`, Gemini's `mcp-oauth-tokens.json`, `a2a-oauth-tokens.json` and
+    `gemini-credentials.json`, pi's `mcp-auth.json` (M1).
+  - Kimi's sign-in takes the owner's region as data (`regions`, `{region}`:
+    `mainland-cn`, kimi.com, or `global`, kimi.ai, each with its hosts), and
+    `KIMI_CODE_NO_AUTO_UPDATE` (M2).
+  - A prompt goes on stdin (Claude, Codex, Gemini, pi) or joined to its option (Kimi's
+    `--prompt={prompt}`); the checker refuses it bare or as two tokens (M3).
+  - No argument, env value or template configures an engine to nothing (an empty value,
+    list or map) (M4).
+  - A lease opens one engine run (`SandboxLeases.open`'s `run`: engine, credential, an
+    API-key run's connection), and its environment carries that credential alone
+    (`sandboxEnv`, `runEnv`): a signed-in run gets no key or base-URL variable, and each
+    record lists what its sign-in forbids (`per_credential.vendor_login_in_sandbox.forbid_env`,
+    its `api_key_env` names among them) (M5).
+  - A call its API's rules cite as free goes unmetered on a sealed endpoint
+    (`api-rules.ts` `free`): Anthropic's `count_tokens`, "Token counting is free to use"
+    (platform.claude.com/docs/en/build-with-claude/token-counting, 2026-11-02), sealed on
+    the `anthropic` key. Gemini's `countTokens` stays refused (`egress_unmetered`):
+    ai.google.dev is outside this session's network, so no Google page was read that says
+    it is free. Codex's web search stays refused `egress_unmetered_tool` (M6).
+  - Lows: the install-scripts guard is "iff" over the whole lock (Gemini, Kimi and pi
+    declare `lifecycle_scripts`); a key naming an unwired engine is refused; Gemini's
+    refusal reason says Google's terms leave it unclear; Codex's API-key citation carries a
+    `read_note` that it was read through the search index only.
+- [ ] Owed by slice E's review, outside slice S's checks:
+  - Price server tools as data (Codex's web search, Anthropic's `mcp_servers`, OpenAI's
+    `web_search_options`), so a call that enables one can be metered rather than refused
+    `egress_unmetered_tool`.
+  - Egress admission holds a lease to its run's own connection: today any process in a
+    lease's sandbox may call any of the owner's connections through the door (the
+    environment no longer hands it another's placeholder, but the door does not check).
+  - Gemini's `countTokens`: read Google's page (ai.google.dev, to be allowed in the
+    session's network) and list it in `free` if the page says it is free.
 - [ ] Slice S verifies each engine record live, on the pinned version, in a headless E2B VM
   (each value below was not confirmable offline), and fixes the record where it differs:
   - **Every CLI:** the event shapes against the matchers (session id, final text, error,
@@ -1757,6 +1800,15 @@ account and no deploy.
     `session_paths` and continues; MCP injection reaches the run-scoped door with no bearer
     in the config; the tool filters and unattended flags run with no prompt; the CLI keeps
     its pinned binary (`no_update`); nothing in `secret_paths` appears in a sync-out.
+  - **Every CLI, its credentials:** every credential file it writes is in `secret_paths`,
+    MCP OAuth stores included (Kimi's, `-tokens.json` and `-client.json`, not yet located);
+    a signed-in run starts with every `forbid_env` name unset and runs on its sign-in.
+  - **Every CLI on a key:** its own model-call body and headers pass `api-rules.ts`
+    through the egress door (its tools, its `*-beta` headers, which a metered call strips),
+    and any other call it makes (a token count, a WebSocket) is free and cited, or refused.
+  - **The runner's content backstop (doors spec, "The runner never syncs a secret's
+    bytes"):** no synced file or transcript line holds the bytes of a `secret_paths` file;
+    the runner refuses the sync, from the records' list.
   - **Claude Code:** `--permission-mode auto` with `--permission-prompts none`; `--tools`
     and `--disallowedTools` as the filters; `CLAUDE_CODE_PROJECT_DIR_NAME` pins the
     transcript path under `CLAUDE_CONFIG_DIR`; `ENABLE_CLAUDEAI_MCP_SERVERS=false`; `auth
@@ -1771,14 +1823,24 @@ account and no deploy.
     (`mcpServers.httpUrl`, `mcp.allowed`, `context.fileName`, `tools.core`,
     `tools.exclude`, `general.disableAutoUpdate`); `selectedType` per credential;
     `--approval-mode yolo`; the `stream-json` field names (`init.session_id`, assistant
-    `message` deltas, `result.stats`, `error`); `--resume {sid}`; the `NO_BROWSER` sign-in.
-  - **Kimi Code:** `--continue` in a per-conversation cwd; the `stream-json` fields; the
-    user-level `mcp.json` schema; where `session_index.jsonl` lives; whether
-    `config.toml` holds sign-in state; `login` headless.
+    `message` deltas, `result.stats`, `error`); `--resume {sid}`; the `NO_BROWSER` sign-in;
+    the prompt on stdin (0.66.0 reads it only if it arrives within 500 ms); with
+    `GOOGLE_GEMINI_BASE_URL` set, 0.66.0's environment auth picks `gateway`: whether the
+    enforced `gemini-api-key` type still sends to that base URL; the node-pty and keytar
+    install scripts.
+  - **Kimi Code:** `--continue` in a per-conversation cwd; the `stream-json` fields, and
+    matchers for its errors and usage (it has none yet); the user-level `mcp.json` schema;
+    where `session_index.jsonl` and the `region` marker live; whether `config.toml` holds
+    sign-in state; `login --region` headless in both regions; `--prompt={prompt}`.
   - **pi:** `--mode json` event names (`session`, `message_end`, `tool_execution_start`),
-    `--session {sid}`, `PI_CODING_AGENT_DIR`, `models.json` `baseUrl` per provider, the
-    pi-ai key variables, `.pi/skills`, `--tools`; and the MCP extension package it needs
-    to reach TinyAssets (its record says `unsupported` until then).
+    and a `final_text` matcher that reads only the last assistant message's text, not every
+    tool-use turn's blocks; `--session {sid}`; `PI_CODING_AGENT_DIR`; `models.json`
+    `baseUrl` per provider; the pi-ai key variables; `.pi/skills` loaded under `--approve`;
+    `--tools`; the user-level `mcp.json` reaching the run's door over streamable HTTP; the
+    prompt on stdin.
+  - **Codex:** whether `OPENAI_BASE_URL` still sets the built-in provider's base URL in
+    0.166.0, or only the `openai_base_url` config key does: the package's own README says
+    nothing, and the review found the variable only in its network-proxy table.
 - [ ] The sandbox (slice 8b), calling G4's `SandboxLeases` in the owner's object only (the
   agent's parts carry it to `exec`): the E2B client and lifecycle (`open` for a sandbox
   run, its egress token in the static transform and its network document and

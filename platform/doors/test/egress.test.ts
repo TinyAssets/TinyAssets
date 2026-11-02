@@ -84,7 +84,8 @@ async function sandbox(apply = true, models: Record<string, unknown> = {
   await bound.stub.policyWrite({ ...bound.binding, session: app.session }, {
     expected_generation: generation,
     policy: { ...policy, models, spend: { ...policy.spend, ...spend } } });
-  const opened = await leases(owner, (sandbox) => sandbox.open({ holder: "sandbox-1" }));
+  const opened = await leases(owner, (sandbox) => sandbox.open({
+    holder: "sandbox-1", run: { engine: "pi", credential: "api_key", connection } }));
   if (apply) {
     await leases(owner, (sandbox) => sandbox.networkApplied({
       lease_id: opened.lease.lease_id, epoch: opened.lease.epoch,
@@ -185,7 +186,8 @@ async function writeEgress(box: Sandbox): Promise<number> {
   await box.bound.stub.policyWrite(sessionOf(box), {
     expected_generation: generation,
     policy: { ...policy, egress: { mode: "allowlist", destinations: [] } } });
-  return (await leases(box.owner, (sandbox) => sandbox.config())).generation;
+  return (await leases(box.owner, (sandbox) => sandbox.config({
+    engine: "pi", credential: "api_key", connection: box.connection }))).generation;
 }
 
 let restore: () => void = () => undefined;

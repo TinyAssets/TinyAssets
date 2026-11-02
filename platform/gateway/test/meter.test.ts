@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { calculateCost } from "@earendil-works/pi-ai/models";
 
-import { apiRules, fallbackList, HINT_KEYS, manyChoices, paidTool, servedPriced,
+import { apiRules, fallbackList, freeCall, HINT_KEYS, manyChoices, paidTool, servedPriced,
          tierMultiplier, unpricedOption } from "../src/api-rules";
 import { builtinCatalog } from "../src/catalog";
 import { egressTarget, meteredCall } from "../src/credential";
@@ -52,6 +52,66 @@ function sse(frames: readonly (readonly [string | null, unknown])[]): string {
 function streamOf(text: string): ReadableStream<Uint8Array> {
   return new Response(text).body!;
 }
+
+describe("the engines' own calls against the API rules (slice E review, M6)", () => {
+  const records = bundledRecords().map(sourceRecord);
+  const scopeOf = (id: string) => {
+    const { upstream, endpoints } = records.find((record) => record.id === id)!;
+    return { api: upstream!.api, base_url: upstream!.base_url, endpoints: endpoints!,
+             meter: null };
+  };
+
+  it("lets Claude Code count tokens unmetered, on the page that says the count is free", () => {
+    const rules = apiRules("anthropic-messages")!;
+    expect(freeCall(rules, "POST", "/v1/messages/count_tokens")).toBe(true);
+    expect(freeCall(rules, "POST", "/v1/messages/count_tokens?beta=true")).toBe(true);
+    expect(freeCall(rules, "POST", "/v1/messages")).toBe(false);
+    expect(freeCall(rules, "GET", "/v1/messages/count_tokens")).toBe(false);
+    expect(egressTarget(scopeOf("anthropic"), "POST", "/v1/messages/count_tokens"))
+      .not.toBeNull();
+    expect(rules.free).toEqual([{
+      method: "POST", path: "/v1/messages/count_tokens",
+      cite: "https://platform.claude.com/docs/en/build-with-claude/token-counting",
+      read: "2026-11-02",
+      says: "Token counting is free to use but subject to requests per minute rate limits" }]);
+  });
+
+  it("cites a page and the day it was read for every free call, and lists only sealed ones", () => {
+    for (const api of ["anthropic-messages", "openai-completions", "mistral-conversations",
+                       "openai-responses", "azure-openai-responses", "google-generative-ai",
+                       "google-vertex"]) {
+      for (const call of apiRules(api)!.free) {
+        expect(call.cite, api).toMatch(/^https:\/\/[^/]+\//);
+        expect(call.read, api).toMatch(/^20\d\d-\d\d-\d\d$/);
+        expect(call.says.length, api).toBeGreaterThan(0);
+        expect(["POST", "PUT", "PATCH", "DELETE"], api).toContain(call.method);
+      }
+    }
+  });
+
+  it("refuses Gemini CLI's countTokens: no page read says it is free", async () => {
+    const rules = apiRules("google-generative-ai")!;
+    expect(rules.free).toEqual([]);
+    const path = "/v1beta/models/gemini-x:countTokens";
+    expect(freeCall(rules, "POST", path)).toBe(false);
+    // Sealed, but neither free nor the model call the gateway meters: egress_unmetered.
+    const { upstream } = records.find((record) => record.id === "google_ai_studio")!;
+    const meter = await learnMeter(builtinCatalog(), upstream!, "k");
+    expect(meteredCall({ ...scopeOf("google_ai_studio"), meter }, "POST", path)).toBe(false);
+  });
+
+  it("refuses Codex's web search (a billed server tool) and its Responses WebSocket", () => {
+    const rules = apiRules("openai-responses")!;
+    for (const type of ["web_search", "web_search_preview"]) {
+      expect(paidTool(rules, { model: "m", input: "hi", tools: [{ type }] }), type).toBe(true);
+    }
+    expect(paidTool(rules, { model: "m", input: "hi", tools: [{ type: "function",
+                                                                  name: "f" }] })).toBe(false);
+    // A WebSocket upgrade is a GET of the model path, which no key seals.
+    expect(egressTarget(scopeOf("openai"), "GET", "/v1/responses")).toBeNull();
+    expect(freeCall(rules, "GET", "/v1/responses")).toBe(false);
+  });
+});
 
 describe("the meter pi-ai's adapter teaches", () => {
   const keys = bundledRecords().map(sourceRecord)

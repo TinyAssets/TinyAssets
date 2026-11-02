@@ -105,7 +105,9 @@ import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
 import { mintToken } from "../../doors/src/routing-mac";
-import { bundledSources, cliEnv } from "../../doors/src/sources";
+import {
+  bundledSources, CREDENTIAL_KINDS, type CredentialKind, runEnv, SourceRecordError,
+} from "../../doors/src/sources";
 
 import {
   type AgentConfig, type AgentParts, END_WAIT_MS, gatewayAgent, type OwnerAgent, type UsageView,
@@ -500,6 +502,18 @@ export interface NetworkAppliedRequest extends LeaseRequest {
 
 /** A lease as the binder keeps the directory by it: with its token's hash. */
 export type HeldLease = Lease & { readonly token: string };
+
+/**
+ * The engine run a lease is for: the CLI record (`engine`), the credential it runs on, and
+ * an API-key run's connection. Its environment carries that credential alone
+ * (`sandboxEnv`): a run on the vendor's own sign-in gets no key at all.
+ */
+export interface SandboxRun {
+  readonly engine: string;
+  readonly credential: CredentialKind;
+  /** An API-key run's connection; absent on the vendor's own sign-in. */
+  readonly connection?: string;
+}
 
 /** What the sandbox slice sets up a sandbox from (`network.ts`). */
 export interface SandboxConfig {
@@ -896,7 +910,7 @@ export interface SandboxLeases {
    * counted to the lease and its epoch. Both tokens expire at the run's `deadline` (Unix
    * seconds), at most `RUN_DEADLINE_S` away, which is also the default.
    */
-  open(request: { holder: string; deadline?: number }): Promise<OpenedLease>;
+  open(request: { holder: string; deadline?: number; run: SandboxRun }): Promise<OpenedLease>;
   /** Renew it (8b's 20 s heartbeat): the same run. */
   renew(request: { lease_id: string; epoch: number }): Promise<Lease>;
   /** Give it back: both tokens refused from this unit on, its streams ended. */
@@ -908,8 +922,8 @@ export interface SandboxLeases {
   network(egressToken: string): Promise<NetworkPlan>;
   /** Whether the live lease's network is older than the egress policy: 8b re-applies it. */
   stale(): Promise<boolean>;
-  /** The owner's egress policy, its generation, and the clients' environment. */
-  config(): Promise<SandboxConfig>;
+  /** The owner's egress policy, its generation, and `run`'s environment. */
+  config(run: SandboxRun): Promise<SandboxConfig>;
 }
 
 export class OwnerDO extends DurableObject<OwnerEnv> {
@@ -2567,12 +2581,24 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   #sandboxLeases(owner: () => string): SandboxLeases {
-    const config = (): SandboxConfig => {
+    const config = (run: SandboxRun): SandboxConfig => {
+      if (typeof run !== "object" || run === null || typeof run.engine !== "string"
+          || !CREDENTIAL_KINDS.includes(run.credential)
+          || (run.credential === "api_key") !== (typeof run.connection === "string")) {
+        throw new Invalid("a sandbox run names its engine, its credential and, on an API " +
+                          "key, its connection");
+      }
+      let engine;
+      try {
+        engine = runEnv(bundledSources(), run.engine, run.credential);
+      } catch (error) {
+        throw error instanceof SourceRecordError ? new Invalid(error.message) : error;
+      }
       const { document } = this.#policy.read();
       return { generation: this.#policy.egressGeneration(), egress: document.egress,
                env: sandboxEnv(this.#connections.egressible(),
                                () => randomBytes(16).toString("hex"),
-                               cliEnv(bundledSources())) };
+                               { ...engine, connection: run.connection ?? null }) };
     };
     const leases: SandboxLeases = {
       open: (request) => this.#door(() => {
@@ -2584,12 +2610,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           throw new Invalid("a run's deadline is whole Unix seconds, still ahead");
         }
         const deadline = Math.min(asked ?? latest, latest);
+        // The run's environment is made before anything is taken: a run its record refuses
+        // takes no lease.
+        const set = config(request.run);
         const egress = mintToken(this.env.ROUTING_MAC_KEY, "egress", owner(), deadline);
         const sync = mintToken(this.env.ROUTING_MAC_KEY, "sync", owner(), deadline);
         const lease = this.#files.leaseAcquire(request.holder, egress.hash, sync.hash);
         // A lease that lapsed is replaced: its streams end with it.
         this.#egress.end("lease", (live) => live.lease !== lease.lease_id);
-        const set = config();
         return { egress_token: egress.token, sync_token: sync.token, lease,
                  network: networkDocument(set.egress, set.generation, egress.token),
                  env: set.env };
@@ -2622,16 +2650,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }),
       network: (egressToken) => this.#door(() => {
         this.#admitted("read");
-        const set = config();
-        return networkDocument(set.egress, set.generation, egressToken);
+        const { document } = this.#policy.read();
+        return networkDocument(document.egress, this.#policy.egressGeneration(), egressToken);
       }),
       stale: () => this.#door(() => {
         const lease = this.#files.sandboxLease(clock());
         return lease !== null && lease.network_generation !== this.#policy.egressGeneration();
       }),
-      config: () => this.#door(() => {
+      config: (run) => this.#door(() => {
         this.#admitted("read");
-        return config();
+        return config(run);
       }),
     };
     return Object.freeze(leases);

@@ -16,7 +16,8 @@
  * - the connection is the owner's, active, its credential usable and its scope stored
  *   (`egress_connection_refused`), and the method and path are among its sealed endpoints,
  *   by the gateway's own rule (`egress_endpoint_refused`);
- * - a read (`GET`, `HEAD`: a model list) is free; any other call must be its source's model
+ * - a read (`GET`, `HEAD`: a model list) is free, as is a call its API's rules cite as free
+ *   (`freeCall`: a token count); any other call must be its source's model
  *   call as pi-ai makes it, which the gateway can meter (`meteredCall`), with a declared
  *   body length (`egress_unmetered`, `egress_length_required`): the run's caps are always
  *   set, so a call that cannot be metered is never sent;
@@ -54,7 +55,7 @@
  */
 import { randomBytes } from "node:crypto";
 
-import { apiRules, tierMultiplier } from "../../gateway/src/api-rules";
+import { apiRules, freeCall, tierMultiplier } from "../../gateway/src/api-rules";
 import { type EgressScope, egressTarget, meteredCall, meteredModel }
   from "../../gateway/src/credential";
 
@@ -419,9 +420,11 @@ export class Egress {
     if (egressTarget(connection.scope, request.method, request.path) === null) {
       return refuse("egress_endpoint_refused");
     }
-    // A read of a sealed endpoint carries no model use; every other call must be the
-    // source's model call as pi-ai makes it, which the gateway meters.
-    const free = FREE_METHODS.includes(request.method);
+    // A read of a sealed endpoint carries no model use, nor does a call its API's rules
+    // cite as free (a token count); every other call must be the source's model call as
+    // pi-ai makes it, which the gateway meters.
+    const free = FREE_METHODS.includes(request.method)
+      || freeCall(apiRules(connection.scope.api), request.method, request.path);
     if (!free && (!meteredCall(connection.scope, request.method, request.path)
                   || connection.models.length === 0)) {
       return refuse("egress_unmetered");

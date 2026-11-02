@@ -15,7 +15,8 @@
       "verify_argv": [
         "{bin}",
         "--version"
-      ]
+      ],
+      "lifecycle_scripts": true
     },
     "credential": [
       "api_key"
@@ -72,21 +73,18 @@
     "engine": {
       "argv": [
         "{bin}",
-        "-p",
         "--mode",
-        "json",
-        "{prompt}"
+        "json"
       ],
       "resume_argv": [
         "{bin}",
-        "-p",
         "--mode",
         "json",
         "--session",
-        "{sid}",
-        "{prompt}"
+        "{sid}"
       ],
       "resume": "session_id",
+      "stdin": "{prompt}",
       "model_argv": [
         "--provider",
         "{provider}",
@@ -148,7 +146,13 @@
       ".pi/skills"
     ],
     "mcp": {
-      "unsupported": "pi's CLI has no built-in MCP client: TinyAssets reaches a pi agent only once an MCP extension package is chosen (slice S)."
+      "file": "{home}/.pi/agent/mcp.json",
+      "template": "{\"mcpServers\": {\"tinyassets\": {\"url\": \"{mcp_url}\"}}}",
+      "argv": [],
+      "trust": {
+        "argv": [],
+        "note": "A user-level server in the agent directory's mcp.json loads without project trust; only a project's .pi/mcp.json needs it (pi docs/mcp.md)."
+      }
     },
     "tools": {
       "allow": {
@@ -159,7 +163,9 @@
         "join": ","
       }
     },
-    "unattended_argv": [],
+    "unattended_argv": [
+      "--approve"
+    ],
     "home_env": {
       "PI_CODING_AGENT_DIR": "{home}/.pi/agent"
     },
@@ -167,10 +173,13 @@
       "{home}/.pi/agent/models.json": "{\"providers\": {\"{provider}\": {\"baseUrl\": \"{base_url}\"}}}"
     },
     "no_update": {
-      "reason": "No auto-update switch is documented in what was read; the template pins the npm package and slice S checks the CLI leaves it unchanged."
+      "env": {
+        "PI_SKIP_VERSION_CHECK": "1"
+      }
     },
     "secret_paths": [
-      "{home}/.pi/agent/auth.json"
+      "{home}/.pi/agent/auth.json",
+      "{home}/.pi/agent/mcp-auth.json"
     ],
     "session_paths": [
       "{home}/.pi/agent/sessions/"

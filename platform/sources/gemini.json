@@ -15,7 +15,8 @@
       "verify_argv": [
         "{bin}",
         "--version"
-      ]
+      ],
+      "lifecycle_scripts": true
     },
     "credential": [
       "vendor_login_in_sandbox",
@@ -49,7 +50,7 @@
     "unattended": {
       "vendor_login_in_sandbox": {
         "allowed": false,
-        "reason": "Google's Gemini CLI terms forbid third-party software using Gemini CLI OAuth, and no Google page read addresses a platform running the CLI unattended on a user's plan (subscription-engines §3, §11).",
+        "reason": "Unclear: Google's Gemini CLI terms do not say whether a platform may run the unmodified CLI unattended on a member's own Google sign-in, and no Google page read permits it (subscription-engines §3, §11).",
         "cite": "https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/tos-privacy.md",
         "read": "2026-11-01"
       },
@@ -63,7 +64,15 @@
       "vendor_login_in_sandbox": {
         "files": {
           "{home}/.gemini/settings.json": "{\"security\": {\"auth\": {\"selectedType\": \"oauth-personal\", \"enforcedType\": \"oauth-personal\"}}}"
-        }
+        },
+        "forbid_env": [
+          "GEMINI_API_KEY",
+          "GOOGLE_API_KEY",
+          "GOOGLE_GEMINI_BASE_URL",
+          "GOOGLE_BASE_URL",
+          "GOOGLE_GENAI_USE_VERTEXAI",
+          "GEMINI_CLI_USE_COMPUTE_ADC"
+        ]
       },
       "api_key": {
         "files": {
@@ -75,20 +84,17 @@
       "argv": [
         "{bin}",
         "--output-format",
-        "stream-json",
-        "--prompt",
-        "{prompt}"
+        "stream-json"
       ],
       "resume_argv": [
         "{bin}",
         "--output-format",
         "stream-json",
         "--resume",
-        "{sid}",
-        "--prompt",
-        "{prompt}"
+        "{sid}"
       ],
       "resume": "session_id",
+      "stdin": "{prompt}",
       "model_argv": [
         "--model",
         "{model}"
@@ -191,7 +197,10 @@
       "file": "{home}/.gemini/system-settings.json"
     },
     "secret_paths": [
-      "{home}/.gemini/oauth_creds.json"
+      "{home}/.gemini/oauth_creds.json",
+      "{home}/.gemini/mcp-oauth-tokens.json",
+      "{home}/.gemini/a2a-oauth-tokens.json",
+      "{home}/.gemini/gemini-credentials.json"
     ],
     "session_paths": [
       "{home}/.gemini/tmp/*/chats/"

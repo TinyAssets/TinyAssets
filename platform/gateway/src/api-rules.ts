@@ -40,7 +40,25 @@
  * - `betas`: the provider beta headers (`anthropic-beta`, `openai-beta`, any `*-beta`) a
  *   call may carry; every other is stripped, since a beta can widen a call past what it
  *   was reserved for (a longer context). None today.
+ * - `free`: calls beyond a read (`GET`, `HEAD`) that the provider does not bill, each with
+ *   the provider's page that says so and the day it was read (a token count): forwarded
+ *   unmetered, as a read is, but only on an endpoint the source seals. A call the API's
+ *   page does not say is free is never here, so it is refused `unmetered`. Gemini's
+ *   `countTokens` is not here: its page (ai.google.dev) could not be read when this list
+ *   was made, so no page says it is free.
  */
+
+/** A call the provider does not bill, with the page that says so (`free`). */
+export interface FreeCall {
+  readonly method: string;
+  /** The path, from the base URL's origin, exactly. */
+  readonly path: string;
+  /** The provider's page that says the call is free, and the day it was read. */
+  readonly cite: string;
+  readonly read: string;
+  /** What the page says, quoted. */
+  readonly says: string;
+}
 
 export interface ApiRules {
   readonly outputs: readonly (readonly string[])[];
@@ -75,6 +93,8 @@ export interface ApiRules {
                      readonly events?: readonly string[] } | null;
   /** The beta headers a call may carry, each one its reservation accounts for. */
   readonly betas: readonly string[];
+  /** Calls the provider does not bill, each on its cited page: forwarded unmetered. */
+  readonly free: readonly FreeCall[];
 }
 
 /** The top-level body keys the egress door reads for the owner's object: model and tier. */
@@ -101,6 +121,7 @@ const COMPLETIONS: ApiRules = Object.freeze({
   served: Object.freeze({ paths: Object.freeze([Object.freeze(["service_tier"])]),
                           priced: Object.freeze(["default", "on_demand"]) }),
   betas: Object.freeze([]),
+  free: Object.freeze([]),
 });
 
 const RESPONSES: ApiRules = Object.freeze({
@@ -131,6 +152,7 @@ const RESPONSES: ApiRules = Object.freeze({
                           events: Object.freeze(["response.completed",
                                                  "response.incomplete"]) }),
   betas: Object.freeze([]),
+  free: Object.freeze([]),
 });
 
 const GOOGLE: ApiRules = Object.freeze({
@@ -154,6 +176,7 @@ const GOOGLE: ApiRules = Object.freeze({
   ]),
   served: null,
   betas: Object.freeze([]),
+  free: Object.freeze([]),
 });
 
 const ANTHROPIC: ApiRules = Object.freeze({
@@ -180,6 +203,13 @@ const ANTHROPIC: ApiRules = Object.freeze({
                                                                "service_tier"])]),
                           priced: Object.freeze(["standard"]) }),
   betas: Object.freeze([]),
+  // Claude Code counts tokens before it sends; Anthropic does not bill the count.
+  free: Object.freeze([Object.freeze({
+    method: "POST", path: "/v1/messages/count_tokens",
+    cite: "https://platform.claude.com/docs/en/build-with-claude/token-counting",
+    read: "2026-11-02",
+    says: "Token counting is free to use but subject to requests per minute rate limits",
+  })]),
 });
 
 /** Mistral's chat completions: as OpenAI's, but its stream reports its usage unasked. */
@@ -201,6 +231,7 @@ const MISTRAL: ApiRules = Object.freeze({
   ]),
   served: null,
   betas: Object.freeze([]),
+  free: Object.freeze([]),
 });
 
 /** The rules for each API a sandbox call may be metered on; any other is never metered. */
@@ -224,6 +255,17 @@ export function valueAt(body: unknown, path: readonly string[]): unknown {
   return path.reduce<unknown>((at, key) =>
     (typeof at === "object" && at !== null && !Array.isArray(at)
       ? (at as Record<string, unknown>)[key] : undefined), body);
+}
+
+/**
+ * Whether a call is one the provider does not bill (`free`): `method` and the bare `path`
+ * (from the origin, its query dropped) exactly a listed call's. A read (`GET`, `HEAD`) is
+ * free by its method, as the egress door has it; this is every other free call.
+ */
+export function freeCall(rules: ApiRules | null, method: string, path: string): boolean {
+  const bare = path.split("?")[0]!;
+  return rules !== null && rules.free.some((call) => call.method === method
+    && call.path === bare);
 }
 
 /** Whether the request asks for more than one choice. */

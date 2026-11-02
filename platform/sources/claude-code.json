@@ -63,6 +63,14 @@
       "vendor_login_in_sandbox": {
         "forbid_argv": [
           "--bare"
+        ],
+        "forbid_env": [
+          "CLAUDE_CODE_USE_BEDROCK",
+          "CLAUDE_CODE_USE_VERTEX",
+          "CLAUDE_CODE_USE_FOUNDRY",
+          "ANTHROPIC_AUTH_TOKEN",
+          "ANTHROPIC_API_KEY",
+          "ANTHROPIC_BASE_URL"
         ]
       }
     },
@@ -203,7 +211,8 @@
       }
     },
     "secret_paths": [
-      "{home}/.claude/.credentials.json"
+      "{home}/.claude/.credentials.json",
+      "{home}/.claude/.claude.json"
     ],
     "session_paths": [
       "{home}/.claude/projects/"
