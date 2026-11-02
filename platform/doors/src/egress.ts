@@ -56,7 +56,8 @@ const OUTCOME_WAIT_MS = 10_000;
 /** The HTTP status each refusal is answered with. */
 const STATUS: Readonly<Record<EgressCode, number>> = Object.freeze({
   egress_token_missing: 401, egress_token_unknown: 401, egress_token_expired: 401,
-  egress_lease_closed: 401, egress_policy_stale: 409, egress_network_stale: 409,
+  egress_lease_closed: 401, egress_run_connection: 403, egress_policy_stale: 409,
+  egress_network_stale: 409,
   egress_connection_refused: 403, egress_endpoint_refused: 403, egress_unmetered: 403,
   egress_length_required: 411, egress_rate: 429, egress_spend_refused: 402,
   egress_unknown_model: 404, egress_unpriced_option: 403, egress_too_large: 413,

@@ -9,6 +9,9 @@
  * **Open** (`open`, in the door's unit, after the binding check admitted the owner for
  * `work`), each refusal one of the fixed codes (`EgressCode`):
  * - the live lease, by the hash of the egress token's secret (`egress_lease_closed`);
+ * - the connection is the one the lease's engine run was given (`egress_run_connection`):
+ *   a run never spends on a connection it was not given, and a run on the vendor's own
+ *   sign-in may call none;
  * - the egress generation the request's transform carries, and the one the sandbox's
  *   network was last applied under, are the current one (`egress_policy_stale`,
  *   `egress_network_stale`): a write that changes the egress table leaves egress refused,
@@ -405,6 +408,10 @@ export class Egress {
     };
     if (lease === null || sandbox.kind !== "egress") {
       return refuse("egress_lease_closed");
+    }
+    // A run spends only on the connection it was given; a signed-in run on none.
+    if (lease.run_connection === null || lease.run_connection !== request.connection) {
+      return refuse("egress_run_connection");
     }
     if (sandbox.generation !== generation) {
       return refuse("egress_policy_stale");

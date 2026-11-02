@@ -552,14 +552,14 @@ describe("a refused call", () => {
     expect(await forwarded()).toEqual([]);
   });
 
-  it("names a connection that is not the owner's, an endpoint not sealed (a write of a read), " +
+  it("names a connection that is not its run's, an endpoint not sealed (a write of a read), " +
      "or no body length", async () => {
     const box = await sandbox();
     const other = await sandbox();
     for (const [request, status, code] of [
-      [egressRequest({ ...box, connection: other.connection }), 403, "egress_connection_refused"],
+      [egressRequest({ ...box, connection: other.connection }), 403, "egress_run_connection"],
       [egressRequest({ ...box, connection: `c${"0".repeat(24)}` }), 403,
-       "egress_connection_refused"],
+       "egress_run_connection"],
       [egressRequest(box, "/openai/v1/files"), 403, "egress_endpoint_refused"],
       [egressRequest(box, "/openai/v1/chat/completions%2F..%2Fadmin"), 403,
        "egress_endpoint_refused"],

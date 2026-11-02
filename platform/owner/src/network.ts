@@ -141,7 +141,8 @@ export function checkDestination(entry: unknown): void {
  */
 export const EGRESS_CODES = Object.freeze([
   "egress_token_missing", "egress_token_unknown", "egress_token_expired",
-  "egress_lease_closed", "egress_policy_stale", "egress_network_stale",
+  "egress_lease_closed", "egress_run_connection", "egress_policy_stale",
+  "egress_network_stale",
   "egress_connection_refused", "egress_endpoint_refused", "egress_unmetered",
   "egress_length_required", "egress_rate", "egress_spend_refused", "egress_unknown_model",
   "egress_unpriced_option", "egress_too_large",

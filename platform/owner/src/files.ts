@@ -266,6 +266,11 @@ export interface SandboxLease {
   readonly expires_at: number;
   /** The egress generation the sandbox's network was last applied under, or null. */
   readonly network_generation: number | null;
+  /**
+   * The one connection the lease's engine run may call through the egress door; null for a
+   * run on the vendor's own sign-in, which may call none.
+   */
+  readonly run_connection: string | null;
 }
 
 /** A sync op: what the sandbox's scan found, against the version it last synced. */
@@ -328,6 +333,7 @@ type Space = {
   egress_token: string | null;
   sync_token: string | null;
   network_generation: number | null;
+  run_connection: string | null;
   retained_keep: number;
   retained_recent: number;
   retained_days: number;
@@ -1636,10 +1642,12 @@ export class Files {
   /**
    * Take the sandbox's one lease, when no live one is held: a new lease id and the next
    * epoch, bound to the SHA-256 hex of its two tokens' secrets (`egress` and `sync`; the
-   * secrets never stay in the object). Its network is not yet applied
+   * secrets never stay in the object), and to the one connection its engine run was given
+   * (`runConnection`; null on the vendor's own sign-in). Its network is not yet applied
    * (`network_generation` null), so egress waits until the sandbox slice applies it.
    */
-  leaseAcquire(holder: unknown, egress: unknown, sync: unknown): Lease {
+  leaseAcquire(holder: unknown, egress: unknown, sync: unknown,
+               runConnection: string | null): Lease {
     if (typeof holder !== "string" || !holder || codePoints(holder) > 128
         || !isPrintable(holder)) {
       throw new Invalid("a lease holder is 1 to 128 printable characters");
@@ -1647,6 +1655,10 @@ export class Files {
     if (typeof egress !== "string" || !HEX64.test(egress) || typeof sync !== "string"
         || !HEX64.test(sync) || egress === sync) {
       throw new Invalid("a lease's two token hashes are 64 hex, and differ");
+    }
+    if (runConnection !== null && (typeof runConnection !== "string" || !runConnection
+                                   || runConnection.length > 64)) {
+      throw new Invalid("a lease's run connection is a connection id, or none");
     }
     return this.#change(null, (_touched, now) => {
       const space = this.#space();
@@ -1656,9 +1668,9 @@ export class Files {
       const leaseId = randomBytes(16).toString("hex");
       const row = this.#sql.exec<{ epoch: number; seq: number }>(
         "UPDATE file_space SET lease_id = ?, epoch = epoch + 1, holder = ?, lease_expires = ?, " +
-          "egress_token = ?, sync_token = ?, network_generation = NULL " +
+          "egress_token = ?, sync_token = ?, network_generation = NULL, run_connection = ? " +
           "RETURNING epoch, seq",
-        leaseId, holder, now + LEASE_TTL_S, egress, sync).one();
+        leaseId, holder, now + LEASE_TTL_S, egress, sync, runConnection).one();
       return { lease_id: leaseId, epoch: row.epoch, expires_at: now + LEASE_TTL_S,
                base: row.seq };
     });
@@ -1676,7 +1688,8 @@ export class Files {
       return null;
     }
     return { lease_id: space.lease_id, epoch: space.epoch, egress_token: space.egress_token,
-             sync_token: space.sync_token, expires_at: space.lease_expires, network_generation: space.network_generation };
+             sync_token: space.sync_token, expires_at: space.lease_expires,
+             network_generation: space.network_generation, run_connection: space.run_connection };
   }
 
   /**
@@ -1721,7 +1734,8 @@ export class Files {
         return { released: false };
       }
       this.#sql.exec("UPDATE file_space SET lease_id = NULL, holder = NULL, lease_expires = 0, " +
-                       "egress_token = NULL, sync_token = NULL, network_generation = NULL");
+                       "egress_token = NULL, sync_token = NULL, network_generation = NULL, " +
+                       "run_connection = NULL");
       return { released: true };
     });
   }

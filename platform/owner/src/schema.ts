@@ -1546,6 +1546,13 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "ON egress_reservations WHEN OLD.charge IS NOT NULL AND OLD.charge != 'held' " +
       "BEGIN SELECT RAISE(ABORT, 'a charge is settled once'); END",
   ]),
+  // The connection the live lease's engine run was given (slice E, review round 1): the
+  // only one its sandbox may call through the egress door; null for a run on the vendor's
+  // own sign-in, which may call none.
+  Object.freeze([
+    "ALTER TABLE file_space ADD COLUMN run_connection TEXT CHECK (run_connection IS NULL " +
+      "OR length(run_connection) BETWEEN 1 AND 64)",
+  ]),
 ]);
 
 /** Apply every migration past the stored version; return the version now stored. */

@@ -2615,7 +2615,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         const set = config(request.run);
         const egress = mintToken(this.env.ROUTING_MAC_KEY, "egress", owner(), deadline);
         const sync = mintToken(this.env.ROUTING_MAC_KEY, "sync", owner(), deadline);
-        const lease = this.#files.leaseAcquire(request.holder, egress.hash, sync.hash);
+        // The lease is held to its run's one connection (none on the vendor's own sign-in).
+        const lease = this.#files.leaseAcquire(request.holder, egress.hash, sync.hash,
+                                               request.run.connection ?? null);
         // A lease that lapsed is replaced: its streams end with it.
         this.#egress.end("lease", (live) => live.lease !== lease.lease_id);
         return { egress_token: egress.token, sync_token: sync.token, lease,
@@ -2674,8 +2676,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const { r, live } = await this.#door(() => {
       this.#bind(binding, "work", "egress");
       const checked = egressRequest(request);
-      return { r: checked,
-               live: this.#egress.lease(sandboxBinding(binding.sandbox), clock()) !== null };
+      const lease = this.#egress.lease(sandboxBinding(binding.sandbox), clock());
+      // Only the live lease's own run connection is ever refreshed for it.
+      return { r: checked, live: lease !== null && lease.run_connection === checked.connection };
     });
     // Only a live lease's call may refresh its connection's OAuth credential.
     if (live) {

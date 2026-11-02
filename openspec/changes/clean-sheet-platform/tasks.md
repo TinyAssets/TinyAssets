@@ -1784,13 +1784,15 @@ account and no deploy.
     declare `lifecycle_scripts`); a key naming an unwired engine is refused; Gemini's
     refusal reason says Google's terms leave it unclear; Codex's API-key citation carries a
     `read_note` that it was read through the search index only.
+  - Egress admission holds a lease to its run's own connection: the lease keeps it
+    (`file_space.run_connection`, a new migration; null for a run on the vendor's own
+    sign-in), and `egressOpen` refuses any other `egress_run_connection` (403) right after
+    the lease check, so a run never spends on a connection it was not given and a
+    signed-in run spends on none; only the run's own connection is refreshed for it.
 - [ ] Owed by slice E's review, outside slice S's checks:
   - Price server tools as data (Codex's web search, Anthropic's `mcp_servers`, OpenAI's
     `web_search_options`), so a call that enables one can be metered rather than refused
     `egress_unmetered_tool`.
-  - Egress admission holds a lease to its run's own connection: today any process in a
-    lease's sandbox may call any of the owner's connections through the door (the
-    environment no longer hands it another's placeholder, but the door does not check).
   - Gemini's `countTokens`: read Google's page (ai.google.dev, to be allowed in the
     session's network) and list it in `free` if the page says it is free.
 - [ ] Slice S verifies each engine record live, on the pinned version, in a headless E2B VM
