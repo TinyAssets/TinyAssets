@@ -13,7 +13,7 @@ import { learnMeter, meteredRecord } from "../src/meter";
 import { Failure, guarded } from "../src/failure";
 import Gateway, { ConnectGateway, EgressGateway } from "../src/index";
 import { open } from "../src/keyring";
-import { ALICE, ANTHROPIC, envelopeOf, OPENAI, sealed } from "./support";
+import { ALICE, ANTHROPIC, OPENAI, sealed } from "./support";
 
 const gateway = (exports as unknown as { default: Service<Gateway> }).default;
 
@@ -320,15 +320,13 @@ describe("the gateway Worker", () => {
     }, ANTHROPIC))).toBe("invalid_source");
   });
 
-  it("serves /v1/messages and nothing else over fetch", async () => {
-    const blob = (await gateway.seal("alice", "c1", 1, "sk-msg", ANTHROPIC)).blob;
-    const missing = await gateway.fetch("https://gateway.internal/v1/other");
-    expect(missing.status).toBe(404);
-    const refused = await gateway.fetch("https://gateway.internal/v1/messages", {
-      method: "POST", headers: { "x-ta-envelope": envelopeOf({ blob, bound: { ...ALICE, owner: "bob" } }) },
-      body: JSON.stringify({ model: "m", context: { messages: [] } }),
-    });
-    expect(refused.status).toBe(403);
-    expect(await refused.text()).not.toContain("sk-msg");
+  it("serves no model call over fetch: /v1/messages is gone with the in-object loop",
+     async () => {
+    for (const path of ["/v1/messages", "/v1/other"]) {
+      const missing = await gateway.fetch(`https://gateway.internal${path}`, {
+        method: "POST", body: JSON.stringify({ model: "m", context: { messages: [] } }) });
+      expect(missing.status).toBe(404);
+      expect(await missing.json()).toEqual({ error: { code: "not_found", message: "not_found" } });
+    }
   });
 });

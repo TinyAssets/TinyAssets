@@ -5,7 +5,6 @@
  */
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { DurableObjectSqliteDatabase } from "@earendil-works/chord/sqlite/cloudflare";
 import { describe, expect, it } from "vitest";
 
 import { CHUNK_BYTES, type Entry, INLINE_BYTES, sha256Hex } from "../src/files";
@@ -395,11 +394,11 @@ describe("every file door", () => {
     await r.register(MUSE);
     const [row] = (await r.stub.grantList(r.bind(null))).clients;
     const answer = await runInDurableObject(r.stub, async (instance: OwnerDO, state) => {
-      // A pi commit holds the queue: the write's door queues its check, then the owner's
+      // An async storage transaction holds the queue: the write's door queues its check, then the owner's
       // narrowing of the client's grant queues behind it, before the write itself.
       let release!: () => void;
       const held = new Promise<void>((resolve) => { release = resolve; });
-      const commit = new DurableObjectSqliteDatabase(state.storage).transaction(() => held);
+      const commit = state.storage.transaction(() => held);
       const writing = instance.fileWrite(r.bind(MUSE), {
         path: `${W}/a.txt`, expected_etag: null, content: text("x") })
         .then(() => "written", (error: Error) => error.message);
@@ -436,11 +435,11 @@ describe("every file door", () => {
     await r.register(MUSE);
     const [row] = (await r.stub.grantList(r.bind(null))).clients;
     const answer = await runInDurableObject(r.stub, async (instance: OwnerDO, state) => {
-      // The door's check queues behind a held pi commit, the narrowing behind it, then
+      // The door's check queues behind a held async transaction, the narrowing behind it, then
       // the write's intent.
       let release!: () => void;
       const held = new Promise<void>((resolve) => { release = resolve; });
-      const commit = new DurableObjectSqliteDatabase(state.storage).transaction(() => held);
+      const commit = state.storage.transaction(() => held);
       const writing = instance.fileWrite(r.bind(MUSE), {
         path: `${W}/big.bin`, expected_etag: null, content: new Uint8Array(INLINE_BYTES + 1) })
         .then(() => "written", (error: Error) => error.message);
@@ -471,7 +470,7 @@ describe("every file door", () => {
       expect(intents()).toHaveLength(1);
       let release!: () => void;
       const held = new Promise<void>((resolve) => { release = resolve; });
-      const commit = new DurableObjectSqliteDatabase(state.storage).transaction(() => held);
+      const commit = state.storage.transaction(() => held);
       const narrowing = narrow(r, instance, row!.revision);
       release();
       await Promise.all([commit, narrowing]);
@@ -491,7 +490,11 @@ describe("every file door", () => {
     expect(await laneAt(r.stub, "files")).toBeGreaterThan(Date.now() / 1000 + 60);
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
     await write(r, `${W}/b`, "1");
-    expect(await laneAt(r.stub, "files")).toBeLessThanOrEqual(Date.now() / 1000);
+    // Due now; or workerd already fired the alarm the due job armed, and the lane ran:
+    // the expired upload is gone (the race the slice D review's round 2 found).
+    const due = ((await laneAt(r.stub, "files")) ?? Infinity) <= Date.now() / 1000;
+    const ran = (await sqlIn(r.stub, "SELECT 1 FROM file_intents")).length === 0;
+    expect(due || ran).toBe(true);
   });
 
   it("refuses a request with a field it does not take", async () => {

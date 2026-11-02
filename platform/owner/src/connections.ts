@@ -116,10 +116,9 @@ export const CONNECTION_LIMITS: ConnectionLimits = Object.freeze({
  * A model a connection serves, as the gateway's setup check lists it: pi-ai's own `Model`
  * record whole (pi audit F6), but for what is the gateway's (`provider`, `api`, `baseUrl`,
  * and the request shaping its adapter applies: `headers`, `compat`, sampling parameters;
- * the gateway's `model-record.ts`). So pi offers the thinking levels its map allows
- * (`getSupportedThinkingLevels`: `xhigh` and `max` only when mapped), `read` resizes images
- * to its `inputLimits`, and a call is reserved and settled at its own prices, long-context
- * tiers included (pi-ai's `calculateCost`, `usage.ts`).
+ * the gateway's `model-record.ts`). So a call is reserved and settled at its own prices,
+ * long-context tiers included (pi-ai's `calculateCost`, `usage.ts`, `egress.ts`), and the
+ * runs slice (R) ranks it (`auto.ts`).
  */
 export type ModelInfo = Readonly<Pick<Model<Api>,
   "id" | "name" | "reasoning" | "thinkingLevelMap" | "promptCache" | "input" | "inputLimits"
@@ -134,7 +133,6 @@ export interface Resealed {
 
 /** The gateway as the object binds it (`GATEWAY`, the `tinyassets-gateway` Worker). */
 export interface GatewayService {
-  fetch(request: Request): Promise<Response>;
   refresh(owner: string, connection: string, version: number, blob: string):
     Promise<Resealed & { readonly expires_at: number | null }>;
   revokeAtProvider(owner: string, connection: string, version: number, blob: string):

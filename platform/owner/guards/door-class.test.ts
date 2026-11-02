@@ -76,14 +76,18 @@ describe("door-class guard", () => {
     expect(classes.size).toBeGreaterThan(60);
     expect(classes.get(ADMISSION_DOOR)).toEqual(["admission"]);
     // The work a billing suspension refuses, and some of what it leaves.
-    for (const door of ["agentSubmit", "agentRun", "fileWrite", "fileUploadBegin",
-                        "collectionWrite", "policyWrite"]) {
+    for (const door of ["fileWrite", "fileUploadBegin", "collectionWrite", "policyWrite",
+                        "roomPost"]) {
       expect(classes.get(door)?.[0], door).toBe("work");
     }
-    for (const door of ["agentStatus", "fileRead", "policyRead", "sessionOpen"]) {
+    for (const door of ["fileRead", "policyRead", "sessionOpen", "mailboxRead"]) {
       expect(classes.get(door)?.[0], door).toBe("read");
     }
-    for (const door of ["agentCancel", "grantRevoke", "fileRemove", "deleteAgent"]) {
+    // The agent's doors are absent until the runs slice brings them back as run doors.
+    for (const door of ["agentSubmit", "agentRun", "agentStatus", "agentCancel"]) {
+      expect(classes.has(door), door).toBe(false);
+    }
+    for (const door of ["grantRevoke", "fileRemove", "deleteAgent"]) {
       expect(classes.get(door)?.[0], door).toBe("reduce");
     }
   });

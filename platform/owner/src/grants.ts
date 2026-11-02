@@ -11,11 +11,11 @@
  * A scoped grant holds exact `{universe, agent, capability}` triples. The capabilities
  * the object's doors check (`CAPABILITIES`): `read_graph` and `write_graph` (the mailbox,
  * its doorbell subscription and the collections), `propose_policy` (an agent's policy
- * proposal), `read_files` and `write_files` (the file doors), and `converse` and
- * `run_graph` (the agent's doors: a message to an agent's thread, and a launch of an
- * agent's run, `agentSubmit` and `agentRun`, as the Python's REST scopes named them), and
- * `run_code` (the agent's code mode, H1), which a full grant does not hold: a client holds
- * it only where a scoped grant names it (`EXPLICIT`, `authority.ts`).
+ * proposal), `read_files` and `write_files` (the file doors), `converse` and `run_graph`
+ * (the Python's REST scopes for a message to an agent and a run of one, whose doors the
+ * runs slice (R) brings back), and `run_code` (code mode, slice M's `code` tool), which a
+ * full grant does not hold: a client holds it only where a scoped grant names it
+ * (`EXPLICIT`, `authority.ts`).
  *
  * Enforced here now:
  * - Every call from an outside client is admitted, in the object that holds its grant,
@@ -37,16 +37,13 @@
  * - Work saved under a grant is rechecked with `standing` against the generation it
  *   was stamped with: a changed, revoked or fenced grant refuses it. Stamps carry no
  *   scopes: a scoped grant's are read live from the row, so a rename needs no new stamp.
- *   The schedule's stamped work (`scheduled.ts`) and an MCP client's held registration
- *   (`registrations.ts`) carry that stamp and hold their client's row (`held`), as an
- *   agent does, so the free-row bound can never forget it and turn a standing grant
- *   into "no grant".
+ *   An MCP client's held registration (`registrations.ts`) carries that stamp and holds
+ *   its client's row (`held`), as an agent does, so the free-row bound can never forget
+ *   it and turn a standing grant into "no grant".
  *
- * The agent's threads made for an outside client carry its stamp, and every tool call in
- * them is checked with `standing` and the scope's capability (`authority.ts`, A2); a grant
- * change ends that client's in-flight turns, live views and waits once it committed (the
- * Python's `_end_outside_streams`; `agent.ts`). Owed by a later slice, written into its
- * task: the doorbell rechecks the grant just before it sends (7).
+ * The runs slice (R) stamps an outside client's runs, each call checked with `standing`
+ * and the scope's capability (`authority.ts`), a grant change ending them. Owed by a later
+ * slice, written into its task: the doorbell rechecks the grant just before it sends (7).
  *
  * The rows stay bounded without ever forgetting a fence (slice 3's review L1, and slice
  * 5's review M1). A row an agent or stamped work holds is kept: it is what that work is
@@ -388,7 +385,7 @@ export class Grants {
       throw new Refused("only a revoked grant is forgotten; revoke it first");
     }
     if (row.agents > 0 || row.held > 0) {
-      throw new Refused("an agent, a thread or a held registration still holds this " +
+      throw new Refused("an agent or a held registration still holds this " +
                         "client's grant");
     }
     this.#sql.exec("DELETE FROM outside_clients WHERE client = ?", row.client);

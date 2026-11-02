@@ -44,16 +44,12 @@ The gateway SHALL run only the pi-ai APIs whose every request goes through `fetc
 - **WHEN** a source names `bedrock-converse-stream` or `openai-codex-responses`
 - **THEN** sealing it is refused as `invalid_source`, and the catalog refuses it as `unsupported_source`
 
-### Requirement: Every adapter request goes through the call's guard
-Each model call SHALL run inside its own `AsyncLocalStorage` scope in which the global `fetch` is that call's endpoint guard, so an adapter that refuses `options.fetch` (pi-ai's Google adapters) is held to the sealed origin, paths and methods and never follows a redirect. Outside any scope the global `fetch` SHALL be the runtime's own.
+### Requirement: An adapter's requests go through the scope's guard
+Each run of a pi-ai adapter the gateway makes (the meter's learning runs, `meter.ts`) SHALL run inside its own `AsyncLocalStorage` scope in which the global `fetch` is that run's own fetch, so an adapter that refuses `options.fetch` (pi-ai's Google adapters) reaches only it. Outside any scope the global `fetch` SHALL be the runtime's own. The gateway serves no model call of its own: sandbox egress is forwarded raw (`forward.ts`), never following a redirect.
 
-#### Scenario: Google's sealed origin redirects
-- **WHEN** a Google call's sealed origin answers 302 or 307 to another host
-- **THEN** the redirect is not followed, nothing reaches the other host, and the stream ends with `upstream_error`
-
-#### Scenario: Two calls at once
-- **WHEN** two owners' Google calls run concurrently
-- **THEN** each upstream request carries only its own call's key
+#### Scenario: Inside and outside a scope
+- **WHEN** a global `fetch` is made inside a run's scope, after an await, and outside any scope
+- **THEN** the first two reach the scope's own fetch, and the last the runtime's
 
 ### Requirement: The interposer is the module-state guard's one pinned exemption
 The interposer SHALL be the one exemption from the platform's module-state guard, pinned to its one file, to the three findings it needs (the scope, the captured runtime fetch, the one write of the global) and to the file's SHA-256: Google's SDK takes no fetch, and nothing else holds it to the seal without forking pi-ai. The scope SHALL hold no data between calls.
@@ -62,62 +58,12 @@ The interposer SHALL be the one exemption from the platform's module-state guard
 - **WHEN** the interposer's file changes, gains a finding, or its text appears in another file
 - **THEN** the module-state guard fails CI
 
-### Requirement: The gateway serves model calls in pi-ai's pi-messages protocol
-`POST /v1/messages` SHALL take pi-ai's pi-messages request with the owner object's envelope (`x-ta-envelope`), open the blob under the binding the envelope names, and run pi-ai's `streamSimple` through pi-ai's provider for the sealed source, sent to the sealed base URL with the opened secret and no ambient credential. It SHALL answer with each pi-ai event re-encoded as the inverse of pi-ai's own pi-messages client, the terminal `done` carrying pi-ai's usage.
-
-#### Scenario: A call through pi-ai's own client
-- **WHEN** pi-ai's pi-messages client streams a call through the gateway to pi-ai's adapter for Anthropic Messages, OpenAI Responses, Google Generative AI or a declared custom endpoint
-- **THEN** the client rebuilds every event the adapter emitted and the same final message, with the opened secret sent only in the provider's own header
-
-### Requirement: A model call stays within its reservation and deadline
-The gateway SHALL clamp a call's output tokens, on the request and on the model, to the envelope's reservation, SHALL refuse a reasoning call whose reservation is under 2048 tokens (no room for the smallest thinking budget beside pi-ai's answer floor) as `reservation_too_small`, and SHALL end the call when the caller stops reading and at the envelope's deadline.
-
-#### Scenario: A thinking budget asks for more
-- **WHEN** a reasoning request would raise the output-token limit above the reservation to fit a thinking budget
-- **THEN** the limit sent upstream stays within the reservation
-
-#### Scenario: The owner's call is cancelled
-- **WHEN** the owner object aborts the call, or the deadline passes
-- **THEN** the upstream request is cancelled, and the stream ends with an `error` event of `aborted` or `deadline`
-
 ### Requirement: Gateway errors are fixed codes
-Every error the gateway returns, throws or streams SHALL be one of its fixed codes, carrying no secret, no upstream body or message and no text of an exception it caught; an upstream failure SHALL be classified from the HTTP status the gateway saw, and the adapter's message SHALL be read only by pi-ai's own overflow detection, never shown.
+Every error the gateway returns or throws SHALL be one of its fixed codes, carrying no secret, no upstream body or message and no text of an exception it caught; an upstream failure SHALL be classified from the HTTP status the gateway saw: 401 and 403 `upstream_unauthorized`, 408 `upstream_timeout`, 429 `upstream_rate_limited`, any other 4xx `upstream_rejected`, 503 and 529 `upstream_overloaded`, any other 5xx `upstream_server_error`.
 
 #### Scenario: An upstream refusal quotes the key
 - **WHEN** a provider answers 401, 403, 429 or another 4xx with a body that quotes the credential
 - **THEN** the gateway answers `upstream_unauthorized`, `upstream_rate_limited` or `upstream_rejected` with status 502, and neither the key nor the body appears anywhere in the answer
-
-### Requirement: A refusal before any output is answered with its status
-A model call the provider refused before producing anything SHALL be answered with its fixed code and that code's non-200 status, not a 200 stream, so the owner settles it at no cost. A failure after the stream started SHALL end the stream with an `error` event of its code.
-
-#### Scenario: The deadline passes mid-answer
-- **WHEN** a call's deadline passes after the provider began answering
-- **THEN** the answer is a 200 stream that ends with an `error` event of `deadline`
-
-### Requirement: A transient refusal's code is one pi-ai retries
-An upstream status SHALL be named so that pi-ai's own retry classifier reads it as the provider meant: 408 `upstream_timeout`, 429 `upstream_rate_limited`, 503 and 529 `upstream_overloaded` and any other 5xx `upstream_server_error`, which it retries; 401 and 403 `upstream_unauthorized` and any other 4xx `upstream_rejected`, which it does not.
-
-#### Scenario: An overloaded provider
-- **WHEN** a provider answers 529 before any output
-- **THEN** the gateway answers `upstream_overloaded`, and pi's agent, allowed a retry, tries the call again
-
-### Requirement: A context too long for the model reaches pi as an overflow
-A model call's refusal SHALL be read for an overflow before the generic mapping: any 413, and any refusal but a 401, 403 or 429 whose adapter message pi-ai's `isContextOverflow` reads as one, SHALL be answered `context_length_exceeded` with status 413, the phrase pi's overflow detection matches, so pi compacts and retries once.
-
-#### Scenario: Anthropic's "prompt is too long"
-- **WHEN** a provider refuses a call in its own words for its context's length, in any of the Anthropic, OpenAI Responses or Google wire formats
-- **THEN** the gateway answers `context_length_exceeded` with status 413, pi-ai's own client reads the answer as an overflow, and none of the provider's words appear in it
-
-#### Scenario: A tokens-per-minute limit
-- **WHEN** a provider answers 429 with words that read like an overflow ("too many tokens")
-- **THEN** the gateway answers `upstream_rate_limited`, by its status
-
-### Requirement: Every other overflow is the same refusal
-A stream the provider fails for its context's length after a 2xx SHALL end with an `error` event of `context_length_exceeded`, and a request body past the gateway's bound SHALL be refused with it.
-
-#### Scenario: A response that fails mid-stream
-- **WHEN** the OpenAI Responses API answers 200 and then fails the response with `context_length_exceeded`
-- **THEN** the stream ends with an `error` event of `context_length_exceeded`, and none of the provider's words
 
 ### Requirement: Sandbox egress is forwarded raw under the sealed endpoints
 `forward` SHALL send a sandbox request's method, path, query, headers and body to the credential's sealed origin only, strip every inbound credential (authorization and API-key headers, cookies, method overrides, the API-key query parameters in any case, our own `x-ta-` headers and Cloudflare's), inject the sealed secret by the sealed auth template, cut the request at five minutes, and pass the provider's answer through.
@@ -159,7 +105,7 @@ For a key-exchange source (the Python's `pkce_user_key_v1`, OpenRouter's), `exch
 - **THEN** the call fails with a fixed code, the redirect is never followed, and nothing is sealed
 
 ### Requirement: The doors reach only the connect steps and egress forwarding
-The gateway SHALL serve the doors Worker through two named entrypoints: `ConnectGateway`, which offers only `seal`, `exchange` and `verify`, and `EgressGateway`, which offers only `forward`, metered, for the egress door, once the owner's object admitted and reserved the call. Model calls, refresh, reseal and provider revocation SHALL stay on the entrypoint only the owner Worker binds.
+The gateway SHALL serve the doors Worker through two named entrypoints: `ConnectGateway`, which offers only `seal`, `exchange` and `verify`, and `EgressGateway`, which offers only `forward`, metered, for the egress door, once the owner's object admitted and reserved the call. Refresh, reseal and provider revocation SHALL stay on the entrypoint only the owner Worker binds, whose `fetch` serves no model call (`/v1/messages` went with the in-object loop, ADR-034).
 
 #### Scenario: The doors call a model
 - **WHEN** either doors binding is asked for `fetch`, `refresh`, `reseal` or `revokeAtProvider`, or the connect binding for `forward`

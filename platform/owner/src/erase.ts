@@ -2,9 +2,8 @@
  * The owner's erasure as a Lifecycle capability (`erasure.ts` holds the order and the
  * mark): one durable job, `owner-erasure/erase`, pushed in the marking unit, so a crash at
  * any step is resumed by the object's own alarm, which Lifecycle drives as it drives every
- * job. While the mark stands, the schedule's lanes run nothing and every thread's wake job
- * finds its thread dropping and completes, so the erasure's job is the only work the
- * alarm does.
+ * job. While the mark stands, the schedule's lanes run nothing, so the erasure's job is
+ * the only work the alarm does.
  *
  * Its last step is the one place the owner's own database is wiped whole: Lifecycle's
  * alarm is disabled for good first (`disableAlarms`, which also clears the alarm), so
@@ -18,50 +17,28 @@
  * measure the window: production's `ctx.abort()` rolled back everything since the last
  * durable point, even an awaited `deleteAll`. The window stands until slice 10 closes it
  * (a record outside the object, or an explicit platform admit), and the erasure door
- * waits for it (`tasks.md`). A thread store wipes
- * itself in `thread-store.ts`; no other source disables Lifecycle's alarm or wipes a
+ * waits for it (`tasks.md`). No other source disables Lifecycle's alarm or wipes a
  * database (the alarm guard).
  */
 import {
   LifecycleCapability, type LifecycleJobContext, type LifecycleJobOutcome,
 } from "agents/lifecycle";
 
-import { ERASE_RETRY_MS, erasureStep, markErasing, storesDestroyed } from "./erasure";
+import { ERASE_RETRY_MS, erasureStep, markErasing, runsEnded } from "./erasure";
 import type { OwnerStorage, Write } from "./gate";
-import type { Thread, Threads } from "./threads";
 
 /** The erasure's Lifecycle capability id, and its job's function. */
 export const ERASURE = "owner-erasure";
 const ERASE_FN = "erase";
 const ERASE_JOB = `${ERASURE}/${ERASE_FN}`;
-/** Threads one round of the erasure drops at once. */
-const ERASE_BATCH = 64;
-/** The longest the erasure waits on one thread's drop before it goes on to the next. */
-const ERASE_DROP_MS = 15_000;
 
-/** `run`'s outcome within `ms`: whether it finished. */
-async function finished(run: Promise<void>, ms: number): Promise<boolean> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<false>((resolve) => {
-    timer = setTimeout(() => resolve(false), ms);
-  });
-  try {
-    return await Promise.race([run.then(() => true, () => false), late]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** What the erasure runs on: the object's gate, its threads and their drop, and its wipe. */
+/** What the erasure runs on: the object's gate, the work it ends, and its wipe. */
 export interface ErasureParts {
   readonly storage: OwnerStorage;
   readonly write: Write;
   readonly clock: () => number;
-  readonly threads: Pick<Threads, "dropAll" | "remaining">;
-  /** The agent's ending of every wait and view (`OwnerAgent.erasing`). */
+  /** The ending of every run in flight, in a unit (`Egress.drop`: its streams). */
   readonly ended: () => void;
-  /** The one drop path, with no receipt (`OwnerAgent.drop`). */
-  readonly drop: (thread: Thread) => Promise<void>;
   /** The object's Lifecycle, whose alarm the last step disables for good. */
   readonly lifecycle: { disableAlarms(): Promise<void> };
   /** The object's whole database deleted, and the tombstone left (`WriteGate.wipe`). */
@@ -122,34 +99,21 @@ export class Erasure extends LifecycleCapability {
     if (this.#erased) {
       return;
     }
-    const { storage, write, clock, threads, drop, lifecycle, wipe } = this.#parts;
+    const { storage, write, clock, ended, lifecycle, wipe } = this.#parts;
     if (erasureStep(storage) < 2) {
-      // 1. The mark, every thread dropping, and the job that resumes this after a crash
-      // (pushed again on a resume, which also sets the alarm again).
+      // 1. The mark, and the job that resumes this after a crash (pushed again on a resume,
+      // which also sets the alarm again).
       const jobs = this.lifecycle.jobs;
       const [rearmed] = await write((): [Promise<unknown>] => {
         markErasing(storage, clock());
-        threads.dropAll();
         return [jobs.push({ id: ERASE_JOB, fn: ERASE_FN, time: Date.now() + ERASE_RETRY_MS })];
       });
       await rearmed;
-      this.#parts.ended();
-      // 2. Every store a row names destroyed, each row forgotten once its store is; one that
-      // fails or hangs is passed, and the step fails once every other was tried.
-      let failed = 0;
-      for (let after = ""; ;) {
-        const rows = threads.remaining(ERASE_BATCH, after);
-        if (rows.length === 0) {
-          break;
-        }
-        after = rows.at(-1)!.thread_id;
-        const done = await Promise.all(rows.map((row) => finished(drop(row), ERASE_DROP_MS)));
-        failed += done.filter((ok) => !ok).length;
-      }
-      if (failed > 0) {
-        throw new Error("some of the owner's thread stores could not be destroyed yet");
-      }
-      await write(() => storesDestroyed(storage));
+      // 2. Every run ended.
+      await write(() => {
+        ended();
+        runsEnded(storage);
+      });
     }
     // 3. The owner wiped whole, Lifecycle's alarm disabled first so nothing is written after.
     await lifecycle.disableAlarms();

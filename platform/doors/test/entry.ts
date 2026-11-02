@@ -10,23 +10,21 @@ import { serve } from "../src/doors";
 import { bundledRecords, catalogOf } from "../src/sources";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 
-import { gatewayAgent } from "../../owner/src/agent";
 import { type OwnerEnv, OwnerDO as RealOwnerDO, type SandboxLeases } from "../../owner/src/owner-do";
 
 /**
- * The real owner object, with its sandbox's lease API (owner-internal: 8b's `exec` reaches it
- * in the object) in the tests' reach.
+ * The real owner object, with its sandbox's lease API (owner-internal: the runs slice
+ * reaches it in the object) in the tests' reach.
  */
 export class OwnerDO extends RealOwnerDO {
   readonly sandbox: SandboxLeases;
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     const made: { sandbox?: SandboxLeases } = {};
-    super(ctx, env, gatewayAgent, { sandbox: (leases) => { made.sandbox = leases; } });
+    super(ctx, env, { sandbox: (leases) => { made.sandbox = leases; } });
     this.sandbox = made.sandbox!;
   }
 }
-export { ThreadStore } from "../../owner/src/thread-store";
 
 /**
  * A served RFC 6749 source: the bundled records' only one is Sign in with ChatGPT,

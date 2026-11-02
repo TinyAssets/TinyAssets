@@ -25,7 +25,6 @@ import {
 import type { ModelRecord } from "./model-record";
 import { type Code, codeOf, Failure, failureResponse, upstreamCode } from "./failure";
 import { nativeFetch } from "./egress";
-import { boundedText } from "./messages";
 import { apiRules, fallbackList, freeCall, manyChoices, paidTool, servedPriced, tierMultiplier,
          unpricedOption, valueAt } from "./api-rules";
 import { clamped, learnMeter, meteredModel, meteredRecord, meteredUsage } from "./meter";
@@ -36,6 +35,49 @@ export const FORWARD_DEADLINE_MS = 5 * 60 * 1000;
 
 /** How long the setup check waits for the provider. */
 const VERIFY_DEADLINE_MS = 15 * 1000;
+
+/**
+ * A metered call's body bound: a context with images can be large, a whole one never this
+ * (the egress door's own, `EGRESS_BODY_MAX`, is the same).
+ */
+export const BODY_MAX = 16 * 1024 * 1024;
+
+/** The body, read up to `BODY_MAX` bytes as UTF-8; `invalid_request` past it, unread. */
+export async function boundedText(request: Request): Promise<string> {
+  const declared = request.headers.get("content-length");
+  if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > BODY_MAX)) {
+    throw new Failure("invalid_request");
+  }
+  if (request.body === null) {
+    return "";
+  }
+  const reader = request.body.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    size += value.byteLength;
+    if (size > BODY_MAX) {
+      await reader.cancel();
+      throw new Failure("invalid_request");
+    }
+    parts.push(value);
+  }
+  const whole = new Uint8Array(size);
+  let at = 0;
+  for (const part of parts) {
+    whole.set(part, at);
+    at += part.byteLength;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(whole);
+  } catch {
+    throw new Failure("invalid_request");
+  }
+}
 
 /** Headers that carry a credential, or route, in any provider's or proxy's convention. */
 const CREDENTIAL_HEADERS: readonly string[] = Object.freeze([

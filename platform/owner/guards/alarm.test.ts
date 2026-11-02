@@ -2,15 +2,13 @@
  * The object's one alarm is Lifecycle's (ADR-032, tasks 3.6).
  *
  * A Durable Object has one alarm, and the Agents SDK's Lifecycle owns it: its job queue
- * derives the alarm from every queued job, each agent thread's wake job among them, so a
- * source that set, read or cleared the alarm itself would overwrite theirs. So a Worker
+ * derives the alarm from every queued job, the lanes' and the erasure's, so a source that
+ * set, read or cleared the alarm itself would overwrite theirs. So a Worker
  * source:
  * - never names `setAlarm`, `deleteAlarm`, `getAlarm`, Lifecycle's `disableAlarms` or the
  *   storage's `deleteAll` (which takes the queue with it), as an identifier, a property or
  *   a string, and holds no string with `Alarm` in it, so the obvious split spellings fail;
- *   three exceptions (`WIPES`), each by identifier only: a thread store
- *   (`thread-store.ts`), a Durable Object of its own that holds no Lifecycle and no alarm,
- *   wipes itself whole with `deleteAll`; and the owner's erasure, whose last step disables
+ *   two exceptions (`WIPES`), each by identifier only: the owner's erasure, whose last step disables
  *   Lifecycle's alarm for good (`erase.ts`, `disableAlarms`) and then has the write gate,
  *   the one holder of the owner's raw storage, delete the whole database (`gate.ts`,
  *   `deleteAll`), so Lifecycle writes nothing after it, and the gate writes the erased
@@ -22,25 +20,19 @@
  * - never installs Lifecycle's runtime handlers (`Lifecycle.install`, `installHandlers`),
  *   which would add a `fetch` and WebSocket handlers to the object's surface;
  * - has one `alarm`, the hand-off `await this.#lifecycle.alarm();`.
- * Lifecycle's own tables (`cf_agents_*`) and pi's (`pi_*`, in thread stores only) are named
- * by no source (the policy-boundary guard). The guard is a tripwire for our own code's
+ * Lifecycle's own tables (`cf_agents_*`) are named by no source (the policy-boundary
+ * guard). The guard is a tripwire for our own code's
  * mistakes, not proof against a source written to evade it.
  *
- * `agents/lifecycle` is the Agents SDK module the object loads, with `agents/skills` (its
- * Agent Skills parser, `parseSkill` and `isModelInvocable`, A5), pinned here by version and
- * lockfile integrity (agents 0.32.0, source-read 2026-10-31: its Lifecycle chunk is
- * byte-identical to 0.31.0's, and PiHarness's only change is its `skills()` rewrite);
- * PiHarness is not loaded (the thread host, `thread-host.ts`, replaces it).
- * `agents/skills` keeps no module-level state but its error classes; it parses with
- * `yaml`'s `parse`, which keeps none per call either. Its module-level state, which objects sharing
+ * `agents/lifecycle` is the one Agents SDK module the object loads, pinned here by version
+ * and lockfile integrity (agents 0.32.0, source-read 2026-10-31: its Lifecycle chunk is
+ * byte-identical to 0.31.0's); PiHarness is not loaded. Its module-level state, which objects sharing
  * an isolate share, holds no owner's data: `WeakMap`s keyed by each Lifecycle or capability
  * instance (event sinks, route transports, host invokers, bound services), one
  * `AsyncLocalStorage` whose store lives only for the invocation that set it
  * (`current-agent.ts`), and `node:diagnostics_channel` channels, which publish only to
  * subscribers and this Worker has none. Lifecycle's `nanoid` pool is never drawn on, since
- * every job id here is given. It reads no `env` or `exports`. pi's storage is opened only in
- * a thread store, over that store's own `ctx.storage`; pi's own versions are the pi pin
- * guard's.
+ * every job id here is given. It reads no `env` or `exports`.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -52,16 +44,13 @@ import { parse, PLATFORM, reporter, workerSources } from "./sources";
 
 const BANNED: ReadonlySet<string> = new Set(["setAlarm", "deleteAlarm", "getAlarm",
                                              "disableAlarms", "deleteAll"]);
-/** What a source may import from the Agents SDK: Lifecycle, and the skills parser. */
-const AGENTS_IMPORTS: ReadonlySet<string> = new Set(["agents/lifecycle", "agents/skills"]);
-/** The one source that may name `deleteAll`: a thread store, which holds no Lifecycle. */
-const STORE = "owner/src/thread-store.ts";
+/** What a source may import from the Agents SDK: Lifecycle alone. */
+const AGENTS_IMPORTS: ReadonlySet<string> = new Set(["agents/lifecycle"]);
 /** The erasure's capability and the write gate, whose wipe is the erasure's last step. */
 const ERASE = "owner/src/erase.ts";
 const GATE = "owner/src/gate.ts";
 /** The banned names each source may still use, as an identifier only. */
 const WIPES: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  [STORE]: Object.freeze(["deleteAll"]),
   [GATE]: Object.freeze(["deleteAll"]),
   [ERASE]: Object.freeze(["disableAlarms"]),
 });
@@ -189,14 +178,10 @@ describe("alarm guard", () => {
     expect(lock.packages["owner"]!.devDependencies!["agents"]).toBe(AGENTS.version);
   });
 
-  it("lets only a thread store, which holds no Lifecycle, wipe itself", () => {
+  it("lets no other source wipe a database: the thread stores are gone", () => {
     const wipe = "export class S { async destroy() { await this.ctx.storage.deleteAll(); } }";
-    expect(alarmReach(STORE, wipe)).toEqual([]);
+    expect(alarmReach("owner/src/thread-store.ts", wipe)).not.toEqual([]);
     expect(alarmReach("owner/src/owner-do.ts", wipe)).not.toEqual([]);
-    expect(alarmReach(STORE, "export const k = 'deleteAll';")).not.toEqual([]);
-    expect(alarmReach(STORE, "export class S { m() { return this.ctx.storage.setAlarm(1); } }"))
-      .not.toEqual([]);
-    expect(workerSources().get(STORE)).toContain("await this.ctx.storage.deleteAll();");
   });
 
   it("lets the owner's erasure alone disable Lifecycle's alarm, and its gate alone wipe " +
@@ -242,6 +227,7 @@ describe("alarm guard", () => {
     "export function f(s: DurableObjectStorage) { return Reflect.get(s, 'setAlarm'); }",
     "import { Agent } from 'agents';",
     "import { skills } from 'agents/harness/pi/skills';",
+    "import { parseSkill } from 'agents/skills';",
     "import { PiHarness } from 'agents/harness/pi';",
     "import { Schedule } from 'agents/schedule';",
     "import { createAI } from 'agents/models/pi-ai';",
@@ -280,7 +266,6 @@ describe("alarm guard", () => {
     "import { Lifecycle } from 'agents/lifecycle';",
     "import { LifecycleCapability, type LifecycleJob } from 'agents/lifecycle';",
     "import type { LifecycleJobContext } from 'agents/lifecycle';",
-    "import { isModelInvocable, parseSkill } from 'agents/skills';",
     "export class O { readonly #lifecycle = new Lifecycle(this); " +
       "override async alarm(): Promise<void> { await this.#lifecycle.alarm(); } }",
     "export function f(lane: { nextDue(n: number): number }) { return lane.nextDue(0); }",

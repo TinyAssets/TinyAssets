@@ -25,7 +25,7 @@
  *   body length (`egress_unmetered`, `egress_length_required`): the run's caps are always
  *   set, so a call that cannot be metered is never sent;
  * - at most `open` at once and `perMinute` opened a minute (`egress_rate`);
- * - and a model call's charge (`#reserve`), by the loop's rules but on counters of its
+ * - and a model call's charge (`#reserve`), by `usage.ts`'s rules but on counters of its
  *   own, none of them pi's: its sandbox run's requests, tokens and cost (the run is the
  *   lease and its epoch, and 8b opens a lease per engine run; the model policy's per-turn
  *   limits are its caps), and the owner's and the source's day and month (shared with the
@@ -49,7 +49,7 @@
  * whole charge. A reservation never settled (the door's invocation lost) is settled `lost`
  * past `LOST_AFTER_S`, its charge `unknown`.
  *
- * Every row lives in `egress_reservations` (migration 14): at most `open` open, the newest
+ * Every row lives in `egress_reservations` (migration 11): at most `open` open, the newest
  * `receiptsKept` admitted and `refusalsKept` refused rows kept as receipts.
  *
  * Declared difference from research §6, which let a sandbox response already streaming
@@ -243,7 +243,7 @@ export interface EgressDeps {
    * context window and output cap): non-decreasing in the output.
    */
   readonly price: (models: readonly EgressModel[], input: number, output: number) => number;
-  /** In the open's unit: the spend counters past their window pruned, as the loop's reserve. */
+  /** In the open's unit: the spend counters past their window pruned, as `usage.ts` does. */
   readonly pruned: (now: number) => void;
 }
 
@@ -494,7 +494,7 @@ export class Egress {
    * The call's charge, against every cap, in the open's unit, so concurrent calls reserve
    * one after another and never pass a cap between them: its run's requests, tokens and
    * cost (`egress_runs`), and the owner's and the source's day and month (the spend
-   * counters the loop's calls hold too, read through `spent`). It is the named model's:
+   * counters the model reservations hold too, read through `spent`). It is the named model's:
    * its input held at that model's context window (a body's bytes do not bound its tokens:
    * a file or a cached context it names can be far larger), its output at that model's cap
    * and what the caps leave (the gateway clamps every cap alias the call names to it, and

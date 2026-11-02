@@ -3,8 +3,6 @@
  * config has no routes and no URL, so only the service bindings of the owner Worker and
  * the doors Worker (the binder) reach it, and it binds nothing, so it reaches no object.
  *
- * - `fetch`: `POST /v1/messages`, a model call in pi-ai's pi-messages protocol, from the
- *   owner object's `gateway` provider (`messages.ts`).
  * - `seal`: a pasted API key, sealed with its source record (§7.2 inline connect).
  * - `exchange`, `refresh`, `revokeAtProvider`: OAuth connections (`oauth.ts`).
  * - `verify`: the connection's setup check, and the models it can be asked for.
@@ -34,7 +32,6 @@ import { codeOf, Failure, failureResponse, guarded } from "./failure";
 import { forward, forwardMetered, forwardRead, type MeterOutcome, type Metering,
          type Verified, verify } from "./forward";
 import { binding, type KeyringEnv, open, reseal, type Resealed, seal, type Sealed } from "./keyring";
-import { messages } from "./messages";
 import { type Exchanged, exchange, type Refreshed, refresh, type Revoked,
          revokeAtProvider } from "./oauth";
 
@@ -141,11 +138,8 @@ function checkedMetering(value: unknown): Metering {
 }
 
 export default class Gateway extends WorkerEntrypoint<GatewayEnv> {
-  override async fetch(request: Request): Promise<Response> {
-    const path = new URL(request.url).pathname;
-    if (path === "/v1/messages") {
-      return messages(request, this.env, builtinCatalog());
-    }
+  /** No model call is served over HTTP (ADR-034 decision 13): egress is the model path. */
+  override async fetch(): Promise<Response> {
     return failureResponse("not_found");
   }
 

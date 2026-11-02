@@ -35,12 +35,11 @@ import { calculateCost, createModels } from "@earendil-works/pi-ai/models";
 import { type ApiRules, apiRules, valueAt } from "./api-rules";
 
 import { type Catalog, NO_AMBIENT, providerFor } from "./catalog";
-import { type Meter, meteredModel, type Upstream } from "./credential";
+import { GLOBAL_FETCH_APIS, type Meter, meteredModel, type Upstream } from "./credential";
 
 export type { Meter };
 export { meteredModel };
 import { within } from "./egress";
-import { GLOBAL_FETCH_APIS } from "./messages";
 
 /** The model id and output cap the learning run asks with: neither is any real value. */
 const MODEL_MARK = "ta-meter-model-0e7f";

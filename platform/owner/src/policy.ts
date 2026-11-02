@@ -26,33 +26,18 @@
  *   ours, with no Python counterpart, so the default document leaves it out and keeps
  *   its digest.
  * - The optional `models` table is the owner's model budget (`MODEL_DEFAULTS`, gateway
- *   research §4): per-turn requests, tokens and cost, owner-wide and per-connection
- *   daily and monthly cost ceilings, and pi's retry count. `usage.ts` holds every model
- *   call to it, in the unit that reserves the call, and `agentPolicy` hands pi the part
- *   that is pi's. The Python's per-turn limits were code constants; here they are policy.
- * - The optional `runs` table is the owner's run policy (`RUN_DEFAULTS`, tasks 5 S5):
- *   how long a settled run's store is kept (`keep_runs`), and its receipt
- *   (`keep_run_receipts`), which the `threads` lane reads (`threads.ts`).
- * - The optional `packages` list is the owner's package selection (tasks 5, A5), in pi's
- *   settings form: each a package directory under `/workspace/.agents/packages`, a tree
- *   only the owner changes, or `{source, skills?,
- *   prompts?, guard?}` with pi's filter grammar per resource type (`resources.ts`); a
- *   `guard` package's hooks run after every other package's (`resources.ts`). There is no
- *   `extensions` filter: a package's code never loads in the owner's object, so a package
- *   that declares any is refused where it loads.
- * - The optional `hooks` table is the owner's policy for code that runs in the hooks Worker
- *   (`HOOK_DEFAULTS`, tasks 5 H1): the longest a package's hook is waited for
- *   (`timeout_ms`, a manifest's own only lowering it), the CPU each hook call may take
- *   there (`cpu_ms`, 50 to 1,000), and whether the agent may run code mode scripts
- *   (`codemode`, off by default).
+ *   research §4): per-run requests, tokens and cost (held per sandbox run at the egress
+ *   door, `egress.ts`), and owner-wide and per-source daily and monthly cost ceilings.
+ *   The Python's per-turn limits were code constants; here they are policy.
+ * - The optional `hooks` table holds one switch: whether code mode scripts may run
+ *   (`codemode`, off by default; `HOOK_DEFAULTS`, tasks 5 H1), their VMs in the hooks
+ *   Worker.
  *
  * The Python closed the owner's public egress tunnels before a write committed and
- * cancelled its live streams after. Here each model call carries the policy generation
- * its reservation read, in its envelope (`gateway-provider.ts`), and a call reserved
- * under an older one is never sent; a policy write ends the owner's in-flight turns and
- * streams, and its sandbox egress streams (`egress.ts`): each sandbox request is admitted
- * at open against the current generation, and the sandbox's network is stale, egress
- * refused, until the sandbox slice applies it again (G4).
+ * cancelled its live streams after. Here a policy write ends the owner's sandbox egress
+ * streams (`egress.ts`): each sandbox request is admitted at open against the current
+ * generation, and the sandbox's network is stale, egress refused, until the sandbox slice
+ * applies it again (G4).
  *
  * Declared differences from the Python:
  * - An egress destination whose host the WHATWG URL parser reads as an IP address
@@ -86,10 +71,7 @@ import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import { CHUNK_BYTES, KEEP_CEILING, MAX_INTENT_CHUNKS } from "./files";
 import { checkDestination } from "./network";
-import { PACKAGES_DIR, storedPath, within } from "./paths";
-import type { PackageSelection } from "./resources";
 import { codePoints, SOURCE_ID } from "./text";
-import type { RunPolicy } from "./threads";
 
 export { EGRESS_IP_LITERAL } from "./network";
 
@@ -176,7 +158,7 @@ export interface PolicyEntry {
  * Each outside client holds at most `client_share` percent of every quota (and of the
  * open uploads and the chunks they hold), and all of them together at most what
  * `owner_reserve` percent leaves, so no client fills the owner's files and the owner
- * always keeps room of its own, as the wait and thread caps keep the owner's. A client is
+ * always keeps room of its own. A client is
  * charged its own rows (the entries it last wrote, its history rows, its temporary
  * directories) and once for each content and chunk they or its open uploads reference,
  * whoever else references them too (`manifest.ts`).
@@ -227,94 +209,35 @@ export function fileSettings(document: PolicyDocument): FileSettings {
 }
 
 /**
- * Owner run policy (tasks 5, S5): how long a settled run's store is kept (`keep_runs`,
- * whole days, at most 30), and how long its receipt is kept from when it settled
- * (`keep_run_receipts`, whole days, at least `keep_runs` and at most 365); and, as the
- * files quotas share theirs, the percent of the runs' live stores (`runs_kept`) and of
- * their receipts one outside client may hold (`client_share`), and the percent every
- * client together leaves the owner (`owner_reserve`), so the owner can always launch; and
- * how many runs may be live at once, not yet settled (`runs_live`, shared the same way),
- * since only a live run holds work. The document's optional `runs` table sets any of them;
- * the rest keep these values. A run's
- * receipt is how its status is answered once it settled (`threads.ts`); receipts past a
- * share let their oldest go, and never refuse a launch.
+ * Owner code mode policy (agent research §6.4): whether code mode scripts may run, their
+ * VMs in the hooks Worker. Off until the owner turns it on.
  */
-export const RUN_DEFAULTS = Object.freeze({
-  keep_runs: 7,
-  keep_run_receipts: 90,
-  client_share: 25,
-  owner_reserve: 25,
-  runs_live: 2_000,
-});
-export type RunSettings = { readonly [K in keyof typeof RUN_DEFAULTS]: number };
-/** The range each run setting may take. */
-export const RUN_SETTINGS: { readonly [K in keyof RunSettings]: readonly [number, number] } =
-  Object.freeze({
-    keep_runs: Object.freeze([1, 30] as const),
-    keep_run_receipts: Object.freeze([1, 365] as const),
-    client_share: Object.freeze([0, 100] as const),
-    owner_reserve: Object.freeze([0, 100] as const),
-    runs_live: Object.freeze([1, 2_000] as const),
-  });
-const DAY_S = 86_400;
-
-/**
- * Owner hook policy (agent research §6.4): what a package's hook may take in the hooks
- * Worker, and whether code mode is on. A hook is waited for at most `timeout_ms` (a
- * manifest's own `timeout_ms` may only lower it) and asks the Worker for `cpu_ms` of CPU a
- * call; code mode (pi's, its VM in the same Worker) is off until the owner turns it on.
- */
-export const HOOK_DEFAULTS = Object.freeze({ timeout_ms: 2_000, cpu_ms: 50, codemode: false });
-/** The range each numeric hook setting may take. */
-export const HOOK_SETTINGS = Object.freeze({
-  timeout_ms: Object.freeze([100, 10_000] as const),
-  cpu_ms: Object.freeze([50, 1_000] as const),
-});
+export const HOOK_DEFAULTS = Object.freeze({ codemode: false });
 
 /** The document's `hooks` table, as written. */
 export interface HookPolicy {
-  readonly timeout_ms?: number;
-  readonly cpu_ms?: number;
   readonly codemode?: boolean;
 }
 
 /** The hook settings a document leaves in force: its own, and the defaults for the rest. */
-export function hookSettings(document: PolicyDocument):
-    { readonly timeout_ms: number; readonly cpu_ms: number; readonly codemode: boolean } {
+export function hookSettings(document: PolicyDocument): { readonly codemode: boolean } {
   return { ...HOOK_DEFAULTS, ...document.hooks };
 }
 
-/** The `hooks` table: known keys only, each number in its range, `codemode` a boolean. */
+/** The `hooks` table: `codemode` alone, a boolean. */
 function validHooks(hooks: unknown): boolean {
   return plain(hooks) && Object.entries(hooks).every(([key, value]) =>
-    key === "codemode" ? typeof value === "boolean"
-      : Object.hasOwn(HOOK_SETTINGS, key)
-        && bounded(value, HOOK_SETTINGS[key as keyof typeof HOOK_SETTINGS]));
-}
-
-/** The run settings a document leaves in force: its own, and the defaults for the rest. */
-export function runSettings(document: PolicyDocument): RunSettings {
-  return { ...RUN_DEFAULTS, ...document.runs };
-}
-
-/** The run policy a document leaves in force, its times in seconds, as the threads read it. */
-export function runPolicy(document: PolicyDocument): RunPolicy {
-  const settings = runSettings(document);
-  return { keepRunsS: settings.keep_runs * DAY_S,
-           keepReceiptsS: settings.keep_run_receipts * DAY_S,
-           clientShare: settings.client_share, ownerReserve: settings.owner_reserve,
-           runsLive: settings.runs_live };
+    key === "codemode" && typeof value === "boolean");
 }
 
 /**
- * Owner model policy (gateway research §4): what one turn may spend, and what the owner's
- * sources may spend in a UTC day and month. A turn is the submitted input at the origin of
- * a call's causal chain, every subagent's, compaction's and background work's call it
- * caused included (`origin.ts`).
+ * Owner model policy (gateway research §4): what one sandbox run's model calls may spend
+ * (held at the egress door, `egress.ts`; the `turn_` names stay until slice R names them
+ * for runs), and what the owner's sources may spend in a UTC day and month.
  * Money is in micro-dollars (µ$), as pi-ai's catalog prices are dollars per million
  * tokens: a token at a price of `p` costs `p` µ$. The Python's per-turn limits
  * (`TurnRequestBudget`: `max_tokens=1_000_000`, `max_cost_microunits=25_000_000`) are the
- * defaults' model, raised for tokens since a turn here is a whole agent loop, each request
+ * defaults' model, raised for tokens since a run is a whole agent loop, each request
  * re-sending its context. A request cap bounds a runaway loop. The daily and monthly
  * ceilings default to none, as the Python's do (`PolicyStore`'s default document:
  * `"daily": None, "monthly": None`); the owner sets them.
@@ -333,7 +256,6 @@ export const MODEL_SETTINGS = Object.freeze({
   turn_cost: Object.freeze([0, 1_000_000_000_000] as const),
   daily_cost: Object.freeze([0, 1_000_000_000_000] as const),
   monthly_cost: Object.freeze([0, 1_000_000_000_000] as const),
-  retries: Object.freeze([0, 10] as const),
 });
 /** The sources one `models.sources` table may name, each by its id (`SOURCE_ID`). */
 const MODEL_SOURCES_MAX = 64;
@@ -352,7 +274,6 @@ export interface ModelPolicy {
   readonly daily_cost?: number | null;
   readonly monthly_cost?: number | null;
   readonly sources?: { readonly [source: string]: SourceCeilings };
-  readonly retries?: number;
 }
 
 /** The model settings a document leaves in force. */
@@ -367,17 +288,8 @@ export interface ModelSettings {
 
 /** The model settings a document leaves in force: its own, and the defaults for the rest. */
 export function modelSettings(document: PolicyDocument): ModelSettings {
-  const { retries: _retries, sources = {}, ...caps } = document.models ?? {};
+  const { sources = {}, ...caps } = document.models ?? {};
   return { ...MODEL_DEFAULTS, ...caps, sources };
-}
-
-/**
- * The part of owner policy that is pi's own settings (tasks 5: owner policy feeds pi's
- * settings), spread over the object's fixed ones: today the model retry count.
- */
-export function agentPolicy(document: PolicyDocument): { readonly retry?: { readonly maxRetries: number } } {
-  const retries = document.models?.retries;
-  return retries === undefined ? {} : { retry: { maxRetries: retries } };
 }
 
 function bounded(value: unknown, [low, high]: readonly [number, number]): boolean {
@@ -406,64 +318,10 @@ function validModels(models: unknown): boolean {
   });
 }
 
-/** The packages one document selects at most, and the patterns one filter list holds. */
-export const PACKAGES_MAX = 32;
-export const FILTER_PATTERNS = 64;
-/** The keys a package selection's object form takes. */
-const SELECTION_KEYS: readonly string[] = Object.freeze(["source", "skills", "prompts",
-                                                         "guard"]);
-
-/**
- * A package's directory: a stored path below `PACKAGES_DIR`, a tree only the owner's own
- * authority changes (`paths.ts`), so no client's file is ever in a selected package.
- */
-function packageSource(value: unknown): value is string {
-  try {
-    return within(storedPath(value), PACKAGES_DIR) && value !== PACKAGES_DIR;
-  } catch {
-    return false;
-  }
-}
-
-/** A filter list: at most `FILTER_PATTERNS` patterns of 1 to 512 characters. */
-function filterList(value: unknown): boolean {
-  return Array.isArray(value) && value.length <= FILTER_PATTERNS
-    && value.every((entry) => typeof entry === "string" && entry !== ""
-                              && codePoints(entry) <= 512);
-}
-
-/** The `packages` list: each a source, or a selection of known keys; no source twice. */
-function validPackages(value: unknown): boolean {
-  if (!Array.isArray(value) || value.length > PACKAGES_MAX) {
-    return false;
-  }
-  const sources = value.map((entry) => (plain(entry) ? entry["source"] : entry));
-  return new Set(sources).size === sources.length && value.every((entry) =>
-    typeof entry === "string" ? packageSource(entry)
-      : plain(entry) && packageSource(entry["source"])
-        && Object.keys(entry).every((key) => SELECTION_KEYS.includes(key))
-        && (entry["skills"] === undefined || filterList(entry["skills"]))
-        && (entry["prompts"] === undefined || filterList(entry["prompts"]))
-        && (entry["guard"] === undefined || typeof entry["guard"] === "boolean"));
-}
-
-/** The packages a document selects, each in the object form, in its order. */
-export function packageSelection(document: PolicyDocument): PackageSelection[] {
-  return (document.packages ?? []).map((entry) => (typeof entry === "string"
-    ? { source: entry } : {
-      source: entry.source,
-      ...(entry.skills === undefined ? {} : { skills: [...entry.skills] }),
-      ...(entry.prompts === undefined ? {} : { prompts: [...entry.prompts] }),
-      ...(entry.guard === true ? { guard: true } : {}),
-    }));
-}
-
 /** The document as `validate` leaves it. */
 export interface PolicyDocument {
   readonly files?: Partial<FileSettings>;
-  readonly packages?: readonly (string | PackageSelection)[];
   readonly hooks?: HookPolicy;
-  readonly runs?: Partial<RunSettings>;
   readonly models?: ModelPolicy;
   readonly entries: PolicyEntry[];
   readonly egress: { readonly mode: string;
@@ -583,21 +441,15 @@ function whole(value: unknown): value is number {
 export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS):
     PolicyDocument {
   if (!plain(document) || !keys(document, ["entries", "spend", "egress",
-    ...(["files", "models", "runs", "packages", "hooks"] as const).filter((table) =>
+    ...(["files", "models", "hooks"] as const).filter((table) =>
       Object.hasOwn(document, table))])) {
     throw new Invalid("invalid policy document");
-  }
-  if (document["packages"] !== undefined && !validPackages(document["packages"])) {
-    throw new Invalid("invalid packages policy: at most 32 package directories under " +
-                      "/workspace/.agents/packages, each once, as a path or {source, skills, " +
-                      "prompts, guard} with filter lists; package code (extensions) never loads");
   }
   if (document["models"] !== undefined && !validModels(document["models"])) {
     throw new Invalid("invalid models policy");
   }
   if (document["hooks"] !== undefined && !validHooks(document["hooks"])) {
-    throw new Invalid("invalid hooks policy: timeout_ms 100 to 10,000, cpu_ms 50 to 1,000, " +
-                      "codemode a boolean");
+    throw new Invalid("invalid hooks policy: codemode, a boolean");
   }
   const files = document["files"];
   if (files !== undefined && (!plain(files) || Object.entries(files).some(([key, value]) =>
@@ -611,16 +463,6 @@ export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS
       > settings.max_history) {
     throw new Invalid("files policy: max_history holds max_entries times the larger of " +
                       "keep_versions and keep_recent");
-  }
-  const runs = document["runs"];
-  if (runs !== undefined && (!plain(runs) || Object.entries(runs).some(([key, value]) =>
-    !Object.hasOwn(RUN_SETTINGS, key)
-    || !bounded(value, RUN_SETTINGS[key as keyof RunSettings])))) {
-    throw new Invalid("invalid runs policy");
-  }
-  const kept = { ...RUN_DEFAULTS, ...(runs as Partial<RunSettings> | undefined) };
-  if (kept.keep_run_receipts < kept.keep_runs) {
-    throw new Invalid("runs policy: keep_run_receipts is at least keep_runs");
   }
   const egress = document["egress"];
   if (!plain(egress) || !keys(egress, ["mode", "destinations"])

@@ -4,18 +4,17 @@
  * it from anywhere else and the alarm reads it locally. The Python's `owner_admission`
  * record (`tinyassets/broker/admission.py`), ported:
  *
- * - `admitted`: the owner's object was made (migration 13 writes the row with the
+ * - `admitted`: the owner's object was made (migration 10 writes the row with the
  *   schema), or every suspension was lifted;
  * - `suspended`, for `billing`, `abuse` or both: the platform's word, and no work runs.
  *   Each door declares its class (`DoorClass`) in its binding check (`OwnerDO`'s `#bind`):
  *   a billing suspension refuses `work` (spend and growth) and leaves the owner its reads,
  *   sign-in and what only lowers risk or storage; an abuse suspension refuses every door.
- *   Work is refused where it is enforced, not only where it starts: every operation and
- *   model call (`Authority`), every new input (`ThreadHost.submit`), every lane with the
- *   Python's `require_work` semantics in its own unit: a scheduled launch's delivery
- *   (`scheduled.ts`, which holds it, to try again) and the `wakes` lane's claim
- *   (`ledger.ts`), whose lane then has no job for its open rows. A suspension also ends
- *   the work of every live thread but the scheduled launches' tasks, the prompt stop;
+ *   Work is refused where it is enforced, not only where it starts: every authority check
+ *   (`Authority`), every sandbox lease and egress call (`OwnerDO`'s `SandboxLeases`,
+ *   `egressOpen`), and every lane with the Python's `require_work` semantics in its own
+ *   unit: the `wakes` lane's claim (`ledger.ts`), whose lane then has no job for its open
+ *   rows. A suspension also ends the sandbox's in-flight egress streams, the prompt stop;
  * - `erased`: the tombstone the owner's erasure leaves as its last step, written after
  *   the wipe in the same synchronous turn (`erase.ts`, `WriteGate.wipe`): exactly this one
  *   row in an otherwise empty database. A stale `getByName` then finds it before anything
