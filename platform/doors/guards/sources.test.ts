@@ -299,6 +299,16 @@ describe("the engine records", () => {
     }
   });
 
+  it("give a run its credential's own variables, and no other credential's", () => {
+    const codex = structuredClone(records.get("codex")) as Json;
+    at(codex["cli"] as Json, "per_credential.api_key")["env"] = { CODEX_EXTRA_FLAG: "1" };
+    const catalog = catalogOf([...bundledRecords().filter((record) =>
+      (record as Json)["id"] !== "codex"), codex]);
+    expect(runEnv(catalog, "codex", "api_key").env["CODEX_EXTRA_FLAG"]).toBe("1");
+    expect(runEnv(catalog, "codex", "vendor_login_in_sandbox").env)
+      .not.toHaveProperty("CODEX_EXTRA_FLAG");
+  });
+
   it("forbid a signed-in run every variable its CLI reads to move it off its sign-in", () => {
     const forbidden = (id: string) => sourceRecord(records.get(id)).cli!.per_credential!
       .vendor_login_in_sandbox!.forbid_env!;

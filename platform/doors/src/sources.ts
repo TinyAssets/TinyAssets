@@ -734,8 +734,8 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     }
     for (const kind of kinds) {
       const named = (forbidEnv[kind] ?? []).find((entry) => new RegExp(
-        `(?<![A-Z0-9_])${entry.endsWith("*") ? `${entry.slice(0, -1)}[A-Z0-9_]*`
-          : `${entry}(?![A-Z0-9_])`}`).test(text));
+        `(?<![A-Z0-9_])${entry.endsWith("*") ? entry.slice(0, -1) : `${entry}(?![A-Z0-9_])`}`)
+        .test(text));
       if (named !== undefined) {
         check.fail(`${what} names ${named}, which the ${kind} credential forbids`);
       }

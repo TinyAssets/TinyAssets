@@ -267,6 +267,17 @@ describe("an egress call", () => {
     const onOther = await leased(r, true, true, onKey(other));
     expect(await refusedWith(r, onOther.as(), other, { path: "/v1/messages/batches" }))
       .toBe("egress_unmetered");
+    // Another provider on the same API, sealing the same path: Anthropic's page is not its.
+    await r.in((instance) => instance.sandbox.close(held(onOther)));
+    const vercel = await r.connect("sk-good-3", {
+      upstream: { provider: "vercel-ai-gateway", api: "anthropic-messages",
+                  base_url: "https://ai-gateway.vercel.sh",
+                  auth: { header: "x-api-key", scheme: "" } },
+      endpoints: [{ origin: "https://ai-gateway.vercel.sh",
+                    paths: ["/v1/messages", "/v1/messages/count_tokens"], methods: ["POST"] }] }, "Vercel");
+    const onVercel = await leased(r, true, true, onKey(vercel));
+    expect(await refusedWith(r, onVercel.as(), vercel, { path: "/v1/messages/count_tokens" }))
+      .toBe("egress_unmetered");
   });
 
   it("spends only on the connection its run was given", async () => {

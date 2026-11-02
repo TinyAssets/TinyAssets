@@ -113,6 +113,18 @@ describe("the gateway Worker", () => {
       "https://egress/v1/messages/count_tokens", { method: "POST", body: "{}" }),
       null, new ReadableStream());
     expect(await elsewhere.response.json()).toMatchObject({ error: { code: "endpoint_refused" } });
+    // Another provider on the same API, sealing the same path: Anthropic's page is not its.
+    const other = (await gateway.seal("alice", "c1", 1, "sk-count", {
+      upstream: { provider: "vercel-ai-gateway", api: "anthropic-messages",
+                  base_url: "https://ai-gateway.vercel.sh",
+                  auth: { header: "x-api-key", scheme: "" } },
+      endpoints: [{ origin: "https://ai-gateway.vercel.sh",
+                    paths: ["/v1/messages", "/v1/messages/count_tokens"], methods: ["POST"] }] })).blob;
+    const theirs = await egress.forward("alice", "c1", 1, other, new Request(
+      "https://egress/v1/messages/count_tokens", { method: "POST", body: "{}",
+                                                   headers: { "x-fake-mode": "hdr" } }),
+      null, new ReadableStream());
+    expect(await theirs.response.json()).toMatchObject({ error: { code: "unmetered" } });
   });
 
   it("forwards a sandbox request on the egress entrypoint alone, a Request in and a Response out",
