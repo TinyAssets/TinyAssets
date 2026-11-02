@@ -490,7 +490,11 @@ describe("every file door", () => {
     expect(await laneAt(r.stub, "files")).toBeGreaterThan(Date.now() / 1000 + 60);
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
     await write(r, `${W}/b`, "1");
-    expect(await laneAt(r.stub, "files")).toBeLessThanOrEqual(Date.now() / 1000);
+    // Due now; or workerd already fired the alarm the due job armed, and the lane ran:
+    // the expired upload is gone (the race the slice D review's round 2 found).
+    const due = ((await laneAt(r.stub, "files")) ?? Infinity) <= Date.now() / 1000;
+    const ran = (await sqlIn(r.stub, "SELECT 1 FROM file_intents")).length === 0;
+    expect(due || ran).toBe(true);
   });
 
   it("refuses a request with a field it does not take", async () => {

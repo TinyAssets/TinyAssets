@@ -473,8 +473,12 @@ describe("the object's schedule", () => {
     // that wrote outside one would throw, and the chunk would stay.
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
     await r.stub.fileMkdir(r.bind(null), { path: "/workspace/d", expected_etag: null });
-    // The door re-derived the files job: due now.
-    expect((await laneJobs(r.stub))["files"]!.time).toBeLessThanOrEqual(Date.now());
+    // The door re-derived the files job: due now; or workerd already fired the alarm it
+    // armed, and the lane deleted the chunk (the slice D review's round 2 race).
+    const due = ((await laneJobs(r.stub))["files"]?.time ?? Infinity) <= Date.now();
+    const ran = (await sqlIn(r.stub, "SELECT 1 FROM file_chunks WHERE sha256 = ?", sha256))
+      .length === 0;
+    expect(due || ran).toBe(true);
     await runInDurableObject(r.stub, (instance: OwnerDO) => instance.alarm());
     expect(await sqlIn(r.stub, "SELECT sha256 FROM file_chunks WHERE sha256 = ?", sha256))
       .toEqual([]);
