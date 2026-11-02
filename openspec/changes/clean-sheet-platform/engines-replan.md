@@ -262,7 +262,7 @@ A run is one engine invocation: one CLI process from start to exit. Its id is th
 2. **Admit, in one gate unit** in the owner's object:
    - the owner is admitted (`requireWork`);
    - the agent is enabled;
-   - the caps hold: concurrent runs, runs per agent per day, and the month's sandbox-seconds;
+   - the owner's own limits hold (their policy's spending limits);
    - the initiator's stamp is standing: the owner, or a client's grant at its generation;
    - the source is chosen: `agent.json`'s, or `auto`'s strongest connected source that has an engine and, for unattended runs, a record citing a page that permits them (ADR-033 D3).
 
@@ -367,11 +367,7 @@ The CLI's own budget flags are set from policy as a second line: Claude `--max-b
 
 **Subscription runs.** TinyAssets cannot meter tokens it never sees.
 - **Model limits:** the vendor's own. Claude Pro and Max have a 5-hour and a weekly limit, "shared across Claude and Claude Code"; Gemini allows 1,500 requests a day on AI Pro; Copilot gives monthly credits [R].
-- **Our caps:**
-  - runs per agent per day;
-  - concurrent runs per owner;
-  - a wall-time deadline per run (default 30 min [I]; Claude's own idle background cap is 10 min [E]);
-  - sandbox-seconds per owner per month. This is TinyAssets' own E2B cost (§3).
+- **No platform caps are set.** The owner's own policy limits and the vendor's apply. How sandbox time is priced or bounded is the founder's decision (§3).
 - **Stop on vendor errors.** A `rate_limit`, `billing_error` or `account_on_hold` event stops the agent's scheduled runs until the next window and raises a notice, so we never hammer a plan. Anthropic's limits "assume ordinary, individual usage" [R].
 
 ### 2.6 How subagents work
@@ -550,7 +546,7 @@ This is a regression against the pi-in-object plan, where a chat turn spent noth
 - Cost now scales with **engine wall time**, not with `bash` time. That is about 1.7–2× the plan for the plan's own activity profile, and far less for main-agent owners.
 - The trusted side gets cheaper and stays under ADR-032's $0.25 threshold: no awaited model streams in the object and no pi partial commits.
 - Model spend stays the user's own (their subscription or key).
-- TinyAssets pays every sandbox second. Sandbox-seconds must be metered per owner and capped by plan, which is a pricing question for the founder.
+- TinyAssets pays every sandbox second. Sandbox-seconds are metered per owner; whether and how they are priced or bounded is the founder's decision.
 
 ---
 
@@ -631,7 +627,7 @@ The plan records that OpenAI's directory "rejects a generic executor or discover
 
 - Sandbox time scales with engine wall time (§3.5).
 - E2B Pro's 100 concurrent sandboxes are reached at about 10k owners.
-- Sandbox-seconds caps per owner are required before launch.
+- How sandbox time is priced or bounded is the founder's decision, open before launch.
 
 ---
 
@@ -653,12 +649,12 @@ The plan records that OpenAI's directory "rejects a generic executor or discover
 | **G4** | Finish 8a | Land `platform-g4` with its review fixes (H1: drop the edge-expiry check on stale KV; M3: settlement leaks; M5: deviation-8 wording). Keep "turn" in its names until slice R re-keys it. | workerd |
 | **D** | **Deletions, one slice** | Everything in §1.7: source, tests, guards and specs. Remove the `PISTORE`/`ThreadStore` binding and class (the config guard updated, the owner-bound guard recomputed with fewer tables). Rewrite the pi migrations in place (nothing deployed). Remove `pi-durable`, `chord` and `pi-telemetry`. Remove `run`, `protocol.ts` and `runner.ts` from the hooks Worker. Remove the gateway's `/v1/messages`. The four agent doors and the `converse`/`run_graph` tools leave the tables until slice R (an absent tool, never a stub: Fact 8). | workerd |
 | **E** | Engine records | `CliSpec.engine` (§2.1), `secret_paths`, `session_paths`, the unattended citation, non-npm install, `engines` on API-key sources. Update the Claude Code, Codex, Gemini and Kimi records. New `anthropic` and `openai` API-key records and a `pi` CLI record that runs on an egress-keyed API key only, with no subscription sign-in (ADR-033 decision 1). Park `chatgpt.json`. The checker in `doors/src/sources.ts` and its guard. | data + workerd |
-| **R** | Runs in the owner object | `runs`, `run_grants` and `conversations` (schema), the `runs` lane with doorbell-on-change, admission and caps (§2.5), run-level `auto`. The run-scoped MCP profile and grant checks. `usage.ts` and G4's reservation re-keyed to runs. The four agent doors and the `converse`/`run_graph` tools back, starting runs. `SANDBOX` binding behind an interface whose absence refuses loudly. The run-event relay to app sockets (A6's salvaged ticket and binder path). | workerd |
+| **R** | Runs in the owner object | `runs`, `run_grants` and `conversations` (schema), the `runs` lane with doorbell-on-change, admission and the owner's own limits (§2.5), run-level `auto`. The run-scoped MCP profile and grant checks. `usage.ts` and G4's reservation re-keyed to runs. The four agent doors and the `converse`/`run_graph` tools back, starting runs. `SANDBOX` binding behind an interface whose absence refuses loudly. The run-event relay to app sockets (A6's salvaged ticket and binder path). | workerd |
 | **S** | **Sandbox (8b), live** | The `tinyassets-sandbox` Worker (E2B key; create, connect, pause, update the network, start the runner). The versioned template (pinned CLIs, the runner, `resolv.conf` on the pinned resolver). The **runner**: sync in and out with secret-path refusal, projection, invocation from the record, event framing, socket or POST, SIGTERM. Live probes: G4's owed list (private CIDRs, transform readability, `/etc/hosts`, IPv6, DNS); a transform over WebSocket and over MCP; resume after hours and days; CLI memory for S1 sizing; per-run overhead; keep-warm. | **[F: E2B Pro $150/mo; E2B workload-identity beta request; accept Anthropic Commercial Terms; founder's Claude, ChatGPT and API keys for the probes]** |
 | **M** | MCP door for engines and main agents | `code` (code mode at the door, the hooks Worker narrowed to its sandbox, H2's probe cut to code mode), `inbox_digest`/`board_digest`, tool profiles (directory, custom, run). Live connector tests from Claude and ChatGPT (`ui-test`). | workerd + live **[F: live connector accounts. Dynamic Workers (open beta) are no longer needed once the loader goes]** |
 | **W** | Wakes and outside agents (tasks 7) | `WakeSender`: ChatGPT MCP Events, Claude `/fire`, Grok webhook routines. Kill switch through `DOORBELL`. Live: a dot wakes on an event (per tier); a Grok routine calls our MCP; #106037 re-test. | **[F: ChatGPT Pro, Claude, SuperGrok/X Premium accounts; live probes]** |
 | **L** | Doors live | The rest of tasks 2: the AuthKit upstream, DNS and routes, `/hooks/inbound`, the key store, rate limits; 0c, the dark deploy of owner, gateway, doors, sandbox and files; the handles canary. | **[F: DNS and route edits; Cloudflare plan check]** |
-| **P** | Before real data | SSE-C on chunks (live probe), the append-only migration guard from first deploy, the nightly manifest and owner export, per-owner sandbox-seconds caps on. | live |
+| **P** | Before real data | SSE-C on chunks (live probe), the append-only migration guard from first deploy, the nightly manifest and owner export, sandbox-seconds metered per owner. | live |
 | **8** | Founder live test | The founder's account end to end: Claude Code on the subscription in the sandbox, Codex on an API key through egress, a ChatGPT or Claude main agent in a room, a scheduled run, a sandbox-down drill (§4.4). | **[F]** |
 | **9** | Cutover window | Full backup; each owner's broker stores imported into their object and each volume into object storage; DNS switched; the droplet paths deleted (Direction 5). | **[F: maintenance window]** |
 | **10** | Later slices | Rooms and status (S4), app manifest and agent players (S6), the **device runner** (S7: the same runner on the user's own machine with their logged-in CLIs, ADR-024 and ADR-031 D5), real-time tiers (S8). Claude and Grok wakes (S9) are mostly in W. Sign in with ChatGPT (S10) is parked: it served our loop. A second sandbox vendor. | later |

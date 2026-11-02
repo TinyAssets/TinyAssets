@@ -6,11 +6,11 @@ Accepted (founder, 2026-11-01).
 - **It amends** ADR-032 decisions 1, 3, 4 and 5, its "Amended 2026-10-30" section, two lines of its "What stands", and two of its Consequences, each listed below. ADR-032 decision 2 stands with one addition (the egress host also serves the run-scoped MCP door and the runner's event socket), and decision 6 stands.
 - **It also amends** the principle ADR-023 states and ADR-032 kept, that "the core loop runs outside every box", and withdraws the paid-tier limit on hosted vendor CLIs in ADR-023 and ADR-030 (decision 8).
 - **It builds on** ADR-033 (merged in #5384).
-- **Per ADR-005**, ADR-032's and ADR-023's bodies are not edited. Only their Status lines gain "amended by ADR-034".
+- **Per ADR-005**, the bodies of ADR-023, ADR-030 and ADR-032 are not edited. Only their Status lines gain "amended by ADR-034".
 
 ## Date
 
-2026-11-01
+2026-11-01; decision 8 2026-11-02
 
 ## Context
 
@@ -68,7 +68,7 @@ Evidence read for this ADR:
    - the egress door and the gateway's sealed keys.
 
 4. **The unit of work is a run: one engine invocation.**
-   1. **Admit.** The owner's object admits a run against the owner's admission, the agent, the run caps and the initiator's standing authority. It chooses the source (Direction 4's strongest connected source that has an engine), records the run, mints its grant, and opens the sandbox lease.
+   1. **Admit.** The owner's object admits a run against the owner's admission, the agent, the owner's own limits and the initiator's standing authority. It chooses the source (Direction 4's strongest connected source that has an engine), records the run, mints its grant, and opens the sandbox lease.
    2. **Start.** A stateless sandbox Worker, the only holder of the E2B key, resumes or creates the owner's sandbox with the owner's network document and starts our in-VM runner in the background.
    3. **Run.** The runner syncs the owner's files and the engine's session files in, projects the agent's files, and invokes the CLI from its source record. It streams the CLI's events to the owner's object, then syncs out.
    4. **Settle.** The object settles the run from the stream's terminal event. A run lost after it started is `unknown` and is never replayed.
@@ -93,12 +93,11 @@ Evidence read for this ADR:
    - **Lifetime.** The grant ends with the run.
 
 7. **The owner's limits hold where the traffic can be seen.**
-   - **API-key runs:** every model request passes the egress door, which reserves and settles it against per-run and per-source caps.
-   - **Subscription runs:** the vendor's own limits apply, plus ours: runs per agent per day, concurrent runs, a wall-time deadline per run, and the owner's sandbox-seconds. A vendor's rate-limit or billing error stops the agent's scheduled runs and notifies the owner.
+   - **API-key runs:** every model request passes the egress door, which reserves and settles it against the owner's own model-policy limits, per run and per source.
+   - **Subscription runs:** the vendor's own limits apply. A vendor's rate-limit or billing error stops the agent's scheduled runs and notifies the owner.
+   - **No platform limit is invented here.** The limits that hold are the owner's own (their policy's spending limits, off by default) and the vendor's. TinyAssets pays for sandbox time; how that is priced or bounded is the founder's call, not this ADR's.
 
-   - **Every owner's runs are capped** in sandbox-seconds a month and in concurrent runs, since TinyAssets pays for sandbox time. The caps are owner policy with platform ceilings; what each pricing tier allows is not yet decided.
-
-8. **Hosted engines are for every owner.** ADR-023 and ADR-030 limited vendor CLIs on TinyAssets boxes to the paid tier, attributed to a founder decision of 2026-10-26. The founder said on 2026-11-02 that no such decision was made, so the limit is withdrawn: every owner's agents may run in the sandbox, on any source, within the caps above.
+8. **Hosted engines are for every owner.** ADR-023 and ADR-030 limited vendor CLIs on TinyAssets boxes to the paid tier, attributed to a founder decision of 2026-10-26. The founder said on 2026-11-02 that no such decision was made, so the limit is withdrawn: every owner's agents may run in the sandbox, on any source.
 
 9. **Continuity is the engine's own session resume.**
    - **Where sessions live.** The session store is the engine's own files: on the sandbox disk while it is warm, and in the owner's files as the durable copy.
