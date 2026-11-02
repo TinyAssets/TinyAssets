@@ -267,7 +267,7 @@ describe("owner Worker config", () => {
   });
 
   it.each([
-    ["the thread stores", { bindings: [{ name: "PISTORE", class_name: "ThreadStore" }] }],
+    ["a store namespace", { bindings: [{ name: "STORES", class_name: "Store" }] }],
     ["OWNER", { bindings: [{ name: "OWNER", class_name: "OwnerDO" }] }],
     ["another Worker's class", { bindings: [{ name: "X", class_name: "X",
                                              script_name: "tinyassets-owner" }] }],
@@ -282,7 +282,7 @@ describe("owner Worker config", () => {
 
   it("makes OwnerDO alone, SQLite-backed, and no other class", () => {
     for (const migrations of [[{ tag: "v1", new_classes: ["OwnerDO"] }],
-                              [{ tag: "v1", new_sqlite_classes: ["OwnerDO", "ThreadStore"] }],
+                              [{ tag: "v1", new_sqlite_classes: ["OwnerDO", "Store"] }],
                               [{ tag: "v1", new_sqlite_classes: ["OwnerDO"] },
                                { tag: "v2", new_sqlite_classes: ["Other"] }],
                               [{ tag: "v1", new_sqlite_classes: ["OwnerDO"],

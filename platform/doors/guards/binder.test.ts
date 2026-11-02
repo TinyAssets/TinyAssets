@@ -108,7 +108,7 @@ describe("binder guard", () => {
     ["doors/src/mcp.ts", "export const f = (env: any) => env.OWNER.getByName('alice');"],
     ["doors/src/mcp.ts", "export const f = (env: any) => env.OWNER['getByName']('alice');"],
     ["owner/src/owner-do.ts", "export const f = (ns: any) => ns.getByName('bob');"],
-    [OWNER_DO, "export const f = (env: any) => env.PISTORE.getByName('x');"],
+    [OWNER_DO, "export const f = (env: any) => env.STORES.getByName('x');"],
     [OWNER_DO, "export const f = (env: any) => env.OWNER.getByName('bob');"],
     ["doors/src/binder.ts", "export const f = (ns: any) => ns.get(ns.idFromName('bob'));"],
     ["doors/src/app.ts", "export const b = { owner: 'a', caller: 'a', origin: null };"],

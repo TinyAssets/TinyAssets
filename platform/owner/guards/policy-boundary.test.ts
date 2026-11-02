@@ -256,10 +256,10 @@ describe("the sandbox's spend", () => {
     ["a .js specifier", 'import { x } from "./thread-host.js";'],
     ["export star", 'export * from "./thread-host";'],
     ["a require", 'const m = require("./thread-host");'],
-    ["a package, side effect", 'import "@earendil-works/pi-durable";'],
-    ["a package, by a mixed import", 'import { type T, x } from "@earendil-works/pi-durable";'],
+    ["a package, side effect", 'import "@earendil-works/pi-coding-agent";'],
+    ["a package, by a mixed import", 'import { type T, x } from "@earendil-works/pi-coding-agent";'],
     ["a package, by inline types alone (kept by verbatimModuleSyntax)",
-     'import { type T } from "@earendil-works/pi-durable";'],
+     'import { type T } from "@earendil-works/pi-coding-agent";'],
   ])("sees %s of pi's engine", (_what, line) => {
     const sources = new Map([["owner/src/egress.ts", line],
                              ["owner/src/thread-host.ts", "export const x = 1;"]]);
@@ -269,7 +269,7 @@ describe("the sandbox's spend", () => {
   it("skips an `import type`, and refuses an import it cannot resolve or read", () => {
     const sources = new Map([
       ["owner/src/a.ts", 'import type { T } from "./thread-host";\n' +
-                         'import type { U } from "@earendil-works/pi-durable";\n' +
+                         'import type { U } from "@earendil-works/pi-coding-agent";\n' +
                          'export type { V } from "./thread-host";\n' +
                          'import { b } from "./missing";\nawait import(name);'],
       ["owner/src/thread-host.ts", "export const x = 1;"]]);

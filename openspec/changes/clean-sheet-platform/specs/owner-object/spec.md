@@ -62,7 +62,7 @@ A service binding the owner Worker holds SHALL be only to a Worker the config gu
 
 #### Scenario: The bindings today
 - **WHEN** the owner Worker's config is checked
-- **THEN** it holds `FILES`, to the files Worker holding exactly one `r2_buckets` entry, and `GATEWAY`, to the model gateway holding no binding and declaring only its keyring secret by name
+- **THEN** it holds `FILES`, to the files Worker holding exactly one `r2_buckets` entry, `GATEWAY`, to the model gateway holding no binding and declaring only its keyring secret by name, and `HOOKS`, to the hooks Worker binding only its own `CodemodeSandbox` class, and no Durable Object namespace
 
 #### Scenario: The bound Worker gains a way on
 - **WHEN** the files Worker's config gains a Durable Object namespace, a service, a queue producer, a workflow, a dispatch namespace, a Worker loader, an unsafe binding, a tail consumer, a KV namespace, a D1 database or a second bucket, at top level or in an environment
@@ -160,10 +160,10 @@ A lane's pass SHALL end within its job's single-flight hung timeout by wall cloc
 - **THEN** it takes no more of them, ends before its job's hung timeout, and its job brings the rest at once
 
 ### Requirement: Only Lifecycle touches the object's alarm
-Lifecycle SHALL own the object's single physical alarm, which each agent thread's wake job shares. No source SHALL set, read or clear the alarm itself, import any part of the `agents` package but `agents/lifecycle` and `agents/skills` (its Agent Skills parser; so the object never extends the SDK's `Agent`), or install Lifecycle's runtime `fetch` and WebSocket handlers. The object's `alarm` SHALL only hand the runtime's alarm to Lifecycle.
+Lifecycle SHALL own the object's single physical alarm, which the lanes' jobs and the erasure's share. No source SHALL set, read or clear the alarm itself, import any part of the `agents` package but `agents/lifecycle` (so the object never extends the SDK's `Agent`), or install Lifecycle's runtime `fetch` and WebSocket handlers. The object's `alarm` SHALL only hand the runtime's alarm to Lifecycle.
 
 #### Scenario: Source sets the alarm
-- **WHEN** a Worker source names `setAlarm`, `deleteAlarm`, `getAlarm`, `disableAlarms` or `deleteAll`, spells one in pieces through a string, reaches a storage or a Lifecycle by a computed name, imports any part of the `agents` package but `agents/lifecycle` and `agents/skills` (`agents/harness/pi` included), installs Lifecycle's handlers, or names a Lifecycle or pi table
+- **WHEN** a Worker source names `setAlarm`, `deleteAlarm`, `getAlarm`, `disableAlarms` or `deleteAll`, spells one in pieces through a string, reaches a storage or a Lifecycle by a computed name, imports any part of the `agents` package but `agents/lifecycle` (`agents/skills` and `agents/harness/pi` included), installs Lifecycle's handlers, or names a Lifecycle table
 - **THEN** the alarm guard or the policy-boundary guard fails CI
 
 #### Scenario: A binding fetches the object
@@ -232,8 +232,8 @@ The object SHALL admit each call from an outside client against that client's gr
 A grant's revision SHALL move on every owner set and revoke, and the owner's set SHALL name it, a stale one refused. Its generation SHALL move only with its mode or the set of its scopes (a revoke is a mode), and stamps SHALL carry it alone, scopes read from the grant as it stands. Where this spec ends a client's work on a grant change, a grant change is a set that moves the generation, or a revoke; a set that moves only the revision SHALL end none of it.
 
 #### Scenario: A client renamed
-- **WHEN** the owner renames a client with a conversation, a sleeping task and run receipts
-- **THEN** the generation is unchanged, its threads, sleeper and receipts are kept, and a tool call in the conversation made before the rename runs
+- **WHEN** the owner renames a client with a registered agent and an open wake
+- **THEN** the generation is unchanged, its stamps still stand, and its wake is kept
 
 #### Scenario: A rename against a stale view
 - **WHEN** the owner renames a client naming a revision that has moved on
@@ -294,45 +294,6 @@ An MCP client SHALL file its agent's registration on its own verified call, so t
 - **WHEN** the owner applies a card whose client's grant was revoked after it was filed
 - **THEN** the apply is refused, no agent is registered, and the card is kept
 
-
-### Requirement: A scheduled launch carries the authority it was made under
-A scheduled launch SHALL run in a run thread stamped with the authority it was made under, or none for the owner's own, rechecked when the thread is recorded and in each delivery with the grant's standing and `run_graph`; a grant that no longer stands SHALL end it. A grant change SHALL drop the client's threads, sleepers included, wiping each store with its task. A scheduled run SHALL hold its client's grant row.
-
-#### Scenario: Free rows at their bound
-- **WHEN** the free grant rows are at their bound while a client's scheduled launch sleeps
-- **THEN** the client's row is kept, and the launch still delivers under its standing grant
-
-#### Scenario: A grant changed around the doors
-- **WHEN** a scheduled launch's client's grant is revoked by a writer that keeps the thread, before the launch is due
-- **THEN** its delivery is refused `outside client authority no longer stands`, its task ends with that reason, and nothing is submitted
-
-
-### Requirement: A scheduled launch is a pi task sleeping in its run's Session
-A scheduled launch SHALL be one background `ta.scheduled` pi task in its run's root, with no telemetry origin, sleeping until due with its wake in the thread's live row. Its delivery SHALL re-check its thread, stamp, the admission and the run policy right before pi commits the input under the occurrence's `requestId`, as `ta.work`; one already made SHALL be pi's duplicate. Cancel SHALL be `abortTask`, a delivery pi holds counting as made.
-
-#### Scenario: A days-long sleep
-- **WHEN** a launch is scheduled three days ahead, its Session closed and the object evicted
-- **THEN** its live row and its job say when, and at that time its job reopens the Session, the task delivers once, as `ta.work`, and completes
-
-#### Scenario: An eviction inside its delivery
-- **WHEN** the object dies after a delivery's submit and before its task commits
-- **THEN** the reopened task finds the submission by its request id, and the thread holds one submission and one answer
-
-#### Scenario: A full thread or a lowered policy at its delivery
-- **WHEN** a launch is due while its thread holds `THREAD_INPUTS` open inputs, or the run policy has no room for it
-- **THEN** its task sleeps again, backing off from 30 s to 10 min, its status `scheduled` and held with the reason, and delivers once that lifts
-
-#### Scenario: A launch due while the owner is suspended
-- **WHEN** a launch falls due while the owner is suspended
-- **THEN** its job opens nothing and looks again a day later, its status `scheduled` and held `owner_suspended`, and the readmission wakes it, so it delivers at once
-
-#### Scenario: A refusal for good
-- **WHEN** a launch is due after its thread was dropped or its stamp stopped standing
-- **THEN** its task ends terminal with the reason, and nothing is submitted
-
-#### Scenario: A cancel during the sleep or the delivery
-- **WHEN** the caller cancels a sleeping launch, or one whose delivery is under way
-- **THEN** its task ends `aborted`, counting the occurrence delivered only if pi holds it, its last delivery is withdrawn, and a second cancel cancels nothing
 
 ### Requirement: A grant change ends its client's wakes
 A grant change SHALL suppress the client's agents' open wakes and schedule the revoke of their callbacks in the same transaction, and a claim SHALL suppress a wake whose client's grant no longer stands.
@@ -469,30 +430,11 @@ An upload SHALL be told a chunk need not be sent only when the chunk is stored a
 - **THEN** each commit is refused, and once the client sends the bytes it commits
 
 ### Requirement: The owner's database is bounded under half its limit
-Every owner table SHALL be bounded by a count or bytes the code enforces, with no exception, and a guard SHALL compute the worst case from those bounds and the schema, at the policy's high bounds, each row laid out as SQLite lays it at a thinned page's worst fill (`WORST_FILL`), and hold it under half the platform's 10 GB. The schema SHALL refuse a turn owner past `THREAD_INPUTS` open root inputs, `THREAD_CHILD_INPUTS` subagent inputs or `THREAD_COMPACTIONS` live compactions a thread (`CONVERSATION_COMPACTIONS` for each of its `THREAD_CONVERSATIONS` working conversations), and a thread's first owner past `WORKING_THREADS` threads holding any.
+Every owner table SHALL be bounded by a count or bytes the code enforces, with no exception, and a guard SHALL compute the worst case from those bounds and the schema, at the policy's high bounds, each row laid out as SQLite lays it at a thinned page's worst fill (`WORST_FILL`), and hold it under half the platform's 10 GB. No agent's records live in the owner's database (ADR-034).
 
 #### Scenario: A table no bound covers
 - **WHEN** a migration makes a table the guard has no term for, or a manifest table's charging trigger is missing
 - **THEN** the owner-bound guard fails
-
-### Requirement: A turn's counters live as long as its work
-The thread host SHALL keep each pi record that owns a turn (an open input, a live compaction), keyed by its thread, as the Session commits it, in a unit at once, closing the Session when one cannot be kept, and all again as it opens, before it resumes. A turn's row SHALL come with its first owner and go with its last or its thread; a call of a turn with no row SHALL be refused `turn_ended`. A thread SHALL hold at most `THREAD_INPUTS` open root inputs (`thread_inputs_full`), a subagent's never among them.
-
-#### Scenario: An input answered
-- **WHEN** an input's run answers, and a call later names the input's turn
-- **THEN** the turn's counters are gone, and the call is refused `turn_ended`
-
-#### Scenario: A unit lost between the commit and the owner
-- **WHEN** the owner's units for a thread's commits are lost while an input runs, and the Session closes and reopens
-- **THEN** as it reopens, the open input's turn is kept again and a stale owner goes
-
-#### Scenario: Background work after its run
-- **WHEN** work a run's tool started submits an input after the run answered
-- **THEN** the input's calls are refused `turn_ended`, never starting the run's counters over
-
-#### Scenario: Two threads at once
-- **WHEN** two threads' first inputs, which pi numbers alike in each thread's own store, are open at once, and both call a model
-- **THEN** each input owns its own thread's turn, and both calls are kept
 
 ### Requirement: A quota never blocks a change that frees
 A change that only removes or frees (a remove, a redaction, a purge, an aborted upload, housekeeping) SHALL never be refused by a quota. A policy SHALL be refused unless `max_entries` times the larger of `keep_versions` and `keep_recent` is at most `max_history`, so no churn of live files can fill it, and gone paths' churn makes its own room.
@@ -533,20 +475,6 @@ The binder is the trust root: the HTTP door's binder MAY read an owner's namespa
 - **WHEN** the binder serves Alice's large file
 - **THEN** it reads Alice's namespace from Alice's object and the chunk keys it asks for are under that namespace only
 
-### Requirement: One pi environment over the manifest
-The owner's pi `ExecutionEnv` SHALL serve its file methods from the manifest and the files Worker, never waking a sandbox, and SHALL pass pi-durable 1.4.0's conformance cases other than `exec`'s, with symbolic links off. A write to a path the environment read SHALL fail with `changed since read` when anything else committed there since; `exec` SHALL answer `shell_unavailable` until the sandbox lands.
-
-#### Scenario: An edit raced by another writer
-- **WHEN** one environment reads `notes.md`, another writes it, and the first writes its edit
-- **THEN** the first write fails with `changed since read` and the other's content stays
-
-### Requirement: The environment stays inside a request's limits and keeps bytes verbatim
-A whole-file read or write by the environment SHALL move at most 16 MiB, and `readTextFile` SHALL keep a byte-order mark.
-
-#### Scenario: pi's edit of a file with a BOM
-- **WHEN** pi's `edit` changes one line of a CRLF file that starts with a BOM
-- **THEN** the file holds the BOM, the CRLF endings and the edit, and nothing else changed
-
 ### Requirement: The platform counts the object's calls
 The object SHALL keep no call budget of its own: the platform counts subrequests per invocation, charged to the object's newest incoming event or to a count each event resets (the cap probe's M12 found one of the two and could not tell them apart), and its own error SHALL be the failure a caller sees (a tool call's error result). The owner Worker's config SHALL set `limits.subrequests` to 10,000, and the config guard SHALL refuse any other value, or none.
 
@@ -555,11 +483,11 @@ The object SHALL keep no call budget of its own: the platform counts subrequests
 - **THEN** the tool's result is that error, and nothing was written
 
 ### Requirement: Every owner write is a synchronous gate unit
-Every owner write SHALL run as a unit of the object's write gate: one synchronous `transactionSync`, run at once, which reads what it decides on itself and spans no outside call. pi's records SHALL live only in the thread stores, never in the owner's database, so no pi transaction is ever open in it. A door's synchronous body SHALL be one unit; a door, lane or tool call that crosses to an outside call (a thread store, `FILES`, the gateway) SHALL write each step around it as a unit of its own. A unit SHALL keep its own atomicity, and SHALL never be an async storage transaction, which would hold the input gate. Reads stay direct.
+Every owner write SHALL run as a unit of the object's write gate: one synchronous `transactionSync`, run at once, which reads what it decides on itself and spans no outside call. No agent loop SHALL commit in the owner's database: agents run on unmodified engines (ADR-034). A door's synchronous body SHALL be one unit; a door or lane that crosses to an outside call (`FILES`, the gateway) SHALL write each step around it as a unit of its own. A unit SHALL keep its own atomicity, and SHALL never be an async storage transaction, which would hold the input gate. Reads stay direct.
 
-#### Scenario: A door writes while a thread commits
-- **WHEN** a door is called while a thread's commit is in flight
-- **THEN** the door's unit runs at once and is kept, and the commit lands in the thread's own store
+#### Scenario: A door writes while another awaits FILES
+- **WHEN** a door is called while another door awaits the files Worker
+- **THEN** the door's unit runs at once and is kept, and the other's later step lands in a unit of its own
 
 ### Requirement: No write reaches the storage past the gate
 The object's modules SHALL see the storage only through the gate's view, which SHALL refuse, loudly, any statement but a single read and any `transactionSync` outside a unit; the gate SHALL refuse a unit inside another and a unit that returns a promise.
@@ -579,62 +507,11 @@ A unit SHALL read the rows it decides on, or re-check them in its own statements
 - **WHEN** an outside client's whole write has passed its door's check and its grant loses `write_files` before the write's unit runs
 - **THEN** the write is refused and nothing is written
 
-### Requirement: Each agent thread is one pi Session over its own store
-pi-durable SHALL run in the owner's object, one Session per agent thread, hosted by the object's own `ThreadHost`, a capability of its Lifecycle beside the schedule, with none of Lifecycle's handlers installed. Each Session SHALL be opened over its thread's own `ThreadStore`, a second SQLite class of the owner Worker bound as `PISTORE` (no `script_name`), by RPC over one session per open Session, released when the Session closes; the harness, every hook (a package's executable hook as our remote wrapper, its code in the hooks Worker), the environment, the model provider and every authority check SHALL run in the owner's object. pi's tables SHALL exist only in the stores, under pi's own schema version, which the pi pin guard SHALL hold at 2, with pi-durable, pi-ai and chord pinned by exact version and lockfile integrity. A store SHALL serve only its holder, the Session that last opened it, refuse every call before it is opened, read no binding, and once destroyed refuse every call.
-
-#### Scenario: A cold object's first call
-- **WHEN** a cold object's first call submits a turn
-- **THEN** the thread's store is made and migrated to version 2, the turn completes, and the owner's database holds no `pi_` table
-
-#### Scenario: A stale Session
-- **WHEN** a newer Session opened a thread's store and the older one commits
-- **THEN** the store refuses the older one's call, and the newer one reads what was committed
-
-### Requirement: The thread host wakes each thread by its own job
-Each thread's Session SHALL be woken by a job of its own (`pi-wake:<thread>`), driven by that Session's `onWake`, each change kept in the thread's `agent_live` row in a gate unit. Sessions SHALL open on demand, close when idle for 2 minutes, the least recently used idle one first to make room, and an open past `OPEN_MAX` with no idle Session SHALL be refused at once, never waited on; a watched Session SHALL be pinned open and counted. A Session a storage error failed SHALL be opened again by its job or the next call, over what it committed.
-
-#### Scenario: A sleeping task in a closed Session
-- **WHEN** a thread's task sleeps until a deadline and its Session is closed
-- **THEN** the thread's own job opens its Session at the deadline and the task runs
-
-#### Scenario: A store reset mid-run
-- **WHEN** a thread's store refuses its Session's commit while an unsafe tool runs
-- **THEN** the Session fails, its job opens it again, committed work stands, and the tool comes back `interrupted`, never run twice
-
-#### Scenario: A task parked by pi's restart limit
-- **WHEN** a thread's task is cut off pi's restart limit times in a row and pi parks it
-- **THEN** the next open of its Session ends the run it holds up, its input settles `unanswered`, the owner is told, and the thread's next input is answered
-
-#### Scenario: A policy write while every Session is working
-- **WHEN** a policy write ends a thread whose live row says it is working, its Session closed and no Session idle
-- **THEN** the ending opens it past the bound, aborts its work before it resumes, starts no model request, and closes it again
-
-### Requirement: pi opens with the object's registry, tools and settings
-The object SHALL open pi with one registry per object, pi's coding tools with `read` alone replay-safe, `ta` replay-safe by its own rule (below), settings read at each use (progress committed at most once a second, a failed run's queued inputs withdrawn, owner policy's part beneath those), TinyAssets' attribution, and one model provider, `gateway`, listing only the owner's connected models.
-
-#### Scenario: An eviction mid-tool
-- **WHEN** the object dies while a `read` and an unsafe tool are running, and its alarm starts it again
-- **THEN** `read` runs again, and the unsafe tool comes back `interrupted` and never runs twice
-
-### Requirement: A conversation's file changes are by its stamp
-The environment SHALL be built per tool call over the owner's files, its history writer the conversation's `ta.authority` stamp: `client:<id>` for an outside client's conversation, else `agent`. A conversation a task creates SHALL take its owner conversation's stamp in the creating commit, and a fork SHALL keep its parent's.
-
-#### Scenario: A subagent of an outside client's conversation
-- **WHEN** a tool in a conversation stamped for a client creates a conversation it owns
-- **THEN** the new conversation carries the same stamp, and its file changes are the client's
-
-### Requirement: pi's reports reach the owner, and owner content never stops the object
-What pi reports through `onReport`, and each extension pi refuses to install while opening, SHALL become an owner notice, the newest 100 kept, read by the owner alone; a refused extension SHALL be noticed once while that notice is kept, though pi opens again at every new instance. Opening pi SHALL never fail for owner content, since a failed open stops the object's lanes with Lifecycle's startup.
-
-#### Scenario: A malformed package
-- **WHEN** an extension pi refuses to install is among the object's
-- **THEN** it is skipped and kept as a notice, pi opens with the rest, and the `wakes` and `files` lanes run
-
 ### Requirement: A model connection holds only a blob the gateway sealed
 The object SHALL hold a model connection's credential only as the blob the gateway sealed for that owner, connection and version, never a plaintext key or token: the binder hands a pasted key to the gateway's `seal` and an OAuth code to its `exchange`, and `connectionCommit` takes the blob, its kid, the models the gateway's setup check listed with their metadata, the egress scope it listed (the sealed base URL and endpoints, within 16 KiB, required but for a failed setup), and an OAuth access expiry in clear.
 
 #### Scenario: A pasted key is connected and used
-- **WHEN** the owner connects a key and its agent runs a turn on it
+- **WHEN** the owner connects a key and the sandbox's calls use it through the egress door
 - **THEN** no table of the object, no call it makes to the gateway and no line it logs holds the key
 
 ### Requirement: A connection keeps up to 1,024 models
@@ -643,10 +520,6 @@ A connection SHALL keep up to 1,024 models, each its whole pi-ai record as the s
 #### Scenario: The largest built-in catalog
 - **WHEN** a key is connected for the built-in provider whose catalog is the largest
 - **THEN** the connection is active with every model the setup check listed
-
-#### Scenario: A model whose thinking map names xhigh
-- **WHEN** a connected model's record maps `xhigh` and `max`, and another reasoning model's has no map
-- **THEN** pi-ai's `getSupportedThinkingLevels` offers both levels for the first, through `high` only for the second, and `auto` offers the strongest's
 
 ### Requirement: The connection doors are the owner's, in its live session
 Preparing (with an OAuth flow's beginning), committing, revoking and listing connections and finishing their OAuth flows SHALL be the owner's own doors, in its live session; a refused one leaves a refusal receipt.
@@ -717,635 +590,105 @@ A blob the gateway resealed under its active kid SHALL be stored by compare-and-
 - **THEN** version 2's tokens stay, and the call's reseal is dropped
 
 ### Requirement: Every model call is reserved against the owner's model policy
-Each loop model call SHALL be reserved in one unit that also reads the connection's blob and the owner policy's generation and `models` caps: the turn's requests, tokens and cost, and the owner's and the source's daily and monthly cost, each counting what is settled and what is still open. The reservation SHALL bound the call's output tokens. A source's ceilings SHALL be keyed by its source record, so a reconnect keeps them.
+Each model call the object reserves (`usage.ts`; the runs slice keys it to a run) SHALL be reserved in one unit that reads the owner policy's generation and `models` ceilings: the owner's and the source's daily and monthly cost, each counting what is settled and what is still open. The reservation SHALL bound the call's output tokens. A source's ceilings SHALL be keyed by its source record, so a reconnect keeps them.
 
-#### Scenario: Concurrent reserves at a cap
-- **WHEN** eight calls of one turn reserve together against a cap of three requests
-- **THEN** three are reserved and five refused, each refusal kept as a receipt
+#### Scenario: Concurrent reserves at a ceiling
+- **WHEN** six calls reserve together against a daily ceiling that holds two
+- **THEN** two are reserved and four refused, each refusal kept as a receipt
 
 ### Requirement: A call is estimated by pi-ai's calculateCost and settled at the gateway's price
 A call's reservation SHALL be priced by pi-ai's `calculateCost` over the target model's whole cost record, so a long-context tier prices the whole request once its estimated input passes the tier's threshold, and the most output the cost room takes SHALL be found in about log2 of its bound. A settled call SHALL keep the cost the gateway's pi-ai adapter reported, never one recomputed from the record stored at connect time.
 
 #### Scenario: A long-context tier
 - **WHEN** a call's estimated and billed input pass its model's tier threshold
-- **THEN** its estimate and reserved output are at the tier's rates, and it settles at the tier's price the gateway reported, which pi's own `pi.usage` records too
+- **THEN** its estimate and reserved output are at the tier's rates, and it settles at the tier's price the gateway reported
 
 #### Scenario: A stored record older than the gateway's catalog
 - **WHEN** a connection's stored record prices a model at nothing and the gateway's catalog does not
 - **THEN** the call settles at the gateway's price, and its spend counts against the caps
 
 ### Requirement: The caps read counters, never receipts
-Every cap SHALL read only counters the schema's triggers write: `model_turns` per turn, `model_spend` per source, day and month. Receipts SHALL be history only, bounded without freeing any cap. A turn's counters SHALL live exactly as long as the pi records that own it: its open input submissions, or its live compaction task.
+Every ceiling SHALL read only counters the schema's triggers write: `model_spend` per source, day and month, which the sandbox's egress charges move too. Receipts SHALL be history only, bounded without freeing any ceiling.
 
-#### Scenario: Many requests in one turn
-- **WHEN** one turn makes 5,000 requests while only the newest 100 receipts are kept
-- **THEN** the turn's counters hold all 5,000, and a cap of 5,000 refuses the next
-
-### Requirement: A model call's turn is the input at the origin of its causal chain
-A turn SHALL be the submitted input at the origin of a call's causal chain, carried by pi's telemetry propagation in its durable records: every call one input caused, through a subagent or a compaction, SHALL be charged to its turn while it is open, and work joining it after it ended refused `turn_ended`. An input under no origin (a door's, a steer) SHALL begin a turn, as SHALL a compaction outside any run; a call of any other task with no carrier SHALL be refused `no_run`.
-
-#### Scenario: A compaction a run starts
-- **WHEN** a run's context passes pi's background threshold, and pi summarizes after the run ended
-- **THEN** the summarization is the run's turn, under its caps, and the turn ends with the compaction
-
-#### Scenario: A subagent's calls
-- **WHEN** a tool of the root's run makes a conversation and submits its work there, which does the same once more
-- **THEN** every call is the root run's turn
-
-#### Scenario: Background work after its run
-- **WHEN** a tool starts background work, the run ends, a later input runs, and the background work then calls a model
-- **THEN** its calls are refused `turn_ended`, and never count against the later run's turn
-
-#### Scenario: An input from outside any run
-- **WHEN** an input is submitted to a subagent's conversation from outside any run
-- **THEN** its calls begin a turn of their own
-
-### Requirement: Only platform code can start a turn or forge one
-A new turn or a forged task carrier SHALL be in reach of trusted platform code only: the owner object runs no package executable code (`pi.extensions` are refused), hooks run in the hooks Worker with no submit or task path, and the model's tools have none of their own.
-
-#### Scenario: A tool submits to its subagent
-- **WHEN** a tool of a run submits work to a conversation it made, under the context pi passed it
-- **THEN** the work is that run's turn, and no new turn opens
+#### Scenario: Receipts pruned
+- **WHEN** six calls settle while only the newest three receipts are kept
+- **THEN** the day's and the month's counters hold all six calls' cost
 
 ### Requirement: A reservation is dispatched and settled once, in its own units
-A reservation SHALL be dispatched only while still reserved, at the same policy generation and connection version, and not aborted; and settled once: `succeeded` from pi-ai's usage, `failed` when the gateway answered with a refusal's status (its own, or the provider's before any output), `unknown` otherwise, which keeps its whole reservation. A dispatch or settle that cannot be kept SHALL settle the row as it stands (`not_sent` or `unknown`) in the same instance.
+A reservation SHALL be dispatched only while still reserved, at the same policy generation, and not refused by its caller; and settled once: `succeeded` from pi-ai's usage, `failed` when the call was refused before any output, `unknown` otherwise, which keeps its whole reservation. A dispatch or settle that cannot be kept SHALL settle the row as it stands (`not_sent` or `unknown`) in the same instance.
 
-#### Scenario: A connection revoked before the dispatch
-- **WHEN** a connection is revoked between a call's reserve and its dispatch
-- **THEN** the call is `not_sent`, and nothing reaches the gateway
+#### Scenario: The policy moved before the dispatch
+- **WHEN** the owner's policy moves between a call's reserve and its dispatch
+- **THEN** the call is `not_sent`, and nothing is sent
 
-#### Scenario: A provider's rate limit, retried
-- **WHEN** the provider answers 429 before any output, and pi retries the call twice
-- **THEN** each try settles `failed` at no cost, and no ceiling is spent
-
-#### Scenario: A provider refuses the key
-- **WHEN** the provider answers 401 before any output, with retries allowed
-- **THEN** pi does not try again, and the turn ends `upstream_unauthorized`
+#### Scenario: A provider's refusal before any output
+- **WHEN** a dispatched call settles `failed`
+- **THEN** it holds nothing, and no ceiling is spent
 
 ### Requirement: A dead instance's calls are settled by the next instance
 An open reservation the live instance did not make SHALL be settled by the next reserve or receipts read: `reserved` as `not_sent`, `dispatched` as `unknown`.
 
 #### Scenario: The object dies mid-call
-- **WHEN** the object is reset while a dispatched call streams
-- **THEN** the next instance settles it `unknown`, and its reservation still counts against the ceilings
-
-### Requirement: The agent's models are the owner's connected models and `auto`
-The `gateway` provider SHALL list each active connection's models, each with its whole record, and, with any, `auto`, carrying the strongest's. `auto` SHALL route each request in the object, by the ranking data file: to the strongest connected model for a user's message, to the model that answered for a continuation, to the next-ranked after one that failed before any output, and to the same model after one that failed for its context's length.
-
-#### Scenario: Nothing is connected
-- **WHEN** a turn starts on an object with no active connection
-- **THEN** it settles `unanswered: no_model`
-
-### Requirement: Each model is compacted at its own thresholds
-pi's compaction thresholds SHALL be each listed model's own, from its context window (pi's defaults from 256K tokens, in proportion below), `auto`'s the strongest's. A request `auto` routes to a model whose threshold is lower than the strongest's SHALL be held to that model's own: over it, the call is refused `context_length_exceeded` before anything is reserved, so pi compacts and retries.
-
-#### Scenario: A provider refuses an overflowing context
-- **WHEN** the provider refuses a turn's call for its context's length, through the gateway
-- **THEN** pi compacts the conversation and retries once, the refusal settles `failed` at no cost, and the turn succeeds
-
-#### Scenario: auto continues on a smaller model
-- **WHEN** a turn's continuation stays on a model whose threshold is lower than the strongest's, and its context passes that threshold
-- **THEN** the call is refused before any reservation, pi compacts, and the retry goes to the same model under its threshold
-
-### Requirement: pi's and pi-ai's metrics are kept
-The telemetry adapter SHALL carry a metrics capability on its root, every span and every extracted parent, aggregating every metric pi and pi-ai record by name, kind and attributes in the object's memory, at most 1,024 series, a measurement past them counted as dropped. The owner's `usageMetrics` SHALL answer them with pi's own `pi.usage`, summed over every thread: an open Session's read live, any other's from the usage row the owner kept as its Session last closed (at most 16 KiB, going with its thread). The read SHALL never open a Session, and SHALL cover the threads the object holds now, each counted once (a dropped thread's usage goes with its row); no cap reads either.
-
-#### Scenario: A turn's metrics
-- **WHEN** a turn runs through the gateway and the owner reads its usage
-- **THEN** the answer holds pi-ai's token and cost metrics, pi-durable's phase and task metrics, and pi's `pi.usage` for the physical model that answered
-
-### Requirement: The telemetry adapter never throws and reads pi's exported names
-The span names and attributes the adapter reads SHALL be pi-durable's exported `DURABLE_TELEMETRY_SCHEMA`'s, and no adapter method SHALL throw, whatever it is handed: on pi 1.4 a throwing adapter can reject a durable commit.
-
-#### Scenario: Hostile input
-- **WHEN** a span, its propagation or its metrics is handed values whose every read throws
-- **THEN** nothing throws, and a measurement that cannot be kept is counted as dropped
-
-#### Scenario: pi renames a span
-- **WHEN** a pi upgrade's `DURABLE_TELEMETRY_SCHEMA` no longer names a span or attribute the adapter reads
-- **THEN** the build fails, at the adapter's types and in its test
-
-### Requirement: Each model call goes to the gateway and to the live tee
-Each call SHALL go to the gateway as pi-messages over the `GATEWAY` service binding, with the envelope the gateway reads, and every event SHALL be published to the live tee under the request's `sessionId` as it streams.
-
-#### Scenario: A live view of a streaming answer
-- **WHEN** an answer streams for longer than a second
-- **THEN** the tee hands a subscriber every delta as it comes, while pi commits the answer at most once a second
-
-#### Scenario: A turn is aborted mid-stream
-- **WHEN** the owner aborts a turn whose model call is streaming
-- **THEN** the gateway's upstream request is cancelled, and the call settles `unknown`
-
-### Requirement: An outside client's authority is enforced in its environment
-The environment pi builds for every tool call, a replay's included and whatever extensions run, SHALL hold each operation to the conversation's authority under a grant that still stands as stamped: a read, and each read of an opened reader, `read_files`; a change `write_files`, again in the change's own unit; `exec` refused to a scoped grant. A refusal SHALL be `permission_denied`.
-
-#### Scenario: The gate configured away
-- **WHEN** a scoped client's conversation, granted `read_files` only, runs with no `beforeTool` gate and calls `write`
-- **THEN** its environment refuses the write, and nothing is written
-
-#### Scenario: A revoke lands after a write began
-- **WHEN** a revoke commits after a write's call passed its first check, before the write's own unit
-- **THEN** that unit refuses it, and nothing is written
-
-### Requirement: An outside client's model calls re-check its authority
-Each model call SHALL find its conversation by its provider session, and its reservation and dispatch units SHALL each re-check that conversation's authority: a client's that no longer stands SHALL be refused `outside_authority` with a receipt and nothing sent, and a session the object never made `no_conversation`. A client's conversation whose stored extension selection drops the gate SHALL make no model call.
-
-#### Scenario: A revoke the abort missed
-- **WHEN** a revoke commits while a client's hand-off is between its mark and its submit, or between a call's reservation and its dispatch
-- **THEN** the call is refused or not sent, and the gateway is never called
-
-### Requirement: The authority gate refuses before a tool begins
-A trusted `ta.authority` extension, installed first, SHALL check each tool call, nested ones included, in `beforeTool`: `read_files` for `read`, `write_files` for `write`, both for `edit`; `bash` and any tool without a capability refused to a scoped grant; the `ta:` names reserved for `ta`'s ops. A refusal SHALL be a block with a fixed reason and a receipt. Packages named `ta.*` SHALL be refused.
-
-#### Scenario: A scoped client without write_files
-- **WHEN** a scoped client's conversation, granted `read_files` only, calls `read`, `write`, `edit` and `bash`
-- **THEN** the read runs, the other three are blocked with fixed reasons, and each block leaves a refusal receipt
-
-### Requirement: Every conversation's authority is explicit and never shed
-Each conversation SHALL carry its authority in pi's own document: the owner's (the root's, an owner thread's), a client's stamp, or none, under which no tool runs and no model call is sent. A thread SHALL be made with its authority in pi's creating commit; a task's conversation SHALL take its owner conversation's in `conversationCreated`, and a fork's copy that differs SHALL fail.
-
-#### Scenario: A fork of a client's thread
-- **WHEN** a client's thread is forked and the client is then revoked
-- **THEN** the fork carries the same stamp, and its next tool call is blocked
-
-### Requirement: A client's threads are bounded and hold its grant
-`agent_threads` SHALL record a thread in a unit that re-checks its stamp stands, naming a fresh store (128 random bits, unique) before the store exists, SHALL never change a thread's stamp or store, SHALL refuse loudly a conversation past its client's bound (64), all clients' together (1,024) or the owner's (10,000), and a run past the runs' own bound (`runs_kept`, 25,000 stores), past the runs not yet settled, a sleeping one among them (owner policy `runs.runs_live`, 2,000 by default and at most, refused `runs_live`), the scheduled ones within half of it (`runs_scheduled`), an outside client's past its share of either (`runs.client_share`, 25%) and every client's together past what the owner's reserve leaves (`runs.owner_reserve`, 25%), before any store is made; a dropping thread SHALL count against every bound, and SHALL hold its client's grant row (`held`), until its row is forgotten. A thread is its Session's root; its stamp SHALL be written in the root's creating commit. A thread row SHALL NOT copy its stamp's universe: it SHALL name the outside agent's registration the stamp was made from, whose id, universe and client never change and which SHALL NOT be deleted while a thread names it (the owner's delete leaves a tombstone that goes with the last such thread), so a thread acts in the universe it was stamped in after its client registers elsewhere, and a run opens there with no agent of its client enabled. A grant change (a set that moves the generation, or a revoke) SHALL mark its client's threads dropping, and let go of its run receipts, in its own unit, and drop them once it committed.
-
-#### Scenario: A client that moved
-- **WHEN** a client's thread was stamped in universe A, and the owner disables its agent there and the client registers in B
-- **THEN** the A thread still acts under A, a message in B gets a conversation of its own, and a run launched under A opens under A
-
-#### Scenario: A scheduled backlog
-- **WHEN** scheduled launches hold their share of `runs_live` (`SCHEDULED_SHARE`, half of it)
-- **THEN** the next scheduled launch is refused `runs_scheduled`, and a launch made now runs
-
-#### Scenario: A client's flood of live runs
-- **WHEN** an outside client launches runs that do not settle until its share of `runs_live` is held
-- **THEN** its next launch is refused `runs_live`, and the owner's launch is made
-
-#### Scenario: 1,000 launches a day
-- **WHEN** the owner launches 1,000 runs in a day while its conversations are one short of their bound
-- **THEN** none is refused, and its next conversation is still made
-
-#### Scenario: One client floods runs
-- **WHEN** an outside client launches runs until it reaches its share of `runs_kept`
-- **THEN** its next run is refused loudly, and the owner can still launch
-
-#### Scenario: A grant made again at once
-- **WHEN** a client with 64 conversations is revoked and granted again before their drops finish
-- **THEN** its new conversations are refused until the drops finish
-
-#### Scenario: A client at its bound
-- **WHEN** a client has as many threads as its bound and asks for another
-- **THEN** the thread is refused loudly, and the client's grant row counts each thread it keeps
-
-### Requirement: Idle threads are dropped, never live ones
-The `threads` lane SHALL drop a conversation no door has touched for the idle age (7 days), and a run `keep_runs` after it settled, each marked in a unit that re-checks the activity it read, so a thread touched since is kept; a live thread (its `agent_live` row: work running in its Session, its subagents' and background work's included, or a task sleeping) SHALL never be marked, its activity moved on instead; a dropped thread's Session SHALL be closed and never opened again; a thread whose scheduled launch sleeps is live, kept by its live row.
-
-#### Scenario: Clients that stopped calling hold the shared bound
-- **WHEN** clients' threads fill the clients' shared bound and then go unused for the idle age
-- **THEN** the lane drops them, and a new client's thread is made
-
-#### Scenario: A thread whose background work runs on
-- **WHEN** a thread's run ended but the background work it started still runs, past the idle age
-- **THEN** the thread is kept and its activity moved on
-
-#### Scenario: A far launch cancelled
-- **WHEN** a client schedules launches months ahead and cancels some
-- **THEN** the cancelled launches' threads are dropped once idle, and the open one's is kept
-
-### Requirement: Every door that uses a thread keeps it active
-Every door that makes or uses a thread SHALL move its activity on and re-derive the `threads` lane's job.
-
-#### Scenario: A message to an idle-aged thread
-- **WHEN** a door touches a thread after the lane read it as idle, before its drop
-- **THEN** the drop re-checks its activity and keeps it
+- **WHEN** a new instance finds a call dispatched by the instance before it
+- **THEN** it settles it `unknown`, and its reservation still counts against the ceilings
 
 ### Requirement: The owner's agent definitions are the owner's alone
-Only the owner's own authority, the owner at the file doors or its agent under the owner's authority, SHALL create, change, move into or out of, or remove anything under `/workspace/agents`, `/workspace/.agents`, `/workspace/skills` or `/workspace/prompts` (its agents, skills, templates and packages); an outside client SHALL be refused at every file door and every change of the agent's environment, its thread's tools included, and every change the owner's agent makes there SHALL raise an owner notice. A thread SHALL be configured only from an `AGENTS.md` whose recorded writer is the owner or its agent, any other refused loudly.
+Only the owner's own authority SHALL create, change, move into or out of, or remove anything under `/workspace/agents`, `/workspace/.agents`, `/workspace/skills` or `/workspace/prompts` (its agents' files and skills, which every engine reads); an outside client SHALL be refused at every file door.
 
 #### Scenario: A client plants an agent's instructions
-- **WHEN** a client writes, renames or uploads into `/workspace/agents/main/AGENTS.md` by a door, or its conversation's model calls `write` there
-- **THEN** each is refused "only the owner changes its agents' files under /workspace/agents, /workspace/.agents, /workspace/skills and /workspace/prompts", and no thread of the owner's or another client's is configured from it
+- **WHEN** a client writes, renames or uploads into `/workspace/agents/main/AGENTS.md` by a door
+- **THEN** each is refused "only the owner changes its agents' files under /workspace/agents, /workspace/.agents, /workspace/skills and /workspace/prompts"
 
-#### Scenario: A client plants a script beside an owner's skill
-- **WHEN** a client writes `scripts/run.sh` into an owner's skill directory, a `SKILL.md` at a skills root, or `extensions/` into a selected package
-- **THEN** each is refused with the same code, and the owner's skill and package stand as the owner left them
+#### Scenario: A client plants a skill
+- **WHEN** a client writes a `SKILL.md` under `/workspace/.agents/skills`, `/workspace/skills` or `/workspace/prompts`
+- **THEN** each is refused with the same code, and the owner's skills stand as the owner left them
 
-#### Scenario: A file another wrote is already there
-- **WHEN** an agent's `AGENTS.md` carries a writer other than the owner's
-- **THEN** a launch or a new thread for that agent is refused loudly, and nothing is made
-
-### Requirement: A launch's time is bounded
-A launch's `at`, at the door and through `ta`, SHALL be seconds since the epoch, at most a year and a day ahead, and refused loudly otherwise; one already past SHALL run now.
-
-#### Scenario: Milliseconds sent for seconds
-- **WHEN** a client launches with `at` in milliseconds, or at 1e300
-- **THEN** the launch is refused as invalid, and no thread, task or alarm is made
-
-### Requirement: A thread's store is wiped when the thread is dropped
-When a thread is dropped, for every reason (idle retention, a run's retention, a grant change or revoke, the owner's erasure), one path SHALL run, each step resumable: in one unit its row is marked `dropping`, after which no door resolves it (an operation on it is no such operation) and nothing opens its Session; its Session's work is ended and the Session closed, never opened for it; a run's receipt is kept; its store is wiped whole (`deleteAll`); and only then, in one unit, its row is forgotten with every row keyed to it (its live and usage rows, its wake job). The `threads` lane SHALL finish any drop cut short, backing off in its row a drop whose store did not answer. A revoke SHALL end live work before it drops. The owner's own database SHALL hold only its bounded rows, its worst case at the policy's high bounds under half its 10 GB (a static guard), the runs' live stores, their receipts and every thread's kept usage (64 MiB in all, a backstop told as `usage_unkept`) included.
-
-#### Scenario: A client's threads after a revoke
-- **WHEN** a client with threads is revoked
-- **THEN** each of its threads' stores is wiped before its row is forgotten, and nothing opens them again
-
-#### Scenario: A revoke while a tool runs
-- **WHEN** a client is revoked while a tool of its run is running
-- **THEN** the run is ended, then its Session closed, then its store wiped
-
-#### Scenario: A sleeping task after a grant change
-- **WHEN** a client's grant changes while a task sleeps in its closed thread
-- **THEN** the store is wiped with the task in it, and its wake job goes with the row
-
-#### Scenario: A crash between two steps of a drop
-- **WHEN** the object dies after a drop's mark, or after its store was wiped, or a store refuses its destroy
-- **THEN** the `threads` lane finishes the drop: every store is wiped and only then its row forgotten
-
-### Requirement: A run's store is wiped `keep_runs` after it settles
-A run SHALL settle once: when its Session reports nothing running and nothing asleep with its input settled, one unit SHALL keep the time and its receipt (its input's status, a reason of at most 64 characters, a fixed code and a short detail, and the first 768 bytes of its answer, a summary), read from that Session, and SHALL add its usage into the owner's total, keeping no usage row of its own and counting it once whether its Session is open or not. A settled run SHALL take no input: a new one SHALL be refused `run_settled` at the host's admission, before pi commits it, from every path (the doors, `ta`, scheduled work), so a settled run holds no turn, live row, wake job or usage row. Its store SHALL be wiped `keep_runs` after it settled (owner policy `runs.keep_runs`, 7 days by default, 30 at most), never while it is live, and no read SHALL move that time; a run never seen settling SHALL be taken `keep_runs` after its last activity, answering as one pi never saw. A settled run's status and cancel SHALL be answered from its receipt, its Session never opened for them, to the caller whose run it was alone, before its drop, during it and after; while its store is there, an answer longer than the receipt's text SHALL be read whole from the store by a read that claims nothing, and once the store is wiped the receipt's text SHALL be marked `truncated`. Receipts SHALL be a history with a row bound (50,000, shared as the runs are), kept `keep_run_receipts` from settling (90 days by default, 365 at most, never less than `keep_runs`); past a scope's share its own oldest receipt SHALL go, and no launch SHALL be refused for receipts.
-
-#### Scenario: A settled run past `keep_runs`
-- **WHEN** a run settled `keep_runs` ago and nothing in its thread is live
-- **THEN** its store is wiped, and its status is still answered from its receipt
-
-#### Scenario: A run with live background work
-- **WHEN** a run's input is answered but background work it started still runs past `keep_runs`
-- **THEN** its store is kept, and wiped `keep_runs` after that work settles
-
-#### Scenario: A client polls a settled run
-- **WHEN** a client reads a settled run's status every second with `keep_runs` at a second
-- **THEN** each read is answered from its receipt, no Session opens, and its store is wiped on time
-
-#### Scenario: A long answer
-- **WHEN** a settled run's answer is longer than 768 bytes
-- **THEN** its status gives the whole answer until its store is wiped, and after that the first 768 bytes marked `truncated`
-
-#### Scenario: Input to a settled run
-- **WHEN** a settled run is sent a new input, or scheduled work names it
-- **THEN** it is refused `run_settled` (the work fails, never retried), and it holds no turn
-
-#### Scenario: Receipts at their bound
-- **WHEN** receipts are at 50,000 and the owner launches a day's 1,000 runs at `keep_run_receipts` 365
-- **THEN** none is refused, and each new receipt lets the oldest of its own scope go
-
-
-### Requirement: Erasing the owner destroys every store before the owner
-Erasing the owner SHALL mark it erasing, every thread `dropping`, after which every door refuses and no lane runs; destroy every store a row names; then `deleteAll()` the owner and leave one `erased` admission row, the tombstone, in the wiped database. Each step SHALL resume after a crash from the step the mark records. A store SHALL be named in its row before it is made. An object holding the tombstone SHALL migrate nothing, start no Lifecycle and refuse every door.
-
-#### Scenario: A thread being made as the erasure begins
-- **WHEN** the owner is erased while a thread's row is recorded and its first open is in flight
-- **THEN** its store is destroyed too, before the owner's database is deleted
+### Requirement: Erasing the owner ends every run before the owner is wiped
+Erasing the owner SHALL mark it erasing, after which every door refuses and no lane runs; end every run (today the sandbox's in-flight egress streams; the runs and sandbox slices add the sandbox's kill and the session files' purge), recorded as the erasure's second step; then `deleteAll()` the owner and leave one `erased` admission row, the tombstone, in the wiped database. Each step SHALL resume after a crash from the step the mark records. An object holding the tombstone SHALL migrate nothing, start no Lifecycle and refuse every door.
 
 #### Scenario: A crash mid-erasure
-- **WHEN** the object dies after the mark, or with some stores destroyed, or after every store is destroyed, or after Lifecycle's alarm was disabled, or its wipe failed
-- **THEN** the doors still refuse, and the next start finishes it: every store destroyed, then the owner deleted, its tombstone left
+- **WHEN** the object dies after the mark, or after every run ended, or after Lifecycle's alarm was disabled, or its wipe failed
+- **THEN** the doors still refuse, and the next start finishes it: the owner deleted, its tombstone left
 
 #### Scenario: A stale getByName
 - **WHEN** a binder reaches an erased owner's object again, across evictions
 - **THEN** every door is refused `owner_erased`, and the database still holds only the tombstone, with no alarm
 
-
 ### Requirement: The owner's admission is the object's own row
-The object SHALL hold one admission row: admitted, suspended for billing and or abuse, or the erased tombstone. Every door SHALL declare a class: billing refuses `work`, abuse every door. Every operation, model call, input and delivery SHALL be refused while not admitted; a suspension SHALL end every live thread's work but scheduled tasks, whose deliveries are held. Only the platform's reserved caller SHALL set it, at no other door.
+The object SHALL hold one admission row: admitted, suspended for billing and or abuse, or the erased tombstone. Every door SHALL declare a class: billing refuses `work`, abuse every door. Every sandbox lease, egress call, authority check and wake claim SHALL be refused while not admitted; a suspension SHALL end the sandbox's in-flight egress streams. Only the platform's reserved caller SHALL set it, at no other door.
 
 #### Scenario: A billing suspension
-- **WHEN** the platform suspends an owner for billing while a launch sleeps and a turn runs
-- **THEN** the turn is aborted, work doors refuse `owner_suspended` while reads, cancels and revokes are served, the launch's delivery is held, and lifting the suspension lets it deliver
+- **WHEN** the platform suspends an owner for billing
+- **THEN** work doors refuse `owner_suspended` while reads and revokes are served, and lifting the suspension serves them all again
 
 #### Scenario: An abuse suspension
 - **WHEN** the platform suspends an owner for abuse
 - **THEN** every door refuses `owner_suspended`
 
-#### Scenario: A suspension landing mid-delivery or mid-door
-- **WHEN** a suspension lands after a delivery's or a door's check and before its submit
-- **THEN** pi is handed nothing, and no model call is made
-
 #### Scenario: Another caller sets admission
 - **WHEN** the owner, an outside client or a session sends `admissionSet`, or the platform's caller calls any other door
 - **THEN** each is refused, and the admission is unchanged
 
-### Requirement: The bounded waits are shared
-The object SHALL keep at most 256 pending waits, at most 16 of any one outside client's, and the clients together SHALL leave 32 for the owner; a wait refused for room SHALL answer `running` at once, the operation still submitted.
-
-#### Scenario: One client fills its waits
-- **WHEN** a client holds 16 waits and sends a 17th, and every client's together fill theirs
-- **THEN** each further client wait answers `running` at once, and the owner's message is still waited on and answered
-
-### Requirement: The agent's doors admit and scope their caller before any pi call
-`agentSubmit` and `agentRun` SHALL admit the caller and check its scope (`converse`, `run_graph`) for the agent it names, in the universe its one enabled agent is registered in, in their first unit, before any thread is made or any input submitted; a thread SHALL be stamped where its caller acts, and its recording unit SHALL re-check the scope there. An outside client's text SHALL reach pi only inside the untrusted envelope naming the client; the owner's as typed.
-
-#### Scenario: A scoped client without converse
-- **WHEN** a client granted `read_files` only sends a message, or holds `converse` for `main` only and names another agent
-- **THEN** it is refused "outside client capability not granted", no thread is made and pi is handed nothing
-
-### Requirement: The agent's work is addressed by thread, the caller's own
-Every agent door SHALL address work by a thread id resolved against the calling client's own rows (the owner's for the owner), and reach only the Session that row names, so no door reaches another caller's thread; an operation id SHALL be its thread's id and pi's request id, and any operation not the caller's, a forged one and a pi session string included, SHALL be refused alike as no such operation.
-
-#### Scenario: Another client asks for an operation
-- **WHEN** one client, the owner, or anyone naming a pi session string asks the status of, or cancels, a client's operation
-- **THEN** each is refused "no such operation", and the operation runs on
-
-### Requirement: A message is one submission and is waited on a bounded time
-`agentSubmit` SHALL find or make the caller's one `converse` thread with the agent, submit with pi's request id `sha256(client ∥ client_send_id)`, so a resend is pi's duplicate, queued behind a running turn or, with `steer`, placed after its current tool round, and wait at most `wait_ms` (25 s by default, 60 s at most), past which it SHALL answer `running` with the operation id. A grant change of the client or a policy write SHALL end the wait as a refusal and end the turn.
-
-#### Scenario: A client resends a message
-- **WHEN** a client sends the same `client_send_id` twice
-- **THEN** the model is asked once and both answers are the same
-
-#### Scenario: A resend after the thread was dropped
-- **WHEN** a client resends a `client_send_id` after idle retention dropped its thread
-- **THEN** the message runs again in a new thread, since pi deduplicates per conversation
-
-#### Scenario: A steer during a tool round
-- **WHEN** a message with `steer` arrives while the thread's run holds a tool call
-- **THEN** pi places it after that tool round, before the run's next answer
-
-### Requirement: A launch runs in a fresh thread, now or scheduled
-`agentRun` SHALL make a fresh `run` thread configured from the agent's data files (`/workspace/agents/<agent>/AGENTS.md` as its instructions), submit the input now, or with `at` ahead or a `cron`, make a scheduled launch in the thread; a status SHALL be pi's receipts, or for a scheduled launch not yet settled its task's record and its last delivery's, read from its store by a read that opens no Session and claims no holder, then the run's receipt.
-
-#### Scenario: A scheduled launch
-- **WHEN** a client launches an agent with `at` a moment ahead
-- **THEN** its status reads `scheduled` until its task delivers, then the run's answer
-
-#### Scenario: A status poll of a sleeping launch
-- **WHEN** a sleeping launch's Session is closed and its status read
-- **THEN** it reads `scheduled` with its time, and no Session opens
-
-### Requirement: ta's agent:run launches in the run's own scope
-`ta`'s `agent:run` SHALL launch on `agentRun`'s path, stamped with the calling conversation's authority where the launched agent acts, and SHALL be refused unless that holds `run_graph`, before pi makes a conversation.
-
-#### Scenario: A launch of an agent the grant does not name
-- **WHEN** a client's conversation that holds `run_graph` for `main` calls `agent:run` for another agent
-- **THEN** the call is refused "outside client capability not granted" before pi makes a conversation
-
-
-### Requirement: A grant or policy change ends the agent work it covers
-After its unit commits, a grant change (a set that moves the generation) or revoke SHALL end its client's waits, views and work, background work included; a policy write SHALL end the waits, views and running work of every Session with work running, never a sleeping task nor a scheduled launch's, each held to the policy when it wakes. The door SHALL wait at most 5 s, and SHALL reject if the ending fails.
-
-#### Scenario: A client revoked mid-turn
-- **WHEN** a client is revoked while its turn, its subagent's and another client's run
-- **THEN** the client's turn and its subagent's settle `unanswered: aborted`, its views hear `end`, its waits end, and the other client's turn runs on
-
-#### Scenario: A revoke during a model call
-- **WHEN** a revoke lands while a client's turn's model call streams
-- **THEN** the turn is aborted, the upstream request cancelled, and its reservation settles `unknown` through the owner's usage
-
-#### Scenario: A policy write while a launch sleeps
-- **WHEN** a policy write lowers `runs_live` while a launch sleeps in a thread whose other input runs
-- **THEN** the running input is aborted, the launch sleeps on, and at its time its delivery is held `runs_scheduled` until the policy has room
-
-### Requirement: A scheduled launch delivers once in its own thread
-A scheduled launch SHALL deliver only into the run thread its row names under the stamp it was made with, each occurrence under a request id of its own, queued behind a busy run; a second submission of an occurrence SHALL be pi's duplicate.
-
-#### Scenario: A second delivery of the same occurrence
-- **WHEN** an occurrence's submission is made again
-- **THEN** pi answers it as the same submission, and the model runs once
-
-
-### Requirement: A recurring launch's cron is ours and bounded
-A launch with `cron` SHALL deliver at each occurrence of its expression, five numeric fields in UTC only, with no time zone, sleeping until the next after each, until a refusal for good or a cancel. An expression SHALL be refused past 64 characters or 16 items a field, with names or `?`, `L`, `W` or `#`, out of range, under 15 minutes apart, or with no occurrence in eight years.
-
-#### Scenario: Three deliveries, then a grant change
-- **WHEN** a client's hourly launch has delivered three times and its grant is revoked
-- **THEN** its thread is dropped and its store wiped with the sleeping task, and no fourth delivery is made
-
-#### Scenario: A suspension and a lowered policy
-- **WHEN** a recurring launch's owner is suspended for billing, then resumed, and its `runs_live` lowered, then raised
-- **THEN** each occurrence meanwhile is held, the schedule survives both, and it delivers after each lifts
-
-### Requirement: The model is offered exactly read, write, edit, bash and ta
-Every conversation the object creates, the root, a thread, a fork and a subagent's included, SHALL offer the model exactly `read`, `write`, `edit`, `bash` and `ta`, written in pi's `modelTools` in every creating commit over whatever pi copied, and nowhere else. Every other tool SHALL be registered callable by tools and reached through `ta`; a tool the model is not offered SHALL be unavailable to the model's own call. No source SHALL build a tool result `control`, which could add a model tool.
-
-#### Scenario: A package registers a tool the model could call
-- **WHEN** a tool registered callable by the model, and a deferred one, are installed, and the model calls each directly
-- **THEN** no request offers either, each call settles "not available", and a fork's and a subagent's conversation still offer the five, whatever their parent's tools drifted to
-
-### Requirement: The five are held where the model is reached
-The model provider SHALL refuse, in each call's reservation unit and with the fixed code `tool_surface`, a request whose own transcript offers the model any tools but exactly the five, a request offering none excepted; and a model call of any conversation, the owner's included, whose stored model tools are not exactly the five SHALL be refused the same. Nothing refused SHALL be sent.
-
-#### Scenario: A hook's result widens the model's tools
-- **WHEN** a hook replaces `ta`'s result with one whose `control` adds a tool, and pi adds it to the conversation's model tools
-- **THEN** the run's next request is refused `tool_surface` and never sent, and so is every later call of that conversation
-
-### Requirement: What the model is offered has one source
-The provider SHALL send the gateway exactly the messages whose offered tools it checked, no other context field and no caller's payload hook, and the gateway SHALL refuse a context carrying `tools` or `systemPrompt`.
-
-#### Scenario: A caller's payload hook adds a tool
-- **WHEN** a model call's context carries `tools` and a system prompt beside its messages, and its options a payload hook that adds a tool
-- **THEN** the gateway receives a context of the messages alone, and a context sent with either field is refused `invalid_request`
-
-### Requirement: A package never shadows the object's tools or names
-A package that provides or wraps a tool named as a model tool, a platform capability or a `ta:` name, or provides a tool not callable by tools, SHALL be refused at install and kept as an owner notice, the frozen copy it is checked as being the one installed; `ta`'s catalog SHALL fail loudly on a tool that takes a platform capability's name.
-
-#### Scenario: A package provides a tool named read
-- **WHEN** a package provides a tool `read`, another wraps `bash`, and another provides a tool only the model may call
-- **THEN** each is refused with a notice naming why, and the object's own tools are unchanged
-
-### Requirement: ta's catalog lists what the conversation may call
-`ta` SHALL take one object, `{op: "catalog", query?, limit?, offset?}` or `{op: "call", name, arguments}`, refusing any other field. The catalog SHALL list the platform capabilities the conversation's authority may call, then the tools registered callable by tools, deferred ones marked, each with its JSON Schema, ranked by `query` as pi's `tool_search` ranks, and paged.
-
-#### Scenario: A scoped client reads the catalog
-- **WHEN** a client granted `read_files` only asks `ta` for its catalog
-- **THEN** it lists `wake:list`, `files:usage` and `model`, and no policy capability and no tool
-
-### Requirement: ta's call runs a platform capability or reaches a tool
-A call SHALL run a platform capability in the object, or reach a tool registered callable by tools through pi's `executeTool`, returning its structured output, diagnostics and error flag; any other name, the file tools, `ta` itself and the `ta:` names SHALL be refused loudly.
-
-#### Scenario: The model calls a file tool through ta
-- **WHEN** the model calls `ta` with `{op: "call", name: "bash"}`, or names `ta:catalog`
-- **THEN** the call fails "unknown capability: bash", or "the ta: names are the ops' own", and nothing runs
-
-### Requirement: A ta capability is a read only when classified one
-Each platform capability SHALL be classified a read or an effect, and one not classified a read SHALL be an effect. A read SHALL write nothing; an effect SHALL re-check the conversation's authority at its effect: in its own unit of the write gate, or for a nested model call in its reservation and dispatch.
-
-#### Scenario: A revoke lands before a proposal's unit
-- **WHEN** a client granted `propose_policy` calls `policy:propose` and its grant is revoked after `ta`'s check but before the proposal's unit runs
-- **THEN** the unit refuses with "outside client authority no longer stands" and no proposal is held
-
-### Requirement: The v1 platform capabilities hold to their doors' needs
-The platform capabilities SHALL be `policy:show` (a read, the owner's alone), `policy:propose` (an effect needing `propose_policy`, held for the owner's card under the proposer's own share), `wake:list` (a read of only the calling authority's own scheduled work), `files:usage` (a read needing `read_files`), `model` (an effect), `agent:run` (an effect needing `run_graph`) and `agent:delegate` (an effect needing `run_graph`, a delegation being a launch of an agent), each registered in `ta.authority`'s map with that need.
-
-#### Scenario: Outside clients ask for the owner's policy
-- **WHEN** a full client and a scoped client call `policy:show`, and a client without `propose_policy` calls `policy:propose`
-- **THEN** each is blocked with its fixed reason and a receipt, while a client granted `propose_policy` holds a proposal for the owner's card
-
-### Requirement: ta re-checks its authority inside its own execute
-`ta` SHALL re-derive its capability's need from the arguments it actually received and re-check the conversation's authority, the stamp's standing included, before it acts, keeping a refusal receipt; `ta.authority`'s `beforeTool` SHALL be only the early gate. A nested call SHALL pass `ta.authority` with its parent named.
-
-#### Scenario: A later hook rewrites an approved call
-- **WHEN** a scoped client's `ta` call of `files:usage` passes the early gate and a later hook rewrites it to `policy:show`
-- **THEN** `ta` refuses it with "only the owner may use this capability", and the policy is not read
-
-### Requirement: A nested model call spends as its run's own calls do
-`ta`'s `model` capability SHALL call the object's model source on the conversation's provider session and its call's telemetry context, so it is reserved, dispatched and settled against the owner's model policy and charged to the turn at the origin of its causal chain; a refusal SHALL be the call's error.
-
-#### Scenario: A run that asks a model through ta
-- **WHEN** a run's model calls `ta`'s `model`, then answers
-- **THEN** the run's three gateway requests are reserved and settled on one turn, counted against that turn's caps, and a later input's request is another turn
-
-### Requirement: ta reruns only what may run twice
-`ta` SHALL be registered replay-safe, and on a rerun after a restart SHALL run again only a read, a delegation (which finds its child and its child's input again) and a tool reached through `executeTool` (reached again by the same key, so the nested call answers under its own replay policy); every other effect SHALL commit a memo before it acts and answer a rerun that finds it as pi answers an unsafe tool's, with the `interrupted` code, never acting twice.
-
-#### Scenario: An eviction while a nested model call is in flight
-- **WHEN** the object dies while `ta`'s `model` call runs, and its alarm starts it again
-- **THEN** the call is refused `interrupted` and no second model call is made
-
-### Requirement: Skills are a prompt section the model reads with read
-A trusted `ta.skills` extension SHALL list, in its `skills` section and in pi-coding-agent's words, each model-invocable skill's name, description and `SKILL.md` path, found under `/workspace/.agents/skills` and `/workspace/skills` at any depth (a directory holding `SKILL.md` not looked into further) and in each selected package, parsed with agents' `parseSkill`; a skill with `disable-model-invocation` SHALL NOT be listed, a name taken twice SHALL keep the first, and a skill the owner's own authority did not write, or that cannot be parsed, SHALL be skipped with a notice. No skill tool SHALL be added, and the section SHALL reach a conversation only while its authority holds `read_files`.
-
-#### Scenario: A skill listed and read
-- **WHEN** the owner writes a skill and another that disables model invocation, and asks its agent a task the first matches
-- **THEN** the request's section lists the first's name, description and path and not the second, and the model reads the first's `SKILL.md` with `read`
-
-### Requirement: The skills section is rebuilt only by a change to what it lists
-The section SHALL be built at the object's first open and rebuilt, by installing the extension again under its name, only when the files' change feed touches a `SKILL.md` or a template under a root, anything under a selected package's directory, or a directory above them, or a policy write moves the package selection; never per request. Rebuilds SHALL run one at a time, a change during one rebuilding once after it.
-
-#### Scenario: Three requests, then an edit
-- **WHEN** three requests run, a file that is no skill is written, then a `SKILL.md` is edited
-- **THEN** the section is built once for the three requests and the write, and rebuilt once for the edit, the next request showing it
-
-### Requirement: The owner's skill and template commands expand at the doors
-The owner's own input to `agentSubmit`, `agentRun` and `ta`'s `agent:run` SHALL be expanded as pi's `prompt` expands it: `/skill:name args` to the skill's body in pi's `<skill>` block with its arguments after, a skill that disables model invocation included, then `/name args` to a prompt template's body (a direct `.md` child of `/workspace/.agents/prompts`, `/workspace/prompts` or a selected package's prompts) with pi's argument substitution; an unknown name SHALL stay as typed, and an outside client's input, enveloped as data, SHALL NOT be expanded.
-
-#### Scenario: A skill command and a template
-- **WHEN** the owner sends `/skill:pdf-tools extract a.pdf`, then `/review "API shape" speed` with a template `review.md`
-- **THEN** pi is handed the skill's block followed by `extract a.pdf`, then the template's body with `$1` as `API shape` and `$@` as both
-
-### Requirement: Packages are selected by owner policy and contribute data and remote hooks
-Owner policy's `packages` list SHALL select packages, each a directory under `/workspace/.agents/packages`, as a path or `{source, skills?, prompts?, guard?}` with pi's filter grammar (plain globs include, `!` excludes, `+` forces an exact path in, `-` out; omitted all, `[]` none), at most 32, each once, with no `extensions` filter; a `guard` package's hooks SHALL run after every other package's, guards among themselves in selection order. A selected package SHALL contribute its skills and prompt templates, from its `package.json`'s `pi` key or its conventional directories, and its `tinyassets.hooks` entries as remote hooks; its `tinyassets` key's other fields SHALL be skipped with a notice until they have a consumer.
-
-#### Scenario: A package filtered
-- **WHEN** the owner selects a package with `skills: ["!beta", "-skills/gamma"]` beside a package it does not select
-- **THEN** the section lists the selected package's other skills and its templates expand, and nothing of `beta`, `gamma` or the unselected package loads
-
-### Requirement: A package that declares code is refused loudly
-A selected package whose manifest holds any npm key but its data (an entry point, `bin`, `scripts`), any `pi` key but its skills and prompts (pi's UI data skipped with a notice), a `pi.extensions` that is not an empty list, or a conventional `extensions/` directory SHALL be refused whole with the fixed code `package_executable` and an owner notice, whatever remote hooks it also declares; no package code SHALL run in the owner's object, and every tool the object installs from a package SHALL pass the early gate again as it executes, a rerun after a restart included.
-
-#### Scenario: A package with an extension
-- **WHEN** the owner selects a package listing `pi.extensions` and skills
-- **THEN** none of its skills are listed, and a notice names the package and `package_executable`
-
-#### Scenario: A package with an extension beside its hooks
-- **WHEN** the owner selects a package listing `pi.extensions` and `tinyassets.hooks`
-- **THEN** it is refused `package_executable` and no wrapper of its hooks is installed
-
-### Requirement: A package's executable hooks run only in the hooks Worker
-A selected package's `tinyassets.hooks` entries (`{module, points, tools?, timeout_ms?}`, each module a prebundled ESM file of the package that the owner's own authority wrote, the points among `beforeTool`, `afterTool`, `onYield`, `beforeCompact`, `afterResponse` and `afterTools`, each once a package) SHALL become remote wrappers on the package's `pkg:<name>` extension, which call the `HOOKS` service binding with JSON in and out, and wait at most `deadline_ms + 250` (the entry's `timeout_ms` within the policy's `hooks.timeout_ms`, 2,000 by default), asking the policy's `hooks.cpu_ms` (50 to 1,000). The owner's selected packages' modules SHALL make one bundle of at most 1 MiB, its id `<owner>/<sha256 of the modules>`, sent only once the hooks Worker answers `need_code`; an entry that is not one, `beforeRequest` among them, or a module not the owner's, SHALL refuse the package `package_invalid`. No call SHALL be made for a point no selected package declares, or for a tool an entry's `tools` does not name.
-
-#### Scenario: A hook that blocks
-- **WHEN** a selected package's `beforeTool` hook blocks a write
-- **THEN** the write is blocked with the hook's reason, and the first call's code was sent only after `need_code`
-
-#### Scenario: Two owners with identical hooks
-- **WHEN** two owners select packages with the same module
-- **THEN** their bundle ids differ, each naming its owner, and their hooks share no module state
-
-### Requirement: A hook's failure follows its point's rule
-A `beforeTool` hook that times out, throws, answers out of shape or cannot be reached SHALL block the call; an `afterTool` hook's failure SHALL fail the result closed (an error, the tool's output withheld); an `onYield` failure SHALL continue nothing; a `beforeCompact` failure SHALL leave pi's own summary; an observe-only point's failure SHALL only be reported, its deadline 250 ms. Every wrapper SHALL be total: any error, its memo's read or store included, SHALL be its point's failure and never a throw pi would skip; a decision past 256 KiB of JSON SHALL be `invalid`, so only bounded decisions are memoized. Each failure SHALL leave an owner notice (`hook_failed`).
-
-#### Scenario: A beforeTool hook past its deadline
-- **WHEN** a `beforeTool` hook computes past the policy's `timeout_ms`
-- **THEN** the call is blocked `hook_failed: ... timeout`, the file is not written, and a notice names the package and the point
-
-#### Scenario: An afterTool hook that throws
-- **WHEN** an `afterTool` hook throws on a read
-- **THEN** the model sees an error result without the file's text
-
-#### Scenario: A redaction whose memo cannot be stored
-- **WHEN** an `afterTool` hook redacts a result and storing its decision fails
-- **THEN** the result fails closed, never the unredacted one
-
-### Requirement: A hook's decision survives a crash without asking the hook again
-Each wrapper SHALL read pi's `api.memo("ta.hook/<ext>/<point>/<key>")` first and return a decision it finds; otherwise it SHALL call the hook and store the decision, a failure's included, with `api.memo`, returning the durable winner. The key SHALL be the call's id for `beforeTool`, plus a digest of the result for `afterTool`, and a digest of what the point sees for the others.
-
-#### Scenario: A crash between the decision and the intent
-- **WHEN** a `beforeTool` hook rewrote a call's arguments and the object dies before the tool's intent, and its alarm starts it again
-- **THEN** the rerun runs the call with the rewritten arguments and the hooks Worker is not called
-
 ### Requirement: The hooks Worker reaches no owner
-The `tinyassets-hooks` Worker SHALL bind its Worker Loader and the namespaces of its own `HookRunner` and `CodemodeSandbox` classes only, serve no URL, and never use its objects' storage; each bundle SHALL load at the owner Worker's compatibility date with `globalOutbound: null`, `env: {}` and `subRequests: 0`, its prelude hardening the shared runtime (every global binding, everything reachable from them, and the prototypes only a builtin's return value reaches) and its shim its own dispatch path before any package's module runs, and a runner SHALL drop a call past its deadline and keep at most 16 pending. The owner config guard SHALL admit `HOOKS` only to such a Worker. One owner's selected packages share one isolate and SHALL be trusted by the owner alike: a package can change objects another exports, and a later package's `beforeTool` rewrite runs after an earlier one approved; the hardening protects the shared runtime and the dispatch path, not one package from another, so a guardrail package belongs in the guard position.
-
-#### Scenario: A hook that fetches
-- **WHEN** a hook calls `fetch`
-- **THEN** the fetch throws inside the hook
-
-#### Scenario: A package that patches an intrinsic
-- **WHEN** one package's module assigns `Array.prototype.includes`, `globalThis.JSON`, the iterator helpers' `next` or the shim's `call`
-- **THEN** the assignment is refused, and another package's guard that uses them answers as written
-
-#### Scenario: A guard package after a rewriting package
-- **WHEN** a guard package refuses writes to a secret path, and another package rewrites a write's path to it
-- **THEN** in selection order the rewrite follows the guard's approval and lands; in the guard position the guard sees the rewrite and blocks it
+The `tinyassets-hooks` Worker SHALL bind the namespace of its own `CodemodeSandbox` class only (no Worker Loader), serve no URL, and never use its objects' storage. The owner config guard SHALL admit `HOOKS` only to such a Worker. User hooks are the engine's own, run in the sandbox (ADR-034 decision 11), never here.
 
 #### Scenario: The hooks Worker gains a binding
-- **WHEN** the hooks Worker's config binds `OWNER`, a bucket or another Worker's class
+- **WHEN** the hooks Worker's config binds `OWNER`, a bucket, a Worker Loader or another Worker's class
 - **THEN** the owner config guard refuses the owner's `HOOKS` binding
 
-### Requirement: Code mode runs through ta, its VM in the hooks Worker
-While the owner's policy turns `hooks.codemode` on, pi's code mode SHALL be installed as `ta.codemode`, its `codemode` tool callable by tools only, reached as `ta call codemode {code}` under its one nested-call key and needing `run_code`, which the owner holds and a client holds only where its scoped grant names it, never by a full grant; its VM SHALL run by pi's `RemoteCodemodeSandbox` through the `HOOKS` binding's `codemodeExecute`, which hands out no stub. A script's `tools.*` SHALL be nested calls the early gate holds to the caller's authority; a `codemode` call that is not `ta`'s own (a script's) SHALL be refused and `codemode` left out of the scripts' section; a script SHALL ask the object's model source only through `tools.model_complete`, a tools-only, replay-unsafe tool running `ta`'s `model` call, so it passes the gate and the packages' hooks, is reserved within and charged to the turn, counts in `pi.usage`, and is never asked twice; code mode's own tools SHALL never be listed or called by `ta`.
+### Requirement: Code mode's VM runs in the hooks Worker
+Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox` through the `HOOKS` binding's `codemodeExecute`, which hands out no stub, each execution named by its owner and a random id; a script's `tools.*` SHALL be the tools its caller hands it, each held by the caller to its own grant; with no hooks Worker bound it SHALL fail loudly. It runs only while the owner's policy turns `hooks.codemode` on, off by default. The MCP door's `code` tool (slice M) hands a script the door's own tools, needing `run_code`, which a client holds only where its scoped grant names it, never by a full grant.
 
-#### Scenario: A scoped client's script
-- **WHEN** a client scoped to `read_files` and `run_code` runs a script that reads, runs bash and writes
-- **THEN** the read returns the file, and the bash and the write are refused with their fixed reasons
+#### Scenario: A script's tool calls
+- **WHEN** a script calls two of the tools its caller handed it
+- **THEN** each call is an RPC back through `exchange`, and the VM runs in the hooks Worker
 
-#### Scenario: A client without run_code
-- **WHEN** a client scoped to `read_files`, or one with a full grant, calls `codemode`
-- **THEN** the call is refused and no script runs
-
-#### Scenario: A script that starts a script
-- **WHEN** a script calls `tools.codemode`
-- **THEN** that call is refused and no inner script runs
-
-#### Scenario: A script's model call
-- **WHEN** a script calls `tools.model_complete` through the gateway
-- **THEN** the call is reserved and settled on the run's own turn, refused past the turn's caps
-
-### Requirement: A subagent is a conversation its delegation owns
-`ta`'s `agent:delegate {agent?, task}` SHALL make its child in its call's own commit, owned by the call's task, found again on a rerun by pi's ownership index, configured as the named agent (its `AGENTS.md`) or as the caller, holding the caller's authority and the five model tools through `conversationCreated`; submit `task` as the child's one input under the call's context, with request id `subagent:<task>`, so it joins the caller's turn; and wait for its answer. Aborting the call SHALL abort the child, the caller SHALL be idle only once the child is, and a revoke, a suspension and a policy write SHALL end it with its thread's work. A scoped client SHALL be refused without `run_graph` where it acts and, with an agent named, where that agent acts.
-
-#### Scenario: A delegation answered
-- **WHEN** the owner's agent delegates to `helper` and the child answers
-- **THEN** the child is the call's conversation with `helper`'s instructions and the owner's authority, offered the five tools, its request on the caller's turn, and the call returns its answer
-
-#### Scenario: An eviction mid-delegation
-- **WHEN** the object dies while the child runs, and its alarm starts it again
-- **THEN** the rerun finds the same child and its one input, the child's unsafe tool comes back interrupted, and the caller gets the child's answer
-
-### Requirement: A thread holds a bounded number of working conversations
-A delegation SHALL be refused, with the fixed code `thread_conversations_full`, when its thread would hold more than `THREAD_CONVERSATIONS` conversations with live work, its root among them; a child SHALL count while the call that owns it, or a task of its own, is live, and SHALL end its lingering work once answered.
-
-#### Scenario: Three delegations at once
-- **WHEN** a run delegates three tasks at once in a thread whose bound is three conversations
-- **THEN** two run beside the root and the third is refused `thread_conversations_full`, and a delegation after both answered is taken
-
-### Requirement: A linked admission joins only a turn that has its row
-A linked input this object makes (a subagent's) SHALL be admitted as a door's input, counted against the thread's `THREAD_CHILD_INPUTS` and refused while the owner is not admitted, and SHALL be refused `turn_ended` before pi admits it when the turn it joins has no row; a delegation SHALL ask these before it makes its child, so a refused one leaves nothing. A resent input SHALL be pi's duplicate and not checked again.
-
-#### Scenario: The turn ended before the admission
-- **WHEN** a delegation's turn loses its last owner before its child's input is admitted
-- **THEN** the delegation fails `turn_ended` and the child holds no submission
-
-### Requirement: An admission hold never outlasts its thread's wake
-While the owner is not admitted, a thread's wake job SHALL open nothing for a thread whose live row is not working, and SHALL look again at the sooner of a day and the row's wake still ahead; a thread whose live row says working SHALL be opened and its work finished at once.
-
-#### Scenario: A job stepped before its schedule is due
-- **WHEN** a suspended owner's sleeping schedule's job steps an hour before it is due, and the owner is readmitted before then
-- **THEN** the job looks again at the schedule's wake, and the schedule delivers then, not a day later
-
-#### Scenario: An ending an eviction cut off
-- **WHEN** a suspended owner's thread's live row says working after an eviction
-- **THEN** its Session opens at once, its work ends, and its row is the Session's again
-
-### Requirement: The turn rows are bounded by the threads at work
-At most `WORKING_THREADS` of an owner's threads SHALL hold turn owners at once. A fresh door or delivery input to a thread not at work SHALL be refused at the host's admission, in a unit, at once and with the fixed code `threads_working`, when `WORKING_THREADS - OPEN_MAX` threads are at work or being admitted, a client past its `client_share` of them, or the clients past what `owner_reserve` leaves; a scheduled delivery SHALL be held, and a thread whose work settled SHALL free its place.
-
-#### Scenario: A client past its share
-- **WHEN** a client's threads hold its share of the working threads and it sends to another
-- **THEN** that input is refused `threads_working`, while its working thread and the owner's threads still take inputs
+#### Scenario: No hooks Worker
+- **WHEN** a script is run with no hooks Worker bound
+- **THEN** it fails, and nothing of it runs in the owner's object
 
 ### Requirement: Each sandbox egress call is admitted and charged at open
-`egressOpen` SHALL take only the egress token's binding (its secret's hash, the egress generation its transform carried), checked to be the binder's exact shape before anything is written, and refused for an owner whose object never opened a lease, writing no row; and admit a call for `work`, in one unit, by these checks in order, each refusal a fixed code kept as a receipt row (at most 60 a minute, apart from the admitted calls' receipts): the live lease by the egress hash (`egress_lease_closed`), checked before anything else, an OAuth refresh among it; the call's egress generation is the current one (`egress_policy_stale`) and the lease's network was applied under it (`egress_network_stale`); the connection is the owner's, active, its credential usable and its scope stored (`egress_connection_refused`); the method and path are among its sealed endpoints, by the gateway's own rule (`egress_endpoint_refused`); a read (`GET`, `HEAD`) is free, and any other call is pi-ai's metered model call (`egress_unmetered`), with a declared body length (`egress_length_required`); at most 64 open and 600 opened a minute (`egress_rate`); and a model call's charge (`egress_spend_refused`, the binding cap its rule): against its sandbox run's requests, tokens and cost (the run is the lease and its epoch, a lease per engine run; the model policy's per-turn limits are its caps), and the owner's and the source's day and month (the spend counters the loop's calls move too, pruned past their window at each open): the model policy's caps, no more and no less; reserved for the model the call names (as the door read it, or its path; refused `egress_unknown_model` when the connection does not list it), at that model's dearest rates by pi-ai's `calculateCost` over the catalog's records, its input held at that model's context window and its output at that model's cap and what the caps leave, times its tier's multiplier where pi-ai prices the tier (a tier it cannot price refused `egress_unpriced_option`), so the charge bounds what the call can cost once the gateway has clamped every output-cap alias and refused several choices, another model, server-side paid tools and options pi-ai does not price. The charge SHALL be the call's own row, counted only by the schema's triggers, and SHALL neither read nor import pi's engine. An admitted call SHALL be an open row, answered with the blob, its version, the generation, its metering (the output cap the gateway clamps to and the body length, or none for a read) and an end signal. `egressSettle` (`reduce`) SHALL settle a reservation of its egress token once, its charge at the metered cost, `failed`, or `unknown` (kept whole); one never settled SHALL be settled `lost`, its charge `unknown`, past six minutes.
+`egressOpen` SHALL take only the egress token's binding (its secret's hash, the egress generation its transform carried), checked to be the binder's exact shape before anything is written, and refused for an owner whose object never opened a lease, writing no row; and admit a call for `work`, in one unit, by these checks in order, each refusal a fixed code kept as a receipt row (at most 60 a minute, apart from the admitted calls' receipts): the live lease by the egress hash (`egress_lease_closed`), checked before anything else, an OAuth refresh among it; the call's egress generation is the current one (`egress_policy_stale`) and the lease's network was applied under it (`egress_network_stale`); the connection is the owner's, active, its credential usable and its scope stored (`egress_connection_refused`); the method and path are among its sealed endpoints, by the gateway's own rule (`egress_endpoint_refused`); a read (`GET`, `HEAD`) is free, and any other call is pi-ai's metered model call (`egress_unmetered`), with a declared body length (`egress_length_required`); at most 64 open and 600 opened a minute (`egress_rate`); and a model call's charge (`egress_spend_refused`, the binding cap its rule): against its sandbox run's requests, tokens and cost (the run is the lease and its epoch, a lease per engine run; the model policy's per-turn limits are its caps), and the owner's and the source's day and month (the spend counters the model reservations move too, pruned past their window at each open): the model policy's caps, no more and no less; reserved for the model the call names (as the door read it, or its path; refused `egress_unknown_model` when the connection does not list it), at that model's dearest rates by pi-ai's `calculateCost` over the catalog's records, its input held at that model's context window and its output at that model's cap and what the caps leave, times its tier's multiplier where pi-ai prices the tier (a tier it cannot price refused `egress_unpriced_option`), so the charge bounds what the call can cost once the gateway has clamped every output-cap alias and refused several choices, another model, server-side paid tools and options pi-ai does not price. The charge SHALL be the call's own row, counted only by the schema's triggers, and SHALL neither read nor import pi's engine. An admitted call SHALL be an open row, answered with the blob, its version, the generation, its metering (the output cap the gateway clamps to and the body length, or none for a read) and an end signal. `egressSettle` (`reduce`) SHALL settle a reservation of its egress token once, its charge at the metered cost, `failed`, or `unknown` (kept whole); one never settled SHALL be settled `lost`, its charge `unknown`, past six minutes.
 
 #### Scenario: A call past the owner's caps
 - **WHEN** the run's requests, tokens or cost, the owner's day or month, or the source's leaves less than a call's least charge
@@ -1355,8 +698,8 @@ At most `WORKING_THREADS` of an owner's threads SHALL hold turn owners at once. 
 - **WHEN** two sandbox calls open together under a run cap one of them fills
 - **THEN** the second is held to what the first left, or refused, and the run's counters hold both
 
-#### Scenario: A loop call and a sandbox call on one source
-- **WHEN** a loop call and a sandbox call of the same source settle on one day
+#### Scenario: A reserved model call and a sandbox call on one source
+- **WHEN** a reserved model call and a sandbox call of the same source settle on one day
 - **THEN** the source's daily ceiling holds both, whichever comes second
 
 #### Scenario: A sandbox token presented elsewhere

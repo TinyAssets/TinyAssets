@@ -55,40 +55,22 @@ The owner's revoke of an MCP client SHALL be made in the owner's object first, t
 - **THEN** both see the same table and reach the same door
 
 ### Requirement: One external tool per outside-callable owner door
-Each external tool SHALL call exactly one owner door an outside client can reach, with that door's capability and arguments, a title, and explicit `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint`. No tool SHALL select an operation by a field, and the model's own tools (`read`, `write`, `edit`, `bash`, `ta`) SHALL never be served. Each outside-callable door without a tool SHALL be named with the slice that owes it.
+Each external tool SHALL call exactly one owner door an outside client can reach, with that door's capability and arguments, a title, and explicit `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint`. No tool SHALL select an operation by a field, and an engine's own tools (`read`, `write`, `edit`, `bash`, `ta`) SHALL never be served as ours. Each outside-callable door without a tool SHALL be named with the slice that owes it.
 
 #### Scenario: A tool added for an owner-only door
 - **WHEN** a tool names `grantSet`, `policyWrite` or any door bound through `#owner` or `#widening`
 - **THEN** the tool guard fails CI
 
-### Requirement: Only the agent's tools are open world
-`openWorldHint` SHALL be true only for the tools that hand work to the owner's agent (`converse`, `run_graph`), which acts on outside services; every other tool is confined to the owner's account.
+### Requirement: No tool is open world, and the agent's tools are absent until runs
+Every tool SHALL be confined to the owner's account, `openWorldHint` false. The agent's tools (`converse`, `run_graph`, `run_status`, `run_cancel`) and the owner's `/app/api/agent/*` routes SHALL be absent until the runs slice (R) brings them back as run doors (ADR-034): an absent tool, never a stub that answers falsely.
 
-#### Scenario: A closed-world tool marked open
-- **WHEN** a tool other than `converse` or `run_graph` is marked open world, or either of those closed
+#### Scenario: A tool marked open world
+- **WHEN** a tool is marked open world
 - **THEN** the tool guard fails CI
 
-### Requirement: The agent's tools reach the caller's own agent work
-`converse` (the object's `agentSubmit`, scope `converse`) and `run_graph` (`agentRun`, scope `run_graph`) SHALL be destructive, not idempotent and open world; `run_status` (`agentStatus`) SHALL be a read, idempotent; `run_cancel` (`agentCancel`) SHALL be destructive and idempotent. Each SHALL be served on `/mcp` and as `POST /api/tools/<name>`, and the owner's own surface SHALL serve the same doors as `/app/api/agent/submit`, `run`, `status` and `cancel`, refusing an outside credential there.
-
-#### Scenario: A retry after a week idle
-- **WHEN** a client reads `converse`'s description
-- **THEN** it says a retry with the same `client_send_id` is the same message while the conversation lasts, and runs again once a conversation idle for a week was dropped
-
-#### Scenario: Another owner's operation
-- **WHEN** a client of one owner asks `run_status` or `run_cancel` for an operation id another owner's client was given
-- **THEN** its own owner's object answers "no such operation", and the other owner's object is not reached
-
-#### Scenario: A key scoped without converse
-- **WHEN** an API key whose scopes hold `read_graph` alone calls `/api/tools/converse` or `run_graph`
-- **THEN** it is refused `403` with "outside client capability not granted", and no thread is made
-
-### Requirement: Long agent work is polled until the SDK serves MCP tasks
-Past `converse`'s bounded wait the answer SHALL be `running` with an `operation_id`, polled through `run_status`, since the MCP SDK 2.3.1 serves no part of the Tasks extension; when it does, a task id SHALL be the operation id, `tasks/get` `agentStatus` and `tasks/cancel` `agentCancel`.
-
-#### Scenario: A turn longer than the wait
-- **WHEN** a client's message starts a turn that outlasts its `wait_ms`
-- **THEN** `converse` answers `running` with the operation id, and `run_status` later answers the turn's reply
+#### Scenario: A client asks for an agent tool
+- **WHEN** a client lists `/mcp`'s tools, calls `converse`, or the owner posts to `/app/api/agent/submit`
+- **THEN** no agent tool is listed, the call is refused as no tool, and the route is not found
 
 ### Requirement: API keys keep the Python's format and order
 An API key SHALL be `ta_key_<16 hex id>_<43 urlsafe secret>`, its directory entry SHALL hold its owner, the SHA-256 hex of its secret and its mint time, compared in constant time. A mint SHALL write the grant before the entry, in the owner's session; a revoke SHALL revoke the grant before deleting the entry; a delete SHALL delete the entry before forgetting the grant. A key's call SHALL bind the key's own origin and its mint time.
