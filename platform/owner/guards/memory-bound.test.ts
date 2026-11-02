@@ -11,10 +11,9 @@
  *   review M-4 and round 2): each its body, at most `EVENTS_BODY_MAX` bytes, once as it
  *   arrived and once parsed (its strings two bytes a unit), the one frame being relayed as
  *   its JSON text (at most `FRAME_UNITS_MAX` units, two bytes each), and each of its at most
- *   `EVENT_FRAMES_MAX` frames' own objects; as many posts at once as runs may be live,
- *   each run's runner posting one at a time (slice S): `POSTS_IN_FLIGHT`, the founder's
- *   paid tier's simultaneous runs (ADR-034 decision 8), which a raise of the tier's top
- *   costs again here;
+ *   `EVENT_FRAMES_MAX` frames' own objects; the posts the object holds at once, at most
+ *   `EVENTS_IN_FLIGHT` whatever the tier (`runEvents`' gate: one more is answered
+ *   `events_busy` and posted again), and the one being refused beside them;
  * - each socket's attachment, the platform's at most 2 KiB, and the SDK's cached copy, at
  *   `OWNER_SOCKETS`, the relay's technical ceiling;
  * - the told sign-outs held (`SIGNED_OUT_KEPT`).
@@ -54,8 +53,6 @@ const TAIL_OVERHEAD = 256;
 const SIGNED_OUT_BYTES = 256;
 /** One posted frame's own objects beside its text: the frame, its relayed copy, numbers. */
 const FRAME_OVERHEAD = 512;
-/** Events posts held at once: one a live run, the paid tier's top (ADR-034 decision 8). */
-export const POSTS_IN_FLIGHT = 10;
 
 export const MEMORY = Object.freeze({
   tailUnits: constant("relay", "TAIL_BYTES"),
@@ -63,6 +60,7 @@ export const MEMORY = Object.freeze({
   eventsBody: constant("run-events", "EVENTS_BODY_MAX"),
   eventFrames: constant("run-events", "EVENT_FRAMES_MAX"),
   frameUnits: constant("run-events", "FRAME_UNITS_MAX"),
+  postsHeld: constant("run-events", "EVENTS_IN_FLIGHT"),
   ownerSockets: constant("relay", "OWNER_SOCKETS"),
   signedOut: constant("relay", "SIGNED_OUT_KEPT"),
   liveRuns: constant("tier", "RUNS_CEILING"),
@@ -72,8 +70,8 @@ export const MEMORY = Object.freeze({
 export function memoryTerms(m: typeof MEMORY = MEMORY): Record<string, number> {
   return {
     tails: 2 * m.tailUnits + m.liveRuns * TAIL_OVERHEAD,
-    events: POSTS_IN_FLIGHT * (3 * m.eventsBody + 2 * m.frameUnits
-                               + m.eventFrames * FRAME_OVERHEAD),
+    events: (m.postsHeld + 1) * (3 * m.eventsBody + 2 * m.frameUnits
+                                 + m.eventFrames * FRAME_OVERHEAD),
     attachments: m.ownerSockets * 2 * ATTACHMENT_BYTES,
     signed_out: m.signedOut * SIGNED_OUT_BYTES,
   };
@@ -94,7 +92,8 @@ describe("the runs' live output's memory bound", () => {
 
   it("reads the bounds the sources hold, and the relay keeps no row", () => {
     expect(MEMORY).toEqual({ tailUnits: 4_194_304, frameMax: 262_144, eventsBody: 65_536,
-                             eventFrames: 64, frameUnits: 32_768, ownerSockets: 1024,
+                             eventFrames: 64, frameUnits: 32_768, postsHeld: 8,
+                             ownerSockets: 1024,
                              signedOut: 64, liveRuns: 1000 });
     // A frame a post may carry is one the tail may keep.
     expect(MEMORY.frameUnits).toBeLessThanOrEqual(MEMORY.frameMax);
@@ -113,5 +112,7 @@ describe("the runs' live output's memory bound", () => {
     // The egress body's 16 MiB as an events post would pass it alone.
     expect(memoryWorstCase({ ...MEMORY, eventsBody: 16 * MIB })).toBeGreaterThan(
       RELAY_MEMORY_BUDGET);
+    // The posts held are the gate's, whatever the tier: a bigger gate would pass it.
+    expect(memoryWorstCase({ ...MEMORY, postsHeld: 50 })).toBeGreaterThan(RELAY_MEMORY_BUDGET);
   });
 });

@@ -85,11 +85,12 @@ export const QUEUE_FULL = `run_inputs_full: ${QUEUE_ROWS} inputs or ${QUEUE_BYTE
 /** An engine's sign-in lapsed: `auto` no longer picks it, and never falls back silently. */
 export const SIGNIN_LAPSED = "signin_lapsed: sign in to this engine again";
 /**
- * A run in an outside client's sandbox, on an engine's own sign-in, where no sign-in is:
- * a login lives in its sandbox and is never copied to another (ADR-031 decision 2).
+ * The sandbox's answer to a start on an engine's own sign-in where none is signed in inside
+ * it (its record's `status_argv`, slice S): the run settles `failed` with it, and the owner
+ * is told to sign in inside that sandbox. A login lives in its sandbox and is never copied
+ * to another (ADR-031 decision 2).
  */
-export const SIGNIN_REQUIRED = "signin_required: sign in inside this client's sandbox, " +
-  "through the vendor's own flow; a login is never copied between sandboxes";
+export const SIGNIN_REQUIRED = "signin_required";
 export const UNATTENDED_REFUSED = "unattended_refused: no source of this agent may run " +
   "unattended on its record";
 export const NO_SOURCE = "no_source: no connected source can run this agent's engine";
@@ -694,9 +695,10 @@ export class Runs {
    * engine. An unattended run takes only a credential its record allows unattended. The
    * sign-ins read are the run's own sandbox's (`authority`'s): the owner's own sandbox's
    * (`engine_signins`), or an outside client's, as its own runner reported them on its live
-   * lease. A login is never copied: a client's run uses a plan only where that client's
-   * sandbox signed in itself, else the owner's keys (`SIGNIN_REQUIRED` for an agent that
-   * names the vendor's sign-in).
+   * lease. A login is never copied: a client's `auto` run uses a plan only where that
+   * client's sandbox is known signed in itself, else the owner's keys. An agent that names
+   * the vendor's sign-in is admitted unless its sandbox is known signed out (the owner's
+   * own, `SIGNIN_LAPSED`); the sandbox's start checks it (`SIGNIN_REQUIRED`).
    */
   choose(file: AgentFile, unattended: boolean, authority = OWNER_AUTHORITY, now = 0):
       { engine: string; credential: CredentialKind; connection: string | null;
@@ -711,8 +713,7 @@ export class Runs {
       ? (this.#deps.lease.live(now, authority)?.signins ?? []).map((engine) =>
         [engine, { engine, signed_in: true, models: [], checked_at: now, changed_at: 0 }])
       : this.signins().map((signin) => [signin.engine, signin]));
-    const lapsed = (engine: string) => new Refused(client ? `${SIGNIN_REQUIRED} (${engine})`
-      : `${SIGNIN_LAPSED} (${engine})`);
+    const lapsed = (engine: string) => new Refused(`${SIGNIN_LAPSED} (${engine})`);
     let unattendedOnly = false;
     const allows = (engine: string, credential: CredentialKind): boolean => {
       const cli = sources.get(engine)?.cli;
@@ -742,9 +743,9 @@ export class Runs {
           continue;
         }
         if (credential === "vendor_login_in_sandbox") {
-          // Never a silent fall back to a key; in a client's sandbox, only its own sign-in.
-          if (client ? signins.get(file.engine)?.signed_in !== true
-            : signins.get(file.engine)?.signed_in === false) {
+          // Never a silent fall back to a key. A sign-in not known signed out is admitted:
+          // the sandbox's start checks it in that sandbox (`SIGNIN_REQUIRED`).
+          if (!client && signins.get(file.engine)?.signed_in === false) {
             throw lapsed(file.engine);
           }
           return { engine: file.engine, credential, connection: null, source: null,

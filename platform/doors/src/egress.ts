@@ -124,7 +124,16 @@ function refused(code: string, status: number, receipt?: string | null): Respons
   return Response.json({ error: { code, message: code },
                          ...(receipt === undefined || receipt === null ? {} : { receipt }) },
                        { status, headers: { "Cache-Control": "no-store",
-                                            ...(status === 429 ? { "Retry-After": "1" } : {}) } });
+                                            ...(status === 429 || status === 503
+                                              ? { "Retry-After": "1" } : {}) } });
+}
+
+/**
+ * The status a run door's refusal goes back with: the object's held posts full
+ * (`events_busy`) is a 503 the runner retries after `Retry-After`; any other, its own.
+ */
+export function refusedStatus(code: string, status: number): number {
+  return code === "events_busy" ? 503 : status;
 }
 
 /** A refusal's code from the object's message: its fixed prefix, as the doors keep them. */
@@ -242,7 +251,8 @@ async function serveRun(request: Request, env: DoorsEnv, run: string,
     if (answer === null) {
       throw error;
     }
-    return refused(codeOf(answer.message), answer.status);
+    return refused(codeOf(answer.message), refusedStatus(codeOf(answer.message),
+                                                       answer.status));
   }
 }
 

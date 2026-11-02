@@ -102,10 +102,10 @@ import {
 import { AGENT_UNDEFINED, type AgentFile, agentFile, agentFilePath } from "./agent-file";
 import { agentId, AUTHORITY_CHANGED, type Stamped } from "./authority";
 import { type CloseKind, OWNERS_SOCKET, Relay, type SocketState } from "./relay";
-import { type Ask, CONVERSATION_BUSY, type LiveRun, type PostedFrame, type RunReceipt, Runs,
+import { type Ask, CONVERSATION_BUSY, SIGNIN_REQUIRED, type LiveRun, type PostedFrame, type RunReceipt, Runs,
          RUN_ENDED, type RunSchedule, scheduleAuthority, secretHash } from "./runs";
 import { ENGINE_SIGNINS, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS } from "./run-rows";
-import { EVENT_FRAMES_MAX, eventsBounded, FRAME_UNITS_MAX } from "./run-events";
+import { EVENT_FRAMES_MAX, eventsBounded, FRAME_UNITS_MAX, PostGate } from "./run-events";
 import { SANDBOX_ABSENT, type SandboxService, started } from "./sandbox";
 import { TICKET_REFUSED } from "./socket-shape";
 import { Tickets } from "./tickets";
@@ -617,6 +617,16 @@ export const SANDBOX_DOORS = "a sandbox's token reaches its own doors only";
 export const SANDBOX_ONLY = "a sandbox door takes its own sandbox token only";
 /** The refusal of a sandbox binding for an owner whose object never opened a lease. */
 export const NO_SANDBOX = "no sandbox lease was opened for this owner";
+/**
+ * What a sync door's caller may read: its lease, the readable set's own name (null for the
+ * owner's sandbox, `*` for all of the owner's files), and the test of a path.
+ */
+interface Readable {
+  readonly lease: string;
+  readonly scope: string | null;
+  readonly test: (path: string) => boolean;
+}
+
 /** A sync token that is not the live lease's, or names another lease or epoch. */
 export const SYNC_FENCED = "the sync lease was lost; this sync is fenced";
 
@@ -946,6 +956,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** The owner app's sockets and the runs' live tails (`relay.ts`), a Lifecycle capability. */
   readonly #relay: Relay;
   readonly #tickets: Tickets;
+  /** The runners' events posts held at once (`EVENTS_IN_FLIGHT`). */
+  readonly #posts = new PostGate();
   /** Who waits on a run's settle, on this instance only: a door's bounded wait. */
   readonly #waiters = new Map<string, Set<() => void>>();
   /** The owner this object is named by (`ctx.id.name`), refused when it has none. */
@@ -1893,7 +1905,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * lease, that lease at its epoch; else refused, as a lost lease's sync is fenced.
    */
   #syncer(binding: Binding, door: DoorClass, request: { lease_id?: unknown; epoch?: unknown }
-                                                      | null): (path: string) => boolean {
+                                                      | null): Readable {
     this.#bind(binding, door, "sync");
     const sandbox = sandboxBinding(binding.sandbox);
     const lease = sandbox.kind === "sync"
@@ -1908,7 +1920,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     // only what it may write (as itself, never into the owner's trees: `Files.syncCommit`),
     // by its grant as its live run stamped it, standing now.
     if (lease.authority === OWNER_AUTHORITY) {
-      return () => true;
+      return { lease: lease.lease_id, scope: null, test: () => true };
     }
     {
       const stamp = this.#runs.authorityStamp(lease.authority);
@@ -1928,15 +1940,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const held = grant.mode === "full" || (stamp!.universe !== null && holds(grant, {
         universe: stamp!.universe, agent: stamp!.agent, capability }));
       if (held) {
-        return () => true;
+        return { lease: lease.lease_id, scope: "*", test: () => true };
       }
       if (door !== "read") {
         throw new Refused("outside client capability not granted");
       }
       const agents = this.#runs.liveAgents(lease.authority)
         .map((agent) => `${AGENTS_DIR}/${agent}`);
-      return (path) => path === AGENTS_DIR || agents.some((dir) => within(path, dir))
-        || OWNER_TREES.some((tree) => tree !== AGENTS_DIR && within(path, tree));
+      return { lease: lease.lease_id, scope: agents.join("\n"),
+               test: (path) => path === AGENTS_DIR || agents.some((dir) => within(path, dir))
+                 || OWNER_TREES.some((tree) => tree !== AGENTS_DIR && within(path, tree)) };
     }
   }
 
@@ -2263,7 +2276,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileChanges(binding: Binding, request: ChangesRequest):
       Promise<{ changes: FileChange[]; cursor: number; reset: boolean }> {
     return this.#door(() => {
-      let readable: (path: string) => boolean = () => true;
+      let readable: Readable | null = null;
       if (binding.sandbox === undefined) {
         this.#filer(binding, "read", "read_files");
       } else {
@@ -2271,7 +2284,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       const r = fileFields(request, ["after", "limit"]);
       const changes = this.#files.changes(r["after"], r["limit"]);
-      return { ...changes, changes: changes.changes.filter((change) => readable(change.path)) };
+      if (readable === null) {
+        return changes;
+      }
+      // A client's sandbox whose readable set changed since its last read (a new agent's run,
+      // a widened file scope) reads the feed again from its start: `reset`.
+      const moved = readable.scope !== null && this.#files.leaseReadable(
+        readable.lease, createHash("sha256").update(readable.scope, "utf8").digest("hex")
+          .slice(0, 16));
+      const test = readable.test;
+      return { ...changes, reset: changes.reset || moved,
+               changes: changes.changes.filter((change) => test(change.path)) };
     });
   }
 
@@ -2432,20 +2455,32 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async runEvents(binding: Binding, request: EventsRequest):
       Promise<{ accepted: number; settled: string | null }> {
     const done = await this.#door(() => {
-      this.#bind(binding, "reduce", "run");
-      const lease = this.#runner(binding);
-      if (lease === null) {
-        throw new Refused(RUN_ENDED);
+      // At most `EVENTS_IN_FLIGHT` posts held at once, whatever the tier: one more is
+      // refused before anything is written, and its runner posts it again.
+      this.#posts.enter();
+      try {
+        this.#bind(binding, "reduce", "run");
+        const lease = this.#runner(binding);
+        if (lease === null) {
+          throw new Refused(RUN_ENDED);
+        }
+        const r = eventsRequest(request);
+        return this.#runs.events(binding.run as string, lease, r.frames, r.end, clock());
+      } catch (error) {
+        this.#posts.leave();
+        throw error;
       }
-      const r = eventsRequest(request);
-      return this.#runs.events(binding.run as string, lease, r.frames, r.end, clock());
     });
-    this.#relay.relay(done.conversation, done.frames);
-    if (done.settled !== null) {
-      this.#relay.settled(binding.run as string);
-      await this.#schedule.sync();
+    try {
+      this.#relay.relay(done.conversation, done.frames);
+      if (done.settled !== null) {
+        this.#relay.settled(binding.run as string);
+        await this.#schedule.sync();
+      }
+      return { accepted: done.frames.length, settled: done.settled };
+    } finally {
+      this.#posts.leave();
     }
-    return { accepted: done.frames.length, settled: done.settled };
   }
 
   /**
@@ -2620,6 +2655,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         this.#runs.started(admitted.run, clock());
       } else {
         this.#runs.settle(admitted.run, "failed", answer.code, null, clock());
+        if (answer.code === SIGNIN_REQUIRED) {
+          // No login inside that sandbox: the owner signs in there, never copies one.
+          this.#notices.add(SIGNIN_REQUIRED, `${agent}: sign in to ${admitted.engine} inside ${
+            admitted.authority === OWNER_AUTHORITY ? "your own" : `${admitted.authority}'s`
+          } sandbox, through the vendor's own flow`, clock());
+        }
       }
     });
     if (answer === null) {

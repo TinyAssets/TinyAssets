@@ -1227,6 +1227,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       // sandbox's are `engine_signins`'), comma-joined, presence only.
       `signins TEXT NOT NULL DEFAULT '' CHECK (length(signins) <= ${SIGNIN_LIST_CHARS} ` +
       "AND signins NOT GLOB '*[^!-~]*'), " +
+      // A client's sandbox's readable set at its sync agent's last read, as a digest: a
+      // change sends the reader back to the feed's start.
+      "readable TEXT CHECK (readable IS NULL OR (length(readable) = 16 AND readable NOT GLOB " +
+      "'*[^0-9a-f]*')), " +
       "CHECK (egress_token != sync_token AND egress_token != " +
       "runner_token AND sync_token != runner_token)) WITHOUT ROWID",
     "CREATE TRIGGER sandbox_leases_full BEFORE INSERT ON sandbox_leases WHEN (SELECT " +

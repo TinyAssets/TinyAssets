@@ -16,7 +16,8 @@ import { AGENT_CHANGED, type Binding } from "../src/owner-do";
 import { Files } from "../src/files";
 import { AGENTS_OWNER_ONLY } from "../src/paths";
 import { RUNS_KEPT } from "../src/run-rows";
-import { EVENT_FRAMES_MAX, FRAME_UNITS_MAX } from "../src/run-events";
+import { EVENT_FRAMES_MAX, EVENTS_BUSY, EVENTS_IN_FLIGHT, FRAME_UNITS_MAX, PostGate }
+  from "../src/run-events";
 import { NO_CONVERSATION, RUN_ENDED, SIGNIN_REQUIRED } from "../src/runs";
 import { SANDBOX_ABSENT } from "../src/sandbox";
 import { TIER_RUNS, TIER_UNREAD } from "../src/tier";
@@ -245,7 +246,7 @@ describe("the runner's events post (review M-4)", () => {
 
 describe("a sandbox's own sign-ins (review round 2, H; ADR-031 decision 2)", () => {
   it("never run a client's run on the owner's sign-in: auto takes the owner's key, and an " +
-     "agent naming the sign-in is refused", async () => {
+     "agent naming the sign-in is started only where its own sandbox signed in", async () => {
     const r = await gated();
     const key = await r.connect("sk-good");
     // The owner signs in inside its own sandbox.
@@ -259,16 +260,32 @@ describe("a sandbox's own sign-ins (review round 2, H; ADR-031 decision 2)", () 
     expect((await ownerRun(r.stub, r.bind(), undefined, "auto")).run)
       .toMatchObject({ credential: "vendor_login_in_sandbox" });
     const client = await fullClient(r);
+    // A cold client sandbox: the named agent is admitted (its sign-in unknown, as the
+    // owner's own path admits one), and the sandbox's start finds no login there.
+    await r.in((instance) => {
+      instance.recorder.answer = { started: false, code: SIGNIN_REQUIRED };
+    });
+    const cold = await r.stub.agentSubmit({ ...client, tiers: TIERS }, {
+      message: "hi", client_send_id: "p-0", agent_id: "plan" });
+    expect(cold).toMatchObject({ state: "failed", code: SIGNIN_REQUIRED,
+                                 credential: "vendor_login_in_sandbox" });
+    expect((await startOf(r.stub, cold.run_id)).authority).toBe(MUSE.client);
+    expect(await notices(r)).toContain(`plan: sign in to claude-code inside ${MUSE.client}'s ` +
+                                       "sandbox, through the vendor's own flow");
+    expect(await r.sql("SELECT authority FROM sandbox_leases WHERE authority != 'owner'"))
+      .toEqual([]);
+    await r.in((instance) => {
+      instance.recorder.answer = { started: true };
+    });
     const viaAuto = await r.stub.agentSubmit({ ...client, tiers: TIERS }, {
       message: "hi", client_send_id: "a-1", agent_id: "auto" });
     expect(viaAuto).toMatchObject({ state: "running", credential: "api_key" });
     expect((await startOf(r.stub, viaAuto.run_id)).authority).toBe(MUSE.client);
-    expect((await failure(() => r.stub.agentSubmit({ ...client, tiers: TIERS }, {
-      message: "hi", client_send_id: "p-1", agent_id: "plan" }))).message)
-      .toBe(`${SIGNIN_REQUIRED} (claude-code)`);
+    // Every client start on a sign-in is its own sandbox's: the owner's never reaches it.
     expect((await recorder(r.stub)).starts
       .filter((start) => start.authority !== "owner"
-                         && start.credential === "vendor_login_in_sandbox")).toEqual([]);
+                         && start.credential === "vendor_login_in_sandbox")
+      .map((start) => start.run)).toEqual([cold.run_id]);
   });
 
   it("run a client's run on that client's sandbox's own sign-in, while it holds one",
@@ -295,15 +312,19 @@ describe("a sandbox's own sign-ins (review round 2, H; ADR-031 decision 2)", () 
     expect((await startOf(r.stub, planned.run_id)).lease).toEqual(start.lease);
     // Auto prefers that plan to the key of its provider, in that sandbox.
     expect(await submit("auto", "a-2")).toMatchObject({ credential: "vendor_login_in_sandbox" });
-    // Its sign-in lapses: a notice, and the plan is refused there, never the owner's used.
+    // Its sign-in lapses: a notice; auto takes the key again, and the named agent's start
+    // finds no login there (never the owner's used).
     expect(await r.stub.signinReport(runnerSandbox(r, start), {
       signins: [{ engine: "claude-code", signed_in: false }] }))
       .toEqual({ recorded: 1, lapsed: ["claude-code"] });
     expect(await notices(r)).toContain(
       `claude-code: sign in again inside ${MUSE.client}'s sandbox`);
-    expect((await failure(() => submit("plan", "p-2"))).message)
-      .toBe(`${SIGNIN_REQUIRED} (claude-code)`);
     expect(await submit("auto", "a-3")).toMatchObject({ credential: "api_key" });
+    await r.in((instance) => {
+      instance.recorder.answer = { started: false, code: SIGNIN_REQUIRED };
+    });
+    expect(await submit("plan", "p-2"))
+      .toMatchObject({ state: "failed", code: SIGNIN_REQUIRED });
   });
 });
 
@@ -345,6 +366,120 @@ describe("a client's sandbox's files (review round 2, M2)", () => {
       ...start.lease, ops: [{ op: "write", path: "/workspace/x.txt", base: null,
                               inline: text("x") }] }))).message)
       .toBe("outside client capability not granted");
+  });
+});
+
+describe("a client's sandbox's readable set (review round 3, M1)", () => {
+  it("sends its sync agent back to the feed's start when it grows", async () => {
+    const r = await gated();
+    const file = await keyed(r);
+    await defineAgent(r.stub, r.bind(), "main", file);
+    await defineAgent(r.stub, r.bind(), "other", file);
+    await r.stub.fileWrite(r.bind(), { path: "/workspace/agents/other/AGENTS.md",
+                                       expected_etag: null, content: text("other's rules") });
+    // A converse-only client, on both agents.
+    const client = r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn() });
+    await r.stub.outsideAgents(client);
+    const { revision } = (await r.stub.grantList(r.bind())).clients
+      .find((entry) => entry.client === MUSE.client)!;
+    await r.stub.grantSet(r.session(), { client: MUSE.client, source: "mcp", mode: "scoped",
+      scopes: ["main", "other"].map((agent) => ({ universe: "alpha", agent,
+                                                  capability: "converse" })),
+      expected_revision: revision, name: "Muse" });
+    const { card_id, digest } = await r.stub.registerPropose(client, {
+      command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
+      recipe_id: null });
+    await r.stub.registerAgent(r.session(), { card_id, digest });
+    const run = await r.stub.agentSubmit({ ...client, tiers: TIERS },
+                                         { message: "hi", client_send_id: "m-1" });
+    const start = await startOf(r.stub, run.run_id);
+    const first = await r.stub.fileChanges(syncOf(r, start), { after: 0, limit: 1000 });
+    expect(first.reset).toBe(false);
+    expect(first.changes.some((change) => change.path.startsWith("/workspace/agents/other")))
+      .toBe(false);
+    // Read again with nothing changed: no reset.
+    expect((await r.stub.fileChanges(syncOf(r, start), { after: first.cursor, limit: 1000 }))
+      .reset).toBe(false);
+    // A run of `other` starts in the same sandbox: the next read starts over, and from its
+    // start the feed now holds `other`'s definition.
+    const second = await r.stub.agentSubmit({ ...client, tiers: TIERS }, {
+      message: "hi", client_send_id: "o-1", agent_id: "other" });
+    expect((await startOf(r.stub, second.run_id)).lease).toEqual(start.lease);
+    const next = await r.stub.fileChanges(syncOf(r, start), { after: first.cursor, limit: 1000 });
+    expect(next.reset).toBe(true);
+    const again = await r.stub.fileChanges(syncOf(r, start), { after: 0, limit: 1000 });
+    expect(again.changes.map((change) => change.path))
+      .toContain("/workspace/agents/other/AGENTS.md");
+    expect(again.reset).toBe(false);
+  });
+});
+
+describe("the runners' events posts (review round 3, M2)", () => {
+  it("are held at most EVENTS_IN_FLIGHT at once; one more is refused to post again",
+     () => {
+    const gate = new PostGate();
+    for (let i = 0; i < EVENTS_IN_FLIGHT; i++) {
+      gate.enter();
+    }
+    expect(() => gate.enter()).toThrow(EVENTS_BUSY);
+    gate.leave();
+    gate.enter();
+    expect(gate.held).toBe(EVENTS_IN_FLIGHT);
+  });
+
+  it("give back the room of a post refused for any other reason", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const ended = await ownerRun(r.stub, r.bind(), undefined, "main");
+    const live = await ownerRun(r.stub, r.bind(), undefined, "main");
+    await r.stub.runEvents(runnerBinding(r, ended.start), { frames: [], end: { exit_code: 0 } });
+    for (let i = 0; i <= EVENTS_IN_FLIGHT; i++) {
+      expect((await failure(() => r.stub.runEvents(runnerBinding(r, ended.start),
+                                                   { frames: [] }))).message).toBe(RUN_ENDED);
+    }
+    expect(await r.stub.runEvents(runnerBinding(r, live.start), { frames: [] }))
+      .toEqual({ accepted: 0, settled: null });
+  });
+
+  it("all land, however many runners post at once, each retrying a busy answer",
+     async () => {
+    const r = await gated();
+    const tiers = { free: { runs: 20, storage_bytes: 1 }, paid: { runs: 20, storage_bytes: 1 } };
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const runs = [];
+    for (let i = 0; i < EVENTS_IN_FLIGHT + 4; i++) {
+      runs.push((await r.stub.agentSubmit(r.bind({ tiers }), { message: "x",
+                                                               client_send_id: `p-${i}` })));
+    }
+    // Every runner's end posted in one turn, inside the object: each holds its post until
+    // its settle's schedule sync is done, so the gate fills; a busy one posts again.
+    const starts = await Promise.all(runs.map((run) => startOf(r.stub, run.run_id)));
+    const bindings = starts.map((start) => runnerBinding(r, start));
+    const body = { frames: [{ seq: 1, at: 1, event: { type: "result", result: "done" } }],
+                   end: { exit_code: 0 } };
+    const busy = await r.in(async (instance) => {
+      let refused = 0;
+      let pending = bindings;
+      for (let round = 0; pending.length > 0; round++) {
+        if (round > 20) {
+          throw new Error("the busy posts never landed");
+        }
+        const answers = await Promise.allSettled(
+          pending.map((binding) => instance.runEvents(binding, body)));
+        const again = pending.filter((_, i) => answers[i]!.status === "rejected");
+        for (const answer of answers) {
+          if (answer.status === "rejected") {
+            expect(String((answer.reason as Error).message)).toBe(EVENTS_BUSY);
+            refused += 1;
+          }
+        }
+        pending = again;
+      }
+      return refused;
+    });
+    expect(await r.sql("SELECT state FROM runs")).toEqual(
+      Array(EVENTS_IN_FLIGHT + 4).fill({ state: "succeeded" }));
+    expect(busy).toBe(4);
   });
 });
 

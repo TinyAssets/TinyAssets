@@ -17,7 +17,7 @@ import type { SandboxStart } from "../../owner/src/sandbox";
 import { TICKET_REFUSED } from "../../owner/src/socket-shape";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";
 import { EGRESS_ORIGIN } from "../src/config";
-import { RUN_HEADER, RUNNER_HEADER } from "../src/egress";
+import { refusedStatus, RUN_HEADER, RUNNER_HEADER } from "../src/egress";
 import { EVENT_FRAMES_MAX } from "../../owner/src/run-events";
 import { RUN_TOOLS } from "../src/tools";
 import type { OwnerDO } from "./entry";
@@ -241,6 +241,11 @@ describe("a run's own doors on the egress host", () => {
       headers: { "Content-Type": "application/json", ...sandbox, [RUN_HEADER]: "0".repeat(64) } }));
     expect(wrong.status).not.toBe(200);
   }, 60_000);
+
+  it("answer a post the object holds no room for 503, for the runner to post again", () => {
+    expect(refusedStatus("events_busy", 403)).toBe(503);
+    expect(refusedStatus("run_ended", 403)).toBe(403);
+  });
 
   it("take a run's events only by the runner's secret, within the post's bounds",
      async () => {

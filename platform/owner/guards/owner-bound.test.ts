@@ -374,10 +374,11 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
               "widest" },
     // The sandbox leases (review H-1): one an authority, opened only for a live run.
     sandbox_leases: { rows: RUNS_CEILING,
-                      bytes: ROW + 64 + 32 + 8 + 128 + 16 + 3 * 64 + 8 + SIGNIN_LIST_CHARS,
+                      bytes: ROW + 64 + 32 + 8 + 128 + 16 + 3 * 64 + 8 + SIGNIN_LIST_CHARS
+                        + 16,
                       by: "RUNS_CEILING, each its authority, lease id, epoch, holder, " +
-                        "times, three token hashes, network generation and its sandbox's " +
-                        "own signed-in engines (visible ASCII)" },
+                        "times, three token hashes, network generation, its sandbox's " +
+                        "own signed-in engines (visible ASCII) and its readable set's digest" },
     // The inputs waiting for their conversation (`run_inputs`): QUEUE_ROWS rows holding
     // QUEUE_BYTES of input in all, however it is spread. Each row is counted at its even
     // share and two overflow pages more: a row's in-place share is at most a third of a

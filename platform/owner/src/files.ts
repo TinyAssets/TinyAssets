@@ -1750,6 +1750,21 @@ export class Files {
     return before === "" ? [] : before.split(",");
   }
 
+  /**
+   * In a unit: the digest of what the live lease `leaseId`'s sandbox may read, as its sync
+   * agent reads the feed now; whether it changed since its last read (it reads again from
+   * the feed's start).
+   */
+  leaseReadable(leaseId: string, digest: string): boolean {
+    const before = this.#sql.exec<{ readable: string | null }>(
+      "SELECT readable FROM sandbox_leases WHERE lease_id = ?", leaseId).one().readable;
+    if (before === digest) {
+      return false;
+    }
+    this.#sql.exec("UPDATE sandbox_leases SET readable = ? WHERE lease_id = ?", digest, leaseId);
+    return before !== null;
+  }
+
   /** In a unit: every lapsed lease's row gone (its runs settled first, `Runs.lost`). */
   leasesLapsed(now: number): void {
     this.#sql.exec(`DELETE FROM sandbox_leases WHERE NOT (${LIVE_LEASE})`, now, now);

@@ -64,13 +64,13 @@ each fixed code.
 
 - **tier**: 4
 - **owner setting**: 8
-- **technical ceiling**: 69
+- **technical ceiling**: 70
 - **budget allocation**: 3
 - **raise**: 38
 - **security**: 8
 - **label or page**: 16
 - **convention**: 15
-- **total**: 161 (slice R added 24: `## Slice R's bounds`)
+- **total**: 162 (slice R added 25: `## Slice R's bounds`)
 
 Flagged for the founder: the files default `max_bytes` (1 GiB, to become the tier's storage); the egress tokens' `RUN_DEADLINE_S` (a day: a token lifetime, with the proposal to tie it to the lease); and the model policy's per-run caps (`turn_requests` 100, `turn_tokens` 10M, `turn_cost` $25), on by default where ADR-034 decision 7 makes the owner's own limits off by default: proposed off.
 
@@ -265,8 +265,8 @@ Slice R (runs in the owner object) invented no limit: the only new bound a user 
 is not a technical ceiling is the tier's own simultaneous runs, whose numbers are the
 control record's (`tier.ts`). Every other new bound is the owner database's (the
 owner-bound guard's terms above), the isolate's memory (the memory guard,
-`owner/guards/memory-bound.test.ts`: 15.8 MB worst case, 12.3% of the isolate, ten
-runners' events posts counted whole at once), the
+`owner/guards/memory-bound.test.ts`: 15.5 MB worst case, 12.1% of the isolate, the
+events posts the object holds at once counted whole, whatever the tier), the
 engine's own, or a call's or a credential's convention.
 
 | Where | Value | Bounds | A user hits | Class | Reason or proposal |
@@ -289,9 +289,10 @@ engine's own, or a call's or a credential's convention.
 | `owner/src/relay.ts:64` | 1,024 | the owner app's sockets open at once | another socket refused `sockets_full` | technical ceiling | The isolate's 128 MB: each socket's attachment and the SDK's copy, counted by the memory guard (4.2 MB). |
 | `owner/src/relay.ts:66` | 4 Mi UTF-16 units | the live runs' tails, together | a late joiner sees fewer of a run's oldest frames | technical ceiling | The isolate's 128 MB (memory guard, 8.4 MB). Frames are never committed (ADR-034 decision 10); the run's result is its receipt's. |
 | `owner/src/relay.ts:68` | 256 Ki units | one frame kept in a tail | a longer frame is relayed live, never kept for a late joiner | technical ceiling | The isolate's memory, as above. |
-| `owner/src/run-events.ts:31` | 64 KiB | a runner's events post, its body | a longer post refused `events_too_large` (413) at the doors; the runner posts more often | technical ceiling | The isolate's 128 MB (memory guard, review M-4 and round 2): the object holds a post whole, as it came and parsed, while it reads and relays it, and each live run's runner posts on its own: ten at once (the paid tier's top; a raise of it costs the term again) times this, 2.9 MB in all. |
-| `owner/src/run-events.ts:32` | 64 | frames in one post | the runner posts more often | technical ceiling | The isolate's memory, as above: each frame's own objects counted. |
-| `owner/src/run-events.ts:33` | 32 Ki units | one frame's JSON in a post | a longer CLI event is cut, marked, by the runner before it posts it (slice S); the engine's transcript keeps the whole, the receipt 16 KiB of the result | technical ceiling | The isolate's memory, as above. |
+| `owner/src/run-events.ts:33` | 64 KiB | a runner's events post, its body | a longer post refused `events_too_large` (413) at the doors; the runner posts more often | technical ceiling | The isolate's 128 MB (memory guard, review M-4 and round 2): the object holds a post whole, as it came and parsed, while it reads and relays it: `EVENTS_IN_FLIGHT` held at once and one being refused, 2.7 MB in all, whatever the tier. |
+| `owner/src/run-events.ts:43` | 8 | the runners' events posts the object holds at once | one more answered `events_busy` (503, `Retry-After`), which its runner posts again; no run is refused, a post only waits | technical ceiling | The isolate's 128 MB (memory guard, review round 3): a gate in `runEvents`, so the memory bound no longer rests on the tier record's numbers, which the founder edits with no deploy. |
+| `owner/src/run-events.ts:34` | 64 | frames in one post | the runner posts more often | technical ceiling | The isolate's memory, as above: each frame's own objects counted. |
+| `owner/src/run-events.ts:35` | 32 Ki units | one frame's JSON in a post | a longer CLI event is cut, marked, by the runner before it posts it (slice S); the engine's transcript keeps the whole, the receipt 16 KiB of the result | technical ceiling | The isolate's memory, as above. |
 | `owner/src/run-rows.ts:57` | 256 characters | a client's sandbox's signed-in engines, joined | a longer report refused | technical ceiling | The 10 GB: the lease's row stays within its page share at it (`sandbox_leases`, 3.1 MB); each a served record that signs in, far past what their ids join to. |
 | `owner/src/relay.ts:70` | 1,024 units | a frame the app sends | a longer one closes the socket `frame_refused` | convention | The app sends only pings. |
 | `owner/src/owner-do.ts:710` | 60 s | how long a run door waits for its run to settle (`wait_ms`) | the door answers the run as it stands; `run_status` reads it later | convention | A call's own bound. The run itself has no deadline. |

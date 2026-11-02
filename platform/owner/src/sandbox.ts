@@ -82,6 +82,12 @@ export interface SandboxStart {
                    readonly signin: string };
 }
 
+/**
+ * The start's answer. A start on the vendor's own sign-in (`credential`
+ * `vendor_login_in_sandbox`) first runs the record's `status_argv` inside that sandbox, and
+ * answers `{started: false, code: "signin_required"}` when no login is there: a login is
+ * never copied between sandboxes, so the owner signs in inside it (the vendor's own flow).
+ */
 export type Started = { readonly started: true } | { readonly started: false; readonly code: string };
 
 /** The sandbox Worker, as the owner's object binds it (`SANDBOX`). */

@@ -16,6 +16,8 @@
  */
 import type { EngineEvents, EventMatcher } from "../../doors/src/sources";
 
+import { Refused } from "./errors";
+
 export const FRAME_VERSION = 1;
 
 /**
@@ -31,6 +33,37 @@ export const FRAME_VERSION = 1;
 export const EVENTS_BODY_MAX = 65_536;
 export const EVENT_FRAMES_MAX = 64;
 export const FRAME_UNITS_MAX = 32_768;
+
+/**
+ * The runners' events posts the object holds at once, whatever the tier (review round 3):
+ * one more is answered `events_busy` (503, `Retry-After`) and its runner posts it again. A
+ * technical ceiling of the isolate's memory, sized so the memory guard fits its budget; no
+ * run is refused, a post only waits.
+ */
+export const EVENTS_IN_FLIGHT = 8;
+export const EVENTS_BUSY = "events_busy: the object holds as many runner posts as it may; " +
+  "post again shortly";
+
+/** The count of events posts the object holds, refusing one past `EVENTS_IN_FLIGHT`. */
+export class PostGate {
+  #held = 0;
+
+  get held(): number {
+    return this.#held;
+  }
+
+  /** Hold one more post, or refuse it `EVENTS_BUSY`. */
+  enter(): void {
+    if (this.#held >= EVENTS_IN_FLIGHT) {
+      throw new Refused(EVENTS_BUSY);
+    }
+    this.#held += 1;
+  }
+
+  leave(): void {
+    this.#held -= 1;
+  }
+}
 
 /** Whether an events post is within its frame bounds (the doors' and the object's check). */
 export function eventsBounded(body: unknown): boolean {

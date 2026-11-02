@@ -837,9 +837,19 @@ R, S, M and W.
     never into `OWNER_TREES`. The run's secret goes as a header (`x-ta-run`) where the
     CLI's record says it takes one (`run_secret_env`, Claude Code's
     `ANTHROPIC_CUSTOM_HEADERS`, and its MCP file's `headers` with `{run_secret}`), the
-    path carrying it otherwise; the doors take either. The events post is bounded for ten
-    runners posting at once (`EVENTS_BODY_MAX` 64 KiB, 64 frames, 32 Ki units a frame;
-    memory guard 15.8 MB worst case, 12.3% of the isolate).
+    path carrying it otherwise; the doors take either. The events post is bounded
+    (`EVENTS_BODY_MAX` 64 KiB, 64 frames, 32 Ki units a frame).
+  - Review round 3. An agent naming the vendor's sign-in is admitted in a client's sandbox
+    whose sign-in is unknown, as the owner's is; the sandbox's start checks the record's
+    `status_argv` there and answers `{started: false, code: "signin_required"}` when no
+    login is, and the run settles `failed` (`signin_required`) with a notice to sign in
+    inside that sandbox. `auto` takes a client's plan only where it is known signed in. A
+    client's sandbox's readable set is kept as a digest on its lease; when it changes (a
+    new agent's run, a widened file scope) the next feed read answers `reset: true`, so
+    the sync agent reads the feed again from its start. The object holds at most
+    `EVENTS_IN_FLIGHT` (8) events posts at once, whatever the tier; one more is answered
+    `events_busy` (503, `Retry-After`) and posted again; memory guard 15.5 MB worst case,
+    12.1% of the isolate, with no tier number in it.
   - Admission in one gate unit (`runs.ts`): owner admitted, `SANDBOX` bound, agent's
     `agent.json` (`agent-file.ts`) read whole and enabled, the stamp standing, the retry
     key, the caller's conversation, the tier's simultaneous runs, the source chosen (the
@@ -878,19 +888,18 @@ R, S, M and W.
   - Carried: slice E's owed case (a record setting a variable a key's environment sets is
     refused by the checker, `network.test.ts`), slice D's flakes (`.wrangler` skipped by
     both config guards; the files-quota pass test's explicit timeout).
-  - Mutation: 115 mutants over admission (12), the tier check (6), grant scoping (7), the
+  - Mutation: 126 mutants over admission (12), the tier check (6), grant scoping (7), the
     doors' authority (7), settle (10), the relay (6), the conversations' queue (13),
-    `auto`'s sign-ins (14), the review's round 1 (23: authority, secrets, the runner's,
-    revoke, schedules, rows, cancel, heartbeat, tiers, the events post) and round 2 (17:
-    per-sandbox sign-ins, the prune's order, a client's sandbox's files, the secret as a
-    header): 115 killed (round 2's 18th, a client sign-in's `signed_in` check, was dead
-    code, removed). The reviewer's 64 and 3 of their round-2 forms the builder ported to the
-    moved code: 9 no longer apply (each replaced by a later form), 4 rejected by `tsc`
-    (their rewrites counted instead) and 2 ports killed by `tsc` alone (their runtime forms
-    among the 115); of the 52 run, 50 killed, the 2 survivors equivalent
-    (`r2-grant-epoch-unchecked`: lease ids are random and unique; `r2-no-prune-wait`: the
-    settle's prune alone keeps the bound). The 12 the round-1 review found untested (M-6)
-    each have their test (`runs-authority.test.ts`, `doors/test/runs.test.ts`).
+    `auto`'s sign-ins (14), the review's round 1 (23), round 2 (17) and round 3 (11: the
+    sign-in notice, the readable set's reset, the events posts' gate, the busy answer):
+    126 killed, the gate's release on a refusal once tested. The reviewer's 74 and 5 forms
+    the builder ported to the moved code: 12 no longer apply (each replaced by a later form,
+    one, `r3-client-unknown-signin-ok`, now the rule), 5 rejected by `tsc` (their rewrites
+    counted instead) and 2 ports killed by `tsc` alone (their runtime forms among the 126);
+    of the 60 run, 57 killed, the 3 survivors equivalent (`r2-grant-epoch-unchecked`: lease
+    ids are random; `r2-no-prune-wait`: the settle's prune bounds the table alone;
+    `r3-header-unchecked-shape`: a malformed header's hash never matches). The 12 the
+    round-1 review found untested (M-6) each have their test.
 - [ ] Slice S builds against the `SANDBOX` interface (`owner/src/sandbox.ts`), and only it:
   - the `tinyassets-sandbox` Worker as `SandboxService`: `start(owner, SandboxStart)`
     answers `{started: true}` or `{started: false, code}` (a fixed code) at once, the runner
@@ -916,9 +925,14 @@ R, S, M and W.
     client's id), each its own lease, tokens and network. A login is never copied between
     sandboxes (ADR-031 decision 2): a client's sandbox runs on a vendor's sign-in only once
     the owner signed in inside it, through the vendor's own flow there, its own runner
-    reporting it (`urls.signin`), never with the owner's sandbox's login;
+    reporting it (`urls.signin`), never with the owner's sandbox's login. The sign-in flow
+    opens a client's sandbox as well as the owner's. A start on the vendor's sign-in first
+    runs the record's `status_argv` in its sandbox and answers `{started: false, code:
+    "signin_required"}` when no login is there;
   - a client's sandbox syncs in its runs' agents' own definitions always, read-only, and the
-    rest of the owner's files only as the change feed the object filters for it gives;
+    rest of the owner's files only as the change feed the object filters for it gives; on
+    `reset: true` it reads the feed again from its start. Any content door slice S adds for
+    the sync agent applies the same filter as the feed (`#syncer`'s readable set);
   - the runner runs as root and keeps the runner secret (`tokens.runner_token`) in a
     root-only file, posting it as `x-ta-runner` on its event and sign-in posts; each CLI
     runs under its own unprivileged uid, `/proc` is mounted `hidepid=2`, and the agent user
@@ -926,7 +940,7 @@ R, S, M and W.
     nor the runner's secret;
   - it posts events within `EVENTS_BODY_MAX`, `EVENT_FRAMES_MAX` and `FRAME_UNITS_MAX`
     (`run-events.ts`), one post in flight a run, cutting a longer CLI event, marked, before
-    it posts it;
+    it posts it, and posts again after `Retry-After` when answered `events_busy` (503);
   - it posts an empty batch, the run's first heartbeat, as soon as the sandbox is up and
     before the initial file sync, since a run with no post within `LEASE_TTL_S` of its
     admission is settled lost;
