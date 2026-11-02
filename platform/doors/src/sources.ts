@@ -11,13 +11,27 @@
  *   `rfc6749` (RFC 6749 and 7636, tokens) or `pkce_user_key_v1` (the Python's protocol,
  *   OpenRouter's: the code buys an API key). A record marked `unwired` names why it is
  *   not served yet, and every connect of it is refused with that reason.
- * - `cli`: the vendor's own command-line client, signed in by the owner in their sandbox
- *   (a consumer subscription, research §2.6). It never enters the gateway, so it names no
- *   upstream; its install, sign-in, invocation and hosts are kept for the sandbox (6).
+ * - `cli`: an engine (ADR-033 decision 2, ADR-034 decisions 1 and 5): a provider's own
+ *   unmodified command-line agent, run whole in the owner's sandbox, never a backend of
+ *   ours, so it has no single-inference `invoke`. It never enters the gateway, so it names
+ *   no upstream. Its record is everything the sandbox runner needs, as data (`CliSpec`):
+ *   install, sign-in, the new-run and resume invocations and their event matchers, the
+ *   instruction and skills paths, the MCP template, tool filters and unattended flags, its
+ *   home, the credentials it runs on, whether each may run unattended (with the vendor
+ *   page that says so), its `session_paths`, which sync to the owner's files, and its
+ *   `secret_paths`, which never leave the sandbox (ADR-031 decision 2). Every path is
+ *   under `{home}`, the runner's engine home, which is sandbox-only and outside
+ *   `/workspace`, so secret and session paths compare in one namespace. A prompt goes on
+ *   stdin or joined to its option (`--prompt={prompt}`), never bare; no value configures
+ *   the engine to nothing (an empty argument, list or map); a run on the vendor's own
+ *   sign-in carries none of the variables its `forbid_env` lists, its API-key variables
+ *   among them; and a sign-in with regions takes the owner's choice as `{region}`. The
+ *   checker holds shape only: no vendor is named here.
  *
  * A gateway source (`api_key`, `oauth`) names the pi-ai provider (`custom` for a declared
  * endpoint), the API its models speak, the base URL, how the secret is sent (`auth`), the
- * setup check (`verify_url`) and the only endpoints the secret may reach. pi-ai's catalog
+ * setup check (`verify_url`), the only endpoints the secret may reach, and its `engines`:
+ * the CLI records that can run on it through the egress door. pi-ai's catalog
  * supplies a known provider's base URL and models, and a record of one restates them
  * (the sources guard holds the two equal); only a `custom` record declares its own models.
  * Those values are what the gateway seals with the secret. They are checked by the
@@ -27,8 +41,11 @@
 import {
   type Endpoint, keyExchangeSource, type Source, source as gatewaySource, type Upstream,
 } from "../../gateway/src/credential";
-import { SOURCE_ID } from "../../owner/src/text";
+import { forbids, SOURCE_ID } from "../../owner/src/text";
 
+export { forbids };
+
+import anthropic from "../../sources/anthropic.json";
 import cerebras from "../../sources/cerebras.json";
 import chatgpt from "../../sources/chatgpt.json";
 import claudeCode from "../../sources/claude-code.json";
@@ -38,11 +55,15 @@ import googleAiStudio from "../../sources/google_ai_studio.json";
 import groq from "../../sources/groq.json";
 import kimi from "../../sources/kimi.json";
 import mistral from "../../sources/mistral.json";
+import openai from "../../sources/openai.json";
 import openrouter from "../../sources/openrouter_user_models_v1.json";
+import pi from "../../sources/pi.json";
+import xai from "../../sources/xai.json";
 
 /** The records the doors serve, as the files hold them. Never written: each read is a copy. */
 const BUNDLED: readonly unknown[] = Object.freeze([
-  cerebras, chatgpt, claudeCode, codex, gemini, googleAiStudio, groq, kimi, mistral, openrouter,
+  anthropic, cerebras, chatgpt, claudeCode, codex, gemini, googleAiStudio, groq, kimi, mistral,
+  openai, openrouter, pi, xai,
 ]);
 
 export type ConnectMethod = "api_key" | "oauth" | "cli";
@@ -74,14 +95,142 @@ export interface UserKey {
 
 export type OAuthSpec = Rfc6749 | UserKey;
 
-/** A vendor CLI's own sign-in (`connect: ["cli"]`), for the sandbox. */
-export interface CliSpec {
-  readonly install: Readonly<Record<string, unknown>>;
-  readonly login: Readonly<Record<string, unknown>>;
-  readonly invoke: Readonly<Record<string, unknown>>;
+/** What an engine runs on: the vendor's own sign-in in the sandbox, or an egress-keyed key. */
+export type CredentialKind = "vendor_login_in_sandbox" | "api_key";
+export const CREDENTIAL_KINDS: readonly CredentialKind[] = Object.freeze([
+  "vendor_login_in_sandbox", "api_key"]);
+
+/**
+ * How the engine binary is installed into the sandbox template, pinned: an npm package by
+ * version, integrity and the digest of its committed lock (`platform/sources/locks/<id>/`),
+ * a pip package by version and the digest of its committed hashed requirements, or a
+ * binary by its https URL and SHA-256.
+ */
+export type Install =
+  | { readonly manager: "npm"; readonly package: string; readonly version: string;
+      readonly integrity: string; readonly lock_sha256: string; readonly bin: string;
+      readonly verify_argv: readonly string[]; readonly lifecycle_scripts?: true }
+  | { readonly manager: "pip"; readonly package: string; readonly version: string;
+      readonly lock_sha256: string; readonly bin: string; readonly verify_argv: readonly string[] }
+  | { readonly manager: "binary"; readonly url: string; readonly sha256: string;
+      readonly version: string; readonly bin: string; readonly verify_argv: readonly string[] };
+
+/** One event matcher: an event whose fields at `match` equal those values, read at `path`. */
+export interface EventMatcher {
+  readonly match: Readonly<Record<string, string | number | boolean>>;
+  /** A dotted path into the event; empty for the event itself. */
+  readonly path: string;
+  /** Every match's value is joined in order (a streamed text), not only the last. */
+  readonly accumulate?: true;
+}
+
+/** How the runner reads the engine's stream (ADR-034 decision 10). */
+export interface EngineEvents {
+  readonly format: "jsonl" | "json";
+  readonly session_id: readonly EventMatcher[];
+  readonly final_text: readonly EventMatcher[];
+  readonly error: readonly EventMatcher[];
+  readonly usage: readonly EventMatcher[];
+  readonly tool_call: readonly EventMatcher[];
+}
+
+/**
+ * One run of the engine (ADR-034 decision 4.3): a new conversation's argv, and the argv
+ * that resumes one, by its session id (`{sid}`) or by continuing in the conversation's own
+ * working directory when the stream names no id.
+ */
+export interface Engine {
+  readonly argv: readonly string[];
+  readonly resume_argv: readonly string[];
+  readonly resume: "session_id" | "continue_in_cwd";
+  readonly stdin?: "{prompt}";
+  readonly model_argv?: readonly string[];
+  readonly events: EngineEvents;
+}
+
+/** Where the agent's canonical `AGENTS.md` is read, and what would shadow it. */
+export interface Instructions {
+  readonly file: string;
+  /** Files that, when present, the engine reads instead: the runner never projects them. */
+  readonly shadowed_by: readonly string[];
+  readonly max_bytes?: number;
+  /** The record's file whose template makes the engine read `file`. */
+  readonly setting?: string;
+}
+
+/** How TinyAssets' run-scoped MCP door reaches the engine, and how its trust is handled. */
+export type Mcp =
+  | { readonly argv: readonly string[]; readonly file?: string; readonly template?: string;
+      readonly trust: { readonly argv: readonly string[]; readonly note: string } }
+  | { readonly unsupported: string };
+
+/** A tool filter: joined into `{tools}`, one argv per tool (`{tool}`), or a file's key. */
+export type ToolFilter =
+  | { readonly argv: readonly string[]; readonly join: string }
+  | { readonly argv: readonly string[]; readonly each: true }
+  | { readonly file: string; readonly key: string };
+
+/** Whether unattended hosted runs on one credential are allowed, with the vendor page. */
+export type Unattended =
+  | { readonly allowed: true; readonly cite: string; readonly read: string;
+      readonly read_note?: string }
+  | { readonly allowed: false; readonly reason: string; readonly cite?: string;
+      readonly read?: string; readonly read_note?: string };
+
+/** The variables a CLI reads its egress base URL and placeholder key from, for a provider. */
+export interface ApiKeyEnv {
+  /** Null when the CLI takes its base URL from a file template's `{base_url}`. */
+  readonly base_url: string | null;
+  readonly api_key: string;
+  /** The door, the connection and the sealed base path, or the door and connection alone. */
+  readonly base: "sealed" | "connection";
+}
+
+/** What differs by the credential a run is on. */
+export interface PerCredential {
+  readonly argv?: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
   readonly files?: Readonly<Record<string, string>>;
-  readonly state_paths: readonly string[];
+  /** Arguments no argv of the record may hold on this credential. */
+  readonly forbid_argv?: readonly string[];
+  /**
+   * Variables a run on this credential never carries (the runner unsets them): on the
+   * vendor's own sign-in, every variable that would move the run onto a key or another
+   * endpoint, its `api_key_env` names among them.
+   */
+  readonly forbid_env?: readonly string[];
+}
+
+/** A region the owner chooses for the vendor's own sign-in: its hosts, `{region}` its id. */
+export interface Region {
+  readonly display_name: string;
+  readonly hosts: Readonly<Record<"login" | "provider", readonly string[]>>;
+}
+
+/** An engine (`connect: ["cli"]`): a provider's own CLI, run whole in the sandbox. */
+export interface CliSpec {
+  readonly install: Install;
+  readonly credential: readonly CredentialKind[];
+  readonly login?: Readonly<Record<string, unknown>>;
+  /** The sign-in's regions, by id: the owner's choice fills `{region}` and adds its hosts. */
+  readonly regions?: Readonly<Record<string, Region>>;
+  readonly api_key_env?: Readonly<Record<string, ApiKeyEnv>>;
+  readonly unattended: Readonly<Partial<Record<CredentialKind, Unattended>>>;
+  readonly per_credential?: Readonly<Partial<Record<CredentialKind, PerCredential>>>;
+  readonly engine: Engine;
+  readonly instructions: Instructions;
+  readonly skills_paths: readonly string[];
+  readonly mcp: Mcp;
+  readonly tools: { readonly allow?: ToolFilter; readonly deny?: ToolFilter };
+  readonly unattended_argv: readonly string[];
+  readonly home_env: Readonly<Record<string, string>>;
+  readonly env?: Readonly<Record<string, string>>;
+  readonly files?: Readonly<Record<string, string>>;
+  readonly no_update: { readonly env?: Readonly<Record<string, string>>;
+                        readonly argv?: readonly string[]; readonly file?: string }
+    | { readonly reason: string };
+  readonly secret_paths: readonly string[];
+  readonly session_paths: readonly string[];
   readonly hosts: Readonly<Record<"registry" | "login" | "provider", readonly string[]>>;
 }
 
@@ -97,6 +246,8 @@ export interface SourceRecord {
   readonly upstream?: Upstream;
   readonly endpoints?: readonly Endpoint[];
   readonly oauth?: OAuthSpec;
+  /** A gateway source's: the CLI records that can run on its key, through the egress door. */
+  readonly engines?: readonly string[];
   readonly cli?: CliSpec;
 }
 
@@ -125,7 +276,6 @@ const PARAM = /^[A-Za-z0-9_.-]{1,64}$/;
 const TEXT = /^[^\p{Cc}]{1,128}$/u;
 const SCOPE = /^[\x21-\x7e]+(?: [\x21-\x7e]+)*$/;
 const CLIENT_ID = /^[\x21-\x7e]{1,512}$/;
-const PATH = /^[A-Za-z0-9._/-]{1,256}$/;
 
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -253,44 +403,841 @@ function oauthSpec(check: ReturnType<typeof checker>, value: unknown): OAuthSpec
   });
 }
 
-function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
-  const fields = check.keys(value, "cli", ["install", "login", "invoke", "state_paths",
-                                           "hosts"], ["env", "files"]);
-  const install = check.keys(fields["install"], "cli.install",
-                             ["manager", "package", "version", "integrity", "bin",
-                              "verify_argv", "lock_sha256"], ["lifecycle_scripts"]);
-  if (install["manager"] !== "npm"
-      || !/^(?:@[a-z0-9-]+\/)?[a-z0-9-]+$/.test(String(install["package"]))
-      || !/^\d+\.\d+\.\d+$/.test(String(install["version"]))
-      || !/^sha512-[A-Za-z0-9+/]{86}==$/.test(String(install["integrity"]))
-      || !/^[0-9a-f]{64}$/.test(String(install["lock_sha256"]))) {
-    check.fail("cli.install pins an npm package by exact version, integrity and lock digest");
-  }
-  check.strings(install["verify_argv"], "cli.install.verify_argv", /^.{1,256}$/su, 16);
-  for (const part of ["login", "invoke"] as const) {
-    const section = fields[part];
-    if (!object(section)) {
-      check.fail(`cli.${part} is an object`);
+/** An environment variable's name. */
+const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+/** A pi-ai provider id, as the gateway's `ID`. */
+const PROVIDER = /^[a-z0-9][a-z0-9-]{0,63}$/;
+/** One argument: any text, a placeholder being `{name}` among `PLACEHOLDERS`. */
+const ARG = /^.{0,4096}$/su;
+/** The placeholders the runner fills, in an argv, an env value or a file template. */
+const PLACEHOLDERS: readonly string[] = Object.freeze([
+  "{bin}", "{prompt}", "{sid}", "{model}", "{provider}", "{home}", "{agent}", "{mcp_url}",
+  "{mcp_config}", "{base_url}", "{tools}", "{tool}", "{region}",
+]);
+/**
+ * The one shape `{prompt}` may take in an argv: joined to its option (`--prompt={prompt}`),
+ * so no prompt is ever read as an option or a file include (`-x`, `@file`). Where the CLI
+ * reads stdin, the prompt goes there instead (`engine.stdin`).
+ */
+const PROMPT_ARG = /^--[A-Za-z0-9][A-Za-z0-9-]*=\{prompt\}$/;
+/** A value that turns a setting off: nothing, bare quotes, or an empty list or map. */
+const EMPTY_VALUE = /^\s*(?:""|''|\[\s*\]|\{\s*\})?\s*$/;
+/** An empty list or map anywhere in a text (`tools.core: []`, `mcp_servers={}`). */
+const EMPTY_COLLECTION = /\[\s*\]|\{\s*\}/;
+/** A variable `forbid_env` names: a name, or every name with a prefix (`OPENAI_*`). */
+const FORBID = /^[A-Z][A-Z0-9_]{0,63}\*?$/;
+/**
+ * A variable name shaped like a credential or an endpoint: a record's own variables, which
+ * every run carries, are never one, so nothing credential-shaped is set but a key run's
+ * own placeholder (`sandboxEnv`).
+ */
+const CREDENTIAL_NAME =
+  /(?:^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTH|BASE_URL|ENDPOINT)(?:_|$)/;
+/** A settings key shaped like a credential, a credential helper or an environment block. */
+const CREDENTIAL_KEY = /^(?:env|environment)$|api_?key|token|secret|password|credential|helper/i;
+/** A settings key that moves where a run's calls go: never in a signed-in run's files. */
+const ENDPOINT_KEY = /base_?url|endpoint/i;
+/** A bare key, dotted or not, as a line of a settings template that is not JSON writes it. */
+const BARE_KEY = /^[A-Za-z0-9_{}-]+(?:\.[A-Za-z0-9_{}-]+)*$/;
+/**
+ * A settings template's real keys and string values, so no spelling hides one: a `.json`
+ * file's from its parse (escapes decoded), walked whole; any other file's from its lines,
+ * which may each be blank, a `#` comment, a table header or a `key = value` pair whose key
+ * is bare and whose value holds no `=` (no inline table) and no backslash (no escape).
+ * There is no TOML parser in the lock, so a quoted key, an escape or any other line is
+ * refused (null), never read past.
+ */
+function settingsOf(path: string, text: string):
+    { readonly keys: readonly string[]; readonly values: readonly string[] } | null {
+  const keys: string[] = [];
+  const values: string[] = [];
+  if (path.endsWith(".json")) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return null;
     }
-    check.strings((section as Record<string, unknown>)["argv"], `cli.${part}.argv`,
-                  /^.{0,4096}$/su, 64);
+    const walk = (node: unknown): void => {
+      if (typeof node === "string") {
+        values.push(node);
+      } else if (Array.isArray(node)) {
+        node.forEach(walk);
+      } else if (object(node)) {
+        for (const [key, item] of Object.entries(node)) {
+          keys.push(key);
+          walk(item);
+        }
+      }
+    };
+    walk(parsed);
+    return { keys, values };
   }
+  if (text.includes("\\")) {
+    return null;
+  }
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#")) {
+      continue;
+    }
+    const table = /^\[\[?([^\]]*)\]\]?$/.exec(line);
+    const pair = /^([^=]*?)\s*=\s*([^=]*)$/.exec(line);
+    const key = table?.[1] ?? pair?.[1];
+    if (key === undefined || !BARE_KEY.test(key)) {
+      return null;
+    }
+    keys.push(...key.split("."));
+    if (pair !== null && table === null) {
+      values.push(pair[2]!);
+    }
+  }
+  return { keys, values };
+}
+
+/**
+ * The process basics a run keeps from the sandbox template's own environment, beside
+ * `HOME`, which the runner sets to the run's engine home (`{home}`): nothing else of the
+ * sandbox's environment reaches a run.
+ */
+export const RUN_BASICS: readonly string[] = Object.freeze([
+  "PATH", "LANG", "LC_ALL", "TERM", "TZ", "TMPDIR", "USER", "SHELL",
+]);
+
+/** A region's id, as the runner passes it in `{region}`. */
+const REGION = /^[a-z0-9][a-z0-9-]{0,31}$/;
+/** A dotted path into a JSON value (an event's field, a settings file's key). */
+const DOTTED = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){0,7}$/;
+/** A path segment: no `.` or `..`, a `*` only whole (any one segment). */
+const SEGMENT = /^(?:\*|(?!\.{1,2}$)[A-Za-z0-9._-]{1,128})$/;
+const DATE = /^20\d\d-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/;
+const REASON = /^[^\p{Cc}]{1,512}$/u;
+const TEMPLATE_MAX = 64 * 1024;
+
+/**
+ * A path's segments under `{home}`, the runner's engine home (sandbox-only, outside
+ * `/workspace`), or null. Every path a record names is under it: any other root (`/`,
+ * `/proc`, `/workspace`, `~`, a relative path) is refused, as are `.` and `..` segments, a
+ * `*` as the first segment (it would hold every other path in the home), and `{home}`
+ * itself. A `*` elsewhere matches any one segment, where `wildcards` allows it; a trailing
+ * `/` names a directory.
+ */
+function homePath(value: unknown, wildcards: boolean): string[] | null {
+  if (typeof value !== "string" || value.length > 512 || !value.startsWith("{home}/")) {
+    return null;
+  }
+  const rest = value.slice("{home}/".length);
+  const segments = (rest.endsWith("/") ? rest.slice(0, -1) : rest).split("/");
+  return segments[0] !== "*" && segments.every((segment) => SEGMENT.test(segment)
+    && (wildcards || segment !== "*")) ? segments : null;
+}
+
+/** Whether one home path is the other or under it, a `*` segment matching any one. */
+function overlaps(a: readonly string[], b: readonly string[]): boolean {
+  const shorter = Math.min(a.length, b.length);
+  for (let i = 0; i < shorter; i += 1) {
+    if (a[i] !== b[i] && a[i] !== "*" && b[i] !== "*") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
+  // `invoke`, a single inference, is not an engine: a CLI is never a backend (ADR-033 D2).
+  if (object(value) && "invoke" in value) {
+    check.fail("cli has no invoke: a CLI is an engine, never a backend (ADR-033 decision 2)");
+  }
+  const fields = check.keys(value, "cli", [
+    "install", "credential", "unattended", "engine", "instructions", "skills_paths", "mcp",
+    "tools", "unattended_argv", "home_env", "no_update", "secret_paths", "session_paths",
+    "hosts"], ["login", "regions", "api_key_env", "per_credential", "env", "files"]);
+  const argvs: [string, string[]][] = [];
+  const argv = (item: unknown, what: string, max = 64): string[] => {
+    const list = check.strings(item, what, ARG, max);
+    for (const arg of list) {
+      // An engine is never configured to nothing: no empty argument (`--tools ""`), no
+      // option set to an empty value (`--tools=`), and no empty list or map
+      // (`mcp_servers={}`), which would turn its tools or its servers off (ADR-033 D2).
+      const equals = arg.indexOf("=");
+      if (EMPTY_VALUE.test(arg) || (equals >= 0 && EMPTY_VALUE.test(arg.slice(equals + 1)))
+          || EMPTY_COLLECTION.test(arg)) {
+        check.fail(`${what} holds an empty value: an engine is never configured to nothing, ` +
+                   "never a backend (ADR-033 decision 2)");
+      }
+    }
+    argvs.push([what, list]);
+    return list;
+  };
+  const templates: [string, string][] = [];
+  const template = (item: unknown, what: string): string => {
+    if (typeof item !== "string" || item.length === 0 || item.length > TEMPLATE_MAX) {
+      check.fail(`${what} is a template of 1 to ${TEMPLATE_MAX} characters`);
+    }
+    if (EMPTY_COLLECTION.test(item as string)) {
+      check.fail(`${what} holds an empty list or map (\`tools.core: []\`): an engine is ` +
+                 "never configured to nothing, never a backend (ADR-033 decision 2)");
+    }
+    templates.push([what, item as string]);
+    return item as string;
+  };
+  const envMap = (item: unknown, what: string): Record<string, string> => {
+    const map = check.stringMap(item, what, ENV_NAME, 32);
+    for (const [name, entry] of Object.entries(map)) {
+      if (!/^[^\p{Cc}]{0,4096}$/u.test(entry)) {
+        check.fail(`${what}.${name} is at most 4096 characters, none a control character`);
+      }
+      if (EMPTY_COLLECTION.test(entry)) {
+        check.fail(`${what}.${name} holds an empty list or map: an engine is never ` +
+                   "configured to nothing, never a backend (ADR-033 decision 2)");
+      }
+      templates.push([`${what}.${name}`, entry]);
+    }
+    return map;
+  };
+  /** A file the record writes: under `{home}`, no wildcard. */
+  const sandboxPath = (item: unknown, what: string): string[] => {
+    const segments = homePath(item, false);
+    return segments ?? check.fail(`${what} is a path under {home}, with no *, . or .. ` +
+                                  "segment");
+  };
+  const declared: string[] = [];
+  const fileMap = (item: unknown, what: string): Record<string, string> => {
+    if (!object(item) || Object.keys(item).length > 16) {
+      check.fail(`${what} maps at most 16 sandbox paths to templates`);
+    }
+    for (const [path, entry] of Object.entries(item as Record<string, unknown>)) {
+      sandboxPath(path, `${what} path ${JSON.stringify(path)}`);
+      template(entry, `${what}.${path}`);
+      declared.push(path);
+    }
+    return item as Record<string, string>;
+  };
+
+  // The install, pinned.
+  const install = installSpec(check, fields["install"], argv);
+
+  // The credentials it runs on, and each one's unattended verdict (ADR-033 decision 3).
+  const credential = check.strings(fields["credential"], "cli.credential",
+                                   /^(?:vendor_login_in_sandbox|api_key)$/, 2) as CredentialKind[];
+  if (credential.length === 0 || new Set(credential).size !== credential.length) {
+    check.fail("cli.credential lists vendor_login_in_sandbox and api_key, at least one, each once");
+  }
+  const unattended = check.keys(fields["unattended"], "cli.unattended", credential);
+  for (const kind of credential) {
+    unattended[kind] = verdict(check, unattended[kind], `cli.unattended.${kind}`);
+  }
+  const signsIn = credential.includes("vendor_login_in_sandbox");
+  if ((fields["login"] !== undefined) !== signsIn) {
+    check.fail("cli.login is present exactly when the record signs in with the vendor's own " +
+               "flow in the sandbox");
+  }
+  const keyed = credential.includes("api_key");
+  if ((fields["api_key_env"] !== undefined) !== keyed) {
+    check.fail("cli.api_key_env is present exactly when the record runs on an API key");
+  }
+
+  // Its home, environment and files.
+  const homeEnv = check.stringMap(fields["home_env"], "cli.home_env", ENV_NAME, 8);
+  if (Object.keys(homeEnv).length === 0 || Object.values(homeEnv).some((path) =>
+    path !== "{home}" && homePath(path, false) === null)) {
+    check.fail("cli.home_env sets at least one variable, each to {home} or a path under it");
+  }
+  const env = fields["env"] === undefined ? undefined : envMap(fields["env"], "cli.env");
+  const files = fields["files"] === undefined ? undefined : fileMap(fields["files"], "cli.files");
+
+  const perCredential = fields["per_credential"] === undefined ? undefined
+    : check.keys(fields["per_credential"], "cli.per_credential", [], credential);
+  const forbidden: [CredentialKind, string[]][] = [];
+  const forbidEnv: Partial<Record<CredentialKind, string[]>> = {};
+  for (const [kind, entry] of Object.entries(perCredential ?? {})) {
+    const what = `cli.per_credential.${kind}`;
+    const part = check.keys(entry, what, [], ["argv", "env", "files", "forbid_argv",
+                                              "forbid_env"]);
+    if (part["forbid_env"] !== undefined) {
+      forbidEnv[kind as CredentialKind] = check.strings(part["forbid_env"],
+                                                        `${what}.forbid_env`, FORBID, 64);
+    }
+    perCredential![kind] = Object.freeze({
+      ...(part["argv"] === undefined ? {} : { argv: Object.freeze(argv(part["argv"], `${what}.argv`)) }),
+      ...(part["env"] === undefined ? {} : { env: Object.freeze(envMap(part["env"], `${what}.env`)) }),
+      ...(part["files"] === undefined ? {}
+        : { files: Object.freeze(fileMap(part["files"], `${what}.files`)) }),
+      ...(part["forbid_argv"] === undefined ? {} : { forbid_argv: Object.freeze(
+        check.strings(part["forbid_argv"], `${what}.forbid_argv`, /^.{1,256}$/su, 16)) }),
+      ...(part["forbid_env"] === undefined ? {}
+        : { forbid_env: Object.freeze(forbidEnv[kind as CredentialKind]!) }),
+    });
+    if (part["forbid_argv"] !== undefined) {
+      forbidden.push([kind as CredentialKind, part["forbid_argv"] as string[]]);
+    }
+  }
+
+  // The MCP door's way in.
+  const mcp = mcpSpec(check, fields["mcp"], argv, template, sandboxPath, declared);
+
+  // The engine itself.
+  const engine = engineSpec(check, fields["engine"], argv);
+  const instructions = instructionsSpec(check, fields["instructions"]);
+  const skills = check.strings(fields["skills_paths"], "cli.skills_paths", /^.{1,256}$/su, 16);
+  if (skills.length === 0 || !skills.every(relative)) {
+    check.fail("cli.skills_paths lists at least one path relative to the agent's directory");
+  }
+  const tools = check.keys(fields["tools"], "cli.tools", [], ["allow", "deny"]);
+  for (const side of ["allow", "deny"] as const) {
+    if (tools[side] !== undefined) {
+      tools[side] = toolFilter(check, tools[side], `cli.tools.${side}`, argv);
+    }
+  }
+  const unattendedArgv = argv(fields["unattended_argv"], "cli.unattended_argv");
+  const noUpdate = noUpdateSpec(check, fields["no_update"], argv, envMap);
+
+  // Every file a part names is one the record writes.
+  const named: [string, string | undefined][] = [
+    ["cli.instructions.setting", instructions.setting],
+    ["cli.no_update.file", "file" in noUpdate ? noUpdate.file : undefined],
+    ...(["allow", "deny"] as const).map((side): [string, string | undefined] => [
+      `cli.tools.${side}.file`,
+      object(tools[side]) ? (tools[side] as { file?: string }).file : undefined]),
+  ];
+  for (const [what, path] of named) {
+    if (path !== undefined && !declared.includes(path)) {
+      check.fail(`${what} names a file the record writes (cli.files, cli.mcp.file or ` +
+                 "cli.per_credential's files)");
+    }
+  }
+
+  // An API key's variables, each provider's (`sandboxEnv` sets them).
+  let apiKeyEnv: Record<string, ApiKeyEnv> | undefined;
+  if (keyed) {
+    const map = fields["api_key_env"];
+    if (!object(map) || Object.keys(map).length === 0 || Object.keys(map).length > 32
+        || !Object.keys(map).every((provider) => PROVIDER.test(provider))) {
+      check.fail("cli.api_key_env maps 1 to 32 pi-ai provider ids to their variables");
+    }
+    apiKeyEnv = {};
+    for (const [provider, entry] of Object.entries(map as Record<string, unknown>)) {
+      const what = `cli.api_key_env.${provider}`;
+      const vars = check.keys(entry, what, ["base_url", "api_key", "base"]);
+      if ((vars["base_url"] !== null && !ENV_NAME.test(String(vars["base_url"])))
+          || !ENV_NAME.test(String(vars["api_key"]))
+          || (vars["base"] !== "sealed" && vars["base"] !== "connection")) {
+        check.fail(`${what} names its base-URL variable (or null) and its key variable, and ` +
+                   "a base of sealed or connection");
+      }
+      apiKeyEnv[provider] = Object.freeze(vars as unknown as ApiKeyEnv);
+    }
+    if (Object.values(apiKeyEnv).some((vars) => vars.base_url === null)
+        && !templates.some(([, text]) => text.includes("{base_url}"))) {
+      check.fail("cli.api_key_env names no base-URL variable, so a file template carries " +
+                 "{base_url}");
+    }
+  }
+
+  // A run's environment carries only its own credential: a run on the vendor's own
+  // sign-in never carries a variable that would move it onto a key or another endpoint,
+  // the record's own API-key variables first among them, and nothing the record sets for
+  // a run on a credential is a variable that credential forbids.
+  if (signsIn) {
+    const owned = Object.values(apiKeyEnv ?? {}).flatMap((vars) =>
+      vars.base_url === null ? [vars.api_key] : [vars.base_url, vars.api_key]);
+    const listed = forbidEnv.vendor_login_in_sandbox ?? [];
+    if (listed.length === 0 || owned.some((name) => !forbids(listed, name))) {
+      check.fail("cli.per_credential.vendor_login_in_sandbox.forbid_env lists every " +
+                 "variable that would move a signed-in run onto a key or another endpoint, " +
+                 "each of its cli.api_key_env names among them");
+    }
+  }
+  for (const kind of credential) {
+    const sets = [...Object.keys(homeEnv), ...Object.keys(env ?? {}),
+                  ...Object.keys(("env" in noUpdate ? noUpdate.env : undefined) ?? {}),
+                  ...Object.keys((perCredential?.[kind] as PerCredential | undefined)?.env ?? {})];
+    const set = sets.find((name) => forbids(forbidEnv[kind] ?? [], name));
+    if (set !== undefined) {
+      check.fail(`the record sets ${set}, which the ${kind} credential forbids`);
+    }
+    // The record's own variables are the run's allow-list (`runEnv`): none is shaped like
+    // a credential or an endpoint, and none is HOME or a basic, which the runner sets.
+    const shaped = sets.find((name) => CREDENTIAL_NAME.test(name) || name === "HOME"
+      || RUN_BASICS.includes(name));
+    if (shaped !== undefined) {
+      check.fail(`the record sets ${shaped}: a record's own variables carry no credential ` +
+                 "or endpoint, and the runner alone sets HOME and the process basics");
+    }
+  }
+
+  // Its settings files carry no credential either: no environment block, no key shaped
+  // like a credential or a credential helper, no variable a credential forbids, and, in a
+  // file a signed-in run gets, no key that moves where its calls go.
+  const settings = templates.filter(([what]) => what === "cli.mcp.template"
+    || what.startsWith("cli.files.") || /^cli\.per_credential\.[a-z_]+\.files\./.test(what));
+  for (const [what, text] of settings) {
+    const kinds = what.startsWith("cli.per_credential.")
+      ? [what.split(".")[2] as CredentialKind] : credential;
+    const path = what === "cli.mcp.template" ? ("file" in mcp ? mcp.file! : "")
+      : what.slice(what.indexOf(".files.") + ".files.".length);
+    const read = settingsOf(path, text);
+    if (read === null) {
+      return check.fail(`${what} is a settings file read whole: a .json file that parses, or ` +
+                        "lines of bare keys (no quoted key, escape or inline table)");
+    }
+    for (const key of read.keys) {
+      if (CREDENTIAL_KEY.test(key)) {
+        check.fail(`${what} sets ${key}: a settings file carries no credential, credential ` +
+                   "helper or environment block");
+      }
+      if (kinds.includes("vendor_login_in_sandbox") && ENDPOINT_KEY.test(key)) {
+        check.fail(`${what} sets ${key}, which would move a signed-in run's calls`);
+      }
+    }
+    for (const kind of kinds) {
+      const named = (forbidEnv[kind] ?? []).find((entry) => new RegExp(
+        `(?<![A-Z0-9_])${entry.endsWith("*") ? entry.slice(0, -1) : `${entry}(?![A-Z0-9_])`}`)
+        .test([text, ...read.keys, ...read.values].join("\n")));
+      if (named !== undefined) {
+        check.fail(`${what} names ${named}, which the ${kind} credential forbids`);
+      }
+    }
+  }
+
+  // Secrets never leave the sandbox: outside /workspace, and outside every synced path.
+  const secrets = check.strings(fields["secret_paths"], "cli.secret_paths", /^.{1,512}$/su, 16);
+  const sessions = check.strings(fields["session_paths"], "cli.session_paths", /^.{1,512}$/su, 16);
+  if (secrets.length === 0 || sessions.length === 0) {
+    check.fail("cli.secret_paths and cli.session_paths each list at least one path");
+  }
+  // Both lists are under {home}, so the two compare in one namespace: no absolute path
+  // (`/*/`, `/root/`, `/proc/self/cwd/...`) can sweep a secret into a sync unseen.
+  const underHome = (what: string) => (path: string) => homePath(path, true)
+    ?? check.fail(`${what} ${path} is a path under {home}, not {home} itself, with no . or ` +
+                  ".. segment and no * as its first segment");
+  const secretSegments = secrets.map(underHome("cli.secret_paths"));
+  const sessionSegments = sessions.map(underHome("cli.session_paths"));
+  for (const [index, secret] of secretSegments.entries()) {
+    if (sessionSegments.some((session) => overlaps(secret, session))) {
+      check.fail(`cli.secret_paths ${secrets[index]} is outside every session path: a ` +
+                 "secret never syncs (ADR-031 decision 2)");
+    }
+  }
+  if (signsIn) {
+    const login = loginSpec(check, fields["login"], argv);
+    for (const state of (login["state_checks"] ?? []) as { path: string }[]) {
+      const segments = homePath(state.path, false);
+      if (segments === null || !secretSegments.some((secret) =>
+        secret.length <= segments.length && overlaps(secret, segments))) {
+        check.fail(`cli.login.state_checks ${state.path} is a credential file among the ` +
+                   "secret paths");
+      }
+    }
+    fields["login"] = login;
+  }
+
+  // The sign-in's regions: the owner's choice fills `{region}` and adds its hosts.
+  let regions: Record<string, Region> | undefined;
+  if (fields["regions"] !== undefined) {
+    const map = fields["regions"];
+    if (!signsIn || !object(map) || Object.keys(map).length === 0
+        || Object.keys(map).length > 8 || !Object.keys(map).every((id) => REGION.test(id))) {
+      check.fail("cli.regions maps 1 to 8 region ids to their hosts, for a record that signs " +
+                 "in with the vendor's own flow");
+    }
+    regions = {};
+    for (const [id, entry] of Object.entries(map as Record<string, unknown>)) {
+      const what = `cli.regions.${id}`;
+      const region = check.keys(entry, what, ["display_name", "hosts"]);
+      const hosts = check.keys(region["hosts"], `${what}.hosts`, ["login", "provider"]);
+      for (const kind of ["login", "provider"] as const) {
+        hosts[kind] = Object.freeze(check.strings(hosts[kind], `${what}.hosts.${kind}`, HOST, 16));
+      }
+      regions[id] = Object.freeze({
+        display_name: check.text(region["display_name"], TEXT, `${what}.display_name`),
+        hosts: Object.freeze(hosts) as unknown as Region["hosts"] });
+    }
+    const loginArgv = argvs.find(([what]) => what === "cli.login.argv")![1];
+    if (!loginArgv.some((item) => item.includes("{region}"))) {
+      check.fail("cli.login.argv carries {region}, which the owner's choice of region fills");
+    }
+  }
+
+  // Placeholders the runner knows, `{sid}` only where a run resumes, and `{mcp_config}`
+  // only beside the file it names.
+  for (const [what, text] of [...argvs.flatMap(([what, list]) =>
+    list.map((item): [string, string] => [what, item])), ...templates]) {
+    for (const found of text.match(/\{[a-z_]+\}/g) ?? []) {
+      if (!PLACEHOLDERS.includes(found)) {
+        check.fail(`${what} uses ${found}, which is not a placeholder the runner fills`);
+      }
+      if (found === "{sid}" && what !== "cli.engine.resume_argv") {
+        check.fail(`${what} uses {sid}, which only the resume argv carries`);
+      }
+      // A prompt is read as text, never as an option or a file include: on stdin, or
+      // joined to its option in the engine's own argv.
+      if (found === "{prompt}" && (!["cli.engine.argv", "cli.engine.resume_argv"].includes(what)
+                                   || !PROMPT_ARG.test(text))) {
+        check.fail(`${what} carries {prompt} other than as --option={prompt} in the engine's ` +
+                   "argv: a prompt goes on stdin, or joined to its option, never bare");
+      }
+      if (found === "{region}" && (regions === undefined || !what.startsWith("cli.login."))) {
+        check.fail(`${what} uses {region}, which only the sign-in carries, under cli.regions`);
+      }
+      if (found === "{mcp_config}" && !("file" in mcp)) {
+        check.fail(`${what} uses {mcp_config}, which names cli.mcp.file, and there is none`);
+      }
+    }
+  }
+  // A credential's forbidden arguments are in no argv of the record.
+  for (const [kind, words] of forbidden) {
+    for (const [what, list] of argvs) {
+      const other = what.startsWith("cli.per_credential.") && !what.startsWith(
+        `cli.per_credential.${kind}.`);
+      if (!other && list.some((item) => words.includes(item))) {
+        check.fail(`${what} holds an argument the ${kind} credential forbids`);
+      }
+    }
+  }
+
   const hosts = check.keys(fields["hosts"], "cli.hosts", ["registry", "login", "provider"]);
   for (const kind of ["registry", "login", "provider"] as const) {
     check.strings(hosts[kind], `cli.hosts.${kind}`, HOST, 16);
   }
-  const env = fields["env"] === undefined ? undefined
-    : check.stringMap(fields["env"], "cli.env", /^[A-Z][A-Z0-9_]{0,63}$/, 16);
-  const files = fields["files"] === undefined ? undefined
-    : check.stringMap(fields["files"], "cli.files", PATH, 8);
   return Object.freeze({
-    install: Object.freeze(install), login: Object.freeze(fields["login"] as object),
-    invoke: Object.freeze(fields["invoke"] as object),
+    install,
+    credential: Object.freeze(credential),
+    ...(signsIn ? { login: Object.freeze(fields["login"] as object) } : {}),
+    ...(regions === undefined ? {} : { regions: Object.freeze(regions) }),
+    ...(apiKeyEnv === undefined ? {} : { api_key_env: Object.freeze(apiKeyEnv) }),
+    unattended: Object.freeze(unattended),
+    ...(perCredential === undefined ? {} : { per_credential: Object.freeze(perCredential) }),
+    engine,
+    instructions,
+    skills_paths: Object.freeze(skills),
+    mcp,
+    tools: Object.freeze(tools),
+    unattended_argv: Object.freeze(unattendedArgv),
+    home_env: Object.freeze(homeEnv),
     ...(env === undefined ? {} : { env: Object.freeze(env) }),
     ...(files === undefined ? {} : { files: Object.freeze(files) }),
-    state_paths: Object.freeze(check.strings(fields["state_paths"], "cli.state_paths", PATH, 8)),
+    no_update: noUpdate,
+    secret_paths: Object.freeze(secrets),
+    session_paths: Object.freeze(sessions),
     hosts: Object.freeze(hosts as unknown as CliSpec["hosts"]),
   }) as CliSpec;
+}
+
+/** Whether a path is relative to the agent's directory, with no `.` or `..` segment. */
+function relative(path: string): boolean {
+  return !path.startsWith("/") && path.split("/").filter((part, i, all) =>
+    !(i === all.length - 1 && part === "")).every((part) => SEGMENT.test(part) && part !== "*");
+}
+
+type Argv = (item: unknown, what: string, max?: number) => string[];
+
+function installSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv): Install {
+  const manager = object(value) ? value["manager"] : undefined;
+  const pinned = (fields: Record<string, unknown>, what: string) => {
+    if (!/^\d+\.\d+\.\d+$/.test(String(fields["version"]))
+        || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(String(fields["bin"]))) {
+      check.fail(`cli.install ${what}, its exact version and its binary's name`);
+    }
+    argv(fields["verify_argv"], "cli.install.verify_argv", 16);
+  };
+  if (manager === "npm") {
+    const fields = check.keys(value, "cli.install", ["manager", "package", "version",
+      "integrity", "bin", "verify_argv", "lock_sha256"], ["lifecycle_scripts"]);
+    if (!/^(?:@[a-z0-9-]+\/)?[a-z0-9-]+$/.test(String(fields["package"]))
+        || !/^sha512-[A-Za-z0-9+/]{86}==$/.test(String(fields["integrity"]))
+        || !/^[0-9a-f]{64}$/.test(String(fields["lock_sha256"]))
+        || (fields["lifecycle_scripts"] !== undefined && fields["lifecycle_scripts"] !== true)) {
+      check.fail("cli.install pins an npm package by exact version, integrity and lock digest");
+    }
+    pinned(fields, "pins an npm package");
+    return Object.freeze(fields) as unknown as Install;
+  }
+  if (manager === "pip") {
+    const fields = check.keys(value, "cli.install", ["manager", "package", "version", "bin",
+                                                     "verify_argv", "lock_sha256"]);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(String(fields["package"]))
+        || !/^[0-9a-f]{64}$/.test(String(fields["lock_sha256"]))) {
+      check.fail("cli.install pins a pip package by exact version and hashed-lock digest");
+    }
+    pinned(fields, "pins a pip package");
+    return Object.freeze(fields) as unknown as Install;
+  }
+  if (manager === "binary") {
+    const fields = check.keys(value, "cli.install", ["manager", "url", "sha256", "version",
+                                                     "bin", "verify_argv"]);
+    check.https(fields["url"], "cli.install.url");
+    if (!/^[0-9a-f]{64}$/.test(String(fields["sha256"]))) {
+      check.fail("cli.install pins a binary by its https URL and SHA-256");
+    }
+    pinned(fields, "pins a binary");
+    return Object.freeze(fields) as unknown as Install;
+  }
+  return check.fail("cli.install.manager is npm, pip or binary");
+}
+
+/** An unattended verdict: allowed only with the vendor page and the day it was read. */
+function verdict(check: ReturnType<typeof checker>, value: unknown, what: string): Unattended {
+  const allowed = object(value) ? value["allowed"] : undefined;
+  if (allowed === true) {
+    const fields = check.keys(value, what, ["allowed", "cite", "read"], ["read_note"]);
+    check.https(fields["cite"], `${what}.cite`);
+    check.text(fields["read"], DATE, `${what}.read`);
+    if (fields["read_note"] !== undefined) {
+      check.text(fields["read_note"], REASON, `${what}.read_note`);
+    }
+    return Object.freeze(fields) as unknown as Unattended;
+  }
+  if (allowed === false) {
+    const fields = check.keys(value, what, ["allowed", "reason"], ["cite", "read",
+                                                                 "read_note"]);
+    check.text(fields["reason"], REASON, `${what}.reason`);
+    if ((fields["cite"] === undefined) !== (fields["read"] === undefined)) {
+      check.fail(`${what} cites a page together with the day it was read`);
+    }
+    if (fields["cite"] !== undefined) {
+      check.https(fields["cite"], `${what}.cite`);
+      check.text(fields["read"], DATE, `${what}.read`);
+    }
+    if (fields["read_note"] !== undefined) {
+      if (fields["cite"] === undefined) {
+        check.fail(`${what}.read_note says how its cited page was read, so it has a cite`);
+      }
+      check.text(fields["read_note"], REASON, `${what}.read_note`);
+    }
+    return Object.freeze(fields) as unknown as Unattended;
+  }
+  return check.fail(`${what}.allowed is true, with the vendor page that permits it and the ` +
+                    "day it was read (ADR-033 decision 3), or false, with the reason");
+}
+
+function matchers(check: ReturnType<typeof checker>, value: unknown, what: string):
+    readonly EventMatcher[] {
+  if (!Array.isArray(value) || value.length > 8) {
+    return check.fail(`${what} is a list of at most 8 matchers`);
+  }
+  return Object.freeze(value.map((entry, index) => {
+    const fields = check.keys(entry, `${what}[${index}]`, ["match", "path"], ["accumulate"]);
+    const match = fields["match"];
+    if (!object(match) || Object.keys(match).length === 0 || Object.keys(match).length > 8
+        || !Object.entries(match).every(([key, item]) => DOTTED.test(key)
+          && ["string", "number", "boolean"].includes(typeof item))) {
+      check.fail(`${what}[${index}].match maps 1 to 8 dotted paths to scalars`);
+    }
+    if (fields["path"] !== "" && !DOTTED.test(String(fields["path"]))) {
+      check.fail(`${what}[${index}].path is a dotted path, or empty for the event itself`);
+    }
+    if (fields["accumulate"] !== undefined && fields["accumulate"] !== true) {
+      check.fail(`${what}[${index}].accumulate is true or absent`);
+    }
+    return Object.freeze({ ...fields, match: Object.freeze({ ...match as object }) }) as
+      unknown as EventMatcher;
+  }));
+}
+
+function engineSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv): Engine {
+  // `invoke`, a single inference, is not an engine: a CLI is never a backend (ADR-033 D2).
+  if (object(value) && "invoke" in value) {
+    check.fail("cli.engine has no invoke: a CLI is an engine, never a backend (ADR-033 " +
+               "decision 2)");
+  }
+  const fields = check.keys(value, "cli.engine", ["argv", "resume_argv", "resume", "events"],
+                            ["stdin", "model_argv"]);
+  const run = argv(fields["argv"], "cli.engine.argv");
+  const resume = argv(fields["resume_argv"], "cli.engine.resume_argv");
+  if (run[0] !== "{bin}" || resume[0] !== "{bin}") {
+    check.fail("cli.engine's argv and resume_argv each run {bin}");
+  }
+  const mode = fields["resume"];
+  const resumesById = resume.some((item) => item.includes("{sid}"));
+  if (mode !== "session_id" && mode !== "continue_in_cwd") {
+    check.fail("cli.engine.resume is session_id or continue_in_cwd");
+  }
+  if (resumesById !== (mode === "session_id")) {
+    check.fail("cli.engine.resume_argv carries {sid} exactly when a run resumes by session id");
+  }
+  if (fields["stdin"] !== undefined && fields["stdin"] !== "{prompt}") {
+    check.fail("cli.engine.stdin is {prompt} or absent");
+  }
+  const prompted = fields["stdin"] !== undefined;
+  for (const [what, list] of [["argv", run], ["resume_argv", resume]] as const) {
+    if (prompted === list.some((item) => item.includes("{prompt}"))) {
+      check.fail(`cli.engine.${what} carries {prompt} exactly when the prompt is not on stdin`);
+    }
+  }
+  const model = fields["model_argv"] === undefined ? undefined
+    : argv(fields["model_argv"], "cli.engine.model_argv", 8);
+  const events = check.keys(fields["events"], "cli.engine.events", [
+    "format", "session_id", "final_text", "error", "usage", "tool_call"]);
+  if (events["format"] !== "jsonl" && events["format"] !== "json") {
+    check.fail("cli.engine.events.format is jsonl or json");
+  }
+  for (const kind of ["session_id", "final_text", "error", "usage", "tool_call"] as const) {
+    events[kind] = matchers(check, events[kind], `cli.engine.events.${kind}`);
+  }
+  if ((events["final_text"] as unknown[]).length === 0) {
+    check.fail("cli.engine.events.final_text has at least one matcher");
+  }
+  if (((events["session_id"] as unknown[]).length > 0) !== (mode === "session_id")) {
+    check.fail("cli.engine.events.session_id has matchers exactly when a run resumes by " +
+               "session id");
+  }
+  return Object.freeze({
+    argv: Object.freeze(run), resume_argv: Object.freeze(resume),
+    resume: mode as Engine["resume"],
+    ...(prompted ? { stdin: "{prompt}" as const } : {}),
+    ...(model === undefined ? {} : { model_argv: Object.freeze(model) }),
+    events: Object.freeze(events) as unknown as EngineEvents,
+  });
+}
+
+function instructionsSpec(check: ReturnType<typeof checker>, value: unknown): Instructions {
+  const fields = check.keys(value, "cli.instructions", ["file", "shadowed_by"],
+                            ["max_bytes", "setting"]);
+  const names = check.strings(fields["shadowed_by"], "cli.instructions.shadowed_by",
+                              /^.{1,256}$/su, 8);
+  if (typeof fields["file"] !== "string" || !relative(fields["file"])
+      || !names.every(relative) || names.includes(fields["file"])) {
+    check.fail("cli.instructions names its file, and what shadows it, relative to the " +
+               "agent's directory");
+  }
+  const max = fields["max_bytes"];
+  if (max !== undefined && (!Number.isSafeInteger(max) || (max as number) < 1)) {
+    check.fail("cli.instructions.max_bytes is a whole number from 1");
+  }
+  if (fields["setting"] !== undefined && homePath(fields["setting"], false) === null) {
+    check.fail("cli.instructions.setting is a path under {home}");
+  }
+  return Object.freeze({ ...fields, shadowed_by: Object.freeze(names) }) as unknown as
+    Instructions;
+}
+
+function mcpSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv,
+                 template: (item: unknown, what: string) => string,
+                 sandboxPath: (item: unknown, what: string) => string[],
+                 declared: string[]): Mcp {
+  if (object(value) && "unsupported" in value) {
+    const fields = check.keys(value, "cli.mcp", ["unsupported"]);
+    return Object.freeze({ unsupported: check.text(fields["unsupported"], REASON,
+                                                   "cli.mcp.unsupported") });
+  }
+  const fields = check.keys(value, "cli.mcp", ["argv", "trust"], ["file", "template"]);
+  const flags = argv(fields["argv"], "cli.mcp.argv", 16);
+  if ((fields["file"] === undefined) !== (fields["template"] === undefined)) {
+    check.fail("cli.mcp has a file exactly when it has the file's template");
+  }
+  let text: string | undefined;
+  if (fields["file"] !== undefined) {
+    sandboxPath(fields["file"], "cli.mcp.file");
+    text = template(fields["template"], "cli.mcp.template");
+    declared.push(fields["file"] as string);
+  }
+  if (![...flags, text ?? ""].some((item) => item.includes("{mcp_url}"))) {
+    check.fail("cli.mcp carries {mcp_url}, in its file's template or its argv");
+  }
+  const trust = check.keys(fields["trust"], "cli.mcp.trust", ["argv", "note"]);
+  return Object.freeze({
+    argv: Object.freeze(flags),
+    ...(text === undefined ? {} : { file: fields["file"] as string, template: text }),
+    trust: Object.freeze({ argv: Object.freeze(argv(trust["argv"], "cli.mcp.trust.argv", 16)),
+                           note: check.text(trust["note"], REASON, "cli.mcp.trust.note") }),
+  });
+}
+
+function toolFilter(check: ReturnType<typeof checker>, value: unknown, what: string,
+                    argv: Argv): ToolFilter {
+  if (object(value) && "file" in value) {
+    const fields = check.keys(value, what, ["file", "key"]);
+    if (homePath(fields["file"], false) === null || !DOTTED.test(String(fields["key"]))) {
+      check.fail(`${what} names a file under {home} and a dotted key`);
+    }
+    return Object.freeze(fields) as unknown as ToolFilter;
+  }
+  const each = object(value) && "each" in value;
+  const fields = check.keys(value, what, ["argv", each ? "each" : "join"]);
+  const list = argv(fields["argv"], `${what}.argv`, 8);
+  const hole = each ? "{tool}" : "{tools}";
+  if (each ? fields["each"] !== true : typeof fields["join"] !== "string"
+      || !/^.{1,4}$/su.test(fields["join"])) {
+    check.fail(`${what} joins its tools with 1 to 4 characters, or repeats per tool (each: true)`);
+  }
+  if (!list.some((item) => item.includes(hole))
+      || list.some((item) => item.includes(each ? "{tools}" : "{tool}"))) {
+    check.fail(`${what}.argv carries ${hole}`);
+  }
+  return Object.freeze({ ...fields, argv: Object.freeze(list) }) as unknown as ToolFilter;
+}
+
+function noUpdateSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv,
+                      envMap: (item: unknown, what: string) => Record<string, string>):
+    CliSpec["no_update"] {
+  if (object(value) && "reason" in value) {
+    const fields = check.keys(value, "cli.no_update", ["reason"]);
+    return Object.freeze({ reason: check.text(fields["reason"], REASON, "cli.no_update.reason") });
+  }
+  const fields = check.keys(value, "cli.no_update", [], ["env", "argv", "file"]);
+  if (Object.keys(fields).length === 0) {
+    check.fail("cli.no_update pins the binary by env, argv or a file, or says why it needs none");
+  }
+  return Object.freeze({
+    ...(fields["env"] === undefined ? {}
+      : { env: Object.freeze(envMap(fields["env"], "cli.no_update.env")) }),
+    ...(fields["argv"] === undefined ? {}
+      : { argv: Object.freeze(argv(fields["argv"], "cli.no_update.argv", 16)) }),
+    ...(fields["file"] === undefined ? {} : { file: String(fields["file"]) }),
+  });
+}
+
+/** The vendor's own sign-in in the sandbox, as the runner drives it. */
+function loginSpec(check: ReturnType<typeof checker>, value: unknown, argv: Argv):
+    Record<string, unknown> {
+  const fields = check.keys(value, "cli.login", ["argv", "url_pattern"], [
+    "status_argv", "status_equals", "accepts_code", "code_pattern", "state_checks",
+    "terminal", "complete_on_state"]);
+  argv(fields["argv"], "cli.login.argv", 16);
+  if (fields["status_argv"] !== undefined) {
+    argv(fields["status_argv"], "cli.login.status_argv", 16);
+  }
+  for (const key of ["url_pattern", "code_pattern"] as const) {
+    const pattern = fields[key];
+    if (pattern === undefined) {
+      continue;
+    }
+    let compiles = typeof pattern === "string" && pattern.length <= 512;
+    try {
+      new RegExp(String(pattern));
+    } catch {
+      compiles = false;
+    }
+    if (!compiles) {
+      check.fail(`cli.login.${key} is a regular expression`);
+    }
+  }
+  for (const key of ["accepts_code", "terminal", "complete_on_state"] as const) {
+    if (fields[key] !== undefined && fields[key] !== true) {
+      check.fail(`cli.login.${key} is true or absent`);
+    }
+  }
+  const equals = fields["status_equals"];
+  if (equals !== undefined && (!object(equals) || !Object.entries(equals).every(([key, item]) =>
+    DOTTED.test(key) && ["string", "number", "boolean"].includes(typeof item)))) {
+    check.fail("cli.login.status_equals maps dotted paths to scalars");
+  }
+  const states = fields["state_checks"];
+  if (states !== undefined) {
+    if (!Array.isArray(states) || states.length > 4) {
+      check.fail("cli.login.state_checks is a list of at most 4 checks");
+    }
+    for (const [index, state] of (states as unknown[]).entries()) {
+      const what = `cli.login.state_checks[${index}]`;
+      const check1 = check.keys(state, what, ["path", "present"]);
+      const present = check.strings(check1["present"], `${what}.present`, DOTTED, 8);
+      if (present.length === 0) {
+        check.fail(`${what}.present names at least one field`);
+      }
+    }
+  }
+  return fields;
 }
 
 /** One record, checked whole: a copy, frozen, or a `SourceRecordError`. */
@@ -312,7 +1259,7 @@ export function sourceRecord(value: unknown): SourceRecord {
   const cli = connect.includes("cli");
   const fields = cli ? check.keys(copy, "the record", [...base, "cli"], optional)
     : check.keys(copy, "the record",
-                 [...base, ...GATEWAY_KEYS.filter((key) => key !== "models"),
+                 [...base, ...GATEWAY_KEYS.filter((key) => key !== "models"), "engines",
                   ...(connect.includes("oauth") ? ["oauth"] : [])],
                  [...optional, "models"]);
   const record: Record<string, unknown> = {
@@ -347,6 +1294,11 @@ export function sourceRecord(value: unknown): SourceRecord {
   }
   record["upstream"] = checked.upstream;
   record["endpoints"] = checked.endpoints;
+  const engines = check.strings(fields["engines"], "engines", SOURCE_ID, 16);
+  if (new Set(engines).size !== engines.length) {
+    check.fail("engines names each CLI record once");
+  }
+  record["engines"] = Object.freeze(engines);
   if (connect.includes("oauth")) {
     const oauth = oauthSpec(check, fields["oauth"]);
     record["oauth"] = oauth;
@@ -405,10 +1357,82 @@ export function catalogOf(records: readonly unknown[]): Sources {
   return {
     get: (id) => {
       const found = typeof id === "string" && SOURCE_ID.test(id) ? byId(id) : undefined;
-      return found === undefined ? undefined : sourceRecord(found);
+      if (found === undefined) {
+        return undefined;
+      }
+      const record = sourceRecord(found);
+      // Each engine a key names is a served CLI record that runs on a key of this provider.
+      for (const engine of record.engines ?? []) {
+        const named = byId(engine) === undefined ? undefined : sourceRecord(byId(engine));
+        if (named?.unwired !== undefined) {
+          throw new SourceRecordError(`source record ${JSON.stringify(record.id)}: engine ` +
+            `${JSON.stringify(engine)} is unwired (${named.unwired}), so no key runs it`);
+        }
+        const cli = named?.cli;
+        if (cli?.api_key_env?.[record.upstream!.provider] === undefined) {
+          throw new SourceRecordError(`source record ${JSON.stringify(record.id)}: engine ` +
+            `${JSON.stringify(engine)} is a CLI record that runs on an API key of provider ` +
+            `${JSON.stringify(record.upstream!.provider)}`);
+        }
+      }
+      return record;
     },
     ids: () => records.map((record) => object(record) ? String(record["id"]) : "?"),
   };
+}
+
+/**
+ * What one engine run's environment is made from (`sandboxEnv`, G4's `network.ts`): the
+ * credential it runs on, the engine's own variables for each provider's key (an API-key
+ * run's alone), and the variables that credential forbids.
+ */
+export interface RunEnv {
+  readonly credential: CredentialKind;
+  readonly api_key_env: Readonly<Record<string, ApiKeyEnv>>;
+  readonly forbid_env: readonly string[];
+  /**
+   * The run's environment, as an allow-list: `HOME` at the engine home and the record's
+   * own variables for this credential (its home, `env`, `no_update` and the credential's
+   * own), each a template the runner fills. The runner starts from an empty environment
+   * and sets these, the process basics it keeps (`inherit`) and, on an API key alone, the
+   * key's variables (`sandboxEnv`); nothing else of the sandbox's environment reaches it.
+   */
+  readonly env: Readonly<Record<string, string>>;
+  readonly inherit: readonly string[];
+}
+
+/**
+ * The environment `engine` runs on `credential` with, from its record: refused (a
+ * `SourceRecordError`) unless the engine is a served CLI record that runs on that
+ * credential. A run on the vendor's own sign-in gets no API-key variables at all.
+ */
+export function runEnv(sources: Sources, engine: string, credential: CredentialKind): RunEnv {
+  const record = sources.get(engine);
+  const cli = record?.cli;
+  if (record === undefined || cli === undefined || record.unwired !== undefined
+      || !cli.credential.includes(credential)) {
+    throw new SourceRecordError(`engine ${JSON.stringify(engine)} is not a served CLI ` +
+                                `record that runs on ${credential}`);
+  }
+  const forbidEnv = cli.per_credential?.[credential]?.forbid_env ?? Object.freeze([]);
+  const env: Record<string, string> = {
+    HOME: "{home}", ...cli.home_env, ...cli.env,
+    ...("env" in cli.no_update ? cli.no_update.env : {}),
+    ...cli.per_credential?.[credential]?.env,
+  };
+  const forbidden = Object.keys(env).find((name) => forbids(forbidEnv, name));
+  if (forbidden !== undefined) {
+    throw new SourceRecordError(`engine ${JSON.stringify(engine)} sets ${forbidden}, which ` +
+                                `${credential} forbids`);
+  }
+  return Object.freeze({
+    credential,
+    api_key_env: credential === "api_key" ? cli.api_key_env ?? Object.freeze({})
+      : Object.freeze({}),
+    forbid_env: forbidEnv,
+    env: Object.freeze(env),
+    inherit: RUN_BASICS,
+  });
 }
 
 /** The bundled records (`platform/sources/`). */

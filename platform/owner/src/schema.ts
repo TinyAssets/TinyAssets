@@ -608,14 +608,18 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "inline_bytes INTEGER NOT NULL CHECK (inline_bytes >= 0), " +
       "intents INTEGER NOT NULL CHECK (intents >= 0), " +
       "intent_chunks INTEGER NOT NULL CHECK (intent_chunks >= 0), " +
-      // The sync lease: its claim token, fencing epoch (only rising), holder and expiry.
+      // The sync lease: its claim token, fencing epoch (only rising), holder and expiry,
+      // and the connection its engine run was given: the only one its sandbox may call
+      // through the egress door; null for a run on the vendor's own sign-in, which may
+      // call none.
       "lease_id TEXT, epoch INTEGER NOT NULL CHECK (epoch >= 0), holder TEXT, " +
-      "lease_expires REAL NOT NULL, " +
+      "lease_expires REAL NOT NULL, run_connection TEXT CHECK (run_connection IS NULL " +
+      "OR length(run_connection) BETWEEN 1 AND 64), " +
       // The retention every kept row is marked by, and how far housekeeping has re-marked
       // the rows for a newer one.
       "retained_keep INTEGER NOT NULL, retained_recent INTEGER NOT NULL, " +
       "retained_days INTEGER NOT NULL, retain_cursor TEXT)",
-    `INSERT INTO file_space VALUES (1, NULL, 0, 0, 0, 0, 0, 0, 0, 0, NULL, 0, NULL, 0, ${
+    `INSERT INTO file_space VALUES (1, NULL, 0, 0, 0, 0, 0, 0, 0, 0, NULL, 0, NULL, 0, NULL, ${
       FILE_DEFAULTS.keep_versions}, ${FILE_DEFAULTS.keep_recent}, ${
       FILE_DEFAULTS.retention_days}, NULL)`,
     "CREATE TRIGGER file_epoch_rises BEFORE UPDATE OF epoch ON file_space " +

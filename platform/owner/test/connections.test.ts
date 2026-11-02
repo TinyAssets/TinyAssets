@@ -46,11 +46,14 @@ async function lanes(r: Gated): Promise<void> {
 }
 
 /**
- * The sandbox's lease taken and its network applied, and the egress door's binding for it,
- * as a sandbox's calls carry it.
+ * The sandbox's lease taken for a run on the owner's connection (pi on that key) and its
+ * network applied, and the egress door's binding for it, as a sandbox's calls carry it.
  */
 async function sandboxOf(r: Gated): Promise<Binding> {
-  const opened = await r.in((instance) => instance.sandbox.open({ holder: "sandbox-1" }));
+  const [{ id: connection }] = await r.sql(
+    "SELECT id FROM connections ORDER BY created_at, id LIMIT 1") as [{ id: string }];
+  const opened = await r.in((instance) => instance.sandbox.open({
+    holder: "sandbox-1", run: { engine: "pi", credential: "api_key", connection } }));
   await r.in((instance) => instance.sandbox.networkApplied({
     lease_id: opened.lease.lease_id, epoch: opened.lease.epoch,
     generation: opened.network.generation }));
@@ -87,10 +90,27 @@ async function calls(r: Gated, many: number): Promise<(EgressOpened | EgressRefu
                                 () => r.stub.egressOpen(binding, listing(connection))));
 }
 
-/** The connections the sandbox's clients are given: those usable now. */
+/**
+ * The owner's connections a run may be given now: each one an API-key run on it can be
+ * made for (`config` refuses one that is not active and usable).
+ */
 async function usable(r: Gated): Promise<string[]> {
-  const { env: given } = await r.in((instance) => instance.sandbox.config());
-  return Object.keys(given).filter((name) => /^TA_.*_BASE_URL$/.test(name));
+  const rows = await r.sql("SELECT id FROM connections ORDER BY created_at, id") as
+    { id: string }[];
+  const given: string[] = [];
+  for (const { id } of rows) {
+    const made = await r.in((instance) => instance.sandbox.config({
+      engine: "pi", credential: "api_key", connection: id })).then(() => true, (error: unknown) => {
+      if (!/active connections/.test(String((error as Error).message))) {
+        throw error;
+      }
+      return false;
+    });
+    if (made) {
+      given.push(id);
+    }
+  }
+  return given;
 }
 
 describe("connecting a pasted key", () => {

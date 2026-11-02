@@ -84,7 +84,8 @@ async function sandbox(apply = true, models: Record<string, unknown> = {
   await bound.stub.policyWrite({ ...bound.binding, session: app.session }, {
     expected_generation: generation,
     policy: { ...policy, models, spend: { ...policy.spend, ...spend } } });
-  const opened = await leases(owner, (sandbox) => sandbox.open({ holder: "sandbox-1" }));
+  const opened = await leases(owner, (sandbox) => sandbox.open({
+    holder: "sandbox-1", run: { engine: "pi", credential: "api_key", connection } }));
   if (apply) {
     await leases(owner, (sandbox) => sandbox.networkApplied({
       lease_id: opened.lease.lease_id, epoch: opened.lease.epoch,
@@ -185,7 +186,8 @@ async function writeEgress(box: Sandbox): Promise<number> {
   await box.bound.stub.policyWrite(sessionOf(box), {
     expected_generation: generation,
     policy: { ...policy, egress: { mode: "allowlist", destinations: [] } } });
-  return (await leases(box.owner, (sandbox) => sandbox.config())).generation;
+  return (await leases(box.owner, (sandbox) => sandbox.config({
+    engine: "pi", credential: "api_key", connection: box.connection }))).generation;
 }
 
 let restore: () => void = () => undefined;
@@ -550,14 +552,14 @@ describe("a refused call", () => {
     expect(await forwarded()).toEqual([]);
   });
 
-  it("names a connection that is not the owner's, an endpoint not sealed (a write of a read), " +
+  it("names a connection that is not its run's, an endpoint not sealed (a write of a read), " +
      "or no body length", async () => {
     const box = await sandbox();
     const other = await sandbox();
     for (const [request, status, code] of [
-      [egressRequest({ ...box, connection: other.connection }), 403, "egress_connection_refused"],
+      [egressRequest({ ...box, connection: other.connection }), 403, "egress_run_connection"],
       [egressRequest({ ...box, connection: `c${"0".repeat(24)}` }), 403,
-       "egress_connection_refused"],
+       "egress_run_connection"],
       [egressRequest(box, "/openai/v1/files"), 403, "egress_endpoint_refused"],
       [egressRequest(box, "/openai/v1/chat/completions%2F..%2Fadmin"), 403,
        "egress_endpoint_refused"],

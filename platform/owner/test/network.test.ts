@@ -7,6 +7,9 @@ import { describe, expect, it } from "vitest";
 import { KEY_MIN_BYTES, mintToken, tokenHash, verifyToken } from "../../doors/src/routing-mac";
 import { Invalid, Refused } from "../src/errors";
 import {
+  bundledRecords, bundledSources, runEnv, sourceRecord,
+} from "../../doors/src/sources";
+import {
   ALL_TRAFFIC, BOUNDARY_NOTE, DNS_SERVERS, EGRESS_HOST, EGRESS_IP_LITERAL, egressBaseUrl,
   GENERATION_HEADER, networkDocument, SANDBOX_HEADER, sandboxEnv,
 } from "../src/network";
@@ -210,48 +213,121 @@ describe("a sandbox token", () => {
   });
 });
 
+/** `engine`'s run on `credential`, on `connection` when it is a key's. */
+const run = (engine: string, credential: "vendor_login_in_sandbox" | "api_key",
+             connection: string | null = null) =>
+  ({ ...runEnv(bundledSources(), engine, credential), connection });
+
+/** Every connection an owner could hold, one per API-key source, oldest first. */
+const KEYS = bundledRecords().map(sourceRecord)
+  .filter((record) => record.connect.includes("api_key"));
+const EVERY = KEYS.map((key, index) => ({
+  connection: `c${String(index + 1).padStart(24, "0")}`, provider: key.upstream!.provider,
+  egress: { api: key.upstream!.api, base_url: key.upstream!.base_url,
+            endpoints: key.endpoints!, meter: null } }));
+
 describe("the sandbox's model clients' environment", () => {
-  it("gives each connection a base URL on the door and a placeholder key", () => {
-    let n = 0;
-    const random = () => (++n).toString(16).padStart(32, "0");
-    const env = sandboxEnv([
-      { connection: C1, provider: "anthropic", egress: ANTHROPIC },
-      { connection: C2, provider: "openai", egress: OPENAI },
-      { connection: C3, provider: "anthropic", egress: ANTHROPIC },
-      { connection: C4, provider: "google-vertex", egress: GROQ },
-      { connection: C5, provider: "google", egress: GOOGLE },
-    ], random);
-    expect(env).toEqual({
-      ANTHROPIC_BASE_URL: `https://egress.tinyassets.io/c/${C1}/`,
-      ANTHROPIC_API_KEY: `ta_ph_${C1}_${"0".repeat(31)}1`,
-      [`TA_${C1.toUpperCase()}_BASE_URL`]: `https://egress.tinyassets.io/c/${C1}/`,
-      [`TA_${C1.toUpperCase()}_API_KEY`]: `ta_ph_${C1}_${"0".repeat(31)}1`,
+  it("gives a run on the vendor's own sign-in no key and no base URL, for every CLI", () => {
+    const engines = bundledRecords().map(sourceRecord)
+      .filter((record) => record.cli?.credential.includes("vendor_login_in_sandbox"));
+    expect(engines.map((record) => record.id).sort())
+      .toEqual(["claude-code", "codex", "gemini", "kimi"]);
+    // Every API-key variable any record names, and the rule's for every provider.
+    const keyNames = bundledRecords().map(sourceRecord).flatMap((record) =>
+      Object.values(record.cli?.api_key_env ?? {}).flatMap((vars) =>
+        [vars.api_key, ...(vars.base_url === null ? [] : [vars.base_url])]));
+    for (const record of engines) {
+      // However many keys the owner holds, a signed-in run carries none of them.
+      const env = sandboxEnv(EVERY, () => "ab".repeat(16),
+                             run(record.id, "vendor_login_in_sandbox"));
+      expect(env, record.id).toEqual({});
+      const forbidden = record.cli!.per_credential!.vendor_login_in_sandbox!.forbid_env!;
+      for (const name of [...forbidden, ...keyNames]) {
+        expect(env, `${record.id}: ${name}`).not.toHaveProperty(name);
+      }
+      expect(Object.keys(env).filter((name) => /_(?:API_KEY|BASE_URL)$/.test(name))).toEqual([]);
+    }
+    const claude = sandboxEnv(EVERY, () => "ab".repeat(16),
+                              run("claude-code", "vendor_login_in_sandbox"));
+    expect(claude["ANTHROPIC_API_KEY"]).toBeUndefined();
+    expect(claude["ANTHROPIC_BASE_URL"]).toBeUndefined();
+    // A signed-in run is on no connection.
+    expect(() => sandboxEnv(EVERY, () => "ab".repeat(16),
+                            run("claude-code", "vendor_login_in_sandbox", EVERY[0]!.connection)))
+      .toThrow(Invalid);
+  });
+
+  it("gives an API-key run its one connection, under the rule's names and the engine's own",
+     () => {
+    let checked = 0;
+    for (const [index, key] of KEYS.entries()) {
+      const own = EVERY[index]!;
+      for (const engine of key.engines!) {
+        const env = sandboxEnv(EVERY, () => "ab".repeat(16), run(engine, "api_key",
+                                                                 own.connection));
+        const placeholder = `ta_ph_${own.connection}_${"ab".repeat(16)}`;
+        const vars = sourceRecord(bundledRecords().find((record) =>
+          (record as { id: string }).id === engine)).cli!.api_key_env![key.upstream!.provider]!;
+        expect(env[vars.api_key], `${key.id} → ${engine}`).toBe(placeholder);
+        if (vars.base_url !== null) {
+          expect(env[vars.base_url], `${key.id} → ${engine}`).toBe(vars.base === "connection"
+            ? egressBaseUrl(own.connection, null) : egressBaseUrl(own.connection, own.egress));
+        }
+        // No other connection's placeholder, nor its base URL, is in the run's environment.
+        for (const other of EVERY.filter((entry) => entry !== own)) {
+          expect(JSON.stringify(env), `${key.id} → ${engine}`).not.toContain(other.connection);
+        }
+        checked += 1;
+      }
+    }
+    expect(checked).toBeGreaterThanOrEqual(10);
+  });
+
+  it("names a key's variables by the rule, and an engine's by its record", () => {
+    const at = (n: number) => `c${String(n).padStart(24, "0")}`;
+    const random = () => "0".repeat(31) + "1";
+    expect(sandboxEnv([{ connection: C2, provider: "openai", egress: OPENAI }], random,
+                      run("codex", "api_key", C2))).toEqual({
       OPENAI_BASE_URL: `https://egress.tinyassets.io/c/${C2}/v1`,
-      OPENAI_API_KEY: `ta_ph_${C2}_${"0".repeat(31)}2`,
+      OPENAI_API_KEY: `ta_ph_${C2}_${"0".repeat(31)}1`,
+      // Codex's own key variable, from its record.
+      CODEX_API_KEY: `ta_ph_${C2}_${"0".repeat(31)}1`,
       [`TA_${C2.toUpperCase()}_BASE_URL`]: `https://egress.tinyassets.io/c/${C2}/v1`,
-      [`TA_${C2.toUpperCase()}_API_KEY`]: `ta_ph_${C2}_${"0".repeat(31)}2`,
-      // The oldest connection of a provider has its names; every one has its own.
-      [`TA_${C3.toUpperCase()}_BASE_URL`]: `https://egress.tinyassets.io/c/${C3}/`,
-      [`TA_${C3.toUpperCase()}_API_KEY`]: `ta_ph_${C3}_${"0".repeat(31)}3`,
-      GOOGLE_VERTEX_BASE_URL: `https://egress.tinyassets.io/c/${C4}/openai/v1`,
-      GOOGLE_VERTEX_API_KEY: `ta_ph_${C4}_${"0".repeat(31)}4`,
-      [`TA_${C4.toUpperCase()}_BASE_URL`]: `https://egress.tinyassets.io/c/${C4}/openai/v1`,
-      [`TA_${C4.toUpperCase()}_API_KEY`]: `ta_ph_${C4}_${"0".repeat(31)}4`,
-      // Gemini CLI's own names, its base URL the door and the connection alone.
-      GOOGLE_BASE_URL: `https://egress.tinyassets.io/c/${C5}/v1beta`,
-      GOOGLE_API_KEY: `ta_ph_${C5}_${"0".repeat(31)}5`,
-      GOOGLE_GEMINI_BASE_URL: `https://egress.tinyassets.io/c/${C5}/`,
-      GEMINI_API_KEY: `ta_ph_${C5}_${"0".repeat(31)}5`,
-      [`TA_${C5.toUpperCase()}_BASE_URL`]: `https://egress.tinyassets.io/c/${C5}/v1beta`,
-      [`TA_${C5.toUpperCase()}_API_KEY`]: `ta_ph_${C5}_${"0".repeat(31)}5`,
+      [`TA_${C2.toUpperCase()}_API_KEY`]: `ta_ph_${C2}_${"0".repeat(31)}1`,
     });
-    expect(sandboxEnv([], random)).toEqual({});
+    expect(sandboxEnv([{ connection: C5, provider: "google", egress: GOOGLE }], random,
+                      run("gemini", "api_key", C5))).toEqual({
+      GOOGLE_BASE_URL: `https://egress.tinyassets.io/c/${C5}/v1beta`,
+      GOOGLE_API_KEY: `ta_ph_${C5}_${"0".repeat(31)}1`,
+      // Gemini CLI's own names, its base URL the door and the connection alone.
+      GOOGLE_GEMINI_BASE_URL: `https://egress.tinyassets.io/c/${C5}/`,
+      GEMINI_API_KEY: `ta_ph_${C5}_${"0".repeat(31)}1`,
+      [`TA_${C5.toUpperCase()}_BASE_URL`]: `https://egress.tinyassets.io/c/${C5}/v1beta`,
+      [`TA_${C5.toUpperCase()}_API_KEY`]: `ta_ph_${C5}_${"0".repeat(31)}1`,
+    });
+    // A connection the owner does not hold, or a provider the engine runs no key of.
+    expect(() => sandboxEnv([{ connection: C1, provider: "anthropic", egress: ANTHROPIC }],
+                            random, run("claude-code", "api_key", at(99)))).toThrow(Invalid);
+    expect(() => sandboxEnv([{ connection: C1, provider: "anthropic", egress: ANTHROPIC }],
+                            random, run("codex", "api_key", C1))).toThrow(Invalid);
+    // Two names for one variable that disagree, or a name the credential forbids, fail.
+    expect(() => sandboxEnv([{ connection: C2, provider: "openai", egress: OPENAI }], random,
+                            { credential: "api_key", connection: C2, forbid_env: [],
+                              api_key_env: { openai: { base_url: "OPENAI_BASE_URL",
+                                                       api_key: "K", base: "connection" } } }))
+      .toThrow(/two values/);
+    expect(() => sandboxEnv([{ connection: C2, provider: "openai", egress: OPENAI }], random,
+                            { ...run("codex", "api_key", C2), forbid_env: ["CODEX_API_KEY"] }))
+      .toThrow(/forbids CODEX_API_KEY/);
+    expect(() => sandboxEnv([{ connection: C2, provider: "openai", egress: OPENAI }], random,
+                            { ...run("codex", "api_key", C2), forbid_env: ["CODEX_*"] }))
+      .toThrow(/forbids CODEX_API_KEY/);
   });
 
   it("refuses a connection id or a placeholder that is not one", () => {
     expect(() => egressBaseUrl("c1", ANTHROPIC)).toThrow("invalid connection");
     expect(() => sandboxEnv([{ connection: C1, provider: "openai", egress: OPENAI }],
-                            () => "not hex")).toThrow();
+                            () => "not hex", run("codex", "api_key", C1))).toThrow();
     expect(egressBaseUrl(C1, GROQ)).toBe(`https://egress.tinyassets.io/c/${C1}/openai/v1`);
   });
 });

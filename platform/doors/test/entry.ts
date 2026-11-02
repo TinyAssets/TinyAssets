@@ -39,6 +39,7 @@ export const TEST_OAUTH = Object.freeze({
   base_url: "https://api.openai.com/v1",
   auth: { header: "authorization", scheme: "Bearer" },
   verify_url: "https://api.openai.com/v1/models",
+  engines: [],
   endpoints: [{ origin: "https://api.openai.com", paths: ["/v1/responses"], methods: ["POST"] },
               { origin: "https://api.openai.com", paths: ["/v1/models"], methods: ["GET"] }],
   oauth: {

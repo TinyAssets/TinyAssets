@@ -5,7 +5,7 @@
   "connect": [
     "oauth"
   ],
-  "unwired": "Sign in with ChatGPT for a remotely hosted app needs OpenAI's approval (the founder's interest-form application)",
+  "unwired": "Parked: Sign in with ChatGPT served the in-object loop, which ADR-034 removes; Codex signs in through its own flow in the sandbox, and a hosted app also needs OpenAI's approval",
   "provider": "openai",
   "api": "openai-responses",
   "base_url": "https://api.openai.com/v1",
@@ -34,6 +34,7 @@
       ]
     }
   ],
+  "engines": [],
   "oauth": {
     "protocol": "rfc6749",
     "authorization_endpoint": "https://auth.openai.com/api/accounts/authorize",

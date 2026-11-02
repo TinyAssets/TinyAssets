@@ -25,6 +25,8 @@ import {
 } from "./gateway-support";
 import { signedIn } from "./ledger-support";
 import { failure } from "./support";
+import type { SandboxRun } from "../src/owner-do";
+import { bundledSources, RUN_BASICS, runEnv } from "../../doors/src/sources";
 import type { FauxOwnerDO } from "./worker";
 
 interface Leased {
@@ -39,6 +41,13 @@ interface Leased {
   readonly synced: (token?: string) => Binding;
 }
 
+/**
+ * The run a lease is for unless a test says otherwise: Claude Code on the owner's own
+ * sign-in, whose environment carries no key at all.
+ */
+const SIGNED_IN = Object.freeze({ engine: "claude-code",
+                                  credential: "vendor_login_in_sandbox" as const });
+
 /** Caps roomy enough that a test's every call fits, each charging up to the most it costs. */
 const ROOMY = Object.freeze({ turn_requests: 10_000, turn_tokens: 1_000_000_000,
                               turn_cost: 1_000_000_000_000 });
@@ -48,15 +57,26 @@ function hashOf(kind: "egress" | "sync", token: string): string {
   return verifyToken(env.ROUTING_MAC_KEY, kind, token)!.hash;
 }
 
+/** The run a lease is for when the owner holds a connection: pi on that key. */
+const onKey = (connection: string) =>
+  Object.freeze({ engine: "pi", credential: "api_key" as const, connection });
+
 /**
- * The sandbox's lease taken, and unless `apply` is false its network applied; the owner's
- * caps made roomy first, unless `roomy` is false.
+ * The sandbox's lease taken for `run`, and unless `apply` is false its network applied;
+ * the owner's caps made roomy first, unless `roomy` is false. Unless a test names the run,
+ * it is pi on the owner's oldest active connection, the one the test calls, or a run on
+ * the owner's own sign-in when the owner holds none.
  */
-async function leased(r: Gated, apply = true, roomy = true): Promise<Leased> {
+async function leased(r: Gated, apply = true, roomy = true,
+                      run?: SandboxRun): Promise<Leased> {
   if (roomy) {
     await capped(r, ROOMY);
   }
-  const opened = await r.in((instance) => instance.sandbox.open({ holder: "sandbox-1" }));
+  const [oldest] = await r.sql("SELECT id FROM connections WHERE status = 'active' " +
+                               "ORDER BY created_at, id LIMIT 1") as { id: string }[];
+  const chosen = run ?? (oldest === undefined ? SIGNED_IN : onKey(oldest.id));
+  const opened = await r.in((instance) => instance.sandbox.open({ holder: "sandbox-1",
+                                                                   run: chosen }));
   const egress = hashOf("egress", opened.egress_token);
   const sync = hashOf("sync", opened.sync_token);
   if (apply) {
@@ -227,6 +247,61 @@ describe("an egress call", () => {
                                       charge: "succeeded", cost: 4200 }]);
   });
 
+  it("that counts tokens on a key that seals it is free, as its API's rules cite it",
+     async () => {
+    const r = await gated();
+    const counted = { ...ANTHROPIC, endpoints: [...ANTHROPIC.endpoints, {
+      origin: "https://api.anthropic.com", paths: ["/v1/messages/count_tokens"],
+      methods: ["POST"] }] };
+    const connection = await r.connect("sk-good", counted);
+    const lease = await leased(r);
+    const opened = await admitted(r, lease, connection, { path: "/v1/messages/count_tokens" });
+    expect(opened.metering).toBeNull();
+    expect(await charges(r)).toMatchObject([{ state: "open", charge: null, est_cost: null }]);
+    // Any other sealed POST that is not the source's model call is still never sent.
+    const other = await r.connect("sk-good-2", { ...ANTHROPIC, endpoints: [
+      ...ANTHROPIC.endpoints, { origin: "https://api.anthropic.com",
+                                paths: ["/v1/messages/batches"], methods: ["POST"] }] },
+                                  "Other");
+    await r.in((instance) => instance.sandbox.close(held(lease)));
+    const onOther = await leased(r, true, true, onKey(other));
+    expect(await refusedWith(r, onOther.as(), other, { path: "/v1/messages/batches" }))
+      .toBe("egress_unmetered");
+    // Another provider on the same API, sealing the same path: Anthropic's page is not its.
+    await r.in((instance) => instance.sandbox.close(held(onOther)));
+    const onCounted = await leased(r, true, true, onKey(connection));
+    await r.sql("UPDATE connections SET provider = 'vercel-ai-gateway' WHERE id = ?", connection);
+    expect(await refusedWith(r, onCounted.as(), connection,
+                             { path: "/v1/messages/count_tokens" })).toBe("egress_unmetered");
+  });
+
+  it("spends only on the connection its run was given", async () => {
+    const r = await gated();
+    const a = await r.connect("sk-good");
+    const b = await r.connect("sk-good-2", ANTHROPIC, "B");
+    const onA = await leased(r, true, true, onKey(a));
+    expect(await refusedWith(r, onA.as(), b)).toBe("egress_run_connection");
+    expect((await admitted(r, onA, a)).ok).toBe(true);
+    expect(await r.sql("SELECT run_connection FROM file_space")).toEqual([{ run_connection: a }]);
+    await r.in((instance) => instance.sandbox.close(held(onA)));
+    expect(await r.sql("SELECT run_connection FROM file_space"))
+      .toEqual([{ run_connection: null }]);
+  });
+
+  it("lets a run on the owner's own sign-in spend on no connection at all", async () => {
+    const r = await gated();
+    const a = await r.connect("sk-good");
+    const b = await r.connect("sk-good-2", ANTHROPIC, "B");
+    const signedIn = await leased(r, true, true, SIGNED_IN);
+    for (const connection of [a, b, `c${"0".repeat(24)}`]) {
+      expect(await refusedWith(r, signedIn.as(), connection), connection)
+        .toBe("egress_run_connection");
+    }
+    // Nor does its call refresh a connection's credential: nothing was opened.
+    expect(await charges(r)).toMatchObject([{ state: "refused" }, { state: "refused" },
+                                            { state: "refused" }]);
+  });
+
   it("that reads a sealed endpoint is free: admitted unmetered, charged nothing", async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
@@ -257,10 +332,11 @@ describe("an egress call", () => {
     expect(await refusedWith(r, before.as(), connection)).toBe("egress_lease_closed");
     const lease = await leased(r);
     expect(await refusedWith(r, before.as(), connection)).toBe("egress_lease_closed");
-    // The connection: another owner's, none, one with no scope stored, an unusable blob.
-    expect(await refusedWith(r, lease.as(), theirs)).toBe("egress_connection_refused");
+    // The run's connection, before the generations: another owner's, or none, is not it.
+    expect(await refusedWith(r, lease.as(2), theirs)).toBe("egress_run_connection");
     expect(await refusedWith(r, lease.as(), `c${"0".repeat(24)}`))
-      .toBe("egress_connection_refused");
+      .toBe("egress_run_connection");
+    // The run's own connection: one with no scope stored, an unusable blob.
     const [scope] = await r.sql("SELECT egress FROM connections WHERE id = ?", connection);
     await r.sql("UPDATE connections SET egress = NULL WHERE id = ?", connection);
     expect(await refusedWith(r, lease.as(), connection)).toBe("egress_connection_refused");
@@ -286,12 +362,20 @@ describe("an egress call", () => {
       [0]).toEqual({ n: 1 });
   });
 
-  it("refreshes an expiring OAuth credential for a live lease's call only", async () => {
+  it("refreshes an expiring OAuth credential for a live lease's own run connection only",
+     async () => {
     const r = await gated();
     const connection = await r.connectOAuth(OAUTH, Date.now() + 60_000);
-    const lease = await leased(r);
     const version = async () =>
       (await r.sql("SELECT version FROM connections WHERE id = ?", connection))[0]!["version"];
+    // A live lease whose run was not given the connection refreshes nothing.
+    const signedIn = await leased(r, true, true, SIGNED_IN);
+    expect(await refusedWith(r, signedIn.as(), connection,
+                             { path: "/v1/responses", model: OPENAI_MODEL }))
+      .toBe("egress_run_connection");
+    expect(await version()).toBe(1);
+    await r.in((instance) => instance.sandbox.close(held(signedIn)));
+    const lease = await leased(r);
     expect(await refusedWith(r, lease.as(1, "f".repeat(64)), connection,
                              { path: "/v1/responses", model: OPENAI_MODEL }))
       .toBe("egress_lease_closed");
@@ -365,7 +449,7 @@ describe("an egress call", () => {
                                                                          spend: { state: "unknown" } })))
       .toEqual({ settled: true });
     expect(await rows(r)).toMatchObject([{ ended: "admission", outcome: "ended" }]);
-    expect((await failure(() => r.in((instance) => instance.sandbox.open({ holder: "x" }))))
+    expect((await failure(() => r.in((instance) => instance.sandbox.open({ holder: "x", run: SIGNED_IN }))))
       .message).toMatch(/^owner_suspended/);
     await r.stub.admissionSet(platform, { reason: "abuse", suspended: true });
     expect((await failure(() => r.stub.egressSettle(lease.as(), settle(opened.reservation))))
@@ -809,20 +893,26 @@ describe("a change that ends egress", () => {
     const r = await gated();
     const first = await r.connect("sk-good");
     const second = await r.connect("sk-good-2", ANTHROPIC, "Second");
-    const lease = await leased(r);
+    const third = await r.connect("sk-good-3", ANTHROPIC, "Third");
+    const lease = await leased(r, true, true, onKey(first));
     const a = await admitted(r, lease, first);
-    const b = await admitted(r, lease, second);
+    // Another connection's revoke leaves the stream be; its own connection's ends it.
+    await r.stub.connectionRevoke(r.session(), { connection: second });
+    expect(await ended(a, 300)).toBe(false);
     await r.stub.connectionRevoke(r.session(), { connection: first });
     expect(await ended(a)).toBe(true);
-    expect(await ended(b, 300)).toBe(false);
     expect(await r.in((instance) => instance.sandbox.close(held(lease))))
+      .toEqual({ released: true });
+    const next = await leased(r, true, true, onKey(third));
+    const b = await admitted(r, next, third);
+    expect(await r.in((instance) => instance.sandbox.close(held(next))))
       .toEqual({ released: true });
     expect(await ended(b)).toBe(true);
     expect(await rows(r)).toMatchObject([{ ended: "connection" }, { ended: "lease" }]);
-    const next = await leased(r);
-    const c = await admitted(r, next, second);
+    const last = await leased(r, true, true, onKey(third));
+    const c = await admitted(r, last, third);
     await r.sql("UPDATE file_space SET lease_expires = 1");
-    await leased(r, true, false);
+    await leased(r, true, false, onKey(third));
     expect(await ended(c)).toBe(true);
     expect((await rows(r)).at(-1)).toMatchObject({ ended: "lease" });
   });
@@ -845,7 +935,8 @@ describe("the owner's erasure", () => {
       connection: prepared.connection, version: 1, blob: sealed.blob, kid: sealed.kid,
       models: await catalog(ANTHROPIC), egress: await scopeOf(ANTHROPIC) });
     const opened = await runInDurableObject(stub, async (instance: FauxOwnerDO) => {
-      const lease = await instance.sandbox.open({ holder: "sandbox-1" });
+      const lease = await instance.sandbox.open({ holder: "sandbox-1", run: {
+        engine: "pi", credential: "api_key", connection: prepared.connection } });
       await instance.sandbox.networkApplied({ lease_id: lease.lease.lease_id,
                                               epoch: lease.lease.epoch, generation: 1 });
       return lease;
@@ -932,17 +1023,17 @@ describe("the sandbox's lease", () => {
     // held to the longest, and a past one refused.
     await r.in((instance) => instance.sandbox.close(held(lease)));
     const soon = Math.floor(Date.now() / 1000) + 600;
-    const short = await r.in((instance) => instance.sandbox.open({ holder: "x", deadline: soon }));
+    const short = await r.in((instance) => instance.sandbox.open({ holder: "x", run: SIGNED_IN, deadline: soon }));
     expect(verifyToken(env.ROUTING_MAC_KEY, "egress", short.egress_token)!.expires).toBe(soon);
     expect(verifyToken(env.ROUTING_MAC_KEY, "sync", short.sync_token)!.expires).toBe(soon);
     await r.in((instance) => instance.sandbox.close(short.lease));
     const far = await r.in((instance) => instance.sandbox.open({
-      holder: "x", deadline: Math.floor(Date.now() / 1000) + 10 * RUN_DEADLINE_S }));
+      holder: "x", run: SIGNED_IN, deadline: Math.floor(Date.now() / 1000) + 10 * RUN_DEADLINE_S }));
     expect(verifyToken(env.ROUTING_MAC_KEY, "egress", far.egress_token)!.expires)
       .toBeLessThanOrEqual(Math.floor(Date.now() / 1000) + RUN_DEADLINE_S);
     await r.in((instance) => instance.sandbox.close(far.lease));
     expect((await failure(() => r.in((instance) => instance.sandbox.open({
-      holder: "x", deadline: 1 })))).message).toMatch(/deadline/);
+      holder: "x", run: SIGNED_IN, deadline: 1 })))).message).toMatch(/deadline/);
     const again = await leased(r, false, false);
     const renewed = await r.in((instance) => instance.sandbox.renew(held(again)));
     expect(renewed).toMatchObject({ lease_id: again.lease_id, epoch: again.epoch });
@@ -974,11 +1065,54 @@ describe("the sandbox's lease", () => {
   it("hands the sandbox slice its policy and its clients' environment", async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
-    const config = await r.in((instance) => instance.sandbox.config());
+    const keyed = { engine: "claude-code", credential: "api_key" as const, connection };
+    const config = await r.in((instance) => instance.sandbox.config(keyed));
     expect(config.generation).toBe(1);
     expect(config.egress).toEqual({ mode: "open", destinations: [] });
+    // The run's whole environment: HOME, the record's own variables and the key's.
+    expect(config.env).toMatchObject({ HOME: "{home}", CLAUDE_CONFIG_DIR: "{home}/.claude",
+                                       DISABLE_AUTOUPDATER: "1" });
+    expect(config.inherit).toEqual(RUN_BASICS);
     expect(config.env["ANTHROPIC_BASE_URL"]).toBe(`https://egress.tinyassets.io/c/${connection}/`);
     expect(config.env["ANTHROPIC_API_KEY"]).toMatch(new RegExp(`^ta_ph_${connection}_[0-9a-f]{32}$`));
     expect(JSON.stringify(config)).not.toContain("sk-good");
+  });
+
+  it("gives a run on the owner's own sign-in no key, though the owner has one", async () => {
+    const r = await gated();
+    await r.connect("sk-good");
+    const config = await r.in((instance) => instance.sandbox.config(SIGNED_IN));
+    // The allow-list alone: HOME and Claude Code's own variables, no key and no base URL.
+    expect(config.env).toEqual(runEnv(bundledSources(), "claude-code",
+                                      "vendor_login_in_sandbox").env);
+    expect(config.env["HOME"]).toBe("{home}");
+    expect(Object.keys(config.env).filter((name) => /API_KEY|BASE_URL|TOKEN/.test(name)))
+      .toEqual([]);
+    expect(config.inherit).toEqual(RUN_BASICS);
+    const opened = await r.in((instance) => instance.sandbox.open({ holder: "h",
+                                                                     run: SIGNED_IN }));
+    expect(opened.env).toEqual(config.env);
+    expect(opened.inherit).toEqual(RUN_BASICS);
+  });
+
+  it("refuses a run its record does not allow, before any lease is taken", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    for (const [run, message] of [
+      [{ engine: "kimi", credential: "api_key", connection }, /kimi/],
+      [{ engine: "anthropic", credential: "api_key", connection }, /not a served CLI/],
+      [{ engine: "nope", credential: "vendor_login_in_sandbox" }, /not a served CLI/],
+      [{ engine: "claude-code", credential: "api_key" }, /its connection/],
+      [{ engine: "claude-code", credential: "vendor_login_in_sandbox", connection },
+       /its connection/],
+      [{ engine: "claude-code", credential: "password" }, /its credential/],
+      [{ engine: "codex", credential: "api_key", connection }, /no key of this/],
+      [{ engine: "claude-code", credential: "api_key", connection: `c${"9".repeat(24)}` },
+       /active connections/],
+    ] as const) {
+      expect((await failure(() => r.in((instance) => instance.sandbox.open({
+        holder: "h", run: run as never })))).message, JSON.stringify(run)).toMatch(message);
+    }
+    expect(await r.sql("SELECT lease_id FROM file_space WHERE lease_id IS NOT NULL")).toEqual([]);
   });
 });

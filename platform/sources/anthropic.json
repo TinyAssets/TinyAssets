@@ -1,0 +1,49 @@
+{
+  "id": "anthropic",
+  "display_name": "Anthropic API",
+  "help_url": "https://console.anthropic.com/settings/keys",
+  "connect": [
+    "api_key"
+  ],
+  "provider": "anthropic",
+  "api": "anthropic-messages",
+  "base_url": "https://api.anthropic.com",
+  "auth": {
+    "header": "x-api-key",
+    "scheme": ""
+  },
+  "verify_url": "https://api.anthropic.com/v1/models",
+  "endpoints": [
+    {
+      "origin": "https://api.anthropic.com",
+      "paths": [
+        "/v1/messages"
+      ],
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "origin": "https://api.anthropic.com",
+      "paths": [
+        "/v1/messages/count_tokens"
+      ],
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "origin": "https://api.anthropic.com",
+      "paths": [
+        "/v1/models"
+      ],
+      "methods": [
+        "GET"
+      ]
+    }
+  ],
+  "engines": [
+    "claude-code",
+    "pi"
+  ]
+}

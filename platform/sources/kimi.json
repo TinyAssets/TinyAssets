@@ -7,28 +7,32 @@
   "cli": {
     "install": {
       "manager": "npm",
-      "lock_sha256": "2ed486573ebd356c797be07799ee885b2ee0ce74e5676624f58123580913b99e",
+      "lock_sha256": "5f38c028a086454550aae20aa7e81e78a4fa23645a7def487058a11abce6adf1",
       "package": "@moonshot-ai/kimi-code",
-      "version": "2.3.0",
-      "integrity": "sha512-/70t2bZV5ynYwYn13yjeA0EuQwY2v0UboH+Ks3LW/69+05eDNe29HZlwEg0F4iU0SvA2rWPcDRSfCRj5MqAJrA==",
+      "version": "2.4.1",
+      "integrity": "sha512-z0py3AxbV9ykOB3Pgh2FiycZbMy7XSAXH4Kb1yfyhhmk+l9xH8H9raakVvCGMYLVxxEQGitQLcgOh8clLVYUTw==",
       "bin": "kimi",
       "verify_argv": [
         "{bin}",
         "--version"
-      ]
+      ],
+      "lifecycle_scripts": true
     },
+    "credential": [
+      "vendor_login_in_sandbox"
+    ],
     "login": {
       "argv": [
         "{bin}",
         "login",
         "--region",
-        "mainland-cn"
+        "{region}"
       ],
-      "url_pattern": "(https://(?:www\\.kimi\\.com|auth\\.kimi\\.com)/[^\\s\\u001b]+)",
+      "url_pattern": "(https://(?:www|auth)\\.kimi\\.(?:com|ai)/[^\\s\\u001b]+)",
       "code_pattern": "enter code: ([A-Za-z0-9-]+)",
       "state_checks": [
         {
-          "path": ".kimi-code/credentials/kimi-code.json",
+          "path": "{home}/.kimi-code/credentials/kimi-code.json",
           "present": [
             "access_token",
             "refresh_token"
@@ -36,47 +40,139 @@
         }
       ]
     },
-    "invoke": {
+    "regions": {
+      "mainland-cn": {
+        "display_name": "Kimi (kimi.com)",
+        "hosts": {
+          "login": [
+            "auth.kimi.com",
+            "api.kimi.com",
+            "www.kimi.com"
+          ],
+          "provider": [
+            "auth.kimi.com",
+            "api.kimi.com"
+          ]
+        }
+      },
+      "global": {
+        "display_name": "Kimi (kimi.ai)",
+        "hosts": {
+          "login": [
+            "auth.kimi.ai",
+            "api.kimi.ai",
+            "www.kimi.ai"
+          ],
+          "provider": [
+            "auth.kimi.ai",
+            "api.kimi.ai"
+          ]
+        }
+      }
+    },
+    "unattended": {
+      "vendor_login_in_sandbox": {
+        "allowed": false,
+        "reason": "No Kimi page read addresses hosted or unattended use of the CLI on a membership, and its help center warns that use with unauthorized platforms or tools may be a violation (subscription-engines §5, §11)."
+      }
+    },
+    "per_credential": {
+      "vendor_login_in_sandbox": {
+        "forbid_env": [
+          "KIMI_API_KEY",
+          "KIMI_BASE_URL",
+          "MOONSHOT_API_KEY",
+          "KIMI_CODE_BASE_URL",
+          "KIMI_MODEL_*",
+          "KIMI_OAUTH_HOST",
+          "KIMI_CODE_OAUTH_HOST",
+          "OPENAI_*",
+          "ANTHROPIC_*"
+        ]
+      }
+    },
+    "engine": {
       "argv": [
         "{bin}",
-        "--agent-file",
-        "{config}/agent.md",
-        "--prompt",
-        "{system}\n\n{prompt}",
+        "--prompt={prompt}",
         "--output-format",
         "stream-json"
       ],
+      "resume_argv": [
+        "{bin}",
+        "--continue",
+        "--prompt={prompt}",
+        "--output-format",
+        "stream-json"
+      ],
+      "resume": "continue_in_cwd",
       "model_argv": [
         "--model",
         "{model}"
       ],
-      "format": "jsonl",
-      "match": {
-        "role": "assistant"
-      },
-      "text_path": "content",
-      "max_prompt_bytes": 100000
+      "events": {
+        "format": "jsonl",
+        "session_id": [],
+        "final_text": [
+          {
+            "match": {
+              "role": "assistant"
+            },
+            "path": "content"
+          }
+        ],
+        "error": [],
+        "usage": [],
+        "tool_call": [
+          {
+            "match": {
+              "role": "assistant"
+            },
+            "path": "tool_calls"
+          }
+        ]
+      }
     },
-    "files": {
-      "agent.md": "---\nname: owner-inference\ntools: []\nsubagents: []\n---\nFollow the supplied conversation and return only the requested response.\n"
+    "instructions": {
+      "file": "AGENTS.md",
+      "shadowed_by": []
     },
-    "state_paths": [
-      ".kimi-code/credentials/kimi-code.json",
-      ".kimi-code/config.toml"
+    "skills_paths": [
+      ".agents/skills"
+    ],
+    "mcp": {
+      "file": "{home}/.kimi-code/mcp.json",
+      "template": "{\"mcpServers\": {\"tinyassets\": {\"url\": \"{mcp_url}\", \"transport\": \"http\"}}}",
+      "argv": [],
+      "trust": {
+        "argv": [],
+        "note": "The server is in the user-level mcp.json, which needs no workspace trust; a project-level one would."
+      }
+    },
+    "tools": {},
+    "unattended_argv": [],
+    "home_env": {
+      "KIMI_CODE_HOME": "{home}/.kimi-code"
+    },
+    "no_update": {
+      "env": {
+        "KIMI_CODE_NO_AUTO_UPDATE": "1"
+      }
+    },
+    "secret_paths": [
+      "{home}/.kimi-code/credentials/",
+      "{home}/.kimi-code/config.toml"
+    ],
+    "session_paths": [
+      "{home}/.kimi-code/sessions/",
+      "{home}/.kimi-code/session_index.jsonl"
     ],
     "hosts": {
       "registry": [
         "registry.npmjs.org"
       ],
-      "login": [
-        "auth.kimi.com",
-        "api.kimi.com",
-        "www.kimi.com"
-      ],
-      "provider": [
-        "auth.kimi.com",
-        "api.kimi.com"
-      ]
+      "login": [],
+      "provider": []
     }
   }
 }

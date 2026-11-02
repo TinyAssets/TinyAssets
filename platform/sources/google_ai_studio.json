@@ -32,5 +32,9 @@
         "GET"
       ]
     }
+  ],
+  "engines": [
+    "gemini",
+    "pi"
   ]
 }

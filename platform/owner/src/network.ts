@@ -49,22 +49,28 @@
  *   key can read it back from the sandbox's info (`SandboxNetworkRuleInfo`), so that key is
  *   a platform secret with the token's custody.
  *
- * **The environment** (`sandboxEnv`): for each of the owner's active connections, a base
- * URL on the egress door and a placeholder key, `ta_ph_<connection>_<random>`, which
- * carries no secret: the door ignores it, the gateway strips it with every other inbound
- * credential (`forward.ts`) and injects the sealed one. The names follow one rule, never a
- * provider's own code: `<PROVIDER>_BASE_URL` and `<PROVIDER>_API_KEY` (the provider id in
- * upper case, `-` as `_`: `ANTHROPIC_BASE_URL`, `OPENAI_API_KEY`, `GROQ_API_KEY`) for the
- * oldest active connection of each provider, and `TA_<CONNECTION>_BASE_URL` and
- * `TA_<CONNECTION>_API_KEY` for every one. A base URL is the door, the connection, then the
- * path of the sealed base URL: `https://egress.tinyassets.io/c/<connection>/` for
+ * **The environment** (`sandboxEnv`): one engine run's, and it carries only that run's own
+ * credential. A run on the vendor's own sign-in in the sandbox carries no API-key or
+ * base-URL variable at all, and none its record forbids (`forbid_env`), so the CLI runs on
+ * the sign-in and never on a key or through the door. An API-key run carries its one
+ * connection's: a base URL on the egress door and a placeholder key,
+ * `ta_ph_<connection>_<random>`, which carries no secret: the door ignores it, the gateway
+ * strips it with every other inbound credential (`forward.ts`) and injects the sealed one.
+ * The names follow one rule, never a provider's own code: `<PROVIDER>_BASE_URL` and
+ * `<PROVIDER>_API_KEY` (the provider id in upper case, `-` as `_`: `ANTHROPIC_BASE_URL`,
+ * `OPENAI_API_KEY`, `GROQ_API_KEY`), `TA_<CONNECTION>_BASE_URL` and
+ * `TA_<CONNECTION>_API_KEY`, and the engine's own names for that provider as its source
+ * record declares them (`cli.api_key_env`). A base URL is the door, the connection, then
+ * the path of the sealed base URL: `https://egress.tinyassets.io/c/<connection>/` for
  * Anthropic's, `…/c/<connection>/v1` for OpenAI's, so a client appends its own API path.
  */
 import type { EgressScope } from "../../gateway/src/credential";
 
 import { tokenShaped } from "../../doors/src/routing-mac";
 
+
 import { Invalid, Refused } from "./errors";
+import { forbids } from "./text";
 
 /**
  * The gateway as the egress door binds it (`EGRESS`, its `EgressGateway` entrypoint): one
@@ -137,7 +143,8 @@ export function checkDestination(entry: unknown): void {
  */
 export const EGRESS_CODES = Object.freeze([
   "egress_token_missing", "egress_token_unknown", "egress_token_expired",
-  "egress_lease_closed", "egress_policy_stale", "egress_network_stale",
+  "egress_lease_closed", "egress_run_connection", "egress_policy_stale",
+  "egress_network_stale",
   "egress_connection_refused", "egress_endpoint_refused", "egress_unmetered",
   "egress_length_required", "egress_rate", "egress_spend_refused", "egress_unknown_model",
   "egress_unpriced_option", "egress_too_large",
@@ -297,19 +304,23 @@ function stem(name: string): string {
 }
 
 /**
- * The provider CLIs whose variables the one rule does not name, as data: for a provider,
- * each CLI's base-URL and key variables, and whether its base URL is the door and the
- * connection alone (`bare`: its SDK appends the API version itself). Gemini CLI reads
- * `GOOGLE_GEMINI_BASE_URL` and `GEMINI_API_KEY`, its `@google/genai` client appending
- * `/v1beta`. Claude Code (`ANTHROPIC_*`), Codex and Qwen Code (`OPENAI_*`) and Mistral's
- * `MISTRAL_API_KEY` are the rule's own names.
+ * One engine run, as its environment is made (from its record, by `doors/src/sources.ts`'s
+ * `runEnv`): the credential it runs on; an API-key run's connection (null on the vendor's
+ * own sign-in); the engine's own variables for each provider's key: its base-URL variable
+ * (none when its base URL comes by a file template) and key variable, and whether its base
+ * URL is the sealed one on the door (`sealed`) or the door and the connection alone
+ * (`connection`: its SDK appends the API version itself, as Gemini CLI's `@google/genai`
+ * client appends `/v1beta`); and the variables the credential forbids. No provider is
+ * named here.
  */
-const CLI_ENV: Readonly<Record<string, readonly {
-  readonly base_url: string; readonly api_key: string; readonly bare: boolean }[]>> =
-  Object.freeze({
-    google: Object.freeze([Object.freeze({ base_url: "GOOGLE_GEMINI_BASE_URL",
-                                           api_key: "GEMINI_API_KEY", bare: true })]),
-  });
+export interface EngineRun {
+  readonly credential: "vendor_login_in_sandbox" | "api_key";
+  readonly connection: string | null;
+  readonly api_key_env: Readonly<Record<string, {
+    readonly base_url: string | null; readonly api_key: string;
+    readonly base: "sealed" | "connection" }>>;
+  readonly forbid_env: readonly string[];
+}
 
 /**
  * The base URL a connection's clients use: the door, the connection, the sealed path (or,
@@ -325,33 +336,53 @@ export function egressBaseUrl(connection: string, egress: EgressScope | null): s
 }
 
 /**
- * The sandbox's model-client environment for `connections` (oldest first, as the object
- * lists them): each one's base URL on the door and a placeholder key, `random()` making
- * each placeholder's random part (hex). A placeholder carries no secret.
+ * One engine run's environment (`run`), from the owner's egress-able `connections`:
+ * nothing on the vendor's own sign-in; on an API key, its one connection's base URL on the
+ * door and a placeholder key, `random()` making the placeholder's random part (hex), under
+ * the rule's names and the engine's own. A placeholder carries no secret. A connection
+ * that is not the owner's egress-able one, a provider the engine runs no key of, two names
+ * for one variable that disagree, or a variable the credential forbids fails loudly.
  */
-export function sandboxEnv(connections: readonly Egressible[], random: () => string):
-    Readonly<Record<string, string>> {
-  const env: Record<string, string> = {};
-  const named = new Set<string>();
-  for (const { connection, provider, egress } of connections) {
-    const base = egressBaseUrl(connection, egress);
-    const part = random();
-    if (!/^[0-9a-f]{16,64}$/.test(part)) {
-      throw new Error("a placeholder's random part is 16 to 64 hex");
+export function sandboxEnv(connections: readonly Egressible[], random: () => string,
+                           run: EngineRun): Readonly<Record<string, string>> {
+  if (run.credential === "vendor_login_in_sandbox") {
+    if (run.connection !== null) {
+      throw new Invalid("a run on the vendor's own sign-in is on no connection");
     }
-    const placeholder = `ta_ph_${connection}_${part}`;
-    env[`TA_${stem(connection)}_BASE_URL`] = base;
-    env[`TA_${stem(connection)}_API_KEY`] = placeholder;
-    const name = stem(provider);
-    if (!named.has(name)) {
-      named.add(name);
-      env[`${name}_BASE_URL`] = base;
-      env[`${name}_API_KEY`] = placeholder;
-      for (const names of CLI_ENV[provider] ?? []) {
-        env[names.base_url] = names.bare ? egressBaseUrl(connection, null) : base;
-        env[names.api_key] = placeholder;
-      }
-    }
+    return Object.freeze({});
   }
+  const own = connections.find((entry) => entry.connection === run.connection);
+  if (own === undefined) {
+    throw new Invalid("an API-key run is on one of the owner's active connections");
+  }
+  const { connection, provider, egress } = own;
+  if (!Object.hasOwn(run.api_key_env, provider)) {
+    throw new Invalid("the engine runs on no key of this connection's provider");
+  }
+  const env: Record<string, string> = {};
+  const set = (name: string, value: string) => {
+    if (env[name] !== undefined && env[name] !== value) {
+      throw new Error(`the source records set ${name} to two values`);
+    }
+    if (forbids(run.forbid_env, name)) {
+      throw new Error(`the run's credential forbids ${name}`);
+    }
+    env[name] = value;
+  };
+  const base = egressBaseUrl(connection, egress);
+  const part = random();
+  if (!/^[0-9a-f]{16,64}$/.test(part)) {
+    throw new Error("a placeholder's random part is 16 to 64 hex");
+  }
+  const placeholder = `ta_ph_${connection}_${part}`;
+  set(`TA_${stem(connection)}_BASE_URL`, base);
+  set(`TA_${stem(connection)}_API_KEY`, placeholder);
+  set(`${stem(provider)}_BASE_URL`, base);
+  set(`${stem(provider)}_API_KEY`, placeholder);
+  const names = run.api_key_env[provider]!;
+  if (names.base_url !== null) {
+    set(names.base_url, names.base === "connection" ? egressBaseUrl(connection, null) : base);
+  }
+  set(names.api_key, placeholder);
   return Object.freeze(env);
 }

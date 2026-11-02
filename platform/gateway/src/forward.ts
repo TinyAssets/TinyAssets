@@ -25,7 +25,7 @@ import {
 import type { ModelRecord } from "./model-record";
 import { type Code, codeOf, Failure, failureResponse, upstreamCode } from "./failure";
 import { nativeFetch } from "./egress";
-import { apiRules, fallbackList, manyChoices, paidTool, servedPriced, tierMultiplier,
+import { apiRules, fallbackList, freeCall, manyChoices, paidTool, servedPriced, tierMultiplier,
          unpricedOption, valueAt } from "./api-rules";
 import { clamped, learnMeter, meteredModel, meteredRecord, meteredUsage } from "./meter";
 import { type Binding, type KeyringEnv, open, type Opened, type Resealed } from "./keyring";
@@ -244,18 +244,16 @@ export async function forwardMetered(env: KeyringEnv, bound: Binding, blob: unkn
 }
 
 /**
- * A sandbox's read of a sealed endpoint (`GET`, `HEAD`: a model list), which carries no
- * model use, forwarded unmetered as `forward` forwards; any other method is `unmetered`,
- * so no call the owner's object did not charge reaches a provider's model.
+ * A sandbox's free call on a sealed endpoint, forwarded unmetered as `forward` forwards: a
+ * read (`GET`, `HEAD`: a model list), which carries no model use, or a call its API's rules
+ * cite as free (`freeCall`: a token count). Any other is `unmetered`, so no call the
+ * owner's object did not charge reaches a provider's model.
  */
 export async function forwardRead(env: KeyringEnv, bound: Binding, blob: unknown,
                                   request: Request, stop: ReadableStream<Uint8Array> | null,
                                   deadlineMs: number = FORWARD_DEADLINE_MS):
     Promise<{ response: Response; outcome: Promise<MeterOutcome> }> {
-  if (request.method !== "GET" && request.method !== "HEAD") {
-    return { response: refusal("unmetered"), outcome: Promise.resolve(FAILED) };
-  }
-  return send(env, bound, blob, request, deadlineMs, null, stop);
+  return send(env, bound, blob, request, deadlineMs, null, stop, true);
 }
 
 const FAILED: MeterOutcome = Object.freeze({ state: "failed" });
@@ -264,7 +262,7 @@ const UNKNOWN: MeterOutcome = Object.freeze({ state: "unknown" });
 async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Request,
                     deadlineMs: number,
                     metered: { metering: Metering; catalog: Catalog } | null,
-                    stop: ReadableStream<Uint8Array> | null):
+                    stop: ReadableStream<Uint8Array> | null, free = false):
     Promise<{ response: Response; outcome: Promise<MeterOutcome> }> {
   const refused = (code: Code, resealed?: Resealed) =>
     ({ response: refusal(code, resealed), outcome: Promise.resolve(FAILED) });
@@ -287,6 +285,12 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
                               `${incoming.pathname}${incoming.search}`);
   if (target === null) {
     return refused("endpoint_refused", resealed);
+  }
+  // A sandbox's unmetered call (`free`): only a read, or a call its API's rules cite as free.
+  if (free && request.method !== "GET" && request.method !== "HEAD"
+      && !freeCall(apiRules(credential.upstream.api), credential.upstream.provider,
+                   request.method, target.pathname)) {
+    return refused("unmetered", resealed);
   }
   // Every spelling of each credential parameter, as some servers read them case-blind.
   for (const name of [...target.searchParams.keys()]) {

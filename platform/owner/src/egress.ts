@@ -9,6 +9,9 @@
  * **Open** (`open`, in the door's unit, after the binding check admitted the owner for
  * `work`), each refusal one of the fixed codes (`EgressCode`):
  * - the live lease, by the hash of the egress token's secret (`egress_lease_closed`);
+ * - the connection is the one the lease's engine run was given (`egress_run_connection`):
+ *   a run never spends on a connection it was not given, and a run on the vendor's own
+ *   sign-in may call none;
  * - the egress generation the request's transform carries, and the one the sandbox's
  *   network was last applied under, are the current one (`egress_policy_stale`,
  *   `egress_network_stale`): a write that changes the egress table leaves egress refused,
@@ -16,7 +19,8 @@
  * - the connection is the owner's, active, its credential usable and its scope stored
  *   (`egress_connection_refused`), and the method and path are among its sealed endpoints,
  *   by the gateway's own rule (`egress_endpoint_refused`);
- * - a read (`GET`, `HEAD`: a model list) is free; any other call must be its source's model
+ * - a read (`GET`, `HEAD`: a model list) is free, as is a call its API's rules cite as free
+ *   (`freeCall`: a token count); any other call must be its source's model
  *   call as pi-ai makes it, which the gateway can meter (`meteredCall`), with a declared
  *   body length (`egress_unmetered`, `egress_length_required`): the run's caps are always
  *   set, so a call that cannot be metered is never sent;
@@ -54,7 +58,7 @@
  */
 import { randomBytes } from "node:crypto";
 
-import { apiRules, tierMultiplier } from "../../gateway/src/api-rules";
+import { apiRules, freeCall, tierMultiplier } from "../../gateway/src/api-rules";
 import { type EgressScope, egressTarget, meteredCall, meteredModel }
   from "../../gateway/src/credential";
 
@@ -227,7 +231,7 @@ export interface EgressDeps {
     { readonly blob: string; readonly version: number } | null;
   /** The connection's egress scope, source and models; null as `credential`'s. */
   readonly connection: (connection: string) =>
-    { readonly scope: EgressScope; readonly source: string;
+    { readonly scope: EgressScope; readonly source: string; readonly provider: string;
       readonly models: readonly EgressModel[] } | null;
   /** The caps for a call of `source`. */
   readonly caps: (source: string) => EgressCaps;
@@ -405,6 +409,10 @@ export class Egress {
     if (lease === null || sandbox.kind !== "egress") {
       return refuse("egress_lease_closed");
     }
+    // A run spends only on the connection it was given; a signed-in run on none.
+    if (lease.run_connection === null || lease.run_connection !== request.connection) {
+      return refuse("egress_run_connection");
+    }
     if (sandbox.generation !== generation) {
       return refuse("egress_policy_stale");
     }
@@ -419,9 +427,12 @@ export class Egress {
     if (egressTarget(connection.scope, request.method, request.path) === null) {
       return refuse("egress_endpoint_refused");
     }
-    // A read of a sealed endpoint carries no model use; every other call must be the
-    // source's model call as pi-ai makes it, which the gateway meters.
-    const free = FREE_METHODS.includes(request.method);
+    // A read of a sealed endpoint carries no model use, nor does a call its API's rules
+    // cite as free (a token count); every other call must be the source's model call as
+    // pi-ai makes it, which the gateway meters.
+    const free = FREE_METHODS.includes(request.method)
+      || freeCall(apiRules(connection.scope.api), connection.provider, request.method,
+                  request.path);
     if (!free && (!meteredCall(connection.scope, request.method, request.path)
                   || connection.models.length === 0)) {
       return refuse("egress_unmetered");
