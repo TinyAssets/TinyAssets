@@ -8,7 +8,8 @@ correct architecture", and the plan records this decision as A9. Amends ADR-019
 and ADR-022 on what a box runs. Amended by ADR-032: owner files live in object
 storage behind a trusted file API, and owner requests are served by edge
 Workers and the owner's Durable Object, not the router and `BoxProvider`; the
-split rule stands.
+split rule stands. Amended by ADR-034 (founder, 2026-11-02): vendor CLIs in the
+sandbox are for every owner, not the paid tier only (ADR-034 decision 8).
 
 ## Date
 

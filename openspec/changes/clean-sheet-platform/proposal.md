@@ -9,6 +9,8 @@ per-owner isolation is the runtime's, not our handlers' (Direction 5).
 
 ## What Changes
 
+**Amended by ADR-034 (2026-11-01):** agents run on unmodified engines, which supersedes "pi-durable is the loop" below; the deletion slice (`engines-replan.md` §5, slice D) removes the pi requirements from this change's specs.
+
 - The trusted side and the agent loop run as one Cloudflare Durable Object per
   owner (`OwnerDO`), written in TypeScript in the new `platform/` workspace. The
   Python logic is ported, never imported, and its tests become acceptance tests.

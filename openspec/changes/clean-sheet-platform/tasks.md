@@ -2,6 +2,16 @@ Build order is the plan of record's "Migration and build order" (ADR-032), one
 section per slice. An item is ticked in the PR that lands it. A landed item whose
 live acceptance is still owed says so.
 
+**Re-cut by ADR-034 (2026-11-01).** Agents run on unmodified engines, and pi-durable
+leaves the owner's object. The order from here is `engines-replan.md` §5: finish
+G4, then one deletion slice (its §1.7), engine records, runs, the sandbox (live),
+the MCP door, wakes, doors live, before real data, the founder's live test, cutover.
+Items below for the in-object pi loop, its host, its stores and its hooks are
+superseded, and the deletion slice removes them from this list.
+
+- [ ] Limits audit (founder, 2026-11-02: no tiny limits before he has used the platform): every bound in `platform/*/src` is raised to the tier numbers or a generous default, made an owner setting, or kept as a technical ceiling with its reason recorded. The files default (`max_bytes` 1 GiB) is the first to raise. The list goes to the founder before anything ships.
+- [ ] Tier numbers in the platform control record (ADR-034 decision 8): free 5 simultaneous runs and 25 GB, paid 10 and 250 GB (founder, 2026-11-02), editable without a deploy.
+
 ## 1. Verify the unverified facts
 
 - [x] E2B p50/p95 resume for a 1 GiB sandbox, measured live; paused-storage price
