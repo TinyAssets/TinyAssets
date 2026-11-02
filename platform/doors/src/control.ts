@@ -48,9 +48,12 @@ export async function ownerGate(env: DoorsEnv, owner: string): Promise<Response 
   return read instanceof Response ? read : null;
 }
 
-/** The record's tier numbers, as the binder hands them to a run door; undefined for none. */
+/**
+ * The record's tier numbers, as the binder hands them to a run door; null for none (the
+ * object then forgets the numbers it kept, and refuses: `tier.ts`).
+ */
 function tiersOf(read: ControlRead): unknown {
-  return read.kind === "read" && read.control.tiers !== null ? read.control.tiers : undefined;
+  return read.kind === "read" && read.control.tiers !== null ? read.control.tiers : null;
 }
 
 /** The outside gate, read once: its refusal, or the record's tier numbers. */

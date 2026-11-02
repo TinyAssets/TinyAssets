@@ -24,35 +24,19 @@ import { SANDBOX_ABSENT, type SandboxStart } from "../src/sandbox";
 import { PLATFORM_TIER_ONLY, TIER_RUNS, TIER_UNREAD } from "../src/tier";
 import { gated, type Gated, OPENAI } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
-import { ALL_SCOPES, defineAgent, ownerRun, recorder, startOf, TIERS } from "./runs-support";
+import {
+  ALL_SCOPES, defineAgent, hashed, ownerRun, recorder, runBinding, runnerBinding, runnerSandbox,
+  sandboxOf, secretOf, startOf, TIERS,
+} from "./runs-support";
 import { drainDue, failure, sqlIn } from "./support";
 
 /** The owner's run of Claude Code on its own sign-in: no key, no connection. */
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
                                   scopes: [] });
 
-/** Each lease's egress token, as the start that opened it got it. */
-const TOKENS = new Map<string, string>();
-
-/** The sandbox's binding on the egress host, as the binder builds it (`bindSandbox`). */
-function sandboxOf(r: Gated, start: SandboxStart, run?: string): Binding {
-  if (start.tokens !== null) {
-    TOKENS.set(start.lease.lease_id, start.tokens.egress_token);
-  }
-  const token = verifyToken(env.ROUTING_MAC_KEY, "egress",
-                            TOKENS.get(start.lease.lease_id))!.hash;
-  return r.bind({ sandbox: { kind: "egress", token, generation: 1 },
-                  ...(run === undefined ? {} : { run }) });
-}
-
-/** The run's own binding on the egress host, as the binder builds it (`bindRun`). */
-function runBinding(r: Gated, start: SandboxStart): Binding {
-  return sandboxOf(r, start, start.run);
-}
-
 /** The runner's report of Claude Code's sign-in, under the sandbox's live lease. */
 function claudeSignin(r: Gated, start: SandboxStart, signedIn: boolean) {
-  return r.stub.signinReport(sandboxOf(r, start), {
+  return r.stub.signinReport(runnerSandbox(r, start), {
     signins: [{ engine: "claude-code", signed_in: signedIn }] });
 }
 
@@ -90,27 +74,33 @@ describe("a run", () => {
     expect(run).toMatchObject({ state: "running", agent: "main", engine: "claude-code",
                                 credential: "api_key", initiator: "owner", requests: 0,
                                 settled_at: null });
-    const [lease] = await r.sql("SELECT lease_id, epoch FROM file_space");
-    expect(await r.sql("SELECT run, lease_id, epoch, stamp, origin, scopes, connection " +
+    const [lease] = await r.sql("SELECT authority, lease_id, epoch FROM sandbox_leases");
+    expect(lease!["authority"]).toBe("owner");
+    expect(await r.sql("SELECT lease_id, epoch FROM runs WHERE id = ?", run.run_id))
+      .toEqual([{ lease_id: lease!["lease_id"], epoch: lease!["epoch"] }]);
+    // Its grant: the run's own secret's hash, never the secret, which only its URLs carry.
+    const secret = secretOf(start);
+    expect(await r.sql("SELECT run, secret, stamp, origin, scopes, connection " +
                          "FROM run_grants")).toEqual([{
-      run: run.run_id, lease_id: lease!["lease_id"], epoch: lease!["epoch"], stamp: null,
-      origin: null, scopes: "[\"read_files\"]", connection }]);
+      run: run.run_id, secret: hashed(secret), stamp: null, origin: null,
+      scopes: "[\"read_files\"]", connection }]);
     expect(await r.sql("SELECT agent, source, session_id, last_run FROM conversations"))
       .toEqual([{ agent: "main", source: "claude-code", session_id: null,
                   last_run: run.run_id }]);
     // The start: the lease it opened, its two tokens and network, and the run's whole
     // environment, the record's own variables and its one connection's key.
     expect(start).toMatchObject({ run: run.run_id, agent: "main", engine: "claude-code",
-                                  credential: "api_key", session_id: null,
+                                  credential: "api_key", session_id: null, authority: "owner",
                                   prompt: "do the thing", unattended: false,
                                   lease: { lease_id: lease!["lease_id"] } });
     expect(start.tokens).not.toBeNull();
     expect(start.network!.network.rules["egress.tinyassets.io"]).toBeDefined();
-    const base = `https://egress.tinyassets.io/r/${run.run_id}/c/${connection}/`;
+    const base = `https://egress.tinyassets.io/r/${run.run_id}/${secret}/c/${connection}/`;
     expect(start.config.env).toMatchObject({
       ...runEnv(bundledSources(), "claude-code", "api_key").env, ANTHROPIC_BASE_URL: base });
     expect(start.config.env["ANTHROPIC_API_KEY"]).toMatch(/^ta_ph_c[0-9a-f]{24}_[0-9a-f]{32}$/);
-    expect(start.urls).toEqual({ mcp: `https://egress.tinyassets.io/r/${run.run_id}/mcp`,
+    expect(start.tokens!.runner_token).toMatch(/^[0-9a-f]{64}$/);
+    expect(start.urls).toEqual({ mcp: `https://egress.tinyassets.io/r/${run.run_id}/${secret}/mcp`,
                                  events: `https://egress.tinyassets.io/r/${run.run_id}/events`,
                                  signin: "https://egress.tinyassets.io/signin" });
     expect(JSON.stringify(start)).not.toContain("sk-good");
@@ -141,14 +131,14 @@ describe("a run", () => {
     expect(waiting).toMatchObject({ state: "waiting", conversation_id: run.conversation_id,
                                     started_at: null, settled_at: null });
     expect((await recorder(r.stub)).starts).toHaveLength(1);
-    await r.stub.runEvents(runBinding(r, start), { frames: frames(INIT("sess-1")),
+    await r.stub.runEvents(runnerBinding(r, start), { frames: frames(INIT("sess-1")),
                                                    end: { exit_code: 0 } });
     await drainDue(r.stub);
     const next = await startOf(r.stub, waiting.run_id);
     expect(next.session_id).toBe("sess-1");
     expect(next.conversation).toBe(run.conversation_id);
     expect(next.prompt).toBe("and then");
-    await r.stub.runEvents(runBinding(r, next), { frames: [], end: { exit_code: 0 } });
+    await r.stub.runEvents(runnerBinding(r, next), { frames: [], end: { exit_code: 0 } });
     const after = await ownerRun(r.stub, r.bind(), undefined, "main",
                                  { conversation_id: run.conversation_id });
     expect(after.start.session_id).toBe("sess-1");
@@ -224,7 +214,7 @@ describe("admission", () => {
     expect((await failure(() => stub.agentSubmit({ ...bind, tiers: TIERS }, {
       message: "x", client_send_id: "n-1" }))).message).toBe(SANDBOX_ABSENT);
     expect(await sqlIn(stub, "SELECT id FROM runs")).toEqual([]);
-    expect(await sqlIn(stub, "SELECT lease_id FROM file_space")).toEqual([{ lease_id: null }]);
+    expect(await sqlIn(stub, "SELECT lease_id FROM sandbox_leases")).toEqual([]);
   });
 
   it("refuses an unattended run on a source whose record does not allow it", async () => {
@@ -273,7 +263,7 @@ describe("a run's settle", () => {
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     // Succeeded: its session id and result kept, its grant gone.
     const ok = await ownerRun(r.stub, r.bind());
-    expect(await r.stub.runEvents(runBinding(r, ok.start), {
+    expect(await r.stub.runEvents(runnerBinding(r, ok.start), {
       frames: frames(INIT("sess-ok"), RESULT("all done")), end: { exit_code: 0 } }))
       .toEqual({ accepted: 2, settled: "succeeded" });
     expect(await r.stub.agentStatus(r.bind(), { run_id: ok.run.run_id }))
@@ -282,22 +272,22 @@ describe("a run's settle", () => {
                        ok.run.conversation_id)).toEqual([{ session_id: "sess-ok" }]);
     expect(await r.sql("SELECT run FROM run_grants WHERE run = ?", ok.run.run_id)).toEqual([]);
     // A frame past its settle is refused: the run is no longer live.
-    expect((await failure(() => r.stub.runEvents(runBinding(r, ok.start),
+    expect((await failure(() => r.stub.runEvents(runnerBinding(r, ok.start),
                                                  { frames: frames(RESULT("again")) })))
       .message).toBe(RUN_ENDED);
     // Failed: the exit code, or an error event though it exited 0.
     const exit = await ownerRun(r.stub, r.bind());
-    await r.stub.runEvents(runBinding(r, exit.start), { frames: [], end: { exit_code: 2 } });
+    await r.stub.runEvents(runnerBinding(r, exit.start), { frames: [], end: { exit_code: 2 } });
     expect(await r.stub.agentStatus(r.bind(), { run_id: exit.run.run_id }))
       .toMatchObject({ state: "failed", code: "exit", exit_code: 2 });
     const error = await ownerRun(r.stub, r.bind());
-    await r.stub.runEvents(runBinding(r, error.start), { frames: frames(FAILED("rate")),
+    await r.stub.runEvents(runnerBinding(r, error.start), { frames: frames(FAILED("rate")),
                                                          end: { exit_code: 0 } });
     expect(await r.stub.agentStatus(r.bind(), { run_id: error.run.run_id }))
       .toMatchObject({ state: "failed", code: "engine_error", error: "rate" });
     // Unknown: its runner lost (no heartbeat within the lease's life).
     const lost = await ownerRun(r.stub, r.bind());
-    await r.sql("UPDATE file_space SET lease_expires = 1");
+    await r.sql("UPDATE sandbox_leases SET lease_expires = 1");
     await ownerRun(r.stub, r.bind());
     expect(await r.stub.agentStatus(r.bind(), { run_id: lost.run.run_id }))
       .toMatchObject({ state: "unknown", code: "lost" });
@@ -317,7 +307,7 @@ describe("a run's settle", () => {
                                              { message: "x", client_send_id: "s-2" });
     expect(refused).toMatchObject({ state: "failed", code: "e2b_down" });
     // Neither holds the lease: the last live run's settle gave it back.
-    expect(await r.sql("SELECT lease_id FROM file_space")).toEqual([{ lease_id: null }]);
+    expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
   });
 });
 
@@ -330,7 +320,7 @@ describe("a run's cancel", () => {
     expect(cancelled).toMatchObject({ run_id: run.run_id, state: "running" });
     expect((await recorder(r.stub)).cancels).toEqual([{ run: run.run_id,
                                                         lease_id: start.lease.lease_id }]);
-    await r.stub.runEvents(runBinding(r, start), { frames: [], end: { exit_code: null } });
+    await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: null } });
     expect(await r.stub.agentStatus(r.bind(), { run_id: run.run_id }))
       .toMatchObject({ state: "failed", code: "cancelled" });
     // A settled run cancels nothing more.
@@ -357,11 +347,18 @@ describe("simultaneous runs", () => {
     expect(JSON.stringify(onB.start.config.env)).not.toContain(a);
     await r.in((instance) => instance.sandbox.networkApplied({
       ...onA.start.lease, generation: 1 }));
-    const egress = r.bind({ sandbox: { kind: "egress", generation: 1, token: verifyToken(
-      env.ROUTING_MAC_KEY, "egress", onA.start.tokens!.egress_token)!.hash } });
-    const call = (run: string, connection: string) => r.stub.egressOpen(egress, {
-      run, connection, method: "GET", path: "/v1/models", bytes_hint: null, model: null,
-      tier: null });
+    const egress = (start: SandboxStart) => r.bind({ sandbox: {
+      kind: "egress", generation: 1, secret: hashed(secretOf(start)), token: verifyToken(
+        env.ROUTING_MAC_KEY, "egress", onA.start.tokens!.egress_token)!.hash } });
+    const call = (run: string, connection: string,
+                  as = run === onA.run.run_id ? onA.start : onB.start) =>
+      r.stub.egressOpen(egress(as), {
+        run, connection, method: "GET", path: "/v1/models", bytes_hint: null, model: null,
+        tier: null });
+    // A run id alone authorizes nothing: one run's process naming the other's id, with its
+    // own secret, spends on neither (slice R's review H-1).
+    expect(await call(onB.run.run_id, b, onA.start))
+      .toMatchObject({ ok: false, code: "egress_run_closed" });
     expect(await call(onA.run.run_id, b)).toMatchObject({ ok: false,
                                                           code: "egress_run_connection" });
     expect(await call(onB.run.run_id, a)).toMatchObject({ ok: false,
@@ -369,7 +366,7 @@ describe("simultaneous runs", () => {
     expect(await call(onA.run.run_id, a)).toMatchObject({ ok: true });
     expect(await call(onB.run.run_id, b)).toMatchObject({ ok: true });
     // A run settled spends no more, though its sandbox's lease is live for the other.
-    await r.stub.runEvents(runBinding(r, onA.start), { frames: [], end: { exit_code: 0 } });
+    await r.stub.runEvents(runnerBinding(r, onA.start), { frames: [], end: { exit_code: 0 } });
     expect(await call(onA.run.run_id, a)).toMatchObject({ ok: false, code: "egress_run_closed" });
     expect(await call(onB.run.run_id, b)).toMatchObject({ ok: true });
   });
@@ -426,7 +423,7 @@ describe("a conversation's inputs", () => {
     expect(await prompts(r)).toEqual(["do the thing", "do the thing"]);
     // The first settles: the second starts, the third still waits; one more that comes as
     // the lane has yet to start them waits behind them.
-    await r.stub.runEvents(runBinding(r, start), { frames: frames(INIT("sess-1")),
+    await r.stub.runEvents(runnerBinding(r, start), { frames: frames(INIT("sess-1")),
                                                    end: { exit_code: 0 } });
     const fourth = await submit(r, run.conversation_id, "fourth", "in-4");
     expect(fourth.state).toBe("waiting");
@@ -437,12 +434,12 @@ describe("a conversation's inputs", () => {
     expect(await r.stub.agentStatus(r.bind(), { run_id: third.run_id }))
       .toMatchObject({ state: "waiting" });
     // The second settles: the third starts, resuming the same session.
-    await r.stub.runEvents(runBinding(r, await startOf(r.stub, second.run_id)),
+    await r.stub.runEvents(runnerBinding(r, await startOf(r.stub, second.run_id)),
                            { frames: [], end: { exit_code: 0 } });
     await drainDue(r.stub);
     expect(await prompts(r)).toEqual(["do the thing", "do the thing", "second", "third"]);
     expect((await startOf(r.stub, third.run_id)).session_id).toBe("sess-1");
-    await r.stub.runEvents(runBinding(r, await startOf(r.stub, third.run_id)),
+    await r.stub.runEvents(runnerBinding(r, await startOf(r.stub, third.run_id)),
                            { frames: [], end: { exit_code: 0 } });
     await drainDue(r.stub);
     expect(await prompts(r))
@@ -485,7 +482,7 @@ describe("a conversation's inputs", () => {
     expect(await r.sql("SELECT run FROM run_inputs")).toEqual([{ run: refused.run_id }]);
     // The agent is disabled before the next one's turn: it settles failed, never started.
     await defineAgent(r.stub, r.bind(), "main", { ...SIGNED_IN, enabled: false });
-    await r.stub.runEvents(runBinding(r, start), { frames: [], end: { exit_code: 0 } });
+    await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
     await drainDue(r.stub);
     expect(await r.stub.agentStatus(r.bind(), { run_id: refused.run_id }))
       .toMatchObject({ state: "failed", code: "agent_disabled", error: AGENT_DISABLED,
@@ -577,12 +574,12 @@ describe("auto and the owner's sign-ins", () => {
                        [{ engine: "claude-code", signed_in: true, models: ["a b"] }],
                        [{ engine: "claude-code", signed_in: true,
                           models: ["m".repeat(256), ...Array(8).fill("m".repeat(256))] }]]) {
-      expect((await report(sandboxOf(r, start), bad)).name).toBe("Invalid");
+      expect((await report(runnerSandbox(r, start), bad)).name).toBe("Invalid");
     }
     expect(await r.sql("SELECT engine FROM engine_signins")).toEqual([]);
     // Its lease over, the sandbox reports nothing.
-    await r.stub.runEvents(runBinding(r, start), { frames: [], end: { exit_code: 0 } });
-    expect((await report(sandboxOf(r, start), one)).message).toBe("egress_lease_closed");
+    await r.stub.runEvents(runnerBinding(r, start), { frames: [], end: { exit_code: 0 } });
+    expect((await report(runnerSandbox(r, start), one)).message).toBe("egress_lease_closed");
   });
 });
 
@@ -599,7 +596,8 @@ describe("the admission unit", () => {
         unadmitted: () => "owner_suspended: the owner's account is suspended (billing)",
         sandboxBound: () => true, sources: never, usable: never, egressible: never,
         standing: never, tier: never, caps: never, spent: never,
-        lease: { live: never, open: never, release: never, renew: never },
+        lease: { live: never, all: never, open: never, release: never, renew: never,
+                 lapsed: never }, stop: never,
         ended: never, leaseEnded: never, capacity: never });
       return gate.write(() => runs.admit({
         initiator: "schedule", stamp: null, origin: null, agent: "main",
@@ -619,9 +617,10 @@ describe("the admission unit", () => {
       const sql = state.storage.sql;
       const row = (id: string, conversation: number, kind: string) => sql.exec(
         "INSERT INTO runs (id, agent, conversation, source, credential, state, initiator, " +
-          "unattended, created_at) VALUES (?, 'main', ?, 'claude-code', " +
-          "'vendor_login_in_sandbox', ?, 'owner', 0, 1)", id,
-        `cv_${String(conversation).repeat(32)}`, kind);
+          "unattended, created_at, lease_id, epoch, beat_at) VALUES (?, 'main', ?, " +
+          "'claude-code', 'vendor_login_in_sandbox', ?, 'owner', 0, 1, ?, ?, ?)", id,
+        `cv_${String(conversation).repeat(32)}`, kind, ...(kind === "running"
+          ? ["0".repeat(32), 1, 1] : [null, null, null]));
       row(run(1), 1, "running");
       row(run(2), 1, "waiting");  // behind its conversation's live run
       row(run(3), 2, "waiting");  // its turn
@@ -632,7 +631,8 @@ describe("the admission unit", () => {
       const runs = (capacity: number | null) => new Runs(new WriteGate(state.storage).storage, {
         unadmitted: never, sandboxBound: never, sources: never, usable: never,
         egressible: never, standing: never, tier: never, caps: never, spent: never,
-        lease: { live: never, open: never, release: never, renew: never },
+        lease: { live: never, all: never, open: never, release: never, renew: never,
+                 lapsed: never }, stop: never,
         ended: never, leaseEnded: never, capacity: () => capacity });
       return [null, 1, 2].map((capacity) => runs(capacity).nextWaiting()?.id ?? null);
     });

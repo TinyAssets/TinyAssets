@@ -86,10 +86,16 @@ export function tierName(request: unknown): TierName {
 
 /**
  * In a unit: the numbers the binder handed (kept, with when, for the lane's runs), else the
- * last kept; refused when there are none.
+ * last kept; refused when there are none. The binder hands `null` when the control record
+ * holds none: the kept numbers go too, so a record that drops its tiers refuses every run
+ * from then on (the lane's as well), never one admitted on numbers it no longer holds.
  */
 export function tierNumbers(storage: OwnerStorage, handed: unknown, now: number): Tiers {
   const sql = storage.sql;
+  if (handed === null) {
+    sql.exec("DELETE FROM platform_tiers");
+    throw new Refused(TIER_UNREAD);
+  }
   if (handed !== undefined) {
     const tiers = parseTiers(handed);
     const text = JSON.stringify(tiers);

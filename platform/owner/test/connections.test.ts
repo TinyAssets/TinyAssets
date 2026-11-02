@@ -22,7 +22,7 @@ import type { EgressOpened, EgressRefusal } from "../src/egress";
 import type { Binding } from "../src/owner-do";
 import { MUSE } from "./ledger-support";
 import { failure } from "./support";
-import { ownerRun } from "./runs-support";
+import { hashed, ownerRun, secretOf } from "./runs-support";
 import {
   ANTHROPIC, catalog, type Gated, gated, keyring, OAUTH, OPENAI, REDIRECT, scopeOf, sealedAs,
   until,
@@ -60,7 +60,8 @@ async function sandboxOf(r: Gated): Promise<Binding> {
     lease_id: start.lease.lease_id, epoch: start.lease.epoch,
     generation: start.network!.generation }));
   const token = verifyToken(env.ROUTING_MAC_KEY, "egress", start.tokens!.egress_token)!.hash;
-  return r.bind({ sandbox: { kind: "egress", token, generation: start.network!.generation } });
+  return r.bind({ sandbox: { kind: "egress", token, generation: start.network!.generation,
+                             secret: hashed(secretOf(start)) } });
 }
 
 /** The run the sandbox's calls name: the one its lease was opened for. */
@@ -105,7 +106,7 @@ async function usable(r: Gated): Promise<string[]> {
   const given: string[] = [];
   for (const { id } of rows) {
     const made = await r.in((instance) => instance.sandbox.config({
-      run: `run_${"0".repeat(32)}`, engine: "pi", credential: "api_key",
+      run: `run_${"0".repeat(32)}`, secret: "5e".repeat(32), engine: "pi", credential: "api_key",
       connection: id })).then(() => true, (error: unknown) => {
       if (!/active connections/.test(String((error as Error).message))) {
         throw error;

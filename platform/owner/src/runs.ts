@@ -28,18 +28,25 @@
  * 8. the owner's own limits hold (`OWNER_LIMIT`): an API-key run's source and the owner's
  *    day and month spend under their caps (the policy's, off by default). A signed-in run
  *    spends on the vendor's plan, which TinyAssets never sees; the vendor's limits hold.
- * Then, in the same unit: the conversation made or touched, the run written `queued`, the
- * sandbox's lease opened, or joined while one is live (the sandbox's runs share it), and the
- * run grant minted: the lease, the stamp and origin, the scopes (the agent's, or for a
- * client's run their intersection with what that client's grant holds where it acts) and
- * the run's own connection (none on the vendor's own sign-in). So simultaneous runs each
- * carry their own connection, and the egress door holds each call to its own run's
- * (`egress.ts`).
+ * Then, in the same unit: the conversation made or touched, the run written `queued`, its
+ * authority's sandbox lease opened, or joined while one is live (one sandbox an authority:
+ * the owner's own work shares the owner's, and each outside client's runs share that
+ * client's own, so runs of different authority never share a VM), and the run grant
+ * minted: the stamp and origin, the scopes (the agent's, or for a client's run their
+ * intersection with what that client's grant holds where it acts), the run's own
+ * connection (none on the vendor's own sign-in) and the SHA-256 of the run's own 256-bit
+ * secret, which only its CLI's environment holds (its URLs carry it). Every call of a run's
+ * (its MCP door, its model calls) presents that secret, so a run id alone authorizes
+ * nothing, and the egress door holds each call to its own run's connection (`egress.ts`).
+ * The runner's own doors (its events, the sign-in report) take the runner's secret, which
+ * no CLI holds.
  *
  * **Settle** (`settle`), once, in a unit: `succeeded` from the runner's end with exit 0 and
- * no error event, `failed` otherwise (a cancel's is `cancelled`), `unknown` when the runner
- * was lost (its lease lapsed, or a start whose answer never came). Unknown is never
- * replayed. The run grant goes with it, and the lease when no live run holds it any more.
+ * no error event, `failed` otherwise (a cancel's is `cancelled`; a revoked or changed
+ * client grant's `revoked`, at once), `unknown` when the runner was lost (its lease lapsed,
+ * its own heartbeat lapsed, or a start whose answer never came). Unknown is never
+ * replayed. The run grant goes with it (a cancel revokes it at once), and the lease when no
+ * live run holds it any more; every settle prunes the receipts to `RUNS_KEPT`.
  * There is no platform deadline: a run's only time bound is the sandbox's own continuous
  * runtime ceiling, as its lease's tokens carry it (`RUN_DEADLINE_S`).
  *
@@ -47,13 +54,14 @@
  * runs are live, never a poll: with no row due the lane has no job, and a due row whose
  * work is absent (a run on the owner's mail with none unacked) starts nothing.
  */
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 import type { CredentialKind, Sources } from "../../doors/src/sources";
 
 import { AGENT_DISABLED, type AgentFile, AUTO, RUN_CAPABILITIES, type RunCapability }
   from "./agent-file";
 import { AUTHORITY_CHANGED, type StandingGrant, type Stamped } from "./authority";
+import { LEASE_TTL_S, OWNER_AUTHORITY } from "./files";
 import { type Candidate, ranked } from "./auto";
 import { nextOccurrence, parseCron } from "./cron";
 import { Invalid, Refused } from "./errors";
@@ -105,17 +113,26 @@ export interface SpendCaps {
                                                    readonly monthly_cost?: number | null } };
 }
 
-/** The sandbox's live lease, as the runs read it (`Files.sandboxLease`). */
+/** A sandbox's live lease, as the runs read it (`Files.sandboxLease`). */
 export interface LiveLease {
   readonly lease_id: string;
   readonly epoch: number;
   readonly expires_at: number;
 }
 
+/** A live run, and the lease it runs under: what a sandbox cancel names. */
+export type LiveRun = {
+  readonly run: string;
+  readonly lease_id: string;
+  readonly epoch: number;
+};
+
 /** A lease the admission opened: its two tokens, for the start that configures the sandbox. */
 export interface OpenedTokens {
   readonly egress_token: string;
   readonly sync_token: string;
+  /** The runner's own secret, for its events and sign-in reports: never a CLI's. */
+  readonly runner_token: string;
 }
 
 export interface RunDeps {
@@ -133,17 +150,25 @@ export interface RunDeps {
   readonly caps: () => SpendCaps;
   readonly spent: (period: string, source: string | null) => number;
   readonly lease: {
-    live(now: number): LiveLease | null;
-    /** In the unit: a new lease, its tokens minted; refused while one is held. */
-    open(now: number): { readonly lease: LiveLease; readonly tokens: OpenedTokens;
-                         readonly network: NetworkPlan };
+    /** `authority`'s live lease (the owner's own work's, or one outside client's). */
+    live(now: number, authority: string): LiveLease | null;
+    /** Every live lease. */
+    all(now: number): readonly LiveLease[];
+    /** In the unit: `authority`'s new lease, its tokens minted; refused while one is held. */
+    open(now: number, authority: string): { readonly lease: LiveLease;
+                                            readonly tokens: OpenedTokens;
+                                            readonly network: NetworkPlan };
     release(leaseId: string, epoch: number): boolean;
     renew(leaseId: string, epoch: number): void;
+    /** In the unit: every lapsed lease's row gone, once its runs were settled. */
+    lapsed(now: number): void;
   };
   /** In the unit, once a run settled: its streams ended (`egress.ts`). */
   readonly ended: (run: string) => void;
   /** In the unit, once the lease was given back: every stream under it ended. */
   readonly leaseEnded: (leaseId: string) => void;
+  /** In the unit: a run settled lost or revoked, whose CLI the sandbox stops, once over. */
+  readonly stop: (runs: readonly LiveRun[]) => void;
   /**
    * The owner's tier's simultaneous runs, as the numbers last handed say, or null when none
    * were: whether a waiting run may start (the lane's).
@@ -190,6 +215,10 @@ export interface Admitted {
   readonly model: string | null;
   readonly session_id: string | null;
   readonly lease: { readonly lease_id: string; readonly epoch: number };
+  /** Whose sandbox it runs in. */
+  readonly authority: string;
+  /** The run's own secret: its URLs carry it, and no other run's CLI holds it. */
+  readonly secret: string;
   readonly tokens: OpenedTokens | null;
   /** The owner's network, with the egress token in its transform, when this run opened it. */
   readonly network: NetworkPlan | null;
@@ -200,12 +229,13 @@ export interface Admitted {
   readonly prompt: string;
 }
 
-/** The source a run was given, and its id: what its environment is made from. */
+/** The source a run was given, its id and secret: what its environment is made from. */
 export interface Chosen {
   readonly run: string;
   readonly engine: string;
   readonly credential: CredentialKind;
   readonly connection: string | null;
+  readonly secret: string;
 }
 
 /**
@@ -244,6 +274,7 @@ export interface RunReceipt {
 /** A run grant, as the run-scoped door and egress read it. */
 export interface RunGrant {
   readonly run: string;
+  /** The lease its run runs under (the run's row's). */
   readonly lease_id: string;
   readonly epoch: number;
   readonly stamp: Stamped | null;
@@ -273,6 +304,7 @@ export interface RunSchedule {
 type RunRow = {
   id: string; agent: string; conversation: string; source: string; credential: CredentialKind;
   model: string | null; state: RunState; initiator: Initiator; client: string | null;
+  lease_id: string | null; epoch: number | null; beat_at: number | null;
   stamp: string | null; request: string | null; unattended: number; cancel_requested: number;
   requests: number; tokens: number; cost: number; last_seq: number; result: string | null;
   result_cut: number; error: string | null; code: string | null; exit_code: number | null;
@@ -281,7 +313,7 @@ type RunRow = {
 
 type GrantRow = {
   run: string; lease_id: string; epoch: number; stamp: string | null; origin: string | null;
-  scopes: string; connection: string | null;
+  scopes: string; connection: string | null; secret: string;
 };
 
 type ScheduleRow = {
@@ -291,6 +323,8 @@ type ScheduleRow = {
 };
 
 const LIVE = "state IN ('queued', 'running')";
+/** A live run's grant row, with the lease its run runs under. */
+const GRANTS = "SELECT g.*, r.lease_id, r.epoch FROM run_grants g JOIN runs r ON r.id = g.run";
 /** A run not settled: live, or waiting for its conversation. */
 const UNSETTLED = "settled_at IS NULL";
 /** The id a subscription takes among the connections it is ranked with. */
@@ -314,6 +348,16 @@ function planModel(model: string): Candidate["model"] {
 
 function id(prefix: string): string {
   return `${prefix}${randomBytes(16).toString("hex")}`;
+}
+
+/** A secret's SHA-256 hex: all the object keeps of one. */
+export function secretHash(secret: string): string {
+  return createHash("sha256").update(secret, "utf8").digest("hex");
+}
+
+/** Whose sandbox a run of `ask` runs in: the client it came through, else the owner's. */
+function authorityOf(origin: { readonly client: string } | null): string {
+  return origin?.client ?? OWNER_AUTHORITY;
 }
 
 /** `text` cut to at most `bytes` UTF-8 bytes on a character boundary, and whether it was. */
@@ -426,12 +470,16 @@ export class Runs {
       this.#limits(chosen.source!, now);
     }
     const runId = waiting ?? id("run_");
+    const secret = randomBytes(32).toString("hex");
     // The run's environment, before anything is written: a run its record refuses writes
     // nothing.
     const config = prepare({ run: runId, engine: chosen.engine, credential: chosen.credential,
-                             connection: chosen.connection });
+                             connection: chosen.connection, secret });
     // Written from here: nothing above refused.
-    this.#prune();
+    const authority = authorityOf(ask.origin);
+    const live = this.#deps.lease.live(now, authority);
+    const opened = live === null ? this.#deps.lease.open(now, authority) : null;
+    const lease = opened?.lease ?? live!;
     let conversationId: string;
     let session: string | null = null;
     if (conversation === null) {
@@ -447,37 +495,35 @@ export class Runs {
     let prompt = ask.prompt;
     if (waiting !== null) {
       // Its turn: its source as chosen now, its kept input taken.
-      this.#sql.exec("UPDATE runs SET state = 'queued', source = ?, credential = ?, model = ? " +
-                       "WHERE id = ? AND state = 'waiting'", chosen.engine, chosen.credential,
-                     chosen.model, waiting);
+      this.#sql.exec("UPDATE runs SET state = 'queued', source = ?, credential = ?, model = ?, " +
+                       "lease_id = ?, epoch = ?, beat_at = ? WHERE id = ? AND state = 'waiting'",
+                     chosen.engine, chosen.credential, chosen.model, lease.lease_id, lease.epoch,
+                     now, waiting);
       prompt = this.#sql.exec<{ prompt: string }>(
         "DELETE FROM run_inputs WHERE run = ? RETURNING prompt", waiting).one().prompt;
     } else {
       this.#sql.exec(
         "INSERT INTO runs (id, agent, conversation, source, credential, model, state, " +
-          "initiator, client, stamp, request, unattended, created_at) " +
-          "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)",
+          "initiator, client, stamp, request, unattended, created_at, lease_id, epoch, " +
+          "beat_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         runId, ask.agent, conversationId, chosen.engine, chosen.credential, chosen.model,
         ask.initiator, ask.origin?.client ?? null,
         ask.stamp === null ? null : JSON.stringify(ask.stamp), ask.request,
-        ask.unattended ? 1 : 0, now);
+        ask.unattended ? 1 : 0, now, lease.lease_id, lease.epoch, now);
     }
-    const live = this.#deps.lease.live(now);
-    const opened = live === null ? this.#deps.lease.open(now) : null;
-    const lease = opened?.lease ?? live!;
     const scopes = ask.file.scopes.filter((scope) => held(scope));
     this.#sql.exec(
-      "INSERT INTO run_grants (run, lease_id, epoch, stamp, origin, scopes, connection, " +
-        "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      runId, lease.lease_id, lease.epoch,
-      ask.stamp === null ? null : JSON.stringify(ask.stamp),
+      "INSERT INTO run_grants (run, secret, stamp, origin, scopes, connection, created_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+      runId, secretHash(secret), ask.stamp === null ? null : JSON.stringify(ask.stamp),
       ask.origin === null ? null : JSON.stringify(ask.origin), JSON.stringify(scopes),
       chosen.connection, now);
+    this.#prune();
     return { run: runId, conversation: conversationId, existing: false, engine: chosen.engine,
              credential: chosen.credential, connection: chosen.connection, model: chosen.model,
              session_id: session, lease: { lease_id: lease.lease_id, epoch: lease.epoch },
-             tokens: opened?.tokens ?? null, network: opened?.network ?? null, scopes, config,
-             prompt };
+             authority, secret, tokens: opened?.tokens ?? null,
+             network: opened?.network ?? null, scopes, config, prompt };
   }
 
   /**
@@ -506,6 +552,7 @@ export class Runs {
                    runId, ask.prompt, utf8Bytes(ask.prompt),
                    ask.origin === null ? null : JSON.stringify(ask.origin));
     this.#sql.exec("UPDATE conversations SET last_at = ? WHERE id = ?", now, conversation);
+    this.#prune();
     return { existing: true, run: runId, conversation };
   }
 
@@ -784,7 +831,11 @@ export class Runs {
     return { lapsed: before?.signed_in === 1 && !signedIn };
   }
 
-  /** Settled runs past the newest `RUNS_KEPT`. */
+  /**
+   * Settled runs past the newest `RUNS_KEPT`, after every write of a run (each admission,
+   * each input that waits) and every settle: so the rows are at most `RUNS_KEPT`, the live
+   * ones and the waiting ones, however runs are queued, cancelled or settled.
+   */
   #prune(): void {
     this.#sql.exec(`DELETE FROM runs WHERE NOT ${UNSETTLED} AND seq <= ` +
                      "(SELECT MAX(seq) FROM runs) - ?", RUNS_KEPT);
@@ -798,21 +849,44 @@ export class Runs {
                      "AND state = 'queued'", now, runId);
   }
 
-  /** The live run's grant, or null. A read. */
+  /** The live run's grant, or null (none once it is cancelled or settled). A read. */
   grant(runId: string): RunGrant | null {
-    const row = this.#sql.exec<GrantRow>(
-      "SELECT g.* FROM run_grants g JOIN runs r ON r.id = g.run WHERE g.run = ? " +
-        `AND r.${LIVE}`, runId).toArray()[0];
+    const row = this.#sql.exec<GrantRow>(`${GRANTS} WHERE g.run = ? AND r.${LIVE}`, runId)
+      .toArray()[0];
     return row === undefined ? null : grantOf(row);
   }
 
-  /** The live run's grant under the live lease `leaseId`, or null: a call from that run. */
-  grantUnder(runId: unknown, leaseId: string, epoch: number): RunGrant | null {
-    if (typeof runId !== "string" || !RUN_ID.test(runId)) {
+  /**
+   * The grant of a call from the live run `runId` under `lease`, presenting `secret` (the
+   * SHA-256 of what its path carried), or null: a run id alone authorizes nothing, and a
+   * cancelled run's grant is gone. A read.
+   */
+  grantFor(runId: unknown, secret: string | undefined, lease: LiveLease): RunGrant | null {
+    if (typeof runId !== "string" || !RUN_ID.test(runId) || secret === undefined) {
       return null;
     }
-    const grant = this.grant(runId);
-    return grant !== null && grant.lease_id === leaseId && grant.epoch === epoch ? grant : null;
+    const row = this.#sql.exec<GrantRow>(`${GRANTS} WHERE g.run = ? AND r.${LIVE}`, runId)
+      .toArray()[0];
+    return row !== undefined && row.secret === secret && row.lease_id === lease.lease_id
+      && row.epoch === lease.epoch ? grantOf(row) : null;
+  }
+
+  /**
+   * The stamp an outside client's live run in its sandbox holds, or null when none is live:
+   * what that sandbox's sync is held to (its grant standing at that stamp). A read.
+   */
+  authorityStamp(client: string): Stamped | null {
+    const row = this.#sql.exec<{ stamp: string }>(
+      `SELECT g.stamp FROM run_grants g JOIN runs r ON r.id = g.run WHERE r.${LIVE} ` +
+        "AND r.client = ? AND g.stamp IS NOT NULL ORDER BY r.seq LIMIT 1", client).toArray()[0];
+    return row === undefined ? null : JSON.parse(row.stamp) as Stamped;
+  }
+
+  /** Whether `runId` is live under `lease`: the runner's own report of it. A read. */
+  liveUnder(runId: unknown, lease: LiveLease): boolean {
+    return typeof runId === "string" && RUN_ID.test(runId) && this.#sql.exec(
+      `SELECT 1 FROM runs WHERE id = ? AND ${LIVE} AND lease_id = ? AND epoch = ?`, runId,
+      lease.lease_id, lease.epoch).toArray().length === 1;
   }
 
   /**
@@ -822,27 +896,28 @@ export class Runs {
    */
   settle(runId: string, state: "succeeded" | "failed" | "unknown", code: string | null,
          exitCode: number | null, now: number): boolean {
-    const grant = this.#sql.exec<GrantRow>("SELECT * FROM run_grants WHERE run = ?", runId)
-      .toArray()[0];
-    const settled = this.#sql.exec(
+    const settled = this.#sql.exec<{ conversation: string; lease_id: string | null;
+                                     epoch: number | null }>(
       "UPDATE runs SET state = ?, code = ?, exit_code = ?, settled_at = ? WHERE id = ? " +
-        `AND ${UNSETTLED} RETURNING conversation`, state, code, exitCode, now,
+        `AND ${UNSETTLED} RETURNING conversation, lease_id, epoch`, state, code, exitCode, now,
       runId).toArray();
     if (settled.length === 0) {
       return false;
     }
+    const lease = settled[0]!;
     this.#sql.exec("DELETE FROM run_inputs WHERE run = ?", runId);
     this.#sql.exec("DELETE FROM run_grants WHERE run = ?", runId);
     this.#sql.exec("UPDATE conversations SET last_at = ? WHERE id = ?", now,
-                   settled[0]!["conversation"] as string);
+                   lease.conversation);
     this.#deps.ended(runId);
-    if (grant !== undefined && this.#sql.exec(
-      "SELECT 1 FROM run_grants WHERE lease_id = ? AND epoch = ?", grant.lease_id, grant.epoch)
-      .toArray().length === 0) {
-      if (this.#deps.lease.release(grant.lease_id, grant.epoch)) {
-        this.#deps.leaseEnded(grant.lease_id);
+    if (lease.lease_id !== null && this.#sql.exec(
+      `SELECT 1 FROM runs WHERE ${LIVE} AND lease_id = ? AND epoch = ?`, lease.lease_id,
+      lease.epoch).toArray().length === 0) {
+      if (this.#deps.lease.release(lease.lease_id, lease.epoch!)) {
+        this.#deps.leaseEnded(lease.lease_id);
       }
     }
+    this.#prune();
     return true;
   }
 
@@ -855,8 +930,7 @@ export class Runs {
   events(runId: string, lease: LiveLease, frames: readonly PostedFrame[],
          end: { readonly exit_code: number | null } | null, now: number):
       { conversation: string; frames: Frame[]; settled: RunState | null } {
-    const grant = this.grantUnder(runId, lease.lease_id, lease.epoch);
-    const row = grant === null ? undefined : this.#run(runId);
+    const row = this.liveUnder(runId, lease) ? this.#run(runId) : undefined;
     if (row === undefined) {
       throw new Refused(RUN_ENDED);
     }
@@ -893,10 +967,11 @@ export class Runs {
       relayed.push(Object.freeze({ v: FRAME_VERSION, run: runId, seq: frame.seq, at: frame.at,
                                    kind: read.kind, event: frame.event }));
     }
+    // The batch is this run's own heartbeat, as it renews the lease.
     this.#sql.exec("UPDATE runs SET last_seq = ?, result = ?, result_cut = ?, error = ?, " +
                      "state = CASE WHEN state = 'queued' THEN 'running' ELSE state END, " +
-                     "started_at = coalesce(started_at, ?) WHERE id = ?",
-                   last, result, resultCut ? 1 : 0, error, now, runId);
+                     "started_at = coalesce(started_at, ?), beat_at = ? WHERE id = ?",
+                   last, result, resultCut ? 1 : 0, error, now, now, runId);
     if (session !== null) {
       this.#sql.exec("UPDATE conversations SET session_id = ? WHERE id = ?", session,
                      row.conversation);
@@ -913,50 +988,60 @@ export class Runs {
   }
 
   /**
-   * In a unit: a live run marked cancelled; its grant and lease, for the sandbox's cancel. A
-   * waiting run is settled `failed` (`cancelled`) at once: it never started.
+   * In a unit: a live run marked cancelled and its grant revoked at once, so its MCP and
+   * model calls are refused from this unit on and its streams end; the run and its lease,
+   * for the sandbox's cancel. It settles `failed` (`cancelled`) from the runner's end, or
+   * `unknown` when its heartbeat lapses. A waiting run is settled `failed` (`cancelled`) at
+   * once: it never started.
    */
-  cancel(runId: string, now: number): RunGrant | null {
+  cancel(runId: string, now: number): LiveRun | null {
     if (this.#sql.exec("SELECT 1 FROM runs WHERE id = ? AND state = 'waiting'", runId)
           .toArray().length === 1) {
       this.settle(runId, "failed", "cancelled", null, now);
       return null;
     }
-    const grant = this.grant(runId);
-    if (grant !== null) {
-      this.#sql.exec("UPDATE runs SET cancel_requested = 1 WHERE id = ?", runId);
+    const live = this.#sql.exec<LiveRun>(
+      `UPDATE runs SET cancel_requested = 1 WHERE id = ? AND ${LIVE} ` +
+        "RETURNING id AS run, lease_id, epoch", runId).toArray()[0];
+    if (live === undefined) {
+      return null;
     }
-    return grant;
+    if (this.#sql.exec("DELETE FROM run_grants WHERE run = ? RETURNING run", runId).toArray()
+          .length === 1) {
+      this.#deps.ended(runId);
+    }
+    return { run: live.run, lease_id: live.lease_id, epoch: live.epoch };
   }
 
   /**
-   * In a unit: the client's live runs ended (a grant change or revoke ends them, ADR-034
-   * decision 6): each marked cancelled and its grant revoked at once, so no call of theirs
-   * passes from this unit on; the ones to cancel in the sandbox.
+   * In a unit: the client's runs ended (a grant change or revoke ends them, ADR-034
+   * decision 6): each settled `failed` (`revoked`) at once, live or waiting, so its grant
+   * is gone, its tier slot and conversation free and its lease given back with the last;
+   * and the client's schedules removed. The live ones, to stop in the sandbox.
    */
-  endClient(client: string, now: number): RunGrant[] {
-    const ended = this.#sql.exec<{ id: string }>(
-      `SELECT id FROM runs WHERE client = ? AND ${UNSETTLED}`, client).toArray()
-      .map(({ id: run }) => this.cancel(run, now)).filter((grant) => grant !== null);
-    for (const grant of ended) {
-      this.#sql.exec("DELETE FROM run_grants WHERE run = ?", grant.run);
-      this.#deps.ended(grant.run);
+  endClient(client: string, now: number): LiveRun[] {
+    const ended = this.#sql.exec<{ id: string; lease_id: string | null; epoch: number | null;
+                                   state: RunState }>(
+      `SELECT id, lease_id, epoch, state FROM runs WHERE client = ? AND ${UNSETTLED}`, client)
+      .toArray();
+    for (const row of ended) {
+      this.settle(row.id, "failed", "revoked", null, now);
     }
     this.#sql.exec("DELETE FROM run_schedules WHERE client = ?", client);
-    return ended;
+    return ended.filter((row) => row.state !== "waiting")
+      .map((row) => ({ run: row.id, lease_id: row.lease_id!, epoch: row.epoch! }));
   }
 
-  /** Every live run's grant. A read. */
-  liveGrants(): RunGrant[] {
-    return this.#sql.exec<GrantRow>(
-      `SELECT g.* FROM run_grants g JOIN runs r ON r.id = g.run WHERE r.${LIVE}`).toArray()
-      .map(grantOf);
+  /** Every live run and its lease. A read. */
+  liveRuns(): LiveRun[] {
+    return this.#sql.exec<LiveRun>(
+      `SELECT id AS run, lease_id, epoch FROM runs WHERE ${LIVE} ORDER BY seq`).toArray();
   }
 
-  /** In a unit: every live run marked cancelled; the ones to cancel in the sandbox. */
-  endAll(now: number): RunGrant[] {
+  /** In a unit: every live run marked cancelled, its grant revoked; to cancel in the sandbox. */
+  endAll(now: number): LiveRun[] {
     return this.#sql.exec<{ id: string }>(`SELECT id FROM runs WHERE ${LIVE}`).toArray()
-      .map(({ id: run }) => this.cancel(run, now)).filter((grant) => grant !== null);
+      .map(({ id: run }) => this.cancel(run, now)).filter((run) => run !== null);
   }
 
   /** The caller's run's receipt, or refused: a client sees its own runs only. A read. */
@@ -986,19 +1071,29 @@ export class Runs {
   }
 
   /**
-   * In a unit: the live runs whose lease is gone (the runner lost: no heartbeat within the
-   * lease's life) settled `unknown`, never replayed.
+   * In a unit: the live runs whose runner was lost settled `unknown`, never replayed: each
+   * whose lease is gone (no heartbeat of the sandbox's within the lease's life), and each
+   * whose own heartbeat lapsed (no report of its own within `LEASE_TTL_S`, while other runs
+   * keep the lease) or whose grant a cancel revoked and whose runner never ended it; then the
+   * lapsed leases' rows gone. It reads the runs' own rows, never their grants, so a run
+   * whose grant is gone is still found. The ones to stop in the sandbox.
    */
-  lost(now: number): string[] {
-    const lease = this.#deps.lease.live(now);
-    const lost = this.#sql.exec<{ run: string }>(
-      "SELECT g.run FROM run_grants g JOIN runs r ON r.id = g.run WHERE r." + LIVE +
-        " AND NOT (g.lease_id = ? AND g.epoch = ?)", lease?.lease_id ?? "", lease?.epoch ?? -1)
-      .toArray().map((row) => row.run);
-    for (const run of lost) {
-      this.settle(run, "unknown", "lost", null, now);
+  lost(now: number): LiveRun[] {
+    const leases = new Set(this.#deps.lease.all(now)
+      .map((lease) => `${lease.lease_id}/${lease.epoch}`));
+    const lost = this.#sql.exec<LiveRun & { beat_at: number }>(
+      `SELECT id AS run, lease_id, epoch, beat_at FROM runs WHERE ${LIVE} ORDER BY seq`)
+      .toArray().filter((row) => !leases.has(`${row.lease_id}/${row.epoch}`)
+                       || row.beat_at + LEASE_TTL_S <= now);
+    for (const row of lost) {
+      this.settle(row.run, "unknown", "lost", null, now);
     }
-    return lost;
+    this.#deps.lease.lapsed(now);
+    const stopped = lost.map(({ run, lease_id, epoch }) => ({ run, lease_id, epoch }));
+    if (stopped.length > 0) {
+      this.#deps.stop(stopped);
+    }
+    return stopped;
   }
 
   // -- THE RUNS LANE: schedules ---------------------------------------------------------
@@ -1071,8 +1166,9 @@ export class Runs {
 
   /**
    * When the lane next has work: the earliest due schedule, only while the owner is
-   * admitted (`require_work`: a suspended owner's schedules wait), and while runs are live
-   * the lease's expiry (a lost runner is settled then). Null for none. A read.
+   * admitted (`require_work`: a suspended owner's schedules wait), a waiting run's turn, and
+   * each live run's lease expiry or own heartbeat's lapse (a lost runner is settled then).
+   * Null for none: with no run live and none due, the lane is disarmed. A read.
    */
   next(now: number, admitted: boolean): number | null {
     const due = !admitted ? null : this.#sql.exec<{ at: number | null }>(
@@ -1081,9 +1177,13 @@ export class Runs {
     if (admitted && this.nextWaiting() !== null) {
       times.push(now);  // a waiting run's turn has come
     }
-    if (this.live() > 0) {
-      const lease = this.#deps.lease.live(now);
-      times.push(lease === null ? now : Math.max(now, lease.expires_at));
+    // A live run is looked at again when its lease or its own heartbeat would lapse.
+    const leases = new Map(this.#deps.lease.all(now)
+      .map((lease) => [`${lease.lease_id}/${lease.epoch}`, lease.expires_at]));
+    for (const row of this.#sql.exec<{ lease_id: string; epoch: number; beat_at: number }>(
+      `SELECT lease_id, epoch, beat_at FROM runs WHERE ${LIVE}`).toArray()) {
+      const expires = leases.get(`${row.lease_id}/${row.epoch}`) ?? now;
+      times.push(Math.max(now, Math.min(expires, row.beat_at + LEASE_TTL_S)));
     }
     return times.length === 0 ? null : Math.min(...times);
   }

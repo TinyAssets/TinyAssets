@@ -17,6 +17,8 @@ import type { SandboxStart } from "../../owner/src/sandbox";
 import { TICKET_REFUSED } from "../../owner/src/socket-shape";
 import { defineAgent } from "../../owner/test/runs-support";
 import { EGRESS_ORIGIN } from "../src/config";
+import { RUNNER_HEADER } from "../src/egress";
+import { EVENT_FRAMES_MAX } from "../../owner/src/run-events";
 import { RUN_TOOLS } from "../src/tools";
 import type { OwnerDO } from "./entry";
 import {
@@ -58,14 +60,21 @@ function starts(who: string): Promise<SandboxStart[]> {
     (instance as OwnerDO).recorder.starts);
 }
 
-/** Each lease's egress token, as the start that opened it got it. */
-const TOKENS = new Map<string, string>();
+/** Each lease's egress token and runner secret, as the start that opened it got them. */
+const TOKENS = new Map<string, { egress: string; runner: string }>();
 
 function tokenOf(start: SandboxStart): string {
   if (start.tokens !== null) {
-    TOKENS.set(start.lease.lease_id, start.tokens.egress_token);
+    TOKENS.set(start.lease.lease_id, { egress: start.tokens.egress_token,
+                                       runner: start.tokens.runner_token });
   }
-  return TOKENS.get(start.lease.lease_id)!;
+  return TOKENS.get(start.lease.lease_id)!.egress;
+}
+
+/** The runner's own secret, as its event and sign-in posts present it. */
+function runnerOf(start: SandboxStart): Record<string, string> {
+  tokenOf(start);
+  return { [RUNNER_HEADER]: TOKENS.get(start.lease.lease_id)!.runner };
 }
 
 async function mcpClient(fetcher: typeof fetch, at: string,
@@ -85,8 +94,7 @@ function outside(tokens: Tokens): Promise<Client> {
 
 /** A run's engine's MCP session on its own door, its egress token set as E2B's transform. */
 function engine(start: SandboxStart): Promise<Client> {
-  return mcpClient((input, init) => call(new Request(input, init)),
-                   `${EGRESS_ORIGIN}/r/${start.run}/mcp`,
+  return mcpClient((input, init) => call(new Request(input, init)), start.urls.mcp,
                    { [SANDBOX_HEADER]: tokenOf(start), [GENERATION_HEADER]: "1" });
 }
 
@@ -95,7 +103,7 @@ function report(start: SandboxStart, body: unknown): Promise<Response> {
   return call(new Request(`${EGRESS_ORIGIN}/r/${start.run}/events`, {
     method: "POST", body: JSON.stringify(body),
     headers: { "Content-Type": "application/json", [SANDBOX_HEADER]: tokenOf(start),
-               [GENERATION_HEADER]: "1" } }));
+               [GENERATION_HEADER]: "1", ...runnerOf(start) } }));
 }
 
 function structured(result: unknown): Record<string, unknown> {
@@ -192,10 +200,31 @@ describe("a run's own doors on the egress host", () => {
       method: "POST", body: "{}", headers: { [SANDBOX_HEADER]: "x.1.y.z",
                                              [GENERATION_HEADER]: "1" } }));
     expect(forged.status).toBe(401);
-    const browser = await call(new Request(`${EGRESS_ORIGIN}/r/${start!.run}/mcp`, {
+    const browser = await call(new Request(start!.urls.mcp, {
       method: "POST", body: "{}", headers: { Origin: url(""), [SANDBOX_HEADER]: tokenOf(start!),
                                              [GENERATION_HEADER]: "1" } }));
     expect(browser.status).toBe(404);
+  }, 60_000);
+
+  it("take a run's events only by the runner's secret, within the post's bounds",
+     async () => {
+    const { who, app } = await owned();
+    await appPost("agent/submit", app.access_token, null, { message: "go", client_send_id: "b-1" });
+    const [start] = await starts(who);
+    const post = (headers: Record<string, string>, frames: unknown[]) =>
+      call(new Request(`${EGRESS_ORIGIN}/r/${start!.run}/events`, {
+        method: "POST", body: JSON.stringify({ frames }),
+        headers: { "Content-Type": "application/json", [SANDBOX_HEADER]: tokenOf(start!),
+                   [GENERATION_HEADER]: "1", ...headers } }));
+    const missing = await post({}, []);
+    expect([missing.status, await missing.json()])
+      .toEqual([401, { error: { code: "runner_token_missing", message: "runner_token_missing" } }]);
+    const many = Array.from({ length: EVENT_FRAMES_MAX + 1 },
+                            (_, i) => ({ seq: i + 1, at: 1, event: {} }));
+    const large = await post(runnerOf(start!), many);
+    expect([large.status, ((await large.json()) as { error: { code: string } }).error.code])
+      .toEqual([413, "events_too_large"]);
+    expect((await post(runnerOf(start!), many.slice(0, 2))).status).toBe(200);
   }, 60_000);
 
   it("take the runner's sign-in report by the sandbox's egress token, and nothing else",
@@ -208,13 +237,19 @@ describe("a run's own doors on the egress host", () => {
         method, body: method === "POST"
           ? JSON.stringify({ signins: [{ engine: "claude-code", signed_in: true }] }) : null,
         headers: { "Content-Type": "application/json", ...headers } }));
-    const sandbox = { [SANDBOX_HEADER]: tokenOf(start!), [GENERATION_HEADER]: "1" };
+    const sandbox = { [SANDBOX_HEADER]: tokenOf(start!), [GENERATION_HEADER]: "1",
+                      ...runnerOf(start!) };
     const reported = await signin(sandbox);
     expect(reported.status).toBe(200);
     expect(await reported.json()).toEqual({ recorded: 1, lapsed: [] });
     expect(start!.urls.signin).toBe(`${EGRESS_ORIGIN}/signin`);
-    expect((await signin({ [SANDBOX_HEADER]: "x.1.y.z", [GENERATION_HEADER]: "1" })).status)
-      .toBe(401);
+    expect((await signin({ [SANDBOX_HEADER]: "x.1.y.z", [GENERATION_HEADER]: "1",
+                           ...runnerOf(start!) })).status).toBe(401);
+    // The egress token alone, without the runner's secret (a CLI's call), is refused.
+    expect((await signin({ [SANDBOX_HEADER]: tokenOf(start!), [GENERATION_HEADER]: "1" }))
+      .status).toBe(401);
+    // A wrong runner secret reaches the object, which refuses it.
+    expect((await signin({ ...sandbox, [RUNNER_HEADER]: "0".repeat(64) })).status).toBe(403);
     expect((await signin({})).status).toBe(401);
     expect((await signin({ ...sandbox, Origin: url("") })).status).toBe(404);
     expect((await signin(sandbox, "GET")).status).toBe(405);
@@ -304,7 +339,38 @@ describe("a run's live events", () => {
       JSON.stringify(state.storage.sql.exec("SELECT * FROM runs").toArray()));
     expect(stored).toContain("\"result\":\"done\"");
     expect(stored).not.toContain("assistant");
+    // Its tail went with its settle: a joiner now sees none of its frames.
+    const after = frames(await socket(await ticketFor(app.access_token, run.conversation_id),
+                                      run.conversation_id));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(after.frames).toEqual([]);
+    after.ws.close(1000, "done");
     early.ws.close(1000, "done");
+    late.ws.close(1000, "done");
+  }, 60_000);
+
+  it("keep a settled run's tail no longer: the live runs' tails have its room", async () => {
+    const { who, app } = await owned();
+    await appPost("agent/submit", app.access_token, null, { message: "a", client_send_id: "t-a" });
+    const b = await (await appPost("agent/submit", app.access_token, null, {
+      message: "b", client_send_id: "t-b" })).json<{ conversation_id: string }>();
+    const [first, second] = await starts(who);
+    // A frame a quarter of a megaunit, one a post (within the post's own bounds).
+    const big = (seq: number) => ({ seq, at: seq,
+                                    event: { type: "assistant", text: "x".repeat(250_000) } });
+    for (let seq = 1; seq <= 4; seq++) {
+      await report(first!, { frames: [big(seq)] });
+    }
+    await report(first!, { frames: [], end: { exit_code: 0 } });
+    // The live run's tail, near the bound: the settled run's took no room of it.
+    for (let seq = 1; seq <= 14; seq++) {
+      await report(second!, { frames: [big(seq)] });
+    }
+    const late = frames(await socket(await ticketFor(app.access_token, b.conversation_id),
+                                     b.conversation_id));
+    await until(() => late.frames.length === 14, "the live run's whole tail");
+    expect(late.frames.map((frame) => frame.seq))
+      .toEqual(Array.from({ length: 14 }, (_, i) => i + 1));
     late.ws.close(1000, "done");
   }, 60_000);
 
@@ -353,11 +419,18 @@ describe("a run's live events", () => {
     const fresh = await ticketFor(app.access_token, first.conversation_id);
     const open = frames(await socket(fresh, first.conversation_id));
     expect((await socket(fresh, first.conversation_id)).status).toBe(403);  // replayed
-    // The sign-out of the device's grant closes its socket, cookie or not.
+    // Another device of the owner's, on its own grant, with its own socket.
+    const other = await signInApp({ owner: who });
+    const kept = frames(await socket(await ticketFor(other.access_token, first.conversation_id),
+                                     first.conversation_id));
+    // The sign-out of the device's grant closes its socket, cookie or not; not the other's.
     const out = await appPost("session/close", app.access_token, null, {});
     expect(out.status).toBe(200);
     await until(() => open.closed() !== null, "the close");
     expect(open.closed()).toBe(4440);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(kept.closed()).toBeNull();
+    kept.ws.close(1000, "done");
     void who;
   }, 60_000);
 });

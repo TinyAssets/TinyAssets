@@ -20,8 +20,11 @@ function entryOf(answer: { entry: Entry } | { conflict: Entry | null }): Entry {
   return answer.entry;
 }
 
-const acquire = (r: Rig, holder = "sandbox-1") =>
-  inFiles(r.stub, {}, (files) => files.leaseAcquire(holder, "a".repeat(64), "b".repeat(64)));
+/** Three token hashes, as a lease's (the secrets never reach the object). */
+const TOKENS = (n = 0) => ({ egress: "a".repeat(63) + n, sync: "b".repeat(63) + n,
+                            runner: "c".repeat(63) + n, deadline: 2e9 });
+const acquire = (r: Rig, holder = "sandbox-1", authority = "owner", n = 0) =>
+  inFiles(r.stub, {}, (files) => files.leaseAcquire(authority, holder, TOKENS(n)));
 const renew = (r: Rig, lease: Pick<Lease, "lease_id" | "epoch">) =>
   inFiles(r.stub, {}, (files) => files.leaseRenew(lease.lease_id, lease.epoch));
 const release = (r: Rig, lease: Pick<Lease, "lease_id" | "epoch">) =>
@@ -45,7 +48,7 @@ describe("the sync lease", () => {
     expect((await failure(() => acquire(r, "sandbox-2"))).message).toBe("the sync lease is held");
     const renewed = await renew(r, first);
     expect(renewed.expires_at).toBeGreaterThanOrEqual(first.expires_at);
-    await sqlIn(r.stub, "UPDATE file_space SET lease_expires = 1");
+    await sqlIn(r.stub, "UPDATE sandbox_leases SET lease_expires = 1");
     expect((await failure(() => renew(r, first))).message)
       .toBe(FENCED);
     const second = await acquire(r, "sandbox-2");
@@ -73,7 +76,7 @@ describe("the sync lease", () => {
     expect(await release(r, lease)).toEqual({ released: false });
     expect((await failure(() => sync(r, lease, [op]))).message).toBe(FENCED);
     const next = await acquire(r);
-    await sqlIn(r.stub, "UPDATE file_space SET lease_expires = 1");
+    await sqlIn(r.stub, "UPDATE sandbox_leases SET lease_expires = 1");
     expect((await failure(() => sync(r, next, [op]))).message).toBe(FENCED);
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_entries")).toEqual([{ n: 0 }]);
   });

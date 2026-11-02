@@ -18,7 +18,7 @@ import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, GENERATION_HEADER, SANDBOX_HEADER }
   from "../../owner/src/network";
 import type { NetworkPlan } from "../../owner/src/network";
 import type { Binding } from "../../owner/src/owner-do";
-import { defineAgent } from "../../owner/test/runs-support";
+import { defineAgent, secretOf } from "../../owner/test/runs-support";
 import type { Bound } from "../src/binder";
 import { type DoorsEnv, EGRESS_ORIGIN } from "../src/config";
 import { EGRESS_DEADLINE_MS, hintsOf, serveEgress } from "../src/egress";
@@ -44,6 +44,8 @@ interface Sandbox {
   readonly key: string;
   /** The run the sandbox's calls name: the one the run door admitted. */
   readonly run: string;
+  /** Its own secret, which its base URLs carry: only its CLI holds them. */
+  readonly secret: string;
 }
 
 /** What the run's start handed the sandbox: the lease, its tokens and network, the env. */
@@ -115,7 +117,7 @@ async function sandbox(apply = true, models: Record<string, unknown> = {
       generation: opened.network.generation }));
   }
   return { owner, session: app.session, token: opened.egress_token, app: app.access_token,
-           connection, model: ids[0]!, bound, opened, key, run };
+           connection, model: ids[0]!, bound, opened, key, run, secret: secretOf(start) };
 }
 
 function bodyOf(box: Pick<Sandbox, "model">, extra: Record<string, unknown> = {}): string {
@@ -123,14 +125,14 @@ function bodyOf(box: Pick<Sandbox, "model">, extra: Record<string, unknown> = {}
                           messages: [{ role: "user", content: "hi" }], ...extra });
 }
 
-function egressRequest(box: Pick<Sandbox, "token" | "connection" | "model" | "run">,
+function egressRequest(box: Pick<Sandbox, "token" | "connection" | "model" | "run" | "secret">,
                        path: string = COMPLETIONS,
                        init: { method?: string; headers?: Record<string, string>;
                                body?: string | null; generation?: string | null } = {}):
     Request {
   const generation = init.generation === undefined ? "1" : init.generation;
   const body = init.body === undefined ? bodyOf(box) : init.body;
-  return new Request(`${EGRESS_ORIGIN}/r/${box.run}/c/${box.connection}${path}`, {
+  return new Request(`${EGRESS_ORIGIN}/r/${box.run}/${box.secret}/c/${box.connection}${path}`, {
     method: init.method ?? "POST",
     headers: {
       "content-type": "application/json",
@@ -210,7 +212,8 @@ async function writeEgress(box: Sandbox): Promise<number> {
     expected_generation: generation,
     policy: { ...policy, egress: { mode: "allowlist", destinations: [] } } });
   return (await leases(box.owner, (sandbox) => sandbox.config({
-    run: box.run, engine: "pi", credential: "api_key", connection: box.connection })))
+    run: box.run, secret: "5e".repeat(32), engine: "pi", credential: "api_key",
+    connection: box.connection })))
     .generation;
 }
 
@@ -475,13 +478,13 @@ describe("the egress door", () => {
     expect(network.network.denyOut).toEqual(["0.0.0.0/0"]);
     expect(network.network.allowOut).toEqual(["*", "egress.tinyassets.io"]);
     expect(box.opened.env["GROQ_BASE_URL"])
-      .toBe(`https://egress.tinyassets.io/r/${box.run}/c/${box.connection}/openai/v1`);
+      .toBe(`https://egress.tinyassets.io/r/${box.run}/${box.secret}/c/${box.connection}/openai/v1`);
     expect(box.opened.env["GROQ_API_KEY"]).toMatch(
       new RegExp(`^ta_ph_${box.connection}_[0-9a-f]{32}$`));
     expect(JSON.stringify(box.opened.env)).not.toContain(box.key);
     // No directory entry is written for either token.
     expect((await env.DIRECTORY.list({ prefix: "l:" })).keys).toEqual([]);
-    const stored = JSON.stringify(await sqlIn(box.owner, "SELECT * FROM file_space"));
+    const stored = JSON.stringify(await sqlIn(box.owner, "SELECT * FROM sandbox_leases"));
     expect(stored).not.toContain(box.token.split(".")[2]);
     expect(stored).toContain(verifyToken(env.ROUTING_MAC_KEY, "egress", box.token)!.hash);
   });
@@ -566,7 +569,7 @@ describe("a refused call", () => {
     expect(theirs.status).toBe(403);
     expect(await reached(stranger)).toBe(false);
     expect(await reservations(stranger)).toEqual([]);
-    await sqlIn(box.owner, "UPDATE file_space SET lease_expires = 1");
+    await sqlIn(box.owner, "UPDATE sandbox_leases SET lease_expires = 1");
     const lapsed = await send(egressRequest(box));
     expect([lapsed.status, await codeOf(lapsed)]).toEqual([401, "egress_lease_closed"]);
     const other = await sandbox();

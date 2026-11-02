@@ -27,7 +27,7 @@ import { signedIn } from "./ledger-support";
 import { failure } from "./support";
 import type { SandboxRun } from "../src/owner-do";
 import type { NetworkPlan } from "../src/network";
-import { ownerRun } from "./runs-support";
+import { hashed, ownerRun, secretOf } from "./runs-support";
 import { bundledSources, RUN_BASICS, runEnv } from "../../doors/src/sources";
 import type { FauxOwnerDO } from "./worker";
 
@@ -62,6 +62,8 @@ const SIGNED_IN = Object.freeze({ engine: "claude-code",
 
 /** A run id a config is made for, when no run is admitted. */
 const RUN_ID = `run_${"0".repeat(32)}`;
+/** Its secret: a config carries it in the run's URLs, whatever the caller hands. */
+const SECRET = "5e".repeat(32);
 
 /** Caps roomy enough that a test's every call fits, each charging up to the most it costs. */
 const ROOMY = Object.freeze({ turn_requests: 10_000, turn_tokens: 1_000_000_000,
@@ -78,6 +80,10 @@ const onKey = (connection: string) =>
 
 /** The run the calls name unless a test says otherwise: the newest one leased. */
 let RUN = "";
+/** Each run's own secret's hash, as its calls present it (`/r/<run>/<secret>/...`). */
+const SECRETS = new Map<string, string>();
+const secretFor = (run: string) =>
+  (SECRETS.has(run) ? { secret: SECRETS.get(run)! } : {});
 /** Each lease's tokens and network, as the start that opened it got them. */
 const OPENED = new Map<string, Omit<Opened, "lease">>();
 
@@ -89,7 +95,7 @@ const OPENED = new Map<string, Omit<Opened, "lease">>();
  * the one the test calls, or a run on the owner's own sign-in when the owner holds none.
  */
 async function leased(r: Gated, apply = true, roomy = true,
-                      run?: Omit<SandboxRun, "run">): Promise<Leased> {
+                      run?: Omit<SandboxRun, "run" | "secret">): Promise<Leased> {
   if (roomy) {
     await capped(r, ROOMY);
   }
@@ -102,6 +108,7 @@ async function leased(r: Gated, apply = true, roomy = true,
   }
   const opened: Opened = { ...OPENED.get(start.lease.lease_id)!, lease: start.lease };
   RUN = start.run;
+  SECRETS.set(start.run, hashed(secretOf(start)));
   const egress = hashOf("egress", opened.egress_token);
   const sync = hashOf("sync", opened.sync_token);
   if (apply) {
@@ -113,7 +120,7 @@ async function leased(r: Gated, apply = true, roomy = true,
     opened, run: start.run, lease_id: opened.lease.lease_id, epoch: opened.lease.epoch, egress,
     sync,
     as: (at = opened.network.generation, token = egress) =>
-      r.bind({ sandbox: { kind: "egress", token, generation: at } }),
+      r.bind({ sandbox: { kind: "egress", token, generation: at, ...secretFor(RUN) } }),
     synced: (token = sync) => r.bind({ sandbox: { kind: "sync", token } }),
   };
 }
@@ -357,7 +364,7 @@ describe("an egress call", () => {
       .toBe("egress_lease_closed");
     expect(await refusedWith(r, before.as(2), connection)).toBe("egress_policy_stale");
     expect(await refusedWith(r, before.as(), connection)).toBe("egress_network_stale");
-    await r.sql("UPDATE file_space SET lease_expires = 1");
+    await r.sql("UPDATE sandbox_leases SET lease_expires = 1");
     expect(await refusedWith(r, before.as(), connection)).toBe("egress_lease_closed");
     const lease = await leased(r);
     expect(await refusedWith(r, before.as(), connection)).toBe("egress_lease_closed");
@@ -892,16 +899,16 @@ describe("a change that ends egress", () => {
     expect(await ended(opened)).toBe(true);
     expect(await rows(r)).toMatchObject([{ state: "open", ended: "policy" }]);
     // A write that leaves the egress table as it was leaves the network current.
-    expect(await r.in((instance) => instance.sandbox.stale())).toBe(false);
+    expect(await r.in((instance) => instance.sandbox.stale(lease.lease_id))).toBe(false);
     await admitted(r, lease, connection);
     // A policy change outside the document (an agent's wake limits: \`Policy.changed\`), neither.
     await r.sql("UPDATE owner_policy SET generation = generation + 1");
-    expect(await r.in((instance) => instance.sandbox.stale())).toBe(false);
+    expect(await r.in((instance) => instance.sandbox.stale(lease.lease_id))).toBe(false);
     await admitted(r, lease, connection);
     const latest = await r.stub.policyRead(r.bind());
     await r.stub.policyWrite(r.session(), { expected_generation: latest.generation, policy: {
       ...latest.policy, egress: { mode: "allowlist", destinations: [] } } });
-    expect(await r.in((instance) => instance.sandbox.stale())).toBe(true);
+    expect(await r.in((instance) => instance.sandbox.stale(lease.lease_id))).toBe(true);
     expect(await refusedWith(r, lease.as(1), connection)).toBe("egress_policy_stale");
     expect(await refusedWith(r, lease.as(2), connection)).toBe("egress_network_stale");
     expect((await failure(() => r.in((instance) => instance.sandbox.networkApplied({
@@ -939,7 +946,7 @@ describe("a change that ends egress", () => {
     expect(await rows(r)).toMatchObject([{ ended: "connection" }, { ended: "lease" }]);
     const last = await leased(r, true, true, onKey(third));
     const c = await admitted(r, last, third);
-    await r.sql("UPDATE file_space SET lease_expires = 1");
+    await r.sql("UPDATE sandbox_leases SET lease_expires = 1");
     await leased(r, true, false, onKey(third));
     // The lapsed lease's run was lost: settled unknown, its streams ended with it.
     expect(await ended(c)).toBe(true);
@@ -973,7 +980,7 @@ describe("the owner's erasure", () => {
       lease_id: start.lease.lease_id, epoch: start.lease.epoch, generation: 1 }));
     const sandbox = bind({ sandbox: { kind: "egress",
                                       token: hashOf("egress", start.tokens!.egress_token),
-                                      generation: 1 } });
+                                      generation: 1, secret: hashed(secretOf(start)) } });
     const open = await stub.egressOpen(sandbox, request(prepared.connection));
     expect(open.ok).toBe(true);
     await runInDurableObject(stub, async (instance: FauxOwnerDO) => {
@@ -1028,7 +1035,8 @@ describe("a reservation", () => {
 });
 
 describe("the sandbox's lease", () => {
-  it("is the file sync lease, with its two MAC'd tokens' hashes, which a close clears",
+  it("is its authority's sandbox lease, with its two MAC'd tokens' hashes and the runner's, " +
+     "which a close clears",
      async () => {
     const r = await gated();
     const lease = await leased(r, false);
@@ -1044,11 +1052,13 @@ describe("the sandbox's lease", () => {
         .toBeNull();
     }
     expect(lease.egress).not.toBe(lease.sync);
-    expect(await r.sql("SELECT lease_id, epoch, egress_token, sync_token, " +
-                         "network_generation FROM file_space"))
-      .toEqual([{ lease_id: lease.lease_id, epoch: lease.epoch, egress_token: lease.egress,
-                  sync_token: lease.sync, network_generation: null }]);
-    expect(JSON.stringify(await r.sql("SELECT * FROM file_space")))
+    expect(await r.sql("SELECT authority, lease_id, epoch, egress_token, sync_token, " +
+                         "network_generation FROM sandbox_leases"))
+      .toEqual([{ authority: "owner", lease_id: lease.lease_id, epoch: lease.epoch,
+                  egress_token: lease.egress, sync_token: lease.sync,
+                  network_generation: null }]);
+    expect(await r.sql("SELECT epoch FROM file_space")).toEqual([{ epoch: lease.epoch }]);
+    expect(JSON.stringify(await r.sql("SELECT * FROM sandbox_leases")))
       .not.toContain(lease.opened.egress_token.split(".")[2]);
     // No run sets a deadline: the tokens die with the sandbox's own continuous-runtime
     // ceiling, never sooner, and the lease's close settles its runs unknown.
@@ -1061,14 +1071,11 @@ describe("the sandbox's lease", () => {
     const renewed = await r.in((instance) => instance.sandbox.renew(held(again)));
     expect(renewed).toMatchObject({ lease_id: again.lease_id, epoch: again.epoch });
     await r.in((instance) => instance.sandbox.close(held(again)));
-    expect(await r.sql("SELECT lease_id, egress_token, sync_token, " +
-                         "network_generation FROM file_space"))
-      .toEqual([{ lease_id: null, egress_token: null, sync_token: null,
-                  network_generation: null }]);
+    expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
     const applied = await leased(r);
-    await r.sql("UPDATE file_space SET lease_expires = 1");
+    await r.sql("UPDATE sandbox_leases SET lease_expires = 1");
     const next = await leased(r, false);
-    expect(await r.sql("SELECT egress_token, network_generation FROM file_space"))
+    expect(await r.sql("SELECT egress_token, network_generation FROM sandbox_leases"))
       .toEqual([{ egress_token: next.egress, network_generation: null }]);
     expect(applied.egress).not.toBe(next.egress);
   });
@@ -1088,8 +1095,8 @@ describe("the sandbox's lease", () => {
   it("hands the sandbox slice its policy and its clients' environment", async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
-    const keyed = { run: RUN_ID, engine: "claude-code", credential: "api_key" as const,
-                    connection };
+    const keyed = { run: RUN_ID, secret: SECRET, engine: "claude-code",
+                    credential: "api_key" as const, connection };
     const config = await r.in((instance) => instance.sandbox.config(keyed));
     expect(config.generation).toBe(1);
     expect(config.egress).toEqual({ mode: "open", destinations: [] });
@@ -1098,7 +1105,7 @@ describe("the sandbox's lease", () => {
                                        DISABLE_AUTOUPDATER: "1" });
     expect(config.inherit).toEqual(RUN_BASICS);
     expect(config.env["ANTHROPIC_BASE_URL"])
-      .toBe(`https://egress.tinyassets.io/r/${RUN_ID}/c/${connection}/`);
+      .toBe(`https://egress.tinyassets.io/r/${RUN_ID}/${SECRET}/c/${connection}/`);
     expect(config.env["ANTHROPIC_API_KEY"]).toMatch(new RegExp(`^ta_ph_${connection}_[0-9a-f]{32}$`));
     expect(JSON.stringify(config)).not.toContain("sk-good");
   });
@@ -1107,7 +1114,8 @@ describe("the sandbox's lease", () => {
     const r = await gated();
     await r.connect("sk-good");
     const config = await r.in((instance) => instance.sandbox.config({ ...SIGNED_IN,
-                                                                      run: RUN_ID }));
+                                                                      run: RUN_ID,
+                                                                      secret: SECRET }));
     // The allow-list alone: HOME and Claude Code's own variables, no key and no base URL.
     expect(config.env).toEqual(runEnv(bundledSources(), "claude-code",
                                       "vendor_login_in_sandbox").env);
@@ -1136,8 +1144,9 @@ describe("the sandbox's lease", () => {
        /active connections/],
     ] as const) {
       expect((await failure(() => r.in((instance) => instance.sandbox.config({
-        ...run, run: RUN_ID } as never)))).message, JSON.stringify(run)).toMatch(message);
+        ...run, run: RUN_ID, secret: SECRET } as never)))).message, JSON.stringify(run))
+        .toMatch(message);
     }
-    expect(await r.sql("SELECT lease_id FROM file_space WHERE lease_id IS NOT NULL")).toEqual([]);
+    expect(await r.sql("SELECT lease_id FROM sandbox_leases")).toEqual([]);
   });
 });

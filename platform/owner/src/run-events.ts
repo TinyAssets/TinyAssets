@@ -17,6 +17,26 @@
 import type { EngineEvents, EventMatcher } from "../../doors/src/sources";
 
 export const FRAME_VERSION = 1;
+
+/**
+ * The runner's events post, bounded so the relay's memory guard counts it whole while the
+ * object holds it (slice R's review M-4; `memory-bound.test.ts`): its body at most
+ * `EVENTS_BODY_MAX` bytes, at most `EVENT_FRAMES_MAX` frames, each frame's JSON at most
+ * `FRAME_UNITS_MAX` UTF-16 code units (the tail's own frame bound). Technical ceilings of
+ * the isolate's memory; a CLI event longer than a frame may be is the runner's to cut,
+ * marked, before it posts it (slice S), the engine's own transcript keeping the whole.
+ */
+export const EVENTS_BODY_MAX = 524_288;
+export const EVENT_FRAMES_MAX = 512;
+export const FRAME_UNITS_MAX = 262_144;
+
+/** Whether an events post is within its frame bounds (the doors' and the object's check). */
+export function eventsBounded(body: unknown): boolean {
+  const frames = typeof body === "object" && body !== null
+    ? (body as { frames?: unknown }).frames : undefined;
+  return Array.isArray(frames) && frames.length <= EVENT_FRAMES_MAX
+    && frames.every((frame) => (JSON.stringify(frame) ?? "").length <= FRAME_UNITS_MAX);
+}
 export const FRAME_KINDS = Object.freeze(["error", "result", "init", "tool_call", "usage",
                                           "event"] as const);
 export type FrameKind = (typeof FRAME_KINDS)[number];

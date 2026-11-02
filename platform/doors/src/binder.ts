@@ -212,26 +212,41 @@ export function bindApiKey(env: DoorsEnv, keyId: string, entry: KeyEntry): Bound
  * the lease and its expiry. It refuses this binding at every door but the egress doors.
  */
 export function bindSandbox(env: DoorsEnv, owner: string, tokenHash: string,
-                            generation: number): Bound {
+                            generation: number, presented: Presented = {}): Bound {
   if (!HEX64.test(tokenHash) || !Number.isSafeInteger(generation) || generation < 1) {
     throw new Error("a sandbox binding needs its token's hash and its network's generation");
   }
   const named = principal(owner);
+  const extra = presented.secret !== undefined
+    ? { secret: createHash("sha256").update(presented.secret, "utf8").digest("hex") }
+    : presented.runner !== undefined
+      ? { runner: createHash("sha256").update(presented.runner, "utf8").digest("hex") } : {};
   return bound(env, { owner: named, caller: named, origin: null,
-                      sandbox: { kind: "egress", token: tokenHash, generation } });
+                      sandbox: { kind: "egress", token: tokenHash, generation, ...extra } });
+}
+
+/**
+ * What a sandbox's call presents beside its egress token: a run's own secret (its path's,
+ * on its model calls and MCP door), or the runner's (`x-ta-runner`, on its event door and
+ * sign-in report). The binding carries only each one's SHA-256, which the object checks.
+ */
+export interface Presented {
+  readonly secret?: string;
+  readonly runner?: string;
 }
 
 /**
  * A run's call on the egress host (its MCP door, its event door): the egress token's
- * binding, as `bindSandbox`'s, with the run its path names. The object resolves the live
- * lease, the run under it and its grant, and holds every door to that grant.
+ * binding, as `bindSandbox`'s, with the run its path names and the secret it presented.
+ * The object resolves the live lease, the run under it and its grant (by the run's secret)
+ * or its runner (by the runner's), and holds every door to that grant.
  */
 export function bindRun(env: DoorsEnv, owner: string, tokenHash: string, generation: number,
-                        run: string): Bound {
+                        run: string, presented: Presented): Bound {
   if (!RUN.test(run)) {
     throw new Error("a run binding names its run");
   }
-  const { binding, stub } = bindSandbox(env, owner, tokenHash, generation);
+  const { binding, stub } = bindSandbox(env, owner, tokenHash, generation, presented);
   return { binding: { ...binding, run }, stub };
 }
 
@@ -240,7 +255,7 @@ export function bindRun(env: DoorsEnv, owner: string, tokenHash: string, generat
  * for this call (`control.ts`): the run doors' admission reads them; no request names them.
  */
 export function withTiers({ binding, stub }: Bound, tiers: unknown): Bound {
-  return tiers === undefined ? { binding, stub } : { binding: { ...binding, tiers }, stub };
+  return { binding: { ...binding, tiers }, stub };
 }
 
 /**

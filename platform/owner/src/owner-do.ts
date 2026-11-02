@@ -102,9 +102,10 @@ import {
 import { AGENT_UNDEFINED, type AgentFile, agentFile, agentFilePath } from "./agent-file";
 import { agentId, AUTHORITY_CHANGED, type Stamped } from "./authority";
 import { type CloseKind, OWNERS_SOCKET, Relay, type SocketState } from "./relay";
-import { type Ask, CONVERSATION_BUSY, type PostedFrame, type RunGrant, type RunReceipt, Runs,
-         RUN_ENDED, type RunSchedule, scheduleAuthority } from "./runs";
+import { type Ask, CONVERSATION_BUSY, type LiveRun, type PostedFrame, type RunReceipt, Runs,
+         RUN_ENDED, type RunSchedule, scheduleAuthority, secretHash } from "./runs";
 import { ENGINE_SIGNINS, SIGNIN_MODELS_CHARS } from "./run-rows";
+import { EVENT_FRAMES_MAX, eventsBounded, FRAME_UNITS_MAX } from "./run-events";
 import { SANDBOX_ABSENT, type SandboxService, started } from "./sandbox";
 import { TICKET_REFUSED } from "./socket-shape";
 import { Tickets } from "./tickets";
@@ -117,7 +118,8 @@ import {
 import { Invalid, Refused } from "./errors";
 import {
   type Change as FileChange, CHUNK_BYTES, type ChunkRef, type ChunkStore, type Content,
-  type Entry, FileConflict, Files, type Lease, type SyncOp, type SyncOutcome, type Usage,
+  type Entry, FileConflict, Files, type Lease, OWNER_AUTHORITY, type SandboxLease, type SyncOp,
+  type SyncOutcome, type Usage,
 } from "./files";
 import { type OwnerStorage, type Write, WriteGate } from "./gate";
 import { type Capability, type Client, type Grant, Grants, holds, type Scope } from "./grants";
@@ -519,6 +521,8 @@ export type HeldLease = Lease & { readonly token: string };
  */
 export interface SandboxRun {
   readonly run: string;
+  /** The run's own secret (64 hex), which its URLs carry: only its CLI holds them. */
+  readonly secret: string;
   readonly engine: string;
   readonly credential: CredentialKind;
   /** An API-key run's connection; absent on the vendor's own sign-in. */
@@ -614,6 +618,8 @@ export const SANDBOX_ONLY = "a sandbox door takes its own sandbox token only";
 export const NO_SANDBOX = "no sandbox lease was opened for this owner";
 /** A sync token that is not the live lease's, or names another lease or epoch. */
 export const SYNC_FENCED = "the sync lease was lost; this sync is fenced";
+/** A sign-in report from an outside client's sandbox: the owner's sign-ins are its own. */
+export const SIGNIN_OWNERS = "signin_owners: only the owner's own sandbox reports its sign-ins";
 
 /**
  * The request's fields are exactly `required`, plus any of `optional`, and none is
@@ -784,6 +790,10 @@ function eventsRequest(request: unknown): {
   if (!Array.isArray(frames)) {
     throw new Invalid("invalid run events");
   }
+  if (!eventsBounded(r)) {
+    throw new Invalid(`a post is at most ${EVENT_FRAMES_MAX} frames, each at most ` +
+                      `${FRAME_UNITS_MAX} units of JSON`);
+  }
   let last = 0;
   for (const frame of frames) {
     const f = fields(frame, ["seq", "at", "event"], [], "invalid run events");
@@ -889,8 +899,9 @@ export function egressPrice(models: readonly ModelInfo[], input: number, output:
 }
 
 /**
- * The sandbox's one lease, owner-internal (G4): no door reaches it. A run's admission opens
- * it, or joins the live one (`runs.ts`): there is no other way to open it, so no path skips
+ * The sandbox leases, one an authority (the owner's own work's, each outside client's),
+ * owner-internal (G4): no door reaches them. A run's admission opens its authority's, or
+ * joins the live one (`runs.ts`): there is no other way to open one, so no path skips
  * admission. What is left here is what slice S's sandbox Worker reports and the tests take
  * through `Internals.sandbox`. Each call is one unit of the write gate, and refused unless
  * the owner is admitted for its class, as a door's binding check refuses.
@@ -908,8 +919,8 @@ export interface SandboxLeases {
     Promise<Lease>;
   /** The network document for the current egress policy, with the egress token. */
   network(egressToken: string): Promise<NetworkPlan>;
-  /** Whether the live lease's network is older than the egress policy: 8b re-applies it. */
-  stale(): Promise<boolean>;
+  /** Whether a live lease's network is older than the egress policy: 8b re-applies it. */
+  stale(leaseId: string): Promise<boolean>;
   /** The owner's egress policy, its generation, and `run`'s environment. */
   config(run: SandboxRun): Promise<SandboxConfig>;
 }
@@ -993,9 +1004,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#connections = new Connections(storage, write, () => env.GATEWAY, owner,
                                         this.#notices, clock);
     this.#egress = new Egress(storage, {
-      lease: (now) => this.#files.sandboxLease(now),
-      runConnection: (run, lease) => {
-        const grant = this.#runs.grantUnder(run, lease.lease_id, lease.epoch);
+      lease: (token, now) => this.#files.leaseByToken("egress", token, now),
+      runConnection: (run, secret, lease) => {
+        const grant = this.#runs.grantFor(run, secret, lease);
         return grant === null ? undefined : grant.connection;
       },
       runUsage: (run) => this.#runs.usage(run),
@@ -1063,13 +1074,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       caps: () => modelSettings(this.#policy.read().document),
       spent: (period, source) => this.#usage.spent(period, source),
       lease: {
-        live: (now) => this.#files.sandboxLease(now),
-        open: (now) => this.#openLease(owner, now),
+        live: (now, authority) => this.#files.sandboxLease(now, authority),
+        all: (now) => this.#files.liveLeases(now),
+        open: (now, authority) => this.#openLease(owner, now, authority),
         release: (leaseId, epoch) => this.#files.leaseRelease(leaseId, epoch).released,
         renew: (leaseId, epoch) => {
           this.#files.leaseRenew(leaseId, epoch);
         },
+        lapsed: (now) => this.#files.leasesLapsed(now),
       },
+      stop: (runs) => this.#cancelInSandbox(runs),
       ended: (run) => {
         this.#egress.end("run", (live) => live.run === run);
         this.#relay.settled(run);
@@ -1101,7 +1115,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       ended: () => {
         this.#egress.drop();
         this.#relay.closeAll("erased");
-        this.#cancelInSandbox(this.#runs.liveGrants());
+        this.#cancelInSandbox(this.#runs.liveRuns());
       },
       wipe: () => this.#gate.wipe(writeTombstone),
       retryMs: internals.eraseRetryMs ?? ERASE_RETRY_MS,
@@ -1225,9 +1239,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   #runAccount(binding: Binding, door: DoorClass): Account {
     const { owner, caller } = this.#bind(binding, door, "run");
     const now = clock();
-    const lease = this.#egress.lease(sandboxBinding(binding.sandbox), now);
-    const grant = lease === null ? null
-      : this.#runs.grantUnder(binding.run, lease.lease_id, lease.epoch);
+    const sandbox = sandboxBinding(binding.sandbox);
+    const lease = this.#egress.lease(sandbox, now);
+    // The run's own secret, as its path carried it: a run id alone authorizes nothing.
+    const grant = lease === null || sandbox.kind !== "egress" ? null
+      : this.#runs.grantFor(binding.run, sandbox.secret, lease);
     if (grant === null) {
       throw new Refused(RUN_ENDED);
     }
@@ -1881,11 +1897,34 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                                                       | null): void {
     this.#bind(binding, door, "sync");
     const sandbox = sandboxBinding(binding.sandbox);
-    const lease = this.#files.sandboxLease(clock());
-    if (lease === null || sandbox.kind !== "sync" || lease.sync_token !== sandbox.token
-        || (request !== null && (request.lease_id !== lease.lease_id
-                                 || request.epoch !== lease.epoch))) {
+    const lease = sandbox.kind === "sync"
+      ? this.#files.leaseByToken("sync", sandbox.token, clock()) : null;
+    if (lease === null || (request !== null && (request.lease_id !== lease.lease_id
+                                                || request.epoch !== lease.epoch))) {
       throw new Refused(SYNC_FENCED);
+    }
+    // A client's sandbox syncs only what that client may read, and writes only what it may
+    // write (as itself, never into the owner's trees: `Files.syncCommit`), by its grant as
+    // its live run stamped it, standing now.
+    if (lease.authority !== OWNER_AUTHORITY) {
+      const stamp = this.#runs.authorityStamp(lease.authority);
+      let grant: Grant;
+      try {
+        if (stamp === null) {
+          throw new Refused(SYNC_FENCED);
+        }
+        grant = this.#grants.standing(stamp.client, stamp.generation, stamp.authenticated_at);
+      } catch (error) {
+        if (error instanceof Refused) {
+          throw new Refused(SYNC_FENCED);
+        }
+        throw error;
+      }
+      const capability = door === "read" ? "read_files" : "write_files";
+      if (grant.mode !== "full" && (stamp!.universe === null || !holds(grant, {
+        universe: stamp!.universe, agent: stamp!.agent, capability }))) {
+        throw new Refused("outside client capability not granted");
+      }
     }
   }
 
@@ -2355,13 +2394,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         return { schedule: this.#runs.unschedule(r["schedule_id"], client).schedule_id };
       }
       const run = this.#runs.receipt(r["run_id"], client).run_id;
-      return { run, client, grant: this.#runs.cancel(run, clock()) };
+      if (this.env.SANDBOX === undefined && this.#runs.grant(run) !== null) {
+        throw new Refused(SANDBOX_ABSENT);  // no CLI could be stopped: refused, loudly
+      }
+      return { run, client, live: this.#runs.cancel(run, clock()) };
     });
     if ("schedule" in found) {
       return { schedule_id: found.schedule, cancelled: true };
     }
-    if (found.grant !== null) {
-      await this.#sandboxCancel(found.grant);
+    if (found.live !== null) {
+      await this.#sandboxCancel(found.live);
     }
     return this.#door(() => this.#runs.receipt(found.run, found.client));
   }
@@ -2377,7 +2419,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       Promise<{ accepted: number; settled: string | null }> {
     const done = await this.#door(() => {
       this.#bind(binding, "reduce", "run");
-      const lease = this.#egress.lease(sandboxBinding(binding.sandbox), clock());
+      const lease = this.#runner(binding);
       if (lease === null) {
         throw new Refused(RUN_ENDED);
       }
@@ -2403,8 +2445,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       Promise<{ recorded: number; lapsed: string[] }> {
     return this.#door(() => {
       this.#bind(binding, "work", "egress");
-      if (this.#egress.lease(sandboxBinding(binding.sandbox), clock()) === null) {
+      const lease = this.#runner(binding);
+      if (lease === null) {
         throw new Refused("egress_lease_closed");
+      }
+      // The owner's own sandbox alone holds the owner's sign-ins.
+      if (lease.authority !== OWNER_AUTHORITY) {
+        throw new Refused(SIGNIN_OWNERS);
       }
       const reports = signinRequest(request);
       const lapsed: string[] = [];
@@ -2417,6 +2464,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       return { recorded: reports.length, lapsed };
     });
+  }
+
+  /**
+   * The live lease the egress token names, when the call also presents that lease's runner
+   * secret (`x-ta-runner`), which only the runner holds: its events and its sign-in reports.
+   * Null otherwise.
+   */
+  #runner(binding: Binding): SandboxLease | null {
+    const sandbox = sandboxBinding(binding.sandbox);
+    const lease = this.#egress.lease(sandbox, clock());
+    return lease !== null && sandbox.kind === "egress" && sandbox.runner !== undefined
+      && sandbox.runner === lease.runner_token ? lease : null;
   }
 
   /**
@@ -2495,10 +2554,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       return { agent: made.agent, unattended: made.unattended,
                admitted: this.#runs.admit({ ...made, file: read.file }, clock(), (chosen) =>
-                 this.#runConfig(chosen.connection === null
-                   ? { run: chosen.run, engine: chosen.engine, credential: chosen.credential }
-                   : { run: chosen.run, engine: chosen.engine, credential: chosen.credential,
-                       connection: chosen.connection }), waiting) };
+                 this.#runConfig({ run: chosen.run, secret: chosen.secret, engine: chosen.engine,
+                                   credential: chosen.credential,
+                                   ...(chosen.connection === null ? {}
+                                     : { connection: chosen.connection }) }), waiting) };
     });
     if (admitted.existing) {
       return admitted.run;
@@ -2513,8 +2572,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         run: admitted.run, agent, conversation: admitted.conversation,
         engine: admitted.engine, credential: admitted.credential, model: admitted.model,
         session_id: admitted.session_id, prompt: admitted.prompt, unattended,
-        lease: admitted.lease, tokens: admitted.tokens, network: admitted.network,
-        config: admitted.config, urls: runUrls(admitted.run) }));
+        authority: admitted.authority, lease: admitted.lease, tokens: admitted.tokens,
+        network: admitted.network, config: admitted.config,
+        urls: runUrls(admitted.run, admitted.secret) }));
     } catch {
       console.error("a run's start had no answer; it is settled unknown");
       answer = null;
@@ -2565,17 +2625,21 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /** Stop a run's CLI through the sandbox; a failure is logged, the run settles regardless. */
-  async #sandboxCancel(grant: Pick<RunGrant, "run" | "lease_id">): Promise<void> {
+  async #sandboxCancel(run: Pick<LiveRun, "run" | "lease_id">): Promise<void> {
+    const sandbox = this.env.SANDBOX;
+    if (sandbox === undefined) {
+      console.error(`${SANDBOX_ABSENT}: run ${run.run}'s CLI could not be stopped`);
+      return;
+    }
     try {
-      await this.env.SANDBOX?.cancel(this.#ownerName(), { run: grant.run,
-                                                          lease_id: grant.lease_id });
+      await sandbox.cancel(this.#ownerName(), { run: run.run, lease_id: run.lease_id });
     } catch {
       console.error("a run's cancel did not reach the sandbox");
     }
   }
 
   /** From a unit: each run's cancel sent to the sandbox once the unit is over. */
-  #cancelInSandbox(grants: readonly RunGrant[]): void {
+  #cancelInSandbox(grants: readonly LiveRun[]): void {
     for (const grant of grants) {
       queueMicrotask(() => void this.#sandboxCancel(grant));
     }
@@ -2799,9 +2863,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     } catch (error) {
       throw error instanceof SourceRecordError ? new Invalid(error.message) : error;
     }
+    if (typeof run.secret !== "string" || !/^[0-9a-f]{64}$/.test(run.secret)) {
+      throw new Invalid("a sandbox run carries its own secret, 64 hex");
+    }
     const keyed = sandboxEnv(this.#connections.egressible(),
                              () => randomBytes(16).toString("hex"),
-                             { ...engine, run: run.run, connection: run.connection ?? null });
+                             { ...engine, run: run.run, secret: run.secret,
+                               connection: run.connection ?? null });
     // The record's own variables are never shaped like a key's, so the two never meet.
     const shared = Object.keys(keyed).find((name) => Object.hasOwn(engine.env, name));
     if (shared !== undefined) {
@@ -2813,19 +2881,24 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * In a unit, as a run's admission finds no live lease: the sandbox's lease taken, its two
-   * tokens minted (they die with the sandbox's continuous-runtime ceiling,
-   * `RUN_DEADLINE_S`, whatever the lease does), and the owner's network made with the egress
+   * In a unit, as a run's admission finds no live lease of its authority: that sandbox's
+   * lease taken, its egress and sync tokens minted (they die with the sandbox's
+   * continuous-runtime ceiling, `RUN_DEADLINE_S`, whatever the lease does, and the lease's
+   * row with them) and the runner's own secret, and the owner's network made with the egress
    * token in its transform. A lease that lapsed is replaced: its streams end with it.
    */
-  #openLease(owner: () => string, now: number) {
+  #openLease(owner: () => string, now: number, authority: string) {
     const deadline = Math.floor(now) + RUN_DEADLINE_S;
     const egress = mintToken(this.env.ROUTING_MAC_KEY, "egress", owner(), deadline);
     const sync = mintToken(this.env.ROUTING_MAC_KEY, "sync", owner(), deadline);
-    const lease = this.#files.leaseAcquire("sandbox", egress.hash, sync.hash);
-    this.#egress.end("lease", (live) => live.lease !== lease.lease_id);
+    const runner = randomBytes(32).toString("hex");
+    const lease = this.#files.leaseAcquire(authority, "sandbox", {
+      egress: egress.hash, sync: sync.hash, runner: secretHash(runner), deadline });
+    const live = new Set(this.#files.liveLeases(now).map((each) => each.lease_id));
+    this.#egress.end("lease", (stream) => !live.has(stream.lease));
     const { document } = this.#policy.read();
-    return { lease, tokens: { egress_token: egress.token, sync_token: sync.token },
+    return { lease, tokens: { egress_token: egress.token, sync_token: sync.token,
+                              runner_token: runner },
              network: networkDocument(document.egress, this.#policy.egressGeneration(),
                                       egress.token) };
   }
@@ -2843,9 +2916,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           this.#egress.end("lease", (live) => live.lease === request.lease_id);
         }
         // Its runs go with it: their runner is gone, so each is settled `unknown`.
-        for (const grant of this.#runs.liveGrants()) {
-          if (grant.lease_id === request.lease_id && grant.epoch === request.epoch) {
-            this.#runs.settle(grant.run, "unknown", "lease_closed", null, clock());
+        for (const run of this.#runs.liveRuns()) {
+          if (run.lease_id === request.lease_id && run.epoch === request.epoch) {
+            this.#runs.settle(run.run, "unknown", "lease_closed", null, clock());
           }
         }
         return { released };
@@ -2869,9 +2942,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         const { document } = this.#policy.read();
         return networkDocument(document.egress, this.#policy.egressGeneration(), egressToken);
       }),
-      stale: () => this.#door(() => {
-        const lease = this.#files.sandboxLease(clock());
-        return lease !== null && lease.network_generation !== this.#policy.egressGeneration();
+      stale: (leaseId) => this.#door(() => {
+        const lease = this.#files.liveLeases(clock()).find((each) => each.lease_id === leaseId);
+        return lease !== undefined
+          && lease.network_generation !== this.#policy.egressGeneration();
       }),
       config: (run) => this.#door(() => {
         this.#admitted("read");
@@ -2893,8 +2967,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const checked = egressRequest(request);
       const lease = this.#egress.lease(sandboxBinding(binding.sandbox), clock());
       // Only the live lease's own run connection is ever refreshed for it.
-      return { r: checked, live: lease !== null && this.#runs.grantUnder(checked.run, lease.lease_id,
-        lease.epoch)?.connection === checked.connection };
+      const sandbox = sandboxBinding(binding.sandbox);
+      return { r: checked, live: lease !== null && sandbox.kind === "egress"
+        && this.#runs.grantFor(checked.run, sandbox.secret, lease)?.connection
+          === checked.connection };
     });
     // Only a live lease's call may refresh its connection's OAuth credential.
     if (live) {

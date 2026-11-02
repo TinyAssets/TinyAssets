@@ -55,13 +55,27 @@ export interface SandboxStart {
   readonly prompt: string;
   /** A run no one waits on: the record's `unattended_argv` applies. */
   readonly unattended: boolean;
+  /**
+   * Whose sandbox the run runs in: the owner's own work's (`owner`), or one outside
+   * client's id. One sandbox an authority (slice R's review H-1): runs of different
+   * authority never share a VM, and a client's sandbox syncs only what that client may.
+   */
+  readonly authority: string;
   readonly lease: { readonly lease_id: string; readonly epoch: number };
-  /** The lease's two tokens, only when this start opened it. */
-  readonly tokens: { readonly egress_token: string; readonly sync_token: string } | null;
+  /**
+   * The lease's tokens, only when this start opened it: the egress token (E2B's transform),
+   * the sync token (the sync agent) and the runner's own secret (`x-ta-runner` on its event
+   * and sign-in posts), which the runner keeps where no CLI can read it.
+   */
+  readonly tokens: { readonly egress_token: string; readonly sync_token: string;
+                     readonly runner_token: string } | null;
   /** The owner's network, its transform carrying the egress token, with `tokens` only. */
   readonly network: NetworkPlan | null;
   readonly config: RunConfig;
-  /** The run's MCP door (the record's `{mcp_url}`), its event door, the sign-in door. */
+  /**
+   * The run's MCP door (the record's `{mcp_url}`, carrying the run's own secret), its event
+   * door and the sign-in door (both the runner's, by its secret).
+   */
   readonly urls: { readonly mcp: string; readonly events: string; readonly signin: string };
 }
 

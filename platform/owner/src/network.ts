@@ -196,26 +196,35 @@ export const DNS_SERVERS: readonly string[] = Object.freeze(["1.1.1.1"]);
 const NAMED_PORTS: readonly number[] = Object.freeze([80, 443]);
 const CONNECTION = /^c[0-9a-f]{24}$/;
 const RUN = /^run_[0-9a-f]{32}$/;
+const SECRET = /^[0-9a-f]{64}$/;
 /** The egress door's path segment before a connection id: `/c/<connection>/...`. */
 const CONNECTION_SEGMENT = "c";
 /** The egress door's path segment before a run id: `/r/<run>/...`. */
 const RUN_SEGMENT = "r";
 
-/** A run's own path on the egress host: `/r/<run>`, before its model calls, MCP and events. */
-export function runPath(run: string): string {
+/**
+ * A run's own path on the egress host: `/r/<run>/<secret>`, before its model calls and its
+ * MCP door. The run's own secret is in it, so only a process holding the run's URLs (its
+ * CLI's environment) calls as that run; without the secret, `/r/<run>` (its event door,
+ * the runner's).
+ */
+export function runPath(run: string, secret?: string): string {
   if (!RUN.test(run)) {
     throw new Invalid("invalid run");
   }
-  return `/${RUN_SEGMENT}/${run}`;
+  if (secret !== undefined && !SECRET.test(secret)) {
+    throw new Invalid("invalid run secret");
+  }
+  return `/${RUN_SEGMENT}/${run}${secret === undefined ? "" : `/${secret}`}`;
 }
 
 /**
  * The run's MCP door (the record's `{mcp_url}`), its event door, and the sandbox's sign-in
  * report door, on the egress host.
  */
-export function runUrls(run: string):
+export function runUrls(run: string, secret: string):
     { readonly mcp: string; readonly events: string; readonly signin: string } {
-  return Object.freeze({ mcp: `${EGRESS_ORIGIN}${runPath(run)}/mcp`,
+  return Object.freeze({ mcp: `${EGRESS_ORIGIN}${runPath(run, secret)}/mcp`,
                          events: `${EGRESS_ORIGIN}${runPath(run)}/events`,
                          signin: `${EGRESS_ORIGIN}/signin` });
 }
@@ -339,6 +348,8 @@ function stem(name: string): string {
 export interface EngineRun {
   /** The run itself, whose path its base URLs carry, so each call names its run. */
   readonly run: string;
+  /** The run's own secret, which its base URLs carry beside it. */
+  readonly secret: string;
   readonly credential: "vendor_login_in_sandbox" | "api_key";
   readonly connection: string | null;
   readonly api_key_env: Readonly<Record<string, {
@@ -353,13 +364,13 @@ export interface EngineRun {
  * the path so that each call names its run, and the door holds it to that run's own
  * connection: simultaneous runs each spend on their own.
  */
-export function egressBaseUrl(connection: string, egress: EgressScope | null, run: string):
-    string {
+export function egressBaseUrl(connection: string, egress: EgressScope | null, run: string,
+                              secret: string): string {
   if (!CONNECTION.test(connection)) {
     throw new Invalid("invalid connection");
   }
   const path = egress === null ? "/" : new URL(egress.base_url).pathname;
-  return `${EGRESS_ORIGIN}${runPath(run)}/${CONNECTION_SEGMENT}/${connection}${
+  return `${EGRESS_ORIGIN}${runPath(run, secret)}/${CONNECTION_SEGMENT}/${connection}${
     path === "/" ? "/" : path.replace(/\/+$/, "")}`;
 }
 
@@ -397,7 +408,7 @@ export function sandboxEnv(connections: readonly Egressible[], random: () => str
     }
     env[name] = value;
   };
-  const base = egressBaseUrl(connection, egress, run.run);
+  const base = egressBaseUrl(connection, egress, run.run, run.secret);
   const part = random();
   if (!/^[0-9a-f]{16,64}$/.test(part)) {
     throw new Error("a placeholder's random part is 16 to 64 hex");
@@ -409,8 +420,8 @@ export function sandboxEnv(connections: readonly Egressible[], random: () => str
   set(`${stem(provider)}_API_KEY`, placeholder);
   const names = run.api_key_env[provider]!;
   if (names.base_url !== null) {
-    set(names.base_url, names.base === "connection" ? egressBaseUrl(connection, null, run.run)
-      : base);
+    set(names.base_url, names.base === "connection"
+      ? egressBaseUrl(connection, null, run.run, run.secret) : base);
   }
   set(names.api_key, placeholder);
   return Object.freeze(env);

@@ -21,17 +21,17 @@
  * unmodified engines, their sessions in the owner's files (ADR-034), so what the owner's
  * object holds is its own bounded rows only, whatever its agents do.
  *
- * The worst case is 42.3% of the limit (slice R: 4,229,662,416.75 bytes), about 770 MB under
- * half; with every raise the limits audit proposes, 49.95% (4,994,849,278.75 bytes,
- * `limits-proposed.test.ts`), 5.2 MB under half.
+ * The worst case is 42.3% of the limit (slice R: 4,231,966,416.75 bytes), about 768 MB under
+ * half; with every raise the limits audit proposes, 49.97% (4,997,153,278.75 bytes,
+ * `limits-proposed.test.ts`), 2.8 MB under half.
  * ADR-034's deletion slice took out the agent's thread rows, their live and usage rows,
  * the run receipts and the model turns' counters and owners, and Lifecycle's wake job and
  * key per live thread (slice D: 40.6%, 4,064,822,714 bytes; G4 was 46.3%). The runs slice
  * (R) added `runs` (85.0 MB, its waiting runs with it), `run_grants` (9.7 MB),
  * `conversations` (30.7 MB), `run_schedules` (26.1 MB), `run_inputs` (9.8 MB, the
  * conversations' input queue, sized to what the rest left), `socket_tickets` (3.1 MB),
- * `engine_signins` (0.4 MB) and `platform_tiers`, 164.9 MB in all, and took out
- * `egress_runs`. A new table, or a raised bound, must stay under half the
+ * `sandbox_leases` (2.3 MB, one sandbox an authority), `engine_signins` (0.4 MB) and
+ * `platform_tiers`, 167.2 MB in all, and took out `egress_runs`. A new table, or a raised bound, must stay under half the
  * limit, or the guard fails.
  */
 import { readdirSync, readFileSync } from "node:fs";
@@ -153,6 +153,7 @@ const CALLS_OPEN = constant("schema", "CALLS_OPEN");
 /** The runs' bounds (slice R): live runs, settled receipts kept, and their rows' widths. */
 const RUNS_CEILING = constant("tier", "RUNS_CEILING");
 const RUNS_KEPT = constant("run-rows", "RUNS_KEPT");
+const RUN_ID_CHARS = constant("run-rows", "RUN_ID_CHARS");
 const RESULT_BYTES = constant("run-rows", "RESULT_BYTES");
 const ERROR_BYTES = constant("run-rows", "ERROR_BYTES");
 const CONVERSATIONS_KEPT = constant("run-rows", "CONVERSATIONS_KEPT");
@@ -359,16 +360,21 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     egress_reservations: { rows: E.receiptsKept + E.refusalsKept
                                   + E.open,
                            bytes: ROW + EGRESS_PATH_MAX + 32 + 32 + 64 + 64 + 9 + 64 + 10 + 7
-                             + 256 + 25 + 7 + 64 + 30 + 16 * 8,
+                             + 256 + 25 + 7 + 64 + 30 + 16 * 8 + RUN_ID_CHARS,
                            by: "receiptsKept admitted, refusalsKept refused and open at once, " +
                              "each its path (visible ASCII, a byte a character), ids, source, " +
                              "charge, rule, periods, served model and numbers" },
     // Runs (slice R): settled receipts kept and the live ones, each its widest; a live run's
     // grant; the conversations; the runs lane's schedules; the tier numbers kept; tickets.
     runs: { rows: RUNS_KEPT + RUNS_CEILING + QUEUE_ROWS,
-            bytes: ROW + RESULT_BYTES + ERROR_BYTES + 4 * STAMP_CHARS + 256 + 512,
+            bytes: ROW + RESULT_BYTES + ERROR_BYTES + 4 * STAMP_CHARS + 256 + 512 + 32 + 16,
             by: "RUNS_KEPT settled receipts, RUNS_CEILING live and QUEUE_ROWS waiting, each " +
-              "its result, error, stamp, model, ids and counters at their widest" },
+              "its result, error, stamp, model, ids, counters, lease and heartbeat at their " +
+              "widest" },
+    // The sandbox leases (review H-1): one an authority, opened only for a live run.
+    sandbox_leases: { rows: RUNS_CEILING, bytes: ROW + 64 + 32 + 8 + 128 + 16 + 3 * 64 + 8,
+                      by: "RUNS_CEILING, each its authority, lease id, epoch, holder, " +
+                        "times, three token hashes and network generation" },
     // The inputs waiting for their conversation (`run_inputs`): QUEUE_ROWS rows holding
     // QUEUE_BYTES of input in all, however it is spread. Each row is counted at its even
     // share and two overflow pages more: a row's in-place share is at most a third of a
@@ -381,8 +387,9 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     engine_signins: { rows: ENGINE_SIGNINS, bytes: ROW + 64 + SIGNIN_MODELS_CHARS + 16,
                       by: "ENGINE_SIGNINS, each its engine and models (visible ASCII)" },
     run_grants: { rows: RUNS_CEILING,
-                  bytes: ROW + 4 * STAMP_CHARS + ORIGIN_CHARS + 512 + 128,
-                  by: "one a live run, its stamp, origin, scopes and connection" },
+                  bytes: ROW + 4 * STAMP_CHARS + ORIGIN_CHARS + 512 + 128 + 64,
+                  by: "one a live run, its stamp, origin, scopes, connection and secret's " +
+                    "hash" },
     conversations: { rows: CONVERSATIONS_KEPT, bytes: ROW + 128 + 64 + 64 + 256 + 128,
                      by: "CONVERSATIONS_KEPT, each its agent, source, client and session id" },
     run_schedules: { rows: SCHEDULES_KEPT,

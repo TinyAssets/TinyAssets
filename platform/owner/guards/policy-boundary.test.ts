@@ -57,6 +57,7 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   platform_tiers: Object.freeze(["owner/src/tier.ts", SCHEMA]),
   socket_tickets: Object.freeze(["owner/src/tickets.ts", SCHEMA]),
   run_inputs: Object.freeze(["owner/src/runs.ts", SCHEMA]),
+  sandbox_leases: Object.freeze(["owner/src/files.ts", SCHEMA]),
   engine_signins: Object.freeze(["owner/src/runs.ts", SCHEMA]),
 });
 

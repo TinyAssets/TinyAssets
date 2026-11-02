@@ -9,10 +9,12 @@
  * **Open** (`open`, in the door's unit, after the binding check admitted the owner for
  * `work`), each refusal one of the fixed codes (`EgressCode`):
  * - the live lease, by the hash of the egress token's secret (`egress_lease_closed`);
- * - the run the call's path names is live under that lease, and the connection is the one
- *   its run grant holds (`egress_run_connection`, `runs.ts`): a run never spends on a
- *   connection it was not given, nor on another simultaneous run's, and a run on the
- *   vendor's own sign-in may call none;
+ * - the run the call's path names is live under that lease, its grant standing (a cancel
+ *   revokes it at once) and the call presenting that run's own secret, which only its CLI's
+ *   environment holds (`egress_run_closed`): a run id alone authorizes nothing, so no
+ *   process in the sandbox spends as another run; and the connection is the one its run
+ *   grant holds (`egress_run_connection`, `runs.ts`): a run never spends on a connection it
+ *   was not given, and a run on the vendor's own sign-in may call none;
  * - the egress generation the request's transform carries, and the one the sandbox's
  *   network was last applied under, are the current one (`egress_policy_stale`,
  *   `egress_network_stale`): a write that changes the egress table leaves egress refused,
@@ -116,7 +118,11 @@ export interface LiveStream {
  * transform set beside it.
  */
 export type SandboxBinding =
-  | { readonly kind: "egress"; readonly token: string; readonly generation: number }
+  | { readonly kind: "egress"; readonly token: string; readonly generation: number;
+      /** The SHA-256 of the run's own secret its path carried (`/r/<run>/<secret>/...`). */
+      readonly secret?: string;
+      /** The SHA-256 of the runner's secret (`x-ta-runner`): the runner's own doors. */
+      readonly runner?: string }
   | { readonly kind: "sync"; readonly token: string };
 
 export interface EgressRequest {
@@ -230,12 +236,15 @@ export interface EgressModel {
 
 /** What `open` reads beside its own rows, each at the open's unit. */
 export interface EgressDeps {
-  readonly lease: (now: number) => SandboxLease | null;
+  /** The live lease whose egress token's hash is `token`, or null. */
+  readonly lease: (token: string, now: number) => SandboxLease | null;
   /**
-   * The connection of `run`'s grant, when `run` is live under the lease (`undefined`
-   * otherwise); null for a run on the vendor's own sign-in.
+   * The connection of `run`'s grant, when `run` is live under the lease, its grant standing
+   * and `secret` the hash of its own secret (`undefined` otherwise); null for a run on the
+   * vendor's own sign-in.
    */
-  readonly runConnection: (run: string, lease: SandboxLease) => string | null | undefined;
+  readonly runConnection: (run: string, secret: string | undefined, lease: SandboxLease) =>
+    string | null | undefined;
   /** `run`'s requests, tokens and cost so far (its `runs` row). */
   readonly runUsage: (run: string) => { requests: number; tokens: number; cost: number };
   readonly generation: () => number;
@@ -329,11 +338,26 @@ export function egressRequest(value: unknown): EgressRequest {
 
 /** The binding's sandbox fields, exactly, or `Invalid`. */
 export function sandboxBinding(value: unknown): SandboxBinding {
-  if (plain(value, "generation,kind,token") && value["kind"] === "egress"
+  // At most one of a run's own secret and the runner's, each a SHA-256 hex.
+  const egress = plain(value, "generation,kind,token") ? "none"
+    : plain(value, "generation,kind,secret,token") ? "secret"
+      : plain(value, "generation,kind,runner,token") ? "runner" : null;
+  if (egress !== null && plain(value, Object.keys(value as object).sort().join())
+      && value["kind"] === "egress"
       && typeof value["token"] === "string" && HEX64.test(value["token"])
       && typeof value["generation"] === "number" && Number.isSafeInteger(value["generation"])
       && value["generation"] >= 1) {
-    return { kind: "egress", token: value["token"], generation: value["generation"] };
+    const secret = value["secret"];
+    const runner = value["runner"];
+    if (egress === "secret" && typeof secret === "string" && HEX64.test(secret)) {
+      return { kind: "egress", token: value["token"], generation: value["generation"], secret };
+    }
+    if (egress === "runner" && typeof runner === "string" && HEX64.test(runner)) {
+      return { kind: "egress", token: value["token"], generation: value["generation"], runner };
+    }
+    if (egress === "none") {
+      return { kind: "egress", token: value["token"], generation: value["generation"] };
+    }
   }
   if (plain(value, "kind,token") && value["kind"] === "sync"
       && typeof value["token"] === "string" && HEX64.test(value["token"])) {
@@ -401,9 +425,7 @@ export class Egress {
    * the one presented. Read before anything else an open does (an OAuth refresh among it).
    */
   lease(sandbox: SandboxBinding, now: number): SandboxLease | null {
-    const lease = this.#deps.lease(now);
-    return lease !== null && sandbox.kind === "egress" && lease.egress_token === sandbox.token
-      ? lease : null;
+    return sandbox.kind === "egress" ? this.#deps.lease(sandbox.token, now) : null;
   }
 
   /**
@@ -429,7 +451,7 @@ export class Egress {
     }
     // A run spends only on the connection its own grant holds; a signed-in run on none, and
     // never on another simultaneous run's.
-    const runConnection = this.#deps.runConnection(request.run, lease);
+    const runConnection = this.#deps.runConnection(request.run, sandbox.secret, lease);
     if (runConnection === undefined) {
       return refuse("egress_run_closed");
     }

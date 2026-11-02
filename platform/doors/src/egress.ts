@@ -1,11 +1,13 @@
 /**
  * The egress door (gateway research §5.4 step 4; tasks 4 G4):
- * `egress.tinyassets.io/r/<run>/c/<connection>/*`, where a run's model clients send their
- * providers' own APIs with placeholder keys (`network.ts`'s `sandboxEnv`). The run in the
- * path is what the object holds the call to: that run's own connection (slice R). The same
- * host serves each run's MCP door and event door (`/r/<run>/mcp`, `/r/<run>/events`,
- * `serveRun`), and the runner's report of the engines' sign-ins (`/signin`,
- * `serveSignin`), by the same token.
+ * `egress.tinyassets.io/r/<run>/<secret>/c/<connection>/*`, where a run's model clients send
+ * their providers' own APIs with placeholder keys (`network.ts`'s `sandboxEnv`). The run in
+ * the path is what the object holds the call to (that run's own connection, slice R), and
+ * the run's own secret beside it is what lets a call act as that run: only the run's CLI
+ * holds its URLs. The same host serves each run's MCP door (`/r/<run>/<secret>/mcp`), and
+ * the runner's own doors, by the runner's secret (`x-ta-runner`), which no CLI holds: a
+ * run's event door (`/r/<run>/events`) and the engines' sign-in report (`/signin`), all by
+ * the same egress token.
  *
  * 1. **The identity.** E2B's transform sets the sandbox's egress token (`x-ta-sandbox`)
  *    and the egress generation its network was made under (`x-ta-network-generation`)
@@ -40,8 +42,9 @@
 import { HINT_KEYS } from "../../gateway/src/api-rules";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, type EgressCode, GENERATION_HEADER, type Outcome,
          SANDBOX_HEADER } from "../../owner/src/network";
+import { EVENTS_BODY_MAX, eventsBounded } from "../../owner/src/run-events";
 
-import { type Bound, bindRun, bindSandbox, rebound } from "./binder";
+import { type Bound, bindRun, bindSandbox, type Presented, rebound } from "./binder";
 import { jsonObject } from "./body";
 import { type DoorsEnv, EGRESS_ORIGIN } from "./config";
 import { ownerGate } from "./control";
@@ -50,9 +53,14 @@ import { serveMcp } from "./mcp";
 import { refusal, runProfile } from "./tools";
 
 /** A run's model call: its run, a connection id, then the provider's own path. */
-const ROUTE = /^\/r\/(run_[0-9a-f]{32})\/c\/(c[0-9a-f]{24})(\/.*)$/;
-/** A run's own doors: its MCP door and its event door. */
-const RUN_DOOR = /^\/r\/(run_[0-9a-f]{32})\/(mcp|events)$/;
+const ROUTE = /^\/r\/(run_[0-9a-f]{32})\/([0-9a-f]{64})\/c\/(c[0-9a-f]{24})(\/.*)$/;
+/** A run's MCP door, by its own secret. */
+const MCP_DOOR = /^\/r\/(run_[0-9a-f]{32})\/([0-9a-f]{64})\/mcp$/;
+/** A run's event door, the runner's. */
+const EVENTS_DOOR = /^\/r\/(run_[0-9a-f]{32})\/events$/;
+/** The runner's own secret, beside the egress token, on its event and sign-in posts. */
+export const RUNNER_HEADER = "x-ta-runner";
+const RUNNER = /^[0-9a-f]{64}$/;
 /** The runner's report of the engines' sign-ins, for the sandbox as a whole. */
 const SIGNIN_DOOR = "/signin";
 const GENERATION = /^[1-9][0-9]{0,14}$/;
@@ -168,31 +176,48 @@ async function sandboxToken(request: Request, env: DoorsEnv):
   return { owner: parsed.owner, hash: parsed.hash, generation: Number(generation) };
 }
 
+/** The runner's secret its call presents, or the refusal: none, or not 64 hex. */
+function runnerOf(request: Request): Response | Presented {
+  const runner = request.headers.get(RUNNER_HEADER);
+  return runner !== null && RUNNER.test(runner) ? { runner }
+    : refused("runner_token_missing", 401);
+}
+
 /**
  * A run's own doors (ADR-034 decisions 6 and 10): its MCP door, the table's tools but the
- * run tools, every one held by the object to the run's grant (`runProfile`); and its event
- * door, the runner's `POST` of its frames and its end (`runEvents`). Only the engine and
- * the runner in the sandbox call them, so an `Origin` (a browser's) is refused.
+ * run tools, every one held by the object to the run's grant (`runProfile`), by the run's
+ * own secret; and its event door, the runner's `POST` of its frames and its end
+ * (`runEvents`), by the runner's secret, each frame and the post bounded (`EVENTS_BODY_MAX`,
+ * `EVENT_FRAMES_MAX`, `FRAME_UNITS_MAX`). Only the engine and the runner in the sandbox call
+ * them, so an `Origin` (a browser's) is refused.
  */
-async function serveRun(request: Request, env: DoorsEnv, run: string, door: string):
-    Promise<Response> {
+async function serveRun(request: Request, env: DoorsEnv, run: string,
+                        door: { mcp: string } | "events"): Promise<Response> {
   if (request.headers.get("Origin") !== null) {
     return refused("not_found", 404);
+  }
+  const presented = door === "events" ? runnerOf(request) : { secret: door.mcp };
+  if (presented instanceof Response) {
+    return presented;
   }
   const verified = await sandboxToken(request, env);
   if (verified instanceof Response) {
     return verified;
   }
-  const bound = bindRun(env, verified.owner, verified.hash, verified.generation, run);
-  if (door === "mcp") {
+  const bound = bindRun(env, verified.owner, verified.hash, verified.generation, run,
+                        presented);
+  if (door !== "events") {
     return serveMcp(request, bound, runProfile());
   }
   if (request.method !== "POST") {
     return refused("method_not_allowed", 405);
   }
-  const body = await jsonObject(request, EGRESS_BODY_MAX);
+  const body = await jsonObject(request, EVENTS_BODY_MAX);
   if (body instanceof Response) {
     return body;
+  }
+  if (!eventsBounded(body)) {
+    return refused("events_too_large", 413);
   }
   try {
     return Response.json(await bound.stub.runEvents(bound.binding, body as never),
@@ -218,11 +243,16 @@ async function serveSignin(request: Request, env: DoorsEnv): Promise<Response> {
   if (request.method !== "POST") {
     return refused("method_not_allowed", 405);
   }
+  const presented = runnerOf(request);
+  if (presented instanceof Response) {
+    return presented;
+  }
   const verified = await sandboxToken(request, env);
   if (verified instanceof Response) {
     return verified;
   }
-  const bound = bindSandbox(env, verified.owner, verified.hash, verified.generation);
+  const bound = bindSandbox(env, verified.owner, verified.hash, verified.generation,
+                            presented);
   const body = await jsonObject(request, EGRESS_BODY_MAX);
   if (body instanceof Response) {
     return body;
@@ -245,9 +275,13 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   if (url.origin !== EGRESS_ORIGIN) {
     return refused("not_found", 404);
   }
-  const door = RUN_DOOR.exec(url.pathname);
-  if (door !== null && url.search === "") {
-    return serveRun(request, env, door[1]!, door[2]!);
+  const mcp = MCP_DOOR.exec(url.pathname);
+  if (mcp !== null && url.search === "") {
+    return serveRun(request, env, mcp[1]!, { mcp: mcp[2]! });
+  }
+  const events = EVENTS_DOOR.exec(url.pathname);
+  if (events !== null && url.search === "") {
+    return serveRun(request, env, events[1]!, "events");
   }
   if (url.pathname === SIGNIN_DOOR && url.search === "") {
     return serveSignin(request, env);
@@ -260,11 +294,12 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   if (verified instanceof Response) {
     return verified;
   }
-  const bound = bindSandbox(env, verified.owner, verified.hash, verified.generation);
+  const bound = bindSandbox(env, verified.owner, verified.hash, verified.generation,
+                            { secret: route[2]! });
   const { binding, stub } = bound;
   const run = route[1]!;
-  const connection = route[2]!;
-  const path = `${route[3]!}${url.search}`;
+  const connection = route[3]!;
+  const path = `${route[4]!}${url.search}`;
   const length = request.headers.get("content-length");
   const bytesHint = length !== null && LENGTH.test(length) ? Number(length) : null;
   // A model call's body is read here, once: the object reserves the call for the model it

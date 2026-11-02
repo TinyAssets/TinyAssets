@@ -615,16 +615,14 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "inline_bytes INTEGER NOT NULL CHECK (inline_bytes >= 0), " +
       "intents INTEGER NOT NULL CHECK (intents >= 0), " +
       "intent_chunks INTEGER NOT NULL CHECK (intent_chunks >= 0), " +
-      // The sync lease: its claim token, fencing epoch (only rising), holder and expiry.
-      // The sandbox's simultaneous runs share it; each run's connection is its own run
-      // grant's (`run_grants`, migration 12), never the lease's.
-      "lease_id TEXT, epoch INTEGER NOT NULL CHECK (epoch >= 0), holder TEXT, " +
-      "lease_expires REAL NOT NULL, " +
+      // The sandbox leases' fencing epoch, only rising: each lease (`sandbox_leases`,
+      // migration 12, one an authority) takes the next.
+      "epoch INTEGER NOT NULL CHECK (epoch >= 0), " +
       // The retention every kept row is marked by, and how far housekeeping has re-marked
       // the rows for a newer one.
       "retained_keep INTEGER NOT NULL, retained_recent INTEGER NOT NULL, " +
       "retained_days INTEGER NOT NULL, retain_cursor TEXT)",
-    `INSERT INTO file_space VALUES (1, NULL, 0, 0, 0, 0, 0, 0, 0, 0, NULL, 0, NULL, 0, ${
+    `INSERT INTO file_space VALUES (1, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, ${
       FILE_DEFAULTS.keep_versions}, ${FILE_DEFAULTS.keep_recent}, ${
       FILE_DEFAULTS.retention_days}, NULL)`,
     "CREATE TRIGGER file_epoch_rises BEFORE UPDATE OF epoch ON file_space " +
@@ -1037,12 +1035,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     ADMISSION_TABLE,
     "INSERT INTO owner_admission (only, state, reasons) VALUES (1, 'admitted', '[]')",
   ]),
-  // 11: the egress door (tasks 4 G4; egress.ts). The sandbox's one lease (`file_space`'s
-  // sync lease) also holds the SHA-256 of its two tokens' secrets (the egress token, which
-  // only E2B's transform carries, and the sync agent's sync token; each names its owner
-  // itself, so no directory entry maps it), and the egress generation its sandbox's network
-  // was last applied under, null until the sandbox slice applies one. The owner's policy
-  // row keeps that egress generation, moved only by a write that changes the egress table.
+  // 11: the egress door (tasks 4 G4; egress.ts). The owner's policy row keeps the egress
+  // generation, moved only by a write that changes the egress table (each sandbox lease,
+  // migration 12, keeps the one its network was last applied under).
   // A connection keeps where its credential may be forwarded (`egress`: its sealed base
   // URL, endpoints and pi-ai's metered call, no secret), from its setup check. Each sandbox
   // call the object admits is an open row until the egress door settles it; a refused one
@@ -1054,14 +1049,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // admitted and `refusalsKept` refused rows are kept, and at most `EGRESS_LIMITS.open` are
   // open at once; a path is visible ASCII, as the door sends it.
   Object.freeze([
-    "ALTER TABLE file_space ADD COLUMN egress_token TEXT CHECK (egress_token IS NULL OR " +
-      "(length(egress_token) = 64 AND egress_token NOT GLOB '*[^0-9a-f]*'))",
-    "ALTER TABLE file_space ADD COLUMN sync_token TEXT CHECK (sync_token IS NULL OR " +
-      "(length(sync_token) = 64 AND sync_token NOT GLOB '*[^0-9a-f]*'))",
     "ALTER TABLE owner_policy ADD COLUMN egress_generation INTEGER NOT NULL DEFAULT 1 " +
       "CHECK (egress_generation >= 1)",
-    "ALTER TABLE file_space ADD COLUMN network_generation INTEGER CHECK " +
-      "(network_generation IS NULL OR network_generation >= 1)",
     "ALTER TABLE connections ADD COLUMN egress TEXT CHECK (egress IS NULL OR " +
       "length(egress) <= 16384)",
     "CREATE TABLE egress_reservations (id TEXT PRIMARY KEY CHECK (length(id) = 32), " +
@@ -1124,9 +1113,16 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // its usage counters, which only the egress triggers below move (a call's charge, held to
   // settled, counts to its run as it counts to its source's day and month). At most
   // `RUNS_CEILING` are live (`queued` or `running`) at once, the most any tier record may
-  // set; the tier's own number is admission's (`tier.ts`). A live run holds one run grant
-  // (`run_grants`): the lease it runs under, its initiator's stamp and origin, its scopes
-  // and its own connection (none on the vendor's own sign-in), deleted at its settle. A
+  // set; the tier's own number is admission's (`tier.ts`). A live run names the sandbox
+  // lease it runs under and its own last heartbeat (`beat_at`), and holds one run grant
+  // (`run_grants`): its initiator's stamp and origin, its scopes, its own connection (none
+  // on the vendor's own sign-in) and the SHA-256 of its own secret, deleted at its settle or
+  // cancel (its authority ends at once; the runner's end still settles it). The sandbox
+  // leases (`sandbox_leases`): one sandbox an authority, the owner's own work's or one
+  // outside client's, so runs of different authority never share a VM; each lease its
+  // fencing epoch, its expiry and its tokens' deadline, the SHA-256 of its egress, sync and
+  // runner tokens, and the egress generation its network was last applied under; at most
+  // `RUNS_CEILING`, since a lease is opened only for a live run and a lapsed one goes. A
   // conversation (`conversations`) keeps its engine and that engine's session id, at most
   // `CONVERSATIONS_KEPT` (the least recently run one with no live run goes first). The
   // `runs` lane's rows (`run_schedules`, at most `SCHEDULES_KEPT`): a launch at a time, a
@@ -1165,8 +1161,16 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       `error TEXT CHECK (error IS NULL OR length(CAST(error AS BLOB)) <= ${ERROR_BYTES}), ` +
       "code TEXT CHECK (code IS NULL OR length(code) BETWEEN 1 AND 64), " +
       "exit_code INTEGER, created_at REAL NOT NULL, started_at REAL, settled_at REAL, " +
+      // The sandbox lease a live run runs under, and its last heartbeat.
+      "lease_id TEXT CHECK (lease_id IS NULL OR length(lease_id) = 32), epoch INTEGER, " +
+      "beat_at REAL, " +
       "CHECK ((state IN ('waiting', 'queued', 'running')) = (settled_at IS NULL)), " +
-      "CHECK ((initiator = 'client') = (client IS NOT NULL)))",
+      "CHECK (state NOT IN ('queued', 'running') OR (lease_id IS NOT NULL " +
+      "AND epoch IS NOT NULL AND beat_at IS NOT NULL)), " +
+      // A client's own run names its client; the owner's names none; a schedule's or the
+      // mail's names the client that set it, if one did.
+      "CHECK (initiator != 'client' OR client IS NOT NULL), " +
+      "CHECK (initiator != 'owner' OR client IS NULL))",
     "CREATE UNIQUE INDEX runs_by_request ON runs (request) WHERE request IS NOT NULL",
     "CREATE INDEX runs_live ON runs (state) WHERE state IN ('queued', 'running')",
     "CREATE INDEX runs_by_conversation ON runs (conversation, seq)",
@@ -1203,9 +1207,31 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER engine_signins_full BEFORE INSERT ON engine_signins WHEN (SELECT " +
       `COUNT(*) FROM engine_signins) >= ${ENGINE_SIGNINS} BEGIN SELECT RAISE(ABORT, ` +
       `'engine_signins_full: ${ENGINE_SIGNINS} engines are known'); END`,
+    "CREATE TABLE sandbox_leases (authority TEXT PRIMARY KEY CHECK (authority = 'owner' " +
+      "OR length(authority) = 64), " +
+      "lease_id TEXT NOT NULL CHECK (length(lease_id) = 32 AND lease_id NOT GLOB " +
+      "'*[^0-9a-f]*'), epoch INTEGER NOT NULL CHECK (epoch >= 1), " +
+      "holder TEXT NOT NULL CHECK (length(holder) BETWEEN 1 AND 128), " +
+      "lease_expires REAL NOT NULL, deadline REAL NOT NULL, " +
+      "egress_token TEXT NOT NULL CHECK (length(egress_token) = 64 AND egress_token " +
+      "NOT GLOB '*[^0-9a-f]*'), " +
+      "sync_token TEXT NOT NULL CHECK (length(sync_token) = 64 AND sync_token " +
+      "NOT GLOB '*[^0-9a-f]*'), " +
+      "runner_token TEXT NOT NULL CHECK (length(runner_token) = 64 AND runner_token " +
+      "NOT GLOB '*[^0-9a-f]*'), " +
+      "network_generation INTEGER CHECK (network_generation IS NULL OR " +
+      "network_generation >= 1), CHECK (egress_token != sync_token AND egress_token != " +
+      "runner_token AND sync_token != runner_token)) WITHOUT ROWID",
+    "CREATE TRIGGER sandbox_leases_full BEFORE INSERT ON sandbox_leases WHEN (SELECT " +
+      `COUNT(*) FROM sandbox_leases) >= ${RUNS_CEILING} BEGIN SELECT RAISE(ABORT, ` +
+      `'sandbox_leases_full: ${RUNS_CEILING} sandboxes are leased'); END`,
+    "CREATE TRIGGER sandbox_leases_fenced BEFORE UPDATE OF authority, lease_id, epoch, " +
+      "egress_token, sync_token, runner_token, deadline ON sandbox_leases BEGIN " +
+      "SELECT RAISE(ABORT, 'a lease never changes what it was taken as'); END",
     "CREATE TABLE run_grants (" +
       `run TEXT PRIMARY KEY CHECK (length(run) = ${RUN_ID_CHARS}), ` +
-      "lease_id TEXT NOT NULL CHECK (length(lease_id) = 32), epoch INTEGER NOT NULL, " +
+      // The SHA-256 of the run's own secret, which only its CLI's environment holds.
+      "secret TEXT NOT NULL CHECK (length(secret) = 64 AND secret NOT GLOB '*[^0-9a-f]*'), " +
       "stamp TEXT CHECK (stamp IS NULL OR length(stamp) <= 1024), " +
       "origin TEXT CHECK (origin IS NULL OR (length(origin) <= 256 " +
       "AND origin NOT GLOB '*[^ -~]*')), " +
