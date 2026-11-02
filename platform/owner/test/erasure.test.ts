@@ -10,13 +10,14 @@ import {
   evictDurableObject, runDurableObjectAlarm, runInDurableObject,
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { Lifecycle } from "agents/lifecycle";
 import { describe, expect, it } from "vitest";
 
 import {
   OWNER_ERASED, OWNER_SUSPENDED, PLATFORM_CALLER, PLATFORM_ONLY, PLATFORM_RESERVED,
   tombstoned, writeTombstone,
 } from "../src/admission";
-import { ERASING } from "../src/erasure";
+import { ERASE_RETRY_MS, ERASING } from "../src/erasure";
 import { WriteGate } from "../src/gate";
 import { Grants } from "../src/grants";
 import { clock, Ledger } from "../src/ledger";
@@ -59,6 +60,44 @@ const call = (r: Rig, door: string, binding: Binding) =>
 const tables = (r: Rig) => sqlIn(r.stub(), "SELECT name FROM sqlite_master WHERE " +
                                    "type = 'table' AND name NOT LIKE '\\_cf\\_%' ESCAPE " +
                                    "'\\' ORDER BY name");
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** What a failing `disableAlarms` rejects with: the erasure's last step before the wipe. */
+const ALARMS_FAILED = "the alarm could not be disabled (the test's)";
+
+/**
+ * Lifecycle's `disableAlarms` failing its next `times` calls, as a storage fault would, so
+ * the erasure stops after its second step; returns the undo. Called inside the object.
+ */
+function failing(times: number): () => void {
+  const prototype = Lifecycle.prototype as unknown as Record<string, unknown>;
+  const original = prototype["disableAlarms"] as (...args: unknown[]) => Promise<void>;
+  let left = times;
+  prototype["disableAlarms"] = function (this: unknown, ...args: unknown[]) {
+    if (left > 0) {
+      left--;
+      return Promise.reject(new Error(ALARMS_FAILED));
+    }
+    return original.apply(this, args);
+  };
+  return () => {
+    prototype["disableAlarms"] = original;
+  };
+}
+
+/** Reset the object as a crash would, and wait until a new instance answers. */
+async function crash(r: Rig): Promise<void> {
+  await runInDurableObject(r.stub(), (_instance, state) => state.abort("crash"))
+    .catch(() => undefined);
+  for (let tries = 0; tries < 100; tries++) {
+    if (await runInDurableObject(r.stub(), () => true).catch(() => false)) {
+      return;
+    }
+    await sleep(10);
+  }
+  throw new Error("no new instance answered");
+}
 
 const until = async (check: () => Promise<boolean>, what: string) => {
   for (let i = 0; i < 500; i++) {
@@ -183,6 +222,124 @@ describe("the owner's erasure", () => {
         (await failure(() => r.stub().policyRead(r.bind(null)))).message);
       await until(async () => JSON.stringify(await tables(r)) ===
                     '[{"name":"owner_admission"}]', `the wipe after step ${step}`);
+      expect((await failure(() => r.stub().policyRead(r.bind(null)))).message)
+        .toBe(OWNER_ERASED);
+    }
+  }, 60_000);
+
+  it("resumes at the object's start alone: no door, no job", async () => {
+    for (const step of [1, 2]) {
+      const r = await rig();
+      // A mark with no job beside it: only the start can resume it.
+      await r.in((_instance, state) => state.storage.sql.exec(
+        "INSERT INTO owner_erasure (only, started_at, step) VALUES (1, 1, ?)", step));
+      await crash(r);
+      // Read straight from the storage, never through a door's binding check.
+      await until(async () => JSON.stringify(await tables(r)) ===
+                    '[{"name":"owner_admission"}]', `the start's wipe after step ${step}`);
+    }
+  }, 60_000);
+
+  it("resumes by its own job alone: no restart, no door", async () => {
+    const r = await rig();
+    const out = await r.in(async (instance, state) => {
+      const restore = failing(1);
+      const answer = await instance.erasure.erase().then(() => "wiped",
+                                                         (error: Error) => error.message);
+      restore();
+      return { answer, alarm: await state.storage.getAlarm(),
+               step: state.storage.sql.exec<{ step: number }>(
+                 "SELECT step FROM owner_erasure").one().step };
+    });
+    expect(out).toMatchObject({ answer: ALARMS_FAILED, step: 2 });
+    expect(out.alarm).not.toBeNull();
+    await sqlIn(r.stub(), "UPDATE cf_agents_jobs SET time = 0 WHERE id = 'owner-erasure/erase'");
+    await runDurableObjectAlarm(r.stub());
+    await until(async () => JSON.stringify(await tables(r)) === '[{"name":"owner_admission"}]',
+                "the job's wipe");
+  }, 30_000);
+
+  it("is tried again later when its job fails through Lifecycle's attempts", async () => {
+    const r = await rig();
+    const restore = await r.in(async (instance) => {
+      const undo = failing(Infinity);
+      await instance.erasure.erase().catch(() => undefined);
+      return undo;
+    });
+    await sqlIn(r.stub(), "UPDATE cf_agents_jobs SET time = 0 WHERE id = 'owner-erasure/erase'");
+    const before = Date.now();
+    await runDurableObjectAlarm(r.stub()).catch(() => false);
+    // The job's failure moves it a retry interval on, never dropped, never due at once.
+    await until(async () => {
+      const [job] = await sqlIn(r.stub(), "SELECT time FROM cf_agents_jobs WHERE id = " +
+                                          "'owner-erasure/erase'");
+      return job !== undefined && Number(job["time"]) >= before + ERASE_RETRY_MS - 5_000;
+    }, "the job rescheduled");
+    await r.in(() => restore());
+  }, 60_000);
+
+  it("resumes from a refused door, at most once a retry interval", async () => {
+    const r = await rig();
+    await r.in(async (instance) => {
+      const restore = failing(1);
+      await instance.erasure.erase().catch(() => undefined);
+      restore();
+    });
+    expect((await failure(() => r.stub().policyRead(r.bind(null)))).message).toBe(ERASING);
+    await sleep(200);
+    expect(await r.in((instance) => instance.erasure.erased)).toBe(false);  // within its wait
+    await sleep(500);
+    expect((await failure(() => r.stub().policyRead(r.bind(null)))).message).toBe(ERASING);
+    await until(() => r.in((instance) => instance.erasure.erased), "the door's resume");
+  }, 30_000);
+
+  it("disables Lifecycle's alarm before it wipes the owner", async () => {
+    const r = await rig();
+    const seen = await r.in(async (instance, state) => {
+      const original = state.storage.deleteAll.bind(state.storage);
+      let alarm: number | null | undefined;
+      Object.defineProperty(state.storage, "deleteAll", {
+        configurable: true,
+        value: async (...args: Parameters<DurableObjectStorage["deleteAll"]>) => {
+          alarm = await state.storage.getAlarm();
+          return original(...args);
+        },
+      });
+      await instance.erasure.erase();
+      return alarm;
+    });
+    expect(seen).toBeNull();
+    expect(await tables(r)).toEqual([{ name: "owner_admission" }]);
+  }, 30_000);
+
+  it("resumes its wipe at the next start after a wipe that failed or hung, and never counts " +
+     "itself erased before the wipe", async () => {
+    for (const how of ["fails", "hangs"] as const) {
+      const r = await rig();
+      const out = await r.in(async (instance, state) => {
+        Object.defineProperty(state.storage, "deleteAll", {
+          configurable: true,
+          value: how === "fails" ? () => Promise.reject(new Error("the wipe failed (the test's)"))
+            : () => new Promise(() => undefined),
+        });
+        const erasing = instance.erasure.erase().then(() => "wiped",
+                                                     (error: Error) => error.message);
+        const answer = how === "fails" ? await erasing : "pending";
+        await until(async () => state.storage.sql.exec<{ step: number }>(
+          "SELECT step FROM owner_erasure").toArray()[0]?.step === 2
+          && (await state.storage.getAlarm()) === null, "the alarm's end");
+        return { answer, erased: instance.erasure.erased };
+      });
+      expect(out).toEqual({ answer: how === "fails" ? "the wipe failed (the test's)" : "pending",
+                            erased: false });
+      // Every run ended and recorded so; the owner's data still there, no alarm left.
+      expect(await sqlIn(r.stub(), "SELECT step FROM owner_erasure")).toEqual([{ step: 2 }]);
+      expect(await sqlIn(r.stub(), "SELECT 1 FROM collection_rows")).toHaveLength(1);
+      expect((await failure(() => r.stub().policyRead(r.bind(null)))).message)
+        .toBe(ERASING);
+      await crash(r);
+      await until(async () => JSON.stringify(await tables(r)) ===
+                    '[{"name":"owner_admission"}]', `the wipe that ${how}`);
       expect((await failure(() => r.stub().policyRead(r.bind(null)))).message)
         .toBe(OWNER_ERASED);
     }

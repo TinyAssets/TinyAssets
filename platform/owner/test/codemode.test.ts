@@ -64,6 +64,22 @@ describe("code mode's executor", () => {
     await sandbox.close();
   });
 
+  it("is refused by the hooks Worker under no name, an empty one or one past 512 " +
+     "characters, before any sandbox is reached", async () => {
+    const exchange = async () => [];
+    for (const name of ["", "x".repeat(513), 7, null]) {
+      const answer = await env.HOOKS.codemodeExecute(name as string, {} as never,
+                                                    exchange as never)
+        .then(() => "ran", (error: Error) => error.message);
+      expect(answer, String(name).slice(0, 8)).toMatch(/a code mode execution is named/);
+    }
+    // 512 characters is a name: the request itself is then refused by the sandbox, not here.
+    const named = await env.HOOKS.codemodeExecute("x".repeat(512), {} as never,
+                                                  exchange as never)
+      .then(() => "ran", (error: Error) => error.message);
+    expect(named).not.toMatch(/a code mode execution is named/);
+  });
+
   it("is off in the owner's policy until the owner turns it on, its one switch", () => {
     const base = { entries: [], egress: { mode: "open", destinations: [] },
                    spend: { daily: null, monthly: null, transaction: null, ask_above: null,

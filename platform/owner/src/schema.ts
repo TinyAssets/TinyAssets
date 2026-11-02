@@ -264,6 +264,14 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "deleted_at REAL CHECK (deleted_at IS NULL OR disabled_reason IS NOT NULL), " +
       "UNIQUE (command_center_id, outside_client, outside_family))",
     "CREATE INDEX outside_identities ON outside_agents (outside_client, outside_family)",
+    // A registration's id, universe and client never change: its client's grant row counts
+    // it (`outside_clients.agents`, moved only on insert and delete), and its universe is
+    // where a scoped stamp acts.
+    "CREATE TRIGGER outside_agents_stamped BEFORE UPDATE OF agent_id, command_center_id, " +
+      "outside_client ON outside_agents WHEN NEW.agent_id IS NOT OLD.agent_id " +
+      "OR NEW.command_center_id IS NOT OLD.command_center_id " +
+      "OR NEW.outside_client IS NOT OLD.outside_client BEGIN " +
+      "SELECT RAISE(ABORT, 'a registration never changes its id, universe or client'); END",
     // AUTOINCREMENT: a seq is never reused once its message is evicted, so no cursor
     // ever points at a different message.
     "CREATE TABLE ledger_messages (" +
