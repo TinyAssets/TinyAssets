@@ -26,6 +26,7 @@ import {
 import { signedIn } from "./ledger-support";
 import { failure } from "./support";
 import type { SandboxRun } from "../src/owner-do";
+import { bundledSources, RUN_BASICS, runEnv } from "../../doors/src/sources";
 import type { FauxOwnerDO } from "./worker";
 
 interface Leased {
@@ -1068,6 +1069,10 @@ describe("the sandbox's lease", () => {
     const config = await r.in((instance) => instance.sandbox.config(keyed));
     expect(config.generation).toBe(1);
     expect(config.egress).toEqual({ mode: "open", destinations: [] });
+    // The run's whole environment: HOME, the record's own variables and the key's.
+    expect(config.env).toMatchObject({ HOME: "{home}", CLAUDE_CONFIG_DIR: "{home}/.claude",
+                                       DISABLE_AUTOUPDATER: "1" });
+    expect(config.inherit).toEqual(RUN_BASICS);
     expect(config.env["ANTHROPIC_BASE_URL"]).toBe(`https://egress.tinyassets.io/c/${connection}/`);
     expect(config.env["ANTHROPIC_API_KEY"]).toMatch(new RegExp(`^ta_ph_${connection}_[0-9a-f]{32}$`));
     expect(JSON.stringify(config)).not.toContain("sk-good");
@@ -1077,10 +1082,17 @@ describe("the sandbox's lease", () => {
     const r = await gated();
     await r.connect("sk-good");
     const config = await r.in((instance) => instance.sandbox.config(SIGNED_IN));
-    expect(config.env).toEqual({});
+    // The allow-list alone: HOME and Claude Code's own variables, no key and no base URL.
+    expect(config.env).toEqual(runEnv(bundledSources(), "claude-code",
+                                      "vendor_login_in_sandbox").env);
+    expect(config.env["HOME"]).toBe("{home}");
+    expect(Object.keys(config.env).filter((name) => /API_KEY|BASE_URL|TOKEN/.test(name)))
+      .toEqual([]);
+    expect(config.inherit).toEqual(RUN_BASICS);
     const opened = await r.in((instance) => instance.sandbox.open({ holder: "h",
                                                                      run: SIGNED_IN }));
-    expect(opened.env).toEqual({});
+    expect(opened.env).toEqual(config.env);
+    expect(opened.inherit).toEqual(RUN_BASICS);
   });
 
   it("refuses a run its record does not allow, before any lease is taken", async () => {

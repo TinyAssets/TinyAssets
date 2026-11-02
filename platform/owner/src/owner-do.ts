@@ -431,7 +431,15 @@ export interface SandboxRun {
 export interface SandboxConfig {
   readonly generation: number;
   readonly egress: EgressPolicy;
+  /**
+   * The run's whole environment, its allow-list (`runEnv`, `sandboxEnv`): `HOME` and the
+   * record's own variables, each a template the runner fills (`{home}`, `{agent}`), and on
+   * an API key its one connection's key variables. The runner starts from an empty
+   * environment and sets exactly these, keeping only `inherit` of the sandbox's own.
+   */
   readonly env: Readonly<Record<string, string>>;
+  /** The process basics the run keeps from the sandbox template's environment. */
+  readonly inherit: readonly string[];
 }
 
 export interface SyncCommitRequest extends LeaseRequest {
@@ -675,8 +683,9 @@ export interface OpenedLease {
   readonly lease: Lease;
   /** E2B's network for the owner's egress policy, the egress token in its transform. */
   readonly network: NetworkPlan;
-  /** The model clients' environment: base URLs on the egress door, placeholder keys. */
+  /** The run's whole environment and the basics it keeps, as `SandboxConfig` has them. */
   readonly env: Readonly<Record<string, string>>;
+  readonly inherit: readonly string[];
 }
 
 /**
@@ -1892,11 +1901,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       } catch (error) {
         throw error instanceof SourceRecordError ? new Invalid(error.message) : error;
       }
+      const keyed = sandboxEnv(this.#connections.egressible(),
+                               () => randomBytes(16).toString("hex"),
+                               { ...engine, connection: run.connection ?? null });
+      // The record's own variables are never shaped like a key's, so the two never meet.
+      const shared = Object.keys(keyed).find((name) => Object.hasOwn(engine.env, name));
+      if (shared !== undefined) {
+        throw new Error(`a run's record and its key both set ${shared}`);
+      }
       const { document } = this.#policy.read();
       return { generation: this.#policy.egressGeneration(), egress: document.egress,
-               env: sandboxEnv(this.#connections.egressible(),
-                               () => randomBytes(16).toString("hex"),
-                               { ...engine, connection: run.connection ?? null }) };
+               env: Object.freeze({ ...engine.env, ...keyed }), inherit: engine.inherit };
     };
     const leases: SandboxLeases = {
       open: (request) => this.#door(() => {
@@ -1920,7 +1935,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         this.#egress.end("lease", (live) => live.lease !== lease.lease_id);
         return { egress_token: egress.token, sync_token: sync.token, lease,
                  network: networkDocument(set.egress, set.generation, egress.token),
-                 env: set.env };
+                 env: set.env, inherit: set.inherit };
       }),
       renew: (request) => this.#door(() => {
         this.#admitted("work");

@@ -756,6 +756,14 @@ R, S, M and W.
     apart from its source's metered model call.
   - Every API-key source's sealed auth header and scheme is held to the one pi-ai sends
     (`sentHeaders`, learned with no network).
+  - Review round 3 (approved at `e41874fe1`): every settings template is read whole, so
+    no spelling hides a key: a `.json` file by its parse, its real keys and decoded values
+    checked; any other file as lines of bare keys, with a quoted key, an escape or an
+    inline table refused outright (no TOML parser is in the lock). The round's bypasses (a
+    `\u` escape, TOML quoted keys) are a guard, `doors/guards/sources-attacks-r3.test.ts`.
+    The lease's `open` and `config` hand the runner the run's whole environment (`env`:
+    `HOME`, the record's variables, an API-key run's key variables) and `inherit`, which
+    slice S sets as is. The free-call guard reads its APIs from the rules (`ruledApis`).
   - **Technical ceiling (limits audit):** Kimi's prompt rides its argument
     (`--prompt={prompt}`, the CLI reads no prompt from stdin), so it is bounded by Linux's
     per-argument limit, `MAX_ARG_STRLEN`, 128 KiB. The bound is the kernel's, not ours: the

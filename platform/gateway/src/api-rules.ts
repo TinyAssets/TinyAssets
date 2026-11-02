@@ -249,6 +249,11 @@ const RULES: Readonly<Record<string, ApiRules>> = Object.freeze({
   "google-vertex": GOOGLE,
 });
 
+/** Every API a sandbox call may be metered on: the ids the rules are keyed by. */
+export function ruledApis(): readonly string[] {
+  return Object.keys(RULES);
+}
+
 /** The API's rules, or null: a call on it is never metered. */
 export function apiRules(api: string): ApiRules | null {
   return Object.hasOwn(RULES, api) ? RULES[api]! : null;

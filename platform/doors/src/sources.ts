@@ -437,12 +437,64 @@ const CREDENTIAL_NAME =
 const CREDENTIAL_KEY = /^(?:env|environment)$|api_?key|token|secret|password|credential|helper/i;
 /** A settings key that moves where a run's calls go: never in a signed-in run's files. */
 const ENDPOINT_KEY = /base_?url|endpoint/i;
+/** A bare key, dotted or not, as a line of a settings template that is not JSON writes it. */
+const BARE_KEY = /^[A-Za-z0-9_{}-]+(?:\.[A-Za-z0-9_{}-]+)*$/;
 /**
- * A template's keys: JSON's (`"key":`) and TOML's or dotenv's (`key =`, `[table]`), as a
- * pattern's source: each scan makes its own global regex, which keeps its own position.
+ * A settings template's real keys and string values, so no spelling hides one: a `.json`
+ * file's from its parse (escapes decoded), walked whole; any other file's from its lines,
+ * which may each be blank, a `#` comment, a table header or a `key = value` pair whose key
+ * is bare and whose value holds no `=` (no inline table) and no backslash (no escape).
+ * There is no TOML parser in the lock, so a quoted key, an escape or any other line is
+ * refused (null), never read past.
  */
-const TEMPLATE_KEYS =
-  '"([^"\\\\]{1,128})"\\s*:|^\\s*\\[?([A-Za-z_][A-Za-z0-9_.-]{0,127})\\]?\\s*=?';
+function settingsOf(path: string, text: string):
+    { readonly keys: readonly string[]; readonly values: readonly string[] } | null {
+  const keys: string[] = [];
+  const values: string[] = [];
+  if (path.endsWith(".json")) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return null;
+    }
+    const walk = (node: unknown): void => {
+      if (typeof node === "string") {
+        values.push(node);
+      } else if (Array.isArray(node)) {
+        node.forEach(walk);
+      } else if (object(node)) {
+        for (const [key, item] of Object.entries(node)) {
+          keys.push(key);
+          walk(item);
+        }
+      }
+    };
+    walk(parsed);
+    return { keys, values };
+  }
+  if (text.includes("\\")) {
+    return null;
+  }
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#")) {
+      continue;
+    }
+    const table = /^\[\[?([^\]]*)\]\]?$/.exec(line);
+    const pair = /^([^=]*?)\s*=\s*([^=]*)$/.exec(line);
+    const key = table?.[1] ?? pair?.[1];
+    if (key === undefined || !BARE_KEY.test(key)) {
+      return null;
+    }
+    keys.push(...key.split("."));
+    if (pair !== null && table === null) {
+      values.push(pair[2]!);
+    }
+  }
+  return { keys, values };
+}
+
 /**
  * The process basics a run keeps from the sandbox template's own environment, beside
  * `HOME`, which the runner sets to the run's engine home (`{home}`): nothing else of the
@@ -722,8 +774,14 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   for (const [what, text] of settings) {
     const kinds = what.startsWith("cli.per_credential.")
       ? [what.split(".")[2] as CredentialKind] : credential;
-    for (const found of text.matchAll(new RegExp(TEMPLATE_KEYS, "gm"))) {
-      const key = found[1] ?? found[2] ?? "";
+    const path = what === "cli.mcp.template" ? ("file" in mcp ? mcp.file! : "")
+      : what.slice(what.indexOf(".files.") + ".files.".length);
+    const read = settingsOf(path, text);
+    if (read === null) {
+      return check.fail(`${what} is a settings file read whole: a .json file that parses, or ` +
+                        "lines of bare keys (no quoted key, escape or inline table)");
+    }
+    for (const key of read.keys) {
       if (CREDENTIAL_KEY.test(key)) {
         check.fail(`${what} sets ${key}: a settings file carries no credential, credential ` +
                    "helper or environment block");
@@ -735,7 +793,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     for (const kind of kinds) {
       const named = (forbidEnv[kind] ?? []).find((entry) => new RegExp(
         `(?<![A-Z0-9_])${entry.endsWith("*") ? entry.slice(0, -1) : `${entry}(?![A-Z0-9_])`}`)
-        .test(text));
+        .test([text, ...read.keys, ...read.values].join("\n")));
       if (named !== undefined) {
         check.fail(`${what} names ${named}, which the ${kind} credential forbids`);
       }

@@ -222,7 +222,7 @@ A `cli` record SHALL have no single-inference `invoke` (ADR-033 decision 2). It 
 - **THEN** reading it fails loudly naming the record, and CI fails; the runner fills a tool filter with at least one tool and refuses an empty list, so no run is a backend with its tools off
 
 #### Scenario: A record that would carry a credential
-- **WHEN** a CLI record's own variable is shaped like a credential or an endpoint, is `HOME` or a process basic, or its settings-file template holds an environment block, a credential-shaped key or helper (`apiKeyHelper`), a variable its credential's `forbid_env` names, or, in a file a signed-in run gets, a key that moves its endpoint
+- **WHEN** a CLI record's own variable is shaped like a credential or an endpoint, is `HOME` or a process basic, or a settings-file template cannot be read whole (a `.json` file that does not parse; in any other file a quoted key, an escape, an inline table or a line that is not a bare key or table), or its real keys or values hold an environment block, a credential-shaped key or helper (`apiKeyHelper`), a variable its credential's `forbid_env` names, or, in a file a signed-in run gets, a key that moves its endpoint
 - **THEN** reading it fails loudly naming the record, and CI fails
 
 #### Scenario: A sign-in with regions

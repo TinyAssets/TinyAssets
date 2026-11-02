@@ -6,7 +6,8 @@ import { describe, expect, it } from "vitest";
 
 import { calculateCost } from "@earendil-works/pi-ai/models";
 
-import { apiRules, fallbackList, freeCall, HINT_KEYS, manyChoices, paidTool, servedPriced,
+import { apiRules, fallbackList, freeCall, HINT_KEYS, manyChoices, paidTool, ruledApis,
+         servedPriced,
          tierMultiplier, unpricedOption } from "../src/api-rules";
 import { builtinCatalog } from "../src/catalog";
 import { egressTarget, meteredCall } from "../src/credential";
@@ -81,9 +82,8 @@ describe("the engines' own calls against the API rules (slice E review, M6)", ()
   });
 
   it("cites a page and the day it was read for every free call, and lists only sealed ones", () => {
-    for (const api of ["anthropic-messages", "openai-completions", "mistral-conversations",
-                       "openai-responses", "azure-openai-responses", "google-generative-ai",
-                       "google-vertex"]) {
+    expect(ruledApis()).toContain("anthropic-messages");
+    for (const api of ruledApis()) {
       for (const call of apiRules(api)!.free) {
         expect(call.cite, api).toMatch(/^https:\/\/[^/]+\//);
         expect(call.read, api).toMatch(/^20\d\d-\d\d-\d\d$/);

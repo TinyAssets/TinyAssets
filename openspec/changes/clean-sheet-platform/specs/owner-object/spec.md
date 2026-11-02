@@ -764,6 +764,10 @@ A lease SHALL be opened for one engine run, naming its CLI record, its credentia
 - **WHEN** the owner holds an Anthropic key and runs Claude Code on its own sign-in
 - **THEN** the run's environment has no `ANTHROPIC_API_KEY` and no `ANTHROPIC_BASE_URL`, so the CLI runs on the sign-in and never on the key or through the door
 
+#### Scenario: The runner takes the run's environment whole
+- **WHEN** the sandbox slice opens a lease for a run, or reads its `config`
+- **THEN** it is handed the run's whole environment (`HOME={home}`, the record's own variables as templates it fills, and on an API key the key's variables) and the basics it keeps (`inherit`), and sets exactly those
+
 #### Scenario: A variable the sandbox has that the record does not name
 - **WHEN** the sandbox template's environment, or an agent's project file, sets a variable the run's allow-list does not hold (`CLAUDE_CODE_OAUTH_TOKEN`, `CODE_ASSIST_ENDPOINT`, a `.env` beside the agent)
 - **THEN** the run does not carry it: the runner builds the environment from the allow-list alone, and slice S checks that no project-level env file reaches it
