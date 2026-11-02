@@ -12,9 +12,11 @@
  *   token, and the runner's sync agent takes the sync token. A run that joins a live lease
  *   gets neither: its sandbox is configured already. `config` is the run's whole
  *   environment (slice E's `runEnv`, G4's `sandboxEnv`), which the runner sets as it is,
- *   from an empty one. The runner reaches the object only by `urls`: the run's MCP door
- *   and its event door, both on the egress host, where E2B's transform sets the egress
- *   token outside the VM.
+ *   from an empty one. The runner reaches the object only by `urls`: the run's MCP door,
+ *   its event door and the sign-in report door (`signin`: each engine that signs in with
+ *   the vendor's own login, whether its record's `status_argv` succeeds, and the models it
+ *   offers; presence only, never a credential), all on the egress host, where E2B's
+ *   transform sets the egress token outside the VM.
  * - `cancel`: stop the run's CLI (SIGTERM, then a kill after a grace; "Stop a run with
  *   SIGTERM", Claude's headless docs). The run settles from the runner's last report, or
  *   `unknown` if the runner is lost.
@@ -59,8 +61,8 @@ export interface SandboxStart {
   /** The owner's network, its transform carrying the egress token, with `tokens` only. */
   readonly network: NetworkPlan | null;
   readonly config: RunConfig;
-  /** The run's MCP door (the record's `{mcp_url}`) and its event door. */
-  readonly urls: { readonly mcp: string; readonly events: string };
+  /** The run's MCP door (the record's `{mcp_url}`), its event door, the sign-in door. */
+  readonly urls: { readonly mcp: string; readonly events: string; readonly signin: string };
 }
 
 export type Started = { readonly started: true } | { readonly started: false; readonly code: string };

@@ -11,15 +11,20 @@
  * 3. the initiator's stamp stands: the owner's own, or a client's grant at the generation it
  *    was stamped with, rechecked (`Grants.standing`; `AUTHORITY_CHANGED`);
  * 4. a retry of the same request is the same run (its `request` key), never a second one;
- * 5. a conversation continued is the caller's own and of this agent (`NO_CONVERSATION`),
- *    with no live run in it, since one engine session runs one invocation at a time
- *    (`CONVERSATION_BUSY`, a technical ceiling);
+ * 5. a conversation continued is the caller's own and of this agent (`NO_CONVERSATION`).
+ *    One engine session runs one invocation at a time (a technical ceiling), so an input to
+ *    a conversation whose run is live, or that has inputs waiting, is written `waiting`
+ *    with its input (`run_inputs`; `QUEUE_FULL` past `QUEUE_ROWS` or `QUEUE_BYTES`), and
+ *    the lane starts it, in order, once the run before it settles (`nextWaiting`);
  * 6. the tier's simultaneous runs hold (`TIER_RUNS`), from the numbers the binder handed
  *    and the owner's own tier (`tier.ts`);
  * 7. the source is chosen (`choose`): `agent.json`'s engine, or `auto`'s strongest connected
- *    source that has an engine (Direction 4), and for an unattended run (a schedule's, the
- *    mail's) only a credential its record allows unattended (ADR-033 decision 3,
- *    `UNATTENDED_REFUSED`);
+ *    source that has an engine (Direction 4): the owner's connections and its signed-in
+ *    engines (`engine_signins`, each as the runner reports its record's `status_argv`)
+ *    ranked together, a subscription preferred to a key of the provider it covers, and a
+ *    lapsed sign-in refused (`SIGNIN_LAPSED`), never a silent fall back to another source;
+ *    for an unattended run (a schedule's, the mail's) only a credential its record allows
+ *    unattended (ADR-033 decision 3, `UNATTENDED_REFUSED`);
  * 8. the owner's own limits hold (`OWNER_LIMIT`): an API-key run's source and the owner's
  *    day and month spend under their caps (the policy's, off by default). A signed-in run
  *    spends on the vendor's plan, which TinyAssets never sees; the vendor's limits hold.
@@ -55,8 +60,8 @@ import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import { periods } from "./money";
 import {
-  CONVERSATION_ID, CONVERSATIONS_KEPT, ERROR_BYTES, INPUT_BYTES, RESULT_BYTES, RUN_ID,
-  RUNS_KEPT, SCHEDULE_ID,
+  CONVERSATION_ID, CONVERSATIONS_KEPT, ERROR_BYTES, INPUT_BYTES, QUEUE_BYTES, QUEUE_ROWS,
+  RESULT_BYTES, RUN_ID, RUNS_KEPT, SCHEDULE_ID,
 } from "./run-rows";
 import { type Frame, FRAME_VERSION, readEvent } from "./run-events";
 import type { NetworkPlan } from "./network";
@@ -66,6 +71,11 @@ import { utf8Bytes } from "./text";
 
 export const NO_CONVERSATION = "no_conversation: no such conversation of the caller's";
 export const CONVERSATION_BUSY = "conversation_busy: a run in this conversation is still live";
+/** The inputs waiting for their conversations are at their ceiling (`QUEUE_ROWS`, `QUEUE_BYTES`). */
+export const QUEUE_FULL = `run_inputs_full: ${QUEUE_ROWS} inputs or ${QUEUE_BYTES} bytes wait ` +
+  "already; let a run settle first";
+/** An engine's sign-in lapsed: `auto` no longer picks it, and never falls back silently. */
+export const SIGNIN_LAPSED = "signin_lapsed: sign in to this engine again";
 export const UNATTENDED_REFUSED = "unattended_refused: no source of this agent may run " +
   "unattended on its record";
 export const NO_SOURCE = "no_source: no connected source can run this agent's engine";
@@ -74,7 +84,7 @@ export const NO_RUN = "no_run: no such run of the caller's";
 export const RUN_ENDED = "run_ended: the run is no longer live";
 export const NO_SCHEDULE = "no_schedule: no such schedule of the caller's";
 
-export type RunState = "queued" | "running" | "succeeded" | "failed" | "unknown";
+export type RunState = "waiting" | "queued" | "running" | "succeeded" | "failed" | "unknown";
 export type Initiator = "owner" | "client" | "schedule" | "mail";
 
 /** A connected source as the choice reads it: `Connections.usable`'s shape. */
@@ -134,6 +144,21 @@ export interface RunDeps {
   readonly ended: (run: string) => void;
   /** In the unit, once the lease was given back: every stream under it ended. */
   readonly leaseEnded: (leaseId: string) => void;
+  /**
+   * The owner's tier's simultaneous runs, as the numbers last handed say, or null when none
+   * were: whether a waiting run may start (the lane's).
+   */
+  readonly capacity: () => number | null;
+}
+
+/** An engine's sign-in, as the runner last reported it: presence only, never a credential. */
+export interface SignIn {
+  readonly engine: string;
+  readonly signed_in: boolean;
+  /** The models the engine offers on the sign-in, as the runner read them from the CLI. */
+  readonly models: readonly string[];
+  readonly checked_at: number;
+  readonly changed_at: number;
 }
 
 /** What an admission asks for. */
@@ -150,6 +175,8 @@ export interface Ask {
   readonly request: string | null;
   readonly tiers: Tiers;
   readonly unattended: boolean;
+  /** The input: kept only while the run waits for its conversation's live run. */
+  readonly prompt: string;
 }
 
 /** An admitted run, as the object starts it. */
@@ -169,6 +196,8 @@ export interface Admitted {
   readonly scopes: readonly RunCapability[];
   /** The run's whole environment, made before anything was written. */
   readonly config: RunConfig;
+  /** The input it starts on (a waiting run's, as it was kept). */
+  readonly prompt: string;
 }
 
 /** The source a run was given, and its id: what its environment is made from. */
@@ -179,7 +208,10 @@ export interface Chosen {
   readonly connection: string | null;
 }
 
-/** A request admitted before: its run, and nothing new written. */
+/**
+ * A request admitted before (its run, nothing new written), or a run that waits for its
+ * conversation's live run (written `waiting`, its input kept): nothing to start now.
+ */
 export interface Retried {
   readonly existing: true;
   readonly run: string;
@@ -259,6 +291,26 @@ type ScheduleRow = {
 };
 
 const LIVE = "state IN ('queued', 'running')";
+/** A run not settled: live, or waiting for its conversation. */
+const UNSETTLED = "settled_at IS NULL";
+/** The id a subscription takes among the connections it is ranked with. */
+const PLAN = "plan:";
+
+/**
+ * The provider an engine's plan covers: its record's one API-key provider (Claude Code's
+ * `anthropic`), else the engine itself. Data only: no provider is named here.
+ */
+function providerOf(apiKeyEnv: Readonly<Record<string, unknown>> | undefined, engine: string):
+    string {
+  const providers = Object.keys(apiKeyEnv ?? {});
+  return providers.length === 1 ? providers[0]! : engine;
+}
+
+/** A model a plan offers, as the ranking reads it: its id; no catalog price. */
+function planModel(model: string): Candidate["model"] {
+  return { id: model, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } as
+    Candidate["model"];
+}
 
 function id(prefix: string): string {
   return `${prefix}${randomBytes(16).toString("hex")}`;
@@ -326,8 +378,14 @@ export class Runs {
 
   // -- ADMISSION ---------------------------------------------------------------------
 
-  /** In a unit: the run admitted, written, its lease opened or joined and its grant minted. */
-  admit(ask: Ask, now: number, prepare: (chosen: Chosen) => RunConfig): Admitted | Retried {
+  /**
+   * In a unit: the run admitted, written, its lease opened or joined and its grant minted;
+   * or, for a conversation whose run is live (or that has runs waiting already), written
+   * `waiting` with its input, to start in order as the one before it settles. `waiting`
+   * names a waiting run the lane starts now: it is admitted whole again.
+   */
+  admit(ask: Ask, now: number, prepare: (chosen: Chosen) => RunConfig,
+        waiting: string | null = null): Admitted | Retried {
     const unadmitted = this.#deps.unadmitted();
     if (unadmitted !== null) {
       throw new Refused(unadmitted);
@@ -339,7 +397,7 @@ export class Runs {
       throw new Refused(AGENT_DISABLED);
     }
     const held = this.#held(ask);
-    if (ask.request !== null) {
+    if (waiting === null && ask.request !== null) {
       const same = this.#sql.exec<RunRow>("SELECT * FROM runs WHERE request = ?", ask.request)
         .toArray()[0];
       if (same !== undefined) {
@@ -352,7 +410,13 @@ export class Runs {
     // A run whose runner was lost (its lease gone) holds no slot: it is settled `unknown`
     // first, so the tier counts only the runs that still run.
     this.lost(now);
-    const conversation = ask.conversation === null ? null : this.#conversation(ask);
+    const conversation = ask.conversation === null ? null : this.#conversation(ask, waiting);
+    if (conversation?.busy === true) {
+      if (waiting !== null) {
+        throw new Refused(CONVERSATION_BUSY);  // not its turn yet: it keeps waiting
+      }
+      return this.#wait(ask, conversation.id, now);
+    }
     const tier = this.#deps.tier();
     if (this.live() >= ask.tiers[tier].runs) {
       throw new Refused(`${TIER_RUNS} (${tier}: ${ask.tiers[tier].runs})`);
@@ -361,7 +425,7 @@ export class Runs {
     if (chosen.credential === "api_key") {
       this.#limits(chosen.source!, now);
     }
-    const runId = id("run_");
+    const runId = waiting ?? id("run_");
     // The run's environment, before anything is written: a run its record refuses writes
     // nothing.
     const config = prepare({ run: runId, engine: chosen.engine, credential: chosen.credential,
@@ -380,14 +444,24 @@ export class Runs {
                        "WHERE id = ?", chosen.engine, session, now, conversationId);
     }
     this.#sql.exec("UPDATE conversations SET last_run = ? WHERE id = ?", runId, conversationId);
-    this.#sql.exec(
-      "INSERT INTO runs (id, agent, conversation, source, credential, model, state, initiator, " +
-        "client, stamp, request, unattended, created_at) " +
-        "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)",
-      runId, ask.agent, conversationId, chosen.engine, chosen.credential, chosen.model,
-      ask.initiator, ask.origin?.client ?? null,
-      ask.stamp === null ? null : JSON.stringify(ask.stamp), ask.request,
-      ask.unattended ? 1 : 0, now);
+    let prompt = ask.prompt;
+    if (waiting !== null) {
+      // Its turn: its source as chosen now, its kept input taken.
+      this.#sql.exec("UPDATE runs SET state = 'queued', source = ?, credential = ?, model = ? " +
+                       "WHERE id = ? AND state = 'waiting'", chosen.engine, chosen.credential,
+                     chosen.model, waiting);
+      prompt = this.#sql.exec<{ prompt: string }>(
+        "DELETE FROM run_inputs WHERE run = ? RETURNING prompt", waiting).one().prompt;
+    } else {
+      this.#sql.exec(
+        "INSERT INTO runs (id, agent, conversation, source, credential, model, state, " +
+          "initiator, client, stamp, request, unattended, created_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)",
+        runId, ask.agent, conversationId, chosen.engine, chosen.credential, chosen.model,
+        ask.initiator, ask.origin?.client ?? null,
+        ask.stamp === null ? null : JSON.stringify(ask.stamp), ask.request,
+        ask.unattended ? 1 : 0, now);
+    }
     const live = this.#deps.lease.live(now);
     const opened = live === null ? this.#deps.lease.open(now) : null;
     const lease = opened?.lease ?? live!;
@@ -402,7 +476,86 @@ export class Runs {
     return { run: runId, conversation: conversationId, existing: false, engine: chosen.engine,
              credential: chosen.credential, connection: chosen.connection, model: chosen.model,
              session_id: session, lease: { lease_id: lease.lease_id, epoch: lease.epoch },
-             tokens: opened?.tokens ?? null, network: opened?.network ?? null, scopes, config };
+             tokens: opened?.tokens ?? null, network: opened?.network ?? null, scopes, config,
+             prompt };
+  }
+
+  /**
+   * In a unit: a run of `ask` written `waiting` in its conversation, behind the live run and
+   * any that wait already, its input kept (`run_inputs`, refused past `QUEUE_ROWS` or
+   * `QUEUE_BYTES`). Its source is chosen now, so a run no source can serve is refused at
+   * once, and chosen again when its turn comes.
+   */
+  #wait(ask: Ask, conversation: string, now: number): Retried {
+    const chosen = this.choose(ask.file, ask.unattended);
+    const queued = this.#sql.exec<{ n: number; bytes: number }>(
+      "SELECT COUNT(*) AS n, coalesce(SUM(bytes), 0) AS bytes FROM run_inputs").one();
+    if (queued.n >= QUEUE_ROWS || queued.bytes + utf8Bytes(ask.prompt) > QUEUE_BYTES) {
+      throw new Refused(QUEUE_FULL);
+    }
+    const runId = id("run_");
+    this.#sql.exec(
+      "INSERT INTO runs (id, agent, conversation, source, credential, model, state, initiator, " +
+        "client, stamp, request, unattended, created_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, 'waiting', ?, ?, ?, ?, ?, ?)",
+      runId, ask.agent, conversation, chosen.engine, chosen.credential, chosen.model,
+      ask.initiator, ask.origin?.client ?? null,
+      ask.stamp === null ? null : JSON.stringify(ask.stamp), ask.request,
+      ask.unattended ? 1 : 0, now);
+    this.#sql.exec("INSERT INTO run_inputs (run, prompt, bytes, origin) VALUES (?, ?, ?, ?)",
+                   runId, ask.prompt, utf8Bytes(ask.prompt),
+                   ask.origin === null ? null : JSON.stringify(ask.origin));
+    this.#sql.exec("UPDATE conversations SET last_at = ? WHERE id = ?", now, conversation);
+    return { existing: true, run: runId, conversation };
+  }
+
+  /**
+   * The waiting run whose turn it is, oldest first: the first waiting in a conversation with
+   * no live run, while the tier has room. A read; null for none.
+   */
+  nextWaiting(): RunRow | null {
+    const room = this.#deps.capacity();
+    if (room === null || this.live() >= room) {
+      return null;
+    }
+    return this.#sql.exec<RunRow>(
+      "SELECT w.* FROM runs w WHERE w.state = 'waiting' AND NOT EXISTS (SELECT 1 FROM runs r " +
+        `WHERE r.conversation = w.conversation AND r.${LIVE}) AND NOT EXISTS (SELECT 1 FROM ` +
+        "runs e WHERE e.conversation = w.conversation AND e.state = 'waiting' " +
+        "AND e.seq < w.seq) ORDER BY w.seq LIMIT 1").toArray()[0] ?? null;
+  }
+
+  /**
+   * A waiting run's admission as it was asked, its input kept: the lane admits it again
+   * whole (`admit` with its id) when its turn comes. Null when it no longer waits. A read.
+   */
+  waitingAsk(runId: string): Omit<Ask, "file" | "tiers"> | null {
+    const row = this.#sql.exec<RunRow & { prompt: string; origin: string | null }>(
+      "SELECT r.*, i.prompt, i.origin FROM runs r JOIN run_inputs i ON i.run = r.id " +
+        "WHERE r.id = ? AND r.state = 'waiting'", runId).toArray()[0];
+    if (row === undefined) {
+      return null;
+    }
+    return { initiator: row.initiator, agent: row.agent, conversation: row.conversation,
+             request: row.request, unattended: row.unattended === 1, prompt: row.prompt,
+             stamp: row.stamp === null ? null : JSON.parse(row.stamp) as Stamped,
+             origin: row.origin === null ? null : JSON.parse(row.origin) as Ask["origin"] };
+  }
+
+  /**
+   * In a unit: a waiting run its turn refused (its grant no longer stands, its agent was
+   * disabled, no source serves it): settled `failed` with the refusal's code, the refusal as
+   * its error. False when it no longer waits.
+   */
+  refuseWaiting(runId: string, reason: string, now: number): boolean {
+    if (this.#sql.exec("SELECT 1 FROM runs WHERE id = ? AND state = 'waiting'", runId)
+          .toArray().length === 0) {
+      return false;
+    }
+    this.#sql.exec("UPDATE runs SET error = ? WHERE id = ?", cut(reason, ERROR_BYTES).text,
+                   runId);
+    return this.settle(runId, "failed", /^[a-z_]{1,64}/.exec(reason)?.[0] ?? "refused", null,
+                       now);
   }
 
   /** A run's requests, tokens and cost so far, as egress caps it. A read. */
@@ -438,8 +591,13 @@ export class Runs {
       && grant.holds({ universe: stamp.universe, agent: stamp.agent, capability });
   }
 
-  /** The conversation `ask` continues: the caller's own, of this agent, with no live run. */
-  #conversation(ask: Ask): { id: string; source: string; session_id: string | null } {
+  /**
+   * The conversation `ask` continues: the caller's own, of this agent; busy while a run in
+   * it is live, or (for a new input) while any waits, or (for a waiting run) while one older
+   * than it waits.
+   */
+  #conversation(ask: Ask, waiting: string | null):
+      { id: string; source: string; session_id: string | null; busy: boolean } {
     const found = typeof ask.conversation === "string" && CONVERSATION_ID.test(ask.conversation)
       ? this.#sql.exec<{ id: string; agent: string; source: string; client: string | null;
                          session_id: string | null }>(
@@ -449,11 +607,11 @@ export class Runs {
         || found.client !== (ask.origin?.client ?? null)) {
       throw new Refused(NO_CONVERSATION);
     }
-    if (this.#sql.exec(`SELECT 1 FROM runs WHERE conversation = ? AND ${LIVE}`, found.id)
-          .toArray().length > 0) {
-      throw new Refused(CONVERSATION_BUSY);
-    }
-    return found;
+    const busy = this.#sql.exec(
+      `SELECT 1 FROM runs WHERE conversation = ? AND (${LIVE} OR (state = 'waiting' AND ` +
+        "seq < coalesce((SELECT seq FROM runs WHERE id = ?), 9223372036854775807)))",
+      found.id, waiting).toArray().length > 0;
+    return { ...found, busy };
   }
 
   /** A new conversation, the least recently run idle one forgotten first at the bound. */
@@ -463,7 +621,7 @@ export class Runs {
     if (count >= CONVERSATIONS_KEPT) {
       this.#sql.exec("DELETE FROM conversations WHERE id IN (SELECT c.id FROM conversations c " +
                        "WHERE NOT EXISTS (SELECT 1 FROM runs r WHERE r.conversation = c.id " +
-                       `AND r.${LIVE}) ORDER BY c.last_at, c.id LIMIT ?)`,
+                       `AND r.${UNSETTLED}) ORDER BY c.last_at, c.id LIMIT ?)`,
                      count - CONVERSATIONS_KEPT + 1);
     }
     const conversation = id("cv_");
@@ -485,8 +643,11 @@ export class Runs {
         source: string | null; model: string | null } {
     const sources = this.#deps.sources();
     const reachable = new Set(this.#deps.egressible().map((entry) => entry.connection));
-    const candidates = ranked(this.#deps.usable().filter((entry) =>
-      reachable.has(entry.connection)));
+    const keys = this.#deps.usable().filter((entry) => reachable.has(entry.connection));
+    const candidates = ranked(keys);
+    // Each engine the runner reported a sign-in for: presence alone, never a credential.
+    const signins = new Map(this.signins().map((signin) => [signin.engine, signin]));
+    const lapsed = (engine: string) => new Refused(`${SIGNIN_LAPSED} (${engine})`);
     let unattendedOnly = false;
     const allows = (engine: string, credential: CredentialKind): boolean => {
       const cli = sources.get(engine)?.cli;
@@ -516,6 +677,9 @@ export class Runs {
           continue;
         }
         if (credential === "vendor_login_in_sandbox") {
+          if (signins.get(file.engine)?.signed_in === false) {
+            throw lapsed(file.engine);  // never a silent fall back to a key
+          }
           return { engine: file.engine, credential, connection: null, source: null,
                    model: file.model };
         }
@@ -526,9 +690,41 @@ export class Runs {
         }
       }
     } else {
-      for (const candidate of candidates) {
+      // The owner's subscriptions (each engine signed in, or lapsed) ranked with its
+      // connections, by the same ranking, each by the models the runner read it offers; a
+      // subscription covering a key's provider is preferred to the key (the plan is used).
+      const plans = new Map<string, string>();  // provider -> engine
+      const planned: UsableSource[] = [];
+      for (const signin of signins.values()) {
+        const record = sources.get(signin.engine);
+        if (record?.cli === undefined || record.unwired !== undefined
+            || !record.cli.credential.includes("vendor_login_in_sandbox")) {
+          continue;
+        }
+        const provider = providerOf(record.cli.api_key_env, signin.engine);
+        plans.set(provider, signin.engine);
+        planned.push({ connection: `${PLAN}${signin.engine}`, source: signin.engine, provider,
+                       display_name: signin.engine, created_at: signin.changed_at,
+                       models: (signin.models.length === 0 ? [""] : signin.models)
+                         .map((model) => planModel(model)) });
+      }
+      for (const candidate of ranked([...keys, ...planned])) {
         if (file.connection !== null && candidate.connection !== file.connection) {
           continue;
+        }
+        const plan = candidate.connection.startsWith(PLAN) ? candidate.source
+          : file.connection === null ? plans.get(candidate.provider) : undefined;
+        if (plan !== undefined && allows(plan, "vendor_login_in_sandbox")) {
+          if (signins.get(plan)?.signed_in !== true) {
+            throw lapsed(plan);  // stops picking it, and never falls back silently
+          }
+          const model = candidate.connection.startsWith(PLAN) && candidate.model.id !== ""
+            ? candidate.model.id : null;
+          return { engine: plan, credential: "vendor_login_in_sandbox", connection: null,
+                   source: null, model: file.model ?? model };
+        }
+        if (candidate.connection.startsWith(PLAN)) {
+          continue;  // a plan its record does not allow here (unattended)
         }
         const engine = (sources.get(candidate.source)?.engines ?? [])
           .find((name) => allows(name, "api_key"));
@@ -559,9 +755,38 @@ export class Runs {
     }
   }
 
+  // -- SIGN-INS: each engine's, as the runner reports it --------------------------------
+
+  /** Every engine's sign-in as last reported. A read. */
+  signins(): SignIn[] {
+    return this.#sql.exec<{ engine: string; signed_in: number; models: string;
+                            checked_at: number; changed_at: number }>(
+      "SELECT * FROM engine_signins ORDER BY engine").toArray()
+      .map((row) => ({ engine: row.engine, signed_in: row.signed_in === 1,
+                       models: JSON.parse(row.models) as string[], checked_at: row.checked_at,
+                       changed_at: row.changed_at }));
+  }
+
+  /**
+   * In a unit: the runner's report of `engine`'s sign-in (its record's `status_argv`), and
+   * the models it read the engine offers; whether it lapsed (was signed in, now is not).
+   */
+  reportSignin(engine: string, signedIn: boolean, models: readonly string[], now: number):
+      { lapsed: boolean } {
+    const before = this.#sql.exec<{ signed_in: number }>(
+      "SELECT signed_in FROM engine_signins WHERE engine = ?", engine).toArray()[0];
+    this.#sql.exec("INSERT INTO engine_signins (engine, signed_in, models, checked_at, " +
+                     "changed_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (engine) DO UPDATE SET " +
+                     "signed_in = excluded.signed_in, models = excluded.models, " +
+                     "checked_at = excluded.checked_at, changed_at = CASE WHEN " +
+                     "signed_in = excluded.signed_in THEN changed_at ELSE excluded.changed_at " +
+                     "END", engine, signedIn ? 1 : 0, JSON.stringify(models), now, now);
+    return { lapsed: before?.signed_in === 1 && !signedIn };
+  }
+
   /** Settled runs past the newest `RUNS_KEPT`. */
   #prune(): void {
-    this.#sql.exec(`DELETE FROM runs WHERE NOT ${LIVE} AND seq <= ` +
+    this.#sql.exec(`DELETE FROM runs WHERE NOT ${UNSETTLED} AND seq <= ` +
                      "(SELECT MAX(seq) FROM runs) - ?", RUNS_KEPT);
   }
 
@@ -601,10 +826,12 @@ export class Runs {
       .toArray()[0];
     const settled = this.#sql.exec(
       "UPDATE runs SET state = ?, code = ?, exit_code = ?, settled_at = ? WHERE id = ? " +
-        `AND ${LIVE} RETURNING conversation`, state, code, exitCode, now, runId).toArray();
+        `AND ${UNSETTLED} RETURNING conversation`, state, code, exitCode, now,
+      runId).toArray();
     if (settled.length === 0) {
       return false;
     }
+    this.#sql.exec("DELETE FROM run_inputs WHERE run = ?", runId);
     this.#sql.exec("DELETE FROM run_grants WHERE run = ?", runId);
     this.#sql.exec("UPDATE conversations SET last_at = ? WHERE id = ?", now,
                    settled[0]!["conversation"] as string);
@@ -685,8 +912,16 @@ export class Runs {
     return { conversation: row.conversation, frames: relayed, settled };
   }
 
-  /** In a unit: a live run marked cancelled; its grant and lease, for the sandbox's cancel. */
-  cancel(runId: string): RunGrant | null {
+  /**
+   * In a unit: a live run marked cancelled; its grant and lease, for the sandbox's cancel. A
+   * waiting run is settled `failed` (`cancelled`) at once: it never started.
+   */
+  cancel(runId: string, now: number): RunGrant | null {
+    if (this.#sql.exec("SELECT 1 FROM runs WHERE id = ? AND state = 'waiting'", runId)
+          .toArray().length === 1) {
+      this.settle(runId, "failed", "cancelled", null, now);
+      return null;
+    }
     const grant = this.grant(runId);
     if (grant !== null) {
       this.#sql.exec("UPDATE runs SET cancel_requested = 1 WHERE id = ?", runId);
@@ -699,10 +934,10 @@ export class Runs {
    * decision 6): each marked cancelled and its grant revoked at once, so no call of theirs
    * passes from this unit on; the ones to cancel in the sandbox.
    */
-  endClient(client: string): RunGrant[] {
+  endClient(client: string, now: number): RunGrant[] {
     const ended = this.#sql.exec<{ id: string }>(
-      `SELECT id FROM runs WHERE client = ? AND ${LIVE}`, client).toArray()
-      .map(({ id: run }) => this.cancel(run)).filter((grant) => grant !== null);
+      `SELECT id FROM runs WHERE client = ? AND ${UNSETTLED}`, client).toArray()
+      .map(({ id: run }) => this.cancel(run, now)).filter((grant) => grant !== null);
     for (const grant of ended) {
       this.#sql.exec("DELETE FROM run_grants WHERE run = ?", grant.run);
       this.#deps.ended(grant.run);
@@ -719,9 +954,9 @@ export class Runs {
   }
 
   /** In a unit: every live run marked cancelled; the ones to cancel in the sandbox. */
-  endAll(): RunGrant[] {
+  endAll(now: number): RunGrant[] {
     return this.#sql.exec<{ id: string }>(`SELECT id FROM runs WHERE ${LIVE}`).toArray()
-      .map(({ id: run }) => this.cancel(run)).filter((grant) => grant !== null);
+      .map(({ id: run }) => this.cancel(run, now)).filter((grant) => grant !== null);
   }
 
   /** The caller's run's receipt, or refused: a client sees its own runs only. A read. */
@@ -843,6 +1078,9 @@ export class Runs {
     const due = !admitted ? null : this.#sql.exec<{ at: number | null }>(
       "SELECT MIN(next_at) AS at FROM run_schedules WHERE next_at IS NOT NULL").one().at;
     const times = due === null ? [] : [Math.max(now, due)];
+    if (admitted && this.nextWaiting() !== null) {
+      times.push(now);  // a waiting run's turn has come
+    }
     if (this.live() > 0) {
       const lease = this.#deps.lease.live(now);
       times.push(lease === null ? now : Math.max(now, lease.expires_at));

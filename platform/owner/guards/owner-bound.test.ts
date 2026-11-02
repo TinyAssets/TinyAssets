@@ -21,15 +21,17 @@
  * unmodified engines, their sessions in the owner's files (ADR-034), so what the owner's
  * object holds is its own bounded rows only, whatever its agents do.
  *
- * The worst case is 42.1% of the limit (slice R: 4,212,787,760.75 bytes), about 787 MB under
- * half; with every raise the limits audit proposes, 49.8% (4,977,974,622.75 bytes,
- * `limits-proposed.test.ts`), 22 MB under half.
+ * The worst case is 42.3% of the limit (slice R: 4,229,662,416.75 bytes), about 770 MB under
+ * half; with every raise the limits audit proposes, 49.95% (4,994,849,278.75 bytes,
+ * `limits-proposed.test.ts`), 5.2 MB under half.
  * ADR-034's deletion slice took out the agent's thread rows, their live and usage rows,
  * the run receipts and the model turns' counters and owners, and Lifecycle's wake job and
  * key per live thread (slice D: 40.6%, 4,064,822,714 bytes; G4 was 46.3%). The runs slice
- * (R) added `runs` (78.3 MB), `run_grants` (9.7 MB), `conversations` (30.7 MB),
- * `run_schedules` (26.1 MB), `socket_tickets` (3.1 MB) and `platform_tiers`, 148.0 MB in
- * all, and took out `egress_runs`. A new table, or a raised bound, must stay under half the
+ * (R) added `runs` (85.0 MB, its waiting runs with it), `run_grants` (9.7 MB),
+ * `conversations` (30.7 MB), `run_schedules` (26.1 MB), `run_inputs` (9.8 MB, the
+ * conversations' input queue, sized to what the rest left), `socket_tickets` (3.1 MB),
+ * `engine_signins` (0.4 MB) and `platform_tiers`, 164.9 MB in all, and took out
+ * `egress_runs`. A new table, or a raised bound, must stay under half the
  * limit, or the guard fails.
  */
 import { readdirSync, readFileSync } from "node:fs";
@@ -156,6 +158,10 @@ const ERROR_BYTES = constant("run-rows", "ERROR_BYTES");
 const CONVERSATIONS_KEPT = constant("run-rows", "CONVERSATIONS_KEPT");
 const SCHEDULES_KEPT = constant("run-rows", "SCHEDULES_KEPT");
 const INPUT_BYTES = constant("run-rows", "INPUT_BYTES");
+const QUEUE_ROWS = constant("run-rows", "QUEUE_ROWS");
+const QUEUE_BYTES = constant("run-rows", "QUEUE_BYTES");
+const ENGINE_SIGNINS = constant("run-rows", "ENGINE_SIGNINS");
+const SIGNIN_MODELS_CHARS = constant("run-rows", "SIGNIN_MODELS_CHARS");
 const SOCKET_TICKETS = constant("socket-shape", "SOCKET_TICKETS");
 /** A stamp's JSON, as the schema's check holds it, in characters (each up to 4 bytes). */
 const STAMP_CHARS = inline("schema", /stamp TEXT CHECK \(stamp IS NULL OR length\(stamp\) <= ([0-9]+)\)/);
@@ -359,10 +365,21 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                              "charge, rule, periods, served model and numbers" },
     // Runs (slice R): settled receipts kept and the live ones, each its widest; a live run's
     // grant; the conversations; the runs lane's schedules; the tier numbers kept; tickets.
-    runs: { rows: RUNS_KEPT + RUNS_CEILING,
+    runs: { rows: RUNS_KEPT + RUNS_CEILING + QUEUE_ROWS,
             bytes: ROW + RESULT_BYTES + ERROR_BYTES + 4 * STAMP_CHARS + 256 + 512,
-            by: "RUNS_KEPT settled receipts and RUNS_CEILING live, each its result, error, " +
-              "stamp, model, ids and counters at their widest" },
+            by: "RUNS_KEPT settled receipts, RUNS_CEILING live and QUEUE_ROWS waiting, each " +
+              "its result, error, stamp, model, ids and counters at their widest" },
+    // The inputs waiting for their conversation (`run_inputs`): QUEUE_ROWS rows holding
+    // QUEUE_BYTES of input in all, however it is spread. Each row is counted at its even
+    // share and two overflow pages more: a row's in-place share is at most a third of a
+    // page (a `WITHOUT ROWID` record keeps 1,002 bytes in place), and its overflow at most a
+    // page past its bytes', which the two pages cover whatever the spread.
+    run_inputs: { rows: QUEUE_ROWS,
+                  bytes: ROW + 36 + ORIGIN_CHARS + QUEUE_BYTES / QUEUE_ROWS + 2 * 4092,
+                  by: "QUEUE_ROWS, QUEUE_BYTES of input in all, each its run and origin" },
+    // Each engine's sign-in as the runner reports it: presence, times and models, no secret.
+    engine_signins: { rows: ENGINE_SIGNINS, bytes: ROW + 64 + SIGNIN_MODELS_CHARS + 16,
+                      by: "ENGINE_SIGNINS, each its engine and models (visible ASCII)" },
     run_grants: { rows: RUNS_CEILING,
                   bytes: ROW + 4 * STAMP_CHARS + ORIGIN_CHARS + 512 + 128,
                   by: "one a live run, its stamp, origin, scopes and connection" },

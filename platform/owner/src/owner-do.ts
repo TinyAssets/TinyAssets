@@ -102,12 +102,13 @@ import {
 import { AGENT_UNDEFINED, type AgentFile, agentFile, agentFilePath } from "./agent-file";
 import { agentId, AUTHORITY_CHANGED, type Stamped } from "./authority";
 import { type CloseKind, OWNERS_SOCKET, Relay, type SocketState } from "./relay";
-import { type Ask, type PostedFrame, type RunGrant, type RunReceipt, Runs, RUN_ENDED,
-         type RunSchedule, scheduleAuthority } from "./runs";
+import { type Ask, CONVERSATION_BUSY, type PostedFrame, type RunGrant, type RunReceipt, Runs,
+         RUN_ENDED, type RunSchedule, scheduleAuthority } from "./runs";
+import { ENGINE_SIGNINS, SIGNIN_MODELS_CHARS } from "./run-rows";
 import { SANDBOX_ABSENT, type SandboxService, started } from "./sandbox";
 import { TICKET_REFUSED } from "./socket-shape";
 import { Tickets } from "./tickets";
-import { PLATFORM_TIER_ONLY, type TierName, tierNumbers } from "./tier";
+import { PLATFORM_TIER_ONLY, TIER_RUNS, type TierName, tierNumbers } from "./tier";
 import { Collections, Conflict, type HistoryEntry, type Page, type Row } from "./collections";
 import {
   CONNECTION_UNAVAILABLE, type ConnectionView, Connections, CREDENTIAL_EXPIRED,
@@ -238,6 +239,16 @@ export interface EventsRequest {
 
 export interface ConversationRequest {
   readonly conversation_id: string;
+}
+
+/**
+ * The runner's report of the sandbox's engines' sign-ins (`signinReport`): for each engine
+ * that signs in with the vendor's own login, whether its record's `status_argv` succeeded,
+ * and the models it read the engine offers. Presence only: never a credential.
+ */
+export interface SigninRequest {
+  readonly signins: readonly { readonly engine: string; readonly signed_in: boolean;
+                               readonly models?: readonly string[] }[];
 }
 
 export interface TierRequest {
@@ -732,6 +743,39 @@ function requestKey(client: string | null, sendId: unknown): string {
   return createHash("sha256").update(`${client ?? "owner"}\0${sendId}`, "utf8").digest("hex");
 }
 
+/** The engine, its reports in one batch at most `ENGINE_SIGNINS`, each engine once. */
+function signinRequest(request: unknown):
+    { engine: string; signed_in: boolean; models: string[] }[] {
+  const r = fields(request, ["signins"], [], "invalid sign-in report");
+  const signins = r["signins"];
+  if (!Array.isArray(signins) || signins.length === 0 || signins.length > ENGINE_SIGNINS) {
+    throw new Invalid(`a sign-in report names 1 to ${ENGINE_SIGNINS} engines`);
+  }
+  const sources = bundledSources();
+  const seen = new Set<string>();
+  return signins.map((entry) => {
+    const f = fields(entry, ["engine", "signed_in"], ["models"], "invalid sign-in report");
+    const engine = f["engine"];
+    const cli = typeof engine === "string" ? sources.get(engine)?.cli : undefined;
+    if (typeof engine !== "string" || cli === undefined || seen.has(engine)
+        || !cli.credential.includes("vendor_login_in_sandbox")) {
+      throw new Invalid("a sign-in report names engines that sign in, each once");
+    }
+    seen.add(engine);
+    if (typeof f["signed_in"] !== "boolean") {
+      throw new Invalid("signed_in is true or false");
+    }
+    const models = f["models"] ?? [];
+    if (!Array.isArray(models) || models.some((model) => typeof model !== "string"
+                                               || !/^[!-~]+$/.test(model))
+        || JSON.stringify(models).length > SIGNIN_MODELS_CHARS) {
+      throw new Invalid(`models are model ids, at most ${SIGNIN_MODELS_CHARS} characters ` +
+                        "as JSON");
+    }
+    return { engine, signed_in: f["signed_in"], models: models as string[] };
+  });
+}
+
 /** The runner's report, exactly: frames numbered from 1 and rising, and an optional end. */
 function eventsRequest(request: unknown): {
   frames: PostedFrame[]; end: { exit_code: number | null } | null } {
@@ -1005,6 +1049,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         return { mode: grant.mode, holds: (scope) => holds(grant, scope as Scope) };
       },
       tier: () => ownerTier(storage),
+      // The lane's: the tier's simultaneous runs, by the numbers the binder last handed.
+      capacity: () => {
+        try {
+          return tierNumbers(storage, undefined, clock())[ownerTier(storage)].runs;
+        } catch (error) {
+          if (error instanceof Refused) {
+            return null;  // none handed yet: no waiting run starts
+          }
+          throw error;
+        }
+      },
       caps: () => modelSettings(this.#policy.read().document),
       spent: (period, source) => this.#usage.spent(period, source),
       lease: {
@@ -1183,7 +1238,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                                      grant.stamp.authenticated_at);
       } catch (error) {
         if (error instanceof Refused) {
-          this.#cancelInSandbox(this.#runs.endClient(grant.stamp.client));
+          this.#cancelInSandbox(this.#runs.endClient(grant.stamp.client, clock()));
           throw new Refused(AUTHORITY_CHANGED);
         }
         throw error;
@@ -1492,7 +1547,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#ledger.suppressClient(client, clock());
     this.#registrations.endClient(client);
     // And its runs (ADR-034 decision 6): their grants gone in this unit, their CLIs stopped.
-    this.#cancelInSandbox(this.#runs.endClient(client));
+    this.#cancelInSandbox(this.#runs.endClient(client, clock()));
   }
 
   // -- OUTSIDE_AGENTS ---------------------------------------------------------
@@ -1696,7 +1751,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       // The prompt stop: its streams, and its runs' CLIs (each settles from its runner).
       await this.#door(() => {
         this.#egress.end("admission");
-        this.#cancelInSandbox(this.#runs.endAll());
+        this.#cancelInSandbox(this.#runs.endAll(clock()));
       });
     }
     if (doorRefusal(set, "read") !== null) {
@@ -2201,12 +2256,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                request: requestKey(client, r["client_send_id"]) };
     });
     const read = await this.#readAgent(asked.agent);
-    const run = await this.#launch(read, asked.prompt, () => {
+    const run = await this.#launch(read, () => {
       const account = this.#account(binding, "work");
       const universe = this.#runDoor(account, "converse", asked.agent);
       return { ...this.#initiated(binding, account, universe, asked.agent),
                agent: asked.agent, conversation: asked.conversation, request: asked.request,
-               tiers: tierNumbers(this.#storage, binding.tiers, clock()), unattended: false };
+               tiers: tierNumbers(this.#storage, binding.tiers, clock()), unattended: false,
+               prompt: asked.prompt };
     });
     return this.#settledWithin(run, asked.waitMs, asked.client);
   }
@@ -2254,12 +2310,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return asked.schedule;
     }
     const read = await this.#readAgent(asked.agent);
-    const run = await this.#launch(read, asked.input, () => {
+    const run = await this.#launch(read, () => {
       const account = this.#account(binding, "work");
       const universe = this.#runDoor(account, "run_graph", asked.agent);
       return { ...this.#initiated(binding, account, universe, asked.agent),
                agent: asked.agent, conversation: null, request: null,
-               tiers: tierNumbers(this.#storage, binding.tiers, clock()), unattended: false };
+               tiers: tierNumbers(this.#storage, binding.tiers, clock()), unattended: false,
+               prompt: asked.input };
     });
     return this.#settledWithin(run, 0, asked.client);
   }
@@ -2298,7 +2355,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         return { schedule: this.#runs.unschedule(r["schedule_id"], client).schedule_id };
       }
       const run = this.#runs.receipt(r["run_id"], client).run_id;
-      return { run, client, grant: this.#runs.cancel(run) };
+      return { run, client, grant: this.#runs.cancel(run, clock()) };
     });
     if ("schedule" in found) {
       return { schedule_id: found.schedule, cancelled: true };
@@ -2333,6 +2390,33 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       await this.#schedule.sync();
     }
     return { accepted: done.frames.length, settled: done.settled };
+  }
+
+  /**
+   * The runner's report of the engines' sign-ins (`SigninRequest`), on the egress host by
+   * the egress token of the live lease: each engine's row (signed in or not, when it was
+   * checked, the models it offers), never a credential; `auto` ranks the signed-in ones
+   * with the owner's connections. A sign-in that lapsed (signed in, now not) leaves a
+   * "sign in again" notice, and `auto` stops picking that engine.
+   */
+  async signinReport(binding: Binding, request: SigninRequest):
+      Promise<{ recorded: number; lapsed: string[] }> {
+    return this.#door(() => {
+      this.#bind(binding, "work", "egress");
+      if (this.#egress.lease(sandboxBinding(binding.sandbox), clock()) === null) {
+        throw new Refused("egress_lease_closed");
+      }
+      const reports = signinRequest(request);
+      const lapsed: string[] = [];
+      for (const report of reports) {
+        if (this.#runs.reportSignin(report.engine, report.signed_in, report.models, clock())
+              .lapsed) {
+          lapsed.push(report.engine);
+          this.#notices.add("signin_lapsed", `${report.engine}: sign in again`, clock());
+        }
+      }
+      return { recorded: reports.length, lapsed };
+    });
   }
 
   /**
@@ -2398,10 +2482,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * Admit a run in one unit (`ask`, which binds the call again, and the agent's file still
    * at the etag it was read at), then start it through the sandbox and record what came of
    * it: `running`, `failed` with the sandbox's code, or `unknown` when its answer never came
-   * (the run is then cancelled too, in case it did start). Its id.
+   * (the run is then cancelled too, in case it did start). Its id: a run that waits for
+   * its conversation's live run is written `waiting` and starts from the lane, its turn
+   * come (`waiting`, the run the lane starts).
    */
-  async #launch(read: { file: AgentFile; etag: string }, prompt: string,
-                ask: () => Omit<Ask, "file">): Promise<string> {
+  async #launch(read: { file: AgentFile; etag: string }, ask: () => Omit<Ask, "file">,
+                waiting: string | null = null): Promise<string> {
     const { admitted, agent, unattended } = await this.#door(() => {
       const made = ask();
       if (this.#files.stat(agentFilePath(made.agent))?.etag !== read.etag) {
@@ -2412,7 +2498,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                  this.#runConfig(chosen.connection === null
                    ? { run: chosen.run, engine: chosen.engine, credential: chosen.credential }
                    : { run: chosen.run, engine: chosen.engine, credential: chosen.credential,
-                       connection: chosen.connection })) };
+                       connection: chosen.connection }), waiting) };
     });
     if (admitted.existing) {
       return admitted.run;
@@ -2426,7 +2512,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       answer = started(await sandbox.start(this.#ownerName(), {
         run: admitted.run, agent, conversation: admitted.conversation,
         engine: admitted.engine, credential: admitted.credential, model: admitted.model,
-        session_id: admitted.session_id, prompt, unattended,
+        session_id: admitted.session_id, prompt: admitted.prompt, unattended,
         lease: admitted.lease, tokens: admitted.tokens, network: admitted.network,
         config: admitted.config, urls: runUrls(admitted.run) }));
     } catch {
@@ -2496,12 +2582,42 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * The `runs` lane's pass: runs whose runner was lost settled `unknown`, then each due
-   * schedule claimed, once, and run through the same admission as a door's when it has
-   * work; a refusal kept on its row and in the owner's notices, never thrown.
+   * The `runs` lane's pass: runs whose runner was lost settled `unknown`; then each waiting
+   * run whose turn came started, oldest first, through the same admission as a door's (one
+   * its turn refuses settles `failed`, the refusal in the owner's notices); then each due
+   * schedule claimed, once, and run the same way when it has work; a refusal kept on its
+   * row and in the owner's notices, never thrown.
    */
   async #runsPass(_now: number, until: number): Promise<void> {
     await this.#door(() => this.#runs.lost(clock()));
+    while (clock() < until) {
+      const waiting = await this.#door(() => {
+        const next = workRefusal(admission(this.#storage)) !== null ? null
+          : this.#runs.nextWaiting();
+        return next === null ? null : { run: next.id, ask: this.#runs.waitingAsk(next.id)! };
+      });
+      if (waiting === null) {
+        break;
+      }
+      try {
+        const read = await this.#readAgent(waiting.ask.agent);
+        await this.#launch(read, () => ({
+          ...waiting.ask, tiers: tierNumbers(this.#storage, undefined, clock()) }), waiting.run);
+      } catch (error) {
+        if (!(error instanceof Refused || error instanceof Invalid)) {
+          throw error;
+        }
+        const reason = error.message;
+        if (reason === CONVERSATION_BUSY || reason.startsWith(TIER_RUNS)) {
+          break;  // not its turn after all: it keeps waiting, and the lane comes back
+        }
+        await this.#door(() => {
+          if (this.#runs.refuseWaiting(waiting.run, reason, clock())) {
+            this.#notices.add("run_refused", `${waiting.ask.agent}: ${reason}`, clock());
+          }
+        });
+      }
+    }
     while (clock() < until) {
       const claimed = await this.#door(() => workRefusal(admission(this.#storage)) !== null
         ? null : this.#runs.claim(clock(), () => this.#ledger.ownerUnacked()));
@@ -2514,10 +2630,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const row = claimed.schedule;
       try {
         const read = await this.#readAgent(row.agent);
-        const run = await this.#launch(read, row.input, () => ({
+        const run = await this.#launch(read, () => ({
           initiator: row.trigger === "mail" ? "mail" : "schedule",
           ...scheduleAuthority(row), agent: row.agent, conversation: null, request: null,
-          tiers: tierNumbers(this.#storage, undefined, clock()), unattended: true }));
+          tiers: tierNumbers(this.#storage, undefined, clock()), unattended: true,
+          prompt: row.input }));
         await this.#door(() => this.#runs.ran(row.id, run, null));
       } catch (error) {
         if (!(error instanceof Refused || error instanceof Invalid)) {

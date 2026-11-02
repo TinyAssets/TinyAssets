@@ -24,8 +24,9 @@ import {
 } from "./manifest";
 import { DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, FILE_DEFAULTS } from "./policy";
 import {
-  CONVERSATION_ID_CHARS, CONVERSATIONS_KEPT, ERROR_BYTES, INPUT_BYTES, RESULT_BYTES,
-  RUN_ID_CHARS, SCHEDULE_ID_CHARS, SCHEDULES_KEPT,
+  CONVERSATION_ID_CHARS, CONVERSATIONS_KEPT, ENGINE_SIGNINS, ERROR_BYTES, INPUT_BYTES,
+  QUEUE_BYTES, QUEUE_ROWS, RESULT_BYTES, RUN_ID_CHARS, SCHEDULE_ID_CHARS, SCHEDULES_KEPT,
+  SIGNIN_MODELS_CHARS,
 } from "./run-rows";
 import { SOCKET_TICKETS } from "./socket-shape";
 import { RUNS_CEILING } from "./tier";
@@ -1132,7 +1133,12 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // cron recurrence, or a run on the owner's mail, each with its input. The platform's tier
   // numbers as the binder last handed them (`platform_tiers`, one row), and the owner app's
   // socket tickets (`socket_tickets`, at most `SOCKET_TICKETS`, single-use, each kept as
-  // its SHA-256 only).
+  // its SHA-256 only). A run that waits for its conversation's live run to settle is a
+  // `waiting` row (not live: it holds no slot, grant or lease), its input kept beside it
+  // (`run_inputs`) until it starts, at most `QUEUE_ROWS` and `QUEUE_BYTES` of input in all.
+  // Each engine's sign-in, as the runner last reported it (`engine_signins`, one row an
+  // engine, at most `ENGINE_SIGNINS`): signed in or not, when, and the models it offers;
+  // never a credential.
   Object.freeze([
     "CREATE TABLE runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, " +
       `id TEXT NOT NULL UNIQUE CHECK (length(id) = ${RUN_ID_CHARS}), ` +
@@ -1142,8 +1148,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "credential TEXT NOT NULL CHECK (credential IN ('vendor_login_in_sandbox', 'api_key')), " +
       "model TEXT CHECK (model IS NULL OR (length(model) BETWEEN 1 AND 256 " +
       "AND model NOT GLOB '*[^!-~]*')), " +
-      "state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'succeeded', 'failed', " +
-      "'unknown')), " +
+      "state TEXT NOT NULL CHECK (state IN ('waiting', 'queued', 'running', 'succeeded', " +
+      "'failed', 'unknown')), " +
       "initiator TEXT NOT NULL CHECK (initiator IN ('owner', 'client', 'schedule', 'mail')), " +
       "client TEXT CHECK (client IS NULL OR length(client) = 64), " +
       "stamp TEXT CHECK (stamp IS NULL OR length(stamp) <= 1024), " +
@@ -1159,20 +1165,44 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       `error TEXT CHECK (error IS NULL OR length(CAST(error AS BLOB)) <= ${ERROR_BYTES}), ` +
       "code TEXT CHECK (code IS NULL OR length(code) BETWEEN 1 AND 64), " +
       "exit_code INTEGER, created_at REAL NOT NULL, started_at REAL, settled_at REAL, " +
-      "CHECK ((state IN ('queued', 'running')) = (settled_at IS NULL)), " +
+      "CHECK ((state IN ('waiting', 'queued', 'running')) = (settled_at IS NULL)), " +
       "CHECK ((initiator = 'client') = (client IS NOT NULL)))",
     "CREATE UNIQUE INDEX runs_by_request ON runs (request) WHERE request IS NOT NULL",
     "CREATE INDEX runs_live ON runs (state) WHERE state IN ('queued', 'running')",
     "CREATE INDEX runs_by_conversation ON runs (conversation, seq)",
+    "CREATE INDEX runs_waiting ON runs (seq) WHERE state = 'waiting'",
     "CREATE TRIGGER runs_live_full BEFORE INSERT ON runs WHEN (SELECT COUNT(*) FROM runs " +
       `WHERE state IN ('queued', 'running')) >= ${RUNS_CEILING} BEGIN SELECT RAISE(ABORT, ` +
       `'runs_full: ${RUNS_CEILING} runs are live'); END`,
     "CREATE TRIGGER runs_settled_once BEFORE UPDATE OF state ON runs " +
-      "WHEN OLD.state NOT IN ('queued', 'running') BEGIN SELECT RAISE(ABORT, " +
+      "WHEN OLD.state NOT IN ('waiting', 'queued', 'running') BEGIN SELECT RAISE(ABORT, " +
       "'a run is settled once'); END",
-    "CREATE TRIGGER runs_kept BEFORE UPDATE OF seq, id, agent, conversation, source, " +
-      "credential, initiator, client, stamp, request, unattended, created_at ON runs BEGIN " +
+    "CREATE TRIGGER runs_kept BEFORE UPDATE OF seq, id, agent, conversation, initiator, " +
+      "client, stamp, request, unattended, created_at ON runs BEGIN " +
       "SELECT RAISE(ABORT, 'a run never changes what it was admitted as'); END",
+    // A waiting run's source is chosen again as it starts; a started one's never moves.
+    "CREATE TRIGGER runs_source_kept BEFORE UPDATE OF source, credential ON runs " +
+      "WHEN OLD.state != 'waiting' BEGIN SELECT RAISE(ABORT, 'a run never changes what " +
+      "it was admitted as'); END",
+    "CREATE TABLE run_inputs (" +
+      `run TEXT PRIMARY KEY CHECK (length(run) = ${RUN_ID_CHARS}), ` +
+      "prompt TEXT NOT NULL, bytes INTEGER NOT NULL CHECK (bytes >= 1), " +
+      // The client's origin, as its run grant will carry it once the run starts.
+      "origin TEXT CHECK (origin IS NULL OR (length(origin) <= 256 " +
+      "AND origin NOT GLOB '*[^ -~]*')), " +
+      "CHECK (bytes = length(CAST(prompt AS BLOB)))) WITHOUT ROWID",
+    "CREATE TRIGGER run_inputs_full BEFORE INSERT ON run_inputs WHEN (SELECT COUNT(*) " +
+      `FROM run_inputs) >= ${QUEUE_ROWS} OR (SELECT coalesce(SUM(bytes), 0) FROM run_inputs) ` +
+      `+ NEW.bytes > ${QUEUE_BYTES} BEGIN SELECT RAISE(ABORT, 'run_inputs_full: ` +
+      `${QUEUE_ROWS} inputs or ${QUEUE_BYTES} bytes wait already; let a run settle first'); END`,
+    "CREATE TABLE engine_signins (engine TEXT PRIMARY KEY CHECK (length(engine) BETWEEN 1 " +
+      "AND 64), signed_in INTEGER NOT NULL CHECK (signed_in IN (0, 1)), " +
+      `models TEXT NOT NULL CHECK (length(models) <= ${SIGNIN_MODELS_CHARS} ` +
+      "AND models NOT GLOB '*[^ -~]*'), checked_at REAL NOT NULL, changed_at REAL NOT NULL) " +
+      "WITHOUT ROWID",
+    "CREATE TRIGGER engine_signins_full BEFORE INSERT ON engine_signins WHEN (SELECT " +
+      `COUNT(*) FROM engine_signins) >= ${ENGINE_SIGNINS} BEGIN SELECT RAISE(ABORT, ` +
+      `'engine_signins_full: ${ENGINE_SIGNINS} engines are known'); END`,
     "CREATE TABLE run_grants (" +
       `run TEXT PRIMARY KEY CHECK (length(run) = ${RUN_ID_CHARS}), ` +
       "lease_id TEXT NOT NULL CHECK (length(lease_id) = 32), epoch INTEGER NOT NULL, " +

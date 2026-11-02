@@ -4,7 +4,8 @@
  * providers' own APIs with placeholder keys (`network.ts`'s `sandboxEnv`). The run in the
  * path is what the object holds the call to: that run's own connection (slice R). The same
  * host serves each run's MCP door and event door (`/r/<run>/mcp`, `/r/<run>/events`,
- * `serveRun`), by the same token.
+ * `serveRun`), and the runner's report of the engines' sign-ins (`/signin`,
+ * `serveSignin`), by the same token.
  *
  * 1. **The identity.** E2B's transform sets the sandbox's egress token (`x-ta-sandbox`)
  *    and the egress generation its network was made under (`x-ta-network-generation`)
@@ -52,6 +53,8 @@ import { refusal, runProfile } from "./tools";
 const ROUTE = /^\/r\/(run_[0-9a-f]{32})\/c\/(c[0-9a-f]{24})(\/.*)$/;
 /** A run's own doors: its MCP door and its event door. */
 const RUN_DOOR = /^\/r\/(run_[0-9a-f]{32})\/(mcp|events)$/;
+/** The runner's report of the engines' sign-ins, for the sandbox as a whole. */
+const SIGNIN_DOOR = "/signin";
 const GENERATION = /^[1-9][0-9]{0,14}$/;
 const LENGTH = /^[0-9]{1,15}$/;
 /** The gateway's own header on its answer, for the object alone. */
@@ -203,6 +206,39 @@ async function serveRun(request: Request, env: DoorsEnv, run: string, door: stri
   }
 }
 
+/**
+ * The runner's report of the engines' sign-ins (`signinReport`): each engine that signs in
+ * with the vendor's own login, whether its record's `status_argv` succeeded, and the models
+ * it offers. Presence only; the runner alone calls it, so an `Origin` is refused.
+ */
+async function serveSignin(request: Request, env: DoorsEnv): Promise<Response> {
+  if (request.headers.get("Origin") !== null) {
+    return refused("not_found", 404);
+  }
+  if (request.method !== "POST") {
+    return refused("method_not_allowed", 405);
+  }
+  const verified = await sandboxToken(request, env);
+  if (verified instanceof Response) {
+    return verified;
+  }
+  const bound = bindSandbox(env, verified.owner, verified.hash, verified.generation);
+  const body = await jsonObject(request, EGRESS_BODY_MAX);
+  if (body instanceof Response) {
+    return body;
+  }
+  try {
+    return Response.json(await bound.stub.signinReport(bound.binding, body as never),
+                         { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    const answer = refusal(error);
+    if (answer === null) {
+      throw error;
+    }
+    return refused(codeOf(answer.message), answer.status);
+  }
+}
+
 export async function serveEgress(request: Request, env: DoorsEnv, ctx: ExecutionContext,
                                   deadlineMs: number = EGRESS_DEADLINE_MS): Promise<Response> {
   const url = new URL(request.url);
@@ -212,6 +248,9 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   const door = RUN_DOOR.exec(url.pathname);
   if (door !== null && url.search === "") {
     return serveRun(request, env, door[1]!, door[2]!);
+  }
+  if (url.pathname === SIGNIN_DOOR && url.search === "") {
+    return serveSignin(request, env);
   }
   const route = ROUTE.exec(url.pathname);
   if (route === null) {

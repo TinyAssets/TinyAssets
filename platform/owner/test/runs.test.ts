@@ -16,14 +16,15 @@ import { AGENT_DISABLED, AGENT_UNDEFINED, agentFile } from "../src/agent-file";
 import { WriteGate } from "../src/gate";
 import { AUTHORITY_CHANGED } from "../src/authority";
 import type { Binding } from "../src/owner-do";
-import { RUN_STARTS_NONE } from "../src/owner-do";
-import { CONVERSATION_BUSY, NO_CONVERSATION, NO_RUN, RUN_ENDED, Runs, UNATTENDED_REFUSED }
-  from "../src/runs";
+import { RUN_STARTS_NONE, SANDBOX_ONLY } from "../src/owner-do";
+import { QUEUE_BYTES, QUEUE_ROWS } from "../src/run-rows";
+import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, Runs, SIGNIN_LAPSED,
+         UNATTENDED_REFUSED } from "../src/runs";
 import { SANDBOX_ABSENT, type SandboxStart } from "../src/sandbox";
 import { PLATFORM_TIER_ONLY, TIER_RUNS, TIER_UNREAD } from "../src/tier";
 import { gated, type Gated, OPENAI } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
-import { ALL_SCOPES, defineAgent, ownerRun, recorder, TIERS } from "./runs-support";
+import { ALL_SCOPES, defineAgent, ownerRun, recorder, startOf, TIERS } from "./runs-support";
 import { drainDue, failure, sqlIn } from "./support";
 
 /** The owner's run of Claude Code on its own sign-in: no key, no connection. */
@@ -33,14 +34,26 @@ const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_log
 /** Each lease's egress token, as the start that opened it got it. */
 const TOKENS = new Map<string, string>();
 
-/** The run's own binding on the egress host, as the binder builds it (`bindRun`). */
-function runBinding(r: Gated, start: SandboxStart): Binding {
+/** The sandbox's binding on the egress host, as the binder builds it (`bindSandbox`). */
+function sandboxOf(r: Gated, start: SandboxStart, run?: string): Binding {
   if (start.tokens !== null) {
     TOKENS.set(start.lease.lease_id, start.tokens.egress_token);
   }
   const token = verifyToken(env.ROUTING_MAC_KEY, "egress",
                             TOKENS.get(start.lease.lease_id))!.hash;
-  return r.bind({ sandbox: { kind: "egress", token, generation: 1 }, run: start.run });
+  return r.bind({ sandbox: { kind: "egress", token, generation: 1 },
+                  ...(run === undefined ? {} : { run }) });
+}
+
+/** The run's own binding on the egress host, as the binder builds it (`bindRun`). */
+function runBinding(r: Gated, start: SandboxStart): Binding {
+  return sandboxOf(r, start, start.run);
+}
+
+/** The runner's report of Claude Code's sign-in, under the sandbox's live lease. */
+function claudeSignin(r: Gated, start: SandboxStart, signedIn: boolean) {
+  return r.stub.signinReport(sandboxOf(r, start), {
+    signins: [{ engine: "claude-code", signed_in: signedIn }] });
 }
 
 /** Claude Code's stream-json events, as its record's matchers read them. */
@@ -98,7 +111,8 @@ describe("a run", () => {
       ...runEnv(bundledSources(), "claude-code", "api_key").env, ANTHROPIC_BASE_URL: base });
     expect(start.config.env["ANTHROPIC_API_KEY"]).toMatch(/^ta_ph_c[0-9a-f]{24}_[0-9a-f]{32}$/);
     expect(start.urls).toEqual({ mcp: `https://egress.tinyassets.io/r/${run.run_id}/mcp`,
-                                 events: `https://egress.tinyassets.io/r/${run.run_id}/events` });
+                                 events: `https://egress.tinyassets.io/r/${run.run_id}/events`,
+                                 signin: "https://egress.tinyassets.io/signin" });
     expect(JSON.stringify(start)).not.toContain("sk-good");
     // A second run joins the live lease: no new tokens, its own grant.
     const second = await ownerRun(r.stub, r.bind(), undefined, "main");
@@ -121,16 +135,23 @@ describe("a run", () => {
   it("continues a conversation of the caller's own, resuming its engine's session", async () => {
     const r = await gated();
     const { run, start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
-    // While its run is live, the conversation takes no other.
-    expect((await failure(() => ownerRun(r.stub, r.bind(), undefined, "main",
-                                         { conversation_id: run.conversation_id })))
-      .message).toBe(CONVERSATION_BUSY);
+    // While its run is live, an input to the conversation waits its turn, never refused.
+    const waiting = await r.stub.agentSubmit(r.bind({ tiers: TIERS }), {
+      message: "and then", client_send_id: "then-1", conversation_id: run.conversation_id });
+    expect(waiting).toMatchObject({ state: "waiting", conversation_id: run.conversation_id,
+                                    started_at: null, settled_at: null });
+    expect((await recorder(r.stub)).starts).toHaveLength(1);
     await r.stub.runEvents(runBinding(r, start), { frames: frames(INIT("sess-1")),
                                                    end: { exit_code: 0 } });
-    const next = await ownerRun(r.stub, r.bind(), undefined, "main",
-                                { conversation_id: run.conversation_id });
-    expect(next.start.session_id).toBe("sess-1");
-    expect(next.start.conversation).toBe(run.conversation_id);
+    await drainDue(r.stub);
+    const next = await startOf(r.stub, waiting.run_id);
+    expect(next.session_id).toBe("sess-1");
+    expect(next.conversation).toBe(run.conversation_id);
+    expect(next.prompt).toBe("and then");
+    await r.stub.runEvents(runBinding(r, next), { frames: [], end: { exit_code: 0 } });
+    const after = await ownerRun(r.stub, r.bind(), undefined, "main",
+                                 { conversation_id: run.conversation_id });
+    expect(after.start.session_id).toBe("sess-1");
     // Another agent's, or no such conversation, is none of this one's.
     await defineAgent(r.stub, r.bind(), "other", SIGNED_IN);
     expect((await failure(() => ownerRun(r.stub, r.bind(), undefined, "other",
@@ -379,6 +400,192 @@ describe("a client's run doors", () => {
   });
 });
 
+describe("a conversation's inputs", () => {
+  /** An input to `conversation`, by the owner. */
+  const submit = (r: Gated, conversation: string, message: string, id: string) =>
+    r.stub.agentSubmit(r.bind({ tiers: TIERS }), { message, client_send_id: id,
+                                                  conversation_id: conversation });
+  /** The prompts the sandbox was started on, in order. */
+  const prompts = async (r: Gated) => (await recorder(r.stub)).starts.map((s) => s.prompt);
+
+  it("two in a row while its run is live both run, in order, each as the one before settles",
+     async () => {
+    const r = await gated();
+    const { run, start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    const second = await submit(r, run.conversation_id, "second", "in-2");
+    const third = await submit(r, run.conversation_id, "third", "in-3");
+    expect([second.state, third.state]).toEqual(["waiting", "waiting"]);
+    expect(await r.sql("SELECT prompt, bytes FROM run_inputs ORDER BY prompt"))
+      .toEqual([{ prompt: "second", bytes: 6 }, { prompt: "third", bytes: 5 }]);
+    // A retry of a waiting input is the same run, never a second one.
+    expect((await submit(r, run.conversation_id, "second", "in-2")).run_id)
+      .toBe(second.run_id);
+    // Another conversation's run is not held up behind them.
+    const other = await ownerRun(r.stub, r.bind());
+    expect(other.run.state).toBe("running");
+    expect(await prompts(r)).toEqual(["do the thing", "do the thing"]);
+    // The first settles: the second starts, the third still waits; one more that comes as
+    // the lane has yet to start them waits behind them.
+    await r.stub.runEvents(runBinding(r, start), { frames: frames(INIT("sess-1")),
+                                                   end: { exit_code: 0 } });
+    const fourth = await submit(r, run.conversation_id, "fourth", "in-4");
+    expect(fourth.state).toBe("waiting");
+    await drainDue(r.stub);
+    expect(await prompts(r)).toEqual(["do the thing", "do the thing", "second"]);
+    expect(await r.stub.agentStatus(r.bind(), { run_id: second.run_id }))
+      .toMatchObject({ state: "running", engine: "claude-code" });
+    expect(await r.stub.agentStatus(r.bind(), { run_id: third.run_id }))
+      .toMatchObject({ state: "waiting" });
+    // The second settles: the third starts, resuming the same session.
+    await r.stub.runEvents(runBinding(r, await startOf(r.stub, second.run_id)),
+                           { frames: [], end: { exit_code: 0 } });
+    await drainDue(r.stub);
+    expect(await prompts(r)).toEqual(["do the thing", "do the thing", "second", "third"]);
+    expect((await startOf(r.stub, third.run_id)).session_id).toBe("sess-1");
+    await r.stub.runEvents(runBinding(r, await startOf(r.stub, third.run_id)),
+                           { frames: [], end: { exit_code: 0 } });
+    await drainDue(r.stub);
+    expect(await prompts(r))
+      .toEqual(["do the thing", "do the thing", "second", "third", "fourth"]);
+    expect((await startOf(r.stub, fourth.run_id)).session_id).toBe("sess-1");
+    expect(await r.sql("SELECT run FROM run_inputs")).toEqual([]);
+  });
+
+  it("wait only within the queue's ceiling, rows and bytes", async () => {
+    const r = await gated();
+    const { run } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    // The ceiling's rows, as other conversations' inputs: one more is refused.
+    await r.sql("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n " +
+                  `WHERE i < ${QUEUE_ROWS}) INSERT INTO run_inputs (run, prompt, bytes) ` +
+                  "SELECT 'run_' || printf('%032x', i), 'x', 1 FROM n");
+    expect((await failure(() => submit(r, run.conversation_id, "more", "q-1"))).message)
+      .toBe(QUEUE_FULL);
+    // One fewer, and it waits.
+    await r.sql("DELETE FROM run_inputs WHERE run = ?", `run_${"0".repeat(31)}1`);
+    expect((await submit(r, run.conversation_id, "more", "q-2")).state).toBe("waiting");
+    // The ceiling's bytes, less than this input's: refused.
+    await r.sql("DELETE FROM run_inputs WHERE prompt = 'x'");
+    const held = QUEUE_BYTES - 4 - 3;
+    await r.sql("INSERT INTO run_inputs (run, prompt, bytes) VALUES (?, " +
+                  "CAST(zeroblob(?) AS TEXT), ?)", `run_${"f".repeat(32)}`, held, held);
+    expect((await failure(() => submit(r, run.conversation_id, "four", "q-3"))).message)
+      .toBe(QUEUE_FULL);
+    expect((await submit(r, run.conversation_id, "two", "q-4")).state).toBe("waiting");
+  });
+
+  it("one waiting is cancelled at once, never started; one whose turn is refused settles " +
+     "failed, the owner told", async () => {
+    const r = await gated();
+    const { run, start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    const cancelled = await submit(r, run.conversation_id, "never", "c-1");
+    const refused = await submit(r, run.conversation_id, "refused", "c-2");
+    expect(await r.stub.agentCancel(r.bind(), { run_id: cancelled.run_id }))
+      .toMatchObject({ state: "failed", code: "cancelled", started_at: null });
+    expect((await recorder(r.stub)).cancels).toEqual([]);
+    expect(await r.sql("SELECT run FROM run_inputs")).toEqual([{ run: refused.run_id }]);
+    // The agent is disabled before the next one's turn: it settles failed, never started.
+    await defineAgent(r.stub, r.bind(), "main", { ...SIGNED_IN, enabled: false });
+    await r.stub.runEvents(runBinding(r, start), { frames: [], end: { exit_code: 0 } });
+    await drainDue(r.stub);
+    expect(await r.stub.agentStatus(r.bind(), { run_id: refused.run_id }))
+      .toMatchObject({ state: "failed", code: "agent_disabled", error: AGENT_DISABLED,
+                       started_at: null });
+    expect((await recorder(r.stub)).starts).toHaveLength(1);
+    expect((await r.stub.noticeList(r.bind())).notices.map((notice) => notice.detail))
+      .toContain(`main: ${AGENT_DISABLED}`);
+    expect(await r.sql("SELECT run FROM run_inputs")).toEqual([]);
+  });
+});
+
+describe("auto and the owner's sign-ins", () => {
+  /** An agent on `auto`, the owner's strongest connected source. */
+  const AUTO_AGENT = Object.freeze({ engine: "auto", scopes: [] });
+
+  it("runs an owner whose only source is a Claude subscription", async () => {
+    const r = await gated();
+    // Nothing reported yet: auto has no source.
+    await defineAgent(r.stub, r.bind(), "helper", AUTO_AGENT);
+    expect((await failure(() => ownerRun(r.stub, r.bind(), undefined, "helper"))).message)
+      .toMatch(/^no_source/);
+    // The owner's own Claude Code run opens the sandbox; its runner reports the sign-in:
+    // presence only, its time, never a credential.
+    const { start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    expect(await claudeSignin(r, start, true)).toEqual({ recorded: 1, lapsed: [] });
+    const [row] = await r.sql("SELECT * FROM engine_signins");
+    expect(row).toMatchObject({ engine: "claude-code", signed_in: 1, models: "[]" });
+    expect(Object.keys(row!).sort())
+      .toEqual(["changed_at", "checked_at", "engine", "models", "signed_in"]);
+    const auto = await ownerRun(r.stub, r.bind(), undefined, "helper");
+    expect(auto.run).toMatchObject({ state: "running", engine: "claude-code",
+                                     credential: "vendor_login_in_sandbox" });
+    expect(auto.start).toMatchObject({ engine: "claude-code",
+                                       credential: "vendor_login_in_sandbox" });
+    expect(await r.sql("SELECT connection FROM run_grants WHERE run = ?", auto.run.run_id))
+      .toEqual([{ connection: null }]);
+  });
+
+  it("prefers the subscription to a key of its provider; a lapse is refused and noticed, " +
+     "never a fall back to the key", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    await defineAgent(r.stub, r.bind(), "helper", AUTO_AGENT);
+    // Only the key: auto runs on it.
+    const keyed = await ownerRun(r.stub, r.bind(), undefined, "helper");
+    expect(keyed.run).toMatchObject({ credential: "api_key" });
+    expect(await r.sql("SELECT connection FROM run_grants WHERE run = ?", keyed.run.run_id))
+      .toEqual([{ connection }]);
+    // Signed in as well: the plan covers the key's provider, and is used.
+    await claudeSignin(r, keyed.start, true);
+    const planned = await ownerRun(r.stub, r.bind(), undefined, "helper");
+    expect(planned.run).toMatchObject({ engine: "claude-code",
+                                        credential: "vendor_login_in_sandbox" });
+    // The sign-in lapses: a "sign in again" notice, and auto stops picking it, the key
+    // never taken in its place.
+    expect(await claudeSignin(r, keyed.start, false))
+      .toEqual({ recorded: 1, lapsed: ["claude-code"] });
+    expect((await r.stub.noticeList(r.bind())).notices
+      .filter((notice) => notice.type === "signin_lapsed").map((notice) => notice.detail))
+      .toEqual(["claude-code: sign in again"]);
+    expect((await failure(() => ownerRun(r.stub, r.bind(), undefined, "helper"))).message)
+      .toBe(`${SIGNIN_LAPSED} (claude-code)`);
+    expect((await failure(() => ownerRun(r.stub, r.bind(), SIGNED_IN))).message)
+      .toBe(`${SIGNIN_LAPSED} (claude-code)`);
+    // Reported lapsed again, it is no new lapse; signed in again, auto picks it again.
+    expect(await claudeSignin(r, keyed.start, false))
+      .toEqual({ recorded: 1, lapsed: [] });
+    await claudeSignin(r, keyed.start, true);
+    expect((await ownerRun(r.stub, r.bind(), undefined, "helper")).run)
+      .toMatchObject({ credential: "vendor_login_in_sandbox" });
+    // The agent that names the key's connection runs on it, its own choice.
+    await defineAgent(r.stub, r.bind(), "keyed", { ...AUTO_AGENT, connection });
+    expect((await ownerRun(r.stub, r.bind(), undefined, "keyed")).run)
+      .toMatchObject({ credential: "api_key" });
+  });
+
+  it("takes a sign-in report only from the sandbox, for engines that sign in, each once",
+     async () => {
+    const r = await gated();
+    const { start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    const report = (binding: Binding, signins: unknown) =>
+      failure(() => r.stub.signinReport(binding, { signins } as never));
+    const one = [{ engine: "claude-code", signed_in: true }];
+    expect((await report(r.bind(), one)).message).toBe(SANDBOX_ONLY);
+    expect((await report(runBinding(r, start), one)).message).toBe(SANDBOX_ONLY);
+    for (const bad of [[], [{ engine: "nope", signed_in: true }], [...one, ...one],
+                       [{ engine: "pi", signed_in: true }],
+                       [{ engine: "claude-code", signed_in: "yes" }],
+                       [{ engine: "claude-code", signed_in: true, models: ["a b"] }],
+                       [{ engine: "claude-code", signed_in: true,
+                          models: ["m".repeat(256), ...Array(8).fill("m".repeat(256))] }]]) {
+      expect((await report(sandboxOf(r, start), bad)).name).toBe("Invalid");
+    }
+    expect(await r.sql("SELECT engine FROM engine_signins")).toEqual([]);
+    // Its lease over, the sandbox reports nothing.
+    await r.stub.runEvents(runBinding(r, start), { frames: [], end: { exit_code: 0 } });
+    expect((await report(sandboxOf(r, start), one)).message).toBe("egress_lease_closed");
+  });
+});
+
 describe("the admission unit", () => {
   it("refuses an owner not admitted itself, whatever reached it (the lane's race)",
      async () => {
@@ -393,15 +600,43 @@ describe("the admission unit", () => {
         sandboxBound: () => true, sources: never, usable: never, egressible: never,
         standing: never, tier: never, caps: never, spent: never,
         lease: { live: never, open: never, release: never, renew: never },
-        ended: never, leaseEnded: never });
+        ended: never, leaseEnded: never, capacity: never });
       return gate.write(() => runs.admit({
         initiator: "schedule", stamp: null, origin: null, agent: "main",
         file: agentFile(JSON.stringify(SIGNED_IN)), conversation: null, request: null,
-        tiers: TIERS, unattended: true }, Date.now() / 1000, never))
+        tiers: TIERS, unattended: true, prompt: "x" }, Date.now() / 1000, never))
         .then(() => "admitted", (error: Error) => error.message);
     });
     expect(refused).toBe("owner_suspended: the owner's account is suspended (billing)");
     expect(await r.sql("SELECT id FROM runs")).toEqual([]);
+  });
+
+  it("finds a waiting run's turn: first in a conversation with no live run, while the " +
+     "tier has room by the numbers last handed", async () => {
+    const r = await gated();
+    const run = (n: number) => `run_${String(n).repeat(32)}`;
+    const picked = await r.in((_instance, state) => {
+      const sql = state.storage.sql;
+      const row = (id: string, conversation: number, kind: string) => sql.exec(
+        "INSERT INTO runs (id, agent, conversation, source, credential, state, initiator, " +
+          "unattended, created_at) VALUES (?, 'main', ?, 'claude-code', " +
+          "'vendor_login_in_sandbox', ?, 'owner', 0, 1)", id,
+        `cv_${String(conversation).repeat(32)}`, kind);
+      row(run(1), 1, "running");
+      row(run(2), 1, "waiting");  // behind its conversation's live run
+      row(run(3), 2, "waiting");  // its turn
+      row(run(4), 2, "waiting");  // behind the one before it
+      const never = () => {
+        throw new Error("a read went past its rows");
+      };
+      const runs = (capacity: number | null) => new Runs(new WriteGate(state.storage).storage, {
+        unadmitted: never, sandboxBound: never, sources: never, usable: never,
+        egressible: never, standing: never, tier: never, caps: never, spent: never,
+        lease: { live: never, open: never, release: never, renew: never },
+        ended: never, leaseEnded: never, capacity: () => capacity });
+      return [null, 1, 2].map((capacity) => runs(capacity).nextWaiting()?.id ?? null);
+    });
+    expect(picked).toEqual([null, null, run(3)]);
   });
 });
 

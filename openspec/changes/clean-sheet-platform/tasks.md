@@ -782,16 +782,33 @@ R, S, M and W.
     engine, credential, model, state, initiator, client and stamp, retry key, usage
     counters, result cut to 16 KiB, first error, exit code, times), `run_grants` (lease,
     stamp, origin, scopes, connection), `conversations` (agent, engine, client, the
-    engine's session id, last run), `run_schedules`, `platform_tiers` and
+    engine's session id, last run), `run_inputs` (a waiting run's input), `engine_signins`
+    (each engine's sign-in, presence only), `run_schedules`, `platform_tiers` and
     `socket_tickets`; `egress_runs` gone, a call's charge counted to its run's row and its
-    source's day and month. Owner-bound guard: 42.1% (4,212,787,760.75 bytes, slice R's
-    tables 148.0 MB); with every proposed raise 49.8% (4,977,974,622.75), 22 MB under half.
+    source's day and month. Owner-bound guard: 42.3% (4,229,662,416.75 bytes, slice R's
+    tables 164.9 MB); with every proposed raise 49.95% (4,994,849,278.75), 5.2 MB under
+    half, the input queue sized last to what the rest left.
   - Admission in one gate unit (`runs.ts`): owner admitted, `SANDBOX` bound, agent's
     `agent.json` (`agent-file.ts`) read whole and enabled, the stamp standing, the retry
-    key, the caller's conversation (one live run each), the tier's simultaneous runs, the
-    source chosen (the file's engine and credential, a named or the strongest listing
-    connection, or `auto`), an unattended run only where its record allows it (ADR-033
-    D3), the owner's own spending caps; then the run, the lease opened or joined, the grant.
+    key, the caller's conversation, the tier's simultaneous runs, the source chosen (the
+    file's engine and credential, a named or the strongest listing connection, or `auto`),
+    an unattended run only where its record allows it (ADR-033 D3), the owner's own
+    spending caps; then the run, the lease opened or joined, the grant.
+  - One live run a conversation (an engine session's own ceiling), and never a refusal
+    for it: an input to a busy conversation is written `waiting`, its input kept
+    (`run_inputs`), and the `runs` lane starts the waiting runs in order as each run
+    before them settles, admitted whole again (a refused turn settles `failed`, noticed;
+    a cancel settles it at once). The queue is bounded together by `QUEUE_ROWS` 256 and
+    `QUEUE_BYTES` 6 MiB, a technical ceiling sized to the owner-bound guard's remaining
+    budget (16.5 MB, its inputs and its waiting runs' rows; `limits-audit.md`).
+  - `auto` sees subscriptions: the runner reports each engine's sign-in (its record's
+    `status_argv`) at `POST egress.tinyassets.io/signin` (`signinReport`, by the egress
+    token), one `engine_signins` row an engine (signed in or not, when checked and
+    changed, the models it offers; never a credential), and `auto` ranks the signed-in
+    engines with the connections by the same ranking, a subscription preferred to a key of
+    the provider it covers. A lapse (signed in, then not) leaves a `signin_lapsed` notice
+    ("sign in again"), and `auto`, or an agent naming that engine on its sign-in, is
+    refused `signin_lapsed`, never a silent fall back to another source.
   - Run doors: `agentSubmit`, `agentRun` (now, `at`, `cron`, `on_mail`, `if_mail`),
     `agentStatus` (from the receipt), `agentCancel` (through the sandbox); MCP `converse`,
     `run_graph`, `run_status`, `run_cancel`; `/app/api/agent/{submit,run,status,cancel}`.
@@ -809,8 +826,9 @@ R, S, M and W.
   - Carried: slice E's owed case (a record setting a variable a key's environment sets is
     refused by the checker, `network.test.ts`), slice D's flakes (`.wrangler` skipped by
     both config guards; the files-quota pass test's explicit timeout).
-  - Mutation: 48 mutants over admission (12), the tier check (6), grant scoping (7), the
-    doors' authority (7), settle (10) and the relay (6): 47 killed. The survivor, the run
+  - Mutation: 75 mutants over admission (12), the tier check (6), grant scoping (7), the
+    doors' authority (7), settle (10), the relay (6), the conversations' queue (13) and
+    `auto`'s sign-ins (14): 74 killed. The survivor, the run
     grant's lease match in `grantUnder`, is equivalent while every lease that replaces a
     lapsed one settles the lapsed one's runs first (`lost`, in the same admission unit);
     it stays as the backstop of that invariant.
@@ -828,10 +846,24 @@ R, S, M and W.
   - it posts `{frames: [{seq, at, event}], end?: {exit_code}}` to `urls.events` (seq from
     1, rising; a batch at least every 20 s as the heartbeat, which renews the lease; the
     end once the CLI exited), and reports a vendor error category as an `error` event;
+  - it posts `{signins: [{engine, signed_in, models?}]}` to `urls.signin` for every engine
+    whose record signs in with the vendor's own login: at each start, before the CLI,
+    each record's `status_argv` run (exit 0, or `status_equals`, is signed in), and at the
+    end of a sign-in; models only as the CLI lists them. Presence only: never a credential;
+  - the vendor sign-in flow itself (`cli.login`) opens the sandbox's lease for the owner
+    with no run, so the first sign-in is reported before any run: `auto` sees a
+    subscription-only owner's plan from then on;
   - the owner config guard's `SERVICES` gains `SANDBOX` (a Worker that reaches nothing but
     E2B), and `wrangler.jsonc` binds it;
   - owed probes: E2B's transform on `/r/<run>/mcp` and `/r/<run>/events`; whether a
     WebSocket would carry the frames (the POST batches are the path today).
+- [ ] Next slice: TinyAssets agents get an identity in the ledger. Each of the owner's
+  agents (`/workspace/agents/<id>/agent.json`) is a ledger identity beside the main agents
+  (outside clients), so it takes part in mail, rooms and the board as they do, and mail to
+  an agent starts its run (its conversation the thread's, the run's input the mail). This
+  is core to the product: group chats that mix people, main agents and TinyAssets agents.
+  Until it lands, slice R's owner-mail schedules (`on_mail`, `if_mail`) stand in for it;
+  the slice replaces them.
 - [ ] Owed by slice E's review, outside slice S's checks:
   - Price server tools as data (Codex's web search, Anthropic's `mcp_servers`, OpenAI's
     `web_search_options`), so a call that enables one can be metered rather than refused

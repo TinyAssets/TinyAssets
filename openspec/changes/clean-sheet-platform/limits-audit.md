@@ -22,16 +22,19 @@ then its own change. `[I]` marks an inference not checked against a primary sour
 
 **The real ceiling** behind most bounds below is the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Half is 5 GB, the guard's budget,
 and every row that bounds a guard term gives its share of it, so one can be traded
-against another. Today's worst case is 4,212,787,760.75 bytes (42.13%; slice D's was
+against another. Today's worst case is 4,229,662,416.75 bytes (42.30%; slice D's was
 4,064,822,714, 40.65%, before slice R's tables).
 
 **Every proposed raise together** (`owner/guards/limits-proposed.test.ts`, `PROPOSED`, which
 the guard's own `termsFor` costs, all applied at once, and which also passes the ledger's
-`checkLimits` and the collections' nesting) gives a worst case of 4,977,974,622.75 bytes
-(49.78%), 22.0 MB under half. Slice D left 169.9 MB of margin for slice R's tables; slice R
-took 148.0 MB of it (`runs` 78.3 MB, `conversations` 30.7 MB, `run_schedules` 26.1 MB,
-`run_grants` 9.7 MB, `socket_tickets` 3.1 MB, `platform_tiers` under 0.1 MB; `egress_runs`
-went), so the founder may trade a raise here for room there. The first draft's raises that do not fit are in
+`checkLimits` and the collections' nesting) gives a worst case of 4,994,849,278.75 bytes
+(49.95%), 5.2 MB under half. Slice D left 169.9 MB of margin for slice R's tables; slice R
+took 164.9 MB of it (`runs` 85.0 MB with its waiting runs, `conversations` 30.7 MB,
+`run_schedules` 26.1 MB, `run_inputs` 9.8 MB, `run_grants` 9.7 MB, `socket_tickets`
+3.1 MB, `engine_signins` 0.4 MB, `platform_tiers` under 0.1 MB; `egress_runs` went). The
+conversations' input queue (`QUEUE_ROWS`, `QUEUE_BYTES`) was sized last, to what the rest
+left: its 16.5 MB (its inputs and its waiting runs' rows) is 75% of the 22.0 MB that
+remained, so the founder may trade a raise here for room there. The first draft's raises that do not fit are in
 `AFTER`, each with the structural change it needs first (the review's H3):
 
 | Structural change first | The draft's raise | Worst case today | Ledger `checkLimits` |
@@ -50,12 +53,12 @@ each fixed code.
 
 - **tier**: 4
 - **owner setting**: 8
-- **technical ceiling**: 64
+- **technical ceiling**: 68
 - **raise**: 38
 - **security**: 8
 - **label or page**: 16
 - **convention**: 15
-- **total**: 153 (slice R added 16: `## Slice R's bounds`)
+- **total**: 157 (slice R added 20: `## Slice R's bounds`)
 
 Flagged for the founder: the files default `max_bytes` (1 GiB, to become the tier's storage); the egress tokens' `RUN_DEADLINE_S` (a day: a token lifetime, with the proposal to tie it to the lease); and the model policy's per-run caps (`turn_requests` 100, `turn_tokens` 10M, `turn_cost` $25), on by default where ADR-034 decision 7 makes the owner's own limits off by default: proposed off.
 
@@ -257,18 +260,22 @@ engine's own, or a call's or a credential's convention.
 |---|---|---|---|---|---|
 | control record `tiers` (`owner/src/tier.ts`) | free 5, paid 10 (the record's) | simultaneous runs | a run past them refused `tier_runs` | tier | ADR-034 decision 8, the founder's numbers, edited in the record with no deploy. |
 | `owner/src/tier.ts:37` | 1,000 | the most simultaneous runs a tier record may give | a record past it is malformed | technical ceiling | The 10 GB: each live run's row and grant are costed at it by the owner-bound guard. Far past any tier. |
-| `owner/src/run-rows.ts:30` | 2,000 | settled runs kept as receipts | an older run's status is gone (its effects and transcript stay) | technical ceiling | The 10 GB: guard term `runs`, 78.3 MB with the live runs. A receipts retention, as egress's 2,000. |
-| `owner/src/run-rows.ts:31` | 16 KiB | a run's result text on its receipt | a longer result kept cut, marked `result_cut` | technical ceiling | The 10 GB, inside `runs`' term. The whole result is in the engine's own transcript, in the owner's files. |
-| `owner/src/run-rows.ts:32` | 1 KiB | a run's first error on its receipt | a longer error kept cut | technical ceiling | The 10 GB, inside `runs`' term; the engine's transcript keeps the whole. |
-| `owner/src/run-rows.ts:33` | 10,000 | conversations kept | the least recently run idle conversation forgets its resume id (its transcript stays) | technical ceiling | The 10 GB: guard term `conversations`, 30.7 MB. Nothing is refused. |
-| `owner/src/run-rows.ts:34` | 1,000 | the `runs` lane's schedules | a new schedule refused `run_schedules_full`, its way out named | technical ceiling | The 10 GB: guard term `run_schedules`, 26.1 MB, each with its stored input. |
-| `owner/src/run-rows.ts:35` | 16 KiB | a schedule's stored input | a longer scheduled input refused | technical ceiling | The 10 GB, inside `run_schedules`' term. A door's input is never stored, so only the door's body bound holds it. |
-| `owner/src/runs.ts:68` | one live run | runs in one conversation at once | a second message to a conversation whose run is live refused `conversation_busy` | technical ceiling | One engine session resumes one invocation at a time (its session files); a new conversation runs beside it. |
+| `owner/src/run-rows.ts:34` | 2,000 | settled runs kept as receipts | an older run's status is gone (its effects and transcript stay) | technical ceiling | The 10 GB: guard term `runs`, 85.0 MB with the live and waiting runs. A receipts retention, as egress's 2,000. |
+| `owner/src/run-rows.ts:35` | 16 KiB | a run's result text on its receipt | a longer result kept cut, marked `result_cut` | technical ceiling | The 10 GB, inside `runs`' term. The whole result is in the engine's own transcript, in the owner's files. |
+| `owner/src/run-rows.ts:36` | 1 KiB | a run's first error on its receipt | a longer error kept cut | technical ceiling | The 10 GB, inside `runs`' term; the engine's transcript keeps the whole. |
+| `owner/src/run-rows.ts:37` | 10,000 | conversations kept | the least recently run idle conversation forgets its resume id (its transcript stays) | technical ceiling | The 10 GB: guard term `conversations`, 30.7 MB. Nothing is refused. |
+| `owner/src/run-rows.ts:38` | 1,000 | the `runs` lane's schedules | a new schedule refused `run_schedules_full`, its way out named | technical ceiling | The 10 GB: guard term `run_schedules`, 26.1 MB, each with its stored input. |
+| `owner/src/run-rows.ts:39` | 16 KiB | a schedule's stored input | a longer scheduled input refused | technical ceiling | The 10 GB, inside `run_schedules`' term. A door's input is stored only while it waits for its conversation (below); otherwise the door's body bound holds it. |
+| `owner/src/runs.ts:489` | one live run | runs in one conversation at once | a second message waits (`waiting`) and starts, in order, as the run before it settles; never refused for it | technical ceiling | One engine session resumes one invocation at a time (its session files); a new conversation runs beside it. |
+| `owner/src/run-rows.ts:46` | 256 | inputs waiting for their conversations, together | one more refused `run_inputs_full` until a run settles | technical ceiling | The 10 GB: each waits as a `runs` row at its widest (6.7 MB of `runs`' term) beside its input. Sized with `QUEUE_BYTES` to the guard's remaining budget. |
+| `owner/src/run-rows.ts:47` | 6 MiB | the waiting inputs' bytes, together | one more refused `run_inputs_full` until a run settles | technical ceiling | The 10 GB: guard term `run_inputs`, 9.8 MB (its inputs however spread, each row two overflow pages over its share). With the waiting runs' rows, 16.5 MB, 75% of the budget slice R's other tables left; a raise takes room from another term. |
+| `owner/src/run-rows.ts:49` | 64 | engines whose sign-in is kept | a report past it fails loudly | technical ceiling | The 10 GB: guard term `engine_signins`, 0.4 MB. One row an engine, far past every CLI record. |
+| `owner/src/run-rows.ts:51` | 2,048 characters | an engine's reported models, as JSON | a longer report refused | technical ceiling | The 10 GB, inside `engine_signins`' term; visible ASCII, a byte a character. |
 | `owner/src/socket-shape.ts:43` | 1,024 | socket tickets outstanding | a ticket refused `socket_tickets_full` until one is used or expires | technical ceiling | The 10 GB: guard term `socket_tickets`, 3.1 MB. A ticket lives 30 s. |
 | `owner/src/socket-shape.ts:38` | 30 s | a socket ticket's life | an unused ticket expires; the app asks again | security | A single-use credential in a URL: short-lived by design (A6). |
 | `owner/src/relay.ts:64` | 1,024 | the owner app's sockets open at once | another socket refused `sockets_full` | technical ceiling | The isolate's 128 MB: each socket's attachment and the SDK's copy, counted by the memory guard (4.2 MB). |
 | `owner/src/relay.ts:66` | 4 Mi UTF-16 units | the live runs' tails, together | a late joiner sees fewer of a run's oldest frames | technical ceiling | The isolate's 128 MB (memory guard, 8.4 MB). Frames are never committed (ADR-034 decision 10); the run's result is its receipt's. |
 | `owner/src/relay.ts:68` | 256 Ki units | one frame kept in a tail | a longer frame is relayed live, never kept for a late joiner | technical ceiling | The isolate's memory, as above. |
 | `owner/src/relay.ts:70` | 1,024 units | a frame the app sends | a longer one closes the socket `frame_refused` | convention | The app sends only pings. |
-| `owner/src/owner-do.ts:698` | 60 s | how long a run door waits for its run to settle (`wait_ms`) | the door answers the run as it stands; `run_status` reads it later | convention | A call's own bound. The run itself has no deadline. |
+| `owner/src/owner-do.ts:710` | 60 s | how long a run door waits for its run to settle (`wait_ms`) | the door answers the run as it stands; `run_status` reads it later | convention | A call's own bound. The run itself has no deadline. |
 

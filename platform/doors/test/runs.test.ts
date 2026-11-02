@@ -2,7 +2,8 @@
  * Runs at the doors (slice R), in workerd, through the real owner object with a recording
  * fake behind its `SANDBOX` (`entry.ts`): the run tools on `/mcp` and `/api`, the owner's
  * `/app/api/agent/*` routes, the tier numbers the control record holds, a run's own MCP door
- * and event door on the egress host, and the owner app's live socket on a conversation
+ * and event door on the egress host, the sandbox's sign-in report door, and the owner
+ * app's live socket on a conversation
  * (A6's ticket, binder path and sign-out, salvaged: a ticket is single-use, a bearer opens
  * nothing, and a sign-out closes exactly its device's sockets).
  */
@@ -195,6 +196,31 @@ describe("a run's own doors on the egress host", () => {
       method: "POST", body: "{}", headers: { Origin: url(""), [SANDBOX_HEADER]: tokenOf(start!),
                                              [GENERATION_HEADER]: "1" } }));
     expect(browser.status).toBe(404);
+  }, 60_000);
+
+  it("take the runner's sign-in report by the sandbox's egress token, and nothing else",
+     async () => {
+    const { who, app } = await owned();
+    await appPost("agent/submit", app.access_token, null, { message: "go", client_send_id: "s-1" });
+    const [start] = await starts(who);
+    const signin = (headers: Record<string, string>, method = "POST") =>
+      call(new Request(`${EGRESS_ORIGIN}/signin`, {
+        method, body: method === "POST"
+          ? JSON.stringify({ signins: [{ engine: "claude-code", signed_in: true }] }) : null,
+        headers: { "Content-Type": "application/json", ...headers } }));
+    const sandbox = { [SANDBOX_HEADER]: tokenOf(start!), [GENERATION_HEADER]: "1" };
+    const reported = await signin(sandbox);
+    expect(reported.status).toBe(200);
+    expect(await reported.json()).toEqual({ recorded: 1, lapsed: [] });
+    expect(start!.urls.signin).toBe(`${EGRESS_ORIGIN}/signin`);
+    expect((await signin({ [SANDBOX_HEADER]: "x.1.y.z", [GENERATION_HEADER]: "1" })).status)
+      .toBe(401);
+    expect((await signin({})).status).toBe(401);
+    expect((await signin({ ...sandbox, Origin: url("") })).status).toBe(404);
+    expect((await signin(sandbox, "GET")).status).toBe(405);
+    expect(await runInDurableObject(env.OWNER.getByName(who), (_instance, state) =>
+      state.storage.sql.exec("SELECT engine, signed_in FROM engine_signins").toArray()))
+      .toEqual([{ engine: "claude-code", signed_in: 1 }]);
   }, 60_000);
 });
 

@@ -209,10 +209,15 @@ export function runPath(run: string): string {
   return `/${RUN_SEGMENT}/${run}`;
 }
 
-/** The run's MCP door (the record's `{mcp_url}`) and its event door, on the egress host. */
-export function runUrls(run: string): { readonly mcp: string; readonly events: string } {
+/**
+ * The run's MCP door (the record's `{mcp_url}`), its event door, and the sandbox's sign-in
+ * report door, on the egress host.
+ */
+export function runUrls(run: string):
+    { readonly mcp: string; readonly events: string; readonly signin: string } {
   return Object.freeze({ mcp: `${EGRESS_ORIGIN}${runPath(run)}/mcp`,
-                         events: `${EGRESS_ORIGIN}${runPath(run)}/events` });
+                         events: `${EGRESS_ORIGIN}${runPath(run)}/events`,
+                         signin: `${EGRESS_ORIGIN}/signin` });
 }
 
 export type EgressMode = "open" | "allowlist" | "ask";
