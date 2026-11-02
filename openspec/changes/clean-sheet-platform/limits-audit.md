@@ -53,7 +53,7 @@ Flagged for the founder: the files default `max_bytes` (1 GiB, to become the tie
 | `owner/src/ledger.ts:170` | 480 KiB | Propose 8 MiB. |
 | `owner/src/ledger.ts:171` | 500 | Propose 5,000. |
 | `owner/src/ledger.ts:172` | 4 MiB | Propose 32 MiB. |
-| `owner/src/grants.ts:115` | 64 | Propose 256; a scope is about 9 KiB of the guard's term, so recompute. |
+| `owner/src/grants.ts:112` | 64 | Propose 256; a scope is about 9 KiB of the guard's term, so recompute. |
 | `owner/src/sessions.ts:57` | 16 | Propose 64: one owner's phones, laptops and browsers. |
 | `owner/src/network.ts:157` | 300 s | Propose 3,600 s: a long reasoning answer can stream past 5 minutes, and a Worker serving a streamed response has no wall-clock limit while its client stays connected [I: Cloudflare Workers limits]. `LOST_AFTER_S` and the gateway's `FORWARD_DEADLINE_MS` follow it (a test holds them equal). |
 | `owner/src/network.ts:159` | 16 MiB | Propose 32 MiB, the largest request a provider takes [I: Anthropic's Messages API documents 32 MB; to verify]; the gateway's `BODY_MAX` follows. |
@@ -123,11 +123,11 @@ Flagged for the founder: the files default `max_bytes` (1 GiB, to become the tie
 | `owner/src/ledger.ts:407` | 80 characters | an agent's display name | a longer name refused | technical ceiling | A label. |
 | `owner/src/registrations.ts:52` | 200 pending, 10 per client, 4,096-byte card | registration cards held for the owner's apply | a client's 11th card refused | technical ceiling | Owner-bound guard term; cards wait for the owner. |
 | `owner/src/registrations.ts:43` | 86,400 s | how long a filed card waits | the client files again | technical ceiling | A held request, not the owner's state. |
-| `owner/src/grants.ts:113` | 1,000 | clients recorded without an owner grant | the oldest free one forgotten (never refused) | technical ceiling | Owner-bound guard term. |
-| `owner/src/grants.ts:114` | 1,000 | clients the owner set a grant for | the 1,001st grant refused | technical ceiling | Owner-bound guard term. |
-| `owner/src/grants.ts:115` | 64 | scope triples in one grant | a wider grant refused | raise | Propose 256; a scope is about 9 KiB of the guard's term, so recompute. |
-| `owner/src/grants.ts:341` | 80 characters | a client's name | a longer name refused | technical ceiling | A label. |
-| `owner/src/grants.ts:178` | 512 characters | a scope's universe, agent or capability | a longer field refused | technical ceiling | A label. |
+| `owner/src/grants.ts:110` | 1,000 | clients recorded without an owner grant | the oldest free one forgotten (never refused) | technical ceiling | Owner-bound guard term. |
+| `owner/src/grants.ts:111` | 1,000 | clients the owner set a grant for | the 1,001st grant refused | technical ceiling | Owner-bound guard term. |
+| `owner/src/grants.ts:112` | 64 | scope triples in one grant | a wider grant refused | raise | Propose 256; a scope is about 9 KiB of the guard's term, so recompute. |
+| `owner/src/grants.ts:338` | 80 characters | a client's name | a longer name refused | technical ceiling | A label. |
+| `owner/src/grants.ts:175` | 512 characters | a scope's universe, agent or capability | a longer field refused | technical ceiling | A label. |
 | `owner/src/sessions.ts:56` | 8 hours | the owner's protected session | the owner signs in again for a widening | technical ceiling | Security: the Python's session life, the cookie's `Max-Age`. |
 | `owner/src/sessions.ts:57` | 16 | signed-in devices at once | the oldest session closed | raise | Propose 64: one owner's phones, laptops and browsers. |
 | `owner/src/sessions.ts:58` | 600 s | how fresh a sign-in must be to open a session | the owner signs in again | technical ceiling | Security (S30). |

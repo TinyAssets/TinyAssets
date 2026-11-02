@@ -2,12 +2,11 @@
  * The owner object's one write gate: every owner write is one synchronous unit (ADR-032;
  * tasks 5, S3).
  *
- * pi no longer shares the object's database: each agent thread's Session lives in a store
- * of its own (`thread-store.ts`), so no pi transaction ever opens in the owner's SQLite,
- * and the gate keeps no queue. It holds the one rule every owner write keeps: a unit is a
- * synchronous body run in one `transactionSync`, so it reads what it decides on itself and
- * writes before anything else runs in the object, and it never spans an outside call (a
- * store's RPC, `FILES`, the gateway): a door or a lane pass writes through it a unit at a
+ * No agent loop shares the object's database (agents run on unmodified engines, ADR-034),
+ * so no outside transaction ever opens in the owner's SQLite, and the gate keeps no queue.
+ * It holds the one rule every owner write keeps: a unit is a synchronous body run in one
+ * `transactionSync`, so it reads what it decides on itself and writes before anything else
+ * runs in the object, and it never spans an outside call (`FILES`, the gateway): a door or a lane pass writes through it a unit at a
  * time, awaiting outside calls only between units. A unit is never an async
  * `ctx.storage.transaction()`, which would hold the input gate across its awaits.
  *

@@ -37,16 +37,13 @@
  * - Work saved under a grant is rechecked with `standing` against the generation it
  *   was stamped with: a changed, revoked or fenced grant refuses it. Stamps carry no
  *   scopes: a scoped grant's are read live from the row, so a rename needs no new stamp.
- *   The schedule's stamped work (`scheduled.ts`) and an MCP client's held registration
- *   (`registrations.ts`) carry that stamp and hold their client's row (`held`), as an
- *   agent does, so the free-row bound can never forget it and turn a standing grant
- *   into "no grant".
+ *   An MCP client's held registration (`registrations.ts`) carries that stamp and holds
+ *   its client's row (`held`), as an agent does, so the free-row bound can never forget
+ *   it and turn a standing grant into "no grant".
  *
- * The agent's threads made for an outside client carry its stamp, and every tool call in
- * them is checked with `standing` and the scope's capability (`authority.ts`, A2); a grant
- * change ends that client's in-flight turns, live views and waits once it committed (the
- * Python's `_end_outside_streams`; `agent.ts`). Owed by a later slice, written into its
- * task: the doorbell rechecks the grant just before it sends (7).
+ * The runs slice (R) stamps an outside client's runs, each call checked with `standing`
+ * and the scope's capability (`authority.ts`), a grant change ending them. Owed by a later
+ * slice, written into its task: the doorbell rechecks the grant just before it sends (7).
  *
  * The rows stay bounded without ever forgetting a fence (slice 3's review L1, and slice
  * 5's review M1). A row an agent or stamped work holds is kept: it is what that work is

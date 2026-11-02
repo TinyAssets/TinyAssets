@@ -2,9 +2,8 @@
  * The owner object's one schedule, on the Agents SDK Lifecycle job queue (ADR-032, tasks 3.6).
  *
  * Lifecycle (`agents/lifecycle`, agents 0.31.0) owns the Durable Object's queue of durable
- * jobs and its single physical alarm, and the thread host (`thread-host.ts`) keeps a wake
- * job per agent thread on the same queue. So no source here sets, reads or clears the
- * alarm (the alarm guard): every queue change re-arms it from the queue, and
+ * jobs and its single physical alarm, which the erasure's job shares. So no source here
+ * sets, reads or clears the alarm (the alarm guard): every queue change re-arms it from the queue, and
  * `OwnerDO.alarm` only hands the runtime's alarm to Lifecycle, which drives the due jobs
  * and re-arms.
  *
