@@ -1,8 +1,8 @@
 /**
  * Every owner write is one synchronous unit of the object's write gate (`gate.ts`), which
- * reads what it decides on itself and spans no outside call. pi's commits are no longer in
- * the owner's database at all (each thread's Session lives in its own store,
- * `thread-store.ts`), so the gate keeps no queue and no pi transaction can hold one.
+ * reads what it decides on itself and spans no outside call. No agent loop commits in the
+ * owner's database (agents run on unmodified engines, ADR-034), so the gate keeps no queue
+ * and no outside transaction can hold one.
  *
  * At run time the gate's storage view refuses a write outside a unit; this guard keeps the
  * source shaped so the view is the only storage the object's code writes through, and so
@@ -11,14 +11,12 @@
  *   first statement returns, or awaits, `this.#door`, `this.#synced` or `this.#filing`,
  *   and those three are the gate (`#door` is `this.#gate.write`, the others call `#door`);
  * - the object names `ctx.storage` once, to make the gate, and its modules are handed the
- *   gate's view; the one other source that names a `ctx.storage` is a thread store, which
- *   is a Durable Object of its own and names only its own; no source builds a SQLite
+ *   gate's view, and no other source names a `ctx.storage`; no source builds a SQLite
  *   adapter (`DurableObjectSqliteDatabase`) over the owner's storage, and no source opens an
  *   async storage transaction, which holds the input gate across its awaits;
  * - in an async function of the modules that write around outside calls (the lanes, the
- *   files' methods that cross to `FILES`, the pi environment, the schedule's job sets, the
- *   agent's notices and threads, the connections' refresh and lane, a model call's
- *   reserve, dispatch, settle and reseal), each call of a write (`WRITES`) sits inside a unit: an arrow handed
+ *   files' methods that cross to `FILES`, the schedule's job sets, the connections'
+ *   refresh and lane), each call of a write (`WRITES`) sits inside a unit: an arrow handed
  *   to `write`, `#write`, `unit` or a door's gate. A synchronous method is itself a unit's
  *   body, so its calls are the view's to check;
  * - in any function of the object's modules that opens a unit, async or not, no value read
@@ -40,8 +38,6 @@ import { parse, reporter, workerSources } from "./sources";
 
 const OWNER_DO = "owner/src/owner-do.ts";
 const GATE = "owner/src/gate.ts";
-/** A thread store: its own Durable Object, which names only its own storage. */
-const STORE = "owner/src/thread-store.ts";
 /** The gate's own helpers in the object, and what each must call. */
 const ENTRIES: ReadonlySet<string> = new Set(["this.#door", "this.#synced", "this.#filing"]);
 /** The calls whose arrow argument is a unit. */
@@ -51,14 +47,9 @@ const WRITES: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   "owner/src/wakes.ts": new Set(["recover", "defer", "claim", "mark", "settle"]),
   "owner/src/files.ts": new Set(["#change", "transactionSync", "begin", "commit", "abort",
                                  "#writeInline", "ns"]),
-  "owner/src/files-env.ts": new Set(["rename", "mkdir", "remove", "tempDir", "dropTemps"]),
   "owner/src/schedule.ts": new Set(["push", "cancel"]),
-  "owner/src/agent.ts": new Set(["add", "record"]),
-  "owner/src/threads.ts": new Set(["retain"]),
   "owner/src/connections.ts": new Set(["#lease", "#unlease", "#refreshed", "#sweep", "#owed",
                                        "#revokeOutcome"]),
-  "owner/src/gateway-provider.ts": new Set(["reserve", "dispatched", "settle", "abandon",
-                                             "resealed"]),
 });
 
 function isAsync(node: ts.Node): boolean {
@@ -244,8 +235,7 @@ export function storageReach(sources: ReadonlyMap<string, string>): string[] {
         const made = path === OWNER_DO && ts.isNewExpression(node.parent)
           && node.parent.expression.getText(file) === "WriteGate"
           && node.expression.getText(file) === "ctx";
-        const own = path === STORE && node.expression.getText(file) === "this.ctx";
-        if (!made && !own) {
+        if (!made) {
           report(node, `names ${node.getText(file)} past the write gate`);
         }
       }
@@ -280,8 +270,6 @@ describe("write-gate guard", () => {
     expect(storageReach(sources)).toEqual([]);
     expect(sources.get(OWNER_DO)).toContain("this.#gate = new WriteGate(ctx.storage);");
     expect(sources.get(GATE)).not.toContain("chord");
-    expect(storageReach(new Map([[STORE, "export class S { m() { return " +
-                                          "this.ctx.storage.sql; } }"]]))).toEqual([]);
   });
 
   it("holds every write of an awaiting function in a unit", () => {
@@ -325,7 +313,7 @@ describe("write-gate guard", () => {
       "await s.transaction(async () => 1); }"],
     [GATE, "export class G { write = (u: U) => this.#db.transaction(async () => u()); }"],
     [GATE, "import { DurableObjectSqliteDatabase } from 'c';"],
-    [STORE, "export class S { m(ctx: DurableObjectState) { return ctx.storage.sql; } }"],
+    ["owner/src/thread-store.ts", "export class S { m() { return this.ctx.storage.sql; } }"],
     ["owner/src/x.ts", "export class S { m() { return this.ctx.storage.sql; } }"],
   ])("sees a reach past the gate in %s: %s", (path, source) => {
     expect(storageReach(new Map([[path, source]]))).toHaveLength(1);

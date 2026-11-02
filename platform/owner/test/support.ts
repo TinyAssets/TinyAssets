@@ -11,7 +11,6 @@ import {
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
 import { SCHEDULE } from "../src/schedule";
-import { MIGRATIONS } from "../src/schema";
 
 export const text = (value: string): Uint8Array => new TextEncoder().encode(value);
 
@@ -24,27 +23,6 @@ export function inGate<R>(stub: DurableObjectStub<OwnerDO>,
                                 gate: WriteGate) => R | Promise<R>): Promise<R> {
   return runInDurableObject(stub, (instance: OwnerDO, state) =>
     act(instance, state, new WriteGate(state.storage)));
-}
-
-/**
- * Install migration 10's turn-owner bound at `inputs` open inputs and `compactions` live
- * compactions a thread, in place of the schema's: a test-only cap, to force the trigger.
- */
-export function capTurnOwners(sql: SqlStorage, inputs: number, compactions: number,
-                              working?: number): void {
-  const trigger = MIGRATIONS[9]!.find((statement) =>
-    statement.startsWith("CREATE TRIGGER model_turn_owners_full"))!;
-  let capped = trigger.replace(/WHEN 's' THEN [0-9]+ WHEN 'c' THEN ([0-9]+) ELSE [0-9]+ END/,
-                               `WHEN 's' THEN ${inputs} WHEN 'c' THEN $1 ELSE ${compactions} END`);
-  if (working !== undefined) {
-    capped = capped.replace(/COUNT\(DISTINCT thread\) FROM model_turn_owners\) >= [0-9]+/,
-                            `COUNT(DISTINCT thread) FROM model_turn_owners) >= ${working}`);
-  }
-  if (capped === trigger) {
-    throw new Error("the turn-owner bound is not where the test expects it");
-  }
-  sql.exec("DROP TRIGGER model_turn_owners_full");
-  sql.exec(capped);
 }
 
 /** The fault a `faulty` gate's unit fails with. */
@@ -138,34 +116,6 @@ export function sqlIn(stub: DurableObjectStub<OwnerDO>, statement: string,
                       ...params: SqlStorageValue[]): Promise<Row[]> {
   return runInDurableObject(stub, (_instance: OwnerDO, state) =>
     state.storage.sql.exec<Row>(statement, ...params).toArray());
-}
-
-/** The store a thread's row names, in `stub`'s object. */
-export async function storeOf(stub: DurableObjectStub<OwnerDO>, thread: string):
-    Promise<string> {
-  const [row] = await sqlIn(stub, "SELECT store FROM agent_threads WHERE thread_id = ?", thread);
-  if (row === undefined) {
-    throw new Error("no such thread");
-  }
-  return row["store"] as string;
-}
-
-/** Rows a query returns in a thread store's own database. */
-export function storeSql(store: string, statement: string, ...params: SqlStorageValue[]):
-    Promise<Row[]> {
-  return runInDurableObject(env.PISTORE.getByName(store), (_instance, state) =>
-    state.storage.sql.exec<Row>(statement, ...params).toArray());
-}
-
-/** A submission as a thread's store keeps it, by its request id or its id: how it stands. */
-export async function storeSubmission(store: string, by: { request?: string; id?: number }):
-    Promise<{ status: string; reason: string | null } | undefined> {
-  const [row] = await storeSql(store, "SELECT status, json_extract(record, '$.reason') AS " +
-                                      "reason FROM pi_submissions WHERE json_extract(record, '$.requestId') IS ? " +
-                                      "OR id IS ?",
-                               by.request ?? null, by.id ?? null);
-  return row === undefined ? undefined
-    : { status: row["status"] as string, reason: (row["reason"] ?? null) as string | null };
 }
 
 /** The tables of `stub`'s own database whose names begin `prefix`. */

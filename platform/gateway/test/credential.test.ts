@@ -5,8 +5,7 @@
 import { describe, expect, it } from "vitest";
 
 import { allows, credential, type Endpoint, source } from "../src/credential";
-import { DEADLINE_MAX_MS, encodeEnvelope, envelope } from "../src/envelope";
-import { failureResponse, modelRefusalCode, upstreamCode } from "../src/failure";
+import { failureResponse, upstreamCode } from "../src/failure";
 import { ANTHROPIC, apiKey, GOOGLE, OPENAI } from "./support";
 
 const ENDPOINTS: readonly Endpoint[] = Object.freeze([
@@ -206,47 +205,6 @@ describe("credential", () => {
   });
 });
 
-describe("envelope", () => {
-  const now = 1_000_000;
-  const fields = { owner: "alice", connection: "c1", version: 1, blob: "v1.k1.x.y",
-                   reservation: { id: "r-1", max_output_tokens: 10 }, policy_generation: 0,
-                   deadline: now + 1000 };
-
-  it("reads what the owner object sends, owner names of any printable text included", () => {
-    const read = envelope(encodeEnvelope({ ...fields, owner: "Ålice 🌊" }), now);
-    expect(read.binding).toEqual({ owner: "Ålice 🌊", connection: "c1", version: 1 });
-    expect(read.reservation).toEqual({ id: "r-1", max_output_tokens: 10 });
-  });
-
-  it.each([
-    ["a missing field", (() => { const { policy_generation: _g, ...rest } = fields; return rest; })()],
-    ["an extra field", { ...fields, model: "m" }],
-    ["a zero cap", { ...fields, reservation: { id: "r-1", max_output_tokens: 0 } }],
-    ["a fractional cap", { ...fields, reservation: { id: "r-1", max_output_tokens: 1.5 } }],
-    ["an extra reservation field", { ...fields, reservation: { id: "r", max_output_tokens: 1, x: 1 } }],
-    ["a bad owner", { ...fields, owner: " alice" }],
-    ["a version of zero", { ...fields, version: 0 }],
-    ["a negative generation", { ...fields, policy_generation: -1 }],
-    ["a deadline too far ahead", { ...fields, deadline: now + DEADLINE_MAX_MS + 1 }],
-    ["a blob that is not text", { ...fields, blob: 1 }],
-    ["a reservation id with a space", { ...fields, reservation: { id: "r 1", max_output_tokens: 1 } }],
-    ["a reservation id starting with a dot", { ...fields, reservation: { id: ".r", max_output_tokens: 1 } }],
-    ["a header over its bound", { ...fields, blob: "b".repeat(96 * 1024) }],
-  ])("refuses %s", (_what, value) => {
-    expect(() => envelope(encodeEnvelope(value as typeof fields), now)).toThrow("invalid_envelope");
-  });
-
-  it("refuses a deadline that has passed as deadline", () => {
-    expect(() => envelope(encodeEnvelope({ ...fields, deadline: now }), now)).toThrow("deadline");
-  });
-
-  it("refuses a header that is not base64url JSON", () => {
-    for (const header of [null, "", "a", "!!!!", btoa("not json"), "x".repeat(100 * 1024)]) {
-      expect(() => envelope(header, now)).toThrow("invalid_envelope");
-    }
-  });
-});
-
 describe("fixed codes", () => {
   it.each([
     [401, "upstream_unauthorized"], [403, "upstream_unauthorized"], [429, "upstream_rate_limited"],
@@ -256,18 +214,6 @@ describe("fixed codes", () => {
     [504, "upstream_server_error"], [302, "upstream_error"],
   ] as const)("names upstream %d as %s", (status, code) => {
     expect(upstreamCode(status)).toBe(code);
-  });
-
-  it.each([
-    [413, false, "context_length_exceeded"], [413, true, "context_length_exceeded"],
-    [400, true, "context_length_exceeded"], [422, true, "context_length_exceeded"],
-    [408, true, "context_length_exceeded"], [500, true, "context_length_exceeded"],
-    [400, false, "upstream_rejected"], [500, false, "upstream_server_error"],
-    [401, true, "upstream_unauthorized"], [403, true, "upstream_unauthorized"],
-    [429, true, "upstream_rate_limited"],
-  ] as const)("names a model call's refusal %d, read as an overflow: %s, as %s",
-              (status, overflow, code) => {
-    expect(modelRefusalCode(status, overflow)).toBe(code);
   });
 
   it("answers with the code and nothing else", async () => {

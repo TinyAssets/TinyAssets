@@ -1,15 +1,12 @@
 /**
- * The owner's notices: what the agent's runtime reports that no call fails with, kept in
- * the owner's own object for the owner to read (`OwnerDO.noticeList`).
- *
- * pi reports a task its restart limit parked, a task that faulted, a hook or section that
- * threw, the error that failed its Session, and the like through `onReport` (pi-durable
- * README, "Failures and Recovery"); the agent (`agent.ts`) turns each report, and each
- * extension it skipped while opening pi, into one notice. A notice is the report's type and
- * a short detail: its reason, the extension and the task kind, and the error's message cut
- * to `NOTICE_DETAIL` characters. Only the newest `NOTICES_KEPT` stay, so a report that
- * repeats every request can never grow the owner's storage. Each is added in one unit of
- * the object's write gate.
+ * The owner's notices: what the owner's work reports that no call fails with, kept in the
+ * owner's own object for the owner to read (`OwnerDO.noticeList`): today a connection's
+ * setup check that failed, or a provider revoke that failed or is unsupported
+ * (`connections.ts`); the runs slice (R) adds a run's failures (a sign-in expired, a
+ * vendor's rate limit or billing error, a sync refused). A notice is a type and a short
+ * detail cut to `NOTICE_DETAIL` characters. Only the newest `NOTICES_KEPT` stay, so a
+ * report that repeats can never grow the owner's storage. Each is added in one unit of the
+ * object's write gate.
  */
 import type { OwnerStorage } from "./gate";
 

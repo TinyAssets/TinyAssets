@@ -113,6 +113,10 @@ export const SUPPORTED_APIS: readonly string[] = Object.freeze([
   "azure-openai-responses", "pi-messages", "google-generative-ai", "google-vertex",
 ]);
 
+/** The supported APIs whose adapters refuse `options.fetch` (held by `egress.ts`). */
+export const GLOBAL_FETCH_APIS: readonly string[] = Object.freeze(["google-generative-ai",
+                                                                   "google-vertex"]);
+
 const ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const HEADER = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const SCHEME = /^(?:[A-Za-z][A-Za-z0-9-]{0,31})?$/;

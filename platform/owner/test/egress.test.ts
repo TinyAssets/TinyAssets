@@ -219,8 +219,7 @@ describe("an egress call", () => {
     expect(await runs(r)).toEqual([{ lease_id: lease.lease_id, epoch: lease.epoch, requests: 1,
                                      tokens: 1500, cost: 4200 }]);
     expect(await sourceSpend(r)).toEqual([{ p: "d", cost: 4200 }, { p: "m", cost: 4200 }]);
-    // No pi record holds it: the loop's turn counters and reservations are untouched.
-    expect(await r.sql("SELECT COUNT(*) AS n FROM model_turns")).toEqual([{ n: 0 }]);
+    // The model reservations are untouched: the sandbox's charge is its own row.
     expect(await r.sql("SELECT COUNT(*) AS n FROM model_reservations")).toEqual([{ n: 0 }]);
     const { receipts } = await r.stub.egressReceipts(r.bind());
     expect(receipts).toMatchObject([{ reservation: opened.reservation, connection,
@@ -379,7 +378,7 @@ describe("an egress call", () => {
     const lease = await leased(r);
     for (const call of [() => r.stub.policyRead(lease.as()),
                         () => r.stub.fileStat(lease.as(), { path: "/workspace/a" }),
-                        () => r.stub.agentStatus(lease.as(), { operation: "x" } as never)]) {
+                        () => r.stub.mailboxRead(lease.as(), { limit: 1 })]) {
       expect((await failure(call)).message).toBe(SANDBOX_DOORS);
     }
     for (const call of [() => r.stub.egressOpen(r.bind(), request(connection)),
@@ -704,7 +703,7 @@ describe("the spend caps", () => {
     }
   });
 
-  it("share the source's day and month with the loop's calls, in both directions",
+  it("share the source's day and month with the model reservations, in both directions",
      async () => {
     // One whole call's charge, as a fresh owner's first call holds it.
     const probe = await gated();
@@ -713,13 +712,11 @@ describe("the spend caps", () => {
     const [{ est_cost: one }] = (await charges(probe)) as [{ est_cost: number }];
     const r = await gated();
     const connection = await r.connect("sk-good");
-    // Room for that call, but not once the loop has spent as much.
+    // Room for that call, but not once a model reservation has spent as much.
     const lease = await cappedLeased(r, { ...ROOMY,
                                           sources: { anthropic: { daily_cost: one + 500_000 } } });
-    // A loop call on the same source, settled, as `usage.ts` records one.
+    // A model call on the same source, settled, as `usage.ts` records one.
     const day = new Date().toISOString().slice(0, 10);
-    await r.sql("INSERT INTO model_turns (turn, requests, tokens, cost, last_at, thread, owners) " +
-                  "VALUES ('s:t', 0, 0, 0, ?, 't', 1)", Date.now() / 1000);
     await r.sql("INSERT INTO model_reservations (id, turn, connection_id, source, model, state, " +
                   "max_output_tokens, est_tokens, est_cost, tokens, cost, policy_generation, " +
                   "day, month, created_at, settled_at) VALUES ('r' || lower(hex(randomblob(16))), " +
@@ -728,10 +725,10 @@ describe("the spend caps", () => {
     await r.sql("UPDATE model_reservations SET state = 'dispatched' WHERE state = 'reserved'");
     await r.sql("UPDATE model_reservations SET state = 'succeeded', tokens = 900, " +
                   "cost = ?, settled_at = ? WHERE state = 'dispatched'", one, Date.now() / 1000);
-    // The loop's spend leaves the source's day no room for the sandbox's call.
+    // That spend leaves the source's day no room for the sandbox's call.
     expect(await refusedWith(r, lease.as(), connection)).toBe("egress_spend_refused");
     expect((await charges(r)).at(-1)).toMatchObject({ rule: "source_daily_cost" });
-    // And the sandbox's spend is on the counters the loop's reservation reads.
+    // And the sandbox's spend is on the counters the model reservations read.
     await capped(r, ROOMY);
     await r.in((instance) => instance.sandbox.networkApplied({ ...held(lease), generation: 1 }));
     const opened = await admitted(r, lease, connection);

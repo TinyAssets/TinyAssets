@@ -5,61 +5,45 @@
  * Ported from `TurnRequestBudget` and its ledger (`tinyassets/request_budget.py`) and the
  * spend reservations of `PolicyStore.decide` (`tinyassets/broker/policy.py`), with their
  * states: `reserved` → `dispatched` → `succeeded` | `failed` | `unknown`, or `reserved` →
- * `not_sent`; plus `refused`, a reservation the caps turned down, kept as its receipt.
+ * `not_sent`; plus `refused`, a reservation the ceilings turned down, kept as its receipt.
+ * The sandbox's egress (`egress.ts`) holds its calls to the same states and counters
+ * (`model_spend`); the runs slice (R) keys these reservations to runs (ADR-034 decision 7).
  *
- * - **Reserve**, in one unit with the call's credential (`gateway-provider.ts`): it reads
- *   the owner's model policy and its generation, the turn's counters and the day's and
- *   month's spend, checks every cap against what is settled plus what is still open, and
- *   inserts the row, so concurrent calls reserve one after another and never pass a cap
- *   between them. The reservation bounds the call's output tokens (`max_output_tokens`,
- *   which the gateway clamps to): what the caps leave, at most what was asked, and at
- *   least `minOutput`, or the call is refused.
- * - **Dispatched**, in a unit of its own just before the gateway call: the row must still
- *   be `reserved` and the owner policy at the generation it was reserved under; else it
- *   is `not_sent`, and the call never goes. A row is `dispatched` before the first byte
+ * - **Reserve**, in one unit: it reads the owner's model policy and its generation and the
+ *   day's and month's spend, checks every ceiling against what is settled plus what is
+ *   still open, and inserts the row, so concurrent calls reserve one after another and
+ *   never pass a ceiling between them. The reservation bounds the call's output tokens
+ *   (`max_output_tokens`): what the ceilings leave, at most what was asked, and at least
+ *   `minOutput`, or the call is refused.
+ * - **Dispatched**, in a unit of its own just before the call: the row must still be
+ *   `reserved` and the owner policy at the generation it was reserved under; else it is
+ *   `not_sent`, and the call never goes. A row is `dispatched` before the first byte
  *   leaves, so an unsent one is provably unsent.
- * - **Settle**, in a unit, once: `succeeded` with pi-ai's `Usage` (tokens, and the cost the
- *   gateway's own pi-ai adapter priced) from the `done` event; `failed`, cost 0,
- *   when the gateway answered the call with a refusal's status, its own or the provider's before any output (the gateway's
- *   `messages.ts`); `unknown` otherwise (a stream lost after it started, an abort), which
- *   keeps its whole reservation and is never replayed.
+ * - **Settle**, in a unit, once: `succeeded` with the tokens and cost the gateway's pi-ai
+ *   adapter read; `failed`, cost 0, when the call was refused before any output;
+ *   `unknown` otherwise (a stream lost after it started, an abort), which keeps its whole
+ *   reservation and is never replayed.
  * - **Abandon**, when a dispatch or settle unit threw: the row settled as it stands
  *   (`reserved` as `not_sent`, `dispatched` as `unknown`), never left open in this instance.
  * - **Recovery**: an object has one live instance, so an open row this instance did not
  *   reserve is a dead instance's call. Each reserve and each receipts read settles them
  *   first: `reserved` as `not_sent`, `dispatched` as `unknown`.
  *
- * Every cap reads a counter only the schema's triggers write (`schema.ts`, migration 6):
- * `model_turns` for a turn's requests, tokens and cost, `model_spend` for a source's day
- * and month. The reservation rows are receipts, history only: the newest `receiptsKept`
- * are kept, and pruning one frees nothing. A turn's counters live exactly as long as its
- * work (migration 10): its row is made with the first pi record that owns it, an open input
- * submission or a live compaction, and goes with the last, as the thread host keeps them
- * (`turnOwners`, `turnsReconciled`), or with its thread. A call of a turn with no row is
- * refused (`turn_ended`), so a turn's counters never start over, and a call settling after
- * its turn ended moves nothing.
+ * Every ceiling reads a counter only the schema's triggers write (`schema.ts`, migration 6):
+ * `model_spend`, a source's day and month. The reservation rows are receipts, history
+ * only: the newest `receiptsKept` are kept, and pruning one frees nothing.
  *
  * Money is micro-dollars (µ$): pi-ai's catalog prices are dollars per million tokens, so a
  * token at price `p` costs `p` µ$. A call's estimate is pi-ai's own `calculateCost` over the
  * target model's whole cost record (pi audit F6), so a long-context tier applies to the
- * whole request once its input passes the tier's threshold, as the provider bills it: the
- * context's estimated input, uncached, and the reserved output, at the rates the estimated
- * input selects. A settled call's cost is the one the gateway's pi-ai adapter reported:
- * its `calculateCost` over the gateway's current catalog record, with pi-ai's own
- * adjustments after it (a service tier's multiplier, a fallback model's prices), so a
- * record the connection stored at connect time never under-records what was spent. A turn is the submitted input
- * at the origin of a call's causal chain, as pi propagates it (`origin.ts`): a subagent a
- * run starts, and a compaction, are that run's turn while the run is open (a compaction's
- * task keeping it), as the Python's `_borrowed` charged a child to its parent, and work
- * joining it after it ended is refused `turn_ended`. A source is a connection's
- * source record (`connections.ts`), so its ceilings survive a reconnect. The day and month
- * are UTC.
+ * whole request once its input passes the tier's threshold, as the provider bills it. A
+ * source is a connection's source record (`connections.ts`), so its ceilings survive a
+ * reconnect. The day and month are UTC.
  *
- * Declared differences from the Python: the per-turn limits are owner policy (the
- * `models` table) rather than constants; the free-tier pools, their consecutive-failure
+ * Declared differences from the Python: the free-tier pools, their consecutive-failure
  * stop and the advisory daily evidence have no counterpart (no platform-paid source
- * exists); a reservation shrinks its output to fit what the caps leave, where the Python
- * counted attempts only.
+ * exists); a reservation shrinks its output to fit what the ceilings leave, where the
+ * Python counted attempts only.
  */
 import { randomBytes } from "node:crypto";
 
@@ -68,7 +52,6 @@ import { calculateCost } from "@earendil-works/pi-ai/models";
 
 import type { OwnerStorage } from "./gate";
 import { costMicros, largestFitting, periods } from "./money";
-import type { TurnOwner } from "./thread-host";
 
 export { costMicros, largestFitting, periods };
 
@@ -94,18 +77,8 @@ export const USAGE_LIMITS: UsageLimits = Object.freeze({
   monthsKept: 3,
 });
 
-/** The fixed rule a call of a turn whose work has ended is refused with. */
-export const TURN_ENDED = "turn_ended";
-/** The schema's refusal of a thread's turn owner past its bound (migration 10). */
-export const TURN_OWNERS_FULL = "turn_owners_full";
-
-
-
-/** The caps of the owner's model policy (`policy.ts`, `modelSettings`), in µ$ for money. */
+/** The ceilings of the owner's model policy (`policy.ts`, `modelSettings`), in µ$. */
 export interface ModelCaps {
-  readonly turn_requests: number;
-  readonly turn_tokens: number;
-  readonly turn_cost: number;
   readonly daily_cost: number | null;
   readonly monthly_cost: number | null;
   /** Each source record's own ceilings, by its id. */
@@ -121,6 +94,7 @@ export interface UsagePolicy {
 
 /** What a call asks to reserve. */
 export interface Ask {
+  /** The work the call is part of, as its receipt names it (slice R: the run). */
   readonly turn: string;
   readonly connection: string;
   /** The connection's source record, which its spend is counted under. */
@@ -217,11 +191,9 @@ export class Usage {
   }
 
   /**
-   * In a unit: reserve a call against every cap, or refuse it, the refusal kept as a
-   * receipt. The policy, the turn's counters and the spend are all read here, and first
-   * the authority the call's conversation runs under (`authority`: the refusal's rule, or
-   * null when it stands), so a call of a revoked client's turn is refused here, whatever
-   * abort it missed.
+   * In a unit: reserve a call against every ceiling, or refuse it, the refusal kept as a
+   * receipt. The policy and the spend are read here, and first the authority the call runs
+   * under (`authority`: the refusal's rule, or null when it stands).
    */
   reserve(ask: Ask, now: number, authority: () => string | null): Reserved {
     return this.#storage.transactionSync(() => {
@@ -229,30 +201,19 @@ export class Usage {
       this.#prune(now);
       const { generation, settings } = this.#policy();
       const { day, month } = periods(now);
-      const unauthorized = authority();
-      if (unauthorized !== null) {
-        this.#insert(ask, "refused", unauthorized, 0, 0, 0, generation, day, month, now);
-        return { ok: false, rule: unauthorized };
-      }
-      const turn = this.#sql.exec<{ requests: number; tokens: number; cost: number }>(
-        "SELECT requests, tokens, cost FROM model_turns WHERE turn = ?", ask.turn).toArray()[0];
-      if (turn === undefined) {
-        this.#insert(ask, "refused", TURN_ENDED, 0, 0, 0, generation, day, month, now);
-        return { ok: false, rule: TURN_ENDED };
-      }
-      const floor = Math.min(ask.maxOutputTokens, ask.reasoning
-        ? Math.max(this.#limits.minOutput, this.#limits.minReasoningOutput)
-        : this.#limits.minOutput);
       const refuse = (rule: string): Reserved => {
         this.#insert(ask, "refused", rule, 0, 0, 0, generation, day, month, now);
         return { ok: false, rule };
       };
-      if (turn.requests >= settings.turn_requests) {
-        return refuse("turn_requests");
+      const unauthorized = authority();
+      if (unauthorized !== null) {
+        return refuse(unauthorized);
       }
-      // The room each cost cap leaves, the tightest first to name.
-      const rooms: [string, number][] = [["turn_cost", settings.turn_cost - turn.cost]];
-      const spent = (period: string, source: string | null) => this.spent(period, source);
+      const floor = Math.min(ask.maxOutputTokens, ask.reasoning
+        ? Math.max(this.#limits.minOutput, this.#limits.minReasoningOutput)
+        : this.#limits.minOutput);
+      // The room each ceiling leaves, the tightest first to name.
+      const rooms: [string, number][] = [];
       const own = settings.sources[ask.source];
       const ceilings: [string, number | null | undefined, string, string | null][] = [
         ["daily_cost", settings.daily_cost, `d:${day}`, null],
@@ -262,21 +223,18 @@ export class Usage {
       ];
       for (const [rule, cap, period, source] of ceilings) {
         if (cap !== null && cap !== undefined) {
-          rooms.push([rule, cap - spent(period, source)]);
+          rooms.push([rule, cap - this.spent(period, source)]);
         }
       }
-      const [costRule, costRoom] = rooms.reduce((a, b) => (b[1] < a[1] ? b : a));
-      const byTokens = settings.turn_tokens - turn.tokens - ask.inputTokens;
+      const [costRule, costRoom]: [string | null, number] = rooms.length === 0
+        ? [null, Infinity] : rooms.reduce((x, y) => (y[1] < x[1] ? y : x));
       // pi-ai's price, rounded up to a µ$, is non-decreasing in the output (the input alone
       // picks a tier), so the most output the cost room takes is found by bisection, within
-      // the call's ask and the turn's tokens.
+      // the call's ask.
       const fits = (output: number) => priced(ask.rates, ask.inputTokens, output) <= costRoom;
-      const output = largestFitting(Math.min(ask.maxOutputTokens, byTokens), fits);
+      const output = largestFitting(ask.maxOutputTokens, fits);
       if (output < floor || output < 1) {
-        // The turn's tokens bind when they leave less than the floor and the cost room
-        // takes what they leave.
-        const byTokensBinds = byTokens < floor && (byTokens < 0 || fits(byTokens));
-        return refuse(byTokensBinds ? "turn_tokens" : costRule);
+        return refuse(costRule ?? "max_output_tokens");
       }
       const id = `r${randomBytes(16).toString("hex")}`;
       const cost = priced(ask.rates, ask.inputTokens, output);
@@ -289,7 +247,7 @@ export class Usage {
 
   /**
    * The µ$ held in `period` (`d:<day>` or `m:<month>`), by `source` or by every source:
-   * the counters the loop's calls and the sandbox's calls (`egress.ts`, through the
+   * the counters these reservations and the sandbox's calls (`egress.ts`, through the
    * schema's triggers) both move. A read.
    */
   spent(period: string, source: string | null): number {
@@ -309,111 +267,6 @@ export class Usage {
   }
 
   /**
-   * In a unit: the turn owners of `thread` that opened (kept, once) or ended (let go); a
-   * turn's row comes with its first owner and goes with its last. An owner that joined
-   * another's turn (a linked input, a run's compaction) keeps it only while it is still
-   * there as the unit begins: one that ended is never made again, and the owner's calls
-   * are refused (`turn_ended`). An owner named twice is as it was named last. The ended
-   * go first, so a thread at its bound can take one in their place, while every turn a new
-   * owner names is held, so its counters never start over.
-   */
-  turnOwners(thread: string, owners: readonly TurnOwner[]): void {
-    const last = [...new Map(owners.map((owner) => [owner.owner, owner])).values()];
-    this.#ownersMoved(thread, last.filter(({ turn }) => turn === null)
-      .map(({ owner }) => owner), last);
-  }
-
-  /**
-   * In a unit: `ended` owners of `thread` let go, then `owners` kept, as `turnOwners`, all
-   * or nothing (its own savepoint), so a refused owner leaves no turn held. With `skip`,
-   * an owner past the thread's bound (`turn_owners_full`) is passed over instead, and
-   * counted: how many were.
-   */
-  #ownersMoved(thread: string, ended: readonly string[], owners: readonly TurnOwner[],
-               skip = false): number {
-    return this.#storage.transactionSync(() => {
-      const held = [...new Set(owners.flatMap(({ turn }) => turn === null ? [] : [turn]))]
-        .filter((turn) => this.#sql.exec("UPDATE model_turns SET owners = owners + 1 " +
-                                          "WHERE turn = ?", turn).rowsWritten > 0);
-      for (const owner of ended) {
-        this.#sql.exec("DELETE FROM model_turn_owners WHERE thread = ? AND owner = ?", thread,
-                       owner);
-      }
-      let skipped = 0;
-      for (const { owner, turn, joined } of owners) {
-        if (turn === null) {
-          continue;
-        }
-        const keep = () => this.#sql.exec(
-          "INSERT INTO model_turn_owners (thread, owner, turn) SELECT ?, ?, ? " +
-            "WHERE NOT ? OR EXISTS (SELECT 1 FROM model_turns WHERE turn = ?) " +
-            "ON CONFLICT (thread, owner) DO NOTHING", thread, owner, turn,
-          joined === true ? 1 : 0, turn);
-        if (!skip) {
-          keep();
-          continue;
-        }
-        try {
-          keep();  // a refused statement writes nothing of its own
-        } catch (error) {
-          if (!(error instanceof Error && error.message.includes(TURN_OWNERS_FULL))) {
-            throw error;
-          }
-          skipped++;
-        }
-      }
-      // A held turn whose owners all went or were passed over goes with its hold.
-      for (const turn of held) {
-        this.#sql.exec("UPDATE model_turns SET owners = owners - 1 WHERE turn = ?", turn);
-        this.#sql.exec("DELETE FROM model_turns WHERE turn = ? AND owners = 0", turn);
-      }
-      return skipped;
-    });
-  }
-
-  /**
-   * Whether `turn` has its row: some pi record still owns it. A linked admission (a
-   * subagent's input) joining a turn without one is refused before pi admits it. A read.
-   */
-  turnLive(turn: string): boolean {
-    return this.#sql.exec("SELECT 1 FROM model_turns WHERE turn = ?", turn).toArray().length > 0;
-  }
-
-  /** How many open subagent inputs (`c:` owners) own turns in `thread`. */
-  childInputs(thread: string): number {
-    return this.#sql.exec<{ n: number }>(
-      "SELECT COUNT(*) AS n FROM model_turn_owners WHERE thread = ? AND owner GLOB 'c:*'",
-      thread).one().n;
-  }
-
-  /** The threads holding turn owners: those at work. A read. */
-  workingThreads(): string[] {
-    return this.#sql.exec<{ thread: string }>(
-      "SELECT DISTINCT thread FROM model_turn_owners").toArray().map((row) => row.thread);
-  }
-
-  /** How many open root inputs own turns in `thread`. */
-  openInputs(thread: string): number {
-    return this.#sql.exec<{ n: number }>(
-      "SELECT COUNT(*) AS n FROM model_turn_owners WHERE thread = ? AND owner GLOB 's:*'",
-      thread).one().n;
-  }
-
-  /**
-   * In a unit: `thread`'s turn owners made exactly `open`, as its store holds them when its
-   * Session opens: one a lost listener left behind goes, and one it never kept is kept, a
-   * turn kept by both keeping its counters. One past the thread's bound is passed over, so
-   * the thread still opens (its calls refused `turn_ended`): how many were.
-   */
-  turnsReconciled(thread: string, open: readonly TurnOwner[]): number {
-    const kept = new Set(open.map(({ owner }) => owner));
-    const stale = this.#sql.exec<{ owner: string }>(
-      "SELECT owner FROM model_turn_owners WHERE thread = ?", thread).toArray()
-      .map(({ owner }) => owner).filter((owner) => !kept.has(owner));
-    return this.#ownersMoved(thread, stale, open, true);
-  }
-
-  /**
    * Receipts past the newest `receiptsKept`, never an open one, and spend counters past
    * their window. None of it moves a counter a cap reads.
    */
@@ -426,8 +279,8 @@ export class Usage {
 
   /**
    * The spend counters past their window (`daysKept` days, `monthsKept` months), as each
-   * reserve prunes them: the loop's here, a sandbox call's at its open (`egress.ts`), so an
-   * owner who uses only the sandbox never fills them. None in a window is touched.
+   * reserve prunes them: a reservation's here, a sandbox call's at its open (`egress.ts`),
+   * so an owner who uses only the sandbox never fills them. None in a window is touched.
    */
   spendPruned(now: number): void {
     const day = periods(now - this.#limits.daysKept * 86_400).day;

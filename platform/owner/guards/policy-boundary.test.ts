@@ -10,10 +10,9 @@
  * module that keeps it and the schema. The held agent registrations and the owner's
  * admission are held to the same: only the object imports them, and the admission row is
  * its module's and the schema's alone. So are the model connections and their spend: only the
- * object builds them, the provider and `auto` read their types and calls, and their
- * tables (the connections, their blobs and flows, the reservations and the spend and turn
- * counters) are their modules' alone, and so are the agent's threads, live, usage and
- * receipt tables, and the owner's erasure mark. The lists only shrink.
+ * object builds them, `auto` reads their types, and their tables (the connections, their
+ * blobs and flows, the reservations and the spend counters) are their modules' alone, and
+ * so are the sandbox's egress rows and the owner's erasure mark. The lists only shrink.
  */
 import { posix } from "node:path";
 
@@ -30,8 +29,8 @@ const MODULES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   sessions: Object.freeze([OWNER_DO]),
   registrations: Object.freeze([OWNER_DO]),
   admission: Object.freeze([OWNER_DO]),
-  connections: Object.freeze([OWNER_DO, "owner/src/auto.ts", "owner/src/gateway-provider.ts"]),
-  usage: Object.freeze([OWNER_DO, "owner/src/gateway-provider.ts"]),
+  connections: Object.freeze([OWNER_DO, "owner/src/auto.ts"]),
+  usage: Object.freeze([OWNER_DO]),
 });
 const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   owner_sessions: Object.freeze(["owner/src/sessions.ts", SCHEMA]),
@@ -43,22 +42,13 @@ const TABLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   grant_fences: Object.freeze(["owner/src/grants.ts", SCHEMA]),
   policy_usage: Object.freeze(["owner/src/grants.ts", "owner/src/policy.ts",
                                "owner/src/registrations.ts", "owner/src/sessions.ts", SCHEMA]),
-  // Its table is dropped (migration 13); only the migrations that made and dropped it name it.
-  scheduled_work: Object.freeze([SCHEMA]),
   owner_admission: Object.freeze(["owner/src/admission.ts", SCHEMA]),
   agent_cards: Object.freeze(["owner/src/registrations.ts", SCHEMA]),
-  agent_threads: Object.freeze(["owner/src/threads.ts", SCHEMA]),
-  agent_live: Object.freeze(["owner/src/threads.ts", SCHEMA]),
-  agent_usage: Object.freeze(["owner/src/threads.ts", SCHEMA]),
-  agent_usage_space: Object.freeze(["owner/src/threads.ts", SCHEMA]),
-  run_receipts: Object.freeze(["owner/src/threads.ts", SCHEMA]),
   owner_erasure: Object.freeze(["owner/src/erasure.ts", SCHEMA]),
   connection_secrets: Object.freeze(["owner/src/connections.ts", SCHEMA]),
   connection_flows: Object.freeze(["owner/src/connections.ts", SCHEMA]),
   model_reservations: Object.freeze(["owner/src/usage.ts", SCHEMA]),
   model_spend: Object.freeze(["owner/src/usage.ts", SCHEMA]),
-  model_turns: Object.freeze(["owner/src/usage.ts", SCHEMA]),
-  model_turn_owners: Object.freeze(["owner/src/usage.ts", SCHEMA]),
   egress_reservations: Object.freeze(["owner/src/egress.ts", SCHEMA]),
   egress_runs: Object.freeze(["owner/src/egress.ts", SCHEMA]),
 });

@@ -17,7 +17,6 @@ const HOOKS = join(PLATFORM, "hooks");
 
 type WorkerConfig = { name: string; compatibility_date: string; compatibility_flags: string[];
                       r2_buckets?: { binding: string }[];
-                      worker_loaders?: { binding: string }[];
                       durable_objects?: { bindings: { name: string; class_name: string }[] } };
 
 function config(dir: string): WorkerConfig {
@@ -86,8 +85,8 @@ function gatewayWorker(keyring: string) {
 
 /**
  * The real hooks Worker, as the HOOKS service binding's target: bundled by wrangler from its
- * own config, as a deploy bundles it (its shim and runner, pi's code mode sandbox and the
- * QuickJS module it compiles), with its own runtime, flags, Worker Loader and two classes.
+ * own config, as a deploy bundles it (pi's code mode sandbox and the QuickJS module it
+ * compiles), with its own runtime, flags and class.
  */
 function hooksWorker() {
   const hooks = config(HOOKS);
@@ -113,8 +112,6 @@ function hooksWorker() {
       })),
       compatibilityDate: hooks.compatibility_date,
       compatibilityFlags: hooks.compatibility_flags,
-      workerLoaders: Object.fromEntries((hooks.worker_loaders ?? [])
-        .map((loader) => [loader.binding, {}])),
       durableObjects: Object.fromEntries((hooks.durable_objects?.bindings ?? [])
         .map((binding) => [binding.name, { className: binding.class_name, useSQLite: true }])),
     };
@@ -149,14 +146,12 @@ export default defineConfig({
     projects: [
       {
         // Runs in workerd. OWNER is bound for the tests only: wrangler.jsonc gives the
-        // Worker no binding to its own namespace. AGENT, MALFORMED and GATED are the test
-        // Worker's own classes of the object (test/worker.ts): its agent on faux models,
-        // with a package pi refuses, and on the production gateway provider with its
+        // Worker no binding to its own namespace. AGENT and GATED are the test Worker's own
+        // classes of the object (test/worker.ts): its internal paths in reach, and its
         // gateway calls watched. FILES, GATEWAY and HOOKS are the config's own bindings, to
-        // the files, gateway and hooks Workers run beside it; PISTORE is the config's own
-        // namespace of thread stores, the real class. TEST_KEYRING is the gateway's keyring,
-        // so a test can seal under an older kid; the tests' own fetches reach the fake.
-        // ROUTING_MAC_KEY is the config's one secret, the sandbox tokens' routing key.
+        // the files, gateway and hooks Workers run beside it. TEST_KEYRING is the gateway's
+        // keyring, so a test can seal under an older kid; the tests' own fetches reach the
+        // fake. ROUTING_MAC_KEY is the config's one secret, the sandbox tokens' routing key.
         plugins: [
           cloudflareTest({
             main: "./test/worker.ts",
@@ -165,9 +160,7 @@ export default defineConfig({
               durableObjects: {
                 OWNER: { className: "OwnerDO", useSQLite: true },
                 AGENT: { className: "FauxOwnerDO", useSQLite: true },
-                MALFORMED: { className: "MalformedOwnerDO", useSQLite: true },
                 GATED: { className: "GatedOwnerDO", useSQLite: true },
-                PISTORE: { className: "ThreadStore", useSQLite: true },
               },
               bindings: { TEST_KEYRING: KEYRING, ROUTING_MAC_KEY: ROUTING_KEY },
               outboundService: "fake-upstream",

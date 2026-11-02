@@ -21,10 +21,12 @@ const PULL = { collection: "board", after: 0, limit: 1 };
  * model-spend doors. `alarm` is the
  * runtime's, handed to Lifecycle, and refused over RPC. Claiming, marking and settling a
  * wake have no door: only the `wakes` lane runs them, in process, with the doorbell's
- * sender. The list only grows by a door.
+ * sender. The list only grows by a door (ADR-034 took the agent's doors out until the runs
+ * slice brings them back as run doors).
  */
 const RPC_METHODS = Object.freeze([
-  "admissionSet", "agentCancel", "agentRun", "agentStatus", "agentSubmit", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory", "collectionPull",
+  "admissionSet", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory",
+  "collectionPull",
   "collectionWrite", "connectionCommit", "connectionList", "connectionPrepare",
   "connectionRevoke", "deleteAgent", "disableAgent", "egressOpen", "egressReceipts",
   "egressSettle", "fileChanges", "fileHistory", "fileHistoryPurge", "fileList",
@@ -36,7 +38,7 @@ const RPC_METHODS = Object.freeze([
   "mailboxSubscriber", "noticeList", "outsideAgents", "policyProposal", "policyPropose",
   "policyRead", "policyReceipts", "policyWakeLimits", "policyWrite", "registerAgent",
   "registerProposal", "registerPropose", "roomPost", "sessionClose", "sessionCloseAll",
-  "sessionExtend", "sessionOpen", "usageMetrics", "usageReceipts",
+  "sessionExtend", "sessionOpen", "usageReceipts",
 ]);
 
 describe("schema migration on wake", () => {

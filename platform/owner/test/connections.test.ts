@@ -1,8 +1,10 @@
 /**
  * The owner's model connections (tasks 4 G2): the connect doors in the owner's session,
  * OAuth flows bound to it and cancelled with it, a revoke's crypto-delete and its provider
- * revoke, the refresh lease under concurrent calls, the reseal's compare-and-swap, the
- * largest built-in catalog, and the plaintext key never in the object.
+ * revoke, the refresh lease under concurrent sandbox calls (`egressOpen` refreshes a
+ * credential near its expiry before it admits a call), the reseal's compare-and-swap (a
+ * blob the gateway resealed, handed back at `egressSettle`), the largest built-in catalog,
+ * and the plaintext key never in the object.
  */
 import { evictDurableObject, runDurableObjectAlarm } from "cloudflare:test";
 import { isModelType } from "@earendil-works/pi-ai/models";
@@ -11,16 +13,18 @@ import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { verifyToken } from "../../doors/src/routing-mac";
 import { type Credential, type Source, SUPPORTED_APIS } from "../../gateway/src/credential";
 import { recordOf } from "../../gateway/src/model-record";
 import { open } from "../../gateway/src/keyring";
 import { CONNECTION_LIMITS, type ModelInfo, MODELS_JSON_MAX } from "../src/connections";
+import type { EgressOpened, EgressRefusal } from "../src/egress";
 import type { Binding } from "../src/owner-do";
 import { MUSE } from "./ledger-support";
 import { failure } from "./support";
 import {
-  ANTHROPIC, asked, catalog, direct, type Gated, gated, keyring, OAUTH, OPENAI, REDIRECT,
-  provider, scopeOf, sealedAs, textOf, until,
+  ANTHROPIC, catalog, type Gated, gated, keyring, OAUTH, OPENAI, REDIRECT, scopeOf, sealedAs,
+  until,
 } from "./gateway-support";
 
 afterEach(() => {
@@ -41,14 +45,52 @@ async function lanes(r: Gated): Promise<void> {
                                        Date.now())).length === 0, "the due jobs");
 }
 
-/** Concurrent model calls through the object's provider, each in a session of its own. */
-function calls(r: Gated, many: number, text = "cmd:echo") {
-  return r.in(async (instance) => {
-    const auto = instance.parts.provider.getModels()[0]!;
-    return Promise.all(Array.from({ length: many }, async (_, i) =>
-      (await provider(instance)).streamSimple(auto, asked(text), await direct(instance, `s-${i}`))
-        .result()));
-  });
+/**
+ * The sandbox's lease taken and its network applied, and the egress door's binding for it,
+ * as a sandbox's calls carry it.
+ */
+async function sandboxOf(r: Gated): Promise<Binding> {
+  const opened = await r.in((instance) => instance.sandbox.open({ holder: "sandbox-1" }));
+  await r.in((instance) => instance.sandbox.networkApplied({
+    lease_id: opened.lease.lease_id, epoch: opened.lease.epoch,
+    generation: opened.network.generation }));
+  const token = verifyToken(env.ROUTING_MAC_KEY, "egress", opened.egress_token)!.hash;
+  return r.bind({ sandbox: { kind: "egress", token, generation: opened.network.generation } });
+}
+
+/** Each owner's one sandbox lease, taken once. */
+const leases = new WeakMap<Gated, Promise<Binding>>();
+
+function leaseOf(r: Gated): Promise<Binding> {
+  let lease = leases.get(r);
+  if (lease === undefined) {
+    lease = sandboxOf(r);
+    leases.set(r, lease);
+  }
+  return lease;
+}
+
+/** A sandbox's free read of `connection`'s model list, as the egress door opens it. */
+function listing(connection: string) {
+  return { connection, method: "GET", path: "/v1/models", bytes_hint: null, model: null,
+           tier: null };
+}
+
+/**
+ * Concurrent sandbox calls of the one connection, each admitted at the egress door's open,
+ * which refreshes the credential first when it is near its expiry.
+ */
+async function calls(r: Gated, many: number): Promise<(EgressOpened | EgressRefusal)[]> {
+  const [{ id: connection }] = await r.sql("SELECT id FROM connections") as [{ id: string }];
+  const binding = await leaseOf(r);
+  return Promise.all(Array.from({ length: many },
+                                () => r.stub.egressOpen(binding, listing(connection))));
+}
+
+/** The connections the sandbox's clients are given: those usable now. */
+async function usable(r: Gated): Promise<string[]> {
+  const { env: given } = await r.in((instance) => instance.sandbox.config());
+  return Object.keys(given).filter((name) => /^TA_.*_BASE_URL$/.test(name));
 }
 
 describe("connecting a pasted key", () => {
@@ -273,7 +315,7 @@ describe("a revoke", () => {
     expect(await r.stub.connectionRevoke(r.session(), { connection }))
       .toEqual({ connection, revoked: true, provider_revoke: false });
     expect(await secrets(r, connection)).toEqual([]);
-    expect(await r.in((instance) => instance.parts.provider.getModels())).toEqual([]);
+    expect(await usable(r)).toEqual([]);
     expect(await r.stub.connectionRevoke(r.session(), { connection }))
       .toEqual({ connection, revoked: false, provider_revoke: false });
     expect((await r.stub.connectionList(r.session())).connections[0])
@@ -289,7 +331,7 @@ describe("a revoke", () => {
       .toEqual({ connection, revoked: true, provider_revoke: true });
     // Unusable at once, the blob kept only for the provider revoke, which the lane sends
     // (its job is due at once, so the runtime may already have run it).
-    expect(await r.in((instance) => instance.parts.provider.getModels())).toEqual([]);
+    expect(await usable(r)).toEqual([]);
     await lanes(r);
     const sent = await r.in((instance) =>
       instance.calls.filter((call) => call.method === "revokeAtProvider"));
@@ -383,7 +425,7 @@ describe("an issued credential whose setup check failed", () => {
       connection: prepared.connection, version: 1, blob, kid: "k2", models: [],
       expires_at: null, failed: "upstream_timeout" });
     expect(view).toMatchObject({ status: "error", provider_revoke_pending: true });
-    expect(await r.in((instance) => instance.parts.provider.getModels())).toEqual([]);
+    expect(await usable(r)).toEqual([]);
     await lanes(r);
     const sent = await r.in((instance) =>
       instance.calls.filter((call) => call.method === "revokeAtProvider"));
@@ -444,8 +486,7 @@ describe("a provider revoke and a refresh in flight", () => {
     await r.in((instance) => {
       instance.faults.refreshGate = new Promise<void>((resolve) => { release = resolve; });
     });
-    const call = r.in(async (instance) => (await provider(instance)).streamSimple(
-      instance.parts.provider.getModels()[0]!, asked("cmd:echo"), await direct(instance)).result());
+    const call = calls(r, 1).then(([answer]) => answer!);
     await until(async () => (await r.in((instance) => instance.calls))
       .some((made) => made.method === "refresh"), "the refresh to be sent");
     // Resolved in the object, where the gate was made: a promise is its I/O.
@@ -464,7 +505,7 @@ describe("a provider revoke and a refresh in flight", () => {
     }, "the old tokens' revoke", 50);
     expect((await r.sql("SELECT revoke_due FROM connections"))[0]!["revoke_due"]).toBeNull();
     await release();
-    expect((await call).errorMessage).toBe("connection_unavailable");
+    expect(await call).toMatchObject({ ok: false, code: "egress_connection_refused" });
     // The rotated tokens are kept, and owed a revoke of their own.
     expect((await secrets(r, connection)).map((row) => row["version"])).toEqual([2]);
     await until(async () => {
@@ -486,7 +527,7 @@ describe("a provider revoke and a refresh in flight", () => {
     // The lane's revoke is due at once: the runtime may send it before the refresh lands.
     await release();
     // The call that asked for the refresh finds its connection gone.
-    expect((await call).errorMessage).toBe("connection_unavailable");
+    expect(await call).toMatchObject({ ok: false, code: "egress_connection_refused" });
     await until(async () => {
       await lanes(r);
       return (await secrets(r, connection)).length === 0;
@@ -561,10 +602,8 @@ describe("the refresh lease", () => {
     const r = await gated();
     const connection = await r.connectOAuth(OAUTH, Date.now() + 60_000);
     const answers = await calls(r, 4);
-    expect(answers.map((answer) => answer.stopReason)).toEqual(["stop", "stop", "stop", "stop"]);
-    // Every call carried the refreshed token: the one refresh's rotation.
-    expect(answers.map((answer) => textOf(answer).includes("Bearer at-2|none:client-1")))
-      .toEqual([true, true, true, true]);
+    // Every call was admitted with the refreshed token: the one refresh's rotation.
+    expect(answers.map((answer) => answer.ok && answer.version)).toEqual([2, 2, 2, 2]);
     const made = await r.in((instance) => instance.calls.map((call) => call.method));
     expect(made.filter((method) => method === "refresh")).toEqual(["refresh"]);
     const [row] = await r.sql("SELECT version, expires_at, lease_id, lease_until " +
@@ -587,7 +626,7 @@ describe("the refresh lease", () => {
     await r.sql("UPDATE connections SET lease_id = 'dead', lease_until = ?", Date.now() + 60_000);
     await evictDurableObject(r.stub);
     const answers = await calls(r, 2);
-    expect(answers.map((answer) => answer.stopReason)).toEqual(["stop", "stop"]);
+    expect(answers.map((answer) => answer.ok && answer.version)).toEqual([2, 2]);
     expect((await r.sql("SELECT version FROM connections"))[0]!["version"]).toBe(2);
   });
 
@@ -606,8 +645,8 @@ describe("the refresh lease", () => {
       connection: prepared.connection, version: 1, blob, kid: "k2",
       models: await catalog(OPENAI), expires_at: Date.now() + 60_000, egress: await scopeOf(OAUTH) });
     const answers = await calls(r, 3);
-    expect(answers.map((answer) => answer.errorMessage)).toEqual(Array(3).fill(
-      "credential_refresh_failed: oauth_invalid_grant"));
+    expect(answers.map((answer) => !answer.ok && answer.code)).toEqual(Array(3).fill(
+      "egress_connection_refused"));
     expect((await r.in((instance) => instance.calls.map((call) => call.method)))
       .filter((method) => method === "refresh")).toEqual(["refresh"]);
     expect(await r.sql("SELECT status, lease_id FROM connections"))
@@ -631,8 +670,7 @@ describe("a refresh that lands on a changed connection", () => {
     await r.in((instance) => {
       instance.faults.refreshGate = new Promise<void>((resolve) => { release = resolve; });
     });
-    const call = r.in(async (instance) => (await provider(instance)).streamSimple(
-      instance.parts.provider.getModels()[0]!, asked("cmd:echo"), await direct(instance)).result());
+    const call = calls(r, 1);
     await until(async () => (await r.sql("SELECT lease_id FROM connections"))[0]!["lease_id"]
       !== null, "the lease to be taken");
     await r.sql(change);
@@ -652,8 +690,9 @@ describe("a credential", () => {
       instance.faults.refreshed = (answer) => ({ ...answer, expires_at: Date.now() - 1 });
     });
     const [answer] = await calls(r, 1);
-    expect(answer!.errorMessage).toBe("credential_expired");
-    expect(await r.sql("SELECT state FROM model_reservations")).toEqual([]);
+    expect(answer).toMatchObject({ ok: false, code: "egress_connection_refused" });
+    expect(await r.sql("SELECT state, code FROM egress_reservations"))
+      .toEqual([{ state: "refused", code: "egress_connection_refused" }]);
   });
 });
 
@@ -722,8 +761,8 @@ describe("a connected model's record", () => {
     for (let at = 0; at < records.length; at += CONNECTION_LIMITS.maxModels) {
       expect(await committed(r, records.slice(at, at + CONNECTION_LIMITS.maxModels))).toBeNull();
     }
-    const kept = await r.in((instance) => instance.parts.provider.getModels());
-    expect(kept.length).toBe(records.length + 1);
+    const [kept] = await r.sql("SELECT SUM(json_array_length(models)) AS n FROM connections");
+    expect(kept!["n"]).toBe(records.length);
   });
 
   it("keeps maxModels of the largest built-in record", async () => {
@@ -736,8 +775,8 @@ describe("a connected model's record", () => {
     expect(JSON.stringify(models).length).toBeGreaterThan(600 * 1024);
     const r = await gated();
     expect(await committed(r, models)).toBeNull();
-    expect(await r.in((instance) => instance.parts.provider.getModels().length))
-      .toBe(CONNECTION_LIMITS.maxModels + 1);
+    expect((await r.sql("SELECT json_array_length(models) AS n FROM connections"))[0]!["n"])
+      .toBe(CONNECTION_LIMITS.maxModels);
   });
 
   it.each([
@@ -783,21 +822,38 @@ describe("a blob resealed under the active kid", () => {
     return prepared.connection;
   }
 
+  /** Each admitted call settled, the blob the gateway resealed from it handed back. */
+  async function settled(r: Gated, binding: Binding, answers: (EgressOpened | EgressRefusal)[]) {
+    for (const answer of answers) {
+      if (!answer.ok) {
+        throw new Error(`refused ${answer.code}`);
+      }
+      const resealed = await env.GATEWAY.reseal(r.name, answer.connection, answer.version,
+                                                answer.blob);
+      await r.stub.egressSettle(binding, { reservation: answer.reservation, outcome: "complete",
+                                           status: 200, bytes: 1, spend: { state: "failed" },
+                                           resealed });
+    }
+  }
+
   it("is stored by compare-and-swap: concurrent reseals keep one, at the next version",
      async () => {
     const r = await gated();
     const connection = await oldKid(r);
-    const answers = await calls(r, 3);
-    expect(answers.map((answer) => answer.stopReason)).toEqual(["stop", "stop", "stop"]);
+    const binding = await sandboxOf(r);
+    const answers = await Promise.all([1, 2, 3].map(() =>
+      r.stub.egressOpen(binding, listing(connection))));
+    expect(answers.map((answer) => answer.ok && answer.version)).toEqual([1, 1, 1]);
+    await settled(r, binding, answers);
     const rows = await secrets(r, connection);
     expect(rows.map((row) => [row["version"], row["kid"]])).toEqual([[2, "k2"]]);
     const opened = await open(keyring("k2"), { owner: r.name, connection, version: 2 },
                               rows[0]!["blob"]);
     expect(opened.credential.kind === "api_key" && opened.credential.secret).toBe("sk-old");
     expect((await r.sql("SELECT version FROM connections"))[0]!["version"]).toBe(2);
-    // The next call carries the resealed blob, and nothing is resealed again.
-    await calls(r, 1);
-    expect((await secrets(r, connection)).map((row) => row["version"])).toEqual([2]);
+    // The next call carries the resealed blob.
+    expect((await r.stub.egressOpen(binding, listing(connection)))).toMatchObject({
+      ok: true, version: 2, blob: rows[0]!["blob"] });
   });
 
   it("never overwrites tokens a refresh stored while its call was in flight", async () => {
@@ -813,25 +869,15 @@ describe("a blob resealed under the active kid", () => {
     await r.stub.connectionCommit(r.session(), { connection, version: 1, blob, kid: "k1",
                                                  models: await catalog(OPENAI), expires_at: far,
                                                  egress: await scopeOf(OAUTH) });
-    const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-    const opened = async () => ((await (await fetch(`https://status.test/cancelled?id=${id}`))
-      .json()) as { cancelled: boolean | null }).cancelled === false;
-    await r.in(async (instance, state) => {
-      const auto = instance.parts.provider.getModels()[0]!;
-      const stop = new AbortController();
-      // A call in flight on version 1, under the old kid: its answer carries a reseal.
-      const slow = (await provider(instance)).streamSimple(auto, asked(`cmd:slow-${id}`),
-                                                        { ...await direct(instance, "slow"),
-                                                          signal: stop.signal });
-      await until(opened, "the slow call to open");
-      // The token nears expiry, and another call refreshes it to version 2.
-      state.storage.sql.exec("UPDATE connections SET expires_at = ?", Date.now() + 60_000);
-      const fresh = await (await provider(instance)).streamSimple(
-        auto, asked("cmd:echo"), await direct(instance, "fresh")).result();
-      expect(textOf(fresh)).toContain("Bearer at-2|none:client-1");
-      stop.abort();
-      await slow.result();
-    });
+    const binding = await sandboxOf(r);
+    // A call in flight on version 1, under the old kid: its settle carries a reseal.
+    const slow = await r.stub.egressOpen(binding, listing(connection));
+    expect(slow).toMatchObject({ ok: true, version: 1 });
+    // The token nears expiry, and another call refreshes it to version 2.
+    await r.sql("UPDATE connections SET expires_at = ?", Date.now() + 60_000);
+    expect(await r.stub.egressOpen(binding, listing(connection)))
+      .toMatchObject({ ok: true, version: 2 });
+    await settled(r, binding, [slow]);
     const rows = await secrets(r, connection);
     expect(rows.map((row) => [row["version"], row["kid"]])).toEqual([[2, "k2"]]);
     const kept = await open(keyring("k2"), { owner: r.name, connection, version: 2 },
@@ -842,9 +888,11 @@ describe("a blob resealed under the active kid", () => {
   it("is dropped while a refresh holds the lease", async () => {
     const r = await gated();
     const connection = await oldKid(r);
+    const binding = await sandboxOf(r);
+    const answer = await r.stub.egressOpen(binding, listing(connection));
     await r.sql("UPDATE connections SET lease_id = 'refreshing', lease_until = ?",
                 Date.now() + 60_000);
-    expect((await calls(r, 1))[0]!.stopReason).toBe("stop");
+    await settled(r, binding, [answer]);
     expect((await secrets(r, connection)).map((row) => [row["version"], row["kid"]]))
       .toEqual([[1, "k1"]]);
   });
@@ -862,12 +910,9 @@ describe("the plaintext key", () => {
     }
     // The binder seals the key with the gateway; the object is handed only the blob.
     const connection = await r.connect(key);
-    const answer = await r.in((instance) => instance.harness.prompt("cmd:drip"));
-    expect(answer.status).toBe("done");
-    await calls(r, 1, "cmd:drip");
+    expect((await calls(r, 2)).map((answer) => answer.ok)).toEqual([true, true]);
     await r.stub.connectionRevoke(r.session(), { connection });
     const made = await r.in((instance) => instance.calls);
-    expect(made.filter((call) => call.method === "fetch").length).toBeGreaterThan(1);
     expect(made.filter((call) => call.text.includes(key))).toEqual([]);
     const tables = await r.sql("SELECT name FROM sqlite_master WHERE type = 'table' " +
                                "AND name NOT LIKE '_cf_%'");
@@ -877,5 +922,5 @@ describe("the plaintext key", () => {
       expect([name, JSON.stringify(rows).includes(key)]).toEqual([name, false]);
     }
     expect(logged.filter((line) => line.includes(key))).toEqual([]);
-  }, 15_000);  // two drips of 1.8 s each, past the default 5 s under a full run's load
+  });
 });

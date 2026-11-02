@@ -1,15 +1,13 @@
 /**
- * The hooks Worker (`tinyassets-hooks`; ADR-032 §4, agent research §6, pi audit F8): owners'
- * executable hooks and pi's code mode VMs, out of the owner's object. Not deployed: no
+ * The hooks Worker (`tinyassets-hooks`; ADR-032 §4, pi audit F8, narrowed to code mode by
+ * ADR-034 decision 12): code mode's VMs, out of the owner's object. Not deployed: no
  * workflow deploys platform/.
  *
  * The owner Worker binds its default entrypoint as `HOOKS`, and nothing else reaches it:
- * no route, no `workers.dev` or preview URL. It binds only its Worker Loader and the
- * namespaces of its own two classes, so it reaches no owner's object, no store and no
- * other Worker, and holds no owner's ledger or policy (`guards/config.test.ts`).
+ * no route, no `workers.dev` or preview URL. It binds only the namespace of its own class,
+ * so it reaches no owner's object, no store and no other Worker, and holds no owner's
+ * ledger or policy (`guards/config.test.ts`).
  *
- * - `run(request)`: one hook call (`protocol.ts`), at the owner's own `HookRunner`
- *   (`getByName(owner)`), which loads the owner's bundle and calls it (`runner.ts`).
  * - `codemodeExecute(name, request, exchange)`: one code mode execution, pi's
  *   `CodemodeRemote.execute`, run by the `CodemodeSandbox` instance of that name
  *   (`codemode.ts`); the owner names one per execution, so scripts never share a thread.
@@ -22,14 +20,13 @@ import type {
 } from "@earendil-works/pi-codemode/portable";
 
 import type { CodemodeSandbox } from "./codemode";
-import { type HookReply, NAME_MAX } from "./protocol";
-import type { HookRunner, RunnerEnv } from "./runner";
 
 export { CodemodeSandbox } from "./codemode";
-export { HookRunner } from "./runner";
 
-export interface HooksEnv extends RunnerEnv {
-  readonly RUNNER: DurableObjectNamespace<HookRunner>;
+/** The most characters an execution's name takes: the owner's name, a slash and a UUID. */
+const NAME_MAX = 512;
+
+export interface HooksEnv {
   readonly CODEMODE: DurableObjectNamespace<CodemodeSandbox>;
 }
 
@@ -38,16 +35,6 @@ function named(value: unknown): value is string {
 }
 
 export class Hooks extends WorkerEntrypoint<HooksEnv> {
-  /** One hook call, at the owner's own runner: the reply, never a throw. */
-  async run(request: unknown): Promise<HookReply> {
-    const owner = typeof request === "object" && request !== null
-      ? (request as Record<string, unknown>)["owner"] : undefined;
-    if (!named(owner)) {
-      return { ok: false, error: "invalid", message: "a hook request names its owner" };
-    }
-    return this.env.RUNNER.getByName(owner).run(request);
-  }
-
   /**
    * One code mode execution, named by the owner: the VM runs in that sandbox object and
    * every tool call goes back through `exchange`. Resolves once the VM has stopped.

@@ -134,7 +134,6 @@ export interface Resealed {
 
 /** The gateway as the object binds it (`GATEWAY`, the `tinyassets-gateway` Worker). */
 export interface GatewayService {
-  fetch(request: Request): Promise<Response>;
   refresh(owner: string, connection: string, version: number, blob: string):
     Promise<Resealed & { readonly expires_at: number | null }>;
   revokeAtProvider(owner: string, connection: string, version: number, blob: string):

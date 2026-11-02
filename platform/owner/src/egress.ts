@@ -45,7 +45,7 @@
  * whole charge. A reservation never settled (the door's invocation lost) is settled `lost`
  * past `LOST_AFTER_S`, its charge `unknown`.
  *
- * Every row lives in `egress_reservations` (migration 14): at most `open` open, the newest
+ * Every row lives in `egress_reservations` (migration 11): at most `open` open, the newest
  * `receiptsKept` admitted and `refusalsKept` refused rows kept as receipts.
  *
  * Declared difference from research §6, which let a sandbox response already streaming

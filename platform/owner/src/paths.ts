@@ -10,17 +10,15 @@
  * folding): two names that differ in any code point are two files, as on Linux. That is
  * also why a path never becomes an R2 key (R2 NFC-normalizes keys; `files/src/keys.ts`).
  *
- * `resolve` is the one place a relative or dotted path is turned into a stored one, as
- * the pi environment's `absolutePath` does against its `cwd`; the RPC doors take only
- * stored paths and refuse anything else.
+ * `resolve` is the one place a relative or dotted path is turned into a stored one, against
+ * a `cwd`; the RPC doors take only stored paths and refuse anything else.
  *
  * The owner's agent definitions are the owner's alone (`OWNER_TREES`, Direction 3: the
  * owner edits its agents' files): `/workspace/agents` (each agent's `AGENTS.md`), and the
- * agent's abilities, which reach every conversation's prompt or its tools' instructions
- * (A5): `/workspace/.agents` (its skills, prompt templates and packages),
- * `/workspace/skills` and `/workspace/prompts`. Only the owner's own authority creates,
- * changes, moves into or out of, or removes anything there (held by the file doors and the
- * agent's environment), so no client's file is ever beside an owner's skill. The roots are
+ * agent's abilities, which reach an engine's instructions (A5; ADR-034 decision 2):
+ * `/workspace/.agents` (its skills), `/workspace/skills` and `/workspace/prompts`. Only the
+ * owner's own authority creates, changes, moves into or out of, or removes anything there
+ * (held by the file doors), so no client's file is ever beside an owner's skill. The roots are
  * never removed or renamed, so no change outside the trees reaches into them.
  */
 import { Invalid } from "./errors";
@@ -32,10 +30,8 @@ export const ROOTS: readonly string[] = Object.freeze([WORKSPACE, TEMP]);
 export const MAX_PATH_BYTES = 4096;
 /** The owner's agent definitions, `/workspace/agents/<agent>/`: the owner's alone to change. */
 export const AGENTS_DIR = "/workspace/agents";
-/** The agent's abilities: its skills, prompt templates and packages (`resources.ts`). */
+/** The agent's abilities: its `SKILL.md` folders, which every engine discovers itself. */
 export const ABILITIES_DIR = "/workspace/.agents";
-/** Where selected packages live (owner policy's `packages`, `policy.ts`). */
-export const PACKAGES_DIR = "/workspace/.agents/packages";
 /** Every tree only the owner's own authority changes. */
 export const OWNER_TREES: readonly string[] = Object.freeze([
   AGENTS_DIR, ABILITIES_DIR, "/workspace/skills", "/workspace/prompts"]);
