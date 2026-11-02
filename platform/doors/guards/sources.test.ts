@@ -538,7 +538,7 @@ describe("an engine record that does not fit", () => {
     ["a written file outside the home", cli((s) => {
       at(s, "mcp")["file"] = "/etc/claude/mcp.json"; })],
     ["a written file with a wildcard", cli((s) => {
-      at(s, "mcp")["file"] = "{home}/run/*"; })],
+      s["files"] = { "{home}/run/*": "model = \"m\"" }; })],
     ["a home variable outside {home}", cli((s) => {
       at(s, "home_env")["CLAUDE_CONFIG_DIR"] = "/proc/self/cwd"; })],
     // M3: the prompt is never a bare argument.
