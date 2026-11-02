@@ -19,7 +19,7 @@ import { EGRESS_ORIGIN } from "../src/config";
 import { RUN_TOOLS } from "../src/tools";
 import type { OwnerDO } from "./entry";
 import {
-  appPost, call, connect, OPEN, registerClient, serveFirstPartyDocument, setControl,
+  appPost, call, connect, OPEN, reached, registerClient, serveFirstPartyDocument, setControl,
   signInApp, type Tokens, url,
 } from "./support";
 
@@ -280,6 +280,33 @@ describe("a run's live events", () => {
     expect(stored).not.toContain("assistant");
     early.ws.close(1000, "done");
     late.ws.close(1000, "done");
+  }, 60_000);
+
+  it("reach only the sockets on the run's own conversation", async () => {
+    const { who, app } = await owned();
+    const first = await (await appPost("agent/submit", app.access_token, null, {
+      message: "a", client_send_id: "o-1" })).json<{ conversation_id: string }>();
+    const second = await (await appPost("agent/submit", app.access_token, null, {
+      message: "b", client_send_id: "o-2" })).json<{ conversation_id: string }>();
+    const [start] = await starts(who);
+    const mine = frames(await socket(await ticketFor(app.access_token, first.conversation_id),
+                                     first.conversation_id));
+    const theirs = frames(await socket(await ticketFor(app.access_token,
+                                                       second.conversation_id),
+                                       second.conversation_id));
+    await report(start!, { frames: [{ seq: 1, at: 1, event: { type: "result", result: "x" } }] });
+    await until(() => mine.frames.length === 1, "the frame");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(theirs.frames).toEqual([]);
+    mine.ws.close(1000, "done");
+    theirs.ws.close(1000, "done");
+  }, 60_000);
+
+  it("take no forged ticket: the doors refuse it before any object", async () => {
+    const forged = `user_${crypto.randomUUID().replace(/-/g, "")}`;
+    const answer = await socket(forged, `cv_${"0".repeat(32)}`);
+    expect([answer.status, await answer.json()]).toEqual([403, { error: TICKET_REFUSED }]);
+    expect(await reached(forged)).toBe(false);
   }, 60_000);
 
   it("take no bearer: a ticket opens one socket, once, for its own conversation, and a " +

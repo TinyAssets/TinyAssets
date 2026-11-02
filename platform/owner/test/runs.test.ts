@@ -12,11 +12,12 @@ import { describe, expect, it } from "vitest";
 import { verifyToken } from "../../doors/src/routing-mac";
 import { bundledSources, runEnv } from "../../doors/src/sources";
 import { PLATFORM_CALLER } from "../src/admission";
-import { AGENT_DISABLED, AGENT_UNDEFINED } from "../src/agent-file";
+import { AGENT_DISABLED, AGENT_UNDEFINED, agentFile } from "../src/agent-file";
+import { WriteGate } from "../src/gate";
 import { AUTHORITY_CHANGED } from "../src/authority";
 import type { Binding } from "../src/owner-do";
 import { RUN_STARTS_NONE } from "../src/owner-do";
-import { CONVERSATION_BUSY, NO_CONVERSATION, NO_RUN, RUN_ENDED, UNATTENDED_REFUSED }
+import { CONVERSATION_BUSY, NO_CONVERSATION, NO_RUN, RUN_ENDED, Runs, UNATTENDED_REFUSED }
   from "../src/runs";
 import { SANDBOX_ABSENT, type SandboxStart } from "../src/sandbox";
 import { PLATFORM_TIER_ONLY, TIER_RUNS, TIER_UNREAD } from "../src/tier";
@@ -353,6 +354,57 @@ describe("simultaneous runs", () => {
   });
 });
 
+describe("a client's run doors", () => {
+  it("hold a scoped client to converse and run_graph where its agent acts", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", { ...SIGNED_IN, scopes: ALL_SCOPES });
+    const client = r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn() });
+    await r.stub.outsideAgents(client);
+    const { revision } = (await r.stub.grantList(r.bind())).clients
+      .find((entry) => entry.client === MUSE.client)!;
+    await r.stub.grantSet(r.session(), { client: MUSE.client, source: "mcp", mode: "scoped",
+                                         scopes: [{ universe: "alpha", agent: "main",
+                                                    capability: "read_graph" }],
+                                         expected_revision: revision, name: "Muse" });
+    const { card_id, digest } = await r.stub.registerPropose(client, {
+      command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
+      recipe_id: null });
+    await r.stub.registerAgent(r.session(), { card_id, digest });
+    expect((await failure(() => r.stub.agentSubmit({ ...client, tiers: TIERS }, {
+      message: "hi", client_send_id: "n-1" }))).message)
+      .toBe("outside client capability not granted");
+    expect((await failure(() => r.stub.agentRun({ ...client, tiers: TIERS }, {
+      agent: "main", input: "x" }))).message).toBe("outside client capability not granted");
+    expect((await recorder(r.stub)).starts).toEqual([]);
+  });
+});
+
+describe("the admission unit", () => {
+  it("refuses an owner not admitted itself, whatever reached it (the lane's race)",
+     async () => {
+    const r = await gated();
+    const refused = await r.in((_instance, state) => {
+      const gate = new WriteGate(state.storage);
+      const never = () => {
+        throw new Error("admission went past the owner's admission");
+      };
+      const runs = new Runs(gate.storage, {
+        unadmitted: () => "owner_suspended: the owner's account is suspended (billing)",
+        sandboxBound: () => true, sources: never, usable: never, egressible: never,
+        standing: never, tier: never, caps: never, spent: never,
+        lease: { live: never, open: never, release: never, renew: never },
+        ended: never, leaseEnded: never });
+      return gate.write(() => runs.admit({
+        initiator: "schedule", stamp: null, origin: null, agent: "main",
+        file: agentFile(JSON.stringify(SIGNED_IN)), conversation: null, request: null,
+        tiers: TIERS, unattended: true }, Date.now() / 1000, never))
+        .then(() => "admitted", (error: Error) => error.message);
+    });
+    expect(refused).toBe("owner_suspended: the owner's account is suspended (billing)");
+    expect(await r.sql("SELECT id FROM runs")).toEqual([]);
+  });
+});
+
 describe("a run's own calls", () => {
   it("are held to its grant's scopes, and never the owner itself", async () => {
     const r = await gated();
@@ -373,6 +425,32 @@ describe("a run's own calls", () => {
     // Another run's id under this lease is refused, as is one settled.
     expect((await failure(() => r.stub.fileStat({ ...asReader, run: `run_${"f".repeat(32)}` },
                                                 { path: "/workspace" }))).message)
+      .toBe(RUN_ENDED);
+  });
+
+  it("of a client's run recheck its stamp at every call: a grant moved ends the run",
+     async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", { ...SIGNED_IN, scopes: ALL_SCOPES });
+    const client = r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn() });
+    await r.stub.outsideAgents(client);
+    const { revision } = (await r.stub.grantList(r.bind())).clients
+      .find((entry) => entry.client === MUSE.client)!;
+    await r.stub.grantSet(r.session(), { client: MUSE.client, source: "mcp", mode: "full",
+                                         scopes: [], expected_revision: revision,
+                                         name: "Muse" });
+    const run = await r.stub.agentSubmit({ ...client, tiers: TIERS },
+                                         { message: "hi", client_send_id: "g-1" });
+    const asRun = runBinding(r, (await recorder(r.stub)).starts.at(-1)!);
+    expect(await r.stub.fileStat(asRun, { path: "/workspace" }))
+      .toMatchObject({ entry: { kind: "dir" } });
+    // The client's grant moves without the doors' own hook: the run's next call finds it.
+    await r.sql("UPDATE outside_clients SET generation = generation + 1 WHERE client = ?",
+                MUSE.client);
+    expect((await failure(() => r.stub.fileStat(asRun, { path: "/workspace" }))).message)
+      .toBe(AUTHORITY_CHANGED);
+    expect((await recorder(r.stub)).cancels.map((cancel) => cancel.run)).toEqual([run.run_id]);
+    expect((await failure(() => r.stub.fileStat(asRun, { path: "/workspace" }))).message)
       .toBe(RUN_ENDED);
   });
 

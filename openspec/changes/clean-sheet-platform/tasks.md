@@ -809,6 +809,11 @@ R, S, M and W.
   - Carried: slice E's owed case (a record setting a variable a key's environment sets is
     refused by the checker, `network.test.ts`), slice D's flakes (`.wrangler` skipped by
     both config guards; the files-quota pass test's explicit timeout).
+  - Mutation: 48 mutants over admission (12), the tier check (6), grant scoping (7), the
+    doors' authority (7), settle (10) and the relay (6): 47 killed. The survivor, the run
+    grant's lease match in `grantUnder`, is equivalent while every lease that replaces a
+    lapsed one settles the lapsed one's runs first (`lost`, in the same admission unit);
+    it stays as the backstop of that invariant.
 - [ ] Slice S builds against the `SANDBOX` interface (`owner/src/sandbox.ts`), and only it:
   - the `tinyassets-sandbox` Worker as `SandboxService`: `start(owner, SandboxStart)`
     answers `{started: true}` or `{started: false, code}` (a fixed code) at once, the runner
