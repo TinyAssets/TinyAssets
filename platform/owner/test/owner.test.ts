@@ -25,7 +25,7 @@ const PULL = { collection: "board", after: 0, limit: 1 };
  * slice brings them back as run doors).
  */
 const RPC_METHODS = Object.freeze([
-  "admissionSet", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory",
+  "admissionSet", "agentCancel", "agentRun", "agentStatus", "agentSubmit", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory",
   "collectionPull",
   "collectionWrite", "connectionCommit", "connectionList", "connectionPrepare",
   "connectionRevoke", "deleteAgent", "disableAgent", "egressOpen", "egressReceipts",
@@ -37,9 +37,14 @@ const RPC_METHODS = Object.freeze([
   "grantForgetRevoked", "grantList", "grantRevoke", "grantSet", "mailboxAck", "mailboxRead",
   "mailboxSubscriber", "noticeList", "outsideAgents", "policyProposal", "policyPropose",
   "policyRead", "policyReceipts", "policyWakeLimits", "policyWrite", "registerAgent",
-  "registerProposal", "registerPropose", "roomPost", "sessionClose", "sessionCloseAll",
-  "sessionExtend", "sessionOpen", "usageReceipts",
+  "registerProposal", "registerPropose", "roomPost", "runEvents", "sessionClose",
+  "sessionCloseAll", "sessionExtend", "sessionOpen", "socketTicket", "socketsEnd", "tierSet",
+  "usageReceipts",
 ]);
+
+/** The runtime's reserved methods the object hands to Lifecycle: no RPC reaches them. */
+const RESERVED = Object.freeze(["alarm", "fetch", "webSocketClose", "webSocketError",
+                                "webSocketMessage"]);
 
 describe("schema migration on wake", () => {
   it("applies every migration before the first call", async () => {
@@ -206,7 +211,7 @@ describe("the object's stored owner", () => {
 describe("the object's RPC surface", () => {
   it("is exactly its doors: nothing claims, marks or settles a wake", async () => {
     const methods = Object.getOwnPropertyNames(OwnerDO.prototype)
-      .filter((method) => method !== "constructor" && method !== "alarm").sort();
+      .filter((method) => method !== "constructor" && !RESERVED.includes(method)).sort();
     expect(methods).toEqual(RPC_METHODS);
     expect(Object.getOwnPropertyNames(DurableObject.prototype)).toEqual(["constructor"]);
     const { stub, name } = ownerObject();

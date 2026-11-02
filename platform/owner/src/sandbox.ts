@@ -1,0 +1,90 @@
+/**
+ * The `SANDBOX` interface (ADR-034 decision 4.2; `engines-replan.md` §2.1 step 3): what the
+ * owner's object asks of slice S's stateless `tinyassets-sandbox` Worker, the only holder
+ * of the E2B key, over a service binding. Slice R defines it and calls it; slice S builds
+ * the Worker, its config, and its entry in the owner config guard's `SERVICES` (a bound
+ * Worker that reaches nothing but E2B).
+ *
+ * - `start`: resume or create the owner's sandbox and start the in-VM runner for one run, in
+ *   the background (E2B's `commands.run(..., { background: true })`), answering at once.
+ *   `tokens` and `network` come only with the start that opened the sandbox's lease: the
+ *   sandbox is then (re)configured with that network, whose transform carries the egress
+ *   token, and the runner's sync agent takes the sync token. A run that joins a live lease
+ *   gets neither: its sandbox is configured already. `config` is the run's whole
+ *   environment (slice E's `runEnv`, G4's `sandboxEnv`), which the runner sets as it is,
+ *   from an empty one. The runner reaches the object only by `urls`: the run's MCP door
+ *   and its event door, both on the egress host, where E2B's transform sets the egress
+ *   token outside the VM.
+ * - `cancel`: stop the run's CLI (SIGTERM, then a kill after a grace; "Stop a run with
+ *   SIGTERM", Claude's headless docs). The run settles from the runner's last report, or
+ *   `unknown` if the runner is lost.
+ * - `status`: whether the run's runner still runs, for slice S's lost-runner checks; the
+ *   object's status doors read the run's receipt, never this.
+ *
+ * Absent, nothing reaches `running`: admission refuses before it writes anything
+ * (`SANDBOX_ABSENT`). Tests put a recording fake behind the interface, in tests only.
+ */
+import type { CredentialKind } from "../../doors/src/sources";
+
+import type { NetworkPlan } from "./network";
+
+export const SANDBOX_ABSENT = "sandbox_absent: no sandbox is bound, so no run can start";
+
+/** A run's environment, as the lease's config gives it (`SandboxLeases.config`). */
+export interface RunConfig {
+  readonly generation: number;
+  readonly egress: { readonly mode: string;
+                     readonly destinations: readonly { host: string; port: number }[] };
+  readonly env: Readonly<Record<string, string>>;
+  readonly inherit: readonly string[];
+}
+
+export interface SandboxStart {
+  readonly run: string;
+  readonly agent: string;
+  readonly conversation: string;
+  /** The CLI record the runner invokes, and the credential it runs on. */
+  readonly engine: string;
+  readonly credential: CredentialKind;
+  readonly model: string | null;
+  /** The engine's session id to resume (`resume_argv`), or null for a new conversation. */
+  readonly session_id: string | null;
+  /** The input, on the engine's stdin or its prompt argument (the record says which). */
+  readonly prompt: string;
+  /** A run no one waits on: the record's `unattended_argv` applies. */
+  readonly unattended: boolean;
+  readonly lease: { readonly lease_id: string; readonly epoch: number };
+  /** The lease's two tokens, only when this start opened it. */
+  readonly tokens: { readonly egress_token: string; readonly sync_token: string } | null;
+  /** The owner's network, its transform carrying the egress token, with `tokens` only. */
+  readonly network: NetworkPlan | null;
+  readonly config: RunConfig;
+  /** The run's MCP door (the record's `{mcp_url}`) and its event door. */
+  readonly urls: { readonly mcp: string; readonly events: string };
+}
+
+export type Started = { readonly started: true } | { readonly started: false; readonly code: string };
+
+/** The sandbox Worker, as the owner's object binds it (`SANDBOX`). */
+export interface SandboxService {
+  start(owner: string, start: SandboxStart): Promise<Started>;
+  cancel(owner: string, request: { readonly run: string; readonly lease_id: string }):
+    Promise<{ readonly cancelled: boolean }>;
+  status(owner: string, request: { readonly run: string; readonly lease_id: string }):
+    Promise<{ readonly state: "running" | "exited" | "gone" }>;
+}
+
+/** A start's answer, checked: a refusal's code is a fixed code, never prose. */
+export function started(value: unknown): Started {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const answer = value as Record<string, unknown>;
+    if (answer["started"] === true && Object.keys(answer).length === 1) {
+      return { started: true };
+    }
+    if (answer["started"] === false && typeof answer["code"] === "string"
+        && /^[a-z][a-z0-9_]{0,63}$/.test(answer["code"]) && Object.keys(answer).length === 2) {
+      return { started: false, code: answer["code"] };
+    }
+  }
+  throw new Error("the sandbox's start answered out of shape");
+}

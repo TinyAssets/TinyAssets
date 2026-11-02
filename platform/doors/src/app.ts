@@ -21,17 +21,32 @@
  * - `connections/key`, `connections/oauth`, `connections/oauth/finish`,
  *   `connections/revoke`, `connections/list`: the model connect doors (`connect.ts`).
  *
- * The agent's routes (`agent/*`) are absent until the runs slice (R) brings them back as
- * run doors (ADR-034).
+ * - `agent/submit`, `agent/run`, `agent/status`, `agent/cancel`: the run doors (slice R),
+ *   the same doors `converse`, `run_graph`, `run_status` and `run_cancel` call for an
+ *   outside client; the control record's tier numbers ride the binding (`withTiers`).
+ * - `agent/socket-ticket`: a single-use socket ticket for one of the owner's conversations
+ *   (A6, salvaged), behind every check above, bound to the token's grant and expiry
+ *   (`bindOwnerGrant`).
+ * - `agent/socket`: the owner app's live socket on one of its conversations: a `GET` with
+ *   `Upgrade: websocket`, `?conversation_id=` and `?ticket=`, its one credential the ticket
+ *   (a browser's `WebSocket` sends no `Authorization`; no bearer is read here), a
+ *   routing-MAC token the doors verify before any object (`bindTicket`), behind the
+ *   maintenance gate; the binder forwards it to the object's `fetch` as a fresh request
+ *   (`socketRequest`), the object consumes the ticket, and its answer, the socket or its
+ *   fixed refusal, is the door's.
+ *
+ * Sign-out tells the object first, whether or not a session cookie came, so the sockets
+ * opened under the device's grant close before the grant is revoked (`socketsEnd`).
  */
 import {
-  type Bound, bindKeyRegistration, bindOwner,
+  type Bound, bindKeyRegistration, bindOwner, bindOwnerGrant, bindSignOut, bindTicket,
+  socketRequest, withTiers,
 } from "./binder";
 import { jsonObject } from "./body";
 import {
   APP_BODY_MAX, APP_RESOURCE, type DoorsEnv, FIRST_PARTY_CLIENTS, MCP_RESOURCE,
 } from "./config";
-import { ownerGate } from "./control";
+import { ownerGate, ownerRead } from "./control";
 import {
   deleteOwnKey, KeyRefused, looksLikeKey, mintKey, registeringEntry, revokeKey,
 } from "./api-keys";
@@ -41,6 +56,9 @@ import { authorizationServer } from "./oauth";
 import { clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
 import type { Sources } from "./sources";
 import { refusal } from "./tools";
+import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
+
+import { SOCKET_FAILED, TICKET_REFUSED } from "../../owner/src/socket-shape";
 
 export const OUTSIDE_CREDENTIAL = "an outside credential never reaches the owner's surface";
 
@@ -80,6 +98,9 @@ async function signOut(env: DoorsEnv, { binding, stub }: Bound, _request: unknow
   if (presented.userId !== binding.owner) {
     throw new Error("a validated first-party token unwraps to its owner's grant");
   }
+  // The device's sockets first, cookie or not: none outlives its grant's revoke.
+  const ending = bindSignOut({ binding, stub }, presented.grantId);
+  await ending.stub.socketsEnd(ending.binding);
   const closed = binding.session === undefined ? { closed: 0 } : await stub.sessionClose(binding);
   await oauth.revokeGrant(presented.grantId, binding.owner);
   return json(200, { ...closed, signed_out: true }, { "Set-Cookie": clearedCookie() });
@@ -97,7 +118,69 @@ const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
     return json(200, extended, { "Set-Cookie": sessionCookie(binding.session ?? "") });
   },
   "session/close": signOut,
+  "agent/submit": async (_env, { binding, stub }, request) =>
+    json(200, await stub.agentSubmit(binding, request as never)),
+  "agent/run": async (_env, { binding, stub }, request) =>
+    json(200, await stub.agentRun(binding, request as never)),
+  "agent/status": async (_env, { binding, stub }, request) =>
+    json(200, await stub.agentStatus(binding, request as never)),
+  "agent/cancel": async (_env, { binding, stub }, request) =>
+    json(200, await stub.agentCancel(binding, request as never)),
 });
+
+/** The owner app's socket door's path, and its ticket door's, under the owner surface. */
+export const SOCKET_PATH = "agent/socket";
+export const TICKET_PATH = "agent/socket-ticket";
+
+/**
+ * A socket ticket: the owner's token's grant (the provider's own unwrap of the presented
+ * token) and expiry bound in, then the object mints it for the conversation named.
+ */
+async function socketTicket(env: DoorsEnv, token: ValidatedAccessToken<unknown>,
+                            presented: string, request: Record<string, unknown>):
+    Promise<Response> {
+  const unwrapped = await authorizationServer(env).getOAuthApi(env).unwrapToken(presented);
+  if (unwrapped === null) {
+    return failure(401, "sign in required");
+  }
+  const { binding, stub } = bindOwnerGrant(env, token, unwrapped.grantId);
+  return json(200, await stub.socketTicket(binding, request as never));
+}
+
+/**
+ * The owner app's live socket: a `GET` upgrade with exactly `?conversation_id=` and
+ * `?ticket=`, its one credential the ticket, forwarded by the binder to the object's `fetch`
+ * (`socketRequest`), whose answer is returned as it is. A failure past the doors answers a
+ * fixed code, never its text.
+ */
+async function socketUpgrade(request: Request, env: DoorsEnv): Promise<Response> {
+  if (request.method !== "GET") {
+    return failure(405, "method not allowed");
+  }
+  if ((request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") {
+    return failure(426, "the socket door takes a WebSocket upgrade");
+  }
+  const query = new URL(request.url).searchParams;
+  const conversation = query.get("conversation_id");
+  const ticket = query.get("ticket");
+  if (conversation === null || ticket === null || [...query.keys()].length !== 2) {
+    return failure(400, "the socket door takes a conversation_id and a ticket");
+  }
+  const held = bindTicket(env, ticket);
+  if (held === null) {
+    return failure(403, TICKET_REFUSED);
+  }
+  const gated = await ownerGate(env, held.bound.binding.owner);
+  if (gated !== null) {
+    return gated;
+  }
+  try {
+    return await held.bound.stub.fetch(socketRequest(held.bound, conversation, held.hash));
+  } catch {
+    console.error("an app socket's upgrade failed past the doors");  // no ids, no text
+    return failure(500, SOCKET_FAILED);
+  }
+}
 
 /** The owner's first-party token, or the refusal for what came instead. */
 async function ownerToken(env: DoorsEnv, token: string | null) {
@@ -122,6 +205,9 @@ async function ownerToken(env: DoorsEnv, token: string | null) {
 
 export async function serveApp(request: Request, env: DoorsEnv, sources: Sources):
     Promise<Response> {
+  if (new URL(request.url).pathname.slice(OWNER_SURFACE.length) === SOCKET_PATH) {
+    return socketUpgrade(request, env);  // its credential is its ticket, never a bearer
+  }
   const presented = bearer(request);
   const token = await ownerToken(env, presented);
   if (token instanceof Response) {
@@ -130,9 +216,10 @@ export async function serveApp(request: Request, env: DoorsEnv, sources: Sources
   const session = sessionOf(request);
   const path = new URL(request.url).pathname.slice(OWNER_SURFACE.length);
   const registering = path === "outside-agents";
+  const ticketing = path === TICKET_PATH;
   const route = Object.hasOwn(ROUTES, path) ? ROUTES[path] : undefined;
   const connect = Object.hasOwn(CONNECT_ROUTES, path) ? CONNECT_ROUTES[path] : undefined;
-  if (route === undefined && connect === undefined && !registering) {
+  if (route === undefined && connect === undefined && !registering && !ticketing) {
     return failure(404, "not found");
   }
   if (request.method !== "POST") {
@@ -145,17 +232,21 @@ export async function serveApp(request: Request, env: DoorsEnv, sources: Sources
   if (parsed instanceof Response) {
     return parsed;
   }
-  const owner = bindOwner(env, token, session);
-  const gated = await ownerGate(env, owner.binding.owner);
-  if (gated !== null) {
+  const unread = bindOwner(env, token, session);
+  const gated = await ownerRead(env, unread.binding.owner);
+  if (gated instanceof Response) {
     return gated;
   }
+  const owner = withTiers(unread, gated.tiers);
   try {
     if (registering) {
       const { key_id: id, ...register } = parsed;
       const { keyId, entry } = await registeringEntry(env, owner.binding.owner, id);
       const { binding, stub } = bindKeyRegistration(env, token, keyId, entry, session);
       return json(200, await stub.registerAgent(binding, register as never));
+    }
+    if (ticketing) {
+      return await socketTicket(env, token, presented!, parsed);
     }
     if (connect !== undefined) {
       return await connect({ env, bound: owner, body: parsed, request, sources });

@@ -31,6 +31,7 @@ import { wiped } from "./erasure";
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import { ADMISSION_TABLE } from "./schema";
+import { type TierName, tierName } from "./tier";
 
 /** The reserved caller only the platform's admin path sends: `admissionSet`'s alone. */
 export const PLATFORM_CALLER = "platform";
@@ -124,6 +125,23 @@ export function setAdmission(storage: OwnerStorage, request: unknown): Admission
   storage.sql.exec("UPDATE owner_admission SET state = ?, reasons = ?", state,
                    JSON.stringify(sorted));
   return { state, reasons: sorted };
+}
+
+/** The owner's tier (`tier.ts`), from its own admission row, which only the platform sets. */
+export function ownerTier(storage: OwnerStorage): TierName {
+  const row = storage.sql.exec<{ tier: TierName }>("SELECT tier FROM owner_admission")
+    .toArray()[0];
+  if (row === undefined) {
+    throw new Error("the owner's admission row is missing");
+  }
+  return row.tier;
+}
+
+/** In a unit: the platform sets the owner's tier (`tierSet`). */
+export function setTier(storage: OwnerStorage, request: unknown): { tier: TierName } {
+  const tier = tierName(request);
+  storage.sql.exec("UPDATE owner_admission SET tier = ?", tier);
+  return { tier };
 }
 
 /**

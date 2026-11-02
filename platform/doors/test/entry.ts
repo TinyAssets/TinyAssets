@@ -11,18 +11,23 @@ import { bundledRecords, catalogOf } from "../src/sources";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 
 import { type OwnerEnv, OwnerDO as RealOwnerDO, type SandboxLeases } from "../../owner/src/owner-do";
+import { RecordingSandbox } from "../../owner/test/sandbox-fake";
 
 /**
- * The real owner object, with its sandbox's lease API (owner-internal: the runs slice
- * reaches it in the object) in the tests' reach.
+ * The real owner object, with its sandbox's lease API (owner-internal) in the tests' reach,
+ * and a recording fake behind its `SANDBOX` binding (tests only: slice S binds the real
+ * sandbox Worker).
  */
 export class OwnerDO extends RealOwnerDO {
   readonly sandbox: SandboxLeases;
+  readonly recorder: RecordingSandbox;
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     const made: { sandbox?: SandboxLeases } = {};
-    super(ctx, env, { sandbox: (leases) => { made.sandbox = leases; } });
+    const recorder = new RecordingSandbox();
+    super(ctx, { ...env, SANDBOX: recorder }, { sandbox: (leases) => { made.sandbox = leases; } });
     this.sandbox = made.sandbox!;
+    this.recorder = recorder;
   }
 }
 

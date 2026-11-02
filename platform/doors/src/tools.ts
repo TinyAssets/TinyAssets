@@ -11,9 +11,14 @@
  * operation (no `method`, `operation`, `tool` or `target` field): each operation is its
  * own tool, which both directories require.
  *
- * The agent tools (`converse`, `run_graph`, `run_status`, `run_cancel`) are absent until
- * the runs slice (R) brings them back as run doors (ADR-034): an absent tool, never a stub
- * that answers falsely. An engine's own tools are its vendor's, and are never served here.
+ * The run tools (`converse`, `run_graph`, `run_status`, `run_cancel`; slice R) are run
+ * doors (ADR-034): `converse` and `run_graph` start an engine run in the owner's sandbox,
+ * so the agent's effects cannot be taken back (destructive, not idempotent; a retry of
+ * `converse` with the same `client_send_id` is the same run); `run_status` reads a run's
+ * receipt; `run_cancel` ends one (destructive, idempotent). An engine's own tools are its
+ * vendor's, and are never served here. A run's own MCP door (`runProfile`, on the egress
+ * host) serves the table but the run tools: work between agents is mail (ADR-034
+ * decision 11).
  * `guards/tools.test.ts` holds every row to these rules and to a real outside-callable
  * door, and names the outside-callable doors without a tool yet, each with the slice that
  * owes it.
@@ -33,7 +38,7 @@ export interface Tool {
   readonly door: Door;
   /** The scope capability the door checks a scoped grant for, or null when it checks none. */
   readonly capability: "read_graph" | "write_graph" | "propose_policy" | "read_files"
-    | "write_files" | null;
+    | "write_files" | "converse" | "run_graph" | null;
   readonly title: string;
   readonly description: string;
   readonly readOnlyHint: boolean;
@@ -46,6 +51,7 @@ export interface Tool {
 
 const str = (description: string): JsonSchema => ({ type: "string", description });
 const int = (description: string): JsonSchema => ({ type: "integer", description });
+const num = (description: string): JsonSchema => ({ type: "number", description });
 const bool = (description: string): JsonSchema => ({ type: "boolean", description });
 const orNull = (description: string): JsonSchema =>
   ({ type: ["string", "null"], description });
@@ -166,7 +172,53 @@ export function toolTable(): readonly Tool[] {
       title: "Restore file version", ...CHANGE,
       description: "Make a kept version of a file its current content.",
       input: args({ path, version: int("The kept version to restore"), expected_etag: etag }) },
+    { name: "converse", door: "agentSubmit", capability: "converse",
+      title: "Talk with an agent", ...CHANGE,
+      description: "Send a message to one of the owner's agents: a run of its engine in a new " +
+        "conversation, or in one of yours by conversation_id. A retry with the same " +
+        "client_send_id is the same run. Waits up to wait_ms for the run to end, then " +
+        "answers the run as it stands; run_status reads it later.",
+      input: args({ message: str("The message"),
+                    client_send_id: str("Your id for this message, for retries: letters, " +
+                                        "digits, - and _") },
+                  { agent_id: str("Which of the owner's agents: main when omitted"),
+                    conversation_id: str("A conversation of yours to continue"),
+                    wait_ms: int("How long to wait for the run to end, in ms: at most 60000") }) },
+    { name: "run_graph", door: "agentRun", capability: "run_graph",
+      title: "Run an agent", ...CHANGE,
+      description: "Launch one of the owner's agents on an input, in a fresh conversation of " +
+        "its own: now, at a time, at each time a cron names, or each time mail reaches the " +
+        "owner. Answers the run, or the schedule, at once.",
+      input: args({ agent: str("Which of the owner's agents, such as main"),
+                    input: str("What the agent is asked to do") },
+                  { at: num("When to run it, in seconds since the epoch"),
+                    cron: str("Run it at each time this names: minute, hour, day of the " +
+                              "month, month and day of the week, in UTC"),
+                    on_mail: bool("Run it each time mail reaches the owner"),
+                    if_mail: bool("Run it only when the owner has unacknowledged mail") }) },
+    { name: "run_status", door: "agentStatus", capability: null,
+      title: "Run status", ...READ,
+      description: "Read one of your runs, its state and its result once done, or one of " +
+        "your schedules.",
+      input: args({}, { run_id: str("The run's id"), schedule_id: str("The schedule's id") }) },
+    { name: "run_cancel", door: "agentCancel", capability: null,
+      title: "Cancel run", readOnlyHint: false, destructiveHint: true, idempotentHint: true,
+      openWorldHint: false,
+      description: "Cancel one of your runs (its engine is stopped), or one of your schedules.",
+      input: args({}, { run_id: str("The run's id"), schedule_id: str("The schedule's id") }) },
   ];
+}
+
+/** The run doors' tools: what a run's own MCP door never serves. */
+export const RUN_TOOLS: readonly string[] = Object.freeze(["converse", "run_graph",
+                                                           "run_status", "run_cancel"]);
+
+/**
+ * A run's own MCP door's tools (ADR-034 decision 6): the table but the run tools, each
+ * held by the object to the run grant's scopes.
+ */
+export function runProfile(): readonly Tool[] {
+  return toolTable().filter((tool) => !RUN_TOOLS.includes(tool.name));
 }
 
 /** The tool named `name`, or undefined. */

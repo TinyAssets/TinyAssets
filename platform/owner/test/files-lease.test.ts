@@ -21,7 +21,7 @@ function entryOf(answer: { entry: Entry } | { conflict: Entry | null }): Entry {
 }
 
 const acquire = (r: Rig, holder = "sandbox-1") =>
-  inFiles(r.stub, {}, (files) => files.leaseAcquire(holder, "a".repeat(64), "b".repeat(64), null));
+  inFiles(r.stub, {}, (files) => files.leaseAcquire(holder, "a".repeat(64), "b".repeat(64)));
 const renew = (r: Rig, lease: Pick<Lease, "lease_id" | "epoch">) =>
   inFiles(r.stub, {}, (files) => files.leaseRenew(lease.lease_id, lease.epoch));
 const release = (r: Rig, lease: Pick<Lease, "lease_id" | "epoch">) =>

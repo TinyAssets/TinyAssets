@@ -15,6 +15,7 @@ import { type Write, WriteGate } from "../src/gate";
 import type { Ledger } from "../src/ledger";
 import { type LaneDeps, type OwnerDO, ownerLanes } from "../src/owner-do";
 import { FILE_DEFAULTS } from "../src/policy";
+import { NOT_BINDER_SHAPE } from "../src/relay";
 import {
   inTime, type Lane, LANE_HUNG_S, LANE_PASS_S, LANE_RETRY_S, laneJob, Schedule, SCHEDULE,
 } from "../src/schedule";
@@ -389,6 +390,12 @@ describe("the object's lanes", () => {
     const write = (() => undefined) as unknown as Write;
     const deps: LaneDeps = {
       ledger, files, connections, sender, admitted, clock, write,
+      runs: { next: (now: number) => {
+        seen.push(["runs.next", now]);
+        return null;
+      }, run: async (now: number, until: number) => {
+        seen.push(["runs.run", now, until]);
+      } },
       runWakes: async (...args) => {
         seen.push(["runWakes", ...args]);
         return 0;
@@ -400,7 +407,7 @@ describe("the object's lanes", () => {
   it("hand each pass its until (slice 5 N1)", async () => {
     const { seen, deps, ledger, clock, write } = recorded(() => null, () => true);
     const lanes = ownerLanes(deps);
-    expect(Object.keys(lanes)).toEqual(["wakes", "files", "connections"]);
+    expect(Object.keys(lanes)).toEqual(["wakes", "files", "connections", "runs"]);
     for (const lane of Object.values(lanes)) {
       await lane.run(100, 123_456);
     }
@@ -408,6 +415,7 @@ describe("the object's lanes", () => {
       ["runWakes", ledger, null, clock, write, WAKES_PER_ALARM, WAKE_SEND_MS, 123_456],
       ["files.collect", 100, 123_456],
       ["connections.run", 100, 123_456],
+      ["runs.run", 100, 123_456],
     ]);
   });
 
@@ -419,13 +427,13 @@ describe("the object's lanes", () => {
     const lanes = ownerLanes(deps);
     for (const [ringing, ask] of [[false, true], [true, true], [false, false]] as const) {
       admitted = ask;
-      expect([lanes.wakes.next(7), lanes.files.next(7), lanes.connections.next(7)])
-        .toEqual([8, 10, 11]);
+      expect([lanes.wakes.next(7), lanes.files.next(7), lanes.connections.next(7),
+              lanes.runs.next(7)]).toEqual([8, 10, 11, null]);
       expect(seen).toEqual([["ledger.nextDue", 7, ringing], ["files.nextAlarm", 7],
-                            ["connections.nextDue", 7]]);
+                            ["connections.nextDue", 7], ["runs.next", 7]]);
       seen.length = 0;
       void Promise.all(Object.values(lanes).map((lane) => lane.run(1, 2)));
-      expect(seen.map((call) => call[2])).toEqual([sender, 2, 2]);
+      expect(seen.map((call) => call[2])).toEqual([sender, 2, 2, 2]);
       seen.length = 0;
       // The object gains its doorbell after the lanes were made.
       sender = {} as WakeSender;
@@ -484,14 +492,15 @@ describe("the object's schedule", () => {
       .toEqual([]);
   });
 
-  it("is driven by the object's alarm alone: no fetch or WebSocket handler is installed",
+  it("is driven by the object's alarm; its fetch takes the binder's socket upgrade alone",
      async () => {
     const { stub, as, name } = ownerObject();
     await stub.policyRead(as(name));
-    // The base class's own two, and none of Lifecycle's handlers (fetch, alarm, webSocket*).
+    // The base class's own two, and none of Lifecycle's handlers installed on the instance.
     expect(await runInDurableObject(stub, (instance: OwnerDO) =>
       Object.getOwnPropertyNames(instance).sort())).toEqual(["ctx", "env"]);
-    expect((await failure(() => stub.fetch("https://owner.example/"))).message)
-      .toMatch(/does not define a `fetch\(\)` method/);
+    const answer = await stub.fetch("https://owner.example/");
+    expect(answer.status).toBe(400);
+    expect(await answer.json()).toEqual({ error: NOT_BINDER_SHAPE });
   });
 });

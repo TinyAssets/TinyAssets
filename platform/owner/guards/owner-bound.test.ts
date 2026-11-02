@@ -145,6 +145,19 @@ const MAX_OPEN_INTENTS = constant("files", "MAX_OPEN_INTENTS");
 const MAX_INTENT_CHUNKS = constant("files", "MAX_INTENT_CHUNKS");
 const MAX_PATH_BYTES = constant("paths", "MAX_PATH_BYTES");
 const CALLS_OPEN = constant("schema", "CALLS_OPEN");
+/** The runs' bounds (slice R): live runs, settled receipts kept, and their rows' widths. */
+const RUNS_CEILING = constant("tier", "RUNS_CEILING");
+const RUNS_KEPT = constant("run-rows", "RUNS_KEPT");
+const RESULT_BYTES = constant("run-rows", "RESULT_BYTES");
+const ERROR_BYTES = constant("run-rows", "ERROR_BYTES");
+const CONVERSATIONS_KEPT = constant("run-rows", "CONVERSATIONS_KEPT");
+const SCHEDULES_KEPT = constant("run-rows", "SCHEDULES_KEPT");
+const INPUT_BYTES = constant("run-rows", "INPUT_BYTES");
+const SOCKET_TICKETS = constant("socket-shape", "SOCKET_TICKETS");
+/** A stamp's JSON, as the schema's check holds it, in characters (each up to 4 bytes). */
+const STAMP_CHARS = inline("schema", /stamp TEXT CHECK \(stamp IS NULL OR length\(stamp\) <= ([0-9]+)\)/);
+/** An origin's JSON is visible ASCII (the schema's check), so a character is a byte. */
+const ORIGIN_CHARS = inline("schema", /origin TEXT CHECK \(origin IS NULL OR \(length\(origin\) <= ([0-9]+) /);
 const SPEND_KEPT = constant("schema", "SPEND_KEPT");
 /** A connection's models, and its sealed blob, as the schema's checks hold them, in characters. */
 const MODELS_CHARS = inline("schema", /length\(models\) <= ([0-9]+)/);
@@ -341,8 +354,23 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                            by: "receiptsKept admitted, refusalsKept refused and open at once, " +
                              "each its path (visible ASCII, a byte a character), ids, source, " +
                              "charge, rule, periods, served model and numbers" },
-    egress_runs: { rows: E.open + 1, bytes: ROW + 32 + 4 * 8,
-                   by: "the live lease's run, and one for each run an open call still holds" },
+    // Runs (slice R): settled receipts kept and the live ones, each its widest; a live run's
+    // grant; the conversations; the runs lane's schedules; the tier numbers kept; tickets.
+    runs: { rows: RUNS_KEPT + RUNS_CEILING,
+            bytes: ROW + RESULT_BYTES + ERROR_BYTES + 4 * STAMP_CHARS + 256 + 512,
+            by: "RUNS_KEPT settled receipts and RUNS_CEILING live, each its result, error, " +
+              "stamp, model, ids and counters at their widest" },
+    run_grants: { rows: RUNS_CEILING,
+                  bytes: ROW + 4 * STAMP_CHARS + ORIGIN_CHARS + 512 + 128,
+                  by: "one a live run, its stamp, origin, scopes and connection" },
+    conversations: { rows: CONVERSATIONS_KEPT, bytes: ROW + 128 + 64 + 64 + 256 + 128,
+                     by: "CONVERSATIONS_KEPT, each its agent, source, client and session id" },
+    run_schedules: { rows: SCHEDULES_KEPT,
+                     bytes: ROW + INPUT_BYTES + 4 * STAMP_CHARS + ORIGIN_CHARS + 4 * 256 + 256,
+                     by: "SCHEDULES_KEPT, each its input, stamp, origin and last error" },
+    platform_tiers: { rows: 1, bytes: ROW + 4 * KIB, by: "one row" },
+    socket_tickets: { rows: SOCKET_TICKETS, bytes: ROW + 64 + 35 + 4 * 128 + 16,
+                      by: "SOCKET_TICKETS, each a hash, a conversation and a grant id" },
     owner_erasure: { rows: 1, bytes: ROW, by: "one row" },
     // The owner's admission: one row, its reasons a short fixed list; after the erasure, the
     // erased tombstone, alone in the database.
@@ -485,7 +513,7 @@ describe("the owner's database bound", () => {
     // A `WITHOUT ROWID` table's records are kept as an index's: they spill past 1,002.
     expect(termBytes("model_spend", { rows: 1, bytes: 1003, by: "" }))
       .toBe(Math.floor(4096 / Math.floor(3066 / 493)) * WORST_FILL + 4096);
-    expect(["model_spend", "egress_runs", "connections"]
+    expect(["model_spend", "run_grants", "connections"]
       .filter((table) => !withoutRowid().has(table))).toEqual([]);
     expect(withoutRowid().has("model_reservations")).toBe(false);
     expect(withoutRowid('"CREATE TABLE a (x) WITHOUT ROWID", "CREATE TABLE b (x)", ' +

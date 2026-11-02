@@ -1,12 +1,14 @@
 /**
- * The workerd tests' Worker: the owner Worker's own export, and two test classes of the
- * same object: one with its owner-internal paths in the tests' reach (`FauxOwnerDO`: the
- * erasure, which no door reaches yet, and the sandbox's lease API, which the runs slice
- * calls in process), and one with its GATEWAY calls watched and faulted (`GatedOwnerDO`).
+ * The workerd tests' Worker: the owner Worker's own export (with no `SANDBOX` bound, as
+ * production has none until slice S), and two test classes of the same object, each with a
+ * recording fake behind `SANDBOX` (`sandbox-fake.ts`): one with its owner-internal paths in
+ * the tests' reach (`FauxOwnerDO`: the erasure, which no door reaches yet, and the
+ * sandbox's lease API), and one with its GATEWAY calls watched and faulted (`GatedOwnerDO`).
  */
 import type { GatewayService, Resealed } from "../src/connections";
 import type { Erasure } from "../src/erase";
 import { type OwnerEnv, OwnerDO, type SandboxLeases } from "../src/owner-do";
+import { RecordingSandbox } from "./sandbox-fake";
 
 export { OwnerDO } from "../src/owner-do";
 
@@ -16,13 +18,18 @@ export class FauxOwnerDO extends OwnerDO {
   readonly erasure: Erasure;
   /** The sandbox's lease API, owner-internal (`SandboxLeases`). */
   readonly sandbox: SandboxLeases;
+  /** The recording fake behind its `SANDBOX` binding. */
+  readonly recorder: RecordingSandbox;
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     const made: { erasure?: Erasure; sandbox?: SandboxLeases } = {};
-    super(ctx, env, { erasure: (erasure) => { made.erasure = erasure; }, eraseRetryMs: 500,
-                      sandbox: (leases) => { made.sandbox = leases; } });
+    const recorder = new RecordingSandbox();
+    super(ctx, { ...env, SANDBOX: recorder },
+          { erasure: (erasure) => { made.erasure = erasure; }, eraseRetryMs: 500,
+            sandbox: (leases) => { made.sandbox = leases; } });
     this.erasure = made.erasure!;
     this.sandbox = made.sandbox!;
+    this.recorder = recorder;
   }
 }
 
@@ -71,17 +78,21 @@ function watched(gateway: GatewayService, calls: () => GatewayCall[],
 export class GatedOwnerDO extends OwnerDO {
   /** The sandbox's lease API, owner-internal (`SandboxLeases`). */
   readonly sandbox: SandboxLeases;
+  /** The recording fake behind its `SANDBOX` binding. */
+  readonly recorder: RecordingSandbox;
   calls: GatewayCall[] = [];
   readonly faults: GatewayFaults = { refreshGate: null, refreshed: null, revokeGate: null };
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     const made: { self?: GatedOwnerDO; sandbox?: SandboxLeases } = {};
     const pending: GatewayCall[] = [];
+    const recorder = new RecordingSandbox();
     super(ctx, { ...env, GATEWAY: watched(env.GATEWAY, () => made.self?.calls ?? pending,
-                                          () => made.self?.faults) },
+                                          () => made.self?.faults), SANDBOX: recorder },
           { sandbox: (leases) => { made.sandbox = leases; } });
     made.self = this;
     this.sandbox = made.sandbox!;
+    this.recorder = recorder;
     this.calls.push(...pending);
   }
 }

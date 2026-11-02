@@ -9,9 +9,10 @@
  * **Open** (`open`, in the door's unit, after the binding check admitted the owner for
  * `work`), each refusal one of the fixed codes (`EgressCode`):
  * - the live lease, by the hash of the egress token's secret (`egress_lease_closed`);
- * - the connection is the one the lease's engine run was given (`egress_run_connection`):
- *   a run never spends on a connection it was not given, and a run on the vendor's own
- *   sign-in may call none;
+ * - the run the call's path names is live under that lease, and the connection is the one
+ *   its run grant holds (`egress_run_connection`, `runs.ts`): a run never spends on a
+ *   connection it was not given, nor on another simultaneous run's, and a run on the
+ *   vendor's own sign-in may call none;
  * - the egress generation the request's transform carries, and the one the sandbox's
  *   network was last applied under, are the current one (`egress_policy_stale`,
  *   `egress_network_stale`): a write that changes the egress table leaves egress refused,
@@ -26,10 +27,9 @@
  *   set, so a call that cannot be metered is never sent;
  * - at most `open` at once and `perMinute` opened a minute (`egress_rate`);
  * - and a model call's charge (`#reserve`), by `usage.ts`'s rules but on counters of its
- *   own, none of them pi's: its sandbox run's requests, tokens and cost (the run is the
- *   lease and its epoch, and 8b opens a lease per engine run; the model policy's per-turn
+ *   own: its run's requests, tokens and cost (on its `runs` row; the model policy's per-run
  *   limits are its caps), and the owner's and the source's day and month (shared with the
- *   loop's calls) (`egress_spend_refused`, the binding cap its `rule`). Its input is held
+ *   model reservations) (`egress_spend_refused`, the binding cap its `rule`). Its input is held
  *   at the largest context window, so the charge bounds the call's cost.
  *   Then one open row, the blob at its version, the output cap the charge leaves (the
  *   gateway clamps the request's own to it) and the stream's end signal. A refusal is kept
@@ -101,7 +101,14 @@ export const EGRESS_PATH_MAX = 2048;
 const PATH = /^\/[\x21-\x7e]*$/;
 
 /** Why the object ended a stream. */
-export type EndedBy = "policy" | "lease" | "connection" | "admission" | "erasure";
+export type EndedBy = "policy" | "lease" | "connection" | "admission" | "erasure" | "run";
+
+/** What an open stream covers, as `end` selects them. */
+export interface LiveStream {
+  readonly connection: string;
+  readonly lease: string;
+  readonly run: string;
+}
 
 /**
  * What the binder knows of the sandbox from its token (`Binding.sandbox`): which token it
@@ -113,6 +120,8 @@ export type SandboxBinding =
   | { readonly kind: "sync"; readonly token: string };
 
 export interface EgressRequest {
+  /** The run the call's path names (`/r/<run>/c/<connection>/...`). */
+  readonly run: string;
   readonly connection: string;
   readonly method: string;
   /** The path (and query) after `/c/<connection>`, as the provider's API names it. */
@@ -222,6 +231,13 @@ export interface EgressModel {
 /** What `open` reads beside its own rows, each at the open's unit. */
 export interface EgressDeps {
   readonly lease: (now: number) => SandboxLease | null;
+  /**
+   * The connection of `run`'s grant, when `run` is live under the lease (`undefined`
+   * otherwise); null for a run on the vendor's own sign-in.
+   */
+  readonly runConnection: (run: string, lease: SandboxLease) => string | null | undefined;
+  /** `run`'s requests, tokens and cost so far (its `runs` row). */
+  readonly runUsage: (run: string) => { requests: number; tokens: number; cost: number };
   readonly generation: () => number;
   /**
    * The connection's blob at its version, or null for one that is not the owner's, not
@@ -255,6 +271,7 @@ const FREE_METHODS: readonly string[] = Object.freeze(["GET", "HEAD"]);
 const METHODS: readonly string[] = Object.freeze(["GET", "HEAD", "POST", "PUT", "PATCH",
                                                   "DELETE"]);
 const CONNECTION = /^c[0-9a-f]{24}$/;
+const RUN = /^run_[0-9a-f]{32}$/;
 const HEX32 = /^[0-9a-f]{32}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 /** A model id or a tier value the door read: visible ASCII. */
@@ -293,19 +310,20 @@ function plain(value: unknown, keys: string): value is Record<string, unknown> {
 
 /** The request's fields, exactly, or `Invalid`. */
 export function egressRequest(value: unknown): EgressRequest {
-  if (!plain(value, "bytes_hint,connection,method,model,path,tier")) {
+  if (!plain(value, "bytes_hint,connection,method,model,path,run,tier")) {
     throw new Invalid("invalid egress request");
   }
-  const { connection, method, path, bytes_hint: hint, model, tier } = value;
+  const { run, connection, method, path, bytes_hint: hint, model, tier } = value;
   const named = (text: unknown) => text === null || (typeof text === "string" && HINT.test(text));
-  if (typeof connection !== "string" || !CONNECTION.test(connection)
+  if (typeof run !== "string" || !RUN.test(run)
+      || typeof connection !== "string" || !CONNECTION.test(connection)
       || typeof method !== "string" || !METHODS.includes(method)
       || typeof path !== "string" || !PATH.test(path) || path.length > EGRESS_PATH_MAX
       || (hint !== null && (typeof hint !== "number" || !Number.isSafeInteger(hint) || hint < 0))
       || !named(model) || !named(tier)) {
     throw new Invalid("invalid egress request");
   }
-  return { connection, method, path, bytes_hint: hint, model: model as string | null,
+  return { run, connection, method, path, bytes_hint: hint, model: model as string | null,
            tier: tier as string | null };
 }
 
@@ -365,8 +383,8 @@ export class Egress {
   readonly #deps: EgressDeps;
   readonly #limits: EgressLimits;
   /** Each open reservation's end signal, by reservation, with what it covers. */
-  readonly #live = new Map<string, { readonly connection: string; readonly lease: string;
-                                     readonly end: WritableStreamDefaultWriter<Uint8Array> }>();
+  readonly #live = new Map<string, LiveStream & {
+    readonly end: WritableStreamDefaultWriter<Uint8Array> }>();
 
   constructor(storage: OwnerStorage, deps: EgressDeps, limits: EgressLimits = EGRESS_LIMITS) {
     this.#storage = storage;
@@ -409,8 +427,13 @@ export class Egress {
     if (lease === null || sandbox.kind !== "egress") {
       return refuse("egress_lease_closed");
     }
-    // A run spends only on the connection it was given; a signed-in run on none.
-    if (lease.run_connection === null || lease.run_connection !== request.connection) {
+    // A run spends only on the connection its own grant holds; a signed-in run on none, and
+    // never on another simultaneous run's.
+    const runConnection = this.#deps.runConnection(request.run, lease);
+    if (runConnection === undefined) {
+      return refuse("egress_run_closed");
+    }
+    if (runConnection === null || runConnection !== request.connection) {
       return refuse("egress_run_connection");
     }
     if (sandbox.generation !== generation) {
@@ -446,7 +469,6 @@ export class Egress {
                          "AND state != 'refused'", now - 60) >= this.#limits.perMinute) {
       return refuse("egress_rate");
     }
-    this.#runsPruned(lease);
     let charge: Charged | null = null;
     let named: { readonly model: string; readonly tier: string | null } | null = null;
     if (!free) {
@@ -469,7 +491,7 @@ export class Egress {
         return refuse("egress_unpriced_option");
       }
       this.#deps.pruned(now);
-      const reserved = this.#reserve(lease, connection.source, model, multiplier, now);
+      const reserved = this.#reserve(request.run, connection.source, model, multiplier, now);
       if (!reserved.ok) {
         return refuse("egress_spend_refused", reserved.rule);
       }
@@ -481,7 +503,7 @@ export class Egress {
                                        ...(charge === null ? {} : { charge }) });
     const { readable, writable } = new IdentityTransformStream();
     this.#live.set(reservation, { connection: request.connection, lease: lease.lease_id,
-                                  end: writable.getWriter() });
+                                  run: request.run, end: writable.getWriter() });
     return { ok: true, reservation, connection: request.connection, blob: credential.blob,
              version: credential.version, generation,
              metering: charge === null || named === null ? null
@@ -493,7 +515,7 @@ export class Egress {
   /**
    * The call's charge, against every cap, in the open's unit, so concurrent calls reserve
    * one after another and never pass a cap between them: its run's requests, tokens and
-   * cost (`egress_runs`), and the owner's and the source's day and month (the spend
+   * cost (its `runs` row), and the owner's and the source's day and month (the spend
    * counters the model reservations hold too, read through `spent`). It is the named model's:
    * its input held at that model's context window (a body's bytes do not bound its tokens:
    * a file or a cached context it names can be far larger), its output at that model's cap
@@ -502,14 +524,12 @@ export class Egress {
    * tier's `multiplier`, so what it holds bounds what it can cost; the settle gives the
    * difference back. Refused, with the cap that binds, below `MIN_OUTPUT`.
    */
-  #reserve(lease: SandboxLease, source: string, model: EgressModel, multiplier: number,
+  #reserve(runId: string, source: string, model: EgressModel, multiplier: number,
            now: number): ({ ok: true } & Charged) | { ok: false; rule: string } {
     const models = [model];
     const input = model.contextWindow;
     const caps = this.#deps.caps(source);
-    const run = this.#sql.exec<{ requests: number; tokens: number; cost: number }>(
-      "SELECT requests, tokens, cost FROM egress_runs WHERE lease_id = ? AND epoch = ?",
-      lease.lease_id, lease.epoch).toArray()[0] ?? { requests: 0, tokens: 0, cost: 0 };
+    const run = this.#deps.runUsage(runId);
     if (run.requests >= caps.run_requests) {
       return { ok: false, rule: "run_requests" };
     }
@@ -540,14 +560,6 @@ export class Egress {
     }
     return { ok: true, source, max_output_tokens: output, est_tokens: input + output,
              est_cost: price(output), day, month };
-  }
-
-  /** The run counters of every run but `lease`'s that holds no open call: theirs are over. */
-  #runsPruned(lease: SandboxLease): void {
-    this.#sql.exec("DELETE FROM egress_runs WHERE NOT (lease_id = ? AND epoch = ?) " +
-                     "AND NOT EXISTS (SELECT 1 FROM egress_reservations AS r WHERE " +
-                     "r.lease_id = egress_runs.lease_id AND r.epoch = egress_runs.epoch " +
-                     "AND r.state = 'open')", lease.lease_id, lease.epoch);
   }
 
   /**
@@ -588,8 +600,7 @@ export class Egress {
    * In a unit, once the change that ends them committed: every open stream `covers` takes
    * (all of them by default) ended, its signal closed and its row marked `why`.
    */
-  end(why: EndedBy, covers: (live: { connection: string; lease: string }) => boolean =
-        () => true): number {
+  end(why: EndedBy, covers: (live: LiveStream) => boolean = () => true): number {
     let ended = 0;
     for (const [reservation, live] of [...this.#live]) {
       if (!covers(live)) {
@@ -638,11 +649,11 @@ export class Egress {
     const id = randomBytes(16).toString("hex");
     const charge = fields.charge;
     this.#sql.exec(
-      "INSERT INTO egress_reservations (id, lease_id, epoch, token, source, charge, rule, " +
+      "INSERT INTO egress_reservations (id, lease_id, epoch, run, token, source, charge, rule, " +
         "max_output_tokens, est_tokens, est_cost, day, month, connection_id, version, method, " +
         "path, generation, bytes_hint, opened_at, state, code, settled_at) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      id, lease?.lease_id ?? null, lease?.epoch ?? null, sandbox.token,
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      id, lease?.lease_id ?? null, lease?.epoch ?? null, request.run, sandbox.token,
       charge?.source ?? null, charge === undefined ? null : "held", fields.rule ?? null,
       charge?.max_output_tokens ?? null, charge?.est_tokens ?? null, charge?.est_cost ?? null,
       charge?.day ?? null, charge?.month ?? null,

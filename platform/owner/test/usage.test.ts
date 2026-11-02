@@ -31,7 +31,7 @@ function rates(input: number, output: number,
 }
 
 const ASK: Ask = Object.freeze({
-  turn: "t1", connection: "c1", source: "anthropic", model: "m1", inputTokens: 1000,
+  run: "t1", connection: "c1", source: "anthropic", model: "m1", inputTokens: 1000,
   maxOutputTokens: 4000, reasoning: false, rates: rates(3, 15),
 });
 
@@ -71,7 +71,7 @@ function withUsage<R>(act: (r: Rig) => Promise<R>, limits: Partial<UsageLimits> 
     return act({
       usage, gate, state, policy, fresh: make,
       rows: () => sql.exec<Record<string, SqlStorageValue>>(
-        "SELECT id, turn, connection_id, source, state, rule, max_output_tokens, est_tokens, " +
+        "SELECT id, run, connection_id, source, state, rule, max_output_tokens, est_tokens, " +
           "est_cost, tokens, cost FROM model_reservations ORDER BY seq").toArray(),
       spend: () => Object.fromEntries(sql.exec<{ period: string; source: string; cost: number }>(
         "SELECT period, source, cost FROM model_spend ORDER BY period, source")
@@ -179,7 +179,7 @@ describe("a reservation", () => {
   it("is abandoned as it stands when a dispatch or settle cannot run: never left open",
      () => withUsage(async (r) => {
     const reserved = await r.gate.write(() => r.usage.reserve(ASK, NOW));
-    const dispatched = await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2" }, NOW));
+    const dispatched = await r.gate.write(() => r.usage.reserve({ ...ASK, run: "t2" }, NOW));
     if (!reserved.ok || !dispatched.ok) {
       throw new Error("refused");
     }
@@ -322,13 +322,13 @@ describe("the daily and monthly ceilings", () => {
     withUsage(async (r) => {
       r.policy.caps = { daily_cost: FULL * 2 - 10 };
       await r.gate.write(() => r.usage.reserve(ASK, NOW));  // open, holding FULL
-      const second = await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2" }, NOW));
+      const second = await r.gate.write(() => r.usage.reserve({ ...ASK, run: "t2" }, NOW));
       expect(second).toMatchObject({ ok: true,
                                      max_output_tokens: Math.floor((FULL - 10 - 3000) / 15) });
-      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t3" }, NOW)))
+      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, run: "t3" }, NOW)))
         .toEqual({ ok: false, rule: "daily_cost" });
       // The next day is a new day.
-      expect((await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t4" },
+      expect((await r.gate.write(() => r.usage.reserve({ ...ASK, run: "t4" },
                                                          NOW + 86_400))).ok).toBe(true);
     }));
 
@@ -336,9 +336,9 @@ describe("the daily and monthly ceilings", () => {
     r.policy.caps = { sources: { openai: { daily_cost: FULL + 10 } } };
     await spent(r, ASK, 10, FULL);  // anthropic's spend is not openai's
     const openai = { ...ASK, connection: "c2", source: "openai" };
-    expect(await r.gate.write(() => r.usage.reserve({ ...openai, turn: "t2" }, NOW)))
+    expect(await r.gate.write(() => r.usage.reserve({ ...openai, run: "t2" }, NOW)))
       .toMatchObject({ ok: true, max_output_tokens: 4000 });
-    expect(await r.gate.write(() => r.usage.reserve({ ...openai, turn: "t3" }, NOW)))
+    expect(await r.gate.write(() => r.usage.reserve({ ...openai, run: "t3" }, NOW)))
       .toEqual({ ok: false, rule: "source_daily_cost" });
   }));
 
@@ -347,7 +347,7 @@ describe("the daily and monthly ceilings", () => {
       r.policy.caps = { sources: { anthropic: { daily_cost: FULL + 10 } } };
       await spent(r, ASK, 10, FULL);
       // The owner revoked c1 and connected the same source again as c9.
-      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2", connection: "c9" },
+      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, run: "t2", connection: "c9" },
                                                        NOW)))
         .toEqual({ ok: false, rule: "source_daily_cost" });
     }));
@@ -361,14 +361,14 @@ describe("the daily and monthly ceilings", () => {
       expect((await r.gate.write(() => r.usage.reserve(ASK, NOW))).ok).toBe(true);
       const later = NOW + 86_400;
       expect(periods(later).month).toBe(month);
-      expect((await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2" }, later))).ok)
+      expect((await r.gate.write(() => r.usage.reserve({ ...ASK, run: "t2" }, later))).ok)
         .toBe(true);
-      expect((await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t3" }, later))).ok)
+      expect((await r.gate.write(() => r.usage.reserve({ ...ASK, run: "t3" }, later))).ok)
         .toBe(true);
-      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t4" }, later)))
+      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, run: "t4" }, later)))
         .toEqual({ ok: false, rule: "monthly_cost" });
       r.policy.caps = { sources: { anthropic: { monthly_cost: FULL * 3 } } };
-      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t5" }, later)))
+      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, run: "t5" }, later)))
         .toEqual({ ok: false, rule: "source_monthly_cost" });
     }));
 });
@@ -378,7 +378,7 @@ describe("concurrent reserves", () => {
      "another", () => withUsage(async (r) => {
     r.policy.caps = { daily_cost: FULL * 2 };
     const reserves = Array.from({ length: 6 }, (_, i) =>
-      r.gate.write(() => r.usage.reserve({ ...ASK, turn: `t${i}` }, NOW)));
+      r.gate.write(() => r.usage.reserve({ ...ASK, run: `t${i}` }, NOW)));
     const results = await Promise.all(reserves);
     expect(results.filter((result) => result.ok)).toHaveLength(2);
     expect(r.spend()[DAY]).toBe(FULL * 2);
@@ -389,7 +389,7 @@ describe("a dead instance's calls", () => {
   it("settle as not sent when reserved and unknown when dispatched, keeping the reservation",
      () => withUsage(async (r) => {
     const reserved = await r.gate.write(() => r.usage.reserve(ASK, NOW));
-    const dispatched = await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2" }, NOW));
+    const dispatched = await r.gate.write(() => r.usage.reserve({ ...ASK, run: "t2" }, NOW));
     if (!reserved.ok || !dispatched.ok) {
       throw new Error("refused");
     }
@@ -433,7 +433,7 @@ describe("the receipts", () => {
   it("keep the newest, and pruning one never frees what it held", () =>
     withUsage(async (r) => {
       for (let i = 0; i < 6; i++) {
-        await spent(r, { ...ASK, turn: `t${i}` }, 10, 7);
+        await spent(r, { ...ASK, run: `t${i}` }, 10, 7);
       }
       expect(r.rows().length).toBeLessThanOrEqual(4);
       expect(r.spend()[DAY]).toBe(42);
@@ -443,13 +443,13 @@ describe("the receipts", () => {
   it("never prune a reservation still open, reserved or dispatched", () =>
     withUsage(async (r) => {
       const open = await r.gate.write(() => r.usage.reserve(ASK, NOW));
-      const out = await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2" }, NOW));
+      const out = await r.gate.write(() => r.usage.reserve({ ...ASK, run: "t2" }, NOW));
       if (!open.ok || !out.ok) {
         throw new Error("refused");
       }
       await r.gate.write(() => r.usage.dispatched(out.id, NOW, null));
       for (let i = 0; i < 4; i++) {
-        await spent(r, { ...ASK, turn: `s${i}` }, 10, 7);
+        await spent(r, { ...ASK, run: `s${i}` }, 10, 7);
       }
       const ids = r.rows().map((row) => row["id"]);
       expect(ids).toContain(open.id);
@@ -461,7 +461,7 @@ describe("the receipts", () => {
 
   it("drop spend counters past their window", () => withUsage(async (r) => {
     await spent(r, ASK, 10, 7);
-    await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t9" }, NOW + 200 * 86_400));
+    await r.gate.write(() => r.usage.reserve({ ...ASK, run: "t9" }, NOW + 200 * 86_400));
     expect(Object.keys(r.spend()).some((key) => key.startsWith(`d:${day}`))).toBe(false);
     expect(Object.keys(r.spend()).some((key) => key.startsWith(`m:${month}`))).toBe(false);
   }));

@@ -1,0 +1,107 @@
+/**
+ * A run's events (ADR-034 decision 10; `engines-replan.md` §2.2): the engine's own JSON
+ * stream, read by its source record's matchers (`engine.events`, slice E), as data.
+ *
+ * The in-VM runner (slice S) posts each event it reads as `{seq, at, event}`, `event` the
+ * CLI's raw JSON. The VM is untrusted, so the object classifies each event itself, by the
+ * run's record, and frames it for the owner's app sockets as `{v, run, seq, at, kind,
+ * event}`. `kind` is the first of the record's matchers the event meets, in this order:
+ * `error`, `result` (its `final_text`), `init` (its `session_id`), `tool_call`, `usage`;
+ * else `event`. The record's matchers name no text deltas or tool results (slice E's
+ * shape), so those arrive as `event` until a record matches them.
+ *
+ * What an event changes durably is read here too, once, by the same matchers: the
+ * conversation's session id (`init`), the run's result text (`final_text`, the last match,
+ * or every match joined where the matcher says `accumulate`) and its first error.
+ */
+import type { EngineEvents, EventMatcher } from "../../doors/src/sources";
+
+export const FRAME_VERSION = 1;
+export const FRAME_KINDS = Object.freeze(["error", "result", "init", "tool_call", "usage",
+                                          "event"] as const);
+export type FrameKind = (typeof FRAME_KINDS)[number];
+
+/** A frame as the object relays it. */
+export interface Frame {
+  readonly v: typeof FRAME_VERSION;
+  readonly run: string;
+  readonly seq: number;
+  readonly at: number;
+  readonly kind: FrameKind;
+  readonly event: unknown;
+}
+
+/** The value at a dotted path, or undefined; the empty path is the event itself. */
+export function valueAt(event: unknown, path: string): unknown {
+  if (path === "") {
+    return event;
+  }
+  let at: unknown = event;
+  for (const part of path.split(".")) {
+    if (typeof at !== "object" || at === null || Array.isArray(at)
+        || !Object.hasOwn(at, part)) {
+      return undefined;
+    }
+    at = (at as Record<string, unknown>)[part];
+  }
+  return at;
+}
+
+/** Whether `event` has each of the matcher's fields at its value. */
+export function meets(event: unknown, matcher: EventMatcher): boolean {
+  return Object.entries(matcher.match).every(([path, value]) => valueAt(event, path) === value);
+}
+
+/** The first of `matchers` the event meets, or undefined. */
+function first(matchers: readonly EventMatcher[], event: unknown): EventMatcher | undefined {
+  return matchers.find((matcher) => meets(event, matcher));
+}
+
+/**
+ * A value as text: a string as it is; a list of blocks, their `text` fields joined; anything
+ * else as its JSON.
+ */
+export function textOf(value: unknown): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value) && value.length > 0 && value.every((block) =>
+    typeof block === "object" && block !== null && typeof block.text === "string")) {
+    return value.map((block: { text: string }) => block.text).join("");
+  }
+  return JSON.stringify(value);
+}
+
+/** What one event is, by its record's matchers. */
+export interface Read {
+  readonly kind: FrameKind;
+  /** The session id it names (`init`), if any. */
+  readonly session_id: string | null;
+  /** The result text it carries, and whether the matcher accumulates it. */
+  readonly text: { readonly value: string; readonly accumulate: boolean } | null;
+  /** The error it reports. */
+  readonly error: string | null;
+}
+
+/** `event`, read by `events`. */
+export function readEvent(events: EngineEvents, event: unknown): Read {
+  const error = first(events.error, event);
+  const result = first(events.final_text, event);
+  const init = first(events.session_id, event);
+  const kind: FrameKind = error !== undefined ? "error" : result !== undefined ? "result"
+    : init !== undefined ? "init" : first(events.tool_call, event) !== undefined ? "tool_call"
+      : first(events.usage, event) !== undefined ? "usage" : "event";
+  const session = init === undefined ? undefined : valueAt(event, init.path);
+  const text = result === undefined ? null : textOf(valueAt(event, result.path));
+  return {
+    kind,
+    session_id: typeof session === "string" && session.length > 0 && session.length <= 256
+      ? session : null,
+    text: text === null ? null : { value: text, accumulate: result?.accumulate === true },
+    error: error === undefined ? null
+      : textOf(valueAt(event, error.path)) ?? "the engine reported an error",
+  };
+}

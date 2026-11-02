@@ -51,7 +51,8 @@ type Rig = Awaited<ReturnType<typeof rig>>;
 
 /** Every door of the object's, but the platform's. */
 const doors = () => Object.getOwnPropertyNames(OwnerDO.prototype)
-  .filter((door) => door !== "constructor" && door !== "alarm" && door !== "admissionSet");
+  .filter((door) => !["constructor", "alarm", "admissionSet", "tierSet", "fetch",
+                      "webSocketMessage", "webSocketClose", "webSocketError"].includes(door));
 const call = (r: Rig, door: string, binding: Binding) =>
   (r.stub() as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[door]!(
     binding, {});

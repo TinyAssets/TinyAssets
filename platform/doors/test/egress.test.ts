@@ -16,7 +16,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PLATFORM_CALLER } from "../../owner/src/admission";
 import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, GENERATION_HEADER, SANDBOX_HEADER }
   from "../../owner/src/network";
-import type { Binding, OpenedLease } from "../../owner/src/owner-do";
+import type { NetworkPlan } from "../../owner/src/network";
+import type { Binding } from "../../owner/src/owner-do";
+import { defineAgent } from "../../owner/test/runs-support";
 import type { Bound } from "../src/binder";
 import { type DoorsEnv, EGRESS_ORIGIN } from "../src/config";
 import { EGRESS_DEADLINE_MS, hintsOf, serveEgress } from "../src/egress";
@@ -38,8 +40,19 @@ interface Sandbox {
   readonly connection: string;
   readonly model: string;
   readonly bound: Bound;
-  readonly opened: OpenedLease;
+  readonly opened: Opened;
   readonly key: string;
+  /** The run the sandbox's calls name: the one the run door admitted. */
+  readonly run: string;
+}
+
+/** What the run's start handed the sandbox: the lease, its tokens and network, the env. */
+interface Opened {
+  readonly egress_token: string;
+  readonly sync_token: string;
+  readonly lease: { readonly lease_id: string; readonly epoch: number };
+  readonly network: NetworkPlan;
+  readonly env: Readonly<Record<string, string>>;
 }
 
 /**
@@ -84,15 +97,25 @@ async function sandbox(apply = true, models: Record<string, unknown> = {
   await bound.stub.policyWrite({ ...bound.binding, session: app.session }, {
     expected_generation: generation,
     policy: { ...policy, models, spend: { ...policy.spend, ...spend } } });
-  const opened = await leases(owner, (sandbox) => sandbox.open({
-    holder: "sandbox-1", run: { engine: "pi", credential: "api_key", connection } }));
+  // The run door admits pi on the key, which opens the sandbox's lease.
+  await defineAgent(bound.stub, bound.binding, "main",
+                    { engine: "pi", credential: "api_key", connection, scopes: [] });
+  const submitted = await appPost("agent/submit", app.access_token, null,
+                                  { message: "go", client_send_id: "s-1" });
+  expect(submitted.status).toBe(200);
+  const { run_id: run } = await submitted.json<{ run_id: string }>();
+  const start = await runInDurableObject(env.OWNER.getByName(owner), (instance: unknown) =>
+    (instance as OwnerDO).recorder.starts.find((each) => each.run === run)!);
+  const opened: Opened = { egress_token: start.tokens!.egress_token,
+                           sync_token: start.tokens!.sync_token, lease: start.lease,
+                           network: start.network!, env: start.config.env };
   if (apply) {
     await leases(owner, (sandbox) => sandbox.networkApplied({
       lease_id: opened.lease.lease_id, epoch: opened.lease.epoch,
       generation: opened.network.generation }));
   }
   return { owner, session: app.session, token: opened.egress_token, app: app.access_token,
-           connection, model: ids[0]!, bound, opened, key };
+           connection, model: ids[0]!, bound, opened, key, run };
 }
 
 function bodyOf(box: Pick<Sandbox, "model">, extra: Record<string, unknown> = {}): string {
@@ -100,14 +123,14 @@ function bodyOf(box: Pick<Sandbox, "model">, extra: Record<string, unknown> = {}
                           messages: [{ role: "user", content: "hi" }], ...extra });
 }
 
-function egressRequest(box: Pick<Sandbox, "token" | "connection" | "model">,
+function egressRequest(box: Pick<Sandbox, "token" | "connection" | "model" | "run">,
                        path: string = COMPLETIONS,
                        init: { method?: string; headers?: Record<string, string>;
                                body?: string | null; generation?: string | null } = {}):
     Request {
   const generation = init.generation === undefined ? "1" : init.generation;
   const body = init.body === undefined ? bodyOf(box) : init.body;
-  return new Request(`${EGRESS_ORIGIN}/c/${box.connection}${path}`, {
+  return new Request(`${EGRESS_ORIGIN}/r/${box.run}/c/${box.connection}${path}`, {
     method: init.method ?? "POST",
     headers: {
       "content-type": "application/json",
@@ -187,7 +210,8 @@ async function writeEgress(box: Sandbox): Promise<number> {
     expected_generation: generation,
     policy: { ...policy, egress: { mode: "allowlist", destinations: [] } } });
   return (await leases(box.owner, (sandbox) => sandbox.config({
-    engine: "pi", credential: "api_key", connection: box.connection }))).generation;
+    run: box.run, engine: "pi", credential: "api_key", connection: box.connection })))
+    .generation;
 }
 
 let restore: () => void = () => undefined;
@@ -451,7 +475,7 @@ describe("the egress door", () => {
     expect(network.network.denyOut).toEqual(["0.0.0.0/0"]);
     expect(network.network.allowOut).toEqual(["*", "egress.tinyassets.io"]);
     expect(box.opened.env["GROQ_BASE_URL"])
-      .toBe(`https://egress.tinyassets.io/c/${box.connection}/openai/v1`);
+      .toBe(`https://egress.tinyassets.io/r/${box.run}/c/${box.connection}/openai/v1`);
     expect(box.opened.env["GROQ_API_KEY"]).toMatch(
       new RegExp(`^ta_ph_${box.connection}_[0-9a-f]{32}$`));
     expect(JSON.stringify(box.opened.env)).not.toContain(box.key);

@@ -28,8 +28,11 @@ import { principal } from "../../owner/src/text";
 export const ROUTING_MAC_KEY = "ROUTING_MAC_KEY";
 /** The shortest routing key, in bytes once decoded. */
 export const KEY_MIN_BYTES = 32;
-/** What a sandbox token is for: E2B's transform on the egress door, or the in-VM sync agent. */
-export type TokenKind = "egress" | "sync";
+/**
+ * What a token is for: E2B's transform on the egress door, the in-VM sync agent, or the owner
+ * app's socket ticket (`owner/src/socket-shape.ts`), which the doors verify before any object.
+ */
+export type TokenKind = "egress" | "sync" | "socket";
 
 const TOKEN =
   /^([A-Za-z0-9_-]{1,2732})\.([1-9][0-9]{9,10})\.([A-Za-z0-9_-]{43})\.([A-Za-z0-9_-]{43})$/;

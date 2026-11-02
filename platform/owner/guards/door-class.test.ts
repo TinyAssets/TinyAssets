@@ -5,7 +5,8 @@
  * its binding check, the one place admission is read: each call of the object's binding
  * helpers (`#bind`, `#account`, `#owner`, `#widening`, `#collector`, `#filer`) in a door
  * names the class as its second argument, a literal, and every door makes one. The
- * platform's own `admissionSet` alone binds as `admission`, which reads no admission.
+ * platform's own doors alone (`admissionSet`, `tierSet`) bind as `admission`, which reads
+ * no admission.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -19,7 +20,7 @@ const OWNER_DO = "owner/src/owner-do.ts";
 const HELPERS: ReadonlySet<string> = new Set(["#bind", "#account", "#owner", "#widening",
                                               "#collector", "#filer"]);
 const CLASSES: ReadonlySet<string> = new Set(["work", "read", "reduce"]);
-const ADMISSION_DOOR = "admissionSet";
+const PLATFORM_DOORS: ReadonlySet<string> = new Set(["admissionSet", "tierSet"]);
 
 /** Each door's classes, as its binding calls name them, and each problem found. */
 export function doorClasses(source: string):
@@ -42,7 +43,7 @@ export function doorClasses(source: string):
               && inner.expression.expression.kind === ts.SyntaxKind.ThisKeyword
               && HELPERS.has(inner.expression.name.getText(file))) {
             const arg = inner.arguments[1];
-            const allowed = door === ADMISSION_DOOR ? new Set(["admission"]) : CLASSES;
+            const allowed = PLATFORM_DOORS.has(door) ? new Set(["admission"]) : CLASSES;
             if (arg === undefined || !ts.isStringLiteral(arg) || !allowed.has(arg.text)) {
               problems.push(`${door}: ${inner.getText(file).slice(0, 60)} names no class`);
             } else {
@@ -74,7 +75,8 @@ describe("door-class guard", () => {
     const { classes, problems } = doorClasses(source);
     expect(problems).toEqual([]);
     expect(classes.size).toBeGreaterThan(60);
-    expect(classes.get(ADMISSION_DOOR)).toEqual(["admission"]);
+    expect(classes.get("admissionSet")).toEqual(["admission"]);
+    expect(classes.get("tierSet")).toEqual(["admission"]);
     // The work a billing suspension refuses, and some of what it leaves.
     for (const door of ["fileWrite", "fileUploadBegin", "collectionWrite", "policyWrite",
                         "roomPost"]) {
@@ -83,11 +85,16 @@ describe("door-class guard", () => {
     for (const door of ["fileRead", "policyRead", "sessionOpen", "mailboxRead"]) {
       expect(classes.get(door)?.[0], door).toBe("read");
     }
-    // The agent's doors are absent until the runs slice brings them back as run doors.
-    for (const door of ["agentSubmit", "agentRun", "agentStatus", "agentCancel"]) {
-      expect(classes.has(door), door).toBe(false);
+    // The run doors: a start is work, a status a read, a cancel and the runner's report
+    // reduce (a settle lowers what runs).
+    for (const door of ["agentSubmit", "agentRun"]) {
+      expect(classes.get(door)?.[0], door).toBe("work");
     }
-    for (const door of ["grantRevoke", "fileRemove", "deleteAgent"]) {
+    for (const door of ["agentStatus", "socketTicket"]) {
+      expect(classes.get(door)?.[0], door).toBe("read");
+    }
+    for (const door of ["grantRevoke", "fileRemove", "deleteAgent", "agentCancel", "runEvents",
+                        "socketsEnd"]) {
       expect(classes.get(door)?.[0], door).toBe("reduce");
     }
   });

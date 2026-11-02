@@ -856,6 +856,14 @@ export class Ledger {
     });
   }
 
+  /**
+   * How many messages the owner has not acked: the `runs` lane's work check for a run on
+   * the owner's mail (`runs.ts`). A read of one counter row.
+   */
+  ownerUnacked(): number {
+    return this.#mailbox(OWNER).unacked;
+  }
+
   /** A reader's mailbox counters: its unacked messages and their bytes. */
   #mailbox(reader: string): { unacked: number; unacked_bytes: number } {
     return this.#sql.exec<{ unacked: number; unacked_bytes: number }>(

@@ -23,6 +23,12 @@ import {
   HISTORY_BYTES as FILE_HISTORY_BYTES, OWNER_SCOPE, SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
 } from "./manifest";
 import { DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, FILE_DEFAULTS } from "./policy";
+import {
+  CONVERSATION_ID_CHARS, CONVERSATIONS_KEPT, ERROR_BYTES, INPUT_BYTES, RESULT_BYTES,
+  RUN_ID_CHARS, SCHEDULE_ID_CHARS, SCHEDULES_KEPT,
+} from "./run-rows";
+import { SOCKET_TICKETS } from "./socket-shape";
+import { RUNS_CEILING } from "./tier";
 
 export type Migration = readonly string[];
 
@@ -36,6 +42,8 @@ export const ADMISSION_TABLE = "CREATE TABLE owner_admission (only INTEGER PRIMA
   "CHECK (only = 1), state TEXT NOT NULL CHECK (state IN ('admitted', 'suspended', " +
   "'erased')), reasons TEXT NOT NULL CHECK (reasons IN ('[]', '[\"abuse\"]', " +
   "'[\"billing\"]', '[\"abuse\",\"billing\"]')), " +
+  // The owner's tier (ADR-034 decision 8), which only the platform sets (`tierSet`).
+  "tier TEXT NOT NULL DEFAULT 'free' CHECK (tier IN ('free', 'paid')), " +
   "CHECK ((state = 'suspended') = (reasons != '[]')))";
 
 /** Add a row's or history entry's counts, times `sign`, to each scope it falls in. */
@@ -106,12 +114,10 @@ const CHARGED = (row: string) =>
 const CHARGED_TOKENS = (row: string) =>
   `(CASE WHEN ${row}.charge IN ('held', 'unknown') THEN ${row}.est_tokens ` +
   `WHEN ${row}.charge IN ('succeeded', 'failed') THEN coalesce(${row}.tokens, 0) ELSE 0 END)`;
-/** Move the row's sandbox run's counters (its lease and epoch) by these amounts. */
+/** Move the row's run's counters (`runs`, migration 12) by these amounts. */
 const RUN = (row: string, requests: string, tokens: string, cost: string) =>
-  "INSERT INTO egress_runs (lease_id, epoch, requests, tokens, cost) VALUES " +
-  `(${row}.lease_id, ${row}.epoch, ${requests}, ${tokens}, ${cost}) ` +
-  "ON CONFLICT (lease_id, epoch) DO UPDATE SET requests = requests + excluded.requests, " +
-  "tokens = tokens + excluded.tokens, cost = cost + excluded.cost;";
+  `UPDATE runs SET requests = requests + ${requests}, tokens = tokens + (${tokens}), ` +
+  `cost = cost + (${cost}) WHERE id = ${row}.run;`;
 type ShareCounter = "entries" | "history" | "chunk_bytes" | "inline_bytes" | "manifest_bytes";
 const SHARE_COUNTERS: readonly ShareCounter[] =
   Object.freeze(["entries", "history", "chunk_bytes", "inline_bytes", "manifest_bytes"]);
@@ -608,18 +614,16 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "inline_bytes INTEGER NOT NULL CHECK (inline_bytes >= 0), " +
       "intents INTEGER NOT NULL CHECK (intents >= 0), " +
       "intent_chunks INTEGER NOT NULL CHECK (intent_chunks >= 0), " +
-      // The sync lease: its claim token, fencing epoch (only rising), holder and expiry,
-      // and the connection its engine run was given: the only one its sandbox may call
-      // through the egress door; null for a run on the vendor's own sign-in, which may
-      // call none.
+      // The sync lease: its claim token, fencing epoch (only rising), holder and expiry.
+      // The sandbox's simultaneous runs share it; each run's connection is its own run
+      // grant's (`run_grants`, migration 12), never the lease's.
       "lease_id TEXT, epoch INTEGER NOT NULL CHECK (epoch >= 0), holder TEXT, " +
-      "lease_expires REAL NOT NULL, run_connection TEXT CHECK (run_connection IS NULL " +
-      "OR length(run_connection) BETWEEN 1 AND 64), " +
+      "lease_expires REAL NOT NULL, " +
       // The retention every kept row is marked by, and how far housekeeping has re-marked
       // the rows for a newer one.
       "retained_keep INTEGER NOT NULL, retained_recent INTEGER NOT NULL, " +
       "retained_days INTEGER NOT NULL, retain_cursor TEXT)",
-    `INSERT INTO file_space VALUES (1, NULL, 0, 0, 0, 0, 0, 0, 0, 0, NULL, 0, NULL, 0, NULL, ${
+    `INSERT INTO file_space VALUES (1, NULL, 0, 0, 0, 0, 0, 0, 0, 0, NULL, 0, NULL, 0, ${
       FILE_DEFAULTS.keep_versions}, ${FILE_DEFAULTS.keep_recent}, ${
       FILE_DEFAULTS.retention_days}, NULL)`,
     "CREATE TRIGGER file_epoch_rises BEFORE UPDATE OF epoch ON file_space " +
@@ -773,7 +777,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "CHECK ((status = 'open') = (verifier IS NOT NULL))) WITHOUT ROWID",
     "CREATE INDEX connection_flows_by_expiry ON connection_flows (expires_at)",
     "CREATE TABLE model_reservations (seq INTEGER PRIMARY KEY AUTOINCREMENT, " +
-      "id TEXT NOT NULL UNIQUE, turn TEXT NOT NULL CHECK (length(turn) <= 320), " +
+      "id TEXT NOT NULL UNIQUE, run TEXT NOT NULL CHECK (length(run) <= 320), " +
       "connection_id TEXT NOT NULL, source TEXT NOT NULL CHECK (length(source) <= 64), " +
       "model TEXT NOT NULL CHECK (length(model) <= 256), " +
       "state TEXT NOT NULL CHECK (state IN ('reserved', 'dispatched', 'succeeded', " +
@@ -791,7 +795,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER model_reservations_respent AFTER UPDATE OF state, cost " +
       `ON model_reservations WHEN ${HELD("NEW")} != ${HELD("OLD")} BEGIN ${
         SPEND("NEW", `${HELD("NEW")} - ${HELD("OLD")}`)} END`,
-    "CREATE TRIGGER model_reservations_kept BEFORE UPDATE OF seq, id, turn, connection_id, " +
+    "CREATE TRIGGER model_reservations_kept BEFORE UPDATE OF seq, id, run, connection_id, " +
       "source, " +
       "model, est_tokens, est_cost, policy_generation, day, month, created_at " +
       "ON model_reservations BEGIN SELECT RAISE(ABORT, 'a reservation never changes " +
@@ -1043,9 +1047,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // call the object admits is an open row until the egress door settles it; a refused one
   // is kept as its receipt. A model call's row carries its own charge (`charge`, held to
   // settled once, as a model reservation's states), which the triggers alone count: into
-  // `egress_runs`, its sandbox run's requests, tokens and cost (the run is the lease and its
-  // epoch), and into `model_spend`, its source's day and month, the counters the model
-  // reservations move too. The newest `EGRESS_LIMITS.receiptsKept`
+  // `model_spend`, its source's day and month, the counters the model reservations move
+  // too, and (migration 12) into its run's own requests, tokens and cost on its `runs` row.
+  // Each row names the run its path named. The newest `EGRESS_LIMITS.receiptsKept`
   // admitted and `refusalsKept` refused rows are kept, and at most `EGRESS_LIMITS.open` are
   // open at once; a path is visible ASCII, as the door sends it.
   Object.freeze([
@@ -1061,6 +1065,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "length(egress) <= 16384)",
     "CREATE TABLE egress_reservations (id TEXT PRIMARY KEY CHECK (length(id) = 32), " +
       "lease_id TEXT CHECK (lease_id IS NULL OR length(lease_id) = 32), epoch INTEGER, " +
+      // The run the call came from, as its path named it (`/r/<run>/c/...`).
+      `run TEXT NOT NULL CHECK (length(run) = ${RUN_ID_CHARS}), ` +
       "token TEXT NOT NULL CHECK (length(token) = 64), " +
       "source TEXT CHECK (source IS NULL OR length(source) BETWEEN 1 AND 64), " +
       "charge TEXT CHECK (charge IS NULL OR charge IN ('held', 'succeeded', 'failed', " +
@@ -1080,7 +1086,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "state TEXT NOT NULL CHECK (state IN ('open', 'settled', 'refused')), " +
       "code TEXT CHECK (code IS NULL OR length(code) <= 64), " +
       "ended TEXT CHECK (ended IS NULL OR ended IN ('policy', 'lease', 'connection', " +
-      "'admission', 'erasure')), " +
+      "'admission', 'erasure', 'run')), " +
       "outcome TEXT CHECK (outcome IS NULL OR outcome IN ('complete', 'aborted', 'failed', " +
       "'deadline', 'ended', 'lost')), " +
       "status INTEGER CHECK (status IS NULL OR status BETWEEN 100 AND 599), " +
@@ -1098,25 +1104,138 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "CHECK ((charge IN ('succeeded', 'failed')) = (tokens IS NOT NULL)))",
     "CREATE INDEX egress_reservations_by_state ON egress_reservations (state, opened_at)",
     "CREATE INDEX egress_reservations_by_time ON egress_reservations (opened_at)",
-    "CREATE TABLE egress_runs (lease_id TEXT NOT NULL, epoch INTEGER NOT NULL, " +
-      "requests INTEGER NOT NULL, tokens INTEGER NOT NULL, cost INTEGER NOT NULL, " +
-      "PRIMARY KEY (lease_id, epoch)) WITHOUT ROWID",
     "CREATE TRIGGER egress_reservations_charged AFTER INSERT ON egress_reservations " +
-      `WHEN NEW.charge IS NOT NULL BEGIN ${SPEND("NEW", CHARGED("NEW"))} ${
-        RUN("NEW", "1", CHARGED_TOKENS("NEW"), CHARGED("NEW"))} END`,
+      `WHEN NEW.charge IS NOT NULL BEGIN ${SPEND("NEW", CHARGED("NEW"))} END`,
     "CREATE TRIGGER egress_reservations_recharged AFTER UPDATE OF charge, tokens, cost " +
       "ON egress_reservations WHEN NEW.charge IS NOT NULL AND OLD.charge IS NOT NULL " +
-      `AND (${CHARGED("NEW")} != ${CHARGED("OLD")} OR ${CHARGED_TOKENS("NEW")} != ${
-        CHARGED_TOKENS("OLD")}) BEGIN ${SPEND("NEW", `${CHARGED("NEW")} - ${CHARGED("OLD")}`)} ${
-        RUN("NEW", "0", `${CHARGED_TOKENS("NEW")} - ${CHARGED_TOKENS("OLD")}`,
-            `${CHARGED("NEW")} - ${CHARGED("OLD")}`)} END`,
-    "CREATE TRIGGER egress_reservations_kept BEFORE UPDATE OF id, lease_id, epoch, token, " +
+      `AND ${CHARGED("NEW")} != ${CHARGED("OLD")} BEGIN ${
+        SPEND("NEW", `${CHARGED("NEW")} - ${CHARGED("OLD")}`)} END`,
+    "CREATE TRIGGER egress_reservations_kept BEFORE UPDATE OF id, lease_id, epoch, run, token, " +
       "source, max_output_tokens, est_tokens, est_cost, day, month, connection_id " +
       "ON egress_reservations BEGIN SELECT RAISE(ABORT, 'a reservation never changes what " +
       "it reserved'); END",
     "CREATE TRIGGER egress_reservations_settled_once BEFORE UPDATE OF charge " +
       "ON egress_reservations WHEN OLD.charge IS NOT NULL AND OLD.charge != 'held' " +
       "BEGIN SELECT RAISE(ABORT, 'a charge is settled once'); END",
+  ]),
+  // 12: runs (ADR-034 decision 4; `runs.ts`). A run is one engine invocation: its row
+  // (`runs`) is its receipt, kept past its settle, the newest `RUNS_KEPT` settled ones, with
+  // its usage counters, which only the egress triggers below move (a call's charge, held to
+  // settled, counts to its run as it counts to its source's day and month). At most
+  // `RUNS_CEILING` are live (`queued` or `running`) at once, the most any tier record may
+  // set; the tier's own number is admission's (`tier.ts`). A live run holds one run grant
+  // (`run_grants`): the lease it runs under, its initiator's stamp and origin, its scopes
+  // and its own connection (none on the vendor's own sign-in), deleted at its settle. A
+  // conversation (`conversations`) keeps its engine and that engine's session id, at most
+  // `CONVERSATIONS_KEPT` (the least recently run one with no live run goes first). The
+  // `runs` lane's rows (`run_schedules`, at most `SCHEDULES_KEPT`): a launch at a time, a
+  // cron recurrence, or a run on the owner's mail, each with its input. The platform's tier
+  // numbers as the binder last handed them (`platform_tiers`, one row), and the owner app's
+  // socket tickets (`socket_tickets`, at most `SOCKET_TICKETS`, single-use, each kept as
+  // its SHA-256 only).
+  Object.freeze([
+    "CREATE TABLE runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, " +
+      `id TEXT NOT NULL UNIQUE CHECK (length(id) = ${RUN_ID_CHARS}), ` +
+      "agent TEXT NOT NULL CHECK (length(agent) BETWEEN 1 AND 128), " +
+      `conversation TEXT NOT NULL CHECK (length(conversation) = ${CONVERSATION_ID_CHARS}), ` +
+      "source TEXT NOT NULL CHECK (length(source) BETWEEN 1 AND 64), " +
+      "credential TEXT NOT NULL CHECK (credential IN ('vendor_login_in_sandbox', 'api_key')), " +
+      "model TEXT CHECK (model IS NULL OR (length(model) BETWEEN 1 AND 256 " +
+      "AND model NOT GLOB '*[^!-~]*')), " +
+      "state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'succeeded', 'failed', " +
+      "'unknown')), " +
+      "initiator TEXT NOT NULL CHECK (initiator IN ('owner', 'client', 'schedule', 'mail')), " +
+      "client TEXT CHECK (client IS NULL OR length(client) = 64), " +
+      "stamp TEXT CHECK (stamp IS NULL OR length(stamp) <= 1024), " +
+      "request TEXT CHECK (request IS NULL OR length(request) = 64), " +
+      "unattended INTEGER NOT NULL CHECK (unattended IN (0, 1)), " +
+      "cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0, 1)), " +
+      "requests INTEGER NOT NULL DEFAULT 0 CHECK (requests >= 0), " +
+      "tokens INTEGER NOT NULL DEFAULT 0 CHECK (tokens >= 0), " +
+      "cost INTEGER NOT NULL DEFAULT 0 CHECK (cost >= 0), " +
+      "last_seq INTEGER NOT NULL DEFAULT 0 CHECK (last_seq >= 0), " +
+      `result TEXT CHECK (result IS NULL OR length(CAST(result AS BLOB)) <= ${RESULT_BYTES}), ` +
+      "result_cut INTEGER NOT NULL DEFAULT 0 CHECK (result_cut IN (0, 1)), " +
+      `error TEXT CHECK (error IS NULL OR length(CAST(error AS BLOB)) <= ${ERROR_BYTES}), ` +
+      "code TEXT CHECK (code IS NULL OR length(code) BETWEEN 1 AND 64), " +
+      "exit_code INTEGER, created_at REAL NOT NULL, started_at REAL, settled_at REAL, " +
+      "CHECK ((state IN ('queued', 'running')) = (settled_at IS NULL)), " +
+      "CHECK ((initiator = 'client') = (client IS NOT NULL)))",
+    "CREATE UNIQUE INDEX runs_by_request ON runs (request) WHERE request IS NOT NULL",
+    "CREATE INDEX runs_live ON runs (state) WHERE state IN ('queued', 'running')",
+    "CREATE INDEX runs_by_conversation ON runs (conversation, seq)",
+    "CREATE TRIGGER runs_live_full BEFORE INSERT ON runs WHEN (SELECT COUNT(*) FROM runs " +
+      `WHERE state IN ('queued', 'running')) >= ${RUNS_CEILING} BEGIN SELECT RAISE(ABORT, ` +
+      `'runs_full: ${RUNS_CEILING} runs are live'); END`,
+    "CREATE TRIGGER runs_settled_once BEFORE UPDATE OF state ON runs " +
+      "WHEN OLD.state NOT IN ('queued', 'running') BEGIN SELECT RAISE(ABORT, " +
+      "'a run is settled once'); END",
+    "CREATE TRIGGER runs_kept BEFORE UPDATE OF seq, id, agent, conversation, source, " +
+      "credential, initiator, client, stamp, request, unattended, created_at ON runs BEGIN " +
+      "SELECT RAISE(ABORT, 'a run never changes what it was admitted as'); END",
+    "CREATE TABLE run_grants (" +
+      `run TEXT PRIMARY KEY CHECK (length(run) = ${RUN_ID_CHARS}), ` +
+      "lease_id TEXT NOT NULL CHECK (length(lease_id) = 32), epoch INTEGER NOT NULL, " +
+      "stamp TEXT CHECK (stamp IS NULL OR length(stamp) <= 1024), " +
+      "origin TEXT CHECK (origin IS NULL OR (length(origin) <= 256 " +
+      "AND origin NOT GLOB '*[^ -~]*')), " +
+      "scopes TEXT NOT NULL CHECK (length(scopes) <= 512), " +
+      "connection TEXT CHECK (connection IS NULL OR length(connection) = 25), " +
+      "created_at REAL NOT NULL, CHECK ((stamp IS NULL) = (origin IS NULL))) WITHOUT ROWID",
+    "CREATE TABLE conversations (" +
+      `id TEXT PRIMARY KEY CHECK (length(id) = ${CONVERSATION_ID_CHARS}), ` +
+      "agent TEXT NOT NULL CHECK (length(agent) BETWEEN 1 AND 128), " +
+      "source TEXT NOT NULL CHECK (length(source) BETWEEN 1 AND 64), " +
+      "client TEXT CHECK (client IS NULL OR length(client) = 64), " +
+      "session_id TEXT CHECK (session_id IS NULL OR (length(session_id) BETWEEN 1 AND 256 " +
+      "AND session_id NOT GLOB '*[^!-~]*')), " +
+      `last_run TEXT CHECK (last_run IS NULL OR length(last_run) = ${RUN_ID_CHARS}), ` +
+      "created_at REAL NOT NULL, last_at REAL NOT NULL) WITHOUT ROWID",
+    "CREATE INDEX conversations_by_age ON conversations (last_at)",
+    "CREATE TRIGGER conversations_full BEFORE INSERT ON conversations WHEN (SELECT COUNT(*) " +
+      `FROM conversations) >= ${CONVERSATIONS_KEPT} BEGIN SELECT RAISE(ABORT, ` +
+      `'conversations_full: ${CONVERSATIONS_KEPT} conversations are kept'); END`,
+    "CREATE TABLE run_schedules (" +
+      `id TEXT PRIMARY KEY CHECK (length(id) = ${SCHEDULE_ID_CHARS}), ` +
+      "agent TEXT NOT NULL CHECK (length(agent) BETWEEN 1 AND 128), " +
+      `input TEXT NOT NULL CHECK (length(CAST(input AS BLOB)) BETWEEN 1 AND ${INPUT_BYTES}), ` +
+      "trigger TEXT NOT NULL CHECK (trigger IN ('at', 'cron', 'mail')), " +
+      "cron TEXT CHECK (cron IS NULL OR length(cron) BETWEEN 1 AND 64), " +
+      "if_mail INTEGER NOT NULL CHECK (if_mail IN (0, 1)), next_at REAL, " +
+      "client TEXT CHECK (client IS NULL OR length(client) = 64), " +
+      "stamp TEXT CHECK (stamp IS NULL OR length(stamp) <= 1024), " +
+      "origin TEXT CHECK (origin IS NULL OR (length(origin) <= 256 " +
+      "AND origin NOT GLOB '*[^ -~]*')), " +
+      `last_run TEXT CHECK (last_run IS NULL OR length(last_run) = ${RUN_ID_CHARS}), ` +
+      "last_error TEXT CHECK (last_error IS NULL OR length(last_error) BETWEEN 1 AND 256), " +
+      "created_at REAL NOT NULL, CHECK ((trigger = 'cron') = (cron IS NOT NULL)), " +
+      "CHECK ((client IS NULL) = (stamp IS NULL) AND (stamp IS NULL) = (origin IS NULL))) " +
+      "WITHOUT ROWID",
+    "CREATE INDEX run_schedules_due ON run_schedules (next_at) WHERE next_at IS NOT NULL",
+    "CREATE TRIGGER run_schedules_full BEFORE INSERT ON run_schedules WHEN (SELECT COUNT(*) " +
+      `FROM run_schedules) >= ${SCHEDULES_KEPT} BEGIN SELECT RAISE(ABORT, ` +
+      `'run_schedules_full: ${SCHEDULES_KEPT} schedules are kept; cancel one first'); END`,
+    "CREATE TABLE platform_tiers (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      "tiers TEXT NOT NULL CHECK (length(tiers) <= 1024), read_at REAL NOT NULL)",
+    "CREATE TABLE socket_tickets (hash TEXT PRIMARY KEY CHECK (length(hash) = 64 " +
+      "AND hash NOT GLOB '*[^0-9a-f]*'), " +
+      `conversation TEXT NOT NULL CHECK (length(conversation) = ${CONVERSATION_ID_CHARS}), ` +
+      "grant_id TEXT NOT NULL CHECK (length(grant_id) BETWEEN 1 AND 128), " +
+      "expires_at REAL NOT NULL, token_expires_at REAL NOT NULL) WITHOUT ROWID",
+    "CREATE TRIGGER socket_tickets_full BEFORE INSERT ON socket_tickets " +
+      `WHEN (SELECT COUNT(*) FROM socket_tickets) >= ${SOCKET_TICKETS} ` +
+      "BEGIN SELECT RAISE(ABORT, 'socket_tickets_full: as many socket tickets are " +
+      "outstanding as may be; use one or wait for one to expire'); END",
+    // A sandbox call's charge counts to its run, as it counts to its source's day and month.
+    "CREATE TRIGGER egress_reservations_run_charged AFTER INSERT ON egress_reservations " +
+      `WHEN NEW.charge IS NOT NULL BEGIN ${RUN("NEW", "1", CHARGED_TOKENS("NEW"),
+                                               CHARGED("NEW"))} END`,
+    "CREATE TRIGGER egress_reservations_run_recharged AFTER UPDATE OF charge, tokens, cost " +
+      "ON egress_reservations WHEN NEW.charge IS NOT NULL AND OLD.charge IS NOT NULL " +
+      `AND (${CHARGED("NEW")} != ${CHARGED("OLD")} OR ${CHARGED_TOKENS("NEW")} != ${
+        CHARGED_TOKENS("OLD")}) BEGIN ${
+        RUN("NEW", "0", `${CHARGED_TOKENS("NEW")} - ${CHARGED_TOKENS("OLD")}`,
+            `${CHARGED("NEW")} - ${CHARGED("OLD")}`)} END`,
   ]),
 ]);
 

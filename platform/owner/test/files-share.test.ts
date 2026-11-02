@@ -2,7 +2,7 @@
  * The files byte quota (plan §6, migration 7): every manifest row charged what the object
  * stores it in, against `max_manifest_bytes`; each outside client held to its share of
  * every quota and all clients to what the owner's reserve leaves; gone paths' history
- * pruned by bytes to make room; and the model turns' counters bounded. An outside client
+ * pruned by bytes to make room; and the model calls' counters bounded. An outside client
  * holding `write_files` cannot fill the owner's object, so the owner's grants, revokes and
  * policy writes always have room.
  */
@@ -315,7 +315,7 @@ describe("an outside client's share", () => {
      async () => {
     const r = await rig();
     const lease = await inFiles(r.stub, {}, (files) =>
-      files.leaseAcquire("sync", "a".repeat(64), "b".repeat(64), null));
+      files.leaseAcquire("sync", "a".repeat(64), "b".repeat(64)));
     await inFiles(r.stub, { client_share: 100, owner_reserve: 0 }, async (files: Files) => {
       await files.write(`${W}/d/a.txt`, text("a"), { expected: null, writer: CLIENT });
       await files.write(`${W}/d/b.bin`, new Uint8Array(INLINE_BYTES + 10),
@@ -660,7 +660,7 @@ describe("deduplication in each scope", () => {
 
 describe("the model calls and spend counters", () => {
   const open = (n: number, state = "reserved") =>
-    "INSERT INTO model_reservations (id, turn, connection_id, source, model, state, " +
+    "INSERT INTO model_reservations (id, run, connection_id, source, model, state, " +
     "max_output_tokens, est_tokens, est_cost, policy_generation, day, month, created_at) " +
     `VALUES ('open-${n}', 'input:t${n}', 'c', 's', 'm', '${state}', 1, 1, 1, 1, ` +
     "'2026-10-31', '2026-10', 1)";

@@ -11,7 +11,8 @@ import { bearer } from "./app";
 import { verifyKey } from "./api-keys";
 import { jsonObject } from "./body";
 import { API_BODY_MAX, type DoorsEnv } from "./config";
-import { outsideGate } from "./control";
+import { outsideRead } from "./control";
+import { withTiers } from "./binder";
 import { mediaType } from "./session";
 import { callDoor, refusal, toolNamed } from "./tools";
 
@@ -28,8 +29,8 @@ export async function serveApi(request: Request, env: DoorsEnv): Promise<Respons
     return failure(401, "a valid API key is required",
                    { "WWW-Authenticate": "Bearer realm=\"tinyassets-api\"" });
   }
-  const gated = await outsideGate(env, bound.binding.owner);
-  if (gated !== null) {
+  const gated = await outsideRead(env, bound.binding.owner);
+  if (gated instanceof Response) {
     return gated;
   }
   const match = TOOL_PATH.exec(new URL(request.url).pathname);
@@ -48,7 +49,8 @@ export async function serveApi(request: Request, env: DoorsEnv): Promise<Respons
     return args;
   }
   try {
-    return Response.json(await callDoor(bound.stub, bound.binding, tool, args));
+    const held = withTiers(bound, gated.tiers);
+    return Response.json(await callDoor(held.stub, held.binding, tool, args));
   } catch (error) {
     const refused = refusal(error);
     if (refused === null) {

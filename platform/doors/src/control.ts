@@ -39,11 +39,32 @@ export function ownerOpen(read: ControlRead, owner: string): boolean {
 
 /** Refused, as a 503 naming why; or null when the gate admits the call. */
 export async function outsideGate(env: DoorsEnv, owner: string): Promise<Response | null> {
-  return outsideOpen(await readControl(env), owner) ? null : refusal(OUTSIDE_OFF);
+  const read = await outsideRead(env, owner);
+  return read instanceof Response ? read : null;
 }
 
 export async function ownerGate(env: DoorsEnv, owner: string): Promise<Response | null> {
-  return ownerOpen(await readControl(env), owner) ? null : refusal(MAINTENANCE);
+  const read = await ownerRead(env, owner);
+  return read instanceof Response ? read : null;
+}
+
+/** The record's tier numbers, as the binder hands them to a run door; undefined for none. */
+function tiersOf(read: ControlRead): unknown {
+  return read.kind === "read" && read.control.tiers !== null ? read.control.tiers : undefined;
+}
+
+/** The outside gate, read once: its refusal, or the record's tier numbers. */
+export async function outsideRead(env: DoorsEnv, owner: string):
+    Promise<Response | { readonly tiers: unknown }> {
+  const read = await readControl(env);
+  return outsideOpen(read, owner) ? { tiers: tiersOf(read) } : refusal(OUTSIDE_OFF);
+}
+
+/** The maintenance gate, read once: its refusal, or the record's tier numbers. */
+export async function ownerRead(env: DoorsEnv, owner: string):
+    Promise<Response | { readonly tiers: unknown }> {
+  const read = await readControl(env);
+  return ownerOpen(read, owner) ? { tiers: tiersOf(read) } : refusal(MAINTENANCE);
 }
 
 function refusal(message: string): Response {

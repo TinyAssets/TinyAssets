@@ -234,11 +234,15 @@ export function configProblems(config: Config,
   return problems;
 }
 
-/** Every wrangler config file under `root` (not dependencies), by path from `root`. */
+/**
+ * Every wrangler config file under `root` (not dependencies, nor wrangler's own `.wrangler`
+ * state, which a local run leaves), by path from `root`.
+ */
 export function wranglerConfigs(root: string): string[] {
   return readdirSync(root, { recursive: true, encoding: "utf8" })
     .map((path) => path.split("\\").join("/"))
-    .filter((path) => !path.split("/").some((part) => part === "node_modules")
+    .filter((path) => !path.split("/").some((part) => part === "node_modules"
+                                                    || part === ".wrangler")
                       && /^wrangler\./i.test(path.split("/").at(-1) ?? ""))
     .sort();
 }
@@ -516,8 +520,10 @@ describe("owner Worker config", () => {
     try {
       mkdirSync(join(root, "src"), { recursive: true });
       mkdirSync(join(root, "node_modules", "dep"), { recursive: true });
+      mkdirSync(join(root, ".wrangler", "tmp"), { recursive: true });
+      // A dependency's, and wrangler's own local state's, are none of the Worker's.
       for (const path of [CONFIG, "wrangler.toml", "src/wrangler.json",
-                          "node_modules/dep/wrangler.toml"]) {
+                          "node_modules/dep/wrangler.toml", ".wrangler/tmp/wrangler.json"]) {
         writeFileSync(join(root, path), "");
       }
       expect(wranglerConfigs(root)).toEqual(["src/wrangler.json", CONFIG, "wrangler.toml"]);
