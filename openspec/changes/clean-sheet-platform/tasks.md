@@ -1789,6 +1789,38 @@ account and no deploy.
     sign-in), and `egressOpen` refuses any other `egress_run_connection` (403) right after
     the lease check, so a run never spends on a connection it was not given and a
     signed-in run spends on none; only the run's own connection is refreshed for it.
+  Review round 2 (approved at `6f176597c`; `ta-work/rve_report.md`):
+  - A run's environment is an allow-list: `runEnv` gives `HOME={home}`, the record's own
+    variables for the credential and the process basics it keeps (`RUN_BASICS`); the
+    runner starts empty and adds an API-key run's key variables (`sandboxEnv`) alone. A
+    record's own variable is never shaped like a credential or an endpoint, nor `HOME` or a
+    basic. `forbid_env` stays the backstop, with `PREFIX_*` patterns, and now holds every
+    variable the review found in the pinned packages (Claude's gateway, Foundry, AWS,
+    Bedrock, Vertex and Mantle variables and `CLAUDE_CODE_OAUTH_TOKEN`; Codex's
+    `CODEX_ACCESS_TOKEN`; Gemini's `CODE_ASSIST_ENDPOINT`, `GOOGLE_GENAI_USE_GCA`,
+    `GOOGLE_CLOUD_ACCESS_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_VERTEX_BASE_URL`
+    and the auth overrides; Kimi's `KIMI_CODE_BASE_URL`, `KIMI_MODEL_*`, the OAuth host
+    overrides, `OPENAI_*` and `ANTHROPIC_*`). The checker scans every settings-file template
+    for an environment block, a credential-shaped key or helper (`apiKeyHelper`), a
+    forbidden variable and, in a signed-in run's file, an endpoint key. The review's
+    attacks are a guard, `doors/guards/sources-attacks-r2.test.ts`.
+  - pi's MCP door is `"exposure": "direct"`, so a `--tools` filter of plain names keeps its
+    tools (pi's default, `codemode`, reaches them through codemode alone).
+  - Free calls are keyed by provider and API (Anthropic's page covers Anthropic's
+    endpoint, not another `anthropic-messages` source), and a guard holds every free call
+    apart from its source's metered model call.
+  - Every API-key source's sealed auth header and scheme is held to the one pi-ai sends
+    (`sentHeaders`, learned with no network).
+  - **Technical ceiling (limits audit):** Kimi's prompt rides its argument
+    (`--prompt={prompt}`, the CLI reads no prompt from stdin), so it is bounded by Linux's
+    per-argument limit, `MAX_ARG_STRLEN`, 128 KiB. The bound is the kernel's, not ours: the
+    runner refuses a longer prompt for Kimi with its reason, never truncates it, and the
+    other engines take theirs on stdin.
+- [ ] Slice R moves the run's connection from the sandbox's one lease to the run grant
+  (`engines-replan.md` §2.4): `file_space.run_connection` holds one run's connection, so a
+  second simultaneous run (ADR-034 decision 8: 5 free, 10 paid) could neither take the
+  lease nor have its own. Each simultaneous run carries its own grant, its own connection
+  (or none, signed in), and its own egress admission check.
 - [ ] Owed by slice E's review, outside slice S's checks:
   - Price server tools as data (Codex's web search, Anthropic's `mcp_servers`, OpenAI's
     `web_search_options`), so a call that enables one can be metered rather than refused
@@ -1811,6 +1843,15 @@ account and no deploy.
   - **The runner's content backstop (doors spec, "The runner never syncs a secret's
     bytes"):** no synced file or transcript line holds the bytes of a `secret_paths` file;
     the runner refuses the sync, from the records' list.
+  - **Project-level env files:** a run's environment is the allow-list alone, though an
+    agent can write the files a CLI loads variables from (Claude's project
+    `.claude/settings.json` `env` and `apiKeyHelper`, Gemini's `.env` and `.gemini/.env`,
+    any CLI's own): the runner checks for them in the agent's directory and refuses a run
+    whose project files set a variable its credential forbids, or any credential-shaped
+    one on a signed-in run.
+  - **`HOME`:** every run has `HOME={home}`, so whatever a CLI or its SDK writes under the
+    home (gcloud's ADC, the Anthropic SDK's config Kimi bundles) is under `{home}` and can
+    be named in `secret_paths`.
   - **Claude Code:** `--permission-mode auto` with `--permission-prompts none`; `--tools`
     and `--disallowedTools` as the filters; `CLAUDE_CODE_PROJECT_DIR_NAME` pins the
     transcript path under `CLAUDE_CONFIG_DIR`; `ENABLE_CLAUDEAI_MCP_SERVERS=false`; `auth

@@ -1378,11 +1378,15 @@ Once its own unit committed, a policy write SHALL end every open egress stream, 
 - **THEN** the first is refused as an IP literal and the second left out, reported as not expressible
 
 ### Requirement: A run's environment carries only its own credential
-A lease SHALL be opened for one engine run, naming its CLI record, its credential and, on an API key, its connection, and its environment SHALL carry that credential alone. A run on the vendor's own sign-in SHALL carry no API-key or base-URL variable, and none its record's `forbid_env` lists (which holds its `api_key_env` names); the runner SHALL unset each of those. An API-key run SHALL carry its one connection's.
+A lease SHALL be opened for one engine run, naming its CLI record, its credential and, on an API key, its connection. The runner SHALL build the run's environment from an allow-list, starting empty: `HOME={home}`, the record's own variables (`runEnv`), the process basics and, on an API key alone, its one connection's variables. A signed-in run SHALL carry none of its record's `forbid_env` (a backstop).
 
 #### Scenario: Claude Code on a subscription, with a key connected
 - **WHEN** the owner holds an Anthropic key and runs Claude Code on its own sign-in
 - **THEN** the run's environment has no `ANTHROPIC_API_KEY` and no `ANTHROPIC_BASE_URL`, so the CLI runs on the sign-in and never on the key or through the door
+
+#### Scenario: A variable the sandbox has that the record does not name
+- **WHEN** the sandbox template's environment, or an agent's project file, sets a variable the run's allow-list does not hold (`CLAUDE_CODE_OAUTH_TOKEN`, `CODE_ASSIST_ENDPOINT`, a `.env` beside the agent)
+- **THEN** the run does not carry it: the runner builds the environment from the allow-list alone, and slice S checks that no project-level env file reaches it
 
 #### Scenario: A run spends on a connection it was not given
 - **WHEN** a run on connection A calls connection B through the egress door, or a run on the vendor's own sign-in calls any connection

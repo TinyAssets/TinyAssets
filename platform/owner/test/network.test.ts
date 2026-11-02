@@ -319,6 +319,9 @@ describe("the sandbox's model clients' environment", () => {
     expect(() => sandboxEnv([{ connection: C2, provider: "openai", egress: OPENAI }], random,
                             { ...run("codex", "api_key", C2), forbid_env: ["CODEX_API_KEY"] }))
       .toThrow(/forbids CODEX_API_KEY/);
+    expect(() => sandboxEnv([{ connection: C2, provider: "openai", egress: OPENAI }], random,
+                            { ...run("codex", "api_key", C2), forbid_env: ["CODEX_*"] }))
+      .toThrow(/forbids CODEX_API_KEY/);
   });
 
   it("refuses a connection id or a placeholder that is not one", () => {

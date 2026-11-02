@@ -68,7 +68,9 @@ import type { EgressScope } from "../../gateway/src/credential";
 
 import { tokenShaped } from "../../doors/src/routing-mac";
 
+
 import { Invalid, Refused } from "./errors";
+import { forbids } from "./text";
 
 /**
  * The gateway as the egress door binds it (`EGRESS`, its `EgressGateway` entrypoint): one
@@ -362,7 +364,7 @@ export function sandboxEnv(connections: readonly Egressible[], random: () => str
     if (env[name] !== undefined && env[name] !== value) {
       throw new Error(`the source records set ${name} to two values`);
     }
-    if (run.forbid_env.includes(name)) {
+    if (forbids(run.forbid_env, name)) {
       throw new Error(`the run's credential forbids ${name}`);
     }
     env[name] = value;

@@ -147,7 +147,7 @@
     ],
     "mcp": {
       "file": "{home}/.pi/agent/mcp.json",
-      "template": "{\"mcpServers\": {\"tinyassets\": {\"url\": \"{mcp_url}\"}}}",
+      "template": "{\"mcpServers\": {\"tinyassets\": {\"url\": \"{mcp_url}\", \"exposure\": \"direct\"}}}",
       "argv": [],
       "trust": {
         "argv": [],

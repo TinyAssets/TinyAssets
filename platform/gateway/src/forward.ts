@@ -246,7 +246,8 @@ async function send(env: KeyringEnv, bound: Binding, blob: unknown, request: Req
   }
   // A sandbox's unmetered call (`free`): only a read, or a call its API's rules cite as free.
   if (free && request.method !== "GET" && request.method !== "HEAD"
-      && !freeCall(apiRules(credential.upstream.api), request.method, target.pathname)) {
+      && !freeCall(apiRules(credential.upstream.api), credential.upstream.provider,
+                   request.method, target.pathname)) {
     return refused("unmetered", resealed);
   }
   // Every spelling of each credential parameter, as some servers read them case-blind.

@@ -81,7 +81,13 @@
         "forbid_env": [
           "KIMI_API_KEY",
           "KIMI_BASE_URL",
-          "MOONSHOT_API_KEY"
+          "MOONSHOT_API_KEY",
+          "KIMI_CODE_BASE_URL",
+          "KIMI_MODEL_*",
+          "KIMI_OAUTH_HOST",
+          "KIMI_CODE_OAUTH_HOST",
+          "OPENAI_*",
+          "ANTHROPIC_*"
         ]
       }
     },

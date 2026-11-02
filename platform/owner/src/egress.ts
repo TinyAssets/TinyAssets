@@ -231,7 +231,7 @@ export interface EgressDeps {
     { readonly blob: string; readonly version: number } | null;
   /** The connection's egress scope, source and models; null as `credential`'s. */
   readonly connection: (connection: string) =>
-    { readonly scope: EgressScope; readonly source: string;
+    { readonly scope: EgressScope; readonly source: string; readonly provider: string;
       readonly models: readonly EgressModel[] } | null;
   /** The caps for a call of `source`. */
   readonly caps: (source: string) => EgressCaps;
@@ -431,7 +431,8 @@ export class Egress {
     // cite as free (a token count); every other call must be the source's model call as
     // pi-ai makes it, which the gateway meters.
     const free = FREE_METHODS.includes(request.method)
-      || freeCall(apiRules(connection.scope.api), request.method, request.path);
+      || freeCall(apiRules(connection.scope.api), connection.provider, request.method,
+                  request.path);
     if (!free && (!meteredCall(connection.scope, request.method, request.path)
                   || connection.models.length === 0)) {
       return refuse("egress_unmetered");

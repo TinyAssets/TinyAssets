@@ -41,7 +41,9 @@
 import {
   type Endpoint, keyExchangeSource, type Source, source as gatewaySource, type Upstream,
 } from "../../gateway/src/credential";
-import { SOURCE_ID } from "../../owner/src/text";
+import { forbids, SOURCE_ID } from "../../owner/src/text";
+
+export { forbids };
 
 import anthropic from "../../sources/anthropic.json";
 import cerebras from "../../sources/cerebras.json";
@@ -422,6 +424,34 @@ const PROMPT_ARG = /^--[A-Za-z0-9][A-Za-z0-9-]*=\{prompt\}$/;
 const EMPTY_VALUE = /^\s*(?:""|''|\[\s*\]|\{\s*\})?\s*$/;
 /** An empty list or map anywhere in a text (`tools.core: []`, `mcp_servers={}`). */
 const EMPTY_COLLECTION = /\[\s*\]|\{\s*\}/;
+/** A variable `forbid_env` names: a name, or every name with a prefix (`OPENAI_*`). */
+const FORBID = /^[A-Z][A-Z0-9_]{0,63}\*?$/;
+/**
+ * A variable name shaped like a credential or an endpoint: a record's own variables, which
+ * every run carries, are never one, so nothing credential-shaped is set but a key run's
+ * own placeholder (`sandboxEnv`).
+ */
+const CREDENTIAL_NAME =
+  /(?:^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTH|BASE_URL|ENDPOINT)(?:_|$)/;
+/** A settings key shaped like a credential, a credential helper or an environment block. */
+const CREDENTIAL_KEY = /^(?:env|environment)$|api_?key|token|secret|password|credential|helper/i;
+/** A settings key that moves where a run's calls go: never in a signed-in run's files. */
+const ENDPOINT_KEY = /base_?url|endpoint/i;
+/**
+ * A template's keys: JSON's (`"key":`) and TOML's or dotenv's (`key =`, `[table]`), as a
+ * pattern's source: each scan makes its own global regex, which keeps its own position.
+ */
+const TEMPLATE_KEYS =
+  '"([^"\\\\]{1,128})"\\s*:|^\\s*\\[?([A-Za-z_][A-Za-z0-9_.-]{0,127})\\]?\\s*=?';
+/**
+ * The process basics a run keeps from the sandbox template's own environment, beside
+ * `HOME`, which the runner sets to the run's engine home (`{home}`): nothing else of the
+ * sandbox's environment reaches a run.
+ */
+export const RUN_BASICS: readonly string[] = Object.freeze([
+  "PATH", "LANG", "LC_ALL", "TERM", "TZ", "TMPDIR", "USER", "SHELL",
+]);
+
 /** A region's id, as the runner passes it in `{region}`. */
 const REGION = /^[a-z0-9][a-z0-9-]{0,31}$/;
 /** A dotted path into a JSON value (an event's field, a settings file's key). */
@@ -574,7 +604,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
                                               "forbid_env"]);
     if (part["forbid_env"] !== undefined) {
       forbidEnv[kind as CredentialKind] = check.strings(part["forbid_env"],
-                                                        `${what}.forbid_env`, ENV_NAME, 32);
+                                                        `${what}.forbid_env`, FORBID, 64);
     }
     perCredential![kind] = Object.freeze({
       ...(part["argv"] === undefined ? {} : { argv: Object.freeze(argv(part["argv"], `${what}.argv`)) }),
@@ -660,7 +690,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     const owned = Object.values(apiKeyEnv ?? {}).flatMap((vars) =>
       vars.base_url === null ? [vars.api_key] : [vars.base_url, vars.api_key]);
     const listed = forbidEnv.vendor_login_in_sandbox ?? [];
-    if (listed.length === 0 || owned.some((name) => !listed.includes(name))) {
+    if (listed.length === 0 || owned.some((name) => !forbids(listed, name))) {
       check.fail("cli.per_credential.vendor_login_in_sandbox.forbid_env lists every " +
                  "variable that would move a signed-in run onto a key or another endpoint, " +
                  "each of its cli.api_key_env names among them");
@@ -670,9 +700,45 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     const sets = [...Object.keys(homeEnv), ...Object.keys(env ?? {}),
                   ...Object.keys(("env" in noUpdate ? noUpdate.env : undefined) ?? {}),
                   ...Object.keys((perCredential?.[kind] as PerCredential | undefined)?.env ?? {})];
-    const set = sets.find((name) => (forbidEnv[kind] ?? []).includes(name));
+    const set = sets.find((name) => forbids(forbidEnv[kind] ?? [], name));
     if (set !== undefined) {
       check.fail(`the record sets ${set}, which the ${kind} credential forbids`);
+    }
+    // The record's own variables are the run's allow-list (`runEnv`): none is shaped like
+    // a credential or an endpoint, and none is HOME or a basic, which the runner sets.
+    const shaped = sets.find((name) => CREDENTIAL_NAME.test(name) || name === "HOME"
+      || RUN_BASICS.includes(name));
+    if (shaped !== undefined) {
+      check.fail(`the record sets ${shaped}: a record's own variables carry no credential ` +
+                 "or endpoint, and the runner alone sets HOME and the process basics");
+    }
+  }
+
+  // Its settings files carry no credential either: no environment block, no key shaped
+  // like a credential or a credential helper, no variable a credential forbids, and, in a
+  // file a signed-in run gets, no key that moves where its calls go.
+  const settings = templates.filter(([what]) => what === "cli.mcp.template"
+    || what.startsWith("cli.files.") || /^cli\.per_credential\.[a-z_]+\.files\./.test(what));
+  for (const [what, text] of settings) {
+    const kinds = what.startsWith("cli.per_credential.")
+      ? [what.split(".")[2] as CredentialKind] : credential;
+    for (const found of text.matchAll(new RegExp(TEMPLATE_KEYS, "gm"))) {
+      const key = found[1] ?? found[2] ?? "";
+      if (CREDENTIAL_KEY.test(key)) {
+        check.fail(`${what} sets ${key}: a settings file carries no credential, credential ` +
+                   "helper or environment block");
+      }
+      if (kinds.includes("vendor_login_in_sandbox") && ENDPOINT_KEY.test(key)) {
+        check.fail(`${what} sets ${key}, which would move a signed-in run's calls`);
+      }
+    }
+    for (const kind of kinds) {
+      const named = (forbidEnv[kind] ?? []).find((entry) => new RegExp(
+        `(?<![A-Z0-9_])${entry.endsWith("*") ? `${entry.slice(0, -1)}[A-Z0-9_]*`
+          : `${entry}(?![A-Z0-9_])`}`).test(text));
+      if (named !== undefined) {
+        check.fail(`${what} names ${named}, which the ${kind} credential forbids`);
+      }
     }
   }
 
@@ -1266,6 +1332,15 @@ export interface RunEnv {
   readonly credential: CredentialKind;
   readonly api_key_env: Readonly<Record<string, ApiKeyEnv>>;
   readonly forbid_env: readonly string[];
+  /**
+   * The run's environment, as an allow-list: `HOME` at the engine home and the record's
+   * own variables for this credential (its home, `env`, `no_update` and the credential's
+   * own), each a template the runner fills. The runner starts from an empty environment
+   * and sets these, the process basics it keeps (`inherit`) and, on an API key alone, the
+   * key's variables (`sandboxEnv`); nothing else of the sandbox's environment reaches it.
+   */
+  readonly env: Readonly<Record<string, string>>;
+  readonly inherit: readonly string[];
 }
 
 /**
@@ -1281,11 +1356,24 @@ export function runEnv(sources: Sources, engine: string, credential: CredentialK
     throw new SourceRecordError(`engine ${JSON.stringify(engine)} is not a served CLI ` +
                                 `record that runs on ${credential}`);
   }
+  const forbidEnv = cli.per_credential?.[credential]?.forbid_env ?? Object.freeze([]);
+  const env: Record<string, string> = {
+    HOME: "{home}", ...cli.home_env, ...cli.env,
+    ...("env" in cli.no_update ? cli.no_update.env : {}),
+    ...cli.per_credential?.[credential]?.env,
+  };
+  const forbidden = Object.keys(env).find((name) => forbids(forbidEnv, name));
+  if (forbidden !== undefined) {
+    throw new SourceRecordError(`engine ${JSON.stringify(engine)} sets ${forbidden}, which ` +
+                                `${credential} forbids`);
+  }
   return Object.freeze({
     credential,
     api_key_env: credential === "api_key" ? cli.api_key_env ?? Object.freeze({})
       : Object.freeze({}),
-    forbid_env: cli.per_credential?.[credential]?.forbid_env ?? Object.freeze([]),
+    forbid_env: forbidEnv,
+    env: Object.freeze(env),
+    inherit: RUN_BASICS,
   });
 }
 

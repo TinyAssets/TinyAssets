@@ -80,7 +80,8 @@
         "forbid_env": [
           "CODEX_API_KEY",
           "OPENAI_API_KEY",
-          "OPENAI_BASE_URL"
+          "OPENAI_BASE_URL",
+          "CODEX_ACCESS_TOKEN"
         ]
       },
       "api_key": {

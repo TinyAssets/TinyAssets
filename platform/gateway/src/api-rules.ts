@@ -40,8 +40,10 @@
  * - `betas`: the provider beta headers (`anthropic-beta`, `openai-beta`, any `*-beta`) a
  *   call may carry; every other is stripped, since a beta can widen a call past what it
  *   was reserved for (a longer context). None today.
- * - `free`: calls beyond a read (`GET`, `HEAD`) that the provider does not bill, each with
- *   the provider's page that says so and the day it was read (a token count): forwarded
+ * - `free`: calls beyond a read (`GET`, `HEAD`) that a provider does not bill, each keyed
+ *   by that provider (pi-ai's id) as well as the API, so a citation covers its own
+ *   provider's endpoint and no other source that speaks the same API, each with the
+ *   provider's page that says so and the day it was read (a token count): forwarded
  *   unmetered, as a read is, but only on an endpoint the source seals. A call the API's
  *   page does not say is free is never here, so it is refused `unmetered`. Gemini's
  *   `countTokens` is not here: its page (ai.google.dev) could not be read when this list
@@ -50,6 +52,8 @@
 
 /** A call the provider does not bill, with the page that says so (`free`). */
 export interface FreeCall {
+  /** The pi-ai provider whose page says the call is free. */
+  readonly provider: string;
   readonly method: string;
   /** The path, from the base URL's origin, exactly. */
   readonly path: string;
@@ -205,7 +209,7 @@ const ANTHROPIC: ApiRules = Object.freeze({
   betas: Object.freeze([]),
   // Claude Code counts tokens before it sends; Anthropic does not bill the count.
   free: Object.freeze([Object.freeze({
-    method: "POST", path: "/v1/messages/count_tokens",
+    provider: "anthropic", method: "POST", path: "/v1/messages/count_tokens",
     cite: "https://platform.claude.com/docs/en/build-with-claude/token-counting",
     read: "2026-11-02",
     says: "Token counting is free to use but subject to requests per minute rate limits",
@@ -258,14 +262,15 @@ export function valueAt(body: unknown, path: readonly string[]): unknown {
 }
 
 /**
- * Whether a call is one the provider does not bill (`free`): `method` and the bare `path`
- * (from the origin, its query dropped) exactly a listed call's. A read (`GET`, `HEAD`) is
- * free by its method, as the egress door has it; this is every other free call.
+ * Whether a call is one its provider does not bill (`free`): `provider`, `method` and the
+ * bare `path` (from the origin, its query dropped) exactly a listed call's. A read (`GET`,
+ * `HEAD`) is free by its method, as the egress door has it; this is every other free call.
  */
-export function freeCall(rules: ApiRules | null, method: string, path: string): boolean {
+export function freeCall(rules: ApiRules | null, provider: string, method: string,
+                         path: string): boolean {
   const bare = path.split("?")[0]!;
-  return rules !== null && rules.free.some((call) => call.method === method
-    && call.path === bare);
+  return rules !== null && rules.free.some((call) => call.provider === provider
+    && call.method === method && call.path === bare);
 }
 
 /** Whether the request asks for more than one choice. */

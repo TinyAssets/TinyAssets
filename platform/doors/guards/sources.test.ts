@@ -24,7 +24,8 @@ import { describe, expect, it } from "vitest";
 import { SUPPORTED_APIS } from "../../gateway/src/credential";
 import { PLATFORM } from "../../owner/guards/sources";
 import {
-  bundledRecords, catalogOf, type Install, runEnv, sealedSource, type SourceRecord,
+  bundledRecords, catalogOf, forbids, type Install, RUN_BASICS, runEnv, sealedSource,
+  type SourceRecord,
   SourceRecordError, sourceRecord,
 } from "../src/sources";
 
@@ -274,6 +275,56 @@ describe("the engine records", () => {
       unwired: "parked" }]), "codex", "vendor_login_in_sandbox")).toThrow(SourceRecordError);
   });
 
+  it("build every run's environment from an allow-list, nothing credential-shaped in it",
+     () => {
+    const catalog = catalogOf(bundledRecords());
+    expect(RUN_BASICS).toEqual(["PATH", "LANG", "LC_ALL", "TERM", "TZ", "TMPDIR", "USER",
+                                "SHELL"]);
+    for (const record of engines) {
+      for (const credential of record.cli!.credential) {
+        const run = runEnv(catalog, record.id, credential);
+        const what = `${record.id} ${credential}`;
+        expect(run.env["HOME"], what).toBe("{home}");
+        expect(run.inherit, what).toBe(RUN_BASICS);
+        const own = new Set(["HOME", ...Object.keys(record.cli!.home_env),
+          ...Object.keys(record.cli!.env ?? {}),
+          ...Object.keys("env" in record.cli!.no_update ? record.cli!.no_update.env ?? {} : {}),
+          ...Object.keys(record.cli!.per_credential?.[credential]?.env ?? {})]);
+        expect(new Set(Object.keys(run.env)), what).toEqual(own);
+        for (const name of [...Object.keys(run.env), ...run.inherit]) {
+          expect(name, what).not.toMatch(/(?:^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|AUTH|BASE_URL|ENDPOINT)(?:_|$)/);
+          expect(forbids(run.forbid_env, name), `${what}: ${name}`).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("forbid a signed-in run every variable its CLI reads to move it off its sign-in", () => {
+    const forbidden = (id: string) => sourceRecord(records.get(id)).cli!.per_credential!
+      .vendor_login_in_sandbox!.forbid_env!;
+    expect(forbidden("claude-code")).toEqual(expect.arrayContaining([
+      "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+      "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+      "CLAUDE_CODE_USE_GATEWAY", "CLAUDE_CODE_GATEWAY_TOKEN", "CLAUDE_CODE_USE_MANTLE",
+      "ANTHROPIC_FOUNDRY_API_KEY", "ANTHROPIC_FOUNDRY_AUTH_TOKEN", "ANTHROPIC_AWS_API_KEY",
+      "ANTHROPIC_AWS_BASE_URL", "ANTHROPIC_BEDROCK_BASE_URL", "ANTHROPIC_VERTEX_BASE_URL",
+      "CLAUDE_CODE_OAUTH_TOKEN"]));
+    expect(forbidden("codex")).toEqual(expect.arrayContaining([
+      "CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_ACCESS_TOKEN"]));
+    expect(forbidden("gemini")).toEqual(expect.arrayContaining([
+      "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL", "CODE_ASSIST_ENDPOINT",
+      "GOOGLE_GENAI_USE_GCA", "GOOGLE_CLOUD_ACCESS_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS",
+      "GOOGLE_VERTEX_BASE_URL", "GEMINI_CLI_AUTH_OVERRIDE", "GEMINI_DEFAULT_AUTH_TYPE"]));
+    expect(forbidden("kimi")).toEqual(expect.arrayContaining([
+      "KIMI_API_KEY", "KIMI_BASE_URL", "MOONSHOT_API_KEY", "KIMI_CODE_BASE_URL",
+      "KIMI_MODEL_*", "KIMI_OAUTH_HOST", "KIMI_CODE_OAUTH_HOST", "OPENAI_*", "ANTHROPIC_*"]));
+    // A pattern names every variable with its prefix, and nothing else.
+    expect(forbids(forbidden("kimi"), "KIMI_MODEL_API_KEY")).toBe(true);
+    expect(forbids(forbidden("kimi"), "OPENAI_BASE_URL")).toBe(true);
+    expect(forbids(forbidden("kimi"), "KIMI_CODE_HOME")).toBe(false);
+    expect(forbids(["OPENAI_*"], "XOPENAI_KEY")).toBe(false);
+  });
+
   it("list every credential file each CLI writes among its secret paths (M1)", () => {
     const secrets = (id: string) => sourceRecord(records.get(id)).cli!.secret_paths;
     expect(secrets("claude-code")).toEqual(expect.arrayContaining([
@@ -289,8 +340,11 @@ describe("the engine records", () => {
 
   it("give pi its MCP door and its agent's own skills in JSON mode (H2)", () => {
     const spec = sourceRecord(pi).cli!;
+    // Its tools declared to the model directly, so a `--tools` filter of plain names keeps
+    // them (pi's default exposure reaches them through codemode only).
     expect(spec.mcp).toEqual(expect.objectContaining({ file: "{home}/.pi/agent/mcp.json",
-      template: "{\"mcpServers\": {\"tinyassets\": {\"url\": \"{mcp_url}\"}}}" }));
+      template: "{\"mcpServers\": {\"tinyassets\": {\"url\": \"{mcp_url}\", " +
+                "\"exposure\": \"direct\"}}}" }));
     // JSON mode cannot show the trust prompt: the run approves the agent's own folder.
     expect(spec.unattended_argv).toContain("--approve");
     expect(spec.no_update).toEqual({ env: { PI_SKIP_VERSION_CHECK: "1" } });
@@ -545,6 +599,48 @@ describe("an engine record that does not fit", () => {
                                                  records.get("kimi") as Json)],
     ["a region placeholder outside the sign-in", cli((s) => {
       (s["unattended_argv"] as string[]).push("--region={region}"); },
+    records.get("kimi") as Json)],
+    // Round 2: the run's environment is an allow-list, and no settings file carries a
+    // credential, an environment block or a forbidden variable.
+    ["a record variable shaped like a key", cli((s) => { at(s, "env")["MY_API_KEY"] = "x"; })],
+    ["a record variable shaped like a token", cli((s) => { at(s, "env")["SOME_TOKEN"] = "x"; })],
+    ["a record variable shaped like an endpoint", cli((s) => {
+      at(s, "env")["UPSTREAM_BASE_URL"] = "https://example.com"; })],
+    ["a record that sets HOME", cli((s) => { at(s, "env")["HOME"] = "{home}"; })],
+    ["a record that sets PATH", cli((s) => { at(s, "env")["PATH"] = "/usr/bin"; })],
+    ["a credential part that sets a token", cli((s) => {
+      at(s, "per_credential.api_key")["env"] = { EXTRA_TOKEN: "x" }; }, records.get("codex") as Json)],
+    ["a forbidden pattern's variable in the record", cli((s) => {
+      s["env"] = { OPENAI_ORG: "x" }; }, records.get("kimi") as Json)],
+    ["a forbid pattern that is not one", cli((s) => {
+      (at(s, "per_credential.vendor_login_in_sandbox")["forbid_env"] as string[])
+        .push("OPENAI*_X"); })],
+    ["a settings file with an env block", cli((s) => {
+      at(s, "per_credential.vendor_login_in_sandbox")["files"] = {
+        "{home}/.claude/settings.json": "{\"env\": {\"FOO\": \"1\"}}" }; })],
+    ["a settings file with a credential helper", cli((s) => {
+      at(s, "per_credential.vendor_login_in_sandbox")["files"] = {
+        "{home}/.claude/settings.json": "{\"apiKeyHelper\": \"echo k\"}" }; })],
+    ["a settings file holding a token", cli((s) => {
+      at(s, "per_credential.vendor_login_in_sandbox")["files"] = {
+        "{home}/.claude/settings.json": "{\"oauth\": {\"token\": \"t\"}}" }; })],
+    ["a TOML settings file with an env table", cli((s) => {
+      at(s, "per_credential.vendor_login_in_sandbox")["files"] = {
+        "{home}/.codex/config.toml": "[env]\nX = \"1\"" }; }, records.get("codex") as Json)],
+    ["a signed-in settings file that moves the endpoint", cli((s) => {
+      at(s, "per_credential.vendor_login_in_sandbox")["files"] = {
+        "{home}/.gemini/settings.json": "{\"baseUrl\": \"https://elsewhere.example\"}" };
+    }, records.get("gemini") as Json)],
+    ["a shared settings file that moves a signed-in run's endpoint", cli((s) => {
+      at(s, "mcp")["template"] = String(at(s, "mcp")["template"])
+        .replace("\"telemetry\"", "\"endpoint\": \"https://x.example\", \"telemetry\"");
+    }, records.get("gemini") as Json)],
+    ["a settings file naming a forbidden variable", cli((s) => {
+      at(s, "per_credential.vendor_login_in_sandbox")["files"] = {
+        "{home}/.claude/notes.json": "{\"note\": \"ANTHROPIC_BASE_URL\"}" }; })],
+    ["a settings file naming a forbidden pattern's variable", cli((s) => {
+      at(s, "mcp")["template"] = String(at(s, "mcp")["template"])
+        .replace("\"transport\"", "\"note\": \"KIMI_MODEL_NAME\", \"transport\""); },
     records.get("kimi") as Json)],
     // The survivors of this round's own mutation run.
     ["a wildcard session path that covers a secret below the first segment", cli((s) => {

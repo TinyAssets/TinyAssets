@@ -10,7 +10,7 @@ import { apiRules, fallbackList, freeCall, HINT_KEYS, manyChoices, paidTool, ser
          tierMultiplier, unpricedOption } from "../src/api-rules";
 import { builtinCatalog } from "../src/catalog";
 import { egressTarget, meteredCall } from "../src/credential";
-import { clamped, describes, learnMeter, meteredModel, meteredRecord, meteredUsage,
+import { clamped, describes, learnMeter, meteredModel, meteredRecord, meteredUsage, sentHeaders,
          snapshotOf } from "../src/meter";
 import { ANTHROPIC, GOOGLE, OPENAI } from "./support";
 
@@ -63,14 +63,18 @@ describe("the engines' own calls against the API rules (slice E review, M6)", ()
 
   it("lets Claude Code count tokens unmetered, on the page that says the count is free", () => {
     const rules = apiRules("anthropic-messages")!;
-    expect(freeCall(rules, "POST", "/v1/messages/count_tokens")).toBe(true);
-    expect(freeCall(rules, "POST", "/v1/messages/count_tokens?beta=true")).toBe(true);
-    expect(freeCall(rules, "POST", "/v1/messages")).toBe(false);
-    expect(freeCall(rules, "GET", "/v1/messages/count_tokens")).toBe(false);
+    expect(freeCall(rules, "anthropic", "POST", "/v1/messages/count_tokens")).toBe(true);
+    expect(freeCall(rules, "anthropic", "POST", "/v1/messages/count_tokens?beta=true"))
+      .toBe(true);
+    expect(freeCall(rules, "anthropic", "POST", "/v1/messages")).toBe(false);
+    expect(freeCall(rules, "anthropic", "GET", "/v1/messages/count_tokens")).toBe(false);
+    // Anthropic's page covers Anthropic's endpoint, not another provider on the same API.
+    expect(freeCall(rules, "custom", "POST", "/v1/messages/count_tokens")).toBe(false);
+    expect(freeCall(rules, "minimax", "POST", "/v1/messages/count_tokens")).toBe(false);
     expect(egressTarget(scopeOf("anthropic"), "POST", "/v1/messages/count_tokens"))
       .not.toBeNull();
     expect(rules.free).toEqual([{
-      method: "POST", path: "/v1/messages/count_tokens",
+      provider: "anthropic", method: "POST", path: "/v1/messages/count_tokens",
       cite: "https://platform.claude.com/docs/en/build-with-claude/token-counting",
       read: "2026-11-02",
       says: "Token counting is free to use but subject to requests per minute rate limits" }]);
@@ -89,11 +93,31 @@ describe("the engines' own calls against the API rules (slice E review, M6)", ()
     }
   });
 
+  it("never lets a free call be a source's metered model call", async () => {
+    let compared = 0;
+    for (const record of records.filter((entry) => entry.upstream !== undefined)) {
+      const rules = apiRules(record.upstream!.api);
+      const calls = (rules?.free ?? []).filter((call) =>
+        call.provider === record.upstream!.provider);
+      if (calls.length === 0) {
+        continue;
+      }
+      const meter = await learnMeter(builtinCatalog(), record.upstream!, "k");
+      for (const call of calls) {
+        expect(meteredCall({ ...scopeOf(record.id), meter }, call.method, call.path),
+               `${record.id} ${call.path}`).toBe(false);
+        expect(meter!.path === call.path && meter!.method === call.method).toBe(false);
+        compared += 1;
+      }
+    }
+    expect(compared).toBeGreaterThan(0);
+  });
+
   it("refuses Gemini CLI's countTokens: no page read says it is free", async () => {
     const rules = apiRules("google-generative-ai")!;
     expect(rules.free).toEqual([]);
     const path = "/v1beta/models/gemini-x:countTokens";
-    expect(freeCall(rules, "POST", path)).toBe(false);
+    expect(freeCall(rules, "google", "POST", path)).toBe(false);
     // Sealed, but neither free nor the model call the gateway meters: egress_unmetered.
     const { upstream } = records.find((record) => record.id === "google_ai_studio")!;
     const meter = await learnMeter(builtinCatalog(), upstream!, "k");
@@ -109,7 +133,7 @@ describe("the engines' own calls against the API rules (slice E review, M6)", ()
                                                                   name: "f" }] })).toBe(false);
     // A WebSocket upgrade is a GET of the model path, which no key seals.
     expect(egressTarget(scopeOf("openai"), "GET", "/v1/responses")).toBeNull();
-    expect(freeCall(rules, "GET", "/v1/responses")).toBe(false);
+    expect(freeCall(rules, "openai", "GET", "/v1/responses")).toBe(false);
   });
 });
 
@@ -120,6 +144,16 @@ describe("the meter pi-ai's adapter teaches", () => {
     expect(keys.map((record) => record.id)).toEqual(expect.arrayContaining([
       "anthropic", "openai", "xai"]));
   });
+
+  it.each(keys.map((record) => [record.id, record] as const))(
+    "seals the %s source's key in the header pi-ai sends it in, by its scheme",
+    async (id, { upstream }) => {
+      const headers = await sentHeaders(builtinCatalog(), upstream!, "sk-probe-key");
+      expect(headers, id).not.toBeNull();
+      const { header, scheme } = upstream!.auth;
+      expect(headers!.get(header), id).toBe(scheme === "" ? "sk-probe-key"
+        : `${scheme} sk-probe-key`);
+    });
 
   it.each(keys.map((record) => [record.id, record] as const))(
     "meters the %s source's model call, on one of its sealed endpoints",

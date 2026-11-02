@@ -762,13 +762,14 @@ export class Connections {
    * bound it); null for no such active connection, or one with no scope stored.
    */
   egressOf(id: string): { readonly scope: EgressScope; readonly source: string;
+                          readonly provider: string;
                           readonly models: readonly ModelInfo[] } | null {
     const row = this.#row(id);
     if (row === undefined || row.status !== "active" || row.egress === null) {
       return null;
     }
     return { scope: egressScope(JSON.parse(row.egress)), source: row.source,
-             models: JSON.parse(row.models) as ModelInfo[] };
+             provider: row.provider, models: JSON.parse(row.models) as ModelInfo[] };
   }
 
   /** The active connections the sandbox may reach, oldest first, each with its scope. */

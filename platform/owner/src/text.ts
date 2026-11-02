@@ -28,6 +28,15 @@ export function isPrintable(value: string): boolean {
  */
 export const SOURCE_ID = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
 
+/**
+ * Whether `list` (variable names and `PREFIX_*` patterns, as a source record's
+ * `forbid_env` holds them) names `name`.
+ */
+export function forbids(list: readonly string[], name: string): boolean {
+  return list.some((entry) => entry.endsWith("*") ? name.startsWith(entry.slice(0, -1))
+    : entry === name);
+}
+
 /** A collection, row or writer name: 1 to 256 printable characters. */
 export function name(value: unknown, what: string): string {
   if (typeof value !== "string" || !value || codePoints(value) > 256 || !isPrintable(value)) {
