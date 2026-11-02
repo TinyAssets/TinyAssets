@@ -99,7 +99,7 @@ Evidence read for this ADR:
 
 8. **Every tier gets the same product and the same security; tiers differ only by simultaneous runs and storage** (the founder's rule, stated on the site's plans page, `WebSite/site-react/app/fine-print/page.tsx`).
    - **Hosted engines are for every owner.** ADR-023 and ADR-030 limited vendor CLIs on TinyAssets boxes to the paid tier, attributed to a founder decision of 2026-10-26. The founder said on 2026-11-02 that no such decision was made, so that limit is withdrawn.
-   - **The defaults are generous** (founder, 2026-11-02: "make the free tier generous and the paid tier more generous"): free 10 simultaneous runs and 25 GB of storage; paid 50 simultaneous runs and 250 GB.
+   - **The defaults are generous** (founder, 2026-11-02: "make the free tier generous and the paid tier more generous"): free 5 simultaneous runs and 25 GB of storage; paid 10 simultaneous runs and 250 GB (founder, 2026-11-02).
    - **The founder changes them without a deploy.** The numbers live in the platform's control record, not in code.
    - **No other limit stands between a user and the platform** unless it is the owner's own setting, a vendor's limit, or a technical ceiling of the runtime (for example a Durable Object's 10 GB), and each such ceiling is recorded with its reason.
 
