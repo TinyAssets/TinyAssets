@@ -262,11 +262,11 @@ A run is one engine invocation: one CLI process from start to exit. Its id is th
 2. **Admit, in one gate unit** in the owner's object:
    - the owner is admitted (`requireWork`);
    - the agent is enabled;
-   - the owner's own limits hold (their policy's spending limits);
+   - the tier's simultaneous runs hold (ADR-034 decision 8: free 5, paid 10), and the owner's own limits (their policy's spending limits);
    - the initiator's stamp is standing: the owner, or a client's grant at its generation;
    - the source is chosen: `agent.json`'s, or `auto`'s strongest connected source that has an engine and, for unattended runs, a record citing a page that permits them (ADR-033 D3).
 
-   It then writes the run row (`queued`, with a deadline), mints the **run grant** (§2.4), and opens the **sandbox lease** (G4's `SandboxLeases.open`, its "turn" now the run id), which mints the egress and sync tokens.
+   It then writes the run row (`queued`; no platform deadline: its only time bound is the sandbox's own continuous-runtime ceiling, 24 h on E2B Pro and reset by a pause, a technical ceiling), mints the **run grant** (§2.4), and opens the **sandbox lease** (G4's `SandboxLeases.open`, its "turn" now the run id), which mints the egress and sync tokens.
 3. **Sandbox wake.**
    - A new stateless `tinyassets-sandbox` Worker, the only holder of the E2B API key, gets the call through a `SANDBOX` service binding. G4 found the key has the egress token's custody, since E2B's sandbox info returns static transform headers [R: `g4_g4entry.md`].
    - It calls `Sandbox.connect` (resume) on the owner's sandbox, or `create` from the versioned template, with the network document from G4's `network.ts`:
@@ -307,7 +307,7 @@ A run is one engine invocation: one CLI process from start to exit. Its id is th
 
    The sandbox Worker then pauses the sandbox (pause measured at 185 ms p50 [E]), or lets E2B auto-pause on timeout (`lifecycle.onTimeout: 'pause'` [E: persistence docs]). ADR-026's zero idle tail holds.
 
-**Cancel and deadline:** the object tells the runner over its socket. The runner sends SIGTERM to the CLI ("Stop a run with SIGTERM" is documented for Claude [E]), then kills it after a grace. A lost runner is detected by the lease's 20 s heartbeat and its 60 s TTL (G4/files).
+**Cancel:** the object tells the runner over its socket. The runner sends SIGTERM to the CLI ("Stop a run with SIGTERM" is documented for Claude [E]), then kills it after a grace. A lost runner is detected by the lease's 20 s heartbeat and its 60 s TTL (G4/files).
 
 ### 2.2 How live output reaches the app
 
@@ -352,9 +352,9 @@ A run is one engine invocation: one CLI process from start to exit. Its id is th
     - for an owner-started or scheduled run, the agent's declared scopes (`agent.json`, owner-written);
     - for a client-started run, the intersection with that client's grant triples, so a client reaches nothing through an agent it could not reach directly. This is A2's invariant, kept;
   - **stamp:** the initiator. A client's stamp is rechecked with `Grants.standing` on each MCP call, and a grant change or revoke ends the run, as A2 did for turns;
-  - **lifetime:** dies at settle, at the deadline, or when the lease closes;
+  - **lifetime:** dies at settle, or when the lease closes;
   - **file writes:** the CLI's own file tools write the sandbox disk. The sync-out for a run under a client's stamp still never writes `OWNER_TREES`, which tasks 6 already requires.
-- **Fallback, if transforms prove unusable for MCP:** a bearer in the MCP config. It would be a 256-bit run token whose hash the run grant holds, visible in the VM but scoped to one run, its deadline and its scopes. Prompt-injected code could replay it for the run's lifetime and only inside its scopes [I].
+- **Fallback, if transforms prove unusable for MCP:** a bearer in the MCP config. It would be a 256-bit run token whose hash the run grant holds, visible in the VM but scoped to one run and its scopes, and dead when the run settles. Prompt-injected code could replay it for the run's lifetime and only inside its scopes [I].
 
 ### 2.5 How the owner's limits hold
 
@@ -367,7 +367,7 @@ The CLI's own budget flags are set from policy as a second line: Claude `--max-b
 
 **Subscription runs.** TinyAssets cannot meter tokens it never sees.
 - **Model limits:** the vendor's own. Claude Pro and Max have a 5-hour and a weekly limit, "shared across Claude and Claude Code"; Gemini allows 1,500 requests a day on AI Pro; Copilot gives monthly credits [R].
-- **No platform caps are set.** The owner's own policy limits and the vendor's apply. How sandbox time is priced or bounded is the founder's decision (§3).
+- **No platform cap but the tier's simultaneous runs** (ADR-034 decision 8). The owner's own policy limits and the vendor's apply. How sandbox time is priced is the founder's decision (§3).
 - **Stop on vendor errors.** A `rate_limit`, `billing_error` or `account_on_hold` event stops the agent's scheduled runs until the next window and raises a notice, so we never hammer a plan. Anthropic's limits "assume ordinary, individual usage" [R].
 
 ### 2.6 How subagents work
@@ -649,7 +649,7 @@ The plan records that OpenAI's directory "rejects a generic executor or discover
 | **G4** | Finish 8a | Land `platform-g4` with its review fixes (H1: drop the edge-expiry check on stale KV; M3: settlement leaks; M5: deviation-8 wording). Keep "turn" in its names until slice R re-keys it. | workerd |
 | **D** | **Deletions, one slice** | Everything in §1.7: source, tests, guards and specs. Remove the `PISTORE`/`ThreadStore` binding and class (the config guard updated, the owner-bound guard recomputed with fewer tables). Rewrite the pi migrations in place (nothing deployed). Remove `pi-durable`, `chord` and `pi-telemetry`. Remove `run`, `protocol.ts` and `runner.ts` from the hooks Worker. Remove the gateway's `/v1/messages`. The four agent doors and the `converse`/`run_graph` tools leave the tables until slice R (an absent tool, never a stub: Fact 8). | workerd |
 | **E** | Engine records | `CliSpec.engine` (§2.1), `secret_paths`, `session_paths`, the unattended citation, non-npm install, `engines` on API-key sources. Update the Claude Code, Codex, Gemini and Kimi records. New `anthropic` and `openai` API-key records and a `pi` CLI record that runs on an egress-keyed API key only, with no subscription sign-in (ADR-033 decision 1). Park `chatgpt.json`. The checker in `doors/src/sources.ts` and its guard. | data + workerd |
-| **R** | Runs in the owner object | `runs`, `run_grants` and `conversations` (schema), the `runs` lane with doorbell-on-change, admission and the owner's own limits (§2.5), run-level `auto`. The run-scoped MCP profile and grant checks. `usage.ts` and G4's reservation re-keyed to runs. The four agent doors and the `converse`/`run_graph` tools back, starting runs. `SANDBOX` binding behind an interface whose absence refuses loudly. The run-event relay to app sockets (A6's salvaged ticket and binder path). | workerd |
+| **R** | Runs in the owner object | `runs`, `run_grants` and `conversations` (schema), the `runs` lane with doorbell-on-change, admission, the tier's simultaneous runs and the owner's own limits (§2.5), run-level `auto`. The run-scoped MCP profile and grant checks. `usage.ts` and G4's reservation re-keyed to runs. The four agent doors and the `converse`/`run_graph` tools back, starting runs. `SANDBOX` binding behind an interface whose absence refuses loudly. The run-event relay to app sockets (A6's salvaged ticket and binder path). | workerd |
 | **S** | **Sandbox (8b), live** | The `tinyassets-sandbox` Worker (E2B key; create, connect, pause, update the network, start the runner). The versioned template (pinned CLIs, the runner, `resolv.conf` on the pinned resolver). The **runner**: sync in and out with secret-path refusal, projection, invocation from the record, event framing, socket or POST, SIGTERM. Live probes: G4's owed list (private CIDRs, transform readability, `/etc/hosts`, IPv6, DNS); a transform over WebSocket and over MCP; resume after hours and days; CLI memory for S1 sizing; per-run overhead; keep-warm. | **[F: E2B Pro $150/mo; E2B workload-identity beta request; accept Anthropic Commercial Terms; founder's Claude, ChatGPT and API keys for the probes]** |
 | **M** | MCP door for engines and main agents | `code` (code mode at the door, the hooks Worker narrowed to its sandbox, H2's probe cut to code mode), `inbox_digest`/`board_digest`, tool profiles (directory, custom, run). Live connector tests from Claude and ChatGPT (`ui-test`). | workerd + live **[F: live connector accounts. Dynamic Workers (open beta) are no longer needed once the loader goes]** |
 | **W** | Wakes and outside agents (tasks 7) | `WakeSender`: ChatGPT MCP Events, Claude `/fire`, Grok webhook routines. Kill switch through `DOORBELL`. Live: a dot wakes on an event (per tier); a Grok routine calls our MCP; #106037 re-test. | **[F: ChatGPT Pro, Claude, SuperGrok/X Premium accounts; live probes]** |

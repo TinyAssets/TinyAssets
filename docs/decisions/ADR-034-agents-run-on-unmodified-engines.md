@@ -68,7 +68,7 @@ Evidence read for this ADR:
    - the egress door and the gateway's sealed keys.
 
 4. **The unit of work is a run: one engine invocation.**
-   1. **Admit.** The owner's object admits a run against the owner's admission, the agent, the owner's own limits and the initiator's standing authority. It chooses the source (Direction 4's strongest connected source that has an engine), records the run, mints its grant, and opens the sandbox lease.
+   1. **Admit.** The owner's object admits a run against the owner's admission, the agent, the tier's simultaneous runs (decision 8), the owner's own limits and the initiator's standing authority. It chooses the source (Direction 4's strongest connected source that has an engine), records the run, mints its grant, and opens the sandbox lease.
    2. **Start.** A stateless sandbox Worker, the only holder of the E2B key, resumes or creates the owner's sandbox with the owner's network document and starts our in-VM runner in the background.
    3. **Run.** The runner syncs the owner's files and the engine's session files in, projects the agent's files, and invokes the CLI from its source record. It streams the CLI's events to the owner's object, then syncs out.
    4. **Settle.** The object settles the run from the stream's terminal event. A run lost after it started is `unknown` and is never replayed.
@@ -190,7 +190,7 @@ Evidence read for this ADR:
   11. cutover.
 
   Branch `platform-a6` is closed after its socket ticket and binder upgrade are carried into the runs slice.
-- **Cost.** Sandbox time now covers each engine run's whole wall time, model waits included, at $0.117 per running hour for 2 vCPU and 1 GiB. The trusted side gets cheaper: no awaited model stream and no pi partial commits. TinyAssets pays every sandbox second, so sandbox-seconds are metered per owner and capped before launch.
+- **Cost.** Sandbox time now covers each engine run's whole wall time, model waits included, at $0.117 per running hour for 2 vCPU and 1 GiB. The trusted side gets cheaper: no awaited model stream and no pi partial commits. TinyAssets pays every sandbox second, so sandbox-seconds are metered per owner.
 - **Latency.** A woken run spends about 1 s at p50 before the model's first token: E2B resume, sync-in and CLI start. A run kept warm while its conversation is open avoids it.
 - **Direction 8.** When the sandbox vendor is down, runs stop. These keep working: files, rooms, the board, the mailbox, the MCP door, main agents over MCP, and code mode.
 - **Owed.** The decision is checked against these live probes in the sandbox slice: resume after hours or days paused; E2B transforms on the MCP door and on a WebSocket; CLI memory for a 1 vCPU size; and #106037 (Claude scheduled tasks missing custom connectors) for main-agent Claude users.
