@@ -221,6 +221,12 @@ export interface CliSpec {
   readonly instructions: Instructions;
   readonly skills_paths: readonly string[];
   readonly mcp: Mcp;
+  /**
+   * Where the CLI's model calls carry the run's own secret as a header (`x-ta-run`) rather
+   * than in their base URL's path: the variable it reads extra headers from, and the
+   * value, `{run_secret}` in it. Absent, the base URL's path carries it (the fallback).
+   */
+  readonly run_secret_env?: { readonly env: string; readonly value: string };
   readonly tools: { readonly allow?: ToolFilter; readonly deny?: ToolFilter };
   readonly unattended_argv: readonly string[];
   readonly home_env: Readonly<Record<string, string>>;
@@ -412,7 +418,7 @@ const ARG = /^.{0,4096}$/su;
 /** The placeholders the runner fills, in an argv, an env value or a file template. */
 const PLACEHOLDERS: readonly string[] = Object.freeze([
   "{bin}", "{prompt}", "{sid}", "{model}", "{provider}", "{home}", "{agent}", "{mcp_url}",
-  "{mcp_config}", "{base_url}", "{tools}", "{tool}", "{region}",
+  "{mcp_config}", "{base_url}", "{tools}", "{tool}", "{region}", "{run_secret}",
 ]);
 /**
  * The one shape `{prompt}` may take in an argv: joined to its option (`--prompt={prompt}`),
@@ -551,7 +557,8 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   const fields = check.keys(value, "cli", [
     "install", "credential", "unattended", "engine", "instructions", "skills_paths", "mcp",
     "tools", "unattended_argv", "home_env", "no_update", "secret_paths", "session_paths",
-    "hosts"], ["login", "regions", "api_key_env", "per_credential", "env", "files"]);
+    "hosts"], ["login", "regions", "api_key_env", "per_credential", "env", "files",
+               "run_secret_env"]);
   const argvs: [string, string[]][] = [];
   const argv = (item: unknown, what: string, max = 64): string[] => {
     const list = check.strings(item, what, ARG, max);
@@ -635,6 +642,17 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
   const keyed = credential.includes("api_key");
   if ((fields["api_key_env"] !== undefined) !== keyed) {
     check.fail("cli.api_key_env is present exactly when the record runs on an API key");
+  }
+  // The run secret as a header on the model calls, where the CLI takes extra headers.
+  let runSecretEnv: { env: string; value: string } | undefined;
+  if (fields["run_secret_env"] !== undefined) {
+    const header = check.keys(fields["run_secret_env"], "cli.run_secret_env", ["env", "value"]);
+    if (!keyed || !ENV_NAME.test(String(header["env"])) || typeof header["value"] !== "string"
+        || !/^x-ta-run: \{run_secret\}$/.test(header["value"])) {
+      check.fail("cli.run_secret_env names the variable an API-key run reads extra headers " +
+                 "from, and the value x-ta-run: {run_secret}");
+    }
+    runSecretEnv = { env: header["env"] as string, value: header["value"] as string };
   }
 
   // Its home, environment and files.
@@ -880,6 +898,10 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
       if (found === "{region}" && (regions === undefined || !what.startsWith("cli.login."))) {
         check.fail(`${what} uses {region}, which only the sign-in carries, under cli.regions`);
       }
+      // The run's own secret only in its MCP file's header, never an argument.
+      if (found === "{run_secret}" && what !== "cli.mcp.template") {
+        check.fail(`${what} uses {run_secret}, which only cli.mcp.template's header carries`);
+      }
       if (found === "{mcp_config}" && !("file" in mcp)) {
         check.fail(`${what} uses {mcp_config}, which names cli.mcp.file, and there is none`);
       }
@@ -912,6 +934,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     instructions,
     skills_paths: Object.freeze(skills),
     mcp,
+    ...(runSecretEnv === undefined ? {} : { run_secret_env: Object.freeze(runSecretEnv) }),
     tools: Object.freeze(tools),
     unattended_argv: Object.freeze(unattendedArgv),
     home_env: Object.freeze(homeEnv),
@@ -1399,6 +1422,8 @@ export interface RunEnv {
    */
   readonly env: Readonly<Record<string, string>>;
   readonly inherit: readonly string[];
+  /** On an API key, the header variable that carries the run's secret (`run_secret_env`). */
+  readonly secret_header?: { readonly env: string; readonly value: string };
 }
 
 /**
@@ -1432,6 +1457,8 @@ export function runEnv(sources: Sources, engine: string, credential: CredentialK
     forbid_env: forbidEnv,
     env: Object.freeze(env),
     inherit: RUN_BASICS,
+    ...(credential === "api_key" && cli.run_secret_env !== undefined
+      ? { secret_header: cli.run_secret_env } : {}),
   });
 }
 

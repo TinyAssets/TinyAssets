@@ -15,9 +15,9 @@ import { GENERATION_HEADER, SANDBOX_HEADER } from "../../owner/src/network";
 import type { Binding } from "../../owner/src/owner-do";
 import type { SandboxStart } from "../../owner/src/sandbox";
 import { TICKET_REFUSED } from "../../owner/src/socket-shape";
-import { defineAgent } from "../../owner/test/runs-support";
+import { defineAgent, secretOf } from "../../owner/test/runs-support";
 import { EGRESS_ORIGIN } from "../src/config";
-import { RUNNER_HEADER } from "../src/egress";
+import { RUN_HEADER, RUNNER_HEADER } from "../src/egress";
 import { EVENT_FRAMES_MAX } from "../../owner/src/run-events";
 import { RUN_TOOLS } from "../src/tools";
 import type { OwnerDO } from "./entry";
@@ -51,6 +51,23 @@ async function owned(file: Record<string, unknown> = SIGNED_IN) {
   const who = owner();
   const app = await signInApp({ owner: who });
   await defineAgent(env.OWNER.getByName(who), ownerBinding(who), "main", file);
+  return { who, app };
+}
+
+/**
+ * A signed-in owner whose `main` agent runs pi on the owner's own key: an outside client's
+ * run spends it, its sandbox holding no login (a login is never copied between sandboxes).
+ */
+async function ownedOnKey() {
+  const who = owner();
+  const app = await signInApp({ owner: who });
+  const connected = await appPost("connections/key", app.access_token, app.session,
+                                  { source: "groq", key: `gsk-good-${crypto.randomUUID()}` });
+  expect(connected.status).toBe(200);
+  const { connection } = await connected.json<{ connection: string }>();
+  await defineAgent(env.OWNER.getByName(who), ownerBinding(who), "main",
+                    { engine: "pi", credential: "api_key", connection,
+                      scopes: ["read_files", "read_graph"] });
   return { who, app };
 }
 
@@ -112,7 +129,7 @@ function structured(result: unknown): Record<string, unknown> {
 
 describe("the run tools", () => {
   it("start, read and cancel a run over MCP, each client held to its own", async () => {
-    const { who } = await owned();
+    const { who } = await ownedOnKey();
     const client = await outside(await connect(await registerClient(), { owner: who }));
     const { tools } = await client.listTools();
     expect(RUN_TOOLS.filter((name) => tools.some((tool) => tool.name === name)))
@@ -204,6 +221,25 @@ describe("a run's own doors on the egress host", () => {
       method: "POST", body: "{}", headers: { Origin: url(""), [SANDBOX_HEADER]: tokenOf(start!),
                                              [GENERATION_HEADER]: "1" } }));
     expect(browser.status).toBe(404);
+  }, 60_000);
+
+  it("take a run's own secret as its header, where its CLI sends one", async () => {
+    const { who, app } = await owned();
+    await appPost("agent/submit", app.access_token, null, { message: "go", client_send_id: "h-1" });
+    const [start] = await starts(who);
+    const sandbox = { [SANDBOX_HEADER]: tokenOf(start!), [GENERATION_HEADER]: "1" };
+    const viaHeader = await mcpClient((input, init) => call(new Request(input, init)),
+                                      start!.urls.mcp_bare,
+                                      { ...sandbox, [RUN_HEADER]: secretOf(start!) });
+    expect((await viaHeader.listTools()).tools.length).toBeGreaterThan(0);
+    await viaHeader.close();
+    const bare = await call(new Request(start!.urls.mcp_bare, {
+      method: "POST", body: "{}", headers: { "Content-Type": "application/json", ...sandbox } }));
+    expect(bare.status).toBe(401);
+    const wrong = await call(new Request(start!.urls.mcp_bare, {
+      method: "POST", body: "{}",
+      headers: { "Content-Type": "application/json", ...sandbox, [RUN_HEADER]: "0".repeat(64) } }));
+    expect(wrong.status).not.toBe(200);
   }, 60_000);
 
   it("take a run's events only by the runner's secret, within the post's bounds",
@@ -355,22 +391,23 @@ describe("a run's live events", () => {
     const b = await (await appPost("agent/submit", app.access_token, null, {
       message: "b", client_send_id: "t-b" })).json<{ conversation_id: string }>();
     const [first, second] = await starts(who);
-    // A frame a quarter of a megaunit, one a post (within the post's own bounds).
+    // Frames of 30,000 units, two a post (within the post's own bounds).
     const big = (seq: number) => ({ seq, at: seq,
-                                    event: { type: "assistant", text: "x".repeat(250_000) } });
-    for (let seq = 1; seq <= 4; seq++) {
-      await report(first!, { frames: [big(seq)] });
-    }
+                                    event: { type: "assistant", text: "x".repeat(30_000) } });
+    const post = async (start: SandboxStart, frames: number) => {
+      for (let seq = 1; seq <= frames; seq += 2) {
+        await report(start, { frames: [big(seq), big(seq + 1)] });
+      }
+    };
+    await post(first!, 34);
     await report(first!, { frames: [], end: { exit_code: 0 } });
     // The live run's tail, near the bound: the settled run's took no room of it.
-    for (let seq = 1; seq <= 14; seq++) {
-      await report(second!, { frames: [big(seq)] });
-    }
+    await post(second!, 118);
     const late = frames(await socket(await ticketFor(app.access_token, b.conversation_id),
                                      b.conversation_id));
-    await until(() => late.frames.length === 14, "the live run's whole tail");
+    await until(() => late.frames.length === 118, "the live run's whole tail");
     expect(late.frames.map((frame) => frame.seq))
-      .toEqual(Array.from({ length: 14 }, (_, i) => i + 1));
+      .toEqual(Array.from({ length: 118 }, (_, i) => i + 1));
     late.ws.close(1000, "done");
   }, 60_000);
 

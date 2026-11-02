@@ -276,6 +276,8 @@ export interface SandboxLease {
   readonly deadline: number;
   /** The egress generation the sandbox's network was last applied under, or null. */
   readonly network_generation: number | null;
+  /** The engines its own runner last reported signed in inside it (a client's sandbox's). */
+  readonly signins: readonly string[];
 }
 
 /** The three tokens' hashes a lease is bound to, and their deadline. */
@@ -289,14 +291,15 @@ export interface LeaseTokens {
 type LeaseRow = {
   authority: string; lease_id: string; epoch: number; holder: string; lease_expires: number;
   deadline: number; egress_token: string; sync_token: string; runner_token: string;
-  network_generation: number | null;
+  network_generation: number | null; signins: string;
 };
 
 function leaseOf(row: LeaseRow): SandboxLease {
   return { authority: row.authority, lease_id: row.lease_id, epoch: row.epoch,
            egress_token: row.egress_token, sync_token: row.sync_token,
            runner_token: row.runner_token, expires_at: row.lease_expires,
-           deadline: row.deadline, network_generation: row.network_generation };
+           deadline: row.deadline, network_generation: row.network_generation,
+           signins: row.signins === "" ? [] : row.signins.split(",") };
 }
 
 /** A lease's row is live while neither its renewal nor its tokens' deadline has passed. */
@@ -1732,6 +1735,19 @@ export class Files {
       this.#sql.exec("DELETE FROM sandbox_leases WHERE lease_id = ?", leaseId);
       return { released: true };
     });
+  }
+
+  /**
+   * In a unit: the engines signed in inside the live lease `leaseId`'s sandbox, as its own
+   * runner reports them; the ones signed in before. Dies with the lease: a login lives in its
+   * sandbox and is never copied to another.
+   */
+  leaseSignins(leaseId: string, engines: readonly string[]): string[] {
+    const before = this.#sql.exec<{ signins: string }>(
+      "SELECT signins FROM sandbox_leases WHERE lease_id = ?", leaseId).one().signins;
+    this.#sql.exec("UPDATE sandbox_leases SET signins = ? WHERE lease_id = ?",
+                   [...engines].sort().join(","), leaseId);
+    return before === "" ? [] : before.split(",");
   }
 
   /** In a unit: every lapsed lease's row gone (its runs settled first, `Runs.lost`). */

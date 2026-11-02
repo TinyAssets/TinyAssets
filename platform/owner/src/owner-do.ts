@@ -104,7 +104,7 @@ import { agentId, AUTHORITY_CHANGED, type Stamped } from "./authority";
 import { type CloseKind, OWNERS_SOCKET, Relay, type SocketState } from "./relay";
 import { type Ask, CONVERSATION_BUSY, type LiveRun, type PostedFrame, type RunReceipt, Runs,
          RUN_ENDED, type RunSchedule, scheduleAuthority, secretHash } from "./runs";
-import { ENGINE_SIGNINS, SIGNIN_MODELS_CHARS } from "./run-rows";
+import { ENGINE_SIGNINS, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS } from "./run-rows";
 import { EVENT_FRAMES_MAX, eventsBounded, FRAME_UNITS_MAX } from "./run-events";
 import { SANDBOX_ABSENT, type SandboxService, started } from "./sandbox";
 import { TICKET_REFUSED } from "./socket-shape";
@@ -137,7 +137,8 @@ import {
 } from "./policy";
 import { type Card, Registrations } from "./registrations";
 import { type Lane, Schedule } from "./schedule";
-import { AGENTS_OWNER_ONLY, ownersOnly, storedPath } from "./paths";
+import { AGENTS_DIR, AGENTS_OWNER_ONLY, OWNER_TREES, ownersOnly, storedPath, within }
+  from "./paths";
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
 import { principal } from "./text";
@@ -618,8 +619,6 @@ export const SANDBOX_ONLY = "a sandbox door takes its own sandbox token only";
 export const NO_SANDBOX = "no sandbox lease was opened for this owner";
 /** A sync token that is not the live lease's, or names another lease or epoch. */
 export const SYNC_FENCED = "the sync lease was lost; this sync is fenced";
-/** A sign-in report from an outside client's sandbox: the owner's sign-ins are its own. */
-export const SIGNIN_OWNERS = "signin_owners: only the owner's own sandbox reports its sign-ins";
 
 /**
  * The request's fields are exactly `required`, plus any of `optional`, and none is
@@ -1894,7 +1893,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * lease, that lease at its epoch; else refused, as a lost lease's sync is fenced.
    */
   #syncer(binding: Binding, door: DoorClass, request: { lease_id?: unknown; epoch?: unknown }
-                                                      | null): void {
+                                                      | null): (path: string) => boolean {
     this.#bind(binding, door, "sync");
     const sandbox = sandboxBinding(binding.sandbox);
     const lease = sandbox.kind === "sync"
@@ -1903,10 +1902,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                                                 || request.epoch !== lease.epoch))) {
       throw new Refused(SYNC_FENCED);
     }
-    // A client's sandbox syncs only what that client may read, and writes only what it may
-    // write (as itself, never into the owner's trees: `Files.syncCommit`), by its grant as
-    // its live run stamped it, standing now.
-    if (lease.authority !== OWNER_AUTHORITY) {
+    // A client's sandbox always reads its live runs' agents' own definitions (their
+    // `AGENTS.md`, `agent.json` and the abilities' trees: without them the agent cannot run),
+    // read-only; the rest of the owner's files only as that client may read them; and writes
+    // only what it may write (as itself, never into the owner's trees: `Files.syncCommit`),
+    // by its grant as its live run stamped it, standing now.
+    if (lease.authority === OWNER_AUTHORITY) {
+      return () => true;
+    }
+    {
       const stamp = this.#runs.authorityStamp(lease.authority);
       let grant: Grant;
       try {
@@ -1921,10 +1925,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         throw error;
       }
       const capability = door === "read" ? "read_files" : "write_files";
-      if (grant.mode !== "full" && (stamp!.universe === null || !holds(grant, {
-        universe: stamp!.universe, agent: stamp!.agent, capability }))) {
+      const held = grant.mode === "full" || (stamp!.universe !== null && holds(grant, {
+        universe: stamp!.universe, agent: stamp!.agent, capability }));
+      if (held) {
+        return () => true;
+      }
+      if (door !== "read") {
         throw new Refused("outside client capability not granted");
       }
+      const agents = this.#runs.liveAgents(lease.authority)
+        .map((agent) => `${AGENTS_DIR}/${agent}`);
+      return (path) => path === AGENTS_DIR || agents.some((dir) => within(path, dir))
+        || OWNER_TREES.some((tree) => tree !== AGENTS_DIR && within(path, tree));
     }
   }
 
@@ -2251,13 +2263,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileChanges(binding: Binding, request: ChangesRequest):
       Promise<{ changes: FileChange[]; cursor: number; reset: boolean }> {
     return this.#door(() => {
+      let readable: (path: string) => boolean = () => true;
       if (binding.sandbox === undefined) {
         this.#filer(binding, "read", "read_files");
       } else {
-        this.#syncer(binding, "read", null);
+        readable = this.#syncer(binding, "read", null);
       }
       const r = fileFields(request, ["after", "limit"]);
-      return this.#files.changes(r["after"], r["limit"]);
+      const changes = this.#files.changes(r["after"], r["limit"]);
+      return { ...changes, changes: changes.changes.filter((change) => readable(change.path)) };
     });
   }
 
@@ -2449,12 +2463,32 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       if (lease === null) {
         throw new Refused("egress_lease_closed");
       }
-      // The owner's own sandbox alone holds the owner's sign-ins.
-      if (lease.authority !== OWNER_AUTHORITY) {
-        throw new Refused(SIGNIN_OWNERS);
-      }
       const reports = signinRequest(request);
       const lapsed: string[] = [];
+      if (lease.authority !== OWNER_AUTHORITY) {
+        // An outside client's sandbox's own sign-ins, kept on its lease: a login is never
+        // copied between sandboxes, so none of the owner's own reaches it.
+        const now = new Set(lease.signins);
+        for (const report of reports) {
+          if (report.signed_in) {
+            now.add(report.engine);
+          } else {
+            now.delete(report.engine);
+          }
+        }
+        const joined = [...now].sort().join(",");
+        if (joined.length > SIGNIN_LIST_CHARS) {
+          throw new Invalid(`a sandbox's signed-in engines are at most ${SIGNIN_LIST_CHARS} ` +
+                            "characters joined");
+        }
+        const before = this.#files.leaseSignins(lease.lease_id, [...now]);
+        for (const engine of before.filter((each) => !now.has(each))) {
+          lapsed.push(engine);
+          this.#notices.add("signin_lapsed",
+                            `${engine}: sign in again inside ${lease.authority}'s sandbox`, clock());
+        }
+        return { recorded: reports.length, lapsed };
+      }
       for (const report of reports) {
         if (this.#runs.reportSignin(report.engine, report.signed_in, report.models, clock())
               .lapsed) {

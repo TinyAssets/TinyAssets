@@ -223,8 +223,10 @@ export function runPath(run: string, secret?: string): string {
  * report door, on the egress host.
  */
 export function runUrls(run: string, secret: string):
-    { readonly mcp: string; readonly events: string; readonly signin: string } {
+    { readonly mcp: string; readonly mcp_bare: string; readonly events: string;
+      readonly signin: string } {
   return Object.freeze({ mcp: `${EGRESS_ORIGIN}${runPath(run, secret)}/mcp`,
+                         mcp_bare: `${EGRESS_ORIGIN}${runPath(run)}/mcp`,
                          events: `${EGRESS_ORIGIN}${runPath(run)}/events`,
                          signin: `${EGRESS_ORIGIN}/signin` });
 }
@@ -348,8 +350,10 @@ function stem(name: string): string {
 export interface EngineRun {
   /** The run itself, whose path its base URLs carry, so each call names its run. */
   readonly run: string;
-  /** The run's own secret, which its base URLs carry beside it. */
+  /** The run's own secret, which its base URLs carry beside it, or its header. */
   readonly secret: string;
+  /** Where the CLI takes the secret as a header instead (its record's `run_secret_env`). */
+  readonly secret_header?: { readonly env: string; readonly value: string };
   readonly credential: "vendor_login_in_sandbox" | "api_key";
   readonly connection: string | null;
   readonly api_key_env: Readonly<Record<string, {
@@ -365,7 +369,7 @@ export interface EngineRun {
  * connection: simultaneous runs each spend on their own.
  */
 export function egressBaseUrl(connection: string, egress: EgressScope | null, run: string,
-                              secret: string): string {
+                              secret: string | undefined): string {
   if (!CONNECTION.test(connection)) {
     throw new Invalid("invalid connection");
   }
@@ -408,7 +412,9 @@ export function sandboxEnv(connections: readonly Egressible[], random: () => str
     }
     env[name] = value;
   };
-  const base = egressBaseUrl(connection, egress, run.run, run.secret);
+  // The secret in the path, unless the CLI sends it as a header (`x-ta-run`).
+  const inPath = run.secret_header === undefined ? run.secret : undefined;
+  const base = egressBaseUrl(connection, egress, run.run, inPath);
   const part = random();
   if (!/^[0-9a-f]{16,64}$/.test(part)) {
     throw new Error("a placeholder's random part is 16 to 64 hex");
@@ -421,7 +427,13 @@ export function sandboxEnv(connections: readonly Egressible[], random: () => str
   const names = run.api_key_env[provider]!;
   if (names.base_url !== null) {
     set(names.base_url, names.base === "connection"
-      ? egressBaseUrl(connection, null, run.run, run.secret) : base);
+      ? egressBaseUrl(connection, null, run.run, inPath) : base);
+  }
+  if (run.secret_header !== undefined) {
+    if (!/^[0-9a-f]{64}$/.test(run.secret)) {
+      throw new Invalid("invalid run secret");
+    }
+    set(run.secret_header.env, run.secret_header.value.replace("{run_secret}", run.secret));
   }
   set(names.api_key, placeholder);
   return Object.freeze(env);

@@ -21,17 +21,17 @@
  * unmodified engines, their sessions in the owner's files (ADR-034), so what the owner's
  * object holds is its own bounded rows only, whatever its agents do.
  *
- * The worst case is 42.3% of the limit (slice R: 4,231,966,416.75 bytes), about 768 MB under
- * half; with every raise the limits audit proposes, 49.97% (4,997,153,278.75 bytes,
- * `limits-proposed.test.ts`), 2.8 MB under half.
+ * The worst case is 42.3% of the limit (slice R: 4,232,733,666.75 bytes), about 767 MB under
+ * half; with every raise the limits audit proposes, 49.98% (4,997,920,528.75 bytes,
+ * `limits-proposed.test.ts`), 2.1 MB under half.
  * ADR-034's deletion slice took out the agent's thread rows, their live and usage rows,
  * the run receipts and the model turns' counters and owners, and Lifecycle's wake job and
  * key per live thread (slice D: 40.6%, 4,064,822,714 bytes; G4 was 46.3%). The runs slice
  * (R) added `runs` (85.0 MB, its waiting runs with it), `run_grants` (9.7 MB),
  * `conversations` (30.7 MB), `run_schedules` (26.1 MB), `run_inputs` (9.8 MB, the
  * conversations' input queue, sized to what the rest left), `socket_tickets` (3.1 MB),
- * `sandbox_leases` (2.3 MB, one sandbox an authority), `engine_signins` (0.4 MB) and
- * `platform_tiers`, 167.2 MB in all, and took out `egress_runs`. A new table, or a raised bound, must stay under half the
+ * `sandbox_leases` (3.1 MB, one sandbox an authority, its own sign-ins on it), `engine_signins` (0.4 MB) and
+ * `platform_tiers`, 168.0 MB in all, and took out `egress_runs`. A new table, or a raised bound, must stay under half the
  * limit, or the guard fails.
  */
 import { readdirSync, readFileSync } from "node:fs";
@@ -163,6 +163,7 @@ const QUEUE_ROWS = constant("run-rows", "QUEUE_ROWS");
 const QUEUE_BYTES = constant("run-rows", "QUEUE_BYTES");
 const ENGINE_SIGNINS = constant("run-rows", "ENGINE_SIGNINS");
 const SIGNIN_MODELS_CHARS = constant("run-rows", "SIGNIN_MODELS_CHARS");
+const SIGNIN_LIST_CHARS = constant("run-rows", "SIGNIN_LIST_CHARS");
 const SOCKET_TICKETS = constant("socket-shape", "SOCKET_TICKETS");
 /** A stamp's JSON, as the schema's check holds it, in characters (each up to 4 bytes). */
 const STAMP_CHARS = inline("schema", /stamp TEXT CHECK \(stamp IS NULL OR length\(stamp\) <= ([0-9]+)\)/);
@@ -372,9 +373,11 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
               "its result, error, stamp, model, ids, counters, lease and heartbeat at their " +
               "widest" },
     // The sandbox leases (review H-1): one an authority, opened only for a live run.
-    sandbox_leases: { rows: RUNS_CEILING, bytes: ROW + 64 + 32 + 8 + 128 + 16 + 3 * 64 + 8,
+    sandbox_leases: { rows: RUNS_CEILING,
+                      bytes: ROW + 64 + 32 + 8 + 128 + 16 + 3 * 64 + 8 + SIGNIN_LIST_CHARS,
                       by: "RUNS_CEILING, each its authority, lease id, epoch, holder, " +
-                        "times, three token hashes and network generation" },
+                        "times, three token hashes, network generation and its sandbox's " +
+                        "own signed-in engines (visible ASCII)" },
     // The inputs waiting for their conversation (`run_inputs`): QUEUE_ROWS rows holding
     // QUEUE_BYTES of input in all, however it is spread. Each row is counted at its even
     // share and two overflow pages more: a row's in-place share is at most a third of a

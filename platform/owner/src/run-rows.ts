@@ -49,3 +49,9 @@ export const QUEUE_BYTES = 6_291_456;
 export const ENGINE_SIGNINS = 64;
 /** A sign-in report's models, as JSON: visible ASCII. */
 export const SIGNIN_MODELS_CHARS = 2048;
+/**
+ * A client's sandbox's signed-in engines, comma-joined on its lease's row: each one a
+ * served record that signs in, so far past what the records' ids join to; the lease row
+ * stays within its page share at it (the owner-bound guard costs the leases at it).
+ */
+export const SIGNIN_LIST_CHARS = 256;

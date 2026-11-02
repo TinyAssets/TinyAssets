@@ -7,12 +7,14 @@
  * at its worst, against `RELAY_MEMORY_BUDGET` (an eighth of the isolate):
  * - the runs' tails: every live run's kept frames together, at most `TAIL_BYTES` UTF-16 code
  *   units (two bytes each);
- * - the runner's events post the object holds while it reads and relays it (slice R's
- *   review M-4): its body, at most `EVENTS_BODY_MAX` bytes, once as it arrived and once
- *   parsed (its strings two bytes a unit), the one frame being relayed as its JSON text (at
- *   most `FRAME_UNITS_MAX` units, two bytes each), and each of its at most
- *   `EVENT_FRAMES_MAX` frames' own objects. One post at a time: the object reads, relays
- *   and answers a post in one synchronous turn, so no second one is held beside it;
+ * - the runners' events posts the object holds while it reads and relays them (slice R's
+ *   review M-4 and round 2): each its body, at most `EVENTS_BODY_MAX` bytes, once as it
+ *   arrived and once parsed (its strings two bytes a unit), the one frame being relayed as
+ *   its JSON text (at most `FRAME_UNITS_MAX` units, two bytes each), and each of its at most
+ *   `EVENT_FRAMES_MAX` frames' own objects; as many posts at once as runs may be live,
+ *   each run's runner posting one at a time (slice S): `POSTS_IN_FLIGHT`, the founder's
+ *   paid tier's simultaneous runs (ADR-034 decision 8), which a raise of the tier's top
+ *   costs again here;
  * - each socket's attachment, the platform's at most 2 KiB, and the SDK's cached copy, at
  *   `OWNER_SOCKETS`, the relay's technical ceiling;
  * - the told sign-outs held (`SIGNED_OUT_KEPT`).
@@ -52,6 +54,8 @@ const TAIL_OVERHEAD = 256;
 const SIGNED_OUT_BYTES = 256;
 /** One posted frame's own objects beside its text: the frame, its relayed copy, numbers. */
 const FRAME_OVERHEAD = 512;
+/** Events posts held at once: one a live run, the paid tier's top (ADR-034 decision 8). */
+export const POSTS_IN_FLIGHT = 10;
 
 export const MEMORY = Object.freeze({
   tailUnits: constant("relay", "TAIL_BYTES"),
@@ -68,7 +72,8 @@ export const MEMORY = Object.freeze({
 export function memoryTerms(m: typeof MEMORY = MEMORY): Record<string, number> {
   return {
     tails: 2 * m.tailUnits + m.liveRuns * TAIL_OVERHEAD,
-    events: 3 * m.eventsBody + 2 * m.frameUnits + m.eventFrames * FRAME_OVERHEAD,
+    events: POSTS_IN_FLIGHT * (3 * m.eventsBody + 2 * m.frameUnits
+                               + m.eventFrames * FRAME_OVERHEAD),
     attachments: m.ownerSockets * 2 * ATTACHMENT_BYTES,
     signed_out: m.signedOut * SIGNED_OUT_BYTES,
   };
@@ -88,11 +93,11 @@ describe("the runs' live output's memory bound", () => {
   });
 
   it("reads the bounds the sources hold, and the relay keeps no row", () => {
-    expect(MEMORY).toEqual({ tailUnits: 4_194_304, frameMax: 262_144, eventsBody: 524_288,
-                             eventFrames: 512, frameUnits: 262_144, ownerSockets: 1024,
+    expect(MEMORY).toEqual({ tailUnits: 4_194_304, frameMax: 262_144, eventsBody: 65_536,
+                             eventFrames: 64, frameUnits: 32_768, ownerSockets: 1024,
                              signedOut: 64, liveRuns: 1000 });
-    // A frame the tail keeps is one a post may carry: the relay keeps no longer one.
-    expect(MEMORY.frameMax).toBe(MEMORY.frameUnits);
+    // A frame a post may carry is one the tail may keep.
+    expect(MEMORY.frameUnits).toBeLessThanOrEqual(MEMORY.frameMax);
     const relay = readFileSync(join(SRC, "relay.ts"), "utf8");
     expect(relay).not.toMatch(/\.sql\b|storage\./);
     // The tail is trimmed to its bound as each frame is kept, the longest tail's oldest first.

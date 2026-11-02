@@ -270,16 +270,22 @@ describe("the sandbox's model clients' environment", () => {
     for (const [index, key] of KEYS.entries()) {
       const own = EVERY[index]!;
       for (const engine of key.engines!) {
-        const env = sandboxEnv(EVERY, () => "ab".repeat(16), run(engine, "api_key",
-                                                                 own.connection));
+        const made = run(engine, "api_key", own.connection);
+        const env = sandboxEnv(EVERY, () => "ab".repeat(16), made);
+        // The secret in the path, or as the header the record names (never both).
+        const inPath = made.secret_header === undefined ? S : undefined;
+        if (made.secret_header !== undefined) {
+          expect(env[made.secret_header.env]).toBe(`x-ta-run: ${S}`);
+          expect(JSON.stringify(env).split(S).length).toBe(2);
+        }
         const placeholder = `ta_ph_${own.connection}_${"ab".repeat(16)}`;
         const vars = sourceRecord(bundledRecords().find((record) =>
           (record as { id: string }).id === engine)).cli!.api_key_env![key.upstream!.provider]!;
         expect(env[vars.api_key], `${key.id} → ${engine}`).toBe(placeholder);
         if (vars.base_url !== null) {
           expect(env[vars.base_url], `${key.id} → ${engine}`).toBe(vars.base === "connection"
-            ? egressBaseUrl(own.connection, null, R, S)
-            : egressBaseUrl(own.connection, own.egress, R, S));
+            ? egressBaseUrl(own.connection, null, R, inPath)
+            : egressBaseUrl(own.connection, own.egress, R, inPath));
         }
         // No other connection's placeholder, nor its base URL, is in the run's environment.
         for (const other of EVERY.filter((entry) => entry !== own)) {
@@ -370,5 +376,30 @@ describe("the sandbox's model clients' environment", () => {
     expect(() => sandboxEnv([{ connection: C1, provider: "openai", egress: OPENAI }],
                             () => "not hex", run("codex", "api_key", C1))).toThrow();
     expect(egressBaseUrl(C1, GROQ, R, S)).toBe(`https://egress.tinyassets.io/r/${RS}/c/${C1}/openai/v1`);
+  });
+
+  it("takes the run's secret as a header only where a record says so, and only so", () => {
+    const records = bundledRecords() as { id: string; cli?: Record<string, unknown> }[];
+    const claude = records.find((record) => record.id === "claude-code")!;
+    const codex = records.find((record) => record.id === "codex")!;
+    expect(sourceRecord(claude).cli!.run_secret_env)
+      .toEqual({ env: "ANTHROPIC_CUSTOM_HEADERS", value: "x-ta-run: {run_secret}" });
+    expect(sourceRecord(claude).cli!.mcp).toMatchObject({
+      template: expect.stringContaining("\"x-ta-run\": \"{run_secret}\"") });
+    // A vendor-login run's environment carries no header: it makes no keyed model call.
+    expect(runEnv(bundledSources(), "claude-code", "vendor_login_in_sandbox").secret_header)
+      .toBeUndefined();
+    const planted = (record: { cli?: Record<string, unknown> }, cli: Record<string, unknown>) =>
+      () => sourceRecord({ ...JSON.parse(JSON.stringify(record)),
+                           cli: { ...JSON.parse(JSON.stringify(record.cli)), ...cli } });
+    expect(planted(codex, { run_secret_env: { env: "X_HEADERS", value: "x-ta-run: {run_secret}" } }))
+      .not.toThrow();
+    expect(planted(codex, { run_secret_env: { env: "X_HEADERS", value: "{run_secret}" } }))
+      .toThrow(/run_secret_env/);
+    expect(planted(codex, { unattended_argv: ["--x={run_secret}"] })).toThrow(/run_secret/);
+    // A record that runs on no key takes no header variable.
+    const kimi = records.find((record) => record.id === "kimi")!;
+    expect(planted(kimi, { run_secret_env: { env: "X_HEADERS", value: "x-ta-run: {run_secret}" } }))
+      .toThrow(/run_secret_env/);
   });
 });

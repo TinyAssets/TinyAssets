@@ -26,7 +26,7 @@ import { DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, FILE_DEFAULTS } from "./pol
 import {
   CONVERSATION_ID_CHARS, CONVERSATIONS_KEPT, ENGINE_SIGNINS, ERROR_BYTES, INPUT_BYTES,
   QUEUE_BYTES, QUEUE_ROWS, RESULT_BYTES, RUN_ID_CHARS, SCHEDULE_ID_CHARS, SCHEDULES_KEPT,
-  SIGNIN_MODELS_CHARS,
+  SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS,
 } from "./run-rows";
 import { SOCKET_TICKETS } from "./socket-shape";
 import { RUNS_CEILING } from "./tier";
@@ -1175,6 +1175,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE INDEX runs_live ON runs (state) WHERE state IN ('queued', 'running')",
     "CREATE INDEX runs_by_conversation ON runs (conversation, seq)",
     "CREATE INDEX runs_waiting ON runs (seq) WHERE state = 'waiting'",
+    "CREATE INDEX runs_settled ON runs (settled_at, seq) WHERE settled_at IS NOT NULL",
     "CREATE TRIGGER runs_live_full BEFORE INSERT ON runs WHEN (SELECT COUNT(*) FROM runs " +
       `WHERE state IN ('queued', 'running')) >= ${RUNS_CEILING} BEGIN SELECT RAISE(ABORT, ` +
       `'runs_full: ${RUNS_CEILING} runs are live'); END`,
@@ -1220,7 +1221,13 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "runner_token TEXT NOT NULL CHECK (length(runner_token) = 64 AND runner_token " +
       "NOT GLOB '*[^0-9a-f]*'), " +
       "network_generation INTEGER CHECK (network_generation IS NULL OR " +
-      "network_generation >= 1), CHECK (egress_token != sync_token AND egress_token != " +
+      "network_generation >= 1), " +
+      // The engines signed in inside this sandbox, as its own runner last reported them
+      // (a client's sandbox's: a login is never copied between sandboxes; the owner's own
+      // sandbox's are `engine_signins`'), comma-joined, presence only.
+      `signins TEXT NOT NULL DEFAULT '' CHECK (length(signins) <= ${SIGNIN_LIST_CHARS} ` +
+      "AND signins NOT GLOB '*[^!-~]*'), " +
+      "CHECK (egress_token != sync_token AND egress_token != " +
       "runner_token AND sync_token != runner_token)) WITHOUT ROWID",
     "CREATE TRIGGER sandbox_leases_full BEFORE INSERT ON sandbox_leases WHEN (SELECT " +
       `COUNT(*) FROM sandbox_leases) >= ${RUNS_CEILING} BEGIN SELECT RAISE(ABORT, ` +

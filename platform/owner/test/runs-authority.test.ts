@@ -17,7 +17,7 @@ import { Files } from "../src/files";
 import { AGENTS_OWNER_ONLY } from "../src/paths";
 import { RUNS_KEPT } from "../src/run-rows";
 import { EVENT_FRAMES_MAX, FRAME_UNITS_MAX } from "../src/run-events";
-import { NO_CONVERSATION, RUN_ENDED } from "../src/runs";
+import { NO_CONVERSATION, RUN_ENDED, SIGNIN_REQUIRED } from "../src/runs";
 import { SANDBOX_ABSENT } from "../src/sandbox";
 import { TIER_RUNS, TIER_UNREAD } from "../src/tier";
 import { gated, type Gated } from "./gateway-support";
@@ -43,6 +43,15 @@ async function fullClient(r: Gated): Promise<Binding> {
   return client;
 }
 
+/**
+ * The owner's agent on its own key: what an outside client's run spends, its sandbox
+ * holding no login of the owner's (a login is never copied between sandboxes).
+ */
+async function keyed(r: Gated, extra: Record<string, unknown> = {}) {
+  return { engine: "claude-code", credential: "api_key", connection: await r.connect("sk-good"),
+           scopes: ALL_SCOPES, ...extra };
+}
+
 /** Any change to a lane's rows re-derives the jobs; then the due ones run. */
 async function laneRuns(r: Gated): Promise<void> {
   await r.stub.fileMkdir(r.bind(), { path: `/workspace/d-${crypto.randomUUID()}`,
@@ -57,7 +66,8 @@ describe("one sandbox an authority (review H-1)", () => {
   it("never puts a client's run in the owner's sandbox, nor lets it act as the owner's run",
      async () => {
     const r = await gated();
-    await defineAgent(r.stub, r.bind(), "main", { ...SIGNED_IN, scopes: ALL_SCOPES });
+    const file = await keyed(r);
+    await defineAgent(r.stub, r.bind(), "main", file);
     const owners = await ownerRun(r.stub, r.bind(), undefined, "main");
     const client = await fullClient(r);
     const run = await r.stub.agentSubmit({ ...client, tiers: TIERS },
@@ -143,10 +153,11 @@ describe("one sandbox an authority (review H-1)", () => {
       .toMatchObject({ state: "succeeded" });
   });
 
-  it("syncs a client's sandbox as that client, never into the owner's trees, and takes no " +
-     "sign-in report from it", async () => {
+  it("syncs a client's sandbox as that client, never into the owner's trees, and keeps its " +
+     "own sign-ins on its own lease", async () => {
     const r = await gated();
-    await defineAgent(r.stub, r.bind(), "main", { ...SIGNED_IN, scopes: ALL_SCOPES });
+    const file = await keyed(r);
+    await defineAgent(r.stub, r.bind(), "main", file);
     const client = await fullClient(r);
     const run = await r.stub.agentSubmit({ ...client, tiers: TIERS },
                                          { message: "hi", client_send_id: "s-1" });
@@ -159,9 +170,13 @@ describe("one sandbox an authority (review H-1)", () => {
       .toMatchObject({ writer: `client:${MUSE.client}` });
     expect((await commit("/workspace/skills/x.md")).outcomes)
       .toMatchObject([{ outcome: "refused", reason: AGENTS_OWNER_ONLY }]);
-    expect((await failure(() => r.stub.signinReport(runnerSandbox(r, start), {
-      signins: [{ engine: "claude-code", signed_in: true }] }))).message)
-      .toMatch(/^signin_owners/);
+    // Its own runner reports its own sandbox's sign-ins, kept on its lease alone.
+    expect(await r.stub.signinReport(runnerSandbox(r, start), {
+      signins: [{ engine: "claude-code", signed_in: true }] }))
+      .toEqual({ recorded: 1, lapsed: [] });
+    expect(await r.sql("SELECT authority, signins FROM sandbox_leases ORDER BY authority"))
+      .toEqual([{ authority: MUSE.client, signins: "claude-code" }]);
+    expect(await r.sql("SELECT engine FROM engine_signins")).toEqual([]);
     // Its grant moved under its live run (no doors' hook), its sync stops at once.
     await r.sql("UPDATE outside_clients SET generation = generation + 1 WHERE client = ?",
                 MUSE.client);
@@ -175,7 +190,8 @@ describe("one sandbox an authority (review H-1)", () => {
   it("opens a client's sandbox without ending the owner's own streams", async () => {
     const r = await gated();
     const key = await r.connect("sk-good");
-    await defineAgent(r.stub, r.bind(), "main", { ...SIGNED_IN, scopes: ALL_SCOPES });
+    await defineAgent(r.stub, r.bind(), "main", { engine: "claude-code", credential: "api_key",
+                                                  connection: key, scopes: ALL_SCOPES });
     const keyed = await ownerRun(r.stub, r.bind(), { engine: "claude-code",
                                                       credential: "api_key", connection: key,
                                                       scopes: [] }, "keyed");
@@ -227,11 +243,117 @@ describe("the runner's events post (review M-4)", () => {
   });
 });
 
+describe("a sandbox's own sign-ins (review round 2, H; ADR-031 decision 2)", () => {
+  it("never run a client's run on the owner's sign-in: auto takes the owner's key, and an " +
+     "agent naming the sign-in is refused", async () => {
+    const r = await gated();
+    const key = await r.connect("sk-good");
+    // The owner signs in inside its own sandbox.
+    const own = await ownerRun(r.stub, r.bind(), { engine: "claude-code", credential: "api_key",
+                                                    connection: key, scopes: [] }, "keyed");
+    await r.stub.signinReport(runnerSandbox(r, own.start), {
+      signins: [{ engine: "claude-code", signed_in: true }] });
+    await defineAgent(r.stub, r.bind(), "auto", { engine: "auto", scopes: ALL_SCOPES });
+    await defineAgent(r.stub, r.bind(), "plan", { ...SIGNED_IN, scopes: ALL_SCOPES });
+    // The owner's own auto run uses its plan; a client's, in the client's sandbox, its key.
+    expect((await ownerRun(r.stub, r.bind(), undefined, "auto")).run)
+      .toMatchObject({ credential: "vendor_login_in_sandbox" });
+    const client = await fullClient(r);
+    const viaAuto = await r.stub.agentSubmit({ ...client, tiers: TIERS }, {
+      message: "hi", client_send_id: "a-1", agent_id: "auto" });
+    expect(viaAuto).toMatchObject({ state: "running", credential: "api_key" });
+    expect((await startOf(r.stub, viaAuto.run_id)).authority).toBe(MUSE.client);
+    expect((await failure(() => r.stub.agentSubmit({ ...client, tiers: TIERS }, {
+      message: "hi", client_send_id: "p-1", agent_id: "plan" }))).message)
+      .toBe(`${SIGNIN_REQUIRED} (claude-code)`);
+    expect((await recorder(r.stub)).starts
+      .filter((start) => start.authority !== "owner"
+                         && start.credential === "vendor_login_in_sandbox")).toEqual([]);
+  });
+
+  it("run a client's run on that client's sandbox's own sign-in, while it holds one",
+     async () => {
+    const r = await gated();
+    const key = await r.connect("sk-good");
+    await defineAgent(r.stub, r.bind(), "auto", { engine: "auto", scopes: ALL_SCOPES });
+    await defineAgent(r.stub, r.bind(), "plan", { ...SIGNED_IN, scopes: ALL_SCOPES });
+    const client = await fullClient(r);
+    const submit = (agent: string, id: string) => r.stub.agentSubmit(
+      { ...client, tiers: TIERS }, { message: "hi", client_send_id: id, agent_id: agent });
+    // The client's first run, on the owner's key, opens its sandbox.
+    const first = await submit("auto", "a-1");
+    expect(first).toMatchObject({ credential: "api_key" });
+    const start = await startOf(r.stub, first.run_id);
+    void key;
+    // The owner signs in inside the client's sandbox (the vendor's own flow there); its
+    // runner reports it.
+    expect(await r.stub.signinReport(runnerSandbox(r, start), {
+      signins: [{ engine: "claude-code", signed_in: true }] }))
+      .toEqual({ recorded: 1, lapsed: [] });
+    const planned = await submit("plan", "p-1");
+    expect(planned).toMatchObject({ state: "running", credential: "vendor_login_in_sandbox" });
+    expect((await startOf(r.stub, planned.run_id)).lease).toEqual(start.lease);
+    // Auto prefers that plan to the key of its provider, in that sandbox.
+    expect(await submit("auto", "a-2")).toMatchObject({ credential: "vendor_login_in_sandbox" });
+    // Its sign-in lapses: a notice, and the plan is refused there, never the owner's used.
+    expect(await r.stub.signinReport(runnerSandbox(r, start), {
+      signins: [{ engine: "claude-code", signed_in: false }] }))
+      .toEqual({ recorded: 1, lapsed: ["claude-code"] });
+    expect(await notices(r)).toContain(
+      `claude-code: sign in again inside ${MUSE.client}'s sandbox`);
+    expect((await failure(() => submit("plan", "p-2"))).message)
+      .toBe(`${SIGNIN_REQUIRED} (claude-code)`);
+    expect(await submit("auto", "a-3")).toMatchObject({ credential: "api_key" });
+  });
+});
+
+describe("a client's sandbox's files (review round 2, M2)", () => {
+  it("always hold its runs' agents' own definitions, and the rest only as the client reads",
+     async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", await keyed(r));
+    await defineAgent(r.stub, r.bind(), "other", SIGNED_IN);
+    await r.stub.fileMkdir(r.bind(), { path: "/workspace/skills", expected_etag: null });
+    await r.stub.fileWrite(r.bind(), { path: "/workspace/skills/s.md", expected_etag: null,
+                                       content: text("a skill") });
+    await r.stub.fileWrite(r.bind(), { path: "/workspace/notes.txt", expected_etag: null,
+                                       content: text("the owner's") });
+    // A connector client holding converse alone, where its agent acts.
+    const client = r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn() });
+    await r.stub.outsideAgents(client);
+    const { revision } = (await r.stub.grantList(r.bind())).clients
+      .find((entry) => entry.client === MUSE.client)!;
+    await r.stub.grantSet(r.session(), { client: MUSE.client, source: "mcp", mode: "scoped",
+                                         scopes: [{ universe: "alpha", agent: "main",
+                                                    capability: "converse" }],
+                                         expected_revision: revision, name: "Muse" });
+    const { card_id, digest } = await r.stub.registerPropose(client, {
+      command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
+      recipe_id: null });
+    await r.stub.registerAgent(r.session(), { card_id, digest });
+    const run = await r.stub.agentSubmit({ ...client, tiers: TIERS },
+                                         { message: "hi", client_send_id: "f-1" });
+    const start = await startOf(r.stub, run.run_id);
+    const { changes } = await r.stub.fileChanges(syncOf(r, start), { after: 0, limit: 100 });
+    const paths = changes.map((change) => change.path);
+    expect(paths).toContain("/workspace/agents/main/agent.json");
+    expect(paths).toContain("/workspace/skills/s.md");
+    expect(paths.filter((path) => path === "/workspace/notes.txt"
+                                  || path.startsWith("/workspace/agents/other"))).toEqual([]);
+    // It writes nothing back: the client holds no write_files.
+    expect((await failure(() => r.stub.fileSyncCommit(syncOf(r, start), {
+      ...start.lease, ops: [{ op: "write", path: "/workspace/x.txt", base: null,
+                              inline: text("x") }] }))).message)
+      .toBe("outside client capability not granted");
+  });
+});
+
 describe("a client's revoke (review H-2)", () => {
   it("settles its runs at once, frees the tier, drops its schedules and disarms the lane",
      async () => {
     const r = await gated();
-    await defineAgent(r.stub, r.bind(), "main", { ...SIGNED_IN, scopes: ALL_SCOPES });
+    const file = await keyed(r);
+    await defineAgent(r.stub, r.bind(), "main", file);
     const client = await fullClient(r);
     const runs: string[] = [];
     for (let i = 0; i < 5; i++) {
@@ -262,7 +384,8 @@ describe("a client's schedule (review H-3)", () => {
   it("starts its run at its time, on its cron and on the owner's mail, as that client",
      async () => {
     const r = await gated();
-    await defineAgent(r.stub, r.bind(), "main", { ...SIGNED_IN, scopes: ALL_SCOPES });
+    const file = await keyed(r);
+    await defineAgent(r.stub, r.bind(), "main", file);
     const client = await fullClient(r);
     for (const when of [{ at: Date.now() / 1000 + 3600 }, { cron: "0 * * * *" },
                         { on_mail: true }]) {
@@ -289,8 +412,7 @@ describe("a client's schedule (review H-3)", () => {
       .toEqual([]);
     // A fire its admission refuses keeps its fixed code and a notice, and writes nothing.
     const before = await r.sql("SELECT COUNT(*) AS n FROM conversations");
-    await defineAgent(r.stub, r.bind(), "main", { ...SIGNED_IN, scopes: ALL_SCOPES,
-                                                  enabled: false });
+    await defineAgent(r.stub, r.bind(), "main", { ...file, enabled: false });
     await r.sql("UPDATE run_schedules SET next_at = ? WHERE trigger = 'cron'",
                 Date.now() / 1000 - 1);
     await laneRuns(r);
@@ -319,6 +441,37 @@ describe("the runs' rows (review M-1)", () => {
     expect(n).toBeLessThanOrEqual(RUNS_KEPT + 1);
     expect(await r.sql("SELECT state FROM runs WHERE id = ?", run.run_id))
       .toEqual([{ state: "running" }]);
+  }, 300_000);
+});
+
+describe("a long run's receipt (review round 2, M1)", () => {
+  it("outlives its settle however many other runs settled meanwhile", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    await defineAgent(r.stub, r.bind(), "other", SIGNED_IN);
+    const long = await ownerRun(r.stub, r.bind(), undefined, "main");
+    const busy = await ownerRun(r.stub, r.bind(), undefined, "other");
+    const owner = r.bind({ tiers: TIERS });
+    await r.in(async (instance) => {
+      for (let i = 0; i < 2050; i++) {
+        const waiting = await instance.agentSubmit(owner, {
+          message: "x", client_send_id: `w-${i}`, agent_id: "other",
+          conversation_id: busy.run.conversation_id });
+        await instance.agentCancel(owner, { run_id: waiting.run_id });
+        if (i % 200 === 0) {  // the runners keep both runs alive
+          await instance.runEvents(runnerBinding(r, long.start), { frames: [] });
+          await instance.runEvents(runnerBinding(r, busy.start), { frames: [] });
+        }
+      }
+    });
+    await r.stub.runEvents(runnerBinding(r, long.start), {
+      frames: [{ seq: 1, at: 1, event: { type: "result", result: "the long answer" } }],
+      end: { exit_code: 0 } });
+    expect(await r.stub.agentStatus(r.bind(), { run_id: long.run.run_id }))
+      .toMatchObject({ state: "succeeded", result: "the long answer" });
+    const [{ n }] = await r.sql("SELECT COUNT(*) AS n FROM runs WHERE settled_at IS NOT NULL") as
+      [{ n: number }];
+    expect(n).toBe(RUNS_KEPT);
   }, 300_000);
 });
 

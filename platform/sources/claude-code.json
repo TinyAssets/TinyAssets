@@ -174,7 +174,7 @@
     ],
     "mcp": {
       "file": "{home}/run/mcp.json",
-      "template": "{\"mcpServers\": {\"tinyassets\": {\"type\": \"http\", \"url\": \"{mcp_url}\"}}}",
+      "template": "{\"mcpServers\": {\"tinyassets\": {\"type\": \"http\", \"url\": \"{mcp_url}\", \"headers\": {\"x-ta-run\": \"{run_secret}\"}}}}",
       "argv": [
         "--mcp-config",
         "{mcp_config}",
@@ -184,6 +184,10 @@
         "argv": [],
         "note": "A non-bare -p run loads its --mcp-config without folder trust; --strict-mcp-config ignores every other server. Neither is restored on resume, so both go on every run."
       }
+    },
+    "run_secret_env": {
+      "env": "ANTHROPIC_CUSTOM_HEADERS",
+      "value": "x-ta-run: {run_secret}"
     },
     "tools": {
       "allow": {

@@ -25,23 +25,27 @@ then its own change. `[I]` marks an inference not checked against a primary sour
 
 **The real ceiling** behind most bounds below is the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Half is 5 GB, the guard's budget,
 and every row that bounds a guard term gives its share of it, so one can be traded
-against another. Today's worst case is 4,231,966,416.75 bytes (42.32%; slice D's was
+against another. Today's worst case is 4,232,733,666.75 bytes (42.33%; slice D's was
 4,064,822,714, 40.65%, before slice R's tables).
 
 **Every proposed raise together** (`owner/guards/limits-proposed.test.ts`, `PROPOSED`, which
 the guard's own `termsFor` costs, all applied at once, and which also passes the ledger's
-`checkLimits` and the collections' nesting) gives a worst case of 4,997,153,278.75 bytes
-(49.97%), 2.8 MB under half (2,846,721.25 bytes). Slice D left 169.9 MB of margin for
-slice R's tables; slice R took 167.2 MB of it (`runs` 85.0 MB with its waiting runs,
+`checkLimits` and the collections' nesting) gives a worst case of 4,997,920,528.75 bytes
+(49.98%), 2.1 MB under half (2,079,471.25 bytes). Slice D left 169.9 MB of margin for
+slice R's tables; slice R took 168.0 MB of it (`runs` 85.0 MB with its waiting runs,
 `conversations` 30.7 MB, `run_schedules` 26.1 MB, `run_inputs` 9.8 MB, `run_grants`
-9.7 MB, `socket_tickets` 3.1 MB, `sandbox_leases` 2.3 MB, `engine_signins` 0.4 MB,
+9.7 MB, `socket_tickets` 3.1 MB, `sandbox_leases` 3.1 MB, `engine_signins` 0.4 MB,
 `platform_tiers` under 0.1 MB; `egress_runs` went). The conversations' input queue
 (`QUEUE_ROWS`, `QUEUE_BYTES`) was sized to what the rest left before the review's round 1:
 its 16.5 MB (its inputs and its waiting runs' rows) was 75% of the 22.0 MB that remained.
 The round's sandbox leases (one an authority, review H-1) took 2.3 MB more of the margin,
 and each run's lease, heartbeat and secret's hash fit within the rows' pages already
-counted; nothing was shrunk to fit. The margin is now 2.8 MB, under the accounting's own
-error bars: the next term that needs room takes it from another, by the founder's choice. The first draft's raises that do not fit are in
+counted; nothing was shrunk to fit. Round 2's per-sandbox sign-ins (a client's sandbox's
+own, on its lease's row: a login is never copied between sandboxes) took 0.8 MB more. The
+margin is now 2.1 MB, under the accounting's own error bars: the next term that needs room
+takes it from another, by the founder's choice. A table of sign-in rows keyed by sandbox and
+engine instead (presence only, the engines that sign in today at each of `RUNS_CEILING`
+sandboxes) would cost 5.3 MB, 2.4 MB past the margin it had; on the lease's row they fit. The first draft's raises that do not fit are in
 `AFTER`, each with the structural change it needs first (the review's H3):
 
 | Structural change first | The draft's raise | Worst case today | Ledger `checkLimits` |
@@ -60,13 +64,13 @@ each fixed code.
 
 - **tier**: 4
 - **owner setting**: 8
-- **technical ceiling**: 68
+- **technical ceiling**: 69
 - **budget allocation**: 3
 - **raise**: 38
 - **security**: 8
 - **label or page**: 16
 - **convention**: 15
-- **total**: 160 (slice R added 23: `## Slice R's bounds`)
+- **total**: 161 (slice R added 24: `## Slice R's bounds`)
 
 Flagged for the founder: the files default `max_bytes` (1 GiB, to become the tier's storage); the egress tokens' `RUN_DEADLINE_S` (a day: a token lifetime, with the proposal to tie it to the lease); and the model policy's per-run caps (`turn_requests` 100, `turn_tokens` 10M, `turn_cost` $25), on by default where ADR-034 decision 7 makes the owner's own limits off by default: proposed off.
 
@@ -261,8 +265,8 @@ Slice R (runs in the owner object) invented no limit: the only new bound a user 
 is not a technical ceiling is the tier's own simultaneous runs, whose numbers are the
 control record's (`tier.ts`). Every other new bound is the owner database's (the
 owner-bound guard's terms above), the isolate's memory (the memory guard,
-`owner/guards/memory-bound.test.ts`: 15.2 MB worst case, 11.9% of the isolate, the
-runner's events post counted whole), the
+`owner/guards/memory-bound.test.ts`: 15.8 MB worst case, 12.3% of the isolate, ten
+runners' events posts counted whole at once), the
 engine's own, or a call's or a credential's convention.
 
 | Where | Value | Bounds | A user hits | Class | Reason or proposal |
@@ -285,9 +289,10 @@ engine's own, or a call's or a credential's convention.
 | `owner/src/relay.ts:64` | 1,024 | the owner app's sockets open at once | another socket refused `sockets_full` | technical ceiling | The isolate's 128 MB: each socket's attachment and the SDK's copy, counted by the memory guard (4.2 MB). |
 | `owner/src/relay.ts:66` | 4 Mi UTF-16 units | the live runs' tails, together | a late joiner sees fewer of a run's oldest frames | technical ceiling | The isolate's 128 MB (memory guard, 8.4 MB). Frames are never committed (ADR-034 decision 10); the run's result is its receipt's. |
 | `owner/src/relay.ts:68` | 256 Ki units | one frame kept in a tail | a longer frame is relayed live, never kept for a late joiner | technical ceiling | The isolate's memory, as above. |
-| `owner/src/run-events.ts:29` | 512 KiB | a runner's events post, its body | a longer post refused `events_too_large` (413) at the doors | technical ceiling | The isolate's 128 MB (memory guard, review M-4): the object holds a post whole, as it came and parsed, while it reads and relays it; the egress body's 16 MiB alone would pass the relay's budget. |
-| `owner/src/run-events.ts:30` | 512 | frames in one post | the runner posts more often | technical ceiling | The isolate's memory, as above: each frame's own objects counted. |
-| `owner/src/run-events.ts:31` | 256 Ki units | one frame's JSON in a post | a longer CLI event is cut, marked, by the runner before it posts it (slice S); the engine's transcript keeps the whole | technical ceiling | The isolate's memory, as above, and the tail's own frame bound. |
+| `owner/src/run-events.ts:31` | 64 KiB | a runner's events post, its body | a longer post refused `events_too_large` (413) at the doors; the runner posts more often | technical ceiling | The isolate's 128 MB (memory guard, review M-4 and round 2): the object holds a post whole, as it came and parsed, while it reads and relays it, and each live run's runner posts on its own: ten at once (the paid tier's top; a raise of it costs the term again) times this, 2.9 MB in all. |
+| `owner/src/run-events.ts:32` | 64 | frames in one post | the runner posts more often | technical ceiling | The isolate's memory, as above: each frame's own objects counted. |
+| `owner/src/run-events.ts:33` | 32 Ki units | one frame's JSON in a post | a longer CLI event is cut, marked, by the runner before it posts it (slice S); the engine's transcript keeps the whole, the receipt 16 KiB of the result | technical ceiling | The isolate's memory, as above. |
+| `owner/src/run-rows.ts:57` | 256 characters | a client's sandbox's signed-in engines, joined | a longer report refused | technical ceiling | The 10 GB: the lease's row stays within its page share at it (`sandbox_leases`, 3.1 MB); each a served record that signs in, far past what their ids join to. |
 | `owner/src/relay.ts:70` | 1,024 units | a frame the app sends | a longer one closes the socket `frame_refused` | convention | The app sends only pings. |
 | `owner/src/owner-do.ts:710` | 60 s | how long a run door waits for its run to settle (`wait_ms`) | the door answers the run as it stands; `run_status` reads it later | convention | A call's own bound. The run itself has no deadline. |
 

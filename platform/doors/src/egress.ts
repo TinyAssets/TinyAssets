@@ -53,9 +53,24 @@ import { serveMcp } from "./mcp";
 import { refusal, runProfile } from "./tools";
 
 /** A run's model call: its run, a connection id, then the provider's own path. */
-const ROUTE = /^\/r\/(run_[0-9a-f]{32})\/([0-9a-f]{64})\/c\/(c[0-9a-f]{24})(\/.*)$/;
+const ROUTE = /^\/r\/(run_[0-9a-f]{32})(?:\/([0-9a-f]{64}))?\/c\/(c[0-9a-f]{24})(\/.*)$/;
 /** A run's MCP door, by its own secret. */
-const MCP_DOOR = /^\/r\/(run_[0-9a-f]{32})\/([0-9a-f]{64})\/mcp$/;
+const MCP_DOOR = /^\/r\/(run_[0-9a-f]{32})(?:\/([0-9a-f]{64}))?\/mcp$/;
+/**
+ * The run's own secret as a header, where its CLI sends one (`run_secret_env`, its MCP
+ * file's `headers`); the path carries it otherwise. Never forwarded (`x-ta-*`).
+ */
+export const RUN_HEADER = "x-ta-run";
+const SECRET = /^[0-9a-f]{64}$/;
+
+/** The run's own secret: its path's, else its header's, else none (refused by the object). */
+function secretOf(request: Request, inPath: string | undefined): string | undefined {
+  if (inPath !== undefined) {
+    return inPath;
+  }
+  const header = request.headers.get(RUN_HEADER);
+  return header !== null && SECRET.test(header) ? header : undefined;
+}
 /** A run's event door, the runner's. */
 const EVENTS_DOOR = /^\/r\/(run_[0-9a-f]{32})\/events$/;
 /** The runner's own secret, beside the egress token, on its event and sign-in posts. */
@@ -277,7 +292,11 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   }
   const mcp = MCP_DOOR.exec(url.pathname);
   if (mcp !== null && url.search === "") {
-    return serveRun(request, env, mcp[1]!, { mcp: mcp[2]! });
+    const secret = secretOf(request, mcp[2]);
+    if (secret === undefined) {
+      return refused("run_secret_missing", 401);
+    }
+    return serveRun(request, env, mcp[1]!, { mcp: secret });
   }
   const events = EVENTS_DOOR.exec(url.pathname);
   if (events !== null && url.search === "") {
@@ -295,7 +314,8 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
     return verified;
   }
   const bound = bindSandbox(env, verified.owner, verified.hash, verified.generation,
-                            { secret: route[2]! });
+                            secretOf(request, route[2]) === undefined ? {}
+                              : { secret: secretOf(request, route[2])! });
   const { binding, stub } = bound;
   const run = route[1]!;
   const connection = route[3]!;

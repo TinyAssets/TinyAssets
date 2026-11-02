@@ -74,9 +74,12 @@ export interface SandboxStart {
   readonly config: RunConfig;
   /**
    * The run's MCP door (the record's `{mcp_url}`, carrying the run's own secret), its event
-   * door and the sign-in door (both the runner's, by its secret).
+   * door and the sign-in door (both the runner's, by its secret). A record whose MCP
+   * template carries `{run_secret}` (a header, `x-ta-run`) takes `mcp_bare` as its
+   * `{mcp_url}`, the secret in the header and out of the URL.
    */
-  readonly urls: { readonly mcp: string; readonly events: string; readonly signin: string };
+  readonly urls: { readonly mcp: string; readonly mcp_bare: string; readonly events: string;
+                   readonly signin: string };
 }
 
 export type Started = { readonly started: true } | { readonly started: false; readonly code: string };

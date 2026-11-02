@@ -84,6 +84,12 @@ export const QUEUE_FULL = `run_inputs_full: ${QUEUE_ROWS} inputs or ${QUEUE_BYTE
   "already; let a run settle first";
 /** An engine's sign-in lapsed: `auto` no longer picks it, and never falls back silently. */
 export const SIGNIN_LAPSED = "signin_lapsed: sign in to this engine again";
+/**
+ * A run in an outside client's sandbox, on an engine's own sign-in, where no sign-in is:
+ * a login lives in its sandbox and is never copied to another (ADR-031 decision 2).
+ */
+export const SIGNIN_REQUIRED = "signin_required: sign in inside this client's sandbox, " +
+  "through the vendor's own flow; a login is never copied between sandboxes";
 export const UNATTENDED_REFUSED = "unattended_refused: no source of this agent may run " +
   "unattended on its record";
 export const NO_SOURCE = "no_source: no connected source can run this agent's engine";
@@ -118,6 +124,8 @@ export interface LiveLease {
   readonly lease_id: string;
   readonly epoch: number;
   readonly expires_at: number;
+  /** The engines its own runner reported signed in inside its sandbox. */
+  readonly signins?: readonly string[];
 }
 
 /** A live run, and the lease it runs under: what a sandbox cancel names. */
@@ -465,7 +473,7 @@ export class Runs {
     if (this.live() >= ask.tiers[tier].runs) {
       throw new Refused(`${TIER_RUNS} (${tier}: ${ask.tiers[tier].runs})`);
     }
-    const chosen = this.choose(ask.file, ask.unattended);
+    const chosen = this.choose(ask.file, ask.unattended, authorityOf(ask.origin), now);
     if (chosen.credential === "api_key") {
       this.#limits(chosen.source!, now);
     }
@@ -533,7 +541,7 @@ export class Runs {
    * once, and chosen again when its turn comes.
    */
   #wait(ask: Ask, conversation: string, now: number): Retried {
-    const chosen = this.choose(ask.file, ask.unattended);
+    const chosen = this.choose(ask.file, ask.unattended, authorityOf(ask.origin), now);
     const queued = this.#sql.exec<{ n: number; bytes: number }>(
       "SELECT COUNT(*) AS n, coalesce(SUM(bytes), 0) AS bytes FROM run_inputs").one();
     if (queued.n >= QUEUE_ROWS || queued.bytes + utf8Bytes(ask.prompt) > QUEUE_BYTES) {
@@ -683,18 +691,28 @@ export class Runs {
    * 4.1): its named engine, on its named credential (else its record's credentials in
    * order, a key's run on the named connection, else the strongest connected one whose
    * source lists the engine); or for `auto`, the strongest connected source that lists an
-   * engine. An unattended run takes only a credential its record allows unattended.
+   * engine. An unattended run takes only a credential its record allows unattended. The
+   * sign-ins read are the run's own sandbox's (`authority`'s): the owner's own sandbox's
+   * (`engine_signins`), or an outside client's, as its own runner reported them on its live
+   * lease. A login is never copied: a client's run uses a plan only where that client's
+   * sandbox signed in itself, else the owner's keys (`SIGNIN_REQUIRED` for an agent that
+   * names the vendor's sign-in).
    */
-  choose(file: AgentFile, unattended: boolean):
+  choose(file: AgentFile, unattended: boolean, authority = OWNER_AUTHORITY, now = 0):
       { engine: string; credential: CredentialKind; connection: string | null;
         source: string | null; model: string | null } {
     const sources = this.#deps.sources();
     const reachable = new Set(this.#deps.egressible().map((entry) => entry.connection));
     const keys = this.#deps.usable().filter((entry) => reachable.has(entry.connection));
     const candidates = ranked(keys);
-    // Each engine the runner reported a sign-in for: presence alone, never a credential.
-    const signins = new Map(this.signins().map((signin) => [signin.engine, signin]));
-    const lapsed = (engine: string) => new Refused(`${SIGNIN_LAPSED} (${engine})`);
+    // Each engine its sandbox's runner reported a sign-in for: presence alone.
+    const client = authority !== OWNER_AUTHORITY;
+    const signins = new Map<string, SignIn>(client
+      ? (this.#deps.lease.live(now, authority)?.signins ?? []).map((engine) =>
+        [engine, { engine, signed_in: true, models: [], checked_at: now, changed_at: 0 }])
+      : this.signins().map((signin) => [signin.engine, signin]));
+    const lapsed = (engine: string) => new Refused(client ? `${SIGNIN_REQUIRED} (${engine})`
+      : `${SIGNIN_LAPSED} (${engine})`);
     let unattendedOnly = false;
     const allows = (engine: string, credential: CredentialKind): boolean => {
       const cli = sources.get(engine)?.cli;
@@ -724,8 +742,10 @@ export class Runs {
           continue;
         }
         if (credential === "vendor_login_in_sandbox") {
-          if (signins.get(file.engine)?.signed_in === false) {
-            throw lapsed(file.engine);  // never a silent fall back to a key
+          // Never a silent fall back to a key; in a client's sandbox, only its own sign-in.
+          if (client ? signins.get(file.engine)?.signed_in !== true
+            : signins.get(file.engine)?.signed_in === false) {
+            throw lapsed(file.engine);
           }
           return { engine: file.engine, credential, connection: null, source: null,
                    model: file.model };
@@ -832,13 +852,17 @@ export class Runs {
   }
 
   /**
-   * Settled runs past the newest `RUNS_KEPT`, after every write of a run (each admission,
-   * each input that waits) and every settle: so the rows are at most `RUNS_KEPT`, the live
-   * ones and the waiting ones, however runs are queued, cancelled or settled.
+   * Settled runs past the newest `RUNS_KEPT` by their settle (review round 2), after every
+   * write of a run (each admission, each input that waits) and every settle: so the rows are
+   * at most `RUNS_KEPT`, the live ones and the waiting ones, however runs are queued,
+   * cancelled or settled, and a long run's receipt outlives its settle.
    */
   #prune(): void {
-    this.#sql.exec(`DELETE FROM runs WHERE NOT ${UNSETTLED} AND seq <= ` +
-                     "(SELECT MAX(seq) FROM runs) - ?", RUNS_KEPT);
+    // The newest `RUNS_KEPT` by when they settled: never the one settling now, nor a live or
+    // a waiting one, however long it ran or waited.
+    this.#sql.exec("DELETE FROM runs WHERE settled_at IS NOT NULL AND seq NOT IN (SELECT seq " +
+                     "FROM runs WHERE settled_at IS NOT NULL ORDER BY settled_at DESC, seq DESC " +
+                     "LIMIT ?)", RUNS_KEPT);
   }
 
   // -- A RUN'S LIFE ------------------------------------------------------------------
@@ -1051,6 +1075,13 @@ export class Runs {
       throw new Refused(NO_RUN);
     }
     return receipt(row);
+  }
+
+  /** The agents of an outside client's live runs: what its sandbox always reads. A read. */
+  liveAgents(client: string): string[] {
+    return this.#sql.exec<{ agent: string }>(
+      `SELECT DISTINCT agent FROM runs WHERE client = ? AND ${LIVE} ORDER BY agent`, client)
+      .toArray().map((row) => row.agent);
   }
 
   /** The conversation's live runs, oldest first. A read. */

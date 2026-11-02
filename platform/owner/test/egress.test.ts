@@ -1104,8 +1104,10 @@ describe("the sandbox's lease", () => {
     expect(config.env).toMatchObject({ HOME: "{home}", CLAUDE_CONFIG_DIR: "{home}/.claude",
                                        DISABLE_AUTOUPDATER: "1" });
     expect(config.inherit).toEqual(RUN_BASICS);
+    // Claude Code carries the run's secret as a header, its base URL the run alone.
     expect(config.env["ANTHROPIC_BASE_URL"])
-      .toBe(`https://egress.tinyassets.io/r/${RUN_ID}/${SECRET}/c/${connection}/`);
+      .toBe(`https://egress.tinyassets.io/r/${RUN_ID}/c/${connection}/`);
+    expect(config.env["ANTHROPIC_CUSTOM_HEADERS"]).toBe(`x-ta-run: ${SECRET}`);
     expect(config.env["ANTHROPIC_API_KEY"]).toMatch(new RegExp(`^ta_ph_${connection}_[0-9a-f]{32}$`));
     expect(JSON.stringify(config)).not.toContain("sk-good");
   });

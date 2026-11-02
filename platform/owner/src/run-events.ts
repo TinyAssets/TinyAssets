@@ -19,16 +19,18 @@ import type { EngineEvents, EventMatcher } from "../../doors/src/sources";
 export const FRAME_VERSION = 1;
 
 /**
- * The runner's events post, bounded so the relay's memory guard counts it whole while the
- * object holds it (slice R's review M-4; `memory-bound.test.ts`): its body at most
- * `EVENTS_BODY_MAX` bytes, at most `EVENT_FRAMES_MAX` frames, each frame's JSON at most
- * `FRAME_UNITS_MAX` UTF-16 code units (the tail's own frame bound). Technical ceilings of
- * the isolate's memory; a CLI event longer than a frame may be is the runner's to cut,
- * marked, before it posts it (slice S), the engine's own transcript keeping the whole.
+ * The runner's events post, bounded so the relay's memory guard counts every post the
+ * object may hold at once (slice R's review M-4 and round 2; `memory-bound.test.ts`): each
+ * run's runner posts on its own, one post at a time, so as many posts as the tier's top
+ * runs may be in flight. Each post's body at most `EVENTS_BODY_MAX` bytes, at most
+ * `EVENT_FRAMES_MAX` frames, each frame's JSON at most `FRAME_UNITS_MAX` UTF-16 code units.
+ * Technical ceilings of the isolate's memory; a CLI event longer than a frame may be is the
+ * runner's to cut, marked, before it posts it (slice S), the engine's own transcript keeping
+ * the whole, and a busy CLI's events go in more posts, not bigger ones.
  */
-export const EVENTS_BODY_MAX = 524_288;
-export const EVENT_FRAMES_MAX = 512;
-export const FRAME_UNITS_MAX = 262_144;
+export const EVENTS_BODY_MAX = 65_536;
+export const EVENT_FRAMES_MAX = 64;
+export const FRAME_UNITS_MAX = 32_768;
 
 /** Whether an events post is within its frame bounds (the doors' and the object's check). */
 export function eventsBounded(body: unknown): boolean {

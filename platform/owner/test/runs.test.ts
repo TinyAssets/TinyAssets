@@ -95,12 +95,16 @@ describe("a run", () => {
                                   lease: { lease_id: lease!["lease_id"] } });
     expect(start.tokens).not.toBeNull();
     expect(start.network!.network.rules["egress.tinyassets.io"]).toBeDefined();
-    const base = `https://egress.tinyassets.io/r/${run.run_id}/${secret}/c/${connection}/`;
+    // Claude Code takes the run's secret as a header (its record's `run_secret_env`), so its
+    // base URL carries the run alone.
+    const base = `https://egress.tinyassets.io/r/${run.run_id}/c/${connection}/`;
     expect(start.config.env).toMatchObject({
-      ...runEnv(bundledSources(), "claude-code", "api_key").env, ANTHROPIC_BASE_URL: base });
+      ...runEnv(bundledSources(), "claude-code", "api_key").env, ANTHROPIC_BASE_URL: base,
+      ANTHROPIC_CUSTOM_HEADERS: `x-ta-run: ${secret}` });
     expect(start.config.env["ANTHROPIC_API_KEY"]).toMatch(/^ta_ph_c[0-9a-f]{24}_[0-9a-f]{32}$/);
     expect(start.tokens!.runner_token).toMatch(/^[0-9a-f]{64}$/);
     expect(start.urls).toEqual({ mcp: `https://egress.tinyassets.io/r/${run.run_id}/${secret}/mcp`,
+                                 mcp_bare: `https://egress.tinyassets.io/r/${run.run_id}/mcp`,
                                  events: `https://egress.tinyassets.io/r/${run.run_id}/events`,
                                  signin: "https://egress.tinyassets.io/signin" });
     expect(JSON.stringify(start)).not.toContain("sk-good");
@@ -666,7 +670,9 @@ describe("a run's own calls", () => {
   it("of a client's run recheck its stamp at every call: a grant moved ends the run",
      async () => {
     const r = await gated();
-    await defineAgent(r.stub, r.bind(), "main", { ...SIGNED_IN, scopes: ALL_SCOPES });
+    await defineAgent(r.stub, r.bind(), "main", {
+      engine: "claude-code", credential: "api_key",
+      connection: await r.connect("sk-good"), scopes: ALL_SCOPES });
     const client = r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn() });
     await r.stub.outsideAgents(client);
     const { revision } = (await r.stub.grantList(r.bind())).clients
@@ -692,7 +698,9 @@ describe("a run's own calls", () => {
   it("of a client's run hold only what that client holds, and its grant's change ends " +
      "the run", async () => {
     const r = await gated();
-    await defineAgent(r.stub, r.bind(), "main", { ...SIGNED_IN, scopes: ALL_SCOPES });
+    await defineAgent(r.stub, r.bind(), "main", {
+      engine: "claude-code", credential: "api_key",
+      connection: await r.connect("sk-good"), scopes: ALL_SCOPES });
     const client = r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn() });
     await r.stub.outsideAgents(client);
     // A scoped grant holding converse and read_graph alone, where its agent acts.
