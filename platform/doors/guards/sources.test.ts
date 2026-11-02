@@ -256,8 +256,6 @@ describe("an engine record that does not fit", () => {
     ["an unknown event kind", cli((s) => { at(s, "engine.events")["thinking"] = []; })],
     ["an unknown verdict key", cli((s) => {
       at(s, "unattended.api_key")["expires"] = "2027-01-01"; })],
-    ["an invoke backend", cli((s) => { s["invoke"] = { argv: ["{bin}", "-p"] }; })],
-    ["an invoke inside the engine", cli((s) => { at(s, "engine")["invoke"] = {}; })],
     ["the old state_paths", cli((s) => { s["state_paths"] = [".claude/.credentials.json"]; })],
     ["a secret path inside /workspace", cli((s) => {
       s["secret_paths"] = ["/workspace/agents/a/.credentials.json"]; })],
@@ -285,15 +283,27 @@ describe("an engine record that does not fit", () => {
     ["allowed as a string", cli((s) => { at(s, "unattended.api_key")["allowed"] = "yes"; })],
     ["refused with no reason", cli((s) => {
       s["unattended"] = { ...(s["unattended"] as Json), api_key: { allowed: false } }; })],
+    ["refused with an empty reason", cli((s) => {
+      s["unattended"] = { ...(s["unattended"] as Json), api_key: { allowed: false,
+        reason: "" } }; })],
     ["refused citing a page with no date", cli((s) => {
       s["unattended"] = { ...(s["unattended"] as Json), api_key: { allowed: false,
         reason: "unclear", cite: "https://example.com/terms" } }; })],
+    ["refused with a date and no page", cli((s) => {
+      s["unattended"] = { ...(s["unattended"] as Json), api_key: { allowed: false,
+        reason: "unclear", read: "2026-11-01" } }; })],
     ["a verdict for a credential it does not run on", cli((s) => {
       s["credential"] = ["vendor_login_in_sandbox"]; delete s["api_key_env"]; })],
     ["no verdict for a credential it runs on", cli((s) => {
       delete at(s, "unattended")["api_key"]; })],
     ["an unknown credential", cli((s) => { s["credential"] = ["password"]; })],
-    ["no credential", cli((s) => { s["credential"] = []; })],
+    ["no credential", cli((s) => {
+      s["credential"] = []; s["unattended"] = {}; delete s["login"]; delete s["api_key_env"];
+      delete s["per_credential"]; })],
+    ["a credential twice", cli((s) => { s["credential"] = ["api_key", "api_key"]; }, pi)],
+    ["API-key variables with no API key", cli((s) => {
+      s["api_key_env"] = { moonshot: { base_url: "KIMI_BASE_URL", api_key: "KIMI_API_KEY",
+                                       base: "sealed" } }; }, records.get("kimi") as Json)],
     ["a sign-in with no vendor login", cli((s) => {
       s["credential"] = ["api_key"]; delete at(s, "unattended")["vendor_login_in_sandbox"];
       delete s["per_credential"]; })],
@@ -335,9 +345,11 @@ describe("an engine record that does not fit", () => {
     ["an MCP config with no door URL", cli((s) => {
       at(s, "mcp")["template"] = "{\"mcpServers\": {}}"; })],
     ["an MCP config flag with no file", cli((s) => {
-      delete at(s, "mcp")["file"]; delete at(s, "mcp")["template"]; })],
+      delete at(s, "mcp")["file"]; delete at(s, "mcp")["template"];
+      (at(s, "mcp")["argv"] as string[]).push("--url", "{mcp_url}"); })],
     ["an MCP file inside /workspace", cli((s) => {
       at(s, "mcp")["file"] = "/workspace/agents/a/.mcp.json"; })],
+    ["the engine home itself as a file", cli((s) => { at(s, "mcp")["file"] = "{home}"; })],
     ["an MCP trust with no note", cli((s) => { delete at(s, "mcp.trust")["note"]; })],
     ["a tool filter with no {tools}", cli((s) => {
       at(s, "tools.allow")["argv"] = ["--tools"]; })],
@@ -372,6 +384,13 @@ describe("an engine record that does not fit", () => {
     ["a gateway source naming an engine twice", { ...anthropic, engines: ["pi", "pi"] }],
   ])("fails loudly: %s", (_what, record) => {
     expect(refused(record)).toMatch(/^source record "[^"]*": /);
+  });
+
+  it.each([
+    ["an invoke backend", cli((s) => { s["invoke"] = { argv: ["{bin}", "-p"] }; })],
+    ["an invoke inside the engine", cli((s) => { at(s, "engine")["invoke"] = {}; })],
+  ])("fails loudly, never a backend: %s", (_what, record) => {
+    expect(refused(record)).toMatch(/^source record "claude-code": cli(?:\.engine)? has no invoke: a CLI is an engine, never a backend/);
   });
 
   it("takes the other pinned installs and an MCP-less engine", () => {

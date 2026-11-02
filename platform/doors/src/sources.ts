@@ -430,6 +430,10 @@ function overlaps(a: readonly string[], b: readonly string[]): boolean {
 }
 
 function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
+  // `invoke`, a single inference, is not an engine: a CLI is never a backend (ADR-033 D2).
+  if (object(value) && "invoke" in value) {
+    check.fail("cli has no invoke: a CLI is an engine, never a backend (ADR-033 decision 2)");
+  }
   const fields = check.keys(value, "cli", [
     "install", "credential", "unattended", "engine", "instructions", "skills_paths", "mcp",
     "tools", "unattended_argv", "home_env", "no_update", "secret_paths", "session_paths",
