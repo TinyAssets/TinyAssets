@@ -10,7 +10,8 @@ ADR-032: the loop is pi-durable in the owner's Durable Object, not a loop-worker
 pool, and user hooks run in a separately deployed Worker's Durable Object, not
 in the box. Amended by ADR-034 (founder, 2026-11-01): agents run on
 unmodified engines, among them a provider's CLI with its own loop in the
-user's sandbox.
+user's sandbox; and the "paid tier only" limit on subscription CLIs, never a
+founder decision (founder, 2026-11-02), is withdrawn (ADR-034 decision 8).
 
 ## Date
 

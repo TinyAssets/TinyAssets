@@ -4,7 +4,7 @@
 
 Accepted (founder, 2026-11-01).
 - **It amends** ADR-032 decisions 1, 3, 4 and 5, its "Amended 2026-10-30" section, two lines of its "What stands", and two of its Consequences, each listed below. ADR-032 decision 2 stands with one addition (the egress host also serves the run-scoped MCP door and the runner's event socket), and decision 6 stands.
-- **It also amends** the principle ADR-023 states and ADR-032 kept, that "the core loop runs outside every box".
+- **It also amends** the principle ADR-023 states and ADR-032 kept, that "the core loop runs outside every box", and withdraws the paid-tier limit on hosted vendor CLIs in ADR-023 and ADR-030 (decision 8).
 - **It builds on** ADR-033 (merged in #5384).
 - **Per ADR-005**, ADR-032's and ADR-023's bodies are not edited. Only their Status lines gain "amended by ADR-034".
 
@@ -96,21 +96,25 @@ Evidence read for this ADR:
    - **API-key runs:** every model request passes the egress door, which reserves and settles it against per-run and per-source caps.
    - **Subscription runs:** the vendor's own limits apply, plus ours: runs per agent per day, concurrent runs, a wall-time deadline per run, and the owner's sandbox-seconds. A vendor's rate-limit or billing error stops the agent's scheduled runs and notifies the owner.
 
-8. **Continuity is the engine's own session resume.**
+   - **Every owner's runs are capped** in sandbox-seconds a month and in concurrent runs, since TinyAssets pays for sandbox time. The caps are owner policy with platform ceilings; what each pricing tier allows is not yet decided.
+
+8. **Hosted engines are for every owner.** ADR-023 and ADR-030 limited vendor CLIs on TinyAssets boxes to the paid tier, attributed to a founder decision of 2026-10-26. The founder said on 2026-11-02 that no such decision was made, so the limit is withdrawn: every owner's agents may run in the sandbox, on any source, within the caps above.
+
+9. **Continuity is the engine's own session resume.**
    - **Where sessions live.** The session store is the engine's own files: on the sandbox disk while it is warm, and in the owner's files as the durable copy.
    - **Resume.** The owner's object keeps each conversation's engine and session id.
    - **What a cold create loses.** It loses the engine's sign-in, which never leaves the sandbox. It never loses the conversation.
 
-9. **Live output is the engine's own event stream**, relayed by the owner's object to the owner's app sockets. It is never committed: what is durable is the run, its receipt, its result and the engine's own transcript.
+10. **Live output is the engine's own event stream**, relayed by the owner's object to the owner's app sockets. It is never committed: what is durable is the run, its receipt, its result and the engine's own transcript.
 
-10. **Subagents and hooks are the engine's own.** Work between two TinyAssets agents goes through the mailbox and the board, which keep authorship.
+11. **Subagents and hooks are the engine's own.** Work between two TinyAssets agents goes through the mailbox and the board, which keep authorship.
 
-11. **Code mode moves to the MCP door.**
+12. **Code mode moves to the MCP door.**
     - **How it works.** A main agent or an engine may send one script that calls the door's tools, each held to the caller's grant. Its VM runs in the separately deployed Worker's `CodemodeSandbox`, never in the owner's object.
     - **Directory-listed profile.** Code mode is not offered there, since OpenAI's directory rejects a generic executor.
     - **User hooks.** These no longer run there.
 
-12. **Deleted, each in one slice** (the re-plan's slice D):
+13. **Deleted, each in one slice** (the re-plan's slice D):
     - the in-object pi loop (`OwnerAgent`, pi's `ExecutionEnv` over the manifest, `ta` as a pi tool);
     - `ThreadStore`, `RemoteStorage`, `ThreadHost` and the thread rows that name stores;
     - the gateway's pi-messages model-call path and the owner's `gateway` provider;
@@ -142,7 +146,7 @@ Evidence read for this ADR:
   - every "Kept difference";
   - the pi 1.4.x pin.
 
-  What survives of it is the separately deployed Worker, now only for code mode's VM (decision 11 above), for the same measured reason: compute in the owner's object delays all its requests.
+  What survives of it is the separately deployed Worker, now only for code mode's VM (decision 12 above), for the same measured reason: compute in the owner's object delays all its requests.
 - **Decision 5:**
   - **Changed:**
     - "A Firecracker microVM sandbox … is woken only for `bash`" becomes "is woken for every engine run".
