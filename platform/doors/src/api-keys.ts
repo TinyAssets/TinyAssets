@@ -27,7 +27,7 @@
  * use for the owner's list, and the Python's held `_apply_key_request`), which also makes
  * the 25-key count strict (two concurrent mints can pass it by one); the per-key and
  * per-owner rate limits (120 and 600 a minute); and `run_graph` and `converse`, which join
- * the scopes with the agent's doors (5).
+ * the scopes with the run doors (slice R).
  */
 import { codePoints } from "../../owner/src/text";
 

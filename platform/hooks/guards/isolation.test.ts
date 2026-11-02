@@ -1,9 +1,9 @@
 /**
  * The hooks Worker's source reaches no owner and no storage (agent research §6.4).
  *
- * - No source names a binding of the owner's world (`OWNER`, `PISTORE`, `FILES`,
- *   `GATEWAY`, `BLOBS`) or `HOOKS` (it is never bound to itself), nor `storage`: its
- *   objects never use their storage, so an owner's code lives only in the owner's files.
+ * - No source names a binding of the owner's world (`OWNER`, `FILES`, `GATEWAY`,
+ *   `BLOBS`) or `HOOKS` (it is never bound to itself), nor `storage`: its objects never
+ *   use their storage, so a script leaves nothing behind.
  *   No source names `process`.
  * - Imports, read from the AST and resolved as paths: a relative one must land in
  *   `hooks/src/`; a bare one must be `cloudflare:workers` or pi's code mode
@@ -25,7 +25,7 @@ import { describe, expect, it } from "vitest";
 import { parse, reporter, workerSources } from "../../owner/guards/sources";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
-const BANNED = /^(?:OWNER|PISTORE|FILES|GATEWAY|BLOBS|HOOKS|storage|process|node:process)$/;
+const BANNED = /^(?:OWNER|FILES|GATEWAY|BLOBS|HOOKS|storage|process|node:process)$/;
 /** The bare modules a source may import, and where (null: anywhere). */
 const BARE: Readonly<Record<string, string | null>> = Object.freeze({
   "cloudflare:workers": null,
@@ -85,22 +85,21 @@ function hooksSources(): Map<string, string> {
 describe("hooks isolation guards", () => {
   it("find no owner binding, no storage and no import from outside", () => {
     const sources = hooksSources();
-    expect([...sources.keys()]).toContain("hooks/src/runner.ts");
+    expect([...sources.keys()].sort()).toEqual(["hooks/src/codemode.ts", "hooks/src/index.ts"]);
     expect([...sources].flatMap(([path, source]) => hooksIsolation(path, source))).toEqual([]);
   });
 
   it.each([
     ["an OWNER binding", "export function f(env: { OWNER: unknown }) { return env.OWNER; }"],
-    ["the thread stores", "export const s = (env: Record<string, unknown>) => env['PISTORE'];"],
     ["the files Worker", "export const f = (env: { FILES: unknown }) => env.FILES;"],
     ["the gateway", "export const g = (env: { GATEWAY: unknown }) => env.GATEWAY;"],
     ["storage", "export const s = (ctx: { storage: unknown }) => ctx.storage;"],
     ["process", "export const p = () => process;"],
     ["the owner object's module", "import { OwnerDO } from '../../owner/src/owner-do';"],
     ["a path out and back", "import { x } from '../src/../../owner/src/text';"],
-    ["another package", "import { x } from '@earendil-works/pi-durable';"],
+    ["another package", "import { x } from '@earendil-works/pi-ai';"],
     ["QuickJS outside codemode.ts", "import { x } from '@earendil-works/pi-codemode/cloudflare';"],
-    ["a dynamic import", "export const f = () => import('./runner');"],
+    ["a dynamic import", "export const f = () => import('./codemode');"],
     ["require", "export const x = require('node:fs');"],
     ["a type import by path", "export type T = import('../../owner/src/owner-do').OwnerDO;"],
   ])("sees %s", (_what, source) => {
@@ -111,7 +110,7 @@ describe("hooks isolation guards", () => {
     expect(hooksIsolation("hooks/src/probe.ts", [
       "import { WorkerEntrypoint } from 'cloudflare:workers';",
       "import type { CodemodeRemote } from '@earendil-works/pi-codemode/portable';",
-      "import { hookRequest } from './protocol';",
+      "import { CodemodeSandbox } from './codemode';",
     ].join("\n"))).toEqual([]);
     expect(hooksIsolation("hooks/src/codemode.ts",
       "import { CodemodeSandboxDurableObject } from '@earendil-works/pi-codemode/cloudflare';"))

@@ -16,32 +16,18 @@
  * `WORST_FILL`, and a workerd test fills, thins and refills a database against it
  * (`files-share.test.ts`). Every other table's rows are laid out as SQLite lays them,
  * their share of a b-tree page at that worst fill too, their overflow pages whole
- * (`termBytes`). The model turns' counters live as long as the pi records that own them,
- * whose rows the schema refuses past `THREAD_INPUTS` open root inputs, `THREAD_CHILD_INPUTS`
- * subagent inputs and `THREAD_COMPACTIONS` live compactions a thread
- * (`CONVERSATION_COMPACTIONS` for each of its `THREAD_CONVERSATIONS` live conversations: its
- * root and the subagents working in it, A5), and past `WORKING_THREADS` threads holding any,
- * each turn of at most `TURN_BYTES`; the calls open at once and
- * the spend counters are bounded by count (migration 10). pi's
- * records live in the thread stores (`thread-store.ts`, S1-S3), never in the owner's
- * database, so what the owner's object holds is its own bounded rows only, whatever its
- * agents do; this guard replaced A4's runtime storage gauge.
+ * (`termBytes`). The calls open at once and the spend counters are bounded by count
+ * (migration 7). No agent's records live in the owner's database: agents run on
+ * unmodified engines, their sessions in the owner's files (ADR-034), so what the owner's
+ * object holds is its own bounded rows only, whatever its agents do.
  *
- * The worst case is 46.3% of the limit (G4: 4,627,732,900 bytes), about 372 MB under half.
- * G4 added the egress reservations (2,564 rows: 2,000 admitted, 500 refused and 64 open,
- * each a visible-ASCII path of up to 2 KiB, about 24 MB) and each connection's egress scope
- * (16 KiB a row, about 7 MB); the sandbox's two token hashes, its turn and its network
- * generation fit in `file_space`'s one row, and the egress generation in `owner_policy`'s,
- * counted already. A5 was 46.0%
- * (4,597,482,932 bytes). F1 (49.0%, 4,897,208,852 bytes) traded the `work` lane's table (its 2,000 rows of up to
- * 16 KiB) for the admission row; a scheduled launch is a run, counted in the thread terms
- * already. A5 bounds the turn rows by the threads at work (`WORKING_THREADS`, 1,024) rather
- * than by every live thread (13,024): sixteen owners a working thread (eight root inputs,
- * two subagents' and six compactions, two for each of three live conversations) where
- * every live thread held ten, freeing about 300 MB. A grant's revision (migration 12) fit
- * in pages S4-S5 already counted. A new table, or a raised bound, must come out of an existing term: lower another
- * bound in the same change, or the guard fails. Every later slice trades terms so; none has
- * room of its own left.
+ * The worst case is 40.6% of the limit (slice D: 4,064,822,714 bytes), about 935 MB under
+ * half.
+ * ADR-034's deletion slice took out the agent's thread rows, their live and usage rows,
+ * the run receipts and the model turns' counters and owners, and Lifecycle's wake job and
+ * key per live thread; G4 was 46.3% (4,627,732,900 bytes). The runs slice (R) adds its
+ * `runs`, `run_grants` and `conversations` out of this room. A new table, or a raised
+ * bound, must stay under half the limit, or the guard fails.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -56,9 +42,6 @@ import {
 } from "../src/manifest";
 import { NOTICE_DETAIL, NOTICES_KEPT } from "../src/notices";
 import { SESSION_LIMITS } from "../src/sessions";
-import {
-  RECEIPT_REASON_MAX, RECEIPT_TEXT_MAX, THREAD_LIMITS, USAGE_ROW_MAX, USAGE_SPACE_MAX,
-} from "../src/threads";
 import { USAGE_LIMITS } from "../src/usage";
 import { PLATFORM } from "./sources";
 
@@ -161,19 +144,12 @@ const CARD_LIMITS = declared("registrations", "CARD_LIMITS", "maxPending", "maxR
 const MAX_OPEN_INTENTS = constant("files", "MAX_OPEN_INTENTS");
 const MAX_INTENT_CHUNKS = constant("files", "MAX_INTENT_CHUNKS");
 const MAX_PATH_BYTES = constant("paths", "MAX_PATH_BYTES");
-const THREAD_INPUTS = constant("schema", "THREAD_INPUTS");
-const THREAD_COMPACTIONS = constant("schema", "THREAD_COMPACTIONS");
-const THREAD_CONVERSATIONS = constant("schema", "THREAD_CONVERSATIONS");
-const THREAD_CHILD_INPUTS = constant("schema", "THREAD_CHILD_INPUTS");
-const WORKING_THREADS = constant("schema", "WORKING_THREADS");
-const CONVERSATION_COMPACTIONS = constant("schema", "CONVERSATION_COMPACTIONS");
-const TURN_BYTES = constant("schema", "TURN_BYTES");
 const CALLS_OPEN = constant("schema", "CALLS_OPEN");
 const SPEND_KEPT = constant("schema", "SPEND_KEPT");
 /** A connection's models, and its sealed blob, as the schema's checks hold them, in characters. */
 const MODELS_CHARS = inline("schema", /length\(models\) <= ([0-9]+)/);
 const BLOB_CHARS = inline("schema", /length\(blob\) <= ([0-9]+)/);
-/** A connection's egress scope (migration 14), as the schema's check holds it, in characters. */
+/** A connection's egress scope (migration 11), as the schema's check holds it, in characters. */
 const EGRESS_CHARS = inline("schema", /length\(egress\) <= ([0-9]+)/);
 /** A scope's every field, and an owner-set client's name, in code points (`grants.ts`). */
 const SCOPE_FIELD = inline("grants", /codePoints\(v\) > ([0-9]+)/);
@@ -247,173 +223,151 @@ export function termBytes(name: string, term: Term): number {
   return term.rows * (inPlace * WORST_FILL + overflow);
 }
 
-/** A thread's id, as its row holds it. */
-const THREAD_ID = 39;
-/**
- * Every thread row at once, dropping ones included (each counts until it is forgotten):
- * the owner's conversations, every client's conversations, and the runs whose stores are
- * kept (`runs_kept`, every caller's).
- */
-const threadRows = THREAD_LIMITS.owner + THREAD_LIMITS.clients + THREAD_LIMITS.runs;
-/** The live runs' bound at the policy's high setting (`runs.runs_live`). */
-const RUNS_LIVE = declared("policy", "RUN_SETTINGS", "runs_live").runs_live;
-/**
- * The threads that may hold live work at once: every conversation, and the runs not yet
- * settled (`runs_live`, high). A settled run takes no input (`run_settled`, refused at the
- * host's admission, a check below), so it holds no turn, no live row, no wake job and no
- * usage row: only its thread row and its receipt.
- */
-const liveRows = THREAD_LIMITS.owner + THREAD_LIMITS.clients + RUNS_LIVE;
-/**
- * A thread row at its widest: its ids and store, an agent id of 128 bytes (its directory's
- * name, ASCII, a CHECK), its client hash, the registration its stamp was made from (an
- * outside agent's id, at most 32: the universe is that row's, counted in `outside_agents`),
- * a run's request id, and its numbers and words. It fits in place in its b-tree page.
- */
-const THREAD_ROW = THREAD_ID + 32 + 128 + 64 + 32 + 128 + 10 * 8 + 2 * 8;
-/**
- * Every thread's turn owners at once: each working thread's (`WORKING_THREADS`, the schema's
- * bound on the threads holding owners, however many are live) open root and subagent
- * inputs and live compactions, a dropping one's too until its row is forgotten.
- */
-const TURN_OWNERS = WORKING_THREADS * (THREAD_INPUTS + THREAD_CHILD_INPUTS
-                                       + THREAD_COMPACTIONS);
+/** The bounds a term is made from, each module's own: what a proposed raise overrides. */
+export interface Bounds {
+  readonly collections?: Partial<typeof COLLECTIONS>;
+  readonly ledger?: Partial<typeof LEDGER_LIMITS>;
+  readonly grants?: Partial<typeof GRANT_LIMITS>;
+  readonly sessions?: Partial<typeof SESSION_LIMITS>;
+  readonly notices?: Partial<{ kept: number; detail: number }>;
+  readonly egress?: Partial<typeof EGRESS_LIMITS>;
+  readonly policy?: Partial<typeof POLICY_LIMITS>;
+  readonly cards?: Partial<typeof CARD_LIMITS>;
+  readonly usage?: Partial<typeof USAGE_LIMITS>;
+  readonly connections?: Partial<typeof CONNECTION_LIMITS>;
+}
 
-/** The file manifest's tables, together: `max_manifest_bytes` at its high bound, at worst fill. */
-const MANIFEST: Term = Object.freeze({
-  rows: 1, bytes: FILE_SETTINGS.max_manifest_bytes, charged: true,
-  by: "max_manifest_bytes (high) at WORST_FILL, charged by triggers to " +
-    Object.keys(MANIFEST_TABLES).join(", "),
-});
-/** An owner-set grant: its scopes, each three fields of JSON, and its name. */
-const GRANT_BYTES = GRANT_LIMITS.maxScopes * (3 * SCOPE_FIELD * JSON_POINT + 64)
-  + CLIENT_NAME * 4;
+/**
+ * Every owner table's worst case at `bounds` (the sources' own unless overridden); the
+ * manifest's tables share one term.
+ */
+export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
+  const C = { ...COLLECTIONS, ...bounds.collections };
+  const L = { ...LEDGER_LIMITS, ...bounds.ledger };
+  const G = { ...GRANT_LIMITS, ...bounds.grants };
+  const S = { ...SESSION_LIMITS, ...bounds.sessions };
+  const N = { kept: NOTICES_KEPT, detail: NOTICE_DETAIL, ...bounds.notices };
+  const E = { ...EGRESS_LIMITS, ...bounds.egress };
+  const P = { ...POLICY_LIMITS, ...bounds.policy };
+  const K = { ...CARD_LIMITS, ...bounds.cards };
+  const U = { ...USAGE_LIMITS, ...bounds.usage };
+  const CN = { ...CONNECTION_LIMITS, ...bounds.connections };
+  const F = FILE_SETTINGS;
+  /** The file manifest's tables, together: `max_manifest_bytes` at its high bound, at worst fill. */
+  const MANIFEST: Term = Object.freeze({
+    rows: 1, bytes: F.max_manifest_bytes, charged: true,
+    by: "max_manifest_bytes (high) at WORST_FILL, charged by triggers to " +
+      Object.keys(MANIFEST_TABLES).join(", "),
+  });
+  /** An owner-set grant: its scopes, each three fields of JSON, and its name. */
+  const GRANT_BYTES = G.maxScopes * (3 * SCOPE_FIELD * JSON_POINT + 64)
+    + CLIENT_NAME * 4;
 
-/** Every owner table's worst case; the manifest's tables share one term. */
-export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string, Term>>({
-  object_owner: { rows: 1, bytes: ROW + 4 * KIB, by: "one row" },
-  file_manifest: MANIFEST,
-  file_space: { rows: 1, bytes: ROW + MAX_PATH_BYTES + 4 * KIB,
-                by: "one row; its retention cursor a path" },
-  file_intents: { rows: MAX_OPEN_INTENTS,
-                  bytes: ROW + 2 * MAX_INTENT_CHUNKS * 64,
-                  by: "MAX_OPEN_INTENTS open uploads, each at most MAX_INTENT_CHUNKS chunk " +
-                    "ids, and as many still to send" },
-  owner_policy: { rows: 1, bytes: ROW + POLICY_LIMITS.maxDocument * 4,
-                  by: "one document of maxDocument code points" },
-  policy_receipts: { rows: 3 * POLICY_LIMITS.receiptsPerBucket, bytes: ROW + 1 * KIB,
-                     by: "receiptsPerBucket in each of three buckets" },
-  policy_proposals: { rows: POLICY_LIMITS.pendingProposals + POLICY_LIMITS.appliedProposals,
-                      bytes: ROW + POLICY_LIMITS.maxChange * 4,
-                      by: "pending and applied proposals of maxChange code points" },
-  proposal_shares: { rows: GRANT_LIMITS.maxFreeClients + GRANT_LIMITS.maxOwnerClients,
-                     bytes: ROW, by: "one per client" },
-  policy_usage: { rows: 1, bytes: ROW, by: "one row" },
-  outside_clients: { rows: GRANT_LIMITS.maxFreeClients + GRANT_LIMITS.maxOwnerClients,
-                     bytes: ROW + 8 + GRANT_BYTES * GRANT_LIMITS.maxOwnerClients
-                       / (GRANT_LIMITS.maxFreeClients + GRANT_LIMITS.maxOwnerClients),
-                     by: "free clients (no scopes, no name) and owner-set ones (maxScopes " +
-                       "scopes of three fields, and a name), each with its revision " +
-                       "(migration 12)" },
-  grant_fences: { rows: 1, bytes: ROW, by: "one row" },
-  owner_sessions: { rows: SESSION_LIMITS.maxSessions, bytes: ROW, by: "maxSessions" },
-  outside_agents: { rows: LEDGER_LIMITS.maxAgentRows, bytes: ROW + 1 * KIB,
-                    by: "maxAgentRows, every row: a tombstone a revoke or a thread holds too" },
-  ledger_messages: { rows: LEDGER_LIMITS.maxMessages, bytes: ROW + 1 * KIB,
-                     by: "maxMessages" },
-  message_bodies: { rows: LEDGER_LIMITS.maxMessages,
-                    bytes: ROW + LEDGER_LIMITS.maxBodyBytes / LEDGER_LIMITS.maxMessages,
-                    by: "maxBodyBytes over maxMessages" },
-  ledger_recipients: { rows: LEDGER_LIMITS.maxMessages * LEDGER_LIMITS.maxAgents,
-                       bytes: ROW, by: "each message to each agent" },
-  ledger_readers: { rows: LEDGER_LIMITS.maxAgentRows, bytes: ROW, by: "one per agent" },
-  ledger_receipts: { rows: LEDGER_LIMITS.maxReceipts, bytes: ROW + 1 * KIB,
-                     by: "maxReceipts" },
-  ledger_rings: { rows: LEDGER_LIMITS.maxAgentRows * WAKES_AN_HOUR, bytes: ROW,
-                  by: "an hour's wakes per agent, at the policy's most an hour" },
-  ledger_wakes: { rows: LEDGER_LIMITS.maxAgentRows + LEDGER_LIMITS.maxSettledWakes,
-                  bytes: ROW + 1 * KIB, by: "an open wake per agent, maxSettledWakes settled" },
-  ledger_usage: { rows: LEDGER_LIMITS.maxAgentRows + 1, bytes: ROW, by: "one per agent" },
-  collection_rows: { rows: COLLECTIONS.maxOwnerRows, bytes: ROW + COLLECTIONS.maxOwnerBytes /
-                                                              COLLECTIONS.maxOwnerRows,
-                     by: "maxOwnerRows; rows and history bytes within maxOwnerBytes" },
-  collection_history: { rows: COLLECTIONS.maxOwnerRows * COLLECTIONS.maxRevisions,
-                        bytes: ROW + COLLECTIONS.maxOwnerBytes /
-                                     (COLLECTIONS.maxOwnerRows * COLLECTIONS.maxRevisions),
-                        by: "maxRevisions a row; bytes within maxOwnerBytes" },
-  collection_seqs: { rows: COLLECTIONS.maxOwnerRows, bytes: ROW, by: "one per collection" },
-  collection_usage: { rows: 4 * COLLECTIONS.maxOwnerRows, bytes: ROW,
-                      by: "owner, collection, writer and creator counters" },
-  agent_cards: { rows: CARD_LIMITS.maxPending, bytes: ROW + CARD_LIMITS.maxRequest,
-                 by: "maxPending cards of maxRequest" },
-  owner_notices: { rows: NOTICES_KEPT, bytes: ROW + NOTICE_DETAIL * 4, by: "NOTICES_KEPT" },
-  connections: { rows: CONNECTION_LIMITS.maxConnections + CONNECTION_LIMITS.maxRevokedKept,
-                 bytes: ROW + 4 * MODELS_CHARS + 4 * EGRESS_CHARS,
-                 by: "connections and revoked kept, the schema's models and egress scope " +
-                   "ceilings each" },
-  connection_secrets: { rows: CONNECTION_LIMITS.maxConnections
-                              + CONNECTION_LIMITS.maxRevokedKept,
-                        bytes: ROW + 4 * BLOB_CHARS,
-                        by: "one sealed blob a connection, at the schema's ceiling" },
-  connection_flows: { rows: CONNECTION_LIMITS.maxFlowRows, bytes: ROW + 4 * KIB,
-                      by: "maxFlowRows" },
-  model_reservations: { rows: USAGE_LIMITS.receiptsKept + CALLS_OPEN, bytes: ROW + 1 * KIB,
-                        by: "receiptsKept settled, and CALLS_OPEN open at once" },
-  model_spend: { rows: SPEND_KEPT, bytes: ROW, by: "SPEND_KEPT day and month counters" },
-  // The sandbox's egress (G4): its lease is `file_space`'s one row; each request a row.
-  egress_reservations: { rows: EGRESS_LIMITS.receiptsKept + EGRESS_LIMITS.refusalsKept
-                                + EGRESS_LIMITS.open,
-                         bytes: ROW + EGRESS_PATH_MAX + 32 + 32 + 64 + 64 + 9 + 64 + 10 + 7
-                           + 256 + 25 + 7 + 64 + 30 + 16 * 8,
-                         by: "receiptsKept admitted, refusalsKept refused and open at once, " +
-                           "each its path (visible ASCII, a byte a character), ids, source, " +
-                           "charge, rule, periods, served model and numbers" },
-  egress_runs: { rows: EGRESS_LIMITS.open + 1, bytes: ROW + 32 + 4 * 8,
-                 by: "the live lease's run, and one for each run an open call still holds" },
-  model_turns: { rows: TURN_OWNERS, bytes: ROW + TURN_BYTES + THREAD_ID,
-                 by: "a turn per owner at most: WORKING_THREADS threads at work, each with " +
-                   "THREAD_INPUTS open root inputs, THREAD_CHILD_INPUTS subagent inputs and " +
-                   "THREAD_COMPACTIONS live compactions (CONVERSATION_COMPACTIONS for each " +
-                   "of THREAD_CONVERSATIONS live conversations), TURN_BYTES each" },
-  model_turn_owners: { rows: TURN_OWNERS, bytes: ROW + TURN_BYTES + 2 * THREAD_ID,
-                       by: "one per open input or live compaction, a thread each, indexed" },
-  // The agent's threads: rows only, every transcript in its own store.
-  agent_threads: { rows: threadRows, bytes: ROW + THREAD_ROW,
-                   by: "THREAD_LIMITS (the owner's conversations, every client's, the runs)" },
-  agent_live: { rows: liveRows, bytes: ROW, by: "one per live thread" },
-  agent_usage: { rows: liveRows, bytes: ROW + Math.min(USAGE_ROW_MAX,
-                                                       USAGE_SPACE_MAX / liveRows),
-                 by: "one per live thread, USAGE_SPACE_MAX of usage in all" },
-  agent_usage_space: { rows: 1, bytes: ROW, by: "one row" },
-  agent_usage_total: { rows: 1, bytes: ROW + USAGE_ROW_MAX,
-                       by: "one row, its keys folded to USAGE_ROW_MAX" },
-  // A run's receipt, a history its row bound keeps.
-  run_receipts: { rows: THREAD_LIMITS.receipts,
-                  bytes: ROW + THREAD_ID + 64 + 128 + RECEIPT_REASON_MAX * 4 + RECEIPT_TEXT_MAX
-                    + 8,
-                  by: "THREAD_LIMITS.receipts, RECEIPT_TEXT_MAX of text each" },
-  owner_erasure: { rows: 1, bytes: ROW, by: "one row" },
-  // The owner's admission: one row, its reasons a short fixed list; after the erasure, the
-  // erased tombstone, alone in the database.
-  owner_admission: { rows: 1, bytes: ROW + 64, by: "one row (the schema's CHECK)" },
-});
+  return Object.freeze<Record<string, Term>>({
+    object_owner: { rows: 1, bytes: ROW + 4 * KIB, by: "one row" },
+    file_manifest: MANIFEST,
+    file_space: { rows: 1, bytes: ROW + MAX_PATH_BYTES + 4 * KIB,
+                  by: "one row; its retention cursor a path" },
+    file_intents: { rows: MAX_OPEN_INTENTS,
+                    bytes: ROW + 2 * MAX_INTENT_CHUNKS * 64,
+                    by: "MAX_OPEN_INTENTS open uploads, each at most MAX_INTENT_CHUNKS chunk " +
+                      "ids, and as many still to send" },
+    owner_policy: { rows: 1, bytes: ROW + P.maxDocument * 4,
+                    by: "one document of maxDocument code points" },
+    policy_receipts: { rows: 3 * P.receiptsPerBucket, bytes: ROW + 1 * KIB,
+                       by: "receiptsPerBucket in each of three buckets" },
+    policy_proposals: { rows: P.pendingProposals + P.appliedProposals,
+                        bytes: ROW + P.maxChange * 4,
+                        by: "pending and applied proposals of maxChange code points" },
+    proposal_shares: { rows: G.maxFreeClients + G.maxOwnerClients,
+                       bytes: ROW, by: "one per client" },
+    policy_usage: { rows: 1, bytes: ROW, by: "one row" },
+    outside_clients: { rows: G.maxFreeClients + G.maxOwnerClients,
+                       bytes: ROW + 8 + GRANT_BYTES * G.maxOwnerClients
+                         / (G.maxFreeClients + G.maxOwnerClients),
+                       by: "free clients (no scopes, no name) and owner-set ones (maxScopes " +
+                         "scopes of three fields, and a name), each with its revision " +
+                         "(migration 9)" },
+    grant_fences: { rows: 1, bytes: ROW, by: "one row" },
+    owner_sessions: { rows: S.maxSessions, bytes: ROW, by: "maxSessions" },
+    outside_agents: { rows: L.maxAgentRows, bytes: ROW + 1 * KIB,
+                      by: "maxAgentRows, every row: a tombstone a revoke holds too" },
+    ledger_messages: { rows: L.maxMessages, bytes: ROW + 1 * KIB,
+                       by: "maxMessages" },
+    message_bodies: { rows: L.maxMessages,
+                      bytes: ROW + L.maxBodyBytes / L.maxMessages,
+                      by: "maxBodyBytes over maxMessages" },
+    ledger_recipients: { rows: L.maxMessages * L.maxAgents,
+                         bytes: ROW, by: "each message to each agent" },
+    ledger_readers: { rows: L.maxAgentRows, bytes: ROW, by: "one per agent" },
+    ledger_receipts: { rows: L.maxReceipts, bytes: ROW + 1 * KIB,
+                       by: "maxReceipts" },
+    ledger_rings: { rows: L.maxAgentRows * WAKES_AN_HOUR, bytes: ROW,
+                    by: "an hour's wakes per agent, at the policy's most an hour" },
+    ledger_wakes: { rows: L.maxAgentRows + L.maxSettledWakes,
+                    bytes: ROW + 1 * KIB, by: "an open wake per agent, maxSettledWakes settled" },
+    ledger_usage: { rows: L.maxAgentRows + 1, bytes: ROW, by: "one per agent" },
+    collection_rows: { rows: C.maxOwnerRows, bytes: ROW + C.maxOwnerBytes /
+                                                                C.maxOwnerRows,
+                       by: "maxOwnerRows; rows and history bytes within maxOwnerBytes" },
+    collection_history: { rows: C.maxOwnerRows * C.maxRevisions,
+                          bytes: ROW + C.maxOwnerBytes /
+                                       (C.maxOwnerRows * C.maxRevisions),
+                          by: "maxRevisions a row; bytes within maxOwnerBytes" },
+    collection_seqs: { rows: C.maxOwnerRows, bytes: ROW, by: "one per collection" },
+    collection_usage: { rows: 4 * C.maxOwnerRows, bytes: ROW,
+                        by: "owner, collection, writer and creator counters" },
+    agent_cards: { rows: K.maxPending, bytes: ROW + K.maxRequest,
+                   by: "maxPending cards of maxRequest" },
+    owner_notices: { rows: N.kept, bytes: ROW + N.detail * 4, by: "N.kept" },
+    connections: { rows: CN.maxConnections + CN.maxRevokedKept,
+                   bytes: ROW + 4 * MODELS_CHARS + 4 * EGRESS_CHARS,
+                   by: "connections and revoked kept, the schema's models and egress scope " +
+                     "ceilings each" },
+    connection_secrets: { rows: CN.maxConnections
+                                + CN.maxRevokedKept,
+                          bytes: ROW + 4 * BLOB_CHARS,
+                          by: "one sealed blob a connection, at the schema's ceiling" },
+    connection_flows: { rows: CN.maxFlowRows, bytes: ROW + 4 * KIB,
+                        by: "maxFlowRows" },
+    model_reservations: { rows: U.receiptsKept + CALLS_OPEN, bytes: ROW + 1 * KIB,
+                          by: "receiptsKept settled, and CALLS_OPEN open at once" },
+    model_spend: { rows: SPEND_KEPT, bytes: ROW, by: "SPEND_KEPT day and month counters" },
+    // The sandbox's egress (G4): its lease is `file_space`'s one row; each request a row.
+    egress_reservations: { rows: E.receiptsKept + E.refusalsKept
+                                  + E.open,
+                           bytes: ROW + EGRESS_PATH_MAX + 32 + 32 + 64 + 64 + 9 + 64 + 10 + 7
+                             + 256 + 25 + 7 + 64 + 30 + 16 * 8,
+                           by: "receiptsKept admitted, refusalsKept refused and open at once, " +
+                             "each its path (visible ASCII, a byte a character), ids, source, " +
+                             "charge, rule, periods, served model and numbers" },
+    egress_runs: { rows: E.open + 1, bytes: ROW + 32 + 4 * 8,
+                   by: "the live lease's run, and one for each run an open call still holds" },
+    owner_erasure: { rows: 1, bytes: ROW, by: "one row" },
+    // The owner's admission: one row, its reasons a short fixed list; after the erasure, the
+    // erased tombstone, alone in the database.
+    owner_admission: { rows: 1, bytes: ROW + 64, by: "one row (the schema's CHECK)" },
+  });
+}
+
+/** Every owner table's worst case at the sources' own bounds. */
+export const TERMS: Readonly<Record<string, Term>> = termsFor();
+/** The file manifest's term at the sources' own bounds. */
+const MANIFEST: Term = TERMS["file_manifest"]!;
 
 /**
  * What the runtime and Lifecycle keep in the owner's database beside its own tables, which
- * the schema does not make: Lifecycle's job table, one wake job per thread, the lanes' and
- * the erasure's; and the key-value store, a wake-failure count per thread, the memory-limit
- * strike counter and Lifecycle's own few keys.
+ * the schema does not make: Lifecycle's job table, the lanes' jobs and the erasure's; and
+ * the key-value store, Lifecycle's own few keys.
  */
 export const RUNTIME: Readonly<Record<string, Term>> = Object.freeze<Record<string, Term>>({
-  cf_agents_jobs: { rows: liveRows + 16, bytes: ROW + 256,
-                    by: "a wake job per live thread, a job per lane, the erasure's" },
-  _cf_KV: { rows: liveRows + 16, bytes: ROW + 128,
-            by: "a wake-failure count per live thread, and Lifecycle's own keys" },
+  cf_agents_jobs: { rows: 16, bytes: ROW + 256, by: "a job per lane, the erasure's" },
+  _cf_KV: { rows: 16, bytes: ROW + 128, by: "Lifecycle's own keys" },
 });
 
 /**
  * Every table the owner's schema makes, by its final name: its statements in order, a
- * rename moving a table and a drop taking one away (migration 13 drops the `work` lane's).
+ * rename moving a table and a drop taking one away.
  */
 export function ownerTables(schema: string = source("schema")): string[] {
   const tables = new Set<string>();
@@ -479,13 +433,16 @@ describe("the owner's database bound", () => {
     expect(tables.filter((table) => !named.includes(table))).toEqual([]);
     expect(named.filter((table) => !tables.includes(table))).toEqual([]);
     expect(new Set(named).size).toBe(named.length);
-    expect(tables.filter((table) => table.startsWith("pi_"))).toEqual([]);
+    expect(tables.filter((table) => table.startsWith("pi_") || table.startsWith("model_turn")
+                         || (table.startsWith("agent_") && table !== "agent_cards")))
+      .toEqual([]);
     // A virtual table, or a name with a digit, is a table too; a dropped one is not.
     expect(ownerTables('"CREATE VIRTUAL TABLE fts5_index USING fts5(x)", ' +
                        '"CREATE TABLE IF NOT EXISTS t2 (a)"')).toEqual(["fts5_index", "t2"]);
     expect(ownerTables('"CREATE TABLE a (x)", "CREATE TABLE b (x)", "DROP TABLE a"'))
       .toEqual(["b"]);
     expect(tables).not.toContain("scheduled_work");
+    expect(tables).not.toContain("run_receipts");
     expect(tables).toContain("owner_admission");
   });
 
@@ -526,9 +483,9 @@ describe("the owner's database bound", () => {
     expect(termBytes("x", { rows: 1, bytes: 4061 + 1, by: "" }))
       .toBe(Math.floor(4096 / Math.floor(3066 / 493)) * WORST_FILL + 4096);
     // A `WITHOUT ROWID` table's records are kept as an index's: they spill past 1,002.
-    expect(termBytes("model_turn_owners", { rows: 1, bytes: 1003, by: "" }))
+    expect(termBytes("model_spend", { rows: 1, bytes: 1003, by: "" }))
       .toBe(Math.floor(4096 / Math.floor(3066 / 493)) * WORST_FILL + 4096);
-    expect(["model_turns", "model_turn_owners", "agent_usage", "agent_live"]
+    expect(["model_spend", "egress_runs", "connections"]
       .filter((table) => !withoutRowid().has(table))).toEqual([]);
     expect(withoutRowid().has("model_reservations")).toBe(false);
     expect(withoutRowid('"CREATE TABLE a (x) WITHOUT ROWID", "CREATE TABLE b (x)", ' +
@@ -536,36 +493,12 @@ describe("the owner's database bound", () => {
   });
 
   it("counts the bounds the sources hold", () => {
-    // The turn owners' bound is the schema's check, by the constants this counts.
-    const schema = source("schema");
-    const full = schema.slice(schema.indexOf("CREATE TRIGGER model_turn_owners_full BEFORE " +
-                                             "INSERT ON model_turn_owners"));
-    const trigger = full.slice(0, full.indexOf("END\""));
-    expect(trigger).toMatch(/WHEN 's' THEN \$\{THREAD_INPUTS\} WHEN 'c' THEN \$\{\s*THREAD_CHILD_INPUTS\} ELSE \$\{THREAD_COMPACTIONS\} END/);
-    expect(trigger).toMatch(/COUNT\(DISTINCT thread\) FROM model_turn_owners\) >= \$\{WORKING_THREADS\}/);
     expect([MAX_INTENT_CHUNKS, CHUNK_BYTES, constant("files", "KEEP_CEILING")])
       .toEqual([10_000, 4 * 1024 ** 2, 1000]);
-    expect([THREAD_INPUTS, THREAD_COMPACTIONS, CALLS_OPEN, SPEND_KEPT, MODELS_CHARS,
-            BLOB_CHARS]).toEqual([8, 6, 1000, 4300, 655_360, 65_536]);
-    // A thread's compactions are each of its live conversations' (A5's subagents), and the
-    // turn rows are the working threads' (A5), not every live thread's.
-    expect([THREAD_CONVERSATIONS, CONVERSATION_COMPACTIONS, THREAD_CHILD_INPUTS,
-            WORKING_THREADS]).toEqual([3, 2, 2, 1024]);
-    expect(schema).toMatch(/export const THREAD_CHILD_INPUTS = THREAD_CONVERSATIONS - 1;/);
-    // The host admits fresh inputs within all but `OPEN_MAX` of the working threads, so a
-    // compaction pi starts in an open Session always has a place under the trigger's bound.
-    expect(source("thread-host")).toContain("workingMax: WORKING_THREADS - OPEN_MAX,");
-    expect(constant("thread-host", "OPEN_MAX")).toBe(64);
-    expect(THREAD_COMPACTIONS).toBe(THREAD_CONVERSATIONS * CONVERSATION_COMPACTIONS);
-    expect(schema).toMatch(/export const THREAD_COMPACTIONS = THREAD_CONVERSATIONS \* /);
+    expect([CALLS_OPEN, SPEND_KEPT, MODELS_CHARS, BLOB_CHARS])
+      .toEqual([1000, 4300, 655_360, 65_536]);
     expect([SCOPE_FIELD, CLIENT_NAME, WAKES_AN_HOUR, GRANT_LIMITS.maxScopes])
       .toEqual([512, 80, 60, 64]);
-    expect(TERMS["model_turns"]).toMatchObject({
-      rows: 1024 * (8 + 2 + 6),
-      bytes: 256 + TURN_BYTES + 39 });
-    expect([TURN_BYTES, USAGE_ROW_MAX]).toEqual([96, 16 * 1024]);
-    expect(TERMS["model_turn_owners"]).toMatchObject({
-      rows: TERMS["model_turns"]!.rows, bytes: 256 + TURN_BYTES + 2 * 39 });
     expect(TERMS["file_intents"]).toMatchObject({
       rows: MAX_OPEN_INTENTS, bytes: 256 + 2 * 640_000 });
     expect(TERMS["model_reservations"]!.rows).toBe(USAGE_LIMITS.receiptsKept + 1000);
@@ -582,83 +515,27 @@ describe("the owner's database bound", () => {
       .toBe(2000 * (256 + 8) + 1000 * (64 * (3 * 512 * 6 + 64) + 80 * 4));
   });
 
-  it("counts every run whose store is kept, every receipt, the usage of each thread and " +
-     "Lifecycle's own rows", () => {
-    expect(TERMS["agent_threads"]!.rows).toBe(threadRows);
-    expect(threadRows).toBe(THREAD_LIMITS.owner + THREAD_LIMITS.clients + THREAD_LIMITS.runs);
-    // A thread row names its registration, never a universe: it fits in place, at its widest.
-    expect(KEPT_AS_INDEX.has("agent_threads")).toBe(true);
-    expect(TERMS["agent_threads"]!.bytes).toBeGreaterThan(700);
-    expect(TERMS["agent_threads"]!.bytes).toBeLessThanOrEqual(INDEX_KEPT);
-    expect(source("schema")).toContain("\"authenticated_at REAL, registration TEXT CHECK " +
-                                       "(registration IS NULL \" +");
-    expect(source("schema")).toContain("\"AND agent_id NOT GLOB '*[^A-Za-z0-9._-]*'), \" +");
-    expect(RUNTIME["cf_agents_jobs"]!.rows).toBeGreaterThan(liveRows);
-    expect(RUNS_LIVE).toBe(2_000);
+  it("counts Lifecycle's own rows, apart from the tables", () => {
     expect(worstCase()).toBe(worstCase(TERMS) + worstCase(RUNTIME));
-    expect(TERMS["run_receipts"]!.rows).toBe(THREAD_LIMITS.receipts);
-    expect(TERMS["run_receipts"]!.bytes).toBeGreaterThan(RECEIPT_TEXT_MAX);
-    // The usage rows' sum is the space bound, not each row's bound times every thread.
-    expect(TERMS["agent_usage"]!.rows * TERMS["agent_usage"]!.bytes)
-      .toBeLessThanOrEqual(liveRows * ROW + USAGE_SPACE_MAX);
-    expect(liveRows * USAGE_ROW_MAX).toBeGreaterThan(USAGE_SPACE_MAX);
   });
 
-  it("counts every registration row, a tombstone a revoke or a thread holds among them, " +
-     "which the registry refuses past", () => {
+  it("counts every registration row, a tombstone a revoke holds among them, which the " +
+     "registry refuses past", () => {
     // Every row is counted as it is made and refused past maxAgentRows; a tombstone is one.
     expect(source("schema")).toContain("\"CREATE TRIGGER outside_agents_added AFTER INSERT ON " +
                                        "outside_agents BEGIN \" +\n      \"UPDATE ledger_usage " +
                                        "SET agents = agents + 1, \" +");
     expect(source("ledger")).toContain("if (usage.agents >= limits.maxAgentRows) {");
-    expect(source("schema")).toContain("\"CREATE TRIGGER outside_agents_named BEFORE DELETE ON " +
-                                       "outside_agents WHEN EXISTS \" +");
-  });
-
-  it("holds one conversation a caller, agent and universe in the recording unit, which no " +
-     "index can read the universe for", () => {
-    const threads = source("threads");
-    const record = threads.slice(threads.indexOf("  record(agent: unknown"));
-    const body = record.slice(0, record.indexOf("\n  }\n"));
-    const found = body.indexOf("      const held = this.conversing(by, id);");
-    expect(found).toBeGreaterThan(0);
-    expect(found).toBeLessThan(body.indexOf("INSERT INTO agent_threads"));
-    expect(body.indexOf("if (kind === \"converse\") {")).toBeLessThan(found);
-    expect(source("schema")).toContain("\"(IFNULL(client, ''), agent_id, " +
-                                       "IFNULL(registration, '')) \" +");
-  });
-
-  it("holds what it counts settled runs by: a settled run takes no input, refused at the " +
-     "host's admission before pi commits one", () => {
-    const host = source("thread-host");
-    const submit = host.slice(host.indexOf("  submit(thread: string"));
-    const body = submit.slice(0, submit.indexOf("\n  }\n"));
-    const refused = body.indexOf("if (fresh && this.#parts.settled(thread)) {\n" +
-                                 "          throw new Refused(RUN_SETTLED);");
-    expect(refused).toBeGreaterThan(0);
-    expect(refused).toBeLessThan(body.indexOf("await conversation.submit("));
-    // No run settles in a unit that finds an input being admitted, so none is refused late.
-    const agent = source("agent");
-    const quiet = agent.indexOf("      if (!from.quiet()) {\n        return false;");
-    expect(quiet).toBeGreaterThan(0);
-    expect(quiet).toBeLessThan(agent.indexOf("      threads.settle(thread, kept,"));
-    // Its turn owners go in its settling unit, a lost unit's too.
-    expect(source("schema")).toContain("\"DELETE FROM model_turn_owners WHERE thread = " +
-                                       "NEW.thread_id; \" +");
-    // The usage of a settled run goes to the total; no row of its own is kept.
-    const threads = source("threads");
-    expect(threads).toContain("\"WHERE thread_id = ? AND settled_at IS NULL \" +");
-    expect(agent).toContain("settled: (thread) => parts.threads.settledRun(thread),");
   });
 
   it("sees a bound that would pass half the limit, or a table it no longer covers", () => {
     expect(worstCase({ ...TERMS, file_manifest: { rows: 1, bytes: 5e9, by: "too much" } }))
       .toBeGreaterThan(SHARE * DATABASE_BYTES);
-    expect(worstCase({ ...TERMS, model_turns: { rows: 1e7, bytes: 896, by: "too many" } }))
+    expect(worstCase({ ...TERMS, model_spend: { rows: 1e7, bytes: 896, by: "too many" } }))
       .toBeGreaterThan(SHARE * DATABASE_BYTES);
-    const { model_turns: _turns, ...fewer } = TERMS;
+    const { model_spend: _spend, ...fewer } = TERMS;
     expect(ownerTables().filter((table) => !covered(fewer).includes(table)))
-      .toEqual(["model_turns"]);
+      .toEqual(["model_spend"]);
     const { file_manifest: _manifest, ...unbounded } = TERMS;
     expect(ownerTables().filter((table) => !covered(unbounded).includes(table)))
       .toEqual(Object.keys(MANIFEST_TABLES).sort());

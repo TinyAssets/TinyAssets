@@ -1,46 +1,28 @@
 /**
  * The owner's model spend (`usage.ts`; tasks 4 G2): reservations held against the owner's
- * model policy, their states, the caps under concurrency, a dead instance's calls, and
- * the policy's `models` table.
+ * model policy, their states, the ceilings under concurrency, a dead instance's calls, and
+ * the policy's `models` table. The runs slice (R) keys the reservations to runs.
  *
- * Acceptance cases ported from `tinyassets/request_budget.py` (`_RequestLedger`: a turn's
- * attempt limit; `dispatched` only from `reserved`; `not_sent` only from `reserved`,
+ * Acceptance cases ported from `tinyassets/request_budget.py` (`_RequestLedger`:
+ * `dispatched` only from `reserved`; `not_sent` only from `reserved`,
  * `succeeded`, `failed` or `unknown` only from `dispatched`; a `not_sent` attempt never
  * counts) and from `PolicyStore.decide`'s spend reservations (`tinyassets/broker/policy.py`:
  * the day's and month's reservations summed against their caps, a source's ceiling).
  */
 import { runInDurableObject } from "cloudflare:test";
-import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
-import { agentPolicy, MODEL_DEFAULTS, MODEL_SETTINGS, modelSettings, validate } from "../src/policy";
-import { THREAD_INPUTS } from "../src/schema";
+import { MODEL_DEFAULTS, MODEL_SETTINGS, modelSettings, validate } from "../src/policy";
 import {
-  type Ask, largestFitting, type ModelCaps, periods, priced, TURN_ENDED, TURN_OWNERS_FULL, Usage,
-  USAGE_LIMITS,
+  type Ask, largestFitting, type ModelCaps, periods, priced, Usage, USAGE_LIMITS,
   type UsageLimits,
 } from "../src/usage";
-import { gated, provider, until } from "./gateway-support";
-import { capTurnOwners, failure, ownerObject } from "./support";
-import type { GatedOwnerDO } from "./worker";
+import { gated } from "./gateway-support";
+import { failure, ownerObject } from "./support";
 
 const NOW = 1_793_000_000;
-/**
- * The threads the test turns are in, and the turns open in them: `IN_THREAD` in each, in
- * order, each thread's owners numbered from one, as pi's ids are per store.
- */
-const THREAD = `thread_${"0".repeat(32)}`;
-const SECOND = `thread_${"2".repeat(32)}`;
-const IN_THREAD = THREAD_INPUTS - 1;
-const OPEN_TURNS = ["t1", "t2", "t3", "t4", "t5", "t9",
-                    ...["t0", "s0", "s1", "s2", "s3"],
-                    ...Array.from({ length: 6 }, (_, i) => `other${i}`)];
-const THREADS = [THREAD, SECOND, ...Array.from(
-  { length: Math.ceil(OPEN_TURNS.length / IN_THREAD) - 2 },
-  (_, i) => `thread_${String(i + 3).repeat(32).slice(0, 32)}`)];
-
 /** A model's cost record at `input` and `output` dollars per million tokens, as pi-ai's. */
 function rates(input: number, output: number,
                tiers?: NonNullable<Ask["rates"]["cost"]["tiers"]>): Ask["rates"] {
@@ -67,8 +49,6 @@ interface Rig {
   readonly rows: () => Record<string, SqlStorageValue>[];
   /** The spend counters, by `<period>/<source>`. */
   readonly spend: () => Record<string, number>;
-  /** A turn's counters, or undefined when it has none. */
-  readonly turn: (turn: string) => Record<string, SqlStorageValue> | undefined;
 }
 
 /** The reservations of calls whose conversation's authority stands: the caps alone decide. */
@@ -88,12 +68,6 @@ function withUsage<R>(act: (r: Rig) => Promise<R>, limits: Partial<UsageLimits> 
     }), { ...USAGE_LIMITS, ...limits });
     const sql = state.storage.sql;
     const usage = make();
-    // Each test turn is open, as the thread host keeps them: an input owns it.
-    for (const [k, thread] of THREADS.entries()) {
-      await gate.write(() => usage.turnOwners(thread, OPEN_TURNS
-        .slice(k * IN_THREAD, (k + 1) * IN_THREAD)
-        .map((turn, i) => ({ owner: `s:${i + 1}`, turn }))));
-    }
     return act({
       usage, gate, state, policy, fresh: make,
       rows: () => sql.exec<Record<string, SqlStorageValue>>(
@@ -102,9 +76,6 @@ function withUsage<R>(act: (r: Rig) => Promise<R>, limits: Partial<UsageLimits> 
       spend: () => Object.fromEntries(sql.exec<{ period: string; source: string; cost: number }>(
         "SELECT period, source, cost FROM model_spend ORDER BY period, source")
         .toArray().map((row) => [`${row.period}/${row.source}`, row.cost])),
-      turn: (turn) => sql.exec<Record<string, SqlStorageValue>>(
-        "SELECT requests, tokens, cost, last_at FROM model_turns WHERE turn = ?", turn)
-        .toArray()[0],
     });
   });
 }
@@ -145,7 +116,6 @@ describe("a reservation", () => {
     expect(r.rows()).toMatchObject([{ state: "reserved", est_tokens: 5000, est_cost: FULL,
                                       source: "anthropic" }]);
     expect(r.spend()).toEqual({ [DAY]: FULL, [MONTH]: FULL });
-    expect(r.turn("t1")).toMatchObject({ requests: 1, tokens: 5000, cost: FULL });
     if (!reserved.ok) {
       return;
     }
@@ -155,17 +125,15 @@ describe("a reservation", () => {
       state: "succeeded", tokens: 1200, cost: 5000 }, NOW + 5))).toBe(true);
     expect(r.rows()).toMatchObject([{ state: "succeeded", tokens: 1200, cost: 5000 }]);
     expect(r.spend()).toEqual({ [DAY]: 5000, [MONTH]: 5000 });
-    expect(r.turn("t1")).toEqual({ requests: 1, tokens: 1200, cost: 5000, last_at: NOW + 5 });
     expect(() => r.usage.reserve(ASK, NOW)).toThrow();  // outside a unit: the gate refuses
   }));
 
-  it("is refused, kept as a receipt, when its conversation's authority no longer stands",
+  it("is refused, kept as a receipt, when the authority it runs under no longer stands",
      () => withUsage(async (r) => {
     expect(await r.gate.write(() => r.usage.reserve(ASK, NOW, () => "outside_authority")))
       .toEqual({ ok: false, rule: "outside_authority" });
     expect(r.rows()).toMatchObject([{ state: "refused", rule: "outside_authority", est_cost: 0 }]);
     expect(r.spend()).toEqual({});
-    expect(r.turn("t1")).toMatchObject({ requests: 0, tokens: 0, cost: 0 });
   }));
 
   it("moves only along its states", () => withUsage(async (r) => {
@@ -192,11 +160,9 @@ describe("a reservation", () => {
       .toEqual([["unknown", null], ["not_sent", "aborted"]]);
     // Unknown keeps its whole reservation; not sent holds nothing.
     expect(r.spend()[DAY]).toBe(FULL);
-    expect(r.turn("t1")).toMatchObject({ requests: 1, tokens: 5000, cost: FULL });
     // A failed call holds nothing.
     await failedCall(r, ASK);
     expect(r.spend()[DAY]).toBe(FULL);
-    expect(r.turn("t1")).toMatchObject({ requests: 2, tokens: 5000, cost: FULL });
   }));
 
   it("is refused once the policy moved since it was reserved", () => withUsage(async (r) => {
@@ -224,170 +190,65 @@ describe("a reservation", () => {
     // Neither is this instance's open call any more.
     expect(await r.gate.write(() => r.usage.dispatched(reserved.id, NOW, null)))
       .toEqual({ sent: false, rule: "reservation_not_open" });
-    expect(r.turn("t1")).toMatchObject({ requests: 0, cost: 0 });
-    expect(r.turn("t2")).toMatchObject({ requests: 1, cost: FULL });
     expect(r.spend()[DAY]).toBe(FULL);
   }));
 });
 
-describe("the per-turn caps", () => {
-  it("hold a turn to its requests; a failed call counts, one never sent or refused does not",
-     () => withUsage(async (r) => {
-    r.policy.caps = { turn_requests: 3 };
-    await spent(r, ASK, 10, 10);
-    const unsent = await r.gate.write(() => r.usage.reserve(ASK, NOW));
-    if (!unsent.ok) {
-      throw new Error("refused");
-    }
-    await r.gate.write(() => r.usage.dispatched(unsent.id, NOW, "aborted"));
-    await failedCall(r, ASK);
-    await spent(r, ASK, 10, 10);
-    expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
-      .toEqual({ ok: false, rule: "turn_requests" });
-    expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
-      .toEqual({ ok: false, rule: "turn_requests" });
-    expect(r.turn("t1")).toMatchObject({ requests: 3 });
-    // Another turn starts afresh.
-    expect((await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2" }, NOW))).ok)
-      .toBe(true);
-    expect(r.rows().filter((row) => row["state"] === "refused")
-      .map((row) => [row["rule"], row["est_cost"]]))
-      .toEqual([["turn_requests", 0], ["turn_requests", 0]]);
-  }));
-
-  it("never free a turn's requests when its receipts are pruned", () => withUsage(async (r) => {
-    r.policy.caps = { turn_requests: 3 };
-    const results: string[] = [];
-    for (let i = 0; i < 8; i++) {
-      const reserved = await r.gate.write(() => r.usage.reserve(ASK, NOW));
-      if (reserved.ok) {
-        await r.gate.write(() => r.usage.dispatched(reserved.id, NOW, null));
-        await r.gate.write(() => r.usage.settle(reserved.id, { state: "succeeded", tokens: 10,
-                                                               cost: 7 }, NOW));
-        results.push("ok");
-      } else {
-        results.push(reserved.rule);
-      }
-    }
-    expect(results).toEqual(["ok", "ok", "ok", ...Array(5).fill("turn_requests")]);
-    expect(r.rows().length).toBeLessThanOrEqual(4);
-  }, { receiptsKept: 3 }));
-
-  it("never free a live turn's caps when other turns' receipts push its own out", () =>
+describe("a reservation's output", () => {
+  it("is refused one token under the floor, and taken at it", () =>
     withUsage(async (r) => {
-      r.policy.caps = { turn_requests: 2 };
-      await spent(r, ASK, 10, 7);
-      await spent(r, ASK, 10, 7);
-      expect((await r.gate.write(() => r.usage.reserve(ASK, NOW))).ok).toBe(false);
-      for (let i = 0; i < 6; i++) {
-        await spent(r, { ...ASK, turn: `other${i}` }, 10, 7);
-      }
-      expect(r.rows().some((row) => row["turn"] === "t1" && row["state"] === "succeeded"))
-        .toBe(false);
+      r.policy.caps = { daily_cost: 3000 + (USAGE_LIMITS.minOutput - 1) * 15 };
       expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
-        .toEqual({ ok: false, rule: "turn_requests" });
-    }, { receiptsKept: 4 }));
-
-  it("hold 5,000 requests of one turn, past its receipts, and refuse the next", () =>
-    withUsage(async (r) => {
-      expect(MODEL_SETTINGS.turn_requests[1]).toBe(10_000);
-      r.policy.caps = { turn_requests: 5_000, turn_tokens: 1_000_000_000,
-                        turn_cost: 1_000_000_000_000 };
-      const ask = { ...ASK, inputTokens: 1, maxOutputTokens: 1, rates: rates(0, 0) };
-      for (let i = 0; i < 5_000; i++) {
-        await r.gate.write(() => {
-          const reserved = r.usage.reserve(ask, NOW);
-          if (!reserved.ok) {
-            throw new Error(`refused at ${i}: ${reserved.rule}`);
-          }
-          r.usage.dispatched(reserved.id, NOW, null);
-          r.usage.settle(reserved.id, { state: "succeeded", tokens: 3, cost: 0 }, NOW);
-        });
-      }
-      // Each held 2 tokens reserved and settled at 3, at no cost: the tokens alone moved.
-      expect(r.turn("t1")).toMatchObject({ requests: 5_000, tokens: 15_000, cost: 0 });
-      expect(r.rows().length).toBeLessThanOrEqual(101);
-      expect(await r.gate.write(() => r.usage.reserve(ask, NOW)))
-        .toEqual({ ok: false, rule: "turn_requests" });
-    }, { receiptsKept: 100 }), 120_000);
-
-  it("shrink a call's output to what the turn's tokens leave, then refuse", () =>
-    withUsage(async (r) => {
-      r.policy.caps = { turn_tokens: 8000 };
-      await spent(r, ASK, 5000, 10);
-      // 8000 - 5000 held - 1000 input leaves 2000 of the 4000 asked.
-      const shrunk = await r.gate.write(() => r.usage.reserve(ASK, NOW));
-      expect(shrunk).toMatchObject({ ok: true, max_output_tokens: 2000 });
-      expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
-        .toEqual({ ok: false, rule: "turn_tokens" });
-    }));
-
-  it("count what a failed call used toward the turn's tokens, and an unknown one's estimate",
-     () => withUsage(async (r) => {
-    r.policy.caps = { turn_tokens: 10_000 };
-    await failedCall(r, ASK);
-    const lost = await r.gate.write(() => r.usage.reserve(ASK, NOW));
-    if (!lost.ok) {
-      throw new Error("refused");
-    }
-    await r.gate.write(() => r.usage.dispatched(lost.id, NOW, null));
-    await r.gate.write(() => r.usage.settle(lost.id, { state: "unknown" }, NOW));
-    // 10,000 - 5,000 the unknown call holds - 1000 input leaves 4000.
-    expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
-      .toMatchObject({ ok: true, max_output_tokens: 4000 });
-    expect(r.turn("t1")).toMatchObject({ requests: 3, tokens: 10_000 });
-  }));
-
-  it("refuse an output one token under the floor, and take one at it", () =>
-    withUsage(async (r) => {
-      r.policy.caps = { turn_tokens: 1000 + USAGE_LIMITS.minOutput - 1 };
-      expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
-        .toEqual({ ok: false, rule: "turn_tokens" });
-      r.policy.caps = { turn_tokens: 1000 + USAGE_LIMITS.minOutput };
+        .toEqual({ ok: false, rule: "daily_cost" });
+      r.policy.caps = { daily_cost: 3000 + USAGE_LIMITS.minOutput * 15 };
       expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
         .toMatchObject({ ok: true, max_output_tokens: USAGE_LIMITS.minOutput });
     }));
 
-  it("count a settled call's cost toward the turn's cost", () => withUsage(async (r) => {
-    r.policy.caps = { turn_cost: 50_000 };
+  it("counts a settled call's cost toward the ceiling", () => withUsage(async (r) => {
+    r.policy.caps = { daily_cost: 50_000 };
     await spent(r, ASK, 10, 20_000);
     // 50,000 - 20,000 spent - 3000 input leaves 27,000 µ$: 1800 output tokens at 15.
     expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
       .toMatchObject({ ok: true, max_output_tokens: 1800 });
   }));
 
-  it("shrink a call's output to what the turn's cost leaves, never below the floor", () =>
+  it("shrinks to what the ceiling leaves, never below the floor", () =>
     withUsage(async (r) => {
-      r.policy.caps = { turn_cost: 30_000 };
+      r.policy.caps = { daily_cost: 30_000 };
       // 3000 for the input leaves 27,000 µ$: 1800 output tokens at 15.
       const first = await r.gate.write(() => r.usage.reserve(ASK, NOW));
       expect(first).toMatchObject({ ok: true, max_output_tokens: 1800 });
       expect(r.rows()[0]).toMatchObject({ est_cost: 30_000, est_tokens: 2800 });
       expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
-        .toEqual({ ok: false, rule: "turn_cost" });
+        .toEqual({ ok: false, rule: "daily_cost" });
       // A reasoning call needs the gateway's floor for a thinking budget.
-      r.policy.caps = { turn_cost: 30_000 + 3000 + 1500 * 15 };
+      r.policy.caps = { daily_cost: 30_000 + 3000 + 1500 * 15 };
       expect(await r.gate.write(() => r.usage.reserve({ ...ASK, reasoning: true }, NOW)))
-        .toEqual({ ok: false, rule: "turn_cost" });
+        .toEqual({ ok: false, rule: "daily_cost" });
       expect((await r.gate.write(() => r.usage.reserve(ASK, NOW)))).toMatchObject({
         ok: true, max_output_tokens: 1500 });
-      // Asking for less than the floor is the call's own choice.
-      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2",
-                                                         maxOutputTokens: 100 }, NOW)))
-        .toMatchObject({ ok: true, max_output_tokens: 100 });
     }));
 
-  it("refuse a call whose input alone passes the cost left", () => withUsage(async (r) => {
-    r.policy.caps = { turn_cost: 2000 };
+  it("is what the call asked for, its floor its own choice, with no ceiling set", () =>
+    withUsage(async (r) => {
+      expect(await r.gate.write(() => r.usage.reserve({ ...ASK, maxOutputTokens: 100 }, NOW)))
+        .toMatchObject({ ok: true, max_output_tokens: 100 });
+      expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
+        .toMatchObject({ ok: true, max_output_tokens: 4000 });
+    }));
+
+  it("is refused when the input alone passes the cost left", () => withUsage(async (r) => {
+    r.policy.caps = { daily_cost: 2000 };
     expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
-      .toEqual({ ok: false, rule: "turn_cost" });
+      .toEqual({ ok: false, rule: "daily_cost" });
     expect(await r.gate.write(() => r.usage.reserve({ ...ASK, rates: rates(3, 0) }, NOW)))
-      .toEqual({ ok: false, rule: "turn_cost" });
+      .toEqual({ ok: false, rule: "daily_cost" });
     expect(await r.gate.write(() => r.usage.reserve({ ...ASK, rates: rates(1, 0) }, NOW)))
       .toMatchObject({ ok: true, max_output_tokens: 4000 });
   }));
 
-  it("round every estimate up to the next µ$", () => withUsage(async (r) => {
+  it("rounds every estimate up to the next µ$", () => withUsage(async (r) => {
     expect(priced(rates(0.5, 0.25), 3, 0)).toBe(2);
     await r.gate.write(() => r.usage.reserve({ ...ASK, inputTokens: 3, maxOutputTokens: 1031,
                                                rates: rates(0.5, 0.25) }, NOW));
@@ -395,15 +256,14 @@ describe("the per-turn caps", () => {
     expect(r.rows()[0]).toMatchObject({ est_cost: 260 });
   }));
 
-  it("find the most output a cost fits by bisection, about log2 of the bound in prices",
-     () => {
+  it("is found by bisection, about log2 of the bound in prices", () => {
     // The steepest search: the largest output any model takes, at the policy's largest
-    // turn cost, against a cheap record of the real catalog's.
+    // ceiling, against a cheap record of the real catalog's.
     const record = rates(0.029, 0.03);
     let calls = 0;
     const fits = (output: number) => {
       calls += 1;
-      return priced(record, 50_000, output) <= MODEL_SETTINGS.turn_cost[1];
+      return priced(record, 50_000, output) <= MODEL_SETTINGS.daily_cost[1];
     };
     expect(largestFitting(100_000_000, fits)).toBe(100_000_000);
     expect(calls).toBeLessThanOrEqual(28);
@@ -421,45 +281,30 @@ describe("the per-turn caps", () => {
     expect(largestFitting(0, () => true)).toBe(0);
   });
 
-  it("reserve a catalog-priced call at the policy's largest turn cost promptly", () =>
+  it("is reserved promptly for a catalog-priced call at the policy's largest ceiling", () =>
     withUsage(async (r) => {
-      r.policy.caps = { turn_cost: MODEL_SETTINGS.turn_cost[1], turn_tokens: 1_000_000_000 };
+      r.policy.caps = { daily_cost: MODEL_SETTINGS.daily_cost[1] };
       const began = Date.now();
       expect(await r.gate.write(() => r.usage.reserve({
         ...ASK, inputTokens: 50_000, maxOutputTokens: 4_000, rates: rates(0.029, 0.03) }, NOW)))
         .toMatchObject({ ok: true, max_output_tokens: 4_000 });
-      // A declared price whose output costs a millionth of a µ$ a token.
-      r.policy.caps = { turn_cost: 1_500, turn_tokens: 1_000_000_000 };
-      expect((await r.gate.write(() => r.usage.reserve({
-        ...ASK, turn: "t2", rates: rates(0.1003, 0.0000015) }, NOW))).ok).toBe(true);
       expect(Date.now() - began).toBeLessThan(500);
     }));
 
-  it("name the tighter of the turn's tokens and its cost when both leave less than the floor",
-     () => withUsage(async (r) => {
-      // 1000 input leaves 500 tokens; the cost leaves 3000 for the input and 100 output at 15.
-      r.policy.caps = { turn_tokens: 1_500, turn_cost: 3_000 + 100 * 15 };
-      expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
-        .toEqual({ ok: false, rule: "turn_cost" });
-      // The cost takes the 500 the tokens leave: the tokens are the tighter.
-      r.policy.caps = { turn_tokens: 1_500, turn_cost: 3_000 + 600 * 15 };
-      expect(await r.gate.write(() => r.usage.reserve(ASK, NOW)))
-        .toEqual({ ok: false, rule: "turn_tokens" });
+  it("keeps an estimate rounded up to the µ$ inside the cost it fits", () =>
+    withUsage(async (r) => {
+      // Here pi-ai's price of the output that fits by its rate, rounded up, is a µ$ over.
+      r.policy.caps = { daily_cost: 100_700 };
+      const reserved = await r.gate.write(() => r.usage.reserve({
+        ...ASK, inputTokens: 260, maxOutputTokens: 2_000_000, rates: rates(0.1, 0.1) }, NOW));
+      expect(reserved.ok).toBe(true);
+      const [row] = r.rows();
+      expect(row!["est_cost"]).toBeLessThanOrEqual(100_700);
+      expect(priced(rates(0.1, 0.1), 260, Number(row!["max_output_tokens"]) + 1))
+        .toBeGreaterThan(100_700);
     }));
 
-  it("keep an estimate rounded up to the µ$ inside the cost it fits", () => withUsage(async (r) => {
-    // Here pi-ai's price of the output that fits by its rate, rounded up, is a µ$ over.
-    r.policy.caps = { turn_cost: 100_700, turn_tokens: 1_000_000_000 };
-    const reserved = await r.gate.write(() => r.usage.reserve({
-      ...ASK, inputTokens: 260, maxOutputTokens: 2_000_000, rates: rates(0.1, 0.1) }, NOW));
-    expect(reserved.ok).toBe(true);
-    const [row] = r.rows();
-    expect(row!["est_cost"]).toBeLessThanOrEqual(100_700);
-    expect(priced(rates(0.1, 0.1), 260, Number(row!["max_output_tokens"]) + 1))
-      .toBeGreaterThan(100_700);
-  }));
-
-  it("price a call by pi-ai's calculateCost, a long-context tier for the whole request once " +
+  it("is priced by pi-ai's calculateCost, a long-context tier for the whole request once " +
      "its input passes the threshold", () => withUsage(async (r) => {
     const tiered = rates(3, 15, [{ inputTokensAbove: 2000, input: 6, output: 30, cacheRead: 0,
                                    cacheWrite: 0 }]);
@@ -469,160 +314,6 @@ describe("the per-turn caps", () => {
     await r.gate.write(() => r.usage.reserve({ ...ASK, inputTokens: 2001, rates: tiered }, NOW));
     expect(r.rows().map((row) => row["est_cost"])).toEqual([2000 * 3 + 4000 * 15,
                                                             2001 * 6 + 4000 * 30]);
-    // The output the caps leave is priced at the tier too: 50,000 - 18,000 of input at 6
-    // leaves 32,000 µ$, 1066 output tokens at 30.
-    r.policy.caps = { turn_cost: 50_000 };
-    expect(await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2", inputTokens: 3000,
-                                                      rates: tiered }, NOW)))
-      .toMatchObject({ ok: true, max_output_tokens: 1066 });
-    expect(r.rows()[2]).toMatchObject({ est_cost: 18_000 + 1066 * 30 });
-  }));
-});
-
-describe("a turn's counters", () => {
-  it("go with the last pi record that owns them, and never with time", () =>
-    withUsage(async (r) => {
-      await r.gate.write(() => r.usage.turnOwners(THREAD, [{ owner: "s:100", turn: "t1" }]));
-      await spent(r, ASK, 10, 7);
-      // Long idle, a turn still owned keeps its counters.
-      await r.gate.write(() => r.usage.reserve({ ...ASK, turn: "t2" }, NOW + 400 * 86_400));
-      expect(r.turn("t1")).toMatchObject({ requests: 1 });
-      await r.gate.write(() => r.usage.turnOwners(THREAD, [{ owner: "s:1", turn: null }]));
-      expect(r.turn("t1")).toMatchObject({ requests: 1 });
-      await r.gate.write(() => r.usage.turnOwners(THREAD, [{ owner: "s:100", turn: null }]));
-      expect(r.turn("t1")).toBeUndefined();
-      // The other thread's own `s:1` is its own, and keeps its turn.
-      expect(r.turn(OPEN_TURNS[IN_THREAD]!)).toMatchObject({ requests: 0 });
-      expect(r.state.storage.sql.exec("SELECT thread FROM model_turns WHERE turn = ?",
-                                      OPEN_TURNS[IN_THREAD]!).one()).toEqual({ thread: SECOND });
-      expect(r.usage.openInputs(THREAD)).toBe(IN_THREAD - 1);
-      expect(r.usage.openInputs(SECOND)).toBe(IN_THREAD);
-    }));
-
-  it("take a commit's new owner in an ended one's place at a thread's bound, the last " +
-     "naming of an owner standing", () =>
-    withUsage(async (r) => {
-      await r.gate.write(() => r.usage.turnOwners(THREAD, [{ owner: "s:50", turn: "t50" }]));
-      expect(r.usage.openInputs(THREAD)).toBe(THREAD_INPUTS);
-      // One input answered and another queued in one commit: the thread stays at its bound.
-      await r.gate.write(() => r.usage.turnOwners(THREAD, [
-        { owner: "s:51", turn: "t51" }, { owner: "s:50", turn: null }]));
-      expect([r.turn("t50"), r.turn("t51")]).toEqual([undefined, expect.anything()]);
-      // Queued and answered in one commit: it owns nothing.
-      await r.gate.write(() => r.usage.turnOwners(THREAD, [
-        { owner: "s:52", turn: null }, { owner: "s:51", turn: null },
-        { owner: "s:52", turn: "t52" }, { owner: "s:52", turn: null }]));
-      expect([r.turn("t51"), r.turn("t52")]).toEqual([undefined, undefined]);
-      expect(r.usage.openInputs(THREAD)).toBe(THREAD_INPUTS - 1);
-    }));
-
-  it("are moved all or nothing: a commit's owner past the bound leaves no turn held, no " +
-     "owner gone", () =>
-    withUsage(async (r) => {
-      const sql = r.state.storage.sql;
-      capTurnOwners(sql, 2, 1);
-      const owners = (turn: string) =>
-        sql.exec("SELECT owners FROM model_turns WHERE turn = ?", turn).toArray();
-      // Past the bound, though an owner ends in the same commit: refused whole.
-      await expect(r.gate.write(() => r.usage.turnOwners(THREAD, [
-        { owner: "s:2", turn: null }, { owner: "s:900", turn: "t1" }])))
-        .rejects.toThrow(TURN_OWNERS_FULL);
-      expect([owners("t1"), owners("t2")]).toEqual([[{ owners: 1 }], [{ owners: 1 }]]);
-      // So its last owner's end still drops the turn.
-      await r.gate.write(() => r.usage.turnOwners(THREAD, [{ owner: "s:1", turn: null }]));
-      expect(r.turn("t1")).toBeUndefined();
-    }));
-
-  it("are reconciled past the bound by passing the owners over it, so the thread opens", () =>
-    withUsage(async (r) => {
-      capTurnOwners(r.state.storage.sql, 2, 1);
-      expect(await r.gate.write(() => r.usage.turnsReconciled(THREAD, [
-        { owner: "s:1", turn: "t1" }, { owner: "s:2", turn: "t2" },
-        { owner: "s:800", turn: "n1" }, { owner: "t:801", turn: "n2" },
-        { owner: "t:802", turn: "n3" }]))).toBe(2);
-      expect([r.turn("t1"), r.turn("t2"), r.turn("n2")]).toEqual([
-        expect.anything(), expect.anything(), expect.anything()]);
-      expect([r.turn("n1"), r.turn("n3"), r.turn("t3")]).toEqual([undefined, undefined, undefined]);
-      expect(r.usage.openInputs(THREAD)).toBe(2);
-      // Any other refusal is no bound's: thrown, the unit kept whole.
-      await expect(r.gate.write(() => r.usage.turnsReconciled(THREAD, [
-        { owner: "s:1", turn: "t1" }, { owner: "x:1", turn: "t2" }])))
-        .rejects.toThrow(/CHECK constraint/);
-      expect(r.usage.openInputs(THREAD)).toBe(2);
-    }));
-
-  it("let a held turn go in a reconcile that passes its only owner over the bound", () =>
-    withUsage(async (r) => {
-      capTurnOwners(r.state.storage.sql, 1, 1);
-      const other = `thread_${"9".repeat(32)}`;
-      await r.gate.write(() => r.usage.turnOwners(other, [{ owner: "s:1", turn: "h1" }]));
-      expect(r.turn("h1")).toBeDefined();
-      // Its stale owner goes, a new one takes the thread's one place, and the turn's own new
-      // owner is passed over: nothing owns it, so it goes, never left at no owners.
-      expect(await r.gate.write(() => r.usage.turnsReconciled(other, [
-        { owner: "s:5", turn: "h5" }, { owner: "s:9", turn: "h1" }]))).toBe(1);
-      expect([r.turn("h1"), r.turn("h5")]).toEqual([undefined, expect.anything()]);
-      expect(r.state.storage.sql.exec("SELECT 1 FROM model_turns WHERE owners = 0").toArray())
-        .toEqual([]);
-    }));
-
-  it("refuse a call of a turn that has ended, never starting it over", () =>
-    withUsage(async (r) => {
-      await spent(r, ASK, 10, 7);
-      await r.gate.write(() => r.usage.turnOwners(THREAD, [{ owner: "s:1", turn: null }]));
-      expect(await r.gate.write(() => r.usage.reserve(ASK, NOW + 1)))
-        .toEqual({ ok: false, rule: TURN_ENDED });
-      expect(r.turn("t1")).toBeUndefined();
-      expect(r.rows().at(-1)).toMatchObject({ state: "refused", rule: TURN_ENDED });
-    }));
-
-  it("are reconciled to the owners a store holds, keeping a turn both hold", () =>
-    withUsage(async (r) => {
-      await spent(r, ASK, 10, 7);
-      await r.gate.write(() => r.usage.turnsReconciled(THREAD, [
-        { owner: "s:99", turn: "t1" }, { owner: "t:7", turn: `task:${THREAD}:7` }]));
-      expect(r.turn("t1")).toMatchObject({ requests: 1 });
-      expect(r.turn("t2")).toBeUndefined();
-      expect(r.turn(`task:${THREAD}:7`)).toMatchObject({ requests: 0 });
-      // Another thread's turns are its own.
-      const other = `thread_${"1".repeat(32)}`;
-      await r.gate.write(() => r.usage.turnOwners(other, [{ owner: "s:500", turn: "o1" }]));
-      await r.gate.write(() => r.usage.turnsReconciled(THREAD, []));
-      expect(r.turn("o1")).toMatchObject({ requests: 0 });
-      expect(r.turn("t1")).toBeUndefined();
-      expect(r.turn(OPEN_TURNS[IN_THREAD]!)).toMatchObject({ requests: 0 });
-    }));
-
-  it("keep the newest call's time when an older call of the turn settles after it", () =>
-    withUsage(async (r) => {
-      const first = await r.gate.write(() => r.usage.reserve(ASK, NOW));
-      if (!first.ok) {
-        throw new Error("refused");
-      }
-      await r.gate.write(() => r.usage.dispatched(first.id, NOW, null));
-      await r.gate.write(() => r.usage.reserve(ASK, NOW + 10));
-      await r.gate.write(() => r.usage.settle(first.id, { state: "succeeded", tokens: 1,
-                                                          cost: 1 }, NOW + 5));
-      expect(r.turn("t1")).toMatchObject({ requests: 2, last_at: NOW + 10 });
-    }));
-
-  it("take nothing from a call that settles after its turn ended", () =>
-    withUsage(async (r) => {
-      const open = await r.gate.write(() => r.usage.reserve(ASK, NOW));
-      if (!open.ok) {
-        throw new Error("refused");
-      }
-      await r.gate.write(() => r.usage.dispatched(open.id, NOW, null));
-      await r.gate.write(() => r.usage.turnOwners(THREAD, [{ owner: "s:1", turn: null }]));
-      await r.gate.write(() => r.usage.settle(open.id, { state: "succeeded", tokens: 1,
-                                                         cost: 1 }, NOW + 5));
-      expect(r.turn("t1")).toBeUndefined();
-    }));
-
-  it("are never moved by a refusal", () => withUsage(async (r) => {
-    r.policy.caps = { turn_cost: 10 };
-    expect((await r.gate.write(() => r.usage.reserve(ASK, NOW))).ok).toBe(false);
-    expect(r.turn("t1")).toMatchObject({ requests: 0, tokens: 0, cost: 0 });
   }));
 });
 
@@ -683,18 +374,8 @@ describe("the daily and monthly ceilings", () => {
 });
 
 describe("concurrent reserves", () => {
-  it("never pass a cap: each reads and inserts in its own unit, one after another", () =>
-    withUsage(async (r) => {
-      r.policy.caps = { turn_requests: 3 };
-      // Asked for together, each runs whole in its own unit, reading what the last wrote.
-      const reserves = Array.from({ length: 8 }, () =>
-        r.gate.write(() => r.usage.reserve(ASK, NOW)));
-      const results = await Promise.all(reserves);
-      expect(results.filter((result) => result.ok)).toHaveLength(3);
-      expect(results.slice(3)).toEqual(Array(5).fill({ ok: false, rule: "turn_requests" }));
-    }));
-
-  it("never pass a spend ceiling either", () => withUsage(async (r) => {
+  it("never pass a spend ceiling: each reads and inserts in its own unit, one after " +
+     "another", () => withUsage(async (r) => {
     r.policy.caps = { daily_cost: FULL * 2 };
     const reserves = Array.from({ length: 6 }, (_, i) =>
       r.gate.write(() => r.usage.reserve({ ...ASK, turn: `t${i}` }, NOW)));
@@ -728,9 +409,9 @@ describe("a dead instance's calls", () => {
       .toBe(false);
   }));
 
-  it("are settled by the next reserve, so a call never sent frees its turn", () =>
+  it("are settled by the next reserve, so a call never sent frees what it held", () =>
     withUsage(async (r) => {
-      r.policy.caps = { turn_requests: 1 };
+      r.policy.caps = { daily_cost: FULL };
       expect((await r.gate.write(() => r.usage.reserve(ASK, NOW))).ok).toBe(true);
       const next = r.fresh();
       expect((await r.gate.write(() => next.reserve(ASK, NOW))).ok).toBe(true);
@@ -746,39 +427,6 @@ describe("a dead instance's calls", () => {
       .toEqual({ sent: false, rule: "reservation_not_open" });
     expect(r.rows().map((row) => row["state"])).toEqual(["reserved"]);
   }));
-
-  it("settle unknown after the object dies mid-call, the reservation kept", async () => {
-    const r = await gated();
-    await r.connect("sk-crash");
-    const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-    const cancelled = async () => ((await (await fetch(`https://status.test/cancelled?id=${id}`))
-      .json()) as { cancelled: boolean | null }).cancelled;
-    await r.in(async (instance: GatedOwnerDO) => {
-      await instance.harness.submit(`cmd:slow-${id}`);
-    });
-    await until(async () => (await cancelled()) === false, "the upstream stream to open");
-    const [open] = await r.sql("SELECT id, state, est_cost FROM model_reservations");
-    expect(open!["state"]).toBe("dispatched");
-    // The object dies mid-call, as an eviction or a reset leaves it: no settle runs.
-    await r.in((_instance, state) => state.abort("evicted mid-call")).catch(() => undefined);
-    // The broken instance answers its last calls with the reset; a new one then serves.
-    let receipts: Awaited<ReturnType<typeof r.stub.usageReceipts>>["receipts"] = [];
-    await until(async () => {
-      try {
-        ({ receipts } = await env.GATED.getByName(r.name).usageReceipts(r.bind()));
-        return true;
-      } catch {
-        return false;
-      }
-    }, "a new instance");
-    const crashed = receipts.find((receipt) => receipt.reservation === open!["id"]);
-    expect(crashed).toMatchObject({ state: "unknown", est_cost: open!["est_cost"] });
-    const held = await runInDurableObject(env.GATED.getByName(r.name),
-                                          (_instance: GatedOwnerDO, state) =>
-      state.storage.sql.exec<{ cost: number }>(
-        "SELECT SUM(cost) AS cost FROM model_spend WHERE period LIKE 'd:%'").one().cost);
-    expect(held).toBeGreaterThanOrEqual(Number(open!["est_cost"]));
-  });
 });
 
 describe("the receipts", () => {
@@ -790,7 +438,6 @@ describe("the receipts", () => {
       expect(r.rows().length).toBeLessThanOrEqual(4);
       expect(r.spend()[DAY]).toBe(42);
       expect(r.spend()[MONTH]).toBe(42);
-      expect(r.turn("t0")).toMatchObject({ requests: 1, tokens: 10, cost: 7 });
     }, { receiptsKept: 3 }));
 
   it("never prune a reservation still open, reserved or dispatched", () =>
@@ -833,25 +480,21 @@ describe("the models table of owner policy", () => {
                  spend: { daily: null, monthly: null, transaction: null, ask_above: null,
                           source_ceilings: {} } };
 
-  it("is optional, its defaults the Python's per-turn limits, and feeds pi its retries",
-     () => {
+  it("is optional, its defaults the Python's per-turn limits", () => {
     expect(modelSettings(validate(base))).toEqual({ ...MODEL_DEFAULTS, sources: {} });
     expect(MODEL_DEFAULTS).toMatchObject({ turn_cost: 25_000_000, turn_requests: 100,
                                            daily_cost: null, monthly_cost: null });
     const document = validate({ ...base, models: {
       turn_requests: 5, turn_tokens: 1000, turn_cost: 0, daily_cost: null, monthly_cost: 9,
-      sources: { anthropic: { daily_cost: 1, monthly_cost: null } },
-      retries: 0 } });
+      sources: { anthropic: { daily_cost: 1, monthly_cost: null } } } });
     expect(modelSettings(document)).toEqual({
       turn_requests: 5, turn_tokens: 1000, turn_cost: 0, daily_cost: null, monthly_cost: 9,
       sources: { anthropic: { daily_cost: 1, monthly_cost: null } } });
-    expect(agentPolicy(document)).toEqual({ retry: { maxRetries: 0 } });
-    expect(agentPolicy(validate(base))).toEqual({});
   });
 
   it.each([
     { turn_requests: 0 }, { turn_requests: 10_001 }, { turn_requests: 1.5 },
-    { turn_tokens: null }, { turn_cost: -1 }, { daily_cost: "1" }, { retries: 11 },
+    { turn_tokens: null }, { turn_cost: -1 }, { daily_cost: "1" }, { retries: 0 },
     { unknown: 1 }, { sources: { Anthropic: { daily_cost: 1 } } },
     { sources: { "-x": { daily_cost: 1 } } }, { sources: { [`a${"b".repeat(64)}`]: {} } },
     { sources: { anthropic: { weekly_cost: 1 } } },

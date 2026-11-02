@@ -8,8 +8,9 @@
  * loudly: code older than its data never runs against it.
  *
  * A migration is append-only. Once deployed it never changes; a new shape is a new
- * entry at the end. Nothing is deployed yet, so migrations 1 to 4 are still edited in
- * place.
+ * entry at the end. Nothing is deployed yet, so every migration is still edited in place:
+ * ADR-034's deletion slice rewrote the ones pi's loop had added (its threads, turns and
+ * scheduled work) out of the list.
  *
  * The `CHECK` on a row body is the store's fixed ceiling of 65,536 characters. The
  * primitive's own bound is `LIMITS.maxRow`, which may be lower but never higher (a
@@ -22,7 +23,6 @@ import {
   HISTORY_BYTES as FILE_HISTORY_BYTES, OWNER_SCOPE, SCOPE_REF_BYTES, SHARE_BYTES, TEMP_BYTES,
 } from "./manifest";
 import { DEFAULT_POLICY_DIGEST, DEFAULT_POLICY_JSON, FILE_DEFAULTS } from "./policy";
-import { SCHEDULED_RUN } from "./threads";
 
 export type Migration = readonly string[];
 
@@ -90,12 +90,6 @@ const CHUNK_USAGE = (sign: string, row: string) =>
 const HELD = (row: string) =>
   `(CASE WHEN ${row}.state IN ('reserved', 'dispatched', 'unknown') THEN ${row}.est_cost ` +
   `WHEN ${row}.state IN ('succeeded', 'failed') THEN coalesce(${row}.cost, 0) ELSE 0 END)`;
-/** What a model reservation row holds against its turn's token cap. */
-const HELD_TOKENS = (row: string) =>
-  `(CASE WHEN ${row}.state IN ('reserved', 'dispatched', 'unknown') THEN ${row}.est_tokens ` +
-  `WHEN ${row}.state IN ('succeeded', 'failed') THEN coalesce(${row}.tokens, 0) ELSE 0 END)`;
-/** Whether a model reservation row counts as one of its turn's requests: it was, or may be, sent. */
-const ASKED = (row: string) => `(${row}.state NOT IN ('refused', 'not_sent'))`;
 /** Add `amount` to the row's source's day and month in `model_spend`. */
 const SPEND = (row: string, amount: string) =>
   "INSERT INTO model_spend (period, source, cost) VALUES " +
@@ -103,7 +97,7 @@ const SPEND = (row: string, amount: string) =>
   `('m:' || ${row}.month, ${row}.source, ${amount}) ` +
   "ON CONFLICT (period, source) DO UPDATE SET cost = cost + excluded.cost;";
 /**
- * What a sandbox call's charge holds (migration 14): its estimate while held or unknown,
+ * What a sandbox call's charge holds (migration 11): its estimate while held or unknown,
  * what it used once settled, as a model reservation's (`HELD`).
  */
 const CHARGED = (row: string) =>
@@ -118,13 +112,6 @@ const RUN = (row: string, requests: string, tokens: string, cost: string) =>
   `(${row}.lease_id, ${row}.epoch, ${requests}, ${tokens}, ${cost}) ` +
   "ON CONFLICT (lease_id, epoch) DO UPDATE SET requests = requests + excluded.requests, " +
   "tokens = tokens + excluded.tokens, cost = cost + excluded.cost;";
-/** Move the row's turn's counters by the row's own, times `sign`, at `at`. */
-const TURN = (row: string, sign: string, at: string) =>
-  "INSERT INTO model_turns (turn, requests, tokens, cost, last_at) VALUES " +
-  `(${row}.turn, ${sign}${ASKED(row)}, ${sign}${HELD_TOKENS(row)}, ${sign}${HELD(row)}, ${at}) ` +
-  "ON CONFLICT (turn) DO UPDATE SET requests = requests + excluded.requests, " +
-  "tokens = tokens + excluded.tokens, cost = cost + excluded.cost, " +
-  "last_at = max(last_at, excluded.last_at);";
 type ShareCounter = "entries" | "history" | "chunk_bytes" | "inline_bytes" | "manifest_bytes";
 const SHARE_COUNTERS: readonly ShareCounter[] =
   Object.freeze(["entries", "history", "chunk_bytes", "inline_bytes", "manifest_bytes"]);
@@ -183,19 +170,8 @@ const CHUNK_OF = (sha: string, what: string) =>
   `(SELECT ${what} FROM file_chunks k WHERE k.sha256 = ${sha})`;
 
 /**
- * Move a turn's counters by a reservation row's, times `sign`, at `at`: only a turn that is
- * still open has a row (migration 10), and a call settling after its turn ended moves
- * nothing, never bringing the row back.
- */
-const TURN_MOVED = (row: string, sign: string, at: string) =>
-  `UPDATE model_turns SET requests = requests ${sign} ${ASKED(row)}, ` +
-  `tokens = tokens ${sign} ${HELD_TOKENS(row)}, cost = cost ${sign} ${HELD(row)}, ` +
-  `last_at = max(last_at, ${at}) WHERE turn = ${row}.turn;`;
-/** A turn's most bytes: an origin (`origin.ts`) is far shorter. */
-export const TURN_BYTES = 96;
-/**
  * Model calls open at once (`reserved` or `dispatched`), past which a reservation is
- * refused (`model_calls_full`): far above what one object's threads make at once.
+ * refused (`model_calls_full`).
  */
 export const CALLS_OPEN = 1000;
 /**
@@ -204,48 +180,6 @@ export const CALLS_OPEN = 1000;
  * source's first call in a period is refused (`model_spend_full`).
  */
 export const SPEND_KEPT = 4300;
-/**
- * Open inputs (queued or placed) a thread's root holds at once, each owning a turn while it
- * is open: the doors' and a scheduled delivery's, never a subagent's (`THREAD_CHILD_INPUTS`
- * bounds those). The thread host refuses one past it (`thread_inputs_full`), and migration
- * 10's trigger refuses its owner row past it.
- */
-export const THREAD_INPUTS = 8;
-/**
- * Conversations with live work a thread's Session holds at once: its root, and the
- * subagents `ta`'s `agent:delegate` made (`delegate.ts`) whose call, or own work, is live;
- * a delegation past it is refused (`thread_conversations_full`).
- */
-export const THREAD_CONVERSATIONS = 3;
-/**
- * Open subagent inputs a thread holds at once: each live subagent's one (`c:<id>` owners,
- * an input of a conversation not the root), refused by the host's linked admission past it
- * and by migration 10's trigger.
- */
-export const THREAD_CHILD_INPUTS = THREAD_CONVERSATIONS - 1;
-/**
- * Threads of the owner's that hold turn owners at once (working: an open input or a live
- * compaction), which bounds the turn rows whatever evictions leave behind. The thread host
- * admits a door's or a delivery's input to a thread not working only within
- * `WORKING_THREADS - OPEN_MAX` of them (`threads_working`, a client within its share), so
- * a compaction pi starts in any open Session always has a place; migration 10's trigger
- * refuses a thread's first owner past it.
- */
-export const WORKING_THREADS = 1024;
-/**
- * Compactions one conversation holds live at once: pi starts a background one only while
- * none is listed (`generation.js`, `pi.live.compactions`), and a run's blocking one waits
- * in its generation, one run at a time; there is no manual compaction door yet (A6 caps
- * its own).
- */
-export const CONVERSATION_COMPACTIONS = 2;
-/**
- * Compactions a thread's Session holds live at once: each of its live conversations'.
- * Migration 10's trigger refuses a compaction's owner row past it.
- */
-export const THREAD_COMPACTIONS = THREAD_CONVERSATIONS * CONVERSATION_COMPACTIONS;
-
-/** A file entry in the temporary area, which keeps no history. */
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // 1: the owner this object serves, and the one revision primitive (S34, ADR-032).
   Object.freeze([
@@ -330,6 +264,14 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "deleted_at REAL CHECK (deleted_at IS NULL OR disabled_reason IS NOT NULL), " +
       "UNIQUE (command_center_id, outside_client, outside_family))",
     "CREATE INDEX outside_identities ON outside_agents (outside_client, outside_family)",
+    // A registration's id, universe and client never change: its client's grant row counts
+    // it (`outside_clients.agents`, moved only on insert and delete), and its universe is
+    // where a scoped stamp acts.
+    "CREATE TRIGGER outside_agents_stamped BEFORE UPDATE OF agent_id, command_center_id, " +
+      "outside_client ON outside_agents WHEN NEW.agent_id IS NOT OLD.agent_id " +
+      "OR NEW.command_center_id IS NOT OLD.command_center_id " +
+      "OR NEW.outside_client IS NOT OLD.outside_client BEGIN " +
+      "SELECT RAISE(ABORT, 'a registration never changes its id, universe or client'); END",
     // AUTOINCREMENT: a seq is never reused once its message is evicted, so no cursor
     // ever points at a different message.
     "CREATE TABLE ledger_messages (" +
@@ -559,31 +501,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "free_clients INTEGER NOT NULL, " +
       "pending_proposals INTEGER NOT NULL, applied_proposals INTEGER NOT NULL, " +
       "owner_receipts INTEGER NOT NULL, agent_receipts INTEGER NOT NULL, " +
-      "refusal_receipts INTEGER NOT NULL, open_work INTEGER NOT NULL DEFAULT 0, " +
-      "settled_work INTEGER NOT NULL DEFAULT 0, pending_cards INTEGER NOT NULL DEFAULT 0)",
+      "refusal_receipts INTEGER NOT NULL, pending_cards INTEGER NOT NULL DEFAULT 0)",
     "INSERT INTO policy_usage (only, sessions, owner_clients, free_clients, " +
       "pending_proposals, applied_proposals, owner_receipts, agent_receipts, " +
       "refusal_receipts) VALUES (1, 0, 0, 0, 0, 0, 0, 0, 0)",
-    // Stamped scheduled work (tasks 3.6, `scheduled.ts`): a scheduled turn or automation,
-    // the outside authority it was made under (`client`, `generation`, `authenticated_at`;
-    // none for the owner's own), rechecked with `Grants.standing` before it is handed to
-    // pi. Open work holds its client's grant row. A hand-off is fenced by its lease and
-    // may-have-been-handed mark, as a wake is, so unknown work is never handed again.
-    "CREATE TABLE scheduled_work (work_id TEXT PRIMARY KEY CHECK (length(work_id) = 37), " +
-      "kind TEXT NOT NULL CHECK (kind IN ('turn')), due REAL NOT NULL, " +
-      "state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'handed', 'failed', " +
-      "'refused', 'unknown')), payload TEXT NOT NULL CHECK (length(payload) <= 16384), " +
-      "client TEXT CHECK (client IS NULL OR length(client) = 64), generation INTEGER, " +
-      "authenticated_at REAL, claim_id TEXT, marked INTEGER NOT NULL DEFAULT 0, " +
-      "attempts INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL, settled_at REAL, " +
-      "outcome TEXT, " +
-      "CHECK ((client IS NULL) = (generation IS NULL) " +
-      "AND (client IS NOT NULL OR authenticated_at IS NULL)), " +
-      "CHECK ((settled_at IS NULL) = (state IN ('pending', 'running'))))",
-    "CREATE INDEX work_open ON scheduled_work (due) WHERE state = 'pending'",
-    "CREATE INDEX work_running ON scheduled_work (due) WHERE state = 'running'",
-    "CREATE INDEX work_settled ON scheduled_work (settled_at) WHERE settled_at IS NOT NULL",
-    "CREATE INDEX work_by_client ON scheduled_work (client, state) WHERE settled_at IS NULL",
     // An MCP client's held registration (slice 3's review L2): filed through the client's
     // own verified call, so the object captured its origin, and applied by the owner in
     // its session by card id. One pending card per outside identity; it holds its client's
@@ -605,12 +526,11 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       `ON outside_clients BEGIN ${CLIENT_USAGE("OLD", "-")} ${CLIENT_USAGE("NEW", "+")} END`,
     `CREATE TRIGGER outside_clients_removed AFTER DELETE ON outside_clients BEGIN ${
       CLIENT_USAGE("OLD", "-")} END`,
-    // A client recorded after its agents or stamped work were (as a direct store change
+    // A client recorded after its agents or held cards were (as a direct store change
     // could leave it) still counts them.
     "CREATE TRIGGER outside_clients_held AFTER INSERT ON outside_clients BEGIN " +
       "UPDATE outside_clients SET agents = (SELECT COUNT(*) FROM outside_agents " +
-      "WHERE outside_client = NEW.client), held = (SELECT COUNT(*) FROM scheduled_work " +
-      "WHERE client = NEW.client AND settled_at IS NULL) + (SELECT COUNT(*) FROM " +
+      "WHERE outside_client = NEW.client), held = (SELECT COUNT(*) FROM " +
       "agent_cards WHERE client = NEW.client) WHERE client = NEW.client; END",
     "CREATE TRIGGER outside_agents_hold AFTER INSERT ON outside_agents BEGIN " +
       "UPDATE outside_clients SET agents = agents + 1 WHERE client = NEW.outside_client; END",
@@ -631,26 +551,6 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "UPDATE policy_usage SET pending_proposals = pending_proposals - " +
       "(OLD.applied_at IS NULL), applied_proposals = applied_proposals - " +
       `(OLD.applied_at IS NOT NULL); ${SHARE("OLD", "-")} END`,
-    "CREATE TRIGGER scheduled_work_added AFTER INSERT ON scheduled_work BEGIN " +
-      "UPDATE policy_usage SET open_work = open_work + (NEW.settled_at IS NULL), " +
-      `settled_work = settled_work + (NEW.settled_at IS NOT NULL); ` +
-      "UPDATE outside_clients SET held = held + 1 WHERE client = NEW.client " +
-      "AND NEW.settled_at IS NULL; END",
-    "CREATE TRIGGER scheduled_work_settled AFTER UPDATE OF settled_at ON scheduled_work " +
-      "WHEN (OLD.settled_at IS NULL) != (NEW.settled_at IS NULL) BEGIN " +
-      "UPDATE policy_usage SET open_work = open_work + CASE WHEN NEW.settled_at IS NULL " +
-      "THEN 1 ELSE -1 END, settled_work = settled_work + CASE WHEN NEW.settled_at IS NULL " +
-      "THEN -1 ELSE 1 END; " +
-      "UPDATE outside_clients SET held = held + CASE WHEN NEW.settled_at IS NULL THEN 1 " +
-      "ELSE -1 END WHERE client = NEW.client; END",
-    "CREATE TRIGGER scheduled_work_removed AFTER DELETE ON scheduled_work BEGIN " +
-      "UPDATE policy_usage SET open_work = open_work - (OLD.settled_at IS NULL), " +
-      "settled_work = settled_work - (OLD.settled_at IS NOT NULL); " +
-      "UPDATE outside_clients SET held = held - 1 WHERE client = OLD.client " +
-      "AND OLD.settled_at IS NULL; END",
-    "CREATE TRIGGER scheduled_work_restamped BEFORE UPDATE OF client, generation, " +
-      "authenticated_at ON scheduled_work " +
-      "BEGIN SELECT RAISE(ABORT, 'scheduled work keeps the authority it was made under'); END",
     "CREATE TRIGGER agent_cards_added AFTER INSERT ON agent_cards BEGIN " +
       `UPDATE policy_usage SET pending_cards = pending_cards + 1; ${HOLD("NEW", "+")} END`,
     "CREATE TRIGGER agent_cards_removed AFTER DELETE ON agent_cards BEGIN " +
@@ -821,9 +721,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "UPDATE file_chunks SET state = 'garbage', " +
       `gc_after = unixepoch('subsec') + ${GC_GRACE_S} WHERE sha256 = NEW.sha256; END`,
   ]),
-  // 5: owner notices (notices.ts): what the agent's runtime reports that no call fails
-  // with (pi's `onReport`: a parked or faulted task, an extension skipped), the newest
-  // kept. A notice names what happened, never a transcript's content past its message.
+  // 5: owner notices (notices.ts): what the owner's work reports that no call fails with
+  // (a connection's setup check or provider revoke that failed), the newest kept.
   Object.freeze([
     "CREATE TABLE owner_notices (seq INTEGER PRIMARY KEY AUTOINCREMENT, at REAL NOT NULL, " +
       "type TEXT NOT NULL CHECK (length(type) BETWEEN 1 AND 64), " +
@@ -834,12 +733,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // holds the key: the object never holds a plaintext secret. Times are the object's
   // clock in seconds, but an OAuth access expiry and the refresh lease, which are epoch
   // ms as the gateway gives them. A reservation's amount is held against the owner's
-  // ceilings by counters only the triggers below write, so no cap ever reads a receipt:
-  // `model_spend`, each source's day and month, and `model_turns`, each turn's requests,
-  // tokens and cost. What is reserved or unknown holds its estimate, what settled holds
-  // what it used, and what was never sent or was refused holds nothing and is no request.
-  // Receipts are history only, pruned without touching a counter; a turn's counters go
-  // with the pi records that own the turn (migration 10).
+  // ceilings by a counter only the triggers below write, so no ceiling ever reads a
+  // receipt: `model_spend`, each source's day and month. What is reserved or unknown holds
+  // its estimate, what settled holds what it used, and what was never sent or was refused
+  // holds nothing. Receipts are history only, pruned without touching a counter.
   Object.freeze([
     "CREATE TABLE connections (id TEXT PRIMARY KEY CHECK (length(id) = 25), " +
       "source TEXT NOT NULL CHECK (length(source) BETWEEN 1 AND 64), " +
@@ -885,132 +782,19 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "WHERE state IN ('reserved', 'dispatched')",
     "CREATE TABLE model_spend (period TEXT NOT NULL, source TEXT NOT NULL, " +
       "cost INTEGER NOT NULL, PRIMARY KEY (period, source)) WITHOUT ROWID",
-    "CREATE TABLE model_turns (turn TEXT PRIMARY KEY, requests INTEGER NOT NULL, " +
-      "tokens INTEGER NOT NULL, cost INTEGER NOT NULL, last_at REAL NOT NULL) WITHOUT ROWID",
-    "CREATE INDEX model_turns_by_age ON model_turns (last_at)",
     "CREATE TRIGGER model_reservations_spent AFTER INSERT ON model_reservations " +
       `WHEN ${HELD("NEW")} != 0 BEGIN ${SPEND("NEW", HELD("NEW"))} END`,
     "CREATE TRIGGER model_reservations_respent AFTER UPDATE OF state, cost " +
       `ON model_reservations WHEN ${HELD("NEW")} != ${HELD("OLD")} BEGIN ${
         SPEND("NEW", `${HELD("NEW")} - ${HELD("OLD")}`)} END`,
-    "CREATE TRIGGER model_reservations_turned AFTER INSERT ON model_reservations " +
-      `WHEN ${ASKED("NEW")} BEGIN ${TURN("NEW", "+", "NEW.created_at")} END`,
-    "CREATE TRIGGER model_reservations_returned AFTER UPDATE OF state, tokens, cost " +
-      `ON model_reservations WHEN ${ASKED("NEW")} != ${ASKED("OLD")} ` +
-      `OR ${HELD_TOKENS("NEW")} != ${HELD_TOKENS("OLD")} OR ${HELD("NEW")} != ${HELD("OLD")} ` +
-      `BEGIN ${TURN("OLD", "-", "OLD.created_at")} ${
-        TURN("NEW", "+", "coalesce(NEW.settled_at, NEW.created_at)")} END`,
     "CREATE TRIGGER model_reservations_kept BEFORE UPDATE OF seq, id, turn, connection_id, " +
       "source, " +
       "model, est_tokens, est_cost, policy_generation, day, month, created_at " +
       "ON model_reservations BEGIN SELECT RAISE(ABORT, 'a reservation never changes " +
       "what it reserved'); END",
   ]),
-  // 7: the agent's threads (threads.ts): each top-level pi conversation the object made for
-  // an agent, and the stamp it was made under, which never changes. pi's own tables hold
-  // the conversation and, in its `ta.authority` document, the same stamp. A client's
-  // threads hold its grant row (`held`), as its stamped work and held registrations do.
-  Object.freeze([
-    "CREATE TABLE agent_threads (thread_id TEXT PRIMARY KEY CHECK (length(thread_id) = 39), " +
-      "conversation_id INTEGER NOT NULL UNIQUE CHECK (conversation_id > 1), " +
-      "agent_id TEXT NOT NULL CHECK (length(agent_id) BETWEEN 1 AND 128), " +
-      "client TEXT CHECK (client IS NULL OR length(client) = 64), generation INTEGER, " +
-      "authenticated_at REAL, universe TEXT CHECK (universe IS NULL OR length(universe) " +
-      "BETWEEN 1 AND 512), created_at REAL NOT NULL, " +
-      "CHECK ((client IS NULL) = (generation IS NULL)), " +
-      "CHECK (client IS NOT NULL OR (authenticated_at IS NULL AND universe IS NULL))) " +
-      "WITHOUT ROWID",
-    "CREATE INDEX agent_threads_by_client ON agent_threads (client, created_at)",
-    "CREATE TRIGGER agent_threads_kept BEFORE UPDATE ON agent_threads BEGIN " +
-      "SELECT RAISE(ABORT, 'a thread never changes the stamp it was made under'); END",
-    `CREATE TRIGGER agent_threads_held AFTER INSERT ON agent_threads BEGIN ${
-      HOLD("NEW", "+")} END`,
-    `CREATE TRIGGER agent_threads_released AFTER DELETE ON agent_threads BEGIN ${
-      HOLD("OLD", "-")} END`,
-    // A client recorded after its threads were still counts them, beside what migration 3
-    // counted.
-    "DROP TRIGGER outside_clients_held",
-    "CREATE TRIGGER outside_clients_held AFTER INSERT ON outside_clients BEGIN " +
-      "UPDATE outside_clients SET agents = (SELECT COUNT(*) FROM outside_agents " +
-      "WHERE outside_client = NEW.client), held = (SELECT COUNT(*) FROM scheduled_work " +
-      "WHERE client = NEW.client AND settled_at IS NULL) + (SELECT COUNT(*) FROM " +
-      "agent_cards WHERE client = NEW.client) + (SELECT COUNT(*) FROM agent_threads " +
-      "WHERE client = NEW.client) WHERE client = NEW.client; END",
-  ]),
-  // 8: `ta`'s `wake:list` (ta.ts): one authority's scheduled work, newest first
-  // (`Scheduled.of`), the owner's (`client IS NULL`) and each client's, settled rows too.
-  Object.freeze([
-    "CREATE INDEX work_by_creator ON scheduled_work (client, created_at, work_id)",
-  ]),
-  // 9: the agent's doors and thread stores (threads.ts, A4 and S3). Each thread is one pi
-  // Session over a store of its own (thread-store.ts), so a row names its store (`store`,
-  // 128 random bits as hex, unique, named before the store exists and never changed) and
-  // no pi conversation: the thread is its Session's root. Its state is `ready`, or
-  // `dropping` while its store is wiped (S4); it never moves back. What a thread is for, a
-  // conversation an agent holds with one caller (`converse`, one per caller, agent and
-  // universe) or one run (`run`, a fresh one per launch), and when it was last active, which
-  // idle retention reads (the `threads` lane, by its index), with the threads unsettled work
-  // names. `agent_live` is each thread's wake as its Session last reported it, and
-  // `agent_usage` its Session's `pi.usage` as it last closed (at most 64 KiB), each going
-  // with its thread. Nothing is deployed, so this migration is edited in place: the table is made
-  // again, and a row from before stores existed (none can be) fails it loudly, its store
-  // missing.
-  Object.freeze([
-    "DROP TRIGGER outside_clients_held",
-    "CREATE TABLE agent_threads_next (thread_id TEXT PRIMARY KEY " +
-      "CHECK (length(thread_id) = 39), " +
-      "store TEXT NOT NULL UNIQUE CHECK (length(store) = 32 AND store NOT GLOB '*[^0-9a-f]*'), " +
-      "state TEXT NOT NULL CHECK (state IN ('ready', 'dropping')), " +
-      "agent_id TEXT NOT NULL CHECK (length(agent_id) BETWEEN 1 AND 128), " +
-      "client TEXT CHECK (client IS NULL OR length(client) = 64), generation INTEGER, " +
-      "authenticated_at REAL, universe TEXT CHECK (universe IS NULL OR length(universe) " +
-      "BETWEEN 1 AND 512), created_at REAL NOT NULL, " +
-      "kind TEXT NOT NULL CHECK (kind IN ('converse', 'run')), last_active REAL NOT NULL, " +
-      "CHECK ((client IS NULL) = (generation IS NULL)), " +
-      "CHECK (client IS NOT NULL OR (authenticated_at IS NULL AND universe IS NULL))) " +
-      "WITHOUT ROWID",
-    "INSERT INTO agent_threads_next (thread_id, store, state, agent_id, client, generation, " +
-      "authenticated_at, universe, created_at, kind, last_active) SELECT thread_id, NULL, " +
-      "'ready', agent_id, client, generation, authenticated_at, universe, created_at, 'run', " +
-      "created_at FROM agent_threads",
-    "DROP TABLE agent_threads",
-    "ALTER TABLE agent_threads_next RENAME TO agent_threads",
-    "CREATE TABLE agent_live (thread_id TEXT PRIMARY KEY, " +
-      "active INTEGER NOT NULL CHECK (active IN (0, 1)), wake_at REAL, " +
-      "CHECK (active = 1 OR wake_at IS NOT NULL)) WITHOUT ROWID",
-    "CREATE TABLE agent_usage (thread_id TEXT PRIMARY KEY, usage TEXT NOT NULL " +
-      "CHECK (length(CAST(usage AS BLOB)) <= 65536)) WITHOUT ROWID",
-    "CREATE INDEX agent_threads_by_client ON agent_threads (client, created_at)",
-    "CREATE TRIGGER agent_threads_kept BEFORE UPDATE ON agent_threads WHEN " +
-      "NEW.thread_id IS NOT OLD.thread_id OR NEW.store IS NOT OLD.store " +
-      "OR (NEW.state IS NOT OLD.state AND NEW.state != 'dropping') " +
-      "OR NEW.agent_id IS NOT OLD.agent_id OR NEW.client IS NOT OLD.client " +
-      "OR NEW.generation IS NOT OLD.generation " +
-      "OR NEW.authenticated_at IS NOT OLD.authenticated_at " +
-      "OR NEW.universe IS NOT OLD.universe OR NEW.created_at IS NOT OLD.created_at " +
-      "OR NEW.kind IS NOT OLD.kind OR NEW.last_active < OLD.last_active BEGIN " +
-      "SELECT RAISE(ABORT, 'a thread never changes the stamp it was made under'); END",
-    `CREATE TRIGGER agent_threads_held AFTER INSERT ON agent_threads BEGIN ${
-      HOLD("NEW", "+")} END`,
-    `CREATE TRIGGER agent_threads_released AFTER DELETE ON agent_threads BEGIN ${
-      HOLD("OLD", "-")} DELETE FROM agent_live WHERE thread_id = OLD.thread_id; ` +
-      "DELETE FROM agent_usage WHERE thread_id = OLD.thread_id; END",
-    "CREATE TRIGGER outside_clients_held AFTER INSERT ON outside_clients BEGIN " +
-      "UPDATE outside_clients SET agents = (SELECT COUNT(*) FROM outside_agents " +
-      "WHERE outside_client = NEW.client), held = (SELECT COUNT(*) FROM scheduled_work " +
-      "WHERE client = NEW.client AND settled_at IS NULL) + (SELECT COUNT(*) FROM " +
-      "agent_cards WHERE client = NEW.client) + (SELECT COUNT(*) FROM agent_threads " +
-      "WHERE client = NEW.client) WHERE client = NEW.client; END",
-    "CREATE INDEX agent_threads_by_activity ON agent_threads (last_active)",
-    "CREATE UNIQUE INDEX agent_threads_conversing ON agent_threads " +
-      "(IFNULL(client, ''), agent_id, IFNULL(universe, '')) " +
-      "WHERE kind = 'converse' AND state = 'ready'",
-    // The threads unsettled work names, which idle retention never drops.
-    "CREATE INDEX work_by_thread ON scheduled_work (json_extract(payload, '$.thread')) " +
-      "WHERE settled_at IS NULL",
-  ]),
-  // 10: the files byte quota and each outside client's share of it (files.ts, manifest.ts),
-  // and a bound on the model turns' counters (usage.ts). Every manifest row is charged what
+  // 7: the files byte quota and each outside client's share of it (files.ts, manifest.ts),
+  // and the bounds on the model reservations (usage.ts). Every manifest row is charged what
   // SQLite stores it in, path bytes and overflow pages included, by triggers only, as the
   // other counters are: once to `file_space`'s `manifest_bytes`, the object's real storage;
   // and to each scope its writer counts in (`file_shares`: an outside client's own,
@@ -1026,21 +810,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // A file row from before this migration (none can be: nothing is deployed) fails it
   // loudly, its scope unknown.
   //
-  // A turn's counters live exactly as long as its work: `model_turn_owners` holds each pi
-  // record that owns a turn, by its thread (pi's ids are per store, a store per thread):
-  // an open input submission of its root (`s:<id>`, a steer's its own turn) or of a
-  // subagent's conversation (`c:<id>`), or a live compaction task (`t:<id>`, the run's turn
-  // when a run made it), kept by the thread host as it sees them
-  // commit (`thread-host.ts`), and a turn's row is made with its first owner and goes with
-  // its last, or with its thread. A call of a turn with no row is refused (`usage.ts`), and
-  // a reservation only moves a row that is there, so no counter ever starts over. A
-  // thread's owner rows are refused past `THREAD_INPUTS` open root inputs,
-  // `THREAD_CHILD_INPUTS` subagent inputs and `THREAD_COMPACTIONS` live compactions, and a
-  // thread's first owner past `WORKING_THREADS` working threads, so the rows are bounded
-  // by the threads at work (edited in place in A5: nothing is deployed). A turn
-  // is at most `TURN_BYTES` (an origin is at most 70; this check counts bytes, the
-  // reservation's own 320 characters). The calls open at once and the spend counters are bounded by count
-  // (`CALLS_OPEN`, `SPEND_KEPT`).
+  // The calls open at once and the spend counters are bounded by count (`CALLS_OPEN`,
+  // `SPEND_KEPT`).
   Object.freeze([
     "ALTER TABLE file_space ADD COLUMN manifest_bytes INTEGER NOT NULL DEFAULT 0 " +
       "CHECK (manifest_bytes >= 0)",
@@ -1063,7 +834,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "refs INTEGER NOT NULL CHECK (refs >= 0), PRIMARY KEY (scope, sha256)) WITHOUT ROWID",
     // Fails the `who` check when any file row is already there.
     "INSERT INTO file_shares (who, entries, history, chunk_bytes, inline_bytes, " +
-      "manifest_bytes) SELECT 'a file row from before migration 10', 0, 0, 0, 0, 0 " +
+      "manifest_bytes) SELECT 'a file row from before migration 7', 0, 0, 0, 0, 0 " +
       "WHERE EXISTS (SELECT 1 FROM file_entries) OR EXISTS (SELECT 1 FROM file_history) " +
       "OR EXISTS (SELECT 1 FROM file_chunks) OR EXISTS (SELECT 1 FROM file_temps)",
     `INSERT INTO file_shares VALUES ('${CLIENTS}', 0, 0, 0, 0, ${SHARE_BYTES}), ('${
@@ -1224,52 +995,6 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "SELECT RAISE(ABORT, 'a file row''s writer never changes'); END",
     "CREATE TRIGGER file_intents_writer_kept BEFORE UPDATE OF writer ON file_intents BEGIN " +
       "SELECT RAISE(ABORT, 'a file row''s writer never changes'); END",
-    "ALTER TABLE model_turns ADD COLUMN thread TEXT NOT NULL DEFAULT ''",
-    "ALTER TABLE model_turns ADD COLUMN owners INTEGER NOT NULL DEFAULT 0 CHECK (owners >= 0)",
-    "DROP INDEX model_turns_by_age",
-    "CREATE TABLE model_turn_owners (thread TEXT NOT NULL CHECK (length(thread) = 39), " +
-      "owner TEXT NOT NULL CHECK (owner GLOB '[sct]:[0-9]*'), " +
-      `turn TEXT NOT NULL CHECK (length(CAST(turn AS BLOB)) <= ${TURN_BYTES}), ` +
-      "PRIMARY KEY (thread, owner)) WITHOUT ROWID",
-    // Fails the owner check when any turn is already kept.
-    "INSERT INTO model_turn_owners (thread, owner, turn) " +
-      "SELECT '', 'a turn from before migration 10', '' WHERE EXISTS (SELECT 1 FROM model_turns)",
-    // A thread's new owner past its kind's bound is refused, and a thread's first past the
-    // working threads' bound; one it holds is no new one.
-    "CREATE TRIGGER model_turn_owners_full BEFORE INSERT ON model_turn_owners " +
-      "WHEN NOT EXISTS (SELECT 1 FROM model_turn_owners WHERE thread = NEW.thread " +
-      "AND owner = NEW.owner) AND ((SELECT COUNT(*) FROM model_turn_owners " +
-      "WHERE thread = NEW.thread AND substr(owner, 1, 2) = substr(NEW.owner, 1, 2)) >= " +
-      `(CASE substr(NEW.owner, 1, 1) WHEN 's' THEN ${THREAD_INPUTS} WHEN 'c' THEN ${
-        THREAD_CHILD_INPUTS} ELSE ${THREAD_COMPACTIONS} END) ` +
-      "OR (NOT EXISTS (SELECT 1 FROM model_turn_owners WHERE thread = NEW.thread) " +
-      `AND (SELECT COUNT(DISTINCT thread) FROM model_turn_owners) >= ${WORKING_THREADS})) ` +
-      "BEGIN SELECT RAISE(ABORT, 'turn_owners_full: a thread holds as many open inputs " +
-      "and live compactions as it may, or the owner as many working threads'); END",
-    "CREATE TRIGGER model_turn_owners_added AFTER INSERT ON model_turn_owners BEGIN " +
-      "INSERT INTO model_turns (turn, requests, tokens, cost, last_at, thread, owners) " +
-      "VALUES (NEW.turn, 0, 0, 0, 0, NEW.thread, 1) " +
-      "ON CONFLICT (turn) DO UPDATE SET owners = owners + 1; END",
-    "CREATE TRIGGER model_turn_owners_removed AFTER DELETE ON model_turn_owners BEGIN " +
-      "UPDATE model_turns SET owners = owners - 1 WHERE turn = OLD.turn; " +
-      "DELETE FROM model_turns WHERE turn = OLD.turn AND owners = 0; END",
-    "CREATE TRIGGER model_turns_kept BEFORE UPDATE OF turn, thread ON model_turns BEGIN " +
-      "SELECT RAISE(ABORT, 'a turn never moves'); END",
-    // A dropped thread's turns go in its drop's unit.
-    "CREATE TRIGGER agent_threads_turns_dropped AFTER DELETE ON agent_threads BEGIN " +
-      "DELETE FROM model_turn_owners WHERE thread = OLD.thread_id; END",
-    "DROP TRIGGER model_reservations_turned",
-    "DROP TRIGGER model_reservations_returned",
-    "CREATE TRIGGER model_reservations_turned AFTER INSERT ON model_reservations " +
-      `WHEN ${ASKED("NEW")} BEGIN ${TURN_MOVED("NEW", "+", "NEW.created_at")} END`,
-    "CREATE TRIGGER model_reservations_returned AFTER UPDATE OF state, tokens, cost " +
-      `ON model_reservations WHEN ${ASKED("NEW")} != ${ASKED("OLD")} ` +
-      `OR ${HELD_TOKENS("NEW")} != ${HELD_TOKENS("OLD")} OR ${HELD("NEW")} != ${HELD("OLD")} ` +
-      `BEGIN ${TURN_MOVED("OLD", "-", "OLD.created_at")} ${
-        TURN_MOVED("NEW", "+", "coalesce(NEW.settled_at, NEW.created_at)")} END`,
-    `CREATE TRIGGER model_reservations_turn_bytes BEFORE INSERT ON model_reservations ` +
-      `WHEN length(CAST(NEW.turn AS BLOB)) > ${TURN_BYTES} BEGIN ` +
-      `SELECT RAISE(ABORT, 'a turn is at most ${TURN_BYTES} bytes'); END`,
     // The calls open at once and the spend counters, each bounded by count; an open call is
     // read by its partial index.
     "CREATE TRIGGER model_reservations_open BEFORE INSERT ON model_reservations " +
@@ -1280,187 +1005,30 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       `WHEN (SELECT COUNT(*) FROM model_spend) > ${SPEND_KEPT} BEGIN ` +
       `SELECT RAISE(ABORT, 'model_spend_full: ${SPEND_KEPT} spend counters are kept'); END`,
   ]),
-  // 11: drops wipe, run retention and erasure (threads.ts, erasure.ts; S4-S5). A thread is
-  // marked `dropping`, its Session ended and closed, its store destroyed, and only then
-  // its row forgotten; a drop the store did not answer is tried again at `drop_retry`, its
-  // failures counted (`drop_failures`). A dropping thread holds its client's grant row, and
-  // counts against its bounds, until its row is forgotten. A run settles once
-  // (`settled_at`, which never changes once set), and its receipt (`run_receipts`: how its
-  // input settled, the first 768 bytes of its answer and whether that was all of it) is kept
-  // in the same unit; a run handed an input names it (`request`) from then on; a run's
-  // retention reads that time alone. The kept usage rows' bytes are counted
-  // (`agent_usage_space`), so their sum has a bound of its own, and a dropped thread's usage,
-  // and a run's as it settles, is added into one owner total (`agent_usage_total`); a
-  // settled run keeps no usage row (`keepUsage` keeps none). The owner being erased is one row
-  // (`owner_erasure`, with the step it reached), the mark every door, lane and new thread
-  // refuses on.
-  //
-  // A thread row no longer copies its stamp's universe: it names the outside agent's
-  // registration it was stamped from (`registration`, `outside_agents.agent_id`), whose
-  // universe (`command_center_id`) and client never change (a trigger), and which is never
-  // deleted while a thread names it (a delete of it is ignored; the owner's delete leaves it
-  // a tombstone, which goes with the last thread that names it). So a stamp reads as it was
-  // made, after its client registers again elsewhere. A thread's agent id is its directory's
-  // name, letters, digits, dots, dashes and underscores, as the doors already hold it. The
-  // table is made again to drop the universe's column; nothing is deployed, so a row whose
-  // universe no registration of its client names fails this loudly.
+  // 8: the owner's erasure (erasure.ts; S4-S5): the owner being erased is one row
+  // (`owner_erasure`, with the step it reached), the mark every door and lane refuses on.
   Object.freeze([
-    "DROP TRIGGER outside_clients_held",
-    "CREATE TABLE agent_threads_next (thread_id TEXT PRIMARY KEY " +
-      "CHECK (length(thread_id) = 39), " +
-      "store TEXT NOT NULL UNIQUE CHECK (length(store) = 32 AND store NOT GLOB '*[^0-9a-f]*'), " +
-      "state TEXT NOT NULL CHECK (state IN ('ready', 'dropping')), " +
-      "agent_id TEXT NOT NULL CHECK (length(agent_id) BETWEEN 1 AND 128 " +
-      "AND agent_id NOT GLOB '*[^A-Za-z0-9._-]*'), " +
-      "client TEXT CHECK (client IS NULL OR length(client) = 64), generation INTEGER, " +
-      "authenticated_at REAL, registration TEXT CHECK (registration IS NULL " +
-      "OR length(registration) BETWEEN 1 AND 32), created_at REAL NOT NULL, " +
-      "kind TEXT NOT NULL CHECK (kind IN ('converse', 'run')), last_active REAL NOT NULL, " +
-      "drop_retry REAL, drop_failures INTEGER NOT NULL DEFAULT 0 CHECK (drop_failures >= 0), " +
-      "settled_at REAL, " +
-      "request TEXT CHECK (request IS NULL OR length(request) BETWEEN 1 AND 128), " +
-      "CHECK ((client IS NULL) = (generation IS NULL)), " +
-      "CHECK (client IS NOT NULL OR (authenticated_at IS NULL AND registration IS NULL))) " +
-      "WITHOUT ROWID",
-    "INSERT INTO agent_threads_next (thread_id, store, state, agent_id, client, generation, " +
-      "authenticated_at, registration, created_at, kind, last_active) SELECT t.thread_id, " +
-      "t.store, t.state, t.agent_id, t.client, t.generation, t.authenticated_at, " +
-      "CASE WHEN t.universe IS NULL THEN NULL ELSE IFNULL((SELECT a.agent_id FROM " +
-      "outside_agents a WHERE a.outside_client = t.client AND a.command_center_id = " +
-      "t.universe ORDER BY a.created_at, a.agent_id LIMIT 1), '') END, t.created_at, t.kind, " +
-      "t.last_active FROM agent_threads t",
-    "DROP TABLE agent_threads",
-    "ALTER TABLE agent_threads_next RENAME TO agent_threads",
-    "CREATE INDEX agent_threads_by_client ON agent_threads (client, created_at)",
-    "CREATE INDEX agent_threads_by_activity ON agent_threads (last_active)",
-    // One conversation a caller, agent and universe: the universe is the registration's,
-    // which an index cannot read, so the recording unit holds the rule (`Threads.record`
-    // finds the caller's conversation there first, a guard), and this index holds it per
-    // registration.
-    "CREATE UNIQUE INDEX agent_threads_conversing ON agent_threads " +
-      "(IFNULL(client, ''), agent_id, IFNULL(registration, '')) " +
-      "WHERE kind = 'converse' AND state = 'ready'",
-    "CREATE INDEX agent_threads_by_registration ON agent_threads (registration) " +
-      "WHERE registration IS NOT NULL",
-    "CREATE TRIGGER agent_threads_kept BEFORE UPDATE ON agent_threads WHEN " +
-      "NEW.thread_id IS NOT OLD.thread_id OR NEW.store IS NOT OLD.store " +
-      "OR (NEW.state IS NOT OLD.state AND NEW.state != 'dropping') " +
-      "OR NEW.agent_id IS NOT OLD.agent_id OR NEW.client IS NOT OLD.client " +
-      "OR NEW.generation IS NOT OLD.generation " +
-      "OR NEW.authenticated_at IS NOT OLD.authenticated_at " +
-      "OR NEW.registration IS NOT OLD.registration OR NEW.created_at IS NOT OLD.created_at " +
-      "OR NEW.kind IS NOT OLD.kind OR NEW.last_active < OLD.last_active " +
-      "OR (OLD.request IS NOT NULL AND NEW.request IS NOT OLD.request) BEGIN " +
-      "SELECT RAISE(ABORT, 'a thread never changes the stamp it was made under'); END",
-    `CREATE TRIGGER agent_threads_held AFTER INSERT ON agent_threads BEGIN ${
-      HOLD("NEW", "+")} END`,
-    `CREATE TRIGGER agent_threads_released AFTER DELETE ON agent_threads BEGIN ${
-      HOLD("OLD", "-")} DELETE FROM agent_live WHERE thread_id = OLD.thread_id; ` +
-      "DELETE FROM agent_usage WHERE thread_id = OLD.thread_id; END",
-    "CREATE TRIGGER agent_threads_turns_dropped AFTER DELETE ON agent_threads BEGIN " +
-      "DELETE FROM model_turn_owners WHERE thread = OLD.thread_id; END",
-    "CREATE TRIGGER outside_clients_held AFTER INSERT ON outside_clients BEGIN " +
-      "UPDATE outside_clients SET agents = (SELECT COUNT(*) FROM outside_agents " +
-      "WHERE outside_client = NEW.client), held = (SELECT COUNT(*) FROM scheduled_work " +
-      "WHERE client = NEW.client AND settled_at IS NULL) + (SELECT COUNT(*) FROM " +
-      "agent_cards WHERE client = NEW.client) + (SELECT COUNT(*) FROM agent_threads " +
-      "WHERE client = NEW.client) WHERE client = NEW.client; END",
-    // A registration a thread names: its id, universe and client never change, and a delete
-    // of it is ignored while any thread names it; it goes with the last thread that names
-    // it, once a tombstone with no revoke of its callbacks left to run.
-    "CREATE TRIGGER outside_agents_stamped BEFORE UPDATE OF agent_id, command_center_id, " +
-      "outside_client ON outside_agents WHEN NEW.agent_id IS NOT OLD.agent_id " +
-      "OR NEW.command_center_id IS NOT OLD.command_center_id " +
-      "OR NEW.outside_client IS NOT OLD.outside_client BEGIN " +
-      "SELECT RAISE(ABORT, 'a registration never changes its id, universe or client'); END",
-    "CREATE TRIGGER outside_agents_named BEFORE DELETE ON outside_agents WHEN EXISTS " +
-      "(SELECT 1 FROM agent_threads WHERE registration = OLD.agent_id) BEGIN " +
-      "SELECT RAISE(IGNORE); END",
-    "CREATE TRIGGER agent_threads_unnamed AFTER DELETE ON agent_threads " +
-      "WHEN OLD.registration IS NOT NULL BEGIN DELETE FROM outside_agents " +
-      "WHERE agent_id = OLD.registration AND deleted_at IS NOT NULL AND NOT EXISTS " +
-      "(SELECT 1 FROM ledger_wakes WHERE agent_id = OLD.registration AND kind = 'revoke' " +
-      "AND state IN ('pending', 'rate_limited', 'sending')); END",
-    // A run that settles holds no turn: every owner it kept goes in its settling unit, a
-    // lost unit's too, and each turn left with no owner.
-    "CREATE TRIGGER agent_threads_settled_turns AFTER UPDATE OF settled_at ON agent_threads " +
-      "WHEN OLD.settled_at IS NULL AND NEW.settled_at IS NOT NULL BEGIN " +
-      "DELETE FROM model_turn_owners WHERE thread = NEW.thread_id; " +
-      "DELETE FROM model_turns WHERE thread = NEW.thread_id AND owners = 0; END",
-    "CREATE TRIGGER agent_threads_settled BEFORE UPDATE OF settled_at ON agent_threads " +
-      "WHEN OLD.settled_at IS NOT NULL AND NEW.settled_at IS NOT OLD.settled_at BEGIN " +
-      "SELECT RAISE(ABORT, 'a run settles once'); END",
-    "CREATE INDEX agent_threads_by_kind ON agent_threads (kind, last_active) " +
-      "WHERE state = 'ready'",
-    "CREATE INDEX agent_threads_runs ON agent_threads (IFNULL(settled_at, last_active)) " +
-      "WHERE kind = 'run' AND state = 'ready'",
-    "CREATE INDEX agent_threads_by_holder ON agent_threads (kind, client)",
-    "CREATE INDEX agent_threads_dropping ON agent_threads (drop_retry) " +
-      "WHERE state = 'dropping'",
-    "CREATE TABLE run_receipts (thread_id TEXT NOT NULL UNIQUE " +
-      "CHECK (length(thread_id) = 39), " +
-      "client TEXT CHECK (client IS NULL OR length(client) = 64), " +
-      "request TEXT CHECK (request IS NULL OR length(request) BETWEEN 1 AND 128), " +
-      "status TEXT NOT NULL CHECK (status IN ('done', 'unanswered')), " +
-      "reason TEXT CHECK (reason IS NULL OR length(reason) BETWEEN 1 AND 64), " +
-      "text TEXT NOT NULL CHECK (length(CAST(text AS BLOB)) <= 768), " +
-      "truncated INTEGER NOT NULL DEFAULT 0 CHECK (truncated IN (0, 1)), " +
-      "settled_at REAL NOT NULL, CHECK ((status = 'done') = (reason IS NULL)))",
-    "CREATE INDEX run_receipts_by_age ON run_receipts (settled_at)",
-    "CREATE INDEX run_receipts_by_client ON run_receipts (client, settled_at)",
-    "CREATE TABLE agent_usage_space (only INTEGER PRIMARY KEY CHECK (only = 1), " +
-      "bytes INTEGER NOT NULL CHECK (bytes >= 0))",
-    "INSERT INTO agent_usage_space (only, bytes) SELECT 1, " +
-      "IFNULL(SUM(length(CAST(usage AS BLOB))), 0) FROM agent_usage",
-    "CREATE TRIGGER agent_usage_added AFTER INSERT ON agent_usage BEGIN " +
-      "UPDATE agent_usage_space SET bytes = bytes + length(CAST(NEW.usage AS BLOB)); END",
-    "CREATE TRIGGER agent_usage_changed AFTER UPDATE OF usage ON agent_usage BEGIN " +
-      "UPDATE agent_usage_space SET bytes = bytes - length(CAST(OLD.usage AS BLOB)) " +
-      "+ length(CAST(NEW.usage AS BLOB)); END",
-    "CREATE TRIGGER agent_usage_removed AFTER DELETE ON agent_usage BEGIN " +
-      "UPDATE agent_usage_space SET bytes = bytes - length(CAST(OLD.usage AS BLOB)); END",
-    "CREATE TABLE agent_usage_total (only INTEGER PRIMARY KEY CHECK (only = 1), " +
-      "usage TEXT NOT NULL CHECK (length(CAST(usage AS BLOB)) <= 65536))",
-    "INSERT INTO agent_usage_total (only, usage) VALUES (1, '{\"models\":{},\"tools\":{}}')",
     "CREATE TABLE owner_erasure (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "started_at REAL NOT NULL, step INTEGER NOT NULL DEFAULT 1 CHECK (step IN (1, 2)))",
   ]),
-  // 12: a grant's revision apart from its authority (grants.ts). `revision` is the owner's
+  // 9: a grant's revision apart from its authority (grants.ts). `revision` is the owner's
   // concurrency token, moved by every set and revoke and named by the owner's set;
   // `generation` moves only when the grant's mode or scopes do, and is what every stamp is
-  // checked against, so a rename keeps the client's threads. A free row is never set, so it
+  // checked against, so a rename keeps the client's stamps. A free row is never set, so it
   // stays at revision 1. Nothing is deployed, so no row is backfilled.
   Object.freeze([
     "ALTER TABLE outside_clients ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 " +
       "CHECK (revision >= 1)",
   ]),
-  // 13: scheduled turns as pi tasks, and the owner's admission (tasks 5, F1). A scheduled
-  // launch is a `ta.scheduled` pi task sleeping in its run thread's own Session
-  // (`scheduled.ts`), so the `work` lane's table goes, with its counters and its part of a
-  // client's held count: the run's thread row holds its client's grant row, as every
-  // thread does. Migrations 9 to 11 name the table in their triggers and index, so it is
-  // dropped here rather than edited out of migration 3. A scheduled run's thread names its
-  // work (`request`, its `work_` id) from the unit that records it; `ta`'s `wake:list` and
-  // the scheduled runs' share of `runs_live` read them by `agent_threads_scheduled`.
-  // `owner_admission` is the owner's one admission row (`admission.ts`): admitted when the
-  // object is first made, suspended for billing or abuse by the platform, or, as the last
-  // step of the owner's erasure, the erased tombstone, alone in the wiped database.
+  // 10: the owner's admission (tasks 5, F1): `owner_admission` is the owner's one
+  // admission row (`admission.ts`): admitted when the object is first made, suspended for
+  // billing or abuse by the platform, or, as the last step of the owner's erasure, the
+  // erased tombstone, alone in the wiped database.
   Object.freeze([
-    "DROP TRIGGER outside_clients_held",
-    "DROP TABLE scheduled_work",
-    "ALTER TABLE policy_usage DROP COLUMN open_work",
-    "ALTER TABLE policy_usage DROP COLUMN settled_work",
-    "CREATE TRIGGER outside_clients_held AFTER INSERT ON outside_clients BEGIN " +
-      "UPDATE outside_clients SET agents = (SELECT COUNT(*) FROM outside_agents " +
-      "WHERE outside_client = NEW.client), held = (SELECT COUNT(*) FROM " +
-      "agent_cards WHERE client = NEW.client) + (SELECT COUNT(*) FROM agent_threads " +
-      "WHERE client = NEW.client) WHERE client = NEW.client; END",
-    `CREATE INDEX agent_threads_scheduled ON agent_threads (client, created_at) WHERE ${
-      SCHEDULED_RUN}`,
     ADMISSION_TABLE,
     "INSERT INTO owner_admission (only, state, reasons) VALUES (1, 'admitted', '[]')",
   ]),
-  // 14: the egress door (tasks 4 G4; egress.ts). The sandbox's one lease (`file_space`'s
+  // 11: the egress door (tasks 4 G4; egress.ts). The sandbox's one lease (`file_space`'s
   // sync lease) also holds the SHA-256 of its two tokens' secrets (the egress token, which
   // only E2B's transform carries, and the sync agent's sync token; each names its owner
   // itself, so no directory entry maps it), and the egress generation its sandbox's network
@@ -1472,8 +1040,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // is kept as its receipt. A model call's row carries its own charge (`charge`, held to
   // settled once, as a model reservation's states), which the triggers alone count: into
   // `egress_runs`, its sandbox run's requests, tokens and cost (the run is the lease and its
-  // epoch), and into `model_spend`, its source's day and month, the counters the loop's
-  // calls move too. No counter reads pi's records. The newest `EGRESS_LIMITS.receiptsKept`
+  // epoch), and into `model_spend`, its source's day and month, the counters the model
+  // reservations move too. The newest `EGRESS_LIMITS.receiptsKept`
   // admitted and `refusalsKept` refused rows are kept, and at most `EGRESS_LIMITS.open` are
   // open at once; a path is visible ASCII, as the door sends it.
   Object.freeze([

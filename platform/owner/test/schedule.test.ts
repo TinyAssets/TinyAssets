@@ -19,7 +19,6 @@ import {
   inTime, type Lane, LANE_HUNG_S, LANE_PASS_S, LANE_RETRY_S, laneJob, Schedule, SCHEDULE,
 } from "../src/schedule";
 import { WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "../src/wakes";
-import { DROP_MS } from "../src/threads";
 import { MUSE, rig } from "./ledger-support";
 import { alarmOf, failure, laneJobs, ownerObject, sqlIn } from "./support";
 
@@ -294,7 +293,6 @@ describe("a lane's run", () => {
     expect(a.untils[0]!).toBeLessThanOrEqual(Date.now() + LANE_PASS_S * 1000);
     // A row's outside call fits in what the budget leaves of the hung timeout.
     expect(LANE_HUNG_S).toBe(60);
-    expect(DROP_MS).toBeLessThanOrEqual((LANE_HUNG_S - LANE_PASS_S) * 1000);
     expect(await inTime(new Promise(() => undefined), 10)).toBe("late");
     const slow = new Promise((resolve) => setTimeout(() => resolve("done"), 20));
     expect(await inTime(slow, Infinity)).toBe("done");  // unbounded waits it out
@@ -387,19 +385,10 @@ describe("the object's lanes", () => {
         seen.push(["connections.run", now, until]);
       },
     };
-    const threads = {
-      nextDue: (now: number) => {
-        seen.push(["threads.nextDue", now]);
-        return now + 5;
-      },
-      run: async (now: number, until: number) => {
-        seen.push(["threads.run", now, until]);
-      },
-    };
     const clock = () => 42;
     const write = (() => undefined) as unknown as Write;
     const deps: LaneDeps = {
-      ledger, files, connections, threads, sender, admitted, clock, write,
+      ledger, files, connections, sender, admitted, clock, write,
       runWakes: async (...args) => {
         seen.push(["runWakes", ...args]);
         return 0;
@@ -408,10 +397,10 @@ describe("the object's lanes", () => {
     return { seen, deps, ledger, clock, write };
   }
 
-  it("hand each pass its until (slice 5 N1); a scheduled launch is no lane's", async () => {
+  it("hand each pass its until (slice 5 N1)", async () => {
     const { seen, deps, ledger, clock, write } = recorded(() => null, () => true);
     const lanes = ownerLanes(deps);
-    expect(Object.keys(lanes)).toEqual(["wakes", "files", "connections", "threads"]);
+    expect(Object.keys(lanes)).toEqual(["wakes", "files", "connections"]);
     for (const lane of Object.values(lanes)) {
       await lane.run(100, 123_456);
     }
@@ -419,7 +408,6 @@ describe("the object's lanes", () => {
       ["runWakes", ledger, null, clock, write, WAKES_PER_ALARM, WAKE_SEND_MS, 123_456],
       ["files.collect", 100, 123_456],
       ["connections.run", 100, 123_456],
-      ["threads.run", 100, 123_456],
     ]);
   });
 
@@ -431,13 +419,13 @@ describe("the object's lanes", () => {
     const lanes = ownerLanes(deps);
     for (const [ringing, ask] of [[false, true], [true, true], [false, false]] as const) {
       admitted = ask;
-      expect([lanes.wakes.next(7), lanes.files.next(7), lanes.connections.next(7),
-              lanes.threads.next(7)]).toEqual([8, 10, 11, 12]);
+      expect([lanes.wakes.next(7), lanes.files.next(7), lanes.connections.next(7)])
+        .toEqual([8, 10, 11]);
       expect(seen).toEqual([["ledger.nextDue", 7, ringing], ["files.nextAlarm", 7],
-                            ["connections.nextDue", 7], ["threads.nextDue", 7]]);
+                            ["connections.nextDue", 7]]);
       seen.length = 0;
       void Promise.all(Object.values(lanes).map((lane) => lane.run(1, 2)));
-      expect(seen.map((call) => call[2])).toEqual([sender, 2, 2, 2]);
+      expect(seen.map((call) => call[2])).toEqual([sender, 2, 2]);
       seen.length = 0;
       // The object gains its doorbell after the lanes were made.
       sender = {} as WakeSender;
@@ -485,8 +473,12 @@ describe("the object's schedule", () => {
     // that wrote outside one would throw, and the chunk would stay.
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
     await r.stub.fileMkdir(r.bind(null), { path: "/workspace/d", expected_etag: null });
-    // The door re-derived the files job: due now.
-    expect((await laneJobs(r.stub))["files"]!.time).toBeLessThanOrEqual(Date.now());
+    // The door re-derived the files job: due now; or workerd already fired the alarm it
+    // armed, and the lane deleted the chunk (the slice D review's round 2 race).
+    const due = ((await laneJobs(r.stub))["files"]?.time ?? Infinity) <= Date.now();
+    const ran = (await sqlIn(r.stub, "SELECT 1 FROM file_chunks WHERE sha256 = ?", sha256))
+      .length === 0;
+    expect(due || ran).toBe(true);
     await runInDurableObject(r.stub, (instance: OwnerDO) => instance.alarm());
     expect(await sqlIn(r.stub, "SELECT sha256 FROM file_chunks WHERE sha256 = ?", sha256))
       .toEqual([]);

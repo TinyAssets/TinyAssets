@@ -252,7 +252,7 @@ describe("the ledger's bounds", () => {
           // N1: the refusal names the tombstones that hold the registry.
           expect((error as Error).message).toBe(
             "the owner's agent registry is full (3 of its rows are deleted agents, kept " +
-            "while a revoke of their callbacks is pending or a thread was stamped from them)");
+            "while a revoke of their callbacks is pending)");
           full++;
         }
       }
@@ -308,7 +308,7 @@ describe("the ledger's bounds", () => {
       ledger.disable(dot, "paused");
       expect(refusal(() => ledger.register(origin(3), MCP, PULL)))
         .toBe("the owner's agent registry is full (0 of its rows are deleted agents, kept " +
-              "while a revoke of their callbacks is pending or a thread was stamped from them)");
+              "while a revoke of their callbacks is pending)");
       ledger.remove(muse);
       ledger.register(origin(3), MCP, PULL);
     });

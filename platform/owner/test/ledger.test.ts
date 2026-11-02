@@ -634,3 +634,23 @@ describe("the policy store's counters", () => {
                                   shares: "{}" });
   });
 });
+
+describe("a registration's identity (slice D review M1)", () => {
+  it("never moves to another client, universe or id, so its client's agent count holds",
+     async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE, "Muse");
+    for (const change of [`outside_client = '${DOT.client}'`, "command_center_id = 'beta'",
+                          "agent_id = 'agent_moved'"]) {
+      expect((await failure(() => r.sql(`UPDATE outside_agents SET ${change} ` +
+                                         "WHERE agent_id = ?", muse))).message)
+        .toMatch(/a registration never changes its id, universe or client/);
+    }
+    expect(await r.sql("SELECT client, agents FROM outside_clients WHERE client = ?",
+                       MUSE.client)).toEqual([{ client: MUSE.client, agents: 1 }]);
+    expect(await r.sql("SELECT outside_client AS client, COUNT(*) AS n FROM outside_agents " +
+                       "GROUP BY outside_client")).toEqual([{ client: MUSE.client, n: 1 }]);
+    // Its other fields still change.
+    await r.sql("UPDATE outside_agents SET display_name = 'Renamed' WHERE agent_id = ?", muse);
+  }, 30_000);
+});

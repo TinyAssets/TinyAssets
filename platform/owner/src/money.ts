@@ -1,5 +1,5 @@
 /**
- * The arithmetic every model-spend reservation shares, the loop's (`usage.ts`) and a
+ * The arithmetic every model-spend reservation shares, the object's (`usage.ts`) and a
  * sandbox's (`egress.ts`): the UTC periods its counters are kept by, micro-dollars, and the
  * bisection that finds the most output a cost room takes. Pure: no storage, no engine.
  */

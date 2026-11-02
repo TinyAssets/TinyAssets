@@ -7,7 +7,6 @@
  */
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { DurableObjectSqliteDatabase } from "@earendil-works/chord/sqlite/cloudflare";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -582,10 +581,10 @@ describe("a chunk between a pass's units", () => {
     const missing = await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
       const gate = new WriteGate(state.storage);
       const files = filesOn(gate.storage, gate.write);
-      // A pi commit holds the queue; the pass queues behind it, an upload's begin after it.
+      // An async storage transaction holds the queue; the pass queues behind it, an upload's begin after it.
       let release!: () => void;
       const held = new Promise<void>((resolve) => { release = resolve; });
-      const commit = new DurableObjectSqliteDatabase(state.storage).transaction(() => held);
+      const commit = state.storage.transaction(() => held);
       const pass = files.collect(Date.now() / 1000 + 10);
       const again = gate.write(() => files.begin(piece.byteLength, [sha], "owner"));
       release();

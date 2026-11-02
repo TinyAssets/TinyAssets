@@ -1,27 +1,19 @@
 /**
- * The owner object on the production gateway provider (`GatedOwnerDO`), and the calls a
- * binder makes to connect a model source: prepare in the owner's session, seal or
- * exchange with the real gateway Worker run beside the tests, then commit. The source
- * records are the gateway tests' own, so every model call reaches the gateway's fake
- * upstream in the provider's own wire format.
+ * The owner object with its gateway calls watched (`GatedOwnerDO`), and the calls a binder
+ * makes to connect a model source: prepare in the owner's session, seal or exchange with
+ * the real gateway Worker run beside the tests, then commit. The source records are the
+ * gateway tests' own, so every sandbox call the egress door forwards reaches the gateway's
+ * fake upstream in the provider's own wire format.
  */
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AssistantMessage, normalizeContext, type TranscriptContext } from "@earendil-works/pi-ai";
-import { ProviderDoc, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import type { TelemetrySpan } from "@earendil-works/pi-telemetry";
 
 import type { Credential, EgressScope, Source } from "../../gateway/src/credential";
 import { seal } from "../../gateway/src/keyring";
-import type { Provider } from "@earendil-works/pi-ai";
 
-import type { AgentParts, OwnerAgent } from "../src/agent";
 import type { ModelInfo } from "../src/connections";
-import { originContext } from "../src/origin";
 import type { Binding } from "../src/owner-do";
 import { signedIn } from "./ledger-support";
-import type { TestHarness } from "./agent-support";
 import type { GatedOwnerDO } from "./worker";
 
 export const ANTHROPIC: Source = Object.freeze({
@@ -140,48 +132,6 @@ export async function gated() {
 }
 
 export type Gated = Awaited<ReturnType<typeof gated>>;
-
-/**
- * The options of a test's own call to the provider, outside any pi run: the provider
- * session of the owner's root conversation (a call must name a conversation the object
- * made), and the telemetry context of an input of its own, `turn`, as pi would hand it
- * (`origin.ts`), its turn open as an input's would be (an owner of the test's own, kept
- * as the thread host keeps them; a reopened Session's reconcile lets it go).
- */
-export async function direct(instance: { harness: TestHarness; parts: AgentParts },
-                             turn: string = crypto.randomUUID()):
-    Promise<{ sessionId: string; telemetry: TelemetrySpan }> {
-  const pi = await instance.harness.pi();
-  const root = await pi.snapshot(ProviderDoc, ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT);
-  // One owner a turn, by its name: a turn asked for again is the one open, as pi's input
-  // that owns it is, and the thread's open inputs stay within their bound.
-  const owner = [...turn].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) % 1_000_000_000,
-                                 7);
-  await instance.parts.turns.owned(await instance.harness.thread(), [
-    { owner: `s:${1_000_000_000 + owner}`, turn: `input:${turn}` }]);
-  return { sessionId: root!.sessionId, telemetry: originContext(`input:${turn}`) };
-}
-
-/**
- * The provider as the owner's own thread's Session sees it (`forSession`): a test's own
- * call names that Session's conversations, as pi's calls do.
- */
-export async function provider(instance: { agent: OwnerAgent; parts: AgentParts;
-                                           harness: TestHarness }): Promise<Provider> {
-  const pi = await instance.harness.pi();
-  return instance.parts.provider.forSession((sessionId) =>
-    instance.agent.modelAuthority(pi, sessionId));
-}
-
-/** A one-message context, as pi sends a request. */
-export function asked(text: string, at = Date.now()): TranscriptContext {
-  return normalizeContext({ messages: [{ role: "user", content: text, timestamp: at }] });
-}
-
-/** An answer's text. */
-export function textOf(message: AssistantMessage): string {
-  return message.content.map((part) => (part.type === "text" ? part.text : "")).join("");
-}
 
 /** Wait until `check` holds. */
 export async function until(check: () => Promise<boolean> | boolean, what: string,
