@@ -52,10 +52,25 @@ describe("the agent's tools, until runs", () => {
     expect(tools.filter((tool) => AGENT_TOOLS.includes(tool.name))).toEqual([]);
     const called = await client.callTool({ name: "converse", arguments: {
       message: "hello", client_send_id: "c-1" } }).then(
-      (result) => ({ isError: result.isError === true }),
-      () => ({ isError: true }));
-    expect(called.isError).toBe(true);
+      (result) => `result ${result.isError === true} ${JSON.stringify(result.content)}`,
+      (error: Error) => `error ${error.message}`);
+    expect(called).toBe("error Tool converse not found");
     await client.close();
+  }, 60_000);
+
+  it("are no tool on the keyed /api/tools/*: 404, no such tool", async () => {
+    const app = await signInApp({ owner: owner() });
+    const minted = await appPost("keys", app.access_token, app.session, {
+      name: "laptop", scopes: [{ universe: "cc", agent: "main", capability: "read_graph" }] });
+    const { key } = await minted.json<{ key: string }>();
+    for (const tool of AGENT_TOOLS) {
+      const answer = await call(new Request(url(`/api/tools/${tool}`), {
+        method: "POST", headers: { Authorization: `Bearer ${key}`,
+                                   "Content-Type": "application/json" },
+        body: JSON.stringify({}) }));
+      expect(answer.status, tool).toBe(404);
+      expect(await answer.json()).toEqual({ error: "no such tool" });
+    }
   }, 60_000);
 
   it("are not found on the owner's /app/api/agent/*", async () => {

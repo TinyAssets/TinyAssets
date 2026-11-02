@@ -223,102 +223,137 @@ export function termBytes(name: string, term: Term): number {
   return term.rows * (inPlace * WORST_FILL + overflow);
 }
 
-/** The file manifest's tables, together: `max_manifest_bytes` at its high bound, at worst fill. */
-const MANIFEST: Term = Object.freeze({
-  rows: 1, bytes: FILE_SETTINGS.max_manifest_bytes, charged: true,
-  by: "max_manifest_bytes (high) at WORST_FILL, charged by triggers to " +
-    Object.keys(MANIFEST_TABLES).join(", "),
-});
-/** An owner-set grant: its scopes, each three fields of JSON, and its name. */
-const GRANT_BYTES = GRANT_LIMITS.maxScopes * (3 * SCOPE_FIELD * JSON_POINT + 64)
-  + CLIENT_NAME * 4;
+/** The bounds a term is made from, each module's own: what a proposed raise overrides. */
+export interface Bounds {
+  readonly collections?: Partial<typeof COLLECTIONS>;
+  readonly ledger?: Partial<typeof LEDGER_LIMITS>;
+  readonly grants?: Partial<typeof GRANT_LIMITS>;
+  readonly sessions?: Partial<typeof SESSION_LIMITS>;
+  readonly notices?: Partial<{ kept: number; detail: number }>;
+  readonly egress?: Partial<typeof EGRESS_LIMITS>;
+  readonly policy?: Partial<typeof POLICY_LIMITS>;
+  readonly cards?: Partial<typeof CARD_LIMITS>;
+  readonly usage?: Partial<typeof USAGE_LIMITS>;
+  readonly connections?: Partial<typeof CONNECTION_LIMITS>;
+}
 
-/** Every owner table's worst case; the manifest's tables share one term. */
-export const TERMS: Readonly<Record<string, Term>> = Object.freeze<Record<string, Term>>({
-  object_owner: { rows: 1, bytes: ROW + 4 * KIB, by: "one row" },
-  file_manifest: MANIFEST,
-  file_space: { rows: 1, bytes: ROW + MAX_PATH_BYTES + 4 * KIB,
-                by: "one row; its retention cursor a path" },
-  file_intents: { rows: MAX_OPEN_INTENTS,
-                  bytes: ROW + 2 * MAX_INTENT_CHUNKS * 64,
-                  by: "MAX_OPEN_INTENTS open uploads, each at most MAX_INTENT_CHUNKS chunk " +
-                    "ids, and as many still to send" },
-  owner_policy: { rows: 1, bytes: ROW + POLICY_LIMITS.maxDocument * 4,
-                  by: "one document of maxDocument code points" },
-  policy_receipts: { rows: 3 * POLICY_LIMITS.receiptsPerBucket, bytes: ROW + 1 * KIB,
-                     by: "receiptsPerBucket in each of three buckets" },
-  policy_proposals: { rows: POLICY_LIMITS.pendingProposals + POLICY_LIMITS.appliedProposals,
-                      bytes: ROW + POLICY_LIMITS.maxChange * 4,
-                      by: "pending and applied proposals of maxChange code points" },
-  proposal_shares: { rows: GRANT_LIMITS.maxFreeClients + GRANT_LIMITS.maxOwnerClients,
-                     bytes: ROW, by: "one per client" },
-  policy_usage: { rows: 1, bytes: ROW, by: "one row" },
-  outside_clients: { rows: GRANT_LIMITS.maxFreeClients + GRANT_LIMITS.maxOwnerClients,
-                     bytes: ROW + 8 + GRANT_BYTES * GRANT_LIMITS.maxOwnerClients
-                       / (GRANT_LIMITS.maxFreeClients + GRANT_LIMITS.maxOwnerClients),
-                     by: "free clients (no scopes, no name) and owner-set ones (maxScopes " +
-                       "scopes of three fields, and a name), each with its revision " +
-                       "(migration 9)" },
-  grant_fences: { rows: 1, bytes: ROW, by: "one row" },
-  owner_sessions: { rows: SESSION_LIMITS.maxSessions, bytes: ROW, by: "maxSessions" },
-  outside_agents: { rows: LEDGER_LIMITS.maxAgentRows, bytes: ROW + 1 * KIB,
-                    by: "maxAgentRows, every row: a tombstone a revoke holds too" },
-  ledger_messages: { rows: LEDGER_LIMITS.maxMessages, bytes: ROW + 1 * KIB,
-                     by: "maxMessages" },
-  message_bodies: { rows: LEDGER_LIMITS.maxMessages,
-                    bytes: ROW + LEDGER_LIMITS.maxBodyBytes / LEDGER_LIMITS.maxMessages,
-                    by: "maxBodyBytes over maxMessages" },
-  ledger_recipients: { rows: LEDGER_LIMITS.maxMessages * LEDGER_LIMITS.maxAgents,
-                       bytes: ROW, by: "each message to each agent" },
-  ledger_readers: { rows: LEDGER_LIMITS.maxAgentRows, bytes: ROW, by: "one per agent" },
-  ledger_receipts: { rows: LEDGER_LIMITS.maxReceipts, bytes: ROW + 1 * KIB,
-                     by: "maxReceipts" },
-  ledger_rings: { rows: LEDGER_LIMITS.maxAgentRows * WAKES_AN_HOUR, bytes: ROW,
-                  by: "an hour's wakes per agent, at the policy's most an hour" },
-  ledger_wakes: { rows: LEDGER_LIMITS.maxAgentRows + LEDGER_LIMITS.maxSettledWakes,
-                  bytes: ROW + 1 * KIB, by: "an open wake per agent, maxSettledWakes settled" },
-  ledger_usage: { rows: LEDGER_LIMITS.maxAgentRows + 1, bytes: ROW, by: "one per agent" },
-  collection_rows: { rows: COLLECTIONS.maxOwnerRows, bytes: ROW + COLLECTIONS.maxOwnerBytes /
-                                                              COLLECTIONS.maxOwnerRows,
-                     by: "maxOwnerRows; rows and history bytes within maxOwnerBytes" },
-  collection_history: { rows: COLLECTIONS.maxOwnerRows * COLLECTIONS.maxRevisions,
-                        bytes: ROW + COLLECTIONS.maxOwnerBytes /
-                                     (COLLECTIONS.maxOwnerRows * COLLECTIONS.maxRevisions),
-                        by: "maxRevisions a row; bytes within maxOwnerBytes" },
-  collection_seqs: { rows: COLLECTIONS.maxOwnerRows, bytes: ROW, by: "one per collection" },
-  collection_usage: { rows: 4 * COLLECTIONS.maxOwnerRows, bytes: ROW,
-                      by: "owner, collection, writer and creator counters" },
-  agent_cards: { rows: CARD_LIMITS.maxPending, bytes: ROW + CARD_LIMITS.maxRequest,
-                 by: "maxPending cards of maxRequest" },
-  owner_notices: { rows: NOTICES_KEPT, bytes: ROW + NOTICE_DETAIL * 4, by: "NOTICES_KEPT" },
-  connections: { rows: CONNECTION_LIMITS.maxConnections + CONNECTION_LIMITS.maxRevokedKept,
-                 bytes: ROW + 4 * MODELS_CHARS + 4 * EGRESS_CHARS,
-                 by: "connections and revoked kept, the schema's models and egress scope " +
-                   "ceilings each" },
-  connection_secrets: { rows: CONNECTION_LIMITS.maxConnections
-                              + CONNECTION_LIMITS.maxRevokedKept,
-                        bytes: ROW + 4 * BLOB_CHARS,
-                        by: "one sealed blob a connection, at the schema's ceiling" },
-  connection_flows: { rows: CONNECTION_LIMITS.maxFlowRows, bytes: ROW + 4 * KIB,
-                      by: "maxFlowRows" },
-  model_reservations: { rows: USAGE_LIMITS.receiptsKept + CALLS_OPEN, bytes: ROW + 1 * KIB,
-                        by: "receiptsKept settled, and CALLS_OPEN open at once" },
-  model_spend: { rows: SPEND_KEPT, bytes: ROW, by: "SPEND_KEPT day and month counters" },
-  // The sandbox's egress (G4): its lease is `file_space`'s one row; each request a row.
-  egress_reservations: { rows: EGRESS_LIMITS.receiptsKept + EGRESS_LIMITS.refusalsKept
-                                + EGRESS_LIMITS.open,
-                         bytes: ROW + EGRESS_PATH_MAX + 32 + 32 + 64 + 64 + 9 + 64 + 10 + 7
-                           + 256 + 25 + 7 + 64 + 30 + 16 * 8,
-                         by: "receiptsKept admitted, refusalsKept refused and open at once, " +
-                           "each its path (visible ASCII, a byte a character), ids, source, " +
-                           "charge, rule, periods, served model and numbers" },
-  egress_runs: { rows: EGRESS_LIMITS.open + 1, bytes: ROW + 32 + 4 * 8,
-                 by: "the live lease's run, and one for each run an open call still holds" },
-  owner_erasure: { rows: 1, bytes: ROW, by: "one row" },
-  // The owner's admission: one row, its reasons a short fixed list; after the erasure, the
-  // erased tombstone, alone in the database.
-  owner_admission: { rows: 1, bytes: ROW + 64, by: "one row (the schema's CHECK)" },
-});
+/**
+ * Every owner table's worst case at `bounds` (the sources' own unless overridden); the
+ * manifest's tables share one term.
+ */
+export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
+  const C = { ...COLLECTIONS, ...bounds.collections };
+  const L = { ...LEDGER_LIMITS, ...bounds.ledger };
+  const G = { ...GRANT_LIMITS, ...bounds.grants };
+  const S = { ...SESSION_LIMITS, ...bounds.sessions };
+  const N = { kept: NOTICES_KEPT, detail: NOTICE_DETAIL, ...bounds.notices };
+  const E = { ...EGRESS_LIMITS, ...bounds.egress };
+  const P = { ...POLICY_LIMITS, ...bounds.policy };
+  const K = { ...CARD_LIMITS, ...bounds.cards };
+  const U = { ...USAGE_LIMITS, ...bounds.usage };
+  const CN = { ...CONNECTION_LIMITS, ...bounds.connections };
+  const F = FILE_SETTINGS;
+  /** The file manifest's tables, together: `max_manifest_bytes` at its high bound, at worst fill. */
+  const MANIFEST: Term = Object.freeze({
+    rows: 1, bytes: F.max_manifest_bytes, charged: true,
+    by: "max_manifest_bytes (high) at WORST_FILL, charged by triggers to " +
+      Object.keys(MANIFEST_TABLES).join(", "),
+  });
+  /** An owner-set grant: its scopes, each three fields of JSON, and its name. */
+  const GRANT_BYTES = G.maxScopes * (3 * SCOPE_FIELD * JSON_POINT + 64)
+    + CLIENT_NAME * 4;
+
+  return Object.freeze<Record<string, Term>>({
+    object_owner: { rows: 1, bytes: ROW + 4 * KIB, by: "one row" },
+    file_manifest: MANIFEST,
+    file_space: { rows: 1, bytes: ROW + MAX_PATH_BYTES + 4 * KIB,
+                  by: "one row; its retention cursor a path" },
+    file_intents: { rows: MAX_OPEN_INTENTS,
+                    bytes: ROW + 2 * MAX_INTENT_CHUNKS * 64,
+                    by: "MAX_OPEN_INTENTS open uploads, each at most MAX_INTENT_CHUNKS chunk " +
+                      "ids, and as many still to send" },
+    owner_policy: { rows: 1, bytes: ROW + P.maxDocument * 4,
+                    by: "one document of maxDocument code points" },
+    policy_receipts: { rows: 3 * P.receiptsPerBucket, bytes: ROW + 1 * KIB,
+                       by: "receiptsPerBucket in each of three buckets" },
+    policy_proposals: { rows: P.pendingProposals + P.appliedProposals,
+                        bytes: ROW + P.maxChange * 4,
+                        by: "pending and applied proposals of maxChange code points" },
+    proposal_shares: { rows: G.maxFreeClients + G.maxOwnerClients,
+                       bytes: ROW, by: "one per client" },
+    policy_usage: { rows: 1, bytes: ROW, by: "one row" },
+    outside_clients: { rows: G.maxFreeClients + G.maxOwnerClients,
+                       bytes: ROW + 8 + GRANT_BYTES * G.maxOwnerClients
+                         / (G.maxFreeClients + G.maxOwnerClients),
+                       by: "free clients (no scopes, no name) and owner-set ones (maxScopes " +
+                         "scopes of three fields, and a name), each with its revision " +
+                         "(migration 9)" },
+    grant_fences: { rows: 1, bytes: ROW, by: "one row" },
+    owner_sessions: { rows: S.maxSessions, bytes: ROW, by: "maxSessions" },
+    outside_agents: { rows: L.maxAgentRows, bytes: ROW + 1 * KIB,
+                      by: "maxAgentRows, every row: a tombstone a revoke holds too" },
+    ledger_messages: { rows: L.maxMessages, bytes: ROW + 1 * KIB,
+                       by: "maxMessages" },
+    message_bodies: { rows: L.maxMessages,
+                      bytes: ROW + L.maxBodyBytes / L.maxMessages,
+                      by: "maxBodyBytes over maxMessages" },
+    ledger_recipients: { rows: L.maxMessages * L.maxAgents,
+                         bytes: ROW, by: "each message to each agent" },
+    ledger_readers: { rows: L.maxAgentRows, bytes: ROW, by: "one per agent" },
+    ledger_receipts: { rows: L.maxReceipts, bytes: ROW + 1 * KIB,
+                       by: "maxReceipts" },
+    ledger_rings: { rows: L.maxAgentRows * WAKES_AN_HOUR, bytes: ROW,
+                    by: "an hour's wakes per agent, at the policy's most an hour" },
+    ledger_wakes: { rows: L.maxAgentRows + L.maxSettledWakes,
+                    bytes: ROW + 1 * KIB, by: "an open wake per agent, maxSettledWakes settled" },
+    ledger_usage: { rows: L.maxAgentRows + 1, bytes: ROW, by: "one per agent" },
+    collection_rows: { rows: C.maxOwnerRows, bytes: ROW + C.maxOwnerBytes /
+                                                                C.maxOwnerRows,
+                       by: "maxOwnerRows; rows and history bytes within maxOwnerBytes" },
+    collection_history: { rows: C.maxOwnerRows * C.maxRevisions,
+                          bytes: ROW + C.maxOwnerBytes /
+                                       (C.maxOwnerRows * C.maxRevisions),
+                          by: "maxRevisions a row; bytes within maxOwnerBytes" },
+    collection_seqs: { rows: C.maxOwnerRows, bytes: ROW, by: "one per collection" },
+    collection_usage: { rows: 4 * C.maxOwnerRows, bytes: ROW,
+                        by: "owner, collection, writer and creator counters" },
+    agent_cards: { rows: K.maxPending, bytes: ROW + K.maxRequest,
+                   by: "maxPending cards of maxRequest" },
+    owner_notices: { rows: N.kept, bytes: ROW + N.detail * 4, by: "N.kept" },
+    connections: { rows: CN.maxConnections + CN.maxRevokedKept,
+                   bytes: ROW + 4 * MODELS_CHARS + 4 * EGRESS_CHARS,
+                   by: "connections and revoked kept, the schema's models and egress scope " +
+                     "ceilings each" },
+    connection_secrets: { rows: CN.maxConnections
+                                + CN.maxRevokedKept,
+                          bytes: ROW + 4 * BLOB_CHARS,
+                          by: "one sealed blob a connection, at the schema's ceiling" },
+    connection_flows: { rows: CN.maxFlowRows, bytes: ROW + 4 * KIB,
+                        by: "maxFlowRows" },
+    model_reservations: { rows: U.receiptsKept + CALLS_OPEN, bytes: ROW + 1 * KIB,
+                          by: "receiptsKept settled, and CALLS_OPEN open at once" },
+    model_spend: { rows: SPEND_KEPT, bytes: ROW, by: "SPEND_KEPT day and month counters" },
+    // The sandbox's egress (G4): its lease is `file_space`'s one row; each request a row.
+    egress_reservations: { rows: E.receiptsKept + E.refusalsKept
+                                  + E.open,
+                           bytes: ROW + EGRESS_PATH_MAX + 32 + 32 + 64 + 64 + 9 + 64 + 10 + 7
+                             + 256 + 25 + 7 + 64 + 30 + 16 * 8,
+                           by: "receiptsKept admitted, refusalsKept refused and open at once, " +
+                             "each its path (visible ASCII, a byte a character), ids, source, " +
+                             "charge, rule, periods, served model and numbers" },
+    egress_runs: { rows: E.open + 1, bytes: ROW + 32 + 4 * 8,
+                   by: "the live lease's run, and one for each run an open call still holds" },
+    owner_erasure: { rows: 1, bytes: ROW, by: "one row" },
+    // The owner's admission: one row, its reasons a short fixed list; after the erasure, the
+    // erased tombstone, alone in the database.
+    owner_admission: { rows: 1, bytes: ROW + 64, by: "one row (the schema's CHECK)" },
+  });
+}
+
+/** Every owner table's worst case at the sources' own bounds. */
+export const TERMS: Readonly<Record<string, Term>> = termsFor();
+/** The file manifest's term at the sources' own bounds. */
+const MANIFEST: Term = TERMS["file_manifest"]!;
 
 /**
  * What the runtime and Lifecycle keep in the owner's database beside its own tables, which

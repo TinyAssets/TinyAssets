@@ -25,7 +25,7 @@ import {
 export type CodemodeTools = NonNullable<
   ConstructorParameters<typeof RemoteCodemodeSandbox>[0]["tools"]>;
 
-/** How long one script may run, in ms; a script past it ends with pi's `timeout`. */
+/** How long one script may run, in ms; a script past it ends with pi-codemode's `timeout`. */
 export const CODEMODE_TIMEOUT_MS = 60_000;
 
 /** What the hooks Worker serves the owner (`hooks/src/index.ts`): code mode's VMs. */

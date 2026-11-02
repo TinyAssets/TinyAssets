@@ -94,7 +94,10 @@ export interface UsagePolicy {
 
 /** What a call asks to reserve. */
 export interface Ask {
-  /** The work the call is part of, as its receipt names it (slice R: the run). */
+  /**
+   * The work the call is part of, as its receipt names it. The `model_reservations.turn`
+   * column keeps its name until the runs slice (R) keys reservations to runs.
+   */
   readonly turn: string;
   readonly connection: string;
   /** The connection's source record, which its spend is counted under. */

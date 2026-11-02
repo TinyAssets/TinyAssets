@@ -66,10 +66,9 @@
  * Every change runs in one `transactionSync`, so a refusal or a thrown error leaves
  * nothing behind; only chunk bytes and their deletes cross to `FILES`, between
  * transactions, at most two chunks a call. A change a caller makes is one unit of the
- * object's write gate (`gate.ts`), which the caller opens (a door, the pi environment);
- * the methods that cross to `FILES` open their own, one for each step around a call, so
- * no write waits on the files Worker and none lands inside a pi commit. Watchers in the
- * object (the pi environment's `watch`) hear each change.
+ * object's write gate (`gate.ts`), which the caller opens (a door); the methods that
+ * cross to `FILES` open their own, one for each step around a call, so no write waits on
+ * the files Worker.
  */
 import { createHash, randomBytes } from "node:crypto";
 
@@ -358,9 +357,6 @@ const QUOTAS: readonly (readonly [keyof Counters, keyof FileLimits, string])[] =
 /** Released history rows one fitting step reads. */
 const FIT_BATCH = 64;
 
-/** Paths each change touched, for the object's watchers. */
-type Touched = string[];
-
 type Intent = { size: number; chunks: string[]; pending: string[]; writer: string };
 
 export function sha256Hex(bytes: Uint8Array | string): string {
@@ -486,7 +482,6 @@ export class Files {
   readonly #limits: () => FileLimits;
   /** The object's write gate: the units the methods that cross to `FILES` write through. */
   readonly #write: Write;
-  readonly #watchers = new Set<(paths: string[]) => void>();
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
               write: Write) {
@@ -524,34 +519,7 @@ export class Files {
   }
 
   /**
-   * Run a caller's synchronous changes (`mkdir`, `remove`, `rename`, ...) as one unit of
-   * the object's write gate, from outside a unit: the pi environment's tool calls.
-   */
-  unit<T>(changes: () => T): Promise<T> {
-    return this.#write(changes);
-  }
-
-  /** Hear every committed change's paths; returns the call that stops it. */
-  watch(listener: (paths: string[]) => void): () => void {
-    this.#watchers.add(listener);
-    return () => this.#watchers.delete(listener);
-  }
-
-  #notify(paths: Touched): void {
-    if (paths.length === 0) {
-      return;
-    }
-    for (const listener of [...this.#watchers]) {
-      try {
-        listener([...paths]);
-      } catch {
-        console.error("a file watcher failed");  // a watcher never undoes a commit
-      }
-    }
-  }
-
-  /**
-   * Run `act` in one transaction, then tell watchers. At the end, history is first fitted
+   * Run `act` in one transaction. At the end, history is first fitted
    * to its quotas from gone paths' rows (`#fit`); then the quotas are checked (`#bounds`),
    * which never refuses a change that leaves every counter no higher, so a redaction, a
    * purge, an abort or housekeeping always passes. `writer` is whose change it is: an
@@ -560,20 +528,17 @@ export class Files {
    * changes that free while writing a record: a remove (its delete row adds to history) and
    * a sync commit (whose ops are bounded one by one, a remove's among them exempt).
    */
-  #change<T>(writer: string | null, act: (touched: Touched, now: number) => T,
+  #change<T>(writer: string | null, act: (now: number) => T,
              freeing = false): T {
-    const touched: Touched = [];
-    const result = this.#storage.transactionSync(() => {
+    return this.#storage.transactionSync(() => {
       const before = this.#before(writer);
-      const value = act(touched, Date.now() / 1000);
+      const value = act(Date.now() / 1000);
       this.#fit(before, writer);
       if (!freeing) {
         this.#bounds(before, writer);
       }
       return value;
     });
-    this.#notify(touched);
-    return result;
   }
 
   /** One share row's counters (`file_shares`, kept by the schema's triggers), or zeros. */
@@ -951,7 +916,7 @@ export class Files {
   }
 
   /** Each missing ancestor made a directory (`parents`), or refused as missing. */
-  #parents(path: string, parents: boolean, writer: string, now: number, touched: Touched): void {
+  #parents(path: string, parents: boolean, writer: string, now: number): void {
     for (const dir of ancestors(path)) {
       const found = this.#entry(dir);
       if (found?.kind === "file") {
@@ -963,15 +928,13 @@ export class Files {
         }
         this.#upsert(dir, "dir", this.#record(dir, "mkdir", "dir", null, 0, 0, writer, now),
                      null, 0, 0, writer, now);
-        touched.push(dir);
       }
     }
   }
 
   /** Commit content as `path`'s next version, inside the caller's transaction. */
   #commit(path: string, expected: string | null, contentId: string, size: number,
-          wanted: number | null, writer: string, op: string, parents: boolean, now: number,
-          touched: Touched): Entry {
+          wanted: number | null, writer: string, op: string, parents: boolean, now: number): Entry {
     if (isRoot(path)) {
       throw new FileFault("is_directory", "a root is a directory");
     }
@@ -984,10 +947,9 @@ export class Files {
     if (size > this.#limits().max_file_bytes) {
       throw new Refused(FILE_TOO_LARGE);
     }
-    this.#parents(path, parents, writer, now, touched);
+    this.#parents(path, parents, writer, now);
     const mode = wanted ?? current?.mode ?? 0;
     const version = this.#record(path, op, "file", contentId, size, mode, writer, now);
-    touched.push(path);
     return shown(this.#upsert(path, "file", version, contentId, size, mode, writer, now));
   }
 
@@ -1027,9 +989,9 @@ export class Files {
   /** Write small content (at most 4 KiB) in one transaction. */
   #writeInline(path: string, bytes: Uint8Array, expected: string | null, mode: number | null,
                writer: string, parents: boolean): Entry {
-    return this.#change(writer, (touched, now) => this.#commit(
+    return this.#change(writer, (now) => this.#commit(
       path, expected, this.#inline(bytes), bytes.byteLength, mode, writer, "write", parents,
-      now, touched));
+      now));
   }
 
   /**
@@ -1198,7 +1160,7 @@ export class Files {
       wanted.set(sha256, plan[index]!);
     });
     const intentId = randomBytes(16).toString("hex");
-    return this.#change(writer, (_touched, now) => {
+    return this.#change(writer, (now) => {
       const sql = this.#sql;
       const space = this.#space();
       if (space.intents >= MAX_OPEN_INTENTS || space.intent_chunks + plan.length > MAX_HELD_CHUNKS) {
@@ -1381,10 +1343,10 @@ export class Files {
     const at = storedPath(path);
     const expected = expectedEtag(request.expected);
     const mode = modeOf(request.mode);
-    return this.#change(request.writer, (touched, now) => {
+    return this.#change(request.writer, (now) => {
       const { contentId, size } = this.#fromIntent(this.#intent(intentId, now));
       const entry = this.#commit(at, expected, contentId, size, mode, request.writer, "write",
-                                 request.parents ?? true, now, touched);
+                                 request.parents ?? true, now);
       this.#release(intentId as string);
       return entry;
     });
@@ -1395,12 +1357,12 @@ export class Files {
       Entry {
     const at = storedPath(path);
     const expected = expectedEtag(options.expected);
-    return this.#change(options.writer, (touched, now) => this.#mkdir(
-      at, expected, options.parents ?? true, options.writer, now, touched));
+    return this.#change(options.writer, (now) => this.#mkdir(
+      at, expected, options.parents ?? true, options.writer, now));
   }
 
-  #mkdir(path: string, expected: string | null, parents: boolean, writer: string, now: number,
-         touched: Touched): Entry {
+  #mkdir(path: string, expected: string | null, parents: boolean, writer: string,
+         now: number): Entry {
     if (isRoot(path)) {
       if (expected !== null) {
         throw new Invalid("a root is never written");
@@ -1416,8 +1378,7 @@ export class Files {
       return shown(current);
     }
     this.#temporary(path);
-    this.#parents(path, parents, writer, now, touched);
-    touched.push(path);
+    this.#parents(path, parents, writer, now);
     return shown(this.#upsert(path, "dir", this.#record(path, "mkdir", "dir", null, 0, 0,
                                                         writer, now),
                               null, 0, 0, writer, now));
@@ -1431,12 +1392,12 @@ export class Files {
       { removed: number } {
     const at = storedPath(path);
     const expected = expectedEtag(options.expected);
-    return this.#change(options.writer, (touched, now) => this.#remove(
-      at, expected, options.recursive ?? false, options.writer, now, touched), true);
+    return this.#change(options.writer, (now) => this.#remove(
+      at, expected, options.recursive ?? false, options.writer, now), true);
   }
 
-  #remove(path: string, expected: string | null, recursive: boolean, writer: string, now: number,
-          touched: Touched): { removed: number } {
+  #remove(path: string, expected: string | null, recursive: boolean, writer: string,
+          now: number): { removed: number } {
     if (isRoot(path)) {
       throw new Invalid("a root is never removed");
     }
@@ -1454,16 +1415,15 @@ export class Files {
                           "a directory is removed with recursive");
     }
     for (const entry of [...below, current]) {
-      this.#drop(pathOf(entry), "delete", writer, now, touched);
+      this.#drop(pathOf(entry), "delete", writer, now);
     }
     return { removed: below.length + 1 };
   }
 
-  #drop(path: string, op: string, writer: string, now: number, touched: Touched): void {
+  #drop(path: string, op: string, writer: string, now: number): void {
     this.#sql.exec("DELETE FROM file_entries WHERE parent = ? AND name = ?", parentOf(path),
                    nameOf(path));
     this.#record(path, op, null, null, 0, 0, writer, now);
-    touched.push(path);
   }
 
   /**
@@ -1483,7 +1443,7 @@ export class Files {
     if (source !== target && within(target, source)) {
       throw new Invalid("a directory is never moved into itself");
     }
-    return this.#change(options.writer, (touched, now) => {
+    return this.#change(options.writer, (now) => {
       const moving = this.#entry(source);
       if (moving === undefined && expected === null) {
         throw new FileFault("not_found", "no such file or directory");
@@ -1533,12 +1493,10 @@ export class Files {
         const made = this.#upsert(path, entry.kind, version, entry.content_id, entry.size,
                                   entry.mode, options.writer, now);
         moved ??= made;
-        touched.push(path);
       }
       for (const entry of tree) {
         this.#sql.exec("DELETE FROM file_entries WHERE parent = ? AND name = ?", entry.parent,
                        entry.name);
-        touched.push(pathOf(entry));
       }
       return shown(moved!);
     });
@@ -1549,13 +1507,13 @@ export class Files {
       Entry {
     const at = storedPath(path);
     const expected = expectedEtag(options.expected);
-    return this.#change(options.writer, (touched, now) => {
+    return this.#change(options.writer, (now) => {
       const row = this.#version(at, version);
       if (row.kind !== "file" || row.content_id === null) {
         throw new Invalid("that version holds no file content");
       }
       return this.#commit(at, expected, row.content_id, row.size, row.mode, options.writer,
-                          "restore", true, now, touched);
+                          "restore", true, now);
     });
   }
 
@@ -1607,27 +1565,27 @@ export class Files {
     }
     const name = `${prefix}${randomBytes(8).toString("hex")}`;
     const path = `${TEMP}/${name}`;
-    this.#change(writer, (touched, now) => {
+    this.#change(writer, (now) => {
       this.#sql.exec("INSERT INTO file_temps (name, expires_at, writer) VALUES (?, ?, ?)", name,
                      now + TEMP_TTL_S, writer);
-      this.#mkdir(path, "", false, writer, now, touched);
+      this.#mkdir(path, "", false, writer, now);
     });
     return path;
   }
 
   /** Remove temporary directories now (an environment's `cleanup`). */
   dropTemps(paths: readonly string[], writer: string): void {
-    this.#change(writer, (touched, now) => {
+    this.#change(writer, (now) => {
       for (const path of paths) {
-        this.#dropTemp(nameOf(path), writer, now, touched);
+        this.#dropTemp(nameOf(path), writer, now);
       }
     });
   }
 
-  #dropTemp(name: string, writer: string, now: number, touched: Touched): void {
+  #dropTemp(name: string, writer: string, now: number): void {
     this.#sql.exec("DELETE FROM file_temps WHERE name = ?", name);
     if (this.#entry(`${TEMP}/${name}`) !== undefined) {
-      this.#remove(`${TEMP}/${name}`, null, true, writer, now, touched);
+      this.#remove(`${TEMP}/${name}`, null, true, writer, now);
     }
   }
 
@@ -1648,7 +1606,7 @@ export class Files {
         || !HEX64.test(sync) || egress === sync) {
       throw new Invalid("a lease's two token hashes are 64 hex, and differ");
     }
-    return this.#change(null, (_touched, now) => {
+    return this.#change(null, (now) => {
       const space = this.#space();
       if (space.lease_id !== null && space.lease_expires > now) {
         throw new Refused("the sync lease is held");
@@ -1685,7 +1643,7 @@ export class Files {
    * the current egress generation (`egress.ts`).
    */
   networkApplied(leaseId: unknown, epoch: unknown, generation: number): Lease {
-    return this.#change(null, (_touched, now) => {
+    return this.#change(null, (now) => {
       const space = this.#fenced(leaseId, epoch, now);
       this.#sql.exec("UPDATE file_space SET network_generation = ?", generation);
       return { lease_id: space.lease_id!, epoch: space.epoch, expires_at: space.lease_expires,
@@ -1704,7 +1662,7 @@ export class Files {
   }
 
   leaseRenew(leaseId: unknown, epoch: unknown): Lease {
-    return this.#change(null, (_touched, now) => {
+    return this.#change(null, (now) => {
       const space = this.#fenced(leaseId, epoch, now);
       this.#sql.exec("UPDATE file_space SET lease_expires = ?", now + LEASE_TTL_S);
       return { lease_id: space.lease_id!, epoch: space.epoch, expires_at: now + LEASE_TTL_S,
@@ -1714,7 +1672,7 @@ export class Files {
 
   /** Give the lease back; one already lost is no error, and changes nothing. */
   leaseRelease(leaseId: unknown, epoch: unknown): { released: boolean } {
-    return this.#change(null, (_touched, now) => {
+    return this.#change(null, (now) => {
       try {
         this.#fenced(leaseId, epoch, now);
       } catch {
@@ -1741,14 +1699,13 @@ export class Files {
     if (!Array.isArray(ops) || ops.length === 0 || ops.length > MAX_SYNC_OPS) {
       throw new Invalid(`a sync commit holds 1 to ${MAX_SYNC_OPS} ops`);
     }
-    return this.#change(null, (touched, now) => {
+    return this.#change(null, (now) => {
       const { epoch } = this.#fenced(request.lease_id, request.epoch, now);
       const writer = `lease:${epoch}`;
       const seen = new Set<string>();
       const outcomes = (ops as unknown[]).map((raw) => {
         const op = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
         const named = typeof op["path"] === "string" ? op["path"] : "";
-        const mark = touched.length;
         try {
           return this.#storage.transactionSync(() => {
             const before = this.#before(writer);
@@ -1757,7 +1714,7 @@ export class Files {
               throw new Invalid("a sync op names one workspace path, once");
             }
             seen.add(path);
-            const outcome = this.#syncOp(op, path, epoch, writer, now, touched);
+            const outcome = this.#syncOp(op, path, epoch, writer, now);
             this.#fit(before, writer);
             if (op["op"] !== "remove") {
               this.#bounds(before, writer);
@@ -1765,7 +1722,6 @@ export class Files {
             return outcome;
           });
         } catch (error) {
-          touched.length = mark;
           if (error instanceof Invalid || error instanceof Refused || error instanceof FileFault
               || error instanceof FileConflict) {
             return { path: named, outcome: "refused" as const, reason: error.message };
@@ -1805,8 +1761,8 @@ export class Files {
     throw new Refused("too many conflict copies of this path in this epoch");
   }
 
-  #syncOp(op: Record<string, unknown>, path: string, epoch: number, writer: string, now: number,
-          touched: Touched): SyncOutcome {
+  #syncOp(op: Record<string, unknown>, path: string, epoch: number, writer: string,
+          now: number): SyncOutcome {
     const base = op["base"] === null ? null : count(op["base"], "base", 1, Number.MAX_SAFE_INTEGER);
     const current = this.#entry(path);
     const moved = base === null ? current !== undefined : current?.version !== base;
@@ -1832,24 +1788,24 @@ export class Files {
         }
         if (moved || current?.kind === "dir" || this.#blocked(path) !== null) {
           return conflict(this.#commit(this.#copyPath(path, epoch), "", contentId, size, mode,
-                                       writer, "conflict", true, now, touched));
+                                       writer, "conflict", true, now));
         }
         return { path, outcome: "committed",
-                 entry: this.#commit(path, null, contentId, size, mode, writer, "write", true, now,
-                                     touched) };
+                 entry: this.#commit(path, null, contentId, size, mode, writer, "write", true,
+                                     now) };
       }
       case "mkdir":
         if ((moved && current?.kind !== "dir") || this.#blocked(path) !== null) {
           return conflict(null);
         }
         return { path, outcome: "committed",
-                 entry: this.#mkdir(path, null, true, writer, now, touched) };
+                 entry: this.#mkdir(path, null, true, writer, now) };
       case "remove":
         if (moved || (current?.kind === "dir" && this.#below(path).length > 0)) {
           return conflict(null);
         }
         if (current !== undefined) {
-          this.#remove(path, null, true, writer, now, touched);
+          this.#remove(path, null, true, writer, now);
         }
         return { path, outcome: "committed", entry: null };
       default:
@@ -1903,7 +1859,7 @@ export class Files {
    */
   async collect(now: number, until: number = Infinity): Promise<void> {
     const sql = this.#sql;
-    await this.#write(() => this.#change(null, (touched) => {
+    await this.#write(() => this.#change(null, () => {
       this.#reretain();
       for (const { intent_id: intentId } of sql.exec<{ intent_id: string }>(
              "SELECT intent_id FROM file_intents WHERE expires_at <= ? ORDER BY expires_at " +
@@ -1913,7 +1869,7 @@ export class Files {
       for (const { name } of sql.exec<{ name: string }>(
              "SELECT name FROM file_temps WHERE expires_at <= ? ORDER BY expires_at LIMIT ?",
              now, HOUSEKEEPING_BATCH).toArray()) {
-        this.#dropTemp(name, "system", now, touched);
+        this.#dropTemp(name, "system", now);
       }
       this.#prune(now);
     }));

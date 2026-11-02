@@ -225,12 +225,10 @@ test, cutover.
   `deleteAll` (the plain spellings and the obvious split ones), off computed access to a
   storage or a Lifecycle, off every `agents` import but `agents/lifecycle`, off
   Lifecycle's handlers, and off Lifecycle's tables.
-  Stamped work (owed by 3.5): a scheduled launch carries the outside authority it was
-  made under (client, grant generation, sign-in time) as its run thread's stamp,
-  rechecked with `Grants.standing` when made and in its delivery's own unit (F1); a
-  grant change drops the client's threads, the sleepers with them, in its own
-  transaction; a scheduled run holds its client's grant row as every thread does
-  (`held`, slice 3's review N3). Slice
+  Stamped work (owed by 3.5): built as F1's scheduled launches in run threads, which slice
+  D deleted with the threads; what stays is the stamp (client, grant generation, sign-in
+  time) rechecked with `Grants.standing`, and a held registration holding its client's
+  grant row (`held`, slice 3's review N3). Slice R stamps runs the same way. Slice
   3's review carries: only the owner's own act lifts a revoke (L1, and slice 5's review
   M1): an API key's revoked row goes at the binder's `grantForget` once the directory
   deleted the key; an MCP client's only by the owner in session (`grantForgetRevoked`),
@@ -311,12 +309,12 @@ account and no deploy.
   window, a provider revoke owed), `connection_secrets` (one sealed blob per connection, at
   its version), `connection_flows` (the SHA-256 of the state, the PKCE verifier while
   open, the session) and `model_reservations`, with the counters every cap reads and only
-  triggers write: `model_spend` (each source's day and month) and `model_turns` (each
-  turn's requests, tokens and cost, kept while pi records own the turn: migration 10),
-  so the reservation rows are receipts only. A connection keeps up to 1,024 models
-  (the largest built-in catalog, 386, found by a scan, connects). Owner policy's optional
-  `models` table: per-turn requests, tokens and cost (µ$), owner-wide and per-source
-  (by source record) daily and monthly cost, pi's retries.
+  triggers write: `model_spend` (each source's day and month; a `model_turns` per-turn
+  counter went with slice D), so the reservation rows are receipts only. A connection
+  keeps up to 1,024 models (the largest built-in catalog, 386, found by a scan,
+  connects). Owner policy's optional `models` table: per-run requests, tokens and cost
+  (µ$, held at the egress door since slice D), owner-wide and per-source (by source
+  record) daily and monthly cost (pi's retries went with slice D).
   `connections.ts`: `connectionPrepare`, `connectionCommit`, `connectionRevoke`,
   `connectionList`, `flowBegin` (folded into `connectionPrepare` by G3), `flowFinish`,
   each the owner's in session, a refusal
@@ -327,14 +325,15 @@ account and no deploy.
   outcome in its row; a source with no revocation endpoint has its blob deleted with a
   notice; a refresh landing after a revoke keeps its rotated tokens for the lane to
   revoke; a dropped refresh clears its lease), every changing door syncing it.
-  `usage.ts`: reserve (the policy, the turn's counters and the spend read in the unit
+  `usage.ts`: reserve (the policy and the spend read in the unit
   that inserts, output shrunk to what the caps leave, refusals kept as receipts),
   dispatched (re-checked: reserved, the policy generation, the connection's version, not
   aborted), settle (`succeeded` from pi-ai's usage, `failed` when the gateway answered
   with a refusal's status, its own or the provider's before any output, else `unknown`,
   which keeps its reservation), abandon (a dispatch or settle unit that threw), and a dead
   instance's open rows settled by the next reserve or receipts read; `usageReceipts`
-  (owner only). `gateway-provider.ts` is A1's. Owed by 3.5,
+  (owner only). `gateway-provider.ts` was A1's (deleted by slice D, which left the
+  reservations uncalled until slice R keys them to runs). Owed by 3.5,
   done: `sessionCloseAll` cancels every open flow in its unit, `sessionClose` its
   session's; the envelope carries the policy generation read in the reserving unit, with
   no call back. Declared differences from the research: an OAuth revoke keeps the blob,
@@ -364,8 +363,10 @@ account and no deploy.
   live equivalent (the reseal's version-shape check of the gateway's own answer; the
   output cap the gateway clamps to anyway; a third in code G3 has since deleted). The
   doors' `GATEWAY` binding and the connect routes are G3's (done). The policy write that
-  ends in-flight turns and closes their tee views is A2's (done). Open: the receipts' rows
-  per call, measured live (G5).
+  ends in-flight turns and closes their tee views was A2's. Slice D deleted the turns,
+  their counters and origin, the envelope, the tee and pi's retry naming this item
+  describes; the reservation states, the spend counters, the lease, the reseal and the
+  revoke stay. Open: the receipts' rows per call, measured live.
 - [x] G3 The connect doors (the doors Worker), in workerd through the real gateway Worker,
   nothing deployed. The doors bind `GATEWAY` to the gateway's new `ConnectGateway`
   entrypoint, which serves only `seal`, `exchange` and `verify` (no model call, no egress
@@ -504,15 +505,16 @@ account and no deploy.
   its epoch: a new lease is a new run; the model policy's per-turn limits are a run's caps,
   rules `run_requests`, `run_tokens`, `run_cost`), and into `model_spend`, its source's day
   and month, which the owner's and the source's daily and monthly ceilings read and which
-  the loop's calls move too: the model policy's caps, no more and no less (the spend
+  the model reservations move too: the model policy's caps, no more and no less (the spend
   table, `ask_above` among it, is the agent's purchases', never a model call's). Each open
-  prunes the spend counters past their window, as the loop's reserve does, so an owner who
+  prunes the spend counters past their window, as `usage.ts`'s reserve does, so an owner who
   uses only the sandbox never fills them. **8b opens a lease per engine run**, so a run's
   caps are per run, not per sandbox life, and sets each run's tokens to expire at that
   run's own deadline (a closed lease's token is refused by the object until then). Nothing of
   it reads or imports pi's engine (a policy-boundary guard holds its runtime imports free
   of `usage.ts`, the thread host and pi-durable, read by the TypeScript compiler, every
-  import resolved or the guard fails), so it outlives the in-object loop. **The
+  import resolved or the guard fails), so it outlived the in-object loop, which slice D
+  deleted. **The
   reservation rule**: the call is reserved for the model it names, read where its API's
   rules say (the door reads the body's top-level `model`, `HINT_KEYS`, once, and hands it
   to `egressOpen` with the body's tier; a path names Google's), refused
@@ -657,7 +659,17 @@ R, S, M and W.
   and `/app/api/agent/*` routes are absent until slice R. The policy loses `packages`,
   `runs`, `models.retries` and the hooks' `timeout_ms` and `cpu_ms`; `hooks.codemode`
   stays. The erasure's order is now: mark, end every run, wipe. The limits audit is
-  `limits-audit.md`.
+  `limits-audit.md`. Review round 1 (REQUEST_CHANGES), all taken: the cron tests carried
+  over (`cron.test.ts`, H1) and its requirement restored; the erasure's resume by its own
+  job, by its start alone, from a refused door at most once a retry interval, after a wipe
+  that failed or hung, and its alarm disabled before the wipe (H2); the audit's raises
+  costed by the guard's own `termsFor`, all together, and held under half by
+  `limits-proposed.test.ts` (48.3%), the draft's that do not fit named with the
+  structural change each needs (H3); `outside_agents_stamped` restored (M1); code mode's
+  switch made slice M's to enforce (M2); the `auto` and notices requirements restored (M3);
+  the audit's classes and missed bounds (M4, M5); the hooks Worker's name check tested
+  (M6); `Files.watch` and `Notices.once` removed, and the stale comments (L1). Mutation:
+  the review's 20 and 3 of mine, all 23 killed.
 - [x] Code mode's VM in the hooks Worker (H0, narrowed by D): `Hooks.codemodeExecute(name,
   request, exchange)` runs one execution in its `CodemodeSandbox` (a
   `CodemodeSandboxDurableObject` subclass with its interrupt budget and memory), handing
@@ -683,6 +695,18 @@ R, S, M and W.
   NOT ship before that outside record, or the explicit platform admit, exists; until
   then no door reaches erasure (`erase.ts`).
 - [ ] 0c (live, slice L): the dark deploy of the owner and gateway Workers.
+- [ ] Code mode's switch (slice M): the MCP door's `code` tool refuses unless the owner's
+  policy turns `hooks.codemode` on. Nothing in production reaches the executor before M,
+  so slice D tests only the policy's parse of the switch.
+- [ ] `test_hygiene_gate` reads no platform TypeScript test (slice D review L4): it
+  reported "tests added 0, removed 0" for a slice that removed 21 test files, so a lost
+  test there is caught only by review. Follow-up for the gate: count `it(` cases under
+  `platform/*/test` and `platform/*/guards` against the base.
+- [ ] Limits (slice D's audit, `limits-audit.md`): the founder approves the proposed
+  table first; then each raise is its own change, its structural prerequisite before it
+  (collection history and grant scopes counted in bytes; the ledger's recipients bounded
+  by their own count), the owner-bound guard recomputed (`limits-proposed.test.ts` holds
+  the table's worst case under half today).
 
 ## 6. Files and sandbox
 
@@ -724,7 +748,8 @@ R, S, M and W.
   and the count resets across events (P1a and P1b void); P2 a store RPC adds 1-2 ms, a new
   thread's store opens about 0.3 s cold; P4 128 Sessions held with no break (`OPEN_MAX`
   64); P7 one `RpcTarget` session bills 2 requests for 200 calls against 202, and pins its
-  store while held.
+  store while held. Slice D deleted the thread stores; P1's subrequest count still sets the
+  owner Worker's `limits.subrequests`.
 - [x] The facet probe P13 (with Q8, F1's erasure window). Method, key and results:
   `facet-probe.md`; run by the manual `facet-probe.yml`. Run 1 (41247617223, 2026-10-31):
   Q1 a parent and all its facets share one ceiling of about 10 GiB (read by hand; at the
@@ -735,8 +760,9 @@ R, S, M and W.
   parent (Q4's no-yield and over-CPU burns not measured: they ran far short of design);
   Q6 facet calls are under 1 ms and billed on the parent; Q8 the order is right with no
   crash, and the crash window was not measured (production's abort rolled back even an
-  awaited `deleteAll`). The design stays: top-level
-  `ThreadStore` objects hosted by `ThreadHost`; facets do not replace the store transport.
+  awaited `deleteAll`). The design was: top-level `ThreadStore` objects hosted by
+  `ThreadHost`, which slice D deleted with the in-object loop; Q1's ceiling and Q8's
+  window still hold for the owner's object.
 - [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
   probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
   does not emulate it); a live probe of the files Worker's create-once put, which

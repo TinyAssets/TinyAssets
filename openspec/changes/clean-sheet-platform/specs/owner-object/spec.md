@@ -632,6 +632,39 @@ An open reservation the live instance did not make SHALL be settled by the next 
 - **WHEN** a new instance finds a call dispatched by the instance before it
 - **THEN** it settles it `unknown`, and its reservation still counts against the ceilings
 
+### Requirement: A recurrence's cron is ours and bounded
+A recurrence SHALL be the five classic cron fields in UTC, numbers only (no names, `?`, `L`, `W` or `#`), each value in its field's range, a field `*`, a value, a range, a step (`*/n`, `a-b/n`, `a/n`) or a list of at most 16 of them, the whole at most 64 characters; when both day fields are restricted a day SHALL match if either does. Consecutive occurrences SHALL be at least 15 minutes apart, across midnight too, and an expression SHALL have an occurrence within eight years, else it is refused when parsed. The next occurrence SHALL be the first matching whole minute strictly after the time, found a day at a time. The runs slice (R) schedules a run by it.
+
+#### Scenario: Every minute
+- **WHEN** an expression would run more often than every 15 minutes, as `*/5 * * * *` or `0,50 0,23 * * *`
+- **THEN** it is refused "minutes apart"
+
+#### Scenario: Both day fields restricted
+- **WHEN** `0 9 13 * 5` is asked its next occurrence from 2026-11-01
+- **THEN** it answers 2026-11-06 09:00 (a Friday), and the 13th after that
+
+#### Scenario: An expression that never matches
+- **WHEN** `0 0 30 2 *` is parsed
+- **THEN** it is refused, having no occurrence within eight years
+
+### Requirement: `auto` is the owner's strongest connected model
+The owner's connected models SHALL be ranked by the data file `model-ranking.json`: the earliest entry a model matches ranks it, newer ids first within an entry; a model no entry matches comes after, by its catalog output price, highest first; then the older connection, then the id. With nothing connected nothing SHALL rank: there is no platform-paid default. The runs slice (R) picks a run's source from the ranking.
+
+#### Scenario: Two connections of one model
+- **WHEN** two connections list the same ranked model
+- **THEN** the older connection's ranks first
+
+#### Scenario: Nothing connected
+- **WHEN** the owner has no active connection, or one with no models
+- **THEN** the ranking is empty
+
+### Requirement: The owner's notices are bounded and the owner's alone
+What the owner's work reports that no call fails with (a connection's setup check that failed, a provider revoke that failed or is unsupported) SHALL be kept as a notice, its type and a detail cut to 1,024 characters, only the newest 100 kept, each added in one unit, and read by the owner alone.
+
+#### Scenario: A notice that repeats
+- **WHEN** more than 100 notices are added
+- **THEN** only the newest 100 are kept, newest first
+
 ### Requirement: The owner's agent definitions are the owner's alone
 Only the owner's own authority SHALL create, change, move into or out of, or remove anything under `/workspace/agents`, `/workspace/.agents`, `/workspace/skills` or `/workspace/prompts` (its agents' files and skills, which every engine reads); an outside client SHALL be refused at every file door.
 
@@ -677,7 +710,7 @@ The `tinyassets-hooks` Worker SHALL bind the namespace of its own `CodemodeSandb
 - **THEN** the owner config guard refuses the owner's `HOOKS` binding
 
 ### Requirement: Code mode's VM runs in the hooks Worker
-Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox` through the `HOOKS` binding's `codemodeExecute`, which hands out no stub, each execution named by its owner and a random id; a script's `tools.*` SHALL be the tools its caller hands it, each held by the caller to its own grant; with no hooks Worker bound it SHALL fail loudly. It runs only while the owner's policy turns `hooks.codemode` on, off by default. The MCP door's `code` tool (slice M) hands a script the door's own tools, needing `run_code`, which a client holds only where its scoped grant names it, never by a full grant.
+Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox` through the `HOOKS` binding's `codemodeExecute`, which hands out no stub and refuses an execution with no name, an empty one or one past 512 characters, each execution named by its owner and a random id; a script's `tools.*` SHALL be the tools its caller hands it, each held by the caller to its own grant; with no hooks Worker bound it SHALL fail loudly. Nothing in production reaches the executor until slice M's MCP `code` tool, which SHALL refuse unless the owner's policy turns `hooks.codemode` on (off by default) and SHALL need `run_code`, which a client holds only where its scoped grant names it, never by a full grant; until then only the policy's parse of the switch is tested.
 
 #### Scenario: A script's tool calls
 - **WHEN** a script calls two of the tools its caller handed it
@@ -686,6 +719,10 @@ Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox`
 #### Scenario: No hooks Worker
 - **WHEN** a script is run with no hooks Worker bound
 - **THEN** it fails, and nothing of it runs in the owner's object
+
+#### Scenario: An execution with no name
+- **WHEN** the hooks Worker is asked to run an execution named `""`, or by 513 characters, or by no string
+- **THEN** it refuses "a code mode execution is named" before any sandbox is reached
 
 ### Requirement: Each sandbox egress call is admitted and charged at open
 `egressOpen` SHALL take only the egress token's binding (its secret's hash, the egress generation its transform carried), checked to be the binder's exact shape before anything is written, and refused for an owner whose object never opened a lease, writing no row; and admit a call for `work`, in one unit, by these checks in order, each refusal a fixed code kept as a receipt row (at most 60 a minute, apart from the admitted calls' receipts): the live lease by the egress hash (`egress_lease_closed`), checked before anything else, an OAuth refresh among it; the call's egress generation is the current one (`egress_policy_stale`) and the lease's network was applied under it (`egress_network_stale`); the connection is the owner's, active, its credential usable and its scope stored (`egress_connection_refused`); the method and path are among its sealed endpoints, by the gateway's own rule (`egress_endpoint_refused`); a read (`GET`, `HEAD`) is free, and any other call is pi-ai's metered model call (`egress_unmetered`), with a declared body length (`egress_length_required`); at most 64 open and 600 opened a minute (`egress_rate`); and a model call's charge (`egress_spend_refused`, the binding cap its rule): against its sandbox run's requests, tokens and cost (the run is the lease and its epoch, a lease per engine run; the model policy's per-turn limits are its caps), and the owner's and the source's day and month (the spend counters the model reservations move too, pruned past their window at each open): the model policy's caps, no more and no less; reserved for the model the call names (as the door read it, or its path; refused `egress_unknown_model` when the connection does not list it), at that model's dearest rates by pi-ai's `calculateCost` over the catalog's records, its input held at that model's context window and its output at that model's cap and what the caps leave, times its tier's multiplier where pi-ai prices the tier (a tier it cannot price refused `egress_unpriced_option`), so the charge bounds what the call can cost once the gateway has clamped every output-cap alias and refused several choices, another model, server-side paid tools and options pi-ai does not price. The charge SHALL be the call's own row, counted only by the schema's triggers, and SHALL neither read nor import pi's engine. An admitted call SHALL be an open row, answered with the blob, its version, the generation, its metering (the output cap the gateway clamps to and the body length, or none for a read) and an end signal. `egressSettle` (`reduce`) SHALL settle a reservation of its egress token once, its charge at the metered cost, `failed`, or `unknown` (kept whole); one never settled SHALL be settled `lost`, its charge `unknown`, past six minutes.
