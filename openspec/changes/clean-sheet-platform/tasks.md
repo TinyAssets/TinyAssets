@@ -9,7 +9,7 @@ sandbox (live), the MCP door, wakes, doors live, before real data, the founder's
 test, cutover.
 
 - [ ] Limits audit (founder, 2026-11-02: no tiny limits before he has used the platform): every bound in `platform/*/src` is raised to the tier numbers or a generous default, made an owner setting, or kept as a technical ceiling with its reason recorded. The files default (`max_bytes` 1 GiB) is the first to raise. The list goes to the founder before anything ships. Listed, no value changed, in slice D: `limits-audit.md`; the founder's review and the changes are owed.
-- [ ] Tier numbers in the platform control record (ADR-034 decision 8): free 5 simultaneous runs and 25 GB, paid 10 and 250 GB (founder, 2026-11-02), editable without a deploy.
+- [x] Tier numbers in the platform control record (ADR-034 decision 8): free 5 simultaneous runs and 25 GB, paid 10 and 250 GB (founder, 2026-11-02), editable without a deploy. Slice R: `c:control`'s `tiers` (`doors/src/directory.ts`, parsed by `owner/src/tier.ts`), handed by the binder to the run doors, the owner's tier on its own admission row set by the platform alone (`tierSet`); the simultaneous runs held at admission. The storage figure is carried; the files byte quota's slice turns `max_bytes` into it.
 
 ## 1. Verify the unverified facts
 
@@ -211,7 +211,7 @@ test, cutover.
   to it. Each kind of timed work is a lane with its own rows and one single-flight
   Lifecycle job, `owner-schedule/<lane>`, derived from them: `wakes` (3.4's wakes and
   revokes), `files` (6.1's housekeeping, with its retention re-apply) and `connections`
-  (the `threads` lane went with slice D; slice R adds a `runs` lane). Every changing door, and the object's wake,
+  (the `threads` lane went with slice D; slice R added the `runs` lane). Every changing door, and the object's wake,
   re-derive the jobs, so any door added later that changes a lane's rows calls
   `#schedule.sync()` too; a re-derive keeps a job Lifecycle moved later (the
   memory-limit breaker's backoff) unless the rows have earlier work. A pass is short:
@@ -769,11 +769,64 @@ R, S, M and W.
     per-argument limit, `MAX_ARG_STRLEN`, 128 KiB. The bound is the kernel's, not ours: the
     runner refuses a longer prompt for Kimi with its reason, never truncates it, and the
     other engines take theirs on stdin.
-- [ ] Slice R moves the run's connection from the sandbox's one lease to the run grant
-  (`engines-replan.md` §2.4): `file_space.run_connection` holds one run's connection, so a
-  second simultaneous run (ADR-034 decision 8: 5 free, 10 paid) could neither take the
-  lease nor have its own. Each simultaneous run carries its own grant, its own connection
-  (or none, signed in), and its own egress admission check.
+- [x] Slice R moves the run's connection from the sandbox's one lease to the run grant
+  (`engines-replan.md` §2.4): `file_space.run_connection` is gone; the sandbox's lease is
+  shared by its simultaneous runs (opened by the first, joined by the rest, given back with
+  the last), and each run carries its own grant (`run_grants.connection`, or none, signed
+  in). Each call names its run in its path (`/r/<run>/c/<connection>/...`) and the egress
+  door holds it to that run's own connection (`egress_run_connection`), a settled run's
+  call refused (`egress_run_closed`).
+- [x] R Runs in the owner object (`engines-replan.md` §5 row R), in workerd, nothing
+  deployed:
+  - Schema, migration 12 in place: `runs` (the run and its receipt: agent, conversation,
+    engine, credential, model, state, initiator, client and stamp, retry key, usage
+    counters, result cut to 16 KiB, first error, exit code, times), `run_grants` (lease,
+    stamp, origin, scopes, connection), `conversations` (agent, engine, client, the
+    engine's session id, last run), `run_schedules`, `platform_tiers` and
+    `socket_tickets`; `egress_runs` gone, a call's charge counted to its run's row and its
+    source's day and month. Owner-bound guard: 42.1% (4,212,787,760.75 bytes, slice R's
+    tables 148.0 MB); with every proposed raise 49.8% (4,977,974,622.75), 22 MB under half.
+  - Admission in one gate unit (`runs.ts`): owner admitted, `SANDBOX` bound, agent's
+    `agent.json` (`agent-file.ts`) read whole and enabled, the stamp standing, the retry
+    key, the caller's conversation (one live run each), the tier's simultaneous runs, the
+    source chosen (the file's engine and credential, a named or the strongest listing
+    connection, or `auto`), an unattended run only where its record allows it (ADR-033
+    D3), the owner's own spending caps; then the run, the lease opened or joined, the grant.
+  - Run doors: `agentSubmit`, `agentRun` (now, `at`, `cron`, `on_mail`, `if_mail`),
+    `agentStatus` (from the receipt), `agentCancel` (through the sandbox); MCP `converse`,
+    `run_graph`, `run_status`, `run_cancel`; `/app/api/agent/{submit,run,status,cancel}`.
+  - A run's own doors on the egress host: `/r/<run>/mcp` (the table but the run tools,
+    every door held to the run grant's scopes; a client's run to its intersection with
+    that client's grant, its stamp rechecked, a grant change or revoke ending the run),
+    `/r/<run>/events` (the runner's frames, read by the record's matchers in the object).
+  - The `runs` lane: due schedules and lost runners only, never a poll; a post to the owner
+    rings the run-on-mail schedules; a due run on mail with none unacked starts nothing.
+  - Live output (`relay.ts`), A6 salvaged (its socket ticket, now a routing-MAC token of
+    the `socket` kind; the binder's upgrade path; the ticket's grant and expiry binding;
+    sign-out ending sockets): frames `{v, run, seq, at, kind, event}` relayed to the app's
+    sockets on the conversation, a bounded in-memory tail (memory guard: 13.4 MB worst
+    case, 10.5% of the isolate), never committed. Not A6's pi `watch()` or tee.
+  - Carried: slice E's owed case (a record setting a variable a key's environment sets is
+    refused by the checker, `network.test.ts`), slice D's flakes (`.wrangler` skipped by
+    both config guards; the files-quota pass test's explicit timeout).
+- [ ] Slice S builds against the `SANDBOX` interface (`owner/src/sandbox.ts`), and only it:
+  - the `tinyassets-sandbox` Worker as `SandboxService`: `start(owner, SandboxStart)`
+    answers `{started: true}` or `{started: false, code}` (a fixed code) at once, the runner
+    in the background; `cancel(owner, {run, lease_id})` sends SIGTERM, then a kill;
+    `status(owner, {run, lease_id})`;
+  - a start with `tokens` and `network` (the start that opened the lease) (re)configures
+    the sandbox with that network and hands the sync token to the sync agent; a start
+    without them runs in the configured sandbox;
+  - the runner sets `config.env` and `config.inherit` exactly, invokes the record's
+    `argv` (or `resume_argv` with `session_id`), the prompt on stdin or its argument, the
+    record's `unattended_argv` when `unattended`, and `{mcp_url}` as `urls.mcp`;
+  - it posts `{frames: [{seq, at, event}], end?: {exit_code}}` to `urls.events` (seq from
+    1, rising; a batch at least every 20 s as the heartbeat, which renews the lease; the
+    end once the CLI exited), and reports a vendor error category as an `error` event;
+  - the owner config guard's `SERVICES` gains `SANDBOX` (a Worker that reaches nothing but
+    E2B), and `wrangler.jsonc` binds it;
+  - owed probes: E2B's transform on `/r/<run>/mcp` and `/r/<run>/events`; whether a
+    WebSocket would carry the frames (the POST batches are the path today).
 - [ ] Owed by slice E's review, outside slice S's checks:
   - Price server tools as data (Codex's web search, Anthropic's `mcp_servers`, OpenAI's
     `web_search_options`), so a call that enables one can be metered rather than refused
@@ -848,7 +901,8 @@ R, S, M and W.
   the blocking isolation (10 s of a script's compute against another owner's), and
   whether `exchange` calls count as subrequests of the owner object or the hooks Worker.
 - [x] Erasure's order: mark the owner erasing, end every run (today the sandbox's egress
-  streams; slices R and S add the sandbox's kill and the session files' purge), then
+  streams, the app's sockets and each live run's cancel through the sandbox, slice R's;
+  slice S adds the sandbox's kill and the session files' purge), then
   `deleteAll()` the owner. The tombstone that keeps a stale binder from making an erased
   owner again came with the admission row in F1; its door is slice 10's. Erasure
   completeness needs a record outside the owner object (the directory's or the

@@ -61,16 +61,41 @@ Each external tool SHALL call exactly one owner door an outside client can reach
 - **WHEN** a tool names `grantSet`, `policyWrite` or any door bound through `#owner` or `#widening`
 - **THEN** the tool guard fails CI
 
-### Requirement: No tool is open world, and the agent's tools are absent until runs
-Every tool SHALL be confined to the owner's account, `openWorldHint` false. The agent's tools (`converse`, `run_graph`, `run_status`, `run_cancel`) and the owner's `/app/api/agent/*` routes SHALL be absent until the runs slice (R) brings them back as run doors (ADR-034): an absent tool, never a stub that answers falsely.
+### Requirement: No tool is open world, and the run tools are run doors
+Every tool SHALL be confined to the owner's account, `openWorldHint` false. The run tools (slice R) SHALL be run doors: `converse` (`agentSubmit`, `converse` held where its agent acts) and `run_graph` (`agentRun`, `run_graph`) start an engine run in the owner's sandbox, destructive and not idempotent; `run_status` (`agentStatus`) reads one of the caller's own runs or schedules, from the run's receipt; `run_cancel` (`agentCancel`) cancels one, destructive and idempotent. The owner's `/app/api/agent/{submit,run,status,cancel}` routes SHALL call the same doors. A run's own MCP door SHALL serve the table but the run tools (`runProfile`).
 
 #### Scenario: A tool marked open world
 - **WHEN** a tool is marked open world
 - **THEN** the tool guard fails CI
 
-#### Scenario: A client asks for an agent tool
-- **WHEN** a client lists `/mcp`'s tools, calls `converse`, or the owner posts to `/app/api/agent/submit`
-- **THEN** no agent tool is listed, the call is refused as no tool, and the route is not found
+#### Scenario: Another client asks for a run
+- **WHEN** an outside client reads or cancels a run another client started
+- **THEN** it is refused `no_run`, as for a run that does not exist
+
+### Requirement: The tier's numbers ride the control record to the run doors
+The control record (`c:control`) MAY hold `tiers`: each tier's simultaneous runs (1 to 1,000, the owner database's ceiling) and storage bytes, which the founder edits with no deploy. A record whose `tiers` are malformed SHALL be malformed whole. The doors SHALL read the record once per outside or owner call and hand its `tiers` in the binding (`withTiers`), never from a request; a record without them hands none, and the object then uses the last it was handed, or refuses every run `tier_unread`.
+
+#### Scenario: The founder edits the free tier's runs
+- **WHEN** the record's free tier says one run, and a free owner starts a second while the first runs
+- **THEN** the second is refused `tier_runs`, with no deploy
+
+### Requirement: A run's own doors are on the egress host, by its egress token
+`egress.tinyassets.io/r/<run>/mcp` SHALL be the run's MCP door and `/r/<run>/events` its event door, each by the egress token E2B's transform sets outside the VM (its MAC verified before any object, then its expiry, its generation and the maintenance gate), bound with the run its path names (`bindRun`). A request carrying an `Origin` SHALL be refused. A run's model calls SHALL be `/r/<run>/c/<connection>/...`.
+
+#### Scenario: A forged token at a run's door
+- **WHEN** a request reaches `/r/<run>/events` with a token the routing key did not MAC
+- **THEN** it is refused `egress_token_unknown` and no object is reached
+
+### Requirement: The owner app's live socket is opened by a single-use ticket
+`POST /app/api/agent/socket-ticket` SHALL mint, behind every first-party token check, a ticket for one of the owner's conversations, bound to the token's grant and expiry: a routing-MAC token of the `socket` kind, which the doors verify (MAC and expiry) before any object. `GET /app/api/agent/socket?conversation_id=&ticket=` with `Upgrade: websocket` SHALL read no bearer; the binder SHALL forward a fresh request of exactly the binder's shape to the object's `fetch`, which consumes the ticket once. A sign-out SHALL tell the object first, cookie or not, so that grant's sockets close `signed_out` before the grant is revoked (A6, salvaged).
+
+#### Scenario: A ticket replayed
+- **WHEN** a ticket opens a socket and is presented again, or for another conversation
+- **THEN** it is refused `ticket_refused`
+
+#### Scenario: A bearer at the socket door
+- **WHEN** the owner's token comes as a bearer, or as the ticket
+- **THEN** no socket opens
 
 ### Requirement: API keys keep the Python's format and order
 An API key SHALL be `ta_key_<16 hex id>_<43 urlsafe secret>`, its directory entry SHALL hold its owner, the SHA-256 hex of its secret and its mint time, compared in constant time. A mint SHALL write the grant before the entry, in the owner's session; a revoke SHALL revoke the grant before deleting the entry; a delete SHALL delete the entry before forgetting the grant. A key's call SHALL bind the key's own origin and its mint time.
@@ -253,10 +278,10 @@ The sandbox runner (slices R and S) SHALL refuse to sync out any file, or any tr
 - **THEN** the runner refuses to sync that line or file, and nothing of the secret reaches the owner's files
 
 ### Requirement: The egress door admits a sandbox call by its egress token
-The doors SHALL serve `egress.tinyassets.io/c/<connection>/*` and nothing else on that origin, and serve the egress door on no other. A call SHALL carry the sandbox's egress token (`x-ta-sandbox`) and the egress generation its network was made under (`x-ta-network-generation`), both set by E2B's transform outside the VM. The token SHALL name its owner itself and its run's deadline, and carry a MAC (`<owner id>.<expires>.<256-bit secret>.<HMAC-SHA-256 under ROUTING_MAC_KEY over its kind, owner, expiry and secret>`; `routing-mac.ts`, the one module the owner Worker mints with and the doors verify with, the key a Worker secret of both, declared by name in both configs), so the door reaches the owner's object with no directory read; a missing, malformed, forged, altered, other-kind or expired token SHALL be refused by its fixed code before any stub call, the placeholder key the client sent never read, and the object SHALL check the secret's hash, the lease and its expiry. Only once the object admitted and charged the call SHALL it go to the gateway's `EgressGateway.forward`, metered (a read with no metering), its path after `/c/<connection>`, the provider's answer streaming back as it is written (an SSE stream unbuffered) but for the gateway's own headers. Only one doors source SHALL reach `EGRESS`.
+The doors SHALL serve `egress.tinyassets.io/r/<run>/c/<connection>/*`, and a run's own MCP and event doors (`/r/<run>/mcp`, `/r/<run>/events`), and nothing else on that origin, and serve the egress door on no other. A call SHALL carry the sandbox's egress token (`x-ta-sandbox`) and the egress generation its network was made under (`x-ta-network-generation`), both set by E2B's transform outside the VM. The token SHALL name its owner itself and its run's deadline, and carry a MAC (`<owner id>.<expires>.<256-bit secret>.<HMAC-SHA-256 under ROUTING_MAC_KEY over its kind, owner, expiry and secret>`; `routing-mac.ts`, the one module the owner Worker mints with and the doors verify with, the key a Worker secret of both, declared by name in both configs), so the door reaches the owner's object with no directory read; a missing, malformed, forged, altered, other-kind or expired token SHALL be refused by its fixed code before any stub call, the placeholder key the client sent never read, and the object SHALL check the secret's hash, the lease and its expiry. Only once the object admitted and charged the call SHALL it go to the gateway's `EgressGateway.forward`, metered (a read with no metering), its path after `/r/<run>/c/<connection>`, the provider's answer streaming back as it is written (an SSE stream unbuffered) but for the gateway's own headers. Only one doors source SHALL reach `EGRESS`.
 
 #### Scenario: A sandbox client sends its placeholder key
-- **WHEN** a sandbox's client posts its model call to `egress.tinyassets.io/c/<connection>/openai/v1/chat/completions` with a live egress token and a placeholder in `authorization`, `x-api-key`, a cookie and `?key=` (of any case)
+- **WHEN** a sandbox's client posts its model call to `egress.tinyassets.io/r/<run>/c/<connection>/openai/v1/chat/completions` with a live egress token and a placeholder in `authorization`, `x-api-key`, a cookie and `?key=` (of any case)
 - **THEN** the provider receives the sealed key in the sealed header, none of the placeholders, the token or the generation, and an output cap no larger than the call's reservation, and the client receives the provider's stream
 
 #### Scenario: A refused call
@@ -279,7 +304,7 @@ The egress door SHALL settle every reservation the object admitted, once, with t
 - **THEN** the stream ends, and the settle reaches the object's new instance
 
 ### Requirement: A sandbox token reaches no other door
-A sandbox token SHALL be refused at `/api`, `/mcp` and `/app`, and the owner's object SHALL refuse a sandbox binding at every door but its own: the egress token at the egress doors alone, the sync token at the sync doors alone, for its lease and epoch.
+A sandbox token SHALL be refused at `/api`, `/mcp` and `/app`, and the owner's object SHALL refuse a sandbox binding at every door but its own: the egress token at the egress doors and, with a run, at that run's MCP and event doors (every door held to the run's grant), the sync token at the sync doors alone, for its lease and epoch.
 
 #### Scenario: A token presented as a bearer
 - **WHEN** a sandbox's egress or sync token is sent to `/api/tools/*`, `/mcp` or `/app/api/*`

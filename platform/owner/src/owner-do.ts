@@ -341,7 +341,8 @@ export interface AdmissionRequest {
  * The object's environment: three service bindings, `FILES`, to the files Worker, which
  * binds no Durable Object and no service, `GATEWAY`, to the model gateway, which binds
  * nothing, and `HOOKS`, to the hooks Worker, which binds only its own class (the config
- * guard checks every config), and no Durable Object namespace.
+ * guard checks every config), and no Durable Object namespace. `SANDBOX`, the sandbox
+ * Worker, is typed here and bound by no config until slice S.
  */
 export interface OwnerEnv {
   readonly FILES: ChunkStore;

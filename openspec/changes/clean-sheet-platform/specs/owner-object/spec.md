@@ -62,7 +62,7 @@ A service binding the owner Worker holds SHALL be only to a Worker the config gu
 
 #### Scenario: The bindings today
 - **WHEN** the owner Worker's config is checked
-- **THEN** it holds `FILES`, to the files Worker holding exactly one `r2_buckets` entry, `GATEWAY`, to the model gateway holding no binding and declaring only its keyring secret by name, and `HOOKS`, to the hooks Worker binding only its own `CodemodeSandbox` class, and no Durable Object namespace
+- **THEN** it holds `FILES`, to the files Worker holding exactly one `r2_buckets` entry, `GATEWAY`, to the model gateway holding no binding and declaring only its keyring secret by name, and `HOOKS`, to the hooks Worker binding only its own `CodemodeSandbox` class, and no Durable Object namespace; `SANDBOX`, the sandbox Worker the runs call (`sandbox.ts`), is unbound until slice S adds that Worker and its allow-list entry, so every run is refused `sandbox_absent` meanwhile
 
 #### Scenario: The bound Worker gains a way on
 - **WHEN** the files Worker's config gains a Durable Object namespace, a service, a queue producer, a workflow, a dispatch namespace, a Worker loader, an unsafe binding, a tail consumer, a KV namespace, a D1 database or a second bucket, at top level or in an environment
@@ -677,7 +677,7 @@ Only the owner's own authority SHALL create, change, move into or out of, or rem
 - **THEN** each is refused with the same code, and the owner's skills stand as the owner left them
 
 ### Requirement: Erasing the owner ends every run before the owner is wiped
-Erasing the owner SHALL mark it erasing, after which every door refuses and no lane runs; end every run (today the sandbox's in-flight egress streams; the runs and sandbox slices add the sandbox's kill and the session files' purge), recorded as the erasure's second step; then `deleteAll()` the owner and leave one `erased` admission row, the tombstone, in the wiped database. Each step SHALL resume after a crash from the step the mark records. An object holding the tombstone SHALL migrate nothing, start no Lifecycle and refuse every door.
+Erasing the owner SHALL mark it erasing, after which every door refuses and no lane runs; end every run (the sandbox's in-flight egress streams, the owner app's sockets, and each live run's cancel through the sandbox; the sandbox slice adds the sandbox's kill and the session files' purge), recorded as the erasure's second step; then `deleteAll()` the owner and leave one `erased` admission row, the tombstone, in the wiped database. Each step SHALL resume after a crash from the step the mark records. An object holding the tombstone SHALL migrate nothing, start no Lifecycle and refuse every door.
 
 #### Scenario: A crash mid-erasure
 - **WHEN** the object dies after the mark, or after every run ended, or after Lifecycle's alarm was disabled, or its wipe failed
@@ -725,7 +725,7 @@ Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox`
 - **THEN** it refuses "a code mode execution is named" before any sandbox is reached
 
 ### Requirement: Each sandbox egress call is admitted and charged at open
-`egressOpen` SHALL take only the egress token's binding (its secret's hash, the egress generation its transform carried), checked to be the binder's exact shape before anything is written, and refused for an owner whose object never opened a lease, writing no row; and admit a call for `work`, in one unit, by these checks in order, each refusal a fixed code kept as a receipt row (at most 60 a minute, apart from the admitted calls' receipts): the live lease by the egress hash (`egress_lease_closed`), checked before anything else, an OAuth refresh among it (of the lease's own run connection alone); the connection is the one the lease's engine run was given (`egress_run_connection`), so a run on the vendor's own sign-in may call none; the call's egress generation is the current one (`egress_policy_stale`) and the lease's network was applied under it (`egress_network_stale`); the connection is the owner's, active, its credential usable and its scope stored (`egress_connection_refused`); the method and path are among its sealed endpoints, by the gateway's own rule (`egress_endpoint_refused`); a read (`GET`, `HEAD`) is free, as is a call its API's rules cite as free with the provider's page that says so (Anthropic's token count), and any other call is pi-ai's metered model call (`egress_unmetered`), with a declared body length (`egress_length_required`); at most 64 open and 600 opened a minute (`egress_rate`); and a model call's charge (`egress_spend_refused`, the binding cap its rule): against its sandbox run's requests, tokens and cost (the run is the lease and its epoch, a lease per engine run; the model policy's per-turn limits are its caps), and the owner's and the source's day and month (the spend counters the model reservations move too, pruned past their window at each open): the model policy's caps, no more and no less; reserved for the model the call names (as the door read it, or its path; refused `egress_unknown_model` when the connection does not list it), at that model's dearest rates by pi-ai's `calculateCost` over the catalog's records, its input held at that model's context window and its output at that model's cap and what the caps leave, times its tier's multiplier where pi-ai prices the tier (a tier it cannot price refused `egress_unpriced_option`), so the charge bounds what the call can cost once the gateway has clamped every output-cap alias and refused several choices, another model, server-side paid tools and options pi-ai does not price. The charge SHALL be the call's own row, counted only by the schema's triggers, and SHALL neither read nor import pi's engine. An admitted call SHALL be an open row, answered with the blob, its version, the generation, its metering (the output cap the gateway clamps to and the body length, or none for a read) and an end signal. `egressSettle` (`reduce`) SHALL settle a reservation of its egress token once, its charge at the metered cost, `failed`, or `unknown` (kept whole); one never settled SHALL be settled `lost`, its charge `unknown`, past six minutes.
+`egressOpen` SHALL take only the egress token's binding (its secret's hash, the egress generation its transform carried), checked to be the binder's exact shape before anything is written, and refused for an owner whose object never opened a lease, writing no row; and admit a call for `work`, in one unit, by these checks in order, each refusal a fixed code kept as a receipt row (at most 60 a minute, apart from the admitted calls' receipts): the live lease by the egress hash (`egress_lease_closed`), checked before anything else, an OAuth refresh among it (of the calling run's own connection alone); the run the call's path names is live under that lease (`egress_run_closed`); the connection is the one that run's grant holds (`egress_run_connection`), so a run never spends on another simultaneous run's connection and a run on the vendor's own sign-in may call none; the call's egress generation is the current one (`egress_policy_stale`) and the lease's network was applied under it (`egress_network_stale`); the connection is the owner's, active, its credential usable and its scope stored (`egress_connection_refused`); the method and path are among its sealed endpoints, by the gateway's own rule (`egress_endpoint_refused`); a read (`GET`, `HEAD`) is free, as is a call its API's rules cite as free with the provider's page that says so (Anthropic's token count), and any other call is pi-ai's metered model call (`egress_unmetered`), with a declared body length (`egress_length_required`); at most 64 open and 600 opened a minute (`egress_rate`); and a model call's charge (`egress_spend_refused`, the binding cap its rule): against its run's requests, tokens and cost (its `runs` row; the model policy's per-turn limits are its caps), and the owner's and the source's day and month (the spend counters the model reservations move too, pruned past their window at each open): the model policy's caps, no more and no less; reserved for the model the call names (as the door read it, or its path; refused `egress_unknown_model` when the connection does not list it), at that model's dearest rates by pi-ai's `calculateCost` over the catalog's records, its input held at that model's context window and its output at that model's cap and what the caps leave, times its tier's multiplier where pi-ai prices the tier (a tier it cannot price refused `egress_unpriced_option`), so the charge bounds what the call can cost once the gateway has clamped every output-cap alias and refused several choices, another model, server-side paid tools and options pi-ai does not price. The charge SHALL be the call's own row, counted only by the schema's triggers (into its run's row and its source's day and month), and SHALL neither read nor import pi's engine. An admitted call SHALL be an open row, answered with the blob, its version, the generation, its metering (the output cap the gateway clamps to and the body length, or none for a read) and an end signal. `egressSettle` (`reduce`) SHALL settle a reservation of its egress token once, its charge at the metered cost, `failed`, or `unknown` (kept whole); one never settled SHALL be settled `lost`, its charge `unknown`, past six minutes.
 
 #### Scenario: A call past the owner's caps
 - **WHEN** the run's requests, tokens or cost, the owner's day or month, or the source's leaves less than a call's least charge
@@ -758,14 +758,14 @@ Once its own unit committed, a policy write SHALL end every open egress stream, 
 - **THEN** the first is refused as an IP literal and the second left out, reported as not expressible
 
 ### Requirement: A run's environment carries only its own credential
-A lease SHALL be opened for one engine run, naming its CLI record, its credential and, on an API key, its connection. The runner SHALL build the run's environment from an allow-list, starting empty: `HOME={home}`, the record's own variables (`runEnv`), the process basics and, on an API key alone, its one connection's variables. A signed-in run SHALL carry none of its record's `forbid_env` (a backstop).
+A run SHALL name its CLI record, its credential and, on an API key, its connection, on its own run grant; the sandbox's lease is the sandbox's, shared by its simultaneous runs, and holds no connection. The runner SHALL build the run's environment from an allow-list, starting empty: `HOME={home}`, the record's own variables (`runEnv`), the process basics and, on an API key alone, its one connection's variables. A signed-in run SHALL carry none of its record's `forbid_env` (a backstop).
 
 #### Scenario: Claude Code on a subscription, with a key connected
 - **WHEN** the owner holds an Anthropic key and runs Claude Code on its own sign-in
 - **THEN** the run's environment has no `ANTHROPIC_API_KEY` and no `ANTHROPIC_BASE_URL`, so the CLI runs on the sign-in and never on the key or through the door
 
 #### Scenario: The runner takes the run's environment whole
-- **WHEN** the sandbox slice opens a lease for a run, or reads its `config`
+- **WHEN** a run's start reaches the sandbox, or the sandbox slice reads its `config`
 - **THEN** it is handed the run's whole environment (`HOME={home}`, the record's own variables as templates it fills, and on an API key the key's variables) and the basics it keeps (`inherit`), and sets exactly those
 
 #### Scenario: A variable the sandbox has that the record does not name
@@ -777,12 +777,62 @@ A lease SHALL be opened for one engine run, naming its CLI record, its credentia
 - **THEN** the call is refused `egress_run_connection`, its receipt kept, before any credential is read or refreshed
 
 #### Scenario: A run its record does not allow
-- **WHEN** a lease names an engine that is not a served CLI record, a credential it does not run on, a connection the owner does not hold, or a provider the engine runs no key of
-- **THEN** it is refused before any lease is taken
+- **WHEN** a run names an engine that is not a served CLI record, a credential it does not run on, a connection the owner does not hold, or a provider the engine runs no key of
+- **THEN** its admission is refused before anything is written
+
+#### Scenario: A record setting a key's variable
+- **WHEN** a CLI record's own variables name one a key's environment sets (`<PROVIDER>_BASE_URL`, its `api_key_env` names, `TA_<CONNECTION>_*`)
+- **THEN** the record checker refuses it, so a run's record and its key never set one variable
 
 ### Requirement: The sandbox's model clients hold placeholder keys
-The sandbox lifecycle's `config` SHALL hand an API-key run, for its connection, a base URL on the egress door (`https://egress.tinyassets.io/c/<connection>` and the sealed base URL's path) and a placeholder key `ta_ph_<connection>_<random>` that carries no secret, as `<PROVIDER>_BASE_URL`, `<PROVIDER>_API_KEY` and `TA_<CONNECTION>_*`, and as the engine's own variables from its record (Gemini CLI's `GOOGLE_GEMINI_BASE_URL`, the door and the connection alone, and `GEMINI_API_KEY`).
+The sandbox lifecycle's `config` SHALL hand an API-key run, for its connection, a base URL on the egress door (`https://egress.tinyassets.io/r/<run>/c/<connection>` and the sealed base URL's path, the run in the path so the door holds each call to its run's own connection) and a placeholder key `ta_ph_<connection>_<random>` that carries no secret, as `<PROVIDER>_BASE_URL`, `<PROVIDER>_API_KEY` and `TA_<CONNECTION>_*`, and as the engine's own variables from its record (Gemini CLI's `GOOGLE_GEMINI_BASE_URL`, the door and the connection alone, and `GEMINI_API_KEY`).
 
 #### Scenario: Two Anthropic connections
 - **WHEN** the owner has two Anthropic connections and a run is on one
 - **THEN** the run's environment names that one alone
+
+### Requirement: A run is admitted in one unit
+A run (ADR-034 decision 4) SHALL be admitted in one gate unit, each refusal a fixed code and nothing written: the owner admitted for work; a `SANDBOX` bound (`sandbox_absent`); the agent's `agent.json` read whole and still at its etag (`agent_undefined`, `agent_changed`) and enabled (`agent_disabled`); the initiator's stamp standing, the owner's own or a client's grant at its stamped generation; a retry of the same request key the same run; a continued conversation the caller's own and of this agent (`no_conversation`), with no live run in it (`conversation_busy`); fewer live runs than the owner's tier allows (`tier_runs`), the runs whose lease lapsed settled `unknown` first; the source chosen: `agent.json`'s engine on its credential (or its record's in order), an API-key run on the named connection or the strongest connected one whose source lists the engine, or for `auto` the strongest connected source that lists an engine; an unattended run (a schedule's, the owner's mail's) only on a credential its record allows unattended (`unattended_refused`); an API-key run under the owner's own spending caps (`owner_limit`), off by default; and the run's environment made. Then, in the same unit: the conversation made or touched, the run written `queued`, the sandbox's lease opened (its tokens minted) or joined, and the run grant minted: the lease, the stamp and origin, the scopes (the agent's, or for a client's run those its grant also holds where it acts) and the run's own connection. The start SHALL then go to the sandbox, and the run be `running` once it took it, `failed` with the sandbox's code when it refused, or `unknown` when no answer came (and cancelled). There SHALL be no platform run deadline: a run's only time bound is the sandbox's own continuous-runtime ceiling, its lease's tokens' life.
+
+#### Scenario: A sixth run on the free tier
+- **WHEN** five runs are live and the control record gives the free tier five
+- **THEN** the sixth is refused `tier_runs`, until the platform sets the owner's tier `paid`
+
+#### Scenario: No sandbox bound
+- **WHEN** a run is asked for and no `SANDBOX` is bound
+- **THEN** it is refused `sandbox_absent`, no run row is written and no lease is taken
+
+### Requirement: The tier's numbers are the control record's, the owner's tier the platform's
+The tier numbers SHALL come only from the platform control record, handed by the binder in the binding of a run door; the object SHALL keep the last numbers it was handed (`platform_tiers`) for the runs its own lane starts, and refuse a run with none (`tier_unread`), never a number of its own. The owner's tier SHALL be its own admission row's, set only by the platform's reserved caller (`tierSet`), never by a client, a request or the owner.
+
+#### Scenario: A client names a tier
+- **WHEN** the owner or a client calls `tierSet`
+- **THEN** it is refused, and the tier stands
+
+### Requirement: A run's calls are held to its run grant
+A call carrying a run's binding (the egress token and the run its path names) SHALL be resolved to the live lease, that run live under it, and its grant; every door SHALL hold it to the grant's scopes, as its initiator (the owner's own work as the owner, a client's as that client, its stamp rechecked at every call). It SHALL never act as the owner itself at an owner-only door, nor start, read or cancel a run (`run_starts_none`). A grant change or revoke SHALL end the client's runs in its unit: their grants deleted, their CLIs cancelled through the sandbox.
+
+#### Scenario: A client revoked mid-run
+- **WHEN** the owner revokes a client whose run is live
+- **THEN** the run's next call is refused `run_ended` and its cancel reaches the sandbox
+
+### Requirement: A run settles once, from its runner's end
+The runner's frames SHALL be read by the run's record's matchers in the object, never trusted as the VM framed them: each new frame (its `seq` past the last) kept as the run's session id, result (cut to 16 KiB, marked) and first error, renewing the lease. The runner's end SHALL settle the run `succeeded` (exit 0, no error event) or `failed` (`exit`, `engine_error`, or `cancelled` after a cancel), and a run whose lease lapsed SHALL settle `unknown` (`lost`), never replayed. A settle SHALL delete the run grant, end the run's streams, and give the lease back when no live run holds it.
+
+#### Scenario: A runner lost
+- **WHEN** a run's lease lapses with no heartbeat
+- **THEN** the run is settled `unknown` by the next admission or the `runs` lane, and never replayed
+
+### Requirement: The runs lane starts runs only when there is work
+The `runs` lane's next time SHALL be the earliest due schedule (while the owner is admitted) and, while runs are live, the lease's expiry. A due schedule SHALL be claimed once (a cron's next occurrence set, an `at` removed, a mail run's cleared) and start its run, unattended, through the same admission as a door's, only when it has work: a run on the owner's mail, or a timed one that asks for mail, only with the owner's mail unacked. A post to the owner SHALL ring each run-on-mail schedule in its own unit. A refusal SHALL be kept on the schedule and in the owner's notices.
+
+#### Scenario: An empty poll
+- **WHEN** no schedule is due
+- **THEN** the lane has no job and no sandbox is started
+
+### Requirement: A run's live output is relayed, never committed
+Each frame (`{v, run, seq, at, kind, event}`) SHALL be relayed to the owner app's sockets on the run's conversation, and kept in memory only in a bounded tail for late joiners (4 Mi UTF-16 units in all, the longest tail's oldest frame first, a frame past 256 Ki units never kept), dropped at the run's settle. A socket SHALL be attached only through the binder's exact upgrade shape, its single-use ticket consumed in the attach's unit, and close with a fixed code at its token's expiry, its grant's sign-out, every session's close, an admission refusing reads, or the erasure.
+
+#### Scenario: A late joiner
+- **WHEN** a socket attaches to a conversation whose run has relayed frames
+- **THEN** it receives the run's tail first, then each frame as it comes

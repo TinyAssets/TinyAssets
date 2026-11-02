@@ -9,7 +9,8 @@
  * - a deleted key's grant is forgotten (`grantForget`) after, and the object refuses an
  *   API key with no grant row, never records one.
  *
- * This slice writes `k:` (API keys) and reads `c:control`. Owed by later slices, each in
+ * This slice writes `k:` (API keys) and reads `c:control` (its gates, and since slice R the
+ * tier numbers, `tiers`, which the founder edits here with no deploy). Owed by later slices, each in
  * its task: `h:` hook tokens and `i:` shared-app installs (`/hooks/inbound`), `a:`
  * published app slugs (S6). A sandbox's tokens have no entry: each names its owner itself
  * (G4, `routing-mac.ts`, its MAC verified at the door), and the owner's object checks it.

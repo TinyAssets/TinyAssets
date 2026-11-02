@@ -21,13 +21,16 @@
  * unmodified engines, their sessions in the owner's files (ADR-034), so what the owner's
  * object holds is its own bounded rows only, whatever its agents do.
  *
- * The worst case is 40.6% of the limit (slice D: 4,064,822,714 bytes), about 935 MB under
- * half.
+ * The worst case is 42.1% of the limit (slice R: 4,212,787,760.75 bytes), about 787 MB under
+ * half; with every raise the limits audit proposes, 49.8% (4,977,974,622.75 bytes,
+ * `limits-proposed.test.ts`), 22 MB under half.
  * ADR-034's deletion slice took out the agent's thread rows, their live and usage rows,
  * the run receipts and the model turns' counters and owners, and Lifecycle's wake job and
- * key per live thread; G4 was 46.3% (4,627,732,900 bytes). The runs slice (R) adds its
- * `runs`, `run_grants` and `conversations` out of this room. A new table, or a raised
- * bound, must stay under half the limit, or the guard fails.
+ * key per live thread (slice D: 40.6%, 4,064,822,714 bytes; G4 was 46.3%). The runs slice
+ * (R) added `runs` (78.3 MB), `run_grants` (9.7 MB), `conversations` (30.7 MB),
+ * `run_schedules` (26.1 MB), `socket_tickets` (3.1 MB) and `platform_tiers`, 148.0 MB in
+ * all, and took out `egress_runs`. A new table, or a raised bound, must stay under half the
+ * limit, or the guard fails.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
