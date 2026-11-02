@@ -7,16 +7,20 @@
   "cli": {
     "install": {
       "manager": "npm",
-      "lock_sha256": "08df64d6da2e2550dd30e187f5b30f779b39fe1185a3a59e73969dbf9dd2028e",
+      "lock_sha256": "cbc217f75509077138f3a0d9127c959c71a271ba13c9cecb19628a27efd8f2e0",
       "package": "@google/gemini-cli",
-      "version": "0.65.0",
-      "integrity": "sha512-B+flaYBNqX2zO71I5/gu7ZsnI38NlpOl654HWz+bK8I/P5sGILQsbkTOQ5a9V+w1Q6QO3wf9PlqtuMsl7XxpNQ==",
+      "version": "0.66.0",
+      "integrity": "sha512-EAtsJ9/JxiphHlduzvhoCkb7I0LdOxyugB5NpUtVqKVGZIWjV3JmurvK89ZrvMbV3kwk5SdWINz1M5ZN/2K/Lw==",
       "bin": "gemini",
       "verify_argv": [
         "{bin}",
         "--version"
       ]
     },
+    "credential": [
+      "vendor_login_in_sandbox",
+      "api_key"
+    ],
     "login": {
       "argv": [
         "{bin}"
@@ -25,7 +29,7 @@
       "accepts_code": true,
       "state_checks": [
         {
-          "path": ".ta-cli/gemini/config/.gemini/oauth_creds.json",
+          "path": "{home}/.gemini/oauth_creds.json",
           "present": [
             "access_token",
             "refresh_token"
@@ -35,31 +39,162 @@
       "terminal": true,
       "complete_on_state": true
     },
-    "invoke": {
+    "api_key_env": {
+      "google": {
+        "base_url": "GOOGLE_GEMINI_BASE_URL",
+        "api_key": "GEMINI_API_KEY",
+        "base": "connection"
+      }
+    },
+    "unattended": {
+      "vendor_login_in_sandbox": {
+        "allowed": false,
+        "reason": "Google's Gemini CLI terms forbid third-party software using Gemini CLI OAuth, and no Google page read addresses a platform running the CLI unattended on a user's plan (subscription-engines §3, §11).",
+        "cite": "https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/tos-privacy.md",
+        "read": "2026-11-01"
+      },
+      "api_key": {
+        "allowed": true,
+        "cite": "https://github.com/google-gemini/gemini-cli/blob/main/docs/get-started/authentication.mdx",
+        "read": "2026-11-01"
+      }
+    },
+    "per_credential": {
+      "vendor_login_in_sandbox": {
+        "files": {
+          "{home}/.gemini/settings.json": "{\"security\": {\"auth\": {\"selectedType\": \"oauth-personal\", \"enforcedType\": \"oauth-personal\"}}}"
+        }
+      },
+      "api_key": {
+        "files": {
+          "{home}/.gemini/settings.json": "{\"security\": {\"auth\": {\"selectedType\": \"gemini-api-key\", \"enforcedType\": \"gemini-api-key\"}}}"
+        }
+      }
+    },
+    "engine": {
       "argv": [
         "{bin}",
-        "--prompt",
-        "{system}\n\nFollow the input conversation.",
         "--output-format",
-        "json"
+        "stream-json",
+        "--prompt",
+        "{prompt}"
       ],
+      "resume_argv": [
+        "{bin}",
+        "--output-format",
+        "stream-json",
+        "--resume",
+        "{sid}",
+        "--prompt",
+        "{prompt}"
+      ],
+      "resume": "session_id",
       "model_argv": [
         "--model",
         "{model}"
       ],
-      "format": "json",
-      "text_path": "response",
-      "stdin": "{prompt}"
+      "events": {
+        "format": "jsonl",
+        "session_id": [
+          {
+            "match": {
+              "type": "init"
+            },
+            "path": "session_id"
+          }
+        ],
+        "final_text": [
+          {
+            "match": {
+              "type": "message",
+              "role": "assistant"
+            },
+            "path": "content",
+            "accumulate": true
+          }
+        ],
+        "error": [
+          {
+            "match": {
+              "type": "error"
+            },
+            "path": "message"
+          },
+          {
+            "match": {
+              "type": "result",
+              "status": "error"
+            },
+            "path": "error"
+          }
+        ],
+        "usage": [
+          {
+            "match": {
+              "type": "result"
+            },
+            "path": "stats"
+          }
+        ],
+        "tool_call": [
+          {
+            "match": {
+              "type": "tool_use"
+            },
+            "path": ""
+          }
+        ]
+      }
+    },
+    "instructions": {
+      "file": "AGENTS.md",
+      "shadowed_by": [],
+      "setting": "{home}/.gemini/system-settings.json"
+    },
+    "skills_paths": [
+      ".agents/skills"
+    ],
+    "mcp": {
+      "file": "{home}/.gemini/system-settings.json",
+      "template": "{\"mcpServers\": {\"tinyassets\": {\"httpUrl\": \"{mcp_url}\"}}, \"mcp\": {\"allowed\": [\"tinyassets\"]}, \"context\": {\"fileName\": [\"AGENTS.md\"]}, \"telemetry\": {\"enabled\": false}, \"general\": {\"disableAutoUpdate\": true}}",
+      "argv": [],
+      "trust": {
+        "argv": [
+          "--allowed-mcp-server-names",
+          "tinyassets"
+        ],
+        "note": "The server is in the system settings, outside the agent's folder, and only it is allowed to load."
+      }
+    },
+    "tools": {
+      "allow": {
+        "file": "{home}/.gemini/system-settings.json",
+        "key": "tools.core"
+      },
+      "deny": {
+        "file": "{home}/.gemini/system-settings.json",
+        "key": "tools.exclude"
+      }
+    },
+    "unattended_argv": [
+      "--approval-mode",
+      "yolo"
+    ],
+    "home_env": {
+      "GEMINI_CLI_HOME": "{home}"
     },
     "env": {
       "NO_BROWSER": "true",
-      "GEMINI_CLI_HOME": "{config}"
+      "GEMINI_CLI_SYSTEM_SETTINGS_PATH": "{home}/.gemini/system-settings.json"
     },
-    "files": {
-      ".gemini/settings.json": "{\"security\": {\"auth\": {\"selectedType\": \"oauth-personal\", \"enforcedType\": \"oauth-personal\"}}, \"tools\": {\"core\": []}, \"mcp\": {\"allowed\": []}, \"telemetry\": {\"enabled\": false}, \"general\": {\"disableAutoUpdate\": true}}"
+    "no_update": {
+      "file": "{home}/.gemini/system-settings.json"
     },
-    "state_paths": [
-      ".ta-cli/gemini/config/.gemini/oauth_creds.json"
+    "secret_paths": [
+      "{home}/.gemini/oauth_creds.json"
+    ],
+    "session_paths": [
+      "{home}/.gemini/tmp/*/chats/"
     ],
     "hosts": {
       "registry": [

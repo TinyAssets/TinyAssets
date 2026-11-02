@@ -1,0 +1,40 @@
+{
+  "id": "openai",
+  "display_name": "OpenAI API",
+  "help_url": "https://platform.openai.com/api-keys",
+  "connect": [
+    "api_key"
+  ],
+  "provider": "openai",
+  "api": "openai-responses",
+  "base_url": "https://api.openai.com/v1",
+  "auth": {
+    "header": "authorization",
+    "scheme": "Bearer"
+  },
+  "verify_url": "https://api.openai.com/v1/models",
+  "endpoints": [
+    {
+      "origin": "https://api.openai.com",
+      "paths": [
+        "/v1/responses"
+      ],
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "origin": "https://api.openai.com",
+      "paths": [
+        "/v1/models"
+      ],
+      "methods": [
+        "GET"
+      ]
+    }
+  ],
+  "engines": [
+    "codex",
+    "pi"
+  ]
+}

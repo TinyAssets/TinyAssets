@@ -1,0 +1,186 @@
+{
+  "id": "pi",
+  "display_name": "pi",
+  "connect": [
+    "cli"
+  ],
+  "cli": {
+    "install": {
+      "manager": "npm",
+      "lock_sha256": "792d133e5ec081063d9dfbd42950ee1f622ac99acd26ecd0cff8d140aae65e57",
+      "package": "@earendil-works/pi-coding-agent",
+      "version": "1.4.0",
+      "integrity": "sha512-Z41LpZ3yYHSC/UUps6Mr39UMFPwH8elhJBG9DY1P7kuzsE5qSK/6eMj2EHzO5evJRQWLbKSqUMw+4nCNtIyiQg==",
+      "bin": "pi",
+      "verify_argv": [
+        "{bin}",
+        "--version"
+      ]
+    },
+    "credential": [
+      "api_key"
+    ],
+    "api_key_env": {
+      "anthropic": {
+        "base_url": null,
+        "api_key": "ANTHROPIC_API_KEY",
+        "base": "sealed"
+      },
+      "openai": {
+        "base_url": null,
+        "api_key": "OPENAI_API_KEY",
+        "base": "sealed"
+      },
+      "xai": {
+        "base_url": null,
+        "api_key": "XAI_API_KEY",
+        "base": "sealed"
+      },
+      "google": {
+        "base_url": null,
+        "api_key": "GEMINI_API_KEY",
+        "base": "sealed"
+      },
+      "groq": {
+        "base_url": null,
+        "api_key": "GROQ_API_KEY",
+        "base": "sealed"
+      },
+      "cerebras": {
+        "base_url": null,
+        "api_key": "CEREBRAS_API_KEY",
+        "base": "sealed"
+      },
+      "mistral": {
+        "base_url": null,
+        "api_key": "MISTRAL_API_KEY",
+        "base": "sealed"
+      },
+      "openrouter": {
+        "base_url": null,
+        "api_key": "OPENROUTER_API_KEY",
+        "base": "sealed"
+      }
+    },
+    "unattended": {
+      "api_key": {
+        "allowed": true,
+        "cite": "https://www.npmjs.com/package/@earendil-works/pi-coding-agent",
+        "read": "2026-11-01"
+      }
+    },
+    "engine": {
+      "argv": [
+        "{bin}",
+        "-p",
+        "--mode",
+        "json",
+        "{prompt}"
+      ],
+      "resume_argv": [
+        "{bin}",
+        "-p",
+        "--mode",
+        "json",
+        "--session",
+        "{sid}",
+        "{prompt}"
+      ],
+      "resume": "session_id",
+      "model_argv": [
+        "--provider",
+        "{provider}",
+        "--model",
+        "{model}"
+      ],
+      "events": {
+        "format": "jsonl",
+        "session_id": [
+          {
+            "match": {
+              "type": "session"
+            },
+            "path": "id"
+          }
+        ],
+        "final_text": [
+          {
+            "match": {
+              "type": "message_end",
+              "message.role": "assistant"
+            },
+            "path": "message.content"
+          }
+        ],
+        "error": [
+          {
+            "match": {
+              "type": "message_end",
+              "message.stopReason": "error"
+            },
+            "path": "message.errorMessage"
+          }
+        ],
+        "usage": [
+          {
+            "match": {
+              "type": "message_end",
+              "message.role": "assistant"
+            },
+            "path": "message.usage"
+          }
+        ],
+        "tool_call": [
+          {
+            "match": {
+              "type": "tool_execution_start"
+            },
+            "path": ""
+          }
+        ]
+      }
+    },
+    "instructions": {
+      "file": "AGENTS.md",
+      "shadowed_by": []
+    },
+    "skills_paths": [
+      ".pi/skills"
+    ],
+    "mcp": {
+      "unsupported": "pi's CLI has no built-in MCP client: TinyAssets reaches a pi agent only once an MCP extension package is chosen (slice S)."
+    },
+    "tools": {
+      "allow": {
+        "argv": [
+          "--tools",
+          "{tools}"
+        ],
+        "join": ","
+      }
+    },
+    "unattended_argv": [],
+    "home_env": {
+      "PI_CODING_AGENT_DIR": "{home}/.pi/agent"
+    },
+    "files": {
+      "{home}/.pi/agent/models.json": "{\"providers\": {\"{provider}\": {\"baseUrl\": \"{base_url}\"}}}"
+    },
+    "no_update": {
+      "reason": "No auto-update switch is documented in what was read; the template pins the npm package and slice S checks the CLI leaves it unchanged."
+    },
+    "secret_paths": [
+      "{home}/.pi/agent/auth.json"
+    ],
+    "session_paths": [
+      "{home}/.pi/agent/sessions/"
+    ],
+    "hosts": {
+      "registry": [
+        "registry.npmjs.org"
+      ],
+      "login": [],
+      "provider": []
+    }
+  }
+}

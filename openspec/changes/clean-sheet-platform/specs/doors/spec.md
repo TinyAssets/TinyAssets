@@ -218,14 +218,30 @@ A pasted key SHALL be held to the gateway's own secret grammar before any object
 - **THEN** the answer is the gateway's fixed code and the connection holds no slot
 
 ### Requirement: Source records are data checked by the gateway's own rule
-Each model source SHALL be an editable JSON record in `platform/sources/` naming how it connects (`api_key`, `oauth`, or `cli` alone) and, for a gateway source, its pi-ai provider, API, base URL, auth header, setup check and endpoints. A record SHALL be checked whole when used and in CI, its gateway values by the gateway's own source check, so the gateway's `SUPPORTED_APIS` is the one list. A record marked unwired SHALL be refused with its reason.
+Each model source SHALL be an editable JSON record in `platform/sources/` naming how it connects (`api_key`, `oauth`, or `cli` alone). A gateway source SHALL name its pi-ai provider, API, base URL, auth header, setup check and endpoints, each from pi-ai's own provider data, and its `engines`: the CLI records that can run on its key through the egress door, each one declaring that provider's variables. A `cli` record SHALL be an engine (ADR-033 decision 2, ADR-034 decision 5), never a backend: it SHALL have no single-inference `invoke`, and SHALL declare its pinned install (npm with a committed lock, pip, or a binary by digest), its credentials (`vendor_login_in_sandbox`, `api_key`), its new-run and resume invocations, event matchers, instruction and skills paths, MCP template and trust handling, tool filters, unattended and no-update flags, its home, its `session_paths` and its `secret_paths`, and for each credential whether unattended hosted runs are allowed. A record SHALL be checked whole when used and in CI, by shape only (no vendor named in the checker), unknown keys refused, its gateway values by the gateway's own source check, so the gateway's `SUPPORTED_APIS` is the one list. A record marked unwired SHALL be refused with its reason.
 
 #### Scenario: A record names an unsupported API
 - **WHEN** a record names an API the gateway does not run, or breaks the schema
 - **THEN** reading it fails loudly naming the record, and CI fails
 
-#### Scenario: Sign in with ChatGPT before OpenAI's approval
-- **WHEN** the owner begins a connect of the `chatgpt` record
+#### Scenario: A secret path could leave the sandbox
+- **WHEN** a CLI record's `secret_paths` holds a path inside `/workspace`, a relative path, or a path inside (or holding) one of its `session_paths`
+- **THEN** reading it fails loudly naming the record, and CI fails
+
+#### Scenario: An unattended verdict with no citation
+- **WHEN** a CLI record allows unattended runs on a credential without the vendor page that permits them and the day it was read (ADR-033 decision 3)
+- **THEN** reading it fails loudly naming the record, and CI fails; a record that cannot cite one says `allowed: false` with its reason
+
+#### Scenario: A CLI as a backend
+- **WHEN** a CLI record carries an `invoke` section
+- **THEN** reading it fails loudly naming the record, and CI fails
+
+#### Scenario: An API key that the egress door cannot meter
+- **WHEN** an API-key source's API has no rules in `api-rules.ts`, or pi-ai's own model call for it lands outside its sealed endpoints
+- **THEN** CI fails
+
+#### Scenario: Sign in with ChatGPT, parked
+- **WHEN** the owner begins a connect of the `chatgpt` record, which served the in-object loop ADR-034 removes
 - **THEN** it is refused `501` naming why, before any object call
 
 ### Requirement: The egress door admits a sandbox call by its egress token

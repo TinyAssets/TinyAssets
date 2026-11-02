@@ -55,8 +55,9 @@
  * credential (`forward.ts`) and injects the sealed one. The names follow one rule, never a
  * provider's own code: `<PROVIDER>_BASE_URL` and `<PROVIDER>_API_KEY` (the provider id in
  * upper case, `-` as `_`: `ANTHROPIC_BASE_URL`, `OPENAI_API_KEY`, `GROQ_API_KEY`) for the
- * oldest active connection of each provider, and `TA_<CONNECTION>_BASE_URL` and
- * `TA_<CONNECTION>_API_KEY` for every one. A base URL is the door, the connection, then the
+ * oldest active connection of each provider, `TA_<CONNECTION>_BASE_URL` and
+ * `TA_<CONNECTION>_API_KEY` for every one, and each CLI's own names for that provider as
+ * its source record declares them (`cli.api_key_env`). A base URL is the door, the connection, then the
  * path of the sealed base URL: `https://egress.tinyassets.io/c/<connection>/` for
  * Anthropic's, `…/c/<connection>/v1` for OpenAI's, so a client appends its own API path.
  */
@@ -297,19 +298,16 @@ function stem(name: string): string {
 }
 
 /**
- * The provider CLIs whose variables the one rule does not name, as data: for a provider,
- * each CLI's base-URL and key variables, and whether its base URL is the door and the
- * connection alone (`bare`: its SDK appends the API version itself). Gemini CLI reads
- * `GOOGLE_GEMINI_BASE_URL` and `GEMINI_API_KEY`, its `@google/genai` client appending
- * `/v1beta`. Claude Code (`ANTHROPIC_*`), Codex and Qwen Code (`OPENAI_*`) and Mistral's
- * `MISTRAL_API_KEY` are the rule's own names.
+ * The CLIs' own variables for a provider's key, from their source records
+ * (`cli.api_key_env`, gathered by `doors/src/sources.ts`'s `cliEnv`): each CLI's base-URL
+ * variable (none when its base URL comes by a file template) and key variable, and whether
+ * its base URL is the sealed one on the door (`sealed`) or the door and the connection
+ * alone (`connection`: its SDK appends the API version itself, as Gemini CLI's
+ * `@google/genai` client appends `/v1beta`). No provider is named here.
  */
-const CLI_ENV: Readonly<Record<string, readonly {
-  readonly base_url: string; readonly api_key: string; readonly bare: boolean }[]>> =
-  Object.freeze({
-    google: Object.freeze([Object.freeze({ base_url: "GOOGLE_GEMINI_BASE_URL",
-                                           api_key: "GEMINI_API_KEY", bare: true })]),
-  });
+export type CliEnv = Readonly<Record<string, readonly {
+  readonly base_url: string | null; readonly api_key: string;
+  readonly base: "sealed" | "connection" }[]>>;
 
 /**
  * The base URL a connection's clients use: the door, the connection, the sealed path (or,
@@ -327,11 +325,19 @@ export function egressBaseUrl(connection: string, egress: EgressScope | null): s
 /**
  * The sandbox's model-client environment for `connections` (oldest first, as the object
  * lists them): each one's base URL on the door and a placeholder key, `random()` making
- * each placeholder's random part (hex). A placeholder carries no secret.
+ * each placeholder's random part (hex), and every CLI's own names for its provider
+ * (`clients`, from the records). A placeholder carries no secret. Two names for one
+ * variable that disagree fail loudly: the records conflict.
  */
-export function sandboxEnv(connections: readonly Egressible[], random: () => string):
-    Readonly<Record<string, string>> {
+export function sandboxEnv(connections: readonly Egressible[], random: () => string,
+                           clients: CliEnv): Readonly<Record<string, string>> {
   const env: Record<string, string> = {};
+  const set = (name: string, value: string) => {
+    if (env[name] !== undefined && env[name] !== value) {
+      throw new Error(`two source records set ${name} to different values`);
+    }
+    env[name] = value;
+  };
   const named = new Set<string>();
   for (const { connection, provider, egress } of connections) {
     const base = egressBaseUrl(connection, egress);
@@ -345,11 +351,14 @@ export function sandboxEnv(connections: readonly Egressible[], random: () => str
     const name = stem(provider);
     if (!named.has(name)) {
       named.add(name);
-      env[`${name}_BASE_URL`] = base;
-      env[`${name}_API_KEY`] = placeholder;
-      for (const names of CLI_ENV[provider] ?? []) {
-        env[names.base_url] = names.bare ? egressBaseUrl(connection, null) : base;
-        env[names.api_key] = placeholder;
+      set(`${name}_BASE_URL`, base);
+      set(`${name}_API_KEY`, placeholder);
+      for (const names of Object.hasOwn(clients, provider) ? clients[provider]! : []) {
+        if (names.base_url !== null) {
+          set(names.base_url, names.base === "connection" ? egressBaseUrl(connection, null)
+            : base);
+        }
+        set(names.api_key, placeholder);
       }
     }
   }

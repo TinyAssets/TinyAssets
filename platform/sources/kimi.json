@@ -7,16 +7,19 @@
   "cli": {
     "install": {
       "manager": "npm",
-      "lock_sha256": "2ed486573ebd356c797be07799ee885b2ee0ce74e5676624f58123580913b99e",
+      "lock_sha256": "5f38c028a086454550aae20aa7e81e78a4fa23645a7def487058a11abce6adf1",
       "package": "@moonshot-ai/kimi-code",
-      "version": "2.3.0",
-      "integrity": "sha512-/70t2bZV5ynYwYn13yjeA0EuQwY2v0UboH+Ks3LW/69+05eDNe29HZlwEg0F4iU0SvA2rWPcDRSfCRj5MqAJrA==",
+      "version": "2.4.1",
+      "integrity": "sha512-z0py3AxbV9ykOB3Pgh2FiycZbMy7XSAXH4Kb1yfyhhmk+l9xH8H9raakVvCGMYLVxxEQGitQLcgOh8clLVYUTw==",
       "bin": "kimi",
       "verify_argv": [
         "{bin}",
         "--version"
       ]
     },
+    "credential": [
+      "vendor_login_in_sandbox"
+    ],
     "login": {
       "argv": [
         "{bin}",
@@ -28,7 +31,7 @@
       "code_pattern": "enter code: ([A-Za-z0-9-]+)",
       "state_checks": [
         {
-          "path": ".kimi-code/credentials/kimi-code.json",
+          "path": "{home}/.kimi-code/credentials/kimi-code.json",
           "present": [
             "access_token",
             "refresh_token"
@@ -36,33 +39,87 @@
         }
       ]
     },
-    "invoke": {
+    "unattended": {
+      "vendor_login_in_sandbox": {
+        "allowed": false,
+        "reason": "No Kimi page read addresses hosted or unattended use of the CLI on a membership, and its help center warns that use with unauthorized platforms or tools may be a violation (subscription-engines §5, §11)."
+      }
+    },
+    "engine": {
       "argv": [
         "{bin}",
-        "--agent-file",
-        "{config}/agent.md",
         "--prompt",
-        "{system}\n\n{prompt}",
+        "{prompt}",
         "--output-format",
         "stream-json"
       ],
+      "resume_argv": [
+        "{bin}",
+        "--continue",
+        "--prompt",
+        "{prompt}",
+        "--output-format",
+        "stream-json"
+      ],
+      "resume": "continue_in_cwd",
       "model_argv": [
         "--model",
         "{model}"
       ],
-      "format": "jsonl",
-      "match": {
-        "role": "assistant"
-      },
-      "text_path": "content",
-      "max_prompt_bytes": 100000
+      "events": {
+        "format": "jsonl",
+        "session_id": [],
+        "final_text": [
+          {
+            "match": {
+              "role": "assistant"
+            },
+            "path": "content"
+          }
+        ],
+        "error": [],
+        "usage": [],
+        "tool_call": [
+          {
+            "match": {
+              "role": "assistant"
+            },
+            "path": "tool_calls"
+          }
+        ]
+      }
     },
-    "files": {
-      "agent.md": "---\nname: owner-inference\ntools: []\nsubagents: []\n---\nFollow the supplied conversation and return only the requested response.\n"
+    "instructions": {
+      "file": "AGENTS.md",
+      "shadowed_by": []
     },
-    "state_paths": [
-      ".kimi-code/credentials/kimi-code.json",
-      ".kimi-code/config.toml"
+    "skills_paths": [
+      ".agents/skills"
+    ],
+    "mcp": {
+      "file": "{home}/.kimi-code/mcp.json",
+      "template": "{\"mcpServers\": {\"tinyassets\": {\"url\": \"{mcp_url}\", \"transport\": \"http\"}}}",
+      "argv": [],
+      "trust": {
+        "argv": [],
+        "note": "The server is in the user-level mcp.json, which needs no workspace trust; a project-level one would."
+      }
+    },
+    "tools": {},
+    "unattended_argv": [],
+    "home_env": {
+      "KIMI_CODE_HOME": "{home}/.kimi-code"
+    },
+    "no_update": {
+      "reason": "No auto-update switch is documented in what was read; the template pins the npm package and slice S checks the CLI leaves it unchanged."
+    },
+    "secret_paths": [
+      "{home}/.kimi-code/credentials/",
+      "{home}/.kimi-code/config.toml"
+    ],
+    "session_paths": [
+      "{home}/.kimi-code/sessions/",
+      "{home}/.kimi-code/session_index.jsonl"
     ],
     "hosts": {
       "registry": [

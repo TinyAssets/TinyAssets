@@ -9,10 +9,12 @@ import { calculateCost } from "@earendil-works/pi-ai/models";
 import { apiRules, fallbackList, HINT_KEYS, manyChoices, paidTool, servedPriced,
          tierMultiplier, unpricedOption } from "../src/api-rules";
 import { builtinCatalog } from "../src/catalog";
-import { meteredCall } from "../src/credential";
+import { egressTarget, meteredCall } from "../src/credential";
 import { clamped, describes, learnMeter, meteredModel, meteredRecord, meteredUsage,
          snapshotOf } from "../src/meter";
 import { ANTHROPIC, GOOGLE, OPENAI } from "./support";
+
+import { bundledRecords, sourceRecord } from "../../doors/src/sources";
 
 const GROQ = Object.freeze({
   provider: "groq", api: "openai-completions", base_url: "https://api.groq.com/openai/v1",
@@ -52,6 +54,27 @@ function streamOf(text: string): ReadableStream<Uint8Array> {
 }
 
 describe("the meter pi-ai's adapter teaches", () => {
+  const keys = bundledRecords().map(sourceRecord)
+    .filter((record) => record.connect.includes("api_key") && record.unwired === undefined);
+  it("has the Anthropic, OpenAI and xAI keys among the API-key sources", () => {
+    expect(keys.map((record) => record.id)).toEqual(expect.arrayContaining([
+      "anthropic", "openai", "xai"]));
+  });
+
+  it.each(keys.map((record) => [record.id, record] as const))(
+    "meters the %s source's model call, on one of its sealed endpoints",
+    async (id, { upstream, endpoints }) => {
+      expect(apiRules(upstream!.api), id).not.toBeNull();
+      const meter = await learnMeter(builtinCatalog(), upstream!, "sk-x");
+      expect(meter, id).not.toBeNull();
+      const path = meter!.path.replace("{model}", "model-a");
+      const scope = { api: upstream!.api, base_url: upstream!.base_url, endpoints: endpoints!,
+                      meter };
+      expect(meteredCall(scope, meter!.method, path), id).toBe(true);
+      expect(egressTarget(scope, meter!.method, path), id).not.toBeNull();
+    });
+
+
   it.each([
     ["Anthropic Messages", ANTHROPIC.upstream,
      { method: "POST", path: "/v1/messages", model_field: ["model"], output_field: ["max_tokens"] }],

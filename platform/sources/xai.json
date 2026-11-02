@@ -1,0 +1,39 @@
+{
+  "id": "xai",
+  "display_name": "xAI API",
+  "help_url": "https://console.x.ai/",
+  "connect": [
+    "api_key"
+  ],
+  "provider": "xai",
+  "api": "openai-responses",
+  "base_url": "https://api.x.ai/v1",
+  "auth": {
+    "header": "authorization",
+    "scheme": "Bearer"
+  },
+  "verify_url": "https://api.x.ai/v1/models",
+  "endpoints": [
+    {
+      "origin": "https://api.x.ai",
+      "paths": [
+        "/v1/responses"
+      ],
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "origin": "https://api.x.ai",
+      "paths": [
+        "/v1/models"
+      ],
+      "methods": [
+        "GET"
+      ]
+    }
+  ],
+  "engines": [
+    "pi"
+  ]
+}

@@ -105,6 +105,7 @@ import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
 import { mintToken } from "../../doors/src/routing-mac";
+import { bundledSources, cliEnv } from "../../doors/src/sources";
 
 import {
   type AgentConfig, type AgentParts, END_WAIT_MS, gatewayAgent, type OwnerAgent, type UsageView,
@@ -2570,7 +2571,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const { document } = this.#policy.read();
       return { generation: this.#policy.egressGeneration(), egress: document.egress,
                env: sandboxEnv(this.#connections.egressible(),
-                               () => randomBytes(16).toString("hex")) };
+                               () => randomBytes(16).toString("hex"),
+                               cliEnv(bundledSources())) };
     };
     const leases: SandboxLeases = {
       open: (request) => this.#door(() => {

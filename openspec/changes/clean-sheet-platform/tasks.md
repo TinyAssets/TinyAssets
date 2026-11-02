@@ -610,7 +610,8 @@ account and no deploy.
   says so (`BOUNDARY_NOTE`, every network plan's `note`). **Placeholders** (`sandboxEnv`):
   `<PROVIDER>_BASE_URL`/`_API_KEY` for each provider's oldest connection (Claude Code's
   `ANTHROPIC_*`, Codex's and Qwen Code's `OPENAI_*`, `MISTRAL_API_KEY`), `TA_<CONNECTION>_*`
-  for every one, and, as data, the CLIs the rule does not name: Gemini CLI's
+  for every one, and each CLI's own names from its source record (slice E's
+  `api_key_env`), such as Gemini CLI's
   `GOOGLE_GEMINI_BASE_URL` (the door and the connection alone) and `GEMINI_API_KEY`; keys
   `ta_ph_<connection>_<random>`; `forward` strips every inbound credential, query keys of
   any case among them. Owner-bound guard 46.3% (4,627,732,900 bytes, about 372 MB under
@@ -635,9 +636,9 @@ account and no deploy.
   model API's other billed calls pi-ai does not make (`count_tokens`, `countTokens`,
   embeddings), refused `egress_unmetered` until a reviewed record marks one unbilled; and
   a non-streaming model call's answer: pi-ai's adapters parse their stream only, so a
-  JSON answer has no usage pi-ai can read and settles `unknown`, its whole charge kept. No API-key source record exists yet for
-  Anthropic, OpenAI or xAI (Claude Code, Codex and Grok Build by key): each is a record
-  file in `platform/sources/`, its endpoints sealed as above.
+  JSON answer has no usage pi-ai can read and settles `unknown`, its whole charge kept. The
+  `anthropic`, `openai` and `xai` API-key records landed with slice E (6), each metered by
+  `api-rules.ts` (a test holds every API-key source's model call to its sealed endpoints).
 - [ ] G5 Measurement and cost: pi-durable's partial commits at most once a second with
   the live tee, per-owner busy seconds, rows written, call durations and delta counts, and
   the rule for building the deferred mode for unattended turns; measured through pi's and
@@ -1726,6 +1727,58 @@ account and no deploy.
   binding and its acceptance at `fileChanges` and `fileSyncCommit` are G4's; the route,
   and the upload and chunk doors' acceptance of it, are this item's). The sync agent reaches
   the file doors through a transform too, so the VM never holds a token that spends.
+- [x] E Engine records (`engines-replan.md` §5 row E), data plus its checker, nothing run.
+  `CliSpec` (`doors/src/sources.ts`) is an engine (ADR-033 decision 2): `engine.argv` and
+  `resume_argv` (by `{sid}`, or `continue_in_cwd` where the stream names no id), event
+  matchers (session id, final text, error, usage, tool calls), `instructions` (the
+  `AGENTS.md` mapping, what shadows it, any cap) and `skills_paths`, `mcp` (a flag or file
+  template carrying `{mcp_url}`, with its trust handling, or `unsupported` with the reason),
+  `tools` filters, `unattended_argv`, `home_env` under `{home}` (sandbox-only, outside
+  `/workspace`), `credential` (`vendor_login_in_sandbox`, `api_key`), `unattended` per
+  credential (`allowed: true` only with `cite` and `read`; `false` with the reason),
+  `per_credential` (argv, env, files, and arguments it forbids: Claude's `--bare`),
+  `api_key_env` (each provider's base-URL and key variables, which `sandboxEnv` now takes
+  from the records, `CLI_ENV` gone), `no_update`, `install.manager` npm, pip or a binary by
+  digest, and `secret_paths` and `session_paths` in place of `state_paths`. The checker
+  refuses unknown keys, `invoke`, a secret path inside `/workspace` or overlapping a
+  session path, an uncited `allowed: true`, unknown placeholders and `{sid}` outside the
+  resume argv. Records: Claude Code 2.1.309 (npm `stable`; `latest` is 2.1.316), Codex
+  0.166.0, Gemini CLI 0.66.0, Kimi Code 2.4.1, and pi's CLI 1.4.0 (API key only), each
+  pinned by a lock committed in `platform/sources/locks/<id>/`; Claude's `hosts.provider`
+  gains `platform.claude.com`. Unattended: Claude Code allowed on a subscription and a key
+  (code.claude.com/docs/en/legal-and-compliance, 2026-11-01); Codex, Gemini and Kimi
+  refused on a subscription with the reason, Codex and Gemini allowed on a key. New
+  `anthropic`, `openai` and `xai` keys; every key names its `engines`. `chatgpt` parked.
+  Kimi has no key credential: no Moonshot API-key source and no read page for one.
+- [ ] Slice S verifies each engine record live, on the pinned version, in a headless E2B VM
+  (each value below was not confirmable offline), and fixes the record where it differs:
+  - **Every CLI:** the event shapes against the matchers (session id, final text, error,
+    usage, tool calls) on one run and one resume; resume after a cold create restores
+    `session_paths` and continues; MCP injection reaches the run-scoped door with no bearer
+    in the config; the tool filters and unattended flags run with no prompt; the CLI keeps
+    its pinned binary (`no_update`); nothing in `secret_paths` appears in a sync-out.
+  - **Claude Code:** `--permission-mode auto` with `--permission-prompts none`; `--tools`
+    and `--disallowedTools` as the filters; `CLAUDE_CODE_PROJECT_DIR_NAME` pins the
+    transcript path under `CLAUDE_CONFIG_DIR`; `ENABLE_CLAUDEAI_MCP_SERVERS=false`; `auth
+    login` completes headless with a pasted code; an API-key run on `ANTHROPIC_BASE_URL`
+    through egress, and whether it calls `/v1/messages/count_tokens` (unmetered, refused).
+  - **Codex:** `exec --json … resume {sid} -` argument order; `CODEX_API_KEY` and
+    `OPENAI_BASE_URL` for a key; `forced_login_method="api"`; `approval_policy` and
+    `sandbox_mode` inside E2B; `check_for_update_on_startup`; `-c mcp_servers.tinyassets.url`
+    over streamable HTTP; `features.<tool>=false` as the deny filter; `login --device-auth`
+    headless.
+  - **Gemini CLI:** `GEMINI_CLI_SYSTEM_SETTINGS_PATH` and the system settings' keys
+    (`mcpServers.httpUrl`, `mcp.allowed`, `context.fileName`, `tools.core`,
+    `tools.exclude`, `general.disableAutoUpdate`); `selectedType` per credential;
+    `--approval-mode yolo`; the `stream-json` field names (`init.session_id`, assistant
+    `message` deltas, `result.stats`, `error`); `--resume {sid}`; the `NO_BROWSER` sign-in.
+  - **Kimi Code:** `--continue` in a per-conversation cwd; the `stream-json` fields; the
+    user-level `mcp.json` schema; where `session_index.jsonl` lives; whether
+    `config.toml` holds sign-in state; `login` headless.
+  - **pi:** `--mode json` event names (`session`, `message_end`, `tool_execution_start`),
+    `--session {sid}`, `PI_CODING_AGENT_DIR`, `models.json` `baseUrl` per provider, the
+    pi-ai key variables, `.pi/skills`, `--tools`; and the MCP extension package it needs
+    to reach TinyAssets (its record says `unsupported` until then).
 - [ ] The sandbox (slice 8b), calling G4's `SandboxLeases` in the owner's object only (the
   agent's parts carry it to `exec`): the E2B client and lifecycle (`open` for a sandbox
   run, its egress token in the static transform and its network document and

@@ -7,10 +7,10 @@
   "cli": {
     "install": {
       "manager": "npm",
-      "lock_sha256": "b57467909d9a3af6f439e5981dab9148a15f6316974e2e9bf4bcec640a61ece6",
+      "lock_sha256": "866e7dfde2719901e137f84bb2f4dd0ce7264e21e9246933d6861ab8ee7dbdb6",
       "package": "@anthropic-ai/claude-code",
-      "version": "2.1.308",
-      "integrity": "sha512-b2HnszgyN73wRTFP+IYPDJNn9ADXnG6jr26ibL+w03HSKqfb6GqE8Jnfr4mz37Zv4AT/NP+B5/3c1F89WTdWSA==",
+      "version": "2.1.309",
+      "integrity": "sha512-+lBYZRuXOJpiKJcRv/CK7gF+5UFNWyJE7hSxkgGUKDZOWgANl9MAabfTkrJk183Tp3B0Nv4xF/DU1t0BaKXOPw==",
       "bin": "claude",
       "lifecycle_scripts": true,
       "verify_argv": [
@@ -18,6 +18,10 @@
         "--version"
       ]
     },
+    "credential": [
+      "vendor_login_in_sandbox",
+      "api_key"
+    ],
     "login": {
       "argv": [
         "{bin}",
@@ -36,37 +40,173 @@
       "url_pattern": "(https://(?:claude\\.com/cai|claude\\.ai)/oauth/authorize[^\\s\\u001b]+)",
       "accepts_code": true
     },
-    "invoke": {
+    "api_key_env": {
+      "anthropic": {
+        "base_url": "ANTHROPIC_BASE_URL",
+        "api_key": "ANTHROPIC_API_KEY",
+        "base": "sealed"
+      }
+    },
+    "unattended": {
+      "vendor_login_in_sandbox": {
+        "allowed": true,
+        "cite": "https://code.claude.com/docs/en/legal-and-compliance",
+        "read": "2026-11-01"
+      },
+      "api_key": {
+        "allowed": true,
+        "cite": "https://code.claude.com/docs/en/legal-and-compliance",
+        "read": "2026-11-01"
+      }
+    },
+    "per_credential": {
+      "vendor_login_in_sandbox": {
+        "forbid_argv": [
+          "--bare"
+        ]
+      }
+    },
+    "engine": {
       "argv": [
         "{bin}",
         "-p",
-        "--system-prompt",
-        "{system}",
         "--output-format",
-        "json",
-        "--tools",
-        "",
-        "--strict-mcp-config",
-        "--mcp-config",
-        "{\"mcpServers\":{}}"
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages"
       ],
-      "format": "json",
-      "text_path": "result",
-      "errors": {
-        "is_error": true
-      },
+      "resume_argv": [
+        "{bin}",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+        "--resume",
+        "{sid}"
+      ],
+      "resume": "session_id",
+      "stdin": "{prompt}",
       "model_argv": [
         "--model",
         "{model}"
       ],
-      "stdin": "{prompt}"
+      "events": {
+        "format": "jsonl",
+        "session_id": [
+          {
+            "match": {
+              "type": "system",
+              "subtype": "init"
+            },
+            "path": "session_id"
+          }
+        ],
+        "final_text": [
+          {
+            "match": {
+              "type": "result"
+            },
+            "path": "result"
+          }
+        ],
+        "error": [
+          {
+            "match": {
+              "type": "result",
+              "is_error": true
+            },
+            "path": "result"
+          },
+          {
+            "match": {
+              "type": "system",
+              "subtype": "api_retry"
+            },
+            "path": "error"
+          }
+        ],
+        "usage": [
+          {
+            "match": {
+              "type": "result"
+            },
+            "path": "usage"
+          }
+        ],
+        "tool_call": [
+          {
+            "match": {
+              "type": "assistant"
+            },
+            "path": "message.content"
+          }
+        ]
+      }
+    },
+    "instructions": {
+      "file": "AGENTS.md",
+      "shadowed_by": [
+        "CLAUDE.md",
+        "CLAUDE.local.md"
+      ]
+    },
+    "skills_paths": [
+      ".claude/skills"
+    ],
+    "mcp": {
+      "file": "{home}/run/mcp.json",
+      "template": "{\"mcpServers\": {\"tinyassets\": {\"type\": \"http\", \"url\": \"{mcp_url}\"}}}",
+      "argv": [
+        "--mcp-config",
+        "{mcp_config}",
+        "--strict-mcp-config"
+      ],
+      "trust": {
+        "argv": [],
+        "note": "A non-bare -p run loads its --mcp-config without folder trust; --strict-mcp-config ignores every other server. Neither is restored on resume, so both go on every run."
+      }
+    },
+    "tools": {
+      "allow": {
+        "argv": [
+          "--tools",
+          "{tools}"
+        ],
+        "join": ","
+      },
+      "deny": {
+        "argv": [
+          "--disallowedTools",
+          "{tools}"
+        ],
+        "join": ","
+      }
+    },
+    "unattended_argv": [
+      "--permission-mode",
+      "auto",
+      "--permission-prompts",
+      "none"
+    ],
+    "home_env": {
+      "CLAUDE_CONFIG_DIR": "{home}/.claude"
     },
     "env": {
-      "DISABLE_AUTOUPDATER": "1",
-      "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+      "CLAUDE_CODE_PROJECT_DIR_NAME": "{agent}",
+      "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+      "ENABLE_CLAUDEAI_MCP_SERVERS": "false"
     },
-    "state_paths": [
-      ".claude/.credentials.json"
+    "no_update": {
+      "env": {
+        "DISABLE_AUTOUPDATER": "1"
+      }
+    },
+    "secret_paths": [
+      "{home}/.claude/.credentials.json"
+    ],
+    "session_paths": [
+      "{home}/.claude/projects/"
     ],
     "hosts": {
       "registry": [
@@ -82,7 +222,8 @@
       "provider": [
         "api.anthropic.com",
         "claude.ai",
-        "claude.com"
+        "claude.com",
+        "platform.claude.com"
       ]
     }
   }
