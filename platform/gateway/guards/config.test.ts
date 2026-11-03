@@ -13,7 +13,7 @@
  * `process.env`), `disable_ctx_exports` and `global_fetch_strictly_public`. It is the
  * gateway's only wrangler config.
  */
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { PLATFORM } from "../../owner/guards/sources";
+import { configFiles, PLATFORM } from "../../owner/guards/sources";
 
 const GATEWAY = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = "wrangler.jsonc";
@@ -70,11 +70,7 @@ export function gatewayConfigProblems(config: Config): string[] {
 }
 
 function wranglerConfigs(root: string): string[] {
-  return readdirSync(root, { recursive: true, encoding: "utf8" })
-    .map((path) => path.split("\\").join("/"))
-    .filter((path) => !path.split("/").includes("node_modules")
-                      && /^wrangler\./i.test(path.split("/").at(-1) ?? ""))
-    .sort();
+  return configFiles(root);
 }
 
 const config = parseConfig(readFileSync(join(GATEWAY, CONFIG), "utf8"));
