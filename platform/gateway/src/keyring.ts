@@ -166,7 +166,7 @@ async function ownerKey(root: Uint8Array, owner: string): Promise<CryptoKey> {
 }
 
 async function sealWith(keys: Ring, kid: string, bound: Binding,
-                        plaintext: Credential): Promise<Sealed> {
+                        plaintext: unknown): Promise<Sealed> {
   const root = keys.keys.get(kid);
   if (root === undefined) {
     throw new Failure("keyring_unavailable");
@@ -196,6 +196,18 @@ export async function seal(env: KeyringEnv, bound: Binding,
  */
 export async function open(env: KeyringEnv, bound: Binding, blob: unknown): Promise<Opened> {
   const keys = ring(env);
+  const { parsed, kid } = await openWith(keys, bound, blob);
+  const opened = credential(parsed);
+  if (kid === keys.active) {
+    return Object.freeze({ credential: opened, kid });
+  }
+  return Object.freeze({ credential: opened, kid,
+                         resealed: await resealWith(keys, bound, opened) });
+}
+
+/** A blob's plaintext as JSON, and its kid; `credential_refused` for any mismatch. */
+async function openWith(keys: Ring, bound: Binding, blob: unknown):
+    Promise<{ parsed: unknown; kid: string }> {
   if (typeof blob !== "string" || blob.length > BLOB_MAX) {
     throw new Failure("credential_refused");
   }
@@ -225,12 +237,40 @@ export async function open(env: KeyringEnv, bound: Binding, blob: unknown): Prom
   } catch {
     throw new Failure("credential_refused");
   }
-  const opened = credential(parsed);
-  if (kid === keys.active) {
-    return Object.freeze({ credential: opened, kid });
+  return { parsed, kid };
+}
+
+/**
+ * A secret that is not a model credential (a doorbell's, `doorbell.ts`), sealed the same
+ * way: `check` is its own shape, applied before the seal and again at every open, and its
+ * binding's connection names its own key space (`wake.<subscription>`), so neither kind of
+ * blob ever opens as the other.
+ */
+export async function sealValue<T>(env: KeyringEnv, bound: Binding, value: unknown,
+                                   check: (value: unknown) => T): Promise<Sealed> {
+  const keys = ring(env);
+  return sealWith(keys, keys.active, bound, check(value));
+}
+
+/** Opens a `sealValue` blob; resealed under the active kid at the next version, as `open`. */
+export async function openValue<T>(env: KeyringEnv, bound: Binding, blob: unknown,
+                                   check: (value: unknown) => T):
+    Promise<{ readonly value: T; readonly kid: string; readonly resealed?: Resealed }> {
+  const keys = ring(env);
+  const { parsed, kid } = await openWith(keys, bound, blob);
+  let value: T;
+  try {
+    value = check(parsed);
+  } catch {
+    throw new Failure("credential_refused");
   }
-  return Object.freeze({ credential: opened, kid,
-                         resealed: await resealWith(keys, bound, opened) });
+  if (kid === keys.active) {
+    return Object.freeze({ value, kid });
+  }
+  const next = Object.freeze({ ...bound, version: bound.version + 1 });
+  const sealed = await sealWith(keys, keys.active, next, value);
+  return Object.freeze({ value, kid, resealed: Object.freeze({ ...sealed,
+                                                               version: next.version }) });
 }
 
 async function resealWith(keys: Ring, bound: Binding, opened: Credential): Promise<Resealed> {

@@ -14,7 +14,7 @@ import { GRANT_LIMITS, Grants } from "../src/grants";
 import { apiKeyOrigin, clock, Ledger, type Origin } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import { Policy, POLICY_LIMITS, policyDigest } from "../src/policy";
-import { DOT, MCP, MUSE, rig, type Rig, signedIn } from "./ledger-support";
+import { DOT, MCP, MUSE, rig, type Rig, signedIn, subscription } from "./ledger-support";
 import { failure } from "./support";
 
 const CHATGPT: Origin = Object.freeze({ client: "1".repeat(64), family: "2".repeat(64) });
@@ -86,13 +86,14 @@ describe("an outside client's grant", () => {
      async () => {
     const r = await rig();
     const agent = await r.register(CHATGPT, "Muse", "mcp_event");
-    const subscribe = (center = "alpha") => r.stub.mailboxSubscriber(
-      r.bind(CHATGPT), { command_center_id: center, agent_id: agent });
+    void agent;
+    const subscribe = (center = "alpha") => r.stub.wakeSubscribe(
+      r.bind(CHATGPT), subscription(center, { client: CHATGPT.client }));
     await grant(r, CHATGPT, "scoped", [WRITE]);
     expect((await failure(() => subscribe())).message)
       .toBe("outside client capability not granted");
     await grant(r, CHATGPT, "scoped", [READ]);
-    expect((await subscribe()).generation).toBe(1);
+    expect((await subscribe()).agent_id).toBe(agent);
     expect((await failure(() => subscribe("beta"))).message)
       .toBe("outside client capability not granted");
   });
@@ -353,21 +354,20 @@ describe("an outside client's grant", () => {
 });
 
 describe("a changed or revoked grant ends its agents' wakes (P0-3's M3)", () => {
-  it("suppresses the wake and revokes the callback in the change's own transaction",
-     async () => {
+  it("suppresses the wake and erases the client's subscription in the change's own " +
+     "transaction", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
-    await r.subscribe(MUSE, muse);
+    await r.subscribe(MUSE);
     await r.post(null, `dm:${muse}`, { cmid: "c1" });
     await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
     const rows = await r.table("ledger_wakes");
-    expect(rows.map((w) => [w["kind"], w["state"]]))
-      .toEqual([["wake", "suppressed"], ["revoke", "pending"]]);
+    expect(rows.map((w) => w["state"])).toEqual(["suppressed"]);
     expect(JSON.parse(rows[0]!["receipt_json"] as string)).toEqual({ reason: "grant" });
+    expect(await r.sql("SELECT * FROM wake_callbacks")).toEqual([]);
     expect(await r.tick(clock() + 1)).toBe(0);
-    expect([r.sender.sent, r.sender.revoked, r.sender.callbacks.get(muse)])
-      .toEqual([[], [[muse, 1]], new Set()]);
-    expect((await failure(() => r.subscribe(MUSE, muse))).message)
+    expect(r.sender.sent).toEqual([]);
+    expect((await failure(() => r.subscribe(MUSE))).message)
       .toBe("outside client revoked");  // it cannot subscribe again while revoked
   });
 
@@ -375,12 +375,13 @@ describe("a changed or revoked grant ends its agents' wakes (P0-3's M3)", () => 
      async () => {
     const r = await rig();
     const dot = await r.register(DOT, "Dot", "mcp_event", { batch_window_s: 0 });
-    await r.subscribe(DOT, dot);
+    await r.subscribe(DOT);
     await r.post(null, `dm:${dot}`, { cmid: "c1" });
     await grant(r, DOT, "scoped", [READ]);
+    expect(await r.sql("SELECT * FROM wake_callbacks")).toEqual([]);
     expect(await r.tick(clock() + 1)).toBe(0);
-    expect([r.sender.sent, r.sender.revoked]).toEqual([[], [[dot, 1]]]);
-    expect(await r.subscribe(DOT, dot)).toBe(2);
+    expect(r.sender.sent).toEqual([]);
+    await r.subscribe(DOT);
     await r.post(null, `dm:${dot}`, { cmid: "c2" });
     expect(await r.tick(clock() + 2)).toBe(1);
     expect(r.sender.sent.map((target) => target.agent_id)).toEqual([dot]);
@@ -390,18 +391,15 @@ describe("a changed or revoked grant ends its agents' wakes (P0-3's M3)", () => 
      async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
-    await r.subscribe(MUSE, muse);
+    await r.subscribe(MUSE);
     await r.post(null, `dm:${muse}`, { cmid: "c1" });
     // no suppression with it
     await r.sql("UPDATE outside_clients SET mode = 'revoked', owner_set = 1");
     expect(await r.tick(clock() + 1)).toBe(0);
     expect(r.sender.sent).toEqual([]);
     const rows = await r.table("ledger_wakes");
-    expect(rows.map((w) => [w["kind"], w["state"]]))
-      .toEqual([["wake", "suppressed"], ["revoke", "pending"]]);
+    expect(rows.map((w) => w["state"])).toEqual(["suppressed"]);
     expect(JSON.parse(rows[0]!["receipt_json"] as string)).toEqual({ reason: "grant" });
-    await r.tick(clock() + 2);
-    expect(r.sender.revoked).toEqual([[muse, 1]]);
   });
 });
 
@@ -840,18 +838,55 @@ describe("a grant's revision apart from its authority (S4-S5 review round 2, L1)
      "change", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
-    await r.subscribe(MUSE, muse);
+    await r.subscribe(MUSE);
     await r.post(null, `dm:${muse}`, { cmid: "c1" });
     await rename(r, MUSE, "Muse");
-    expect((await r.table("ledger_wakes")).map((w) => [w["kind"], w["state"]]))
-      .toEqual([["wake", "pending"]]);
+    expect((await r.table("ledger_wakes")).map((w) => w["state"])).toEqual(["pending"]);
     expect(await r.tick(clock() + 1)).toBe(1);
-    expect([r.sender.sent.map((target) => target.agent_id), r.sender.revoked])
-      .toEqual([[muse], []]);
+    expect(r.sender.sent.map((target) => target.agent_id)).toEqual([muse]);
+    expect(await r.sql("SELECT * FROM wake_callbacks")).toHaveLength(1);
     await r.post(null, `dm:${muse}`, { cmid: "c2" });
     await grant(r, MUSE, "scoped", [READ]);
-    expect((await r.table("ledger_wakes")).map((w) => [w["kind"], w["state"]]).slice(1))
-      .toEqual([["wake", "suppressed"], ["revoke", "pending"]]);
+    expect((await r.table("ledger_wakes")).map((w) => w["state"]).slice(1))
+      .toEqual(["suppressed"]);
+    expect(await r.sql("SELECT * FROM wake_callbacks")).toEqual([]);
+  });
+});
+
+describe("a grant's tool profile (slice M)", () => {
+  it("names custom until the owner names another, and moves the generation",
+     async () => {
+    const r = await rig();
+    await r.stub.outsideAgents(r.bind(CHATGPT));
+    const [free] = await clients(r);
+    expect(free).toMatchObject({ profile: "custom", generation: 1 });
+    const row = free!;
+    const listed = await r.stub.grantSet(r.session(null), {
+      client: CHATGPT.client, source: "mcp", mode: "full", scopes: [],
+      expected_revision: row.revision, name: "", profile: "directory" });
+    expect(listed).toMatchObject({ profile: "directory", generation: 2 });
+    // A set that names no profile keeps the grant's own, and moves only the revision.
+    const renamed = await rename(r, CHATGPT, "ChatGPT");
+    expect(renamed).toMatchObject({ profile: "directory", generation: 2 });
+    for (const profile of ["run", "everything", 7, null]) {
+      const refused = await failure(() => r.stub.grantSet(r.session(null), {
+        client: CHATGPT.client, source: "mcp", mode: "full", scopes: [],
+        expected_revision: renamed.revision, name: "", profile: profile as never }));
+      expect([refused.name, refused.message])
+        .toEqual(["Invalid", "a grant's profile is one of directory, custom"]);
+    }
+  });
+
+  it("is held by the row's own rule: a free row names custom", async () => {
+    const r = await rig();
+    await r.stub.outsideAgents(r.bind(CLAUDE));
+    const changed = await failure(() => r.sql(
+      "UPDATE outside_clients SET profile = 'directory' WHERE client = ?", CLAUDE.client));
+    expect(changed.message).toMatch(/CHECK/);
+    const unknown = await failure(() => r.sql(
+      "UPDATE outside_clients SET owner_set = 1, profile = 'run' WHERE client = ?",
+      CLAUDE.client));
+    expect(unknown.message).toMatch(/CHECK/);
   });
 });
 

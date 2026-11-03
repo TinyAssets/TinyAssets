@@ -14,7 +14,7 @@
  *
  * A flip reaches every location within KV's 60 s; no revoke depends on it. A `code` call's
  * script reads the same gates again at each tool call, in the object (`control-gate.ts`).
- * The switch reaching the object's alarm (the doorbell) is task 7's.
+ * The owner object's `wakes` lane reads it too, once a pass, before it claims a wake (slice W).
  */
 import type { DoorsEnv } from "./config";
 import { type Control, type ControlRead, readControl } from "./directory";

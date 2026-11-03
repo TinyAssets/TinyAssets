@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 
 import { apiKeyOrigin, displayName, OWNER } from "../src/ledger";
 import { policyDigest } from "../src/policy";
-import { DOT, MCP, MUSE, origin, rig } from "./ledger-support";
+import { DOT, MCP, MUSE, origin, rig, subscription } from "./ledger-support";
 import { failure } from "./support";
 
 describe("the sender is the verified identity", () => {
@@ -313,7 +313,8 @@ describe("outside agents register from a verified identity", () => {
     expect(await r.table("outside_agents")).toEqual([]);
   });
 
-  it("takes an API-key agent's identity from its key, and only for pull", async () => {
+  it("takes an API-key agent's identity from its key, and never for a kind its client " +
+     "subscribes", async () => {
     const r = await rig();
     const key = "0123456789abcdef";
     const origin = apiKeyOrigin(key);
@@ -325,7 +326,7 @@ describe("outside agents register from a verified identity", () => {
       [r.session(MUSE, source), {}, "the origin is not this API key's"],
       [r.session(apiKeyOrigin("fedcba9876543210"), source), {}, "the origin is not this API key's"],
       [r.session(origin, source), { delivery_method: "mcp_event" },
-        "an API-key agent reads by pull; mcp_event is for MCP clients"],
+        "an API-key agent cannot subscribe; mcp_event is for MCP clients"],
     ] as const) {
       const refused = await failure(() => r.stub.registerAgent(binding, { ...request, ...fields }));
       expect([refused.name, refused.message]).toEqual(["Refused", reason]);
@@ -336,27 +337,31 @@ describe("outside agents register from a verified identity", () => {
     const agent = await r.stub.registerAgent(r.session(origin, source), request);
     expect([agent.source, agent.source_ref, agent.delivery_method, agent.outside_client])
       .toEqual(["api_key", key, "pull", origin.client]);
+    // A kind whose doorbell the owner hands over takes an API-key agent too (a Grok Bot).
+    const hooked = await r.stub.registerAgent(r.session(origin, source),
+                                              { ...request, delivery_method: "webhook" });
+    expect(hooked.delivery_method).toBe("webhook");
   });
 
-  it("admits pull and mcp_event delivery only, with W3's defaults and bounds", async () => {
+  it("admits the delivery a wake-kind record names, with W3's defaults and bounds",
+     async () => {
     const r = await rig();
-    for (const method of ["routine_fire", "webhook", "a2a"]) {
-      const refused = await failure(() => r.register(MUSE, "Muse", method));
-      expect([refused.name, refused.message])
-        .toEqual(["Refused", "only pull and mcp_event delivery are available yet"]);
-    }
+    const refused = await failure(() => r.register(MUSE, "Muse", "a2a"));
+    expect([refused.name, refused.message]).toEqual(
+      ["Refused", "only pull, mcp_event, routine_fire, webhook delivery are available yet"]);
     expect((await failure(() => r.register(MUSE, "Muse", "carrier pigeon"))).message)
       .toBe("unknown delivery method");
     const agent = await r.registered(MUSE, "Muse", "mcp_event");
-    expect([agent.max_wakes_per_hour, agent.batch_window_s, agent.revision]).toEqual([12, 60, 1]);
+    // The owner's own settings, off by default: no hourly cap, no batch window.
+    expect([agent.max_wakes_per_hour, agent.batch_window_s, agent.revision]).toEqual([null, 0, 1]);
     const limits = async (extra: object) => (await r.stub.policyWakeLimits(r.session(null), {
       agent_id: agent.agent_id, max_wakes_per_hour: 12, batch_window_s: 60,
       expected_generation: (await r.stub.policyRead(r.bind(null))).generation, ...extra })).agent;
     for (const [extra, reason] of [
-      [{ max_wakes_per_hour: 0 }, "max_wakes_per_hour is 1 to 60"],
-      [{ max_wakes_per_hour: 61 }, "max_wakes_per_hour is 1 to 60"],
-      [{ batch_window_s: -1 }, "batch_window_s is 0 to 3600"],
-      [{ batch_window_s: 1.5 }, "batch_window_s is 0 to 3600"],
+      [{ max_wakes_per_hour: 0 }, "max_wakes_per_hour is a whole number from 1, or null for none"],
+      [{ max_wakes_per_hour: 1.5 }, "max_wakes_per_hour is a whole number from 1, or null for none"],
+      [{ batch_window_s: -1 }, "batch_window_s is a whole number of seconds from 0"],
+      [{ batch_window_s: 1.5 }, "batch_window_s is a whole number of seconds from 0"],
       [{ agent_id: "agent_x" }, "agent not found"],
     ] as const) {
       expect((await failure(() => limits(extra))).message).toBe(reason);
@@ -366,6 +371,8 @@ describe("outside agents register from a verified identity", () => {
     // A re-registration keeps the owner's policy; it cannot carry its own.
     const again = await r.registered(MUSE, "Muse", "mcp_event");
     expect([again.max_wakes_per_hour, again.batch_window_s, again.revision]).toEqual([2, 0, 3]);
+    const uncapped = await limits({ max_wakes_per_hour: null, batch_window_s: 7200 });
+    expect([uncapped.max_wakes_per_hour, uncapped.batch_window_s]).toEqual([null, 7200]);
     const carried = await failure(() => r.stub.registerPropose(r.bind(MUSE), {
       command_center_id: "alpha", display_name: "Muse", delivery_method: "mcp_event",
       recipe_id: null, max_wakes_per_hour: 60 } as never));
@@ -415,7 +422,7 @@ describe("outside agents register from a verified identity", () => {
                                        body: "x", parent_id: null }),
       () => r.stub.mailboxRead(outside, { limit: 1 }),
       () => r.stub.mailboxAck(outside, { through: 0 }),
-      () => r.stub.mailboxSubscriber(outside, { command_center_id: "alpha", agent_id: muse }),
+      () => r.stub.wakeSubscribe(outside, subscription(muse)),
       () => r.stub.disableAgent(outside, { agent_id: muse, reason: "x" }),
       () => r.stub.deleteAgent(outside, { agent_id: muse }),
       () => r.stub.policyRead(outside),
@@ -459,7 +466,7 @@ describe("outside agents register from a verified identity", () => {
       }
     }
     const [agent] = (await r.stub.outsideAgents(r.bind(null))).agents;
-    expect([agent!.max_wakes_per_hour, agent!.revision]).toEqual([12, 1]);
+    expect([agent!.max_wakes_per_hour, agent!.revision]).toEqual([null, 1]);
   });
 
   it("keeps a display name to letters, digits, spaces, dots and dashes, and no secret",
@@ -511,13 +518,12 @@ describe("the ledger's binding", () => {
     const tables = (await r.sql("SELECT name FROM sqlite_master WHERE type = 'table'"))
       .map((t) => t["name"]);
     for (const table of ["outside_agents", "ledger_messages", "ledger_recipients",
-                         "ledger_receipts", "ledger_readers", "ledger_wakes", "ledger_rings",
+                         "ledger_receipts", "ledger_readers", "ledger_wakes", "wake_callbacks",
                          "message_bodies", "ledger_usage"]) {
       expect(tables).toContain(table);
     }
     expect(await r.table("ledger_usage")).toEqual([
-      { only: 1, agents: 0, enabled_agents: 0, messages: 0, body_bytes: 0, settled_wakes: 0,
-        tombstones: 0 }]);
+      { only: 1, agents: 0, enabled_agents: 0, messages: 0, body_bytes: 0, settled_wakes: 0 }]);
   });
 });
 
@@ -570,7 +576,7 @@ describe("a refused widening's receipt", () => {
       agent_id: muse, max_wakes_per_hour: 1, batch_window_s: 0, expected_generation: 7 }));
     expect(stale.message).toBe("policy generation changed");
     const [agent] = (await r.stub.outsideAgents(r.bind(null))).agents;
-    expect([agent!.max_wakes_per_hour, agent!.revision]).toEqual([12, 1]);
+    expect([agent!.max_wakes_per_hour, agent!.revision]).toEqual([null, 1]);
     expect((await r.table("policy_receipts")).map((row) => row["kind"])).toEqual(["refusal"]);
   });
 });

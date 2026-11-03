@@ -44,7 +44,11 @@
  * endpoints; `keys.test` is a key-exchange endpoint (OpenRouter's PKCE flow); `evil.test` records everything it receives, read back from
  * `https://status.test/evil`, so a test sees whether a redirect was followed. It is test
  * code: its module state (the cancel registry, the evil log) is the fake's, never the
- * gateway's.
+ * gateway's. `doorbell.test`, and Claude's `/fire` path on `api.anthropic.com`, are a
+ * doorbell's receiver (slice W): each request is recorded, read back from
+ * `https://status.test/doorbell`, and answered by its path: `status-<n>` that status
+ * (`?retry=<v>` its `Retry-After`), `hang` never, `echo` the verification challenge it was
+ * sent, else 202.
  */
 const cancelled = new Map<string, boolean>();
 /** The `cmd:overflow-<id>` ids already refused once. */
@@ -426,9 +430,37 @@ async function forwardEcho(request: Request): Promise<Response> {
   }, { headers: { "x-upstream": "fake", "cf-ray": "fake-ray" } });
 }
 
+/** Every request a doorbell receiver took (slice W), oldest first. */
+const rung: { url: string; method: string; redirect: string; headers: Record<string, string>;
+              body: string }[] = [];
+
+async function doorbellReceiver(request: Request, url: URL): Promise<Response> {
+  const body = await request.text();
+  rung.push({ url: request.url, method: request.method, redirect: request.redirect,
+              headers: Object.fromEntries(request.headers), body });
+  if (url.pathname.includes("hang")) {
+    return new Promise<Response>(() => undefined);
+  }
+  if (url.pathname.includes("echo")) {
+    return Response.json({ challenge: (JSON.parse(body) as { challenge?: string }).challenge });
+  }
+  const status = /status[-_](\d{3})/.exec(url.pathname);
+  const retry = url.searchParams.get("retry");
+  return new Response("a receiver's own words", {
+    status: status === null ? 202 : Number(status[1]),
+    headers: retry === null ? {} : { "Retry-After": retry } });
+}
+
 export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (url.hostname === "doorbell.test" || (url.hostname === "api.anthropic.com"
+                                             && url.pathname.startsWith("/v1/claude_code/"))) {
+      return doorbellReceiver(request, url);
+    }
+    if (url.hostname === "status.test" && url.pathname === "/doorbell") {
+      return Response.json(rung);
+    }
     if (url.hostname === "evil.test") {
       evil.push({ url: request.url, headers: Object.fromEntries(request.headers) });
       return new Response("stolen", { status: 200 });

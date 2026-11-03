@@ -63,7 +63,8 @@ const SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY"]) });
 /** The doors' two services: the gateway's connect and egress entrypoints, and what each serves. */
 const GATEWAY = Object.freeze({ binding: "GATEWAY", service: "tinyassets-gateway",
                                 entrypoint: "ConnectGateway" });
-const CONNECT_METHODS: readonly string[] = Object.freeze(["exchange", "seal", "verify"]);
+const CONNECT_METHODS: readonly string[] = Object.freeze(["exchange", "seal", "sealDoorbell",
+                                                          "verify", "verifyDoorbell"]);
 const EGRESS = Object.freeze({ binding: "EGRESS", service: "tinyassets-gateway",
                                entrypoint: "EgressGateway" });
 const EGRESS_METHODS: readonly string[] = Object.freeze(["forward"]);
@@ -211,7 +212,7 @@ describe("doors Worker config", () => {
      "and cannot deploy", () => {
     expect(doorsConfigProblems(config, platform, gatewaySource)).toEqual([]);
     expect(exportedMethods(gatewaySource).get("ConnectGateway"))
-      .toEqual(["exchange", "seal", "verify"]);
+      .toEqual(["exchange", "seal", "sealDoorbell", "verify", "verifyDoorbell"]);
     expect(exportedMethods(gatewaySource).get("EgressGateway")).toEqual(["forward"]);
   });
 

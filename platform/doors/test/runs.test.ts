@@ -22,8 +22,8 @@ import { profileNames } from "../src/tools";
 import { EVENT_FRAMES_MAX } from "../../owner/src/run-events";
 import type { OwnerDO } from "./entry";
 import {
-  appPost, call, connect, OPEN, reached, registerClient, serveFirstPartyDocument, setControl,
-  signInApp, type Tokens, url,
+  appPost, call, connect, OPEN, reached, registerClient, rpcBody, serveFirstPartyDocument,
+  setControl, signInApp, sqlIn, type Tokens, url,
 } from "./support";
 
 /** The run doors' tools: what a run's own MCP door never serves. */
@@ -229,6 +229,30 @@ describe("a run's own doors on the egress host", () => {
       method: "POST", body: "{}", headers: { Origin: url(""), [SANDBOX_HEADER]: tokenOf(start!),
                                              [GENERATION_HEADER]: "1" } }));
     expect(browser.status).toBe(404);
+  }, 60_000);
+
+  it("serve a run no MCP Events: it lists none and may subscribe or end none", async () => {
+    const { who, app } = await owned();
+    await appPost("agent/submit", app.access_token, null, { message: "go", client_send_id: "v-1" });
+    const [start] = await starts(who);
+    const post = async (method: string, params: unknown) => rpcBody(await call(new Request(
+      start!.urls.mcp, { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 1, method,
+                                                                params }),
+                         headers: { [SANDBOX_HEADER]: tokenOf(start!), [GENERATION_HEADER]: "1",
+                                    "Content-Type": "application/json",
+                                    Accept: "application/json, text/event-stream",
+                                    "MCP-Protocol-Version": "2025-11-25" } })));
+    expect((await post("events/list", {}))["result"]).toEqual({ events: [] });
+    const args = { command_center_id: "alpha", board: true };
+    const delivery = { mode: "webhook", url: "https://callback.test/echo/run",
+                       secret: "whsec_" + btoa("k".repeat(32)) };
+    for (const [method, params] of [
+      ["events/subscribe", { name: "tinyassets.changed", arguments: args, delivery }],
+      ["events/unsubscribe", { name: "tinyassets.changed", arguments: args, delivery }],
+    ] as const) {
+      expect((await post(method, params))["error"]).toMatchObject({ code: -32024 });
+    }
+    expect(await sqlIn(who, "SELECT 1 FROM wake_callbacks")).toEqual([]);
   }, 60_000);
 
   it("take a run's own secret as its header, where its CLI sends one", async () => {

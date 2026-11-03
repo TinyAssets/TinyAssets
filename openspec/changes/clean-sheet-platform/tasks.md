@@ -1346,35 +1346,56 @@ R, S, M and W.
 
 ## 7. Wakes and outside agents
 
-- [ ] Alarms, doorbells for ChatGPT and Claude, the board with the W8 decisions.
-- [ ] The doorbell: a `WakeSender` the object constructs and its alarm calls in process
-  (ChatGPT MCP Events, then Claude `/fire`), its construction tested through the object,
-  since the lanes read it through a getter whose capture no test can tell until then; it
-  consumes the schedule's open wakes and
-  revokes, and a send finishes inside the 60 s claim lease or its outcome is `unknown`.
-  The lane bounds each send and revoke itself at `WAKE_SEND_MS`, `LANE_HUNG_S -
-  LANE_PASS_S` (15 s), whatever the sender does (a late send is marked and left to its
-  lease, never sent again; a late revoke is due again after it), and the
-  pass takes no new row past `LANE_PASS_S`, so a pass ends inside its lane's hung
-  timeout whatever the batch.
-  The subscribe door tags each callback with the generation `mailboxSubscriber`
-  returns, and a revoke erases only callbacks at or before its generation. The door
-  stores the callback in the same object transaction as `mailboxSubscriber`, or the
-  store re-checks, as it writes, that the generation is past the agent's
-  `revoked_through` and that the agent is still enabled, so a revoke scheduled between
-  the two can never be outlived by the callback. The doorbell rechecks the client's
-  grant (`Grants.live`) immediately before it sends, and keeps each `wakes` lane pass
-  short: Lifecycle's drive loop awaits a pass inline, so a slow one delays every other
-  job on the object, PiHarness's wake job among them; a send already in flight when a
-  revoke lands is not stopped, and counts as `unknown`, never replayed, only if it
-  fails.
-  Deferred from 3.4, as the Python's tick had them: no wake is claimed while the outside
-  kill switch (`TINYASSETS_OUTSIDE_DENY`) is off or the owner is not admitted
-  (`require_work`: the claim reads the admission row in its own unit, built in F1). The kill switch reaches the alarm through the owner Worker's own `CONTROL` binding
-  (slice M), the namespace of the `c:control` record alone: the `wakes` lane reads it
-  through `ControlGate` (`control-gate.ts`, the outside gate) once a pass before it claims,
-  and claims nothing on closed or a failure. No doorbell Worker is needed for it.
-  Admission is the object's own row (2).
+- [x] Alarms, doorbells for ChatGPT and Claude, the board with the W8 decisions. Built in
+  slice W and its review: wake kinds are data (`owner/wake-kinds.json`, `wake-kinds.ts`),
+  each record citing its vendor's page and limits: ChatGPT MCP Events (the client
+  subscribes; Standard Webhooks), Claude `/fire` and Grok webhook routines (the owner
+  pastes the vendor's URL and token in its session, the owner app's `agent/doorbell`;
+  bearer), Muse with no push (it catches up on its own schedule; nothing polls). Mail
+  rings its recipient, never its sender (slice ID's mail wakes settle against the
+  `ledger_wakes` CHECK of 1 to 7 change bits). A board or room write rings only for the
+  owner's own act (an outside client's or a run's rings no one, so no two agents wake each
+  other without end), only agents subscribed to that board or room whose grant reads it,
+  and only for a change anyone may see. Each wake folds into the agent's one open wake,
+  which says what changed and the owner-wide cursor it is after, so `inbox_digest` or
+  `board_digest` after it returns just the change. The wake cap is the owner's own
+  setting, off by default (`agent/wake-limits`), spaced by one `wake_tat` column with no
+  invented high; `ledger_rings` is gone.
+- [x] The doorbell: a `WakeSender` the object constructs and its `wakes` lane calls in
+  process. Its secrets are sealed by the gateway (`gateway/src/doorbell.ts`: `sealDoorbell`
+  and `verifyDoorbell` on the doors' entrypoint, `ringDoorbell` on the owner's), bound to
+  the owner and the subscription; the object holds the blob alone and the gateway opens it
+  and makes the send, with no redirect and no body read, dual-signing with the replaced
+  secret for the record's rotation window. An agent holds several subscriptions (a dot and
+  a Work chat), each by the id derived from its principal, URL, event and arguments, at
+  most `SUBSCRIPTIONS_PER_AGENT` (16) an enabled agent, counted in the schema and priced in
+  the owner-bound guard, so no client fills another's room. The send is marked before its
+  first byte and rechecked (subscriptions, grant, kill switch) just before it; a late or
+  failed send settles `unknown` and is never replayed. Each subscription's outcome is its
+  own: a retry rings only the ones a `429` left owed, and one that took the wake wakes the
+  mail. A `429` waits its Retry-After as sent, an unreadable, zero or past one an
+  exponential backoff; a `410` or `413` keeps the subscription; a record's dead-token
+  status (Claude's `401`) notices the owner once, until a new token is pasted. The
+  records and callback checks are `wake-records.ts`, which imports nothing but the errors
+  and the records' file, and the gateway's isolation guard walks its whole import closure. A
+  grant change erases a client's subscriptions only, never an owner-set token. The kill
+  switch is the owner Worker's `CONTROL` read through `ControlGate`; admission is the
+  object's own row (2). Callbacks to loopback, private, metadata, single-label or our own
+  hosts are refused, the gateway's fetch is `global_fetch_strictly_public`, and vendor
+  hosts are pinned as data where a vendor has one.
+- [x] W2, MCP Events at the MCP door (`doors/src/events.ts`): `events` in `initialize` and
+  `server/discover`, `events/list` (`tinyassets.changed`), `events/subscribe` with the
+  gateway's signed challenge (a bounded read, a constant-time compare; a failure is
+  OpenAI's `-32015` with a `data.reason`, not the sketch's provisional `-32027`), `ttlMs`
+  granted as `refreshBefore`, `events/unsubscribe` by name, arguments and URL, and the
+  event's own time as `timestamp`. A run's MCP door serves none of it.
+- [ ] Owed live, none of it reachable from here: each vendor end to end (a ChatGPT dot and
+  Work chat subscribing, a Claude `/fire`, a Grok webhook routine, Muse's catch-up); the
+  SSRF probe (a callback whose DNS answers 127.0.0.1, 10.x or 169.254.169.254 is refused
+  by `global_fetch_strictly_public`); Grok's webhook host, to pin as data once seen; and
+  whether Claude's over-limit fire answers `429`.
+- [ ] Not built, by choice: a verification cache (each subscribe verifies again) and
+  retries of a `5xx` (the wake settles failed; the next change rings).
 
 ## 8. Founder live test
 
