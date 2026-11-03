@@ -279,7 +279,7 @@ describe("the engine records", () => {
      () => {
     const catalog = catalogOf(bundledRecords());
     expect(RUN_BASICS).toEqual(["PATH", "LANG", "LC_ALL", "TERM", "TZ", "TMPDIR", "USER",
-                                "SHELL"]);
+                                "SHELL", "NODE_EXTRA_CA_CERTS"]);
     for (const record of engines) {
       for (const credential of record.cli!.credential) {
         const run = runEnv(catalog, record.id, credential);
@@ -459,7 +459,13 @@ describe("an engine record that does not fit", () => {
       (at(s, "engine")["argv"] as string[]).push("--bare"); })],
     ["a forbidden argument in the unattended argv", cli((s) => {
       (s["unattended_argv"] as string[]).push("--bare"); })],
-    ["an unknown placeholder", cli((s) => { (at(s, "engine")["argv"] as string[]).push("{system}"); })],
+    ["an unknown placeholder", cli((s) => { (at(s, "engine")["argv"] as string[]).push("{nowhere}"); })],
+    ["a secret path under {system}", cli((s) => {
+      (s["secret_paths"] as string[]).push("{system}/creds.json"); })],
+    ["a session path under {system}", cli((s) => {
+      (s["session_paths"] as string[]).push("{system}/sessions/"); })],
+    ["a {system} file with a .. segment", cli((s) => {
+      s["files"] = { "{system}/../x.json": "{}" }; })],
     ["a placeholder in an env value it is not", cli((s) => {
       at(s, "env")["X"] = "{config}"; })],
     ["a session id outside the resume argv", cli((s) => {

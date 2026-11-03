@@ -162,14 +162,14 @@
     "instructions": {
       "file": "AGENTS.md",
       "shadowed_by": [],
-      "setting": "{home}/.gemini/system-settings.json"
+      "setting": "{system}/gemini-settings.json"
     },
     "skills_paths": [
       ".agents/skills"
     ],
     "mcp": {
-      "file": "{home}/.gemini/system-settings.json",
-      "template": "{\"mcpServers\": {\"tinyassets\": {\"httpUrl\": \"{mcp_url}\"}}, \"mcp\": {\"allowed\": [\"tinyassets\"]}, \"context\": {\"fileName\": [\"AGENTS.md\"]}, \"telemetry\": {\"enabled\": false}, \"general\": {\"disableAutoUpdate\": true}}",
+      "file": "{system}/gemini-settings.json",
+      "template": "{\"mcpServers\": {\"tinyassets\": {\"httpUrl\": \"{mcp_url}\"}}, \"mcp\": {\"allowed\": [\"tinyassets\"]}, \"context\": {\"fileName\": [\"AGENTS.md\"]}, \"telemetry\": {\"enabled\": false}, \"general\": {\"disableAutoUpdate\": true}, \"security\": {\"folderTrust\": {\"enabled\": false}}}",
       "argv": [],
       "trust": {
         "argv": [
@@ -181,11 +181,11 @@
     },
     "tools": {
       "allow": {
-        "file": "{home}/.gemini/system-settings.json",
+        "file": "{system}/gemini-settings.json",
         "key": "tools.core"
       },
       "deny": {
-        "file": "{home}/.gemini/system-settings.json",
+        "file": "{system}/gemini-settings.json",
         "key": "tools.exclude"
       }
     },
@@ -198,10 +198,10 @@
     },
     "env": {
       "NO_BROWSER": "true",
-      "GEMINI_CLI_SYSTEM_SETTINGS_PATH": "{home}/.gemini/system-settings.json"
+      "GEMINI_CLI_SYSTEM_SETTINGS_PATH": "{system}/gemini-settings.json"
     },
     "no_update": {
-      "file": "{home}/.gemini/system-settings.json"
+      "file": "{system}/gemini-settings.json"
     },
     "secret_paths": [
       "{home}/.gemini/oauth_creds.json",

@@ -1,0 +1,48 @@
+// The sandbox Worker (slice S; ADR-034 decision 4.2): what stands behind the owner object's
+// SANDBOX binding, and the only holder of the E2B API key. Not deployable: no routes, no
+// workers.dev or preview URL, and its control namespace is a placeholder. It binds
+// exactly what the owner's config guard allows (owner/guards/config.test.ts, SERVICES):
+// - SANDBOXES: the namespace of its own class SandboxControl, one per owner, which
+//   serializes one owner's E2B calls and renews each sandbox before its runtime ceiling;
+//   SLOTS: its own class SandboxSlots, one for the platform, the line for one more
+//   running sandbox. No script_name, so no other Worker's class; both SQLite.
+// - CONTROL: the platform's control record's namespace (the doors' CONTROL, the same id at
+//   deploy), read for `c:control` alone, whose sandbox numbers the founder edits with no
+//   deploy.
+// - RING: the producer of the ring queue, the line's doorbell: `{owner}` messages, which the
+//   doors Worker consumes and turns into that owner's `sandboxRung`, and nothing else.
+// - E2B_API_KEY: the one secret, declared by name; `secrets.required` makes a deploy without
+//   it fail. Whoever holds it can read a sandbox's egress token back from E2B, so it has
+//   the egress token's custody.
+// - E2B_TEMPLATE: the versioned template, `name:tag`, as `template/build.py` builds and
+//   prints it; the template guard holds its tag to the sources it is built from.
+// `global_fetch_strictly_public` keeps every fetch off same-zone routing: it reaches E2B's
+// public hosts and nothing else (guards/config.test.ts reads every fetch in the source).
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "tinyassets-sandbox",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-23",
+  "compatibility_flags": ["nodejs_compat", "disable_ctx_exports", "global_fetch_strictly_public"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": { "E2B_TEMPLATE": "tinyassets-sandbox:sfbd5920361a47279" },
+  "secrets": { "required": ["E2B_API_KEY"] },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SANDBOXES", "class_name": "SandboxControl" },
+      { "name": "SLOTS", "class_name": "SandboxSlots" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["SandboxControl", "SandboxSlots"] }
+  ],
+  "kv_namespaces": [
+    { "binding": "CONTROL", "id": "not-provisioned-control" }
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "RING", "queue": "tinyassets-sandbox-ring" }
+    ]
+  }
+}

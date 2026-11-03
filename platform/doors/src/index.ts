@@ -6,10 +6,13 @@
  */
 import type { DoorsEnv } from "./config";
 import { serve } from "./doors";
+import { ringQueue } from "./ring";
 import { bundledSources } from "./sources";
 import { UNWIRED } from "./upstream";
 
 export default Object.freeze({
   fetch: (request: Request, env: DoorsEnv, ctx: ExecutionContext): Promise<Response> =>
     serve(request, env, ctx, UNWIRED, bundledSources()),
+  // The sandbox line's doorbell (`ring.ts`): the ring queue, its one consumer.
+  queue: (batch: MessageBatch<unknown>, env: DoorsEnv): Promise<void> => ringQueue(batch, env),
 });
