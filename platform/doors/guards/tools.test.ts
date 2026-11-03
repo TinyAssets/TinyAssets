@@ -311,7 +311,7 @@ describe("tool table guard", () => {
     expect(profileNames("custom")).toEqual(all);
     expect(profileNames("directory")).not.toContain("code");
     expect([...CLIENT_PROFILES]).toEqual(["directory", "custom"]);
-    expect(DEFAULT_PROFILE).toBe("directory");
+    expect(DEFAULT_PROFILE).toBe("custom");
     // The directory profile cites the directories' rules it is held to.
     expect(profiles.directory.sources.join(" ")).toMatch(/openai\.com.*claude\.com/);
   });

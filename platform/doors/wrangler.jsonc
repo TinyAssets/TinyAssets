@@ -10,7 +10,9 @@
 //   egress door streams a sandbox request the owner's object admitted through it. Only
 //   src/egress.ts reaches it.
 // - OAUTH_KV: the OAuth provider's own store; DIRECTORY: the owner directory (routing
-//   hints and the control record). Two namespaces, so their schemas never collide.
+//   hints); CONTROL: the platform's control record alone, which the owner Worker binds too
+//   (code mode's calls read the gates again). Three namespaces, so their schemas never
+//   collide, and the owner's object reaches no directory entry.
 // - DCR_ENABLED: the deprecated dynamic-registration fallback, off. OWNER_ISSUER:
 //   AuthKit's issuer, whose subjects stay owner ids; unset until the AuthKit slice, so
 //   every sign-in fails loudly. FOREIGN_ISSUERS: the other issuers whose owners are
@@ -46,6 +48,7 @@
   ],
   "kv_namespaces": [
     { "binding": "OAUTH_KV", "id": "not-provisioned-oauth" },
-    { "binding": "DIRECTORY", "id": "not-provisioned-directory" }
+    { "binding": "DIRECTORY", "id": "not-provisioned-directory" },
+    { "binding": "CONTROL", "id": "not-provisioned-control" }
   ]
 }

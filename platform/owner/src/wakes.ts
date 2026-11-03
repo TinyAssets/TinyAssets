@@ -18,9 +18,11 @@
  * constructs and the lane calls in process, so no wake can be claimed or settled over
  * RPC. It sends every vendor's wake from that vendor's record (`wake-kinds.ts`): ChatGPT's
  * MCP Events, Claude's `/fire`, Grok's webhook routines; Muse has no push, so nothing is
- * sent to it. The outside kill switch reaches it through `DOORBELL`, the
- * `tinyassets-doorbell` Worker, which reads the directory's `c:control` record: the lane
- * asks `open()` once a pass, before it claims, and claims nothing on closed or a failure.
+ * sent to it. The outside kill switch is the platform's control record (`c:control`, in
+ * the owner Worker's control namespace, which holds it alone, `control-gate.ts`), read
+ * with the doors' own rule
+ * (`outsideOpen`): the lane asks `open()` once a pass, before it claims, and claims nothing
+ * on closed, a failure or no answer.
  */
 import { Invalid } from "./errors";
 import type { Write } from "./gate";
@@ -158,12 +160,6 @@ export async function runWakes(ledger: Ledger, sender: WakeSender | null, clock:
   return accepted;
 }
 
-/** The kill switch's Worker, as the owner Worker binds it (`DOORBELL`). */
-export interface DoorbellService {
-  /** Whether the directory's control record lets outside work for `owner` go now. */
-  open(owner: string): Promise<boolean>;
-}
-
 /** How a doorbell request leaves: production's global `fetch`, a recording fake in tests. */
 export type Transport = (request: Request) => Promise<Response>;
 
@@ -174,7 +170,7 @@ export interface DoorbellDeps {
   readonly live: (client: string) => boolean;
   readonly write: Write;
   readonly clock: () => number;
-  /** The kill switch: `DOORBELL.open(owner)`; closed when the binding is absent. */
+  /** The kill switch: whether the control record lets this owner's outside work go now. */
   readonly gate: () => Promise<boolean>;
   readonly transport: Transport;
 }

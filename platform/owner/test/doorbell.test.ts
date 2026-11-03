@@ -1,12 +1,11 @@
 /**
  * The doorbell (slice W, tasks 7): each wake kind's request from its record, the kill
- * switch through `DOORBELL`, admission, a revoke never outlived, a slow send never
- * replayed, and a wake that leads its agent's digest to just the change.
+ * switch in the control record (`CONTROL`), admission, a revoke never outlived, a slow send
+ * never replayed, and a wake that leads its agent's digest to just the change.
  *
  * The object is production's but for its transport (`RungOwnerDO`): each request is
- * recorded as it leaves, never sent. `DOORBELL` is the real doorbell Worker, reading the
- * directory the tests write, so each test opens the kill switch for its own owner only (the
- * maintenance gate's canary list), and every other test file's owners stay closed.
+ * recorded as it leaves, never sent. Each test opens the kill switch for its own owner
+ * only (the maintenance gate's canary list).
  */
 import { createHmac } from "node:crypto";
 
@@ -15,6 +14,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { PLATFORM_CALLER } from "../src/admission";
+import { outsideAdmits } from "../src/control-gate";
 import { WriteGate } from "../src/gate";
 import { clock, type Origin, WAKE_LEASE_S } from "../src/ledger";
 import type { Binding, OwnerDO } from "../src/owner-do";
@@ -41,7 +41,7 @@ async function rung(): Promise<Rung> {
 
 /** The directory's control record: the kill switch on for `owners` only, or off. */
 async function control(owners: readonly string[], outside: "on" | "off" = "on"): Promise<void> {
-  await env.DIRECTORY.put("c:control", JSON.stringify({
+  await env.CONTROL.put("c:control", JSON.stringify({
     outside, ordinary: "canary", canary: owners, inbound: false,
   }));
 }
@@ -202,10 +202,10 @@ describe("the kill switch and admission", () => {
       expect(await r.rang()).toEqual([]);
       expect(await r.wakesAt()).toBeGreaterThan(clock() + 30);  // held, never a busy loop
     }
-    await env.DIRECTORY.delete("c:control");  // missing: closed too
-    expect(await env.DOORBELL.open(r.owner)).toBe(false);
+    await env.CONTROL.delete("c:control");  // missing: closed too
+    expect(await outsideAdmits(env.CONTROL, r.owner)).toBe(false);
     await control([r.owner]);
-    expect(await env.DOORBELL.open(r.owner)).toBe(true);
+    expect(await outsideAdmits(env.CONTROL, r.owner)).toBe(true);
     await r.sql("DELETE FROM cf_agents_jobs");  // the hold lifts at its time; here, now
     await evictDurableObject(r.stub);
     await r.stub.outsideAgents(r.bind(null));  // a wake re-derives the schedule

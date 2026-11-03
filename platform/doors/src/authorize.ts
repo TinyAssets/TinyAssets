@@ -238,7 +238,7 @@ export async function callback(request: Request, env: DoorsEnv, upstream: Upstre
                                                "sign in again"), headers);
   }
   const owner = await ownerOf(env, signedIn.issuer, signedIn.subject);
-  const control = await readControl(env);
+  const control = await readControl(env.CONTROL);
   const scope = granted(original.scope);
   if (original.resource === MCP_RESOURCE && !firstParty(original)) {
     if (!outsideOpen(control, owner)) {

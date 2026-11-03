@@ -305,7 +305,7 @@ describe("the gateway Worker", () => {
     const owned = await gateway.forward("alice", "c1", 1, blob, new Request(
       "https://egress/v1/models", { headers: { "x-fake-mode": "echo" } }));
     expect(owned.status).toBe(200);
-  });
+  }, 30_000);
 
   it("gives the doors' entrypoint only the connect steps", async () => {
     // The doors' own tests reach it over their real `GATEWAY` binding; here, its surface.

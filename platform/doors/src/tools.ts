@@ -21,14 +21,17 @@
  * Slice M's tools, so a main agent spends few calls: `inbox_digest` and `board_digest`
  * (what changed for the caller since its cursor, in one read) and `code` (code mode: one
  * script calls the caller's other tools, each held to its grant, its VM in the hooks
- * Worker). `code` is a generic executor, so it is never in the directory profile.
+ * Worker). `code` is a generic executor, so it is never in the directory profile, by
+ * OpenAI's plugin guidelines (no generic executor enabling operations not exposed for review).
  *
  * **Profiles** (`profiles.json`, data): which of the table's tools a caller is served.
- * `directory`, what the public connector directories allow; `custom`, the owner's own
- * choice (its policy's `tools.custom`, or every tool); `run`, a run's own MCP door on the
- * egress host, the table but the run tools (work between agents is mail, ADR-034
- * decision 11). Each outside client's grant names `directory` or `custom`; the object
- * answers a caller's profile (`toolProfile`) and builds `code`'s tools from it.
+ * `custom`, the owner's own choice (its policy's `tools.custom`, or every tool), which every
+ * grant on the MCP door and every API key names: each is a custom connector; `directory`,
+ * what a public connector directory allows, for the listing's own MCP resource once the
+ * listing is submitted (the founder's call: a new door); `run`, a run's own MCP door on
+ * the egress host, the table but the run tools (work between agents is mail, ADR-034
+ * decision 11). The object answers a caller's profile (`toolProfile`) and builds `code`'s
+ * tools from it.
  * `guards/tools.test.ts` holds every row to these rules and to a real outside-callable
  * door, and names the outside-callable doors without a tool yet, each with the slice that
  * owes it.
@@ -251,8 +254,8 @@ export function toolTable(): readonly Tool[] {
 export type ProfileName = "directory" | "custom" | "run";
 /** The profiles an outside client's grant may name; `run` is a run's own door's. */
 export const CLIENT_PROFILES: readonly ProfileName[] = Object.freeze(["directory", "custom"]);
-/** What a grant names until the owner names another. */
-export const DEFAULT_PROFILE: ProfileName = "directory";
+/** What a grant names until the owner names another: every client is a custom connector. */
+export const DEFAULT_PROFILE: ProfileName = "custom";
 
 /** A profile's tool names, as its data lists them (`custom`: the default of the owner's choice). */
 export function profileNames(name: ProfileName): readonly string[] {

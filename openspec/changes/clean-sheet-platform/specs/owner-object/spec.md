@@ -62,7 +62,7 @@ A service binding the owner Worker holds SHALL be only to a Worker the config gu
 
 #### Scenario: The bindings today
 - **WHEN** the owner Worker's config is checked
-- **THEN** it holds `FILES`, to the files Worker holding exactly one `r2_buckets` entry, `GATEWAY`, to the model gateway holding no binding and declaring only its keyring secret by name, and `HOOKS`, to the hooks Worker binding only its own `CodemodeSandbox` class, and no Durable Object namespace; `SANDBOX`, the sandbox Worker the runs call (`sandbox.ts`), is unbound until slice S adds that Worker and its allow-list entry, so every run is refused `sandbox_absent` meanwhile
+- **THEN** it holds `FILES`, to the files Worker holding exactly one `r2_buckets` entry, `GATEWAY`, to the model gateway holding no binding and declaring only its keyring secret by name, and `HOOKS`, to the hooks Worker binding only its own `CodemodeSandbox` class; one store, `CONTROL`, the doors' namespace of the platform's control record alone, which only `control-gate.ts` reads; and no Durable Object namespace; `SANDBOX`, the sandbox Worker the runs call (`sandbox.ts`), is unbound until slice S adds that Worker and its allow-list entry, so every run is refused `sandbox_absent` meanwhile
 
 #### Scenario: The bound Worker gains a way on
 - **WHEN** the files Worker's config gains a Durable Object namespace, a service, a queue producer, a workflow, a dispatch namespace, a Worker loader, an unsafe binding, a tail consumer, a KV namespace, a D1 database or a second bucket, at top level or in an environment
@@ -171,15 +171,15 @@ Lifecycle SHALL own the object's single physical alarm, which the lanes' jobs an
 - **THEN** it fails, since the object defines no `fetch`
 
 ### Requirement: Only the wakes lane claims and settles wakes
-Wakes, and revokes of an agent's callbacks, SHALL be rows on the object's one schedule, the `wakes` lane. No RPC method SHALL claim, mark or settle one; the lane's pass SHALL, in process, with the doorbell the object constructs (`Doorbell`, `wakes.ts`). Each pass SHALL first recover lapsed claims by their own index, then, when rows are due, ask the kill switch once (`DOORBELL.open`, bounded at `WAKE_SEND_MS`) and claim nothing on closed, a failure or no answer, holding its job `WAKE_RETRY_S` without touching a row; then claim due open rows. The lane SHALL have a job for open rows only while the owner is admitted.
+Wakes, and revokes of an agent's callbacks, SHALL be rows on the object's one schedule, the `wakes` lane. No RPC method SHALL claim, mark or settle one; the lane's pass SHALL, in process, with the doorbell the object constructs (`Doorbell`, `wakes.ts`). Each pass SHALL first recover lapsed claims by their own index, then, when rows are due, ask the kill switch once (the control record in `CONTROL`, by the doors' `outsideOpen`, bounded at `WAKE_SEND_MS`) and claim nothing on closed, a failure or no answer, holding its job `WAKE_RETRY_S` without touching a row; then claim due open rows. The lane SHALL have a job for open rows only while the owner is admitted.
 
 #### Scenario: A lapsed claim behind due wakes
 - **WHEN** a claim's lease has lapsed behind more due open wakes than one pass takes, and the kill switch is closed
 - **THEN** one pass recovers it, as `unknown` if it was marked, claims none of the rest, and holds the lane's job a retry out
 
 #### Scenario: The kill switch is closed
-- **WHEN** the directory's `c:control` record is missing, malformed, unreadable, `outside` off, or its maintenance gate leaves the owner out
-- **THEN** the `tinyassets-doorbell` Worker answers closed, no wake is claimed, and the lane's job waits `WAKE_RETRY_S`, never a busy loop
+- **WHEN** the `c:control` record is missing, malformed, unreadable, `outside` off, or its maintenance gate leaves the owner out
+- **THEN** the switch reads closed, no wake is claimed, and the lane's job waits `WAKE_RETRY_S`, never a busy loop
 
 ### Requirement: Each vendor's wake is a record, sent by one doorbell
 Each vendor's wake mechanism SHALL be one record of `owner/wake-kinds.json`, checked whole: its delivery method, whether it pushes, who hands TinyAssets the callback (the agent's client over MCP Events, or the owner in session), the callback's URL and secret rules, the auth scheme (`bearer` or `standard_webhooks`), header and body templates, the statuses that say the callback is gone, the vendor's own limits and its citations. A record with no push (Muse) SHALL never ring: its agent catches up through `inbox_digest` and `board_digest` on its own schedule, and TinyAssets polls nothing. No code SHALL name a vendor. A wake SHALL carry identifiers, the agent's mailbox cursor, what kind of change it is (`mail`, `rooms`, `board`), the owner-wide change cursor it is after and the digests that answer it, never content. The request SHALL never follow a redirect, and its answer's body SHALL never be read.
@@ -266,22 +266,26 @@ A grant's revision SHALL move on every owner set and revoke, and the owner's set
 - **THEN** the generation is unchanged, and a revoked grant keeps its revoke's time as its fence
 
 ### Requirement: A grant names its tool profile
-Each outside client's grant SHALL name its tool profile (`doors/profiles.json`): `directory` until the owner names `custom` in its session; a free row SHALL name `directory`. The object SHALL answer a caller's tools (`toolProfile`): a run's, the `run` profile; a client's, its grant's, where `custom` is the owner's policy's `tools.custom` (distinct names of the MCP door's tools), or every tool when the policy names none; `code` only while the owner's policy turns `hooks.codemode` on. Code mode SHALL be no capability: the profile is the owner's choice of it.
+Each outside client's grant SHALL name its tool profile (`doors/profiles.json`): `custom` until the owner names `directory` in its session; a free row SHALL name `custom`. The object SHALL answer a caller's tools (`toolProfile`): a run's, the `run` profile; a client's, its grant's, where `custom` is the owner's policy's `tools.custom` (distinct names of the MCP door's tools), or every tool when the policy names none; `code` only while the owner's policy has `hooks.codemode` on, its default. Code mode SHALL be no capability: the profile and the switch are the owner's choice of it.
 
 #### Scenario: A new client
 - **WHEN** an MCP client's first verified call records its grant
-- **THEN** its grant names `directory`, and it is served no `code`
+- **THEN** its grant names `custom`, and it is served every tool, `code` among them
 
-#### Scenario: The owner names custom
-- **WHEN** the owner names a client's profile `custom`
-- **THEN** the grant's generation moves, and the client is served the owner's `tools.custom`
+#### Scenario: The owner names directory
+- **WHEN** the owner names a client's profile `directory`
+- **THEN** the grant's generation moves, and the client is served no `code`
 
 ### Requirement: A main agent's digests are held to its grant
-`inboxDigest` SHALL answer, in one read, the caller's unacknowledged mail (the mailbox read from its own acknowledged cursor) and the rows of the owner's rooms (`room:<app>:<room>`) written past an owner-wide change cursor; `boardDigest` the board's. Each row SHALL be its head (`head_chars`, 512 when omitted) with its etag, seq, writer and body length, oldest change first, and the next cursor the page's last change when it is full, else the owner's latest, never behind the one given. Every collection write SHALL take the owner-wide clock's next change (`collection_clock`, which only rises). Both SHALL need `read_graph` where a scoped grant acts, and show a private row only to its writer.
+`inboxDigest` SHALL answer, in one read, the caller's unacknowledged mail (the mailbox read from its own acknowledged cursor) and the rows of the owner's rooms (`room:<app>:<room>`) written past an owner-wide change cursor; `boardDigest` the board's. Each row SHALL be its head (`head_chars`, 512 when omitted) with its etag, seq, writer and body length, and each delete or clear of a row the caller could see SHALL be reported as that row's deletion, oldest change first, and the next cursor the page's last change when it is full, else the owner's latest, never behind the one given. Every collection write, and each delete's and clear's history entry, SHALL take the owner-wide clock's next change (`collection_clock`, which only rises), read by its own index. A row keeps the privacy it was made with, so it turns private only by a delete, which is reported. Both SHALL need `read_graph` where a scoped grant acts, and show a private row, or its deletion, only to its writer.
 
 #### Scenario: Nothing new
 - **WHEN** an agent asks for its digest past the cursor its last digest answered, and nothing was written since
 - **THEN** it gets no rows and the same cursor
+
+#### Scenario: A deleted board row
+- **WHEN** the owner deletes a board row an agent's last digest showed
+- **THEN** the agent's next digest past its cursor reports that row deleted
 
 #### Scenario: A scoped client without read_graph
 - **WHEN** a client scoped to `write_graph` asks for either digest
@@ -754,11 +758,19 @@ The `tinyassets-hooks` Worker SHALL bind the namespace of its own `CodemodeSandb
 - **THEN** the owner config guard refuses the owner's `HOOKS` binding
 
 ### Requirement: Code mode's VM runs in the hooks Worker
-Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox` through the `HOOKS` binding's `codemodeExecute`, which hands out no stub and refuses an execution with no name, an empty one or one past 512 characters, each execution named by its owner and a random id; a script's `tools.*` SHALL be the tools its caller hands it, each held by the caller to its own grant; with no hooks Worker bound it SHALL fail loudly. The MCP door's `code` tool SHALL reach it only through `codeRun`, which SHALL refuse (`code_mode_off`) unless the owner's policy turns `hooks.codemode` on (off by default), and (`tool_not_served`) unless the caller's profile holds `code`. A script's tools SHALL be the caller's profile's other tools, each call that tool's own door with the caller's binding, admitted again and held to the caller's profile and the switch as they stand at that call. A script SHALL end `timeout` past `CODEMODE_TIMEOUT_MS` of wall time, checked at each tool call as well as by pi-codemode's timer, or past the hooks Worker's interrupt budget of compute; its answer counts its calls by outcome, never lists them.
+Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox` through the `HOOKS` binding's `codemodeExecute`, which hands out no stub and refuses an execution with no name, an empty one or one past 512 characters, each execution named by its owner and a random id; a script's `tools.*` SHALL be the tools its caller hands it, each held by the caller to its own grant; with no hooks Worker bound it SHALL fail loudly. The MCP door's `code` tool SHALL reach it only through `codeRun`, which SHALL refuse (`code_mode_off`) once the owner's policy turns `hooks.codemode` off (on by default), and (`tool_not_served`) unless the caller's profile holds `code`. A script's tools SHALL be the caller's profile's other tools, each call that tool's own door with the caller's binding, admitted again and held to the caller's profile, the switch, and the control record's gates the door read (the kill switch for an outside client, the maintenance gate for a run or the owner; one read serving at most a second of calls) as they stand at that call. A script SHALL end `timeout` past `CODEMODE_TIMEOUT_MS` of wall time, checked at each tool call as well as by pi-codemode's timer, or past the hooks Worker's interrupt budget of compute; its answer counts its calls by outcome and lists the calls of tools that change something in order (`landed`, a run of one tool and outcome as one entry), and an answer past `CODE_ANSWER_MAX` (31 MiB of UTF-8 JSON, within Workers RPC's 32 MiB) SHALL be refused `answer_too_large`, its value and output dropped, its calls kept.
 
 #### Scenario: Code mode off
-- **WHEN** an outside client whose profile holds `code` calls `codeRun` while the owner's policy has code mode off
+- **WHEN** an outside client whose profile holds `code` calls `codeRun` after the owner's policy turns code mode off
 - **THEN** it is refused `code_mode_off`, and its tools list no `code`
+
+#### Scenario: Outside access switched off mid-script
+- **WHEN** the control record turns outside access off while an outside client's script runs
+- **THEN** the script's next call is refused "outside access is switched off", and what landed before it is listed
+
+#### Scenario: An answer past the RPC's ceiling
+- **WHEN** a script's value and output come to more than `CODE_ANSWER_MAX` as UTF-8 JSON
+- **THEN** it is answered `answer_too_large`, with its calls and what landed
 
 #### Scenario: A tool outside the profile
 - **WHEN** a script reads `tools.file_usage` and the caller's profile does not hold it

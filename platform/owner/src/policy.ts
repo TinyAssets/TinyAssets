@@ -30,8 +30,8 @@
  *   door, `egress.ts`), and owner-wide and per-source daily and monthly cost ceilings.
  *   The Python's per-turn limits were code constants; here they are policy.
  * - The optional `hooks` table holds one switch: whether code mode scripts may run
- *   (`codemode`, off by default; `HOOK_DEFAULTS`, tasks 5 H1), their VMs in the hooks
- *   Worker. The MCP door's `code` tool refuses while it is off (slice M).
+ *   (`codemode`, on unless the owner turns it off; `HOOK_DEFAULTS`), their VMs in the
+ *   hooks Worker. The MCP door's `code` tool refuses while it is off (slice M).
  * - The optional `tools` table is the owner's own tool profile (`custom`, slice M): the
  *   MCP door's tools a client whose grant names `custom` is served, each a tool of the
  *   table, none twice. Left out, `custom` is every tool (`doors/profiles.json`).
@@ -214,9 +214,11 @@ export function fileSettings(document: PolicyDocument): FileSettings {
 
 /**
  * Owner code mode policy (agent research §6.4): whether code mode scripts may run, their
- * VMs in the hooks Worker. Off until the owner turns it on.
+ * VMs in the hooks Worker. On until the owner turns it off: code mode adds no authority
+ * (each call is the tool's own door, admitted again), so the owner's own setting is the
+ * one that limits it.
  */
-export const HOOK_DEFAULTS = Object.freeze({ codemode: false });
+export const HOOK_DEFAULTS = Object.freeze({ codemode: true });
 
 /** The document's `hooks` table, as written. */
 export interface HookPolicy {

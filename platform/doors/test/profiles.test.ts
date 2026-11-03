@@ -1,10 +1,11 @@
 /**
  * The MCP door's tool profiles and code mode (slice M), over the real MCP client SDK and
- * the real hooks Worker: each client is served exactly its own grant's profile (the
- * directory's until the owner names `custom`, the owner's own choice), `code` only while
- * the owner's policy turns code mode on; one `code` call runs a script of several tool
- * calls; a revoked client is refused before any tool is listed; an API key is held to its
- * profile at `/api` as a client is at `/mcp`.
+ * the real hooks Worker: each client is served exactly its own grant's profile (`custom`,
+ * the owner's own choice, until the owner names `directory`), `code` while the owner's
+ * policy has code mode on, its default; one `code` call runs a script of several tool
+ * calls, and its calls stop once outside access is switched off; a revoked client is
+ * refused before any tool is listed; an API key is held to its profile at `/api` as a
+ * client is at `/mcp`.
  */
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { env } from "cloudflare:workers";
@@ -83,16 +84,17 @@ describe("the MCP door's tool profiles", () => {
     const customClient = await registerClient("Custom");
     const listedTokens = await connect(listedClient, { owner: o.who });
     const customTokens = await connect(customClient, { owner: o.who });
-    // The directory's profile until the owner names another: no code.
+    // Every grant here is a custom connector's: every tool, code mode on by default.
+    expect(await listed(listedTokens)).toEqual(profileNames("custom"));
+    expect(await listed(customTokens)).toEqual(profileNames("custom"));
+    const listedOrigin = await mcpOrigin(listedClient.clientId, listedClient.redirectUri);
+    await o.profile(listedOrigin.client, "directory");
     expect(await listed(listedTokens)).toEqual(profileNames("directory"));
-    expect(await listed(customTokens)).toEqual(profileNames("directory"));
-    const custom = await mcpOrigin(customClient.clientId, customClient.redirectUri);
-    await o.profile(custom.client, "custom");
+    expect(await listed(customTokens)).toEqual(profileNames("custom"));
     // Code mode off: every custom tool but code.
+    await o.policy(false);
     expect(await listed(customTokens))
       .toEqual(profileNames("custom").filter((name) => name !== "code"));
-    await o.policy(true);
-    expect(await listed(customTokens)).toEqual(profileNames("custom"));
     expect(await listed(listedTokens)).toEqual(profileNames("directory"));
     // The owner's own choice of custom tools.
     await o.policy(true, ["agents_list", "code"]);
@@ -108,10 +110,6 @@ describe("the MCP door's tool profiles", () => {
     const o = await signedIn();
     const registered = await registerClient();
     const tokens = await connect(registered, { owner: o.who });
-    expect(await listed(tokens)).not.toContain("code");  // its first call records its grant
-    await o.profile((await mcpOrigin(registered.clientId, registered.redirectUri)).client,
-                    "custom");
-    await o.policy(true);
     const client = await mcpClient(tokens);
     const ran = await client.callTool({ name: "code", arguments: { script: [
       "await tools.collection_write({ collection: 'board', row_id: 't', body: 'todo',",
@@ -121,7 +119,13 @@ describe("the MCP door's tool profiles", () => {
     ].join("\n") } });
     expect(ran.isError).toBeFalsy();
     expect(ran.structuredContent).toMatchObject({ ok: true, value: ["todo"],
-                                                  calls: { ok: 2, error: 0 } });
+      calls: { ok: 2, error: 0 }, landed: [{ name: "collection_write", status: "ok", count: 1 }] });
+    // Outside access switched off: the door refuses before any script runs.
+    await setControl({ ...OPEN, outside: "off" });
+    const off = await legacyPost(tokens.access_token,
+                                 { jsonrpc: "2.0", id: 1, method: "tools/list" });
+    expect(off.status).toBe(503);
+    await setControl(OPEN);
     // With code mode off again, the call is refused with its reason.
     await o.policy(false);
     const refused = await client.callTool({ name: "code", arguments: { script: "return 1;" } })
@@ -134,7 +138,7 @@ describe("the MCP door's tool profiles", () => {
     const o = await signedIn();
     const registered = await registerClient();
     const tokens = await connect(registered, { owner: o.who });
-    expect(await listed(tokens)).toEqual(profileNames("directory"));
+    expect(await listed(tokens)).toEqual(profileNames("custom"));
     await o.stub.grantRevoke(o.own, {
       client: (await mcpOrigin(registered.clientId, registered.redirectUri)).client });
     const response = await legacyPost(tokens.access_token,
@@ -153,13 +157,14 @@ describe("the API door's tool profiles", () => {
     const api = (tool: string, body: unknown) => call(new Request(url(`/api/tools/${tool}`), {
       method: "POST", body: JSON.stringify(body),
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" } }));
-    await o.policy(true);
-    expect((await api("code", { script: "return 1;" })).status).toBe(404);
-    expect((await api("agents_list", {})).status).toBe(200);
-    await o.profile(apiKeyOrigin(key_id).client, "custom");
+    // A key's grant names custom too: code is served.
     const ran = await api("code", { script: "return (await tools.agents_list({})).agents;" });
     expect([ran.status, await ran.json()]).toEqual([200, expect.objectContaining({
       ok: true, value: [] })]);
+    await o.profile(apiKeyOrigin(key_id).client, "directory");
+    expect((await api("code", { script: "return 1;" })).status).toBe(404);
+    expect((await api("agents_list", {})).status).toBe(200);
+    await o.profile(apiKeyOrigin(key_id).client, "custom");
     await o.policy(true, ["code"]);
     expect((await api("agents_list", {})).status).toBe(404);
   });

@@ -1,16 +1,19 @@
 /**
  * The owner directory (research §3): one KV namespace, `DIRECTORY`, a routing hint only.
  *
- * It maps a credential's id to its owner, plus one `c:control` record of platform gates.
- * It holds no owner content: hashes, owner ids, opaque ids and times. Every security
+ * It maps a credential's id to its owner. It holds no owner content: hashes, owner ids,
+ * opaque ids and times. The `c:control` record of platform gates lives in a namespace of its
+ * own (`CONTROL`), which the owner Worker binds too, so the owner's object reads the gates
+ * at code mode's calls (`owner/src/control-gate.ts`) and never this directory. Every security
  * decision is made again in the owner's object, which is strongly consistent and on the
  * path, so KV's lag of up to 60 s can only route a dead credential to a refusal:
  * - a key's revoke lands in the object (`grantRevoke`) before its entry is deleted;
  * - a deleted key's grant is forgotten (`grantForget`) after, and the object refuses an
  *   API key with no grant row, never records one.
  *
- * This slice writes `k:` (API keys) and reads `c:control` (its gates, and since slice R the
- * tier numbers, `tiers`, which the founder edits here with no deploy). Owed by later slices, each in
+ * This slice writes `k:` (API keys); `readControl` reads `c:control` from `CONTROL` (its
+ * gates, and since slice R the tier numbers, `tiers`, which the founder edits there with no
+ * deploy). Owed by later slices, each in
  * its task: `h:` hook tokens and `i:` shared-app installs (`/hooks/inbound`), `a:`
  * published app slugs (S6). A sandbox's tokens have no entry: each names its owner itself
  * (G4, `routing-mac.ts`, its MAC verified at the door), and the owner's object checks it.
@@ -119,12 +122,13 @@ export type ControlRead =
   | { readonly kind: "malformed" }
   | { readonly kind: "unreadable" };
 
-export async function readControl(env: Pick<DoorsEnv, "DIRECTORY">): Promise<ControlRead> {
+/** The record in its own namespace (`CONTROL`: the doors' and the owner Worker's). */
+export async function readControl(store: KVNamespace): Promise<ControlRead> {
   let value: unknown;
   try {
-    value = await env.DIRECTORY.get(CONTROL, { type: "json" });
+    value = await store.get(CONTROL, { type: "json" });
   } catch (error) {
-    console.error("the directory's control record is unreadable", error);
+    console.error("the control record is unreadable", error);
     return { kind: "unreadable" };
   }
   if (value === null) {
@@ -132,7 +136,7 @@ export async function readControl(env: Pick<DoorsEnv, "DIRECTORY">): Promise<Con
   }
   const control = parseControl(value);
   if (control === null) {
-    console.error("the directory's control record is malformed");
+    console.error("the control record is malformed");
     return { kind: "malformed" };
   }
   return { kind: "read", control };
