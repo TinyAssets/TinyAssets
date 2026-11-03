@@ -89,7 +89,10 @@ if buckets="$(listed "r2/buckets?per_page=1000")"; then
     fi
   done
 else
-  echo "R2: the token cannot list buckets; no bucket was made by a run that could not list them"
+  # The workflow makes its bucket with this same token: a token that cannot reach R2 made
+  # none, so there is no bucket to find, and step 3 reads the other lists alone.
+  echo "R2: the token cannot list buckets, so no run with it made one; R2 is not checked"
+  LATENCYPROBE_NO_R2=1
 fi
 
 # 3. Nothing named ta-latencyprobe* left.
