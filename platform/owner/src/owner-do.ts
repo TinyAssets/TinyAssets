@@ -4139,6 +4139,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
   }
 
+  /**
+   * The owner's own tier, for its app (`read`): its admission row's, which only the platform
+   * sets. The numbers are the control record's, which the doors read and show beside it.
+   */
+  tierRead(binding: Binding): Promise<{ tier: TierName }> {
+    return this.#door(() => {
+      this.#owner(binding, "read", "read its tier");
+      return { tier: ownerTier(this.#storage) };
+    });
+  }
+
   // -- THE SANDBOX: its one lease, its network and its egress (tasks 4 G4) -----------
   //
   // The sandbox holds one lease, the file sync lease (`files.ts`): its id is the claim

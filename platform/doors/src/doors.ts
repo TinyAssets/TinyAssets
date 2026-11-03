@@ -15,6 +15,7 @@
  * - `/hooks/*`: the inbound door is owed (tasks 2), so `404`, and its request is never
  *   read; the inbound door strips the `Cookie` header as `/mcp` and `/api` do.
  * - `/app/api/*`: the owner surface (`app.ts`).
+ * - `/app` and its named pages and files: the owner app itself (`pages.ts`).
  * - `/authorize`, `/oauth/upstream/callback`: the sign-in (`authorize.ts`).
  * - `/oauth/connect/callback/<source>[/<state>]`: a model source's OAuth redirect
  *   (`connect.ts`).
@@ -40,6 +41,7 @@ import {
 import { outsideRead } from "./control";
 import { serveMcp } from "./mcp";
 import { authorizationServer, mcpResource } from "./oauth";
+import { appPath, servePage } from "./pages";
 import { OWNER_SURFACE, withoutCookie } from "./session";
 import type { Sources } from "./sources";
 import type { Upstream } from "./upstream";
@@ -93,6 +95,9 @@ export async function serve(request: Request, env: DoorsEnv, ctx: ExecutionConte
   }
   if (path.startsWith(OWNER_SURFACE)) {
     return serveApp(request, env, sources);
+  }
+  if (appPath(path)) {
+    return servePage(request, env);
   }
   if (path === CONNECT_CALLBACK_PATH || path.startsWith(`${CONNECT_CALLBACK_PATH}/`)) {
     return connectCallback(request, sources);
