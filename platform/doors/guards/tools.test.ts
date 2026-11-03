@@ -133,7 +133,7 @@ export function outsideDoors(source: string): Map<string, DoorShape> {
           && ts.isPrivateIdentifier(node.expression.name)) {
         const helper = node.expression.name.text;
         helpers.add(helper);
-        if (["#scope", "#collector", "#filer", "#runDoor"].includes(helper)) {
+        if (["#scope", "#collector", "#filer", "#reader", "#runDoor"].includes(helper)) {
           // The capability is the call's last string; a door class comes before it.
           const literal = node.arguments.filter(ts.isStringLiteralLike).at(-1);
           capability = literal?.text ?? capability;
@@ -142,7 +142,7 @@ export function outsideDoors(source: string): Map<string, DoorShape> {
       ts.forEachChild(node, visit);
     };
     visit(member.body);
-    const outside = ["#account", "#collector", "#filer"].some((h) => helpers.has(h))
+    const outside = ["#account", "#collector", "#filer", "#reader"].some((h) => helpers.has(h))
       && !helpers.has("#owner") && !helpers.has("#widening");
     if (!outside) {
       continue;

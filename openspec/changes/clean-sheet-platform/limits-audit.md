@@ -17,7 +17,7 @@ four classes:
   and vendors' limits bound those), each with the attack it bounds.
 
 Not listed, since none refuses or truncates what a user does:
-- internal timings and backoffs: leases, retries, garbage-collection grace, lane passes, wake retries, a placement upload's 10-minute expiry, how long one read of the control record serves a script's calls (`CONTROL_FRESH_MS`), an egress reservation's beat and its lost detection three beats on (`EGRESS_BEAT_S`, `LOST_AFTER_S`), the erasure's day under its mark before its R2 step and wipe (`PUT_GRACE_MS`), its job waking it, and the deadlines on the gateway's own calls to a provider (the setup check, a token endpoint);
+- internal timings and backoffs: leases, retries, garbage-collection grace, lane passes, wake retries, a placement upload's 10-minute expiry, how long one read of the control record serves a script's calls (`CONTROL_FRESH_MS`), an egress reservation's beat and its lost detection three beats on (`EGRESS_BEAT_S`, `LOST_AFTER_S`), the erasure's day under its mark before its R2 step and wipe (`PUT_GRACE_MS`), its job waking it, the deadlines on the gateway's own calls to a provider (the setup check, a token endpoint), and the sandbox's own (slice S): a renewal's window (`sandbox_renewal_window_s`, the control record's) and its measured edge, the sandbox look's and the line's back-offs, a runner command's deadline (a lease's TTL), and the idle reap a lease's TTL on;
 - pages a read returns, which the caller pages past: a pull, a mailbox or history read, a file list, a receipts list, a chunk read, a run door's wait;
 - the SQLite layout constants (`manifest.ts`), hashes and key sizes, and the ids we mint;
 - the owner app's own protocol frames, and the HTTP status of each fixed code.
@@ -55,9 +55,9 @@ The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collect
 
 - **tier**: 3
 - **owner setting**: 12
-- **vendor limit**: 6
-- **technical ceiling**: 108
-- **total**: 129
+- **vendor limit**: 9
+- **technical ceiling**: 113
+- **total**: 137
 
 Counted by a script over every table row (`| ` lines past the header, six cells each), the first row and the names row among them.
 
@@ -237,6 +237,14 @@ reason; none refuses a write.
 | `gateway/src/model-record.ts` numbers | as the owner's | a declared model record | refused past them | technical ceiling | As the owner's model numbers. |
 | `hooks/src/codemode.ts` `CODEMODE_INTERRUPT_BUDGET` | 1,000,000 polls (about 100 s) | a script's CPU | a compute-bound script ends `timeout` | technical ceiling | Within the hooks Worker's `cpu_ms`. |
 | `hooks/src/codemode.ts` `CODEMODE_MEMORY_BYTES` | 32 MiB | a script's VM memory | a script past it fails | technical ceiling | The isolate's 128 MB, shared by its VMs. |
+| control record `sandbox_runtime_ceiling_s` (`doors/src/directory.ts`) | the E2B plan's: Hobby 3,600 s, Pro 86,400 s | how long one sandbox runs at a stretch | nothing ends: its runs are renewed (paused and resumed with their memory) at a quiet moment before it | vendor limit | E2B's continuous runtime per plan (docs.e2b.dev, sandbox lifetime), which a pause resets (probed, `sandbox-probe.md`); edited in the record with no deploy. |
+| control record `sandbox_concurrency_ceiling` (`doors/src/directory.ts`) | the E2B plan's: Hobby 20, Pro 100 | sandboxes the E2B team runs at once | a run waits `sandbox_waiting` in the platform's line, never refused | vendor limit | E2B's concurrent sandboxes per plan; E2B's own refusal (`429`) holds it regardless. |
+| `sandbox/runner/guards.ts` `ATOM_MIN` | 39 characters | the shortest value or line of a `secret_paths` file the content backstop matches | a synced file or transcript line holding one refused | vendor limit | A Google API key, 39 characters: the shortest credential any record's provider issues. |
+| `sandbox/template/build.py` run pool | `RUNS_CEILING` (1,000) users | runs live in one sandbox at once | a run past it refused, every run user taken | technical ceiling | One uid a live run (review H-4); one authority's sandbox holds at most its owner's live runs, which `RUNS_CEILING` bounds. |
+| `doors/src/egress.ts` `SYNC_BODY_MAX` | 12 MiB | one sync door's body | the sync agent sends more calls | technical ceiling | Two 4 MiB chunks' base64 and the call's fields: the files plane's most a call (`BATCH_BYTES`). |
+| `sandbox/runner/runner.ts` `CANCEL_GRACE_MS` | 20 s | a cancelled CLI's grace after SIGTERM | killed past it | technical ceiling | One heartbeat (`HEARTBEAT_MS`): the run's end and its last post reach the object inside its lease's TTL. |
+| `sandbox/runner/users.ts` `KILL_WITHIN_MS` | 20 s | how long a run user's processes may outlive their SIGKILL | the run's end fails loudly, the user not given back | technical ceiling | One heartbeat; a process still there is stuck in the kernel. |
+| `sandbox/runner/runner.ts` a failed CLI's stderr | `FRAME_UNITS_MAX` | the stderr a failed run shows | its head cut | technical ceiling | As much as one frame shows; the frame's own cut marks the rest. |
 | `doors/wrangler.jsonc` `CIMD_LIMIT` (`doors/src/throttle.ts`) | 20 a minute per caller IP | the Client ID Metadata Document fetches an unknown `client_id` makes the OAuth provider send (`/authorize`, `/oauth/token`, `/oauth/revoke`) | `429` with `Retry-After`; a client the provider's cache holds (Claude's, ChatGPT's) costs no fetch and is never counted | security | An unauthenticated caller naming fresh https `client_id`s makes the platform fetch any public URL, each up to 5 KiB and 10 s (the provider's own bounds): an amplifier and a scanner. A real client's document is cached for days. Cloudflare's `ratelimits` binding, per location. |
 | `doors/wrangler.jsonc` `SIGNIN_LIMIT` (`doors/src/throttle.ts`) | 60 a minute per caller IP | sign-in attempts: `/authorize` and the upstream callback | `429` with `Retry-After` | security | Each starts or finishes an upstream sign-in: KV records, a code exchange and a JWKS fetch at AuthKit, all unauthenticated. A person's sign-in is 3 to 5 requests; a shared office IP fits a dozen people a minute. |
 | `doors/src/throttle.ts` `OAUTH_FORM_MAX` | 16 KiB | a token or revoke request's form, read before the provider reads it | `413` | security | The form is read once more to find its `client_id` for the CIMD bound; a larger one could not be told apart from padding past it. A token request's fields with a client assertion are a few KiB. |

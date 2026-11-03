@@ -37,6 +37,11 @@ Map, why: `docs/architecture.md`, `docs/decisions/`.
     internal; after DNS/tunnel/connector edits, run the handles canary.
 13. Prove a path is pushed or in history before destroying it; never switch
     a dirty worktree to `main`.
+14. Research comes before building, as its own step. How to do a thing is never
+    decided before its research, nor left to a builder to settle: the design
+    is chosen from the research, checked against the intent, then built.
+    Research again when a build grows past its plan, or when it needs patches
+    that suggest a bad shape (founder, 2026-11-03).
 
 Sandbox, filesystem or process-limit work needs `scripts/linux_oracle.py`;
 a skip is not a pass. Secrets: `set -a; source scripts/load_secrets.sh;

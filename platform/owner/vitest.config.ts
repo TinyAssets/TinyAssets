@@ -14,6 +14,7 @@ const PLATFORM = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FILES = join(PLATFORM, "files");
 const GATEWAY = join(PLATFORM, "gateway");
 const HOOKS = join(PLATFORM, "hooks");
+const SANDBOX = join(PLATFORM, "sandbox");
 
 type WorkerConfig = { name: string; compatibility_date: string; compatibility_flags: string[];
                       r2_buckets?: { binding: string }[];
@@ -120,6 +121,41 @@ function hooksWorker() {
   }
 }
 
+/**
+ * The real sandbox Worker, as the SANDBOX service binding's target: bundled by wrangler from
+ * its own config, with its own runtime, flags and class, its directory a namespace of its
+ * own (no control record in it, so it starts nothing: `sandbox_unconfigured`), and a key
+ * that reaches no E2B (its every fetch goes to the gateway's fake upstream). Its behaviour
+ * against E2B is its own package's tests (`sandbox/test`).
+ */
+function sandboxWorker() {
+  const sandbox = config(SANDBOX);
+  const out = mkdtempSync(join(tmpdir(), "owner-sandbox-"));
+  try {
+    const wrangler = join(dirname(createRequire(join(SANDBOX, "package.json"))
+      .resolve("wrangler/package.json")), "bin", "wrangler.js");
+    execFileSync(process.execPath, [wrangler, "deploy", "--dry-run", "--outdir", out,
+                                    "--config", join(SANDBOX, "wrangler.jsonc")],
+                 { cwd: SANDBOX, stdio: "pipe",
+                   env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
+    return {
+      name: sandbox.name,
+      modulesRoot: SANDBOX,
+      modules: [{ type: "ESModule" as const, path: join(SANDBOX, "index.js"),
+                  contents: readFileSync(join(out, "index.js"), "utf8") }],
+      compatibilityDate: sandbox.compatibility_date,
+      compatibilityFlags: sandbox.compatibility_flags,
+      bindings: { E2B_API_KEY: "e2b_unused_in_owner_tests", E2B_TEMPLATE: "none" },
+      kvNamespaces: ["DIRECTORY"],
+      durableObjects: Object.fromEntries((sandbox.durable_objects?.bindings ?? [])
+        .map((binding) => [binding.name, { className: binding.class_name, useSQLite: true }])),
+      outboundService: "fake-upstream",
+    };
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+}
+
 /** The gateway's fake outside world (`gateway/test/fake-upstream.ts`), transpiled. */
 function fakeUpstream() {
   const path = join(GATEWAY, "test", "fake-upstream.ts");
@@ -162,6 +198,7 @@ export default defineConfig({
                 OWNER: { className: "OwnerDO", useSQLite: true },
                 AGENT: { className: "FauxOwnerDO", useSQLite: true },
                 GATED: { className: "GatedOwnerDO", useSQLite: true },
+                BARE: { className: "UnboundOwnerDO", useSQLite: true },
                 BOUNDED: { className: "BoundedOwnerDO", useSQLite: true },
                 RUNG: { className: "RungOwnerDO", useSQLite: true },
                 SWITCHED: { className: "SwitchedOwnerDO", useSQLite: true },
@@ -171,7 +208,8 @@ export default defineConfig({
               serviceBindings: { CONNECT: { name: "tinyassets-gateway",
                                             entrypoint: "ConnectGateway" } },
               outboundService: "fake-upstream",
-              workers: [filesWorker(), gatewayWorker(KEYRING), hooksWorker(), fakeUpstream()],
+              workers: [filesWorker(), gatewayWorker(KEYRING), hooksWorker(), sandboxWorker(),
+                        fakeUpstream()],
             },
           }),
         ],

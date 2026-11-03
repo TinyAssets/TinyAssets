@@ -1,9 +1,11 @@
 /**
- * The workerd tests' Worker: the owner Worker's own export (with no `SANDBOX` bound, as
- * production has none until slice S), and two test classes of the same object, each with a
- * recording fake behind `SANDBOX` (`sandbox-fake.ts`): one with its owner-internal paths in
- * the tests' reach (`FauxOwnerDO`: the erasure, which no door reaches yet, and the
- * sandbox's lease API), and one with its GATEWAY calls watched and faulted (`GatedOwnerDO`).
+ * The workerd tests' Worker: the owner Worker's own export (its `SANDBOX` the real sandbox
+ * Worker, run beside it against no E2B), and three test classes of the same object: two
+ * with a recording fake behind `SANDBOX` (`sandbox-fake.ts`), one with its owner-internal
+ * paths in the tests' reach (`FauxOwnerDO`: the erasure, which no door reaches yet, and the
+ * sandbox's lease API), and one with its GATEWAY calls watched and faulted
+ * (`GatedOwnerDO`); and one with no `SANDBOX` at all (`UnboundOwnerDO`), whose every run is
+ * refused (`SANDBOX_ABSENT`).
  */
 import type { GatewayService, Resealed } from "../src/connections";
 import type { Erasure } from "../src/erase";
@@ -152,6 +154,14 @@ export class GatedOwnerDO extends OwnerDO {
     this.sandbox = made.sandbox!;
     this.recorder = recorder;
     this.calls.push(...pending);
+  }
+}
+
+/** The owner object with no `SANDBOX` bound: every run refused, every cancel too. */
+export class UnboundOwnerDO extends OwnerDO {
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    const { SANDBOX: _sandbox, ...rest } = env;
+    super(ctx, rest);
   }
 }
 

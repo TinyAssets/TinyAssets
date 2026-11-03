@@ -9,6 +9,7 @@
 import { type DoorsEnv, ISSUER_NOT_CONFIGURED, UPSTREAM_NOT_CONFIGURED } from "./config";
 import { serve } from "./doors";
 import { oidcUpstream, upstreamConfig } from "./oidc";
+import { ringQueue } from "./ring";
 import { bundledSources } from "./sources";
 import { UNWIRED, type Upstream } from "./upstream";
 
@@ -32,4 +33,6 @@ export function upstreamOf(env: DoorsEnv): Upstream {
 export default Object.freeze({
   fetch: (request: Request, env: DoorsEnv, ctx: ExecutionContext): Promise<Response> =>
     serve(request, env, ctx, upstreamOf(env), bundledSources()),
+  // The sandbox line's doorbell (`ring.ts`): the ring queue, its one consumer.
+  queue: (batch: MessageBatch<unknown>, env: DoorsEnv): Promise<void> => ringQueue(batch, env),
 });
