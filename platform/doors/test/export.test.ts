@@ -32,7 +32,7 @@ describe("the owner export door", () => {
     const lines = (await response.text()).trimEnd().split("\n")
       .map((line) => JSON.parse(line) as { t: string; owner?: string; table?: string });
     expect(lines[0]).toMatchObject({ t: "header", format: "tinyassets-export", owner: who });
-    expect(lines.at(-1)).toEqual({ t: "end" });
+    expect(lines.at(-1)).toMatchObject({ t: "end" });
     expect(lines.some((line) => line.t === "row" && line.table === "owner_sessions")).toBe(false);
   });
 

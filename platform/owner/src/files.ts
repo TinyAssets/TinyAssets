@@ -124,10 +124,11 @@ export const PLACE_TTL_S = 600;
  * How long a garbage chunk waits before it is deleted (the schema's trigger sets it): 30
  * days, the object's own point-in-time recovery window (Durable Objects restore "to any point
  * in the past 30 days"), so a restored object, or a manifest, never names a chunk the sweep
- * took. A garbage chunk counts in no owner's storage (deleted files are kept 30 days for
- * recovery and don't count); once an owner's garbage in its grace passes the tier's storage
- * figure, the oldest is collected early (`collect`), so what the platform keeps uncounted for
- * an owner is bounded by what it counts.
+ * took. A garbage chunk counts in no owner's storage; once an owner's garbage in its grace
+ * passes the owner's storage figure, the oldest is collected early (`collect`), never one the
+ * newest manifest names, so what the platform keeps uncounted for an owner is bounded by what
+ * it counts. What the owner is told: "Deleted files are kept up to 30 days, within your
+ * storage; past that the oldest go first."
  */
 export const GC_GRACE_S = 30 * 86_400;
 /** When a failed chunk delete is tried again. */
@@ -590,6 +591,8 @@ export class Files {
   readonly #storage: OwnerStorage;
   readonly #store: ChunkStore;
   readonly #limits: () => FileLimits;
+  /** When (s) the newest finished nightly manifest began, or null: what it names is kept. */
+  readonly #manifested: () => number | null;
   /** The object's write gate: the units the methods that cross to `FILES` write through. */
   readonly #write: Write;
   /** What retention frees at the byte quota (the collections' history, acked mail). */
@@ -605,8 +608,10 @@ export class Files {
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
               write: Write, reclaim: Reclaim = () => false,
-              changed: (path: string, present: boolean, now: number) => void = () => {}) {
+              changed: (path: string, present: boolean, now: number) => void = () => {},
+              manifested: () => number | null = () => null) {
     this.#storage = storage;
+    this.#manifested = manifested;
     this.#store = store;
     this.#limits = limits;
     this.#write = write;
@@ -2159,7 +2164,11 @@ export class Files {
     return space.retain_cursor !== null || this.#retentionChanged(space, limits);
   }
 
-  /** The garbage bytes past the tier's storage figure, collected early; 0 for none. */
+  /**
+   * The garbage bytes in their grace past the owner's storage figure (`max_bytes`, the
+   * lower of its own setting and its tier's), to collect early; 0 for none. A chunk being
+   * deleted is the delete's already and counts no more (`garbage_bytes`).
+   */
   #garbageOver(): number {
     const max = this.#limits().max_bytes;
     const garbage = this.#sql.exec<{ garbage_bytes: number }>(
@@ -2168,13 +2177,41 @@ export class Files {
   }
 
   /**
+   * The latest `gc_after` (exclusive) a garbage chunk may have to be collected early: let go
+   * before the newest finished manifest began, so that manifest never named it (a chunk
+   * live when it began is named by it). Infinity with no manifest kept.
+   */
+  #earlyBefore(): number {
+    const began = this.#manifested();
+    return began === null ? Infinity : began + GC_GRACE_S;
+  }
+
+  /** The bytes of deleted files kept for recovery, in no owner's number. A read. */
+  garbageBytes(): number {
+    return this.#sql.exec<{ garbage_bytes: number }>("SELECT garbage_bytes FROM file_space")
+      .one().garbage_bytes;
+  }
+
+  /** Whether some garbage, not yet due, may be collected early. A read. */
+  #earlyCollectable(now: number): boolean {
+    const before = this.#earlyBefore();
+    return this.#sql.exec("SELECT 1 FROM file_chunks WHERE state = 'garbage' AND gc_after > ? " +
+                            "AND gc_after < ? LIMIT 1", now,
+                          Number.isFinite(before) ? before : Number.MAX_VALUE)
+      .toArray().length > 0;
+  }
+
+  /**
    * When housekeeping is next due, never before `now`, or null: expired intents and
    * temporary directories, due history prunes, and due chunk deletes, each with
    * `HOUSEKEEPING_SLACK_S`, so one run takes an hour's work; and at once, a retention
-   * change still to apply, or garbage past the tier's storage figure.
+   * change still to apply, or garbage past the owner's storage figure that it may collect
+   * early. Garbage waiting on a failed delete's retry is due at that retry, never at once,
+   * and garbage the newest manifest names is never collected early.
    */
   nextAlarm(now: number): number | null {
-    if (this.#reretaining(this.#space(), this.#limits()) || this.#garbageOver() > 0) {
+    if (this.#reretaining(this.#space(), this.#limits())
+        || (this.#garbageOver() > 0 && this.#earlyCollectable(now))) {
       return now;
     }
     const times = [
@@ -2221,16 +2258,21 @@ export class Files {
     // Read and marked in one unit: a chunk read due outside it could be held again (an
     // upload's begin) before the mark, and its bytes then deleted under a live file.
     const due = await this.#write(() => this.#storage.transactionSync(() => {
-      const rows = sql.exec<{ sha256: string; size: number }>(
-        "SELECT sha256, size FROM file_chunks WHERE gc_after IS NOT NULL AND gc_after <= ? " +
-          "ORDER BY gc_after LIMIT ?", now, DELETE_BATCH).toArray();
+      const rows = sql.exec<{ sha256: string; size: number; state: string }>(
+        "SELECT sha256, size, state FROM file_chunks WHERE gc_after IS NOT NULL AND " +
+          "gc_after <= ? ORDER BY gc_after LIMIT ?", now, DELETE_BATCH).toArray();
       const found = rows.map((row) => row.sha256);
-      // Garbage past the tier's figure, oldest first, as far as covers it: due now.
-      let over = this.#garbageOver() - rows.reduce((sum, row) => sum + row.size, 0);
+      // Garbage past the owner's figure, oldest first, as far as covers it: due now; none the
+      // newest manifest names.
+      let over = this.#garbageOver() - rows.filter((row) => row.state === "garbage")
+        .reduce((sum, row) => sum + row.size, 0);
+      const before = this.#earlyBefore();
       if (over > 0 && found.length < DELETE_BATCH) {
         for (const row of sql.exec<{ sha256: string; size: number }>(
                "SELECT sha256, size FROM file_chunks WHERE state = 'garbage' AND gc_after > ? " +
-                 "ORDER BY gc_after LIMIT ?", now, DELETE_BATCH - found.length).toArray()) {
+                 "AND gc_after < ? ORDER BY gc_after LIMIT ?", now,
+               Number.isFinite(before) ? before : Number.MAX_VALUE,
+               DELETE_BATCH - found.length).toArray()) {
           if (over <= 0) {
             break;
           }

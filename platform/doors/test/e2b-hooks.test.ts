@@ -64,8 +64,10 @@ describe("E2B's lifecycle webhook", () => {
     const { days } = await env.OWNER.getByName(who).sandboxDays(
       { owner: who, caller: who, origin: null }, {});
     expect(days).toEqual([
-      { day: "20261103", seconds: 0, billed_seconds: 60, vcpu_seconds: 120, gb_seconds: 60 },
-      { day: "20261102", seconds: 0, billed_seconds: 60, vcpu_seconds: 120, gb_seconds: 60 },
+      { day: "20261103", seconds: 0, billed_seconds: 60, vcpu_seconds: 120, gb_seconds: 60,
+        unverified_executions: 0 },
+      { day: "20261102", seconds: 0, billed_seconds: 60, vcpu_seconds: 120, gb_seconds: 60,
+        unverified_executions: 0 },
     ]);
   });
 

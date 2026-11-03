@@ -9,7 +9,8 @@ import { describe, expect, it } from "vitest";
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import { type RunReceipt, runMeter } from "../src/runs";
-import { DAYS_KEPT, meterRead, SandboxTime } from "../src/sandbox-time";
+import { BILLED_KEPT, DAYS_KEPT, meterRead, SandboxTime } from "../src/sandbox-time";
+import { rig } from "./ledger-support";
 import { gated } from "./gateway-support";
 import { ownerRun, recorder, runnerBinding } from "./runs-support";
 import { drainDue, failure, sqlIn } from "./support";
@@ -18,7 +19,8 @@ const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_log
                                   scopes: [] });
 const S = 1000;
 /** A day E2B billed nothing for: only the Worker's own log counted it. */
-const UNBILLED = Object.freeze({ billed_seconds: 0, vcpu_seconds: 0, gb_seconds: 0 });
+const UNBILLED = Object.freeze({ billed_seconds: 0, vcpu_seconds: 0, gb_seconds: 0,
+                                 unverified_executions: 0 });
 const DAY = 86_400 * S;
 
 let made = 0;
@@ -166,5 +168,40 @@ describe("sandbox time", () => {
     expect((await failure(() => r.stub.sandboxDays(
       r.bind({ origin: { client: "c".repeat(64), family: "mcp" } } as never), {}))).name)
       .toMatch(/Refused|Invalid/);
+  });
+});
+
+describe("E2B's billed executions", () => {
+  const event = (over: Record<string, unknown>) => ({
+    id: crypto.randomUUID(), authority: "owner", kind: "paused",
+    started_at: Date.now() - 60_000, execution_ms: 60_000, vcpu: 2, memory_mb: 1024,
+    execution_id: "exec-1", sandbox_id: "sbx-1", at: Date.now(), ...over });
+  const billed = async (r: Awaited<ReturnType<typeof rig>>) =>
+    (await r.stub.sandboxDays(r.bind(null), {})).days;
+
+  it("counts a paused sandbox's execution once, though its kill comes days later " +
+     "(review N4)", async () => {
+    const r = await rig();
+    expect(await r.stub.sandboxBilled(event({}) as never)).toEqual({ counted: true });
+    // A day and an hour pass: the window's ids are gone, the live sandbox's last is kept.
+    await sqlIn(r.stub, "UPDATE sandbox_billed SET at = at - ?", 25 * 3_600_000);
+    expect(await r.stub.sandboxBilled(event({ kind: "killed" }) as never))
+      .toEqual({ counted: false });
+    expect((await billed(r)).reduce((sum, day) => sum + day.billed_seconds, 0)).toBe(60);
+    // Killed: its sandbox's row is gone.
+    expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM sandbox_live")).toEqual([{ n: 0 }]);
+  });
+
+  it("counts an execution past BILLED_KEPT anyway, and shows it unverified (review N5)",
+     async () => {
+    const r = await rig();
+    await sqlIn(r.stub, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n " +
+      "WHERE i < ?) INSERT INTO sandbox_billed (digest, at) SELECT randomblob(8), ? FROM n",
+                BILLED_KEPT, Date.now());
+    expect(await r.stub.sandboxBilled(event({ execution_id: "new-exec" }) as never))
+      .toEqual({ counted: true });
+    const days = await billed(r);
+    expect(days.reduce((sum, day) => sum + day.billed_seconds, 0)).toBe(60);
+    expect(days.reduce((sum, day) => sum + day.unverified_executions, 0)).toBe(1);
   });
 });

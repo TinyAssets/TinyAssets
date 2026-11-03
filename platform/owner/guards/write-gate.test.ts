@@ -266,7 +266,7 @@ describe("write-gate guard", () => {
     expect(source.match(/return this\.#(door|synced|filing)\(/g)?.length).toBeGreaterThan(50);
     const bodies = helpers(source);
     expect(bodies["#door"]).toBe("{\n    return this.#gate.write(act);\n  }");
-    // A quiet unit is a unit of the same gate, which moves no change clock (`gate.ts`).
+    // A quiet unit is a unit of the same gate, which marks nothing changed (`gate.ts`).
     expect(bodies["#quiet"]).toBe("{\n    return this.#gate.quiet(act);\n  }");
     expect(bodies["#synced"]).toContain("await this.#door(act)");
     expect(bodies["#filing"]).toContain("await this.#door(act)");

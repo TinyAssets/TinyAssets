@@ -179,6 +179,9 @@ const EXPORTS_OPEN = constant("export", "EXPORTS_OPEN");
 const SPANS_KEPT = constant("sandbox-time", "SPANS_KEPT");
 const DAYS_KEPT = constant("sandbox-time", "DAYS_KEPT");
 const BILLED_KEPT = constant("sandbox-time", "BILLED_KEPT");
+const LIVE_KEPT = constant("sandbox-time", "LIVE_KEPT");
+const DIRTY_BYTES_MAX = constant("streams", "DIRTY_BYTES_MAX");
+const DIRTY_ROW_BYTES = constant("streams", "DIRTY_ROW_BYTES");
 /** Mail that starts runs (slice ID): a message's id, an own agent's id, a mail's authority. */
 const MESSAGE_ID_CHARS = constant("run-rows", "MESSAGE_ID_CHARS");
 const NATIVE_ID_CHARS = constant("run-rows", "NATIVE_ID_CHARS");
@@ -559,19 +562,32 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                        "cursor and its list of at most MANIFEST_PARTS parts" },
     // Slice P: the sandbox meter (`sandbox-time.ts`).
     sandbox_meter: { rows: 1, bytes: ROW + 3 * 8, by: "one row: the log's cursor" },
-    owner_backup_state: { rows: 1, bytes: ROW + 3 * 8,
-                          by: "one row: the change clock, changed since the manifest, told" },
-    owner_exports: { rows: EXPORTS_OPEN, bytes: ROW + 32 + 3 * 8,
-                     by: "EXPORTS_OPEN, each its id, opening, end and clock" },
+    owner_backup_state: { rows: 1, bytes: ROW + 2 * 8,
+                          by: "one row: changed since the manifest, and told" },
+    owner_exports: { rows: EXPORTS_OPEN, bytes: ROW + 32 + 2 * 8,
+                     by: "EXPORTS_OPEN, each its id, opening and end" },
+    // The streams being read (review N1): one export's and the manifest's.
+    owner_streams: { rows: 2, bytes: ROW + 16 + 32 + 3 * 8,
+                     by: "one a kind: the export's and the manifest's" },
+    // Their journal, charged as its trigger counts it: each new key its table's name, its
+    // key and DIRTY_ROW_BYTES (past a record's own bytes), at most DIRTY_BYTES_MAX a stream
+    // over its life, and one key past it (a key's widest: a cursor's).
+    stream_dirty: { rows: 1, bytes: 2 * (DIRTY_BYTES_MAX + CURSOR_CHARS + DIRTY_ROW_BYTES),
+                    charged: true,
+                    by: "DIRTY_BYTES_MAX journaled a stream, two streams, at WORST_FILL" },
     sandbox_spans: { rows: SPANS_KEPT + 1 + G.maxFreeClients + G.maxOwnerClients,
                      bytes: ROW + 64 + 2 * 8,
                      by: "SPANS_KEPT closed spans, and one open an authority (the owner's " +
                        "and each client's)" },
-    sandbox_billed: { rows: BILLED_KEPT, bytes: ROW + 3 * 128 + 8,
-                      by: "BILLED_KEPT E2B executions inside the window, each its execution, " +
-                        "event and sandbox ids and the event's time",
-                      indexes: { sandbox_billed_by_age: key(128) } },
-    sandbox_days: { rows: DAYS_KEPT, bytes: ROW + 8 + 4 * 8,
+    // Keyed by an 8-byte digest (review N5): a record of its key, its time and their header.
+    sandbox_billed: { rows: BILLED_KEPT, bytes: 8 + NUMBER + 8,
+                      by: "BILLED_KEPT E2B executions inside the window, each 8 bytes of " +
+                        "its id's digest and the event's time",
+                      indexes: { sandbox_billed_by_age: key(8) } },
+    sandbox_live: { rows: LIVE_KEPT, bytes: ROW + 128 + 8 + NUMBER,
+                    by: "LIVE_KEPT live sandboxes, each its id and its last execution's digest",
+                    indexes: { sandbox_live_by_age: key(128) } },
+    sandbox_days: { rows: DAYS_KEPT, bytes: ROW + 8 + 5 * 8,
                     by: "DAYS_KEPT days of sandbox seconds" },
     // The owner's admission: one row, its reasons a short fixed list; after the erasure, the
     // erased tombstone, alone in the database.

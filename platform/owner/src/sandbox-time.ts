@@ -8,8 +8,12 @@
  *   hand here (`billed`); each execution is counted once by its execution id (a pause and
  *   then a kill of the paused sandbox may both carry it), split across the UTC days it ran,
  *   into `sandbox_days`' billed columns. An event older than `BILLED_WINDOW_S` (by its own
- *   signed time) is not counted, and every execution counted within the window is kept, so
- *   a delivery replayed later is refused by its time, and one replayed sooner by its id. It covers what the Worker did not cause: E2B's own
+ *   signed time) is not counted, and every execution counted within the window is kept (8
+ *   bytes of its id's SHA-256), so a delivery replayed later is refused by its time, and one
+ *   replayed sooner by its id; each live sandbox's last execution is kept until its kill
+ *   (`sandbox_live`), so a kill of a paused sandbox however long after counts nothing again.
+ *   Past `BILLED_KEPT` inside the window an execution is counted all the same, and tallied
+ *   `unverified` on its day, which the view shows: it never quietly understates. It covers what the Worker did not cause: E2B's own
  *   timeout pauses and kills, a Worker lost mid-call, time kept warm.
  * - **Estimate, and the fallback.** The sandbox Worker is the one that starts, pauses, resumes and kills a
  *   sandbox (slice S's `SandboxControl`, which serializes them per owner), and it logs each
@@ -31,6 +35,8 @@
  * Bounds (`limits-audit.md`): `SPANS_KEPT` spans, the oldest closed one dropped past it
  * (a technical ceiling: years of an always-renewing sandbox); `DAYS_KEPT` days of sums.
  */
+import { createHash } from "node:crypto";
+
 import type { OwnerStorage } from "./gate";
 
 /**
@@ -69,11 +75,18 @@ export const BILLED_WINDOW_S = 86_400;
 /** How far ahead of the object's clock an event's time may be: clocks drift. */
 export const BILLED_SKEW_S = 300;
 /**
- * The executions counted inside the window, one every 8.6 s all day: past it a new one is
- * not counted (the Worker's log stands, loudly), and none inside the window is ever
- * forgotten, so a replay never counts twice (the 10 GB).
+ * The executions kept to check inside the window, one every 0.86 s all day: past it a new
+ * one is counted anyway, and tallied `unverified` (the 10 GB: 8 bytes and a time a row).
  */
-export const BILLED_KEPT = 10_000;
+export const BILLED_KEPT = 100_000;
+/** Live sandboxes whose last execution is kept until their kill; past it the oldest goes. */
+export const LIVE_KEPT = 1_000;
+
+/** 8 bytes of an E2B execution id's SHA-256: what is kept to count it once. */
+function digest(executionId: string): ArrayBuffer {
+  return Uint8Array.from(createHash("sha256").update(executionId).digest().subarray(0, 8))
+    .buffer;
+}
 
 /** One execution E2B billed, from its signed lifecycle event (`doors/src/e2b-hooks.ts`). */
 export interface BilledEvent {
@@ -247,7 +260,8 @@ export class SandboxTime {
    * In a unit: one execution E2B billed, at `now` (ms), counted once by its execution id,
    * each UTC day it ran given its part of the billed ms, vCPU-ms and MB-ms. Whether it was
    * counted: not when the event is older than the window (or ahead of the clock past the
-   * skew), when its execution was counted already, or past `BILLED_KEPT` in the window.
+   * skew), or when its execution was counted already (kept in the window, or its sandbox's
+   * last until the kill). Past `BILLED_KEPT` it is counted, and tallied `unverified`.
    */
   billed(event: BilledEvent, now: number): boolean {
     const floor = now - BILLED_WINDOW_S * 1000;
@@ -255,18 +269,33 @@ export class SandboxTime {
       return false;
     }
     this.#sql.exec("DELETE FROM sandbox_billed WHERE at < ?", floor);
-    if (this.#sql.exec("SELECT 1 FROM sandbox_billed WHERE execution_id = ?",
-                       event.execution_id).toArray().length > 0) {
+    const key = digest(event.execution_id);
+    const seen = this.#sql.exec("SELECT 1 FROM sandbox_live WHERE sandbox_id = ? AND " +
+                                  "digest = ?", event.sandbox_id, key).toArray().length > 0
+      || this.#sql.exec("SELECT 1 FROM sandbox_billed WHERE digest = ?", key).toArray()
+        .length > 0;
+    if (event.kind === "killed") {
+      this.#sql.exec("DELETE FROM sandbox_live WHERE sandbox_id = ?", event.sandbox_id);
+    } else {
+      this.#sql.exec("INSERT INTO sandbox_live (sandbox_id, digest, at) VALUES (?, ?, ?) " +
+                       "ON CONFLICT (sandbox_id) DO UPDATE SET digest = excluded.digest, " +
+                       "at = excluded.at", event.sandbox_id, key, now);
+      this.#sql.exec("DELETE FROM sandbox_live WHERE sandbox_id IN (SELECT sandbox_id FROM " +
+                       "sandbox_live ORDER BY at DESC LIMIT -1 OFFSET ?)", LIVE_KEPT);
+    }
+    if (seen) {
       return false;
     }
-    if (this.#sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM sandbox_billed").one().n
-          >= BILLED_KEPT) {
-      console.error("sandbox_billed is full inside its window; the Worker's log stands");
-      return false;
+    const kept = this.#sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM sandbox_billed")
+      .one().n < BILLED_KEPT;
+    if (kept) {
+      this.#sql.exec("INSERT INTO sandbox_billed (digest, at) VALUES (?, ?)", key, event.at);
+    } else {
+      console.error("sandbox_billed is full inside its window; counted unverified");
+      this.#sql.exec("INSERT INTO sandbox_days (day, ms, unverified) VALUES (?, 0, 1) ON " +
+                       "CONFLICT (day) DO UPDATE SET unverified = unverified + 1",
+                     dayOf(event.at));
     }
-    this.#sql.exec("INSERT INTO sandbox_billed (execution_id, event_id, sandbox_id, at) " +
-                     "VALUES (?, ?, ?, ?)", event.execution_id, event.id, event.sandbox_id,
-                   event.at);
     const end = event.started_at + event.execution_ms;
     for (let at = event.started_at; at < end;) {
       const until = Math.min(end, Math.floor(at / DAY_MS) * DAY_MS + DAY_MS);
@@ -284,17 +313,21 @@ export class SandboxTime {
   }
 
   /**
-   * The owner's sandbox time by day, newest first: the Worker's estimate (`seconds`) and what
-   * E2B billed (`billed_seconds`, `vcpu_seconds`, `gb_seconds`). A read.
+   * The owner's sandbox time by day, newest first: the Worker's estimate (`seconds`), what
+   * E2B billed (`billed_seconds`, `vcpu_seconds`, `gb_seconds`), and how many of the day's
+   * billed executions were counted with no id kept to check them against
+   * (`unverified_executions`). A read.
    */
   days(limit: number): { day: string; seconds: number; billed_seconds: number;
-                         vcpu_seconds: number; gb_seconds: number }[] {
+                         vcpu_seconds: number; gb_seconds: number;
+                         unverified_executions: number }[] {
     return this.#sql.exec<{ day: string; ms: number; billed_ms: number; vcpu_ms: number;
-                            mb_ms: number }>(
-      "SELECT day, ms, billed_ms, vcpu_ms, mb_ms FROM sandbox_days ORDER BY day DESC LIMIT ?",
-      limit).toArray()
+                            mb_ms: number; unverified: number }>(
+      "SELECT day, ms, billed_ms, vcpu_ms, mb_ms, unverified FROM sandbox_days ORDER BY day " +
+        "DESC LIMIT ?", limit).toArray()
       .map((row) => ({ day: row.day, seconds: row.ms / 1000, billed_seconds: row.billed_ms / 1000,
-                       vcpu_seconds: row.vcpu_ms / 1000, gb_seconds: row.mb_ms / 1024 / 1000 }));
+                       vcpu_seconds: row.vcpu_ms / 1000, gb_seconds: row.mb_ms / 1024 / 1000,
+                       unverified_executions: row.unverified }));
   }
 }
 

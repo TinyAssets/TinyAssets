@@ -18,10 +18,10 @@
  * refuses, loudly, any statement but a single `SELECT` (nothing after it) and any
  * `transactionSync` outside a unit (Fact 8: a write outside a unit is a crash, not a hope).
  * A unit inside another, and a unit that returns a promise, are refused the same way.
- * A unit that wrote anything is followed, in its own transaction, by `changed`: the owner's
- * change clock moves (`backup.ts` `mark`), which pins what an export and the nightly
- * manifest read. A `quiet` unit is one that changes nothing they read: the export's and the
- * manifest's own bookkeeping, and a session's renewal; it moves no clock.
+ * A unit that wrote anything is followed, in its own transaction, by `changed`: the owner is
+ * marked changed for the nightly manifest (`backup.ts` `mark`). A `quiet` unit is one that
+ * changes nothing a manifest holds: the export's and the manifest's own bookkeeping, and a
+ * session's renewal; it marks nothing.
  */
 
 /** What the object's modules use of its storage: SQL, and `transactionSync`. */
@@ -53,7 +53,7 @@ export class WriteGate {
   #holding = false;
   /** Whether the unit running has written: only a unit that did is marked `changed`. */
   #wrote = false;
-  /** Whether the unit running is `quiet`: it writes nothing the owner's change clock pins. */
+  /** Whether the unit running is `quiet`: it writes nothing a manifest holds. */
   #quiet = false;
   /** Run, in the unit's own transaction, after a unit that wrote. */
   #changed: (sql: Pick<SqlStorage, "exec">) => void = () => {};
@@ -150,8 +150,8 @@ export class WriteGate {
   };
 
   /**
-   * A unit, as `write` runs it, that moves no change clock: it writes only the export's or
-   * the manifest's own bookkeeping, or a session's renewal, none of which an export reads.
+   * A unit, as `write` runs it, that marks nothing changed: it writes only the export's or
+   * the manifest's own bookkeeping, or a session's renewal, none of which a manifest holds.
    */
   readonly quiet: Write = <T>(unit: () => T): Promise<T> => {
     if (this.#holding) {

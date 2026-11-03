@@ -1422,23 +1422,32 @@ R, S, M and W.
   page's cursor, and the chunks' bytes fetched by hash (`exportChunks`), so an export of any
   size resumes at a page or a chunk. Every table is exported (each column decided) or kept
   out with its reason; credentials, hashes (a policy receipt's session hash too, review
-  M2), secrets and the wrapped key never. Each stream is one snapshot: it is pinned to the
-  owner's change clock (every unit that changes the owner moves it; the export's and
-  manifest's bookkeeping and a session's renewal are quiet units that do not), named in
-  its header, and a later page once the clock moved is refused "changed since this export
-  began: begin it again"; the manifest begins again (review M1). An export holds nothing:
+  M2), secrets and the wrapped key never. Each stream ends as exactly the owner at one
+  moment E, however the owner writes while it is read, and never begins again (review M1,
+  then N1): pre-copy with a dirty-key journal (`streams.ts`). While a stream is open, a
+  trigger on every exported table journals each changed key; the base pass is a fuzzy copy;
+  each later page re-emits the journal's keys (the row as it stands, or a `gone` line);
+  the page that takes the whole journal in its one synchronous unit ends the stream
+  (`{"t":"end","at":E}`), read last line per key wins. At most one export's stream and the
+  manifest's; each journals at most `DIRTY_BYTES_MAX` and reads at most `ROUNDS_MAX`
+  rounds' pages, past which it fails with a notice, never a loop. A manifest a pass did
+  not finish goes on `MANIFEST_CONTINUE_S` later, never at once. An export holds nothing:
   it lives a week (`EXPORT_LIFE_S`), under the 30-day garbage grace (the object's
   point-in-time recovery), so every chunk its pages name is still there; deleted bytes
-  leave the owner's number at once, and garbage past the tier's storage figure is
-  collected early, oldest first (review H1). The owner alone, in its live session: the
+  leave the owner's number at once, and garbage past the owner's storage figure (the
+  lower of its own setting and its tier's) is collected early, oldest first, never a chunk
+  the newest manifest names (released after it began), and garbage waiting on a failed
+  delete's retry never re-arms the files lane at once (reviews H1, N2, N3). The owner alone, in its live session: the
   owner surface's `export`, `export/chunks`, `export/end`. The nightly manifest
   (`backup.ts`): the same manifest, its parts encrypted under the data key under the
   owner's prefix (which the erasure deletes), its root naming them with the wrapped key;
   written only when something changed since the last (the first change sets the lane's
   job), so an idle owner's object is never woken for it; past `MANIFEST_PARTS` (measured
   against the worst stream, escaping included) it is given up once and the owner told.
-- [ ] Owed by slice P's app work with the app slice: the storage view's line "Deleted
-  files are kept 30 days for recovery and don't count toward your storage."
+- [ ] Owed by the app slice: the storage view's line "Deleted files are kept up to 30 days,
+  within your storage; past that the oldest go first.", from `storageUsage`'s
+  `deleted` (`kept_bytes`, `kept_days`), and the storage setting showing that a lower
+  figure shortens recovery.
 - [ ] Owed (founder's spending decision): a manifest copy outside this account and bucket
   (3-2-1); today's recovery point lives in the same bucket.
 - [x] Sandbox time metered per owner (slice P, `owner/src/sandbox-time.ts`). The truth is
@@ -1446,10 +1455,12 @@ R, S, M and W.
   is verified by E2B's signature scheme against `E2B_WEBHOOK_SECRET`, parsed strictly and
   routed by a sealed route the sandbox carries in its metadata (`ta_route`, `sealRoute`),
   and each paused or killed execution's billed ms, vCPU-ms and MB-ms is counted once by its
-  `sandbox_execution_id` (a pause and a later kill may both carry it, review L1), and only
-  while the event's own signed `timestamp` is inside a day (`BILLED_WINDOW_S`), every
-  execution counted kept that long, so a replay is refused by its time or its id (review
-  L2); the body is read through a byte count that stops at its bound (review L3); split
+  `sandbox_execution_id` (a pause and a later kill may both carry it, review L1; each live
+  sandbox's last execution kept until its kill, review N4), and only while the event's own
+  signed `timestamp` is inside a day (`BILLED_WINDOW_S`), every execution counted kept that
+  long by 8 bytes of its id's digest (100,000 of them), so a replay is refused by its time
+  or its id (review L2); past that, an execution is counted anyway and tallied
+  `unverified_executions` on its day, which `sandboxDays` shows (review N5); the body is read through a byte count that stops at its bound (review L3); split
   across UTC days. The estimate, and the fallback: the sandbox Worker
   logs each create, resume, pause and kill (`SandboxControl`, `meter`), which the object
   reads on its `sandbox` lane onto each run's receipt (`sandbox_s`) and each day.

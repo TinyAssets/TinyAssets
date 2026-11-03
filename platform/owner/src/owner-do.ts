@@ -138,7 +138,8 @@ import {
 import { Invalid, Refused } from "./errors";
 import {
   BATCH_BYTES, type Change as FileChange, CHUNK_BYTES, CHUNK_DELETING, type ChunkRef,
-  type ChunkStore, type Content, type Entry, FileConflict, FileFault, Files, type Lease,
+  type ChunkStore, type Content, type Entry, FileConflict, FileFault, Files, GC_GRACE_S,
+  type Lease,
   OWNER_AUTHORITY, type SandboxLease, type SyncOp,
   type SyncOutcome, type Usage,
 } from "./files";
@@ -165,9 +166,10 @@ import { type Lane, Schedule } from "./schedule";
 import { AGENTS_DIR, AGENTS_OWNER_ONLY, OWNER_TREES, ownersOnly, storedPath, within }
   from "./paths";
 import { MIGRATIONS, migrate } from "./schema";
-import { chunkLine, decodeCursor, encodeCursor, END_LINE, readPage } from "./export";
-import { Backups, changeClock } from "./backup";
+import { chunkLine, decodeCursor, encodeCursor } from "./export";
+import { Backups } from "./backup";
 import { OpenExports } from "./open-exports";
+import { Streams } from "./streams";
 import { type BilledEvent, billedEvent, METER_BATCH, meterRead, SandboxTime } from "./sandbox-time";
 import { Sessions } from "./sessions";
 import { CONTROL_FRESH_MS, ControlGate, type Gate } from "./control-gate";
@@ -1283,8 +1285,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #files: Files;
   /** The nightly manifest (`backup.ts`). */
   readonly #backups: Backups;
-  /** The exports open, each named and pinned to the change clock (`open-exports.ts`). */
+  /** The exports open, each named for a week (`open-exports.ts`). */
   readonly #exports: OpenExports;
+  /** The export's and the manifest's streams, and their journal (`streams.ts`). */
+  readonly #streams: Streams;
   /** Sandbox time, per run and per day (`sandbox-time.ts`). */
   readonly #sandboxTime: SandboxTime;
   /** Where large bodies live (ADR-035): placed in R2 through the files plane. */
@@ -1365,8 +1369,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
             this.#ledger.retire(agent, now);
           }
         }
-      });
+      },
+      // Garbage the newest nightly manifest names is never collected early.
+      () => this.#backups.manifests().at(-1)?.started_at ?? null);
     this.#exports = new OpenExports(storage);
+    this.#streams = new Streams(storage);
     this.#bodies = new Bodies(this.#files, storage, write);
     // An outside writer's share of the collections is the owner's own `client_share`.
     this.#collections = new Collections(storage, undefined, this.#bodies.adopt,
@@ -1377,6 +1384,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                               () => this.#collections.clock(), this.#bodies.adopt);
     this.#backups = new Backups({
       storage, write: this.#gate.quiet, store: env.FILES, space: () => this.#files.space(),
+      streams: this.#streams,
       owner: () => this.ctx.id.name ?? "", schema: MIGRATIONS.length,
       serves: () => storage.sql.exec("SELECT 1 FROM object_owner").toArray().length > 0,
       halted: () => wiped(storage.sql) || erasing(storage),
@@ -1576,8 +1584,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         return;  // an erased owner: nothing is made here again
       }
       await write(() => migrate(storage));
-      // From here on, a unit that writes (not a quiet one) moves the owner's change clock and
-      // marks the owner changed for the nightly manifest.
+      // From here on, a unit that writes (not a quiet one) marks the owner changed for the
+      // nightly manifest.
       this.#gate.onChange((sql) => {
         if (this.#backups.mark(sql)) {
           // The first change since the last manifest: its job set again, once the unit is done.
@@ -1637,7 +1645,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /**
    * A door's synchronous body as a quiet unit: it writes only what no export reads (an
-   * export's own row, a session's renewal), so it moves no change clock (`gate.ts`).
+   * export's own row, a session's renewal), so it marks nothing changed (`gate.ts`).
    */
   #quiet<T>(act: () => T): Promise<T> {
     return this.#gate.quiet(act);
@@ -1904,7 +1912,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** The owner's sandbox seconds a day, newest first: the founder's cost view. */
   sandboxDays(binding: Binding, request: { days?: number }): Promise<{
       days: { day: string; seconds: number; billed_seconds: number; vcpu_seconds: number;
-              gb_seconds: number }[] }> {
+              gb_seconds: number; unverified_executions: number }[] }> {
     return this.#door(() => {
       this.#owner(binding, "read", "read its sandbox time");
       const days = request?.days ?? 31;
@@ -1927,7 +1935,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   storageUsage(binding: Binding): Promise<{
       used_bytes: number; limit_bytes: number | null;
-      breakdown: { files: number; messages: number; collections: number } }> {
+      breakdown: { files: number; messages: number; collections: number };
+      deleted: { kept_bytes: number; kept_days: number } }> {
     return this.#door(() => {
       this.#owner(binding, "read", "read its storage");
       const usage = this.#files.usage();
@@ -1936,21 +1945,25 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       // rest, so the parts always sum to what is used.
       const messages = Math.min(used, this.#ledger.storedBytes());
       const collections = Math.min(used - messages, this.#collections.storedBytes());
+      // Deleted files kept for recovery: up to 30 days, within the same figure (the oldest go
+      // first past it), so a lower setting shortens recovery; counted in nothing used.
       return { used_bytes: used, limit_bytes: usage.limits.max_bytes,
-               breakdown: { files: used - messages - collections, messages, collections } };
+               breakdown: { files: used - messages - collections, messages, collections },
+               deleted: { kept_bytes: this.#files.garbageBytes(),
+                          kept_days: GC_GRACE_S / 86_400 } };
     });
   }
 
   // -- OWNER_EXPORT: everything the owner holds (`export.ts`) --------------------
 
   /**
-   * One page of the owner's export from `cursor` (null: the start, which opens the export,
-   * pinned to the owner's change clock): its lines, and the next page's cursor, or null once
-   * the page ended the stream. A later page is refused once the clock moved
-   * (`EXPORT_CHANGED`). The owner's alone, in its live session: no outside client, no run,
-   * and no request without the session cookie reaches it. A `read` door, so a billing
-   * suspension still lets the owner take its data; its one write (the export's own row) is
-   * quiet, so it moves no clock.
+   * One page of the owner's export from `cursor` (null: the start, which opens the export
+   * and its stream, `streams.ts`): its lines, and the next page's cursor, or null once the
+   * page ended the stream, which is then the owner at its end line's moment however the
+   * owner changed between pages. The owner's alone, in its live session: no outside client,
+   * no run, and no request without the session cookie reaches it. A `read` door, so a
+   * billing suspension still lets the owner take its data; its writes (the export's own
+   * rows) are quiet: they mark nothing changed.
    */
   async ownerExport(binding: Binding,
                     request: { cursor?: string | null; export_id?: string }):
@@ -1964,17 +1977,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       const cursor = decodeCursor(request.cursor);
       const now = clock();
-      // Its first page opens it, pinned to the clock; each later page names it, and is read
-      // only while the clock has not moved.
-      const ticks = changeClock(this.#storage.sql);
-      const open = request.cursor === null || request.cursor === undefined
-        ? this.#exports.open(now, ticks) : this.#exports.standing(request.export_id, now, ticks);
-      const page = readPage(this.#storage.sql, cursor,
-                            { schema: MIGRATIONS.length, owner, at: Date.now(), ...open },
-                            Number.MAX_SAFE_INTEGER);
+      this.#streams.sweep(now);
+      // Its first page opens it and its stream; each later page names it.
+      const first = request.cursor === null || request.cursor === undefined;
+      const open = first ? this.#exports.open(now) : this.#exports.named(request.export_id, now);
+      if (first) {
+        this.#streams.open("export", open.export_id, now);
+      }
+      const page = this.#streams.page("export", open.export_id, cursor,
+                                      { schema: MIGRATIONS.length, owner, at: Date.now(),
+                                        ...open }, now);
       const lines = [...page.lines, ...page.chunks.map((chunk) => chunkLine(chunk))];
       if (page.next === null) {
-        lines.push(END_LINE);
+        this.#streams.close("export", open.export_id);  // ended: its journal goes
       }
       return { export_id: open.export_id, lines,
                next: page.next === null ? null : encodeCursor(page.next) };
@@ -2010,7 +2025,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   exportEnd(binding: Binding, request: { export_id: string }): Promise<{ ended: boolean }> {
     return this.#quiet(() => {
       this.#owner(binding, "reduce", "end its export");
-      return { ended: this.#exports.end(request?.export_id) };
+      const ended = this.#exports.end(request?.export_id);
+      this.#streams.close("export", request.export_id);
+      return { ended };
     });
   }
 

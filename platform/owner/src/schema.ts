@@ -38,6 +38,7 @@ import {
 import { SOCKET_TICKETS } from "./socket-shape";
 import { PART_ENTRY } from "./backup";
 import { CURSOR_CHARS } from "./export";
+import { DIRTY_BYTES_MAX, DIRTY_ROW_BYTES } from "./streams";
 import { MANIFEST_PARTS } from "../../files/src/keys";
 import { ARGUMENTS_CHARS, DOORBELL_BLOB_CHARS, SUBSCRIPTIONS_PER_AGENT } from "./wake-kinds";
 import { RUNS_CEILING } from "./tier";
@@ -164,13 +165,32 @@ const SHARE = (row: string, sign: string) => sign === "+"
 
 /** The chunk states whose bytes count against the owner's quota. */
 const COUNTED = "('uploading', 'live')";
-/**
- * Move `file_space.chunk_bytes` by a chunk row's size when its state counts, and
- * `garbage_bytes` when it does not (garbage in its grace, or being deleted).
- */
+/** Move `file_space.chunk_bytes` by a chunk row's size, when its state counts. */
 const CHUNK_USAGE = (sign: string, row: string) =>
-  `chunk_bytes = chunk_bytes ${sign} ${row}.size * (${row}.state IN ${COUNTED}), ` +
-  `garbage_bytes = garbage_bytes ${sign} ${row}.size * (${row}.state NOT IN ${COUNTED});`;
+  `chunk_bytes = chunk_bytes ${sign} ${row}.size * (${row}.state IN ${COUNTED});`;
+/**
+ * Move `file_space.garbage_bytes` by a chunk row's size while it is garbage in its grace (one
+ * being deleted is the delete's already, and counts no more).
+ */
+const GARBAGE_USAGE = (sign: string, row: string) =>
+  `garbage_bytes = garbage_bytes ${sign} ${row}.size * (${row}.state = 'garbage');`;
+
+/**
+ * Each open stream's journal of a key of an exported table that a change touched
+ * (`streams.ts`): one row a stream and key, set untaken again when it changes after a page
+ * took it, and none once the stream has journaled `DIRTY_BYTES_MAX` (it then fails).
+ */
+const STREAM_KEY = (table: string, keys: string, row: string) =>
+  `INSERT INTO stream_dirty (kind, tbl, key, taken) SELECT kind, '${table}', json_array(${
+    keys.split(" ").map((key) => `${row}.${key}`).join(", ")}), 0 FROM owner_streams ` +
+  `WHERE journaled < ${DIRTY_BYTES_MAX} ON CONFLICT (kind, tbl, key) DO UPDATE SET taken = 0;`;
+/** The three journal triggers of one exported table, keyed as `export.ts` keys it. */
+const STREAMED = (table: string, keys: string, event: "INSERT" | "UPDATE" | "DELETE") =>
+  `CREATE TRIGGER ${table}_streamed_${event.toLowerCase()} AFTER ${event} ON ${table} ` +
+  "WHEN EXISTS (SELECT 1 FROM owner_streams) BEGIN " +
+  (event === "INSERT" ? STREAM_KEY(table, keys, "NEW") : event === "DELETE"
+    ? STREAM_KEY(table, keys, "OLD")
+    : `${STREAM_KEY(table, keys, "OLD")} ${STREAM_KEY(table, keys, "NEW")}`) + " END";
 /** What a model reservation row holds against the ceilings, in µ$. */
 const HELD = (row: string) =>
   `(CASE WHEN ${row}.state IN ('reserved', 'dispatched', 'unknown') THEN ${row}.est_cost ` +
@@ -808,8 +828,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       // inline bodies of collection rows, their history and mail (part 15).
       "manifest_bytes INTEGER NOT NULL DEFAULT 0 CHECK (manifest_bytes >= 0), " +
       "body_bytes INTEGER NOT NULL DEFAULT 0 CHECK (body_bytes >= 0), " +
-      // The bytes of chunks no content holds, in their grace or being deleted: counted in no
-      // owner's storage, and held to the tier's figure by early collection.
+      // The bytes of garbage chunks in their grace: counted in no owner's storage, and held to
+      // the owner's storage figure by early collection (files.ts `collect`).
       "garbage_bytes INTEGER NOT NULL DEFAULT 0 CHECK (garbage_bytes >= 0))",
     // The manifest starts charged its two share rows (part 7).
     `INSERT INTO file_space VALUES (1, NULL, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, ${
@@ -1118,10 +1138,12 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
         "ELSE 0 END")}, 0)) BEGIN SELECT RAISE(ABORT, 'a chunk list holds the chunks its ` +
       "content''s size is cut into'); END",
     "CREATE TRIGGER file_chunks_added AFTER INSERT ON file_chunks BEGIN " +
-      `UPDATE file_space SET ${CHUNK_USAGE("+", "NEW")} UPDATE file_space SET manifest_bytes = ` +
+      `UPDATE file_space SET ${CHUNK_USAGE("+", "NEW")} UPDATE file_space SET ${
+        GARBAGE_USAGE("+", "NEW")} UPDATE file_space SET manifest_bytes = ` +
       `manifest_bytes + ${CHUNK_ROW_BYTES()}; END`,
     "CREATE TRIGGER file_chunks_removed AFTER DELETE ON file_chunks BEGIN " +
-      `UPDATE file_space SET ${CHUNK_USAGE("-", "OLD")} UPDATE file_space SET manifest_bytes = ` +
+      `UPDATE file_space SET ${CHUNK_USAGE("-", "OLD")} UPDATE file_space SET ${
+        GARBAGE_USAGE("-", "OLD")} UPDATE file_space SET manifest_bytes = ` +
       `manifest_bytes - ${CHUNK_ROW_BYTES()}; ${
         SHARE_USAGE(SCOPES("OLD.holder"), "-", { manifest_bytes: `${CHUNK_ROW_BYTES()} * ` +
           "(OLD.state IN ('garbage', 'deleting'))" })} END`,
@@ -1133,6 +1155,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER file_chunks_revived AFTER UPDATE OF state ON file_chunks " +
       `WHEN OLD.state = 'garbage' AND NEW.state IN ${COUNTED} BEGIN ${
         SHARE_USAGE(SCOPES("OLD.holder"), "-", { manifest_bytes: CHUNK_ROW_BYTES() })} END`,
+    "CREATE TRIGGER file_chunks_garbage AFTER UPDATE OF state ON file_chunks " +
+      "WHEN (OLD.state = 'garbage') != (NEW.state = 'garbage') BEGIN " +
+      `UPDATE file_space SET ${GARBAGE_USAGE("+", "NEW")} UPDATE file_space SET ${
+        GARBAGE_USAGE("-", "OLD")} END`,
     "CREATE TRIGGER file_chunks_held BEFORE UPDATE OF holder ON file_chunks " +
       "WHEN NEW.holder IS NOT OLD.holder AND OLD.state IN ('garbage', 'deleting') BEGIN " +
       "SELECT RAISE(ABORT, 'a garbage chunk''s holder never changes'); END",
@@ -1509,8 +1535,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "BEGIN SELECT RAISE(ABORT, 'a message body is never changed'); END",
     // Part 15: before real data (slice P). The nightly manifest's bookkeeping (backup.ts): at most
     // two manifests, the newest finished and the one being written, each with its parts as
-    // R2 verified them (`<sha256>:<size>`, comma-joined, at most MANIFEST_PARTS) and the
-    // change clock its stream is pinned to. The sandbox
+    // R2 verified them (`<sha256>:<size>`, comma-joined, at most MANIFEST_PARTS). The sandbox
     // meter (sandbox-time.ts): the cursor of the sandbox Worker's log, each authority's
     // running spans a run not yet metered may overlap (one open at most), the seconds a UTC
     // day, and each run's own (`runs.sandbox_ms`).
@@ -1521,20 +1546,32 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       `parts INTEGER NOT NULL CHECK (parts BETWEEN 0 AND ${MANIFEST_PARTS}), ` +
       `part_list TEXT NOT NULL CHECK (length(part_list) <= ${MANIFEST_PARTS * PART_ENTRY}), ` +
       "bytes INTEGER NOT NULL CHECK (bytes >= 0), started_at REAL NOT NULL, " +
-      "finished_at REAL, retry_at REAL, clock INTEGER NOT NULL CHECK (clock >= 0), " +
+      "finished_at REAL, retry_at REAL, " +
       "CHECK ((state = 'done') = (finished_at IS NOT NULL))) WITHOUT ROWID",
-    // The exports open (export.ts): each its id, its end (under `GC_GRACE_S`) and the change
-    // clock its pages are pinned to.
+    // The exports open (export.ts): each its id and its end (under `GC_GRACE_S`).
     "CREATE TABLE owner_exports (export_id TEXT PRIMARY KEY CHECK (length(export_id) = 32 " +
       "AND export_id NOT GLOB '*[^0-9a-f]*'), opened_at REAL NOT NULL, " +
-      "ends_at REAL NOT NULL, clock INTEGER NOT NULL CHECK (clock >= 0)) WITHOUT ROWID",
-    // The owner's change clock (backup.ts `mark`): whether anything changed since the last
-    // manifest began, how many units have changed the owner, and whether the owner was told
-    // its manifest passed its ceiling (told once, until one is written).
+      "ends_at REAL NOT NULL) WITHOUT ROWID",
+    // Whether anything changed since the last manifest began (backup.ts `mark`), and whether
+    // the owner was told its manifest was given up (told once, until one is written).
     "CREATE TABLE owner_backup_state (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "changed INTEGER NOT NULL CHECK (changed IN (0, 1)), " +
-      "clock INTEGER NOT NULL CHECK (clock >= 0), told INTEGER NOT NULL CHECK (told IN (0, 1)))",
-    "INSERT INTO owner_backup_state VALUES (1, 1, 0, 0)",
+      "told INTEGER NOT NULL CHECK (told IN (0, 1)))",
+    "INSERT INTO owner_backup_state VALUES (1, 1, 0)",
+    // The streams being read (streams.ts): at most one export's and the manifest's, each its
+    // id, when it opened and was last read, and the bytes it has journaled (only rising);
+    // and their journal of the keys of exported tables changed since each opened.
+    "CREATE TABLE owner_streams (kind TEXT PRIMARY KEY CHECK (kind IN ('export', 'manifest')), " +
+      "stream_id TEXT NOT NULL CHECK (length(stream_id) <= 32), opened_at REAL NOT NULL, " +
+      "read_at REAL NOT NULL, journaled INTEGER NOT NULL DEFAULT 0 CHECK (journaled >= 0)) " +
+      "WITHOUT ROWID",
+    "CREATE TABLE stream_dirty (kind TEXT NOT NULL, tbl TEXT NOT NULL, key TEXT NOT NULL, " +
+      "taken INTEGER NOT NULL CHECK (taken >= 0), PRIMARY KEY (kind, tbl, key)) WITHOUT ROWID",
+    "CREATE TRIGGER stream_dirty_added AFTER INSERT ON stream_dirty BEGIN UPDATE owner_streams " +
+      "SET journaled = journaled + length(CAST(NEW.tbl AS BLOB)) + " +
+      `length(CAST(NEW.key AS BLOB)) + ${DIRTY_ROW_BYTES} WHERE kind = NEW.kind; END`,
+    "CREATE TRIGGER owner_streams_closed AFTER DELETE ON owner_streams BEGIN " +
+      "DELETE FROM stream_dirty WHERE kind = OLD.kind; END",
     "CREATE TABLE sandbox_meter (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "after INTEGER NOT NULL CHECK (after >= 0), read_at INTEGER NOT NULL, retry_at REAL)",
     "INSERT INTO sandbox_meter VALUES (1, 0, 0, NULL)",
@@ -1549,15 +1586,127 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "AND day NOT GLOB '*[^0-9]*'), ms INTEGER NOT NULL CHECK (ms >= 0), " +
       "billed_ms INTEGER NOT NULL DEFAULT 0 CHECK (billed_ms >= 0), " +
       "vcpu_ms INTEGER NOT NULL DEFAULT 0 CHECK (vcpu_ms >= 0), " +
-      "mb_ms INTEGER NOT NULL DEFAULT 0 CHECK (mb_ms >= 0)) WITHOUT ROWID",
-    // E2B's executions already counted, by their execution id (each counted once, whichever
-    // of its events came first), with the event's id and the sandbox's, for reconciling, and
-    // the event's time: kept while an event that old is still taken (`BILLED_WINDOW_S`).
-    "CREATE TABLE sandbox_billed (execution_id TEXT PRIMARY KEY CHECK (length(execution_id) " +
-      "BETWEEN 1 AND 128), event_id TEXT NOT NULL CHECK (length(event_id) BETWEEN 1 AND 128), " +
-      "sandbox_id TEXT NOT NULL CHECK (length(sandbox_id) BETWEEN 1 AND 128), " +
+      "mb_ms INTEGER NOT NULL DEFAULT 0 CHECK (mb_ms >= 0), " +
+      // Executions counted with no id kept to check them against (`BILLED_KEPT` passed).
+      "unverified INTEGER NOT NULL DEFAULT 0 CHECK (unverified >= 0)) WITHOUT ROWID",
+    // E2B's executions already counted, each by 8 bytes of its execution id's SHA-256 (each
+    // counted once, whichever of its events came first), and its event's time: kept while an
+    // event that old is still taken (`BILLED_WINDOW_S`).
+    "CREATE TABLE sandbox_billed (digest BLOB PRIMARY KEY CHECK (length(digest) = 8), " +
       "at INTEGER NOT NULL) WITHOUT ROWID",
     "CREATE INDEX sandbox_billed_by_age ON sandbox_billed (at)",
+    // Each live sandbox's last execution counted, kept until its kill (a kill of a paused
+    // sandbox may carry the pause's execution, however long after), with its id for
+    // reconciling; the oldest dropped past `LIVE_KEPT`.
+    "CREATE TABLE sandbox_live (sandbox_id TEXT PRIMARY KEY CHECK (length(sandbox_id) " +
+      "BETWEEN 1 AND 128), digest BLOB NOT NULL CHECK (length(digest) = 8), " +
+      "at INTEGER NOT NULL) WITHOUT ROWID",
+    "CREATE INDEX sandbox_live_by_age ON sandbox_live (at)",
+    // Every exported table's three journal triggers (streams.ts): a key its change touched
+    // goes to each open stream's journal, so a stream read across units ends as one snapshot.
+    // The export test holds the list to `exported()` and its keys.
+    `${STREAMED("object_owner", "only", "INSERT")}`,
+    `${STREAMED("object_owner", "only", "UPDATE")}`,
+    `${STREAMED("object_owner", "only", "DELETE")}`,
+    `${STREAMED("owner_admission", "only", "INSERT")}`,
+    `${STREAMED("owner_admission", "only", "UPDATE")}`,
+    `${STREAMED("owner_admission", "only", "DELETE")}`,
+    `${STREAMED("owner_policy", "only", "INSERT")}`,
+    `${STREAMED("owner_policy", "only", "UPDATE")}`,
+    `${STREAMED("owner_policy", "only", "DELETE")}`,
+    `${STREAMED("policy_proposals", "request_id", "INSERT")}`,
+    `${STREAMED("policy_proposals", "request_id", "UPDATE")}`,
+    `${STREAMED("policy_proposals", "request_id", "DELETE")}`,
+    `${STREAMED("policy_receipts", "seq", "INSERT")}`,
+    `${STREAMED("policy_receipts", "seq", "UPDATE")}`,
+    `${STREAMED("policy_receipts", "seq", "DELETE")}`,
+    `${STREAMED("outside_clients", "client", "INSERT")}`,
+    `${STREAMED("outside_clients", "client", "UPDATE")}`,
+    `${STREAMED("outside_clients", "client", "DELETE")}`,
+    `${STREAMED("agent_cards", "card_id", "INSERT")}`,
+    `${STREAMED("agent_cards", "card_id", "UPDATE")}`,
+    `${STREAMED("agent_cards", "card_id", "DELETE")}`,
+    `${STREAMED("connections", "id", "INSERT")}`,
+    `${STREAMED("connections", "id", "UPDATE")}`,
+    `${STREAMED("connections", "id", "DELETE")}`,
+    `${STREAMED("engine_signins", "engine", "INSERT")}`,
+    `${STREAMED("engine_signins", "engine", "UPDATE")}`,
+    `${STREAMED("engine_signins", "engine", "DELETE")}`,
+    `${STREAMED("owner_notices", "seq", "INSERT")}`,
+    `${STREAMED("owner_notices", "seq", "UPDATE")}`,
+    `${STREAMED("owner_notices", "seq", "DELETE")}`,
+    `${STREAMED("file_entries", "parent name", "INSERT")}`,
+    `${STREAMED("file_entries", "parent name", "UPDATE")}`,
+    `${STREAMED("file_entries", "parent name", "DELETE")}`,
+    `${STREAMED("file_history", "version", "INSERT")}`,
+    `${STREAMED("file_history", "version", "UPDATE")}`,
+    `${STREAMED("file_history", "version", "DELETE")}`,
+    `${STREAMED("file_temps", "name", "INSERT")}`,
+    `${STREAMED("file_temps", "name", "UPDATE")}`,
+    `${STREAMED("file_temps", "name", "DELETE")}`,
+    `${STREAMED("file_contents", "content_id", "INSERT")}`,
+    `${STREAMED("file_contents", "content_id", "UPDATE")}`,
+    `${STREAMED("file_contents", "content_id", "DELETE")}`,
+    `${STREAMED("file_content_chunks", "content_id idx", "INSERT")}`,
+    `${STREAMED("file_content_chunks", "content_id idx", "UPDATE")}`,
+    `${STREAMED("file_content_chunks", "content_id idx", "DELETE")}`,
+    `${STREAMED("file_chunks", "sha256", "INSERT")}`,
+    `${STREAMED("file_chunks", "sha256", "UPDATE")}`,
+    `${STREAMED("file_chunks", "sha256", "DELETE")}`,
+    `${STREAMED("collection_rows", "collection row_id", "INSERT")}`,
+    `${STREAMED("collection_rows", "collection row_id", "UPDATE")}`,
+    `${STREAMED("collection_rows", "collection row_id", "DELETE")}`,
+    `${STREAMED("collection_history", "collection key revision", "INSERT")}`,
+    `${STREAMED("collection_history", "collection key revision", "UPDATE")}`,
+    `${STREAMED("collection_history", "collection key revision", "DELETE")}`,
+    `${STREAMED("collection_seqs", "collection", "INSERT")}`,
+    `${STREAMED("collection_seqs", "collection", "UPDATE")}`,
+    `${STREAMED("collection_seqs", "collection", "DELETE")}`,
+    `${STREAMED("collection_clock", "only", "INSERT")}`,
+    `${STREAMED("collection_clock", "only", "UPDATE")}`,
+    `${STREAMED("collection_clock", "only", "DELETE")}`,
+    `${STREAMED("outside_agents", "agent_id", "INSERT")}`,
+    `${STREAMED("outside_agents", "agent_id", "UPDATE")}`,
+    `${STREAMED("outside_agents", "agent_id", "DELETE")}`,
+    `${STREAMED("native_agents", "agent_id", "INSERT")}`,
+    `${STREAMED("native_agents", "agent_id", "UPDATE")}`,
+    `${STREAMED("native_agents", "agent_id", "DELETE")}`,
+    `${STREAMED("ledger_messages", "seq", "INSERT")}`,
+    `${STREAMED("ledger_messages", "seq", "UPDATE")}`,
+    `${STREAMED("ledger_messages", "seq", "DELETE")}`,
+    `${STREAMED("message_bodies", "message_id", "INSERT")}`,
+    `${STREAMED("message_bodies", "message_id", "UPDATE")}`,
+    `${STREAMED("message_bodies", "message_id", "DELETE")}`,
+    `${STREAMED("ledger_recipients", "message_id agent_id", "INSERT")}`,
+    `${STREAMED("ledger_recipients", "message_id agent_id", "UPDATE")}`,
+    `${STREAMED("ledger_recipients", "message_id agent_id", "DELETE")}`,
+    `${STREAMED("ledger_receipts", "seq", "INSERT")}`,
+    `${STREAMED("ledger_receipts", "seq", "UPDATE")}`,
+    `${STREAMED("ledger_receipts", "seq", "DELETE")}`,
+    `${STREAMED("ledger_readers", "reader", "INSERT")}`,
+    `${STREAMED("ledger_readers", "reader", "UPDATE")}`,
+    `${STREAMED("ledger_readers", "reader", "DELETE")}`,
+    `${STREAMED("model_spend", "period source", "INSERT")}`,
+    `${STREAMED("model_spend", "period source", "UPDATE")}`,
+    `${STREAMED("model_spend", "period source", "DELETE")}`,
+    `${STREAMED("model_reservations", "seq", "INSERT")}`,
+    `${STREAMED("model_reservations", "seq", "UPDATE")}`,
+    `${STREAMED("model_reservations", "seq", "DELETE")}`,
+    `${STREAMED("egress_reservations", "id", "INSERT")}`,
+    `${STREAMED("egress_reservations", "id", "UPDATE")}`,
+    `${STREAMED("egress_reservations", "id", "DELETE")}`,
+    `${STREAMED("runs", "seq", "INSERT")}`,
+    `${STREAMED("runs", "seq", "UPDATE")}`,
+    `${STREAMED("runs", "seq", "DELETE")}`,
+    `${STREAMED("run_inputs", "run", "INSERT")}`,
+    `${STREAMED("run_inputs", "run", "UPDATE")}`,
+    `${STREAMED("run_inputs", "run", "DELETE")}`,
+    `${STREAMED("run_schedules", "id", "INSERT")}`,
+    `${STREAMED("run_schedules", "id", "UPDATE")}`,
+    `${STREAMED("run_schedules", "id", "DELETE")}`,
+    `${STREAMED("conversations", "id", "INSERT")}`,
+    `${STREAMED("conversations", "id", "UPDATE")}`,
+    `${STREAMED("conversations", "id", "DELETE")}`,
     // The one storage number (founder, 2026-11-03): a body kept inline in its row is user
     // content too, counted in `body_bytes`, owner-wide and in its writer's files scope (its
     // `filer`), so the tier's storage holds every byte a user stores wherever it lives.

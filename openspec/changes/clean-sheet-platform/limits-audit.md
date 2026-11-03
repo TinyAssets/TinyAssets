@@ -37,12 +37,12 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,485,605,175 bytes, 44.86% of the 10 GB: 514.4 MB under
+**The worst case that ships is 4,497,952,133.25 bytes, 44.98% of the 10 GB: 502.0 MB under
 half**, slice ID's agent identities and mail authority, slice M's change orders, slice W's
 doorbell subscriptions (`wake_callbacks`, 423.6 MB at 1,000 agents and their widest), slice
-S's sandbox wait, and slice P's tables (`sandbox_billed` 28.8 MB with its index by age,
-`sandbox_spans` 3.1 MB, `owner_backups` 2.4 MB, `schema_digests` 1.0 MB, `sandbox_days`
-0.4 MB) included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
+S's sandbox wait, and slice P's tables (`sandbox_billed` 29.7 MB with its index by age,
+`stream_dirty` 9.5 MB, `sandbox_spans` 3.1 MB, `owner_backups` 2.4 MB, `sandbox_live`
+1.9 MB, `schema_digests` 1.0 MB, `sandbox_days` 0.4 MB) included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
 2.1 MB). Without each structural change, the same bounds would cost: bodies in their rows
 424.1 GB; history as rows times revisions 111.5 GB; recipients as messages times agents
 46.2 GB; scopes at 512 code points of JSON each 6.8 GB, each past the half.
@@ -56,8 +56,8 @@ The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collect
 - **tier**: 3
 - **owner setting**: 12
 - **vendor limit**: 9
-- **technical ceiling**: 132
-- **total**: 156
+- **technical ceiling**: 137
+- **total**: 161
 
 Counted by a script over every table row (`| ` lines past the header, six cells each), the first row and the names row among them.
 
@@ -256,7 +256,7 @@ a user does:
 | Where | Value | Bounds | A user hits | Class | Reason |
 |---|---|---|---|---|---|
 | `files/src/keys.ts` `MANIFEST_PARTS` | 16,384 parts of 4 MiB (64 GiB) | one nightly manifest's stream | nothing: the stream's worst case is 22.2 GB; past the ceiling the manifest is given up once and the owner told (`manifest_ceiling`), never retried in a loop | technical ceiling | Measured, JSON's escaping included: the owner-bound guard's "the nightly manifest's stream" puts every exported table at its bound, each line its frame and its values at 6 bytes a byte (a control character's `\u00XX`), a charged term as rows of 48 bytes each, and holds the sum under the parts. The part list, 73 bytes a part, fits one SQLite row's 2 MB (1.2 MB). |
-| `owner/src/backup.ts` `GATHER_BYTES` | 8 MiB | the stream one burst reads, with no outside call, before it puts its parts | nothing: the manifest goes on in the next burst | technical ceiling | The isolate's 128 MB: the burst's text as UTF-16, then its bytes, about 24 MiB at its peak. Each burst is one snapshot, and each checks the change clock first. |
+| `owner/src/backup.ts` `GATHER_BYTES` | 8 MiB | the stream one burst reads, with no outside call, before it puts its parts | nothing: the manifest goes on in the next burst | technical ceiling | The isolate's 128 MB: the burst's text as UTF-16, then its bytes, about 24 MiB at its peak. No other unit runs in the object during a burst. |
 | `owner/src/backup.ts` | 2 manifests | the nightly manifests kept | nothing: the newest finished is kept, an older one deleted once a new one finishes | technical ceiling | A recovery copy of the object; Durable Objects' own point-in-time recovery covers 30 days. Each manifest is the platform's, not counted in the owner's storage. |
 | `owner/src/export.ts` `CURSOR_CHARS` | 16,384 characters | an export cursor | nothing: a cursor past it was never handed out | technical ceiling | The widest key a cursor holds (a path of 4 KiB and its name) as base64url JSON. |
 | `doors/src/app.ts` `EXPORT_PAGES` | 64 pages a response | one export response | the stream ends with its cursor line; the client asks again from it | technical ceiling | One request's work in the doors Worker (8 MiB of chunks a page at most, about 512 MiB a response). A page, never what is held. |
@@ -264,11 +264,16 @@ a user does:
 | `owner/src/export.ts` `EXPORT_LIFE_S` | 7 days | an export's life from its first page; it holds no chunk | past it, its id names nothing: the owner begins the export again | technical ceiling | Under `GC_GRACE_S` (a test holds it), so every chunk its pages name is still in the bucket: a week to fetch every chunk of a 250 GB owner. |
 | `owner/src/export.ts` `EXPORT_PAGE_BYTES` | 1 MiB of rows a page | one export or manifest page's rows | nothing: the next page goes on from the cursor | technical ceiling | One page read in one unit, well inside one RPC's 32 MiB and the isolate's memory. |
 | `owner/src/export.ts` `EXPORTS_OPEN` | 16 | exports open at once | a 17th ends the oldest | technical ceiling | The 10 GB: guard term `owner_exports`; far past one owner's devices. |
-| `owner/src/files.ts` `GC_GRACE_S` | 30 days | how long a garbage chunk waits before it is deleted | nothing: deleted bytes leave the owner's number at once; the app says deleted files are kept 30 days for recovery and don't count | technical ceiling | Durable Objects' point-in-time recovery, 30 days: a restored object, or a manifest, never names a swept chunk. |
-| `owner/src/files.ts` garbage past the tier's storage (`garbage_bytes` over `max_bytes`) | the tier's storage figure: free 25 GB, paid 250 GB | the garbage in its grace the platform keeps uncounted for one owner | nothing: past it, the oldest garbage is collected early, so the earliest deletes lose their 30-day recovery first | technical ceiling | Recovery against cost: uncounted bytes are the platform's cost, so they are bounded by what the owner's tier counts (at most twice its figure in R2); the tier's own number, not a new one. |
+| `owner/src/files.ts` `GC_GRACE_S` | 30 days | how long a garbage chunk waits before it is deleted | nothing: deleted bytes leave the owner's number at once; the app says "Deleted files are kept up to 30 days, within your storage; past that the oldest go first." | technical ceiling | Durable Objects' point-in-time recovery, 30 days: a restored object, or a manifest, never names a swept chunk. |
+| `owner/src/files.ts` garbage past the owner's storage figure (`garbage_bytes` over `max_bytes`) | the owner's storage figure: the lower of its own setting (off by default) and its tier's (free 25 GB, paid 250 GB) | the garbage in its grace the platform keeps uncounted for one owner (a chunk being deleted counts no more) | nothing: past it, the oldest garbage is collected early, never a chunk the newest manifest names; a lower setting shortens recovery, which the storage view shows (`deleted`) | technical ceiling | Recovery against cost: uncounted bytes are the platform's cost, so they are bounded by what the owner's figure counts; the owner's own number, not a new one. Garbage the newest manifest names waits for the next manifest (a night at most), so a recovery point never loses a chunk. |
 | `owner/src/sandbox-time.ts` `BILLED_WINDOW_S` | 1 day | how old an E2B event, by its signed time, may be and still count; each counted execution is kept as long | nothing: a later event leaves the Worker's log as that execution's time | technical ceiling | E2B's signature carries no time: the window refuses a late replay, and the ids kept for it refuse an early one. Past E2B's three delivery attempts. |
 | `owner/src/sandbox-time.ts` `BILLED_SKEW_S` | 5 minutes | how far ahead of the object's clock an event's time may be | nothing: the Worker's log stands | technical ceiling | Clock drift between E2B and the platform. |
-| `owner/src/sandbox-time.ts` `BILLED_KEPT` | 10,000 executions | E2B executions counted inside the window, each once by its execution id | nothing: past it a new one is not counted (logged), the Worker's log stands; none inside the window is forgotten | technical ceiling | The 10 GB: guard term `sandbox_billed`, 28.8 MB with its index. One execution every 8.6 s all day. |
+| `owner/src/sandbox-time.ts` `BILLED_KEPT` | 100,000 executions | E2B executions kept inside the window to count each once, by 8 bytes of their id's SHA-256 | nothing: past it a new one is counted anyway and tallied `unverified_executions` on its day, which the view shows; none inside the window is forgotten | technical ceiling | The 10 GB: guard term `sandbox_billed`, 29.7 MB with its index. One execution every 0.86 s all day; the digests' birthday chance at 10^5 is about 3·10^-10. |
+| `owner/src/sandbox-time.ts` `LIVE_KEPT` | 1,000 sandboxes | live sandboxes whose last execution is kept until their kill | nothing: past it the oldest live sandbox's is dropped, and a kill of it then names an execution the window may no longer hold | technical ceiling | The 10 GB: guard term `sandbox_live`. One sandbox an authority, and far fewer authorities than this. |
+| `owner/src/streams.ts` `DIRTY_BYTES_MAX` | 2 MiB a stream | the keys one export or manifest journals over its life (each its table, key and `DIRTY_ROW_BYTES` 96) | nothing the owner writes: past it that stream fails (`stream_unsettled`), the export is begun again and the manifest given up with one notice | technical ceiling | The 10 GB: guard term `stream_dirty`, 9.5 MB for the two streams at worst fill; about 13,000 keys changed while one stream is read, far past an owner's writes during a stream that ends in minutes. |
+| `owner/src/streams.ts` `ROUNDS_MAX` | 1,024 pages | the journal's pages one stream reads | as `DIRTY_BYTES_MAX`: the stream fails, never loops | technical ceiling | A stream that has not caught up in a thousand pages of rounds is outrun by its owner. |
+| `owner/src/streams.ts` `STREAM_IDLE_S` | 10 minutes | how long an export's stream waits for its next page | nothing: its pages are refused, the export begun again | technical ceiling | A journal costs every write a row while it is open; an export read stays well inside it. |
+| `owner/src/backup.ts` `MANIFEST_CONTINUE_S` | 60 s | when a manifest a pass did not finish goes on | nothing | technical ceiling | The schedule's contract: a lane never sets itself due at once with work it cannot finish. |
 | `owner/src/sandbox-time.ts` `METER_BATCH` | 1,000 entries | the sandbox Worker's log entries one read takes | nothing: the lane reads again from the cursor | technical ceiling | One read's answer over RPC and one unit's work, well inside 32 MiB. |
 | `files/src/datakey.ts` `KIDS_MAX` | 64 kids | the files keyring's kids | a ring past it fails every call loudly (`files_keyring_unavailable`) | technical ceiling | The secret's 5 KiB: 64 keys of 44 characters each, far past any rotation schedule. |
 | `files/src/cipher.ts` AES-GCM, one data key | at most 2^32 seals a key (NIST SP 800-38D §8.3, random 96-bit nonces) | objects sealed under one owner's data key in the `aes-gcm` fallback | nothing: an owner's chunks are created once each, far fewer than 4 billion (a 250 GB owner at 4 MiB a chunk is 60,000; tiny files are inline) | technical ceiling | The nonce-collision bound of random IVs; the default (SSE-C) seals nothing here. Range reads under `aes-gcm` are charged a whole chunk each against `BATCH_BYTES`. |

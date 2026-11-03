@@ -11,8 +11,12 @@ import { describe, expect, it } from "vitest";
 import { mint } from "../../files/src/datakey";
 import { MANIFEST_PARTS } from "../../files/src/keys";
 import { PLATFORM_CALLER, PLATFORM_ONLY } from "../src/admission";
-import { MANIFEST_CEILING, manifestDay, spread } from "../src/backup";
-import { EXPORT_CHANGED, EXPORT_LIFE_S, exported, NOT_EXPORTED } from "../src/export";
+import {
+  Backups, MANIFEST_CEILING, MANIFEST_CONTINUE_S, MANIFEST_UNSETTLED, manifestDay, spread,
+} from "../src/backup";
+import { WriteGate } from "../src/gate";
+import { DIRTY_BYTES_MAX, Streams, STREAM_UNSETTLED } from "../src/streams";
+import { EXPORT_LIFE_S, exported, NOT_EXPORTED } from "../src/export";
 import type FilesService from "../../files/src/index";
 import { CHUNK_BYTES, CHUNK_GONE, GC_GRACE_S, INLINE_BYTES } from "../src/files";
 import type { Binding, OwnerDO } from "../src/owner-do";
@@ -120,13 +124,12 @@ describe("the owner export", () => {
     await o.stub.collectionWrite(o.bind(), { collection: "board", row_id: "t1", body: "hello",
                                              expected_etag: "", private: false });
     const { lines, exportId } = await exportAll(o);
-    const [{ clock }] = await sqlIn(o.stub, "SELECT clock FROM owner_backup_state") as
-      [{ clock: number }];
     expect(lines[0]).toMatchObject({ t: "header", format: "tinyassets-export", version: 1,
                                      schema: MIGRATIONS.length, owner: o.name,
-                                     export_id: exportId, clock });
+                                     export_id: exportId });
     const chunkBytes = await fetched(o, lines, exportId);
-    expect(lines.at(-1)).toEqual({ t: "end" });
+    expect(lines.at(-1)).toMatchObject({ t: "end" });
+    expect(lines.at(-1)!["at"]).toBeGreaterThan(0);
     expect(lines.filter((line) => line.t === "header" || line.t === "end")).toHaveLength(2);
     // Each exported table's rows are exactly its rows, columns as listed, in key order.
     const tables = exported();
@@ -171,26 +174,28 @@ describe("the owner export", () => {
     for (let i = 0; i < 220; i++) {
       await write(o, `${W}/inline-${i}.bin`, filled(INLINE_BYTES, i));
     }
-    const whole = await exportAll(o);
-    expect(whole.cursors.length).toBeGreaterThan(0);
-    // From each page's cursor, the rest of the manifest, exactly.
-    const pages: Line[][] = [];
-    for (let next: string | null = null; ;) {
-      const page = await o.stub.ownerExport(o.session(), next === null ? { cursor: null }
-        : { cursor: next, export_id: whole.exportId });
-      pages.push(page.lines.map((line) => JSON.parse(line) as Line));
-      if (page.next === null) {
-        break;
+    // Each page asked again from its cursor is the same page, the rounds' among them.
+    const first = await o.stub.ownerExport(o.session(), { cursor: null });
+    const cursors: string[] = [];
+    let pages = 1;
+    for (let next = first.next; next !== null; pages++) {
+      cursors.push(next);
+      const page = await o.stub.ownerExport(o.session(), { cursor: next,
+                                                           export_id: first.export_id });
+      if (page.next !== null) {
+        expect(await o.stub.ownerExport(o.session(), { cursor: next,
+                                                       export_id: first.export_id }))
+          .toEqual(page);
       }
       next = page.next;
     }
-    for (const [at, cursor] of whole.cursors.entries()) {
-      const rest = await exportAll(o, cursor, whole.exportId);
-      expect(rest.lines).toEqual(pages.slice(at + 1).flat());
-    }
-    // A later page names its open export; an unknown one is refused.
+    expect(pages).toBeGreaterThan(1);
+    // A later page names its open export; an unknown one, or one ended, is refused.
     expect((await failure(() => o.stub.ownerExport(o.session(), {
-      cursor: whole.cursors[0]!, export_id: "0".repeat(32) }))).message)
+      cursor: cursors[0]!, export_id: "0".repeat(32) }))).message)
+      .toBe("this export is not open: begin it again");
+    expect((await failure(() => o.stub.ownerExport(o.session(), {
+      cursor: cursors[0]!, export_id: first.export_id }))).message)
       .toBe("this export is not open: begin it again");
     for (const bad of ["x", "Zm9v", Buffer.from("[1,999,null]").toString("base64url"),
                        Buffer.from("[2,0,null]").toString("base64url"), "a".repeat(20_000)]) {
@@ -225,9 +230,68 @@ describe("the owner export", () => {
   });
 });
 
+describe("the streams' journal", () => {
+  it("journals every exported table's changed keys, by the key the export reads, and no " +
+     "other table's (review N1)", async () => {
+    const o = await owner();
+    const triggers = await sqlIn(o.stub, "SELECT name, tbl_name, sql FROM sqlite_master " +
+                                         "WHERE type = 'trigger' AND name GLOB '*_streamed_*'");
+    const tables = exported();
+    expect([...new Set(triggers.map((row) => row["tbl_name"] as string))].sort())
+      .toEqual(Object.keys(tables).sort());
+    for (const [table, { key }] of Object.entries(tables)) {
+      const of = (event: string) => triggers.find((row) =>
+        row["name"] === `${table}_streamed_${event}`)!["sql"] as string;
+      const keyed = (row: string) => `json_array(${key.map((column) => `${row}.${column}`)
+        .join(", ")})`;
+      expect(of("insert")).toContain(keyed("NEW"));
+      expect(of("delete")).toContain(keyed("OLD"));
+      expect(of("update")).toContain(keyed("OLD"));
+      expect(of("update")).toContain(keyed("NEW"));
+    }
+    // With no stream open, a write journals nothing.
+    await write(o, `${W}/quiet.txt`, filled(10, 1));
+    expect(await sqlIn(o.stub, "SELECT COUNT(*) AS n FROM stream_dirty")).toEqual([{ n: 0 }]);
+  });
+});
+
 /** A manifest finished long ago, so tonight's is due now. */
 const LAST_YEARS = "INSERT INTO owner_backups (day, state, cursor, parts, part_list, bytes, " +
-  "started_at, finished_at, clock) VALUES ('20200101', 'done', NULL, 0, '', 0, 1, 1, 0)";
+  "started_at, finished_at) VALUES ('20200101', 'done', NULL, 0, '', 0, 1, 1)";
+
+/** Rows as a reader keeps them: each table's rows by key, the last line for a key winning. */
+type Rows = Record<string, Record<string, string>>;
+
+/** A stream's lines replayed, last line per (table, key) winning, `gone` taking one away. */
+function replay(lines: Line[]): Rows {
+  const tables = exported();
+  const out: Rows = Object.fromEntries(Object.keys(tables).map((table) => [table, {}]));
+  for (const line of lines) {
+    const table = line["table"] as string;
+    if (line.t === "row") {
+      const row = line["row"] as Record<string, unknown>;
+      out[table]![JSON.stringify(tables[table]!.key.map((column) => row[column]))] =
+        JSON.stringify(row);
+    } else if (line.t === "gone") {
+      delete out[table]![JSON.stringify(line["key"])];
+    }
+  }
+  return out;
+}
+
+/** The owner's exported rows as they stand, keyed as `replay` keys them. */
+function standing(sql: Pick<SqlStorage, "exec">): Rows {
+  const tables = exported();
+  return Object.fromEntries(Object.entries(tables).map(([table, { columns, key }]) => [
+    table, Object.fromEntries(sql.exec<Record<string, SqlStorageValue>>(
+      `SELECT ${[...new Set([...columns, ...key])].join(", ")} FROM ${table}`).toArray()
+      .map((row) => [JSON.stringify(key.map((column) => row[column])), JSON.stringify(
+        Object.fromEntries(columns.map((column) => {
+          const value = row[column];
+          return [column, value instanceof ArrayBuffer
+            ? { $base64: Buffer.from(value).toString("base64") } : value];
+        })))]))]));
+}
 
 /** A file written, then removed with its history: its chunk is garbage, in its grace. */
 async function writeThenDelete(o: Owner, path: string, seed: number): Promise<string> {
@@ -265,7 +329,7 @@ describe("an open export", () => {
     expect(await stateOf(o, sha)).toEqual([]);
     // Nothing in the export's row could hold one.
     expect((await sqlIn(o.stub, "PRAGMA table_info(owner_exports)")).map((row) => row["name"]))
-      .toEqual(["export_id", "opened_at", "ends_at", "clock"]);
+      .toEqual(["export_id", "opened_at", "ends_at"]);
   });
 
   it("lives under the garbage grace, so every chunk its pages name is still there",
@@ -302,28 +366,72 @@ describe("an open export", () => {
       .toBe("this export is not open: begin it again");
   });
 
-  it("is one snapshot: a later page, once the owner changed, is refused (review M1)",
+  it("ends as the owner at one moment though the owner writes between every page " +
+     "(review N1)", async () => {
+    const o = await owner();
+    for (let i = 0; i < 440; i++) {
+      await write(o, `${W}/inline-${i}.bin`, filled(INLINE_BYTES, i));
+    }
+    // A writer between every page: a board write (one a second, as an agent's), a frame
+    // batch (twenty rows at once), a file overwritten and one deleted.
+    const lines: Line[] = [];
+    let pages = 0;
+    let exportId = "";
+    for (let next: string | null = null; ; pages++) {
+      const page = await o.stub.ownerExport(o.session(), next === null ? { cursor: null }
+        : { cursor: next, export_id: exportId });
+      exportId = page.export_id;
+      lines.push(...page.lines.map((line) => JSON.parse(line) as Line));
+      if (page.next === null) {
+        break;
+      }
+      next = page.next;
+      expect(pages).toBeLessThan(40);
+      await o.stub.collectionWrite(o.bind(), { collection: "board", row_id: `p${pages}`,
+                                               body: `page ${pages}`, expected_etag: "",
+                                               private: false });
+      await sqlIn(o.stub, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n " +
+                          "WHERE i < 20) INSERT INTO owner_notices (at, type, detail) " +
+                          "SELECT ?, 'frame', 'batch ' || i FROM n", pages);
+      await write(o, `${W}/inline-${pages}.bin`, filled(INLINE_BYTES, 1000 + pages));
+      await o.stub.fileRemove(o.bind(), { path: `${W}/inline-${439 - pages}.bin`,
+                                          expected_etag: null, recursive: false });
+    }
+    expect(pages).toBeGreaterThan(1);
+    // Rounds re-emitted what changed, and a delete as gone.
+    expect(lines.some((line) => line.t === "gone")).toBe(true);
+    expect(lines.at(-1)).toMatchObject({ t: "end" });
+    // Replayed, the stream is exactly the owner as it stands: nothing wrote after its end.
+    const now = await runInDurableObject(o.stub, (_instance: OwnerDO, state) =>
+      standing(state.storage.sql));
+    expect(replay(lines)).toEqual(now);
+    // Its journal went with it.
+    expect(await sqlIn(o.stub, "SELECT COUNT(*) AS n FROM stream_dirty")).toEqual([{ n: 0 }]);
+    expect(await sqlIn(o.stub, "SELECT COUNT(*) AS n FROM owner_streams")).toEqual([{ n: 0 }]);
+  });
+
+  it("serves a page asked again, and fails, never loops, once the owner outruns it",
      async () => {
     const o = await owner();
     for (let i = 0; i < 220; i++) {
       await write(o, `${W}/inline-${i}.bin`, filled(INLINE_BYTES, i));
     }
     const first = await o.stub.ownerExport(o.session(), { cursor: null });
-    expect(first.next).not.toBeNull();
-    // A renewal of the session, and another export opened and ended, change nothing it reads.
-    await o.stub.sessionExtend(o.session());
-    const other = await o.stub.ownerExport(o.session(), { cursor: null });
-    await o.stub.exportEnd(o.bind(), { export_id: other.export_id });
-    const second = await o.stub.ownerExport(o.session(), { cursor: first.next,
-                                                            export_id: first.export_id });
-    // A change between pages: the next page is refused, and a new export reads it whole.
-    await write(o, `${W}/late.bin`, filled(10, 1));
+    const again = await o.stub.ownerExport(o.session(), { cursor: first.next,
+                                                           export_id: first.export_id });
+    expect(await o.stub.ownerExport(o.session(), { cursor: first.next,
+                                                   export_id: first.export_id }))
+      .toEqual(again);
+    // The owner changed past what one stream may journal: the export fails, loudly.
+    await sqlIn(o.stub, "UPDATE owner_streams SET journaled = ?", DIRTY_BYTES_MAX);
     expect((await failure(() => o.stub.ownerExport(o.session(), {
-      cursor: second.next ?? first.next, export_id: first.export_id }))).message)
-      .toBe(EXPORT_CHANGED);
-    const again = await exportAll(o);
-    expect(again.lines.some((line) => line["table"] === "file_entries"
-      && (line["row"] as { name: string }).name === "late.bin")).toBe(true);
+      cursor: again.next, export_id: first.export_id }))).message).toBe(STREAM_UNSETTLED);
+    // A new export replaces its stream; the old one's pages are no longer served.
+    const fresh = await exportAll(o);
+    expect(fresh.lines.at(-1)).toMatchObject({ t: "end" });
+    expect((await failure(() => o.stub.ownerExport(o.session(), {
+      cursor: again.next, export_id: first.export_id }))).message)
+      .toBe("this export is not open: begin it again");
   });
 });
 
@@ -357,7 +465,7 @@ describe("the nightly manifest", () => {
     const lines: Line[] = Buffer.concat(parts).toString("utf8").trimEnd().split("\n")
       .map((line: string) => JSON.parse(line) as Line);
     expect(lines[0]).toMatchObject({ t: "header", owner: o.name });
-    expect(lines.at(-1)).toEqual({ t: "end" });
+    expect(lines.at(-1)).toMatchObject({ t: "end" });
     // The same stream as the export's, the chunks' bytes left in the bucket.
     const chunks = lines.filter((line) => line.t === "chunk");
     expect(chunks).toHaveLength(1);
@@ -377,32 +485,99 @@ describe("the nightly manifest", () => {
     expect(await laneAt(o.stub, "manifest")).toBe(tomorrow + spread(o.name));
   });
 
-  it("begins again, pinned anew, when the owner changes between its bursts (review M1)",
-     async () => {
+  it("ends as the owner at one moment though the owner writes during every R2 put " +
+     "(review N1)", async () => {
     const o = await owner();
-    await write(o, `${W}/first.bin`, filled(INLINE_BYTES + 10, 8));
     await sqlIn(o.stub, LAST_YEARS);
-    // A manifest under way, pinned to a clock the owner has since moved past.
-    const day = manifestDay(Date.now() / 1000);
-    await sqlIn(o.stub, "INSERT INTO owner_backups (day, state, cursor, parts, part_list, " +
-                        "bytes, started_at, clock) VALUES (?, 'writing', NULL, 0, '', 0, ?, 0)",
-                day, Date.now() / 1000);
-    await o.stub.fileMkdir(o.bind(), { path: `${W}/d`, expected_etag: null });
+    // About 11 MB of stream: more than one burst, so R2 puts fall inside it.
+    await sqlIn(o.stub, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n " +
+      "WHERE i < 10000) INSERT INTO owner_notices (at, type, detail) SELECT 0, 'x', " +
+      "printf('%.1000c', 'a') FROM n");
+    const outcome = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+      const gate = new WriteGate(state.storage);
+      const streams = new Streams(gate.storage);
+      const parts = new Map<number, Uint8Array>();
+      const before: Rows[] = [];
+      let roots = 0;
+      let writes = 0;
+      const store = {
+        // An agent's write lands while each part is on its way to R2.
+        async putManifestPart(_ns: string, _key: string, _day: string, part: number,
+                              bytes: Uint8Array) {
+          before.push(standing(state.storage.sql));
+          await gate.write(() => {
+            writes++;
+            gate.storage.sql.exec("INSERT INTO owner_notices (at, type, detail) VALUES " +
+                                  "(1, 'agent', 'write')");
+            gate.storage.sql.exec("UPDATE owner_notices SET detail = 'changed' WHERE seq = ?",
+                                  writes);
+            gate.storage.sql.exec("DELETE FROM owner_notices WHERE seq = ?", 5000 + writes);
+          });
+          parts.set(part, bytes.slice());
+          return { sha256: "a".repeat(64), size: bytes.byteLength };
+        },
+        async putManifestRoot() { roots++; },
+        async deleteManifest() {},
+      };
+      const backups = new Backups({
+        storage: gate.storage, write: gate.quiet, store: store as never, streams,
+        space: async () => ({ ns: "0".repeat(32), key: "v1.k.x.y" }), owner: () => o.name,
+        serves: () => true, schema: MIGRATIONS.length, halted: () => false, notice: () => {},
+      });
+      await backups.run(Date.now() / 1000, Date.now() + 60_000);
+      const text = Buffer.concat([...parts.keys()].sort((a, b) => a - b)
+        .map((part) => parts.get(part)!)).toString("utf8");
+      return { roots, writes, before, text,
+               rows: state.storage.sql.exec("SELECT state FROM owner_backups").toArray(),
+               streams: state.storage.sql.exec("SELECT COUNT(*) AS n FROM owner_streams")
+                 .one().n };
+    });
+    // Finished in one pass, never begun again, though every put saw a write.
+    expect(outcome.roots).toBe(1);
+    expect(outcome.writes).toBeGreaterThan(2);
+    expect(outcome.rows).toEqual([{ state: "done" }]);
+    expect(outcome.streams).toBe(0);
+    const lines = outcome.text.trimEnd().split("\n").map((line: string) => JSON.parse(line) as Line);
+    expect(lines[0]).toMatchObject({ t: "header" });
+    expect(lines.at(-1)).toMatchObject({ t: "end" });
+    // Replayed, it is the owner at its end: as it stood when the last burst's puts began,
+    // before the first write after the stream ended.
+    const replayed = replay(lines);
+    expect(outcome.before.slice(-2).some((rows) =>
+      JSON.stringify(rows) === JSON.stringify(replayed))).toBe(true);
+    expect(replayed["owner_notices"]!["[1]"]).toContain("changed");
+  });
+
+  it("goes on later, never at once, when a pass ends before it does; given up, never " +
+     "looped, when the owner outruns it", async () => {
+    const o = await owner();
+    await write(o, `${W}/a.bin`, filled(INLINE_BYTES + 10, 12));
+    await sqlIn(o.stub, LAST_YEARS);
+    await sqlIn(o.stub, "UPDATE owner_backup_state SET changed = 1");
+    const due = await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+      const gate = new WriteGate(state.storage);
+      const streams = new Streams(gate.storage);
+      const backups = new Backups({
+        storage: gate.storage, write: gate.quiet, store: env.FILES, streams,
+        space: async () => ({ ns: "0".repeat(32), key: "v1.k.x.y" }), owner: () => o.name,
+        serves: () => true, schema: MIGRATIONS.length, halted: () => false, notice: () => {},
+      });
+      const now = Date.now() / 1000;
+      await backups.run(now, Date.now());  // a pass with no time left: begun, not finished
+      return { next: backups.next(now)!, now };
+    });
+    expect(due.next).toBeGreaterThanOrEqual(due.now + MANIFEST_CONTINUE_S - 5);
+    // The owner outran the stream: the manifest is given up, the owner told, no job left.
+    await sqlIn(o.stub, "UPDATE owner_streams SET journaled = ?", DIRTY_BYTES_MAX);
+    await sqlIn(o.stub, "UPDATE owner_backups SET retry_at = NULL WHERE state = 'writing'");
+    await o.stub.fileMkdir(o.bind(), { path: `${W}/d`, expected_etag: null });  // its job set
+    await sqlIn(o.stub, "UPDATE owner_backup_state SET changed = 0");
     await drainDue(o.stub);
-    const [row] = await sqlIn(o.stub, "SELECT state, clock FROM owner_backups WHERE day = ?",
-                              day);
-    const [{ clock }] = await sqlIn(o.stub, "SELECT clock FROM owner_backup_state") as
-      [{ clock: number }];
-    // Begun again at the clock as it stood, and finished: the stream names the change.
-    expect(row).toEqual({ state: "done", clock });
-    expect(clock).toBeGreaterThan(0);
-    const [space] = await sqlIn(o.stub, "SELECT ns FROM file_space");
-    const root = (await bucket().getManifestRoot(space!["ns"] as string, day))!;
-    const text = Buffer.concat(await Promise.all(root.parts.map((part, at) =>
-      bucket().getManifestPart(space!["ns"] as string, root.key, day, at, part.sha256))))
-      .toString("utf8");
-    expect(JSON.parse(text.split("\n")[0]!)).toMatchObject({ t: "header", clock });
-    expect(text).toContain('"name":"d"');
+    expect(await sqlIn(o.stub, "SELECT state FROM owner_backups WHERE day != '20200101'"))
+      .toEqual([]);
+    const told = await o.stub.noticeList(o.bind());
+    expect(told.notices.filter((notice) => notice.type === MANIFEST_UNSETTLED)).toHaveLength(1);
+    expect(await laneAt(o.stub, "manifest")).toBeNull();
   });
 
   it("past its ceiling, is given up once and the owner told, never retried in a loop " +
@@ -413,12 +588,11 @@ describe("the nightly manifest", () => {
     // A manifest under way with every part but none used already.
     const day = manifestDay(Date.now() / 1000);
     await sqlIn(o.stub, "INSERT INTO owner_backups (day, state, cursor, parts, part_list, " +
-                        "bytes, started_at, clock) VALUES (?, 'writing', NULL, ?, '', 0, ?, 0)",
+                        "bytes, started_at) VALUES (?, 'writing', NULL, ?, '', 0, ?)",
                 day, MANIFEST_PARTS, Date.now() / 1000);
+    await sqlIn(o.stub, "INSERT INTO owner_streams (kind, stream_id, opened_at, read_at) " +
+                        "VALUES ('manifest', 'manifest', 0, 0)");
     await o.stub.fileMkdir(o.bind(), { path: `${W}/d`, expected_etag: null });  // its job set
-    // Pinned to the clock as it stands, nothing changed since.
-    await sqlIn(o.stub, "UPDATE owner_backups SET clock = (SELECT clock FROM " +
-                        "owner_backup_state) WHERE day = ?", day);
     await sqlIn(o.stub, "UPDATE owner_backup_state SET changed = 0");
     await drainDue(o.stub);
     expect(await sqlIn(o.stub, "SELECT day FROM owner_backups WHERE day = ?", day)).toEqual([]);

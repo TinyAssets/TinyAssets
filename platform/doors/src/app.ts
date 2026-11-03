@@ -32,8 +32,9 @@
  * - `storage`: the owner's one storage number, used and left (`storageUsage`).
  * - `export`: the owner's export manifest (`owner/src/export.ts`), streamed as
  *   newline-delimited JSON (`exportStream`), resumable from any page's cursor line with the
- *   header's `export_id` while the owner has not changed since it began (else "begin it
- *   again"); `export/chunks` its chunks' bytes by hash; `export/end` its id let go.
+ *   header's `export_id`, ending as the owner at one moment however the owner writes
+ *   meanwhile (`owner/src/streams.ts`); `export/chunks` its chunks' bytes by hash;
+ *   `export/end` its id let go.
  * - `agent/socket-ticket`: a single-use socket ticket for one of the owner's conversations
  *   (A6, salvaged), behind every check above, bound to the token's grant and expiry
  *   (`bindOwnerGrant`).
