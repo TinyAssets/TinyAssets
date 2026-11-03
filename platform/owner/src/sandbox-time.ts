@@ -79,8 +79,12 @@ export const BILLED_SKEW_S = 300;
  * one is counted anyway, and tallied `unverified` (the 10 GB: 8 bytes and a time a row).
  */
 export const BILLED_KEPT = 100_000;
-/** Live sandboxes whose last execution is kept until their kill; past it the oldest goes. */
-export const LIVE_KEPT = 1_000;
+/**
+ * Live sandboxes whose last execution is kept until their kill: one an authority, and an
+ * owner has at most 2,001 (itself, and `GRANT_LIMITS`' 1,000 free and 1,000 owner-set
+ * clients; a test holds it there). Past it the oldest goes.
+ */
+export const LIVE_KEPT = 2_001;
 
 /** 8 bytes of an E2B execution id's SHA-256: what is kept to count it once. */
 function digest(executionId: string): ArrayBuffer {

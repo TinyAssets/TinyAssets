@@ -39,7 +39,8 @@
  * wherever a chunk outlived the prefix delete, and their names say nothing.
  *
  * The nightly manifest (`owner/src/backup.ts`) is the only other kind of object: its parts
- * (`o/<ns>/m/<day>/<n>`), under the same data key, and its root (`o/<ns>/m/<day>`), a small
+ * (`o/<ns>/m/<gen>/<n>`) and log segments (`o/<ns>/m/<gen>/l/<a>-<b>`), under the same data
+ * key, and its root (`o/<ns>/m/<gen>`), a small
  * JSON carrying the owner's wrapped key, always under the ring's active kid, and the parts'
  * hashes and sizes sealed under the data key (AES-256-GCM, the root's own R2 key as
  * additional data), so a recovery needs no object state but the keyring, and the bucket
@@ -59,8 +60,8 @@ import { type Cipher, cipherOf, open, seal } from "./cipher";
 import { chunkName, type KeyringSecret, mint, rewrap, unwrap } from "./datakey";
 import {
   BATCH_BYTES, CHUNK_BYTES, chunkHash, chunkKey, chunkPrefix, DELETE_BATCH, Invalid, listedChunk,
-  listedManifest, MANIFEST_PARTS, manifestDay, manifestKey, manifestPart, manifestPrefix,
-  namespace,
+  generation, listedManifest, MANIFEST_PARTS, manifestKey, manifestPart, manifestPrefix,
+  type ManifestAt, manifestObjectKey, namespace, segmentKey, segmentSpan,
 } from "./keys";
 /** How a binding reports R2's `BadDigest`: the code, or its message. */
 const BAD_DIGEST = /\(10037\)|did not match what we received/;
@@ -73,28 +74,46 @@ export interface FilesEnv {
   readonly FILES_CIPHER?: string;
 }
 
-/** A nightly manifest's root, as a recovery reads it (`getManifestRoot`, its list opened). */
+/** One object of a generation: its SHA-256 and size. */
+export interface ManifestObject {
+  readonly sha256: string;
+  readonly size: number;
+}
+
+/** A log segment of a generation: the seqs after `a` through `b`, its hash and size. */
+export interface ManifestSegment extends ManifestObject {
+  readonly a: number;
+  readonly b: number;
+}
+
+/**
+ * A generation's root, as a recovery reads it (`getManifestRoot`, its list opened): its base
+ * parts and its log segments in order, the log's span `s` (its first seq) to `e` (its end,
+ * the moment the generation is the owner as it stood), and when it was written.
+ */
 export interface ManifestRoot {
   readonly format: "tinyassets-manifest";
-  readonly version: 1;
-  readonly day: string;
-  /** The owner's wrapped data key, which the parts are under. */
+  readonly version: 2;
+  readonly gen: string;
+  /** The owner's wrapped data key, which the parts and segments are under. */
   readonly key: string;
-  /** Each part's SHA-256 and size, in order. */
-  readonly parts: readonly { readonly sha256: string; readonly size: number }[];
+  readonly parts: readonly ManifestObject[];
+  readonly segments: readonly ManifestSegment[];
+  readonly s: number;
+  readonly e: number;
   readonly at: number;
 }
 
-/** A root as the bucket holds it: the wrapped key in the clear, the parts and time sealed. */
+/** A root as the bucket holds it: the wrapped key in the clear, the lists and span sealed. */
 interface StoredRoot {
   readonly format: "tinyassets-manifest";
-  readonly version: 1;
-  readonly day: string;
+  readonly version: 2;
+  readonly gen: string;
   readonly key: string;
   readonly sealed: string;
 }
 
-function storedRoot(text: string, day: string): StoredRoot {
+function storedRoot(text: string, gen: string): StoredRoot {
   let root: unknown;
   try {
     root = JSON.parse(text);
@@ -103,8 +122,8 @@ function storedRoot(text: string, day: string): StoredRoot {
   }
   const r = root as Record<string, unknown>;
   if (typeof root !== "object" || root === null
-      || Object.keys(root).sort().join() !== "day,format,key,sealed,version"
-      || r["format"] !== "tinyassets-manifest" || r["version"] !== 1 || r["day"] !== day
+      || Object.keys(root).sort().join() !== "format,gen,key,sealed,version"
+      || r["format"] !== "tinyassets-manifest" || r["version"] !== 2 || r["gen"] !== gen
       || typeof r["key"] !== "string" || typeof r["sealed"] !== "string") {
     throw new Error("a manifest root is out of shape");
   }
@@ -371,76 +390,118 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
     return { deleted: hashes.length };
   }
 
-  /**
-   * One part of the owner's nightly manifest of `day`, under the owner's key, verified by
-   * R2. A part is written again when a pass that wrote it did not record it.
-   */
-  async putManifestPart(ns: string, key: string, day: string, part: number,
-                        bytes: Uint8Array): Promise<{ sha256: string; size: number }> {
+  /** A generation's object's bytes put under the owner's key at `at`, verified by R2. */
+  async #putObject(ns: string, key: string, gen: string, at: ManifestAt, bytes: Uint8Array):
+      Promise<ManifestObject> {
     const body = chunkBytes(bytes);
     const sha256 = await sha256Hex(body);
     const dataKey = await this.#key(ns, key);
-    const stored = await this.#stored(dataKey, manifestKey(ns, day, part), body, sha256);
-    await this.env.BLOBS.put(manifestKey(ns, day, part), stored.body, stored.options);
+    const stored = await this.#stored(dataKey, manifestObjectKey(ns, gen, at), body, sha256);
+    await this.env.BLOBS.put(manifestObjectKey(ns, gen, at), stored.body, stored.options);
     return { sha256, size: body.byteLength };
   }
 
+  /** A generation's object's bytes read under the key `key` (the object's, or the root's). */
+  async #getObject(ns: string, key: string, gen: string, at: ManifestAt, sha256: string):
+      Promise<Uint8Array> {
+    const dataKey = await this.#key(ns, key);
+    const object = await this.env.BLOBS.get(manifestObjectKey(ns, gen, at), this.#reading(dataKey));
+    if (object === null) {
+      throw new Error("a manifest object its root names is missing from the bucket");
+    }
+    const bytes = await this.#plain(dataKey, manifestObjectKey(ns, gen, at), object);
+    if (await sha256Hex(bytes) !== chunkHash(sha256)) {
+      throw new Error("a manifest object's bytes no longer match its hash");
+    }
+    return bytes;
+  }
+
   /**
-   * The manifest's root, written once every part is: the owner's wrapped key, under the
-   * active kid whatever kid `key` was, so a pass that began before a rotation writes no root
-   * under a retiring one; and the parts' hashes and sizes in order, sealed under the data
-   * key, so a recovery needs only the keyring.
+   * One base part of the owner's generation `gen`, under the owner's key, verified by R2. A
+   * part is written again when a pass that wrote it did not record it.
    */
-  async putManifestRoot(ns: string, key: string, day: string,
-                        parts: readonly { sha256: string; size: number }[]): Promise<void> {
+  async putManifestPart(ns: string, key: string, gen: string, part: number,
+                        bytes: Uint8Array): Promise<ManifestObject> {
+    return this.#putObject(ns, key, gen, part, bytes);
+  }
+
+  /**
+   * One log segment of the generation `gen`: the change log's seqs after `a` through `b`,
+   * under the owner's key. Put again with the same bytes when its acknowledgement was lost.
+   */
+  async putManifestSegment(ns: string, key: string, gen: string, a: number, b: number,
+                           bytes: Uint8Array): Promise<ManifestObject> {
+    return this.#putObject(ns, key, gen, { a, b }, bytes);
+  }
+
+  /**
+   * The generation's root, written once every part and segment through `e` is: the owner's
+   * wrapped key, under the active kid whatever kid `key` was, so a pass that began before a
+   * rotation writes no root under a retiring one; and the parts' and segments' hashes and
+   * sizes in order, with the log's span, sealed under the data key, so a recovery needs only
+   * the keyring.
+   */
+  async putManifestRoot(ns: string, key: string, gen: string, parts: readonly ManifestObject[],
+                        segments: readonly ManifestSegment[], span: { s: number; e: number }):
+      Promise<void> {
     const wrapped = await rewrap(this.env.FILES_KEYRING, ns, key);
     const dataKey = await this.#key(ns, wrapped);
-    if (!Array.isArray(parts) || parts.length === 0 || parts.length > MANIFEST_PARTS
-        || parts.some((part) => typeof part !== "object" || part === null
-                      || Object.keys(part).sort().join() !== "sha256,size"
-                      || typeof part.size !== "number" || !Number.isSafeInteger(part.size)
-                      || part.size < 1 || part.size > CHUNK_BYTES)) {
-      throw new Invalid(`a manifest has 1 to ${MANIFEST_PARTS} parts`);
+    const object = (item: unknown, keys: string) => typeof item === "object" && item !== null
+      && Object.keys(item).sort().join() === keys
+      && typeof (item as ManifestObject).size === "number"
+      && Number.isSafeInteger((item as ManifestObject).size)
+      && (item as ManifestObject).size >= 1 && (item as ManifestObject).size <= CHUNK_BYTES;
+    if (!Array.isArray(parts) || !Array.isArray(segments) || parts.length === 0
+        || parts.length + segments.length > MANIFEST_PARTS
+        || !parts.every((part) => object(part, "sha256,size"))
+        || !segments.every((segment) => object(segment, "a,b,sha256,size"))
+        || typeof span !== "object" || span === null || !Number.isSafeInteger(span.s)
+        || !Number.isSafeInteger(span.e) || span.s < 1 || span.e < span.s - 1) {
+      throw new Invalid(`a manifest has 1 to ${MANIFEST_PARTS} objects and a log span`);
     }
     const listed = JSON.stringify({
       parts: parts.map((part) => ({ sha256: chunkHash(part.sha256), size: part.size })),
-      at: Date.now() });
-    const sealed = await seal(dataKey, manifestKey(ns, day), new TextEncoder().encode(listed));
-    const root: StoredRoot = { format: "tinyassets-manifest", version: 1,
-                               day: manifestDay(day), key: wrapped,
-                               sealed: toBase64(sealed) };
-    await this.env.BLOBS.put(manifestKey(ns, day), JSON.stringify(root));
+      segments: segments.map((segment) => {
+        const [a, b] = segmentSpan(segment.a, segment.b);
+        return { a, b, sha256: chunkHash(segment.sha256), size: segment.size };
+      }),
+      s: span.s, e: span.e, at: Date.now() });
+    const sealed = await seal(dataKey, manifestKey(ns, gen), new TextEncoder().encode(listed));
+    const root: StoredRoot = { format: "tinyassets-manifest", version: 2, gen: generation(gen),
+                               key: wrapped, sealed: toBase64(sealed) };
+    await this.env.BLOBS.put(manifestKey(ns, gen), JSON.stringify(root));
   }
 
-  /** A manifest's root, its list opened under the key it carries, or null when there is none. */
-  async getManifestRoot(ns: string, day: string): Promise<ManifestRoot | null> {
-    const object = await this.env.BLOBS.get(manifestKey(ns, day));
+  /** A generation's root, its lists opened under the key it carries, or null for none. */
+  async getManifestRoot(ns: string, gen: string): Promise<ManifestRoot | null> {
+    const object = await this.env.BLOBS.get(manifestKey(ns, gen));
     if (object === null) {
       return null;
     }
-    const root = storedRoot(await object.text(), day);
+    const root = storedRoot(await object.text(), gen);
     const dataKey = await this.#key(ns, root.key);
     const listed = JSON.parse(new TextDecoder().decode(await open(
-      dataKey, manifestKey(ns, day), fromBase64(root.sealed)))) as
-      Pick<ManifestRoot, "parts" | "at">;
-    return { format: root.format, version: root.version, day: root.day, key: root.key,
-             parts: listed.parts, at: listed.at };
+      dataKey, manifestKey(ns, gen), fromBase64(root.sealed)))) as
+      Pick<ManifestRoot, "parts" | "segments" | "s" | "e" | "at">;
+    return { format: root.format, version: root.version, gen: root.gen, key: root.key,
+             parts: listed.parts, segments: listed.segments, s: listed.s, e: listed.e,
+             at: listed.at };
   }
 
   /**
-   * A key rotation's step for one manifest: its root's wrapped key wrapped again under the
+   * A key rotation's step for one generation: its root's wrapped key wrapped again under the
    * active kid, written in place only if the root did not change meanwhile (a pass writing
    * it again writes the active kid itself). The key the root now carries, or null for none.
    */
-  async rewrapManifestRoot(ns: string, day: string): Promise<{ key: string } | null> {
-    const object = await this.env.BLOBS.get(manifestKey(ns, day));
+  async rewrapManifestRoot(ns: string, gen: string): Promise<{ key: string } | null> {
+    const object = await this.env.BLOBS.get(manifestKey(ns, gen));
     if (object === null) {
       return null;
     }
-    const root = storedRoot(await object.text(), day);
+    const root = storedRoot(await object.text(), gen);
     const key = await rewrap(this.env.FILES_KEYRING, ns, root.key);
     if (key !== root.key) {
-      const put = await this.env.BLOBS.put(manifestKey(ns, day), JSON.stringify({ ...root, key }),
+      const put = await this.env.BLOBS.put(manifestKey(ns, gen), JSON.stringify({ ...root, key }),
                                            { onlyIf: { etagMatches: object.etag } });
       if (put === null) {
         throw new Error("a manifest root changed while its key was wrapped again; run it again");
@@ -449,31 +510,36 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
     return { key };
   }
 
-  /** One manifest part's bytes, under the key `key` (the object's, or the root's), checked. */
-  async getManifestPart(ns: string, key: string, day: string, part: number,
+  /** One base part's bytes, under the key `key` (the object's, or the root's), checked. */
+  async getManifestPart(ns: string, key: string, gen: string, part: number,
                         sha256: string): Promise<Uint8Array> {
-    const dataKey = await this.#key(ns, key);
-    const object = await this.env.BLOBS.get(manifestKey(ns, day, part), this.#reading(dataKey));
-    if (object === null) {
-      throw new Error("a manifest part its root names is missing from the bucket");
-    }
-    const bytes = await this.#plain(dataKey, manifestKey(ns, day, part), object);
-    if (await sha256Hex(bytes) !== chunkHash(sha256)) {
-      throw new Error("a manifest part's bytes no longer match its hash");
-    }
-    return bytes;
+    return this.#getObject(ns, key, gen, part, sha256);
   }
 
-  /** A manifest deleted (`parts` of them and its root): the root first, so none dangles. */
-  async deleteManifest(ns: string, day: string, parts: number): Promise<void> {
+  /** One log segment's bytes, under the key `key`, checked. */
+  async getManifestSegment(ns: string, key: string, gen: string, a: number, b: number,
+                           sha256: string): Promise<Uint8Array> {
+    return this.#getObject(ns, key, gen, { a, b }, sha256);
+  }
+
+  /**
+   * A generation deleted (`parts` of its base parts, the `segments` named, and its root): the
+   * root first, so none dangles.
+   */
+  async deleteManifest(ns: string, gen: string, parts: number,
+                       segments: readonly { a: number; b: number }[]): Promise<void> {
     if (parts !== 0) {
       manifestPart(parts - 1);
     }
-    await this.env.BLOBS.delete(manifestKey(ns, day));
+    await this.env.BLOBS.delete(manifestKey(ns, gen));
     const all = Array.from({ length: parts }, (_, part) => part);
     for (let at = 0; at < all.length; at += DELETE_BATCH) {
       await this.env.BLOBS.delete(all.slice(at, at + DELETE_BATCH)
-        .map((part) => manifestKey(ns, day, part)));
+        .map((part) => manifestKey(ns, gen, part)));
+    }
+    for (let at = 0; at < segments.length; at += DELETE_BATCH) {
+      await this.env.BLOBS.delete(segments.slice(at, at + DELETE_BATCH)
+        .map((segment) => segmentKey(ns, gen, segment.a, segment.b)));
     }
   }
 }

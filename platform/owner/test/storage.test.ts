@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { manifestDay } from "../src/backup";
+import { MANIFEST_PROTECT_S, manifestDay } from "../src/backup";
 import { FILE_QUOTA, GC_GRACE_S, INLINE_BYTES } from "../src/files";
 import type { Binding } from "../src/owner-do";
 import { MUSE, rig } from "./ledger-support";
@@ -36,7 +36,7 @@ describe("the one storage number", () => {
     const before = await r.stub.storageUsage(r.bind(null));
     expect(before).toEqual({ used_bytes: 0, limit_bytes: TIERS.free.storage_bytes,
                              breakdown: { files: 0, messages: 0, collections: 0 },
-                             deleted: { kept_bytes: 0, kept_days: 30 } });
+                             deleted_content: { kept_bytes: 0, kept_up_to_days: 30 } });
     await write(r, r.bind(null), "a", "x".repeat(1000));
     const rows = await sqlIn(r.stub, "SELECT (SELECT SUM(body_bytes) FROM collection_rows) + " +
                                      "(SELECT SUM(body_bytes) FROM collection_history) AS n");
@@ -113,8 +113,8 @@ describe("the one storage number", () => {
     expect(await sqlIn(r.stub, "SELECT garbage_bytes FROM file_space"))
       .toEqual([{ garbage_bytes: figure }]);
     // The owner reads what is kept for recovery, and for how long at most.
-    expect((await r.stub.storageUsage(small)).deleted)
-      .toEqual({ kept_bytes: figure, kept_days: 30 });
+    expect((await r.stub.storageUsage(small)).deleted_content)
+      .toEqual({ kept_bytes: figure, kept_up_to_days: 30 });
   });
 
   it("keeps the files lane off its own alarm while an early delete waits for its retry " +
@@ -149,9 +149,10 @@ describe("the one storage number", () => {
     const unit = INLINE_BYTES + 1000;
     const small = r.bind(null, { tiers: tiers(unit) });
     // Last night's manifest began an hour ago: the two files below were live then.
-    await sqlIn(r.stub, "INSERT INTO owner_backups (day, state, cursor, parts, part_list, " +
-                        "bytes, started_at, finished_at) VALUES (?, 'done', NULL, 0, '', 0, " +
-                        "?, ?)", manifestDay(Date.now() / 1000), Date.now() / 1000 - 3600,
+    await sqlIn(r.stub, "INSERT INTO owner_backups (gen, day, state, cursor, parts, " +
+                        "part_list, bytes, s, started_at, finished_at) VALUES " +
+                        "('0123456789abcdef', ?, 'done', NULL, 0, '', 0, 1, ?, ?)",
+                manifestDay(Date.now() / 1000), Date.now() / 1000 - 3600,
                 Date.now() / 1000 - 3000);
     for (let i = 0; i < 2; i++) {
       const path = `/workspace/n${i}.bin`;
@@ -170,6 +171,30 @@ describe("the one storage number", () => {
     await sqlIn(r.stub, "UPDATE owner_backups SET started_at = ?", Date.now() / 1000 + 1);
     await r.stub.fileMkdir(small, { path: "/workspace/z", expected_etag: null });
     await drainDue(r.stub);
+    expect(await sqlIn(r.stub, "SELECT state FROM file_chunks")).toEqual([{ state: "garbage" }]);
+  });
+
+  it("stops protecting garbage by a manifest past MANIFEST_PROTECT_S, no recovery point " +
+     "(review N3)", async () => {
+    const r = await rig();
+    const unit = INLINE_BYTES + 1000;
+    const small = r.bind(null, { tiers: tiers(unit) });
+    // The newest manifest began and finished more than two nights ago: no recovery point.
+    const long = Date.now() / 1000 - MANIFEST_PROTECT_S - 60;
+    await sqlIn(r.stub, "INSERT INTO owner_backups (gen, day, state, cursor, parts, " +
+                        "part_list, bytes, s, started_at, finished_at) VALUES " +
+                        "('0123456789abcdef', ?, 'done', NULL, 0, '', 0, 1, ?, ?)",
+                manifestDay(Date.now() / 1000), long - 60, long);
+    for (let i = 0; i < 2; i++) {
+      const path = `/workspace/o${i}.bin`;
+      await r.stub.fileWrite(small, { path, expected_etag: null,
+                                      content: new Uint8Array(unit).fill(i + 9) });
+      await r.stub.fileRemove(small, { path, expected_etag: null, recursive: false });
+      await r.stub.fileHistoryPurge(small, { path });
+    }
+    await r.stub.fileMkdir(small, { path: "/workspace/y", expected_etag: null });
+    await drainDue(r.stub);
+    // The figure holds again: the oldest went early.
     expect(await sqlIn(r.stub, "SELECT state FROM file_chunks")).toEqual([{ state: "garbage" }]);
   });
 

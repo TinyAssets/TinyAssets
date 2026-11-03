@@ -166,10 +166,10 @@ import { type Lane, Schedule } from "./schedule";
 import { AGENTS_DIR, AGENTS_OWNER_ONLY, OWNER_TREES, ownersOnly, storedPath, within }
   from "./paths";
 import { MIGRATIONS, migrate } from "./schema";
-import { chunkLine, decodeCursor, encodeCursor } from "./export";
-import { Backups } from "./backup";
+import { decodeExportCursor, encodeExportCursor } from "./export";
+import { Backups, MANIFEST_PROTECT_S } from "./backup";
 import { OpenExports } from "./open-exports";
-import { Streams } from "./streams";
+import { ChangeLog } from "./changelog";
 import { type BilledEvent, billedEvent, METER_BATCH, meterRead, SandboxTime } from "./sandbox-time";
 import { Sessions } from "./sessions";
 import { CONTROL_FRESH_MS, ControlGate, type Gate } from "./control-gate";
@@ -1287,8 +1287,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #backups: Backups;
   /** The exports open, each named for a week (`open-exports.ts`). */
   readonly #exports: OpenExports;
-  /** The export's and the manifest's streams, and their journal (`streams.ts`). */
-  readonly #streams: Streams;
+  /** The change log a generation captures (`changelog.ts`). */
+  readonly #log: ChangeLog;
   /** Sandbox time, per run and per day (`sandbox-time.ts`). */
   readonly #sandboxTime: SandboxTime;
   /** Where large bodies live (ADR-035): placed in R2 through the files plane. */
@@ -1370,10 +1370,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           }
         }
       },
-      // Garbage the newest nightly manifest names is never collected early.
-      () => this.#backups.manifests().at(-1)?.started_at ?? null);
+      // Garbage the newest finished generation names is never collected early, while it is
+      // a recovery point (finished within MANIFEST_PROTECT_S).
+      () => {
+        const newest = this.#backups.manifests().at(-1);
+        return newest === undefined || newest.finished_at < clock() - MANIFEST_PROTECT_S
+          ? null : newest.started_at;
+      });
     this.#exports = new OpenExports(storage);
-    this.#streams = new Streams(storage);
+    this.#log = new ChangeLog(storage);
     this.#bodies = new Bodies(this.#files, storage, write);
     // An outside writer's share of the collections is the owner's own `client_share`.
     this.#collections = new Collections(storage, undefined, this.#bodies.adopt,
@@ -1384,7 +1389,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                               () => this.#collections.clock(), this.#bodies.adopt);
     this.#backups = new Backups({
       storage, write: this.#gate.quiet, store: env.FILES, space: () => this.#files.space(),
-      streams: this.#streams,
+      log: this.#log,
       owner: () => this.ctx.id.name ?? "", schema: MIGRATIONS.length,
       serves: () => storage.sql.exec("SELECT 1 FROM object_owner").toArray().length > 0,
       halted: () => wiped(storage.sql) || erasing(storage),
@@ -1936,7 +1941,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   storageUsage(binding: Binding): Promise<{
       used_bytes: number; limit_bytes: number | null;
       breakdown: { files: number; messages: number; collections: number };
-      deleted: { kept_bytes: number; kept_days: number } }> {
+      deleted_content: { kept_bytes: number; kept_up_to_days: number } }> {
     return this.#door(() => {
       this.#owner(binding, "read", "read its storage");
       const usage = this.#files.usage();
@@ -1949,51 +1954,69 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       // first past it), so a lower setting shortens recovery; counted in nothing used.
       return { used_bytes: used, limit_bytes: usage.limits.max_bytes,
                breakdown: { files: used - messages - collections, messages, collections },
-               deleted: { kept_bytes: this.#files.garbageBytes(),
-                          kept_days: GC_GRACE_S / 86_400 } };
+               deleted_content: { kept_bytes: this.#files.garbageBytes(),
+                                  kept_up_to_days: GC_GRACE_S / 86_400 } };
     });
   }
 
   // -- OWNER_EXPORT: everything the owner holds (`export.ts`) --------------------
 
   /**
-   * One page of the owner's export from `cursor` (null: the start, which opens the export
-   * and its stream, `streams.ts`): its lines, and the next page's cursor, or null once the
-   * page ended the stream, which is then the owner at its end line's moment however the
-   * owner changed between pages. The owner's alone, in its live session: no outside client,
-   * no run, and no request without the session cookie reaches it. A `read` door, so a
-   * billing suspension still lets the owner take its data; its writes (the export's own
-   * rows) are quiet: they mark nothing changed.
+   * One object of the owner's export from `cursor` (null: the start, which opens the export
+   * on a generation, `backup.ts`: the one running, the newest finished while nothing changed
+   * since, or a new one, begun at once): its lines, and the next object's cursor, or null
+   * after its end line. Every object is immutable once R2 holds it, so any cursor resumes;
+   * one not yet written answers `pending`, its cursor the same, to ask again. The owner's
+   * alone, in its live session: no outside client, no run, and no request without the
+   * session cookie reaches it. A `read` door, so a billing suspension still lets the owner
+   * take its data; its writes (the export's own rows) are quiet: they mark nothing changed.
    */
   async ownerExport(binding: Binding,
                     request: { cursor?: string | null; export_id?: string }):
-      Promise<{ export_id: string; lines: string[]; next: string | null }> {
-    return this.#quiet(() => {
-      const { owner } = this.#owner(binding, "read", "export everything it holds");
+      Promise<{ export_id: string; lines: string[]; next: string | null; pending: boolean }> {
+    const asked = await this.#quiet(() => {
+      this.#owner(binding, "read", "export everything it holds");
       this.#sessions.live(binding.session, clock());
       if (typeof request !== "object" || request === null || Array.isArray(request)
           || Object.keys(request).some((key) => key !== "cursor" && key !== "export_id")) {
         throw new Invalid("an export request is at most its cursor and its export_id");
       }
-      const cursor = decodeCursor(request.cursor);
       const now = clock();
-      this.#streams.sweep(now);
-      // Its first page opens it and its stream; each later page names it.
       const first = request.cursor === null || request.cursor === undefined;
-      const open = first ? this.#exports.open(now) : this.#exports.named(request.export_id, now);
-      if (first) {
-        this.#streams.open("export", open.export_id, now);
+      const open = first ? this.#exports.open(now, this.#backups.forExport(now))
+        : this.#exports.named(request.export_id, now);
+      const at = first ? { gen: open.gen, index: 0 } : decodeExportCursor(request.cursor);
+      if (at.gen !== open.gen) {
+        throw new Invalid("an export cursor is one a page handed out");
       }
-      const page = this.#streams.page("export", open.export_id, cursor,
-                                      { schema: MIGRATIONS.length, owner, at: Date.now(),
-                                        ...open }, now);
-      const lines = [...page.lines, ...page.chunks.map((chunk) => chunkLine(chunk))];
-      if (page.next === null) {
-        this.#streams.close("export", open.export_id);  // ended: its journal goes
-      }
-      return { export_id: open.export_id, lines,
-               next: page.next === null ? null : encodeCursor(page.next) };
+      return { open, index: at.index, first };
     });
+    const { open, index } = asked;
+    if (asked.first) {
+      await this.#schedule.sync();  // a generation begun or joined goes on at once
+    }
+    const { ns, key } = await this.#files.space();
+    const root = this.#backups.finished(open.gen)
+      ? await this.env.FILES.getManifestRoot(ns, open.gen) : null;
+    const object = this.#backups.object(open.gen, index, root);
+    const answer = (lines: string[], next: string | null, pending = false) =>
+      ({ export_id: open.export_id, lines, next, pending });
+    if (object === null) {
+      throw new Invalid("this export is not open: begin it again");
+    }
+    if (object.kind === "pending") {
+      return answer([], encodeExportCursor(open.gen, index), true);
+    }
+    if (object.kind === "end") {
+      return answer([object.line], null);
+    }
+    const bytes = object.kind === "part"
+      ? await this.env.FILES.getManifestPart(ns, root?.key ?? key, open.gen, object.part,
+                                             object.sha256)
+      : await this.env.FILES.getManifestSegment(ns, root?.key ?? key, open.gen, object.a,
+                                                object.b, object.sha256);
+    return answer(new TextDecoder().decode(bytes).trimEnd().split("\n"),
+                  encodeExportCursor(open.gen, index + 1));
   }
 
   /**
@@ -2025,9 +2048,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   exportEnd(binding: Binding, request: { export_id: string }): Promise<{ ended: boolean }> {
     return this.#quiet(() => {
       this.#owner(binding, "reduce", "end its export");
-      const ended = this.#exports.end(request?.export_id);
-      this.#streams.close("export", request.export_id);
-      return { ended };
+      return { ended: this.#exports.end(request?.export_id) };
     });
   }
 
@@ -2044,7 +2065,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           || binding.session !== undefined || binding.source !== undefined) {
         throw new Refused(PLATFORM_ONLY);
       }
-      return this.#backups.manifests().map((manifest) => manifest.day);
+      return this.#backups.manifests().map((manifest) => manifest.gen);
     });
     return this.#files.rewrap(days);
   }

@@ -26,11 +26,25 @@ describe("the owner export door", () => {
   it("streams the owner's whole export, header to end, in its session", async () => {
     const who = owner();
     const app = await signInApp({ owner: who });
-    const response = await appPost("export", app.access_token, app.session, {});
-    expect(response.status).toBe(200);
-    expect(response.headers.get("Content-Type")).toBe("application/x-ndjson");
-    const lines = (await response.text()).trimEnd().split("\n")
-      .map((line) => JSON.parse(line) as { t: string; owner?: string; table?: string });
+    // Its generation is written by the owner's own lane: the stream ends at a cursor line
+    // while an object is not yet written, and the app asks again from it.
+    type Line = { t: string; owner?: string; table?: string; cursor?: string; export_id?: string };
+    const lines: Line[] = [];
+    let ask: Record<string, unknown> = {};
+    for (let tries = 0; tries < 400; tries++) {
+      const response = await appPost("export", app.access_token, app.session, ask);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("application/x-ndjson");
+      const got = (await response.text()).trimEnd().split("\n")
+        .map((line) => JSON.parse(line) as Line);
+      lines.push(...got.filter((line) => line.t !== "cursor"));
+      const last = got.at(-1)!;
+      if (last.t !== "cursor") {
+        break;
+      }
+      ask = { cursor: last.cursor, export_id: last.export_id };
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
     expect(lines[0]).toMatchObject({ t: "header", format: "tinyassets-export", owner: who });
     expect(lines.at(-1)).toMatchObject({ t: "end" });
     expect(lines.some((line) => line.t === "row" && line.table === "owner_sessions")).toBe(false);

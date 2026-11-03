@@ -36,9 +36,9 @@ import {
   RUN_ID_CHARS, SCHEDULE_ID_CHARS, SCHEDULES_KEPT, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS,
 } from "./run-rows";
 import { SOCKET_TICKETS } from "./socket-shape";
-import { PART_ENTRY } from "./backup";
+import { PART_ENTRY, SEGMENT_ENTRY } from "./backup";
 import { CURSOR_CHARS } from "./export";
-import { DIRTY_BYTES_MAX, DIRTY_ROW_BYTES } from "./streams";
+import { IMAGE_MAX, LOG_BYTES, LOG_ROW_BYTES, LOG_WIDE } from "./changelog";
 import { MANIFEST_PARTS } from "../../files/src/keys";
 import { ARGUMENTS_CHARS, DOORBELL_BLOB_CHARS, SUBSCRIPTIONS_PER_AGENT } from "./wake-kinds";
 import { RUNS_CEILING } from "./tier";
@@ -175,22 +175,49 @@ const CHUNK_USAGE = (sign: string, row: string) =>
 const GARBAGE_USAGE = (sign: string, row: string) =>
   `garbage_bytes = garbage_bytes ${sign} ${row}.size * (${row}.state = 'garbage');`;
 
+/** An exported column's value in a row image: a BLOB as hex, which the shipper turns base64. */
+const IMAGE_VALUE = (table: string, column: string, row: string) =>
+  table === "file_contents" && column === "inline"
+    ? `CASE WHEN ${row}.${column} IS NULL THEN NULL ELSE hex(${row}.${column}) END`
+    : `${row}.${column}`;
+/** A row's image as an export line: its exported columns, in `export.ts`'s order. */
+const ROW_LINE = (table: string, columns: string, row: string) =>
+  `json_object('t', 'row', 'table', '${table}', 'row', json_object(${columns.split(" ")
+    .map((column) => `'${column}', ${IMAGE_VALUE(table, column, row)}`).join(", ")}))`;
+/** A gone row's line: its key's values, as the export keys it. */
+const GONE_LINE = (table: string, keys: string, row: string) =>
+  `json_object('t', 'gone', 'table', '${table}', 'key', json_array(${keys.split(" ")
+    .map((key) => `${row}.${key}`).join(", ")}))`;
 /**
- * Each open stream's journal of a key of an exported table that a change touched
- * (`streams.ts`): one row a stream and key, set untaken again when it changes after a page
- * took it, and none once the stream has journaled `DIRTY_BYTES_MAX` (it then fails).
+ * One line into the change log while a generation captures and the log has room: the image,
+ * or, past `IMAGE_MAX`, the mark `LOG_WIDE` (a row no SQLite row could hold as an image).
  */
-const STREAM_KEY = (table: string, keys: string, row: string) =>
-  `INSERT INTO stream_dirty (kind, tbl, key, taken) SELECT kind, '${table}', json_array(${
-    keys.split(" ").map((key) => `${row}.${key}`).join(", ")}), 0 FROM owner_streams ` +
-  `WHERE journaled < ${DIRTY_BYTES_MAX} ON CONFLICT (kind, tbl, key) DO UPDATE SET taken = 0;`;
-/** The three journal triggers of one exported table, keyed as `export.ts` keys it. */
-const STREAMED = (table: string, keys: string, event: "INSERT" | "UPDATE" | "DELETE") =>
-  `CREATE TRIGGER ${table}_streamed_${event.toLowerCase()} AFTER ${event} ON ${table} ` +
-  "WHEN EXISTS (SELECT 1 FROM owner_streams) BEGIN " +
-  (event === "INSERT" ? STREAM_KEY(table, keys, "NEW") : event === "DELETE"
-    ? STREAM_KEY(table, keys, "OLD")
-    : `${STREAM_KEY(table, keys, "OLD")} ${STREAM_KEY(table, keys, "NEW")}`) + " END";
+const LOG_LINE = (line: string, unless = "") =>
+  "INSERT INTO change_log (line) SELECT CASE WHEN length(CAST(image AS BLOB)) <= " +
+  `${IMAGE_MAX} THEN image ELSE '${LOG_WIDE}' END FROM (SELECT ${line} AS image) WHERE ` +
+  `(SELECT capturing FROM log_capture) = 1 AND (SELECT bytes FROM log_capture) < ` +
+  `${LOG_BYTES}${unless};`;
+/**
+ * Past `LOG_BYTES`, or an image past `IMAGE_MAX`, capture stops and the generation fails;
+ * the write itself always lands.
+ */
+const LOG_FULL = "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE capturing = 1 AND " +
+  `(bytes >= ${LOG_BYTES} OR (SELECT line FROM change_log WHERE seq = log_capture.last) = ` +
+  `'${LOG_WIDE}');`;
+/**
+ * An exported table's capture trigger for `event` (changelog.ts): while a generation runs, the
+ * row's image (or its key, gone) goes to the change log in the writing unit's own transaction.
+ * An update that moves a key gives the old key gone first.
+ */
+const LOGGED = (table: string, columns: string, keys: string,
+                event: "INSERT" | "UPDATE" | "DELETE") =>
+  `CREATE TRIGGER ${table}_logged_${event.toLowerCase()} AFTER ${event} ON ${table} ` +
+  "WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
+  (event === "INSERT" ? LOG_LINE(ROW_LINE(table, columns, "NEW"))
+    : event === "DELETE" ? LOG_LINE(GONE_LINE(table, keys, "OLD"))
+    : LOG_LINE(GONE_LINE(table, keys, "OLD"), ` AND NOT (${keys.split(" ")
+        .map((key) => `OLD.${key} IS NEW.${key}`).join(" AND ")})`) + " " +
+      LOG_LINE(ROW_LINE(table, columns, "NEW"))) + ` ${LOG_FULL} END`;
 /** What a model reservation row holds against the ceilings, in µ$. */
 const HELD = (row: string) =>
   `(CASE WHEN ${row}.state IN ('reserved', 'dispatched', 'unknown') THEN ${row}.est_cost ` +
@@ -1539,39 +1566,52 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // meter (sandbox-time.ts): the cursor of the sandbox Worker's log, each authority's
     // running spans a run not yet metered may overlap (one open at most), the seconds a UTC
     // day, and each run's own (`runs.sandbox_ms`).
-    "CREATE TABLE owner_backups (day TEXT PRIMARY KEY CHECK (length(day) = 8 " +
+    // A generation (backup.ts): its id, the day it began, its base cursor (`ended` once the
+    // base is read), its base parts and log segments as R2 verified them (lists cleared once
+    // its root holds them), its log's span `s` to `e`, and when E was.
+    "CREATE TABLE owner_backups (gen TEXT PRIMARY KEY CHECK (length(gen) = 16 " +
+      "AND gen NOT GLOB '*[^0-9a-f]*'), day TEXT NOT NULL CHECK (length(day) = 8 " +
       "AND day NOT GLOB '*[^0-9]*'), " +
       "state TEXT NOT NULL CHECK (state IN ('writing', 'done')), " +
       `cursor TEXT CHECK (cursor IS NULL OR length(cursor) <= ${CURSOR_CHARS}), ` +
       `parts INTEGER NOT NULL CHECK (parts BETWEEN 0 AND ${MANIFEST_PARTS}), ` +
       `part_list TEXT NOT NULL CHECK (length(part_list) <= ${MANIFEST_PARTS * PART_ENTRY}), ` +
-      "bytes INTEGER NOT NULL CHECK (bytes >= 0), started_at REAL NOT NULL, " +
+      "segments INTEGER NOT NULL DEFAULT 0 CHECK (segments >= 0), " +
+      "segment_list TEXT NOT NULL DEFAULT '' CHECK (length(segment_list) <= " +
+      `${MANIFEST_PARTS * SEGMENT_ENTRY}), ` +
+      "bytes INTEGER NOT NULL CHECK (bytes >= 0), s INTEGER NOT NULL CHECK (s >= 1), " +
+      "e INTEGER, ended_at REAL, started_at REAL NOT NULL, " +
       "finished_at REAL, retry_at REAL, " +
+      `CHECK (parts + segments <= ${MANIFEST_PARTS}), ` +
       "CHECK ((state = 'done') = (finished_at IS NOT NULL))) WITHOUT ROWID",
-    // The exports open (export.ts): each its id and its end (under `GC_GRACE_S`).
+    // The exports open (export.ts): each its id, its end (under `GC_GRACE_S`), and the
+    // generation it reads, pinned from deletion until then.
     "CREATE TABLE owner_exports (export_id TEXT PRIMARY KEY CHECK (length(export_id) = 32 " +
       "AND export_id NOT GLOB '*[^0-9a-f]*'), opened_at REAL NOT NULL, " +
-      "ends_at REAL NOT NULL) WITHOUT ROWID",
+      "ends_at REAL NOT NULL, gen TEXT NOT NULL CHECK (length(gen) = 16)) WITHOUT ROWID",
     // Whether anything changed since the last manifest began (backup.ts `mark`), and whether
     // the owner was told its manifest was given up (told once, until one is written).
     "CREATE TABLE owner_backup_state (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "changed INTEGER NOT NULL CHECK (changed IN (0, 1)), " +
       "told INTEGER NOT NULL CHECK (told IN (0, 1)))",
     "INSERT INTO owner_backup_state VALUES (1, 1, 0)",
-    // The streams being read (streams.ts): at most one export's and the manifest's, each its
-    // id, when it opened and was last read, and the bytes it has journaled (only rising);
-    // and their journal of the keys of exported tables changed since each opened.
-    "CREATE TABLE owner_streams (kind TEXT PRIMARY KEY CHECK (kind IN ('export', 'manifest')), " +
-      "stream_id TEXT NOT NULL CHECK (length(stream_id) <= 32), opened_at REAL NOT NULL, " +
-      "read_at REAL NOT NULL, journaled INTEGER NOT NULL DEFAULT 0 CHECK (journaled >= 0)) " +
-      "WITHOUT ROWID",
-    "CREATE TABLE stream_dirty (kind TEXT NOT NULL, tbl TEXT NOT NULL, key TEXT NOT NULL, " +
-      "taken INTEGER NOT NULL CHECK (taken >= 0), PRIMARY KEY (kind, tbl, key)) WITHOUT ROWID",
-    "CREATE TRIGGER stream_dirty_added AFTER INSERT ON stream_dirty BEGIN UPDATE owner_streams " +
-      "SET journaled = journaled + length(CAST(NEW.tbl AS BLOB)) + " +
-      `length(CAST(NEW.key AS BLOB)) + ${DIRTY_ROW_BYTES} WHERE kind = NEW.kind; END`,
-    "CREATE TRIGGER owner_streams_closed AFTER DELETE ON owner_streams BEGIN " +
-      "DELETE FROM stream_dirty WHERE kind = OLD.kind; END",
+    // The change log (changelog.ts): while a generation runs, each exported row's image as an
+    // export line, by seq, until R2 holds it; and the capture's one row: its generation, the
+    // log's first seq `s`, its last `last` and its end `e`, whether it captures, its
+    // unshipped bytes, whether they passed `LOG_BYTES`, the seq shipped through, and the
+    // segment being shipped.
+    "CREATE TABLE log_capture (only INTEGER PRIMARY KEY CHECK (only = 1), gen TEXT, " +
+      "s INTEGER NOT NULL DEFAULT 1, last INTEGER NOT NULL DEFAULT 0, e INTEGER, " +
+      "capturing INTEGER NOT NULL DEFAULT 0 CHECK (capturing IN (0, 1)), " +
+      "bytes INTEGER NOT NULL DEFAULT 0 CHECK (bytes >= 0), " +
+      "overflow INTEGER NOT NULL DEFAULT 0 CHECK (overflow IN (0, 1)), " +
+      "shipped INTEGER NOT NULL DEFAULT 0, pending_a INTEGER, pending_b INTEGER)",
+    "INSERT INTO log_capture (only) VALUES (1)",
+    "CREATE TABLE change_log (seq INTEGER PRIMARY KEY AUTOINCREMENT, line TEXT NOT NULL)",
+    "CREATE TRIGGER change_log_added AFTER INSERT ON change_log BEGIN UPDATE log_capture SET " +
+      `bytes = bytes + length(CAST(NEW.line AS BLOB)) + ${LOG_ROW_BYTES}, last = NEW.seq; END`,
+    "CREATE TRIGGER change_log_removed AFTER DELETE ON change_log BEGIN UPDATE log_capture " +
+      `SET bytes = bytes - length(CAST(OLD.line AS BLOB)) - ${LOG_ROW_BYTES}; END`,
     "CREATE TABLE sandbox_meter (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "after INTEGER NOT NULL CHECK (after >= 0), read_at INTEGER NOT NULL, retry_at REAL)",
     "INSERT INTO sandbox_meter VALUES (1, 0, 0, NULL)",
@@ -1602,111 +1642,111 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "BETWEEN 1 AND 128), digest BLOB NOT NULL CHECK (length(digest) = 8), " +
       "at INTEGER NOT NULL) WITHOUT ROWID",
     "CREATE INDEX sandbox_live_by_age ON sandbox_live (at)",
-    // Every exported table's three journal triggers (streams.ts): a key its change touched
-    // goes to each open stream's journal, so a stream read across units ends as one snapshot.
-    // The export test holds the list to `exported()` and its keys.
-    `${STREAMED("object_owner", "only", "INSERT")}`,
-    `${STREAMED("object_owner", "only", "UPDATE")}`,
-    `${STREAMED("object_owner", "only", "DELETE")}`,
-    `${STREAMED("owner_admission", "only", "INSERT")}`,
-    `${STREAMED("owner_admission", "only", "UPDATE")}`,
-    `${STREAMED("owner_admission", "only", "DELETE")}`,
-    `${STREAMED("owner_policy", "only", "INSERT")}`,
-    `${STREAMED("owner_policy", "only", "UPDATE")}`,
-    `${STREAMED("owner_policy", "only", "DELETE")}`,
-    `${STREAMED("policy_proposals", "request_id", "INSERT")}`,
-    `${STREAMED("policy_proposals", "request_id", "UPDATE")}`,
-    `${STREAMED("policy_proposals", "request_id", "DELETE")}`,
-    `${STREAMED("policy_receipts", "seq", "INSERT")}`,
-    `${STREAMED("policy_receipts", "seq", "UPDATE")}`,
-    `${STREAMED("policy_receipts", "seq", "DELETE")}`,
-    `${STREAMED("outside_clients", "client", "INSERT")}`,
-    `${STREAMED("outside_clients", "client", "UPDATE")}`,
-    `${STREAMED("outside_clients", "client", "DELETE")}`,
-    `${STREAMED("agent_cards", "card_id", "INSERT")}`,
-    `${STREAMED("agent_cards", "card_id", "UPDATE")}`,
-    `${STREAMED("agent_cards", "card_id", "DELETE")}`,
-    `${STREAMED("connections", "id", "INSERT")}`,
-    `${STREAMED("connections", "id", "UPDATE")}`,
-    `${STREAMED("connections", "id", "DELETE")}`,
-    `${STREAMED("engine_signins", "engine", "INSERT")}`,
-    `${STREAMED("engine_signins", "engine", "UPDATE")}`,
-    `${STREAMED("engine_signins", "engine", "DELETE")}`,
-    `${STREAMED("owner_notices", "seq", "INSERT")}`,
-    `${STREAMED("owner_notices", "seq", "UPDATE")}`,
-    `${STREAMED("owner_notices", "seq", "DELETE")}`,
-    `${STREAMED("file_entries", "parent name", "INSERT")}`,
-    `${STREAMED("file_entries", "parent name", "UPDATE")}`,
-    `${STREAMED("file_entries", "parent name", "DELETE")}`,
-    `${STREAMED("file_history", "version", "INSERT")}`,
-    `${STREAMED("file_history", "version", "UPDATE")}`,
-    `${STREAMED("file_history", "version", "DELETE")}`,
-    `${STREAMED("file_temps", "name", "INSERT")}`,
-    `${STREAMED("file_temps", "name", "UPDATE")}`,
-    `${STREAMED("file_temps", "name", "DELETE")}`,
-    `${STREAMED("file_contents", "content_id", "INSERT")}`,
-    `${STREAMED("file_contents", "content_id", "UPDATE")}`,
-    `${STREAMED("file_contents", "content_id", "DELETE")}`,
-    `${STREAMED("file_content_chunks", "content_id idx", "INSERT")}`,
-    `${STREAMED("file_content_chunks", "content_id idx", "UPDATE")}`,
-    `${STREAMED("file_content_chunks", "content_id idx", "DELETE")}`,
-    `${STREAMED("file_chunks", "sha256", "INSERT")}`,
-    `${STREAMED("file_chunks", "sha256", "UPDATE")}`,
-    `${STREAMED("file_chunks", "sha256", "DELETE")}`,
-    `${STREAMED("collection_rows", "collection row_id", "INSERT")}`,
-    `${STREAMED("collection_rows", "collection row_id", "UPDATE")}`,
-    `${STREAMED("collection_rows", "collection row_id", "DELETE")}`,
-    `${STREAMED("collection_history", "collection key revision", "INSERT")}`,
-    `${STREAMED("collection_history", "collection key revision", "UPDATE")}`,
-    `${STREAMED("collection_history", "collection key revision", "DELETE")}`,
-    `${STREAMED("collection_seqs", "collection", "INSERT")}`,
-    `${STREAMED("collection_seqs", "collection", "UPDATE")}`,
-    `${STREAMED("collection_seqs", "collection", "DELETE")}`,
-    `${STREAMED("collection_clock", "only", "INSERT")}`,
-    `${STREAMED("collection_clock", "only", "UPDATE")}`,
-    `${STREAMED("collection_clock", "only", "DELETE")}`,
-    `${STREAMED("outside_agents", "agent_id", "INSERT")}`,
-    `${STREAMED("outside_agents", "agent_id", "UPDATE")}`,
-    `${STREAMED("outside_agents", "agent_id", "DELETE")}`,
-    `${STREAMED("native_agents", "agent_id", "INSERT")}`,
-    `${STREAMED("native_agents", "agent_id", "UPDATE")}`,
-    `${STREAMED("native_agents", "agent_id", "DELETE")}`,
-    `${STREAMED("ledger_messages", "seq", "INSERT")}`,
-    `${STREAMED("ledger_messages", "seq", "UPDATE")}`,
-    `${STREAMED("ledger_messages", "seq", "DELETE")}`,
-    `${STREAMED("message_bodies", "message_id", "INSERT")}`,
-    `${STREAMED("message_bodies", "message_id", "UPDATE")}`,
-    `${STREAMED("message_bodies", "message_id", "DELETE")}`,
-    `${STREAMED("ledger_recipients", "message_id agent_id", "INSERT")}`,
-    `${STREAMED("ledger_recipients", "message_id agent_id", "UPDATE")}`,
-    `${STREAMED("ledger_recipients", "message_id agent_id", "DELETE")}`,
-    `${STREAMED("ledger_receipts", "seq", "INSERT")}`,
-    `${STREAMED("ledger_receipts", "seq", "UPDATE")}`,
-    `${STREAMED("ledger_receipts", "seq", "DELETE")}`,
-    `${STREAMED("ledger_readers", "reader", "INSERT")}`,
-    `${STREAMED("ledger_readers", "reader", "UPDATE")}`,
-    `${STREAMED("ledger_readers", "reader", "DELETE")}`,
-    `${STREAMED("model_spend", "period source", "INSERT")}`,
-    `${STREAMED("model_spend", "period source", "UPDATE")}`,
-    `${STREAMED("model_spend", "period source", "DELETE")}`,
-    `${STREAMED("model_reservations", "seq", "INSERT")}`,
-    `${STREAMED("model_reservations", "seq", "UPDATE")}`,
-    `${STREAMED("model_reservations", "seq", "DELETE")}`,
-    `${STREAMED("egress_reservations", "id", "INSERT")}`,
-    `${STREAMED("egress_reservations", "id", "UPDATE")}`,
-    `${STREAMED("egress_reservations", "id", "DELETE")}`,
-    `${STREAMED("runs", "seq", "INSERT")}`,
-    `${STREAMED("runs", "seq", "UPDATE")}`,
-    `${STREAMED("runs", "seq", "DELETE")}`,
-    `${STREAMED("run_inputs", "run", "INSERT")}`,
-    `${STREAMED("run_inputs", "run", "UPDATE")}`,
-    `${STREAMED("run_inputs", "run", "DELETE")}`,
-    `${STREAMED("run_schedules", "id", "INSERT")}`,
-    `${STREAMED("run_schedules", "id", "UPDATE")}`,
-    `${STREAMED("run_schedules", "id", "DELETE")}`,
-    `${STREAMED("conversations", "id", "INSERT")}`,
-    `${STREAMED("conversations", "id", "UPDATE")}`,
-    `${STREAMED("conversations", "id", "DELETE")}`,
+    // Every exported table's three capture triggers (changelog.ts): while a generation runs, a
+    // change's row image goes to the change log, so the generation ends as the owner at E.
+    // The changelog test holds each to `exported()`'s columns and keys.
+    `${LOGGED("object_owner", "only owner", "only", "INSERT")}`,
+    `${LOGGED("object_owner", "only owner", "only", "UPDATE")}`,
+    `${LOGGED("object_owner", "only owner", "only", "DELETE")}`,
+    `${LOGGED("owner_admission", "only state reasons tier", "only", "INSERT")}`,
+    `${LOGGED("owner_admission", "only state reasons tier", "only", "UPDATE")}`,
+    `${LOGGED("owner_admission", "only state reasons tier", "only", "DELETE")}`,
+    `${LOGGED("owner_policy", "only generation digest document egress_generation", "only", "INSERT")}`,
+    `${LOGGED("owner_policy", "only generation digest document egress_generation", "only", "UPDATE")}`,
+    `${LOGGED("owner_policy", "only generation digest document egress_generation", "only", "DELETE")}`,
+    `${LOGGED("policy_proposals", "request_id digest document at applied_at proposer", "request_id", "INSERT")}`,
+    `${LOGGED("policy_proposals", "request_id digest document at applied_at proposer", "request_id", "UPDATE")}`,
+    `${LOGGED("policy_proposals", "request_id digest document at applied_at proposer", "request_id", "DELETE")}`,
+    `${LOGGED("policy_receipts", "seq bucket kind at old_digest new_digest request_digest generation rule decision outcome", "seq", "INSERT")}`,
+    `${LOGGED("policy_receipts", "seq bucket kind at old_digest new_digest request_digest generation rule decision outcome", "seq", "UPDATE")}`,
+    `${LOGGED("policy_receipts", "seq bucket kind at old_digest new_digest request_digest generation rule decision outcome", "seq", "DELETE")}`,
+    `${LOGGED("outside_clients", "client source mode scopes generation revoked_at name first_seen last_seen owner_set agents held profile revision", "client", "INSERT")}`,
+    `${LOGGED("outside_clients", "client source mode scopes generation revoked_at name first_seen last_seen owner_set agents held profile revision", "client", "UPDATE")}`,
+    `${LOGGED("outside_clients", "client source mode scopes generation revoked_at name first_seen last_seen owner_set agents held profile revision", "client", "DELETE")}`,
+    `${LOGGED("agent_cards", "card_id client family source_ref generation authenticated_at request digest filed_at", "card_id", "INSERT")}`,
+    `${LOGGED("agent_cards", "card_id client family source_ref generation authenticated_at request digest filed_at", "card_id", "UPDATE")}`,
+    `${LOGGED("agent_cards", "card_id client family source_ref generation authenticated_at request digest filed_at", "card_id", "DELETE")}`,
+    `${LOGGED("connections", "id source kind display_name provider models status version expires_at created_at pending_until revoked_at revoke_due revoke_tries revocable egress", "id", "INSERT")}`,
+    `${LOGGED("connections", "id source kind display_name provider models status version expires_at created_at pending_until revoked_at revoke_due revoke_tries revocable egress", "id", "UPDATE")}`,
+    `${LOGGED("connections", "id source kind display_name provider models status version expires_at created_at pending_until revoked_at revoke_due revoke_tries revocable egress", "id", "DELETE")}`,
+    `${LOGGED("engine_signins", "engine signed_in models checked_at changed_at", "engine", "INSERT")}`,
+    `${LOGGED("engine_signins", "engine signed_in models checked_at changed_at", "engine", "UPDATE")}`,
+    `${LOGGED("engine_signins", "engine signed_in models checked_at changed_at", "engine", "DELETE")}`,
+    `${LOGGED("owner_notices", "seq at type detail", "seq", "INSERT")}`,
+    `${LOGGED("owner_notices", "seq at type detail", "seq", "UPDATE")}`,
+    `${LOGGED("owner_notices", "seq at type detail", "seq", "DELETE")}`,
+    `${LOGGED("file_entries", "parent name kind version content_id size mode mtime_ms writer", "parent name", "INSERT")}`,
+    `${LOGGED("file_entries", "parent name kind version content_id size mode mtime_ms writer", "parent name", "UPDATE")}`,
+    `${LOGGED("file_entries", "parent name kind version content_id size mode mtime_ms writer", "parent name", "DELETE")}`,
+    `${LOGGED("file_history", "version path op kind content_id size mode writer at prune_after released", "version", "INSERT")}`,
+    `${LOGGED("file_history", "version path op kind content_id size mode writer at prune_after released", "version", "UPDATE")}`,
+    `${LOGGED("file_history", "version path op kind content_id size mode writer at prune_after released", "version", "DELETE")}`,
+    `${LOGGED("file_temps", "name expires_at writer", "name", "INSERT")}`,
+    `${LOGGED("file_temps", "name expires_at writer", "name", "UPDATE")}`,
+    `${LOGGED("file_temps", "name expires_at writer", "name", "DELETE")}`,
+    `${LOGGED("file_contents", "content_id size inline refs", "content_id", "INSERT")}`,
+    `${LOGGED("file_contents", "content_id size inline refs", "content_id", "UPDATE")}`,
+    `${LOGGED("file_contents", "content_id size inline refs", "content_id", "DELETE")}`,
+    `${LOGGED("file_content_chunks", "content_id idx sha256", "content_id idx", "INSERT")}`,
+    `${LOGGED("file_content_chunks", "content_id idx sha256", "content_id idx", "UPDATE")}`,
+    `${LOGGED("file_content_chunks", "content_id idx sha256", "content_id idx", "DELETE")}`,
+    `${LOGGED("file_chunks", "sha256 size state stored refs holds gc_after holder", "sha256", "INSERT")}`,
+    `${LOGGED("file_chunks", "sha256 size state stored refs holds gc_after holder", "sha256", "UPDATE")}`,
+    `${LOGGED("file_chunks", "sha256 size state stored refs holds gc_after holder", "sha256", "DELETE")}`,
+    `${LOGGED("collection_rows", "collection row_id revision seq etag writer private body updated_at creator change body_bytes content_id filer", "collection row_id", "INSERT")}`,
+    `${LOGGED("collection_rows", "collection row_id revision seq etag writer private body updated_at creator change body_bytes content_id filer", "collection row_id", "UPDATE")}`,
+    `${LOGGED("collection_rows", "collection row_id revision seq etag writer private body updated_at creator change body_bytes content_id filer", "collection row_id", "DELETE")}`,
+    `${LOGGED("collection_history", "collection key revision op body_json at writer change private_writer body_bytes content_id filer", "collection key revision", "INSERT")}`,
+    `${LOGGED("collection_history", "collection key revision op body_json at writer change private_writer body_bytes content_id filer", "collection key revision", "UPDATE")}`,
+    `${LOGGED("collection_history", "collection key revision op body_json at writer change private_writer body_bytes content_id filer", "collection key revision", "DELETE")}`,
+    `${LOGGED("collection_seqs", "collection seq", "collection", "INSERT")}`,
+    `${LOGGED("collection_seqs", "collection seq", "collection", "UPDATE")}`,
+    `${LOGGED("collection_seqs", "collection seq", "collection", "DELETE")}`,
+    `${LOGGED("collection_clock", "only change", "only", "INSERT")}`,
+    `${LOGGED("collection_clock", "only change", "only", "UPDATE")}`,
+    `${LOGGED("collection_clock", "only change", "only", "DELETE")}`,
+    `${LOGGED("outside_agents", "agent_id command_center_id outside_client outside_family source source_ref display_name delivery_method recipe_id revision disabled_reason created_at max_wakes_per_hour batch_window_s unacked_to_owner", "agent_id", "INSERT")}`,
+    `${LOGGED("outside_agents", "agent_id command_center_id outside_client outside_family source source_ref display_name delivery_method recipe_id revision disabled_reason created_at max_wakes_per_hour batch_window_s unacked_to_owner", "agent_id", "UPDATE")}`,
+    `${LOGGED("outside_agents", "agent_id command_center_id outside_client outside_family source source_ref display_name delivery_method recipe_id revision disabled_reason created_at max_wakes_per_hour batch_window_s unacked_to_owner", "agent_id", "DELETE")}`,
+    `${LOGGED("native_agents", "agent_id agent created_at retired_at unacked_to_owner", "agent_id", "INSERT")}`,
+    `${LOGGED("native_agents", "agent_id agent created_at retired_at unacked_to_owner", "agent_id", "UPDATE")}`,
+    `${LOGGED("native_agents", "agent_id agent created_at retired_at unacked_to_owner", "agent_id", "DELETE")}`,
+    `${LOGGED("ledger_messages", "seq message_id command_center_id room_id sender_kind sender_id client_message_id body_sha256 parent_id chain_root chain_depth created_at body_bytes unacked authority attended", "seq", "INSERT")}`,
+    `${LOGGED("ledger_messages", "seq message_id command_center_id room_id sender_kind sender_id client_message_id body_sha256 parent_id chain_root chain_depth created_at body_bytes unacked authority attended", "seq", "UPDATE")}`,
+    `${LOGGED("ledger_messages", "seq message_id command_center_id room_id sender_kind sender_id client_message_id body_sha256 parent_id chain_root chain_depth created_at body_bytes unacked authority attended", "seq", "DELETE")}`,
+    `${LOGGED("message_bodies", "message_id room_id body created_at body_bytes content_id filer", "message_id", "INSERT")}`,
+    `${LOGGED("message_bodies", "message_id room_id body created_at body_bytes content_id filer", "message_id", "UPDATE")}`,
+    `${LOGGED("message_bodies", "message_id room_id body created_at body_bytes content_id filer", "message_id", "DELETE")}`,
+    `${LOGGED("ledger_recipients", "message_id agent_id seq state changed_at unacked", "message_id agent_id", "INSERT")}`,
+    `${LOGGED("ledger_recipients", "message_id agent_id seq state changed_at unacked", "message_id agent_id", "UPDATE")}`,
+    `${LOGGED("ledger_recipients", "message_id agent_id seq state changed_at unacked", "message_id agent_id", "DELETE")}`,
+    `${LOGGED("ledger_receipts", "seq agent_id kind ref at detail_json", "seq", "INSERT")}`,
+    `${LOGGED("ledger_receipts", "seq agent_id kind ref at detail_json", "seq", "UPDATE")}`,
+    `${LOGGED("ledger_receipts", "seq agent_id kind ref at detail_json", "seq", "DELETE")}`,
+    `${LOGGED("ledger_readers", "reader through_seq acked_at unacked", "reader", "INSERT")}`,
+    `${LOGGED("ledger_readers", "reader through_seq acked_at unacked", "reader", "UPDATE")}`,
+    `${LOGGED("ledger_readers", "reader through_seq acked_at unacked", "reader", "DELETE")}`,
+    `${LOGGED("model_spend", "period source cost", "period source", "INSERT")}`,
+    `${LOGGED("model_spend", "period source cost", "period source", "UPDATE")}`,
+    `${LOGGED("model_spend", "period source cost", "period source", "DELETE")}`,
+    `${LOGGED("model_reservations", "seq id run connection_id source model state rule max_output_tokens est_tokens est_cost tokens cost policy_generation day month created_at settled_at", "seq", "INSERT")}`,
+    `${LOGGED("model_reservations", "seq id run connection_id source model state rule max_output_tokens est_tokens est_cost tokens cost policy_generation day month created_at settled_at", "seq", "UPDATE")}`,
+    `${LOGGED("model_reservations", "seq id run connection_id source model state rule max_output_tokens est_tokens est_cost tokens cost policy_generation day month created_at settled_at", "seq", "DELETE")}`,
+    `${LOGGED("egress_reservations", "id lease_id epoch run source charge rule max_output_tokens est_tokens est_cost tokens cost day month served connection_id version method path generation bytes_hint opened_at beat_at state code ended outcome status bytes settled_at", "id", "INSERT")}`,
+    `${LOGGED("egress_reservations", "id lease_id epoch run source charge rule max_output_tokens est_tokens est_cost tokens cost day month served connection_id version method path generation bytes_hint opened_at beat_at state code ended outcome status bytes settled_at", "id", "UPDATE")}`,
+    `${LOGGED("egress_reservations", "id lease_id epoch run source charge rule max_output_tokens est_tokens est_cost tokens cost day month served connection_id version method path generation bytes_hint opened_at beat_at state code ended outcome status bytes settled_at", "id", "DELETE")}`,
+    `${LOGGED("runs", "seq id agent conversation source credential model state initiator client stamp request unattended mail cancel_requested requests tokens cost last_seq result result_cut error code exit_code created_at started_at settled_at epoch beat_at sandbox_ms sandbox_wait", "seq", "INSERT")}`,
+    `${LOGGED("runs", "seq id agent conversation source credential model state initiator client stamp request unattended mail cancel_requested requests tokens cost last_seq result result_cut error code exit_code created_at started_at settled_at epoch beat_at sandbox_ms sandbox_wait", "seq", "UPDATE")}`,
+    `${LOGGED("runs", "seq id agent conversation source credential model state initiator client stamp request unattended mail cancel_requested requests tokens cost last_seq result result_cut error code exit_code created_at started_at settled_at epoch beat_at sandbox_ms sandbox_wait", "seq", "DELETE")}`,
+    `${LOGGED("run_inputs", "run prompt bytes origin", "run", "INSERT")}`,
+    `${LOGGED("run_inputs", "run prompt bytes origin", "run", "UPDATE")}`,
+    `${LOGGED("run_inputs", "run prompt bytes origin", "run", "DELETE")}`,
+    `${LOGGED("run_schedules", "id agent input trigger cron next_at client stamp origin last_run last_error created_at", "id", "INSERT")}`,
+    `${LOGGED("run_schedules", "id agent input trigger cron next_at client stamp origin last_run last_error created_at", "id", "UPDATE")}`,
+    `${LOGGED("run_schedules", "id agent input trigger cron next_at client stamp origin last_run last_error created_at", "id", "DELETE")}`,
+    `${LOGGED("conversations", "id agent source client session_id last_run created_at last_at", "id", "INSERT")}`,
+    `${LOGGED("conversations", "id agent source client session_id last_run created_at last_at", "id", "UPDATE")}`,
+    `${LOGGED("conversations", "id agent source client session_id last_run created_at last_at", "id", "DELETE")}`,
     // The one storage number (founder, 2026-11-03): a body kept inline in its row is user
     // content too, counted in `body_bytes`, owner-wide and in its writer's files scope (its
     // `filer`), so the tier's storage holds every byte a user stores wherever it lives.

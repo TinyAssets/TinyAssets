@@ -180,8 +180,11 @@ const SPANS_KEPT = constant("sandbox-time", "SPANS_KEPT");
 const DAYS_KEPT = constant("sandbox-time", "DAYS_KEPT");
 const BILLED_KEPT = constant("sandbox-time", "BILLED_KEPT");
 const LIVE_KEPT = constant("sandbox-time", "LIVE_KEPT");
-const DIRTY_BYTES_MAX = constant("streams", "DIRTY_BYTES_MAX");
-const DIRTY_ROW_BYTES = constant("streams", "DIRTY_ROW_BYTES");
+export const LOG_BYTES = constant("changelog", "LOG_BYTES");
+export const LOG_ROW_BYTES = constant("changelog", "LOG_ROW_BYTES");
+const INLINE_FILE = constant("files", "INLINE_BYTES");
+const SEGMENT_ENTRY = constant("backup", "SEGMENT_ENTRY");
+export const IMAGE_MAX = constant("changelog", "IMAGE_MAX");
 /** Mail that starts runs (slice ID): a message's id, an own agent's id, a mail's authority. */
 const MESSAGE_ID_CHARS = constant("run-rows", "MESSAGE_ID_CHARS");
 const NATIVE_ID_CHARS = constant("run-rows", "NATIVE_ID_CHARS");
@@ -556,25 +559,26 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // Each applied migration's digest (`migrate`): one row a migration of the code's list.
     schema_digests: { rows: 1024, bytes: ROW + 8 + 64,
                       by: "one a migration; 1,024 past any list the code will hold" },
-    // Slice P: the nightly manifest's bookkeeping, at most two manifests (`backup.ts`).
-    owner_backups: { rows: 2, bytes: ROW + CURSOR_CHARS + MANIFEST_PARTS * PART_ENTRY + 8 * 8,
-                     by: "the newest finished manifest and the one being written, each its " +
-                       "cursor and its list of at most MANIFEST_PARTS parts" },
+    // Slice P: the generations (`backup.ts`): the one being written, its cursor and its lists
+    // of at most MANIFEST_PARTS base parts and log segments together; and the newest finished
+    // and each one an open export pins, their lists cleared (their roots hold them).
+    owner_backups: { rows: 1, bytes: ROW + CURSOR_CHARS + MANIFEST_PARTS * SEGMENT_ENTRY + 16 * 8,
+                     by: "the generation being written, its cursor and its lists" },
+    owner_backups_kept: { rows: 1 + EXPORTS_OPEN, bytes: ROW + 16 + 8 + 6 + 16 * 8,
+                          tables: [],
+                          by: "the newest finished generation and EXPORTS_OPEN pinned ones" },
     // Slice P: the sandbox meter (`sandbox-time.ts`).
     sandbox_meter: { rows: 1, bytes: ROW + 3 * 8, by: "one row: the log's cursor" },
     owner_backup_state: { rows: 1, bytes: ROW + 2 * 8,
                           by: "one row: changed since the manifest, and told" },
-    owner_exports: { rows: EXPORTS_OPEN, bytes: ROW + 32 + 2 * 8,
-                     by: "EXPORTS_OPEN, each its id, opening and end" },
-    // The streams being read (review N1): one export's and the manifest's.
-    owner_streams: { rows: 2, bytes: ROW + 16 + 32 + 3 * 8,
-                     by: "one a kind: the export's and the manifest's" },
-    // Their journal, charged as its trigger counts it: each new key its table's name, its
-    // key and DIRTY_ROW_BYTES (past a record's own bytes), at most DIRTY_BYTES_MAX a stream
-    // over its life, and one key past it (a key's widest: a cursor's).
-    stream_dirty: { rows: 1, bytes: 2 * (DIRTY_BYTES_MAX + CURSOR_CHARS + DIRTY_ROW_BYTES),
-                    charged: true,
-                    by: "DIRTY_BYTES_MAX journaled a stream, two streams, at WORST_FILL" },
+    owner_exports: { rows: EXPORTS_OPEN, bytes: ROW + 32 + 16 + 2 * 8,
+                     by: "EXPORTS_OPEN, each its id, opening, end and generation" },
+    // The change log (`changelog.ts`, review R4): its capture's one row, and its unshipped
+    // images, charged as its trigger counts them (each its text and LOG_ROW_BYTES), held under
+    // LOG_BYTES, and one image past it at its widest.
+    log_capture: { rows: 1, bytes: ROW + 16 + 9 * 8, by: "one row" },
+    change_log: { rows: 1, bytes: LOG_BYTES + IMAGE_MAX + LOG_ROW_BYTES, charged: true,
+                  by: "LOG_BYTES of unshipped images and one past it, at WORST_FILL" },
     sandbox_spans: { rows: SPANS_KEPT + 1 + G.maxFreeClients + G.maxOwnerClients,
                      bytes: ROW + 64 + 2 * 8,
                      by: "SPANS_KEPT closed spans, and one open an authority (the owner's " +
@@ -748,8 +752,48 @@ describe("the nightly manifest's stream", () => {
     const worst = worstStream();
     expect(worst).toBeGreaterThan(DATABASE_BYTES * SHARE);  // escaping is counted
     expect(worst).toBeLessThan(MANIFEST_PARTS * CHUNK_BYTES);
-    // Its part list fits one SQLite row (2 MB, Durable Objects' limits).
+    // Its lists fit one SQLite row (2 MB, Durable Objects' limits), its parts and segments
+    // together (a segment's entry the wider), with its cursor.
     expect(MANIFEST_PARTS * PART_ENTRY).toBeLessThan(2_000_000);
+    expect(MANIFEST_PARTS * SEGMENT_ENTRY + CURSOR_CHARS + ROW).toBeLessThan(2_000_000);
+  });
+});
+
+/**
+ * Tables whose wide columns are JSON text the object writes itself (`JSON.stringify`: no raw
+ * control character), so escaping one at most doubles an ASCII character and leaves any
+ * other as it is: no wider than its bytes as the term counts them, four a character.
+ */
+const JSON_TEXT: ReadonlySet<string> = new Set(["connections", "owner_policy"]);
+/** The one table whose widest row is past `IMAGE_MAX`: its image then fails a generation. */
+const WIDER: ReadonlySet<string> = new Set(["connections"]);
+
+/** The widest row image one change writes (`schema.ts` `LOGGED`), every exported table's. */
+export function widestImage(terms: Readonly<Record<string, Term>> = TERMS): number {
+  const tables = exported();
+  const frame = (table: string) => `{"t":"row","table":"${table}","row":{}}`.length
+    + tables[table]!.columns.reduce((sum, column) => sum + column.length + 4 + JSON_VALUE, 0);
+  // A table charged in bytes has rows of its own widths: a path, a small file's bytes as
+  // hex, a placed body's inline part, and their ids, each escaped at JSON's worst.
+  const charged = JSON_POINT * (MAX_PATH_BYTES + 255 * 4 + PLACE_BYTES + 4 * KIB)
+    + 2 * INLINE_FILE;
+  return Math.max(...Object.keys(tables).map((table) => {
+    const term = terms[table];
+    return frame(table) + (term === undefined || term.charged === true ? charged
+      : (JSON_TEXT.has(table) ? 1 : JSON_POINT) * term.bytes);
+  }).filter((_, at) => !WIDER.has(Object.keys(tables)[at]!)));
+}
+
+describe("the change log's images", () => {
+  it("are each at most IMAGE_MAX, under a SQLite row's 2 MB, but a connection's widest",
+     () => {
+    const widest = widestImage();
+    expect(widest).toBeGreaterThan(100_000);
+    expect(widest).toBeLessThanOrEqual(IMAGE_MAX);
+    expect(IMAGE_MAX).toBeLessThan(2_000_000);
+    // A connection's models list near its ceiling may pass it: its image is then marked, and
+    // the generation fails (the changelog test), never the write.
+    expect(TERMS["connections"]!.bytes).toBeGreaterThan(IMAGE_MAX);
   });
 });
 

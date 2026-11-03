@@ -66,8 +66,16 @@ export function through(overrides: Partial<ChunkStore>): ChunkStore {
     deleteNamespace: (ns) => files.deleteNamespace(ns),
     putManifestPart: (ns, key, day, part, bytes) =>
       files.putManifestPart(ns, key, day, part, bytes),
-    putManifestRoot: (ns, key, day, parts) => files.putManifestRoot(ns, key, day, parts),
-    deleteManifest: (ns, day, parts) => files.deleteManifest(ns, day, parts),
+    putManifestSegment: (ns, key, gen, a, b, bytes) =>
+      files.putManifestSegment(ns, key, gen, a, b, bytes),
+    putManifestRoot: (ns, key, gen, parts, segments, span) =>
+      files.putManifestRoot(ns, key, gen, parts, segments, span),
+    getManifestRoot: (ns, gen) => files.getManifestRoot(ns, gen),
+    getManifestPart: (ns, key, gen, part, sha256) =>
+      files.getManifestPart(ns, key, gen, part, sha256),
+    getManifestSegment: (ns, key, gen, a, b, sha256) =>
+      files.getManifestSegment(ns, key, gen, a, b, sha256),
+    deleteManifest: (ns, gen, parts, segments) => files.deleteManifest(ns, gen, parts, segments),
     ...overrides,
   };
 }

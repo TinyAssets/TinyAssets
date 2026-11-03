@@ -12,7 +12,8 @@
  *   anything else but the data keys' ring (`this.env.FILES_KEYRING`, handed straight to
  *   `datakey.ts`'s `mint`, `unwrap` and `rewrap`, the one module that reads it), and every
  *   key is a call of a key builder
- *   (`chunkKey`, `manifestKey`, or `listedManifest`, which rebuilds a listed manifest key
+ *   (`chunkKey`, `manifestKey`, `segmentKey`, `manifestObjectKey`, or `listedManifest`, which rebuilds a
+ *   listed key
  *   through `manifestKey`; or a list of them mapped from a list), each the one imported
  *   from `./keys` and nothing shadowing it. No alias (`const b = this.env.BLOBS`,
  *   `const { BLOBS } = env`, `env["BLOBS"]`) passes, and the one list is of one namespace's
@@ -29,7 +30,8 @@ const CALLS: ReadonlySet<string> = new Set(["put", "get", "head", "delete"]);
 const KEY_TEXT = /^o\/|\/c\//;
 const R2_TYPE = /^R2[A-Z]/;
 /** The key builders `keys.ts` exports, the only calls a bucket key may be. */
-const BUILDERS: ReadonlySet<string> = new Set(["chunkKey", "manifestKey", "listedManifest"]);
+const BUILDERS: ReadonlySet<string> = new Set(["chunkKey", "manifestKey", "segmentKey",
+                                                "manifestObjectKey", "listedManifest"]);
 /** The prefixes `keys.ts` exports, the only lists of the bucket. */
 const PREFIXES: ReadonlySet<string> = new Set(["chunkPrefix", "manifestPrefix"]);
 /** The one other field of `this.env` the Worker reads, and the calls it may go to. */

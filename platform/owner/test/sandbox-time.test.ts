@@ -9,7 +9,8 @@ import { describe, expect, it } from "vitest";
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
 import { type RunReceipt, runMeter } from "../src/runs";
-import { BILLED_KEPT, DAYS_KEPT, meterRead, SandboxTime } from "../src/sandbox-time";
+import { GRANT_LIMITS } from "../src/grants";
+import { BILLED_KEPT, DAYS_KEPT, LIVE_KEPT, meterRead, SandboxTime } from "../src/sandbox-time";
 import { rig } from "./ledger-support";
 import { gated } from "./gateway-support";
 import { ownerRun, recorder, runnerBinding } from "./runs-support";
@@ -190,6 +191,9 @@ describe("E2B's billed executions", () => {
     expect((await billed(r)).reduce((sum, day) => sum + day.billed_seconds, 0)).toBe(60);
     // Killed: its sandbox's row is gone.
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM sandbox_live")).toEqual([{ n: 0 }]);
+    // One live sandbox an authority is kept for every authority an owner may have.
+    expect(LIVE_KEPT).toBeGreaterThanOrEqual(1 + GRANT_LIMITS.maxFreeClients
+                                             + GRANT_LIMITS.maxOwnerClients);
   });
 
   it("counts an execution past BILLED_KEPT anyway, and shows it unverified (review N5)",

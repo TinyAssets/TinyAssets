@@ -1416,38 +1416,45 @@ R, S, M and W.
 - [ ] Owed by slice L's admin path, at the first rotation: add the new kid as active, call
   `dataKeyRewrap` for every owner, and remove a kid from `FILES_KEYRING` only after every
   owner's call has answered (the object's key and each manifest root under the new kid).
-- [x] The owner export and the nightly manifest (slice P), one format, `tinyassets-export`
-  version 1 (`owner/src/export.ts`): a manifest (header, every row of every exported table
-  in key order, every named chunk by hash and size, end) read a page at a time from any
-  page's cursor, and the chunks' bytes fetched by hash (`exportChunks`), so an export of any
-  size resumes at a page or a chunk. Every table is exported (each column decided) or kept
-  out with its reason; credentials, hashes (a policy receipt's session hash too, review
-  M2), secrets and the wrapped key never. Each stream ends as exactly the owner at one
-  moment E, however the owner writes while it is read, and never begins again (review M1,
-  then N1): pre-copy with a dirty-key journal (`streams.ts`). While a stream is open, a
-  trigger on every exported table journals each changed key; the base pass is a fuzzy copy;
-  each later page re-emits the journal's keys (the row as it stands, or a `gone` line);
-  the page that takes the whole journal in its one synchronous unit ends the stream
-  (`{"t":"end","at":E}`), read last line per key wins. At most one export's stream and the
-  manifest's; each journals at most `DIRTY_BYTES_MAX` and reads at most `ROUNDS_MAX`
-  rounds' pages, past which it fails with a notice, never a loop. A manifest a pass did
-  not finish goes on `MANIFEST_CONTINUE_S` later, never at once. An export holds nothing:
-  it lives a week (`EXPORT_LIFE_S`), under the 30-day garbage grace (the object's
-  point-in-time recovery), so every chunk its pages name is still there; deleted bytes
-  leave the owner's number at once, and garbage past the owner's storage figure (the
-  lower of its own setting and its tier's) is collected early, oldest first, never a chunk
-  the newest manifest names (released after it began), and garbage waiting on a failed
-  delete's retry never re-arms the files lane at once (reviews H1, N2, N3). The owner alone, in its live session: the
-  owner surface's `export`, `export/chunks`, `export/end`. The nightly manifest
-  (`backup.ts`): the same manifest, its parts encrypted under the data key under the
-  owner's prefix (which the erasure deletes), its root naming them with the wrapped key;
-  written only when something changed since the last (the first change sets the lane's
-  job), so an idle owner's object is never woken for it; past `MANIFEST_PARTS` (measured
-  against the worst stream, escaping included) it is given up once and the owner told.
+- [x] The owner export and the nightly manifest (slice P), one artifact: a generation
+  (`backup_shape_research.md` (d); `owner/src/backup.ts`, `changelog.ts`), format
+  `tinyassets-export` version 2 (`export.ts`). A fuzzy base copy of every row of every
+  exported table, read in bursts and put as whole-line parts, and a change log of full row
+  images captured from S while the base is read (one trigger an exported table and event,
+  `LOGGED`, in the writing unit's own transaction), shipped to R2 after every part as
+  segments (`o/<ns>/m/<gen>/l/<a>-<b>`), each recorded pending, put, then acknowledged and
+  deleted; the unit that reads the base's last page fixes E, the unit that records it turns
+  capture off, and the root names the parts, the segments through E, S and E. Read last line
+  per key wins, it is exactly the owner at E, however the owner writes meanwhile, and a crash
+  anywhere repeats only what was not acknowledged (reviews M1, N1, R4-1 to R4-3). The export
+  is a generation (the one running, the newest while nothing changed, or a new one), read by
+  a cursor of the generation and an object's index, so any cursor resumes and any number of
+  exports read at once; `owner_exports` pins its generation for the export's 7 days. Every
+  table is exported (each column decided) or kept out with its reason; credentials, hashes (a
+  policy receipt's session hash too, review M2), secrets and the wrapped key never. The one
+  bound is `LOG_BYTES` (3 MiB, derived from the database margin): past it, or an image past
+  `IMAGE_MAX`, capture stops and the generation fails with one notice; the write lands. A
+  generation a pass did not finish goes on `MANIFEST_CONTINUE_S` (5 s) later. Deleted bytes
+  leave the owner's number at once, and garbage past the owner's storage figure is collected
+  early, oldest first, never a chunk the newest finished generation names while it is under
+  `MANIFEST_PROTECT_S` (2 days) old, and garbage waiting on a failed delete's retry never
+  re-arms the files lane at once (reviews H1, N2, N3). The owner alone, in its live session:
+  the owner surface's `export`, `export/chunks`, `export/end`. Nightly, only when something
+  changed (the first change sets the lane's job), so an idle owner's object is never woken
+  for it; past `MANIFEST_PARTS` objects it is given up once and the owner told.
+- [ ] Owed by slice L: a live probe of the owner's sustained write rate against the change
+  log's ship rate (R2 puts of 4 MiB segments), against `LOG_BYTES`.
+- [ ] Owed (founder's cost decision): capture always on (`backup_shape_research.md` (c)): the
+  same code with the log never off, giving a recovery point of minutes instead of a night.
+  Each exported-row change then costs an image insert and a delete always: about $2 per
+  million changes (Durable Objects bill rows written at $1 a million, deletes count); a heavy
+  owner (about 12 changes a second) about $62 a month, a light one (an hour a day at one a
+  second) about $0.20; R2 at most about $1.17 a month for a put every 10 s. Today, capture only
+  during a generation costs the same heavy owner about $0.70 a month.
 - [ ] Owed by the app slice: the storage view's line "Deleted files are kept up to 30 days,
-  within your storage; past that the oldest go first.", from `storageUsage`'s
-  `deleted` (`kept_bytes`, `kept_days`), and the storage setting showing that a lower
-  figure shortens recovery.
+  within your storage; past that the oldest go first.", labelled "deleted content", from
+  `storageUsage`'s `deleted_content` (`kept_bytes`, `kept_up_to_days`), and the storage
+  setting showing that a lower figure shortens recovery.
 - [ ] Owed (founder's spending decision): a manifest copy outside this account and bucket
   (3-2-1); today's recovery point lives in the same bucket.
 - [x] Sandbox time metered per owner (slice P, `owner/src/sandbox-time.ts`). The truth is

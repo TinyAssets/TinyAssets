@@ -440,74 +440,87 @@ describe("data keys (SSE-C)", () => {
 });
 
 describe("manifests", () => {
-  it("writes parts under the owner's key and a root naming them, read back and deleted", async () => {
+  it("writes a generation's parts and segments under the owner's key, and a root naming " +
+     "them, read back and deleted", async () => {
     const space = ns();
     const key = await keyOf(space);
     const parts = [bytes("first part"), bytes("second")];
     const written: { sha256: string; size: number }[] = [];
     for (const [part, body] of parts.entries()) {
-      written.push(await service().putManifestPart(space, key, "20261103", part, body));
+      written.push(await service().putManifestPart(space, key, "0123456789abcdef", part, body));
     }
     expect(written).toEqual([{ sha256: await sha(parts[0]!), size: 10 },
                              { sha256: await sha(parts[1]!), size: 6 }]);
-    expect(await service().getManifestRoot(space, "20261103")).toBeNull();
-    await service().putManifestRoot(space, key, "20261103", written);
-    const root = await service().getManifestRoot(space, "20261103");
-    expect(root).toMatchObject({ format: "tinyassets-manifest", version: 1, day: "20261103",
-                                 key, parts: written });
-    // The bucket's copy names no part: the list is sealed under the data key.
-    const raw = await (await env.BLOBS.get(manifestKey(space, "20261103")))!.text();
-    expect(Object.keys(JSON.parse(raw)).sort()).toEqual(["day", "format", "key", "sealed",
+    const log = bytes("a log segment");
+    const segment = { a: 4, b: 9, ...await service().putManifestSegment(space, key, "0123456789abcdef", 4, 9,
+                                                                       log) };
+    expect(await service().getManifestRoot(space, "0123456789abcdef")).toBeNull();
+    await service().putManifestRoot(space, key, "0123456789abcdef", written, [segment], { s: 5, e: 9 });
+    const root = await service().getManifestRoot(space, "0123456789abcdef");
+    expect(root).toMatchObject({ format: "tinyassets-manifest", version: 2, gen: "0123456789abcdef",
+                                 key, parts: written, segments: [segment], s: 5, e: 9 });
+    // The bucket's copy names no object: the lists are sealed under the data key.
+    const raw = await (await env.BLOBS.get(manifestKey(space, "0123456789abcdef")))!.text();
+    expect(Object.keys(JSON.parse(raw)).sort()).toEqual(["format", "gen", "key", "sealed",
                                                          "version"]);
-    for (const part of written) {
+    for (const part of [...written, segment]) {
       expect(raw).not.toContain(part.sha256);
     }
-    // A recovery needs only the ring: the root's own key opens its parts.
-    expect(await service().getManifestPart(space, root!.key, "20261103", 1,
+    // A recovery needs only the ring: the root's own key opens its parts and segments.
+    expect(await service().getManifestPart(space, root!.key, "0123456789abcdef", 1,
                                            root!.parts[1]!.sha256)).toEqual(parts[1]);
+    expect(await service().getManifestSegment(space, root!.key, "0123456789abcdef", 4, 9, segment.sha256))
+      .toEqual(log);
     const second = (await service().mintKey(space)).key;
-    expect((await failure(() => service().getManifestPart(space, second, "20261103", 0,
+    expect((await failure(() => service().getManifestPart(space, second, "0123456789abcdef", 0,
                                                           written[0]!.sha256))).message)
       .toMatch(/^SSE-C/);
-    await service().deleteManifest(space, "20261103", 2);
+    await service().deleteManifest(space, "0123456789abcdef", 2, [segment]);
     expect(await keys(space)).toEqual([]);
-    expect(manifestKey(space, "20261103", 3)).toBe(`o/${space}/m/20261103/3`);
+    expect(manifestKey(space, "0123456789abcdef", 3)).toBe(`o/${space}/m/0123456789abcdef/3`);
   });
 
   it("writes a root under the active kid, and wraps an old root's key again in place",
      async () => {
     const space = ns();
     const old = (await service(ssec(env.BLOBS), OLD).mintKey(space)).key;
-    const part = await service().putManifestPart(space, old, "20261102", 0, bytes("night one"));
+    const part = await service().putManifestPart(space, old, "1111111111111111", 0, bytes("night one"));
     // A pass that began before a rotation still writes its root under the active kid.
-    await service().putManifestRoot(space, old, "20261102", [part]);
-    expect((await service().getManifestRoot(space, "20261102"))!.key.startsWith("v1.k2."))
+    await service().putManifestRoot(space, old, "1111111111111111", [part], [], { s: 1, e: 0 });
+    expect((await service().getManifestRoot(space, "1111111111111111"))!.key.startsWith("v1.k2."))
       .toBe(true);
     // A root written under the old kid (before the rotation) is wrapped again in place.
-    await service(ssec(env.BLOBS), OLD).putManifestRoot(space, old, "20261101", [part]);
-    expect((await service().getManifestRoot(space, "20261101"))!.key).toBe(old);
-    const { key } = (await service().rewrapManifestRoot(space, "20261101"))!;
+    await service(ssec(env.BLOBS), OLD).putManifestRoot(space, old, "2222222222222222", [part], [],
+                                                        { s: 1, e: 0 });
+    expect((await service().getManifestRoot(space, "2222222222222222"))!.key).toBe(old);
+    const { key } = (await service().rewrapManifestRoot(space, "2222222222222222"))!;
     expect(key.startsWith("v1.k2.")).toBe(true);
-    expect(await service().rewrapManifestRoot(space, "20261101")).toEqual({ key });
-    expect(await service().rewrapManifestRoot(space, "20261009")).toBeNull();
+    expect(await service().rewrapManifestRoot(space, "2222222222222222")).toEqual({ key });
+    expect(await service().rewrapManifestRoot(space, "3333333333333333")).toBeNull();
     // With the old kid gone, the root still opens, and its key reads its parts.
     const without = new FilesService(createExecutionContext(), {
       BLOBS: ssec(env.BLOBS), FILES_KEYRING: JSON.stringify({ active: "k2", keys: {
         k2: JSON.parse(RING).keys.k2 } }) });
-    const root = (await without.getManifestRoot(space, "20261101"))!;
+    const root = (await without.getManifestRoot(space, "2222222222222222"))!;
     expect(root.parts).toEqual([part]);
-    expect(await without.getManifestPart(space, root.key, "20261102", 0, part.sha256))
+    expect(await without.getManifestPart(space, root.key, "1111111111111111", 0, part.sha256))
       .toEqual(bytes("night one"));
   });
 
-  it.each([["a day", "2026-11-03", 0], ["a part", "20261103", -1],
-           ["a part", "20261103", MANIFEST_PARTS], ["a day", "20261303", 0]])(
-    "refuses %s out of shape", async (_what, day, part) => {
+  it.each([["a generation", "2026-11-03", 0], ["a part", "0123456789abcdef", -1],
+           ["a part", "0123456789abcdef", MANIFEST_PARTS], ["a generation", "ABCDEF0123456789", 0]])(
+    "refuses %s out of shape", async (_what, gen, part) => {
       const space = ns();
       expect((await failure(async () => service().putManifestPart(
-        space, await keyOf(space), day as string, part as number, bytes("x")))).message)
+        space, await keyOf(space), gen as string, part as number, bytes("x")))).message)
         .toMatch(/^a manifest/);
     });
+
+  it("refuses a segment whose span is out of order", async () => {
+    const space = ns();
+    expect((await failure(async () => service().putManifestSegment(
+      space, await keyOf(space), "0123456789abcdef", 5, 5, bytes("x")))).message).toMatch(/^a manifest/);
+  });
 });
 
 describe("the AES-GCM fallback (FILES_CIPHER aes-gcm)", () => {
@@ -579,8 +592,8 @@ describe("the AES-GCM fallback (FILES_CIPHER aes-gcm)", () => {
   it("seals manifest parts too, and refuses a cipher it does not know", async () => {
     const space = ns();
     const key = await keyOf(space);
-    const part = await sealed().putManifestPart(space, key, "20261103", 0, bytes("a manifest"));
-    expect(await sealed().getManifestPart(space, key, "20261103", 0, part.sha256))
+    const part = await sealed().putManifestPart(space, key, "0123456789abcdef", 0, bytes("a manifest"));
+    expect(await sealed().getManifestPart(space, key, "0123456789abcdef", 0, part.sha256))
       .toEqual(bytes("a manifest"));
     const odd = new FilesService(createExecutionContext(), { BLOBS: env.BLOBS,
                                                              FILES_KEYRING: RING,

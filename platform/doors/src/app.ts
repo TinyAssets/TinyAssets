@@ -31,9 +31,9 @@
  *   outside client; the control record's tier numbers ride the binding (`withTiers`).
  * - `storage`: the owner's one storage number, used and left (`storageUsage`).
  * - `export`: the owner's export manifest (`owner/src/export.ts`), streamed as
- *   newline-delimited JSON (`exportStream`), resumable from any page's cursor line with the
- *   header's `export_id`, ending as the owner at one moment however the owner writes
- *   meanwhile (`owner/src/streams.ts`); `export/chunks` its chunks' bytes by hash;
+ *   newline-delimited JSON (`exportStream`), resumable from any cursor line (it names the
+ *   export's id), ending as the owner at one moment however the owner writes meanwhile (a
+ *   generation, `owner/src/backup.ts`); `export/chunks` its chunks' bytes by hash;
  *   `export/end` its id let go.
  * - `agent/socket-ticket`: a single-use socket ticket for one of the owner's conversations
  *   (A6, salvaged), behind every check above, bound to the token's grant and expiry
@@ -123,15 +123,16 @@ async function signOut(env: DoorsEnv, { binding, stub }: Bound, _request: unknow
 /**
  * The pages one export response carries before it ends with its cursor line, so one
  * request's work in this Worker stays bounded (a technical ceiling: a request's CPU; about
- * 1 MiB of rows a page, 64 MiB a response). The client asks again with the last cursor line
- * it read and the header's export_id.
+ * 4 MiB an object, 256 MiB a response). The client asks again with the last cursor line it
+ * read, which names its export_id.
  */
 export const EXPORT_PAGES = 64;
 
 /**
- * The owner's export, as newline-delimited JSON (`application/x-ndjson`): the object's
- * pages one after another, each but the last followed by its cursor line
- * (`{"t":"cursor","cursor":...}`), until the stream's `end` line or `EXPORT_PAGES`. The
+ * The owner's export, as newline-delimited JSON (`application/x-ndjson`): its generation's
+ * objects one after another, each but the last followed by its cursor line
+ * (`{"t":"cursor","cursor":...,"export_id":...}`), until the stream's `end` line,
+ * `EXPORT_PAGES`, or an object not yet written (the client asks again later). The
  * first page is read before the response begins, so a refusal is the door's status; a
  * page that fails after it cuts the stream short of its `end` line, and the client resumes
  * from the last cursor it read.
@@ -152,10 +153,11 @@ async function exportStream(_env: DoorsEnv, { binding, stub }: Bound,
       const lines = [...page.lines];
       const next = page.next;
       if (next !== null) {
-        lines.push(JSON.stringify({ t: "cursor", cursor: next }));
+        lines.push(JSON.stringify({ t: "cursor", cursor: next, export_id: exportId }));
       }
       controller.enqueue(encoder.encode(lines.join("\n") + "\n"));
-      if (next === null || pages >= EXPORT_PAGES) {
+      // An object not yet written: the response ends at its cursor, to ask again.
+      if (next === null || pages >= EXPORT_PAGES || page.pending) {
         controller.close();
         return;
       }

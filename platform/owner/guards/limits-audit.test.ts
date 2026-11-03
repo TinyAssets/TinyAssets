@@ -13,8 +13,10 @@ import { BODY_BYTES_MAX } from "../src/bodies";
 import { LIMITS as COLLECTIONS } from "../src/collections";
 import { checkLimits, LEDGER_LIMITS } from "../src/ledger";
 import { PLACE_BYTES } from "../src/manifest";
+import { WORST_FILL } from "../src/manifest";
 import {
-  DATABASE_BYTES, RUNTIME, SHARE, type Term, termBytes, TERMS, worstCase,
+  DATABASE_BYTES, IMAGE_MAX, LOG_BYTES, LOG_ROW_BYTES, RUNTIME, SHARE, type Term, termBytes,
+  TERMS, worstCase,
 } from "./owner-bound.test";
 
 const HALF = SHARE * DATABASE_BYTES;
@@ -44,6 +46,16 @@ const WITHOUT: Readonly<Record<string, () => Readonly<Record<string, Term>>>> = 
   "grant scopes counted in bytes, not 512 code points of JSON each": () => ({ ...TERMS,
     outside_clients: { rows: 2_000, bytes: ROW + 8 + 1_000 * (256 * (3 * 512 * 6 + 64)) / 2_000,
                        by: "256 scopes of three 512-point fields" } }),
+});
+
+describe("the change log's bound", () => {
+  it("is derived from the margin: the largest whole MiB that keeps it past MARGIN", () => {
+    const { change_log: _log, ...others } = TERMS;
+    const room = HALF - MARGIN - total(others);
+    const largest = Math.floor((room / WORST_FILL - IMAGE_MAX - LOG_ROW_BYTES) / 2 ** 20) * 2 ** 20;
+    expect(LOG_BYTES).toBe(largest);
+    expect(LOG_BYTES).toBeGreaterThanOrEqual(2 ** 20);
+  });
 });
 
 describe("the limits that ship", () => {

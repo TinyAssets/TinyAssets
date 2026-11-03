@@ -13,10 +13,12 @@ import { defineConfig } from "vitest/config";
 const DOORS = dirname(fileURLToPath(import.meta.url));
 const GATEWAY = join(DOORS, "..", "gateway");
 const HOOKS = join(DOORS, "..", "hooks");
+const FILES = join(DOORS, "..", "files");
 
 type WorkerConfig = {
   name: string; compatibility_date: string; compatibility_flags: string[];
   durable_objects?: { bindings: { name: string; class_name: string }[] };
+  r2_buckets?: { binding: string }[];
 };
 
 function config(dir: string): WorkerConfig {
@@ -92,6 +94,29 @@ function hooksWorker() {
   }
 }
 
+/**
+ * The real files Worker, as the owner object's FILES binding (its export's generations are in
+ * R2): its own source, transpiled, its one bucket, a test keyring as its one secret.
+ */
+function filesWorker(keyring: string) {
+  const files = config(FILES);
+  return {
+    name: files.name,
+    modulesRoot: FILES,
+    modules: ["index", "keys", "datakey", "cipher"].map((name) => ({
+      type: "ESModule" as const,
+      path: join(FILES, "src", name),
+      contents: ts.transpileModule(readFileSync(join(FILES, "src", `${name}.ts`), "utf8"), {
+        compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+      }).outputText,
+    })),
+    compatibilityDate: files.compatibility_date,
+    compatibilityFlags: files.compatibility_flags,
+    r2Buckets: (files.r2_buckets ?? []).map((bucket) => bucket.binding),
+    bindings: { FILES_KEYRING: keyring },
+  };
+}
+
 /** The providers a connect reaches (`test/fake-providers.ts`), transpiled. */
 function fakeProviders() {
   const path = join(DOORS, "test", "fake-providers.ts");
@@ -132,10 +157,12 @@ export default defineConfig({
               durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
               bindings: { OWNER_ISSUER: "https://upstream.test", ROUTING_MAC_KEY: ROUTING_KEY,
                           E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret" },
-              // HOOKS: the owner object's (in this script for the tests), to the real
-              // hooks Worker, as the owner config binds it.
-              serviceBindings: { PROVIDERS: "fake-providers", HOOKS: "tinyassets-hooks" },
-              workers: [gatewayWorker(KEYRING), hooksWorker(), fakeProviders()],
+              // HOOKS and FILES: the owner object's (in this script for the tests), to the real
+              // hooks and files Workers, as the owner config binds them.
+              serviceBindings: { PROVIDERS: "fake-providers", HOOKS: "tinyassets-hooks",
+                                 FILES: "tinyassets-files" },
+              workers: [gatewayWorker(KEYRING), hooksWorker(), filesWorker(KEYRING),
+                        fakeProviders()],
             },
           }),
         ],
