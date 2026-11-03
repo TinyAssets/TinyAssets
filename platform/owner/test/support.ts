@@ -1,7 +1,7 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
-import { Collections, LIMITS, type Limits } from "../src/collections";
+import { Collections, LIMITS, type Limits, type Shares } from "../src/collections";
 import { type ChunkStore, type FileLimits, Files } from "../src/files";
 import { type OwnerStorage, type Write, WriteGate } from "../src/gate";
 import {
@@ -13,6 +13,12 @@ import { FILE_DEFAULTS } from "../src/policy";
 import { SCHEDULE } from "../src/schedule";
 
 export const text = (value: string): Uint8Array => new TextEncoder().encode(value);
+
+/** The founder's numbers (ADR-034 decision 8), as the tests' control record holds them. */
+export const TIERS = Object.freeze({
+  free: Object.freeze({ runs: 5, storage_bytes: 25_000_000_000 }),
+  paid: Object.freeze({ runs: 10, storage_bytes: 250_000_000_000 }),
+});
 
 /**
  * `act` in `stub`'s object, with a write gate of its own over the object's storage: it
@@ -55,6 +61,7 @@ export function through(overrides: Partial<ChunkStore>): ChunkStore {
     putChunks: (ns, key, chunks) => files.putChunks(ns, key, chunks),
     getChunks: (ns, key, reads) => files.getChunks(ns, key, reads),
     deleteChunks: (ns, sha256s) => files.deleteChunks(ns, sha256s),
+    deleteNamespace: (ns) => files.deleteNamespace(ns),
     putManifestPart: (ns, key, day, part, bytes) =>
       files.putManifestPart(ns, key, day, part, bytes),
     putManifestRoot: (ns, key, day, parts) => files.putManifestRoot(ns, key, day, parts),
@@ -65,7 +72,9 @@ export function through(overrides: Partial<ChunkStore>): ChunkStore {
 
 export function filesOn(storage: OwnerStorage, write: Write, store: ChunkStore = env.FILES,
                         limits: Partial<FileLimits> = {}): Files {
-  return new Files(storage, store, () => ({ ...FILE_DEFAULTS, ...limits }), write);
+  return new Files(storage, store, () => ({ ...FILE_DEFAULTS,
+                                            max_bytes: TIERS.free.storage_bytes, ...limits }),
+                   write);
 }
 
 /**
@@ -294,7 +303,7 @@ export function ownerObject(): Owner {
   return {
     name,
     stub: env.OWNER.getByName(name),
-    as: (caller, owner = name) => ({ owner, caller, origin: null }),
+    as: (caller, owner = name) => ({ owner, caller, origin: null, tiers: TIERS }),
   };
 }
 
@@ -313,9 +322,11 @@ export async function failure(call: () => Promise<unknown>): Promise<Error> {
 
 /** The primitive on `stub`'s own storage, with some bounds lowered for the test. */
 export function inObject<R>(stub: Stub, limits: Partial<Limits>,
-                            act: (store: Collections, state: DurableObjectState) => R): Promise<R> {
+                            act: (store: Collections, state: DurableObjectState) => R,
+                            shares?: Shares): Promise<R> {
   return runInDurableObject(stub, (_instance: OwnerDO, state) =>
-    act(new Collections(state.storage, { ...LIMITS, ...limits }), state));
+    act(new Collections(state.storage, { ...LIMITS, ...limits }, undefined,
+                        shares === undefined ? undefined : () => shares), state));
 }
 
 export type RowTuple = [string, string, number, number, string, number, string];

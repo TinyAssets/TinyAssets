@@ -23,8 +23,8 @@
  * `ctx.exports`. Its `limits` are exactly `LIMITS`, set at top level: the platform's count
  * of subrequests per invocation (50 on Free, 10,000 by default on Paid, at most 10,000,000),
  * whose own error is the object's only call limit, so the number the object relies on is
- * explicit and moves only with a review here. It is 1,000,000: live probe P1 found calls
- * stopped at exactly 10,000 at the default, and Paid accepts it. It is the only
+ * explicit and moves only with a review here. It is Paid's most, 10,000,000: live probe P1
+ * found calls stopped at exactly 10,000 at the default and passed at 1,000,000. It is the only
  * wrangler config in the owner Worker. Edge Workers bind `OWNER` from their own configs.
  *
  * Its one store, at top level only, is `CONTROL` (slice M review M1): the namespace of the
@@ -54,7 +54,7 @@ const ENV_KEYS: ReadonlySet<string> = new Set([
   "migrations", "limits",
 ]);
 /** The owner Worker's limits, wherever they are set: subrequests, as live probe P1 set them. */
-const LIMITS = Object.freeze({ subrequests: 1_000_000 });
+const LIMITS = Object.freeze({ subrequests: 10_000_000 });
 /** The keys the top level may set: an environment's, the schema, the environments, its secret. */
 const TOP_KEYS: ReadonlySet<string> = new Set([...ENV_KEYS, "$schema", "env", "secrets",
                                                  "kv_namespaces"]);
@@ -101,7 +101,7 @@ const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
                            secrets: Object.freeze(["GATEWAY_KEYRING"]) }),
   HOOKS: Object.freeze({ service: "tinyassets-hooks",
                          bindings: Object.freeze({}), own: HOOKS_OWN,
-                         limits: Object.freeze({ cpu_ms: 30_000 }) }),
+                         limits: Object.freeze({ cpu_ms: 300_000 }) }),
 });
 
 type Config = Record<string, unknown>;
@@ -445,7 +445,7 @@ describe("owner Worker config", () => {
   });
 
   it("sets the platform's subrequests per invocation explicitly", () => {
-    expect(config["limits"]).toEqual({ subrequests: 1_000_000 });
+    expect(config["limits"]).toEqual({ subrequests: 10_000_000 });
     for (const limits of [undefined, {}, { subrequests: 50 }, { subrequests: 10000 },
                           { subrequests: 1_000_000, cpu_ms: 1 }, { cpu_ms: 30000 }]) {
       const { limits: _drop, ...rest } = config;
@@ -468,7 +468,7 @@ describe("owner Worker config", () => {
 
   const hooks = { name: "tinyassets-hooks", main: "src/index.ts",
                   compatibility_flags: ["disable_ctx_exports"], workers_dev: false,
-                  limits: { cpu_ms: 30_000 },
+                  limits: { cpu_ms: 300_000 },
                   durable_objects: HOOKS_OWN.durable_objects,
                   migrations: [{ tag: "v1", new_sqlite_classes: HOOKS_OWN.classes }] };
   const hooksBinding = [{ binding: "HOOKS", service: "tinyassets-hooks" }];

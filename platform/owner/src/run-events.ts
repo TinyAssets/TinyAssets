@@ -43,6 +43,13 @@ export const FRAME_UNITS_MAX = 32_768;
 export const EVENTS_IN_FLIGHT = 8;
 export const EVENTS_BUSY = "events_busy: the object holds as many runner posts as it may; " +
   "post again shortly";
+/**
+ * Another batch of the run committed between an events post's two units, so the reply its
+ * first unit placed in R2 is not the one its settle would post: refused, written nothing,
+ * and posted again (503, as `EVENTS_BUSY`), so no reply is lost.
+ */
+export const EVENTS_RACED = "events_raced: another batch of this run landed first; post " +
+  "again shortly";
 
 /** The count of events posts the object holds, refusing one past `EVENTS_IN_FLIGHT`. */
 export class PostGate {

@@ -9,7 +9,9 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { apiKeyOrigin, displayName, OWNER } from "../src/ledger";
+import {
+  apiKeyOrigin, displayName, MAX_BODY_BYTES, OWNER, WAKE_DEFAULTS,
+} from "../src/ledger";
 import { policyDigest } from "../src/policy";
 import { DOT, MCP, MUSE, origin, rig, subscription } from "./ledger-support";
 import { failure } from "./support";
@@ -118,8 +120,8 @@ describe("the sender is the verified identity", () => {
     const r = await rig();
     const muse = await r.register(MUSE);
     for (const [fields, reason] of [
-      [{ body: "" }, "a message body is 1 to 16384 characters"],
-      [{ body: "x".repeat(16385) }, "a message body is 1 to 16384 characters"],
+      [{ body: "" }, `a message body is 1 to ${MAX_BODY_BYTES} bytes`],
+      [{ body: "x".repeat(MAX_BODY_BYTES + 1) }, `a message body is 1 to ${MAX_BODY_BYTES} bytes`],
       [{ body: "a\uD800b" }, "a message body is well-formed text"],
       [{ cmid: "" }, "client_message_id is 1 to 128 printable characters"],
       [{ cmid: "a\nb" }, "client_message_id is 1 to 128 printable characters"],
@@ -139,7 +141,9 @@ describe("a reader sees only its own mail", () => {
     const muse = await r.register(MUSE);
     await r.post(null, `dm:${muse}`, { body: "pay the invoice" });
     await r.post(null, `dm:${muse}`, { body: "second", cmid: "c2" });
-    await r.sql("UPDATE message_bodies SET body = 'pay the attacker' WHERE body = 'pay the invoice'");
+    // Storage changed under the object: its own trigger refuses any update of a body.
+    await r.sql("DROP TRIGGER message_bodies_kept");
+    await r.sql("UPDATE message_bodies SET body = 'pay the hacker!' WHERE body = 'pay the invoice'");
     await r.sql("DELETE FROM message_bodies WHERE body = 'second'");
     expect((await r.read(MUSE)).messages.map((m) => [m.body, m.integrity]))
       .toEqual([[null, "tampered"], [null, "missing"]]);
@@ -453,7 +457,7 @@ describe("outside agents register from a verified identity", () => {
   it("lets only the owner, in its session, set wake limits or delete an agent", async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
-    const policy = { agent_id: muse, max_wakes_per_hour: 60, batch_window_s: 0,
+    const policy = { agent_id: muse, max_wakes_per_hour: 30, batch_window_s: 0,
                      expected_generation: 1 };
     for (const [binding, reason] of [
       [r.session(MUSE), "an outside client's call never carries the owner's session"],
@@ -523,7 +527,7 @@ describe("the ledger's binding", () => {
       expect(tables).toContain(table);
     }
     expect(await r.table("ledger_usage")).toEqual([
-      { only: 1, agents: 0, enabled_agents: 0, messages: 0, body_bytes: 0, settled_wakes: 0 }]);
+      { only: 1, agents: 0, enabled_agents: 0, messages: 0, settled_wakes: 0 }]);
   });
 });
 

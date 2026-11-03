@@ -82,6 +82,8 @@ import { Invalid, Refused } from "./errors";
 import type { OwnerStorage, Write } from "./gate";
 import { CHUNK_BYTES, CLIENT_WRITER, CLIENTS, HISTORY_BYTES, OWNER_SCOPE } from "./manifest";
 import { inTime } from "./schedule";
+import { refuseErasing } from "./erasure";
+import { TIER_UNREAD } from "./tier";
 import {
   AGENTS_OWNER_ONLY, ancestors, isRoot, MAX_NAME_BYTES, MAX_PATH_BYTES, nameOf, ownersOnly,
   parentOf, storedPath, TEMP, within, WORKSPACE,
@@ -106,10 +108,18 @@ export const BATCH_BYTES = 2 * CHUNK_BYTES;
  * calls); larger files go by upload, a chunk at a time.
  */
 export const WHOLE_BYTES = 4 * CHUNK_BYTES;
-/** Files this size or smaller are kept inline in the object. */
+/**
+ * Files this size or smaller are kept inline in the object, so reading `AGENTS.md` or a skill
+ * touches no bucket; a placed body's own threshold is `PLACE_BYTES` (ADR-035).
+ */
 export const INLINE_BYTES = 4096;
 /** An upload intent's life: past it, its uncommitted chunks become garbage. */
-export const INTENT_TTL_S = 3600;
+export const INTENT_TTL_S = 86_400;
+/**
+ * A placed body's upload's life (ADR-035): its bytes go to R2 and its row commits in one
+ * door call, so a crashed placement holds its quota and its upload slot for minutes only.
+ */
+export const PLACE_TTL_S = 600;
 /** How long a garbage chunk waits before it is deleted (the schema's trigger sets it). */
 export const GC_GRACE_S = 86_400;
 /** When a failed chunk delete is tried again. */
@@ -119,7 +129,7 @@ export const LEASE_TTL_S = 60;
 /** The owner's own work's sandbox: the authority every run the owner started holds. */
 export const OWNER_AUTHORITY = "owner";
 /** A temporary directory's life. */
-export const TEMP_TTL_S = 86_400;
+export const TEMP_TTL_S = 7 * 86_400;
 /**
  * How late housekeeping may run after it is due, so one alarm takes everything due in
  * an hour rather than each prune or delete arming its own.
@@ -144,15 +154,17 @@ export const MAX_HELD_CHUNKS = 20_000;
 export const MAX_SYNC_OPS = 1000;
 /** The most versions policy can keep of a path (`FILE_SETTINGS.keep_versions`). */
 export const KEEP_CEILING = 1000;
-/** Conflict copies of one path one epoch may make. */
-export const MAX_CONFLICT_COPIES = 100;
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const HEX32 = /^[0-9a-f]{32}$/;
 
 /** The owner's files settings the object enforces (owner policy's `files` table). */
 export interface FileLimits {
-  readonly max_bytes: number;
+  /**
+   * File bytes (chunks, live and in history, and placed bodies): the tier's storage, or the
+   * owner's own lower figure; null while the tier's is not known here (`TIER_UNREAD`).
+   */
+  readonly max_bytes: number | null;
   readonly max_inline_bytes: number;
   readonly max_manifest_bytes: number;
   readonly max_entries: number;
@@ -197,6 +209,8 @@ export interface ChunkStore {
             reads: { sha256: string; offset?: number; length?: number }[]):
     Promise<Uint8Array[]>;
   deleteChunks(ns: string, sha256s: string[]): Promise<{ deleted: number }>;
+  /** Every object under the namespace's prefix deleted: the erasure's alone. */
+  deleteNamespace(ns: string): Promise<{ deleted: number }>;
   putManifestPart(ns: string, key: string, day: string, part: number, bytes: Uint8Array):
     Promise<{ sha256: string; size: number }>;
   putManifestRoot(ns: string, key: string, day: string,
@@ -209,6 +223,15 @@ export interface ChunkSpace {
   readonly ns: string;
   readonly key: string;
 }
+
+/**
+ * What retention frees when the files byte quota would refuse a change (ADR-035): the oldest
+ * placed collection history entry, or the oldest acked message with a placed body, of the
+ * writers `filer` names (any, `*`; every outside writer, `client:*`; or one), one at a time;
+ * false when none
+ * is left. Run in the change's own unit, before its quota is checked.
+ */
+export type Reclaim = (filer: string) => boolean;
 
 export type FileKind = "file" | "dir";
 
@@ -291,25 +314,25 @@ export interface SandboxLease {
   /** The SHA-256 hex of the runner's own secret, which no CLI holds. */
   readonly runner_token: string;
   readonly expires_at: number;
-  /** When its tokens die: the sandbox's own continuous-runtime ceiling. */
-  readonly deadline: number;
   /** The egress generation the sandbox's network was last applied under, or null. */
   readonly network_generation: number | null;
   /** The engines its own runner last reported signed in inside it (a client's sandbox's). */
   readonly signins: readonly string[];
 }
 
-/** The three tokens' hashes a lease is bound to, and their deadline. */
+/**
+ * The three tokens' hashes a lease is bound to. They live while the lease does: no deadline
+ * of their own, the lease's renewal (its heartbeat) is their life.
+ */
 export interface LeaseTokens {
   readonly egress: string;
   readonly sync: string;
   readonly runner: string;
-  readonly deadline: number;
 }
 
 type LeaseRow = {
   authority: string; lease_id: string; epoch: number; holder: string; lease_expires: number;
-  deadline: number; egress_token: string; sync_token: string; runner_token: string;
+  egress_token: string; sync_token: string; runner_token: string;
   network_generation: number | null; signins: string;
 };
 
@@ -317,12 +340,12 @@ function leaseOf(row: LeaseRow): SandboxLease {
   return { authority: row.authority, lease_id: row.lease_id, epoch: row.epoch,
            egress_token: row.egress_token, sync_token: row.sync_token,
            runner_token: row.runner_token, expires_at: row.lease_expires,
-           deadline: row.deadline, network_generation: row.network_generation,
+           network_generation: row.network_generation,
            signins: row.signins === "" ? [] : row.signins.split(",") };
 }
 
-/** A lease's row is live while neither its renewal nor its tokens' deadline has passed. */
-const LIVE_LEASE = "lease_expires > ? AND deadline > ?";
+/** A lease's row, and its tokens, are live while its renewal has not lapsed. */
+const LIVE_LEASE = "lease_expires > ?";
 
 /** A sync op: what the sandbox's scan found, against the version it last synced. */
 export type SyncOp =
@@ -519,6 +542,12 @@ export function batches<T extends { size: number }>(items: readonly T[]): T[][] 
  * A conflict copy's name: `name` cut at a code point to leave room, then
  * `.ta-conflict-<epoch>` and, past the first, `-<n>`, at most 255 bytes in all.
  */
+/**
+ * An upload names a chunk the sweep is deleting this moment: refused, nothing held, so its
+ * writer begins again once the delete lands (a placed body's door does so itself).
+ */
+export const CHUNK_DELETING = "a chunk of this upload is being deleted; begin again";
+
 export function conflictName(name: string, epoch: number, n: number): string {
   const suffix = `.ta-conflict-${epoch}${n > 1 ? `-${n}` : ""}`;
   const points = [...name];
@@ -534,6 +563,10 @@ export class Files {
   readonly #limits: () => FileLimits;
   /** The object's write gate: the units the methods that cross to `FILES` write through. */
   readonly #write: Write;
+  /** What retention frees at the byte quota (the collections' history, acked mail). */
+  readonly #reclaim: Reclaim;
+  /** The `FILES` puts in flight on this instance, which the erasure waits for. */
+  readonly #puts = new Set<Promise<unknown>>();
   /**
    * Told of each workspace path a change makes or takes away, in that change's own unit:
    * what follows a path (an agent's ledger identity its `agent.json`). A refusal refuses
@@ -542,12 +575,13 @@ export class Files {
   readonly #changed: (path: string, present: boolean, now: number) => void;
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
-              write: Write,
+              write: Write, reclaim: Reclaim = () => false,
               changed: (path: string, present: boolean, now: number) => void = () => {}) {
     this.#storage = storage;
     this.#store = store;
     this.#limits = limits;
     this.#write = write;
+    this.#reclaim = reclaim;
     this.#changed = changed;
   }
 
@@ -589,11 +623,6 @@ export class Files {
       this.#sql.exec("UPDATE file_space SET data_key = ? WHERE data_key IS NULL", key);
       return { ns, key: this.#space().data_key! };
     });
-  }
-
-  /** The namespace if it was made, else null: never made here. A read. */
-  heldNamespace(): string | null {
-    return this.#space().ns;
   }
 
   /** The namespace from outside a unit: made through the gate on first use. */
@@ -644,23 +673,24 @@ export class Files {
    */
   #scopes(before: Before, writer: string | null): {
     percent: number; before: Counters; now: () => Counters; refusal: (what: string) => string;
-    rows: string; args: SqlStorageValue[];
+    rows: string; args: SqlStorageValue[]; filer: string;
   }[] {
     const limits = this.#limits();
     const owner = { percent: 100, before: before.space, now: () => this.#space(),
                     refusal: (what: string) => `${FILE_QUOTA}: the owner's ${what} are at ` +
-                      "their quota", rows: "1 = 1", args: [] };
+                      "their quota", rows: "1 = 1", args: [], filer: "*" };
     if (!isClient(writer)) {
       return [owner];
     }
     return [
       { percent: limits.client_share, before: before.share, now: () => this.#share(writer),
         refusal: (what) => `${FILE_SHARE}: this client's ${what} are at its share of the ` +
-          "owner's quota", rows: "writer = ?", args: [writer] },
+          "owner's quota", rows: "writer = ?", args: [writer], filer: writer },
       { percent: 100 - limits.owner_reserve, before: before.clients,
         now: () => this.#share(CLIENTS),
         refusal: (what) => `${FILE_SHARE}: outside clients' ${what} are at their share; ` +
-          "the rest is kept for the owner", rows: "writer GLOB ?", args: [CLIENT_WRITER] },
+          "the rest is kept for the owner", rows: "writer GLOB ?", args: [CLIENT_WRITER],
+        filer: CLIENT_WRITER },
       owner,
     ];
   }
@@ -675,8 +705,14 @@ export class Files {
     for (const scope of this.#scopes(before, writer)) {
       const after = scope.now();
       for (const [counter, setting, what] of QUOTAS) {
-        if (after[counter] > shareOf(limits[setting], scope.percent)
-            && after[counter] > scope.before[counter]) {
+        if (after[counter] <= scope.before[counter]) {
+          continue;
+        }
+        const bound = limits[setting];
+        if (bound === null) {
+          throw new Refused(TIER_UNREAD);  // the tier's storage is not known: no guess
+        }
+        if (after[counter] > shareOf(bound, scope.percent)) {
           throw new Refused(scope.refusal(what));
         }
       }
@@ -699,6 +735,14 @@ export class Files {
   #fit(before: Before, writer: string | null): void {
     const limits = this.#limits();
     for (const scope of this.#scopes(before, writer)) {
+      // Retention kept in R2 makes room first (ADR-035): past the byte quota, the scope's
+      // oldest placed history and acked mail go before the change is held to it.
+      const bytes = limits.max_bytes;
+      while (bytes !== null && scope.now().chunk_bytes > Math.max(
+               shareOf(bytes, scope.percent), scope.before.chunk_bytes)
+             && this.#reclaim(scope.filer)) {
+        // one entry or message a step, until the scope fits or nothing is left
+      }
       for (;;) {
         const now = scope.now();
         const rows = now.history - Math.max(shareOf(limits.max_history, scope.percent),
@@ -783,9 +827,11 @@ export class Files {
 
   #content(contentId: string, size: number): { inline?: Uint8Array; chunks?: ChunkRef[] } {
     if (size <= INLINE_BYTES) {
-      const row = this.#sql.exec<{ inline: ArrayBuffer }>(
+      const row = this.#sql.exec<{ inline: ArrayBuffer | null }>(
         "SELECT inline FROM file_contents WHERE content_id = ?", contentId).one();
-      return { inline: new Uint8Array(row.inline) };
+      if (row.inline !== null) {
+        return { inline: new Uint8Array(row.inline) };
+      }
     }
     const sizes = chunkPlan(size);
     const shas = this.#sql.exec<{ sha256: string }>(
@@ -1148,8 +1194,20 @@ export class Files {
    */
   async #put(chunks: readonly { sha256: string; bytes: Uint8Array }[], intentId: string):
       Promise<void> {
-    const { ns, key } = await this.space();
-    await this.#store.putChunks(ns, key, chunks.map(({ sha256, bytes }) => ({ sha256, bytes })));
+    // No byte goes to R2 once the erasure's mark stands; one already sent is waited for.
+    const ns = await this.#write(() => {
+      refuseErasing(this.#storage);
+      return this.ns();
+    });
+    const { key } = await this.space();
+    const put = this.#store.putChunks(ns, key,
+                                      chunks.map(({ sha256, bytes }) => ({ sha256, bytes })));
+    this.#puts.add(put);
+    try {
+      await put;
+    } finally {
+      this.#puts.delete(put);
+    }
     await this.#write(() => this.#storage.transactionSync(() => {
       const sent = new Set(chunks.map(({ sha256 }) => sha256));
       for (const sha256 of sent) {
@@ -1222,10 +1280,12 @@ export class Files {
    * open uploads and the chunks they hold, all clients together at most what the owner's
    * reserve leaves. Every bound is checked here, before any byte is sent.
    */
-  begin(size: unknown, chunks: unknown, writer: string, readable: readonly string[] = []):
-      { intent_id: string; missing: string[]; expires_at: number } {
-    const bytes = count(size, "size", INLINE_BYTES + 1, Number.MAX_SAFE_INTEGER);
-    if (bytes > this.#limits().max_file_bytes) {
+  begin(size: unknown, chunks: unknown, writer: string, readable: readonly string[] = [],
+        placing = false): { intent_id: string; missing: string[]; expires_at: number } {
+    refuseErasing(this.#storage);
+    // A placed body (ADR-035) is no file: any size past its threshold, its own short life.
+    const bytes = count(size, "size", placing ? 1 : INLINE_BYTES + 1, Number.MAX_SAFE_INTEGER);
+    if (!placing && bytes > this.#limits().max_file_bytes) {
       throw new Refused(FILE_TOO_LARGE);
     }
     const plan = chunkPlan(bytes);
@@ -1266,7 +1326,7 @@ export class Files {
           sql.exec("INSERT INTO file_chunks (sha256, size, state, stored, holds, holder) " +
                      "VALUES (?, ?, 'uploading', 0, 1, ?)", sha256, chunkSize, own);
         } else if (row.state === "deleting") {
-          throw new Refused("a chunk of this upload is being deleted; begin again");
+          throw new Refused(CHUNK_DELETING);
         } else if (row.state === "garbage") {
           sql.exec("UPDATE file_chunks SET state = 'uploading', holds = 1, gc_after = NULL " +
                      "WHERE sha256 = ?", sha256);
@@ -1278,7 +1338,7 @@ export class Files {
           missing.push(sha256);
         }
       }
-      const expiresAt = now + INTENT_TTL_S;
+      const expiresAt = now + (placing ? PLACE_TTL_S : INTENT_TTL_S);
       sql.exec("INSERT INTO file_intents (intent_id, size, chunks, expires_at, writer, " +
                  "pending) VALUES (?, ?, ?, ?, ?, ?)", intentId, bytes,
                (chunks as string[]).join(""), expiresAt, writer, missing.join(""));
@@ -1433,6 +1493,22 @@ export class Files {
                                  request.parents ?? true, now);
       this.#release(intentId as string);
       return entry;
+    });
+  }
+
+  /**
+   * In the caller's unit, a placed body's adoption (ADR-035, `bodies.ts`): the upload's
+   * content made (its chunks stored, made live), the intent ended, and `name` run with the
+   * content's id, the caller's row naming it, whose own triggers count the reference, in
+   * its writer's scope too. Held to every quota as any change is, after the row, in the
+   * same transaction, so a refused or conflicting row leaves the content unmade and the
+   * intent open for its release.
+   */
+  adopt<T>(intentId: string, writer: string, name: (contentId: string) => T): T {
+    return this.#change(writer, (now) => {
+      const { contentId } = this.#fromIntent(this.#intent(intentId, now));
+      this.#release(intentId);
+      return name(contentId);
     });
   }
 
@@ -1643,9 +1719,11 @@ export class Files {
 
   /** A new temporary directory under `/.ta/tmp`, expired after a day. */
   tempDir(prefix: unknown, writer: string): string {
-    if (typeof prefix !== "string" || prefix.includes("/") || codePoints(prefix) > 64
-        || !isPrintable(prefix)) {
-      throw new Invalid("a temporary prefix is at most 64 printable characters, no slash");
+    // A prefix and the 16 hex after it make one path component (`MAX_NAME_BYTES`).
+    if (typeof prefix !== "string" || prefix.includes("/")
+        || utf8Bytes(prefix) > MAX_NAME_BYTES - 16 || !isPrintable(prefix)) {
+      throw new Invalid(`a temporary prefix is at most ${MAX_NAME_BYTES - 16} bytes of ` +
+                        "printable characters, no slash");
     }
     const name = `${prefix}${randomBytes(8).toString("hex")}`;
     const path = `${TEMP}/${name}`;
@@ -1694,7 +1772,7 @@ export class Files {
     }
     const hashes = [tokens.egress, tokens.sync, tokens.runner];
     if (hashes.some((hash) => typeof hash !== "string" || !HEX64.test(hash))
-        || new Set(hashes).size !== 3 || !Number.isFinite(tokens.deadline)) {
+        || new Set(hashes).size !== 3) {
       throw new Invalid("a lease's three token hashes are 64 hex, and differ");
     }
     return this.#change(null, (now) => {
@@ -1702,14 +1780,14 @@ export class Files {
         throw new Refused("the sync lease is held");
       }
       this.#sql.exec("DELETE FROM sandbox_leases WHERE authority = ? OR NOT " +
-                       `(${LIVE_LEASE})`, authority, now, now);
+                       `(${LIVE_LEASE})`, authority, now);
       const row = this.#sql.exec<{ epoch: number; seq: number }>(
         "UPDATE file_space SET epoch = epoch + 1 RETURNING epoch, seq").one();
       const leaseId = randomBytes(16).toString("hex");
       this.#sql.exec(
         "INSERT INTO sandbox_leases (authority, lease_id, epoch, holder, lease_expires, " +
-          "deadline, egress_token, sync_token, runner_token) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        authority, leaseId, row.epoch, holder, now + LEASE_TTL_S, tokens.deadline,
+          "egress_token, sync_token, runner_token) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        authority, leaseId, row.epoch, holder, now + LEASE_TTL_S,
         tokens.egress, tokens.sync, tokens.runner);
       return { lease_id: leaseId, epoch: row.epoch, expires_at: now + LEASE_TTL_S,
                base: row.seq };
@@ -1719,7 +1797,7 @@ export class Files {
   /** `authority`'s live lease, or null. A read. */
   sandboxLease(now: number, authority: string): SandboxLease | null {
     const row = this.#sql.exec<LeaseRow>(
-      `SELECT * FROM sandbox_leases WHERE authority = ? AND ${LIVE_LEASE}`, authority, now, now)
+      `SELECT * FROM sandbox_leases WHERE authority = ? AND ${LIVE_LEASE}`, authority, now)
       .toArray()[0];
     return row === undefined ? null : leaseOf(row);
   }
@@ -1728,7 +1806,7 @@ export class Files {
   leaseByToken(kind: "egress" | "sync" | "runner", hash: string, now: number):
       SandboxLease | null {
     const row = this.#sql.exec<LeaseRow>(
-      `SELECT * FROM sandbox_leases WHERE ${kind}_token = ? AND ${LIVE_LEASE}`, hash, now, now)
+      `SELECT * FROM sandbox_leases WHERE ${kind}_token = ? AND ${LIVE_LEASE}`, hash, now)
       .toArray()[0];
     return row === undefined ? null : leaseOf(row);
   }
@@ -1736,7 +1814,7 @@ export class Files {
   /** Every live lease. A read. */
   liveLeases(now: number): SandboxLease[] {
     return this.#sql.exec<LeaseRow>(
-      `SELECT * FROM sandbox_leases WHERE ${LIVE_LEASE} ORDER BY epoch`, now, now).toArray()
+      `SELECT * FROM sandbox_leases WHERE ${LIVE_LEASE} ORDER BY epoch`, now).toArray()
       .map(leaseOf);
   }
 
@@ -1758,7 +1836,7 @@ export class Files {
   /** The live lease these name, or refused: a stale epoch or lease id is fenced. */
   #fenced(leaseId: unknown, epoch: unknown, now: number): LeaseRow {
     const row = typeof leaseId !== "string" ? undefined : this.#sql.exec<LeaseRow>(
-      `SELECT * FROM sandbox_leases WHERE lease_id = ? AND ${LIVE_LEASE}`, leaseId, now, now)
+      `SELECT * FROM sandbox_leases WHERE lease_id = ? AND ${LIVE_LEASE}`, leaseId, now)
       .toArray()[0];
     if (row === undefined || row.epoch !== epoch) {
       throw new Refused("the sync lease was lost; this sync is fenced");
@@ -1819,7 +1897,7 @@ export class Files {
 
   /** In a unit: every lapsed lease's row gone (its runs settled first, `Runs.lost`). */
   leasesLapsed(now: number): void {
-    this.#sql.exec(`DELETE FROM sandbox_leases WHERE NOT (${LIVE_LEASE})`, now, now);
+    this.#sql.exec(`DELETE FROM sandbox_leases WHERE NOT (${LIVE_LEASE})`, now);
   }
 
   /**
@@ -1891,9 +1969,19 @@ export class Files {
   #copyPath(path: string, epoch: number): string {
     const at = this.#blocked(path) ?? path;
     const rest = path.slice(at.length);
-    for (let n = 1; n <= MAX_CONFLICT_COPIES; n++) {
+    // Each copy is an entry, so the free name is within the entries quota's count. Every
+    // candidate starts with the name as cut for the longest suffix that count allows, so the
+    // names taken are found in one range read of the parent's entries (review rvlim N6).
+    const most = this.#limits().max_entries + 1;
+    const longest = conflictName(nameOf(at), epoch, most);
+    const cut = longest.slice(0, longest.length - `.ta-conflict-${epoch}-${most}`.length);
+    const from = cut === "" ? "" : nameOf(storedPath(`${parentOf(at)}/${cut}`));
+    const taken = new Set(this.#sql.exec<{ name: string }>(
+      "SELECT name FROM file_entries WHERE parent = ? AND name >= ? AND name < ?",
+      parentOf(storedPath(at)), from, `${from}\u{10FFFF}`).toArray().map((row) => row.name));
+    for (let n = 1; n <= most; n++) {
       const copy = storedPath(`${parentOf(at)}/${conflictName(nameOf(at), epoch, n)}`);
-      if (this.#entry(copy) === undefined) {
+      if (!taken.has(nameOf(copy))) {
         if (utf8Bytes(copy + rest) > MAX_PATH_BYTES) {
           throw new Refused("the conflict copy's path would pass 4096 bytes; " +
                             "the sandbox keeps this file and reports it each sync");
@@ -2049,6 +2137,27 @@ export class Files {
         sql.exec("DELETE FROM file_chunks WHERE sha256 = ? AND state = 'deleting'", sha256);
       }
     }));
+  }
+
+  /** The owner's namespace, or null when nothing was ever stored. A read. */
+  storedNamespace(): string | null {
+    return this.#space().ns;
+  }
+
+  /** Once every `FILES` put this instance has in flight has landed or failed. */
+  async settled(): Promise<void> {
+    while (this.#puts.size > 0) {
+      await Promise.allSettled([...this.#puts]);
+    }
+  }
+
+  /**
+   * The erasure's R2 step (`erase.ts`): every object under the owner's namespace deleted,
+   * by its prefix, not by its rows, so a chunk whose row was lost or whose put landed late
+   * goes too. Repeatable; it changes no row.
+   */
+  async eraseNamespace(ns: string): Promise<void> {
+    await this.#store.deleteNamespace(ns);
   }
 
   /**

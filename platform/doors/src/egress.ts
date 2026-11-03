@@ -40,15 +40,15 @@
  * sandbox binding at every door but the egress doors.
  */
 import { HINT_KEYS } from "../../gateway/src/api-rules";
-import { EGRESS_BODY_MAX, EGRESS_DEADLINE_S, type EgressCode, GENERATION_HEADER, type Outcome,
-         SANDBOX_HEADER } from "../../owner/src/network";
+import { EGRESS_BEAT_S, EGRESS_BODY_MAX, EGRESS_DEADLINE_S, type EgressCode, GENERATION_HEADER,
+         type Outcome, SANDBOX_HEADER } from "../../owner/src/network";
 import { EVENTS_BODY_MAX, eventsBounded } from "../../owner/src/run-events";
 
 import { type Bound, bindRun, bindSandbox, type Presented, rebound } from "./binder";
 import { jsonObject } from "./body";
 import { type DoorsEnv, EGRESS_ORIGIN } from "./config";
 import { ownerGate } from "./control";
-import { verifyToken } from "./routing-mac";
+import { LEASE_LIVED, verifyToken } from "./routing-mac";
 import { serveMcp } from "./mcp";
 import { refusal } from "./tools";
 
@@ -130,10 +130,11 @@ function refused(code: string, status: number, receipt?: string | null): Respons
 
 /**
  * The status a run door's refusal goes back with: the object's held posts full
- * (`events_busy`) is a 503 the runner retries after `Retry-After`; any other, its own.
+ * (`events_busy`), or another batch of the run landing between a post's units
+ * (`events_raced`), is a 503 the runner retries after `Retry-After`; any other, its own.
  */
 export function refusedStatus(code: string, status: number): number {
-  return code === "events_busy" ? 503 : status;
+  return code === "events_busy" || code === "events_raced" ? 503 : status;
 }
 
 /** A refusal's code from the object's message: its fixed prefix, as the doors keep them. */
@@ -186,8 +187,10 @@ async function sandboxToken(request: Request, env: DoorsEnv):
   if (parsed === null) {
     return refused("egress_token_unknown", 401);
   }
-  if (parsed.expires <= Date.now() / 1000) {
-    return refused("egress_token_expired", 401);  // the lease is over: no object is reached
+  // A lease's token lives while its lease is renewed, which the object checks; one minted
+  // with a time of its own is refused past it, reaching no object.
+  if (parsed.expires !== LEASE_LIVED && parsed.expires <= Date.now() / 1000) {
+    return refused("egress_token_expired", 401);
   }
   const generation = request.headers.get(GENERATION_HEADER) ?? "";
   if (!GENERATION.test(generation)) {
@@ -374,9 +377,15 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   const halt = new IdentityTransformStream();
   const halter = halt.writable.getWriter();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // The door beats its open reservation while it streams, so the object settles it lost
+  // within minutes once the beats stop (a deploy, a restart), never a day on.
+  const beat = setInterval(() => {
+    bound.stub.egressBeat(bound.binding, { reservation }).catch(() => undefined);
+  }, EGRESS_BEAT_S * 1000);
   const finish = (end: Outcome): Promise<void> => {
     if (settled === null) {
       clearTimeout(timer);
+      clearInterval(beat);
       signal.cancel().catch(() => undefined);
       halter.close().catch(() => undefined);  // the provider's request ends with the stream
       // Only a completed answer's meter can be read; any other end may have cost anything up

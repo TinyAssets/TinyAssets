@@ -22,8 +22,11 @@
  *   loudly instead of counting as a deduplicated hit.
  * - `getChunks` reads chunks whole, rechecking each hash, or byte ranges of them.
  * - `deleteChunks` removes up to 1,000 chunks in one call (R2's batch limit); the owner
- *   object's garbage collection is its only caller, for keys in its own chunk table, so
- *   nothing ever lists the bucket.
+ *   object's garbage collection is its only caller, for keys in its own chunk table.
+ * - `deleteNamespace` deletes every object under one owner's namespace prefix, listing it
+ *   1,000 keys at a time: the owner's erasure alone, so a chunk whose row was lost, or
+ *   whose put landed late, goes with the rest. It is the only list of the bucket, and only
+ *   ever of one namespace's prefix.
  *
  * Every chunk is put and read under its owner's data key (SSE-C, R2's `ssecKey`;
  * `datakey.ts`): each call presents the owner's wrapped key, which this Worker opens with
@@ -47,8 +50,9 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { type KeyringSecret, mint, unwrap } from "./datakey";
 import {
-  BATCH_BYTES, CHUNK_BYTES, chunkHash, chunkKey, DELETE_BATCH, Invalid, MANIFEST_PARTS,
-  manifestDay, manifestKey, manifestPart, namespace,
+  BATCH_BYTES, CHUNK_BYTES, chunkHash, chunkKey, chunkPrefix, DELETE_BATCH, Invalid, listedChunk,
+  listedManifest, MANIFEST_PARTS, manifestDay, manifestKey, manifestPart, manifestPrefix,
+  namespace,
 } from "./keys";
 /** How a binding reports R2's `BadDigest`: the code, or its message. */
 const BAD_DIGEST = /\(10037\)|did not match what we received/;
@@ -213,6 +217,34 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
       }
       return bytes;
     }));
+  }
+
+  /**
+   * Delete every chunk and then every manifest object under `ns`'s prefixes, listed 1,000 at
+   * a time; repeatable.
+   */
+  async deleteNamespace(ns: string): Promise<{ deleted: number }> {
+    namespace(ns);
+    let deleted = 0;
+    for (;;) {
+      const listed = await this.env.BLOBS.list({ prefix: chunkPrefix(ns), limit: DELETE_BATCH });
+      const shas = listed.objects.map((object) => listedChunk(ns, object.key));
+      if (shas.length === 0) {
+        break;
+      }
+      await this.env.BLOBS.delete(shas.map((sha) => chunkKey(ns, sha)));
+      deleted += shas.length;
+    }
+    for (;;) {
+      const listed = await this.env.BLOBS.list({ prefix: manifestPrefix(ns),
+                                                 limit: DELETE_BATCH });
+      const keys = listed.objects.map((object) => object.key);
+      if (keys.length === 0) {
+        return { deleted };
+      }
+      await this.env.BLOBS.delete(keys.map((key) => listedManifest(ns, key)));
+      deleted += keys.length;
+    }
   }
 
   /** Delete chunks (at most 1,000); a key already gone is not an error. */

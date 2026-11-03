@@ -10,10 +10,12 @@
  * - in the files Worker, the bucket is reached in exactly one form,
  *   `this.env.BLOBS.<put|get|head|delete>(key, ...)`, `this.env` is never read for
  *   anything else but the data keys' ring (`this.env.FILES_KEYRING`, handed straight to
- *   `datakey.ts`, the one module that reads it), and every key is a call of `chunkKey` or
- *   `manifestKey` (or a list of them mapped from a list), each the one imported from
- *   `./keys` and nothing shadowing it. No alias (`const b = this.env.BLOBS`,
- *   `const { BLOBS } = env`, `env["BLOBS"]`) and no list call passes.
+ *   `datakey.ts`, the one module that reads it), and every key is a call of a key builder
+ *   (`chunkKey`, `manifestKey`, or `listedManifest`, which rebuilds a listed manifest key
+ *   through `manifestKey`; or a list of them mapped from a list), each the one imported
+ *   from `./keys` and nothing shadowing it. No alias (`const b = this.env.BLOBS`,
+ *   `const { BLOBS } = env`, `env["BLOBS"]`) passes, and the one list is of one namespace's
+ *   prefix (`list({ prefix: chunkPrefix(ns) | manifestPrefix(ns), ... })`, the erasure's).
  */
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
@@ -26,7 +28,9 @@ const CALLS: ReadonlySet<string> = new Set(["put", "get", "head", "delete"]);
 const KEY_TEXT = /^o\/|\/c\//;
 const R2_TYPE = /^R2[A-Z]/;
 /** The key builders `keys.ts` exports, the only calls a bucket key may be. */
-const BUILDERS: ReadonlySet<string> = new Set(["chunkKey", "manifestKey"]);
+const BUILDERS: ReadonlySet<string> = new Set(["chunkKey", "manifestKey", "listedManifest"]);
+/** The prefixes `keys.ts` exports, the only lists of the bucket. */
+const PREFIXES: ReadonlySet<string> = new Set(["chunkPrefix", "manifestPrefix"]);
 /** The one other field of `this.env` the Worker reads, and the calls it may go to. */
 const RING = "FILES_KEYRING";
 const RING_READERS: ReadonlySet<string> = new Set(["mint", "unwrap"]);
@@ -34,6 +38,15 @@ const RING_READERS: ReadonlySet<string> = new Set(["mint", "unwrap"]);
 function thisEnv(node: ts.Node): boolean {
   return ts.isPropertyAccessExpression(node) && node.expression.kind === ts.SyntaxKind.ThisKeyword
     && node.name.text === "env";
+}
+
+/** `{ prefix: chunkPrefix(...), ... }`: a list of one namespace's prefix. */
+function prefixList(node: ts.Node | undefined): boolean {
+  return node !== undefined && ts.isObjectLiteralExpression(node) && node.properties.some(
+    (property) => ts.isPropertyAssignment(property) && ts.isIdentifier(property.name)
+      && property.name.text === "prefix" && ts.isCallExpression(property.initializer)
+      && ts.isIdentifier(property.initializer.expression)
+      && PREFIXES.has(property.initializer.expression.text));
 }
 
 function chunkKeyCall(node: ts.Node | undefined): boolean {
@@ -110,8 +123,9 @@ export function keyProblems(fileName: string, source: string): string[] {
       const call = method?.parent;
       if (!ts.isPropertyAccessExpression(access) || access.name !== node || !thisEnv(access.expression)
           || !ts.isPropertyAccessExpression(method) || method.expression !== access
-          || !CALLS.has(method.name.text) || call === undefined || !ts.isCallExpression(call)
-          || call.expression !== method || !chunkKeyCall(call.arguments[0])) {
+          || call === undefined || !ts.isCallExpression(call) || call.expression !== method
+          || !(CALLS.has(method.name.text) ? chunkKeyCall(call.arguments[0])
+            : method.name.text === "list" && prefixList(call.arguments[0]))) {
         report(node, "reaches BLOBS other than this.env.BLOBS.<put|get|head|delete>(<a key builder>(...))");
       }
     }
@@ -139,6 +153,7 @@ describe("r2-keys guard", () => {
     ["owner/src/probe.ts", "function f(env) { return env.BLOBS; }"],
     ["files/src/index.ts", "class S { async f(path) { await this.env.BLOBS.put(path, b); } }"],
     ["files/src/index.ts", "class S { async f() { await this.env.BLOBS.list({}); } }"],
+    ["files/src/index.ts", "class S { async f() { await this.env.BLOBS.list({ prefix: 'o/' }); } }"],
     ["files/src/index.ts", "class S { f() { const b = this.env.BLOBS.get; return b('k'); } }"],
     ["files/src/index.ts", "class S { async f(xs) { await this.env.BLOBS.delete(xs.map((x) => x)); } }"],
     ["files/src/index.ts", "class S { async f(k) { const key = chunkKey(a, b); " +
@@ -176,6 +191,8 @@ describe("r2-keys guard", () => {
     "class S { async f(ns, d) { await this.env.BLOBS.get(manifestKey(ns, d)); } }",
     "class S { f(ns, k) { return unwrap(this.env.FILES_KEYRING, ns, k); } }",
     "interface FilesEnv { readonly BLOBS: R2Bucket; }",
+    "class S { async f(ns) { await this.env.BLOBS.list({ prefix: chunkPrefix(ns) }); } }",
+    "class S { async f(ns) { await this.env.BLOBS.list({ prefix: manifestPrefix(ns) }); } }",
   ])("allows %s", (source) => {
     expect(keyProblems("files/src/index.ts", header + source)).toEqual([]);
   });

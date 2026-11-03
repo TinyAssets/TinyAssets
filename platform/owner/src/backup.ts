@@ -19,9 +19,10 @@
  * - **Kept.** The newest finished manifest, and the one being written: once one finishes,
  *   every older one is deleted from R2, root first, and then its rows. A new one begins
  *   only once that is done, so the object never holds more than two manifests' rows.
- * - **Erasure.** The manifests carry the owner's wrapped key, so the erasure deletes every
- *   one (`purge`) before it wipes the object (`erase.ts`), and the mark has already halted
- *   this lane: no manifest is written after it. Then nothing holds the owner's key.
+ * - **Erasure.** The manifests carry the owner's wrapped key, so the erasure's prefix delete
+ *   takes them with the chunks (`FILES.deleteNamespace`, `erase.ts`), and the mark has
+ *   already halted this lane: a pass under way stops before its next put. Then nothing holds
+ *   the owner's key.
  *
  * Nothing here limits the owner: a manifest is the platform's recovery copy, bounded by the
  * object it copies (`limits-audit.md`).
@@ -31,7 +32,6 @@ import { createHash } from "node:crypto";
 import { chunkLine, decodeCursor, encodeCursor, END_LINE, readPage } from "./export";
 import { CHUNK_BYTES, type ChunkStore, type ChunkSpace } from "./files";
 import type { OwnerStorage, Write } from "./gate";
-import { MANIFEST_PARTS } from "../../files/src/keys";
 
 /** The manifest lane's name in the schedule. */
 export const MANIFEST_LANE = "manifest";
@@ -43,12 +43,6 @@ export const MANIFEST_RETRY_S = 300;
 export const PART_ENTRY = 64 + 1 + 7 + 1;
 /** The stream's bytes a pass gathers before it puts them as parts. */
 const GATHER_BYTES = CHUNK_BYTES;
-/**
- * The most parts one gather puts: its bytes, past `GATHER_BYTES` by at most one page
- * (`EXPORT_PAGE_BYTES` and the row that ended it, a row at most 2 MB, six bytes a character
- * escaped), cut at the chunk size.
- */
-const GATHER_PARTS_MAX = 8;
 const DAY_S = 86_400;
 
 /** The day `at` (seconds) falls in, UTC, as `YYYYMMDD`. */
@@ -86,8 +80,6 @@ export interface BackupParts {
   readonly store: ChunkStore;
   /** The owner's namespace and wrapped key, made on first use (`Files.space`). */
   readonly space: () => Promise<ChunkSpace>;
-  /** The owner's namespace if it has one, never made here (`Files.heldNamespace`). A read. */
-  readonly ns: () => string | null;
   readonly owner: () => string;
   /** Whether the object serves its owner yet (its first door ran): none before, nothing to keep. */
   readonly serves: () => boolean;
@@ -98,8 +90,6 @@ export interface BackupParts {
 
 export class Backups {
   readonly #parts: BackupParts;
-  /** The pass under way, which the erasure's purge waits out. */
-  #running: Promise<void> | undefined;
 
   constructor(parts: BackupParts) {
     this.#parts = parts;
@@ -143,15 +133,7 @@ export class Backups {
    * a time until the wall clock reaches `until` (ms). An R2 call that fails backs the lane
    * off in its row (`retry_at`); the pass itself completes.
    */
-  run(now: number, until: number): Promise<void> {
-    const pass = this.#pass(now, until).finally(() => {
-      this.#running = undefined;
-    });
-    this.#running = pass;
-    return pass;
-  }
-
-  async #pass(now: number, until: number): Promise<void> {
+  async run(now: number, until: number): Promise<void> {
     try {
       if (!await this.#prune(until)) {
         return;
@@ -261,30 +243,6 @@ export class Backups {
         await this.#prune(until);
         return;
       }
-    }
-  }
-
-  /**
-   * The erasure's step: every manifest deleted from R2, root first, and its rows. Each one
-   * carries the owner's wrapped key, so none may outlive the wipe. A failure rejects, and
-   * the erasure tries again.
-   */
-  async purge(): Promise<void> {
-    await this.#running?.catch(() => undefined);
-    const rows = this.#rows();
-    if (rows.length === 0) {
-      return;
-    }
-    const ns = this.#parts.ns();
-    for (const row of rows) {
-      if (ns !== null) {
-        // Parts a crashed pass put and never recorded lie past its count: those too.
-        await this.#parts.store.deleteManifest(
-          ns, row.day, row.state === "done" ? row.parts
-            : Math.min(row.parts + GATHER_PARTS_MAX, MANIFEST_PARTS));
-      }
-      await this.#parts.write(() => this.#sql.exec("DELETE FROM owner_backups WHERE day = ?",
-                                                    row.day));
     }
   }
 }

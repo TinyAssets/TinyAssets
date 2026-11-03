@@ -11,7 +11,7 @@ import type { Binding, OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
 import { subscriptionId } from "../src/wake-kinds";
 import { CLOSED, runWakes, type WakeSender } from "../src/wakes";
-import { alarmOf, laneAt } from "./support";
+import { alarmOf, laneAt, TIERS } from "./support";
 
 export const MUSE: Origin = Object.freeze({ client: "a".repeat(64), family: "b".repeat(64) });
 export const DOT: Origin = Object.freeze({ client: "c".repeat(64), family: "d".repeat(64) });
@@ -120,7 +120,8 @@ export async function rig(namespace: DurableObjectNamespace<OwnerDO> = env.OWNER
   const stub: DurableObjectStub<OwnerDO> = namespace.getByName(owner);
   /** A binder's binding; an outside origin comes through an MCP client unless named. */
   const bind = (origin: Origin | null, extra: Partial<Binding> = {}): Binding =>
-    ({ owner, caller: owner, origin, ...(origin === null ? {} : { source: MCP }), ...extra });
+    ({ owner, caller: owner, origin, ...(origin === null ? {} : { source: MCP }), tiers: TIERS,
+       ...extra });
   const { session: cookie } = await stub.sessionOpen(bind(null, { authenticated_at: signedIn() }));
   const session = (origin: Origin | null, source: Source = MCP): Binding =>
     bind(origin, { session: cookie, source });
@@ -215,10 +216,10 @@ export async function wakeReceipts(r: Rig): Promise<string[]> {
 /** Every counter the ledger's bounds read, and the same numbers counted from the rows. */
 export async function counters(r: Rig): Promise<[Row, Row]> {
   const [usage] = await r.sql(
-    "SELECT agents, enabled_agents, messages, body_bytes, settled_wakes, " +
-      "(SELECT json_group_object(reader, unacked || '/' || unacked_bytes) FROM " +
+    "SELECT agents, enabled_agents, messages, settled_wakes, " +
+      "(SELECT json_group_object(reader, unacked) FROM " +
       "(SELECT * FROM ledger_readers WHERE unacked > 0 ORDER BY reader)) AS mailboxes, " +
-      "(SELECT json_group_object(agent_id, unacked_to_owner || '/' || unacked_to_owner_bytes) " +
+      "(SELECT json_group_object(agent_id, unacked_to_owner) " +
       "FROM (SELECT * FROM outside_agents WHERE unacked_to_owner > 0 ORDER BY agent_id)) " +
       "AS shares, " +
       "(SELECT json_group_object(message_id, unacked) FROM " +
@@ -229,14 +230,14 @@ export async function counters(r: Rig): Promise<[Row, Row]> {
     "SELECT (SELECT COUNT(*) FROM outside_agents) AS agents, " +
       "(SELECT COUNT(*) FROM outside_agents WHERE disabled_reason IS NULL) AS enabled_agents, " +
       "(SELECT COUNT(*) FROM ledger_messages) AS messages, " +
-      "(SELECT COALESCE(SUM(length(CAST(body AS BLOB))), 0) FROM message_bodies) AS body_bytes, " +
+
       "(SELECT COUNT(*) FROM ledger_wakes WHERE settled_at IS NOT NULL) AS settled_wakes, " +
-      "(SELECT json_group_object(agent_id, n || '/' || b) FROM (SELECT r.agent_id, " +
-      "COUNT(*) AS n, SUM(m.body_bytes) AS b FROM ledger_recipients r JOIN ledger_messages m " +
+      "(SELECT json_group_object(agent_id, n) FROM (SELECT r.agent_id, " +
+      "COUNT(*) AS n FROM ledger_recipients r JOIN ledger_messages m " +
       "USING (message_id) WHERE r.unacked = 1 GROUP BY r.agent_id ORDER BY r.agent_id)) " +
       "AS mailboxes, " +
-      "(SELECT json_group_object(sender_id, n || '/' || b) FROM (SELECT sender_id, " +
-      "COUNT(*) AS n, SUM(body_bytes) AS b FROM ledger_messages WHERE sender_kind = 'outside' " +
+      "(SELECT json_group_object(sender_id, n) FROM (SELECT sender_id, " +
+      "COUNT(*) AS n FROM ledger_messages WHERE sender_kind = 'outside' " +
       "AND message_id IN (SELECT message_id FROM ledger_recipients WHERE unacked = 1) " +
       "GROUP BY sender_id ORDER BY sender_id)) AS shares, " +
       "(SELECT json_group_object(message_id, n) FROM (SELECT message_id, COUNT(*) AS n " +

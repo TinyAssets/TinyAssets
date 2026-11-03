@@ -111,15 +111,14 @@ describe("cron recurrence", () => {
   });
 
   it.each([
-    ["* * * * *", "minutes apart"], ["*/5 * * * *", "minutes apart"],
-    ["0,10 * * * *", "minutes apart"], ["0 0-23 * * *", null],
+    ["0 0-23 * * *", null],
     ["60 * * * *", "takes 0 to 59"], ["0 24 * * *", "takes 0 to 23"],
     ["0 0 0 * *", "takes 1 to 31"], ["0 0 * 13 *", "takes 1 to 12"],
     ["0 0 * * 7", "takes 0 to 6"], ["0 0 * * MON", "not a value"], ["0 0 * JAN *", "not a value"],
     ["0 0 L * *", "not a value"], ["0 0 ? * *", "not a value"], ["0 0 * * 1#2", "not a value"],
     ["0 0 30 2 *", "an occurrence within"], ["0 0 31 4 *", "an occurrence within"],
     ["0 0 * *", "exactly five fields"], ["0 0 * * * *", "exactly five fields"],
-    [`0 ${Array.from({ length: 17 }, (_, n) => n).join(",")} * * *`, "at most 16 items"],
+    [`${Array.from({ length: 61 }, (_, n) => n % 60).join(",")} * * * *`, "at most 60 items"],
     [`0 0 * * *${" ".repeat(CRON_MAX_CHARS)}`, "characters"], ["", "characters"],
     ["0 5-1 * * *", "takes 0 to 23"], ["*/0 * * * *", "takes 0 to 59"],
     ["*/61 * * * *", "takes 0 to 59"],
@@ -132,12 +131,13 @@ describe("cron recurrence", () => {
   });
 
   it("holds the bounds as named", () => {
-    expect([CRON_MAX_CHARS, CRON_MAX_ITEMS, CRON_MIN_GAP_MIN]).toEqual([64, 16, 15]);
-    // Two occurrences fifteen minutes apart pass; fourteen do not.
-    expect(parseCron("0,15,30,45 * * * *").minutes).toEqual([0, 15, 30, 45]);
-    expect(() => parseCron("0,14 * * * *")).toThrow("minutes apart");
-    // The least gap counts across midnight: 23:50 then 00:00 is ten minutes.
-    expect(() => parseCron("0,50 0,23 * * *")).toThrow("minutes apart");
+    expect([CRON_MAX_CHARS, CRON_MAX_ITEMS, CRON_MIN_GAP_MIN]).toEqual([256, 60, 1]);
+    // Every minute is a schedule: the tier's simultaneous runs bound what it starts.
+    expect(parseCron("* * * * *").minutes).toHaveLength(60);
+    expect(parseCron("*/5 * * * *").minutes).toHaveLength(12);
+    // Every value of a field, listed, is one field's most items.
+    expect(parseCron(`${Array.from({ length: 60 }, (_, n) => n).join(",")} * * * *`).minutes)
+      .toHaveLength(60);
     expect(parseCron("0 0,23 * * *").hours).toEqual([0, 23]);
   });
 });

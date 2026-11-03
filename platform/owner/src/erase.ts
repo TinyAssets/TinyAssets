@@ -24,7 +24,9 @@ import {
   LifecycleCapability, type LifecycleJobContext, type LifecycleJobOutcome,
 } from "agents/lifecycle";
 
-import { ERASE_RETRY_MS, erasureStep, markErasing, runsEnded } from "./erasure";
+import {
+  ERASE_RETRY_MS, erasureStartedAt, erasureStep, markErasing, runsEnded,
+} from "./erasure";
 import type { OwnerStorage, Write } from "./gate";
 
 /** The erasure's Lifecycle capability id, and its job's function. */
@@ -39,10 +41,22 @@ export interface ErasureParts {
   readonly clock: () => number;
   /** The ending of every run in flight, in a unit (`Egress.drop`: its streams). */
   readonly ended: () => void;
-  /** The nightly manifests deleted from R2, each a copy of the wrapped key (`Backups.purge`). */
-  readonly purge: () => Promise<void>;
   /** The object's Lifecycle, whose alarm the last step disables for good. */
   readonly lifecycle: { disableAlarms(): Promise<void> };
+  /**
+   * Every object the owner holds in R2 deleted, by its namespace's prefix
+   * (`Files.eraseNamespace`): its files' chunks and its placed bodies' (ADR-035), once every
+   * put this instance began has landed (`Files.settled`; under the mark no new one begins).
+   * Repeatable; it changes no row. Resolves with the namespace, for `blobsAgain`.
+   */
+  readonly blobs: () => Promise<string | null>;
+  /** The same deletion again after the wipe, for a put another instance began (`ns`). */
+  readonly blobsAgain: (ns: string | null) => Promise<void>;
+  /**
+   * How long after the mark the R2 step waits, so a put an earlier instance of the object
+   * began before the mark has landed by then (`PUT_GRACE_MS`).
+   */
+  readonly putGraceMs: number;
   /** The object's whole database deleted, and the tombstone left (`WriteGate.wipe`). */
   readonly wipe: () => Promise<void>;
   /** How long a refused door waits after the last attempt before it resumes the erasure. */
@@ -101,7 +115,7 @@ export class Erasure extends LifecycleCapability {
     if (this.#erased) {
       return;
     }
-    const { storage, write, clock, ended, purge, lifecycle, wipe } = this.#parts;
+    const { storage, write, clock, ended, lifecycle, blobs, blobsAgain, wipe } = this.#parts;
     if (erasureStep(storage) < 2) {
       // 1. The mark, and the job that resumes this after a crash (pushed again on a resume,
       // which also sets the alarm again).
@@ -117,12 +131,25 @@ export class Erasure extends LifecycleCapability {
         runsEnded(storage);
       });
     }
-    // The manifests, each holding the wrapped key, gone before the object's own copy is.
-    await purge();
-    // 3. The owner wiped whole, Lifecycle's alarm disabled first so nothing is written after.
+    // 3. Every R2 copy deleted by the namespace's prefix, once a put any instance began
+    // before the mark has had its time to land (a failure rejects, and the retry deletes
+    // again); then the owner wiped whole, Lifecycle's alarm disabled first so nothing is
+    // written after; then the prefix deleted once more.
+    const due = erasureStartedAt(storage) * 1000 + this.#parts.putGraceMs;
+    if (due > Date.now()) {
+      // Not yet: the erasure's job wakes it when the grace is up (a day), held in storage,
+      // so no in-memory wait carries it and a restart loses nothing.
+      const jobs = this.lifecycle.jobs;
+      const [rearmed] = await write((): [Promise<unknown>] =>
+        [jobs.push({ id: ERASE_JOB, fn: ERASE_FN, time: due })]);
+      await rearmed;
+      return;
+    }
+    const ns = await blobs();
     await lifecycle.disableAlarms();
     await wipe();
     this.#erased = true;
+    await blobsAgain(ns);
   }
 
   /** The erasure's job is due: an erasure a crash cut short, resumed. */

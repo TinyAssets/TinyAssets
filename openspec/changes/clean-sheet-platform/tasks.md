@@ -8,8 +8,8 @@ G4, then one deletion slice (its §1.7, done: section 5), engine records, runs, 
 sandbox (live), the MCP door, wakes, doors live, before real data, the founder's live
 test, cutover.
 
-- [ ] Limits audit (founder, 2026-11-02: no tiny limits before he has used the platform): every bound in `platform/*/src` is raised to the tier numbers or a generous default, made an owner setting, or kept as a technical ceiling with its reason recorded. The files default (`max_bytes` 1 GiB) is the first to raise. The list goes to the founder before anything ships. Listed, no value changed, in slice D: `limits-audit.md`; the founder's review and the changes are owed.
-- [x] Tier numbers in the platform control record (ADR-034 decision 8): free 5 simultaneous runs and 25 GB, paid 10 and 250 GB (founder, 2026-11-02), editable without a deploy. Slice R: `c:control`'s `tiers` (`doors/src/directory.ts`, parsed by `owner/src/tier.ts`), handed by the binder to the run doors, the owner's tier on its own admission row set by the platform alone (`tierSet`); the simultaneous runs held at admission. The storage figure is carried; the files byte quota's slice turns `max_bytes` into it.
+- [x] Limits audit (founder, 2026-11-02: no tiny limits before he has used the platform): every bound in `platform/*/src` is raised to the tier numbers or a generous default, made an owner setting, or kept as a technical ceiling with its reason recorded. Listed in slice D; applied in slice LIM (founder, 2026-11-02 and 2026-11-03), after the placement rule and the structural changes it needed (ADR-035): `limits-audit.md` holds the values that ship, each classed. The files byte quota is the tier's storage; the model policy's per-run caps are off by default; a lease's tokens live while the lease does. The owner-bound guard's worst case is 42.3% of the 10 GB, 774.1 MB under half (`limits-audit.test.ts`). Owed, flagged in the audit: the collections' and ledger's byte bounds dropped for the tier's figure; the files' history rule counted in bytes (`max_entries` past 30,000); a live check of `limits.subrequests` at 10,000,000; R2 read latency from an owner object, measured live.
+- [x] Tier numbers in the platform control record (ADR-034 decision 8): free 5 simultaneous runs and 25 GB, paid 10 and 250 GB (founder, 2026-11-02), editable without a deploy. Slice R: `c:control`'s `tiers` (`doors/src/directory.ts`, parsed by `owner/src/tier.ts`), handed by the binder to the run doors, the owner's tier on its own admission row set by the platform alone (`tierSet`); the simultaneous runs held at admission. The storage figure is the files byte quota's `max_bytes` (slice LIM), kept from every door's binding.
 
 ## 1. Verify the unverified facts
 
@@ -1196,11 +1196,34 @@ R, S, M and W.
   reported "tests added 0, removed 0" for a slice that removed 21 test files, so a lost
   test there is caught only by review. Follow-up for the gate: count `it(` cases under
   `platform/*/test` and `platform/*/guards` against the base.
-- [ ] Limits (slice D's audit, `limits-audit.md`): the founder approves the proposed
-  table first; then each raise is its own change, its structural prerequisite before it
-  (collection history and grant scopes counted in bytes; the ledger's recipients bounded
-  by their own count), the owner-bound guard recomputed (`limits-proposed.test.ts` holds
-  the table's worst case under half today).
+- [x] Limits (slice LIM, ADR-035): the placement rule (a body past 2,048 bytes, a
+  collection row's, a history entry's or a message's, lives in R2 through the files plane,
+  up to 8 MiB in two chunks, written R2 first then its reference, a crashed placement's
+  upload expiring in 10 minutes, charged to its writer's files scope within the tier's
+  storage, retention making room first); the collection rows and history counted in
+  laid-out bytes, tombstones among them; one recipient a message (the key); the
+  mailboxes' caps within the ceilings (`ledger_full` when only unread mail is held); grant
+  scopes counted in bytes; the collections' and ledger's byte caps and the egress
+  per-minute rates removed; then every raise, and the files' `max_bytes` the tier's
+  storage. The erasure refuses uploads and puts under its mark, waits out the puts in
+  flight, and deletes the owner's R2 namespace by prefix before and after its wipe.
+  Merged after slices ID and M: a mail to an own agent is bounded by the body bound alone,
+  its run reading the body from R2 as it starts (a waiting run's input row keeps only the
+  mail's reference); a long reply is placed before the settle's unit and posted in it by
+  reference, so a crash leaves an orphan upload for the sweep, never a lost reply; the
+  digests and a mail chain read placed bodies; slice M's change orders are counted in the
+  collections' charges. Round 3: a pruned deletion resets a feed reader behind it
+  (`erasure_floor`, `reset`); an egress reservation is beaten by its door every minute and
+  lost three beats on, the day's deadline kept; one 16 MiB request-body ceiling (API, owner
+  surface, egress door, gateway) with bodies at half of it; a race between an events post's
+  units refuses the post (`events_raced`) so no reply is lost; the erasure holds its mark a
+  day before its R2 step and wipe, its Lifecycle job waking it (no in-memory wait); a conflict copy's free name in one range
+  read; a placed write past a chunk mid-delete begins again.
+  Owed: the owner export (slice P) reads the placed bodies' chunks with the files'; SSE-C
+  on them with the files' chunks; live, R2 read latency from an owner object and the
+  longest put in flight against `PUT_GRACE_MS`; slice L's isolate memory probe, with a
+  16 MiB request body; a live check of `limits.subrequests` at
+  10,000,000.
 
 ## 6. Files and sandbox
 

@@ -15,11 +15,9 @@ import type { RunReceipt } from "../src/runs";
 import type { SandboxStart } from "../src/sandbox";
 import type { RecordingSandbox } from "./sandbox-fake";
 
-/** The founder's numbers (ADR-034 decision 8), as the tests' control record holds them. */
-export const TIERS = Object.freeze({
-  free: Object.freeze({ runs: 5, storage_bytes: 25_000_000_000 }),
-  paid: Object.freeze({ runs: 10, storage_bytes: 250_000_000_000 }),
-});
+import { TIERS } from "./support";
+
+export { TIERS };
 
 /** Every scope a run can hold. */
 export const ALL_SCOPES = Object.freeze(["read_graph", "write_graph", "propose_policy",

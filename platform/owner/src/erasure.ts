@@ -7,12 +7,15 @@
  *    erasure instead of driving Lifecycle).
  * 2. **End every run**: the sandbox's in-flight egress streams end (`Egress.drop`), and the
  *    step is recorded done (`step` 2). The runs and sandbox slices (R, S) add the sandbox's
- *    kill and the engines' session files' purge to this step (ADR-034). Then the nightly
- *    manifests are deleted from R2 (`Backups.purge`): each carries the owner's wrapped data
- *    key, so once the wipe takes the object's own copy nothing holds it, and a chunk the
- *    bucket still keeps is unreadable (crypto-erasure, `files/src/datakey.ts`). The mark
- *    halted the manifest lane, and the purge waits out a pass under way.
- * 3. **`deleteAll()` the owner**, Lifecycle's alarm disabled first, so nothing is written
+ *    kill and the engines' session files' purge to this step (ADR-034).
+ * 3. **Delete every R2 copy**: every object under the owner's namespace prefix, its files'
+ *    and its placed bodies' (ADR-035) chunks and its nightly manifests (slice P), once
+ *    `PUT_GRACE_MS` (a day) has passed since the mark, its job waking it then, and every put
+ *    this instance began has landed (no put begins under the mark, and the manifest lane is
+ *    halted); repeatable, and repeated after the wipe. Each manifest's root carries the
+ *    owner's wrapped data key, so once they and the object's own copy are gone nothing holds
+ *    it: a chunk the bucket still keeps is unreadable (crypto-erasure, `files/src/datakey.ts`).
+ * 4. **`deleteAll()` the owner**, Lifecycle's alarm disabled first, so nothing is written
  *    after it but the tombstone: the erased admission row (`admission.ts`), written into the
  *    empty database in the same synchronous turn (`WriteGate.wipe`); a killed turn can
  *    lose it (the window `erase.ts` names, not measured in production; slice 10's to
@@ -62,6 +65,22 @@ export function erasureStep(storage: OwnerStorage): 0 | 1 | 2 {
   return (storage.sql.exec<{ step: 1 | 2 }>("SELECT step FROM owner_erasure").toArray()[0]
     ?.step ?? 0);
 }
+
+/** When the owner was marked erasing, in seconds; a read, the mark standing. */
+export function erasureStartedAt(storage: OwnerStorage): number {
+  return storage.sql.exec<{ started_at: number }>("SELECT started_at FROM owner_erasure")
+    .one().started_at;
+}
+
+/**
+ * How long the erasure holds its mark before its R2 step and its wipe, so a put an earlier
+ * instance of the object began before the mark has landed by then: a day, since no request
+ * into the object outlives the longest one a door holds open, an egress stream's day
+ * (`EGRESS_DEADLINE_S`), whatever R2's put latency (not documented; to measure live). Under
+ * the mark every door refuses and no put begins; the erasure's own Lifecycle job wakes it
+ * when the day is up (review rvlim N5), so nothing rests on an in-memory wait.
+ */
+export const PUT_GRACE_MS = 24 * 60 * 60_000;
 
 /** In a unit: the erasure's step 2 done: every run ended. */
 export function runsEnded(storage: OwnerStorage): void {

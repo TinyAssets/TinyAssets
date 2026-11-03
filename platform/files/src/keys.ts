@@ -70,3 +70,35 @@ export function manifestKey(ns: unknown, day: unknown, part?: unknown): string {
   const root = `o/${namespace(ns)}/m/${manifestDay(day)}`;
   return part === undefined ? root : `${root}/${manifestPart(part)}`;
 }
+
+/** The prefix every chunk key of one owner's namespace starts with: the erasure's list. */
+export function chunkPrefix(ns: unknown): string {
+  return `o/${namespace(ns)}/c/`;
+}
+
+/** The chunk hash a key listed under `chunkPrefix(ns)` names, or a loud failure. */
+export function listedChunk(ns: unknown, key: unknown): string {
+  const prefix = chunkPrefix(ns);
+  if (typeof key !== "string" || !key.startsWith(prefix)) {
+    throw new Error("a listed key is not under its namespace's prefix");
+  }
+  return chunkHash(key.slice(prefix.length));
+}
+
+/** The prefix every manifest key of one owner's namespace starts with: the erasure's list. */
+export function manifestPrefix(ns: unknown): string {
+  return `o/${namespace(ns)}/m/`;
+}
+
+/** The manifest key a key listed under `manifestPrefix(ns)` is, rebuilt, or a loud failure. */
+export function listedManifest(ns: unknown, key: unknown): string {
+  const prefix = manifestPrefix(ns);
+  if (typeof key !== "string" || !key.startsWith(prefix)) {
+    throw new Error("a listed key is not under its namespace's prefix");
+  }
+  const [day, part, ...rest] = key.slice(prefix.length).split("/");
+  if (rest.length > 0 || (part !== undefined && !/^(0|[1-9][0-9]*)$/.test(part))) {
+    throw new Error("a listed manifest key is out of shape");
+  }
+  return manifestKey(ns, day, part === undefined ? undefined : Number(part));
+}
