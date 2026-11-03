@@ -333,7 +333,11 @@ The doors SHALL serve the in-VM sync agent's doors on the egress host (`/sync/ch
 - **THEN** it is refused and no lease's files are read or written
 
 ### Requirement: A subscription is signed in inside the sandbox by the vendor's own flow
-The owner SHALL sign in to a source with the vendor's own login only inside the owner's own sandbox, or one client's for that client, by the record's `cli.login` run there on a terminal by the runner as a user of its own; only a URL matching the record's pattern on its login hosts, or a device code of the record's shape, SHALL leave the VM, checked again by the owner's object outside it before the owner sees it; a pasted code SHALL reach only that login's stdin, never logged or stored; each source's sign-in SHALL sit behind its own control-record switch, defaulting to the record's cited verdict on the vendor's terms for hosted use.
+The owner SHALL sign in to a source only by the record's `cli.login`, run on a terminal inside the owner's sandbox (or one client's, for that client) as a user of its own; only the record's URL or device-code shapes SHALL leave the VM, checked again by the owner's object; each source's sign-in SHALL sit behind its own control-record switch, defaulting to the record's cited verdict on hosted use.
+
+#### Scenario: A pasted code
+- **WHEN** the owner pastes the vendor's code into a live sign-in
+- **THEN** it reaches only that login's stdin, is never logged or stored, and is refused once the login has ended
 
 #### Scenario: A look-alike sign-in page
 - **WHEN** the runner relays a URL off the record's login hosts
