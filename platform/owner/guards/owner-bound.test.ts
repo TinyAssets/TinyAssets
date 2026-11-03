@@ -172,6 +172,8 @@ const QUEUE_BYTES = constant("run-rows", "QUEUE_BYTES");
 const ENGINE_SIGNINS = constant("run-rows", "ENGINE_SIGNINS");
 const SIGNIN_MODELS_CHARS = constant("run-rows", "SIGNIN_MODELS_CHARS");
 const SIGNIN_LIST_CHARS = constant("run-rows", "SIGNIN_LIST_CHARS");
+const SIGNIN_URL_MAX = constant("run-rows", "SIGNIN_URL_MAX");
+const SIGNIN_CODE_MAX = constant("run-rows", "SIGNIN_CODE_MAX");
 const SOCKET_TICKETS = constant("socket-shape", "SOCKET_TICKETS");
 const CURSOR_CHARS = constant("export", "CURSOR_CHARS");
 const PART_ENTRY = constant("backup", "PART_ENTRY");
@@ -536,6 +538,16 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                       by: "RUNS_CEILING, each its authority, lease id, epoch, holder, " +
                         "times, three token hashes, network generation, its sandbox's " +
                         "own signed-in engines (visible ASCII) and its readable set's digest" },
+    // The vendor's own sign-ins in progress (slice SIGNIN): one a sandbox, each holding that
+    // sandbox's lease, so at most RUNS_CEILING; each its prompt, a URL and a code (visible
+    // ASCII, at most SIGNIN_URL_MAX and SIGNIN_CODE_MAX).
+    sandbox_signins: { rows: RUNS_CEILING,
+                       bytes: ROW + 64 + 35 + 64 + 3 + 64 + 32 + NUMBER + 32
+                         + SIGNIN_URL_MAX + SIGNIN_CODE_MAX + 1 + 2 * NUMBER,
+                       by: "RUNS_CEILING, each its authority, id, engine, mode, region, " +
+                         "lease, state, " +
+                         "the vendor's URL and code at their widest, and its times",
+                       indexes: { sqlite_autoindex_sandbox_signins_2: key(35) } },
     // The inputs waiting for their conversation (`run_inputs`): QUEUE_ROWS rows holding
     // QUEUE_BYTES of input in all, however it is spread. Each row is counted at its even
     // share and two overflow pages more: a row's in-place share is at most a third of a
@@ -560,6 +572,8 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                      by: "SCHEDULES_KEPT, each its input, stamp, origin and last error",
                      indexes: { run_schedules_due: key(NUMBER, SCHEDULE_ID_CHARS) } },
     platform_tiers: { rows: 1, bytes: ROW + 4 * KIB, by: "one row" },
+    platform_signins: { rows: 1, bytes: ROW + SIGNIN_LIST_CHARS + NUMBER,
+                        by: "one row: the switched-on records' ids, joined" },
     socket_tickets: { rows: SOCKET_TICKETS, bytes: ROW + 64 + 35 + 4 * 128 + 16,
                       by: "SOCKET_TICKETS, each a hash, a conversation and a grant id" },
     owner_erasure: { rows: 1, bytes: ROW, by: "one row" },

@@ -1,6 +1,7 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
+import { bundledSources, signinsOn } from "../../doors/src/sources";
 import { Collections, LIMITS, type Limits, type Shares } from "../src/collections";
 import { type ChunkStore, type FileLimits, Files } from "../src/files";
 import { type OwnerStorage, type Write, WriteGate } from "../src/gate";
@@ -13,6 +14,13 @@ import { FILE_DEFAULTS } from "../src/policy";
 import { SCHEDULE } from "../src/schedule";
 
 export const text = (value: string): Uint8Array => new TextEncoder().encode(value);
+
+/**
+ * Every served sign-in switched on, as the doors hand them when the control record turns
+ * each on: what a test's binding carries unless it names fewer (`Binding.signins`).
+ */
+export const EVERY_SIGNIN: readonly string[] = Object.freeze(signinsOn(
+  bundledSources(), Object.fromEntries(bundledSources().ids().map((id) => [id, true]))));
 
 /** The founder's numbers (ADR-034 decision 8), as the tests' control record holds them. */
 export const TIERS = Object.freeze({

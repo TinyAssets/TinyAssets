@@ -44,11 +44,14 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,499,132,749.75 bytes, 44.99% of the 10 GB: 500.9 MB under
-half** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`),
-slice ID's agent identities and mail authority, slice M's change orders, slice W's
-doorbell subscriptions (`wake_callbacks`, 423.6 MB at 1,000 agents and their widest), slice
-S's sandbox wait, and slice P's tables (`sandbox_billed` 29.7 MB with its index by age,
+**The worst case that ships is 4,545,833,342.5 bytes, 45.46% of the 10 GB: 454.2 MB under
+half, short of the guard's 500 MB margin (`MARGIN`), which fails; owed: the coordinator's
+decision** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`;
+main alone is 4,496,562,760.5, 503.4 MB under half), slice ID's agent identities and mail
+authority, slice M's change orders, slice W's doorbell subscriptions (`wake_callbacks`,
+423.6 MB at 1,000 agents and their widest), slice S's sandbox wait, slice L's keys and
+inbound bindings (`inbound_bindings` 23.0 MB, `owner_keys` 2.9 MB), slice SIGNIN's sign-ins,
+and slice P's tables (`sandbox_billed` 29.7 MB with its index by age,
 `change_log` 9.4 MB, `sandbox_live` 3.8 MB, `sandbox_spans` 3.1 MB, `owner_backups` 1.8 MB
 and its kept rows 0.02 MB, `schema_digests` 1.0 MB, `sandbox_days` 0.4 MB) included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
 2.1 MB). Without each structural change, the same bounds would cost: bodies in their rows
@@ -63,9 +66,9 @@ The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collect
 
 - **tier**: 3
 - **owner setting**: 12
-- **vendor limit**: 11
-- **technical ceiling**: 145
-- **total**: 171
+- **vendor limit**: 12
+- **technical ceiling**: 149
+- **total**: 176
 
 Counted by a script over every table row (`| ` lines past the header, six cells each), the first row and the names row among them.
 
@@ -227,6 +230,11 @@ reason; none refuses a write.
 | `owner/src/run-rows.ts` `ENGINE_SIGNINS` | 64 | engines whose sign-in is kept | a report past it fails loudly | technical ceiling | Guard term `engine_signins`. |
 | `owner/src/run-rows.ts` `SIGNIN_MODELS_CHARS` | 2,048 characters | an engine's reported models | a longer report refused | technical ceiling | Inside `engine_signins`. |
 | `owner/src/run-rows.ts` `SIGNIN_LIST_CHARS` | 256 characters | a client's sandbox's signed-in engines | a longer report refused | technical ceiling | Inside `sandbox_leases`. |
+| `owner/src/run-rows.ts` `SIGNIN_URL_MAX` | 8,000 characters | the vendor's sign-in URL a sign-in shows | a longer one refused, the sign-in ended `refused` | technical ceiling | RFC 9110 section 4.1: senders and recipients support URIs of at least 8,000 octets. Inside `sandbox_signins`. |
+| `owner/src/run-rows.ts` `SIGNIN_CODE_MAX` | 16 characters | the device code a sign-in shows | a longer one refused, the sign-in ended `refused` | technical ceiling | RFC 8628 section 6.1 keeps device codes short (8 recommended); every record's shape is within 16. |
+| `owner/src/run-rows.ts` `SIGNIN_PASTE_MAX` | 4,095 characters | a code the owner pastes back | a longer one refused | technical ceiling | One line to the CLI's terminal: Linux's `N_TTY_BUF_SIZE`, 4,096 bytes with its newline. |
+| `sources/{codex,gemini,kimi}.json` `cli.login.expires` | Codex 900 s, Gemini 300 s, Kimi 900 s | an open sign-in, from its start | the sign-in ended `expired` (one lease TTL later on the trusted side); the owner starts again | vendor limit | Codex's CLI's own text ("expires in 15 minutes"); the pinned gemini-cli 0.66.0's and kimi-code 2.4.1's own timers. Each record cites its own. |
+| `sources/claude-code.json` `cli.login.expires` | 600 s | an open Claude sign-in, from its start: the owner's password, 2FA and account steps, then the code pasted back | the sign-in ended `expired`; the owner starts again | technical ceiling | The platform's own bound, not Anthropic's: an open sign-in keeps a metered sandbox up, and Anthropic documents no lifetime (claude 2.1.309 waits with no timer). RFC 6749 section 4.1.2's 10-minute maximum for an authorization code is context only, since it runs from the code's issue. Owed: the time a real sign-in with 2FA takes (the founder's live test), which sets it if 600 s is too tight. |
 | `owner/src/socket-shape.ts` `SOCKET_TICKETS` | 1,024 | socket tickets outstanding | refused `socket_tickets_full` until one is used or expires | technical ceiling | Guard term `socket_tickets`. |
 | `owner/src/socket-shape.ts` ticket life | 30 s | a socket ticket's life | the app asks again | technical ceiling | A single-use credential in a URL, which servers and proxies log; it lives only for the connect. |
 | `owner/src/relay.ts` sockets | 1,024 | the owner app's sockets open at once | another refused `sockets_full` | technical ceiling | The isolate's 128 MB (memory guard). |

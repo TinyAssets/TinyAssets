@@ -37,8 +37,33 @@
           ]
         }
       ],
-      "terminal": true,
-      "complete_on_state": true
+      "complete_on_state": true,
+      "url": {
+        "hosts": [
+          "accounts.google.com"
+        ],
+        "path": "/o/oauth2/v2/auth",
+        "params": {
+          "redirect_uri": "https://codeassist.google.com/authcode",
+          "access_type": "offline",
+          "scope": "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile",
+          "code_challenge_method": "S256",
+          "response_type": "code",
+          "client_id": "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
+        },
+        "free": [
+          "code_challenge",
+          "state"
+        ]
+      },
+      "expires": {
+        "s": 300,
+        "citation": "@google/gemini-cli 0.66.0 bundle/chunk-HJ5KJXNZ.js authWithUserCode: Authorization timed out after 5 minutes (setTimeout 3e5), read 2026-11-03"
+      },
+      "hosted_use": {
+        "verdict": "unclear",
+        "citation": "gemini-cli docs/resources/tos-privacy.md: third-party software using Gemini CLI OAuth to reach its services is a violation; a platform hosting the unmodified CLI for the user's own sign-in is not addressed (subscription-engines.md section 11)"
+      }
     },
     "api_key_env": {
       "google": {
@@ -50,7 +75,7 @@
     "unattended": {
       "vendor_login_in_sandbox": {
         "allowed": false,
-        "reason": "Unclear: Google's Gemini CLI terms do not say whether a platform may run the unmodified CLI unattended on a member's own Google sign-in, and no Google page read permits it (subscription-engines §3, §11).",
+        "reason": "Unclear: Google's Gemini CLI terms do not say whether a platform may run the unmodified CLI unattended on a member's own Google sign-in, and no Google page read permits it (subscription-engines \u00a73, \u00a711).",
         "cite": "https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/tos-privacy.md",
         "read": "2026-11-01"
       },

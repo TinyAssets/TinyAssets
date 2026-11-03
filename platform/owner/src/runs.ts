@@ -69,7 +69,7 @@ import type { CredentialKind, EngineEvents, Sources } from "../../doors/src/sour
 import { AGENT_DISABLED, type AgentFile, AUTO, RUN_CAPABILITIES, type RunCapability }
   from "./agent-file";
 import { AUTHORITY_CHANGED, type StandingGrant, type Stamped } from "./authority";
-import { LEASE_TTL_S, OWNER_AUTHORITY } from "./files";
+import { LEASE_TTL_S, MAX_LIST, OWNER_AUTHORITY } from "./files";
 import { type Candidate, ranked } from "./auto";
 import { nextOccurrence, parseCron } from "./cron";
 import { Invalid, Refused } from "./errors";
@@ -83,6 +83,7 @@ import { type Frame, FRAME_VERSION, readEvent } from "./run-events";
 import type { NetworkPlan } from "./network";
 import { type RunConfig, SANDBOX_ABSENT, SANDBOX_WAITING } from "./sandbox";
 import type { RunMeter } from "./sandbox-time";
+import { SIGNIN_OFF } from "./signins";
 import { TIER_RUNS, type TierName, type Tiers } from "./tier";
 import { utf8Bytes } from "./text";
 
@@ -158,6 +159,11 @@ export interface RunDeps {
   readonly unadmitted: () => string | null;
   readonly sandboxBound: () => boolean;
   readonly sources: () => Sources;
+  /**
+   * Whether `engine`'s vendor sign-in is switched on (the control record, as the binder last
+   * handed it): a run never uses a switched-off source's vendor login.
+   */
+  readonly signinOn: (engine: string) => boolean;
   /** The owner's active connections and their models. */
   readonly usable: () => readonly UsableSource[];
   /** The connections the sandbox may reach (a stored egress scope). */
@@ -945,8 +951,12 @@ export class Runs {
           continue;
         }
         if (credential === "vendor_login_in_sandbox") {
-          // Never a silent fall back to a key. A sign-in not known signed out is admitted:
-          // the sandbox's start checks it in that sandbox (`SIGNIN_REQUIRED`).
+          // Never a silent fall back to a key. A switched-off source's login is never used,
+          // even where it is signed in (review H1). A sign-in not known signed out is
+          // admitted: the sandbox's start checks it in that sandbox (`SIGNIN_REQUIRED`).
+          if (!this.#deps.signinOn(file.engine)) {
+            throw new Refused(`${SIGNIN_OFF} (${file.engine})`);
+          }
           if (!client && signins.get(file.engine)?.signed_in === false) {
             throw lapsed(file.engine);
           }
@@ -967,8 +977,10 @@ export class Runs {
       const planned: UsableSource[] = [];
       for (const signin of signins.values()) {
         const record = sources.get(signin.engine);
+        // A switched-off source's plan is no candidate (review H1).
         if (record?.cli === undefined || record.unwired !== undefined
-            || !record.cli.credential.includes("vendor_login_in_sandbox")) {
+            || !record.cli.credential.includes("vendor_login_in_sandbox")
+            || !this.#deps.signinOn(signin.engine)) {
           continue;
         }
         const provider = providerOf(record.cli.api_key_env, signin.engine);
@@ -1295,6 +1307,34 @@ export class Runs {
       throw new Refused(NO_RUN);
     }
     return receipt(row);
+  }
+
+  /**
+   * The caller's runs, newest first (by `seq`), `limit` a page (at most `MAX_LIST`, the
+   * object's own most a listing pages), from before `before`: the owner's every run
+   * (`client` null), an outside client's its own. Each its receipt without its result. A
+   * read.
+   */
+  list(client: string | null, before: unknown, limit: unknown):
+      { runs: (Omit<RunReceipt, "result"> & { seq: number })[]; next: number | null } {
+    const most = limit === undefined ? MAX_LIST : limit;
+    if (typeof most !== "number" || !Number.isSafeInteger(most) || most < 1 || most > MAX_LIST
+        || (before !== undefined && (typeof before !== "number" || !Number.isSafeInteger(before)
+                                     || before < 1))) {
+      throw new Invalid(`a run list's limit is 1 to ${MAX_LIST}, its before a run's seq`);
+    }
+    const rows = this.#sql.exec<RunRow & { seq: number }>(
+      "SELECT * FROM runs WHERE (? IS NULL OR client = ?) AND (? IS NULL OR seq < ?) " +
+        "ORDER BY seq DESC LIMIT ?", client, client, before ?? null, before ?? null, most + 1)
+      .toArray();
+    const page = rows.slice(0, most);
+    return {
+      runs: page.map((row) => {
+        const { result: _result, ...rest } = receipt(row);
+        return { ...rest, seq: row.seq };
+      }),
+      next: rows.length > most ? page.at(-1)!.seq : null,
+    };
   }
 
   /** The agents of an outside client's live runs: what its sandbox always reads. A read. */

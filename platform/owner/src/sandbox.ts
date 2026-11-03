@@ -120,8 +120,37 @@ export type Started = { readonly started: true } | { readonly started: false; re
  */
 export const SANDBOX_WAITING = "sandbox_waiting";
 
+/**
+ * The vendor's own sign-in started in a sandbox (slice SIGNIN; `signins.ts`), or its sign-out:
+ * the record's `cli.login` run there by the runner as a user of its own (`ta-runner
+ * login-launch`), under the sandbox's lease, which a start that opened it configures
+ * (`tokens`, `network`) as a run's would. `region` is the owner's choice among the record's
+ * `cli.regions` (its hosts let out), `urls.events` the sign-in's own event door and
+ * `urls.signin` the presence report's.
+ */
+export interface SandboxSignin {
+  readonly id: string;
+  readonly engine: string;
+  readonly region: string | null;
+  readonly mode: "in" | "out";
+  readonly authority: string;
+  readonly lease: { readonly lease_id: string; readonly epoch: number };
+  readonly tokens: SandboxStart["tokens"];
+  readonly network: NetworkPlan | null;
+  readonly urls: { readonly events: string; readonly signin: string };
+}
+
 /** The sandbox Worker, as the owner's object binds it (`SANDBOX`). */
 export interface SandboxService {
+  /** A sign-in started in the authority's sandbox (`SandboxSignin`); the start's answer. */
+  signin(owner: string, signin: SandboxSignin): Promise<Started>;
+  /** A pasted code to the live sign-in's CLI's stdin; whether it was live to take it. */
+  signinInput(owner: string, request: { readonly authority: string; readonly id: string;
+                                        readonly code: string }):
+    Promise<{ readonly delivered: boolean }>;
+  /** A live sign-in stopped. */
+  signinCancel(owner: string, request: { readonly authority: string; readonly id: string }):
+    Promise<{ readonly cancelled: boolean }>;
   start(owner: string, start: SandboxStart): Promise<Started>;
   cancel(owner: string, request: { readonly run: string; readonly lease_id: string }):
     Promise<{ readonly cancelled: boolean }>;

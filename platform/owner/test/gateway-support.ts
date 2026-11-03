@@ -14,7 +14,7 @@ import { seal } from "../../gateway/src/keyring";
 import type { ModelInfo } from "../src/connections";
 import type { Binding } from "../src/owner-do";
 import { signedIn } from "./ledger-support";
-import { TIERS } from "./support";
+import { EVERY_SIGNIN, TIERS } from "./support";
 import type { GatedOwnerDO } from "./worker";
 
 export const ANTHROPIC: Source = Object.freeze({
@@ -90,7 +90,7 @@ export async function gated() {
   const stub: DurableObjectStub<GatedOwnerDO> = env.GATED.getByName(name);
   const bind = (extra: Partial<Binding> = {}): Binding =>
     ({ owner: name, caller: name, origin: null,
-       ...("sandbox" in extra ? {} : { tiers: TIERS }), ...extra });
+       ...("sandbox" in extra ? {} : { tiers: TIERS, signins: EVERY_SIGNIN }), ...extra });
   const { session: cookie } = await stub.sessionOpen(bind({ authenticated_at: signedIn() }));
   const session = (): Binding => bind({ session: cookie });
 

@@ -260,6 +260,54 @@ async function serveRun(request: Request, env: DoorsEnv, run: string,
   }
 }
 
+/** A sign-in's event door's path: the sign-in's id. */
+const SIGNIN_EVENTS_DOOR = /^\/signin\/(si_[0-9a-f]{32})\/events$/;
+
+/**
+ * A sign-in's event door (slice SIGNIN): the runner's `ta.signin` frames of the vendor's own
+ * sign-in it drives, by the egress token and the runner's secret of the lease that holds it,
+ * each frame and the post bounded as a run's (`EVENTS_BODY_MAX`). The object keeps the
+ * latest prompt, renews the lease and relays each frame to the owner's app sockets.
+ */
+async function serveSigninEvents(request: Request, env: DoorsEnv, id: string):
+    Promise<Response> {
+  if (request.headers.get("Origin") !== null) {
+    return refused("not_found", 404);
+  }
+  if (request.method !== "POST") {
+    return refused("method_not_allowed", 405);
+  }
+  const presented = runnerOf(request);
+  if (presented instanceof Response) {
+    return presented;
+  }
+  const verified = await sandboxToken(request, env);
+  if (verified instanceof Response) {
+    return verified;
+  }
+  const bound = bindSandbox(env, verified.owner, verified.hash, verified.generation,
+                            presented);
+  const body = await jsonObject(request, EVENTS_BODY_MAX);
+  if (body instanceof Response) {
+    return body;
+  }
+  if (!eventsBounded(body)) {
+    return refused("events_too_large", 413);
+  }
+  try {
+    return Response.json(await bound.stub.signinEvents(bound.binding, {
+      id, frames: body["frames"], ...(body["end"] === undefined ? {} : { end: body["end"] }) }),
+                         { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    const answer = refusal(error);
+    if (answer === null) {
+      throw error;
+    }
+    return refused(codeOf(answer.message), refusedStatus(codeOf(answer.message),
+                                                       answer.status));
+  }
+}
+
 /**
  * The runner's report of the engines' sign-ins (`signinReport`): each engine that signs in
  * with the vendor's own login, whether its record's `status_argv` succeeded, and the models
@@ -450,6 +498,10 @@ export async function serveEgress(request: Request, env: DoorsEnv, ctx: Executio
   }
   if (url.pathname === SIGNIN_DOOR && url.search === "") {
     return serveSignin(request, env);
+  }
+  const signinEvents = SIGNIN_EVENTS_DOOR.exec(url.pathname);
+  if (signinEvents !== null && url.search === "") {
+    return serveSigninEvents(request, env, signinEvents[1]!);
   }
   const sync = SYNC_DOOR.exec(url.pathname);
   if (sync !== null && url.search === "") {

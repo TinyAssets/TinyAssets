@@ -48,11 +48,11 @@ const RPC_METHODS = Object.freeze([
   "mailboxAck", "mailboxRead", "noticeList", "outsideAgents", "ownerErase", "ownerExport",
   "policyProposal", "policyPropose",
   "policyRead", "policyReceipts", "policyWakeLimits", "policyWrite", "registerAgent",
-  "registerProposal", "registerPropose", "roomPost", "runEvents", "sandboxBilled",
-  "sandboxDays", "sandboxRung", "sessionClose",
-  "sessionCloseAll", "sessionExtend", "sessionOpen", "signinReport", "socketTicket",
-  "socketsEnd", "storageUsage", "tierRead", "tierSet", "toolProfile", "usageReceipts",
-  "wakeEvents", "wakeSubscribe", "wakeUnsubscribe",
+  "registerProposal", "registerPropose", "roomPost", "runEvents", "runList", "sandboxBilled",
+  "sandboxDays", "sandboxRung", "sessionClose", "sessionCloseAll", "sessionExtend", "sessionOpen",
+  "signinCancel", "signinCode", "signinEvents", "signinList", "signinReport", "signinStart",
+  "socketTicket", "socketsEnd", "storageUsage", "tierRead", "tierSet", "toolProfile",
+  "usageReceipts", "wakeEvents", "wakeSubscribe", "wakeUnsubscribe",
 ]);
 
 /** The runtime's reserved methods the object hands to Lifecycle: no RPC reaches them. */

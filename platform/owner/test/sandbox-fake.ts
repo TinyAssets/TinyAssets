@@ -5,7 +5,7 @@
  * sets it. Nothing is started: slice S's sandbox Worker (`platform/sandbox`) is the real
  * one, tested against a fake E2B in its own package.
  */
-import type { SandboxService, SandboxStart, Started } from "../src/sandbox";
+import type { SandboxService, SandboxSignin, SandboxStart, Started } from "../src/sandbox";
 import type { MeterEvent } from "../src/sandbox-time";
 
 export class RecordingSandbox implements SandboxService {
@@ -14,6 +14,11 @@ export class RecordingSandbox implements SandboxService {
   readonly releases: { lease_id: string }[] = [];
   readonly unwaits: string[] = [];
   readonly erasures: string[] = [];
+  readonly signins: SandboxSignin[] = [];
+  readonly codes: { authority: string; id: string; code: string }[] = [];
+  readonly signinCancels: { authority: string; id: string }[] = [];
+  /** What a sign-in's start answers. */
+  signinAnswer: Started | "throw" = { started: true };
   /**
    * What a start answers: started, a refusal's code, or no answer at all (a throw); a list
    * answers each start in turn, its last answer from then on.
@@ -43,6 +48,26 @@ export class RecordingSandbox implements SandboxService {
   async release(_owner: string, request: { lease_id: string }): Promise<{ paused: boolean }> {
     this.releases.push({ lease_id: request.lease_id });
     return { paused: true };
+  }
+
+  async signin(_owner: string, signin: SandboxSignin): Promise<Started> {
+    this.signins.push(signin);
+    if (this.signinAnswer === "throw") {
+      throw new Error("the sandbox did not answer");
+    }
+    return this.signinAnswer;
+  }
+
+  async signinInput(_owner: string, request: { authority: string; id: string; code: string }):
+      Promise<{ delivered: boolean }> {
+    this.codes.push({ ...request });
+    return { delivered: true };
+  }
+
+  async signinCancel(_owner: string, request: { authority: string; id: string }):
+      Promise<{ cancelled: boolean }> {
+    this.signinCancels.push({ ...request });
+    return { cancelled: true };
   }
 
   async unwait(owner: string): Promise<void> {

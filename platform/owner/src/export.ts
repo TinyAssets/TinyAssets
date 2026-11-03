@@ -200,6 +200,8 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   sandbox_live: "each live sandbox's last E2B execution counted, until its kill",
   log_capture: "the change log's capture: its generation, span and shipping",
   change_log: "row images not yet shipped to R2, which a generation carries",
+  sandbox_signins: "a vendor sign-in in progress: its lease and the vendor's one-time prompt",
+  platform_signins: "the platform's served sign-in records as last read, not the owner's",
 });
 
 /** The exported tables' names, in order. */
