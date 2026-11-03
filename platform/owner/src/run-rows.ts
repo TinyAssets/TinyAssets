@@ -19,6 +19,11 @@
  * - `QUEUE_ROWS`, `QUEUE_BYTES`: inputs waiting for their conversation's live run, which
  *   the owner database's remaining budget sizes;
  * - `ENGINE_SIGNINS`: one sign-in row an engine, past every CLI record.
+ *
+ * And the mail that starts runs (slice ID): a ledger message's id, the ledger id of one of
+ * the owner's own agents, and a message's authority as JSON (an outside client's id and
+ * family, 64 hex each, its grant generation and its sign-in time), which the schema
+ * checks without the ledger's code.
  */
 
 /** `run_` and 32 hex. */
@@ -55,3 +60,10 @@ export const SIGNIN_MODELS_CHARS = 2048;
  * stays within its page share at it (the owner-bound guard costs the leases at it).
  */
 export const SIGNIN_LIST_CHARS = 256;
+
+/** `msg_` and 32 hex: a ledger message's id. */
+export const MESSAGE_ID_CHARS = 36;
+/** `ta_` and 16 hex: the ledger id of one of the owner's own agents. */
+export const NATIVE_ID_CHARS = 19;
+/** A mail's authority as JSON: two 64-hex ids, a generation and a time, and their keys. */
+export const AUTHORITY_CHARS = 240;

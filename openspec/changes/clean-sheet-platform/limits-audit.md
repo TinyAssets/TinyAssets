@@ -25,14 +25,15 @@ then its own change. `[I]` marks an inference not checked against a primary sour
 
 **The real ceiling** behind most bounds below is the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Half is 5 GB, the guard's budget,
 and every row that bounds a guard term gives its share of it, so one can be traded
-against another. Today's worst case is 4,232,733,666.75 bytes (42.33%; slice D's was
-4,064,822,714, 40.65%, before slice R's tables).
+against another. Today's worst case is 4,234,268,166.75 bytes (42.34%; slice D's was
+4,064,822,714, 40.65%, before slice R's tables; slice R's 4,232,733,666.75 before slice
+ID's `native_agents`, 1.5 MB).
 
 **Every proposed raise together** (`owner/guards/limits-proposed.test.ts`, `PROPOSED`, which
 the guard's own `termsFor` costs, all applied at once, and which also passes the ledger's
-`checkLimits` and the collections' nesting) gives a worst case of 4,997,920,528.75 bytes
-(49.98%), 2.1 MB under half (2,079,471.25 bytes); slice W's `wake_callbacks` took 0.6 MB
-of it (4,998,540,720.75 bytes, 1.5 MB under half). Slice D left 169.9 MB of margin for
+`checkLimits` and the collections' nesting) gives a worst case of 4,999,455,028.75 bytes
+(49.99%), 0.5 MB under half (544,971.25 bytes; slice ID's agent identities took 1.5 MB of
+slice R's 2.1 MB). Slice D left 169.9 MB of margin for
 slice R's tables; slice R took 168.0 MB of it (`runs` 85.0 MB with its waiting runs,
 `conversations` 30.7 MB, `run_schedules` 26.1 MB, `run_inputs` 9.8 MB, `run_grants`
 9.7 MB, `socket_tickets` 3.1 MB, `sandbox_leases` 3.1 MB, `engine_signins` 0.4 MB,
@@ -42,8 +43,9 @@ its 16.5 MB (its inputs and its waiting runs' rows) was 75% of the 22.0 MB that 
 The round's sandbox leases (one an authority, review H-1) took 2.3 MB more of the margin,
 and each run's lease, heartbeat and secret's hash fit within the rows' pages already
 counted; nothing was shrunk to fit. Round 2's per-sandbox sign-ins (a client's sandbox's
-own, on its lease's row: a login is never copied between sandboxes) took 0.8 MB more. The
-margin is now 2.1 MB, under the accounting's own error bars: the next term that needs room
+own, on its lease's row: a login is never copied between sandboxes) took 0.8 MB more, and
+slice ID's agent identities 1.5 MB (its other columns fit the pages already counted). The
+margin is now 0.5 MB, under the accounting's own error bars: the next term that needs room
 takes it from another, by the founder's choice. A table of sign-in rows keyed by sandbox and
 engine instead (presence only, the engines that sign in today at each of `RUNS_CEILING`
 sandboxes) would cost 5.3 MB, 2.4 MB past the margin it had; on the lease's row they fit. The first draft's raises that do not fit are in
@@ -161,7 +163,7 @@ Flagged for the founder: the files default `max_bytes` (1 GiB, to become the tie
 | `owner/src/collections.ts:218` | 32 characters | a write's history op | a longer op refused | label or page | A label of ours. |
 | `owner/src/text.ts:33` | 256 characters | a collection, row or writer name | a longer name refused | label or page | A name, not content. |
 | `owner/src/ledger.ts:68` | 16,384 characters | one message body | a longer message refused | raise | Invented. Proposed 65,536: bodies are bounded in all by `maxBodyBytes`, so no guard term moves, but the schema's CHECK (`length(body) BETWEEN 1 AND 16384`, migration 2) must move with it, as a new migration. |
-| `owner/src/ledger.ts:163` | 100 | enabled outside agents | the 101st agent's registration refused | raise | **The 10 GB limits it, through the ledger's layout:** `ledger_recipients` is costed as `maxMessages x maxAgents` rows, and `checkLimits` ties both to the mailbox caps. The draft's 1,000 alone reaches 116.0% and fails `checkLimits` (`AFTER`). Bounding recipients by their own count (a counted bound on recipient rows) would lift it; R2 would not, since the mailboxes are read on every call. Proposed 110, with `maxMessages` 11,000 and `maxBodyBytes` 72 MiB (`checkLimits` holds them together). Its guard terms: 837.0 MB today; proposed, 1,012.8 MB, 20.26% of the 5 GB budget. |
+| `owner/src/ledger.ts:163` | 100 | enabled agents: outside agents and the owner's own live agents (slice ID) together, each a reserved mailbox | the 101st outside agent's registration, or the 101st live agent's `agent.json` write, refused (`ledger_agents_full`) | raise | **The 10 GB limits it, through the ledger's layout:** `ledger_recipients` is costed as `maxMessages x maxAgents` rows, and `checkLimits` ties both to the mailbox caps. The draft's 1,000 alone reaches 116.0% and fails `checkLimits` (`AFTER`). Bounding recipients by their own count (a counted bound on recipient rows) would lift it; R2 would not, since the mailboxes are read on every call. Proposed 110, with `maxMessages` 11,000 and `maxBodyBytes` 72 MiB (`checkLimits` holds them together). Its guard terms: 837.0 MB today; proposed, 1,012.8 MB, 20.26% of the 5 GB budget. |
 | `owner/src/ledger.ts:164` | 1,000 | agent rows, tombstones included | a registration refused past it | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`outside_agents`, `ledger_readers`, `ledger_rings`, `ledger_usage`): 56.5 MB, 1.13% of the 5 GB budget. |
 | `owner/src/ledger.ts:165` | 10,000 | messages held | a post refused past it | raise | As `maxAgents`. Proposed 11,000, with `maxAgents` 110. Its guard terms: 980.3 MB today; proposed, 1,170.4 MB, 23.41% of the 5 GB budget. |
 | `owner/src/ledger.ts:166` | 64 MiB | message bodies held | a post refused past it | raise | Moving message bodies into R2, as files are, would lift it; the bodies term is the smaller part of the ledger's cost. Proposed 72 MiB, with `maxAgents` 110. Its guard terms: 97.3 MB today; proposed, 107.0 MB, 2.14% of the 5 GB budget. |

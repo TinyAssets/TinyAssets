@@ -67,7 +67,7 @@ describe.each([
     const client = await mcpClient(tokens, mode);
     const listed = await client.callTool({ name: "agents_list", arguments: {} });
     expect(listed.isError).toBeFalsy();
-    expect(listed.structuredContent).toEqual({ agents: [] });
+    expect(listed.structuredContent).toEqual({ agents: [], owner_agents: [] });
     const filed = await client.callTool({ name: "agent_register", arguments: {
       command_center_id: "cc", display_name: "Muse", delivery_method: "pull", recipe_id: null } });
     expect(filed.isError).toBeFalsy();

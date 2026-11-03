@@ -22,8 +22,8 @@ import { describe, expect, it } from "vitest";
 
 import { parse, PLATFORM } from "../../owner/guards/sources";
 import profiles from "../profiles.json" with { type: "json" };
-import { CLIENT_PROFILES, DEFAULT_PROFILE, profileNames, type Tool, toolNames, toolTable }
-  from "../src/tools";
+import { CLIENT_PROFILES, DEFAULT_PROFILE, MAILBOX_TOOLS, profileNames, type Tool, toolNames,
+         toolTable } from "../src/tools";
 
 /** Outside-callable doors without a tool yet, and what owes each. */
 const DEFERRED: Readonly<Record<string, string>> = Object.freeze({
@@ -299,7 +299,8 @@ describe("tool table guard", () => {
   it("serves the run tools, and a run's own profile serves none of them", () => {
     expect(toolTable().filter((tool) => RUN_TOOLS.includes(tool.name)).map((tool) => tool.door))
       .toEqual(["agentSubmit", "agentRun", "agentStatus", "agentCancel"]);
-    expect(profileNames("run").filter((name) => RUN_TOOLS.includes(name))).toEqual([]);
+    expect(profileNames("run").filter((name) => RUN_TOOLS.includes(name)
+                                      || MAILBOX_TOOLS.includes(name))).toEqual([]);
   });
 
   it("lists exactly each profile's tools: the directory's all but code, a run's all but " +
@@ -307,7 +308,8 @@ describe("tool table guard", () => {
     const all = toolNames();
     expect(Object.keys(profiles).sort()).toEqual(["custom", "directory", "run"]);
     expect(profileNames("directory")).toEqual(all.filter((name) => name !== "code"));
-    expect(profileNames("run")).toEqual(all.filter((name) => !RUN_TOOLS.includes(name)));
+    expect(profileNames("run")).toEqual(all.filter((name) => !RUN_TOOLS.includes(name)
+                                                   && !MAILBOX_TOOLS.includes(name)));
     expect(profileNames("custom")).toEqual(all);
     expect(profileNames("directory")).not.toContain("code");
     expect([...CLIENT_PROFILES]).toEqual(["directory", "custom"]);
