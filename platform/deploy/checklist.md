@@ -37,6 +37,11 @@ Run mode `plan` once and read the list. Then run mode `dark`, read its plan, and
     file's contents, then delete the file.
   - `E2B_WEBHOOK_SECRET`: the signature secret you register with E2B's sandbox lifecycle
     webhook (`/hooks/e2b/lifecycle`). Its registration at E2B is owed (tasks.md).
+- **The migration lock, pinned at the commit you deploy.** The kit refuses to run unless
+  `platform/owner/migrations.json` marks the first deploy and pins every migration the code
+  ships. Pin it with `PIN_MIGRATIONS=<commit> npx vitest run --project guards
+  guards/migrations.test.ts` in `platform/owner`, and land the lock with the code. From then
+  on a deployed migration is never edited; a new shape is a new migration.
 - **`auth_time`, settled before anything changes.** Every sign-in needs AuthKit's tokens to
   carry `auth_time`. Store one real AuthKit token's `iss` and `auth_time`, copied from it, as
   the variable `OWNER_TOKEN_CLAIMS`, a JSON object (the `fetch-prod-logs` workflow shows a

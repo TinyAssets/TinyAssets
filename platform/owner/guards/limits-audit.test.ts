@@ -22,9 +22,10 @@ import {
 const HALF = SHARE * DATABASE_BYTES;
 /**
  * The room under half when `LOG_BYTES` was derived (2026-11-03: main at `8161540c1`, slices
- * L, APP and SIGNIN, with slice P's tables), every term but the change log's at its worst.
+ * L, APP and SIGNIN, with slice P's tables, a connection counted in bytes since review L5-1),
+ * every term but the change log's at its worst.
  */
-const DERIVED_ROOM = 463_603_985.5;
+const DERIVED_ROOM = 665_127_185.5;
 /**
  * The change log's share of that room: a quarter, an equal share with each of the three
  * slices still to land (STORE, STARTER, BRAIN), whose terms take the rest. The room exists

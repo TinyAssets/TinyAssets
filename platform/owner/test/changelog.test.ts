@@ -13,7 +13,8 @@ import { exported } from "../src/export";
 import { INLINE_BYTES } from "../src/files";
 import { WriteGate } from "../src/gate";
 import type { OwnerDO } from "../src/owner-do";
-import { generate, type Line, owner, replay, standing } from "./generation-support";
+import { LOGGED } from "../src/schema";
+import { digest, generate, type Line, owner, replay, standing } from "./generation-support";
 import { filesOn, sqlIn } from "./support";
 
 const W = "/workspace";
@@ -89,9 +90,8 @@ describe("the change log", () => {
     expect(await sqlIn(o.stub, "SELECT COUNT(*) AS n FROM change_log")).toEqual([{ n: 0 }]);
   });
 
-  it("past LOG_BYTES, or an image past IMAGE_MAX, lands the write and fails the generation " +
-     "with one notice", async () => {
-    for (const how of ["full", "wide"] as const) {
+  it("past LOG_BYTES lands the write and fails the generation with one notice", async () => {
+    for (const how of ["full"] as const) {
       const o = await owner();
       await sqlIn(o.stub, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n " +
         "WHERE i < 9000) INSERT INTO owner_notices (at, type, detail) SELECT 0, 'x', " +
@@ -101,20 +101,11 @@ describe("the change log", () => {
           if (n !== 1) {
             return;
           }
-          // As R2 refused puts long enough, or a row too wide to log.
+          // As R2 refused puts long enough.
           await gate.write(() => {
-            if (how === "full") {
-              gate.storage.sql.exec("UPDATE log_capture SET bytes = ?", LOG_BYTES);
-            }
+            gate.storage.sql.exec("UPDATE log_capture SET bytes = ?", LOG_BYTES);
             gate.storage.sql.exec("INSERT INTO owner_notices (at, type, detail) VALUES " +
                                   "(1, 'agent', 'landed')");
-            if (how === "wide") {
-              // A connection's models list near its ceiling, every character escaped.
-              gate.storage.sql.exec("INSERT INTO connections (id, source, kind, display_name, " +
-                "provider, models, status, version, created_at, revocable) VALUES (?, 'src', " +
-                "'api_key', 'wide', 'p', ?, 'active', 1, 0, 0)", "c".repeat(25),
-                                    '"'.repeat(IMAGE_MAX / 2 + 1));
-            }
           });
         },
       });
@@ -122,15 +113,64 @@ describe("the change log", () => {
       // The write that passed it landed.
       expect(await sqlIn(o.stub, "SELECT COUNT(*) AS n FROM owner_notices WHERE type = " +
                                  "'agent'")).toEqual([{ n: 1 }]);
-      expect(await sqlIn(o.stub, "SELECT COUNT(*) AS n FROM connections"))
-        .toEqual([{ n: how === "wide" ? 1 : 0 }]);
       expect(await sqlIn(o.stub, "SELECT COUNT(*) AS n FROM owner_backups WHERE state = " +
                                  "'writing'")).toEqual([{ n: 0 }]);
       expect(await sqlIn(o.stub, "SELECT capturing, gen FROM log_capture"))
         .toEqual([{ capturing: 0, gen: null }]);
-      expect(LOG_WIDE).toBe('{"t":"wide"}');
     }
   }, 120_000);
+
+  it("logs a connection's widest row whole: its token refresh fails no generation (review " +
+     "L5-1)", async () => {
+    const o = await owner();
+    await sqlIn(o.stub, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n " +
+      "WHERE i < 9000) INSERT INTO owner_notices (at, type, detail) SELECT 0, 'x', " +
+      "printf('%.1000c', 'a') FROM n");
+    // Its models at their ceiling in bytes, every one a character JSON escapes, and its
+    // egress scope at its own.
+    const models = '"'.repeat(655_360);
+    await sqlIn(o.stub, "INSERT INTO connections (id, source, kind, display_name, provider, " +
+      "models, status, version, created_at, revocable, egress) VALUES (?, 'src', 'oauth2', " +
+      "'wide', 'p', ?, 'active', 1, 0, 1, ?)", "c".repeat(25), models, "\\".repeat(16_384));
+    let refreshed = 0;
+    const made = await generate(o.stub, {
+      duringCall: async ({ gate }) => {
+        // A refresh's claim, then its new token's expiry, as `connections.ts` writes them.
+        await gate.write(() => gate.storage.sql.exec(
+          "UPDATE connections SET lease_id = ?, lease_until = ?, expires_at = ? WHERE id = ?",
+          `lease-${++refreshed}`, refreshed, 1_000 + refreshed, "c".repeat(25)));
+      },
+    });
+    expect(refreshed).toBeGreaterThan(1);
+    expect(made.notices).toEqual([]);
+    expect(digest(replay(made.lines))).toBe(made.atE);
+    const images = made.lines.filter((line) => line.t === "row" && line.table === "connections");
+    expect(images.length).toBeGreaterThan(1);
+    expect(made.lines.some((line) => (line as { t: string }).t === "wide")).toBe(false);
+  }, 120_000);
+
+  it("marks an image past IMAGE_MAX, the backstop: the write lands and the generation fails",
+     async () => {
+    const o = await owner();
+    await runInDurableObject(o.stub, async (_instance: OwnerDO, state) => {
+      const gate = new WriteGate(state.storage);
+      const sql = gate.storage.sql;
+      const log = new ChangeLog(gate.storage);
+      await gate.write(() => {
+        // A table no exported one is (the guard holds every exported row's image under it).
+        sql.exec("CREATE TABLE wide_probe (k TEXT PRIMARY KEY, v TEXT)");
+        sql.exec(LOGGED("wide_probe", "k v", "k", "INSERT"));
+        log.begin("0123456789abcdef");
+      });
+      await gate.write(() => sql.exec("INSERT INTO wide_probe (k, v) VALUES ('w', ?)",
+                                      "a".repeat(IMAGE_MAX)));
+      expect(sql.exec("SELECT COUNT(*) AS n FROM wide_probe").one()).toEqual({ n: 1 });
+      expect(sql.exec("SELECT line FROM change_log").toArray()).toEqual([{ line: LOG_WIDE }]);
+      expect(sql.exec("SELECT capturing, overflow FROM log_capture").one())
+        .toEqual({ capturing: 0, overflow: 1 });
+    });
+    expect(LOG_WIDE).toBe('{"t":"wide"}');
+  });
 
   it("keeps small files' bytes in their image under the BLOB's size bound", () => {
     expect(INLINE_BYTES * 2).toBeLessThan(IMAGE_MAX);

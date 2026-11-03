@@ -163,9 +163,11 @@ export default defineConfig({
                           E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret",
                           WORKOS_API_KEY: "test-client-secret",
                           INBOUND_SLACK_SIGNING_SECRET: SLACK_SECRET },
-              // HOOKS: the owner object's (in this script for the tests), to the real
-              // hooks Worker, as the owner config binds it.
-              serviceBindings: { PROVIDERS: "fake-providers", HOOKS: "tinyassets-hooks" },
+              // HOOKS and OWNER_FILES: the owner object's (in this script for the tests), to
+              // the real hooks and files Workers, as the owner config binds them: the owner's
+              // FILES is the files Worker's whole service, the doors' its upload entrypoint.
+              serviceBindings: { PROVIDERS: "fake-providers", HOOKS: "tinyassets-hooks",
+                                 OWNER_FILES: "tinyassets-files" },
               workers: [gatewayWorker(KEYRING), hooksWorker(), fakeProviders(),
                         filesWorker(KEYRING)],
             },

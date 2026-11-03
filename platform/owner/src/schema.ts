@@ -210,7 +210,7 @@ const LOG_FULL = "UPDATE log_capture SET capturing = 0, overflow = 1 WHERE captu
  * row's image (or its key, gone) goes to the change log in the writing unit's own transaction.
  * An update that moves a key gives the old key gone first.
  */
-const LOGGED = (table: string, columns: string, keys: string,
+export const LOGGED = (table: string, columns: string, keys: string,
                 event: "INSERT" | "UPDATE" | "DELETE") =>
   `CREATE TRIGGER ${table}_logged_${event.toLowerCase()} AFTER ${event} ON ${table} ` +
   "WHEN (SELECT capturing FROM log_capture) = 1 BEGIN " +
@@ -964,7 +964,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "kind TEXT NOT NULL CHECK (kind IN ('api_key', 'oauth2')), " +
       "display_name TEXT NOT NULL CHECK (length(display_name) BETWEEN 1 AND 128), " +
       "provider TEXT NOT NULL CHECK (length(provider) BETWEEN 1 AND 64), " +
-      "models TEXT NOT NULL DEFAULT '[]' CHECK (length(models) <= 655360), " +
+      // In bytes (review L5-1): its ceiling's reason is records of bytes (`connections.ts`
+      // `MODELS_JSON_MAX`), and a row image's width is bytes.
+      "models TEXT NOT NULL DEFAULT '[]' CHECK (length(CAST(models AS BLOB)) <= 655360), " +
       "status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'revoked', 'error')), " +
       "version INTEGER NOT NULL CHECK (version >= 1), expires_at INTEGER, " +
       "lease_id TEXT, lease_until INTEGER, created_at REAL NOT NULL, pending_until REAL, " +
@@ -972,7 +974,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "revocable INTEGER NOT NULL CHECK (revocable IN (0, 1)), " +
       // Where its credential may be forwarded (part 11): its sealed base URL, endpoints and
       // pi-ai's metered call, no secret.
-      "egress TEXT CHECK (egress IS NULL OR length(egress) <= 16384), " +
+      "egress TEXT CHECK (egress IS NULL OR length(CAST(egress AS BLOB)) <= 16384), " +
       "CHECK ((status = 'pending') = (pending_until IS NOT NULL)), " +
       "CHECK (revoke_due IS NULL OR status IN ('revoked', 'error'))) WITHOUT ROWID",
     "CREATE INDEX connections_pending ON connections (pending_until) " +
@@ -1584,6 +1586,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "segment_list TEXT NOT NULL DEFAULT '' CHECK (length(segment_list) <= " +
       `${MANIFEST_PARTS * SEGMENT_ENTRY}), ` +
       "bytes INTEGER NOT NULL CHECK (bytes >= 0), s INTEGER NOT NULL CHECK (s >= 1), " +
+      // The schema version it was begun under: a migration while it runs ends it (review L5-2).
+      "schema INTEGER NOT NULL CHECK (schema >= 1), " +
       "e INTEGER, ended_at REAL, started_at REAL NOT NULL, " +
       "finished_at REAL, retry_at REAL, " +
       `CHECK (parts + segments <= ${MANIFEST_PARTS}), ` +

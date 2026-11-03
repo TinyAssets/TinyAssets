@@ -283,6 +283,24 @@ describe("a generation", () => {
     }
   }, 600_000);
 
+  it("gives up one a migration ran under, loudly, and begins a fresh one under the new " +
+     "schema: never two schemas in one (review L5-2)", async () => {
+    const o = await owner();
+    await notices(o, 10_000);
+    const before = await generate(o.stub, { onePass: true });
+    const [begun] = await sqlIn(o.stub, "SELECT gen, schema FROM owner_backups");
+    expect(begun).toEqual({ gen: before.gen, schema: MIGRATIONS.length });
+    // The next start's code has one migration more: the lane runs under its schema.
+    const after = await generate(o.stub, { schema: MIGRATIONS.length + 1 });
+    expect(after.notices).toEqual(["manifest_schema"]);
+    expect(after.gen).not.toBe(before.gen);
+    expect(await sqlIn(o.stub, "SELECT state, schema FROM owner_backups"))
+      .toEqual([{ state: "done", schema: MIGRATIONS.length + 1 }]);
+    // Its lines are one schema's, and replayed they are the owner at E.
+    expect(after.lines[0]).toMatchObject({ t: "header", schema: MIGRATIONS.length + 1 });
+    expect(digest(replay(after.lines))).toBe(after.atE);
+  }, 120_000);
+
   it("goes on later, never at once, when a pass ends before it does", async () => {
     const o = await owner();
     await notices(o, 100);
@@ -296,8 +314,8 @@ describe("a generation", () => {
 
 /** A generation finished long ago, so tonight's is due now. */
 const LAST_YEARS = "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, " +
-  "bytes, s, started_at, finished_at) VALUES ('ffffffffffffffff', '20200101', 'done', NULL, " +
-  "0, '', 0, 1, 1, 1)";
+  "bytes, s, schema, started_at, finished_at) VALUES ('ffffffffffffffff', '20200101', 'done', " +
+  "NULL, 0, '', 0, 1, 1, 1, 1)";
 
 /** A file written, then removed with its history: its chunk is garbage, in its grace. */
 async function writeThenDelete(o: Owner, path: string, seed: number): Promise<string> {
@@ -447,8 +465,9 @@ describe("the nightly manifest", () => {
     // A generation under way with every part but none used already.
     const gen = "abcdefabcdefabcd";
     await sqlIn(o.stub, "INSERT INTO owner_backups (gen, day, state, cursor, parts, " +
-                        "part_list, bytes, s, started_at) VALUES (?, '20261103', 'writing', " +
-                        "NULL, ?, '', 0, 1, ?)", gen, MANIFEST_PARTS, Date.now() / 1000);
+                        "part_list, bytes, s, schema, started_at) VALUES (?, '20261103', " +
+                        "'writing', NULL, ?, '', 0, 1, ?, ?)", gen, MANIFEST_PARTS,
+                MIGRATIONS.length, Date.now() / 1000);
     await sqlIn(o.stub, "UPDATE log_capture SET gen = ?, capturing = 1", gen);
     await o.stub.fileMkdir(o.bind(), { path: `${W}/d`, expected_etag: null });  // its job set
     await sqlIn(o.stub, "UPDATE owner_backup_state SET changed = 0");

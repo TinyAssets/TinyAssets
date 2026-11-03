@@ -543,3 +543,16 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
     }
   }
 }
+
+/**
+ * The upload door's entrypoint (review M5-1): the doors bind only this, so the internet-
+ * facing Worker, which carries an uploading owner's wrapped data key, can put that owner's
+ * chunks and read nothing: no chunk, no generation, no key call. It serves `putChunks`
+ * alone, as `FilesService` does it.
+ */
+export class FilesUpload extends WorkerEntrypoint<FilesEnv> {
+  /** Store chunks under their hashes, each verified by R2 (`FilesService.putChunks`). */
+  async putChunks(ns: string, key: string, chunks: ChunkPut[]): Promise<{ created: number }> {
+    return new FilesService(this.ctx, this.env).putChunks(ns, key, chunks);
+  }
+}

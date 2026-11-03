@@ -29,7 +29,10 @@ export class OwnerDO extends RealOwnerDO {
     const made: { sandbox?: SandboxLeases } = {};
     const recorder = new RecordingSandbox();
     const erasures = new RecordingErasures();
-    super(ctx, { ...env, SANDBOX: recorder, ERASURES: erasures },
+    // The owner Worker's FILES, the files Worker's whole service: this script's FILES is the
+    // doors', its upload entrypoint alone (review M5-1).
+    const files = (env as unknown as { OWNER_FILES: OwnerEnv["FILES"] }).OWNER_FILES;
+    super(ctx, { ...env, FILES: files, SANDBOX: recorder, ERASURES: erasures },
           { sandbox: (leases) => { made.sandbox = leases; }, putGraceMs: 0, eraseRetryMs: 500 });
     this.erasures = erasures;
     this.sandbox = made.sandbox!;

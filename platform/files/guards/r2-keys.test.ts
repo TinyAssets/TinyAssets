@@ -112,8 +112,12 @@ export function keyProblems(fileName: string, source: string): string[] {
       const cipher = ts.isPropertyAccessExpression(parent) && parent.name.text === CIPHER
         && call !== undefined && ts.isCallExpression(call) && call.arguments[0] === parent
         && ts.isIdentifier(call.expression) && call.expression.text === "cipherOf";
-      if (!ts.isPropertyAccessExpression(parent) || parent.expression !== node
-          || (parent.name.text !== "BLOBS" && !ring && !cipher)) {
+      // The doors' upload entrypoint hands its env whole to the service it narrows, this
+      // file's own class, which this guard holds as it holds the rest (review M5-1).
+      const service = ts.isNewExpression(parent) && ts.isIdentifier(parent.expression)
+        && parent.expression.text === "FilesService";
+      if (!service && (!ts.isPropertyAccessExpression(parent) || parent.expression !== node
+          || (parent.name.text !== "BLOBS" && !ring && !cipher))) {
         report(node, "reads this.env for other than BLOBS and the ring's own module");
       }
     }

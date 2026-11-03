@@ -44,14 +44,14 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,652,001,662.5 bytes, 46.52% of the 10 GB: 348.0 MB under
+**The worst case that ships is 4,498,844,030.5 bytes, 44.99% of the 10 GB: 501.2 MB under
 half** (the sum of every term and the runtime's rows, `owner/guards/limits-audit.test.ts`),
 slice ID's agent identities and mail
 authority, slice M's change orders, slice W's doorbell subscriptions (`wake_callbacks`,
 423.6 MB at 1,000 agents and their widest), slice S's sandbox wait, slice L's keys and
 inbound bindings (`inbound_bindings` 23.0 MB, `owner_keys` 2.9 MB), slice SIGNIN's sign-ins,
 and slice P's tables (`sandbox_billed` 29.7 MB with its index by age,
-`change_log` 115.6 MB, `sandbox_live` 3.8 MB, `sandbox_spans` 3.1 MB, `owner_backups` 1.8 MB
+`change_log` 164.0 MB, `sandbox_live` 3.8 MB, `sandbox_spans` 3.1 MB, `owner_backups` 1.8 MB
 and its kept rows 0.02 MB, `schema_digests` 1.0 MB, `sandbox_days` 0.4 MB) included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
 2.1 MB). Without each structural change, the same bounds would cost: bodies in their rows
 424.1 GB; history as rows times revisions 111.5 GB; recipients as messages times agents
@@ -62,14 +62,16 @@ holds the worst case at or under half the 10 GB. Slice LIM's 500 MB `MARGIN` pas
 cushion ("no thin margin") that no platform fact derives, so it is gone: an underived
 headroom is an invented limit. What is under the half is room, given out by stated shares:
 the change log's `LOG_BYTES` takes a quarter of the room as it stood at its derivation
-(463.6 MB with every other term at its worst, main at `8161540c1` with slice P), an equal
+(665.1 MB with every other term at its worst, main at `8161540c1` with slice P, a
+connection's models and egress counted in bytes since review L5-1), an equal
 share with each of the three slices still to land (STORE, STARTER, BRAIN). Their terms take
-the rest, 348.0 MB; the day a slice's terms would pass the half, the guard fails loudly and
+the rest, 501.2 MB; the day a slice's terms would pass the half, the guard fails loudly and
 the shares are decided again.
 
 The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collection_rows`
 604.0 MB, `wake_callbacks` 423.6 MB, `ledger_messages` 399.2 MB, `ledger_receipts` 309.6 MB, `collection_history`
-302.0 MB, `connections` 269.3 MB, `message_bodies` 219.7 MB, `ledger_recipients` 107.9 MB.
+302.0 MB, `message_bodies` 219.7 MB, `change_log` 164.0 MB, `ledger_recipients` 107.9 MB;
+`connections` 67.8 MB.
 
 ## Summary
 
@@ -201,11 +203,11 @@ reason; none refuses a write.
 | `owner/src/sessions.ts` `SESSION_LIMITS.maxSessions` | 64 | signed-in devices at once | the oldest session closed | technical ceiling | The 10 GB, each session a row the guard costs. |
 | `owner/src/sessions.ts` `SESSION_LIMITS` life | 8 hours | the owner's protected session | the owner signs in again for a widening | technical ceiling | A credential's life: NIST SP 800-63B's reauthentication at AAL2, at most 12 hours. The cookie's `Max-Age`. |
 | `owner/src/sessions.ts` `SESSION_LIMITS` freshness | 600 s | how fresh a sign-in must be to open a session | the owner signs in again | technical ceiling | S30: a widening needs a sign-in the owner just made. |
-| `owner/src/connections.ts` `CONNECTION_LIMITS.maxConnections` | 50 | live model connections | the 51st refused | technical ceiling | The 10 GB: guard terms `connections` 269.3 MB, `connection_secrets`. A connection's models list is read in every egress admission unit, so it stays in its row (ADR-035 decision 9). |
+| `owner/src/connections.ts` `CONNECTION_LIMITS.maxConnections` | 50 | live model connections | the 51st refused | technical ceiling | The 10 GB: guard terms `connections` 67.8 MB (its models and egress scope in bytes, review L5-1), `connection_secrets`. A connection's models list is read in every egress admission unit, so it stays in its row (ADR-035 decision 9). |
 | `owner/src/connections.ts` `CONNECTION_LIMITS.maxOpenFlows` | 10 | OAuth connect flows open at once | an 11th refused | technical ceiling | The 10 GB: guard term `connection_flows`; each holds a PKCE verifier for `flowTtlS`. |
 | `owner/src/connections.ts` `CONNECTION_LIMITS.flowTtlS` | 600 s | an OAuth flow's life | the owner starts the connect again | technical ceiling | An authorization code's most recommended life, 10 minutes (RFC 6749 §4.1.2). |
 | `owner/src/connections.ts` `CONNECTION_LIMITS.maxModels` | 1,024 | models one connection lists | models past it refused at commit | technical ceiling | Inside `connections`; the largest built-in catalog has 386. |
-| `owner/src/connections.ts` `MODELS_JSON_MAX` | 640 KiB | a connection's models, as JSON | a larger list refused at commit | technical ceiling | As above. |
+| `owner/src/connections.ts` `MODELS_JSON_MAX` | 640 KiB | a connection's models, as JSON, in bytes (the schema's check too, review L5-1) | a larger list refused at commit | technical ceiling | As above. |
 | `owner/src/connections.ts` `EGRESS_JSON_MAX` | 16 KiB | a connection's egress scope | many custom paths refused at commit | technical ceiling | As above. |
 | `owner/src/connections.ts` `BLOB_MAX` | 64 KiB | a connection's sealed blob | a credential past it refused | technical ceiling | Guard term `connection_secrets`; the gateway's own bound too. |
 | `owner/src/connections.ts` model numbers | $1,000,000 a million tokens; 100,000,000 tokens; 16 tiers | a model record's prices, windows and tiers | a record past them refused | technical ceiling | A charge, price times tokens, stays an exact integer in a JavaScript number (2^53). Far past every catalog's. |
@@ -291,8 +293,8 @@ a user does:
 | Where | Value | Bounds | A user hits | Class | Reason |
 |---|---|---|---|---|---|
 | `files/src/keys.ts` `MANIFEST_PARTS` | 16,384 objects of 4 MiB (64 GiB) | one generation's base parts and log segments together | nothing: the base's worst case is 22.2 GB; past the ceiling the generation is given up once and the owner told (`manifest_ceiling`), never retried in a loop | technical ceiling | Measured, JSON's escaping included: the owner-bound guard's "the nightly manifest's stream" puts every exported table at its bound, each line its frame and its values at 6 bytes a byte (a control character's `\u00XX`), a charged term as rows of 48 bytes each, and holds the sum under the parts. Its lists, 106 bytes a segment at most, fit one SQLite row's 2 MB with its cursor (1.8 MB). |
-| `owner/src/changelog.ts` `LOG_BYTES` | 48 MiB | the change log's unshipped images the object holds while a generation runs | nothing the owner writes: the write always lands; past it capture stops, the generation fails with one notice (`manifest_log_overflow`), and the next change begins a new one | technical ceiling | Derived from the room under the half: a quarter of the 463.6 MB left with every other term at its worst, an equal share with each of the three slices still to land, as the largest whole MiB at `WORST_FILL` with one image past it (`limits-audit.test.ts` "the change log's bound" holds it equal). The room is there so a generation's held changes survive an R2 outage: the log ships after every base part, so it binds only when R2 refuses puts for a while, or when one outside call's worth of writes outruns it; the owner's sustained write rate against the ship rate is owed to slice L's live probe. |
-| `owner/src/changelog.ts` `IMAGE_MAX` | 1 MiB | one row image in the change log | nothing the owner writes: a wider image is logged as a mark, and the generation fails with the same notice | technical ceiling | A SQLite row's 2 MB, with room: every exported table's widest image fits (the guard measures 389 KB), but a connection's models list near its 655,360-character ceiling. |
+| `owner/src/changelog.ts` `LOG_BYTES` | 68 MiB | the change log's unshipped images the object holds while a generation runs | nothing the owner writes: the write always lands; past it capture stops, the generation fails with one notice (`manifest_log_overflow`), and the next change begins a new one | technical ceiling | Derived from the room under the half: a quarter of the 665.1 MB left with every other term at its worst, an equal share with each of the three slices still to land, as the largest whole MiB at `WORST_FILL` with one image past it (`limits-audit.test.ts` "the change log's bound" holds it equal). The room is there so a generation's held changes survive an R2 outage: the log ships after every base part, so it binds only when R2 refuses puts for a while, or when one outside call's worth of writes outruns it; the owner's sustained write rate against the ship rate is owed to slice L's live probe. |
+| `owner/src/changelog.ts` `IMAGE_MAX` | 1.5 MiB | one row image in the change log | nothing the owner writes: every exported row's image fits, so no change, a token refresh's included, fails a generation; a wider image (only a later column the guard has not yet caught) is logged as a mark, the generation fails with the same notice, and the write lands | technical ceiling | Derived from the widest real row (review L5-1): the owner-bound guard's widest image, a connection at its models' 640 KiB and egress scope's 16 KiB in bytes, each escaped at JSON's worst (twice), 1,344,621 bytes, rounded up to a quarter MiB; under a Durable Object row's 2 MB, which one change log row is. |
 | `owner/src/backup.ts` `GATHER_BYTES` | 8 MiB | the stream one burst reads, with no outside call, before it puts its parts | nothing: the manifest goes on in the next burst | technical ceiling | The isolate's 128 MB: the burst's text as UTF-16, then its bytes, about 24 MiB at its peak. No other unit runs in the object during a burst. |
 | `owner/src/backup.ts` | the newest finished generation, the one being written, and each an open export pins | the generations kept | nothing: an older one is deleted once a new one finishes and no export pins it | technical ceiling | A recovery copy of the object, and the owner's exports; Durable Objects' own point-in-time recovery covers 30 days. Each is the platform's, not counted in the owner's storage; at most `EXPORTS_OPEN` pinned. |
 | `owner/src/export.ts` `CURSOR_CHARS` | 16,384 characters | an export cursor | nothing: a cursor past it was never handed out | technical ceiling | The widest key a cursor holds (a path of 4 KiB and its name) as base64url JSON. |

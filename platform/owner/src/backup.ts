@@ -76,6 +76,12 @@ const GATHER_BYTES = 2 * CHUNK_BYTES;
 export const MANIFEST_CEILING = "manifest_ceiling";
 /** The notice an owner is given, once, when its unshipped log passed `LOG_BYTES`. */
 export const MANIFEST_LOG_OVERFLOW = "manifest_log_overflow";
+/**
+ * The notice an owner is given, once, when a migration ran while a generation was under way
+ * (review L5-2): its base and log are of the old schema, so it is given up, never mixed, and
+ * a fresh one is begun under the new.
+ */
+export const MANIFEST_SCHEMA = "manifest_schema";
 /** A generation's recorded cursor once its base is read: only its log is left. */
 const ENDED = "ended";
 const DAY_S = 86_400;
@@ -108,6 +114,7 @@ export type GenerationRow = {
   readonly segment_list: string;
   readonly bytes: number;
   readonly s: number;
+  readonly schema: number;
   readonly e: number | null;
   readonly ended_at: number | null;
   readonly started_at: number;
@@ -344,15 +351,16 @@ export class Backups {
     const s = this.#parts.log.begin(gen);
     this.#sql.exec(
       "INSERT INTO owner_backups (gen, day, state, cursor, parts, part_list, bytes, s, " +
-        "started_at) VALUES (?, ?, 'writing', NULL, 0, '', 0, ?, ?)", gen, manifestDay(now), s,
-      now);
+        "schema, started_at) VALUES (?, ?, 'writing', NULL, 0, '', 0, ?, ?, ?)", gen,
+      manifestDay(now), s, this.#parts.schema, now);
     return gen;
   }
 
   /**
-   * The generation of `gen` given up (past `MANIFEST_PARTS`, its log past `LOG_BYTES`, or its
-   * capture lost): its objects deleted, its row and its log gone, and the owner told once
-   * (`why`, unless null) until one is written again. The lane waits for a change.
+   * The generation of `gen` given up (past `MANIFEST_PARTS`, its log past `LOG_BYTES`, a
+   * migration while it ran, or its capture lost): its objects deleted, its row and its log
+   * gone, and the owner told once (`why`, unless null) until one is written again. The lane
+   * waits for a change, but after a migration, which begins a fresh one at once.
    */
   async #abandon(ns: string, row: GenerationRow, why: string | null): Promise<void> {
     console.error(`a generation was given up (${why ?? "its capture was lost"})`);
@@ -370,6 +378,9 @@ export class Backups {
         this.#parts.notice(why, why === MANIFEST_CEILING
           ? `The nightly recovery copy of your data passed its ${MANIFEST_PARTS} parts and ` +
             "was not written. Your data is intact; export it to keep a copy."
+          : why === MANIFEST_SCHEMA
+          ? "The recovery copy of your data under way was begun again: an update changed how " +
+            "your data is stored while it ran. Your data is intact."
           : "The nightly recovery copy of your data could not be written: storage was " +
             "unavailable for too long while it ran. Your data is intact; it is tried again " +
             "after your next change.");
@@ -445,6 +456,13 @@ export class Backups {
   async #carry(row: GenerationRow, until: number): Promise<boolean> {
     const { ns, key } = await this.#parts.space();
     const log = this.#parts.log;
+    if (row.schema !== this.#parts.schema) {
+      // A migration ran while it was under way: its base and log are the old schema's, so it
+      // is given up, loudly, and a fresh one begun under the new (review L5-2).
+      await this.#abandon(ns, row, MANIFEST_SCHEMA);
+      const gen = await this.#write(() => this.#open(Date.now() / 1000));
+      return this.#carry(this.#rows().find((each) => each.gen === gen)!, until);
+    }
     if (log.state().gen !== row.gen) {
       await this.#abandon(ns, row, null);  // a generation whose capture is not its own
       return true;

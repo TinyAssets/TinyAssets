@@ -16,8 +16,10 @@
 //   hints); CONTROL: the platform's control record alone, which the owner Worker binds too
 //   (code mode's calls read the gates again). Three namespaces, so their schemas never
 //   collide, and the owner's object reaches no directory entry.
-// - FILES: the files Worker, whose putChunks the file door's bytes call (the binder streams
-//   an upload's chunks to it, src/file-bytes.ts). Only src/file-bytes.ts reaches it.
+// - FILES: the files Worker's FilesUpload entrypoint, which serves putChunks alone, what the
+//   file door's bytes call (the binder streams an upload's chunks to it, src/file-bytes.ts):
+//   the doors hold an uploading owner's wrapped data key, so they bind no read and no key
+//   call of the files Worker's (review M5-1). Only src/file-bytes.ts reaches it.
 // - No ratelimits: no number of ours bounds any caller (slice L's review). Cloudflare's own
 //   DDoS protection is in front of every Worker; a metadata fetch the OAuth provider makes
 //   is bounded by the provider (public URLs, 5 KiB, 10 s; global_fetch_strictly_public).
@@ -71,7 +73,7 @@
   "services": [
     { "binding": "GATEWAY", "service": "tinyassets-gateway", "entrypoint": "ConnectGateway" },
     { "binding": "EGRESS", "service": "tinyassets-gateway", "entrypoint": "EgressGateway" },
-    { "binding": "FILES", "service": "tinyassets-files" }
+    { "binding": "FILES", "service": "tinyassets-files", "entrypoint": "FilesUpload" }
   ],
   "assets": { "directory": "./app", "binding": "ASSETS", "run_worker_first": true,
               "html_handling": "none", "not_found_handling": "none" },

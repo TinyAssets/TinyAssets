@@ -85,8 +85,9 @@ async function keys(space: string): Promise<string[]> {
 }
 
 describe("the Worker's main module", () => {
-  it("exports only its entrypoint, as a deployed Worker must", async () => {
-    expect(Object.keys(await import("../src/index"))).toEqual(["default"]);
+  it("exports only its entrypoints: the service, and the doors' upload one (review M5-1)",
+     async () => {
+    expect(Object.keys(await import("../src/index")).sort()).toEqual(["FilesUpload", "default"]);
   });
 });
 

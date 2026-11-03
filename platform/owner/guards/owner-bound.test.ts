@@ -202,11 +202,12 @@ const STAMP_CHARS = inline("schema", /stamp TEXT CHECK \(stamp IS NULL OR length
 /** An origin's JSON is visible ASCII (the schema's check), so a character is a byte. */
 const ORIGIN_CHARS = inline("schema", /origin TEXT CHECK \(origin IS NULL OR \(length\(origin\) <= ([0-9]+) /);
 const SPEND_KEPT = constant("schema", "SPEND_KEPT");
-/** A connection's models, and its sealed blob, as the schema's checks hold them, in characters. */
-const MODELS_CHARS = inline("schema", /length\(models\) <= ([0-9]+)/);
+/** A connection's models, as the schema's check holds them, in bytes (review L5-1). */
+const MODELS_BYTES = inline("schema", /length\(CAST\(models AS BLOB\)\) <= ([0-9]+)/);
+/** A connection's sealed blob, as the schema's check holds it, in characters. */
 const BLOB_CHARS = inline("schema", /length\(blob\) <= ([0-9]+)/);
-/** A connection's egress scope (migration 11), as the schema's check holds it, in characters. */
-const EGRESS_CHARS = inline("schema", /length\(egress\) <= ([0-9]+)/);
+/** A connection's egress scope (migration 11), as the schema's check holds it, in bytes. */
+const EGRESS_BYTES = inline("schema", /length\(CAST\(egress AS BLOB\)\) <= ([0-9]+)/);
 /** A scope's every field, and an owner-set client's name, in code points (`grants.ts`). */
 const SCOPE_FIELD = inline("grants", /codePoints\(v\) > ([0-9]+)/);
 /** A grant's scopes, as the schema's check holds their JSON, in bytes. */
@@ -490,7 +491,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                               agent_cards_by_age: key(NUMBER) } },
     owner_notices: { rows: N.kept, bytes: ROW + N.detail * 4, by: "N.kept" },
     connections: { rows: CN.maxConnections + CN.maxRevokedKept,
-                   bytes: ROW + 4 * MODELS_CHARS + 4 * EGRESS_CHARS,
+                   bytes: ROW + MODELS_BYTES + EGRESS_BYTES,
                    by: "connections and revoked kept, the schema's models and egress scope " +
                      "ceilings each",
                    indexes: { connections_pending: key(NUMBER, 25),
@@ -797,12 +798,14 @@ describe("the nightly manifest's stream", () => {
 
 /**
  * Tables whose wide columns are JSON text the object writes itself (`JSON.stringify`: no raw
- * control character), so escaping one at most doubles an ASCII character and leaves any
- * other as it is: no wider than its bytes as the term counts them, four a character.
+ * control character), so escaping one at most doubles an ASCII byte (a quote or a
+ * backslash) and leaves any other as it is: at most twice its bytes as the term counts them.
  */
 const JSON_TEXT: ReadonlySet<string> = new Set(["connections", "owner_policy"]);
-/** The one table whose widest row is past `IMAGE_MAX`: its image then fails a generation. */
-const WIDER: ReadonlySet<string> = new Set(["connections"]);
+/** The step `IMAGE_MAX` is derived in: the widest image, rounded up to a quarter MiB. */
+const IMAGE_STEP = 256 * 1024;
+/** A Durable Object's SQLite row, at most: one change log row holds one image. */
+const ROW_MAX = 2_000_000;
 
 /** The widest row image one change writes (`schema.ts` `LOGGED`), every exported table's. */
 export function widestImage(terms: Readonly<Record<string, Term>> = TERMS): number {
@@ -816,20 +819,20 @@ export function widestImage(terms: Readonly<Record<string, Term>> = TERMS): numb
   return Math.max(...Object.keys(tables).map((table) => {
     const term = terms[table];
     return frame(table) + (term === undefined || term.charged === true ? charged
-      : (JSON_TEXT.has(table) ? 1 : JSON_POINT) * term.bytes);
-  }).filter((_, at) => !WIDER.has(Object.keys(tables)[at]!)));
+      : (JSON_TEXT.has(table) ? 2 : JSON_POINT) * term.bytes);
+  }));
 }
 
 describe("the change log's images", () => {
-  it("are each at most IMAGE_MAX, under a SQLite row's 2 MB, but a connection's widest",
-     () => {
+  it("are each at most IMAGE_MAX, derived from the widest real row, under a row's 2 MB " +
+     "(review L5-1)", () => {
     const widest = widestImage();
     expect(widest).toBeGreaterThan(100_000);
-    expect(widest).toBeLessThanOrEqual(IMAGE_MAX);
-    expect(IMAGE_MAX).toBeLessThan(2_000_000);
-    // A connection's models list near its ceiling may pass it: its image is then marked, and
-    // the generation fails (the changelog test), never the write.
-    expect(TERMS["connections"]!.bytes).toBeGreaterThan(IMAGE_MAX);
+    // Every exported table's widest row, a connection's models at their ceiling among them:
+    // no change, a token refresh's included, writes the wide mark.
+    expect(IMAGE_MAX).toBe(Math.ceil(widest / IMAGE_STEP) * IMAGE_STEP);
+    expect(IMAGE_MAX + LOG_ROW_BYTES).toBeLessThan(ROW_MAX);
+    expect(widest).toBeGreaterThan(TERMS["connections"]!.bytes);
   });
 });
 
@@ -918,7 +921,7 @@ describe("the owner's database bound", () => {
   it("counts the bounds the sources hold", () => {
     expect([MAX_INTENT_CHUNKS, CHUNK_BYTES, constant("files", "KEEP_CEILING")])
       .toEqual([10_000, 4 * 1024 ** 2, 1000]);
-    expect([CALLS_OPEN, SPEND_KEPT, MODELS_CHARS, BLOB_CHARS])
+    expect([CALLS_OPEN, SPEND_KEPT, MODELS_BYTES, BLOB_CHARS])
       .toEqual([1000, 4300, 655_360, 65_536]);
     expect([SCOPE_FIELD, CLIENT_NAME]).toEqual([512, 80]);
     // A grant's scopes are counted in bytes: the module's bound is the schema's ceiling.
@@ -931,7 +934,7 @@ describe("the owner's database bound", () => {
     expect(TERMS["model_spend"]!.rows).toBe(4300);
     expect(TERMS["wake_callbacks"]!.rows).toBe(LEDGER_LIMITS.maxAgents * 16);
     expect(TERMS["connection_secrets"]!.bytes).toBe(256 + 4 * 65_536);
-    expect(TERMS["connections"]!.bytes).toBe(256 + 4 * 655_360 + 4 * 16_384);
+    expect(TERMS["connections"]!.bytes).toBe(256 + 655_360 + 16_384);  // in bytes (review L5-1)
     expect(TERMS["egress_reservations"]!.rows).toBe(2_000 + 500 + 16 * 1_000);
     expect(EGRESS_PATH_MAX).toBe(2048);
     // The path is visible ASCII, so a character is a byte (the schema's CHECK).

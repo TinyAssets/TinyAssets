@@ -453,7 +453,7 @@ The doors SHALL count or cap no caller's requests, authenticated or not, and SHA
 - **THEN** a valid key and a live refresh from that address still succeed
 
 ### Requirement: The binder streams an upload's bytes to FILES
-The owner surface's upload SHALL take one chunk a `PUT`, in any order and again after any failure, put it to `FILES` when the intent still needs it, refuse bytes that are not that declared chunk or a body shorter or longer than it, and answer the chunk's SHA-256 as `Content-Digest`; a file SHALL be bounded by the owner's policy, never by one request, and a refusal mid-upload SHALL answer its fixed code.
+The owner surface's upload SHALL take one chunk a `PUT`, in any order and again after any failure, put it to `FILES` when the intent still needs it, through the files Worker's upload entrypoint alone (`FilesUpload`, `putChunks` and nothing that reads a chunk, a generation or a key), refuse bytes that are not that declared chunk or a body shorter or longer than it, and answer the chunk's SHA-256 as `Content-Digest`; a file SHALL be bounded by the owner's policy, never by one request, and a refusal mid-upload SHALL answer its fixed code.
 
 #### Scenario: A tampered chunk
 - **WHEN** an upload's body differs from its declared chunk

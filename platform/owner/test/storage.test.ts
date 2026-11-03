@@ -150,8 +150,8 @@ describe("the one storage number", () => {
     const small = r.bind(null, { tiers: tiers(unit) });
     // Last night's manifest began an hour ago: the two files below were live then.
     await sqlIn(r.stub, "INSERT INTO owner_backups (gen, day, state, cursor, parts, " +
-                        "part_list, bytes, s, started_at, finished_at) VALUES " +
-                        "('0123456789abcdef', ?, 'done', NULL, 0, '', 0, 1, ?, ?)",
+                        "part_list, bytes, s, schema, started_at, finished_at) VALUES " +
+                        "('0123456789abcdef', ?, 'done', NULL, 0, '', 0, 1, 1, ?, ?)",
                 manifestDay(Date.now() / 1000), Date.now() / 1000 - 3600,
                 Date.now() / 1000 - 3000);
     for (let i = 0; i < 2; i++) {
@@ -182,8 +182,8 @@ describe("the one storage number", () => {
     // The newest manifest began and finished more than two nights ago: no recovery point.
     const long = Date.now() / 1000 - MANIFEST_PROTECT_S - 60;
     await sqlIn(r.stub, "INSERT INTO owner_backups (gen, day, state, cursor, parts, " +
-                        "part_list, bytes, s, started_at, finished_at) VALUES " +
-                        "('0123456789abcdef', ?, 'done', NULL, 0, '', 0, 1, ?, ?)",
+                        "part_list, bytes, s, schema, started_at, finished_at) VALUES " +
+                        "('0123456789abcdef', ?, 'done', NULL, 0, '', 0, 1, 1, ?, ?)",
                 manifestDay(Date.now() / 1000), long - 60, long);
     for (let i = 0; i < 2; i++) {
       const path = `/workspace/o${i}.bin`;

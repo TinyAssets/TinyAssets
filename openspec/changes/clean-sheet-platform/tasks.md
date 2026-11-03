@@ -717,7 +717,7 @@ account and no deploy.
   changes; the base's pins stay the head's first pins, in order), so a change that edits a
   deployed migration and its pin together fails in review. Until the marker is set, slices
   still edit in place.
-- [ ] Owed by slice L's deploy kit: mark the first deploy and pin each deploy's migrations,
+- [x] The deploy kit holds the migration lock (slice P, review M5-2): mark the first deploy and pin each deploy's migrations,
   `PIN_MIGRATIONS=<commit> npx vitest run --project guards guards/migrations.test.ts` in
   `platform/owner` (it refuses to pin a changed one), committing the lock with the deployed
   code; and refuse to deploy the owner Worker unless the lock pins every migration it
@@ -726,7 +726,11 @@ account and no deploy.
   guards project's import of `owner/src/schema.ts`), and failing unless `first_deploy` is
   set and `deployed` equals `MIGRATIONS.map(migrationDigest)` element for element (same
   length, same order); that is, the guard test passes and
-  `lock.deployed.length === MIGRATIONS.length`.
+  `lock.deployed.length === MIGRATIONS.length`. Done: `platform/deploy/deploy.ts`
+  `lockRefusal`, checked in every mode before any change, its digests from the guards
+  project (`MIGRATION_DIGESTS`), refusing an unmarked lock, a migration unpinned, gone,
+  changed or reordered (`doors/guards/deploy.test.ts`). Today's lock is unmarked, so the
+  kit refuses until the founder pins at the first deploy's commit (the checklist).
 - [ ] Mobile connects and sign-in (the app slice): on mobile the OAuth runs in an external
   browser (RFC 8252), whose cookies are not the WebView's, so a binding cookie set in the
   WebView never comes back with the callback. **Decided (app slice, 2026-11-03, corrected
@@ -1815,8 +1819,12 @@ R, S, M and W.
   exports read at once; `owner_exports` pins its generation for the export's 7 days. Every
   table is exported (each column decided) or kept out with its reason; credentials, hashes (a
   policy receipt's session hash too, review M2), secrets and the wrapped key never. The one
-  bound is `LOG_BYTES` (48 MiB, a quarter of the room under the database's half): past it, or an image past
-  `IMAGE_MAX`, capture stops and the generation fails with one notice; the write lands. A
+  bound is `LOG_BYTES` (68 MiB, a quarter of the room under the database's half): past it, or an image past
+  `IMAGE_MAX` (1.5 MiB, the widest real row's image, review L5-1), capture stops and the
+  generation fails with one notice; the write lands. A migration while a generation runs
+  gives it up with one notice (`manifest_schema`) and begins a fresh one under the new
+  schema, never mixing two; and no `REPLACE` meets an exported table (a guard), since its
+  delete fires no trigger (review L5-2). A
   generation a pass did not finish goes on `MANIFEST_CONTINUE_S` (5 s) later. Deleted bytes
   leave the owner's number at once, and garbage past the owner's storage figure is collected
   early, oldest first, never a chunk the newest finished generation names while it is under

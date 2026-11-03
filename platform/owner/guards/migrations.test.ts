@@ -16,7 +16,9 @@
  * `PIN_MIGRATIONS=<commit> npx vitest run --project guards guards/migrations.test.ts` in
  * `platform/owner`: the marker is set once, the migrations already pinned are checked
  * first (a changed one refuses the pin), and every migration the code now holds is pinned;
- * the deploy commits the lock with the code it deployed.
+ * the deploy commits the lock with the code it deployed. The deploy kit refuses to deploy
+ * the owner Worker unless the lock is marked and pins every migration the code ships, in
+ * order (`deploy/deploy.ts` `lockRefusal`, its digests from this test's `MIGRATION_DIGESTS`).
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -24,7 +26,9 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { exported } from "../src/export";
 import { MIGRATIONS, type Migration, migrationDigest } from "../src/schema";
+import { workerSources } from "./sources";
 
 const LOCK = join(dirname(fileURLToPath(import.meta.url)), "..", "migrations.json");
 
@@ -86,6 +90,12 @@ describe("append-only migrations", () => {
       writeFileSync(LOCK, `${JSON.stringify(next, null, 2)}\n`);
     }
     expect(lockProblems(MIGRATIONS, readLock())).toEqual([]);
+    // The deploy kit's check (`deploy/deploy.ts` `lockRefusal`): the code's digests, as
+    // this project evaluates the schema, written where the kit asks.
+    const out = process.env["MIGRATION_DIGESTS"];
+    if (out !== undefined && out !== "") {
+      writeFileSync(out, JSON.stringify(MIGRATIONS.map(digest)));
+    }
   });
 
   const first = { at: "2026-11-04T00:00:00.000Z", commit: "abc123" };
@@ -121,5 +131,60 @@ describe("append-only migrations", () => {
   it("digests a migration as the code evaluates it", () => {
     expect(digest(["A", "B"])).not.toBe(digest(["AB"]));
     expect(digest(MIGRATIONS[0]!)).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+/**
+ * Each place a `REPLACE` could meet an exported table (review L5-2): SQLite's REPLACE
+ * conflict resolution deletes the row it replaces with no delete trigger (recursive triggers
+ * are off), so the change log would miss that row's `gone` and a replay would bring it back.
+ * A statement in a source (`INSERT OR REPLACE INTO`, `REPLACE INTO`, `UPDATE OR REPLACE`),
+ * its string pieces joined, or a table whose own constraint resolves `ON CONFLICT REPLACE`.
+ */
+export function replaceProblems(sources: ReadonlyMap<string, string>,
+                                migrations: readonly Migration[],
+                                tables: ReadonlySet<string>): string[] {
+  const problems: string[] = [];
+  const statement = /\b(?:INSERT\s+OR\s+REPLACE\s+INTO|REPLACE\s+INTO|UPDATE\s+OR\s+REPLACE)\s+([A-Za-z_]+)/gi;
+  for (const [path, source] of sources) {
+    const joined = source.replace(/["'`]\s*\+\s*["'`]/g, "");
+    for (const found of joined.matchAll(statement)) {
+      if (tables.has(found[1]!)) {
+        problems.push(`${path}: a REPLACE against the exported ${found[1]}`);
+      }
+    }
+  }
+  for (const sql of migrations.flat()) {
+    const table = /^\s*CREATE\s+TABLE\s+([A-Za-z_]+)/i.exec(sql)?.[1];
+    if (table !== undefined && tables.has(table) && /ON\s+CONFLICT\s+REPLACE/i.test(sql)) {
+      problems.push(`the exported ${table} resolves a conflict by REPLACE`);
+    }
+    for (const found of sql.matchAll(statement)) {
+      if (tables.has(found[1]!)) {
+        problems.push(`a migration REPLACEs into the exported ${found[1]}`);
+      }
+    }
+  }
+  return problems;
+}
+
+describe("no REPLACE against an exported table (review L5-2)", () => {
+  const tables = new Set(Object.keys(exported()));
+
+  it("holds for every source and migration", () => {
+    expect(replaceProblems(workerSources(), MIGRATIONS, tables)).toEqual([]);
+  });
+
+  it("sees each way one would come", () => {
+    const at = (source: string) => replaceProblems(new Map([["x.ts", source]]), [], tables);
+    expect(at('sql.exec("INSERT OR REPLACE INTO file_entries (parent) VALUES (?)")')).toHaveLength(1);
+    expect(at('sql.exec("REPLACE INTO runs (seq) VALUES (1)")')).toHaveLength(1);
+    expect(at('sql.exec("UPDATE OR REPLACE outside_clients SET name = ?")')).toHaveLength(1);
+    expect(at('sql.exec("INSERT OR " +\n  "REPLACE INTO connections (id) VALUES (?)")')).toHaveLength(1);
+    expect(replaceProblems(new Map(), [["CREATE TABLE owner_notices (seq INTEGER PRIMARY KEY " +
+      "ON CONFLICT REPLACE)"]], tables)).toHaveLength(1);
+    // A table not exported may: the applied migrations' digests are the start's own check.
+    expect(at('sql.exec("INSERT OR REPLACE INTO schema_digests (version) VALUES (?)")'))
+      .toEqual([]);
   });
 });

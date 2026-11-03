@@ -29,16 +29,18 @@ import type { OwnerStorage } from "./gate";
  * that share). The room is there so a generation's held changes survive an R2 outage; it
  * binds only while R2 refuses puts, or when one unit changes more than it.
  */
-export const LOG_BYTES = 48 * 1024 * 1024;
+export const LOG_BYTES = 68 * 1024 * 1024;
 /** A log row's own bytes past its line, as the log counts it: its seq and record. */
 export const LOG_ROW_BYTES = 64;
 /**
- * The widest row image the log takes, well under a SQLite row's 2 MB: every exported table's
- * widest row fits it but a connection's models list near its ceiling (the owner-bound guard
- * measures them); a wider one is logged as `LOG_WIDE`, which fails the generation, never the
- * write.
+ * The widest row image the log takes, under a Durable Object row's 2 MB: derived from the
+ * widest real row (review L5-1), every exported table's at its ceiling escaped at JSON's
+ * worst, a connection's models list at its 640 KiB among them, rounded up to a quarter MiB
+ * (the owner-bound guard holds it equal). So no change, a token refresh's included, ever
+ * writes `LOG_WIDE`; that mark stays the backstop should a later column outgrow it before
+ * the guard catches it, failing the generation, never the write.
  */
-export const IMAGE_MAX = 1024 * 1024;
+export const IMAGE_MAX = 1536 * 1024;
 /** What the log holds in place of an image past `IMAGE_MAX`. */
 export const LOG_WIDE = '{"t":"wide"}';
 /** What one log line adds to a segment past its stored text: its seq. */

@@ -101,6 +101,8 @@ export interface Harness {
   readonly failAt?: { readonly call: number; readonly when: "before" | "after" };
   /** Begin it and stop, a pass with no time to carry it on, for an export to join. */
   readonly onePass?: boolean;
+  /** The schema version the lane runs under (the code's, unless a migration is played). */
+  readonly schema?: number;
 }
 
 /**
@@ -158,7 +160,7 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
     const notices: string[] = [];
     const lane = () => new Backups({
       storage: gate.storage, write: quiet, store, log, space: () => files.space(),
-      owner: () => "owner", serves: () => true, schema: MIGRATIONS.length,
+      owner: () => "owner", serves: () => true, schema: harness.schema ?? MIGRATIONS.length,
       halted: () => false, notice: (type) => notices.push(type),
     });
     // The one under way, or a new one, begun now (its owner changed since the last).
@@ -166,12 +168,19 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
           .toArray().length === 0) {
       await gate.write(() => gate.storage.sql.exec("UPDATE owner_backup_state SET changed = 1"));
     }
-    const gen = await gate.quiet(() => lane().forExport(Date.now() / 1000));
+    let gen = await gate.quiet(() => lane().forExport(Date.now() / 1000));
     for (let pass = 0; pass < 40; pass++) {
       await lane().run(Date.now() / 1000, harness.onePass === true ? Date.now()
         : Date.now() + 60_000);
       const row = state.storage.sql.exec<{ state: string }>(
         "SELECT state FROM owner_backups WHERE gen = ?", gen).toArray()[0];
+      // One given up for a migration is followed by a fresh one: it is carried on instead.
+      const fresh = row !== undefined ? undefined : state.storage.sql.exec<{ gen: string }>(
+        "SELECT gen FROM owner_backups ORDER BY started_at DESC LIMIT 1").toArray()[0];
+      if (fresh !== undefined && notices.length > 0) {
+        gen = fresh.gen;
+        continue;
+      }
       if (harness.onePass === true || row === undefined || row.state === "done") {
         break;
       }

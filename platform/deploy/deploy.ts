@@ -46,7 +46,11 @@
  *   secret, so the kit cannot check that a rotated keyring keeps the deployed key;
  * - the control record is written only when the API answered that it is absent;
  * - the WorkOS redirect URI is registered only when WorkOS's listing lacks it (GET, then
- *   POST; never a delete).
+ *   POST; never a delete);
+ * - the owner Worker is deployed only when the migration lock (`owner/migrations.json`)
+ *   marks the first deploy and pins every migration the code ships, in order
+ *   (`lockRefusal`): pin with `PIN_MIGRATIONS=<commit>` (`owner/guards/migrations.test.ts`)
+ *   and commit the lock with the code first, so a deployed migration is never edited.
  *
  * Before anything is changed it checks, live: the owner issuer's discovery names
  * `OWNER_ISSUER` exactly and declares its token endpoint auth methods, and one real
@@ -161,6 +165,52 @@ function wrangler(args: string[], stdin?: string): string {
                     `${result.stderr.trim()}`);
   }
   return result.stdout;
+}
+
+/**
+ * Why the owner Worker may not deploy under `lock` (the migration lock as
+ * `owner/migrations.json` holds it) with the code's migrations' `digests`, or null: the
+ * first deploy is marked, and the lock pins exactly the code's migrations, element for
+ * element (tasks "Append-only migrations from the first deploy").
+ */
+export function lockRefusal(lock: unknown, digests: readonly string[]): string | null {
+  const pin = "pin them with PIN_MIGRATIONS=<commit> npx vitest run --project guards " +
+    "guards/migrations.test.ts in platform/owner, and commit the lock with the code";
+  const held = lock as { first_deploy?: unknown; deployed?: unknown } | null;
+  if (typeof held !== "object" || held === null || !Array.isArray(held.deployed)
+      || !("first_deploy" in held)) {
+    return "owner/migrations.json is out of shape";
+  }
+  if (held.first_deploy === null) {
+    return `the migration lock marks no first deploy: ${pin}`;
+  }
+  if (held.deployed.length !== digests.length
+      || held.deployed.some((digest, index) => digest !== digests[index])) {
+    return `the migration lock pins ${held.deployed.length} migrations and the code ships ` +
+      `${digests.length}, or one differs: ${pin}`;
+  }
+  return null;
+}
+
+/** The code's migrations' digests, as the owner's guards project evaluates its schema. */
+export function codeDigests(): string[] {
+  const dir = mkdtempSync(join(tmpdir(), "ta-migrations-"));
+  const out = join(dir, "digests.json");
+  try {
+    const vitest = join(dirname(require.resolve("vitest/package.json")), "vitest.mjs");
+    const result = spawnSync(process.execPath, [vitest, "run", "--project", "guards",
+                                                "guards/migrations.test.ts"], {
+      cwd: join(PLATFORM, "owner"), encoding: "utf8",
+      env: { ...process.env, MIGRATION_DIGESTS: out, PIN_MIGRATIONS: "" },
+    });
+    if (result.status !== 0) {
+      throw new Error(`the migration lock's guard failed (exit ${result.status}): ` +
+                      `${result.stdout.slice(-2000)}`);
+    }
+    return JSON.parse(readFileSync(out, "utf8")) as string[];
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /** Cloudflare's API answer: its status and its parsed body, or a throw on no answer. */
@@ -674,6 +724,15 @@ async function main(): Promise<void> {
       keyring(input(name), name);
     }
   }
+  // The migration lock, before anything is changed: the owner Worker never deploys a
+  // migration the lock does not pin.
+  const refused = lockRefusal(JSON.parse(readFileSync(join(PLATFORM, "owner",
+                                                           "migrations.json"), "utf8")),
+                              codeDigests());
+  if (refused !== null) {
+    throw new Error(refused);
+  }
+  plan.push("the migration lock pins every migration the owner Worker ships");
   const account = input("CLOUDFLARE_ACCOUNT_ID")!;
   const api = cfApi(input("CLOUDFLARE_API_TOKEN")!);
   // The live checks, before anything is changed.
