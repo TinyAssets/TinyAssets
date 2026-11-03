@@ -35,14 +35,14 @@
  *   `enable_request_signal`, so a sandbox client that leaves before the answer aborts the
  *   egress door's request and its settle comes at once.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { PLATFORM } from "../../owner/guards/sources";
+import { configFiles, PLATFORM } from "../../owner/guards/sources";
 
 const DOORS = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = "wrangler.jsonc";
@@ -54,6 +54,9 @@ const KEYS: ReadonlySet<string> = new Set([
   "preview_urls", "vars", "durable_objects", "services", "kv_namespaces", "secrets",
   "queues", "assets",
 ]);
+/** The owner app's files, served only through the Worker (`src/pages.ts`). */
+const ASSETS = Object.freeze({ directory: "./app", binding: "ASSETS", run_worker_first: true,
+                               html_handling: "none", not_found_handling: "none" });
 /**
  * The doors' one queue: the consumer of the sandbox line's ring queue (slice S,
  * `src/ring.ts`), which turns `{owner}` into that owner's `sandboxRung` and nothing else.
@@ -61,9 +64,6 @@ const KEYS: ReadonlySet<string> = new Set([
  */
 const QUEUES = Object.freeze({ consumers: Object.freeze([
   Object.freeze({ queue: "tinyassets-sandbox-ring" })]) });
-/** The owner app's files, served only through the Worker (`src/pages.ts`). */
-const ASSETS = Object.freeze({ directory: "./app", binding: "ASSETS", run_worker_first: true,
-                               html_handling: "none", not_found_handling: "none" });
 /** The doors' one secret, the sandbox tokens' routing key (`routing-mac.ts`), and the owner's. */
 const SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY"]) });
 /** The doors' two services: the gateway's connect and egress entrypoints, and what each serves. */
@@ -93,12 +93,7 @@ function parseConfig(text: string): Config {
  * state, which a local run leaves), by path from `root`.
  */
 function wranglerConfigs(root: string): string[] {
-  return readdirSync(root, { recursive: true, encoding: "utf8" })
-    .map((path) => path.split("\\").join("/"))
-    .filter((path) => !path.split("/").includes("node_modules")
-                      && !path.split("/").includes(".wrangler")
-                      && /^wrangler\./i.test(path.split("/").at(-1) ?? ""))
-    .sort();
+  return configFiles(root);
 }
 
 /** Every Worker config in the platform, by its Worker's name. */

@@ -7,6 +7,33 @@ import ts from "typescript";
 /** The platform workspace root (`platform/`). */
 export const PLATFORM = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+/** Directories no config guard looks in: dependencies, and wrangler's own local state. */
+const UNWALKED: ReadonlySet<string> = new Set(["node_modules", ".wrangler"]);
+
+/**
+ * Every `wrangler.*` file under `root`, by path from `root`, sorted. The walk never enters
+ * `node_modules` or `.wrangler`: listing them whole and filtering after (28,000 entries under
+ * `platform/` once installed) was most of each config guard's time, enough to pass a test's
+ * 5 s bound on a loaded CI runner.
+ */
+export function configFiles(root: string): string[] {
+  const found: string[] = [];
+  const walk = (dir: string, at: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = at === "" ? entry.name : `${at}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (!UNWALKED.has(entry.name)) {
+          walk(join(dir, entry.name), path);
+        }
+      } else if (/^wrangler\./i.test(entry.name)) {
+        found.push(path);
+      }
+    }
+  };
+  walk(root, "");
+  return found.sort();
+}
+
 /** Every extension a Worker's bundler would take as script, and how to parse it. */
 const KINDS: Readonly<Record<string, ts.ScriptKind>> = Object.freeze({
   ".ts": ts.ScriptKind.TS, ".mts": ts.ScriptKind.TS, ".cts": ts.ScriptKind.TS,
