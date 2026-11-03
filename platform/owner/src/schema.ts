@@ -8,14 +8,14 @@
  * loudly: code older than its data never runs against it.
  *
  * A migration is append-only. Once deployed it never changes; a new shape is a new
- * entry at the end. Nothing is deployed yet, so every migration is still edited in place:
- * ADR-034's deletion slice rewrote the ones pi's loop had added (its threads, turns and
- * scheduled work) out of the list.
+ * entry at the end, held by `migrations.json` and the migrations guard from the first
+ * deploy on. Before it, the one baseline (squashed in slice P from fifteen migrations
+ * that had been edited in place) may still be edited in place.
  *
  * Where a body lives is the placement rule (ADR-035): a collection row's, a history entry's
  * or a message's body of more than `PLACE_BYTES` UTF-8 bytes is never in its row. It is
  * content of the files plane, in R2, which the row names by its `content_id`; the `CHECK`s
- * hold every inline body within `PLACE_BYTES`, and the triggers of migration 14 count each
+ * hold every inline body within `PLACE_BYTES`, and the triggers of part 14 count each
  * reference on the content, so the files plane's quota, garbage collection and erasure
  * cover the placed bytes.
  */
@@ -263,9 +263,15 @@ export const CALLS_OPEN = 1000;
  * source's first call in a period is refused (`model_spend_full`).
  */
 export const SPEND_KEPT = 4300;
+/**
+ * The owner's migrations: one baseline (squashed before the first deploy, slice P), every
+ * table, index, trigger and seed row the owner's object starts with, its parts in the order
+ * they were written, numbered as the sources cite them ("part 12"). A change from the first
+ * deploy on is a new migration after it (`migrations.json`, the migrations guard).
+ */
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
-  // 1: the owner this object serves, and the one revision primitive (S34, ADR-032).
   Object.freeze([
+    // Part 1: the owner this object serves, and the one revision primitive (S34, ADR-032).
     "CREATE TABLE object_owner (only INTEGER PRIMARY KEY CHECK (only = 1), owner TEXT NOT NULL)",
     "CREATE TABLE collection_rows (" +
       "collection TEXT NOT NULL, row_id TEXT NOT NULL, revision INTEGER NOT NULL, " +
@@ -357,13 +363,11 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // A digest reads only what changed past its cursor.
     "CREATE INDEX collection_changes ON collection_rows (change)",
     "CREATE INDEX collection_erasures ON collection_history (change) WHERE change IS NOT NULL",
-  ]),
-  // 2: the message ledger (S30, S3a, S3b), its bodies, and the W3 wake limits (ledger.ts).
-  // The object is its owner, so no row carries an owner column. Every bound the ledger
-  // keeps is a counter that only the triggers below write, inside the statement that
-  // changes the rows it counts, and every query a door or a lane runs has an index, so
-  // nothing scans the whole store.
-  Object.freeze([
+    // Part 2: the message ledger (S30, S3a, S3b), its bodies, and the W3 wake limits (ledger.ts).
+    // The object is its owner, so no row carries an owner column. Every bound the ledger
+    // keeps is a counter that only the triggers below write, inside the statement that
+    // changes the rows it counts, and every query a door or a lane runs has an index, so
+    // nothing scans the whole store.
     "CREATE TABLE outside_agents (" +
       "agent_id TEXT PRIMARY KEY, command_center_id TEXT NOT NULL, " +
       "outside_client TEXT NOT NULL, outside_family TEXT NOT NULL, " +
@@ -581,11 +585,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER ledger_wakes_removed AFTER DELETE ON ledger_wakes " +
       "WHEN OLD.settled_at IS NOT NULL BEGIN " +
       "UPDATE ledger_usage SET settled_wakes = settled_wakes - 1; END",
-  ]),
-  // 3: owner policy, outside-client grants and the owner's protected sessions (N10,
-  // P0-3; tasks 3.5): policy.ts, grants.ts, sessions.ts. Each bound reads `policy_usage`,
-  // which only the triggers below write, and every query has an index.
-  Object.freeze([
+    // Part 3: owner policy, outside-client grants and the owner's protected sessions (N10,
+    // P0-3; tasks 3.5): policy.ts, grants.ts, sessions.ts. Each bound reads `policy_usage`,
+    // which only the triggers below write, and every query has an index.
     // A session row holds the hash of the cookie the object minted, never the cookie.
     "CREATE TABLE owner_sessions (" +
       "session_hash TEXT PRIMARY KEY CHECK (length(session_hash) = 64), " +
@@ -594,8 +596,11 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // The owner's one policy document, its digest, and a generation every change bumps.
     "CREATE TABLE owner_policy (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "generation INTEGER NOT NULL CHECK (generation >= 1), digest TEXT NOT NULL, " +
-      "document TEXT NOT NULL)",
-    `INSERT INTO owner_policy VALUES (1, 1, '${DEFAULT_POLICY_DIGEST}', '${DEFAULT_POLICY_JSON}')`,
+      "document TEXT NOT NULL, " +
+      // The egress generation (part 11), moved only by a write that changes the egress table.
+      "egress_generation INTEGER NOT NULL DEFAULT 1 CHECK (egress_generation >= 1))",
+    `INSERT INTO owner_policy VALUES (1, 1, '${DEFAULT_POLICY_DIGEST}', '${DEFAULT_POLICY_JSON}', ` +
+      "1)",
     // Append-only. Each bucket is kept and listed apart, so neither an agent's proposals
     // nor a stranger's refusals can push the owner's own changes out.
     "CREATE TABLE policy_receipts (seq INTEGER PRIMARY KEY AUTOINCREMENT, " +
@@ -644,6 +649,11 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "held INTEGER NOT NULL DEFAULT 0 CHECK (held >= 0), " +
       // The tool profile it is served (slice M, `doors/profiles.json`).
       "profile TEXT NOT NULL DEFAULT 'custom' CHECK (profile IN ('directory', 'custom')), " +
+      // A grant's revision apart from its authority (part 9): the owner's concurrency token,
+      // moved by every set and revoke and named by the owner's set; `generation` moves only
+      // when the grant's mode or scopes do, and is what every stamp is checked against, so a
+      // rename keeps the client's stamps. A free row is never set, so it stays at 1.
+      "revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1), " +
       "CHECK (owner_set = 1 OR (source = 'mcp' AND mode = 'full' AND generation = 1 " +
       "AND revoked_at IS NULL AND scopes = '[]' AND name = '' AND profile = 'custom')))",
     "CREATE INDEX outside_clients_listed ON outside_clients (first_seen, client)",
@@ -738,37 +748,35 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "UPDATE policy_usage SET owner_receipts = owner_receipts - (OLD.bucket = 'owner'), " +
       "agent_receipts = agent_receipts - (OLD.bucket = 'agent'), " +
       "refusal_receipts = refusal_receipts - (OLD.bucket = 'refusal'); END",
-  ]),
-  // 4: owner files (plan §6; files.ts): the manifest of paths, versions and history,
-  // which chunks make which content, chunk reference counts, upload intents, quotas, the
-  // change feed and the sync lease. The bytes are chunks in the files Worker's bucket.
+    // Part 4: owner files (plan §6; files.ts): the manifest of paths, versions and history,
+    // which chunks make which content, chunk reference counts, upload intents, quotas, the
+    // change feed and the sync lease. The bytes are chunks in the files Worker's bucket.
   //
-  // Every index and trigger write is a billed row written, so there are only the ones a
-  // query or a bound needs. Tables keyed by text are WITHOUT ROWID (the key is the table,
-  // no second index), and an entry is keyed by (parent, name), which serves a lookup, a
-  // directory listing and a subtree's range alike. Measured (`rowsWritten`, triggers and
-  // indexes included, under the default retention): a new small file writes 10 rows, and
-  // its overwrite 10 while the path keeps fewer than `keep_versions`, 12 until it keeps
-  // `keep_recent`, then 17 in the steady state (each change also moves a row between the
-  // retention bands and drops the oldest); a new one-chunk file 22, its overwrite 22, 24,
-  // then 35. A delete also releases the path's kept rows, two or three rows written for
-  // each: 13 for a path of one version, 72 for one of 20 (78 chunked); a path made again
-  // takes them back, so its first write is 44 rows after a gone path of 20 (62 chunked).
-  // An entry's own content reference costs a row or two of each figure: the new content's
-  // reference, and on an overwrite the old one's release.
+    // Every index and trigger write is a billed row written, so there are only the ones a
+    // query or a bound needs. Tables keyed by text are WITHOUT ROWID (the key is the table,
+    // no second index), and an entry is keyed by (parent, name), which serves a lookup, a
+    // directory listing and a subtree's range alike. Measured (`rowsWritten`, triggers and
+    // indexes included, under the default retention): a new small file writes 10 rows, and
+    // its overwrite 10 while the path keeps fewer than `keep_versions`, 12 until it keeps
+    // `keep_recent`, then 17 in the steady state (each change also moves a row between the
+    // retention bands and drops the oldest); a new one-chunk file 22, its overwrite 22, 24,
+    // then 35. A delete also releases the path's kept rows, two or three rows written for
+    // each: 13 for a path of one version, 72 for one of 20 (78 chunked); a path made again
+    // takes them back, so its first write is 44 rows after a gone path of 20 (62 chunked).
+    // An entry's own content reference costs a row or two of each figure: the new content's
+    // reference, and on an overwrite the old one's release.
   //
-  // Counters only triggers write: `file_space`'s entries, history rows, chunk bytes
-  // (chunks uploading or live), inline bytes, open intents and the chunks they hold,
-  // which the bounds read; a content's `refs` (every entry and every kept history row
-  // that names it, in any root: one model, so no path, history or none, can drop
-  // content an entry still names) and a chunk's `refs` (contents made of it). A content
-  // nothing refers to goes, with its chunk list; a chunk no content refers to and no
-  // upload holds becomes garbage, deleted by housekeeping after `GC_GRACE_S` (24 h,
-  // SQLite's clock: the schedule compares it with the object's, and a day's grace does
-  // not mind which). So content any entry or kept row names is never garbage. A history
-  // row never changes but for its prune time, its `released` mark and a redaction of
-  // its content.
-  Object.freeze([
+    // Counters only triggers write: `file_space`'s entries, history rows, chunk bytes
+    // (chunks uploading or live), inline bytes, open intents and the chunks they hold,
+    // which the bounds read; a content's `refs` (every entry and every kept history row
+    // that names it, in any root: one model, so no path, history or none, can drop
+    // content an entry still names) and a chunk's `refs` (contents made of it). A content
+    // nothing refers to goes, with its chunk list; a chunk no content refers to and no
+    // upload holds becomes garbage, deleted by housekeeping after `GC_GRACE_S` (24 h,
+    // SQLite's clock: the schedule compares it with the object's, and a day's grace does
+    // not mind which). So content any entry or kept row names is never garbage. A history
+    // row never changes but for its prune time, its `released` mark and a redaction of
+    // its content.
     "CREATE TABLE file_space (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       // The owner's chunk namespace, made on first use (files.ts `ns`), and its data key,
       // wrapped: only the files Worker's keyring opens it (`files/src/datakey.ts`).
@@ -788,10 +796,15 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       // The retention every kept row is marked by, and how far housekeeping has re-marked
       // the rows for a newer one.
       "retained_keep INTEGER NOT NULL, retained_recent INTEGER NOT NULL, " +
-      "retained_days INTEGER NOT NULL, retain_cursor TEXT)",
+      "retained_days INTEGER NOT NULL, retain_cursor TEXT, " +
+      // Everything the manifest takes in the object as SQLite stores it (part 7), and the
+      // inline bodies of collection rows, their history and mail (part 15).
+      "manifest_bytes INTEGER NOT NULL DEFAULT 0 CHECK (manifest_bytes >= 0), " +
+      "body_bytes INTEGER NOT NULL DEFAULT 0 CHECK (body_bytes >= 0))",
+    // The manifest starts charged its two share rows (part 7).
     `INSERT INTO file_space VALUES (1, NULL, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, ${
       FILE_DEFAULTS.keep_versions}, ${FILE_DEFAULTS.keep_recent}, ${
-      FILE_DEFAULTS.retention_days}, NULL)`,
+      FILE_DEFAULTS.retention_days}, NULL, ${2 * SHARE_BYTES}, 0)`,
     "CREATE TRIGGER file_epoch_rises BEFORE UPDATE OF epoch ON file_space " +
       "WHEN NEW.epoch < OLD.epoch BEGIN SELECT RAISE(ABORT, 'the lease epoch only rises'); END",
     "CREATE TRIGGER file_seq_rises BEFORE UPDATE OF seq ON file_space " +
@@ -819,12 +832,17 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "stored INTEGER NOT NULL CHECK (stored IN (0, 1)), " +
       "refs INTEGER NOT NULL DEFAULT 0 CHECK (refs >= 0), " +
       "holds INTEGER NOT NULL DEFAULT 0 CHECK (holds >= 0), gc_after REAL, " +
+      // The scope that let it go last, which holds its garbage (part 7).
+      `holder TEXT NOT NULL DEFAULT '${OWNER_SCOPE}', ` +
       "CHECK ((gc_after IS NOT NULL) = (state IN ('garbage', 'deleting'))), " +
       "CHECK (state != 'live' OR stored = 1)) WITHOUT ROWID",
     "CREATE INDEX file_chunks_due ON file_chunks (gc_after) WHERE gc_after IS NOT NULL",
     // An upload of one file: its size and its chunks in order (64 hex each, repeats kept).
     "CREATE TABLE file_intents (intent_id TEXT PRIMARY KEY, size INTEGER NOT NULL, " +
-      "chunks TEXT NOT NULL CHECK (length(chunks) % 64 = 0), expires_at REAL NOT NULL) " +
+      "chunks TEXT NOT NULL CHECK (length(chunks) % 64 = 0), expires_at REAL NOT NULL, " +
+      "writer TEXT NOT NULL DEFAULT 'system', " +
+      // The chunks the upload's writer has still to send: its proof of holding their bytes.
+      "pending TEXT NOT NULL DEFAULT '' CHECK (length(pending) % 64 = 0)) " +
       "WITHOUT ROWID",
     "CREATE INDEX file_intents_due ON file_intents (expires_at)",
     "CREATE TRIGGER file_intents_added AFTER INSERT ON file_intents BEGIN " +
@@ -846,48 +864,21 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE INDEX file_history_paths ON file_history (path, version)",
     "CREATE INDEX file_history_due ON file_history (prune_after) WHERE prune_after IS NOT NULL",
     "CREATE INDEX file_history_released ON file_history (prune_after) WHERE released = 1",
-    "CREATE TABLE file_temps (name TEXT PRIMARY KEY, expires_at REAL NOT NULL) WITHOUT ROWID",
+    "CREATE TABLE file_temps (name TEXT PRIMARY KEY, expires_at REAL NOT NULL, " +
+      "writer TEXT NOT NULL DEFAULT 'system') WITHOUT ROWID",
     "CREATE INDEX file_temps_due ON file_temps (expires_at)",
-    // Every entry holds its own content, in every root, whatever history keeps.
-    "CREATE TRIGGER file_entries_added AFTER INSERT ON file_entries BEGIN " +
-      "UPDATE file_space SET entries = entries + 1; " +
-      "UPDATE file_contents SET refs = refs + 1 WHERE content_id = NEW.content_id; END",
-    "CREATE TRIGGER file_entries_removed AFTER DELETE ON file_entries BEGIN " +
-      "UPDATE file_space SET entries = entries - 1; " +
-      "UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
-    "CREATE TRIGGER file_entries_changed AFTER UPDATE OF content_id ON file_entries " +
-      "WHEN NEW.content_id IS NOT OLD.content_id BEGIN " +
-      "UPDATE file_contents SET refs = refs + 1 WHERE content_id = NEW.content_id; " +
-      "UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
-    "CREATE TRIGGER file_history_added AFTER INSERT ON file_history BEGIN " +
-      "UPDATE file_space SET history = history + 1; " +
-      "UPDATE file_contents SET refs = refs + 1 WHERE content_id = NEW.content_id; END",
-    "CREATE TRIGGER file_history_removed AFTER DELETE ON file_history BEGIN " +
-      "UPDATE file_space SET history = history - 1; " +
-      "UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
     "CREATE TRIGGER file_history_kept BEFORE UPDATE OF version, path, op, kind, size, mode, " +
       "writer, at ON file_history BEGIN " +
       "SELECT RAISE(ABORT, 'a file history row is never changed'); END",
     "CREATE TRIGGER file_history_redacted BEFORE UPDATE OF content_id ON file_history " +
       "WHEN NEW.content_id IS NOT NULL BEGIN " +
       "SELECT RAISE(ABORT, 'a file history row is never changed'); END",
-    "CREATE TRIGGER file_history_released AFTER UPDATE OF content_id ON file_history BEGIN " +
-      "UPDATE file_contents SET refs = refs - 1 WHERE content_id = OLD.content_id; END",
-    "CREATE TRIGGER file_contents_added AFTER INSERT ON file_contents BEGIN " +
-      "UPDATE file_space SET inline_bytes = inline_bytes + coalesce(length(NEW.inline), 0); END",
     "CREATE TRIGGER file_contents_unreferenced AFTER UPDATE OF refs ON file_contents " +
       "WHEN NEW.refs = 0 BEGIN DELETE FROM file_contents WHERE content_id = NEW.content_id; END",
-    "CREATE TRIGGER file_contents_removed AFTER DELETE ON file_contents BEGIN " +
-      "UPDATE file_space SET inline_bytes = inline_bytes - coalesce(length(OLD.inline), 0); " +
-      "DELETE FROM file_content_chunks WHERE content_id = OLD.content_id; END",
     "CREATE TRIGGER file_content_chunks_added AFTER INSERT ON file_content_chunks BEGIN " +
       "UPDATE file_chunks SET refs = refs + 1 WHERE sha256 = NEW.sha256; END",
     "CREATE TRIGGER file_content_chunks_removed AFTER DELETE ON file_content_chunks BEGIN " +
       "UPDATE file_chunks SET refs = refs - 1 WHERE sha256 = OLD.sha256; END",
-    `CREATE TRIGGER file_chunks_added AFTER INSERT ON file_chunks BEGIN UPDATE file_space SET ${
-      CHUNK_USAGE("+", "NEW")} END`,
-    `CREATE TRIGGER file_chunks_removed AFTER DELETE ON file_chunks BEGIN UPDATE file_space SET ${
-      CHUNK_USAGE("-", "OLD")} END`,
     "CREATE TRIGGER file_chunks_moved AFTER UPDATE OF state ON file_chunks " +
       `WHEN (OLD.state IN ${COUNTED}) != (NEW.state IN ${COUNTED}) BEGIN ` +
       `UPDATE file_space SET ${CHUNK_USAGE("+", "NEW")} UPDATE file_space SET ${
@@ -896,24 +887,20 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "WHEN NEW.refs = 0 AND NEW.holds = 0 AND NEW.state IN ('uploading', 'live') BEGIN " +
       "UPDATE file_chunks SET state = 'garbage', " +
       `gc_after = unixepoch('subsec') + ${GC_GRACE_S} WHERE sha256 = NEW.sha256; END`,
-  ]),
-  // 5: owner notices (notices.ts): what the owner's work reports that no call fails with
-  // (a connection's setup check or provider revoke that failed), the newest kept.
-  Object.freeze([
+    // Part 5: owner notices (notices.ts): what the owner's work reports that no call fails with
+    // (a connection's setup check or provider revoke that failed), the newest kept.
     "CREATE TABLE owner_notices (seq INTEGER PRIMARY KEY AUTOINCREMENT, at REAL NOT NULL, " +
       "type TEXT NOT NULL CHECK (length(type) BETWEEN 1 AND 64), " +
       "detail TEXT NOT NULL CHECK (length(detail) <= 1024))",
-  ]),
-  // 6: model connections and their use (gateway research §4, §7; connections.ts,
-  // usage.ts). A connection's credential is a blob sealed by the gateway, which alone
-  // holds the key: the object never holds a plaintext secret. Times are the object's
-  // clock in seconds, but an OAuth access expiry and the refresh lease, which are epoch
-  // ms as the gateway gives them. A reservation's amount is held against the owner's
-  // ceilings by a counter only the triggers below write, so no ceiling ever reads a
-  // receipt: `model_spend`, each source's day and month. What is reserved or unknown holds
-  // its estimate, what settled holds what it used, and what was never sent or was refused
-  // holds nothing. Receipts are history only, pruned without touching a counter.
-  Object.freeze([
+    // Part 6: model connections and their use (gateway research §4, §7; connections.ts,
+    // usage.ts). A connection's credential is a blob sealed by the gateway, which alone
+    // holds the key: the object never holds a plaintext secret. Times are the object's
+    // clock in seconds, but an OAuth access expiry and the refresh lease, which are epoch
+    // ms as the gateway gives them. A reservation's amount is held against the owner's
+    // ceilings by a counter only the triggers below write, so no ceiling ever reads a
+    // receipt: `model_spend`, each source's day and month. What is reserved or unknown holds
+    // its estimate, what settled holds what it used, and what was never sent or was refused
+    // holds nothing. Receipts are history only, pruned without touching a counter.
     "CREATE TABLE connections (id TEXT PRIMARY KEY CHECK (length(id) = 25), " +
       "source TEXT NOT NULL CHECK (length(source) BETWEEN 1 AND 64), " +
       "kind TEXT NOT NULL CHECK (kind IN ('api_key', 'oauth2')), " +
@@ -925,6 +912,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "lease_id TEXT, lease_until INTEGER, created_at REAL NOT NULL, pending_until REAL, " +
       "revoked_at REAL, revoke_due REAL, revoke_tries INTEGER NOT NULL DEFAULT 0, " +
       "revocable INTEGER NOT NULL CHECK (revocable IN (0, 1)), " +
+      // Where its credential may be forwarded (part 11): its sealed base URL, endpoints and
+      // pi-ai's metered call, no secret.
+      "egress TEXT CHECK (egress IS NULL OR length(egress) <= 16384), " +
       "CHECK ((status = 'pending') = (pending_until IS NOT NULL)), " +
       "CHECK (revoke_due IS NULL OR status IN ('revoked', 'error'))) WITHOUT ROWID",
     "CREATE INDEX connections_pending ON connections (pending_until) " +
@@ -968,37 +958,23 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "model, est_tokens, est_cost, policy_generation, day, month, created_at " +
       "ON model_reservations BEGIN SELECT RAISE(ABORT, 'a reservation never changes " +
       "what it reserved'); END",
-  ]),
-  // 7: the files byte quota and each outside client's share of it (files.ts, manifest.ts),
-  // and the bounds on the model reservations (usage.ts). Every manifest row is charged what
-  // SQLite stores it in, path bytes and overflow pages included, by triggers only, as the
-  // other counters are: once to `file_space`'s `manifest_bytes`, the object's real storage;
-  // and to each scope its writer counts in (`file_shares`: an outside client's own,
-  // `client:<id>`, all clients' together, `*`, and the owner's own writers', `owner`). A
-  // scope is charged its own entries, history rows and temporary directories, and once for
-  // each content and chunk its own rows (or its open uploads) reference, counted in
-  // `file_scope_contents` and `file_scope_chunks` and charged while the count is above zero,
-  // deduplicated within the scope and never across scopes; a chunk no scope references is
-  // garbage, charged to its `holder`, the scope that let it go last, until it is deleted or
-  // revived. A share row is charged its own bytes, and a client's goes once it holds
-  // nothing else; all clients' and the owner's rows are never dropped. Every reference is
-  // counted before a content or chunk can go, so a credit reads the row it was charged for.
-  // A file row from before this migration (none can be: nothing is deployed) fails it
-  // loudly, its scope unknown.
+    // Part 7: the files byte quota and each outside client's share of it (files.ts, manifest.ts),
+    // and the bounds on the model reservations (usage.ts). Every manifest row is charged what
+    // SQLite stores it in, path bytes and overflow pages included, by triggers only, as the
+    // other counters are: once to `file_space`'s `manifest_bytes`, the object's real storage;
+    // and to each scope its writer counts in (`file_shares`: an outside client's own,
+    // `client:<id>`, all clients' together, `*`, and the owner's own writers', `owner`). A
+    // scope is charged its own entries, history rows and temporary directories, and once for
+    // each content and chunk its own rows (or its open uploads) reference, counted in
+    // `file_scope_contents` and `file_scope_chunks` and charged while the count is above zero,
+    // deduplicated within the scope and never across scopes; a chunk no scope references is
+    // garbage, charged to its `holder`, the scope that let it go last, until it is deleted or
+    // revived. A share row is charged its own bytes, and a client's goes once it holds
+    // nothing else; all clients' and the owner's rows are never dropped. Every reference is
+    // counted before a content or chunk can go, so a credit reads the row it was charged for.
   //
-  // The calls open at once and the spend counters are bounded by count (`CALLS_OPEN`,
-  // `SPEND_KEPT`).
-  Object.freeze([
-    "ALTER TABLE file_space ADD COLUMN manifest_bytes INTEGER NOT NULL DEFAULT 0 " +
-      "CHECK (manifest_bytes >= 0)",
-    "ALTER TABLE file_space ADD COLUMN body_bytes INTEGER NOT NULL DEFAULT 0 " +
-      "CHECK (body_bytes >= 0)",
-    `ALTER TABLE file_chunks ADD COLUMN holder TEXT NOT NULL DEFAULT '${OWNER_SCOPE}'`,
-    "ALTER TABLE file_temps ADD COLUMN writer TEXT NOT NULL DEFAULT 'system'",
-    "ALTER TABLE file_intents ADD COLUMN writer TEXT NOT NULL DEFAULT 'system'",
-    // The chunks the upload's writer has still to send: its proof of holding their bytes.
-    "ALTER TABLE file_intents ADD COLUMN pending TEXT NOT NULL DEFAULT '' " +
-      "CHECK (length(pending) % 64 = 0)",
+    // The calls open at once and the spend counters are bounded by count (`CALLS_OPEN`,
+    // `SPEND_KEPT`).
     `CREATE TABLE file_shares (who TEXT PRIMARY KEY CHECK (who IN ('${CLIENTS}', '${
       OWNER_SCOPE}') OR (length(who) = 71 AND who GLOB '${CLIENT_WRITER}')), ` +
       "entries INTEGER NOT NULL CHECK (entries >= 0), " +
@@ -1013,14 +989,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "refs INTEGER NOT NULL CHECK (refs >= 0), PRIMARY KEY (scope, content_id)) WITHOUT ROWID",
     "CREATE TABLE file_scope_chunks (scope TEXT NOT NULL, sha256 TEXT NOT NULL, " +
       "refs INTEGER NOT NULL CHECK (refs >= 0), PRIMARY KEY (scope, sha256)) WITHOUT ROWID",
-    // Fails the `who` check when any file row is already there.
-    "INSERT INTO file_shares (who, entries, history, chunk_bytes, inline_bytes, " +
-      "manifest_bytes) SELECT 'a file row from before migration 7', 0, 0, 0, 0, 0 " +
-      "WHERE EXISTS (SELECT 1 FROM file_entries) OR EXISTS (SELECT 1 FROM file_history) " +
-      "OR EXISTS (SELECT 1 FROM file_chunks) OR EXISTS (SELECT 1 FROM file_temps)",
     `INSERT INTO file_shares VALUES ('${CLIENTS}', 0, 0, 0, 0, ${SHARE_BYTES}, 0), ('${
       OWNER_SCOPE}', 0, 0, 0, 0, ${SHARE_BYTES}, 0)`,
-    `UPDATE file_space SET manifest_bytes = 2 * ${SHARE_BYTES}`,
     `CREATE TRIGGER file_shares_charged AFTER INSERT ON file_shares WHEN NEW.who NOT IN ('${
       CLIENTS}', '${OWNER_SCOPE}') BEGIN UPDATE file_shares SET manifest_bytes = ` +
       `manifest_bytes + ${SHARE_BYTES} WHERE who IN (NEW.who, '${CLIENTS}'); ` +
@@ -1079,16 +1049,6 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
           manifest_bytes: `${SCOPE_REF_BYTES("OLD")} + ${CHUNK_ROW_BYTES()}` })} ` +
       `UPDATE file_chunks SET holder = OLD.scope WHERE sha256 = OLD.sha256 AND OLD.scope != '${
         CLIENTS}'; END`,
-    "DROP TRIGGER file_entries_added",
-    "DROP TRIGGER file_entries_removed",
-    "DROP TRIGGER file_entries_changed",
-    "DROP TRIGGER file_history_added",
-    "DROP TRIGGER file_history_removed",
-    "DROP TRIGGER file_history_released",
-    "DROP TRIGGER file_contents_added",
-    "DROP TRIGGER file_contents_removed",
-    "DROP TRIGGER file_chunks_added",
-    "DROP TRIGGER file_chunks_removed",
     // Each scope's references are counted before the content's own, and taken out first.
     "CREATE TRIGGER file_entries_added AFTER INSERT ON file_entries BEGIN " +
       `UPDATE file_space SET entries = entries + 1, manifest_bytes = manifest_bytes + ${
@@ -1186,48 +1146,29 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER model_spend_kept AFTER INSERT ON model_spend " +
       `WHEN (SELECT COUNT(*) FROM model_spend) > ${SPEND_KEPT} BEGIN ` +
       `SELECT RAISE(ABORT, 'model_spend_full: ${SPEND_KEPT} spend counters are kept'); END`,
-  ]),
-  // 8: the owner's erasure (erasure.ts; S4-S5): the owner being erased is one row
-  // (`owner_erasure`, with the step it reached), the mark every door and lane refuses on.
-  Object.freeze([
+    // Part 8: the owner's erasure (erasure.ts; S4-S5): the owner being erased is one row
+    // (`owner_erasure`, with the step it reached), the mark every door and lane refuses on.
     "CREATE TABLE owner_erasure (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "started_at REAL NOT NULL, step INTEGER NOT NULL DEFAULT 1 CHECK (step IN (1, 2)))",
-  ]),
-  // 9: a grant's revision apart from its authority (grants.ts). `revision` is the owner's
-  // concurrency token, moved by every set and revoke and named by the owner's set;
-  // `generation` moves only when the grant's mode or scopes do, and is what every stamp is
-  // checked against, so a rename keeps the client's stamps. A free row is never set, so it
-  // stays at revision 1. Nothing is deployed, so no row is backfilled.
-  Object.freeze([
-    "ALTER TABLE outside_clients ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 " +
-      "CHECK (revision >= 1)",
-  ]),
-  // 10: the owner's admission (tasks 5, F1): `owner_admission` is the owner's one
-  // admission row (`admission.ts`): admitted when the object is first made, suspended for
-  // billing or abuse by the platform, or, as the last step of the owner's erasure, the
-  // erased tombstone, alone in the wiped database.
-  Object.freeze([
+    // Part 10: the owner's admission (tasks 5, F1): `owner_admission` is the owner's one
+    // admission row (`admission.ts`): admitted when the object is first made, suspended for
+    // billing or abuse by the platform, or, as the last step of the owner's erasure, the
+    // erased tombstone, alone in the wiped database.
     ADMISSION_TABLE,
     "INSERT INTO owner_admission (only, state, reasons) VALUES (1, 'admitted', '[]')",
-  ]),
-  // 11: the egress door (tasks 4 G4; egress.ts). The owner's policy row keeps the egress
-  // generation, moved only by a write that changes the egress table (each sandbox lease,
-  // migration 12, keeps the one its network was last applied under).
-  // A connection keeps where its credential may be forwarded (`egress`: its sealed base
-  // URL, endpoints and pi-ai's metered call, no secret), from its setup check. Each sandbox
-  // call the object admits is an open row until the egress door settles it; a refused one
-  // is kept as its receipt. A model call's row carries its own charge (`charge`, held to
-  // settled once, as a model reservation's states), which the triggers alone count: into
-  // `model_spend`, its source's day and month, the counters the model reservations move
-  // too, and (migration 12) into its run's own requests, tokens and cost on its `runs` row.
-  // Each row names the run its path named. The newest `EGRESS_LIMITS.receiptsKept`
-  // admitted and `refusalsKept` refused rows are kept, and at most `EGRESS_LIMITS.open` are
-  // open at once; a path is visible ASCII, as the door sends it.
-  Object.freeze([
-    "ALTER TABLE owner_policy ADD COLUMN egress_generation INTEGER NOT NULL DEFAULT 1 " +
-      "CHECK (egress_generation >= 1)",
-    "ALTER TABLE connections ADD COLUMN egress TEXT CHECK (egress IS NULL OR " +
-      "length(egress) <= 16384)",
+    // Part 11: the egress door (tasks 4 G4; egress.ts). The owner's policy row keeps the egress
+    // generation, moved only by a write that changes the egress table (each sandbox lease,
+    // migration 12, keeps the one its network was last applied under).
+    // A connection keeps where its credential may be forwarded (`egress`: its sealed base
+    // URL, endpoints and pi-ai's metered call, no secret), from its setup check. Each sandbox
+    // call the object admits is an open row until the egress door settles it; a refused one
+    // is kept as its receipt. A model call's row carries its own charge (`charge`, held to
+    // settled once, as a model reservation's states), which the triggers alone count: into
+    // `model_spend`, its source's day and month, the counters the model reservations move
+    // too, and (migration 12) into its run's own requests, tokens and cost on its `runs` row.
+    // Each row names the run its path named. The newest `EGRESS_LIMITS.receiptsKept`
+    // admitted and `refusalsKept` refused rows are kept, and at most `EGRESS_LIMITS.open` are
+    // open at once; a path is visible ASCII, as the door sends it.
     "CREATE TABLE egress_reservations (id TEXT PRIMARY KEY CHECK (length(id) = 32), " +
       "lease_id TEXT CHECK (lease_id IS NULL OR length(lease_id) = 32), epoch INTEGER, " +
       // The run the call came from, as its path named it (`/r/<run>/c/...`).
@@ -1284,35 +1225,33 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER egress_reservations_settled_once BEFORE UPDATE OF charge " +
       "ON egress_reservations WHEN OLD.charge IS NOT NULL AND OLD.charge != 'held' " +
       "BEGIN SELECT RAISE(ABORT, 'a charge is settled once'); END",
-  ]),
-  // 12: runs (ADR-034 decision 4; `runs.ts`). A run is one engine invocation: its row
-  // (`runs`) is its receipt, kept past its settle, the newest `RUNS_KEPT` settled ones, with
-  // its usage counters, which only the egress triggers below move (a call's charge, held to
-  // settled, counts to its run as it counts to its source's day and month). At most
-  // `RUNS_CEILING` are live (`queued` or `running`) at once, the most any tier record may
-  // set; the tier's own number is admission's (`tier.ts`). A live run names the sandbox
-  // lease it runs under and its own last heartbeat (`beat_at`), and holds one run grant
-  // (`run_grants`): its initiator's stamp and origin, its scopes, its own connection (none
-  // on the vendor's own sign-in) and the SHA-256 of its own secret, deleted at its settle or
-  // cancel (its authority ends at once; the runner's end still settles it). The sandbox
-  // leases (`sandbox_leases`): one sandbox an authority, the owner's own work's or one
-  // outside client's, so runs of different authority never share a VM; each lease its
-  // fencing epoch, its expiry (its tokens' too), the SHA-256 of its egress, sync and
-  // runner tokens, and the egress generation its network was last applied under; at most
-  // `RUNS_CEILING`, since a lease is opened only for a live run and a lapsed one goes. A
-  // conversation (`conversations`) keeps its engine and that engine's session id, at most
-  // `CONVERSATIONS_KEPT` (the least recently run one with no live run goes first). The
-  // `runs` lane's rows (`run_schedules`, at most `SCHEDULES_KEPT`): a launch at a time or a
-  // cron recurrence, each with its input. The platform's tier
-  // numbers as the binder last handed them (`platform_tiers`, one row), and the owner app's
-  // socket tickets (`socket_tickets`, at most `SOCKET_TICKETS`, single-use, each kept as
-  // its SHA-256 only). A run that waits for its conversation's live run to settle is a
-  // `waiting` row (not live: it holds no slot, grant or lease), its input kept beside it
-  // (`run_inputs`) until it starts, at most `QUEUE_ROWS` and `QUEUE_BYTES` of input in all.
-  // Each engine's sign-in, as the runner last reported it (`engine_signins`, one row an
-  // engine, at most `ENGINE_SIGNINS`): signed in or not, when, and the models it offers;
-  // never a credential.
-  Object.freeze([
+    // Part 12: runs (ADR-034 decision 4; `runs.ts`). A run is one engine invocation: its row
+    // (`runs`) is its receipt, kept past its settle, the newest `RUNS_KEPT` settled ones, with
+    // its usage counters, which only the egress triggers below move (a call's charge, held to
+    // settled, counts to its run as it counts to its source's day and month). At most
+    // `RUNS_CEILING` are live (`queued` or `running`) at once, the most any tier record may
+    // set; the tier's own number is admission's (`tier.ts`). A live run names the sandbox
+    // lease it runs under and its own last heartbeat (`beat_at`), and holds one run grant
+    // (`run_grants`): its initiator's stamp and origin, its scopes, its own connection (none
+    // on the vendor's own sign-in) and the SHA-256 of its own secret, deleted at its settle or
+    // cancel (its authority ends at once; the runner's end still settles it). The sandbox
+    // leases (`sandbox_leases`): one sandbox an authority, the owner's own work's or one
+    // outside client's, so runs of different authority never share a VM; each lease its
+    // fencing epoch, its expiry (its tokens' too), the SHA-256 of its egress, sync and
+    // runner tokens, and the egress generation its network was last applied under; at most
+    // `RUNS_CEILING`, since a lease is opened only for a live run and a lapsed one goes. A
+    // conversation (`conversations`) keeps its engine and that engine's session id, at most
+    // `CONVERSATIONS_KEPT` (the least recently run one with no live run goes first). The
+    // `runs` lane's rows (`run_schedules`, at most `SCHEDULES_KEPT`): a launch at a time or a
+    // cron recurrence, each with its input. The platform's tier
+    // numbers as the binder last handed them (`platform_tiers`, one row), and the owner app's
+    // socket tickets (`socket_tickets`, at most `SOCKET_TICKETS`, single-use, each kept as
+    // its SHA-256 only). A run that waits for its conversation's live run to settle is a
+    // `waiting` row (not live: it holds no slot, grant or lease), its input kept beside it
+    // (`run_inputs`) until it starts, at most `QUEUE_ROWS` and `QUEUE_BYTES` of input in all.
+    // Each engine's sign-in, as the runner last reported it (`engine_signins`, one row an
+    // engine, at most `ENGINE_SIGNINS`): signed in or not, when, and the models it offers;
+    // never a credential.
     "CREATE TABLE runs (seq INTEGER PRIMARY KEY AUTOINCREMENT, " +
       `id TEXT NOT NULL UNIQUE CHECK (length(id) = ${RUN_ID_CHARS}), ` +
       "agent TEXT NOT NULL CHECK (length(agent) BETWEEN 1 AND 128), " +
@@ -1344,6 +1283,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       // The sandbox lease a live run runs under, and its last heartbeat.
       "lease_id TEXT CHECK (lease_id IS NULL OR length(lease_id) = 32), epoch INTEGER, " +
       "beat_at REAL, " +
+      // The time its sandbox ran between its start and its settle (part 15, `sandbox-time.ts`).
+      "sandbox_ms INTEGER CHECK (sandbox_ms IS NULL OR sandbox_ms >= 0), " +
       "CHECK ((state IN ('waiting', 'queued', 'running')) = (settled_at IS NULL)), " +
       "CHECK (state NOT IN ('queued', 'running') OR (lease_id IS NOT NULL " +
       "AND epoch IS NOT NULL AND beat_at IS NOT NULL)), " +
@@ -1484,17 +1425,15 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
         CHARGED_TOKENS("OLD")}) BEGIN ${
         RUN("NEW", "0", `${CHARGED_TOKENS("NEW")} - ${CHARGED_TOKENS("OLD")}`,
             `${CHARGED("NEW")} - ${CHARGED("OLD")}`)} END`,
-  ]),
-  // 13: the owner's own agents as ledger identities (slice ID; ledger.ts). Each
-  // `/workspace/agents/<agent>/agent.json` is one, made as the file appears and retired as
-  // it goes, in the file change's own unit: a mail recipient and sender beside the outside
-  // agents, counted with them in the registry's rows and, while live, its reserved
-  // mailboxes (`ledger_usage`). A retired one keeps its row, and its mail stays readable.
-  // Mail to one waits `queued` in its recipient row (read by its agent through
-  // `recipients_by_state`) until the `runs` lane starts the run that takes it. The identity
-  // is keyed by its ledger id, which is its name's digest, so a name finds its row by the
-  // key and no second index is kept.
-  Object.freeze([
+    // Part 13: the owner's own agents as ledger identities (slice ID; ledger.ts). Each
+    // `/workspace/agents/<agent>/agent.json` is one, made as the file appears and retired as
+    // it goes, in the file change's own unit: a mail recipient and sender beside the outside
+    // agents, counted with them in the registry's rows and, while live, its reserved
+    // mailboxes (`ledger_usage`). A retired one keeps its row, and its mail stays readable.
+    // Mail to one waits `queued` in its recipient row (read by its agent through
+    // `recipients_by_state`) until the `runs` lane starts the run that takes it. The identity
+    // is keyed by its ledger id, which is its name's digest, so a name finds its row by the
+    // key and no second index is kept.
     "CREATE TABLE native_agents (" +
       `agent_id TEXT PRIMARY KEY CHECK (length(agent_id) = ${NATIVE_ID_CHARS} ` +
       "AND agent_id GLOB 'ta_*' AND substr(agent_id, 4) NOT GLOB '*[^0-9a-f]*'), " +
@@ -1530,15 +1469,13 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "AND OLD.unacked > 0 BEGIN " +
       "UPDATE native_agents SET unacked_to_owner = unacked_to_owner - 1 " +
       "WHERE agent_id = OLD.sender_id; END",
-  ]),
-  // 14: the placement rule (ADR-035). A body past `PLACE_BYTES` is content of the files
-  // plane: a collection row, a history entry or a message body that names it holds a
-  // reference on it (`file_contents.refs`) and one in its writer's files scope
-  // (`file_scope_contents`, by its `filer`), counted here as each row comes and goes, so
-  // content nothing names goes, its chunk becomes garbage and housekeeping deletes it from
-  // R2, as a file's. Its bytes count in the files byte quota (`chunk_bytes`), the tier's
-  // storage, and in its outside writer's share of it (`client_share`, `owner_reserve`).
-  Object.freeze([
+    // Part 14: the placement rule (ADR-035). A body past `PLACE_BYTES` is content of the files
+    // plane: a collection row, a history entry or a message body that names it holds a
+    // reference on it (`file_contents.refs`) and one in its writer's files scope
+    // (`file_scope_contents`, by its `filer`), counted here as each row comes and goes, so
+    // content nothing names goes, its chunk becomes garbage and housekeeping deletes it from
+    // R2, as a file's. Its bytes count in the files byte quota (`chunk_bytes`), the tier's
+    // storage, and in its outside writer's share of it (`client_share`, `owner_reserve`).
     "CREATE TRIGGER collection_rows_placed AFTER INSERT ON collection_rows " +
       `WHEN NEW.content_id IS NOT NULL BEGIN ${PLACED("NEW", "+")} END`,
     "CREATE TRIGGER collection_rows_unplaced AFTER DELETE ON collection_rows " +
@@ -1556,14 +1493,12 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       `OLD.filer BEGIN ${PLACED("NEW", "+")} ${PLACED("OLD", "-")} END`,
     "CREATE TRIGGER message_bodies_kept BEFORE UPDATE ON message_bodies " +
       "BEGIN SELECT RAISE(ABORT, 'a message body is never changed'); END",
-  ]),
-  // 15: before real data (slice P). The nightly manifest's bookkeeping (backup.ts): at most
-  // two manifests, the newest finished and the one being written, each with its parts as
-  // R2 verified them (`<sha256>:<size>`, comma-joined, at most MANIFEST_PARTS). The sandbox
-  // meter (sandbox-time.ts): the cursor of the sandbox Worker's log, each authority's
-  // running spans a run not yet metered may overlap (one open at most), the seconds a UTC
-  // day, and each run's own (`runs.sandbox_ms`).
-  Object.freeze([
+    // Part 15: before real data (slice P). The nightly manifest's bookkeeping (backup.ts): at most
+    // two manifests, the newest finished and the one being written, each with its parts as
+    // R2 verified them (`<sha256>:<size>`, comma-joined, at most MANIFEST_PARTS). The sandbox
+    // meter (sandbox-time.ts): the cursor of the sandbox Worker's log, each authority's
+    // running spans a run not yet metered may overlap (one open at most), the seconds a UTC
+    // day, and each run's own (`runs.sandbox_ms`).
     "CREATE TABLE owner_backups (day TEXT PRIMARY KEY CHECK (length(day) = 8 " +
       "AND day NOT GLOB '*[^0-9]*'), " +
       "state TEXT NOT NULL CHECK (state IN ('writing', 'done')), " +
@@ -1583,7 +1518,6 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "OR ended_at >= started_at), PRIMARY KEY (authority, started_at)) WITHOUT ROWID",
     "CREATE TABLE sandbox_days (day TEXT PRIMARY KEY CHECK (length(day) = 8 " +
       "AND day NOT GLOB '*[^0-9]*'), ms INTEGER NOT NULL CHECK (ms >= 0)) WITHOUT ROWID",
-    "ALTER TABLE runs ADD COLUMN sandbox_ms INTEGER CHECK (sandbox_ms IS NULL OR sandbox_ms >= 0)",
     // The one storage number (founder, 2026-11-03): a body kept inline in its row is user
     // content too, counted in `body_bytes`, owner-wide and in its writer's files scope (its
     // `filer`), so the tier's storage holds every byte a user stores wherever it lives.
@@ -1613,6 +1547,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       `WHEN OLD.content_id IS NULL AND OLD.body_bytes > 0 BEGIN ${INLINE("OLD", "-")} END`,
   ]),
 ]);
+
 
 /** Apply every migration past the stored version; return the version now stored. */
 export function migrate(

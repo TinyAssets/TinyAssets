@@ -37,9 +37,10 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,449,862,167.75 bytes, 44.50% of the 10 GB: 550.1 MB under
-half**, slice ID's agent identities and mail authority, slice M's change orders and slice W's
-doorbell subscriptions (`wake_callbacks`, 423.6 MB at 1,000 agents and their widest) included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
+**The worst case that ships is 4,453,912,206.75 bytes, 44.54% of the 10 GB: 546.1 MB under
+half**, slice ID's agent identities and mail authority, slice M's change orders, slice W's
+doorbell subscriptions (`wake_callbacks`, 423.6 MB at 1,000 agents and their widest) and
+slice P's tables (`sandbox_spans` 3.1 MB, `owner_backups` 0.6 MB, `sandbox_days` 0.3 MB) included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
 2.1 MB). Without each structural change, the same bounds would cost: bodies in their rows
 424.1 GB; history as rows times revisions 111.5 GB; recipients as messages times agents
 46.2 GB; scopes at 512 code points of JSON each 6.8 GB, each past the half.

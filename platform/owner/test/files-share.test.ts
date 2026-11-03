@@ -809,11 +809,3 @@ describe("the files policy's bounds inside the manifest's", () => {
   });
 });
 
-describe("migration 7", () => {
-  it("fails loudly on a file row from before it", async () => {
-    const r = await rig();
-    await write(r, null, `${W}/a`);
-    const guard = MIGRATIONS[6]!.find((statement) => statement.includes("from before"))!;
-    expect((await failure(() => sqlIn(r.stub, guard))).message).toMatch(/CHECK constraint/);
-  });
-});
