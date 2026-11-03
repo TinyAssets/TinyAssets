@@ -1514,6 +1514,14 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "bytes INTEGER NOT NULL CHECK (bytes >= 0), started_at REAL NOT NULL, " +
       "finished_at REAL, retry_at REAL, " +
       "CHECK ((state = 'done') = (finished_at IS NOT NULL))) WITHOUT ROWID",
+    // The exports open (export.ts): each holds every chunk from deletion until it ends.
+    "CREATE TABLE owner_exports (export_id TEXT PRIMARY KEY CHECK (length(export_id) = 32 " +
+      "AND export_id NOT GLOB '*[^0-9a-f]*'), opened_at REAL NOT NULL, " +
+      "held_until REAL NOT NULL) WITHOUT ROWID",
+    // Whether anything changed since the last manifest began (backup.ts `mark`).
+    "CREATE TABLE owner_backup_state (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      "changed INTEGER NOT NULL CHECK (changed IN (0, 1)))",
+    "INSERT INTO owner_backup_state VALUES (1, 1)",
     "CREATE TABLE sandbox_meter (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "after INTEGER NOT NULL CHECK (after >= 0), read_at INTEGER NOT NULL, retry_at REAL)",
     "INSERT INTO sandbox_meter VALUES (1, 0, 0, NULL)",

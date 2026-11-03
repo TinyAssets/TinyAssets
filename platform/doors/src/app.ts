@@ -30,8 +30,10 @@
  *   the same doors `converse`, `run_graph`, `run_status` and `run_cancel` call for an
  *   outside client; the control record's tier numbers ride the binding (`withTiers`).
  * - `storage`: the owner's one storage number, used and left (`storageUsage`).
- * - `export`: the owner's export (`owner/src/export.ts`), streamed as newline-delimited
- *   JSON (`exportStream`), resumable from any page's cursor line.
+ * - `export`: the owner's export manifest (`owner/src/export.ts`), streamed as
+ *   newline-delimited JSON (`exportStream`), resumable from any page's cursor line with the
+ *   header's `export_id`; `export/chunks` its chunks' bytes by hash; `export/end` its hold
+ *   on them let go.
  * - `agent/socket-ticket`: a single-use socket ticket for one of the owner's conversations
  *   (A6, salvaged), behind every check above, bound to the token's grant and expiry
  *   (`bindOwnerGrant`).
@@ -119,9 +121,9 @@ async function signOut(env: DoorsEnv, { binding, stub }: Bound, _request: unknow
 
 /**
  * The pages one export response carries before it ends with its cursor line, so one
- * request's work in this Worker stays bounded (a technical ceiling: a request's CPU; at
- * most 8 MiB of chunks a page, about 512 MiB a response). The client asks again with the
- * last cursor line it read.
+ * request's work in this Worker stays bounded (a technical ceiling: a request's CPU; about
+ * 1 MiB of rows a page, 64 MiB a response). The client asks again with the last cursor line
+ * it read and the header's export_id.
  */
 export const EXPORT_PAGES = 64;
 
@@ -135,10 +137,12 @@ export const EXPORT_PAGES = 64;
  */
 async function exportStream(_env: DoorsEnv, { binding, stub }: Bound,
                             request: Record<string, unknown>): Promise<Response> {
-  if (Object.keys(request).some((key) => key !== "cursor")) {
-    return failure(400, "an export request is at most its cursor");
+  if (Object.keys(request).some((key) => key !== "cursor" && key !== "export_id")) {
+    return failure(400, "an export request is at most its cursor and its export_id");
   }
-  let page = await stub.ownerExport(binding, { cursor: request["cursor"] as string | null });
+  let page = await stub.ownerExport(binding, request as { cursor?: string | null;
+                                                          export_id?: string });
+  const exportId = page.export_id;
   let pages = 0;
   const encoder = new TextEncoder();
   const body = new ReadableStream<Uint8Array>({
@@ -154,7 +158,7 @@ async function exportStream(_env: DoorsEnv, { binding, stub }: Bound,
         controller.close();
         return;
       }
-      page = await stub.ownerExport(binding, { cursor: next });
+      page = await stub.ownerExport(binding, { cursor: next, export_id: exportId });
     },
   });
   return new Response(body, { status: 200, headers: {
@@ -198,6 +202,10 @@ async function doorbell(env: DoorsEnv, { binding, stub }: Bound,
 
 const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
   "export": exportStream,
+  "export/chunks": async (_env, { binding, stub }, request) =>
+    json(200, await stub.exportChunks(binding, request as never)),
+  "export/end": async (_env, { binding, stub }, request) =>
+    json(200, await stub.exportEnd(binding, request as never)),
   "storage": async (_env, { binding, stub }) => json(200, await stub.storageUsage(binding)),
   "agent/doorbell": doorbell,
   "agent/doorbell/end": async (_env, { binding, stub }, request) =>

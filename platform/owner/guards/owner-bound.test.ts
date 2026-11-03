@@ -174,6 +174,7 @@ const SIGNIN_LIST_CHARS = constant("run-rows", "SIGNIN_LIST_CHARS");
 const SOCKET_TICKETS = constant("socket-shape", "SOCKET_TICKETS");
 const CURSOR_CHARS = constant("export", "CURSOR_CHARS");
 const PART_ENTRY = constant("backup", "PART_ENTRY");
+const EXPORTS_OPEN = constant("export", "EXPORTS_OPEN");
 const SPANS_KEPT = constant("sandbox-time", "SPANS_KEPT");
 const DAYS_KEPT = constant("sandbox-time", "DAYS_KEPT");
 /** Mail that starts runs (slice ID): a message's id, an own agent's id, a mail's authority. */
@@ -556,6 +557,8 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                        "cursor and its list of at most MANIFEST_PARTS parts" },
     // Slice P: the sandbox meter (`sandbox-time.ts`).
     sandbox_meter: { rows: 1, bytes: ROW + 3 * 8, by: "one row: the log's cursor" },
+    owner_backup_state: { rows: 1, bytes: ROW + 8, by: "one row: changed since the manifest" },
+    owner_exports: { rows: EXPORTS_OPEN, bytes: ROW + 32 + 16, by: "EXPORTS_OPEN" },
     sandbox_spans: { rows: SPANS_KEPT + 1 + G.maxFreeClients + G.maxOwnerClients,
                      bytes: ROW + 64 + 2 * 8,
                      by: "SPANS_KEPT closed spans, and one open an authority (the owner's " +

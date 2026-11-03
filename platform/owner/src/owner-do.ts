@@ -167,6 +167,7 @@ import { AGENTS_DIR, AGENTS_OWNER_ONLY, OWNER_TREES, ownersOnly, storedPath, wit
 import { MIGRATIONS, migrate } from "./schema";
 import { chunkLine, decodeCursor, encodeCursor, END_LINE, readPage } from "./export";
 import { Backups } from "./backup";
+import { ExportHolds } from "./export-holds";
 import { METER_BATCH, meterRead, SandboxTime } from "./sandbox-time";
 import { Sessions } from "./sessions";
 import { CONTROL_FRESH_MS, ControlGate, type Gate } from "./control-gate";
@@ -1282,6 +1283,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #files: Files;
   /** The nightly manifest (`backup.ts`). */
   readonly #backups: Backups;
+  /** The exports open, each holding the chunks its manifest names (`export-holds.ts`). */
+  readonly #exportHolds: ExportHolds;
   /** Sandbox time, per run and per day (`sandbox-time.ts`). */
   readonly #sandboxTime: SandboxTime;
   /** Where large bodies live (ADR-035): placed in R2 through the files plane. */
@@ -1362,7 +1365,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
             this.#ledger.retire(agent, now);
           }
         }
-      });
+      },
+      // An open export holds every chunk its manifest names from deletion.
+      () => this.#exportHolds.heldUntil(clock()));
+    this.#exportHolds = new ExportHolds(storage);
     this.#bodies = new Bodies(this.#files, storage, write);
     // An outside writer's share of the collections is the owner's own `client_share`.
     this.#collections = new Collections(storage, undefined, this.#bodies.adopt,
@@ -1571,6 +1577,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         return;  // an erased owner: nothing is made here again
       }
       await write(() => migrate(storage));
+      // From here on, a unit that writes marks the owner changed for the nightly manifest.
+      this.#gate.onChange((sql) => {
+        if (this.#backups.mark(sql)) {
+          // The first change since the last manifest: its job set again, once the unit is done.
+          queueMicrotask(() => {
+            this.#schedule.sync().catch(() => console.error("the schedule's sync failed"));
+          });
+        }
+      });
       if (erasing(storage)) {
         // An erasure a crash cut short, from its recorded step: its alarm may be gone.
         this.#erasure.resume();
@@ -1910,24 +1925,62 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * outside client, no run, and no request without the session cookie reaches it. A
    * `read` door, so a billing suspension still lets the owner take its data.
    */
-  async ownerExport(binding: Binding, request: { cursor?: string | null }):
-      Promise<{ lines: string[]; next: string | null }> {
-    const page = await this.#door(() => {
+  async ownerExport(binding: Binding,
+                    request: { cursor?: string | null; export_id?: string }):
+      Promise<{ export_id: string; lines: string[]; next: string | null }> {
+    return this.#door(() => {
       const { owner } = this.#owner(binding, "read", "export everything it holds");
       this.#sessions.live(binding.session, clock());
       if (typeof request !== "object" || request === null || Array.isArray(request)
-          || Object.keys(request).some((key) => key !== "cursor")) {
-        throw new Invalid("an export request is at most its cursor");
+          || Object.keys(request).some((key) => key !== "cursor" && key !== "export_id")) {
+        throw new Invalid("an export request is at most its cursor and its export_id");
       }
-      return readPage(this.#storage.sql, decodeCursor(request.cursor),
-                      { schema: MIGRATIONS.length, owner, at: Date.now() }, BATCH_BYTES);
+      const cursor = decodeCursor(request.cursor);
+      const now = clock();
+      // Its first page opens it, holding every chunk; each later page names it.
+      const held = request.cursor === null || request.cursor === undefined
+        ? this.#exportHolds.open(now) : this.#exportHolds.standing(request.export_id, now);
+      const page = readPage(this.#storage.sql, cursor,
+                            { schema: MIGRATIONS.length, owner, at: Date.now(), ...held },
+                            Number.MAX_SAFE_INTEGER);
+      const lines = [...page.lines, ...page.chunks.map((chunk) => chunkLine(chunk))];
+      if (page.next === null) {
+        lines.push(END_LINE);
+      }
+      return { export_id: held.export_id, lines,
+               next: page.next === null ? null : encodeCursor(page.next) };
     });
-    const bytes = await this.#files.fetch(page.chunks.map(({ sha256 }) => ({ sha256 })));
-    const lines = [...page.lines, ...page.chunks.map((chunk, at) => chunkLine(chunk, bytes[at]))];
-    if (page.next === null) {
-      lines.push(END_LINE);
-    }
-    return { lines, next: page.next === null ? null : encodeCursor(page.next) };
+  }
+
+  /**
+   * Chunks an open export's manifest names, by hash: their bytes, at most two chunks a call
+   * (`BATCH_BYTES`), each checked against its hash by the files Worker. The owner's alone.
+   */
+  async exportChunks(binding: Binding, request: { export_id: string; sha256s: string[] }):
+      Promise<{ chunks: { sha256: string; data: string }[] }> {
+    const wanted = await this.#door(() => {
+      this.#owner(binding, "read", "export everything it holds");
+      this.#sessions.live(binding.session, clock());
+      if (typeof request !== "object" || request === null
+          || Object.keys(request).sort().join() !== "export_id,sha256s"
+          || !Array.isArray(request.sha256s) || request.sha256s.length < 1
+          || request.sha256s.length > 2) {
+        throw new Invalid("an export's chunks are its export_id and one or two sha256s");
+      }
+      this.#exportHolds.standing(request.export_id, clock());
+      return this.#files.heldChunks(request.sha256s);
+    });
+    const bytes = await this.#files.fetch(wanted.map((sha256) => ({ sha256 })));
+    return { chunks: wanted.map((sha256, at) => ({
+      sha256, data: Buffer.from(bytes[at]!).toString("base64") })) };
+  }
+
+  /** An export ended: its hold on the chunks let go. */
+  exportEnd(binding: Binding, request: { export_id: string }): Promise<{ ended: boolean }> {
+    return this.#door(() => {
+      this.#owner(binding, "reduce", "end its export");
+      return { ended: this.#exportHolds.end(request?.export_id) };
+    });
   }
 
   // -- OWNER_POLICY ------------------------------------------------------------

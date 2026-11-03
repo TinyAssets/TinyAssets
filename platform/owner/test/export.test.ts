@@ -49,24 +49,38 @@ async function write(o: Owner, path: string, content: Uint8Array): Promise<void>
   await o.stub.fileWrite(o.bind(), { path, expected_etag: null, content });
 }
 
-/** Every page from `cursor` to the end: their lines, and each page's next cursor. */
-async function exportAll(o: Owner, cursor: string | null = null):
-    Promise<{ lines: Line[]; cursors: string[] }> {
+/** Every page from `cursor` to the end: their lines, each page's next cursor, the export. */
+async function exportAll(o: Owner, cursor: string | null = null, exportId?: string):
+    Promise<{ lines: Line[]; cursors: string[]; exportId: string }> {
   const lines: Line[] = [];
   const cursors: string[] = [];
+  let id = exportId;
   for (let next: string | null = cursor; ;) {
-    const page = await o.stub.ownerExport(o.session(), { cursor: next });
+    const page = await o.stub.ownerExport(o.session(), next === null ? { cursor: null }
+      : { cursor: next, export_id: id! });
+    id = page.export_id;
     lines.push(...page.lines.map((line) => JSON.parse(line) as Line));
     if (page.next === null) {
-      return { lines, cursors };
+      return { lines, cursors, exportId: id };
     }
     cursors.push(page.next);
     next = page.next;
   }
 }
 
-/** A file's bytes as the stream holds them: its content's inline bytes, or its chunks'. */
-function bytesOf(lines: Line[], path: string): Uint8Array {
+/** Each chunk line's bytes, fetched by hash from the open export, one call a chunk. */
+async function fetched(o: Owner, lines: Line[], exportId: string): Promise<Map<string, Buffer>> {
+  const out = new Map<string, Buffer>();
+  for (const line of lines.filter((each) => each.t === "chunk")) {
+    const { chunks } = await o.stub.exportChunks(o.session(), {
+      export_id: exportId, sha256s: [line["sha256"] as string] });
+    out.set(chunks[0]!.sha256, Buffer.from(chunks[0]!.data, "base64"));
+  }
+  return out;
+}
+
+/** A file's bytes as the export holds them: its content's inline bytes, or its chunks'. */
+function bytesOf(lines: Line[], path: string, chunkBytes: Map<string, Buffer>): Uint8Array {
   const rows = (table: string) => lines.filter((line) => line.t === "row"
     && line["table"] === table).map((line) => line["row"] as Record<string, unknown>);
   const name = path.slice(path.lastIndexOf("/") + 1);
@@ -78,12 +92,11 @@ function bytesOf(lines: Line[], path: string): Uint8Array {
   const chunks = rows("file_content_chunks")
     .filter((row) => row["content_id"] === entry["content_id"])
     .sort((a, b) => (a["idx"] as number) - (b["idx"] as number));
-  return Buffer.concat(chunks.map((chunk) => Buffer.from(lines.find((line) =>
-    line.t === "chunk" && line["sha256"] === chunk["sha256"])!["data"] as string, "base64")));
+  return Buffer.concat(chunks.map((chunk) => chunkBytes.get(chunk["sha256"] as string)!));
 }
 
 describe("the owner export", () => {
-  it("streams every exported table's rows and every chunk's bytes, which round-trip", async () => {
+  it("lists every exported table's rows and every chunk, whose bytes round-trip", async () => {
     const o = await owner();
     const small = filled(100, 1);
     const big = filled(INLINE_BYTES + 5000, 2);
@@ -91,9 +104,11 @@ describe("the owner export", () => {
     await write(o, `${W}/big.bin`, big);
     await o.stub.collectionWrite(o.bind(), { collection: "board", row_id: "t1", body: "hello",
                                              expected_etag: "", private: false });
-    const { lines } = await exportAll(o);
+    const { lines, exportId } = await exportAll(o);
     expect(lines[0]).toMatchObject({ t: "header", format: "tinyassets-export", version: 1,
-                                     schema: MIGRATIONS.length, owner: o.name });
+                                     schema: MIGRATIONS.length, owner: o.name,
+                                     export_id: exportId });
+    const chunkBytes = await fetched(o, lines, exportId);
     expect(lines.at(-1)).toEqual({ t: "end" });
     expect(lines.filter((line) => line.t === "header" || line.t === "end")).toHaveLength(2);
     // Each exported table's rows are exactly its rows, columns as listed, in key order.
@@ -111,8 +126,8 @@ describe("the owner export", () => {
         })))));
     }
     // The files come back byte for byte, and the collection row as written.
-    expect(bytesOf(lines, `${W}/small.txt`)).toEqual(Buffer.from(small));
-    expect(bytesOf(lines, `${W}/big.bin`)).toEqual(Buffer.from(big));
+    expect(bytesOf(lines, `${W}/small.txt`, chunkBytes)).toEqual(Buffer.from(small));
+    expect(bytesOf(lines, `${W}/big.bin`, chunkBytes)).toEqual(Buffer.from(big));
     expect(lines.some((line) => line["table"] === "collection_rows"
       && (line["row"] as { body: string }).body === "hello")).toBe(true);
     // Nothing kept out appears: no table, no namespace, no data key, no session hash.
@@ -131,18 +146,17 @@ describe("the owner export", () => {
   it("is resumable from any page's cursor, and refuses a cursor it never handed out",
      async () => {
     const o = await owner();
-    // Three chunks of 4 MiB: no one page carries them all (8 MiB of chunks a page).
-    for (const seed of [3, 4, 5]) {
-      await write(o, `${W}/large-${seed}.bin`, filled(CHUNK_BYTES, seed));
+    // Small files kept inline, about 5.5 KB of JSON each: past one page's 1 MiB of rows.
+    for (let i = 0; i < 220; i++) {
+      await write(o, `${W}/inline-${i}.bin`, filled(INLINE_BYTES, i));
     }
     const whole = await exportAll(o);
     expect(whole.cursors.length).toBeGreaterThan(0);
-    const chunkLines = whole.lines.filter((line) => line.t === "chunk");
-    expect(chunkLines).toHaveLength(3);
-    // From each page's cursor, the rest of the stream, exactly.
+    // From each page's cursor, the rest of the manifest, exactly.
     const pages: Line[][] = [];
     for (let next: string | null = null; ;) {
-      const page = await o.stub.ownerExport(o.session(), { cursor: next });
+      const page = await o.stub.ownerExport(o.session(), next === null ? { cursor: null }
+        : { cursor: next, export_id: whole.exportId });
       pages.push(page.lines.map((line) => JSON.parse(line) as Line));
       if (page.next === null) {
         break;
@@ -150,9 +164,13 @@ describe("the owner export", () => {
       next = page.next;
     }
     for (const [at, cursor] of whole.cursors.entries()) {
-      const rest = await exportAll(o, cursor);
+      const rest = await exportAll(o, cursor, whole.exportId);
       expect(rest.lines).toEqual(pages.slice(at + 1).flat());
     }
+    // A later page names its open export; an unknown one is refused.
+    expect((await failure(() => o.stub.ownerExport(o.session(), {
+      cursor: whole.cursors[0]!, export_id: "0".repeat(32) }))).message)
+      .toBe("this export is not open: begin it again");
     for (const bad of ["x", "Zm9v", Buffer.from("[1,999,null]").toString("base64url"),
                        Buffer.from("[2,0,null]").toString("base64url"), "a".repeat(20_000)]) {
       expect((await failure(() => o.stub.ownerExport(o.session(), { cursor: bad }))).message)
@@ -168,7 +186,7 @@ describe("the owner export", () => {
       .toBe("only the owner may export everything it holds");
     expect((await failure(() => o.stub.ownerExport(o.bind(), {}))).name).toBe("Refused");
     expect((await failure(() => o.stub.ownerExport(o.session(), { cursor: null, x: 1 } as never)))
-      .message).toBe("an export request is at most its cursor");
+      .message).toBe("an export request is at most its cursor and its export_id");
   });
 
   it("holds every table of the schema to exported or kept out, and every column decided",
@@ -190,6 +208,39 @@ describe("the owner export", () => {
 const LAST_YEARS = "INSERT INTO owner_backups (day, state, cursor, parts, part_list, bytes, " +
   "started_at, finished_at) VALUES ('20200101', 'done', NULL, 0, '', 0, 1, 1)";
 
+describe("an open export", () => {
+  it("holds every chunk from deletion until it ends, and serves only those it names",
+     async () => {
+    const o = await owner();
+    const big = filled(INLINE_BYTES + 10, 7);
+    await write(o, `${W}/held.bin`, big);
+    const { lines, exportId } = await exportAll(o);
+    const sha = lines.find((line) => line.t === "chunk")!["sha256"] as string;
+    // The file goes; its chunk is garbage and due now, but the export holds it.
+    await o.stub.fileRemove(o.bind(), { path: `${W}/held.bin`, expected_etag: null,
+                                        recursive: false });
+    await o.stub.fileHistoryPurge(o.bind(), { path: `${W}/held.bin` });
+    await sqlIn(o.stub, "UPDATE file_chunks SET gc_after = 1 WHERE sha256 = ?", sha);
+    await o.stub.fileMkdir(o.bind(), { path: `${W}/x`, expected_etag: null });
+    await drainDue(o.stub);
+    expect(await sqlIn(o.stub, "SELECT state FROM file_chunks WHERE sha256 = ?", sha))
+      .toEqual([{ state: "garbage" }]);
+    expect((await fetched(o, lines, exportId)).get(sha)).toEqual(Buffer.from(big));
+    expect((await failure(() => o.stub.exportChunks(o.session(), {
+      export_id: exportId, sha256s: ["e".repeat(64)] }))).message)
+      .toBe("not_found: no such chunk");
+    // Ended: the hold goes, and the sweep takes the chunk.
+    expect(await o.stub.exportEnd(o.bind(), { export_id: exportId })).toEqual({ ended: true });
+    await o.stub.fileMkdir(o.bind(), { path: `${W}/y`, expected_etag: null });
+    await drainDue(o.stub);
+    expect(await sqlIn(o.stub, "SELECT state FROM file_chunks WHERE sha256 = ?", sha))
+      .toEqual([]);
+    expect((await failure(() => o.stub.exportChunks(o.session(), {
+      export_id: exportId, sha256s: [sha] }))).message)
+      .toBe("this export is not open: begin it again");
+  });
+});
+
 describe("the nightly manifest", () => {
   it("is written by the owner's own schedule, under its key, and the older one let go",
      async () => {
@@ -208,7 +259,8 @@ describe("the nightly manifest", () => {
     const day = manifestDay(Date.now() / 1000);
     expect(await sqlIn(o.stub, "SELECT day, state FROM owner_backups"))
       .toEqual([{ day, state: "done" }]);
-    expect(await laneAt(o.stub, "manifest")).toBe(tomorrow + spread(o.name));
+    // Nothing changed since it began: no job, and the idle owner's object is never woken.
+    expect(await laneAt(o.stub, "manifest")).toBeNull();
     // The root names its parts and carries the wrapped key; the parts read under it.
     const [space] = await sqlIn(o.stub, "SELECT ns, data_key FROM file_space");
     const [ns, key] = [space!["ns"] as string, space!["data_key"] as string];
@@ -226,6 +278,17 @@ describe("the nightly manifest", () => {
     expect(chunks[0]).not.toHaveProperty("data");
     expect(lines.some((line) => line["table"] === "file_entries"
       && (line["row"] as { name: string }).name === "kept.bin")).toBe(true);
+    // A read changes nothing: still no job.
+    await o.stub.fileStat(o.bind(), { path: `${W}/kept.bin` });
+    expect(await sqlIn(o.stub, "SELECT changed FROM owner_backup_state")).toEqual([{ changed: 0 }]);
+    expect(await laneAt(o.stub, "manifest")).toBeNull();
+    // A change sets it due again, the next night.
+    await o.stub.fileMkdir(o.bind(), { path: `${W}/later`, expected_etag: null });
+    expect(await sqlIn(o.stub, "SELECT changed FROM owner_backup_state")).toEqual([{ changed: 1 }]);
+    for (let i = 0; i < 50 && await laneAt(o.stub, "manifest") === null; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));  // the mark's own sync
+    }
+    expect(await laneAt(o.stub, "manifest")).toBe(tomorrow + spread(o.name));
   });
 
   it("is deleted with every copy of the owner's key when the owner is erased", async () => {

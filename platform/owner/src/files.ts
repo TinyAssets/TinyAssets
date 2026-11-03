@@ -120,8 +120,13 @@ export const INTENT_TTL_S = 86_400;
  * door call, so a crashed placement holds its quota and its upload slot for minutes only.
  */
 export const PLACE_TTL_S = 600;
-/** How long a garbage chunk waits before it is deleted (the schema's trigger sets it). */
-export const GC_GRACE_S = 86_400;
+/**
+ * How long a garbage chunk waits before it is deleted (the schema's trigger sets it): 30
+ * days, the object's own point-in-time recovery window (Durable Objects restore "to any point
+ * in the past 30 days"), so a restored object, or a manifest, never names a chunk the sweep
+ * took. A garbage chunk counts in no owner's storage.
+ */
+export const GC_GRACE_S = 30 * 86_400;
 /** When a failed chunk delete is tried again. */
 export const GC_RETRY_S = 300;
 /** A sandbox lease's life without a renewal; a run's heartbeat lapses as soon. */
@@ -575,6 +580,11 @@ export function conflictName(name: string, epoch: number, n: number): string {
 export class Files {
   readonly #storage: OwnerStorage;
   readonly #store: ChunkStore;
+  /**
+   * Until when (seconds) an open export holds every chunk from deletion, or null: its
+   * manifest names chunks by hash, which the owner fetches after (`export.ts`).
+   */
+  readonly #held: () => number | null;
   readonly #limits: () => FileLimits;
   /** The object's write gate: the units the methods that cross to `FILES` write through. */
   readonly #write: Write;
@@ -591,8 +601,10 @@ export class Files {
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
               write: Write, reclaim: Reclaim = () => false,
-              changed: (path: string, present: boolean, now: number) => void = () => {}) {
+              changed: (path: string, present: boolean, now: number) => void = () => {},
+              held: () => number | null = () => null) {
     this.#storage = storage;
+    this.#held = held;
     this.#store = store;
     this.#limits = limits;
     this.#write = write;
@@ -905,6 +917,24 @@ export class Files {
       throw new FileFault("not_found", "no such version");
     }
     return row;
+  }
+
+  /**
+   * Of `sha256s`, each a chunk this owner's manifest names (stored, not being deleted), in
+   * order: what an export fetches by hash. Any other is refused. A read.
+   */
+  heldChunks(sha256s: readonly unknown[]): string[] {
+    return sha256s.map((sha256) => {
+      if (typeof sha256 !== "string" || !HEX64.test(sha256)) {
+        throw new Invalid("a chunk is named by its sha256");
+      }
+      const found = this.#sql.exec("SELECT 1 FROM file_chunks WHERE sha256 = ? AND stored = 1 " +
+                                     "AND state != 'deleting'", sha256).toArray().length > 0;
+      if (!found) {
+        throw new FileFault("not_found", "no such chunk");
+      }
+      return sha256;
+    });
   }
 
   /** Chunk bytes in order, fetched from `FILES` at most two chunks a call. */
@@ -2119,6 +2149,11 @@ export class Files {
       "SELECT MIN(prune_after) AS due FROM file_history WHERE prune_after IS NOT NULL",
       "SELECT MIN(gc_after) AS due FROM file_chunks WHERE gc_after IS NOT NULL",
     ].map((query) => this.#sql.exec<{ due: number | null }>(query).one().due)
+      .map((due, at) => {
+        const held = this.#held();
+        // A chunk's delete waits out an open export's hold.
+        return at === 3 && due !== null && held !== null ? Math.max(due, held) : due;
+      })
       .filter((due): due is number => due !== null);
     return times.length ? Math.max(Math.min(...times) + HOUSEKEEPING_SLACK_S, now) : null;
   }
@@ -2151,6 +2186,10 @@ export class Files {
     }));
     if (until - Date.now() < DELETE_FLOOR_MS) {
       return;  // too little of this pass left: the chunks stay due for a later one
+    }
+    const held = this.#held();
+    if (held !== null && held > now) {
+      return;  // an open export names chunks by hash: none is deleted until it ends
     }
     // Read and marked in one unit: a chunk read due outside it could be held again (an
     // upload's begin) before the mark, and its bytes then deleted under a live file.

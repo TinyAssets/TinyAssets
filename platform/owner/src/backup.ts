@@ -4,6 +4,10 @@
  * `manifest` lane of the object's one schedule (`schedule.ts`): no platform cron looks at
  * every owner; each object's Lifecycle job wakes it once a night.
  *
+ * - **Only on change.** Every write unit of the object but this lane's own marks the owner
+ *   changed (`mark`, the write gate's `onChange`; one row written on the first change after a
+ *   manifest, none after); a manifest begins by clearing it. With a finished manifest and no
+ *   change since, the lane has no job: an idle owner's object is never woken for it.
  * - **When.** A manifest is due from its day's start in UTC plus the owner's own offset in
  *   the night (`MANIFEST_SPREAD_S`, from a hash of the owner id), so owners' writes spread
  *   over hours rather than meet at midnight. The first is due the night after the object
@@ -90,6 +94,8 @@ export interface BackupParts {
 
 export class Backups {
   readonly #parts: BackupParts;
+  /** True while this lane's own unit runs: its writes are no change of the owner's. */
+  #quiet = false;
 
   constructor(parts: BackupParts) {
     this.#parts = parts;
@@ -97,6 +103,31 @@ export class Backups {
 
   get #sql(): OwnerStorage["sql"] {
     return this.#parts.storage.sql;
+  }
+
+  /** One of this lane's units: it marks nothing changed (units run at once, synchronously). */
+  #write<T>(unit: () => T): Promise<T> {
+    this.#quiet = true;
+    try {
+      return this.#parts.write(unit);
+    } finally {
+      this.#quiet = false;
+    }
+  }
+
+  /**
+   * In a unit that wrote (the write gate's `onChange`): the owner changed since the manifest.
+   * Whether this was the first change since, which sets the lane's job again.
+   */
+  mark(sql: Pick<SqlStorage, "exec">): boolean {
+    return !this.#quiet && sql.exec(
+      "UPDATE owner_backup_state SET changed = 1 WHERE changed = 0 RETURNING changed")
+      .toArray().length > 0;
+  }
+
+  #changed(): boolean {
+    return this.#sql.exec<{ changed: number }>("SELECT changed FROM owner_backup_state").one()
+      .changed === 1;
   }
 
   #rows(): BackupRow[] {
@@ -124,6 +155,9 @@ export class Backups {
     if (done.length > 1) {
       return retry(done[0]!.retry_at);
     }
+    if (done.length === 1 && !this.#changed()) {
+      return null;  // nothing changed since the last manifest: no job, no wake
+    }
     const after = done.length === 0 ? manifestDay(now) : done[0]!.day;
     return Math.max(now, dayStart(after) + DAY_S + spread(this.#parts.owner()));
   }
@@ -147,7 +181,7 @@ export class Backups {
     } catch {
       // An R2 call that failed, kept in the rows: the lane comes back after its retry.
       console.error("the nightly manifest's pass failed; it is tried again later");
-      await this.#parts.write(() => this.#sql.exec(
+      await this.#write(() => this.#sql.exec(
         "UPDATE owner_backups SET retry_at = ? WHERE state = 'writing' OR day = " +
           "(SELECT MIN(day) FROM owner_backups)", Date.now() / 1000 + MANIFEST_RETRY_S));
     }
@@ -162,7 +196,7 @@ export class Backups {
       }
       const { ns } = await this.#parts.space();
       await this.#parts.store.deleteManifest(ns, old.day, old.parts);
-      await this.#parts.write(() => this.#sql.exec("DELETE FROM owner_backups WHERE day = ?",
+      await this.#write(() => this.#sql.exec("DELETE FROM owner_backups WHERE day = ?",
                                                     old.day));
     }
     return true;
@@ -170,9 +204,13 @@ export class Backups {
 
   async #begin(now: number): Promise<BackupRow> {
     const day = manifestDay(now);
-    await this.#parts.write(() => this.#sql.exec(
-      "INSERT INTO owner_backups (day, state, cursor, parts, part_list, bytes, started_at) " +
-        "VALUES (?, 'writing', NULL, 0, '', 0, ?) ON CONFLICT (day) DO NOTHING", day, now));
+    await this.#write(() => this.#parts.storage.transactionSync(() => {
+      // What changes from here on is the next manifest's.
+      this.#sql.exec("UPDATE owner_backup_state SET changed = 0");
+      this.#sql.exec(
+        "INSERT INTO owner_backups (day, state, cursor, parts, part_list, bytes, started_at) " +
+          "VALUES (?, 'writing', NULL, 0, '', 0, ?) ON CONFLICT (day) DO NOTHING", day, now);
+    }));
     return this.#rows().find((row) => row.day === day)!;
   }
 
@@ -192,7 +230,7 @@ export class Backups {
       let ended = false;
       while (size < GATHER_BYTES) {
         const at = next;
-        const page = await this.#parts.write(() => readPage(
+        const page = await this.#write(() => readPage(
           this.#sql, decodeCursor(at),
           { schema: this.#parts.schema, owner: this.#parts.owner(), at: Date.now() },
           Number.MAX_SAFE_INTEGER));
@@ -218,7 +256,7 @@ export class Backups {
           ns, key, row.day, part + written.length, bytes.subarray(at, at + CHUNK_BYTES)));
       }
       const added = written.map((put) => `${put.sha256}:${put.size}`).join(",");
-      await this.#parts.write(() => this.#sql.exec(
+      await this.#write(() => this.#sql.exec(
         "UPDATE owner_backups SET cursor = ?, parts = ?, bytes = bytes + ?, retry_at = NULL, " +
           "part_list = part_list || CASE WHEN part_list = '' OR ? = '' THEN '' ELSE ',' END " +
           "|| ? WHERE day = ? AND parts = ?",
@@ -237,7 +275,7 @@ export class Backups {
           return;  // the root carries the key: none is written once the erasure began
         }
         await this.#parts.store.putManifestRoot(ns, key, row.day, parts);
-        await this.#parts.write(() => this.#sql.exec(
+        await this.#write(() => this.#sql.exec(
           "UPDATE owner_backups SET state = 'done', finished_at = ? WHERE day = ?",
           Date.now() / 1000, row.day));
         await this.#prune(until);

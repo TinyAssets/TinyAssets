@@ -1,21 +1,23 @@
 /**
- * The owner export (ADR-018; slice P): everything the owner holds, as one stable stream,
- * resumable from any page's cursor. The same stream, without the chunks' bytes, is the
- * nightly manifest (`backup.ts`).
+ * The owner export (ADR-018; slice P): everything the owner holds, in one format with the
+ * nightly manifest (`backup.ts`): a manifest of every row and every chunk's hash, read a
+ * page at a time from any page's cursor, and the chunks' bytes fetched by hash
+ * (`exportChunks`), so a client that drops resumes at a page or a chunk, whatever the size.
  *
  * **Format `tinyassets-export`, version 1.** Newline-delimited JSON (one object a line,
  * UTF-8), in this order:
  * 1. `{"t":"header","format":"tinyassets-export","version":1,"schema":<n>,"owner":"<id>",
  *    "at":<ms>}`: once, first; `schema` is the owner schema's migration count, which says
- *    what each table's columns are (`schema.ts`).
+ *    what each table's columns are (`schema.ts`). An export's header also names its
+ *    `export_id` and `held_until` (below).
  * 2. `{"t":"row","table":"<name>","row":{<column>:<value>,...}}`: every row of every table
  *    in {@link exported}, a table at a time in that order, each in its key's order. A value
  *    is JSON's number, string or null; bytes (a small file's inline content) are
  *    `{"$base64":"<standard base64>"}`. Each table's columns are those `exported` lists.
- * 3. `{"t":"chunk","sha256":"<hex>","size":<n>,"data":"<standard base64>"}`: the bytes of
- *    every chunk some content still names (files, their kept versions, and placed bodies:
- *    ADR-035 bodies are files-plane contents), once each, by hash. The manifest's lines
- *    carry no `data`: its bytes are the bucket's own chunks.
+ * 3. `{"t":"chunk","sha256":"<hex>","size":<n>}`: every chunk some content still names
+ *    (files, their kept versions, and placed bodies: ADR-035 bodies are files-plane
+ *    contents), once each, by hash. Its bytes are fetched by that hash (`exportChunks`, the
+ *    owner surface's `export/chunks`), checked against it.
  * 4. `{"t":"end"}`: once, last. A stream without it is incomplete.
  *
  * A file's bytes are its content's: `file_entries` and `file_history` name a `content_id`;
@@ -26,10 +28,12 @@
  * **Resumable.** The stream is read a page at a time (`ownerExport`), each page ending with
  * its cursor (`{"t":"cursor","cursor":"<opaque>"}`, the doors' line) unless it ended the
  * stream; asking with that cursor goes on from the next row. A cursor is the section and
- * the last key read, so it never skips or repeats a row that stands; the stream is not one
- * snapshot (a row written between pages is read if its key is still ahead). Chunks are
- * immutable, and one a page names stays at least a day after its last reference goes
- * (`GC_GRACE_S`), so a resumed stream reads it.
+ * the last key read, so it never skips or repeats a row that stands; each page is read in one
+ * unit, and a row written between pages is read if its key is still ahead. Chunks are
+ * immutable, and an open export holds every chunk from deletion (`owner_exports`,
+ * `EXPORT_HOLD_S`) until it ends (`exportEnd`) or its hold lapses, so every hash its
+ * manifest names can be fetched; past that, a chunk stays `GC_GRACE_S` (30 days, the
+ * object's point-in-time recovery) after its last reference goes.
  *
  * **What it never holds** (ADR-018: credentials are never exported), each table kept out
  * with its reason in {@link NOT_EXPORTED}: sealed credentials and connect flows, session
@@ -169,6 +173,8 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   owner_erasure: "an erasure in progress",
   schema_digests: "the applied migrations' digests, the start's own check",
   owner_backups: "the nightly manifest's own bookkeeping",
+  owner_exports: "the exports open, holding chunks",
+  owner_backup_state: "the nightly manifest's own bookkeeping",
   sandbox_meter: "the sandbox meter's cursor in the sandbox Worker's log",
   sandbox_spans: "the sandbox meter's open and recent spans",
   sandbox_days: "the platform's cost meter: sandbox seconds a day",
@@ -244,7 +250,15 @@ export interface Header {
   readonly schema: number;
   readonly owner: string;
   readonly at: number;
+  /** An export's: its id, and until when (s) it holds the chunks it names. */
+  readonly export_id?: string;
+  readonly held_until?: number;
 }
+
+/** How long an open export holds every chunk from deletion: a week to fetch them. */
+export const EXPORT_HOLD_S = 7 * 86_400;
+/** Exports open at once; past them the oldest is ended. */
+export const EXPORTS_OPEN = 16;
 
 /**
  * One page from `cursor`, read in the caller's unit: at most `EXPORT_PAGE_BYTES` of rows'
