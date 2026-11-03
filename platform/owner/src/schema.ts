@@ -1285,6 +1285,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "beat_at REAL, " +
       // The time its sandbox ran between its start and its settle (part 15, `sandbox-time.ts`).
       "sandbox_ms INTEGER CHECK (sandbox_ms IS NULL OR sandbox_ms >= 0), " +
+      // A run waiting for a sandbox (slice S: E2B ran as many as its plan allows, or another
+      // owner waits ahead): not started again until the platform's line rings the owner.
+      "sandbox_wait INTEGER NOT NULL DEFAULT 0 CHECK (sandbox_wait IN (0, 1) AND " +
+      "(sandbox_wait = 0 OR state = 'waiting')), " +
       "CHECK ((state IN ('waiting', 'queued', 'running')) = (settled_at IS NULL)), " +
       "CHECK (state NOT IN ('queued', 'running') OR (lease_id IS NOT NULL " +
       "AND epoch IS NOT NULL AND beat_at IS NOT NULL)), " +

@@ -118,7 +118,9 @@ export function runnerSandbox(r: Binder, start: SandboxStart): Binding {
 export function syncOf(r: Binder, start: SandboxStart): Binding {
   return r.bind({ sandbox: { kind: "sync",
                              token: verifyToken(env.ROUTING_MAC_KEY, "sync",
-                                                leaseTokens(start).sync)!.hash } });
+                                                leaseTokens(start).sync)!.hash,
+                             egress: verifyToken(env.ROUTING_MAC_KEY, "egress",
+                                                 leaseTokens(start).egress)!.hash } });
 }
 
 /** The recorded start of `run`. */

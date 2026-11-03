@@ -1,0 +1,6 @@
+#!/bin/sh
+# The runner's command (slice S): Node with E2B's egress CA trusted beside the system's, so the
+# runner's own posts to the egress host, which E2B's proxy intercepts to set the egress token,
+# verify. Root only (mode 0700): the Worker runs it through envd as root.
+export NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/e2b-ca.crt
+exec /usr/local/bin/node /opt/ta/runner/runner.mjs "$@"

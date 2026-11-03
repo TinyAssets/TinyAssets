@@ -1,7 +1,9 @@
 /**
  * A recording fake behind the `SANDBOX` interface (`sandbox.ts`), in tests only: it records
- * every start, cancel and status the owner's object sends, and answers as a test sets it.
- * Nothing is started: slice S's sandbox Worker is the real one.
+ * every start, cancel, status, release, unwait and erase the owner's object sends, and
+ * answers as a test
+ * sets it. Nothing is started: slice S's sandbox Worker (`platform/sandbox`) is the real
+ * one, tested against a fake E2B in its own package.
  */
 import type { SandboxService, SandboxStart, Started } from "../src/sandbox";
 import type { MeterEvent } from "../src/sandbox-time";
@@ -9,15 +11,23 @@ import type { MeterEvent } from "../src/sandbox-time";
 export class RecordingSandbox implements SandboxService {
   readonly starts: SandboxStart[] = [];
   readonly cancels: { run: string; lease_id: string }[] = [];
-  /** What a start answers: started, a refusal's code, or no answer at all (a throw). */
-  answer: Started | "throw" = { started: true };
+  readonly releases: { lease_id: string }[] = [];
+  readonly unwaits: string[] = [];
+  readonly erasures: string[] = [];
+  /**
+   * What a start answers: started, a refusal's code, or no answer at all (a throw); a list
+   * answers each start in turn, its last answer from then on.
+   */
+  answer: Started | "throw" | readonly (Started | "throw")[] = { started: true };
 
   async start(_owner: string, start: SandboxStart): Promise<Started> {
     this.starts.push(start);
-    if (this.answer === "throw") {
+    const answers = Array.isArray(this.answer) ? this.answer : [this.answer];
+    const answer = answers[Math.min(this.starts.length, answers.length) - 1]!;
+    if (answer === "throw") {
       throw new Error("the sandbox did not answer");
     }
-    return this.answer;
+    return answer as Started;
   }
 
   async cancel(_owner: string, request: { run: string; lease_id: string }):
@@ -28,6 +38,20 @@ export class RecordingSandbox implements SandboxService {
 
   async status(): Promise<{ state: "running" | "exited" | "gone" }> {
     return { state: "running" };
+  }
+
+  async release(_owner: string, request: { lease_id: string }): Promise<{ paused: boolean }> {
+    this.releases.push({ lease_id: request.lease_id });
+    return { paused: true };
+  }
+
+  async unwait(owner: string): Promise<void> {
+    this.unwaits.push(owner);
+  }
+
+  async erase(owner: string): Promise<{ killed: number }> {
+    this.erasures.push(owner);
+    return { killed: 1 };
   }
 
   /** The sandbox Worker's log as a test writes it, and whether a read fails. */

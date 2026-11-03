@@ -778,9 +778,9 @@ describe("the reviewer's untested cases (review M-6)", () => {
   });
 
   it("refuses a cancel loudly when no sandbox is bound to stop the run", async () => {
-    // The plain object: production's, with no `SANDBOX` until slice S binds it.
+    // The object with no `SANDBOX` bound.
     const owner = `owner-${crypto.randomUUID()}`;
-    const stub = env.OWNER.getByName(owner);
+    const stub = env.BARE.getByName(owner);
     const bind: Binding = { owner, caller: owner, origin: null, tiers: TIERS };
     await defineAgent(stub, bind, "main", SIGNED_IN);
     const run = `run_${"a".repeat(32)}`;

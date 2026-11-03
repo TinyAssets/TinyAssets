@@ -1,9 +1,10 @@
 /**
  * The `SANDBOX` interface (ADR-034 decision 4.2; `engines-replan.md` §2.1 step 3): what the
- * owner's object asks of slice S's stateless `tinyassets-sandbox` Worker, the only holder
- * of the E2B key, over a service binding. Slice R defines it and calls it; slice S builds
- * the Worker, its config, and its entry in the owner config guard's `SERVICES` (a bound
- * Worker that reaches nothing but E2B).
+ * owner's object asks of the `tinyassets-sandbox` Worker (`platform/sandbox`, slice S), the
+ * only holder of the E2B key, over a service binding. Slice R defined it; slice S built the
+ * Worker, bound it (`wrangler.jsonc`) and held it in the owner config guard's `SERVICES`
+ * (a Worker that reaches nothing but E2B, with one class of its own per owner that
+ * serializes that owner's E2B calls and renews each sandbox before its runtime ceiling).
  *
  * - `start`: resume or create the owner's sandbox and start the in-VM runner for one run, in
  *   the background (E2B's `commands.run(..., { background: true })`), answering at once.
@@ -22,6 +23,16 @@
  *   `unknown` if the runner is lost.
  * - `status`: whether the run's runner still runs, for slice S's lost-runner checks; the
  *   object's status doors read the run's receipt, never this.
+ * - `release` (slice S): the lease ended, so the sandbox is paused unless a run started in
+ *   it since (zero idle tail).
+ * - `unwait` (slice S): the owner has no run waiting for a sandbox any more, so it leaves
+ *   the platform's line and the next owner in it is rung.
+ * - `erase` (slice S; the erasure's step 2): every sandbox of the owner killed, paused ones
+ *   included, and the sandbox Worker's own state of the owner deleted.
+ *
+ * A start may answer `sandbox_waiting` (`SANDBOX_WAITING`): E2B runs as many sandboxes as
+ * its plan allows, and the run waits (`waiting`), never refused, until the platform's line
+ * rings the owner (`sandboxRung`, through the doors Worker's ring consumer).
  * - `meter` (slice P): the Worker's own log of the owner's sandboxes started, paused,
  *   resumed and killed, each with its authority and time, after a cursor; the object reads
  *   it into its sandbox time (`sandbox-time.ts`), and the Worker may drop what a cursor
@@ -95,6 +106,15 @@ export interface SandboxStart {
  */
 export type Started = { readonly started: true } | { readonly started: false; readonly code: string };
 
+/**
+ * The start's answer when the E2B team runs as many sandboxes as its plan allows (the
+ * control record's `sandbox_concurrency_ceiling`, or E2B's own refusal), or another owner
+ * waits ahead in the platform's line: the run is never refused for it. It waits
+ * (`waiting`, the app's "waiting to start", `sandbox_wait`) until the line rings the owner,
+ * and the `runs` lane then starts it again, admitted whole (slice S).
+ */
+export const SANDBOX_WAITING = "sandbox_waiting";
+
 /** The sandbox Worker, as the owner's object binds it (`SANDBOX`). */
 export interface SandboxService {
   start(owner: string, start: SandboxStart): Promise<Started>;
@@ -102,6 +122,19 @@ export interface SandboxService {
     Promise<{ readonly cancelled: boolean }>;
   status(owner: string, request: { readonly run: string; readonly lease_id: string }):
     Promise<{ readonly state: "running" | "exited" | "gone" }>;
+  /**
+   * The lease is over: no run lives under it. The sandbox Worker pauses that sandbox at
+   * once unless a run started in it since (ADR-026's zero idle tail; a paused sandbox costs
+   * nothing and keeps its memory, files and sign-ins). The Worker keeps asking E2B until
+   * the pause lands, and reaps on its own a sandbox idle for a lease's TTL (a release that
+   * never reached it), so an idle sandbox is never left to its ceiling.
+   */
+  release(owner: string, request: { readonly lease_id: string }):
+    Promise<{ readonly paused: boolean }>;
+  /** The owner waits for a sandbox no more: out of the platform's line. */
+  unwait(owner: string): Promise<void>;
+  /** The owner erased: each of their sandboxes killed, the Worker's state of them deleted. */
+  erase(owner: string): Promise<{ readonly killed: number }>;
   /** The log after `after`: at most `METER_BATCH` entries, and the cursor past them. */
   meter(owner: string, request: { readonly after: number }):
     Promise<{ readonly events: readonly MeterEvent[]; readonly next: number }>;
