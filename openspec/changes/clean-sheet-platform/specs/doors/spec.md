@@ -321,6 +321,23 @@ The in-VM runner SHALL post an empty batch as soon as it runs, before the sync; 
 - **WHEN** the agent's `.env` sets `ANTHROPIC_API_KEY`
 - **THEN** the CLI never runs and the run ends failed with a `ta.refused` frame
 
+### Requirement: An agent works in scratch apart from the owner's storage
+Each agent SHALL have a scratch area on its sandbox's own disk (`/scratch/<agent>`, group `ta`), never synced and never counted in the owner's storage, bounded only by the sandbox's disk (the sandbox vendor's limit, the same on every tier), kept between runs in the paused sandbox as a cache. Before a run, scratch unused for the control record's `scratch_retention_days` SHALL be deleted, then, while the disk's free space is under a tenth of it, the least recently used, never a live run's agent's; what went SHALL be told to the agent and the user in plain words, saying their storage is unaffected and never offering an upgrade. A run's engine SHALL be told where scratch is (`TA_SCRATCH`, its tools' caches pointed there, and the run-scoped MCP door's instructions): clones and builds go there, and what the user keeps goes to `/workspace` or leaves by `git push`.
+
+#### Scenario: A repository cloned for a task
+- **WHEN** a run clones a repository into its scratch and builds it
+- **THEN** none of it is synced or counted, and the next run of that agent finds it there unless the disk needed the room or it went unused past the retention
+
+### Requirement: Sync-out streams, the sessions first, the owner's ignore list kept
+Sync-out SHALL read a file a chunk at a time, hashing and scanning it as it reads, and send each batch as it fills, so what it holds is one batch's small files and one chunk whatever the run changed. The engines' sessions SHALL be committed first, in commits of their own. Paths the owner's `/workspace/.ta/sync-ignore` names (regenerable trees by default, the file written where the owner sees and edits it) SHALL never be offered nor removed. An op refused `storage_full` SHALL stay in the sandbox, unmirrored, and be offered again by the next run, the run reporting it once (`ta.storage_full`): the only place an upgrade is offered.
+
+#### Scenario: A large build in the workspace
+- **WHEN** a run leaves hundreds of MB of changed files under `/workspace`
+- **THEN** the sync agent's memory stays bounded, the transcript is committed before them, and an ignored tree is never sent
+
+### Requirement: A full disk never loses the run
+The runner SHALL keep a reserve on the disk (`RESERVE_BYTES`) that it lets go when its own state write meets `ENOSPC`, and before sync-out when the disk is full; a state write that fails even so SHALL leave the state in memory and the run going, so a full disk never leaves a run `unknown`.
+
 ### Requirement: The runner never syncs a secret's bytes
 The sandbox runner (slices R and S) SHALL refuse to sync out any file, or any transcript line, that contains the bytes of a file under its engine's `secret_paths`, read from the records, so a secret an engine's own tool printed or copied never leaves the sandbox by its content (ADR-031 decision 2), whatever path it was written to.
 

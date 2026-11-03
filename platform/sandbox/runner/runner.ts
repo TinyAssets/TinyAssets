@@ -52,7 +52,8 @@ import { remove, safeDirs, safeRead, safeWalk, safeWrite } from "./fsafe";
 import { ancestorEnvFile, heldSecret, homeEnvFile, projectEnvFile, projectEnvRefusal,
          secretAtoms } from "./guards";
 import { project } from "./project";
-import { keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, scratchEnv, scratchNotice,
+import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, scratchEnv,
+         scratchNotice,
          writeIndex,
          writeOrRelease } from "./scratch";
 import { readMirror, SyncClient, SyncFenced, syncIn, syncOut } from "./sync";
@@ -1122,6 +1123,12 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
             continue;
           }
           safeWrite(SYNC_HOME, join(out, rec.id, rel), bytes, 0o644, undefined, 0o755);
+        }
+        // A full disk: ext4 keeps root's own blocks (probed: root still wrote at 0 free), but
+        // the sync agent is its own user, so the runner's reserve goes now, and its mirror
+        // and its staged sessions have room (`scratch.ts`).
+        if (diskOf(STATE).free_bytes < RESERVE_SIZE) {
+          rmSync(RESERVE, { force: true });
         }
         const done = syncAgent(job("out", secrets));
         remove(out);

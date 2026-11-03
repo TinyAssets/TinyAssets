@@ -52,9 +52,9 @@ The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collect
 
 - **tier**: 3
 - **owner setting**: 12
-- **vendor limit**: 9
-- **technical ceiling**: 113
-- **total**: 137
+- **vendor limit**: 10
+- **technical ceiling**: 114
+- **total**: 139
 
 Counted by a script over every table row (`| ` lines past the header, six cells each), the first row and the names row among them.
 
@@ -87,7 +87,7 @@ Flagged for the founder:
 
 ## Chosen retentions
 
-Three expiries are not ceilings: each queue or area is bounded by its count or charge in the
+Four expiries are not ceilings: each queue or area is bounded by its count or charge in the
 10 GB, and needs no expiry to fit. Each is a retention chosen for what it serves, with its
 reason; none refuses a write.
 
@@ -97,6 +97,7 @@ reason; none refuses a write.
   hours), so a crashed run's spills do not hold the owner's storage.
 - `owner/src/registrations.ts` `CARD_TTL_S`, 7 days: a filed registration card waits a week
   for the owner, so an owner away for a week misses none; the client files again past it.
+- the control record's `scratch_retention_days` (30 to start; `sandbox/runner/scratch.ts`): an agent's sandbox scratch unused that long is deleted at its sandbox's next run. Scratch is a cache on the sandbox's own disk, never counted in the owner's storage; 30 days matches Codespaces' default idle deletion and Claude Code's transcript default. It refuses nothing; with none in the record only the disk's own pressure lets scratch go.
 - `owner/src/policy.ts` `POLICY_LIMITS.proposalTtlS`, 90 days: a pending policy proposal
   waits a quarter for the owner's answer, then expires unanswered, so a stale proposal never
   applies against a policy long since changed.
@@ -106,7 +107,7 @@ reason; none refuses a write.
 | Where | Value | Bounds | A user hits | Class | Reason |
 |---|---|---|---|---|---|
 | control record `tiers` (`owner/src/tier.ts`) | free 5, paid 10 | simultaneous runs | a run past them refused `tier_runs` | tier | ADR-034 decision 8, edited in the record with no deploy. |
-| `owner/src/policy.ts` `fileLimits` | the tier's storage: free 25 GB, paid 250 GB | the owner's file bytes, live and in history, and the placed bodies of collections and mail | placed history and acked mail let go first, then refused `file_quota`; with no tier numbers kept, `tier_unread` | tier | The control record's figure, kept from every door's binding. |
+| `owner/src/policy.ts` `fileLimits` | the tier's storage: free 25 GB, paid 250 GB | the owner's file bytes, live and in history, and the placed bodies of collections and mail | placed history and acked mail let go first, then refused `storage_full` (used, total, what to free, the upgrade; 507 at the doors; `storage-full.ts`); with no tier numbers kept, `tier_unread` | tier | The control record's figure, kept from every door's binding. |
 | `owner/src/egress.ts` `EGRESS_LIMITS.openPerRun` | 16 a run (free 80, paid 160) | sandbox model calls streaming at once | a call refused `egress_rate` | tier | Scaled by the tier's runs. Guard term `egress_reservations`, 89.4 MB, costed at `RUNS_CEILING`. |
 | `owner/src/policy.ts` files `max_bytes` | none (the owner may set 0 to 1 PiB) | the owner's own file quota | only below the tier's storage | owner setting | Off by default: the tier's figure binds. |
 | `owner/src/policy.ts` `FILE_DEFAULTS.max_file_bytes` | 40 GiB, its most | one file's size | only the owner's own lower cap | owner setting | Off by default: the most one upload holds (`MAX_INTENT_CHUNKS`). |
@@ -120,6 +121,8 @@ reason; none refuses a write.
 | `owner/src/policy.ts` `MODEL_DEFAULTS.turn_cost` | none (owner may set to $1,000,000) | cost of one sandbox run | only the owner's own cap | owner setting | As above. |
 | `owner/src/policy.ts` `MODEL_DEFAULTS.daily_cost`, `monthly_cost` | none | the owner's and each source's day and month | only the owner's own ceiling | owner setting | As above. |
 | `owner/src/ledger.ts` `WAKE_DEFAULTS` | none: no hourly cap, no batch window (slice W) | an agent's doorbells | nothing by default; with a cap the owner set, wakes past it wait their turn | owner setting | Off by default (`policyWakeLimits`, the owner app's `agent/wake-limits`). A cap is spaced evenly by one `wake_tat` column, no burst. With none, each change rings, one open wake an agent at a time, and the vendor's own limit answers 429, whose `Retry-After` the wake waits out (`wake-kinds.json` records each vendor's). |
+| E2B sandbox disk (`sandbox_disk_bytes`) | 14,825 MiB on our template (14.4 GB at `/`, 10.7 GB free when made; ext4, 3,788,096 inodes, 4 KiB blocks, 320 MB kept for root) | the agents' scratch, the mirror of the owner's files and the engines' homes, shared by an owner's live runs | a tool's write fails `ENOSPC`; old scratch is let go first (`scratch.ts`) and the run is told plainly, never an upgrade | vendor limit | E2B's disk per plan (Hobby 10 GiB, Pro 20+ GiB, fixed at template build; docs.e2b.dev/billing), the same on every tier; probed 2026-11-03 (`scripts/probes/sandboxprobe/`). |
+| `sandbox/runner/scratch.ts` `RESERVE_BYTES` | 256 MiB | the runner's own room on the sandbox disk | nothing: a ballast the runner lets go on `ENOSPC`, and before sync-out on a full disk | technical ceiling | The largest engine transcript measured (86 MB) staged once for sync-out, with the run's state and room to spare. |
 | `owner/src/network.ts` `EGRESS_DEADLINE_S` | 86,400 s | one streamed sandbox model call | a stream past a day is cut `deadline`, settled `unknown` | vendor limit | An E2B Pro sandbox lives at most 24 hours (`engines-replan.md` §3); a subrequest has no time limit while its client stays connected (Workers limits). `LOST_AFTER_S` follows. |
 | `gateway/src/forward.ts` `FORWARD_DEADLINE_MS` | 24 hours | one forwarded request | as `EGRESS_DEADLINE_S` | vendor limit | Held equal to it by a test. |
 | `owner/src/owner-do.ts` `CODE_ANSWER_MAX` | 31 MiB as V8 serializes it | a `code` script's answer (value and output) | answered `answer_too_large`, its calls and what landed kept | technical ceiling | Workers RPC's 32 MiB of serialized arguments or return value (its own error, observed in workerd: "Serialized RPC arguments or return values are limited to 32MiB"), the owner-to-doors hop, less 1 MiB for the envelope. Measured as V8 serializes (`serializedBytes`): a string one byte a unit when every unit is Latin-1, else two bytes a unit for the whole string, so mostly ASCII text with one wide character counts double. pi-codemode's own output bound (16 Mi characters, 100,000 items) is the vendor's, not ours, and is not this path's ceiling: 16 Mi two-byte characters are 32 MiB serialized. |
