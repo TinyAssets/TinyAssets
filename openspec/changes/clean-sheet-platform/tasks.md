@@ -448,9 +448,18 @@ account and no deploy.
   OpenRouter (no `state`, no `iss`) can be connected; that source's own slice solves it
   (for example a separate flow family, or no key exchange beside it) before such sources
   are allowed.
-- [ ] Append-only migrations from the first deploy: once a migration has run on a live
+- [x] Append-only migrations from the first deploy: once a migration has run on a live
   object it is never edited (G3 edited migration 6 in place only because nothing is
-  deployed), held by a guard that pins each deployed migration's text by digest.
+  deployed), held by a guard that pins each deployed migration's text by digest. Slice P:
+  `platform/owner/migrations.json` (`first_deploy`, `deployed` SHA-256s over each
+  migration's statements as the code evaluates them) and `owner/guards/migrations.test.ts`,
+  which fails a pinned migration changed or gone and anything pinned before the marker;
+  today's migrations squashed into one baseline. Until the marker is set, slices still edit
+  in place.
+- [ ] Owed by slice L's deploy kit: mark the first deploy and pin each deploy's migrations,
+  `PIN_MIGRATIONS=<commit> npx vitest run --project guards guards/migrations.test.ts` in
+  `platform/owner` (it refuses to pin a changed one), committing the lock with the deployed
+  code.
 - [ ] Mobile connects and sign-in (the app slice): on mobile the OAuth runs in an external
   browser (RFC 8252), whose cookies are not the WebView's, so the Lax connect binding (and
   the provider's own upstream binding for the owner's sign-in) does not come back with
@@ -1248,14 +1257,41 @@ R, S, M and W.
   awaited `deleteAll`). The design was: top-level `ThreadStore` objects hosted by
   `ThreadHost`, which slice D deleted with the in-object loop; Q1's ceiling and Q8's
   window still hold for the owner's object.
-- [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
-  probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
-  does not emulate it); a live probe of the files Worker's create-once put, which
-  miniflare passed but the live bucket must also: `onlyIf: { etagDoesNotMatch: "*" }`
-  as a wildcard, and which R2 checks first when a key exists and the bytes miss the
-  `sha256` (the precondition or the digest), since the Worker's recheck of an existing
-  key reads either answer; the manifest tables in the nightly export; each droplet volume
-  imported into the manifest and bucket in the cutover window (9).
+- [x] Per-owner SSE-C data keys on every chunk get and put (slice P, in workerd): Cloudflare
+  documents `ssecKey` on the Workers binding's `get`, `put` and `createMultipartUpload`
+  (r2/examples/ssec, the Workers API reference, read 2026-11-03), so it is SSE-C, not
+  client-side encryption. Each owner's data key is 32 random bytes the files Worker mints
+  for its namespace and the object keeps only wrapped (`file_space.data_key`: AES-256-GCM
+  under HKDF-SHA256 of the files Worker's own `FILES_KEYRING`, bound to the namespace and
+  kid; `files/src/datakey.ts`); every put and get presents it, a keyless or foreign one is
+  refused before R2; an existing key is checked by a get under the key, never a keyless
+  `head`. Erasure deletes the nightly manifests (each carries the wrapped key) before the
+  wipe, so a stray chunk is unreadable. Miniflare ignores `ssecKey`, so the files tests
+  hold the Worker to R2's documented answers (`files/test/ssec.ts`).
+- [ ] Owed live (slice L): a probe of `ssecKey` with `onlyIf` and `sha256` on a put, of a get
+  with another key and with none on an SSE-C object, and of a ranged SSE-C get; the files
+  Worker's create-once put on the live bucket (`onlyIf: { etagDoesNotMatch: "*" }` as a
+  wildcard, and which R2 checks first when a key exists and the bytes miss the `sha256`);
+  `FILES_KEYRING` generated and set at the files Worker's deploy. Owed with the first kid
+  rotation: a sweep that wraps every owner's key again under the active kid (the data key
+  never changes, so no chunk is rewritten). Each droplet volume imported into the manifest
+  and bucket in the cutover window (9).
+- [x] The owner export and the nightly manifest (slice P). One stream, `tinyassets-export`
+  version 1 (`owner/src/export.ts`): header, every row of every exported table in key
+  order, every named chunk's bytes once, end; every table of the schema exported (each
+  column decided) or kept out with its reason, credentials, hashes, secrets and the wrapped
+  key never; resumable from any page's cursor. `ownerExport` answers the owner alone in its
+  live session; the owner surface streams it as NDJSON (`POST /app/api/export`). The
+  nightly manifest (`backup.ts`): the same stream without the chunks' bytes, written by
+  each object's own `manifest` lane at its owner's hour of the night, its parts under the
+  data key and its root naming them with the wrapped key; the newest kept.
+- [x] Sandbox time metered per owner (slice P, `owner/src/sandbox-time.ts`): the object reads
+  the sandbox Worker's log of starts, pauses, resumes and kills (`SandboxService.meter`) on
+  its `sandbox` lane, and keeps each run's seconds on its receipt (`sandbox_s`) and each
+  UTC day's sum; `sandboxDays` is the owner's read of it. It limits nothing.
+- [ ] Owed by slice S (or merged with it): the sandbox Worker's side of `meter`, its
+  `SandboxControl` logging each create, resume, pause and kill with its authority and time
+  and dropping what a read's cursor passed.
 
 ## 7. Wakes and outside agents
 

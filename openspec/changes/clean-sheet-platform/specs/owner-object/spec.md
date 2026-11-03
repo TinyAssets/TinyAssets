@@ -62,7 +62,7 @@ A service binding the owner Worker holds SHALL be only to a Worker the config gu
 
 #### Scenario: The bindings today
 - **WHEN** the owner Worker's config is checked
-- **THEN** it holds `FILES`, to the files Worker holding exactly one `r2_buckets` entry, `GATEWAY`, to the model gateway holding no binding and declaring only its keyring secret by name, and `HOOKS`, to the hooks Worker binding only its own `CodemodeSandbox` class; one store, `CONTROL`, the doors' namespace of the platform's control record alone, which only `control-gate.ts` reads; and no Durable Object namespace; `SANDBOX`, the sandbox Worker the runs call (`sandbox.ts`), is unbound until slice S adds that Worker and its allow-list entry, so every run is refused `sandbox_absent` meanwhile
+- **THEN** it holds `FILES`, to the files Worker holding exactly one `r2_buckets` entry and declaring only its data keys' ring secret (`FILES_KEYRING`) by name, `GATEWAY`, to the model gateway holding no binding and declaring only its keyring secret by name, and `HOOKS`, to the hooks Worker binding only its own `CodemodeSandbox` class; one store, `CONTROL`, the doors' namespace of the platform's control record alone, which only `control-gate.ts` reads; and no Durable Object namespace; `SANDBOX`, the sandbox Worker the runs call (`sandbox.ts`), is unbound until slice S adds that Worker and its allow-list entry, so every run is refused `sandbox_absent` meanwhile
 
 #### Scenario: The bound Worker gains a way on
 - **WHEN** the files Worker's config gains a Durable Object namespace, a service, a queue producer, a workflow, a dispatch namespace, a Worker loader, an unsafe binding, a tail consumer, a KV namespace, a D1 database or a second bucket, at top level or in an environment
@@ -540,14 +540,14 @@ A sync op made against a version that has moved on SHALL leave the current versi
 - **THEN** the sandbox's content is saved as `notes.md.ta-conflict-<epoch>-2` and the other file stays
 
 ### Requirement: The files Worker moves bytes and never sees a path
-The files Worker SHALL hold the platform's only bucket binding and bind nothing else, serve no URL, and take only hex namespaces, chunk hashes and bytes, moving at most two chunks' bytes a call. Its keys SHALL be only `o/<ns>/c/<sha256>`, built by one function. A put SHALL be create-once and verified by R2's SHA-256 check; an existing key SHALL count as stored only when it holds those bytes.
+The files Worker SHALL hold the platform's only bucket binding and bind nothing else, serve no URL, and take only hex namespaces, chunk hashes and bytes, moving at most two chunks' bytes a call. Its keys SHALL be only `o/<ns>/c/<sha256>` and the nightly manifest's `o/<ns>/m/<day>[/<part>]`, built by one module. A put SHALL be create-once and verified by R2's SHA-256 check; an existing key SHALL count as stored only when it holds those bytes, read back under the owner's key.
 
 #### Scenario: Bytes that miss their hash
 - **WHEN** a put names a hash its bytes do not have
 - **THEN** it is refused and nothing is stored
 
 ### Requirement: The binder may stream an owner's chunks
-The binder is the trust root: the HTTP door's binder MAY read an owner's namespace from that owner's object and stream chunks to the files Worker itself, since a binder already reaches every owner's object; no owner's object SHALL hand out another owner's namespace.
+The binder is the trust root: the HTTP door's binder MAY read an owner's namespace and wrapped data key from that owner's object and stream chunks to the files Worker itself, since a binder already reaches every owner's object; no owner's object SHALL hand out another owner's namespace.
 
 #### Scenario: The binder streams a large read
 - **WHEN** the binder serves Alice's large file
@@ -755,7 +755,7 @@ Only the owner's own authority SHALL create, change, move into or out of, or rem
 - **THEN** each is refused with the same code, and the owner's skills stand as the owner left them
 
 ### Requirement: Erasing the owner ends every run before the owner is wiped
-Erasing the owner SHALL mark it erasing, after which every door refuses and no lane runs; end every run (the sandbox's in-flight egress streams, the owner app's sockets, and each live run's cancel through the sandbox; the sandbox slice adds the sandbox's kill and the session files' purge), recorded as the erasure's second step; then `deleteAll()` the owner and leave one `erased` admission row, the tombstone, in the wiped database. Each step SHALL resume after a crash from the step the mark records. An object holding the tombstone SHALL migrate nothing, start no Lifecycle and refuse every door.
+Erasing the owner SHALL mark it erasing, after which every door refuses and no lane runs; end every run (the sandbox's in-flight egress streams, the owner app's sockets, and each live run's cancel through the sandbox; the sandbox slice adds the sandbox's kill and the session files' purge), recorded as the erasure's second step; delete every nightly manifest from R2, each a copy of the owner's wrapped data key, after any manifest pass under way; then `deleteAll()` the owner and leave one `erased` admission row, the tombstone, in the wiped database. Each step SHALL resume after a crash from the step the mark records. An object holding the tombstone SHALL migrate nothing, start no Lifecycle and refuse every door.
 
 #### Scenario: A crash mid-erasure
 - **WHEN** the object dies after the mark, or after every run ended, or after Lifecycle's alarm was disabled, or its wipe failed
@@ -995,3 +995,47 @@ Each frame (`{v, run, seq, at, kind, event}`) SHALL be relayed to the owner app'
 #### Scenario: A late joiner
 - **WHEN** a socket attaches to a conversation whose run has relayed frames
 - **THEN** it receives the run's tail first, then each frame as it comes
+
+### Requirement: Every chunk is put and read under its owner's data key
+Every chunk get and put, a file's and a placed body's alike, and every nightly manifest part SHALL carry its owner's own SSE-C data key (R2's `ssecKey`). The data key SHALL be 32 random bytes made by the files Worker for one namespace and kept only wrapped: AES-256-GCM under a wrapping key derived for that namespace from the files Worker's own keyring (`FILES_KEYRING`, HKDF-SHA256), its additional data binding the namespace and the kid, so the owner's object holds no key it can use and a wrapped key presented for another namespace fails. A get or put with no key, or one that does not open, SHALL be refused before R2 is reached; a missing or malformed ring SHALL fail every call loudly. Erasure SHALL leave no copy of the wrapped key, so a chunk that outlives the prefix delete is unreadable.
+
+#### Scenario: Another owner's key
+- **WHEN** a chunk put under Alice's key is read with Bob's wrapped key, or with a second key minted for Alice's own namespace
+- **THEN** Bob's key is refused `data_key_refused` before R2 is reached, and the second key is refused by R2's SSE-C check
+
+#### Scenario: An erased owner's stray chunk
+- **WHEN** the owner is erased and a chunk of theirs is still in the bucket
+- **THEN** no manifest root and no object row holds their wrapped key, so the chunk cannot be read
+
+### Requirement: The owner export streams everything the owner holds, to the owner alone
+The owner's export SHALL be one stream in the documented `tinyassets-export` format, version 1 (`export.ts`): a header naming the schema, every row of every exported table in its key's order, the bytes of every chunk some content names once each, and an end line. It SHALL be read a page at a time, each page's cursor resuming at the next row, and refuse a cursor it never handed out. Every table of the schema SHALL be either exported, with every column exported or kept out with its reason, or kept out with its reason; sealed credentials, flows, session and ticket hashes, run and lease secrets, the namespace and the wrapped key SHALL never be exported. Its door SHALL answer only the owner, in its live session: no outside client, no run, and no request without the session.
+
+#### Scenario: A round trip
+- **WHEN** the owner exports after writing a small file, a chunked file and a collection row
+- **THEN** each exported table's rows equal the table's, and the files rebuild byte for byte from the stream
+
+#### Scenario: A client asks
+- **WHEN** an outside client, an API key or an MCP token calls the export
+- **THEN** it is refused, and the owner surface answers `403`
+
+### Requirement: The nightly manifest is written by the owner's own schedule
+Each owner's object SHALL write its export stream, without the chunks' bytes, to R2 once a night, from its own `manifest` lane (its day's start in UTC plus the owner's own offset), never from a platform cron of every owner, and only once the object serves its owner. The parts SHALL be under the owner's data key and the root, written last, SHALL name each part's hash and size and carry the wrapped key, so a recovery needs only the keyring. The newest finished manifest SHALL be kept, and an older one deleted root first once a new one finishes.
+
+#### Scenario: Tonight's manifest
+- **WHEN** the owner's manifest is due
+- **THEN** the object's own alarm writes its parts and root, deletes the older one, and sets its job for the next night
+
+### Requirement: A deployed migration is never edited
+Once the owner Worker's first deploy is marked in `platform/owner/migrations.json`, every deployed migration SHALL be pinned there by the SHA-256 of its statements as the code evaluates them, and the migrations guard SHALL fail a pinned migration that changed or is gone; a new shape SHALL be a new migration at the end. The deploy SHALL mark the first deploy and pin each migration it ships; nothing SHALL be pinned without that mark, and until it is set migrations may be edited in place.
+
+#### Scenario: A deployed migration edited in place
+- **WHEN** a pinned migration's statements change
+- **THEN** the guard fails, and the deploy refuses to pin
+
+### Requirement: Sandbox time is metered per run and per day, and limits nothing
+The object SHALL read the sandbox Worker's own log of each sandbox's start, pause, resume and kill on its `sandbox` lane, after a settled run has no sandbox time and while a span stands open, and apply it in one unit. A run's receipt SHALL carry its sandbox seconds (`sandbox_s`), the time its sandbox ran between its start and its settle, once the log is read past its settle; each UTC day SHALL sum the owner's sandboxes' running time once however many runs they held. No door, admission or run SHALL read it to refuse anything.
+
+#### Scenario: A pause and a resume inside a run
+- **WHEN** a run from 5 s to 30 s shares a sandbox that ran 0-10 s and 20-35 s
+- **THEN** its receipt carries 15 s and the day 25 s
+

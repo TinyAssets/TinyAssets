@@ -339,3 +339,10 @@ The MCP door SHALL advertise `events` in its `initialize` and `server/discover` 
 - **WHEN** the callback answers another challenge, or `404`
 - **THEN** the subscribe answers `-32015` with `challenge_failed` or `http_4xx`, and nothing is stored
 
+### Requirement: The owner export is an owner-surface stream
+`POST /app/api/export`, with at most a `cursor`, SHALL answer the owner's export as newline-delimited JSON (`application/x-ndjson`): the object's pages in order, each but the last followed by a `{"t":"cursor"}` line, up to `EXPORT_PAGES` pages a response (a technical ceiling on one request's work), so a client resumes from the last cursor it read. The first page SHALL be read before the response begins, so a refusal is the door's status.
+
+#### Scenario: The owner takes its data
+- **WHEN** the owner's app posts `{}` with its session
+- **THEN** the stream begins with the header and ends with `{"t":"end"}`
+
