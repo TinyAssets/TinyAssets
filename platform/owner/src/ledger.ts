@@ -101,6 +101,28 @@ const DUE = "state IN ('queued', 'held_cap') AND agent_id IN (SELECT agent_id FR
 export const RUN_NO_MAILBOX = "run_no_mailbox: a run's mail is its input; it reads and acks " +
   "no mailbox";
 
+/** A framed mail's header, past which `mailInput` fails loudly: the queue's room for it. */
+export const MAIL_HEADER_BYTES = 1024;
+
+/**
+ * A mail run's input: its own mail's envelope (who sent it, the room, the message to
+ * answer), then the body verbatim. The envelope is the run's own mail, so it tells the run
+ * nothing past its authority, and it is all a woken agent needs to answer by a deliberate
+ * post (`room_post` in that room, the message its parent).
+ */
+export function mailInput(mail: Pick<Delivery, "sender_id" | "sender_kind" | "sender_name"
+                                     | "room_id" | "message_id">, body: string): string {
+  const header = "[TinyAssets mail]\n" +
+    `from: ${mail.sender_name} (${mail.sender_kind} ${mail.sender_id})\n` +
+    `room: ${mail.room_id}\n` +
+    `message: ${mail.message_id}\n` +
+    `To answer by mail, post in room ${mail.room_id} with parent_id ${mail.message_id}.\n\n`;
+  if (utf8Bytes(header) > MAIL_HEADER_BYTES) {
+    throw new Error("a mail's envelope is past its bound");
+  }
+  return header + body;
+}
+
 /** The ledger id of the owner's agent `agent`: `ta_` and its name's digest, 16 hex. */
 export function nativeId(agent: string): string {
   return "ta_" + digest(`tinyassets-native-agent\0${agent}`).slice(0, 16);
@@ -306,6 +328,9 @@ export interface Delivery {
   /** The thread's first message: the conversation key. */
   readonly thread: string;
   readonly sender_id: string;
+  readonly sender_kind: string;
+  /** Who sent it, by name: the owner, an outside agent's display name, an agent's name. */
+  readonly sender_name: string;
   readonly body: string | null;
   readonly integrity: Integrity;
   readonly authority: MailAuthority | null;
@@ -725,9 +750,11 @@ export class Ledger {
       }
       if (usage.agents >= limits.maxAgentRows) {
         // At most `maxAgentRows` rows to look through, and only when the registry is full.
+        // Agents retired at one instant (the runtime's clock stands still in a unit) go in
+        // their names' order, never their digests'.
         const forgotten = sql.exec<{ agent_id: string }>(
           "DELETE FROM native_agents WHERE agent_id = (SELECT agent_id FROM native_agents " +
-            "WHERE retired_at IS NOT NULL ORDER BY retired_at, agent_id LIMIT 1) " +
+            "WHERE retired_at IS NOT NULL ORDER BY retired_at, agent LIMIT 1) " +
             "RETURNING agent_id",
         ).toArray()[0];
         if (forgotten === undefined) {
@@ -1246,10 +1273,16 @@ export class Ledger {
 
   /** The oldest mail no run has taken, its body checked against its hash. A read. */
   nextMail(): Delivery | null {
-    const row = this.#sql.exec<StoredMessage & { recipient: string; agent: string }>(
-      "SELECT m.*, r.agent_id AS recipient, n.agent FROM native_agents n " +
-        "JOIN ledger_recipients r ON r.agent_id = n.agent_id AND r.state = 'queued' " +
+    // Driven from the agents (a `CROSS JOIN` keeps that order): each agent's queued rows
+    // by `recipients_by_state`, an index seek an agent; only those rows are sorted.
+    const row = this.#sql.exec<StoredMessage & { recipient: string; agent: string;
+                                                 sender_name: string | null }>(
+      "SELECT m.*, r.agent_id AS recipient, n.agent, coalesce(s.agent, o.display_name) " +
+        "AS sender_name FROM native_agents n " +
+        "CROSS JOIN ledger_recipients r ON r.agent_id = n.agent_id AND r.state = 'queued' " +
         "JOIN ledger_messages m ON m.message_id = r.message_id " +
+        "LEFT JOIN native_agents s ON s.agent_id = m.sender_id " +
+        "LEFT JOIN outside_agents o ON o.agent_id = m.sender_id " +
         "ORDER BY r.seq LIMIT 1").toArray()[0];
     if (row === undefined) {
       return null;
@@ -1260,7 +1293,9 @@ export class Ledger {
       ? [null, "missing"]
       : digest(stored.body) !== row.body_sha256 ? [null, "tampered"] : [stored.body, "ok"];
     return { message_id: row.message_id, agent: row.agent, agent_id: row.recipient,
-             room_id: row.room_id, thread: row.chain_root, sender_id: row.sender_id, body,
+             room_id: row.room_id, thread: row.chain_root, sender_id: row.sender_id,
+             sender_kind: row.sender_kind,
+             sender_name: row.sender_kind === OWNER ? OWNER : row.sender_name ?? "", body,
              integrity, authority: authorityOf(row.authority, row.command_center_id),
              attended: row.attended === 1 };
   }

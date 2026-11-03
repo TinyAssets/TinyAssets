@@ -129,7 +129,7 @@ import type { HooksService } from "./codemode";
 import {
   type Actor, type Agent, type ChainMail, clock, type Delivery, Ledger, type MailAuthority,
   type MailPage, RUN_NO_MAILBOX,
-  MAX_BODY, type NativeAgent, type Origin, outsideOrigin, type Posted, registrant,
+  MAIL_HEADER_BYTES, mailInput, MAX_BODY, type NativeAgent, type Origin, outsideOrigin, type Posted, registrant,
   type Source,
 } from "./ledger";
 import { type Notice, Notices } from "./notices";
@@ -726,8 +726,11 @@ function flag(value: unknown, what: string): boolean {
 
 /** The agent a scoped client acts as when its call names none. */
 export const MAIN_AGENT = "main";
-/** The most bytes a mail's body is (`MAX_BODY` characters of up to 4 bytes): a queued input's. */
-const MAIL_INPUT_BYTES = 4 * MAX_BODY;
+/**
+ * The most bytes a mail's input is: its envelope, and its body (`MAX_BODY` characters of up
+ * to 4 bytes); a queued input's.
+ */
+const MAIL_INPUT_BYTES = MAIL_HEADER_BYTES + 4 * MAX_BODY;
 /** An agent's file, whose agent is a ledger identity while it exists (slice ID). */
 const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
 
@@ -2977,8 +2980,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * One mail to one of the owner's agents started as that agent's run, unattended: its input
-   * the mail's body, its conversation its thread's under the mail's authority (made with
+   * One mail to one of the owner's agents started as that agent's run, attended only when a
+   * person sent it: its input the mail's envelope and body (`mailInput`), all the run needs
+   * to answer by a deliberate post; its conversation its thread's under the mail's authority
+   * (made with
    * the run when the thread has none), its authority the mail's (a client's stamp at its
    * generation, acting as this agent: held to the intersection of the agent's scopes and
    * the client's grant there, and refused once that grant moved), its retry key the mail and
@@ -2998,7 +3003,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       if (mail.body === null) {
         throw new Refused(`mail_${mail.integrity}: the mail's body is ${mail.integrity}`);
       }
-      const prompt = mail.body;
+      const prompt = mailInput(mail, mail.body);
       const read = await this.#readAgent(mail.agent);
       const conversation = mailConversation(mail.agent, mail.thread, origin?.client ?? null);
       await this.#launch(read, () => ({

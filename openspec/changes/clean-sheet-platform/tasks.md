@@ -961,7 +961,8 @@ R, S, M and W.
     `ta_` and its name's digest) beside the outside agents, made as the file appears and
     retired as it goes, in the file change's own unit (`Files`' path observer). A live one
     takes one of the ledger's reserved mailboxes (`ledger_agents_full` past them); its row
-    counts in the registry, the oldest retired one forgotten first. A retired agent's mail
+    counts in the registry, the oldest retired one forgotten first (ties at one instant by
+    name). A retired agent's mail
     is kept and readable by the other side; new mail to or from it is refused
     `agent_retired`, and its untaken mail fails, what it sent included (a disabled outside
     agent's too).
@@ -972,7 +973,9 @@ R, S, M and W.
     authority's mail. Each mail keeps its sender's authority (`ledger_messages.authority`)
     and whether a person sent it (`attended`: the owner's own call).
   - Mail to an agent waits `queued` for the `runs` lane, which starts the agent's run
-    through slice R's admission: its input the mail; attended only when a person sent it
+    through slice R's admission: its input its own mail's envelope (sender name, kind and
+    id, room, message id) and then the body verbatim, all a woken agent needs to answer by
+    a deliberate post (review N1); attended only when a person sent it
     (a run's mail and a client's are unattended); its conversation the thread's (one a
     thread, agent and authority, keyed by their digest, no index); its authority the
     mail's (a client's mail held to the intersection with its grant, refused once the grant
