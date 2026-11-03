@@ -13,8 +13,16 @@
  *    rules alone.
  *
  * Routes, each a door or a binder sequence:
- * - `keys`, `keys/revoke`, `keys/delete`: `api-keys.ts`.
+ * - `keys`, `keys/list`, `keys/revoke`, `keys/delete`: `api-keys.ts` (the key store's mint
+ *   and list in the object).
  * - `grants/revoke`: an MCP client's revoke, object then provider (`revoke.ts`).
+ * - `grants/set`: the owner's set of a client's grant, in session (its mode, scopes,
+ *   profile); a set to `revoked` revokes at the provider too, as `grants/revoke` does.
+ * - `account/erase`: the owner's erasure, in session and confirmed (`erase.ts`).
+ * - `hooks/create`, `hooks/list`, `hooks/set`, `hooks/revoke`: the owner's inbound
+ *   bindings and their directory entries (`inbound.ts`).
+ * - `files/upload/begin`, `PUT files/upload/<intent_id>`, `files/upload/commit`: an upload,
+ *   its bytes streamed to `FILES` by the binder (`file-bytes.ts`).
  * - `outside-agents`: the owner's browser registering an agent for an API key it holds.
  * - `session/extend`: the session's renewal.
  * - `session/close`: sign-out, the session closed and the presented token's grant revoked.
@@ -48,10 +56,14 @@ import {
 } from "./config";
 import { ownerGate, ownerRead } from "./control";
 import {
-  deleteOwnKey, KeyRefused, looksLikeKey, mintKey, registeringEntry, revokeKey,
+  deleteOwnKey, KeyRefused, listKeys, looksLikeKey, mintKey, registeringEntry, revokeKey,
 } from "./api-keys";
 import { CONNECT_ROUTES, ConnectRefused } from "./connect";
-import { revokeClient } from "./revoke";
+import { eraseOwner } from "./erase";
+import { streamUpload, UPLOAD_BEGIN, UPLOAD_COMMIT, UPLOAD_PREFIX } from "./file-bytes";
+import { HOOK_ROUTES } from "./inbound";
+import { revokeClient, setClient } from "./revoke";
+import type { Upstream } from "./upstream";
 import { authorizationServer } from "./oauth";
 import { clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
 import type { Sources } from "./sources";
@@ -77,7 +89,7 @@ export function bearer(request: Request): string | null {
 }
 
 type Route = (env: DoorsEnv, owner: Bound, request: Record<string, unknown>,
-              token: string) => Promise<Response>;
+              token: string, upstream: Upstream) => Promise<Response>;
 
 /**
  * Sign-out: the session closed in the object when the browser presented it, and the
@@ -108,6 +120,18 @@ async function signOut(env: DoorsEnv, { binding, stub }: Bound, _request: unknow
 
 const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
   "keys": async (env, owner, request) => json(200, await mintKey(env, owner, request)),
+  "keys/list": async (_env, owner) => json(200, await listKeys(owner)),
+  "grants/set": async (env, owner, request) => json(200, await setClient(env, owner, request)),
+  "account/erase": async (env, owner, request, _token, upstream) =>
+    json(200, await eraseOwner(env, owner, request, upstream),
+         { "Set-Cookie": clearedCookie() }),
+  "files/upload/begin": async (_env, { binding, stub }, request) =>
+    json(200, await stub.fileUploadBegin(binding, request as never)),
+  "files/upload/commit": async (_env, { binding, stub }, request) =>
+    json(200, await stub.fileUploadCommit(binding, request as never)),
+  ...Object.fromEntries(Object.entries(HOOK_ROUTES).map(([path, route]) =>
+    [path, async (env: DoorsEnv, owner: Bound, request: Record<string, unknown>) =>
+      json(200, await route(env, owner, request))])),
   "keys/revoke": async (env, owner, request) => json(200, await revokeKey(env, owner, request)),
   "keys/delete": async (env, owner, request) =>
     json(200, await deleteOwnKey(env, owner, request)),
@@ -203,8 +227,8 @@ async function ownerToken(env: DoorsEnv, token: string | null) {
   return app;
 }
 
-export async function serveApp(request: Request, env: DoorsEnv, sources: Sources):
-    Promise<Response> {
+export async function serveApp(request: Request, env: DoorsEnv, sources: Sources,
+                               upstream: Upstream): Promise<Response> {
   if (new URL(request.url).pathname.slice(OWNER_SURFACE.length) === SOCKET_PATH) {
     return socketUpgrade(request, env);  // its credential is its ticket, never a bearer
   }
@@ -215,6 +239,12 @@ export async function serveApp(request: Request, env: DoorsEnv, sources: Sources
   }
   const session = sessionOf(request);
   const path = new URL(request.url).pathname.slice(OWNER_SURFACE.length);
+  if (path.startsWith(UPLOAD_PREFIX) && path !== UPLOAD_BEGIN && path !== UPLOAD_COMMIT) {
+    // An upload's bytes: the owner's token, the maintenance gate, then the stream.
+    const owner = bindOwner(env, token, undefined);
+    const gated = await ownerGate(env, owner.binding.owner);
+    return gated ?? await streamUpload(request, env, owner, path.slice(UPLOAD_PREFIX.length));
+  }
   const registering = path === "outside-agents";
   const ticketing = path === TICKET_PATH;
   const route = Object.hasOwn(ROUTES, path) ? ROUTES[path] : undefined;
@@ -251,7 +281,7 @@ export async function serveApp(request: Request, env: DoorsEnv, sources: Sources
     if (connect !== undefined) {
       return await connect({ env, bound: owner, body: parsed, request, sources });
     }
-    return await route!(env, owner, parsed, presented!);
+    return await route!(env, owner, parsed, presented!, upstream);
   } catch (error) {
     if (error instanceof KeyRefused || error instanceof ConnectRefused) {
       return failure(error.status, error.message);

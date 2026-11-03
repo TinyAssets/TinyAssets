@@ -1098,6 +1098,13 @@ export class Ledger {
     return { id: to.id, native: to.kind === "native" ? to.native.agent : null };
   }
 
+  /** The message the owner posted under `clientMessageId`, if any: an inbound replay's. */
+  ownerPosted(clientMessageId: string): string | null {
+    return this.#sql.exec<{ message_id: string }>(
+      "SELECT message_id FROM ledger_messages WHERE sender_id = ? AND client_message_id = ?",
+      OWNER, clientMessageId).toArray()[0]?.message_id ?? null;
+  }
+
   // -- ROOM_POST: a pair's room -----------------------------------------------
 
   post(origin: Actor, roomId: unknown, clientMessageId: unknown, body: unknown,

@@ -12,8 +12,10 @@
  *   (`403` otherwise), then the resource host (the token), the kill switch, the binder
  *   and the MCP handler.
  * - `/api/*`: the `Cookie` header removed, then the key (`api.ts`).
- * - `/hooks/*`: the inbound door is owed (tasks 2), so `404`, and its request is never
- *   read; the inbound door strips the `Cookie` header as `/mcp` and `/api` do.
+ * - `/hooks/inbound/<token>`: the inbound door (`inbound.ts`), the `Cookie` header removed;
+ *   any other `/hooks/` path is `404`, its request never read.
+ * - `/oauth/token`, `/oauth/revoke`: a `client_id` the provider must fetch the metadata of
+ *   counts against the caller's CIMD fetches first (`throttle.ts`).
  * - `/app/api/*`: the owner surface (`app.ts`).
  * - `/authorize`, `/oauth/upstream/callback`: the sign-in (`authorize.ts`).
  * - `/oauth/connect/callback/<source>[/<state>]`: a model source's OAuth redirect
@@ -34,10 +36,13 @@ import { authorize, callback } from "./authorize";
 import { connectCallback } from "./connect";
 import { bindMcp, withTiers } from "./binder";
 import {
-  CONNECT_CALLBACK_PATH, type DoorsEnv, EGRESS_ORIGIN, MCP_ORIGINS, PUBLIC_ORIGIN, WEB_CLIENT,
-  WEB_REDIRECT,
+  CONNECT_CALLBACK_PATH, type DoorsEnv, EGRESS_ORIGIN, INBOUND_PATH, MCP_ORIGINS, PUBLIC_ORIGIN,
+  WEB_CLIENT, WEB_REDIRECT,
 } from "./config";
 import { outsideRead } from "./control";
+import { boundedText } from "./body";
+import { serveInbound } from "./inbound";
+import { cimdAllowed, OAUTH_FORM_MAX, tooMany } from "./throttle";
 import { serveMcp } from "./mcp";
 import { authorizationServer, mcpResource } from "./oauth";
 import { OWNER_SURFACE, withoutCookie } from "./session";
@@ -87,11 +92,14 @@ export async function serve(request: Request, env: DoorsEnv, ctx: ExecutionConte
   if (path.startsWith("/api/")) {
     return serveApi(withoutCookie(request), env);
   }
+  if (path.startsWith(INBOUND_PATH)) {
+    return serveInbound(withoutCookie(request), env);
+  }
   if (path.startsWith("/hooks/")) {
     return notFound();
   }
   if (path.startsWith(OWNER_SURFACE)) {
-    return serveApp(request, env, sources);
+    return serveApp(request, env, sources, upstream);
   }
   if (path === CONNECT_CALLBACK_PATH || path.startsWith(`${CONNECT_CALLBACK_PATH}/`)) {
     return connectCallback(request, sources);
@@ -107,6 +115,16 @@ export async function serve(request: Request, env: DoorsEnv, ctx: ExecutionConte
   }
   if (path.startsWith("/.well-known/oauth-protected-resource")) {
     return mcpResource(() => Promise.resolve(notFound())).fetch(request, env, ctx);
+  }
+  if ((path === "/oauth/token" || path === "/oauth/revoke") && request.method === "POST") {
+    // The form is read from a copy, bounded, before the provider reads the request itself.
+    const form = await boundedText(request.clone(), OAUTH_FORM_MAX);
+    if (form === null) {
+      return new Response("the request body is too large", { status: 413 });
+    }
+    if (!await cimdAllowed(env, request, new URLSearchParams(form).get("client_id"))) {
+      return tooMany();
+    }
   }
   if (path.startsWith("/.well-known/") || path.startsWith("/oauth/")) {
     return authorizationServer(env).fetch(request, env, ctx);

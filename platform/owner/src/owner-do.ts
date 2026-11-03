@@ -121,6 +121,11 @@ import { EVENT_FRAMES_MAX, eventsBounded, FRAME_UNITS_MAX, PostGate } from "./ru
 import { SANDBOX_ABSENT, type SandboxService, started } from "./sandbox";
 import { TICKET_REFUSED } from "./socket-shape";
 import { Tickets } from "./tickets";
+import { type ApiKey, keyId, keyName, Keys } from "./keys";
+import {
+  bindingId, created as inboundCreated, Inbound, type InboundBinding, ownerProof, PROOF_INVALID,
+} from "./inbound";
+import { proves } from "./inbound-proof";
 import { PLATFORM_TIER_ONLY, TIER_RUNS, type TierName, tierNumbers } from "./tier";
 import {
   type Changed, Collections, Conflict, type HistoryEntry, type Page, type Row,
@@ -143,8 +148,9 @@ import {
 import {
   type Actor, type Agent, type ChainMail, clock, type Delivery, Ledger, type MailAuthority,
   type MailPage, RUN_NO_MAILBOX,
-  MAIL_HEADER_BYTES, mailInput, MAX_BODY, type NativeAgent, type Origin, outsideOrigin, type Posted, registrant,
-  type Source,
+  apiKeyOrigin, MAIL_HEADER_BYTES, mailInput, MAX_BODY, type NativeAgent, nativeId, type Origin,
+  outsideOrigin,
+  type Posted, registrant, type Source,
 } from "./ledger";
 import { type Notice, Notices } from "./notices";
 import { Erasure } from "./erase";
@@ -179,6 +185,10 @@ import { runWakes, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "./wake
  * agent), or null. The object takes every sender and reader from here, never from a
  * request field.
  */
+/** An inbound event's binding at any door but `inboundAccept`, and the reverse. */
+export const INBOUND_ONLY = "an inbound event's route reaches the inbound door alone";
+export const INBOUND_DOOR = "the inbound door takes an inbound event's route alone";
+
 export interface Binding {
   readonly owner: string;
   readonly caller: string;
@@ -221,6 +231,12 @@ export interface Binding {
    */
   readonly grant?: string;
   readonly expires_at?: number;
+  /**
+   * An inbound event's route, as the binder read it from the directory (`h:` or `i:`): the
+   * owner's binding it names, at the revision the entry carries. Only `inboundAccept` takes
+   * it; every other door refuses it.
+   */
+  readonly inbound?: { readonly binding: string; readonly revision: number };
 }
 
 export type { Origin, Source, WakeSender };
@@ -435,11 +451,72 @@ export interface SubscriberRequest {
   readonly agent_id: string;
 }
 
-/** The platform's change of the owner's admission (`admission.ts`). */
-export interface AdmissionRequest {
-  readonly reason: string;
-  readonly suspended: boolean;
+/** A key's mint (`keyMint`): its id, name and scopes, and an agent's held request. */
+export interface KeyMintRequest {
+  readonly key_id: string;
+  readonly name: string;
+  readonly scopes: unknown;
+  readonly proposal?: { readonly request_id: string; readonly digest: string };
 }
+
+/** What the owner types to erase its account. */
+export const ERASE_CONFIRM = "erase my account";
+
+function erasureConfirmed(request: unknown): void {
+  const r = policyFields(request, ["confirm"]);
+  if (r["confirm"] !== ERASE_CONFIRM) {
+    throw new Invalid(`an erasure is confirmed by ${JSON.stringify(ERASE_CONFIRM)}`);
+  }
+}
+
+export interface EraseRequest {
+  readonly confirm: string;
+}
+
+export interface InboundCreateRequest {
+  readonly kind: "capability" | "shared";
+  readonly agent: string;
+  readonly route: string;
+  readonly profile?: unknown;
+  readonly secret?: string;
+}
+
+export interface InboundSetRequest {
+  readonly binding_id: string;
+  readonly expected_revision: number;
+  readonly enabled?: boolean;
+  readonly agent?: string;
+}
+
+export interface BindingRequest {
+  readonly binding_id: string;
+}
+
+/** An inbound event as the binder hands it: its id and time, its raw bytes, its headers. */
+export interface InboundEvent {
+  readonly event_id: string;
+  readonly event_at: number;
+  readonly body: Uint8Array;
+  readonly headers: Readonly<Record<string, string>>;
+}
+
+export type InboundAnswer =
+  | { readonly state: "admitted"; readonly receipt: string; readonly deduped: boolean }
+  | { readonly state: "refused"; readonly error: string; readonly retry?: true }
+  | { readonly state: "no_op"; readonly error: string };
+
+export interface UploadStoredRequest {
+  readonly intent_id: string;
+  readonly chunks: readonly string[];
+}
+
+/**
+ * The platform's change of the owner's admission (`admission.ts`): its admit at sign-up, or
+ * a suspension's reason and whether it holds.
+ */
+export type AdmissionRequest =
+  | { readonly admit: true }
+  | { readonly reason: string; readonly suspended: boolean };
 
 /**
  * The object's environment: three service bindings, `FILES`, to the files Worker, which
@@ -1133,6 +1210,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** The owner app's sockets and the runs' live tails (`relay.ts`), a Lifecycle capability. */
   readonly #relay: Relay;
   readonly #tickets: Tickets;
+  /** The owner's API keys (`keys.ts`): the key store. */
+  readonly #keys: Keys;
+  /** The owner's inbound bindings (`inbound.ts`). */
+  readonly #inbound: Inbound;
   /** The runners' events posts held at once (`EVENTS_IN_FLIGHT`). */
   readonly #posts = new PostGate();
   /** Who waits on a run's settle, on this instance only: a door's bounded wait. */
@@ -1251,6 +1332,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return { generation, settings: modelSettings(document) };
     });
     this.#tickets = new Tickets(storage);
+    this.#keys = new Keys(storage);
+    this.#inbound = new Inbound(storage);
     this.#runs = new Runs(storage, {
       unadmitted: () => workRefusal(admission(storage)),
       sandboxBound: () => env.SANDBOX !== undefined,
@@ -1433,9 +1516,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (binding.session !== undefined && source.kind !== "api_key") {
       throw new Refused(MCP_REGISTERS_BY_CARD);
     }
-    return { owner, caller, origin,
-             grant: this.#grants.admit(origin.client, source.kind, signedIn, clock()),
-             run: null };
+    const grant = this.#grants.admit(origin.client, source.kind, signedIn, clock());
+    if (source.kind === "api_key") {
+      this.#keys.used(source.ref, Math.floor(clock()));  // the key store's last use, coarse
+    }
+    return { owner, caller, origin, grant, run: null };
   }
 
   /**
@@ -1715,6 +1800,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         if (moved) {
           this.#endClient(set.client);
         }
+        if (set.mode === "revoked") {
+          this.#keys.revoked(set.client, Math.floor(clock()));
+        }
         return set;
       });
     }));
@@ -1732,6 +1820,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return this.#storage.transactionSync(() => {
         const revoked = this.#grants.revoke(r["client"], clock());
         this.#endClient(revoked.client);
+        this.#keys.revoked(revoked.client, Math.floor(clock()));
         return revoked;
       });
     });
@@ -1747,7 +1836,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#door(() => {
       this.#owner(binding, "reduce", "forget an outside client's grant");
       const r = policyFields(request, ["client"]);
-      return this.#grants.forgetKey(r["client"], clock());
+      return this.#storage.transactionSync(() => {
+        const forgot = this.#grants.forgetKey(r["client"], clock());
+        if (forgot.forgotten) {
+          this.#keys.forgotten(forgot.client);
+        }
+        return forgot;
+      });
     });
   }
 
@@ -1762,8 +1857,240 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return this.#widening(binding, "reduce", "outside_forget", request,
                             "forget its revoked outside clients", (_account, id) => {
         const r = policyFields(request, ["clients"]);
-        return this.#grants.forgetRevoked(id, r["clients"], clock());
+        return this.#storage.transactionSync(() => {
+          const forgot = this.#grants.forgetRevoked(id, r["clients"], clock());
+          for (const client of forgot.forgotten) {
+            this.#keys.forgotten(client);
+          }
+          return forgot;
+        });
       });
+    });
+  }
+
+  // -- THE KEY STORE: the owner's API keys (slice L; `keys.ts`) ------------------------
+
+  /**
+   * Mint an API key's record and its grant, in the owner's session, in one unit: the live
+   * keys counted there (`MAX_KEYS`, strict), the grant set (source `api_key`, scoped,
+   * revision 0), an agent's held key request applied with it when one is named
+   * (`proposal`), and the key's row. The binder then writes the key's directory entry and
+   * shows its secret once (`doors/src/api-keys.ts`); the object never sees the secret.
+   */
+  keyMint(binding: Binding, request: KeyMintRequest): Promise<ApiKey & { scopes: Scope[];
+      revision: number }> {
+    return this.#synced(() => this.#widening(binding, "work", "key_mint", request,
+                                             "mint an API key", (_account, id) => {
+      const r = policyFields(request, ["key_id", "name", "scopes"], ["proposal"]);
+      const key = keyId(r["key_id"]);
+      const name = keyName(r["name"]);
+      const now = Math.floor(clock());  // whole seconds: the directory entry's mint time
+      return this.#storage.transactionSync(() => {
+        const row = this.#keys.add(key, apiKeyOrigin(key).client, name, now);
+        const set = this.#grants.set(id, {
+          client: apiKeyOrigin(key).client, source: "api_key", mode: "scoped",
+          scopes: r["scopes"] as Scope[], expected_revision: 0, name,
+        } as unknown as GrantRequest, now);
+        if (r["proposal"] !== undefined) {
+          this.#policy.applyKeyRequest(r["proposal"], set.scopes, now);
+        }
+        return { ...row, scopes: set.scopes, revision: set.revision };
+      });
+    }));
+  }
+
+  /** The owner's API keys, live and revoked: what its key list shows, and its erasure ends. */
+  keyList(binding: Binding): Promise<{ keys: ApiKey[] }> {
+    return this.#door(() => {
+      this.#owner(binding, "read", "read its API keys");
+      return { keys: this.#keys.list() };
+    });
+  }
+
+  // -- ERASURE: the owner's own erasure (slice L; `erase.ts`, `erasure.ts`) ------------
+
+  /**
+   * The owner erases its account, in its live session: the erasure's order (`erasure.ts`)
+   * from its mark, which this door begins; it answers once the wipe is done, or, should an
+   * attempt fail, once the mark stands (the erasure's job and every start resume it). The
+   * binder has already written the outside record and deleted the owner's directory
+   * entries, its OAuth grants and its identity (`doors/src/erase.ts`), so no sign-in or
+   * inbound route resolves the owner again and the platform never admits the name again:
+   * a stale `getByName` finds the tombstone, or, should a crash have lost it, a pending
+   * object that refuses everything (`admission.ts`).
+   */
+  async ownerErase(binding: Binding, request: EraseRequest):
+      Promise<{ erasing: true; erased: boolean }> {
+    const confirmed = await this.#door(() => this.#widening(binding, "reduce", "owner_erase",
+                                                            request, "erase its account", () => {
+      erasureConfirmed(request);
+      return true;
+    }));
+    if (!confirmed) {
+      throw new Error("an erasure's widening returned without confirming it");
+    }
+    try {
+      await this.#erasure.erase();
+      return { erasing: true, erased: true };
+    } catch {
+      console.error("the owner's erasure failed after its mark; it resumes");  // no ids
+      return { erasing: true, erased: false };
+    }
+  }
+
+  /**
+   * What the owner's directory holds for it, as the object knows it: each key's id and
+   * each inbound binding's route. The binder deletes them at the owner's erasure, before the
+   * object's mark (`doors/src/erase.ts`).
+   */
+  erasureNames(binding: Binding, request: EraseRequest):
+      Promise<{ keys: string[]; routes: string[] }> {
+    return this.#door(() => this.#widening(binding, "reduce", "owner_erase_names", request,
+                                           "erase its account", () => {
+      erasureConfirmed(request);
+      return { keys: this.#keys.ids(), routes: this.#inbound.routes() };
+    }));
+  }
+
+  // -- INBOUND: the owner's event sources (slice L; `inbound.ts`) ----------------------
+
+  /** The owner's inbound bindings, never a secret. */
+  inboundList(binding: Binding): Promise<{ bindings: InboundBinding[] }> {
+    return this.#door(() => {
+      this.#owner(binding, "read", "read its inbound bindings");
+      return { bindings: this.#inbound.list() };
+    });
+  }
+
+  /**
+   * A new inbound binding, in the owner's session: a capability URL the binder minted (its
+   * route the token's hash), with an owner-held proof if the owner adds one; or a shared
+   * app's installation, which only its install flow (owed) may name.
+   */
+  inboundCreate(binding: Binding, request: InboundCreateRequest): Promise<InboundBinding> {
+    return this.#door(() => this.#widening(binding, "work", "inbound_create", request,
+                                           "add an inbound binding", () =>
+      this.#inbound.create(inboundCreated(request), clock())));
+  }
+
+  /** The owner's change of a binding, in its session, against its revision. */
+  inboundSet(binding: Binding, request: InboundSetRequest): Promise<InboundBinding> {
+    return this.#door(() => this.#widening(binding, "work", "inbound_set", request,
+                                           "change an inbound binding", () =>
+      this.#inbound.set(request, clock())));
+  }
+
+  /** A binding withdrawn, a narrowing the owner's account makes without a session. */
+  inboundRevoke(binding: Binding, request: BindingRequest):
+      Promise<{ binding_id: string; route: string | null }> {
+    return this.#door(() => {
+      this.#owner(binding, "reduce", "withdraw an inbound binding");
+      return this.#inbound.revoke(request);
+    });
+  }
+
+  /**
+   * One inbound event, as the binder proved and routed it (`doors/src/inbound.ts`): the
+   * binding its route names at that route's revision, enabled; an owner-held proof checked
+   * on the raw bytes; the event posted as the owner's mail to the binding's agent, keyed by
+   * the binding, its revision and the event's id, so a retry is the same mail. A shared
+   * app's event refused for a full mailbox counts toward its breaker; once tripped, its
+   * events are a no-op until the owner changes the binding.
+   */
+  inboundAccept(binding: Binding, request: InboundEvent): Promise<InboundAnswer> {
+    return this.#synced(() => {
+      const { owner } = this.#bind(binding, "work", "inbound");
+      if (binding.origin !== null || binding.caller !== owner || binding.session !== undefined
+          || binding.source !== undefined) {
+        throw new Invalid("invalid inbound binding");
+      }
+      const route = binding.inbound!;
+      const row = this.#inbound.current(bindingId(route.binding), route.revision);
+      const r = policyFields(request, ["event_id", "event_at", "body", "headers"]);
+      const eventId = r["event_id"];
+      const eventAt = r["event_at"];
+      const body = r["body"];
+      const headers = r["headers"];
+      if (typeof eventId !== "string" || !eventId.trim() || codePoints(eventId) > 256
+          || typeof eventAt !== "number" || !Number.isSafeInteger(eventAt) || eventAt < 0
+          || eventAt > 999_999_999_999 || !(body instanceof Uint8Array)
+          || typeof headers !== "object" || headers === null || Array.isArray(headers)) {
+        throw new Invalid("an inbound event is its id, its time, its bytes and its headers");
+      }
+      const shared = row.kind === "shared";
+      if (shared && row.tripped === 1) {
+        return { state: "no_op", error: "breaker_tripped" };
+      }
+      const proof = ownerProof(row);
+      const now = clock();
+      if (proof !== null && !proves(proof.profile, headers as Record<string, string>, body,
+                                    proof.secret, now)) {
+        throw new Refused(PROOF_INVALID);
+      }
+      const key = createHash("sha256")
+        .update(`tinyassets-inbound\0${row.binding_id}\0${row.revision}\0${eventId}`, "utf8")
+        .digest("hex");
+      const cmid = `inb_${key}`;
+      const prior = this.#ledger.ownerPosted(cmid);
+      const envelope = JSON.stringify({ inbound: {
+        binding: row.binding_id, event_id: eventId, event_at: eventAt,
+        raw_base64: Buffer.from(body).toString("base64") } });
+      this.#keepTiers(binding);
+      try {
+        const posted = this.#ledger.post(null, `dm:${nativeId(row.agent)}`, cmid, envelope,
+                                         null, now, null);
+        this.#inbound.succeeded(row);
+        return { state: "admitted", receipt: posted.message_id, deduped: prior !== null };
+      } catch (error) {
+        if (error instanceof Refused && /mailbox is full/.test(error.message)) {
+          if (shared && this.#inbound.failed(row, now)) {
+            this.#notices.add("inbound", `An inbound app's events to ${row.agent} were ` +
+                              "paused: its mailbox was full. Change the binding to resume.", now);
+          }
+          return { state: "refused", error: "mailbox_full", retry: true };
+        }
+        if (error instanceof Refused && error.message === "conflict") {
+          return { state: "refused", error: "event_conflict" };
+        }
+        if (error instanceof Invalid && /message body/.test(error.message)) {
+          return { state: "refused", error: "too_large" };
+        }
+        if (error instanceof Refused) {
+          return { state: "refused", error: "agent_unavailable" };
+        }
+        throw error;
+      }
+    });
+  }
+
+  // -- THE FILE DOOR'S BYTES: the binder streams chunks to FILES (slice L; tasks 6.1) ----
+
+  /**
+   * An upload's target for the binder, which streams the file's bytes to `FILES` itself:
+   * the owner's chunk namespace, the intent's chunk plan and the chunks still to send. The
+   * binder is the trust root, already reaching every owner's object, so handing it this
+   * owner's namespace weakens no isolation.
+   */
+  async fileUploadTarget(binding: Binding, request: IntentRequest):
+      Promise<{ namespace: string; chunks: { sha256: string; size: number }[];
+                pending: string[] }> {
+    const plan = await this.#door(() => {
+      this.#filer(binding, "work", "write_files");
+      const r = fileFields(request, ["intent_id"]);
+      return this.#files.uploadPlan(r["intent_id"]);
+    });
+    return { namespace: await this.#files.namespace(), ...plan };
+  }
+
+  /**
+   * The binder's word that `FILES` accepted these of the intent's chunks (each put verified
+   * its hash): recorded as `fileUploadChunks` records its own puts.
+   */
+  fileUploadStored(binding: Binding, request: UploadStoredRequest): Promise<{ stored: number }> {
+    return this.#door(() => {
+      this.#filer(binding, "work", "write_files");
+      const r = fileFields(request, ["intent_id", "chunks"]);
+      return this.#files.stored(r["intent_id"], r["chunks"]);
     });
   }
 
@@ -2067,7 +2394,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       return setAdmission(this.#storage, request);
     });
-    if (set.state !== "admitted") {
+    if (set.state === "suspended") {
       // The prompt stop: its streams, and its runs' CLIs (each settles from its runner).
       await this.#door(() => {
         this.#egress.end("admission");
@@ -2331,9 +2658,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * no other door, and no owner is named so.
    */
   #bind(binding: Binding, door: DoorClass | "admission",
-        sandbox: "none" | "egress" | "sync" | "run" = "none"): { owner: string; caller: string } {
+        sandbox: "none" | "egress" | "sync" | "run" | "inbound" = "none"):
+      { owner: string; caller: string } {
     if (this.#tombstone || this.#erasure.erased) {
       throw new Refused(OWNER_ERASED);
+    }
+    const inbound = typeof binding === "object" && binding !== null && "inbound" in binding;
+    const inboundDoor = sandbox === "inbound";
+    if (inboundDoor) {
+      sandbox = "none";
     }
     if (erasing(this.#storage)) {
       this.#erasure.resume(true);
@@ -2347,11 +2680,24 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (owner === PLATFORM_CALLER || (door !== "admission" && caller === PLATFORM_CALLER)) {
       throw new Refused(PLATFORM_RESERVED);
     }
+    // The object's own name first: an object for another owner, or for none, says so
+    // whatever its admission.
+    const named = this.ctx.id.name;
+    if (named === undefined) {
+      throw new Refused("this object is not named by an owner");
+    }
+    if (named !== owner) {
+      throw new Refused("this object belongs to another owner");
+    }
     if (door !== "admission") {
       const refusal = doorRefusal(admission(this.#storage), door);
       if (refusal !== null) {
         throw new Refused(refusal);
       }
+    }
+    // An inbound event's binding reaches `inboundAccept` alone, and that door nothing else.
+    if (inbound !== inboundDoor) {
+      throw new Refused(inbound ? INBOUND_ONLY : INBOUND_DOOR);
     }
     // A sandbox token reaches its own doors and nothing else: the egress token the egress
     // doors, the sync token the sync doors; they take nothing else.
@@ -2376,13 +2722,6 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         throw new Invalid("invalid sandbox binding");
       }
     }
-    const named = this.ctx.id.name;
-    if (named === undefined) {
-      throw new Refused("this object is not named by an owner");
-    }
-    if (named !== owner) {
-      throw new Refused("this object belongs to another owner");
-    }
     const sql = this.#storage.sql;
     const stored = sql.exec<{ owner: string }>("SELECT owner FROM object_owner").toArray()[0];
     if (stored === undefined && sandbox !== "none") {
@@ -2390,9 +2729,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       // no rows from one.
       throw new Refused(NO_SANDBOX);
     }
-    if (stored === undefined) {
+    // The owner is stored at its first door past the platform's admit, never by the admit.
+    if (stored === undefined && door !== "admission") {
       sql.exec("INSERT INTO object_owner (only, owner) VALUES (1, ?)", owner);
-    } else if (stored.owner !== owner) {
+    } else if (stored !== undefined && stored.owner !== owner) {
       throw new Refused("this object belongs to another owner");
     }
     return { owner, caller };

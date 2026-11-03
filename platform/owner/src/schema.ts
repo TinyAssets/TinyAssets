@@ -40,9 +40,9 @@ export type Migration = readonly string[];
  * in the wiped database, so it is spelled once, here.
  */
 export const ADMISSION_TABLE = "CREATE TABLE owner_admission (only INTEGER PRIMARY KEY " +
-  "CHECK (only = 1), state TEXT NOT NULL CHECK (state IN ('admitted', 'suspended', " +
-  "'erased')), reasons TEXT NOT NULL CHECK (reasons IN ('[]', '[\"abuse\"]', " +
-  "'[\"billing\"]', '[\"abuse\",\"billing\"]')), " +
+  "CHECK (only = 1), state TEXT NOT NULL CHECK (state IN ('pending', 'admitted', " +
+  "'suspended', 'erased')), reasons TEXT NOT NULL CHECK (reasons IN ('[]', " +
+  "'[\"abuse\"]', '[\"billing\"]', '[\"abuse\",\"billing\"]')), " +
   // The owner's tier (ADR-034 decision 8), which only the platform sets (`tierSet`).
   "tier TEXT NOT NULL DEFAULT 'free' CHECK (tier IN ('free', 'paid')), " +
   "CHECK ((state = 'suspended') = (reasons != '[]')))";
@@ -1062,12 +1062,13 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "CHECK (revision >= 1)",
   ]),
   // 10: the owner's admission (tasks 5, F1): `owner_admission` is the owner's one
-  // admission row (`admission.ts`): admitted when the object is first made, suspended for
-  // billing or abuse by the platform, or, as the last step of the owner's erasure, the
-  // erased tombstone, alone in the wiped database.
+  // admission row (`admission.ts`): pending when the object is first made, admitted only by
+  // the platform's explicit admit at sign-up (slice L), suspended for billing or abuse by
+  // the platform, or, as the last step of the owner's erasure, the erased tombstone, alone
+  // in the wiped database.
   Object.freeze([
     ADMISSION_TABLE,
-    "INSERT INTO owner_admission (only, state, reasons) VALUES (1, 'admitted', '[]')",
+    "INSERT INTO owner_admission (only, state, reasons) VALUES (1, 'pending', '[]')",
   ]),
   // 11: the egress door (tasks 4 G4; egress.ts). The owner's policy row keeps the egress
   // generation, moved only by a write that changes the egress table (each sandbox lease,
@@ -1389,6 +1390,28 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "UPDATE native_agents SET unacked_to_owner = unacked_to_owner - 1, " +
       "unacked_to_owner_bytes = unacked_to_owner_bytes - OLD.body_bytes " +
       "WHERE agent_id = OLD.sender_id; END",
+  ]),
+  // 14: the doors' records in the owner's object (slice L). `owner_keys`, the key store
+  // (`keys.ts`): each API key's id, name, mint time, last use and revoke, its row only while
+  // its owner-set grant row stands (its `client`), so the owner's list and its erasure can
+  // enumerate them. `inbound_bindings` (`inbound.ts`): each inbound event source, its agent,
+  // its revision, the directory route the doors keep for it, an owner-held proof and its
+  // secret, and its breaker.
+  Object.freeze([
+    "CREATE TABLE owner_keys (key_id TEXT PRIMARY KEY CHECK (length(key_id) = 16 AND " +
+      "key_id NOT GLOB '*[^0-9a-f]*'), client TEXT NOT NULL UNIQUE CHECK " +
+      "(length(client) = 64), name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 80), " +
+      "created_at INTEGER NOT NULL, last_used_at INTEGER, revoked_at INTEGER)",
+    "CREATE TABLE inbound_bindings (binding_id TEXT PRIMARY KEY CHECK " +
+      "(length(binding_id) = 32), kind TEXT NOT NULL CHECK (kind IN ('capability', " +
+      "'shared')), agent TEXT NOT NULL CHECK (length(agent) BETWEEN 1 AND 64), " +
+      "enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)), revision INTEGER NOT NULL " +
+      "CHECK (revision >= 1), route TEXT NOT NULL UNIQUE CHECK (length(route) <= 160), " +
+      "profile TEXT CHECK (profile IS NULL OR length(profile) <= 1024), " +
+      "secret TEXT CHECK (secret IS NULL OR length(secret) <= 4096), " +
+      "failures TEXT NOT NULL DEFAULT '[]' CHECK (length(failures) <= 64), " +
+      "tripped INTEGER NOT NULL DEFAULT 0 CHECK (tripped IN (0, 1)), " +
+      "created_at INTEGER NOT NULL, changed_at INTEGER NOT NULL)",
   ]),
 ]);
 

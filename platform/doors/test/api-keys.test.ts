@@ -8,9 +8,10 @@ import { createHash } from "node:crypto";
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { GRANT_LIMITS } from "../../owner/src/grants";
 import { apiKeyOrigin } from "../../owner/src/ledger";
 import {
-  newKey, parseKey, secretHash,
+  MAX_KEYS_PER_OWNER, newKey, parseKey, secretHash,
 } from "../src/api-keys";
 import { type DoorsEnv, now } from "../src/config";
 import {
@@ -167,14 +168,22 @@ describe("a mint", () => {
     }
   });
 
-  it("refuses past the Python's 25 live keys", async () => {
+  it("refuses past MAX_KEYS live keys, counted in the mint's own unit, and writes nothing",
+     async () => {
     const o = await signedIn();
-    for (let i = 0; i < 25; i++) {
-      await mint(o);
-    }
+    await mint(o);
+    // The rest of the live keys, as earlier mints left them (a revoked one does not count).
+    await sqlIn(o.owner, "INSERT INTO owner_keys (key_id, client, name, created_at, revoked_at) " +
+                "SELECT printf('%016x', x), printf('%064x', x), 'k', 0, " +
+                "CASE WHEN x = 1 THEN 1 ELSE NULL END FROM (WITH RECURSIVE c(x) AS " +
+                "(SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < ?) SELECT x FROM c)",
+                MAX_KEYS_PER_OWNER);
+    const before = await sqlIn(o.owner, "SELECT COUNT(*) AS n FROM outside_clients");
     const over = await appPost("keys", o.token, o.session, { name: "one more", scopes: SCOPES });
     expect(over.status).toBe(403);
     expect(await over.json()).toEqual({ error: "too many live API keys; revoke one first" });
+    expect(await sqlIn(o.owner, "SELECT COUNT(*) AS n FROM outside_clients")).toEqual(before);
+    expect(MAX_KEYS_PER_OWNER).toBe(GRANT_LIMITS.maxOwnerClients);
   });
 });
 

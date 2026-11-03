@@ -59,6 +59,8 @@ export const TEST_OAUTH = Object.freeze({
     issuer: "https://auth.test",
     authorization_response_iss_parameter_supported: true,
     authorize_params: { prompt: "consent" },
+    redirect_registration: { match: "exact",
+                             uri: "https://tinyassets.io/oauth/connect/callback/test_oauth" },
   },
 });
 

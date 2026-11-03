@@ -13,11 +13,20 @@
  *    sign-in's time is always fresh, and after any revoke the owner made before.
  * 4. At the callback: the provider recovers the request in the same browser only, the
  *    upstream verifies the sign-in, and the doors take it only when at most 600 s old.
- * 5. The platform gates: an outside client's authorization is outside work (the kill
+ * 5. The owner directory's record of the owner (`o:`): an erased owner is refused (and its
+ *    identity's deletion tried again), whatever the issuer still says.
+ * 6. The platform gates: an outside client's authorization is outside work (the kill
  *    switch and the maintenance gate); the owner's own sign-in, the maintenance gate.
- * 6. An outside client: the grant, its props holding the sign-in's time. The owner's
+ * 7. Sign-up: an owner the directory has no record of is admitted by the platform, its
+ *    explicit admit (`bindPlatform`, `admissionSet`), and then recorded; a fresh object
+ *    is pending until then and refuses every door (`owner/src/admission.ts`).
+ * 8. An outside client: the grant, its props holding the sign-in's time. The owner's
  *    app: `sessionOpen` at the sign-in's time, the session cookie set on the redirect,
  *    and the grant.
+ *
+ * Every `/authorize` and callback counts against the caller's sign-in attempts, and a
+ * `client_id` the provider must fetch the metadata of against its CIMD fetches
+ * (`throttle.ts`): past either, `429` before anything else.
  *
  * A resource and its clients never cross: a token for `/app` goes only to a first-party
  * client, and a first-party client never gets one for `/mcp`. An outside client may not
@@ -29,18 +38,21 @@ import {
   type ConsentDescription, type OAuthHelpers,
 } from "@cloudflare/workers-oauth-provider";
 
-import { type AppProps, bindSignIn, type McpProps, mcpOrigin, ownerOf } from "./binder";
+import {
+  type AppProps, bindPlatform, bindSignIn, type McpProps, mcpOrigin, ownerOf,
+} from "./binder";
 import { boundedText, TOO_LARGE } from "./body";
 import {
   APP_RESOURCE, AUTHORIZE_BODY_MAX, CLOCK_MARGIN_S, type DoorsEnv, FIRST_PARTY_CLIENTS,
   MCP_RESOURCE, now, PUBLIC_HOST, SCOPES, SIGN_IN_MAX_AGE_S, UPSTREAM_CALLBACK,
 } from "./config";
 import { outsideOpen, ownerOpen } from "./control";
-import { readControl } from "./directory";
+import { putOwner, readControl, readOwner } from "./directory";
 import { authorizationServer } from "./oauth";
 import { replaceInstallation } from "./revoke";
 import { mediaType, sessionCookie } from "./session";
-import type { Upstream } from "./upstream";
+import { cimdAllowed, signInAllowed, tooMany } from "./throttle";
+import type { SignIn, Upstream } from "./upstream";
 
 interface Verifier {
   readonly verifier: string;
@@ -158,11 +170,18 @@ function failed(error: unknown): Response {
 /** `GET` and `POST /authorize`. */
 export async function authorize(request: Request, env: DoorsEnv, upstream: Upstream):
     Promise<Response> {
+  if (!await signInAllowed(env, request)) {
+    return tooMany();
+  }
   const oauth = authorizationServer(env).getOAuthApi(env);
   try {
     if (request.method === "GET") {
       if (!navigation(request)) {
         return text(403, "Open this page in your browser to sign in.");
+      }
+      if (!await cimdAllowed(env, request,
+                             new URL(request.url).searchParams.get("client_id"))) {
+        return tooMany();
       }
       const parsed = await oauth.parseAuthRequest(request);
       const forApp = parsed.resource === APP_RESOURCE;
@@ -212,9 +231,43 @@ export async function authorize(request: Request, env: DoorsEnv, upstream: Upstr
   }
 }
 
+/**
+ * The platform's explicit admit of a new owner at sign-up: the owner's object first (a
+ * fresh one is pending), then the directory's record, so a failure between them admits it
+ * again at the next sign-in (the admit is idempotent) and a record never names an owner
+ * its object did not admit.
+ */
+async function admit(env: DoorsEnv, signedIn: SignIn, owner: string): Promise<void> {
+  const platform = bindPlatform(env, await bindSignIn(env, signedIn));
+  const { state } = await platform.stub.admissionSet(platform.binding, { admit: true });
+  if (state === "pending") {
+    throw new Error("the platform's admit left the owner pending");
+  }
+  await putOwner(env, owner, { s: "admitted", t: now() });
+}
+
+/**
+ * An erased owner's sign-in: refused, and its identity's deletion at the issuer tried again
+ * (the erasure tried it first; a failure there leaves the identity, which this finishes).
+ */
+async function erasedSignIn(upstream: Upstream, env: DoorsEnv, signedIn: SignIn):
+    Promise<void> {
+  if (signedIn.issuer !== env.OWNER_ISSUER) {
+    return;  // a foreign issuer's identity is that provider's slice's to delete
+  }
+  try {
+    await upstream.forget(signedIn.subject);
+  } catch {
+    console.error("an erased owner's identity deletion failed again");  // no ids
+  }
+}
+
 /** `GET /oauth/upstream/callback`: the verified sign-in becomes the grant. */
 export async function callback(request: Request, env: DoorsEnv, upstream: Upstream):
     Promise<Response> {
+  if (!await signInAllowed(env, request)) {
+    return tooMany();
+  }
   const oauth = authorizationServer(env).getOAuthApi(env);
   let resumed: Awaited<ReturnType<typeof oauth.finishUpstream<Verifier>>>;
   try {
@@ -238,11 +291,20 @@ export async function callback(request: Request, env: DoorsEnv, upstream: Upstre
                                                "sign in again"), headers);
   }
   const owner = await ownerOf(env, signedIn.issuer, signedIn.subject);
+  const record = await readOwner(env, owner);
+  if (record?.s === "erased") {
+    await erasedSignIn(upstream, env, signedIn);
+    return redirect(authorizationErrorRedirect(original, "access_denied",
+                                               "this account was erased"), headers);
+  }
   const control = await readControl(env.CONTROL);
   const scope = granted(original.scope);
   if (original.resource === MCP_RESOURCE && !firstParty(original)) {
     if (!outsideOpen(control, owner)) {
       return redirect(authorizationErrorRedirect(original, "temporarily_unavailable"), headers);
+    }
+    if (record === null) {
+      await admit(env, signedIn, owner);
     }
     const props: McpProps = {
       kind: "mcp", owner, ...await mcpOrigin(original.clientId, original.redirectUri),
@@ -261,6 +323,9 @@ export async function callback(request: Request, env: DoorsEnv, upstream: Upstre
   if (original.resource === APP_RESOURCE && firstParty(original)) {
     if (!ownerOpen(control, owner)) {
       return redirect(authorizationErrorRedirect(original, "temporarily_unavailable"), headers);
+    }
+    if (record === null) {
+      await admit(env, signedIn, owner);
     }
     const { binding, stub } = await bindSignIn(env, signedIn);
     const { session } = await stub.sessionOpen(binding);

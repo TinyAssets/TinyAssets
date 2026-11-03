@@ -21,5 +21,6 @@
               "doors/src/**/*.ts", "doors/test/**/*.ts", "doors/guards/**/*.ts", "doors/*.ts",
               "gateway/src/**/*.ts", "gateway/test/**/*.ts", "gateway/guards/**/*.ts",
               "gateway/*.ts", "hooks/src/**/*.ts", "hooks/test/**/*.ts",
-              "hooks/guards/**/*.ts", "hooks/*.ts"]
+              "hooks/guards/**/*.ts", "hooks/*.ts", "admin/src/**/*.ts",
+              "deploy/**/*.ts"]
 }

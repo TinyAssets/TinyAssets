@@ -170,6 +170,12 @@ const ENGINE_SIGNINS = constant("run-rows", "ENGINE_SIGNINS");
 const SIGNIN_MODELS_CHARS = constant("run-rows", "SIGNIN_MODELS_CHARS");
 const SIGNIN_LIST_CHARS = constant("run-rows", "SIGNIN_LIST_CHARS");
 const SOCKET_TICKETS = constant("socket-shape", "SOCKET_TICKETS");
+/** The doors' records in the object (slice L): the key store and the inbound bindings. */
+const MAX_KEYS = constant("keys", "MAX_KEYS");
+const KEY_NAME_MAX = constant("keys", "KEY_NAME_MAX");
+const MAX_BINDINGS = constant("inbound", "MAX_BINDINGS");
+const SECRET_MAX = constant("inbound", "SECRET_MAX");
+const ROUTE_MAX = constant("inbound", "ROUTE_MAX");
 /** Mail that starts runs (slice ID): a message's id, an own agent's id, a mail's authority. */
 const MESSAGE_ID_CHARS = constant("run-rows", "MESSAGE_ID_CHARS");
 const NATIVE_ID_CHARS = constant("run-rows", "NATIVE_ID_CHARS");
@@ -433,6 +439,17 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // The owner's admission: one row, its reasons a short fixed list; after the erasure, the
     // erased tombstone, alone in the database.
     owner_admission: { rows: 1, bytes: ROW + 64, by: "one row (the schema's CHECK)" },
+    // The key store (slice L): a row only while its key's owner-set grant row stands.
+    owner_keys: { rows: Math.max(MAX_KEYS, G.maxOwnerClients),
+                bytes: ROW + 16 + 64 + 4 * KEY_NAME_MAX + 3 * 9,
+                by: "maxOwnerClients (a key's grant is an owner-set client), each its id, " +
+                  "client, name and times" },
+    // The inbound bindings (slice L): each its route, agent, owner-held proof and secret.
+    inbound_bindings: { rows: MAX_BINDINGS,
+                        bytes: ROW + 32 + 10 + 64 + 9 + ROUTE_MAX + 1024 + 4 * SECRET_MAX + 64
+                          + 3 * 9,
+                        by: "MAX_BINDINGS, each its id, kind, agent, revision, route, proof " +
+                          "(ASCII), secret, breaker and times" },
   });
 }
 

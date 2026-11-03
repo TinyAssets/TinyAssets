@@ -5,6 +5,7 @@ import { createExecutionContext, runInDurableObject, waitOnExecutionContext } fr
 import { env } from "cloudflare:workers";
 import { vi } from "vitest";
 
+import { ADMIN_CALLER } from "../../admin/src/caller";
 import type { OwnerDO } from "../../owner/src/owner-do";
 import { APP_RESOURCE, type DoorsEnv, MCP_RESOURCE, now, PUBLIC_ORIGIN, WEB_CLIENT,
          WEB_REDIRECT } from "../src/config";
@@ -23,13 +24,32 @@ export const OPEN = Object.freeze({ outside: "on", ordinary: "all", canary: [], 
                                     tiers: TIERS });
 export const NAVIGATE = Object.freeze({ "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" });
 
-/** One request through the doors, its waitUntil work finished. */
+/**
+ * One request through the doors, its waitUntil work finished. A request that names no
+ * caller IP comes from an address of its own, as Cloudflare's `CF-Connecting-IP` names it,
+ * so the unauthenticated callers' bounds (`throttle.ts`) count only the tests that set one.
+ */
 export async function call(request: Request, environment: DoorsEnv = doorsEnv):
     Promise<Response> {
+  if (!request.headers.has("CF-Connecting-IP")) {
+    const headers = new Headers(request.headers);
+    headers.set("CF-Connecting-IP", `198.51.100.${crypto.getRandomValues(new Uint8Array(1))[0]}`
+                + `:${crypto.randomUUID()}`);
+    request = new Request(request, { headers });
+  }
   const ctx = createExecutionContext();
   const response = await worker.fetch(request, environment, ctx);
   await waitOnExecutionContext(ctx);
   return response;
+}
+
+/**
+ * The platform's explicit admit of `owner`, as the sign-in callback sends it at sign-up
+ * (`authorize.ts`), for a test that reaches an owner's object without signing it in.
+ */
+export async function admitOwner(owner: string): Promise<void> {
+  await env.OWNER.getByName(owner).admissionSet({ owner, caller: ADMIN_CALLER, origin: null },
+                                                { admit: true });
 }
 
 export function url(path: string): string {
