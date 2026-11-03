@@ -5,13 +5,16 @@
  * `ta_key_<16 hex id>_<43 urlsafe secret>`, the id `secrets.token_hex(8)` and the secret
  * `secrets.token_urlsafe(32)`, and only the SHA-256 hex of the secret's UTF-8 is stored,
  * compared in constant time (a 256-bit random secret needs no KDF). The directory's
- * `k:<id>` holds the owner, that hash and the mint time; the key's grant row in the
- * owner's object is its metadata (name, scopes, revoke).
+ * `k:<id>` holds the owner, that hash and the mint time; the owner's object holds the key's
+ * grant row (scopes, revoke) and its key-store row (`owner/src/keys.ts`: id, name, mint
+ * time, last use), so the owner's key list and its erasure enumerate the keys.
  *
- * - **Mint**, from the owner's browser in session: at most 25 live keys, then the grant
- *   (`grantSet`: the key's own origin, source `api_key`, scoped, revision 0), then the
- *   directory entry, then the secret, once. A refused grant writes no entry; an entry
- *   that fails to write leaves a grant the owner can revoke.
+ * - **Mint**, from the owner's browser in session: the object's `keyMint`, one unit that
+ *   counts the live keys strictly (`MAX_KEYS`, the owner-set clients' own bound), sets the
+ *   grant (the key's own origin, source `api_key`, scoped, revision 0), applies an agent's
+ *   held key request with it when the owner names one (`proposal`), and writes the key's
+ *   row; then the directory entry, then the secret, once. A refused mint writes no entry;
+ *   an entry that fails to write leaves a grant the owner can revoke.
  * - **Use**: parse, read the entry, compare hashes, then the kill switch. A wrong key is
  *   `401` before any object is reached. The binding's origin is `apiKeyOrigin(id)` and
  *   its sign-in the mint time, so a revoked key never passes the fence.
@@ -23,27 +26,20 @@
  * A key the directory names for another owner is "not found" to this one; nothing of
  * it is touched.
  *
- * Owed, each in tasks 2: the key store in the owner's object (key ids, names and last
- * use for the owner's list, and the Python's held `_apply_key_request`), which also makes
- * the 25-key count strict (two concurrent mints can pass it by one); the per-key and
- * per-owner rate limits (120 and 600 a minute); and `run_graph` and `converse`, which join
- * the scopes with the run doors (slice R).
+ * No per-key or per-owner request cap (the founder's rule: no invented limits): a key's
+ * calls are bounded by the tier's simultaneous runs, the owner's own settings and vendors'
+ * limits.
  */
-import { codePoints } from "../../owner/src/text";
+import { MAX_KEYS } from "../../owner/src/keys";
 
 import { apiKeyOrigin, bindApiKey, type Bound } from "./binder";
-import { type DoorsEnv, now } from "./config";
+import type { DoorsEnv } from "./config";
 import { deleteKey, type KeyEntry, putKey, readKey } from "./directory";
 
 export const PREFIX = "ta_key_";
 const KEY = /^ta_key_([0-9a-f]{16})_([A-Za-z0-9_-]{43})$/;
-/**
- * The live keys an owner holds: each key's grant is an owner-set client, so the owner's own
- * set clients' bound (`GRANT_LIMITS.maxOwnerClients`, the owner-bound guard's share) is
- * theirs too; a test holds the two equal.
- */
-export const MAX_KEYS_PER_OWNER = 1000;
-const MAX_NAME = 80;
+/** The live keys an owner holds at most: the object's count (`owner/src/keys.ts`). */
+export const MAX_KEYS_PER_OWNER = MAX_KEYS;
 
 export class KeyRefused extends Error {
   override readonly name = "KeyRefused";
@@ -126,28 +122,30 @@ export interface Minted {
   readonly scopes: unknown;
 }
 
-/** Mint a key for the bound owner: grant, then directory entry, then the secret once. */
+/**
+ * Mint a key for the bound owner: the object's mint (its row, its grant, the count, a held
+ * request applied), then the directory entry, then the secret once.
+ */
 export async function mintKey(env: DoorsEnv, { binding, stub }: Bound, request: unknown):
     Promise<Minted> {
-  const { name, scopes } = (request ?? {}) as { name?: unknown; scopes?: unknown };
-  const label = typeof name === "string" ? name.trim() : "";
-  if (!label || codePoints(label) > MAX_NAME) {
+  const { name, scopes, proposal } = (request ?? {}) as { name?: unknown; scopes?: unknown;
+                                                          proposal?: unknown };
+  if (typeof name !== "string" || name.trim() === "") {
     throw new KeyRefused(400, "key name required (at most 80 characters)");
   }
-  const { clients } = await stub.grantList(binding);
-  if (clients.filter((c) => c.source === "api_key" && c.mode !== "revoked").length
-      >= MAX_KEYS_PER_OWNER) {
-    throw new KeyRefused(403, "too many live API keys; revoke one first");
-  }
   const minted = newKey();
-  const createdAt = now();
-  await stub.grantSet(binding, {
-    client: apiKeyOrigin(minted.keyId).client, source: "api_key", mode: "scoped",
-    scopes: scopes as never, expected_revision: 0, name: label,
-  });
+  const row = await stub.keyMint(binding, {
+    key_id: minted.keyId, name, scopes,
+    ...(proposal === undefined ? {} : { proposal: proposal as never }) });
   await putKey(env, minted.keyId,
-               { o: binding.owner, h: await secretHash(minted.secret), c: createdAt });
-  return { key: minted.key, key_id: minted.keyId, name: label, created_at: createdAt, scopes };
+               { o: binding.owner, h: await secretHash(minted.secret), c: row.created_at });
+  return { key: minted.key, key_id: minted.keyId, name: row.name, created_at: row.created_at,
+           scopes: row.scopes };
+}
+
+/** The owner's keys as its object keeps them: id, name, mint time, last use and revoke. */
+export async function listKeys({ binding, stub }: Bound): Promise<unknown> {
+  return stub.keyList(binding);
 }
 
 /** Revoke the owner's key: the object first, then the directory entry. */

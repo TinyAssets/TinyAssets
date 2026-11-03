@@ -22,8 +22,7 @@ import { mintKeyFor } from "./keys";
 import {
   appPost, authorizeMcp, authorizeUrl, call, connect, consent, decide, doorsEnv, handleOf, Jar, legacyPost,
   NAVIGATE, OPEN, pkce, reached, refresh, registerClient, rpcBody, serveFirstPartyDocument,
-  setControl, signInApp, tokenCall, upstreamReturns, url,
-} from "./support";
+  setControl, signInApp, tokenCall, upstreamReturns, url, admitOwner } from "./support";
 
 function owner(): string {
   return `user_${crypto.randomUUID().replace(/-/g, "")}`;
@@ -564,6 +563,7 @@ describe("L7: the provider revoke reads every page", () => {
       await oauth.completeAuthorization({ request, userId: alice, metadata: {}, scope: [],
                                           props: { kind: "mcp" }, revokeExistingGrants: false });
     }
+    await admitOwner(alice);
     const bound = { binding: { owner: alice, caller: alice, origin: null },
                     stub: env.OWNER.getByName(alice) };
     // The provider's grant listing, observed: each page holds the one grant asked for.

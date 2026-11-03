@@ -1,0 +1,30 @@
+{
+  "apps": [
+    {
+      "id": "slack",
+      "endpoint": "slack",
+      "secret": "INBOUND_SLACK_SIGNING_SECRET",
+      "profile": {
+        "method": "hmac-sha256",
+        "signature_header": "x-slack-signature",
+        "encoding": "hex",
+        "prefix": "v0=",
+        "version": "v0",
+        "timestamp_header": "x-slack-request-timestamp",
+        "max_skew_seconds": 300
+      },
+      "envelope": {
+        "setup_type": "url_verification",
+        "challenge": "challenge",
+        "event_type": "event_callback",
+        "require_false": ["is_ext_shared_channel"],
+        "event_id": "event_id",
+        "event_time": "event_time",
+        "installations": "authorizations",
+        "enterprise_flag": "is_enterprise_install",
+        "enterprise_id": "enterprise_id",
+        "workspace_id": "team_id"
+      }
+    }
+  ]
+}

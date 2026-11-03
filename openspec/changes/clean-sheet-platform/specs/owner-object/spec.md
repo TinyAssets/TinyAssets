@@ -809,7 +809,7 @@ A change under `/workspace/agents`, `/workspace/.agents`, `/workspace/skills` or
 - **THEN** it is refused `AGENTS_OWNER_ONLY`
 
 ### Requirement: Erasing the owner ends every run before the owner is wiped
-Erasing the owner SHALL mark it erasing, after which every door refuses and no lane runs; end every run (the sandbox's in-flight egress streams, the owner app's sockets, and each live run's cancel through the sandbox; the sandbox slice adds the sandbox's kill and the session files' purge), recorded as the erasure's second step; delete every chunk its rows name from R2, its files' and its placed bodies' (ADR-035), repeatable; then `deleteAll()` the owner and leave one `erased` admission row, the tombstone, in the wiped database. Each step SHALL resume after a crash from the step the mark records. An object holding the tombstone SHALL migrate nothing, start no Lifecycle and refuse every door.
+Erasing the owner SHALL mark it erasing, after which every door refuses and no lane runs; end every run (the sandbox's in-flight egress streams, the owner app's sockets, and each live run's cancel through the sandbox; the sandbox slice adds the sandbox's kill and the session files' purge), recorded as the erasure's second step; wait for the doors' confirmation of the outside record (the erasure queue, sent by the erasure's own job at the mark and at each attempt until confirmed); delete every chunk its rows name from R2, its files' and its placed bodies' (ADR-035), repeatable; then `deleteAll()` the owner and leave one `erased` admission row, the tombstone, in the wiped database. Each step SHALL resume after a crash from the step the mark records. An object holding the tombstone SHALL migrate nothing, start no Lifecycle and refuse every door.
 
 #### Scenario: A crash mid-erasure
 - **WHEN** the object dies after the mark, or after every run ended, or after Lifecycle's alarm was disabled, or its wipe failed
@@ -824,7 +824,7 @@ Erasing the owner SHALL mark it erasing, after which every door refuses and no l
 - **THEN** every door is refused `owner_erased`, and the database still holds only the tombstone, with no alarm
 
 ### Requirement: The owner's admission is the object's own row
-The object SHALL hold one admission row: admitted, suspended for billing and or abuse, or the erased tombstone. Every door SHALL declare a class: billing refuses `work`, abuse every door. Every sandbox lease, egress call, authority check and wake claim SHALL be refused while not admitted; a suspension SHALL end the sandbox's in-flight egress streams. Only the platform's reserved caller SHALL set it, at no other door.
+The object SHALL hold one admission row: pending, admitted, suspended for billing and or abuse, or the erased tombstone. A fresh object SHALL be pending and refuse every door and lane until the platform's explicit admit (`admissionSet {admit: true}`), which is idempotent and lifts no suspension; a pending owner SHALL never be suspended. Every door SHALL declare a class: billing refuses `work`, abuse every door. Every sandbox lease, egress call, authority check and wake claim SHALL be refused while not admitted; a suspension SHALL end the sandbox's in-flight egress streams. Only the platform's reserved caller SHALL set it, at no other door.
 
 #### Scenario: A billing suspension
 - **WHEN** the platform suspends an owner for billing
@@ -1108,3 +1108,10 @@ Each frame (`{v, run, seq, at, kind, event}`) SHALL be relayed to the owner app'
 #### Scenario: A late joiner
 - **WHEN** a socket attaches to a conversation whose run has relayed frames
 - **THEN** it receives the run's tail first, then each frame as it comes
+
+### Requirement: The key store and the inbound bindings are the object's own rows
+The object SHALL keep each API key's id, name, mint time, last use and revoke, written with its grant in one unit that counts live keys strictly. It SHALL keep each inbound binding's agent, revision, route, owner-held proof and breaker. `inboundAccept` SHALL take only an inbound route's binding, and post the event as the owner's mail to its agent, keyed by binding, revision and event id.
+
+#### Scenario: A stale route, a replay, a full mailbox
+- **WHEN** an event arrives on a route at a revision the binding has moved past, or the same event id arrives twice, or a shared app's events meet a full mailbox three times in a minute
+- **THEN** the first is refused `binding_withdrawn`, the second answers the first's receipt as deduped with one mail, and the third trips the binding's breaker, its events no-ops until the owner changes the binding

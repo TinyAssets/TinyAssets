@@ -15,7 +15,8 @@
  *   directory, whose keys hold no cookie or session hash.
  * - Only `connect.ts` reaches the gateway (`GATEWAY`), so a pasted key or an OAuth code
  *   has one path, to the gateway's connect entrypoint; only `egress.ts` reaches its egress
- *   entrypoint (`EGRESS`), so a blob the owner's object handed out is forwarded on one path.
+ *   entrypoint (`EGRESS`), so a blob the owner's object handed out is forwarded on one path;
+ *   only `file-bytes.ts` reaches the files Worker (`FILES`), the file door's bytes.
  * - Consent is never remembered: no source names `remember` or `isConsentRemembered`.
  *
  * A tripwire for our own code, read from the syntax tree, not proof against deliberate
@@ -39,6 +40,7 @@ const SESSION = "doors/src/session.ts";
 const DIRECTORY = "doors/src/directory.ts";
 const CONNECT = "doors/src/connect.ts";
 const EGRESS = "doors/src/egress.ts";
+const FILE_BYTES = "doors/src/file-bytes.ts";
 const OBJECT_IDS = new Set(["idFromName", "idFromString", "newUniqueId"]);
 const REMEMBERING = new Set(["remember", "isConsentRemembered"]);
 
@@ -81,6 +83,10 @@ export function binderProblems(fileName: string, source: string): string[] {
     if (doors && ts.isIdentifier(node) && node.text === "GATEWAY" && fileName !== CONNECT
         && fileName !== "doors/src/config.ts") {
       report(node, "reaches the gateway outside connect.ts");
+    }
+    if (doors && ts.isIdentifier(node) && node.text === "FILES" && fileName !== FILE_BYTES
+        && fileName !== "doors/src/config.ts") {
+      report(node, "reaches the files Worker outside file-bytes.ts");
     }
     if (doors && ts.isIdentifier(node) && node.text === "EGRESS" && fileName !== EGRESS
         && fileName !== "doors/src/config.ts") {

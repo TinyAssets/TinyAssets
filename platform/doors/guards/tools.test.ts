@@ -27,18 +27,20 @@ import { CLIENT_PROFILES, DEFAULT_PROFILE, profileNames, type Tool, toolNames, t
 
 /** Outside-callable doors without a tool yet, and what owes each. */
 const DEFERRED: Readonly<Record<string, string>> = Object.freeze({
-  fileRead: "tasks 2, owed by 6.1: file bytes streamed by the binder",
-  fileReadChunks: "tasks 2, owed by 6.1: file bytes streamed by the binder",
-  fileWrite: "tasks 2, owed by 6.1: file bytes streamed by the binder",
-  fileUploadBegin: "tasks 2, owed by 6.1: file bytes streamed by the binder",
-  fileUploadChunks: "tasks 2, owed by 6.1: file bytes streamed by the binder",
-  fileUploadCommit: "tasks 2, owed by 6.1: file bytes streamed by the binder",
-  fileUploadAbort: "tasks 2, owed by 6.1: file bytes streamed by the binder",
+  fileRead: "an outside client's file bytes: the binder streams the owner's (slice L)",
+  fileReadChunks: "an outside client's file bytes: the binder streams the owner's (slice L)",
+  fileWrite: "an outside client's file bytes: the binder streams the owner's (slice L)",
+  fileUploadBegin: "an outside client's file bytes: the binder streams the owner's (slice L)",
+  fileUploadChunks: "an outside client's file bytes: the binder streams the owner's (slice L)",
+  fileUploadCommit: "an outside client's file bytes: the binder streams the owner's (slice L)",
+  fileUploadAbort: "an outside client's file bytes: the binder streams the owner's (slice L)",
   fileChanges: "tasks 6: the sandbox's sync feed, reached by its sync token",
 });
 /** Outside-callable doors the doors call themselves, never a tool, and why. */
 const DOORS_ONLY: Readonly<Record<string, string>> = Object.freeze({
   toolProfile: "the MCP and API doors' read of which tools the caller is served",
+  fileUploadTarget: "the file door's bytes: the binder's read of an upload's plan (slice L)",
+  fileUploadStored: "the file door's bytes: the binder's report of the chunks it stored",
   wakeEvents: "the MCP door's events/list (MCP Events, slice W), never a tool",
   wakeSubscribe: "the MCP door's events/subscribe, after its signed callback challenge",
   wakeUnsubscribe: "the MCP door's events/unsubscribe",
