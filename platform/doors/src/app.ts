@@ -43,6 +43,12 @@
  * - `tools/<name>`: the owner calling one tool of the MCP door's table (`tools.ts`) as
  *   itself, the same doors and fields an outside client's call takes, held by the object to
  *   the owner's own authority.
+ * - `signin/start`, `signin/code`, `signin/cancel`, `signin/list` (slice SIGNIN): the
+ *   vendor's own sign-in (or sign-out) inside the owner's own sandbox or one client's, its
+ *   prompt watched on the app socket by the sign-in's id (`agent/socket-ticket` takes it as
+ *   its `conversation_id`), a pasted code handed back, a sign-in stopped, and the sign-ins in
+ *   progress with each engine's presence.
+ * - `runs` (slice SIGNIN): the owner's past runs, newest first, a page at a time.
  * - `agent/submit`, `agent/run`, `agent/status`, `agent/cancel`: the run doors (slice R),
  *   the same doors `converse`, `run_graph`, `run_status` and `run_cancel` call for an
  *   outside client; the control record's tier numbers ride the binding (`withTiers`).
@@ -300,6 +306,16 @@ const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
     json(200, await stub.agentStatus(binding, request as never)),
   "agent/cancel": async (_env, { binding, stub }, request) =>
     json(200, await stub.agentCancel(binding, request as never)),
+  "runs": async (_env, { binding, stub }, request) =>
+    json(200, await stub.runList(binding, request as never)),
+  "signin/start": async (_env, { binding, stub }, request) =>
+    json(200, await stub.signinStart(binding, request as never)),
+  "signin/code": async (_env, { binding, stub }, request) =>
+    json(200, await stub.signinCode(binding, request as never)),
+  "signin/cancel": async (_env, { binding, stub }, request) =>
+    json(200, await stub.signinCancel(binding, request as never)),
+  "signin/list": (_env, { binding, stub }, request) =>
+    read(request, () => stub.signinList(binding)),
 });
 
 /** The owner app's socket door's path, and its ticket door's, under the owner surface. */

@@ -51,7 +51,7 @@ import { readControl, type SandboxCeilings } from "../../doors/src/directory";
 import { bundledSources } from "../../doors/src/sources";
 import { LEASE_TTL_S } from "../../owner/src/files";
 import { DNS_SERVERS, EGRESS_HOST } from "../../owner/src/network";
-import type { SandboxStart, Started } from "../../owner/src/sandbox";
+import type { SandboxSignin, SandboxStart, Started } from "../../owner/src/sandbox";
 
 import { E2b, type E2bNetwork, type Handle, noRoom, type SandboxInfo } from "./e2b";
 import { SLOTS, type SandboxSlots } from "./slots";
@@ -182,21 +182,34 @@ export function widened(network: E2bNetwork, hosts: readonly string[]): E2bNetwo
 
 /** The vendor's own hosts of an engine run on its sign-in; none on a key. */
 function vendorHosts(start: SandboxStart): string[] {
-  if (start.credential !== "vendor_login_in_sandbox") {
-    return [];
-  }
-  const cli = bundledSources().get(start.engine)?.cli;
-  if (cli === undefined) {
-    throw new Error(`engine ${start.engine} has no CLI record`);
-  }
-  return [...new Set([...cli.hosts.login, ...cli.hosts.provider])];
+  return start.credential !== "vendor_login_in_sandbox" ? [] : engineHosts(start.engine, null);
 }
+
+/**
+ * An engine's vendor hosts, its sign-in's and its model calls': the record's, and the
+ * chosen region's (`cli.regions`) when it has regions.
+ */
+function engineHosts(engine: string, region: string | null): string[] {
+  const cli = bundledSources().get(engine)?.cli;
+  if (cli === undefined) {
+    throw new Error(`engine ${engine} has no CLI record`);
+  }
+  const chosen = region === null ? undefined : cli.regions?.[region];
+  if (region !== null && chosen === undefined) {
+    throw new Error(`engine ${engine} has no region ${region}`);
+  }
+  return [...new Set([...cli.hosts.login, ...cli.hosts.provider,
+                      ...(chosen?.hosts.login ?? []), ...(chosen?.hosts.provider ?? [])])];
+}
+
+/** A sign-in's id: `si_` and 32 hex. */
+const SIGNIN = /^si_[0-9a-f]{32}$/;
 
 /**
  * The run's doors, each `https` on the egress host: E2B's transform sets the egress token
  * on HTTPS alone (probed), so a plain-HTTP door would reach the object without it.
  */
-function httpsDoors(urls: SandboxStart["urls"]): boolean {
+function httpsDoors(urls: Readonly<Record<string, string>>): boolean {
   return Object.values(urls).every((url) => {
     try {
       const parsed = new URL(url);
@@ -514,6 +527,105 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
                        "authority = ?", start.authority);
       await this.#arm();
       return { started: true };
+    });
+  }
+
+  /**
+   * The vendor's own sign-in started in the authority's sandbox (slice SIGNIN), or its
+   * sign-out: the sandbox found, resumed or made as a run's start finds it (its turn in the
+   * line, `sandbox_waiting` past the ceiling), its network let out to the engine's vendor
+   * hosts (and the chosen region's), and the runner's `login-launch` started with the
+   * sign-in's document (no secret); the sign-in holds the lease as a launched run does.
+   */
+  async signin(owner: string, signin: SandboxSignin): Promise<Started> {
+    if (!SIGNIN.test(signin.id) || !AUTHORITY.test(signin.authority)
+        || !LEASE.test(signin.lease.lease_id) || (signin.tokens === null) !== (signin.network === null)
+        || !httpsDoors(signin.urls) || (signin.mode !== "in" && signin.mode !== "out")) {
+      throw new Error("a sign-in names its id, its authority, its lease and its https doors " +
+                      "on the egress host");
+    }
+    const hosts = engineHosts(signin.engine, signin.region);
+    const ceilings = await this.#ceilings();
+    if (ceilings === null) {
+      return { started: false, code: CODES.unconfigured };
+    }
+    return this.#serial(async () => {
+      const e2b = this.#e2b();
+      const network = signin.network === null ? null : e2bNetwork(signin.network.network);
+      const first = network === null ? null : widened(network, hosts) ?? network;
+      const got = await this.#ensure(owner, signin.authority, first, ceilings);
+      if (got === "waiting") {
+        return { started: false, code: CODES.waiting };
+      }
+      if (got === "lost") {
+        return { started: false, code: CODES.lost };
+      }
+      const { handle } = got;
+      if (signin.tokens !== null) {
+        await e2b.upload(handle, `${STATE_DIR}/lease.json`, json({
+          lease: signin.lease, authority: signin.authority, tokens: signin.tokens }));
+        this.#sql.exec("UPDATE sandboxes SET lease_id = ?, releasing = 0 WHERE authority = ?",
+                       signin.lease.lease_id, signin.authority);
+      } else {
+        const live = await e2b.info(handle.sandboxID);
+        const more = live === null ? null : widened(e2bNetwork(live.network), hosts);
+        if (more !== null) {
+          await e2b.network(handle.sandboxID, more);
+        }
+      }
+      const { tokens: _tokens, network: _network, lease: _lease, ...doc } = signin;
+      await e2b.upload(handle, `${STATE_DIR}/inbox/${signin.id}.json`, json(doc));
+      const launched = await this.#run(handle, ["login-launch", signin.id]);
+      if (launched.code !== OK) {
+        throw new Error(`the runner did not launch sign-in ${signin.id}`);
+      }
+      this.#sql.exec("INSERT OR REPLACE INTO launched (run, authority, lease_id) VALUES (?, ?, ?)",
+                     signin.id, signin.authority, signin.lease.lease_id);
+      this.#sql.exec("UPDATE sandboxes SET releasing = 0, idle_since = NULL WHERE " +
+                       "authority = ?", signin.authority);
+      await this.#arm();
+      return { started: true };
+    });
+  }
+
+  /** The authority's running sandbox, or null (none, or paused). */
+  async #running(authority: string): Promise<Handle | null> {
+    const row = this.#row(authority);
+    const found = row === null ? null : await this.#e2b().info(row.sandbox_id);
+    return found === null ? null : handleOf(found);
+  }
+
+  /**
+   * A pasted code to the live sign-in's CLI: left in the runner's root-only inbox and handed
+   * over (`login-input`); whether the sign-in was live to take it.
+   */
+  async signinInput(_owner: string, request: { authority: string; id: string; code: string }):
+      Promise<{ delivered: boolean }> {
+    if (!SIGNIN.test(request.id) || !AUTHORITY.test(request.authority)
+        || typeof request.code !== "string" || /[\r\n]/.test(request.code)) {
+      throw new Error("a pasted code names its sign-in and is one line");
+    }
+    return this.#serial(async () => {
+      const handle = await this.#running(request.authority);
+      if (handle === null) {
+        return { delivered: false };
+      }
+      await this.#e2b().upload(handle, `${STATE_DIR}/inbox/${request.id}.code`,
+                               new TextEncoder().encode(request.code));
+      return { delivered: (await this.#run(handle, ["login-input", request.id])).code === OK };
+    });
+  }
+
+  /** A live sign-in stopped (`login-cancel`). */
+  async signinCancel(_owner: string, request: { authority: string; id: string }):
+      Promise<{ cancelled: boolean }> {
+    if (!SIGNIN.test(request.id) || !AUTHORITY.test(request.authority)) {
+      throw new Error("a sign-in's cancel names its sign-in");
+    }
+    return this.#serial(async () => {
+      const handle = await this.#running(request.authority);
+      return { cancelled: handle !== null
+        && (await this.#run(handle, ["login-cancel", request.id])).code === OK };
     });
   }
 

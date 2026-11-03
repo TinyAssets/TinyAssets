@@ -322,6 +322,187 @@ describe("root never follows a link another user planted (slice S review)", () =
   });
 });
 
+/** A sign-in's id, fresh. */
+const signinId = () => `si_${crypto.randomUUID().replace(/-/g, "")}`;
+
+/** The sign-in's `ta.signin` frames, in order. */
+function signinFrames(id: string): Record<string, unknown>[] {
+  return doors.events().filter((post) => post.path === `/signin/${id}/events`)
+    .flatMap((post) => (post.body["frames"] as { event: Record<string, unknown> }[])
+      .map((frame) => frame.event));
+}
+
+async function frameWhere(id: string, test: (frame: Record<string, unknown>) => boolean) {
+  await waitFor(() => signinFrames(id).some(test));
+  return signinFrames(id).find(test)!;
+}
+
+/**
+ * Each record's vendor sign-in, as a fake CLI prints it (the shapes the records' patterns
+ * were written from, `subscription-engines.md`), and how it completes: a pasted code, the
+ * device page, or the credentials file appearing.
+ */
+const LOGINS: Record<string, { lines: string[]; url: string; code: string | null;
+                                region?: string; paste?: string; exits?: boolean;
+                                writes: Record<string, string>;
+                                status?: { out: string; exit: number } }> = {
+  "claude-code": {
+    lines: ["Opening browser to sign in…",
+            "\u001b[1mBrowser didn't open? Use the url below to sign in:\u001b[0m",
+            "https://claude.ai/oauth/authorize?code=true&client_id=c1&response_type=code&state=s1",
+            "Paste code here if prompted >"],
+    url: "https://claude.ai/oauth/authorize?code=true&client_id=c1&response_type=code&state=s1",
+    code: null, paste: "code-from-the-vendor-page#state",
+    writes: { "~/.claude/.credentials.json": "{\"claudeAiOauth\":{\"accessToken\":\"stored\"}}" },
+    status: { out: JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }), exit: 0 },
+  },
+  codex: {
+    lines: ["Follow these steps to sign in with ChatGPT using device code authorization:",
+            "1. Open this link in your browser and sign in to your account",
+            "   https://auth.openai.com/codex/device",
+            "2. Enter this one-time code (expires in 15 minutes)",
+            "   ABCD-EFGHI"],
+    url: "https://auth.openai.com/codex/device", code: "ABCD-EFGHI", exits: true,
+    writes: { "~/.codex/auth.json": JSON.stringify({ tokens: { access_token: "stored-a",
+                                                                refresh_token: "stored-r" } }) },
+    status: { out: "Logged in using ChatGPT", exit: 0 },
+  },
+  gemini: {
+    lines: ["Please visit the following URL to authorize the application:",
+            "https://accounts.google.com/o/oauth2/v2/auth?client_id=g1&scope=openid&state=s2",
+            "Enter the authorization code:"],
+    url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=g1&scope=openid&state=s2",
+    code: null,
+    writes: { "~/.gemini/oauth_creds.json": JSON.stringify({ access_token: "stored-a",
+                                                              refresh_token: "stored-r" }) },
+  },
+  kimi: {
+    lines: ["Visit https://www.kimi.ai/code/device?user_code=K1-ABC to sign in,",
+            "or enter code: K1-ABC"],
+    url: "https://www.kimi.ai/code/device?user_code=K1-ABC", code: "K1-ABC", region: "global",
+    exits: true,
+    writes: { "~/.kimi-code/credentials/kimi-code.json": JSON.stringify({
+      access_token: "stored-a", refresh_token: "stored-r" }) },
+  },
+};
+
+describe("the vendor's own sign-in", () => {
+  it.each(Object.keys(LOGINS))("relays %s's own prompt by its record's patterns, and signs in",
+                               async (engine) => {
+    const plan = LOGINS[engine]!;
+    const login = sources.get(engine)!.cli!.login as Record<string, unknown>;
+    box.cli(engine, { lines: [], login: { lines: plan.lines, code: plan.paste !== undefined,
+                                          writes: plan.writes,
+                                          ...(plan.exits === true ? { exit: 0 } : {}) },
+                      ...(plan.status === undefined ? {} : { status: plan.status }) });
+    const id = signinId();
+    box.login({ id, engine, region: plan.region ?? null }, doors);
+    expect(box.runner("login-launch", id).code).toBe(0);
+    const open = await frameWhere(id, (frame) => frame["state"] === "open"
+      && (frame["url"] !== null || frame["code"] !== null));
+    expect(open).toMatchObject({ type: "ta.signin", url: plan.url,
+                                 accepts_code: login["accepts_code"] === true });
+    if (plan.code !== null) {
+      await frameWhere(id, (frame) => frame["code"] === plan.code);
+    }
+    if (plan.paste !== undefined) {
+      box.write(`/var/lib/ta/inbox/${id}.code`, plan.paste);
+      expect(box.runner("login-input", id).code).toBe(0);
+    }
+    await doors.ended_(25_000, id);
+    expect(signinFrames(id).at(-1)).toMatchObject({ type: "ta.signin", state: "signed_in" });
+    const seen = box.ran(engine)[0]!;
+    // The record's own login, `{region}` filled, as a user of its own, never root.
+    expect(seen.uid).not.toBe(0);
+    expect(seen.argv).toEqual((login["argv"] as string[]).slice(1).map((arg) =>
+      arg.replaceAll("{region}", plan.region ?? "")));
+    if (login["terminal"] === true) {
+      expect((seen as unknown as { tty: boolean }).tty).toBe(true);
+    }
+    if (plan.paste !== undefined) {
+      expect(box.ran(engine).some((each) => each.stdin === `${plan.paste}\n`)).toBe(true);
+    }
+    // Presence, never a credential: the engine is reported signed in; nothing posted holds
+    // the stored tokens.
+    const report = doors.posts.filter((post) => post.path === "/signin").at(-1)!;
+    expect(report.body).toEqual({ signins: [{ engine, signed_in: true }] });
+    expect(JSON.stringify(doors.posts.map((post) => post.body))).not.toMatch(/stored/);
+  });
+
+  it("relays nothing credential-shaped, and ends the sign-in refused", async () => {
+    box.cli("codex", { lines: [], login: { lines: [
+      "Open https://auth.openai.com/codex/device?access_token=leaked-value now"], code: true } });
+    const id = signinId();
+    box.login({ id, engine: "codex" }, doors);
+    expect(box.runner("login-launch", id).code).toBe(0);
+    await doors.ended_(25_000, id);
+    expect(signinFrames(id).some((frame) => frame["state"] === "open")).toBe(false);
+    expect(signinFrames(id).at(-1)).toMatchObject({ state: "refused" });
+    expect(JSON.stringify(doors.posts.map((post) => post.body))).not.toContain("leaked-value");
+  });
+
+  it("refuses a value holding a stored secret's own bytes", async () => {
+    const secret = "s".repeat(48);
+    box.write("/var/lib/ta/store/codex/.codex/auth.json",
+              JSON.stringify({ tokens: { access_token: secret, refresh_token: "r".repeat(48) } }));
+    box.cli("codex", { lines: [], login: { lines: [
+      `Open https://auth.openai.com/codex/device?for=${secret} now`], code: true } });
+    const id = signinId();
+    box.login({ id, engine: "codex" }, doors);
+    box.runner("login-launch", id);
+    await doors.ended_(25_000, id);
+    expect(signinFrames(id).at(-1)).toMatchObject({ state: "refused" });
+    expect(JSON.stringify(doors.posts.map((post) => post.body))).not.toContain(secret);
+  });
+
+  it("is cancelled, its CLI stopped and its user's processes gone", async () => {
+    box.cli("claude-code", { lines: [], login: { lines: LOGINS["claude-code"]!.lines,
+                                                 code: true } });
+    const id = signinId();
+    box.login({ id, engine: "claude-code" }, doors);
+    box.runner("login-launch", id);
+    await frameWhere(id, (frame) => frame["state"] === "open");
+    expect(box.runner("login-cancel", id).code).toBe(0);
+    await doors.ended_(25_000, id);
+    expect(signinFrames(id).at(-1)).toMatchObject({ state: "cancelled" });
+    const seen = box.ran("claude-code").find((each) => !each.argv.includes("status"));
+    if (seen !== undefined) {
+      expect(processesOf(seen.uid)).toEqual([]);
+    }
+    expect(box.runner("login-cancel", id).code).toBe(3);  // nothing live to cancel
+  });
+
+  it("signs out: the engine's secrets gone from its store, its presence reported", async () => {
+    box.write("/var/lib/ta/store/kimi/.kimi-code/credentials/kimi-code.json",
+              JSON.stringify({ access_token: "a".repeat(40), refresh_token: "b".repeat(40) }));
+    box.write("/var/lib/ta/store/kimi/.kimi-code/sessions/s.json", "{}");
+    const id = signinId();
+    box.login({ id, engine: "kimi", mode: "out" }, doors);
+    box.runner("login-launch", id);
+    await doors.ended_(25_000, id);
+    expect(signinFrames(id).at(-1)).toMatchObject({ state: "signed_out" });
+    expect(() => lstatSync(box.path("/var/lib/ta/store/kimi/.kimi-code/credentials/" +
+                                    "kimi-code.json"))).toThrow();
+    // Its sessions are kept: only its secrets go.
+    expect(lstatSync(box.path("/var/lib/ta/store/kimi/.kimi-code/sessions/s.json")).isFile())
+      .toBe(true);
+    const report = doors.posts.filter((post) => post.path === "/signin").at(-1)!;
+    expect(report.body).toEqual({ signins: [{ engine: "kimi", signed_in: false }] });
+  });
+
+  it("keeps a sandbox with a sign-in in progress from the idle reap", async () => {
+    box.cli("claude-code", { lines: [], login: { lines: LOGINS["claude-code"]!.lines,
+                                                 code: true } });
+    const id = signinId();
+    box.login({ id, engine: "claude-code" }, doors);
+    box.runner("login-launch", id);
+    await frameWhere(id, (frame) => frame["state"] === "open");
+    expect(JSON.parse(box.runner("state").out)).toEqual({ live: 1, quiet: true });
+    box.runner("login-cancel", id);
+    await doors.ended_(25_000, id);
+  });
+});
+
 describe("each run's own user", () => {
   it("is not the next run's: its processes and its files are gone", async () => {
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, daemon: true,

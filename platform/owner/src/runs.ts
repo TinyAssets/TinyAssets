@@ -69,7 +69,7 @@ import type { CredentialKind, EngineEvents, Sources } from "../../doors/src/sour
 import { AGENT_DISABLED, type AgentFile, AUTO, RUN_CAPABILITIES, type RunCapability }
   from "./agent-file";
 import { AUTHORITY_CHANGED, type StandingGrant, type Stamped } from "./authority";
-import { LEASE_TTL_S, OWNER_AUTHORITY } from "./files";
+import { LEASE_TTL_S, MAX_LIST, OWNER_AUTHORITY } from "./files";
 import { type Candidate, ranked } from "./auto";
 import { nextOccurrence, parseCron } from "./cron";
 import { Invalid, Refused } from "./errors";
@@ -1247,6 +1247,34 @@ export class Runs {
       throw new Refused(NO_RUN);
     }
     return receipt(row);
+  }
+
+  /**
+   * The caller's runs, newest first (by `seq`), `limit` a page (at most `MAX_LIST`, the
+   * object's own most a listing pages), from before `before`: the owner's every run
+   * (`client` null), an outside client's its own. Each its receipt without its result. A
+   * read.
+   */
+  list(client: string | null, before: unknown, limit: unknown):
+      { runs: (Omit<RunReceipt, "result"> & { seq: number })[]; next: number | null } {
+    const most = limit === undefined ? MAX_LIST : limit;
+    if (typeof most !== "number" || !Number.isSafeInteger(most) || most < 1 || most > MAX_LIST
+        || (before !== undefined && (typeof before !== "number" || !Number.isSafeInteger(before)
+                                     || before < 1))) {
+      throw new Invalid(`a run list's limit is 1 to ${MAX_LIST}, its before a run's seq`);
+    }
+    const rows = this.#sql.exec<RunRow & { seq: number }>(
+      "SELECT * FROM runs WHERE (? IS NULL OR client = ?) AND (? IS NULL OR seq < ?) " +
+        "ORDER BY seq DESC LIMIT ?", client, client, before ?? null, before ?? null, most + 1)
+      .toArray();
+    const page = rows.slice(0, most);
+    return {
+      runs: page.map((row) => {
+        const { result: _result, ...rest } = receipt(row);
+        return { ...rest, seq: row.seq };
+      }),
+      next: rows.length > most ? page.at(-1)!.seq : null,
+    };
   }
 
   /** The agents of an outside client's live runs: what its sandbox always reads. A read. */

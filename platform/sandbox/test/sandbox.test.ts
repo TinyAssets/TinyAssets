@@ -648,6 +648,72 @@ describe("the look before the runtime ceiling", () => {
   });
 });
 
+describe("a sign-in", () => {
+  const SI = `si_${"5".repeat(32)}`;
+  function signin(over: Record<string, unknown> = {}) {
+    return { id: SI, engine: "kimi", region: "global", mode: "in" as const, authority: "owner",
+             lease: LEASE, tokens: start().tokens, network: NETWORK as never,
+             urls: { events: `https://egress.tinyassets.io/signin/${SI}/events`,
+                     signin: "https://egress.tinyassets.io/signin" }, ...over };
+  }
+
+  it("starts the record's login in the authority's sandbox, its region's hosts let out",
+     async () => {
+    const who = owner();
+    expect(await stub(who).signin(who, signin() as never)).toEqual({ started: true });
+    const state = await seen();
+    const box = state.sandboxes[0]!;
+    expect(box.network.allowOut).toEqual(expect.arrayContaining(["auth.kimi.ai", "api.kimi.ai"]));
+    expect(box.network.allowOut).not.toContain("auth.kimi.com");
+    expect(state.commands.map((command) => command.argv.slice(1, 3))).toEqual([
+      ["prepare", "1.1.1.1"], ["login-launch", SI]]);
+    const doc = JSON.parse(state.files[`${box.id}:/var/lib/ta/inbox/${SI}.json`]!);
+    expect(doc).toEqual({ id: SI, engine: "kimi", region: "global", mode: "in",
+                          authority: "owner", urls: signin().urls });
+    expect(JSON.parse(state.files[`${box.id}:/var/lib/ta/lease.json`]!).tokens.runner_token)
+      .toBe("d".repeat(64));
+    // A sign-in in progress keeps the sandbox leased: its look is the idle one, not a reap.
+    expect(await alarmOf(who)).not.toBeNull();
+  });
+
+  it("hands a pasted code to the live sign-in, and stops it", async () => {
+    const who = owner();
+    await stub(who).signin(who, signin({ engine: "claude-code", region: null }) as never);
+    expect(await stub(who).signinInput(who, { authority: "owner", id: SI, code: "abc#d" }))
+      .toEqual({ delivered: true });
+    const state = await seen();
+    const box = state.sandboxes[0]!;
+    expect(state.files[`${box.id}:/var/lib/ta/inbox/${SI}.code`]).toBe("abc#d");
+    expect(state.commands.at(-1)!.argv.slice(1)).toEqual(["login-input", SI]);
+    expect(await stub(who).signinCancel(who, { authority: "owner", id: SI }))
+      .toEqual({ cancelled: true });
+    expect((await seen()).commands.at(-1)!.argv.slice(1)).toEqual(["login-cancel", SI]);
+    // No sandbox running in a client's name: nothing to hand a code to.
+    expect(await stub(who).signinInput(who, { authority: "c".repeat(64), id: SI, code: "x" }))
+      .toEqual({ delivered: false });
+  });
+
+  it("waits its turn in the line as a start does", async () => {
+    await e2b("/script", { full: true });
+    const who = owner();
+    expect(await stub(who).signin(who, signin() as never)).toEqual({ started: false,
+                                                                     code: CODES.waiting });
+    expect(await line()).toEqual([who]);
+  });
+
+  it("refuses a sign-in that is not one: its id, a region the record lacks, plain HTTP", async () => {
+    const who = owner();
+    for (const bad of [signin({ id: "run_x" }), signin({ region: "moon" }),
+                       signin({ urls: { events: "http://egress.tinyassets.io/x",
+                                        signin: "https://egress.tinyassets.io/signin" } })]) {
+      const refused = await stub(who).signin(who, bad as never)
+        .then(() => null, (error: unknown) => error);
+      expect(refused).not.toBeNull();
+    }
+    expect((await seen()).sandboxes).toEqual([]);
+  });
+});
+
 describe("an erasure", () => {
   it("kills every sandbox of the owner, paused and strays included, and forgets the owner",
      async () => {

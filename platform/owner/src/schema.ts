@@ -33,6 +33,7 @@ import {
   INPUT_BYTES, MESSAGE_ID_CHARS, NATIVE_ID_CHARS, QUEUE_BYTES, QUEUE_ROWS, RESULT_BYTES,
   RUN_ID_CHARS, SCHEDULE_ID_CHARS, SCHEDULES_KEPT, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS,
 } from "./run-rows";
+import { FRAME_UNITS_MAX } from "./run-events";
 import { SOCKET_TICKETS } from "./socket-shape";
 import { ARGUMENTS_CHARS, DOORBELL_BLOB_CHARS, SUBSCRIPTIONS_PER_AGENT } from "./wake-kinds";
 import { RUNS_CEILING } from "./tier";
@@ -1406,6 +1407,23 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER sandbox_leases_fenced BEFORE UPDATE OF authority, lease_id, epoch, " +
       "egress_token, sync_token, runner_token ON sandbox_leases BEGIN " +
       "SELECT RAISE(ABORT, 'a lease never changes what it was taken as'); END",
+    // The vendor's own sign-in in progress inside a sandbox (slice SIGNIN, `signins.ts`): one
+    // an authority, holding that sandbox's lease, its latest prompt (the vendor's URL and code,
+    // never a token) and its runner's last beat. Gone at its end.
+    "CREATE TABLE sandbox_signins (authority TEXT PRIMARY KEY CHECK (authority = 'owner' " +
+      "OR (length(authority) = 64 AND authority NOT GLOB '*[^0-9a-f]*')), " +
+      "id TEXT NOT NULL UNIQUE CHECK (length(id) = 35 AND id GLOB 'si_*'), " +
+      "engine TEXT NOT NULL CHECK (length(engine) BETWEEN 1 AND 64), " +
+      "mode TEXT NOT NULL CHECK (mode IN ('in', 'out')), " +
+      "lease_id TEXT NOT NULL CHECK (length(lease_id) = 32), epoch INTEGER NOT NULL, " +
+      "state TEXT NOT NULL CHECK (length(state) BETWEEN 1 AND 32), " +
+      `url TEXT CHECK (url IS NULL OR length(url) <= ${FRAME_UNITS_MAX}), ` +
+      `code TEXT CHECK (code IS NULL OR length(code) <= ${FRAME_UNITS_MAX}), ` +
+      "accepts_code INTEGER NOT NULL DEFAULT 0 CHECK (accepts_code IN (0, 1)), " +
+      "started_at REAL NOT NULL, beat_at REAL NOT NULL) WITHOUT ROWID",
+    "CREATE TRIGGER sandbox_signins_full BEFORE INSERT ON sandbox_signins WHEN (SELECT " +
+      `COUNT(*) FROM sandbox_signins) >= ${RUNS_CEILING} BEGIN SELECT RAISE(ABORT, ` +
+      `'sandbox_signins_full: ${RUNS_CEILING} sign-ins are live'); END`,
     "CREATE TABLE run_grants (" +
       `run TEXT PRIMARY KEY CHECK (length(run) = ${RUN_ID_CHARS}), ` +
       // The SHA-256 of the run's own secret, which only its CLI's environment holds.

@@ -35,6 +35,14 @@
  * - `recover`: after a resume that rebooted the sandbox, each run that was live is started
  *   again from its session (`resume_argv`).
  * - `sync` (internal, as `ta-sync`, its job on stdin): the sync agent and the projection.
+ * - `login-launch <id>`: the vendor's own sign-in (slice SIGNIN; `login.ts`), its document
+ *   the Worker put in the root-only inbox, started detached (`login-run <id>`): the record's
+ *   login as a user of its own, its home made from the engine's store, the URL or code the
+ *   record's patterns find relayed (`ta.signin` frames on the sign-in's event door), a pasted
+ *   code (`login-input <id>`, the Worker's upload) written to its stdin, then its secrets kept
+ *   in the engine's store and the engine's presence reported (`urls.signin`). A sign-out
+ *   (`mode: out`) deletes the engine's `secret_paths` from the store and reports the same.
+ *   `login-cancel <id>` stops it.
  */
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { chownSync, closeSync, existsSync, lchownSync, lstatSync, mkdirSync, openSync,
@@ -52,6 +60,8 @@ import { remove, safeDirs, safeRead, safeWalk, safeWrite } from "./fsafe";
 import { ancestorEnvFile, heldSecret, homeEnvFile, projectEnvFile, projectEnvRefusal,
          secretAtoms } from "./guards";
 import { project } from "./project";
+import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
+         statesHold } from "./login";
 import { readMirror, SyncClient, SyncFenced, syncIn, syncOut } from "./sync";
 import { asUser, give, group, type Identity, killAll, POOL_PREFIX, take, user } from "./users";
 
@@ -288,12 +298,23 @@ function atoms(): string[] {
   return found;
 }
 
-/** Whether the engine is signed in inside this sandbox: its record's `status_argv`. */
+/**
+ * Whether the engine is signed in inside this sandbox: its record's `status_argv` (and
+ * `status_equals`), or, for a record with none, its `state_checks` over the engine's store.
+ */
 export function signedIn(rec: SourceRecord): boolean {
   const login = rec.cli?.login as { status_argv?: string[];
                                     status_equals?: Record<string, unknown> } | undefined;
-  if (login?.status_argv === undefined) {
+  if (login === undefined) {
     return false;
+  }
+  if (login.status_argv === undefined) {
+    const store = `${STORE}/${rec.id}`;
+    return statesHold(login as Record<string, unknown>, (path) => {
+      const rel = path.replace(/^\{home\}\//, "");
+      return existsSync(store) ? safeRead(store, join(store, rel))?.toString("utf8") ?? null
+        : null;
+    });
   }
   const name = `check-${rec.id}-${process.pid}`;
   const as = take(ROOT, STATE, name);
@@ -469,7 +490,8 @@ function quiet(state: RunState): boolean {
 
 function stateCommand(): number {
   const live = liveRuns();
-  process.stdout.write(JSON.stringify({ live: live.length,
+  // A sign-in in progress keeps its sandbox from the idle reap; it is quiet (no model call).
+  process.stdout.write(JSON.stringify({ live: live.length + liveLogins().length,
                                         quiet: live.every(({ state }) => quiet(state)) }));
   return OK;
 }
@@ -1103,11 +1125,17 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
 
 async function reportSignins(start: StartDoc, lease: LeaseFile): Promise<void> {
   const signins = [...RECORDS.values()].filter((rec) => rec.unwired === undefined
-    && rec.cli!.credential.includes("vendor_login_in_sandbox")
-    && (rec.cli!.login as { status_argv?: unknown } | undefined)?.status_argv !== undefined)
+    && rec.cli!.credential.includes("vendor_login_in_sandbox") && rec.cli!.login !== undefined)
     .map((rec) => ({ engine: rec.id, signed_in: safeSignedIn(rec) }));
+  await postSignins(start.urls.signin, lease, signins);
+}
+
+/** The engines' presence, posted to the sign-in report door (presence only, no credential). */
+async function postSignins(url: string, lease: LeaseFile,
+                           signins: readonly { engine: string; signed_in: boolean }[]):
+    Promise<void> {
   try {
-    await fetch(start.urls.signin, {
+    await fetch(url, {
       method: "POST", body: JSON.stringify({ signins }),
       headers: { "content-type": "application/json", "x-ta-runner": lease.tokens.runner_token } });
   } catch {
@@ -1123,6 +1151,236 @@ function safeSignedIn(rec: SourceRecord): boolean {
   }
 }
 
+
+// -- the vendor's own sign-in (slice SIGNIN) ------------------------------------------
+
+const SIGNIN = /^si_[0-9a-f]{32}$/;
+
+function signinDir(id: string): string {
+  if (!SIGNIN.test(id)) {
+    throw new Error("a sign-in id is si_ and 32 hex");
+  }
+  return `${STATE}/signin/${id}`;
+}
+
+/** A sign-in's document, as the sandbox Worker leaves it: no secret. */
+interface SigninDoc {
+  readonly id: string;
+  readonly engine: string;
+  readonly region: string | null;
+  readonly mode: "in" | "out";
+  readonly authority: string;
+  readonly urls: { readonly events: string; readonly signin: string };
+}
+
+function loginState(id: string): { pid: number; ended: boolean } | null {
+  const path = `${signinDir(id)}/state.json`;
+  return existsSync(path) ? readJson<{ pid: number; ended: boolean }>(path) : null;
+}
+
+/** The sign-ins whose runners still run. */
+function liveLogins(): string[] {
+  const dir = `${STATE}/signin`;
+  if (!existsSync(dir)) {
+    return [];
+  }
+  return readdirSync(dir).filter((id) => SIGNIN.test(id)).filter((id) => {
+    const state = loginState(id);
+    return state !== null && !state.ended && alive(state.pid);
+  });
+}
+
+function loginLaunch(id: string): number {
+  const dir = signinDir(id);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  renameSync(`${STATE}/inbox/${id}.json`, `${dir}/start.json`);
+  const log = openSync(`${dir}/runner.log`, "a", 0o600);
+  const child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "login-run", id],
+                      { detached: true, stdio: ["ignore", log, log], env: process.env });
+  closeSync(log);
+  child.unref();
+  writeJson(`${dir}/state.json`, { pid: child.pid, ended: false });
+  return OK;
+}
+
+/** A pasted code the Worker left in the inbox, handed to the live sign-in's runner. */
+function loginInput(id: string): number {
+  const dir = signinDir(id);
+  const state = loginState(id);
+  const inbox = `${STATE}/inbox/${id}.code`;
+  if (state === null || state.ended || !alive(state.pid)) {
+    remove(inbox);
+    return NO;
+  }
+  renameSync(inbox, `${dir}/input`);
+  return OK;
+}
+
+function loginCancel(id: string): number {
+  const state = loginState(id);
+  if (state === null || state.ended || !alive(state.pid)) {
+    return NO;
+  }
+  writeFileSync(`${signinDir(id)}/cancel`, "");
+  process.kill(state.pid, "SIGTERM");
+  return OK;
+}
+
+/**
+ * The sign-in's own runner: the record's login run as a pool user, its prompt relayed, a
+ * pasted code to its stdin; then its kept paths into the engine's store, its presence
+ * reported, and the sign-in's end posted (`signed_in`, `failed`, `cancelled`, `refused`,
+ * `signed_out`).
+ */
+async function loginRun(id: string): Promise<number> {
+  const dir = signinDir(id);
+  const doc = readJson<SigninDoc>(`${dir}/start.json`);
+  const lease = readJson<LeaseFile>(`${STATE}/lease.json`);
+  const rec = record(doc.engine);
+  const login = rec.cli!.login as Readonly<Record<string, unknown>> | undefined;
+  const outbox = new Outbox(0);
+  const proc: { child: ChildProcess | null; kill: ReturnType<typeof setTimeout> | null;
+                stopped: boolean } = { child: null, kill: null, stopped: false };
+  const stop = () => {
+    proc.stopped = true;
+    const child = proc.child;
+    if (child !== null && child.exitCode === null && child.pid !== undefined) {
+      const pid = child.pid;
+      try {
+        process.kill(-pid, "SIGTERM");
+      } catch {
+        child.kill("SIGTERM");
+      }
+      proc.kill ??= setTimeout(() => {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          child.kill("SIGKILL");
+        }
+      }, CANCEL_GRACE_MS);
+    }
+  };
+  const poster = new Poster(doc.urls.events, lease.tokens.runner_token, outbox, stop);
+  process.on("SIGTERM", stop);
+  await poster.tick();  // the sign-in's first heartbeat: it holds the lease
+  const pump = setInterval(() => {
+    void poster.tick();
+  }, FLUSH_MS);
+  let end = "failed";
+  let reason: string | null = null;
+  let as: Identity | null = null;
+  let home: string | null = null;
+  let watch: ReturnType<typeof setInterval> | null = null;
+  try {
+    if (login === undefined || !rec.cli!.credential.includes("vendor_login_in_sandbox")) {
+      throw new Error(`engine ${rec.id} has no vendor sign-in`);
+    }
+    if (doc.mode === "out") {
+      // Its secrets gone from the store: no later run's home carries the sign-in.
+      const store = `${STORE}/${rec.id}`;
+      for (const rel of existsSync(store) ? safeWalk(store) : []) {
+        if (isKept(keptPaths(rec).secrets, rel)) {
+          remove(join(store, rel));
+        }
+      }
+      end = "signed_out";
+    } else {
+      as = take(ROOT, STATE, id);
+      home = makeHome(id, rec);
+      const madeHome = home;
+      const files = rec.cli!.per_credential?.vendor_login_in_sandbox?.files ?? {};
+      for (const [path, text] of Object.entries(files)) {
+        safeWrite(madeHome, path.replaceAll("{home}", madeHome), new TextEncoder().encode(text),
+                  0o600);
+      }
+      giveTree(madeHome, as);
+      const command = loginArgv(login, binOf(rec), doc.region);
+      const argv = asUser(as, [shared()], login["terminal"] === true ? onTerminal(command)
+        : command);
+      const secrets = atoms();
+      let shown: Prompt = { url: null, code: null };
+      let text = "";
+      let complete = false;
+      const exit = await new Promise<number>((resolve) => {
+        const child = spawn(argv[0]!, argv.slice(1), {
+          env: engineEnv(rec, madeHome), cwd: madeHome, detached: true,
+          stdio: ["pipe", "pipe", "pipe"] });
+        proc.child = child;
+        // Only the record's patterns' groups leave the VM, and none credential-shaped.
+        const read = (data: Buffer) => {
+          // Its tail, as much as one frame shows: a prompt is a line of it.
+          text = (text + plain(data.toString("utf8"))).slice(-FRAME_UNITS_MAX);
+          const next = prompted(login, text, shown);
+          if (next.url === shown.url && next.code === shown.code) {
+            return;
+          }
+          const why = [next.url, next.code].flatMap((value) => value === null ? []
+            : [credentialShaped(value, secrets)]).find((found) => found !== null) ?? null;
+          if (why !== null) {
+            reason = why;
+            stop();
+            return;
+          }
+          shown = next;
+          outbox.push({ type: "ta.signin", state: "open", url: shown.url, code: shown.code,
+                        accepts_code: login["accepts_code"] === true });
+        };
+        child.stdout!.on("data", read);
+        child.stderr!.on("data", read);
+        child.stdin!.on("error", () => undefined);
+        child.on("close", (code) => resolve(code ?? 128 + 15));
+        child.on("error", () => resolve(127));
+        watch = setInterval(() => {
+          if (existsSync(`${dir}/input`)) {
+            const code = readFileSync(`${dir}/input`, "utf8").trim();
+            remove(`${dir}/input`);
+            child.stdin!.write(`${code}\n`);
+            outbox.push({ type: "ta.signin", state: "code_sent" });
+          }
+          if (existsSync(`${dir}/cancel`)) {
+            stop();
+          }
+          if (login["complete_on_state"] === true && !complete && statesHold(login, (path) =>
+            safeRead(madeHome, path.replaceAll("{home}", madeHome))?.toString("utf8") ?? null)) {
+            complete = true;  // signed in: a CLI that stays up after is stopped
+            stop();
+          }
+        }, FLUSH_MS);
+      });
+      clearInterval(watch!);
+      watch = null;
+      killAll(as.uid);
+      keepHome(madeHome, rec);
+      end = reason !== null ? "refused"
+        : existsSync(`${dir}/cancel`) && !complete ? "cancelled"
+          : (exit === 0 || complete) && safeSignedIn(rec) ? "signed_in" : "failed";
+    }
+  } catch (error) {
+    end = "failed";
+    reason = String(error);
+  } finally {
+    if (watch !== null) {
+      clearInterval(watch);
+    }
+    if (as !== null) {
+      try {
+        killAll(as.uid);
+      } finally {
+        if (home !== null) {
+          remove(home);
+        }
+        give(STATE, as);
+      }
+    }
+  }
+  await postSignins(doc.urls.signin, lease, [{ engine: rec.id, signed_in: safeSignedIn(rec) }]);
+  outbox.push({ type: "ta.signin", state: end, ...(reason === null ? {} : { reason }) });
+  clearInterval(pump);
+  await poster.finish(end === "signed_in" || end === "signed_out" ? 0 : 1);
+  writeJson(`${dir}/state.json`, { pid: process.pid, ended: true });
+  return OK;
+}
+
 // -- main -----------------------------------------------------------------------------
 
 export async function main(argv: readonly string[]): Promise<number> {
@@ -1130,6 +1388,14 @@ export async function main(argv: readonly string[]): Promise<number> {
   switch (command) {
     case "prepare":
       return prepare(args);
+    case "login-launch":
+      return loginLaunch(args[0] ?? "");
+    case "login-run":
+      return loginRun(args[0] ?? "");
+    case "login-input":
+      return loginInput(args[0] ?? "");
+    case "login-cancel":
+      return loginCancel(args[0] ?? "");
     case "signin-check":
       return signedIn(record(args[0] ?? "")) ? OK : NO;
     case "launch":
