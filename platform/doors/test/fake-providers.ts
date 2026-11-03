@@ -154,6 +154,18 @@ export default {
     const body = request.method === "GET" ? "" : await request.clone().text();
     log.push({ method: request.method, url: request.url,
                headers: Object.fromEntries(request.headers), body });
+    if (url.hostname === "callback.test") {
+      // An MCP Events receiver (slice W): `/echo...` echoes the verification's challenge,
+      // `/wrong...` answers another, anything else a 404.
+      const sent = body === "" ? {} : JSON.parse(body) as { challenge?: string };
+      if (url.pathname.startsWith("/echo")) {
+        return Response.json({ challenge: sent.challenge });
+      }
+      if (url.pathname.startsWith("/wrong")) {
+        return Response.json({ challenge: "not it" });
+      }
+      return new Response("no such receiver", { status: 404 });
+    }
     const where = `${url.hostname}${url.pathname}`;
     switch (where) {
       case "api.groq.com/openai/v1/models":

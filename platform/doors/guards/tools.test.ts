@@ -35,11 +35,13 @@ const DEFERRED: Readonly<Record<string, string>> = Object.freeze({
   fileUploadCommit: "tasks 2, owed by 6.1: file bytes streamed by the binder",
   fileUploadAbort: "tasks 2, owed by 6.1: file bytes streamed by the binder",
   fileChanges: "tasks 6: the sandbox's sync feed, reached by its sync token",
-  mailboxSubscriber: "tasks 7: the MCP Events subscribe door",
 });
 /** Outside-callable doors the doors call themselves, never a tool, and why. */
 const DOORS_ONLY: Readonly<Record<string, string>> = Object.freeze({
   toolProfile: "the MCP and API doors' read of which tools the caller is served",
+  wakeEvents: "the MCP door's events/list (MCP Events, slice W), never a tool",
+  wakeSubscribe: "the MCP door's events/subscribe, after its signed callback challenge",
+  wakeUnsubscribe: "the MCP door's events/unsubscribe",
 });
 /**
  * The mailbox tools, which a run never holds (slice ID): its mail is its input, and its

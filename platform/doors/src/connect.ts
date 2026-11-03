@@ -400,6 +400,22 @@ async function list({ bound: { binding, stub }, body }: ConnectContext): Promise
 }
 
 /** The connect routes, by their path under the owner surface. */
+/**
+ * A wake's secret, handed straight to the gateway (slice W, ruling H1), as a pasted model
+ * key is: the owner's pasted `/fire` or routine token sealed (`sealDoorbell`), or an MCP
+ * Events callback verified by its signed challenge and sealed (`verifyDoorbell`). The
+ * doors keep neither; the owner's object stores only the blob.
+ */
+export function sealDoorbell(env: DoorsEnv, owner: string, subscription: string,
+                             input: { record: string; url: string; secret: string }) {
+  return env.GATEWAY.sealDoorbell(owner, subscription, 1, input);
+}
+
+export function verifyDoorbell(env: DoorsEnv, owner: string, subscription: string,
+                               input: { record: string; url: string; secret: string }) {
+  return env.GATEWAY.verifyDoorbell(owner, subscription, 1, input);
+}
+
 export const CONNECT_ROUTES: Readonly<Record<string, (context: ConnectContext) =>
     Promise<Response>>> = Object.freeze({
   "connections/key": connectKey,

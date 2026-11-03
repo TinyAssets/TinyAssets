@@ -10,6 +10,8 @@
  *   entrypoint for the egress door.
  * - `reseal`: a blob resealed under the active kid at the next version (the sweep that
  *   retires a kid).
+ * - `sealDoorbell`, `verifyDoorbell`, `ringDoorbell`: a wake's secret sealed, an MCP Events
+ *   callback verified and sealed, and one wake sent with it (`doorbell.ts`, slice W).
  *
  * The owner Worker binds the default entrypoint. The doors Worker binds `ConnectGateway`,
  * which serves only `seal`, `exchange` and `verify`, the steps of a connect, and
@@ -28,6 +30,9 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { builtinCatalog } from "./catalog";
 import { type Credential, secret, source } from "./credential";
+import {
+  type RingAnswer, ringDoorbell, sealDoorbell, verifyDoorbell, type Verified as Rung,
+} from "./doorbell";
 import { codeOf, Failure, failureResponse, guarded } from "./failure";
 import { forward, forwardMetered, forwardRead, type MeterOutcome, type Metering,
          type Verified, verify } from "./forward";
@@ -83,6 +88,18 @@ export class ConnectGateway extends WorkerEntrypoint<GatewayEnv> {
   async verify(owner: string, connection: string, version: number,
                blob: string): Promise<Verified> {
     return verifySealed(this.env, owner, connection, version, blob);
+  }
+
+  /** Seals the owner's pasted wake token (a `/fire` token, a routine key) for its callback. */
+  async sealDoorbell(owner: string, subscription: string, version: number,
+                     input: unknown): Promise<Sealed> {
+    return guarded(() => sealDoorbell(this.env, owner, subscription, version, input));
+  }
+
+  /** Verifies an MCP Events callback with a signed challenge, then seals it. */
+  async verifyDoorbell(owner: string, subscription: string, version: number,
+                       input: unknown): Promise<Rung> {
+    return guarded(() => verifyDoorbell(this.env, owner, subscription, version, input));
   }
 }
 
@@ -176,6 +193,14 @@ export default class Gateway extends WorkerEntrypoint<GatewayEnv> {
     } catch (error) {
       return failureResponse(codeOf(error, "internal"));
     }
+  }
+
+  /** Sends one wake with its sealed secret, for the owner's object (`doorbell.ts`). */
+  async ringDoorbell(owner: string, subscription: string, version: number, blob: string,
+                     previous: { readonly version: number; readonly blob: string } | null,
+                     request: unknown): Promise<RingAnswer> {
+    return guarded(() => ringDoorbell(this.env, owner, subscription, version, blob, previous,
+                                      request));
   }
 
   /** Asks the provider to revoke an OAuth credential (RFC 7009). */
