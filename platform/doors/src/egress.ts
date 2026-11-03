@@ -48,7 +48,7 @@ import { type Bound, bindRun, bindSandbox, type Presented, rebound } from "./bin
 import { jsonObject } from "./body";
 import { type DoorsEnv, EGRESS_ORIGIN } from "./config";
 import { ownerGate } from "./control";
-import { verifyToken } from "./routing-mac";
+import { LEASE_LIVED, verifyToken } from "./routing-mac";
 import { serveMcp } from "./mcp";
 import { refusal, runProfile } from "./tools";
 
@@ -186,8 +186,10 @@ async function sandboxToken(request: Request, env: DoorsEnv):
   if (parsed === null) {
     return refused("egress_token_unknown", 401);
   }
-  if (parsed.expires <= Date.now() / 1000) {
-    return refused("egress_token_expired", 401);  // the lease is over: no object is reached
+  // A lease's token lives while its lease is renewed, which the object checks; one minted
+  // with a time of its own is refused past it, reaching no object.
+  if (parsed.expires !== LEASE_LIVED && parsed.expires <= Date.now() / 1000) {
+    return refused("egress_token_expired", 401);
   }
   const generation = request.headers.get(GENERATION_HEADER) ?? "";
   if (!GENERATION.test(generation)) {

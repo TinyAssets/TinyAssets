@@ -45,7 +45,7 @@ import { within } from "./egress";
 const MODEL_MARK = "ta-meter-model-0e7f";
 const TOKENS_MARK = 4_321;
 /** How many of a source's models the verify-time learning asks before it gives up. */
-const LEARN_TRIES = 8;
+const LEARN_TRIES = 32;
 /** The context each run asks with: one short user message, made afresh for each run. */
 function context(): Context {
   return { messages: [{ role: "user", content: "x", timestamp: 0 }] } as unknown as Context;

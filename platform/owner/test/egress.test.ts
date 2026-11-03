@@ -14,7 +14,6 @@ import { verifyToken } from "../../doors/src/routing-mac";
 import { PLATFORM_CALLER } from "../src/admission";
 import type { ModelInfo } from "../src/connections";
 import { EGRESS_LIMITS, type EgressOpened, LOST_AFTER_S } from "../src/egress";
-import { RUN_DEADLINE_S } from "../src/network";
 import type { Binding } from "../src/owner-do";
 import { apiRules } from "../../gateway/src/api-rules";
 import { egressPrice, NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY, SYNC_FENCED } from "../src/owner-do";
@@ -24,7 +23,7 @@ import {
   ANTHROPIC, catalog, type Gated, gated, OAUTH, OPENAI, scopeOf, sealedAs,
 } from "./gateway-support";
 import { signedIn } from "./ledger-support";
-import { failure } from "./support";
+import { failure, TIERS } from "./support";
 import type { SandboxRun } from "../src/owner-do";
 import type { NetworkPlan } from "../src/network";
 import { hashed, ownerRun, secretOf } from "./runs-support";
@@ -426,7 +425,8 @@ describe("an egress call", () => {
     const connection = await r.connect("sk-good");
     const lease = await leased(r);
     const open: EgressOpened[] = [];
-    for (let i = 0; i < EGRESS_LIMITS.open; i++) {
+    // The tier's runs scale it: the tests' control record's free tier.
+    for (let i = 0; i < EGRESS_LIMITS.openPerRun * TIERS.free.runs; i++) {
       open.push(await admitted(r, lease, connection));
     }
     expect(await refusedWith(r, lease.as(), connection)).toBe("egress_rate");
@@ -446,7 +446,7 @@ describe("an egress call", () => {
         "SELECT i FROM n)", lease.lease_id, lease.run, lease.egress, connection, at, state,
       state === "refused" ? "egress_rate" : null, state === "settled" ? "complete" : null, at,
       count);
-    await fill(EGRESS_LIMITS.perMinute - 1, now - 59, "settled");
+    await fill(EGRESS_LIMITS.perRunPerMinute * TIERS.free.runs - 1, now - 59, "settled");
     await fill(50, now - 61, "settled");
     await fill(30, now - 30, "refused");
     await admitted(r, lease, connection);
@@ -1042,10 +1042,9 @@ describe("the sandbox's lease", () => {
     const lease = await leased(r, false);
     const tokens = { egress: lease.opened.egress_token, sync: lease.opened.sync_token };
     for (const [kind, token] of Object.entries(tokens) as ["egress" | "sync", string][]) {
-      expect(token).toMatch(/^[A-Za-z0-9_-]+\.[0-9]{10,11}\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}$/);
-      // It dies with the run's deadline.
-      expect(verifyToken(env.ROUTING_MAC_KEY, kind, token)!.expires)
-        .toBeGreaterThanOrEqual(Math.floor(Date.now() / 1000) + RUN_DEADLINE_S - 5);
+      expect(token).toMatch(/^[A-Za-z0-9_-]+\.0\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}$/);
+      // It has no deadline of its own: it lives while its lease is renewed.
+      expect(verifyToken(env.ROUTING_MAC_KEY, kind, token)!.expires).toBe(0);
       expect(verifyToken(env.ROUTING_MAC_KEY, kind, token)!.owner).toBe(r.name);
       // Each is its own kind's alone.
       expect(verifyToken(env.ROUTING_MAC_KEY, kind === "egress" ? "sync" : "egress", token))
@@ -1060,10 +1059,8 @@ describe("the sandbox's lease", () => {
     expect(await r.sql("SELECT epoch FROM file_space")).toEqual([{ epoch: lease.epoch }]);
     expect(JSON.stringify(await r.sql("SELECT * FROM sandbox_leases")))
       .not.toContain(lease.opened.egress_token.split(".")[2]);
-    // No run sets a deadline: the tokens die with the sandbox's own continuous-runtime
-    // ceiling, never sooner, and the lease's close settles its runs unknown.
-    expect(verifyToken(env.ROUTING_MAC_KEY, "egress", lease.opened.egress_token)!.expires)
-      .toBeLessThanOrEqual(Math.floor(Date.now() / 1000) + RUN_DEADLINE_S);
+    // No run meets a deadline: the tokens die with the lease, and its close settles its
+    // runs unknown.
     await r.in((instance) => instance.sandbox.close(held(lease)));
     expect(await r.stub.agentStatus(r.bind(), { run_id: lease.run }))
       .toMatchObject({ state: "unknown", code: "lease_closed" });

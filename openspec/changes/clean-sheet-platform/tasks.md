@@ -8,8 +8,8 @@ G4, then one deletion slice (its §1.7, done: section 5), engine records, runs, 
 sandbox (live), the MCP door, wakes, doors live, before real data, the founder's live
 test, cutover.
 
-- [ ] Limits audit (founder, 2026-11-02: no tiny limits before he has used the platform): every bound in `platform/*/src` is raised to the tier numbers or a generous default, made an owner setting, or kept as a technical ceiling with its reason recorded. The files default (`max_bytes` 1 GiB) is the first to raise. The list goes to the founder before anything ships. Listed, no value changed, in slice D: `limits-audit.md`; the founder's review and the changes are owed.
-- [x] Tier numbers in the platform control record (ADR-034 decision 8): free 5 simultaneous runs and 25 GB, paid 10 and 250 GB (founder, 2026-11-02), editable without a deploy. Slice R: `c:control`'s `tiers` (`doors/src/directory.ts`, parsed by `owner/src/tier.ts`), handed by the binder to the run doors, the owner's tier on its own admission row set by the platform alone (`tierSet`); the simultaneous runs held at admission. The storage figure is carried; the files byte quota's slice turns `max_bytes` into it.
+- [x] Limits audit (founder, 2026-11-02: no tiny limits before he has used the platform): every bound in `platform/*/src` is raised to the tier numbers or a generous default, made an owner setting, or kept as a technical ceiling with its reason recorded. Listed in slice D; applied in slice LIM (founder, 2026-11-02 and 2026-11-03), after the placement rule and the structural changes it needed (ADR-035): `limits-audit.md` holds the values that ship, each classed. The files byte quota is the tier's storage; the model policy's per-run caps are off by default; a lease's tokens live while the lease does. The owner-bound guard's worst case is 42.3% of the 10 GB, 774.1 MB under half (`limits-audit.test.ts`). Owed, flagged in the audit: the collections' and ledger's byte bounds dropped for the tier's figure; the files' history rule counted in bytes (`max_entries` past 30,000); a live check of `limits.subrequests` at 10,000,000; R2 read latency from an owner object, measured live.
+- [x] Tier numbers in the platform control record (ADR-034 decision 8): free 5 simultaneous runs and 25 GB, paid 10 and 250 GB (founder, 2026-11-02), editable without a deploy. Slice R: `c:control`'s `tiers` (`doors/src/directory.ts`, parsed by `owner/src/tier.ts`), handed by the binder to the run doors, the owner's tier on its own admission row set by the platform alone (`tierSet`); the simultaneous runs held at admission. The storage figure is the files byte quota's `max_bytes` (slice LIM), kept from every door's binding.
 
 ## 1. Verify the unverified facts
 
@@ -1056,11 +1056,16 @@ R, S, M and W.
   reported "tests added 0, removed 0" for a slice that removed 21 test files, so a lost
   test there is caught only by review. Follow-up for the gate: count `it(` cases under
   `platform/*/test` and `platform/*/guards` against the base.
-- [ ] Limits (slice D's audit, `limits-audit.md`): the founder approves the proposed
-  table first; then each raise is its own change, its structural prerequisite before it
-  (collection history and grant scopes counted in bytes; the ledger's recipients bounded
-  by their own count), the owner-bound guard recomputed (`limits-proposed.test.ts` holds
-  the table's worst case under half today).
+- [x] Limits (slice LIM, ADR-035): the placement rule (a body past 4,096 bytes, a
+  collection row's, a history entry's or a message's, lives in R2 through the files plane,
+  written R2 first then its reference, an orphan swept, erased with the owner, counted in
+  the tier's storage); the collection history counted in bytes; one recipient a message
+  (the key); the mailboxes' caps within the ceilings (`ledger_full` when only unread mail
+  is held); grant scopes counted in bytes; then every raise, the AFTER draft's included,
+  and the files' `max_bytes` the tier's storage. The erasure now deletes every R2 chunk
+  the owner's rows name before its wipe, files' too (it left them before). Owed: the owner
+  export (slice P) reads the placed bodies' chunks with the files'; SSE-C on them with the
+  files' chunks.
 
 ## 6. Files and sandbox
 

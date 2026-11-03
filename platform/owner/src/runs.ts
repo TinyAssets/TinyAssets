@@ -47,8 +47,8 @@
  * its own heartbeat lapsed, or a start whose answer never came). Unknown is never
  * replayed. The run grant goes with it (a cancel revokes it at once), and the lease when no
  * live run holds it any more; every settle prunes the receipts to `RUNS_KEPT`.
- * There is no platform deadline: a run's only time bound is the sandbox's own continuous
- * runtime ceiling, as its lease's tokens carry it (`RUN_DEADLINE_S`).
+ * There is no platform deadline: a run's lease's tokens live while its heartbeat renews it
+ * (`LEASE_LIVED`), so its only time bound is the sandbox's own, the vendor's.
  *
  * **The `runs` lane** (`lane`): a schedule's due time, or a live run's lease expiry while
  * runs are live, never a poll: with no row due the lane has no job, and a due row whose

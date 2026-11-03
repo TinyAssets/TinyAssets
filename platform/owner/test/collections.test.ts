@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import { Collections, Conflict, LIMITS, type Row } from "../src/collections";
 import { Invalid, Refused } from "../src/errors";
+import { HISTORY_CHARGE } from "../src/schema";
 import { etags, failure, history, inObject, type Owner, ownerObject, rows } from "./support";
 
 const ROOM = "room:chess:main";
@@ -114,26 +115,27 @@ describe("the revision primitive", () => {
       expect(store.write(alice, alice, "board", "a", "2", row.etag, false).revision)
         .toBe(2);
     });
-    expect(LIMITS.maxRows).toBe(1000);
+    expect(LIMITS.maxRows).toBe(100_000);
   });
 
   it("an owner's collections are bounded in rows and bytes", async () => {
     // Across every collection of one owner; another owner's object is untouched.
     const { stub, name: alice } = ownerObject();
-    await inObject(stub, { maxOwnerRows: 2, maxOwnerBytes: 24 }, (store) => {
-      // A body counts twice: the row, and its history.
+    await inObject(stub, { maxOwnerRows: 2, maxOwnerBytes: 10 }, (store) => {
+      // A body counts once, as the row's, wherever it is placed; the history is pruned on
+      // its own bounds, never refused.
       const a = store.write(alice, alice, "room:a:main", "x", "1234", "", false);
       store.write(alice, alice, "room:b:main", "x", "1234", "", false);
       expect(() => store.write(alice, alice, "room:c:main", "x", "", "", false))
         .toThrow("the owner's collections are full");
       expect(() => store.write(alice, alice, "room:a:main", "x", "caféé", a.etag, false))
-        .toThrow("the owner's collections are full"); // 16 + 14 - 4
+        .toThrow("the owner's collections are full"); // 8 + 7 - 4
       expect(store.write(alice, alice, "room:a:main", "x", "123456", a.etag, false)
         .revision).toBe(2);
     });
     expect(await rows(stub)).toHaveLength(2);
     const { stub: bobs } = ownerObject();
-    await inObject(bobs, { maxOwnerRows: 2, maxOwnerBytes: 24 }, (store) => {
+    await inObject(bobs, { maxOwnerRows: 2, maxOwnerBytes: 10 }, (store) => {
       expect(store.write("bob", "bob", "room:c:main", "x", "1", "", false).revision).toBe(1);
     });
   });
@@ -226,7 +228,7 @@ describe("the revision primitive", () => {
   it("one visitor fills only its own share and the owner clears", async () => {
     // A visitor stops at its share; another still writes; one room cannot starve another.
     const { stub, name: alice, as } = ownerObject();
-    const limits = { maxWriterRows: 2, maxCollectionBytes: 12 };
+    const limits = { maxWriterRows: 2, maxCollectionBytes: 6 };
     const put = (store: Collections, caller: string, rowId: string, body = "1",
                  collection = ROOM) => store.write(alice, caller, collection, rowId, body, "",
                                                    true);
@@ -235,7 +237,7 @@ describe("the revision primitive", () => {
       put(store, "mallory", "b");
       expect(() => put(store, "mallory", "c")).toThrow("this writer's share");
       put(store, "cara", "c1");
-      // 3 rows and their history, 6, + 8 > 12
+      // 3 rows, 3 bytes, + 4 > 6
       expect(() => put(store, alice, "big", "1234")).toThrow("the collection is full");
       put(store, alice, "big", "1234", "room:go:main");
     });
@@ -281,7 +283,53 @@ describe("the primitive's history", () => {
     expect(erase.message).toMatch(/history_op/);
   });
 
-  it("keeps the last revisions and counts in the byte bounds", async () => {
+  it("is bounded in bytes, oldest first, and a key with no entry left repeats no revision",
+     async () => {
+    const { stub, name: alice } = ownerObject();
+    const space = (state: DurableObjectState) => state.storage.sql.exec<{
+      charge: number; bytes: number; revision_floor: number }>(
+      "SELECT charge, bytes, revision_floor FROM collection_history_space").one();
+    const held = await inObject(stub, {}, (store, state) => {
+      const a = store.write(alice, alice, "board", "a", "aaaa", "", false);
+      store.delete(alice, "board", "a", a.etag);  // its tombstone: revision 2
+      store.write(alice, alice, "board", "b", "bbbb", "", false);
+      return space(state);
+    });
+    expect(held).toMatchObject({ bytes: 4, revision_floor: 0 });
+    // One more entry passes the charge: the oldest, a's tombstone, goes, and its revision
+    // becomes the floor.
+    await inObject(stub, { maxHistoryCharge: held.charge + 1 }, (store, state) => {
+      store.write(alice, alice, "board", "c", "cccc", "", false);
+      expect(space(state).revision_floor).toBe(2);
+      expect(space(state).charge).toBeLessThanOrEqual(held.charge + 1);
+      // Made again, `a` goes on past every revision a prune let go.
+      expect(store.write(alice, alice, "board", "a", "again", "", false).revision).toBe(3);
+    });
+    expect((await history(stub)).map((h) => [h[1], h[2], h[3]]))
+      .toEqual([["a", 3, "write"], ["c", 1, "write"]]);
+    // Its bodies' bytes are bounded too.
+    await inObject(stub, { maxHistoryBytes: 9 }, (store, state) => {
+      store.write(alice, alice, "board", "d", "dddd", "", false);
+      expect(space(state).bytes).toBeLessThanOrEqual(9);
+    });
+  });
+
+  it("lets an emptied collection's seq row go, and never takes its cursor back", async () => {
+    const { stub, name: alice, as } = ownerObject();
+    await inObject(stub, {}, (store, state) => {
+      store.write(alice, alice, "room:a:main", "x", "1", "", false);
+      store.write(alice, alice, "room:a:main", "y", "2", "", false);
+      store.clear(alice, "room:a:main", null);
+      expect(state.storage.sql.exec("SELECT COUNT(*) AS n FROM collection_seqs").one().n)
+        .toBe(0);
+      expect(store.write(alice, alice, "room:a:main", "x", "3", "", false).seq).toBe(3);
+    });
+    expect((await stub.collectionPull(as(alice), { collection: "room:a:main", after: 2,
+                                                   limit: 10 })).rows.map((r) => r.body))
+      .toEqual(["3"]);
+  });
+
+  it("keeps the last revisions, and counts no history in the byte bounds", async () => {
     const { stub, name: alice, as } = ownerObject();
     const row = await inObject(stub, { maxRevisions: 3 }, (store) => {
       let last = { etag: "" };
@@ -294,11 +342,12 @@ describe("the primitive's history", () => {
       [[3, "v2"], [4, "v3"], [5, "v4"]]);
     expect((await stub.collectionHistory(as("bob"), { collection: "board", row_id: "t" }))
       .entries.map((e) => e.body)).toEqual(["v2", "v3", "v4"]);
-    await inObject(stub, { maxRevisions: 3, maxCollectionBytes: 9 }, (store) => {
-      // Six bytes of history and two of the row: a new row of two needs four more.
-      expect(() => store.write(alice, alice, "board", "u", "ab", "", false))
+    await inObject(stub, { maxRevisions: 3, maxCollectionBytes: 4 }, (store) => {
+      // The row's two bytes count; its history's six do not: a new row of two fits, one
+      // more byte does not.
+      expect(() => store.write(alice, alice, "board", "u", "abc", "", false))
         .toThrow("the collection is full");
-      // A write that prunes an old entry frees its bytes in the same transaction.
+      store.write(alice, alice, "board", "u", "ab", "", false);
       expect(store.write(alice, alice, "board", "t", "v5", row.etag, false).revision)
         .toBe(6);
     });
@@ -339,41 +388,45 @@ function seeded(seed: number): () => number {
   };
 }
 
-type Usage = Record<string, [number, number, number]>;
+type Usage = Record<string, [number, number]>;
 
-/** The bounds' counters recounted from the rows and history, by the same scopes. */
+/**
+ * The bounds' counters recounted from the rows, by the same scopes, and the history's own
+ * (`history`: its charge as SQLite lays its entries out, and its bodies' bytes).
+ */
 function recount(sql: SqlStorage): Usage {
   const used: Usage = {};
-  const add = (key: string, rows: number, rowBytes: number, historyBytes: number) => {
-    const [r, b, h] = used[key] ?? [0, 0, 0];
-    used[key] = [r + rows, b + rowBytes, h + historyBytes];
+  const add = (key: string, rows: number, rowBytes: number) => {
+    const [r, b] = used[key] ?? [0, 0];
+    used[key] = [r + rows, b + rowBytes];
   };
   const bytes = (text: string) => new TextEncoder().encode(text).byteLength;
   for (const row of sql.exec<{ collection: string; writer: string; creator: string;
                                body: string }>(
     "SELECT collection, writer, creator, body FROM collection_rows").toArray()) {
     const size = bytes(row.body);
-    add("owner||", 1, size, 0);
-    add(`collection|${row.collection}|`, 1, size, 0);
-    add(`writer|${row.collection}|${row.writer}`, 1, size, 0);
-    add(`creator|${row.collection}|${row.creator}`, 1, size, 0);
+    add("owner||", 1, size);
+    add(`collection|${row.collection}|`, 1, size);
+    add(`writer|${row.collection}|${row.writer}`, 1, size);
+    add(`creator|${row.collection}|${row.creator}`, 1, size);
   }
-  for (const entry of sql.exec<{ collection: string; writer: string; body_json: string }>(
-    "SELECT collection, writer, body_json FROM collection_history").toArray()) {
-    const size = bytes(entry.body_json);
-    add("owner||", 0, 0, size);
-    add(`collection|${entry.collection}|`, 0, 0, size);
-    add(`writer|${entry.collection}|${entry.writer}`, 0, 0, size);
-  }
-  return Object.fromEntries(Object.entries(used).filter(([, v]) => v.some((n) => n !== 0)));
+  const counted = Object.fromEntries(Object.entries(used).filter(([, v]) =>
+    v.some((n) => n !== 0)));
+  const history = sql.exec<{ charge: number; bytes: number }>(
+    `SELECT COALESCE(SUM(${HISTORY_CHARGE("h")}), 0) AS charge, ` +
+      "COALESCE(SUM(length(CAST(h.body_json AS BLOB))), 0) AS bytes " +
+      "FROM collection_history h").one();
+  return { ...counted, history: [history.charge, history.bytes] };
 }
 
 function counters(sql: SqlStorage): Usage {
-  return Object.fromEntries(sql.exec<{ scope: string; collection: string; who: string;
-                                       rows: number; row_bytes: number;
-                                       history_bytes: number }>(
+  const space = sql.exec<{ charge: number; bytes: number }>(
+    "SELECT charge, bytes FROM collection_history_space").one();
+  return { ...Object.fromEntries(sql.exec<{ scope: string; collection: string; who: string;
+                                             rows: number; row_bytes: number }>(
     "SELECT * FROM collection_usage").toArray().map((u) => [
-    `${u.scope}|${u.collection}|${u.who}`, [u.rows, u.row_bytes, u.history_bytes]]));
+    `${u.scope}|${u.collection}|${u.who}`, [u.rows, u.row_bytes]])),
+           history: [space.charge, space.bytes] };
 }
 
 describe("the bounds' counters", () => {
@@ -382,6 +435,8 @@ describe("the bounds' counters", () => {
     const outcomes = await inObject(stub, {
       maxRevisions: 3, maxWriterRows: 4, maxWriterBytes: 160, maxRows: 9,
       maxCollectionBytes: 600, maxOwnerRows: 20, maxOwnerBytes: 1400,
+      // The history pruned by what it takes, on the way.
+      maxHistoryCharge: 6000, maxHistoryBytes: 400,
     }, (store, state) => {
       const random = seeded(seed);
       const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)]!;
@@ -415,6 +470,8 @@ describe("the bounds' counters", () => {
         counted[outcome] = (counted[outcome] ?? 0) + 1;
         expect(counters(state.storage.sql), `seed ${seed}, step ${step}`)
           .toEqual(recount(state.storage.sql));
+        const [charge, held] = counters(state.storage.sql)["history"]!;
+        expect(charge <= 6000 && held <= 400, `seed ${seed}, step ${step}`).toBe(true);
       }
       return counted;
     });

@@ -9,8 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseKey } from "../src/api-keys";
 import { mcpClient } from "../src/binder";
 import {
-  ACCESS_TOKEN_TTL_S, APP_RESOURCE, type DoorsEnv, MCP_RESOURCE, now, REFRESH_TOKEN_TTL_S,
-  WEB_CLIENT, WEB_REDIRECT,
+  ACCESS_TOKEN_TTL_S, API_BODY_MAX, APP_RESOURCE, type DoorsEnv, MCP_RESOURCE, now,
+  REFRESH_TOKEN_TTL_S, WEB_CLIENT, WEB_REDIRECT,
 } from "../src/config";
 import { ours } from "../src/authorize";
 import { authorizationServer } from "../src/oauth";
@@ -342,12 +342,13 @@ describe("L5: bounded bodies", () => {
     expect(response.status).toBe(413);
   });
 
-  it("refuses an /api body over 1 MiB 413, and a non-object 400", async () => {
+  it("refuses an /api body over 8 MiB 413, and a non-object 400", async () => {
     const { key } = await mintKeyFor(owner());
     const post = (body: string) => call(new Request(url("/api/tools/agents_list"), {
       method: "POST", headers: { Authorization: `Bearer ${key}`,
                                  "Content-Type": "application/json" }, body }));
-    expect((await post(`{"p":"${"x".repeat(1024 * 1024)}"}`)).status).toBe(413);
+    expect(API_BODY_MAX).toBe(8 * 1024 * 1024);
+    expect((await post(`{"p":"${"x".repeat(API_BODY_MAX)}"}`)).status).toBe(413);
     expect((await post("[1]")).status).toBe(400);
     expect((await post("{")).status).toBe(400);
   });

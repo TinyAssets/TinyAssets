@@ -10,7 +10,7 @@ import {
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
 import { runWakes, type WakeSender } from "../src/wakes";
-import { alarmOf, laneAt } from "./support";
+import { alarmOf, laneAt, TIERS } from "./support";
 
 export const MUSE: Origin = Object.freeze({ client: "a".repeat(64), family: "b".repeat(64) });
 export const DOT: Origin = Object.freeze({ client: "c".repeat(64), family: "d".repeat(64) });
@@ -97,7 +97,8 @@ export async function rig() {
   const stub: DurableObjectStub<OwnerDO> = env.OWNER.getByName(owner);
   /** A binder's binding; an outside origin comes through an MCP client unless named. */
   const bind = (origin: Origin | null, extra: Partial<Binding> = {}): Binding =>
-    ({ owner, caller: owner, origin, ...(origin === null ? {} : { source: MCP }), ...extra });
+    ({ owner, caller: owner, origin, ...(origin === null ? {} : { source: MCP }), tiers: TIERS,
+       ...extra });
   const { session: cookie } = await stub.sessionOpen(bind(null, { authenticated_at: signedIn() }));
   const session = (origin: Origin | null, source: Source = MCP): Binding =>
     bind(origin, { session: cookie, source });

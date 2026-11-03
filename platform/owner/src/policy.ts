@@ -122,7 +122,7 @@ export interface PolicyLimits {
 export const POLICY_LIMITS: PolicyLimits = Object.freeze({
   maxDocument: 65_536,
   maxChange: 16_000,
-  proposalTtlS: 30 * 86_400,
+  proposalTtlS: 90 * 86_400,
   pendingProposals: 200,
   pendingPerClient: 50,
   appliedProposals: 200,
@@ -141,7 +141,10 @@ export interface PolicyEntry {
  * Owner files policy (plan §6): quotas and history retention. Each is an owner-editable
  * default: the document's optional `files` table sets any of them, and the rest keep
  * these values. Quotas are refused loudly at the bound and never make room by dropping
- * history. `max_bytes` counts unique chunk bytes, live and in history; `max_inline_bytes`
+ * history. `max_bytes` counts unique chunk bytes, live and in history, and the bodies
+ * placed in R2 (ADR-035): it is the tier's storage (free 25 GB, paid 250 GB, the control
+ * record's, `tier.ts`), never a number of ours, which the owner may set lower and no
+ * higher (`fileLimits`); `max_inline_bytes`
  * the small files kept in the object itself; `max_manifest_bytes` everything the manifest
  * takes in the object as SQLite stores it (`manifest.ts`): every entry, history row,
  * content, chunk list, chunk and temporary directory, each path and inline byte in them.
@@ -174,7 +177,6 @@ export interface PolicyEntry {
  * defaults come with the sync agent (tasks 6).
  */
 export const FILE_DEFAULTS = Object.freeze({
-  max_bytes: 1024 ** 3,
   max_inline_bytes: 256 * 1024 ** 2,
   max_manifest_bytes: 512 * 1024 ** 2,
   max_entries: 30_000,
@@ -186,11 +188,11 @@ export const FILE_DEFAULTS = Object.freeze({
   client_share: 25,
   owner_reserve: 25,
 });
-export type FileSettings = { readonly [K in keyof typeof FILE_DEFAULTS]: number };
-/** The range each setting may take. */
+export type FileSettings = { readonly [K in keyof typeof FILE_DEFAULTS | "max_bytes"]: number };
+/** The range each setting may take. `max_bytes` past the tier's storage holds at the tier's. */
 export const FILE_SETTINGS: { readonly [K in keyof FileSettings]: readonly [number, number] } =
   Object.freeze({
-    max_bytes: Object.freeze([0, 1024 ** 4] as const),
+    max_bytes: Object.freeze([0, 1024 ** 5] as const),
     max_inline_bytes: Object.freeze([0, 384 * 1024 ** 2] as const),
     max_manifest_bytes: Object.freeze([0, 512 * 1024 ** 2] as const),
     max_entries: Object.freeze([0, 500_000] as const),
@@ -203,9 +205,26 @@ export const FILE_SETTINGS: { readonly [K in keyof FileSettings]: readonly [numb
     owner_reserve: Object.freeze([0, 100] as const),
   });
 
-/** The files settings a document leaves in force: its own, and the defaults for the rest. */
-export function fileSettings(document: PolicyDocument): FileSettings {
-  return { ...FILE_DEFAULTS, ...document.files };
+/**
+ * The files settings a document leaves in force: its own, and the defaults for the rest;
+ * `max_bytes` is the owner's own lower one, or null for the tier's storage alone.
+ */
+export function fileSettings(document: PolicyDocument):
+    Omit<FileSettings, "max_bytes"> & { readonly max_bytes: number | null } {
+  return { ...FILE_DEFAULTS, max_bytes: null, ...document.files };
+}
+
+/**
+ * The files limits the object holds: the document's settings, with `max_bytes` the tier's
+ * storage (`storage`, the control record's figure for the owner's tier), or the owner's own
+ * where it is lower. Null when the tier's figure is not known here, which refuses every
+ * change that adds file bytes (`TIER_UNREAD`): never a figure of ours in its place.
+ */
+export function fileLimits(document: PolicyDocument, storage: number | null):
+    Omit<FileSettings, "max_bytes"> & { readonly max_bytes: number | null } {
+  const settings = fileSettings(document);
+  return { ...settings, max_bytes: storage === null ? null
+    : Math.min(storage, settings.max_bytes ?? storage) };
 }
 
 /**
@@ -243,15 +262,15 @@ function validHooks(hooks: unknown): boolean {
  * `"daily": None, "monthly": None`); the owner sets them.
  */
 export const MODEL_DEFAULTS = Object.freeze({
-  turn_requests: 100,
-  turn_tokens: 10_000_000,
-  turn_cost: 25_000_000,
+  turn_requests: null as number | null,
+  turn_tokens: null as number | null,
+  turn_cost: null as number | null,
   daily_cost: null as number | null,
   monthly_cost: null as number | null,
 });
-/** The range each model setting may take. */
+/** The range each model setting may take, when the owner sets it (null: none, the default). */
 export const MODEL_SETTINGS = Object.freeze({
-  turn_requests: Object.freeze([1, 10_000] as const),
+  turn_requests: Object.freeze([1, 1_000_000] as const),
   turn_tokens: Object.freeze([1, 1_000_000_000] as const),
   turn_cost: Object.freeze([0, 1_000_000_000_000] as const),
   daily_cost: Object.freeze([0, 1_000_000_000_000] as const),
@@ -268,9 +287,9 @@ export interface SourceCeilings {
 
 /** The document's `models` table, as written. */
 export interface ModelPolicy {
-  readonly turn_requests?: number;
-  readonly turn_tokens?: number;
-  readonly turn_cost?: number;
+  readonly turn_requests?: number | null;
+  readonly turn_tokens?: number | null;
+  readonly turn_cost?: number | null;
   readonly daily_cost?: number | null;
   readonly monthly_cost?: number | null;
   readonly sources?: { readonly [source: string]: SourceCeilings };
@@ -278,9 +297,9 @@ export interface ModelPolicy {
 
 /** The model settings a document leaves in force. */
 export interface ModelSettings {
-  readonly turn_requests: number;
-  readonly turn_tokens: number;
-  readonly turn_cost: number;
+  readonly turn_requests: number | null;
+  readonly turn_tokens: number | null;
+  readonly turn_cost: number | null;
   readonly daily_cost: number | null;
   readonly monthly_cost: number | null;
   readonly sources: { readonly [source: string]: SourceCeilings };
@@ -313,8 +332,7 @@ function validModels(models: unknown): boolean {
       return false;
     }
     const range = MODEL_SETTINGS[key as keyof typeof MODEL_SETTINGS];
-    return ((key === "daily_cost" || key === "monthly_cost") && value === null)
-      || bounded(value, range);
+    return value === null || bounded(value, range);
   });
 }
 

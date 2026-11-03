@@ -20,8 +20,10 @@
  * binding names it: the object reads its own row.
  *
  * **What is held.** The tier's simultaneous runs, at admission, against the object's own
- * live runs (`runs.ts`). The storage figure is carried for the files byte quota's slice,
- * which turns `max_bytes` into it (`limits-audit.md`); nothing here enforces it yet.
+ * live runs (`runs.ts`), and its storage, as the files byte quota's `max_bytes`
+ * (`policy.ts`'s `fileLimits`), which counts the owner's file chunks and the bodies placed
+ * in R2 (ADR-035). Every door that hands the numbers keeps them, written only when they
+ * changed (`keepTiers`), so the storage figure is the record's for every change.
  *
  * `RUNS_CEILING` is a technical ceiling, not a tier: the most live runs the owner's
  * database is costed for (the owner-bound guard counts each live run's rows at it), so a
@@ -109,4 +111,37 @@ export function tierNumbers(storage: OwnerStorage, handed: unknown, now: number)
     throw new Refused(TIER_UNREAD);
   }
   return parseTiers(JSON.parse(kept.tiers));
+}
+
+/**
+ * In a unit: the numbers the binder handed kept, written only when they differ from the
+ * kept ones (most calls hand the same); `null`, a record with none, drops the kept ones, so
+ * no run is admitted and no file byte added on numbers the record no longer holds. A door
+ * that handed none (`undefined`) keeps what is kept.
+ */
+export function keepTiers(storage: OwnerStorage, handed: unknown, now: number): void {
+  if (handed === undefined) {
+    return;
+  }
+  const sql = storage.sql;
+  if (handed === null) {
+    if (keptTiers(storage) !== null) {
+      sql.exec("DELETE FROM platform_tiers");
+    }
+    return;
+  }
+  const text = JSON.stringify(parseTiers(handed));
+  const kept = sql.exec<{ tiers: string }>("SELECT tiers FROM platform_tiers").toArray()[0];
+  if (kept?.tiers !== text) {
+    sql.exec("INSERT INTO platform_tiers (only, tiers, read_at) VALUES (1, ?, ?) " +
+               "ON CONFLICT (only) DO UPDATE SET tiers = excluded.tiers, " +
+               "read_at = excluded.read_at", text, now);
+  }
+}
+
+/** The kept tier numbers, or null when none are kept. A read. */
+export function keptTiers(storage: OwnerStorage): Tiers | null {
+  const kept = storage.sql.exec<{ tiers: string }>("SELECT tiers FROM platform_tiers")
+    .toArray()[0];
+  return kept === undefined ? null : parseTiers(JSON.parse(kept.tiers));
 }

@@ -37,7 +37,7 @@ import { deleteKey, type KeyEntry, putKey, readKey } from "./directory";
 
 export const PREFIX = "ta_key_";
 const KEY = /^ta_key_([0-9a-f]{16})_([A-Za-z0-9_-]{43})$/;
-export const MAX_KEYS_PER_OWNER = 25;
+export const MAX_KEYS_PER_OWNER = 200;
 const MAX_NAME = 80;
 
 export class KeyRefused extends Error {

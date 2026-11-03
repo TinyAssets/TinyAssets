@@ -14,6 +14,12 @@ import { SCHEDULE } from "../src/schedule";
 
 export const text = (value: string): Uint8Array => new TextEncoder().encode(value);
 
+/** The founder's numbers (ADR-034 decision 8), as the tests' control record holds them. */
+export const TIERS = Object.freeze({
+  free: Object.freeze({ runs: 5, storage_bytes: 25_000_000_000 }),
+  paid: Object.freeze({ runs: 10, storage_bytes: 250_000_000_000 }),
+});
+
 /**
  * `act` in `stub`'s object, with a write gate of its own over the object's storage: it
  * shares the object's queue, as every adapter over one storage does (`gate.ts`).
@@ -46,7 +52,9 @@ export function faulty(write: Write, fails: (n: number) => boolean): Write {
  */
 export function filesOn(storage: OwnerStorage, write: Write, store: ChunkStore = env.FILES,
                         limits: Partial<FileLimits> = {}): Files {
-  return new Files(storage, store, () => ({ ...FILE_DEFAULTS, ...limits }), write);
+  return new Files(storage, store, () => ({ ...FILE_DEFAULTS,
+                                            max_bytes: TIERS.free.storage_bytes, ...limits }),
+                   write);
 }
 
 /**
@@ -275,7 +283,7 @@ export function ownerObject(): Owner {
   return {
     name,
     stub: env.OWNER.getByName(name),
-    as: (caller, owner = name) => ({ owner, caller, origin: null }),
+    as: (caller, owner = name) => ({ owner, caller, origin: null, tiers: TIERS }),
   };
 }
 

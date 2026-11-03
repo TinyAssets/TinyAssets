@@ -14,25 +14,18 @@
  * too (`MANIFEST_INDEXES`). The charge counts a page at three quarters full; a thinned page
  * may stay a third full, so the guard counts the manifest at its high bound times
  * `WORST_FILL`, and a workerd test fills, thins and refills a database against it
- * (`files-share.test.ts`). Every other table's rows are laid out as SQLite lays them,
- * their share of a b-tree page at that worst fill too, their overflow pages whole
- * (`termBytes`). The calls open at once and the spend counters are bounded by count
- * (migration 7). No agent's records live in the owner's database: agents run on
- * unmodified engines, their sessions in the owner's files (ADR-034), so what the owner's
- * object holds is its own bounded rows only, whatever its agents do.
+ * (`files-share.test.ts`). The collection history is bounded the same way, in the bytes
+ * its entries take (`HISTORY_CHARGE`, `maxHistoryCharge`). Every other table's rows are
+ * laid out as SQLite lays them, their share of a b-tree page at that worst fill too (at most
+ * the whole page: a record is on its page however thinned), their overflow pages whole
+ * (`termBytes`). A body past `PLACE_BYTES` is never in a row (ADR-035): it is in R2, and
+ * its row keeps a content id, so a body's own size moves no term. No agent's records live
+ * in the owner's database: agents run on unmodified engines, their sessions in the owner's
+ * files (ADR-034), so what the owner's object holds is its own bounded rows only.
  *
- * The worst case is 42.3% of the limit (slice R: 4,232,733,666.75 bytes), about 767 MB under
- * half; with every raise the limits audit proposes, 49.98% (4,997,920,528.75 bytes,
- * `limits-proposed.test.ts`), 2.1 MB under half.
- * ADR-034's deletion slice took out the agent's thread rows, their live and usage rows,
- * the run receipts and the model turns' counters and owners, and Lifecycle's wake job and
- * key per live thread (slice D: 40.6%, 4,064,822,714 bytes; G4 was 46.3%). The runs slice
- * (R) added `runs` (85.0 MB, its waiting runs with it), `run_grants` (9.7 MB),
- * `conversations` (30.7 MB), `run_schedules` (26.1 MB), `run_inputs` (9.8 MB, the
- * conversations' input queue, sized to what the rest left), `socket_tickets` (3.1 MB),
- * `sandbox_leases` (3.1 MB, one sandbox an authority, its own sign-ins on it), `engine_signins` (0.4 MB) and
- * `platform_tiers`, 168.0 MB in all, and took out `egress_runs`. A new table, or a raised bound, must stay under half the
- * limit, or the guard fails.
+ * The worst case, with the limits that ship (`limits-audit.md`, `limits-audit.test.ts`), is
+ * 42.3% of the limit (4,225,851,030.75 bytes), 774.1 MB under half. A new table, or a raised
+ * bound, must stay under half the limit, or the guard fails.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -42,8 +35,8 @@ import { describe, expect, it } from "vitest";
 import { LIMITS as COLLECTIONS } from "../src/collections";
 import { LEDGER_LIMITS } from "../src/ledger";
 import {
-  CHUNK_BYTES, INDEX_KEPT, MANIFEST_INDEXES, MANIFEST_TABLES, recordLayout, TABLE_KEPT,
-  WORST_FILL,
+  CHUNK_BYTES, INDEX_KEPT, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, PLACE_BYTES,
+  recordLayout, TABLE_KEPT, WORST_FILL,
 } from "../src/manifest";
 import { NOTICE_DETAIL, NOTICES_KEPT } from "../src/notices";
 import { SESSION_LIMITS } from "../src/sessions";
@@ -137,11 +130,11 @@ function inline(module: string, pattern: RegExp): number {
 
 const CONNECTION_LIMITS = declared("connections", "CONNECTION_LIMITS", "maxConnections",
                                    "maxRevokedKept", "maxModels", "maxFlowRows");
-const EGRESS_LIMITS = declared("egress", "EGRESS_LIMITS", "open", "receiptsKept",
+const EGRESS_LIMITS = declared("egress", "EGRESS_LIMITS", "openPerRun", "receiptsKept",
                                "refusalsKept");
 const EGRESS_PATH_MAX = constant("egress", "EGRESS_PATH_MAX");
 const GRANT_LIMITS = declared("grants", "GRANT_LIMITS", "maxFreeClients", "maxOwnerClients",
-                              "maxScopes");
+                              "maxScopes", "maxScopesBytes");
 const POLICY_LIMITS = declared("policy", "POLICY_LIMITS", "maxDocument", "maxChange",
                                "pendingProposals", "appliedProposals", "receiptsPerBucket");
 const FILE_SETTINGS = declared("policy", "FILE_SETTINGS", "max_manifest_bytes");
@@ -177,6 +170,12 @@ const BLOB_CHARS = inline("schema", /length\(blob\) <= ([0-9]+)/);
 const EGRESS_CHARS = inline("schema", /length\(egress\) <= ([0-9]+)/);
 /** A scope's every field, and an owner-set client's name, in code points (`grants.ts`). */
 const SCOPE_FIELD = inline("grants", /codePoints\(v\) > ([0-9]+)/);
+/** A grant's scopes, as the schema's check holds their JSON, in bytes. */
+const SCOPES_BYTES = inline("schema", /length\(CAST\(scopes AS BLOB\)\) <= ([0-9]+)/);
+/** A room id, in code points (`ledger.ts`), each up to four bytes. */
+const ROOM_CHARS = inline("ledger", /text\(roomId, ([0-9]+), "room_id"\)/);
+/** A content id: 64 hex (ADR-035's placed body, the files plane's content). */
+const CONTENT_ID = 64;
 const CLIENT_NAME = inline("grants", /codePoints\(name\) > ([0-9]+)/);
 /** The most wakes an hour policy lets an agent take, the rings one hour keeps (`ledger.ts`). */
 const WAKES_AN_HOUR = inline("ledger", /maxWakesPerHour: Object\.freeze\(\{ low: [0-9]+, high: ([0-9]+) \}\)/);
@@ -244,7 +243,8 @@ export function termBytes(name: string, term: Term): number {
   }
   const { inPlace, overflow } = recordLayout(term.bytes,
                                              KEPT_AS_INDEX.has(name) ? INDEX_KEPT : TABLE_KEPT);
-  return term.rows * (inPlace * WORST_FILL + overflow);
+  // A record is on its page however thinned the page: it takes at most the whole page.
+  return term.rows * (Math.min(inPlace * WORST_FILL, PAGE_BYTES) + overflow);
 }
 
 /** The bounds a term is made from, each module's own: what a proposed raise overrides. */
@@ -283,9 +283,8 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     by: "max_manifest_bytes (high) at WORST_FILL, charged by triggers to " +
       Object.keys(MANIFEST_TABLES).join(", "),
   });
-  /** An owner-set grant: its scopes, each three fields of JSON, and its name. */
-  const GRANT_BYTES = G.maxScopes * (3 * SCOPE_FIELD * JSON_POINT + 64)
-    + CLIENT_NAME * 4;
+  /** An owner-set grant: its scopes, counted in bytes as the schema holds them, and its name. */
+  const GRANT_BYTES = Math.min(G.maxScopesBytes, SCOPES_BYTES) + CLIENT_NAME * 4;
 
   return Object.freeze<Record<string, Term>>({
     object_owner: { rows: 1, bytes: ROW + 4 * KIB, by: "one row" },
@@ -309,20 +308,23 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     outside_clients: { rows: G.maxFreeClients + G.maxOwnerClients,
                        bytes: ROW + 8 + GRANT_BYTES * G.maxOwnerClients
                          / (G.maxFreeClients + G.maxOwnerClients),
-                       by: "free clients (no scopes, no name) and owner-set ones (maxScopes " +
-                         "scopes of three fields, and a name), each with its revision " +
-                         "(migration 9)" },
+                       by: "free clients (no scopes, no name) and owner-set ones (their " +
+                         "scopes' JSON at the schema's byte ceiling, and a name), each with " +
+                         "its revision (migration 9)" },
     grant_fences: { rows: 1, bytes: ROW, by: "one row" },
     owner_sessions: { rows: S.maxSessions, bytes: ROW, by: "maxSessions" },
     outside_agents: { rows: L.maxAgentRows, bytes: ROW + 1 * KIB,
                       by: "maxAgentRows, every row: a tombstone a revoke holds too" },
     ledger_messages: { rows: L.maxMessages, bytes: ROW + 1 * KIB,
                        by: "maxMessages" },
+    // A body past PLACE_BYTES is placed in R2 (ADR-035): the row keeps at most that much.
     message_bodies: { rows: L.maxMessages,
-                      bytes: ROW + L.maxBodyBytes / L.maxMessages,
-                      by: "maxBodyBytes over maxMessages" },
-    ledger_recipients: { rows: L.maxMessages * L.maxAgents,
-                         bytes: ROW, by: "each message to each agent" },
+                      bytes: ROW + 4 * ROOM_CHARS + PLACE_BYTES + CONTENT_ID + 9,
+                      by: "maxMessages, each its room and its body inline up to PLACE_BYTES " +
+                        "(a larger one placed in R2) or its content id" },
+    // Its key holds a message to one recipient.
+    ledger_recipients: { rows: L.maxMessages, bytes: ROW,
+                         by: "one a message (the key: message_id)" },
     ledger_readers: { rows: L.maxAgentRows, bytes: ROW, by: "one per agent" },
     ledger_receipts: { rows: L.maxReceipts, bytes: ROW + 1 * KIB,
                        by: "maxReceipts" },
@@ -331,16 +333,20 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     ledger_wakes: { rows: L.maxAgentRows + L.maxSettledWakes,
                     bytes: ROW + 1 * KIB, by: "an open wake per agent, maxSettledWakes settled" },
     ledger_usage: { rows: L.maxAgentRows + 1, bytes: ROW, by: "one per agent" },
-    collection_rows: { rows: C.maxOwnerRows, bytes: ROW + C.maxOwnerBytes /
-                                                                C.maxOwnerRows,
-                       by: "maxOwnerRows; rows and history bytes within maxOwnerBytes" },
-    collection_history: { rows: C.maxOwnerRows * C.maxRevisions,
-                          bytes: ROW + C.maxOwnerBytes /
-                                       (C.maxOwnerRows * C.maxRevisions),
-                          by: "maxRevisions a row; bytes within maxOwnerBytes" },
-    collection_seqs: { rows: C.maxOwnerRows, bytes: ROW, by: "one per collection" },
-    collection_usage: { rows: 4 * C.maxOwnerRows, bytes: ROW,
-                        by: "owner, collection, writer and creator counters" },
+    // A body past PLACE_BYTES is placed in R2 (ADR-035): the row keeps at most that much.
+    collection_rows: { rows: C.maxOwnerRows,
+                       bytes: ROW + Math.min(PLACE_BYTES, C.maxOwnerBytes / C.maxOwnerRows)
+                         + CONTENT_ID + 9,
+                       by: "maxOwnerRows, each its body inline up to PLACE_BYTES (a larger " +
+                         "one placed in R2) or its content id" },
+    // The history in bytes, as SQLite lays its entries out (`HISTORY_CHARGE`), pruned at it.
+    collection_history: { rows: 1, bytes: C.maxHistoryCharge, charged: true,
+                          by: "maxHistoryCharge at WORST_FILL, charged by its triggers" },
+    collection_history_space: { rows: 1, bytes: ROW, by: "one row" },
+    collection_seqs: { rows: C.maxOwnerRows, bytes: ROW,
+                       by: "one per collection with rows (an emptied one goes)" },
+    collection_usage: { rows: 1 + 3 * C.maxOwnerRows, bytes: ROW,
+                        by: "the owner's, and each row's collection, writer and creator" },
     agent_cards: { rows: K.maxPending, bytes: ROW + K.maxRequest,
                    by: "maxPending cards of maxRequest" },
     owner_notices: { rows: N.kept, bytes: ROW + N.detail * 4, by: "N.kept" },
@@ -359,10 +365,11 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     model_spend: { rows: SPEND_KEPT, bytes: ROW, by: "SPEND_KEPT day and month counters" },
     // The sandbox's egress (G4): its lease is `file_space`'s one row; each request a row.
     egress_reservations: { rows: E.receiptsKept + E.refusalsKept
-                                  + E.open,
+                                  + E.openPerRun * RUNS_CEILING,
                            bytes: ROW + EGRESS_PATH_MAX + 32 + 32 + 64 + 64 + 9 + 64 + 10 + 7
                              + 256 + 25 + 7 + 64 + 30 + 16 * 8 + RUN_ID_CHARS,
-                           by: "receiptsKept admitted, refusalsKept refused and open at once, " +
+                           by: "receiptsKept admitted, refusalsKept refused and openPerRun at " +
+                             "once for each of the most runs a tier may give, " +
                              "each its path (visible ASCII, a byte a character), ids, source, " +
                              "charge, rule, periods, served model and numbers" },
     // Runs (slice R): settled receipts kept and the live ones, each its widest; a live run's
@@ -544,6 +551,9 @@ describe("the owner's database bound", () => {
     // A `WITHOUT ROWID` table's records are kept as an index's: they spill past 1,002.
     expect(termBytes("model_spend", { rows: 1, bytes: 1003, by: "" }))
       .toBe(Math.floor(4096 / Math.floor(3066 / 493)) * WORST_FILL + 4096);
+    // A record over a third of a page is on its page however thinned: a page at most.
+    expect(termBytes("x", { rows: 1, bytes: 2000, by: "" })).toBe(4096);
+    expect(termBytes("x", { rows: 1, bytes: 1200, by: "" })).toBe(4096);
     expect(["model_spend", "run_grants", "connections"]
       .filter((table) => !withoutRowid().has(table))).toEqual([]);
     expect(withoutRowid().has("model_reservations")).toBe(false);
@@ -557,7 +567,10 @@ describe("the owner's database bound", () => {
     expect([CALLS_OPEN, SPEND_KEPT, MODELS_CHARS, BLOB_CHARS])
       .toEqual([1000, 4300, 655_360, 65_536]);
     expect([SCOPE_FIELD, CLIENT_NAME, WAKES_AN_HOUR, GRANT_LIMITS.maxScopes])
-      .toEqual([512, 80, 60, 64]);
+      .toEqual([512, 80, 60, 256]);
+    // A grant's scopes are counted in bytes: the module's bound is the schema's ceiling.
+    expect([GRANT_LIMITS.maxScopesBytes, SCOPES_BYTES]).toEqual([65_536, 65_536]);
+    expect([PLACE_BYTES, ROOM_CHARS]).toEqual([4096, 128]);
     expect(TERMS["file_intents"]).toMatchObject({
       rows: MAX_OPEN_INTENTS, bytes: 256 + 2 * 640_000 });
     expect(TERMS["model_reservations"]!.rows).toBe(USAGE_LIMITS.receiptsKept + 1000);
@@ -565,13 +578,19 @@ describe("the owner's database bound", () => {
     expect(TERMS["ledger_rings"]!.rows).toBe(LEDGER_LIMITS.maxAgentRows * 60);
     expect(TERMS["connection_secrets"]!.bytes).toBe(256 + 4 * 65_536);
     expect(TERMS["connections"]!.bytes).toBe(256 + 4 * 655_360 + 4 * 16_384);
-    expect(TERMS["egress_reservations"]!.rows).toBe(2_000 + 500 + 64);
+    expect(TERMS["egress_reservations"]!.rows).toBe(2_000 + 500 + 16 * 1_000);
     expect(EGRESS_PATH_MAX).toBe(2048);
     // The path is visible ASCII, so a character is a byte (the schema's CHECK).
     expect(source("schema")).toContain("\"path TEXT NOT NULL CHECK (length(path) BETWEEN 1 AND " +
                                        "2048 AND \" +\n      \"path NOT GLOB '*[^ -~]*'), \" +");
     expect(TERMS["outside_clients"]!.rows * TERMS["outside_clients"]!.bytes)
-      .toBe(2000 * (256 + 8) + 1000 * (64 * (3 * 512 * 6 + 64) + 80 * 4));
+      .toBe(2000 * (256 + 8) + 1000 * (65_536 + 80 * 4));
+    // The structural bounds (ADR-035): one recipient a message; history in bytes.
+    expect(TERMS["ledger_recipients"]!.rows).toBe(LEDGER_LIMITS.maxMessages);
+    expect(TERMS["collection_history"]).toMatchObject({ rows: 1, charged: true,
+                                                         bytes: COLLECTIONS.maxHistoryCharge });
+    expect(source("schema")).toContain("\"message_id TEXT NOT NULL PRIMARY KEY, agent_id TEXT " +
+                                       "NOT NULL, seq INTEGER NOT NULL, \" +");
   });
 
   it("counts Lifecycle's own rows, apart from the tables", () => {

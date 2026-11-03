@@ -9,7 +9,9 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { apiKeyOrigin, displayName, OWNER } from "../src/ledger";
+import {
+  apiKeyOrigin, displayName, MAX_BODY, OWNER, WAKE_DEFAULTS,
+} from "../src/ledger";
 import { policyDigest } from "../src/policy";
 import { DOT, MCP, MUSE, origin, rig } from "./ledger-support";
 import { failure } from "./support";
@@ -118,8 +120,8 @@ describe("the sender is the verified identity", () => {
     const r = await rig();
     const muse = await r.register(MUSE);
     for (const [fields, reason] of [
-      [{ body: "" }, "a message body is 1 to 16384 characters"],
-      [{ body: "x".repeat(16385) }, "a message body is 1 to 16384 characters"],
+      [{ body: "" }, `a message body is 1 to ${MAX_BODY} characters`],
+      [{ body: "x".repeat(MAX_BODY + 1) }, `a message body is 1 to ${MAX_BODY} characters`],
       [{ body: "a\uD800b" }, "a message body is well-formed text"],
       [{ cmid: "" }, "client_message_id is 1 to 128 printable characters"],
       [{ cmid: "a\nb" }, "client_message_id is 1 to 128 printable characters"],
@@ -139,7 +141,9 @@ describe("a reader sees only its own mail", () => {
     const muse = await r.register(MUSE);
     await r.post(null, `dm:${muse}`, { body: "pay the invoice" });
     await r.post(null, `dm:${muse}`, { body: "second", cmid: "c2" });
-    await r.sql("UPDATE message_bodies SET body = 'pay the attacker' WHERE body = 'pay the invoice'");
+    // Storage changed under the object: its own trigger refuses any update of a body.
+    await r.sql("DROP TRIGGER message_bodies_kept");
+    await r.sql("UPDATE message_bodies SET body = 'pay the hacker!' WHERE body = 'pay the invoice'");
     await r.sql("DELETE FROM message_bodies WHERE body = 'second'");
     expect((await r.read(MUSE)).messages.map((m) => [m.body, m.integrity]))
       .toEqual([[null, "tampered"], [null, "missing"]]);
@@ -348,7 +352,10 @@ describe("outside agents register from a verified identity", () => {
     expect((await failure(() => r.register(MUSE, "Muse", "carrier pigeon"))).message)
       .toBe("unknown delivery method");
     const agent = await r.registered(MUSE, "Muse", "mcp_event");
-    expect([agent.max_wakes_per_hour, agent.batch_window_s, agent.revision]).toEqual([12, 60, 1]);
+    // The schema's column default is the module's own (W3, raised to the policy's most).
+    expect([agent.max_wakes_per_hour, agent.batch_window_s, agent.revision])
+      .toEqual([WAKE_DEFAULTS.maxWakesPerHour, WAKE_DEFAULTS.batchWindowS, 1]);
+    expect(WAKE_DEFAULTS.maxWakesPerHour).toBe(60);
     const limits = async (extra: object) => (await r.stub.policyWakeLimits(r.session(null), {
       agent_id: agent.agent_id, max_wakes_per_hour: 12, batch_window_s: 60,
       expected_generation: (await r.stub.policyRead(r.bind(null))).generation, ...extra })).agent;
@@ -446,7 +453,7 @@ describe("outside agents register from a verified identity", () => {
   it("lets only the owner, in its session, set wake limits or delete an agent", async () => {
     const r = await rig();
     const muse = await r.register(MUSE);
-    const policy = { agent_id: muse, max_wakes_per_hour: 60, batch_window_s: 0,
+    const policy = { agent_id: muse, max_wakes_per_hour: 30, batch_window_s: 0,
                      expected_generation: 1 };
     for (const [binding, reason] of [
       [r.session(MUSE), "an outside client's call never carries the owner's session"],
@@ -459,7 +466,7 @@ describe("outside agents register from a verified identity", () => {
       }
     }
     const [agent] = (await r.stub.outsideAgents(r.bind(null))).agents;
-    expect([agent!.max_wakes_per_hour, agent!.revision]).toEqual([12, 1]);
+    expect([agent!.max_wakes_per_hour, agent!.revision]).toEqual([60, 1]);
   });
 
   it("keeps a display name to letters, digits, spaces, dots and dashes, and no secret",
@@ -570,7 +577,7 @@ describe("a refused widening's receipt", () => {
       agent_id: muse, max_wakes_per_hour: 1, batch_window_s: 0, expected_generation: 7 }));
     expect(stale.message).toBe("policy generation changed");
     const [agent] = (await r.stub.outsideAgents(r.bind(null))).agents;
-    expect([agent!.max_wakes_per_hour, agent!.revision]).toEqual([12, 1]);
+    expect([agent!.max_wakes_per_hour, agent!.revision]).toEqual([60, 1]);
     expect((await r.table("policy_receipts")).map((row) => row["kind"])).toEqual(["refusal"]);
   });
 });

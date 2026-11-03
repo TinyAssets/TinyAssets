@@ -14,8 +14,11 @@
  */
 import { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
 
-/** Interrupt polls per execution: pi's default, about 10 s of a tight loop on Cloudflare. */
-export const CODEMODE_INTERRUPT_BUDGET = 100_000;
+/**
+ * Interrupt polls per execution: about 100 s of a tight loop on Cloudflare, ten times pi's
+ * default, within the Worker's `cpu_ms` of 300,000 (Workers Paid's most, 5 minutes).
+ */
+export const CODEMODE_INTERRUPT_BUDGET = 1_000_000;
 /** VM memory per execution: pi's remote default. */
 export const CODEMODE_MEMORY_BYTES = 32 * 1024 * 1024;
 

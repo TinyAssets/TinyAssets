@@ -77,7 +77,7 @@
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import { canonical, plain, type Policy, policyDigest } from "./policy";
-import { codePoints } from "./text";
+import { codePoints, utf8Bytes } from "./text";
 
 export const OUTSIDE_MODES: readonly string[] = Object.freeze(["full", "scoped", "revoked"]);
 /** The capabilities a scoped grant's triples name at the object's doors. */
@@ -102,6 +102,8 @@ export interface GrantLimits {
   readonly maxFreeClients: number;
   readonly maxOwnerClients: number;
   readonly maxScopes: number;
+  /** The scopes' JSON, in UTF-8 bytes, as the row keeps it. */
+  readonly maxScopesBytes: number;
   readonly seenIntervalS: number;
   readonly revokeClockMarginS: number;
 }
@@ -109,7 +111,10 @@ export interface GrantLimits {
 export const GRANT_LIMITS: GrantLimits = Object.freeze({
   maxFreeClients: 1_000,
   maxOwnerClients: 1_000,
-  maxScopes: 64,
+  maxScopes: 256,
+  // The scopes' JSON as the row keeps it, the schema's own ceiling on the column (the
+  // owner-bound guard holds the two equal and counts a grant's scopes by it).
+  maxScopesBytes: 64 * 1024,
   seenIntervalS: 60,
   revokeClockMarginS: 5,
 });
@@ -178,6 +183,9 @@ export function scopes(value: unknown, limits: GrantLimits = GRANT_LIMITS): Scop
   if (value.some((scope) => !(CAPABILITIES as readonly string[]).includes(
     (scope as Record<string, string>)["capability"]!))) {
     throw new Invalid(`a scope's capability is one of ${CAPABILITIES.join(", ")}`);
+  }
+  if (utf8Bytes(JSON.stringify(value)) > limits.maxScopesBytes) {
+    throw new Invalid(`a grant's scopes are at most ${limits.maxScopesBytes} bytes of JSON`);
   }
   return value as Scope[];
 }

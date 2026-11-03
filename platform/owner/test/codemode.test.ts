@@ -53,7 +53,7 @@ describe("code mode's executor", () => {
     expect(names).toHaveLength(2);
     expect(names[1]).not.toBe(names[0]);
     await sandbox.close();
-    expect(CODEMODE_TIMEOUT_MS).toBe(60_000);
+    expect(CODEMODE_TIMEOUT_MS).toBe(300_000);
   });
 
   it("fails loudly with no hooks Worker bound, never running the script here", async () => {

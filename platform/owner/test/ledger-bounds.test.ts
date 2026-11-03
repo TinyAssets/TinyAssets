@@ -34,16 +34,21 @@ function tight(agents: number, each: number, own: number): Partial<LedgerLimits>
 }
 
 describe("the ledger's limits", () => {
-  it("fit every enabled agent's mailbox and the owner's inside the ceilings", () => {
+  it("hold each mailbox's caps within the ceilings, not reserved out of them", () => {
     expect(checkLimits(LEDGER_LIMITS)).toBe(LEDGER_LIMITS);
-    const { maxAgents, maxAgentUnacked, maxAgentUnackedBytes, maxOwnerUnacked,
-            maxOwnerUnackedBytes, maxMessages, maxBodyBytes } = LEDGER_LIMITS;
-    expect(maxAgents * maxAgentUnacked + maxOwnerUnacked).toBeLessThanOrEqual(maxMessages);
-    expect(maxAgents * maxAgentUnackedBytes + maxOwnerUnackedBytes)
-      .toBeLessThanOrEqual(maxBodyBytes);
+    const L = LEDGER_LIMITS;
+    expect(Math.max(L.maxAgentUnacked, L.maxOwnerUnacked)).toBeLessThanOrEqual(L.maxMessages);
+    expect(L.maxSenderUnacked).toBeLessThanOrEqual(L.maxOwnerUnacked);
+    expect(Math.max(L.maxAgentUnackedBytes, L.maxOwnerUnackedBytes))
+      .toBeLessThanOrEqual(L.maxBodyBytes);
+    // The caps the audit's draft asked for, which reserving them could not hold.
+    expect([L.maxAgents, L.maxAgentUnacked, L.maxOwnerUnacked, L.maxSenderUnacked])
+      .toEqual([1_000, 1_000, 10_000, 5_000]);
+    expect(L.maxAgents * L.maxAgentUnacked + L.maxOwnerUnacked).toBeGreaterThan(L.maxMessages);
     for (const [bad, reason] of [
-      [{ maxMessages: 9_999 }, "the mailboxes' messages exceed maxMessages"],
-      [{ maxAgentUnackedBytes: 600 * 1024 }, "the mailboxes' bytes exceed maxBodyBytes"],
+      [{ maxMessages: L.maxOwnerUnacked - 1 }, "a mailbox's messages exceed its ceiling"],
+      [{ maxSenderUnacked: L.maxOwnerUnacked + 1 }, "a mailbox's messages exceed its ceiling"],
+      [{ maxAgentUnackedBytes: L.maxBodyBytes + 1 }, "a mailbox's bytes exceed its ceiling"],
       [{ maxAgents: 1_001, maxAgentUnacked: 1 }, "maxAgents exceeds maxAgentRows"],
     ] as const) {
       expect(() => checkLimits({ ...LEDGER_LIMITS, ...bad })).toThrow(reason);
@@ -53,8 +58,26 @@ describe("the ledger's limits", () => {
   it("refuses to build a ledger over limits whose mailboxes do not fit", async () => {
     const r = await rig();
     const refused = await failure(() => r.inLedger({ maxMessages: 9_999 }, () => "built"));
-    expect(refused.message).toMatch(/invalid ledger limits: the mailboxes' messages exceed/);
+    expect(refused.message).toMatch(/invalid ledger limits: a mailbox's messages exceed/);
     expect(await r.inLedger({}, () => "built")).toBe("built");
+  });
+
+  it("refuses a post, loudly, when the ledger holds only unread mail at a ceiling", async () => {
+    const r = await rig();
+    await r.inLedger({ ...tight(2, 2, 1), maxMessages: 2 }, (ledger: Ledger) => {
+      const muse = `dm:${ledger.register(MUSE, MCP, PULL).agent_id}`;
+      const dot = `dm:${ledger.register(DOT, MCP, { ...PULL, display_name: "Dot" }).agent_id}`;
+      ledger.post(null, muse, "c1", "for muse", null);
+      ledger.post(null, muse, "c2", "for muse too", null);
+      // Dot's own mailbox is empty, but the ledger holds two unread messages.
+      expect(refusal(() => ledger.post(null, dot, "c3", "for dot", null)))
+        .toBe("ledger_full: every message the ledger holds is unread; a reader acks to " +
+              "make room");
+      ledger.ack(MUSE, 1);
+      ledger.post(null, dot, "c3", "for dot", null);  // evicts the acked one
+    });
+    const [usage, actual] = await counters(r);
+    expect(usage).toEqual(actual);
   });
 });
 
@@ -120,14 +143,14 @@ describe("the ledger's bounds", () => {
   it("evicts by body bytes too", async () => {
     const r = await rig();
     await r.inLedger({ maxBodyBytes: 10, maxAgents: 1, maxAgentUnackedBytes: 10,
-                       maxOwnerUnackedBytes: 0 }, (ledger: Ledger) => {
+                       maxOwnerUnackedBytes: 0, maxSenderUnackedBytes: 0 }, (ledger: Ledger) => {
       const room = `dm:${ledger.register(MUSE, MCP, PULL).agent_id}`;
       ledger.post(null, room, "c1", "12345", null);
       ledger.post(null, room, "c2", "é234", null);  // five bytes, four characters
       expect(refusal(() => ledger.post(null, room, "c3", "1", null)))
         .toBe("this agent's mailbox is full");
       expect(refusal(() => ledger.post(MUSE, room, "m1", "1", null)))
-        .toBe("the owner's mailbox is full");  // it holds no bytes here
+        .toBe("this agent's unacked mail to the owner is full");  // its share, of none
       ledger.ack(MUSE, 1);
       ledger.post(null, room, "c3", "1", null);
     });

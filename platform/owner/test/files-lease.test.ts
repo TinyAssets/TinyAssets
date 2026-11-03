@@ -22,7 +22,7 @@ function entryOf(answer: { entry: Entry } | { conflict: Entry | null }): Entry {
 
 /** Three token hashes, as a lease's (the secrets never reach the object). */
 const TOKENS = (n = 0) => ({ egress: "a".repeat(63) + n, sync: "b".repeat(63) + n,
-                            runner: "c".repeat(63) + n, deadline: 2e9 });
+                            runner: "c".repeat(63) + n });
 const acquire = (r: Rig, holder = "sandbox-1", authority = "owner", n = 0) =>
   inFiles(r.stub, {}, (files) => files.leaseAcquire(authority, holder, TOKENS(n)));
 const renew = (r: Rig, lease: Pick<Lease, "lease_id" | "epoch">) =>

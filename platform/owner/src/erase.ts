@@ -41,6 +41,11 @@ export interface ErasureParts {
   readonly ended: () => void;
   /** The object's Lifecycle, whose alarm the last step disables for good. */
   readonly lifecycle: { disableAlarms(): Promise<void> };
+  /**
+   * Every object the owner holds in R2 deleted (`Files.eraseChunks`): its files' chunks and
+   * its placed bodies' (ADR-035). Repeatable; it reads the chunk rows and changes none.
+   */
+  readonly blobs: () => Promise<void>;
   /** The object's whole database deleted, and the tombstone left (`WriteGate.wipe`). */
   readonly wipe: () => Promise<void>;
   /** How long a refused door waits after the last attempt before it resumes the erasure. */
@@ -99,7 +104,7 @@ export class Erasure extends LifecycleCapability {
     if (this.#erased) {
       return;
     }
-    const { storage, write, clock, ended, lifecycle, wipe } = this.#parts;
+    const { storage, write, clock, ended, lifecycle, blobs, wipe } = this.#parts;
     if (erasureStep(storage) < 2) {
       // 1. The mark, and the job that resumes this after a crash (pushed again on a resume,
       // which also sets the alarm again).
@@ -115,7 +120,10 @@ export class Erasure extends LifecycleCapability {
         runsEnded(storage);
       });
     }
-    // 3. The owner wiped whole, Lifecycle's alarm disabled first so nothing is written after.
+    // 3. Every R2 copy deleted while the rows still name them (a failure rejects, and the
+    // retry deletes again), then the owner wiped whole, Lifecycle's alarm disabled first so
+    // nothing is written after.
+    await blobs();
     await lifecycle.disableAlarms();
     await wipe();
     this.#erased = true;

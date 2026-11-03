@@ -8,7 +8,10 @@
  * 2. **End every run**: the sandbox's in-flight egress streams end (`Egress.drop`), and the
  *    step is recorded done (`step` 2). The runs and sandbox slices (R, S) add the sandbox's
  *    kill and the engines' session files' purge to this step (ADR-034).
- * 3. **`deleteAll()` the owner**, Lifecycle's alarm disabled first, so nothing is written
+ * 3. **Delete every R2 copy**: each chunk the owner's rows name, its files' and its placed
+ *    bodies' (ADR-035), while the rows still name them; repeatable, so a failed attempt
+ *    deletes again.
+ * 4. **`deleteAll()` the owner**, Lifecycle's alarm disabled first, so nothing is written
  *    after it but the tombstone: the erased admission row (`admission.ts`), written into the
  *    empty database in the same synchronous turn (`WriteGate.wipe`); a killed turn can
  *    lose it (the window `erase.ts` names, not measured in production; slice 10's to

@@ -213,13 +213,12 @@ describe("one sandbox an authority (review H-1)", () => {
     expect(ended).toBe(false);
   });
 
-  it("never joins a lease past its tokens' deadline: its runs are lost, a fresh one opens",
-     async () => {
+  it("never joins a lease whose renewal lapsed, its tokens with it: its runs are lost, a " +
+     "fresh one opens", async () => {
     const r = await gated();
     const first = await ownerRun(r.stub, r.bind(), SIGNED_IN);
-    // Its tokens die (the clock past the deadline the lease was taken with).
-    await r.sql("DROP TRIGGER sandbox_leases_fenced");
-    await r.sql("UPDATE sandbox_leases SET deadline = 1");
+    // Its heartbeat stopped: the lease's life, and its tokens', is over.
+    await r.sql("UPDATE sandbox_leases SET lease_expires = 1");
     const second = await ownerRun(r.stub, r.bind(), undefined, "main");
     expect(second.start.tokens).not.toBeNull();
     expect(second.start.lease.lease_id).not.toBe(first.start.lease.lease_id);

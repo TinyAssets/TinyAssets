@@ -29,6 +29,16 @@
 
 /** A chunk's most bytes: the files Worker's `CHUNK_BYTES` (a test ties the two). */
 export const CHUNK_BYTES = 4 * 1024 * 1024;
+/**
+ * The placement rule's threshold (ADR-035): content of more UTF-8 bytes than this is never
+ * kept in the object's SQLite but in R2, through the files plane: a file's bytes (its
+ * `INLINE_BYTES`), a collection row's or history entry's body, a message's. Up to it a
+ * body keeps in its row's b-tree page (4,061 bytes in place in a rowid table); past it,
+ * each 4,092 bytes would be another overflow page read with the row, and an R2 put
+ * ($4.50 a million) costs less than its SQLite storage ($0.20 a GB-month against R2's
+ * $0.015) within months.
+ */
+export const PLACE_BYTES = 4096;
 /** SQLite's page in the object's database. */
 export const PAGE_BYTES = 4096;
 /**

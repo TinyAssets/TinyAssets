@@ -89,7 +89,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
-import { mintToken } from "../../doors/src/routing-mac";
+import { LEASE_LIVED, mintToken } from "../../doors/src/routing-mac";
 import {
   bundledSources, CREDENTIAL_KINDS, type CredentialKind, runEnv, SourceRecordError,
 } from "../../doors/src/sources";
@@ -109,8 +109,13 @@ import { EVENT_FRAMES_MAX, eventsBounded, FRAME_UNITS_MAX, PostGate } from "./ru
 import { SANDBOX_ABSENT, type SandboxService, started } from "./sandbox";
 import { TICKET_REFUSED } from "./socket-shape";
 import { Tickets } from "./tickets";
-import { PLATFORM_TIER_ONLY, TIER_RUNS, type TierName, tierNumbers } from "./tier";
-import { Collections, Conflict, type HistoryEntry, type Page, type Row } from "./collections";
+import {
+  keepTiers, keptTiers, PLATFORM_TIER_ONLY, TIER_RUNS, type TierName, tierNumbers,
+} from "./tier";
+import { Bodies, type Placed, type Placing } from "./bodies";
+import {
+  checkBody, Collections, Conflict, type HistoryEntry, type Page, type Row,
+} from "./collections";
 import {
   CONNECTION_UNAVAILABLE, type ConnectionView, Connections, CREDENTIAL_EXPIRED,
   type GatewayService, type ModelInfo, type Prepared,
@@ -125,14 +130,14 @@ import { type OwnerStorage, type Write, WriteGate } from "./gate";
 import { type Capability, type Client, type Grant, Grants, holds, type Scope } from "./grants";
 import type { HooksService } from "./codemode";
 import {
-  type Agent, clock, Ledger, type MailPage, OWNER, type Origin, outsideOrigin, type Posted,
-  registrant, type Source,
+  type Agent, checkMessage, clock, Ledger, type MailPage, OWNER, type Origin, outsideOrigin,
+  type Posted, registrant, type Source,
 } from "./ledger";
 import { type Notice, Notices } from "./notices";
 import { Erasure } from "./erase";
 import { ERASE_RETRY_MS, ERASING, erasing, wiped } from "./erasure";
 import {
-  type Change, fileSettings, modelSettings, Policy, type PolicyDocument, type Projection,
+  type Change, fileLimits, modelSettings, Policy, type PolicyDocument, type Projection,
   type Receipt,
 } from "./policy";
 import { type Card, Registrations } from "./registrations";
@@ -148,7 +153,7 @@ import {
   type SandboxBinding, sandboxBinding, settleRequest,
 } from "./egress";
 import {
-  type EgressPolicy, networkDocument, RUN_DEADLINE_S, type NetworkPlan, runUrls, sandboxEnv,
+  type EgressPolicy, networkDocument, type NetworkPlan, runUrls, sandboxEnv,
 } from "./network";
 import { runWakes, WAKE_SEND_MS, type WakeSender, WAKES_PER_ALARM } from "./wakes";
 
@@ -699,6 +704,31 @@ async function fileConflictedAfter<T>(act: () => Promise<T>): Promise<T | FileCo
   }
 }
 
+/**
+ * How often a mailbox read reads its placed bodies again when mail that came between its
+ * read of them and its unit put an unread placed body first (ADR-035).
+ */
+const READ_TRIES = 3;
+
+/** The placed contents a read's rows name (ADR-035). */
+function contentsOf(rows: readonly { readonly content_id?: string }[]): string[] {
+  return rows.flatMap((row) => row.content_id === undefined ? [] : [row.content_id]);
+}
+
+/** A row or entry with its placed body read in, as a caller sees it. */
+function filled<T extends { readonly body: string; readonly content_id?: string }>(
+    row: T, bodies: ReadonlyMap<string, string>): T {
+  if (row.content_id === undefined) {
+    return row;
+  }
+  const { content_id: contentId, ...rest } = row;
+  const body = bodies.get(contentId);
+  if (body === undefined) {
+    throw new Error("a placed body its row names was not read");
+  }
+  return { ...rest, body } as T;
+}
+
 /** Who a file change is by, in its history: the owner, or the outside client it came through. */
 function fileWriter(account: Account): string {
   return account.origin === null ? "owner" : `client:${account.origin.client}`;
@@ -945,6 +975,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #sessions: Sessions;
   readonly #ledger: Ledger;
   readonly #files: Files;
+  /** Where large bodies live (ADR-035): placed in R2 through the files plane. */
+  readonly #bodies: Bodies;
   readonly #registrations: Registrations;
   readonly #notices: Notices;
   readonly #connections: Connections;
@@ -995,13 +1027,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#storage = storage;
     this.#tombstone = tombstoned(storage.sql);
     const admitted = () => workRefusal(admission(storage)) === null;
-    this.#collections = new Collections(storage);
     this.#policy = new Policy(storage);
+    // The files byte quota is the tier's storage (ADR-034 decision 8), as last handed.
+    this.#files = new Files(storage, env.FILES, () => fileLimits(
+      this.#policy.read().document,
+      keptTiers(storage)?.[ownerTier(storage)].storage_bytes ?? null), write);
+    this.#bodies = new Bodies(this.#files, storage, write);
+    this.#collections = new Collections(storage, undefined, this.#bodies.adopt);
     this.#grants = new Grants(storage, this.#policy);
     this.#sessions = new Sessions(storage);
-    this.#ledger = new Ledger(storage, this.#grants, undefined, admitted);
-    this.#files = new Files(storage, env.FILES,
-                            () => fileSettings(this.#policy.read().document), write);
+    this.#ledger = new Ledger(storage, this.#grants, undefined, admitted, this.#bodies.adopt);
     this.#registrations = new Registrations(storage, this.#grants);
     this.#notices = new Notices(storage);
     const owner = () => {
@@ -1021,6 +1056,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         return grant === null ? undefined : grant.connection;
       },
       runUsage: (run) => this.#runs.usage(run),
+      tierRuns: () => keptTiers(storage)?.[ownerTier(storage)].runs ?? null,
       generation: () => this.#policy.egressGeneration(),
       credential: (connection, nowMs) => {
         try {
@@ -1128,6 +1164,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         this.#relay.closeAll("erased");
         this.#cancelInSandbox(this.#runs.liveRuns());
       },
+      // Every R2 copy of the owner's: files and placed bodies alike are the files plane's
+      // chunks (ADR-035), which the wipe would otherwise leave behind, named nowhere.
+      blobs: () => this.#files.eraseChunks(),
       wipe: () => this.#gate.wipe(writeTombstone),
       retryMs: internals.eraseRetryMs ?? ERASE_RETRY_MS,
     });
@@ -1208,6 +1247,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return this.#runAccount(binding, door);
     }
     const { owner, caller } = this.#bind(binding, door);
+    // The tier's numbers, as the binder read them from the control record: kept for the
+    // files byte quota and the lane's runs (written only when they changed).
+    keepTiers(this.#storage, binding.tiers, clock());
     if (!("origin" in binding)) {
       throw new Invalid("invalid outside origin");
     }
@@ -1673,17 +1715,24 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   // -- ROOM_POST and MAILBOX_RECEIPT -------------------------------------------
 
   roomPost(binding: Binding, request: PostRequest): Promise<Posted> {
-    return this.#synced(() => {
+    return this.#placing(() => {
+      const account = this.#account(binding, "work");
+      const r = ledgerFields(request, ["room_id", "client_message_id", "body", "parent_id"]);
+      this.#scope(account, "write_graph");
+      checkMessage(r["body"]);
+      return { body: r["body"], writer: fileWriter(account) };
+    }, (placed) => {
       const account = this.#account(binding, "work");
       const r = ledgerFields(request, ["room_id", "client_message_id", "body", "parent_id"]);
       this.#scope(account, "write_graph");
       const posted = this.#ledger.post(account.origin, r["room_id"], r["client_message_id"],
-                                       r["body"], r["parent_id"]);
+                                       r["body"], r["parent_id"], clock(), placed,
+                                       fileWriter(account));
       if (posted.recipients.includes(OWNER)) {
         this.#runs.mailArrived(clock());  // the doorbell: the runs on the owner's mail
       }
       return posted;
-    });
+    }, true);
   }
 
   // -- MODEL CONNECTIONS: sealed credentials, flows and spend (tasks 4 G2) ------------
@@ -1787,14 +1836,25 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return set;
   }
 
+  /**
+   * A mailbox page. Its placed bodies (ADR-035) are read from R2 first, located in a unit
+   * of their own; the read's unit then marks only what it returns, and ends the page before
+   * a placed body it was not handed (one that arrived between), which a further read of
+   * the bodies picks up.
+   */
   mailboxRead(binding: Binding, request: ReadRequest): Promise<MailPage> {
-    return this.#door(() => {
+    return this.#rereading(() => {
+      const account = this.#account(binding, "read");
+      const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes"]);
+      this.#scope(account, "read_graph");
+      return this.#ledger.placedNext(account.origin, r["limit"]);
+    }, (bodies) => {
       const account = this.#account(binding, "read");
       const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes"]);
       this.#scope(account, "read_graph");
       return this.#ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null,
-                               r["pad_bytes"] ?? 0);
-    });
+                               r["pad_bytes"] ?? 0, clock(), bodies);
+    }, (page) => page.messages.length === 0 && page.more);
   }
 
   mailboxAck(binding: Binding, request: AckRequest): Promise<{ reader: string; through: number }> {
@@ -1963,48 +2023,123 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * A collection door's caller: the owner, a visiting owner, or an outside client the
    * owner's account acts through, admitted against its grant and held to `capability`.
    */
-  #collector(binding: Binding, door: DoorClass, capability: Capability):
-      { owner: string; caller: string } {
+  #collector(binding: Binding, door: DoorClass, capability: Capability): Account {
     const account = this.#account(binding, door, { visitors: true });
     this.#scope(account, capability);
     return account;
   }
 
+  /**
+   * A write door with a body (ADR-035). Its first unit checks its caller and request
+   * (`prepare`, the body and the writer it is placed as); a body its row keeps is written
+   * in that same unit (`act`). A body past `PLACE_BYTES` is begun there instead, sent to R2,
+   * and written in a second unit, which checks the caller again and adopts it; its upload
+   * is released after, whatever the unit did (none once adopted).
+   */
+  async #placing<T>(prepare: () => { body: unknown; writer: string },
+                    act: (placed: Placed | null) => T, synced = false): Promise<T> {
+    const first = await this.#door((): { done: T } | { placing: Placing } => {
+      const { body, writer } = prepare();
+      const placing = this.#bodies.begin(body as string, writer);
+      return placing === null ? { done: act(null) } : { placing };
+    });
+    let done: T;
+    if ("done" in first) {
+      done = first.done;
+    } else {
+      const placed = await this.#bodies.send(first.placing);
+      try {
+        done = await this.#door(() => act(placed));
+      } finally {
+        await this.#bodies.release(placed);
+      }
+    }
+    if (synced) {
+      await this.#schedule.sync();
+    }
+    return done;
+  }
+
+  /**
+   * A read door's unit, then the placed bodies its rows name read from R2 and set in them
+   * (ADR-035): `unit` returns its result and the content ids it names, located in the
+   * same unit, so each is the content its row named.
+   */
+  /**
+   * A read door whose unit marks what it returns (a mailbox read, ADR-035): the placed
+   * bodies it would return located in a unit of their own (`locate`, its caller checked),
+   * read from R2, then its unit (`read`, the caller checked again) handed them; it reads
+   * again, a few times at most, while `again` says mail between put an unread placed body
+   * first.
+   */
+  async #rereading<T>(locate: () => readonly string[],
+                      read: (bodies: ReadonlyMap<string, string>) => T,
+                      again: (value: T) => boolean): Promise<T> {
+    for (let tries = 0; ; tries++) {
+      const located = await this.#door(() => this.#bodies.locate(locate()));
+      const bodies = await this.#bodies.fetch(located);
+      const value = await this.#door(() => read(bodies));
+      if (!again(value) || tries >= READ_TRIES) {
+        return value;
+      }
+    }
+  }
+
+  async #reading<T>(unit: () => { value: T; contents: readonly string[] },
+                    fill: (value: T, bodies: ReadonlyMap<string, string>) => T): Promise<T> {
+    const { value, located } = await this.#door(() => {
+      const read = unit();
+      return { value: read.value, located: this.#bodies.locate(read.contents) };
+    });
+    return located.size === 0 ? fill(value, new Map()) : fill(value, await this.#bodies.fetch(located));
+  }
+
   collectionWrite(binding: Binding, request: WriteRequest): Promise<{ row: Row } | Conflicted> {
-    return this.#door(() => {
-      const { owner, caller } = this.#collector(binding, "work", "write_graph");
+    return this.#placing(() => {
+      const account = this.#collector(binding, "work", "write_graph");
+      const r = fields(request, ["collection", "row_id", "body", "expected_etag", "private"],
+                       ["history_op"]);
+      return { body: checkBody(r["body"]), writer: fileWriter(account) };
+    }, (placed) => {
+      const account = this.#collector(binding, "work", "write_graph");
       const r = fields(request, ["collection", "row_id", "body", "expected_etag", "private"],
                        ["history_op"]);
       return conflicted(() => ({
-        row: this.#collections.write(owner, caller, r["collection"] as string,
+        row: this.#collections.write(account.owner, account.caller, r["collection"] as string,
                                      r["row_id"] as string, r["body"], r["expected_etag"],
-                                     r["private"], "history_op" in r ? r["history_op"] : "write"),
+                                     r["private"], "history_op" in r ? r["history_op"] : "write",
+                                     placed, fileWriter(account)),
       }));
     });
   }
 
   collectionPull(binding: Binding, request: PullRequest): Promise<Page> {
-    return this.#door(() => {
+    return this.#reading(() => {
       const { caller } = this.#collector(binding, "read", "read_graph");
       const r = fields(request, ["collection", "after", "limit"]);
-      return this.#collections.pull(caller, r["collection"] as string, r["after"], r["limit"]);
-    });
+      const page = this.#collections.pull(caller, r["collection"] as string, r["after"],
+                                          r["limit"]);
+      return { value: page, contents: contentsOf(page.rows) };
+    }, (page, bodies) => ({ ...page, rows: page.rows.map((row) => filled(row, bodies)) }));
   }
 
   collectionGet(binding: Binding, request: KeyRequest): Promise<{ row: Row | null }> {
-    return this.#door(() => {
+    return this.#reading(() => {
       const { caller } = this.#collector(binding, "read", "read_graph");
       const r = fields(request, ["collection", "row_id"]);
-      return this.#collections.get(caller, r["collection"] as string, r["row_id"] as string);
-    });
+      const got = this.#collections.get(caller, r["collection"] as string, r["row_id"] as string);
+      return { value: got, contents: contentsOf(got.row === null ? [] : [got.row]) };
+    }, (got, bodies) => ({ row: got.row === null ? null : filled(got.row, bodies) }));
   }
 
   collectionHistory(binding: Binding, request: KeyRequest): Promise<{ entries: HistoryEntry[] }> {
-    return this.#door(() => {
+    return this.#reading(() => {
       const { caller } = this.#collector(binding, "read", "read_graph");
       const r = fields(request, ["collection", "row_id"]);
-      return this.#collections.history(caller, r["collection"] as string, r["row_id"] as string);
-    });
+      const kept = this.#collections.history(caller, r["collection"] as string,
+                                             r["row_id"] as string);
+      return { value: kept, contents: contentsOf(kept.entries) };
+    }, (kept, bodies) => ({ entries: kept.entries.map((entry) => filled(entry, bodies)) }));
   }
 
   collectionDelete(binding: Binding, request: DeleteRequest):
@@ -2957,18 +3092,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /**
    * In a unit, as a run's admission finds no live lease of its authority: that sandbox's
-   * lease taken, its egress and sync tokens minted (they die with the sandbox's
-   * continuous-runtime ceiling, `RUN_DEADLINE_S`, whatever the lease does, and the lease's
-   * row with them) and the runner's own secret, and the owner's network made with the egress
-   * token in its transform. A lease that lapsed is replaced: its streams end with it.
+   * lease taken, its egress and sync tokens minted (they live while the lease is renewed,
+   * by its heartbeat, with no deadline of their own, `LEASE_LIVED`, so no run meets a fixed
+   * one) and the runner's own secret, and the owner's network made with the egress token in
+   * its transform. A lease that lapsed is replaced: its streams and tokens end with it.
    */
   #openLease(owner: () => string, now: number, authority: string) {
-    const deadline = Math.floor(now) + RUN_DEADLINE_S;
-    const egress = mintToken(this.env.ROUTING_MAC_KEY, "egress", owner(), deadline);
-    const sync = mintToken(this.env.ROUTING_MAC_KEY, "sync", owner(), deadline);
+    const egress = mintToken(this.env.ROUTING_MAC_KEY, "egress", owner(), LEASE_LIVED);
+    const sync = mintToken(this.env.ROUTING_MAC_KEY, "sync", owner(), LEASE_LIVED);
     const runner = randomBytes(32).toString("hex");
     const lease = this.#files.leaseAcquire(authority, "sandbox", {
-      egress: egress.hash, sync: sync.hash, runner: secretHash(runner), deadline });
+      egress: egress.hash, sync: sync.hash, runner: secretHash(runner) });
     const live = new Set(this.#files.liveLeases(now).map((each) => each.lease_id));
     this.#egress.end("lease", (stream) => !live.has(stream.lease));
     const { document } = this.#policy.read();

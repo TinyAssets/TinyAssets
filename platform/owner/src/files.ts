@@ -77,8 +77,11 @@ import { createHash, randomBytes } from "node:crypto";
 
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage, Write } from "./gate";
-import { CHUNK_BYTES, CLIENT_WRITER, CLIENTS, HISTORY_BYTES, OWNER_SCOPE } from "./manifest";
+import {
+  CHUNK_BYTES, CLIENT_WRITER, CLIENTS, HISTORY_BYTES, OWNER_SCOPE, PLACE_BYTES,
+} from "./manifest";
 import { inTime } from "./schedule";
+import { TIER_UNREAD } from "./tier";
 import {
   AGENTS_OWNER_ONLY, ancestors, isRoot, MAX_NAME_BYTES, MAX_PATH_BYTES, nameOf, ownersOnly,
   parentOf, storedPath, TEMP, within, WORKSPACE,
@@ -103,10 +106,10 @@ export const BATCH_BYTES = 2 * CHUNK_BYTES;
  * calls); larger files go by upload, a chunk at a time.
  */
 export const WHOLE_BYTES = 4 * CHUNK_BYTES;
-/** Files this size or smaller are kept inline in the object. */
-export const INLINE_BYTES = 4096;
+/** Files this size or smaller are kept inline in the object: the placement rule's threshold. */
+export const INLINE_BYTES = PLACE_BYTES;
 /** An upload intent's life: past it, its uncommitted chunks become garbage. */
-export const INTENT_TTL_S = 3600;
+export const INTENT_TTL_S = 86_400;
 /** How long a garbage chunk waits before it is deleted (the schema's trigger sets it). */
 export const GC_GRACE_S = 86_400;
 /** When a failed chunk delete is tried again. */
@@ -116,7 +119,7 @@ export const LEASE_TTL_S = 60;
 /** The owner's own work's sandbox: the authority every run the owner started holds. */
 export const OWNER_AUTHORITY = "owner";
 /** A temporary directory's life. */
-export const TEMP_TTL_S = 86_400;
+export const TEMP_TTL_S = 7 * 86_400;
 /**
  * How late housekeeping may run after it is due, so one alarm takes everything due in
  * an hour rather than each prune or delete arming its own.
@@ -142,14 +145,18 @@ export const MAX_SYNC_OPS = 1000;
 /** The most versions policy can keep of a path (`FILE_SETTINGS.keep_versions`). */
 export const KEEP_CEILING = 1000;
 /** Conflict copies of one path one epoch may make. */
-export const MAX_CONFLICT_COPIES = 100;
+export const MAX_CONFLICT_COPIES = 1000;
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const HEX32 = /^[0-9a-f]{32}$/;
 
 /** The owner's files settings the object enforces (owner policy's `files` table). */
 export interface FileLimits {
-  readonly max_bytes: number;
+  /**
+   * File bytes (chunks, live and in history, and placed bodies): the tier's storage, or the
+   * owner's own lower figure; null while the tier's is not known here (`TIER_UNREAD`).
+   */
+  readonly max_bytes: number | null;
   readonly max_inline_bytes: number;
   readonly max_manifest_bytes: number;
   readonly max_entries: number;
@@ -272,25 +279,25 @@ export interface SandboxLease {
   /** The SHA-256 hex of the runner's own secret, which no CLI holds. */
   readonly runner_token: string;
   readonly expires_at: number;
-  /** When its tokens die: the sandbox's own continuous-runtime ceiling. */
-  readonly deadline: number;
   /** The egress generation the sandbox's network was last applied under, or null. */
   readonly network_generation: number | null;
   /** The engines its own runner last reported signed in inside it (a client's sandbox's). */
   readonly signins: readonly string[];
 }
 
-/** The three tokens' hashes a lease is bound to, and their deadline. */
+/**
+ * The three tokens' hashes a lease is bound to. They live while the lease does: no deadline
+ * of their own, the lease's renewal (its heartbeat) is their life.
+ */
 export interface LeaseTokens {
   readonly egress: string;
   readonly sync: string;
   readonly runner: string;
-  readonly deadline: number;
 }
 
 type LeaseRow = {
   authority: string; lease_id: string; epoch: number; holder: string; lease_expires: number;
-  deadline: number; egress_token: string; sync_token: string; runner_token: string;
+  egress_token: string; sync_token: string; runner_token: string;
   network_generation: number | null; signins: string;
 };
 
@@ -298,12 +305,12 @@ function leaseOf(row: LeaseRow): SandboxLease {
   return { authority: row.authority, lease_id: row.lease_id, epoch: row.epoch,
            egress_token: row.egress_token, sync_token: row.sync_token,
            runner_token: row.runner_token, expires_at: row.lease_expires,
-           deadline: row.deadline, network_generation: row.network_generation,
+           network_generation: row.network_generation,
            signins: row.signins === "" ? [] : row.signins.split(",") };
 }
 
-/** A lease's row is live while neither its renewal nor its tokens' deadline has passed. */
-const LIVE_LEASE = "lease_expires > ? AND deadline > ?";
+/** A lease's row, and its tokens, are live while its renewal has not lapsed. */
+const LIVE_LEASE = "lease_expires > ?";
 
 /** A sync op: what the sandbox's scan found, against the version it last synced. */
 export type SyncOp =
@@ -624,8 +631,14 @@ export class Files {
     for (const scope of this.#scopes(before, writer)) {
       const after = scope.now();
       for (const [counter, setting, what] of QUOTAS) {
-        if (after[counter] > shareOf(limits[setting], scope.percent)
-            && after[counter] > scope.before[counter]) {
+        if (after[counter] <= scope.before[counter]) {
+          continue;
+        }
+        const bound = limits[setting];
+        if (bound === null) {
+          throw new Refused(TIER_UNREAD);  // the tier's storage is not known: no guess
+        }
+        if (after[counter] > shareOf(bound, scope.percent)) {
           throw new Refused(scope.refusal(what));
         }
       }
@@ -1384,6 +1397,21 @@ export class Files {
     });
   }
 
+  /**
+   * In the caller's unit, a placed body's adoption (ADR-035, `bodies.ts`): the upload's
+   * content made (its chunk stored, made live), the intent ended, and the content's id
+   * returned for the caller's row to name, whose own trigger counts the reference. Held to
+   * every quota as any change is, in the same transaction as the row, so a refused or
+   * conflicting row leaves the content unmade and the intent open for its release.
+   */
+  adopt(intentId: string, writer: string): string {
+    return this.#change(writer, (now) => {
+      const { contentId } = this.#fromIntent(this.#intent(intentId, now));
+      this.#release(intentId);
+      return contentId;
+    });
+  }
+
   /** Make a directory; an existing one is no error unless `expected` says otherwise. */
   mkdir(path: unknown, options: { expected: unknown; parents?: boolean; writer: string }):
       Entry {
@@ -1591,9 +1619,11 @@ export class Files {
 
   /** A new temporary directory under `/.ta/tmp`, expired after a day. */
   tempDir(prefix: unknown, writer: string): string {
-    if (typeof prefix !== "string" || prefix.includes("/") || codePoints(prefix) > 64
-        || !isPrintable(prefix)) {
-      throw new Invalid("a temporary prefix is at most 64 printable characters, no slash");
+    // A prefix and the 16 hex after it make one path component (`MAX_NAME_BYTES`).
+    if (typeof prefix !== "string" || prefix.includes("/")
+        || utf8Bytes(prefix) > MAX_NAME_BYTES - 16 || !isPrintable(prefix)) {
+      throw new Invalid(`a temporary prefix is at most ${MAX_NAME_BYTES - 16} bytes of ` +
+                        "printable characters, no slash");
     }
     const name = `${prefix}${randomBytes(8).toString("hex")}`;
     const path = `${TEMP}/${name}`;
@@ -1642,7 +1672,7 @@ export class Files {
     }
     const hashes = [tokens.egress, tokens.sync, tokens.runner];
     if (hashes.some((hash) => typeof hash !== "string" || !HEX64.test(hash))
-        || new Set(hashes).size !== 3 || !Number.isFinite(tokens.deadline)) {
+        || new Set(hashes).size !== 3) {
       throw new Invalid("a lease's three token hashes are 64 hex, and differ");
     }
     return this.#change(null, (now) => {
@@ -1650,14 +1680,14 @@ export class Files {
         throw new Refused("the sync lease is held");
       }
       this.#sql.exec("DELETE FROM sandbox_leases WHERE authority = ? OR NOT " +
-                       `(${LIVE_LEASE})`, authority, now, now);
+                       `(${LIVE_LEASE})`, authority, now);
       const row = this.#sql.exec<{ epoch: number; seq: number }>(
         "UPDATE file_space SET epoch = epoch + 1 RETURNING epoch, seq").one();
       const leaseId = randomBytes(16).toString("hex");
       this.#sql.exec(
         "INSERT INTO sandbox_leases (authority, lease_id, epoch, holder, lease_expires, " +
-          "deadline, egress_token, sync_token, runner_token) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        authority, leaseId, row.epoch, holder, now + LEASE_TTL_S, tokens.deadline,
+          "egress_token, sync_token, runner_token) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        authority, leaseId, row.epoch, holder, now + LEASE_TTL_S,
         tokens.egress, tokens.sync, tokens.runner);
       return { lease_id: leaseId, epoch: row.epoch, expires_at: now + LEASE_TTL_S,
                base: row.seq };
@@ -1667,7 +1697,7 @@ export class Files {
   /** `authority`'s live lease, or null. A read. */
   sandboxLease(now: number, authority: string): SandboxLease | null {
     const row = this.#sql.exec<LeaseRow>(
-      `SELECT * FROM sandbox_leases WHERE authority = ? AND ${LIVE_LEASE}`, authority, now, now)
+      `SELECT * FROM sandbox_leases WHERE authority = ? AND ${LIVE_LEASE}`, authority, now)
       .toArray()[0];
     return row === undefined ? null : leaseOf(row);
   }
@@ -1676,7 +1706,7 @@ export class Files {
   leaseByToken(kind: "egress" | "sync" | "runner", hash: string, now: number):
       SandboxLease | null {
     const row = this.#sql.exec<LeaseRow>(
-      `SELECT * FROM sandbox_leases WHERE ${kind}_token = ? AND ${LIVE_LEASE}`, hash, now, now)
+      `SELECT * FROM sandbox_leases WHERE ${kind}_token = ? AND ${LIVE_LEASE}`, hash, now)
       .toArray()[0];
     return row === undefined ? null : leaseOf(row);
   }
@@ -1684,7 +1714,7 @@ export class Files {
   /** Every live lease. A read. */
   liveLeases(now: number): SandboxLease[] {
     return this.#sql.exec<LeaseRow>(
-      `SELECT * FROM sandbox_leases WHERE ${LIVE_LEASE} ORDER BY epoch`, now, now).toArray()
+      `SELECT * FROM sandbox_leases WHERE ${LIVE_LEASE} ORDER BY epoch`, now).toArray()
       .map(leaseOf);
   }
 
@@ -1706,7 +1736,7 @@ export class Files {
   /** The live lease these name, or refused: a stale epoch or lease id is fenced. */
   #fenced(leaseId: unknown, epoch: unknown, now: number): LeaseRow {
     const row = typeof leaseId !== "string" ? undefined : this.#sql.exec<LeaseRow>(
-      `SELECT * FROM sandbox_leases WHERE lease_id = ? AND ${LIVE_LEASE}`, leaseId, now, now)
+      `SELECT * FROM sandbox_leases WHERE lease_id = ? AND ${LIVE_LEASE}`, leaseId, now)
       .toArray()[0];
     if (row === undefined || row.epoch !== epoch) {
       throw new Refused("the sync lease was lost; this sync is fenced");
@@ -1767,7 +1797,7 @@ export class Files {
 
   /** In a unit: every lapsed lease's row gone (its runs settled first, `Runs.lost`). */
   leasesLapsed(now: number): void {
-    this.#sql.exec(`DELETE FROM sandbox_leases WHERE NOT (${LIVE_LEASE})`, now, now);
+    this.#sql.exec(`DELETE FROM sandbox_leases WHERE NOT (${LIVE_LEASE})`, now);
   }
 
   /**
@@ -1997,6 +2027,30 @@ export class Files {
         sql.exec("DELETE FROM file_chunks WHERE sha256 = ? AND state = 'deleting'", sha256);
       }
     }));
+  }
+
+  /**
+   * The erasure's R2 step (`erase.ts`): every chunk the owner's rows name, in any state
+   * (a file's, a placed body's, garbage, one being uploaded), deleted from the bucket
+   * `DELETE_BATCH` at a time. It changes no row, so a failed attempt repeats it whole; the
+   * wipe after it removes the rows. A put a door began before the erasure's mark and that
+   * lands after this step is the window `tasks.md` names.
+   */
+  async eraseChunks(): Promise<void> {
+    const ns = this.#space().ns;
+    if (ns === null) {
+      return;  // nothing was ever stored
+    }
+    for (let after = "";;) {
+      const batch = this.#sql.exec<{ sha256: string }>(
+        "SELECT sha256 FROM file_chunks WHERE sha256 > ? ORDER BY sha256 LIMIT ?", after,
+        DELETE_BATCH).toArray().map((row) => row.sha256);
+      if (batch.length === 0) {
+        return;
+      }
+      await this.#store.deleteChunks(ns, batch);
+      after = batch.at(-1)!;
+    }
   }
 
   /**

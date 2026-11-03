@@ -69,7 +69,7 @@ export const CLOCK_MARGIN_S = 5;
 /** The largest body each door reads; past it, `413` before anything is parsed. */
 export const AUTHORIZE_BODY_MAX = 4 * 1024;
 export const APP_BODY_MAX = 64 * 1024;
-export const API_BODY_MAX = 1024 * 1024;
+export const API_BODY_MAX = 8 * 1024 * 1024;
 
 /** `OWNER_ISSUER` until the AuthKit slice sets AuthKit's production issuer. */
 export const ISSUER_NOT_CONFIGURED = "not-configured";

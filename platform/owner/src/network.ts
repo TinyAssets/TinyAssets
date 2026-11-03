@@ -157,21 +157,20 @@ export const OUTCOMES: readonly string[] = Object.freeze(["complete", "aborted",
 export type Outcome = "complete" | "aborted" | "failed" | "deadline" | "ended";
 
 /**
- * The longest one sandbox request may stream, in seconds: the gateway's own forward
- * deadline (`FORWARD_DEADLINE_MS`, a test holds the two equal), which the door keeps too,
- * so a stream the gateway never ends is still settled.
+ * The longest one sandbox request may stream, in seconds: an hour, room for a long reasoning
+ * answer (a Worker's subrequest has no time limit while its client stays connected,
+ * Cloudflare's Workers limits). The gateway's own forward deadline (`FORWARD_DEADLINE_MS`,
+ * a test holds the two equal), which the door keeps too, so a stream the gateway never ends
+ * is still settled.
  */
-export const EGRESS_DEADLINE_S = 300;
-/** The largest model call the egress door reads, as the gateway's own bound (`BODY_MAX`). */
-export const EGRESS_BODY_MAX = 16 * 1024 * 1024;
+export const EGRESS_DEADLINE_S = 3600;
 /**
- * The sandbox lease's tokens' life, in seconds from the lease's open: a day, the sandbox's
- * own continuous-runtime ceiling on E2B Pro (a technical ceiling, reset by a pause; slice S's
- * probe confirms it for ours). It is no platform run deadline: the sandbox itself stops
- * there. Both tokens carry it under their MAC, so the door refuses a dead lease's token
- * without reaching the owner's object; the runs live under the lease end with it.
+ * The largest model call the egress door reads, as the gateway's own bound (`BODY_MAX`): a
+ * technical ceiling, the isolate's 128 MB, which holds the body and its decoded text while
+ * the gateway meters it. Providers take more (Anthropic's Messages API, 128 MB), past what
+ * an isolate holds at all.
  */
-export const RUN_DEADLINE_S = 24 * 60 * 60;
+export const EGRESS_BODY_MAX = 16 * 1024 * 1024;
 
 /** The egress door's host: always allowed, the one host the transform is set on. */
 export const EGRESS_HOST = "egress.tinyassets.io";
