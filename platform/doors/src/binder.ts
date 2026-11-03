@@ -23,7 +23,6 @@ import type { Binding, Origin, OwnerDO } from "../../owner/src/owner-do";
 import {
   BINDING_HEADER, CONVERSATION_HEADER, SOCKET_URL, TICKET_HEADER,
 } from "../../owner/src/socket-shape";
-import { PLATFORM_CALLER } from "../../owner/src/admission";
 import { principal } from "../../owner/src/text";
 
 import { LEASE_LIVED, verifyToken } from "./routing-mac";
@@ -254,13 +253,11 @@ export function ringOwner(env: DoorsEnv, owner: string): DurableObjectStub<Owner
 
 /**
  * A verified E2B lifecycle event's owner (`e2b-hooks.ts`, slice P), by the route E2B echoed
- * and the doors opened: that owner's object, called as the platform, whose one door here
- * (`sandboxBilled`) records the sandbox time E2B billed and nothing else.
+ * and the doors opened: that owner's object, whose one door here (`sandboxBilled`) records
+ * the sandbox time E2B billed. It carries no binding: the event grants nothing.
  */
-export function bindSandboxHook(env: DoorsEnv, owner: string): Bound {
-  const named = principal(owner);
-  return { binding: { owner: named, caller: PLATFORM_CALLER, origin: null },
-           stub: env.OWNER.getByName(named) };
+export function sandboxHookOwner(env: DoorsEnv, owner: string): DurableObjectStub<OwnerDO> {
+  return env.OWNER.getByName(principal(owner));
 }
 
 /**

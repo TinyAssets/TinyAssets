@@ -1879,17 +1879,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
 
   /**
    * One execution E2B billed, from its signed lifecycle event, which the doors verified and
-   * routed here by its sealed route (`doors/src/e2b-hooks.ts`): the platform's alone.
+   * routed here by its sealed route (`doors/src/e2b-hooks.ts`). It carries no binding, as the
+   * line's ring does not (`sandboxRung`): it grants nothing, and only adds to the meter, once
+   * an event. An erased or erasing owner counts nothing.
    */
-  sandboxBilled(binding: Binding, event: BilledEvent): Promise<{ counted: boolean }> {
-    return this.#door(() => {
-      const { caller } = this.#bind(binding, "admission");
-      if (caller !== PLATFORM_CALLER || !("origin" in binding) || binding.origin !== null
-          || binding.session !== undefined || binding.source !== undefined) {
-        throw new Refused(PLATFORM_ONLY);
-      }
-      return { counted: this.#sandboxTime.billed(billedEvent(event)) };
-    });
+  async sandboxBilled(event: BilledEvent): Promise<{ counted: boolean }> {
+    if (this.#tombstone || this.#erasure.erased || erasing(this.#storage)) {
+      return { counted: false };
+    }
+    const checked = billedEvent(event);
+    return this.#door(() => ({ counted: this.#sandboxTime.billed(checked) }));
   }
 
   /** The owner's sandbox seconds a day, newest first: the founder's cost view. */

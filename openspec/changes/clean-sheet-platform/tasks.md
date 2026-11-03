@@ -454,8 +454,11 @@ account and no deploy.
   `platform/owner/migrations.json` (`first_deploy`, `deployed` SHA-256s over each
   migration's statements as the code evaluates them) and `owner/guards/migrations.test.ts`,
   which fails a pinned migration changed or gone and anything pinned before the marker;
-  today's migrations squashed into one baseline. Until the marker is set, slices still edit
-  in place.
+  today's migrations (slice S's column folded in) squashed into one baseline, checked equal
+  to the old chain by a one-off workerd comparison. Each object's start also refuses to run
+  when a migration it applied reads differently now (`schema_digests`, Flyway's
+  `validate`), which catches what the repo's guard cannot (a hotfix branch, a revert).
+  Until the marker is set, slices still edit in place.
 - [ ] Owed by slice L's deploy kit: mark the first deploy and pin each deploy's migrations,
   `PIN_MIGRATIONS=<commit> npx vitest run --project guards guards/migrations.test.ts` in
   `platform/owner` (it refuses to pin a changed one), committing the lock with the deployed
@@ -1382,26 +1385,46 @@ R, S, M and W.
   wipe, so a stray chunk is unreadable. Miniflare ignores `ssecKey`, so the files tests
   hold the Worker to R2's documented answers (`files/test/ssec.ts`).
 - [ ] Owed live (slice L): a probe of `ssecKey` with `onlyIf` and `sha256` on a put, of a get
-  with another key and with none on an SSE-C object, and of a ranged SSE-C get; the files
+  with another key and with none on an SSE-C object, and of a ranged SSE-C get. Should SSE-C
+  not combine with the create-once put or R2's `sha256`, set `FILES_CIPHER` to `aes-gcm`: the
+  fallback (AES-256-GCM per object in the files Worker, `files/src/cipher.ts`) is built and
+  tested, and the config guards take either; the files
   Worker's create-once put on the live bucket (`onlyIf: { etagDoesNotMatch: "*" }` as a
   wildcard, and which R2 checks first when a key exists and the bytes miss the `sha256`);
   `FILES_KEYRING` generated and set at the files Worker's deploy. Owed with the first kid
   rotation: a sweep that wraps every owner's key again under the active kid (the data key
   never changes, so no chunk is rewritten). Each droplet volume imported into the manifest
   and bucket in the cutover window (9).
-- [x] The owner export and the nightly manifest (slice P). One stream, `tinyassets-export`
-  version 1 (`owner/src/export.ts`): header, every row of every exported table in key
-  order, every named chunk's bytes once, end; every table of the schema exported (each
-  column decided) or kept out with its reason, credentials, hashes, secrets and the wrapped
-  key never; resumable from any page's cursor. `ownerExport` answers the owner alone in its
-  live session; the owner surface streams it as NDJSON (`POST /app/api/export`). The
-  nightly manifest (`backup.ts`): the same stream without the chunks' bytes, written by
-  each object's own `manifest` lane at its owner's hour of the night, its parts under the
-  data key and its root naming them with the wrapped key; the newest kept.
-- [x] Sandbox time metered per owner (slice P, `owner/src/sandbox-time.ts`): the object reads
-  the sandbox Worker's log of starts, pauses, resumes and kills (`SandboxService.meter`) on
-  its `sandbox` lane, and keeps each run's seconds on its receipt (`sandbox_s`) and each
-  UTC day's sum; `sandboxDays` is the owner's read of it. It limits nothing.
+- [x] The owner export and the nightly manifest (slice P), one format, `tinyassets-export`
+  version 1 (`owner/src/export.ts`): a manifest (header, every row of every exported table
+  in key order, every named chunk by hash and size, end) read a page at a time from any
+  page's cursor, and the chunks' bytes fetched by hash (`exportChunks`), so an export of any
+  size resumes at a page or a chunk. Every table is exported (each column decided) or kept
+  out with its reason; credentials, hashes, secrets and the wrapped key never. An open
+  export holds every chunk from deletion until it ends or its week lapses
+  (`owner_exports`); the garbage grace is 30 days, the object's point-in-time recovery, so
+  no restore or manifest names a swept chunk. The owner alone, in its live session: the
+  owner surface's `export`, `export/chunks`, `export/end`. The nightly manifest
+  (`backup.ts`): the same manifest, its parts encrypted under the data key under the
+  owner's prefix (which the erasure deletes), its root naming them with the wrapped key;
+  written only when something changed since the last (every write unit marks it, the first
+  mark sets the lane's job), so an idle owner's object is never woken for it.
+- [ ] Owed (founder's spending decision): a manifest copy outside this account and bucket
+  (3-2-1); today's recovery point lives in the same bucket.
+- [x] Sandbox time metered per owner (slice P, `owner/src/sandbox-time.ts`). The truth is
+  E2B's: its signed lifecycle webhook (`POST /hooks/e2b/lifecycle`, `doors/src/e2b-hooks.ts`)
+  is verified by E2B's signature scheme against `E2B_WEBHOOK_SECRET`, parsed strictly and
+  routed by a sealed route the sandbox carries in its metadata (`ta_route`, `sealRoute`),
+  and each paused or killed execution's billed ms, vCPU-ms and MB-ms is counted once by the
+  event's id, split across UTC days. The estimate, and the fallback: the sandbox Worker
+  logs each create, resume, pause and kill (`SandboxControl`, `meter`), which the object
+  reads on its `sandbox` lane onto each run's receipt (`sandbox_s`) and each day.
+  `sandboxDays` shows both. It limits nothing.
+- [ ] Owed by slice L's deploy kit: register E2B's lifecycle webhook
+  (`POST https://api.e2b.app/events/webhooks`, events `sandbox.lifecycle.paused` and
+  `.killed`, the URL `https://tinyassets.io/hooks/e2b/lifecycle`) with a generated
+  signature secret, set as the doors' `E2B_WEBHOOK_SECRET`; and one platform-wide pull of
+  `/events/sandboxes` to catch deliveries E2B gave up on.
 - [x] One storage number (founder, 2026-11-03; slice P): every byte of user content counts
   toward the tier's storage wherever it lives. The inline bodies of collection rows, their
   history and mail are counted by triggers (`body_bytes`, owner-wide and in each writer's
@@ -1410,9 +1433,10 @@ R, S, M and W.
   retention first (history no row still is, then acked mail, inline or placed), then
   `file_quota`. `storageUsage` (the app's `POST /app/api/storage`) answers used, the limit and
   where it is (files, messages, collections).
-- [ ] Owed by slice S (or merged with it): the sandbox Worker's side of `meter`, its
-  `SandboxControl` logging each create, resume, pause and kill with its authority and time
-  and dropping what a read's cursor passed.
+- [x] The sandbox Worker's side of `meter` (slice P, after slice S merged): `SandboxControl`
+  logs each create, resume, pause (its own, and one E2B made, as first seen) and kill (a
+  sandbox gone while it ran) with its authority and time, and drops what a read's cursor
+  passed.
 
 ## 7. Wakes and outside agents
 

@@ -1055,7 +1055,7 @@ Each frame (`{v, run, seq, at, kind, event}`) SHALL be relayed to the owner app'
 - **THEN** it receives the run's tail first, then each frame as it comes
 
 ### Requirement: Every chunk is put and read under its owner's data key
-Every chunk get and put, a file's and a placed body's alike, and every nightly manifest part SHALL carry its owner's own SSE-C data key (R2's `ssecKey`). The data key SHALL be 32 random bytes made by the files Worker for one namespace and kept only wrapped: AES-256-GCM under a wrapping key derived for that namespace from the files Worker's own keyring (`FILES_KEYRING`, HKDF-SHA256), its additional data binding the namespace and the kid, so the owner's object holds no key it can use and a wrapped key presented for another namespace fails. A get or put with no key, or one that does not open, SHALL be refused before R2 is reached; a missing or malformed ring SHALL fail every call loudly. Erasure SHALL leave no copy of the wrapped key, so a chunk that outlives the prefix delete is unreadable.
+Every chunk get and put, a file's and a placed body's alike, and every nightly manifest part SHALL be under its owner's own data key: R2's SSE-C (`ssecKey`) by default, or AES-256-GCM per object in the files Worker (`FILES_CIPHER` `aes-gcm`, the object's R2 key as additional data) should the live probe find SSE-C does not combine with the create-once put. The data key SHALL be 32 random bytes made by the files Worker for one namespace and kept only wrapped: AES-256-GCM under a wrapping key derived for that namespace from the files Worker's own keyring (`FILES_KEYRING`, HKDF-SHA256), its additional data binding the namespace and the kid, so the owner's object holds no key it can use and a wrapped key presented for another namespace fails. A get or put with no key, or one that does not open, SHALL be refused before R2 is reached; a missing or malformed ring SHALL fail every call loudly. Erasure SHALL leave no copy of the wrapped key, so a chunk that outlives the prefix delete is unreadable.
 
 #### Scenario: Another owner's key
 - **WHEN** a chunk put under Alice's key is read with Bob's wrapped key, or with a second key minted for Alice's own namespace
@@ -1066,32 +1066,36 @@ Every chunk get and put, a file's and a placed body's alike, and every nightly m
 - **THEN** no manifest root and no object row holds their wrapped key, so the chunk cannot be read
 
 ### Requirement: The owner export streams everything the owner holds, to the owner alone
-The owner's export SHALL be one stream in the documented `tinyassets-export` format, version 1 (`export.ts`): a header naming the schema, every row of every exported table in its key's order, the bytes of every chunk some content names once each, and an end line. It SHALL be read a page at a time, each page's cursor resuming at the next row, and refuse a cursor it never handed out. Every table of the schema SHALL be either exported, with every column exported or kept out with its reason, or kept out with its reason; sealed credentials, flows, session and ticket hashes, run and lease secrets, the namespace and the wrapped key SHALL never be exported. Its door SHALL answer only the owner, in its live session: no outside client, no run, and no request without the session.
+The owner's export SHALL be one format with the nightly manifest, `tinyassets-export` version 1 (`export.ts`): a manifest (a header naming the schema and the export, every row of every exported table in its key's order, every chunk some content names by hash and size once each, and an end line) read a page at a time, each page's cursor resuming at the next row, and the chunks' bytes fetched by hash. It SHALL refuse a cursor it never handed out and an export not open. An open export SHALL hold every chunk from deletion until it ends or its hold lapses. Every table of the schema SHALL be either exported, with every column exported or kept out with its reason, or kept out with its reason; sealed credentials, flows, session and ticket hashes, run and lease secrets, the namespace and the wrapped key SHALL never be exported. Its door SHALL answer only the owner, in its live session: no outside client, no run, and no request without the session.
 
 #### Scenario: A round trip
 - **WHEN** the owner exports after writing a small file, a chunked file and a collection row
-- **THEN** each exported table's rows equal the table's, and the files rebuild byte for byte from the stream
+- **THEN** each exported table's rows equal the table's, and the files rebuild byte for byte from the manifest and the chunks fetched by hash
+
+#### Scenario: An export holds its chunks
+- **WHEN** a file goes while an export that names its chunk is open, and the chunk's grace is past
+- **THEN** the chunk is still fetched by hash; once the export ends, the sweep deletes it
 
 #### Scenario: A client asks
 - **WHEN** an outside client, an API key or an MCP token calls the export
 - **THEN** it is refused, and the owner surface answers `403`
 
 ### Requirement: The nightly manifest is written by the owner's own schedule
-Each owner's object SHALL write its export stream, without the chunks' bytes, to R2 once a night, from its own `manifest` lane (its day's start in UTC plus the owner's own offset), never from a platform cron of every owner, and only once the object serves its owner. The parts SHALL be under the owner's data key and the root, written last, SHALL name each part's hash and size and carry the wrapped key, so a recovery needs only the keyring. The newest finished manifest SHALL be kept, and an older one deleted root first once a new one finishes.
+Each owner's object SHALL write its export manifest to R2 once a night when anything changed since the last one began, from its own `manifest` lane (its day's start in UTC plus the owner's own offset), never from a platform cron of every owner; with no change, the lane SHALL keep no job. A garbage chunk SHALL wait 30 days, the object's point-in-time recovery window, before it is deleted, so no recovery point names a swept chunk. The parts SHALL be under the owner's data key and the root, written last, SHALL name each part's hash and size and carry the wrapped key, so a recovery needs only the keyring. The newest finished manifest SHALL be kept, and an older one deleted root first once a new one finishes.
 
 #### Scenario: Tonight's manifest
 - **WHEN** the owner's manifest is due
-- **THEN** the object's own alarm writes its parts and root, deletes the older one, and sets its job for the next night
+- **THEN** the object's own alarm writes its parts and root and deletes the older one; with no change since, it sets no job, and the first change sets it for the next night
 
 ### Requirement: A deployed migration is never edited
-Once the owner Worker's first deploy is marked in `platform/owner/migrations.json`, every deployed migration SHALL be pinned there by the SHA-256 of its statements as the code evaluates them, and the migrations guard SHALL fail a pinned migration that changed or is gone; a new shape SHALL be a new migration at the end. The deploy SHALL mark the first deploy and pin each migration it ships; nothing SHALL be pinned without that mark, and until it is set migrations may be edited in place.
+Once the owner Worker's first deploy is marked in `platform/owner/migrations.json`, every deployed migration SHALL be pinned there by the SHA-256 of its statements as the code evaluates them, and the migrations guard SHALL fail a pinned migration that changed or is gone; a new shape SHALL be a new migration at the end. Each object SHALL keep the digest of every migration it applied and refuse to start when one reads differently now. The deploy SHALL mark the first deploy and pin each migration it ships; nothing SHALL be pinned without that mark, and until it is set migrations may be edited in place.
 
 #### Scenario: A deployed migration edited in place
 - **WHEN** a pinned migration's statements change
 - **THEN** the guard fails, and the deploy refuses to pin
 
 ### Requirement: Sandbox time is metered per run and per day, and limits nothing
-The object SHALL read the sandbox Worker's own log of each sandbox's start, pause, resume and kill on its `sandbox` lane, after a settled run has no sandbox time and while a span stands open, and apply it in one unit. A run's receipt SHALL carry its sandbox seconds (`sandbox_s`), the time its sandbox ran between its start and its settle, once the log is read past its settle; each UTC day SHALL sum the owner's sandboxes' running time once however many runs they held. No door, admission or run SHALL read it to refuse anything.
+What E2B bills SHALL be the truth: its signed lifecycle events (paused, killed), verified by E2B's signature scheme and routed by the sealed route the sandbox carries in its metadata, SHALL add each execution's billed ms, vCPU-ms and MB-ms to the UTC days it ran, once by the event's id. As the estimate and the fallback, the object SHALL read the sandbox Worker's own log of each sandbox's start, pause, resume and kill on its `sandbox` lane, after a settled run has no sandbox time and while a span stands open, and apply it in one unit. A run's receipt SHALL carry its sandbox seconds (`sandbox_s`), the time its sandbox ran between its start and its settle, once the log is read past its settle; each UTC day SHALL sum the owner's sandboxes' running time once however many runs they held. No door, admission or run SHALL read it to refuse anything.
 
 #### Scenario: A pause and a resume inside a run
 - **WHEN** a run from 5 s to 30 s shares a sandbox that ran 0-10 s and 20-35 s

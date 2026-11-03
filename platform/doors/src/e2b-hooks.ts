@@ -16,14 +16,12 @@
  *    milliseconds billed), and only those are delivered; every other event type answers
  *    `200`, so E2B does not retry it.
  * 3. **Routed by the sealed route** E2B echoes from the sandbox's metadata (`ta_route`,
- *    `routing-mac.ts`): the owner's object, as the platform (`sandboxBilled`), which keeps
- *    each event once by its id. A sandbox with no route of ours answers `200`, logged.
+ *    `routing-mac.ts`): the owner's object (`sandboxBilled`, which grants nothing), which
+ *    keeps each event once by its id. A sandbox with no route of ours answers `200`, logged.
  */
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
-import { createHash } from "node:crypto";
-
-import { bindSandboxHook } from "./binder";
+import { sandboxHookOwner } from "./binder";
 import type { DoorsEnv } from "./config";
 import { openRoute } from "./routing-mac";
 
@@ -140,7 +138,7 @@ export async function e2bLifecycle(request: Request, env: DoorsEnv): Promise<Res
     console.error("an E2B lifecycle event named no sandbox of ours");  // no ids in the log
     return answer(200, { unrouted: true });
   }
-  const { binding, stub } = bindSandboxHook(env, route.owner);
   const { route: _route, ...billed } = event;
-  return answer(200, await stub.sandboxBilled(binding, { ...billed, authority: route.authority }));
+  return answer(200, await sandboxHookOwner(env, route.owner).sandboxBilled(
+    { ...billed, authority: route.authority }));
 }

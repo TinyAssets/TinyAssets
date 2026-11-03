@@ -17,6 +17,8 @@ import { drainDue, failure, sqlIn } from "./support";
 const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_login_in_sandbox",
                                   scopes: [] });
 const S = 1000;
+/** A day E2B billed nothing for: only the Worker's own log counted it. */
+const UNBILLED = Object.freeze({ billed_seconds: 0, vcpu_seconds: 0, gb_seconds: 0 });
 const DAY = 86_400 * S;
 
 let made = 0;
@@ -66,7 +68,7 @@ describe("sandbox time", () => {
       expect([sandboxMs(sql, a), sandboxMs(sql, b), sandboxMs(sql, c), sandboxMs(sql, never)])
         .toEqual([15 * S, 8 * S, 0, 0]);
       // The sandbox itself: 10 s, then 15 s, once however many runs it held.
-      expect(meter.days(10)).toEqual([{ day: "19700131", seconds: 25 }]);
+      expect(meter.days(10)).toEqual([{ day: "19700131", seconds: 25, ...UNBILLED }]);
       expect(meter.cursor()).toMatchObject({ after: 4, read_at: t0 + 60 * S });
       // Every run is metered: no span is kept.
       expect(sql.exec("SELECT COUNT(*) AS n FROM sandbox_spans").one()).toEqual({ n: 0 });
@@ -92,7 +94,7 @@ describe("sandbox time", () => {
       meter.apply([{ seq: 4, authority: "owner", kind: "kill", at: t0 + 300 * S }], 4,
                   t0 + 310 * S);
       expect(meter.next(t0 / S + 311)).toBeNull();
-      expect(meter.days(1)).toEqual([{ day: "19700210", seconds: 120 + 100 }]);
+      expect(meter.days(1)).toEqual([{ day: "19700210", seconds: 120 + 100, ...UNBILLED }]);
     });
   });
 
@@ -102,8 +104,8 @@ describe("sandbox time", () => {
       meter.apply([{ seq: 1, authority: "owner", kind: "start", at: midnight - 10 * S },
                    { seq: 2, authority: "owner", kind: "pause", at: midnight + 30 * S }],
                   2, midnight + 60 * S);
-      expect(meter.days(5)).toEqual([{ day: "19700220", seconds: 30 },
-                                     { day: "19700219", seconds: 10 }]);
+      expect(meter.days(5)).toEqual([{ day: "19700220", seconds: 30, ...UNBILLED },
+                                     { day: "19700219", seconds: 10, ...UNBILLED }]);
       const events = [];
       for (let day = 0; day < DAYS_KEPT + 5; day++) {
         events.push({ seq: 3 + 2 * day, authority: "owner", kind: "resume" as const,
@@ -159,7 +161,7 @@ describe("sandbox time", () => {
     // The sandbox itself: from its start to its pause, once (its resume is still open).
     expect((await r.stub.sandboxDays(r.bind(), {})).days).toEqual([
       { day: new Date(Math.floor(from) - 500).toISOString().slice(0, 10).replaceAll("-", ""),
-        seconds: 0.501 }]);
+        seconds: 0.501, ...UNBILLED }]);
     // The client's own call never reaches the meter's read.
     expect((await failure(() => r.stub.sandboxDays(
       r.bind({ origin: { client: "c".repeat(64), family: "mcp" } } as never), {}))).name)
