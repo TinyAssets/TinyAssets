@@ -73,22 +73,22 @@ Every tool SHALL be confined to the owner's account, `openWorldHint` false. The 
 - **THEN** it is refused `no_run`, as for a run that does not exist
 
 ### Requirement: Each caller is served exactly its own tool profile
-A profile SHALL be data (`doors/profiles.json`) listing table tools in the table's order: `directory`, every tool but `code`, a generic executor, as OpenAI's directory (each operation its own tool, no generic executor) and Anthropic's (narrow, unambiguous tools) require, cited there; `custom`, the owner's own choice (by default every tool); `run`, the table but the run tools. `/mcp`, a run's MCP door and `/api` SHALL serve a request only the tools the object answers for its caller (`toolProfile`), asked before any tool is listed; a caller the object refuses SHALL be answered that refusal (`403`) and no tool, and a tool outside the profile SHALL be unknown (`/api`: `404`).
+A profile SHALL be data (`doors/profiles.json`) listing table tools in the table's order: `custom`, the owner's own choice (by default every tool), which every grant on `/mcp` and every API key names until the owner names another, since each is a custom connector; `directory`, every tool but `code`, a generic executor, as OpenAI's plugin guidelines require (each operation its own tool, no generic executor enabling operations not exposed for review), cited there, for a listing's own MCP resource once it is submitted; `run`, the table but the run tools. `/mcp`, a run's MCP door and `/api` SHALL serve a request only the tools the object answers for its caller (`toolProfile`), asked before any tool is listed; a caller the object refuses SHALL be answered that refusal (`403`) and no tool, and a tool outside the profile SHALL be unknown (`/api`: `404`).
 
 #### Scenario: Two clients of one owner
-- **WHEN** the owner names one client's profile `custom` and leaves another's
-- **THEN** the first lists the custom tools and the second exactly the directory's
+- **WHEN** the owner names one client's profile `directory` and leaves another's
+- **THEN** the first lists exactly the directory's tools and the second the custom ones, `code` among them
 
 #### Scenario: A revoked client lists its tools
 - **WHEN** a revoked client sends `tools/list`
 - **THEN** it is answered `403` "outside client revoked"
 
 ### Requirement: A main agent spends few calls
-`/mcp` SHALL serve `inbox_digest` and `board_digest` (what changed for the caller since its cursor, in one read) and `code` (one script calling the caller's other tools as `await tools.<name>(args)`, its VM in the hooks Worker, refused unless the owner's policy turns code mode on and the caller's profile holds it).
+`/mcp` SHALL serve `inbox_digest` and `board_digest` (what changed for the caller since its cursor, deletions included, in one read) and `code` (one script calling the caller's other tools as `await tools.<name>(args)`, its VM in the hooks Worker, refused once the owner's policy turns code mode off, on by default, or where the caller's profile lacks it).
 
 #### Scenario: A script of two calls
-- **WHEN** a custom client with code mode on calls `code` with a script that writes a board row and reads the board digest
-- **THEN** one MCP call answers the script's value, with two calls counted `ok`
+- **WHEN** a new client calls `code` with a script that writes a board row and reads the board digest
+- **THEN** one MCP call answers the script's value, with two calls counted `ok` and the write listed as landed
 
 ### Requirement: The tier's numbers ride the control record to the run doors
 The control record (`c:control`) MAY hold `tiers`: each tier's simultaneous runs (1 to 1,000, the owner database's ceiling) and storage bytes, which the founder edits with no deploy. A record whose `tiers` are malformed SHALL be malformed whole. The doors SHALL read the record once per outside or owner call and hand its `tiers` in the binding (`withTiers`), never from a request; a record without them hands `null`, and the object then forgets the numbers it kept and refuses every run `tier_unread`.
@@ -134,7 +134,7 @@ The session cookie SHALL be `__Host-ta-owner`, Secure, HttpOnly, Path=/, SameSit
 - **THEN** no session is forwarded and the object refuses the widening
 
 ### Requirement: The outside kill switch fails closed
-Every outside call (an MCP call, an `/api` call, an outside client's authorization) SHALL pass only when the directory's `control` record reads, well formed, with `outside` on and the maintenance gate admitting its owner; a missing, malformed or unreadable record SHALL refuse it. The owner's own surfaces and sign-in SHALL be held by the maintenance gate, and SHALL stay open only when the record is missing.
+Every outside call (an MCP call, an `/api` call, an outside client's authorization), and each tool call of a `code` script in the object, SHALL pass only when the `control` record (its own `CONTROL` namespace) reads, well formed, with `outside` on and the maintenance gate admitting its owner; a missing, malformed or unreadable record SHALL refuse it. The owner's own surfaces and sign-in SHALL be held by the maintenance gate, and SHALL stay open only when the record is missing.
 
 #### Scenario: The control record is missing
 - **WHEN** the directory holds no `control` record
@@ -159,7 +159,7 @@ Each sign-in of the owner's app SHALL keep its own grant, so devices stay signed
 - **THEN** the phone's token is refused at once and the laptop's still works
 
 ### Requirement: The doors Worker cannot deploy before cutover
-The doors config SHALL bind exactly `OWNER` (the owner Worker's `OwnerDO`, by script name), `GATEWAY` (the gateway Worker's `ConnectGateway` entrypoint), `EGRESS` (its `EgressGateway` entrypoint), `OAUTH_KV` and `DIRECTORY` (distinct placeholder ids) and the `DCR_ENABLED` var, with no routes, custom domain, workers.dev or preview URL, and the flags `nodejs_compat`, `disable_ctx_exports` and `global_fetch_strictly_public`.
+The doors config SHALL bind exactly `OWNER` (the owner Worker's `OwnerDO`, by script name), `GATEWAY` (the gateway Worker's `ConnectGateway` entrypoint), `EGRESS` (its `EgressGateway` entrypoint), `OAUTH_KV`, `DIRECTORY` and `CONTROL` (distinct placeholder ids) and the `DCR_ENABLED` var, with no routes, custom domain, workers.dev or preview URL, and the flags `nodejs_compat`, `disable_ctx_exports` and `global_fetch_strictly_public`.
 
 #### Scenario: A route is added
 - **WHEN** a route, another service, a real KV id or another binding is added to the doors config

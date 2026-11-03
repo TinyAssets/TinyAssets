@@ -1,9 +1,9 @@
 {
   "directory": {
-    "about": "What a client listed from the public connector directories is served: every tool but code, a generic executor. OpenAI: each model-callable operation is its own tool, with no generic executor enabling operations not individually exposed for review. Anthropic: each tool narrow and unambiguous, its annotations given (readOnlyHint, destructiveHint, title). Every grant names this profile until the owner names another.",
+    "about": "What a client listed from a public connector directory is to be served: every tool but code, a generic executor. OpenAI's plugin guidelines expose each model-callable operation as its own tool, and refuse a generic executor that enables operations not individually exposed for review; that rule alone keeps code out. Anthropic's software directory policy has no rule against an executor (2A asks for narrow, unambiguous tool descriptions, 5E for readOnlyHint, destructiveHint and title, 5B for frugal token use). No grant names this profile yet: a listing submission gets its own MCP resource whose grants are pinned to it.",
     "sources": [
       "https://developers.openai.com/plugins/plugin-guidelines (Tools: Tool independence and exposure; Correct annotation), read 2026-11-03",
-      "https://support.claude.com/en/articles/13145358-anthropic-software-directory-policy (3A, 3F, 5B, 5C, 5E), read 2026-11-03"
+      "https://support.claude.com/en/articles/13145358-anthropic-software-directory-policy (2A, 5B, 5E), read 2026-11-03"
     ],
     "tools": [
       "inbox_digest", "board_digest", "mailbox_read", "mailbox_ack", "room_post",
@@ -14,7 +14,7 @@
     ]
   },
   "custom": {
-    "about": "A client the owner named custom, such as one added as a custom connector: the owner's own choice of tools, the policy's tools.custom, or every tool when the policy names none.",
+    "about": "Every grant on the MCP door and every API key, a custom connector until a directory listing has its own resource: the owner's own choice of tools, the policy's tools.custom, or every tool when the policy names none.",
     "tools": [
       "inbox_digest", "board_digest", "mailbox_read", "mailbox_ack", "room_post",
       "agents_list", "agent_register", "policy_propose", "collection_get", "collection_list",

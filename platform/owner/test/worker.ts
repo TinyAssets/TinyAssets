@@ -44,6 +44,23 @@ export class BoundedOwnerDO extends OwnerDO {
   }
 }
 
+/**
+ * The owner object as production builds it but for its CONTROL namespace, a fake whose
+ * control record reads open three times and then has outside access off, and a script's
+ * read of it serving no call past its own (`controlFreshMs` 0): a test sees the gates read
+ * again at each of a script's calls.
+ */
+export class SwitchedOwnerDO extends OwnerDO {
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    let reads = 0;
+    const open = { outside: "on", ordinary: "all", canary: [], inbound: false };
+    const control = {
+      get: async () => (reads++ < 3 ? open : { ...open, outside: "off" }),
+    } as unknown as KVNamespace;
+    super(ctx, { ...env, CONTROL: control }, { controlFreshMs: 0 });
+  }
+}
+
 /** One call the object made to its GATEWAY binding, as text: what crossed the binding. */
 export interface GatewayCall {
   readonly method: string;

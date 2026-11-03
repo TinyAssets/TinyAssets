@@ -103,8 +103,10 @@ export interface DoorsEnv {
   readonly ROUTING_MAC_KEY: string;
   /** The OAuth provider's own store (its schema; never ours). */
   readonly OAUTH_KV: KVNamespace;
-  /** The owner directory: routing hints and the `control` record (`directory.ts`). */
+  /** The owner directory: routing hints (`directory.ts`). */
   readonly DIRECTORY: KVNamespace;
+  /** The platform's control record alone (`c:control`), the owner Worker's too. */
+  readonly CONTROL: KVNamespace;
   /** Dynamic client registration, the deprecated fallback: exactly "true" or "false". */
   readonly DCR_ENABLED: string;
   /**

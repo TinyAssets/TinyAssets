@@ -1,14 +1,25 @@
 /**
  * A main agent's digests (slice M): `inboxDigest` gives its unacknowledged mail and the
  * owner's rooms' rows written past its cursor, `boardDigest` the board's, each row as its
- * head, in one call; only since the cursor, which never goes back; and only what its grant
- * holds: `read_graph`, a private row only to its writer, no revoked client.
+ * head, in one call; only since the cursor, which never goes back; each delete and clear
+ * reported too, to whoever could see the row; and only what its grant holds: `read_graph`, a
+ * private row only to its writer, no revoked client.
  */
 import { describe, expect, it } from "vitest";
 
-import type { Binding } from "../src/owner-do";
+import type { Binding, RowHead } from "../src/owner-do";
 import { MUSE, rig, type Rig } from "./ledger-support";
 import { failure } from "./support";
+
+type Live = Extract<RowHead, { deleted: false }>;
+
+/** A digest's rows, each a live row's head. */
+function live(rows: readonly RowHead[]): Live[] {
+  for (const row of rows) {
+    expect(row.deleted).toBe(false);
+  }
+  return rows as Live[];
+}
 
 function write(r: Rig, collection: string, rowId: string, body: string,
                caller: Binding = r.bind(null), isPrivate = false) {
@@ -27,11 +38,11 @@ describe("the inbox digest", () => {
     await write(r, "room:app:den", "m1", "hello den");
     const first = await r.stub.inboxDigest(r.bind(MUSE), { limit: 10, after: 0 });
     expect(first.mail.messages.map((m) => m.body)).toEqual(["are you there?"]);
-    expect(first.rooms.rows.map((row) => [row.collection, row.row_id, row.body_chars]))
+    expect(live(first.rooms.rows).map((row) => [row.collection, row.row_id, row.body_chars]))
       .toEqual([["room:app:lobby", "m1", 1000], ["room:app:den", "m1", 9]]);
-    expect(first.rooms.rows[0]!.head).toBe("x".repeat(512));
-    expect(first.rooms.rows[1]!).toMatchObject({ head: "hello den", writer: r.owner });
-    expect(first.rooms.rows[0]!).not.toHaveProperty("body");
+    expect(live(first.rooms.rows)[0]!.head).toBe("x".repeat(512));
+    expect(live(first.rooms.rows)[1]!).toMatchObject({ head: "hello den", writer: r.owner });
+    expect(live(first.rooms.rows)[0]!).not.toHaveProperty("body");
     // Only since the cursor: nothing new, then only the one row written since.
     const again = await r.stub.inboxDigest(r.bind(MUSE), { limit: 10,
                                                           after: first.rooms.cursor });
@@ -39,7 +50,7 @@ describe("the inbox digest", () => {
     await write(r, "room:app:lobby", "m2", "later");
     const later = await r.stub.inboxDigest(r.bind(MUSE), { limit: 10, after: again.rooms.cursor,
                                                           head_chars: 3 });
-    expect(later.rooms.rows.map((row) => [row.row_id, row.head])).toEqual([["m2", "lat"]]);
+    expect(live(later.rooms.rows).map((row) => [row.row_id, row.head])).toEqual([["m2", "lat"]]);
     expect(later.rooms.cursor).toBeGreaterThan(first.rooms.cursor);
     // Mail is since its own acknowledged cursor.
     await r.ack(MUSE, first.mail.messages.at(-1)!.seq);
@@ -90,22 +101,60 @@ describe("the board digest", () => {
     await write(r, "room:app:lobby", "m1", "not the board");
     await write(r, "board", "t2", "second");
     const page = await r.stub.boardDigest(r.bind(MUSE), { limit: 1, after: 0 });
-    expect(page.rows.map((row) => [row.collection, row.row_id, row.head]))
+    expect(live(page.rows).map((row) => [row.collection, row.row_id, row.head]))
       .toEqual([["board", "t1", "first"]]);
-    expect(page.cursor).toBe(page.rows[0]!.change);
+    expect(page.cursor).toBe(live(page.rows)[0]!.change);
     const next = await r.stub.boardDigest(r.bind(MUSE), { limit: 1, after: page.cursor });
     expect(next.rows.map((row) => row.row_id)).toEqual(["t2"]);
     // A claim is a write on the row's etag: the row is changed again, past the cursor.
     const done = await r.stub.boardDigest(r.bind(MUSE), { limit: 5, after: next.cursor });
     expect(done.rows).toEqual([]);
     await r.stub.collectionWrite(r.bind(MUSE), { collection: "board", row_id: "t1",
-      body: "claimed", expected_etag: page.rows[0]!.etag, private: false, history_op: "claim" });
-    expect((await r.stub.boardDigest(r.bind(MUSE), { limit: 5, after: done.cursor })).rows
+      body: "claimed", expected_etag: live(page.rows)[0]!.etag, private: false, history_op: "claim" });
+    expect(live((await r.stub.boardDigest(r.bind(MUSE), { limit: 5, after: done.cursor })).rows)
       .map((row) => [row.row_id, row.head])).toEqual([["t1", "claimed"]]);
     for (const bad of [{ limit: 0, after: 0 }, { limit: 1, after: -1 },
                        { limit: 1, after: 0, head_chars: -1 }, { limit: 1 }]) {
       expect((await failure(() => r.stub.boardDigest(r.bind(MUSE), bad as never))).name)
         .toBe("Invalid");
     }
+  });
+});
+
+describe("a digest's deletions", () => {
+  it("reports a delete and a clear past the cursor, to whoever could see the row", async () => {
+    const r = await rig();
+    await r.stub.outsideAgents(r.bind(MUSE));
+    const bob: Binding = { owner: r.owner, caller: "bob", origin: null };
+    const t1 = await write(r, "board", "t1", "a task");
+    await write(r, "board", "t2", "another");
+    await write(r, "board", "mine", "bob's own", bob, true);
+    const seen = await r.stub.boardDigest(r.bind(MUSE), { limit: 10, after: 0 });
+    expect(live(seen.rows).map((row) => row.row_id)).toEqual(["t1", "t2"]);
+    await r.stub.collectionDelete(r.bind(null), { collection: "board", row_id: "t1",
+      expected_etag: "row" in t1 ? t1.row.etag : "" });
+    const gone = await r.stub.boardDigest(r.bind(MUSE), { limit: 10, after: seen.cursor });
+    expect(gone.rows).toEqual([{ collection: "board", row_id: "t1", deleted: true,
+                                 op: "delete", writer: r.owner,
+                                 change: expect.any(Number) }]);
+    expect(gone.cursor).toBeGreaterThan(seen.cursor);
+    // A clear erases bob's private row too: only bob is told of it.
+    const bobSeen = await r.stub.boardDigest(bob, { limit: 10, after: gone.cursor });
+    await r.stub.collectionClear(r.bind(null), { collection: "board", writer: null });
+    const cleared = await r.stub.boardDigest(r.bind(MUSE), { limit: 10, after: gone.cursor });
+    expect(cleared.rows.map((row) => [row.row_id, row.deleted, "op" in row ? row.op : ""]))
+      .toEqual([["t2", true, "clear"]]);
+    const bobs = await r.stub.boardDigest(bob, { limit: 10, after: bobSeen.cursor });
+    expect(bobs.rows.map((row) => row.row_id).sort()).toEqual(["mine", "t2"]);
+    // A row made again under a deleted key is a live row past its delete.
+    await write(r, "board", "t1", "back");
+    const back = await r.stub.boardDigest(r.bind(MUSE), { limit: 10, after: cleared.cursor });
+    expect(live(back.rows).map((row) => [row.row_id, row.head])).toEqual([["t1", "back"]]);
+    // A room's deletion reaches the inbox digest, not the board's.
+    await write(r, "room:app:lobby", "m1", "hi");
+    await r.stub.collectionClear(r.bind(null), { collection: "room:app:lobby", writer: null });
+    const inbox = await r.stub.inboxDigest(r.bind(null), { limit: 10, after: back.cursor });
+    expect(inbox.rooms.rows.map((row) => [row.collection, row.row_id, row.deleted]))
+      .toEqual([["room:app:lobby", "m1", true]]);
   });
 });

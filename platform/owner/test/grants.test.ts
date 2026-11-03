@@ -169,7 +169,7 @@ describe("an outside client's grant", () => {
     const named = await r.stub.grantSet(r.session(null), { ...change, mode: "scoped",
                                                            scopes: [READ], name: "ChatGPT" });
     expect(named).toEqual({ client: CHATGPT.client, mode: "scoped", scopes: [READ],
-                            profile: "directory", generation: 2, revision: 2 });
+                            profile: "custom", generation: 2, revision: 2 });
     await grant(r, CHATGPT, "full");  // an empty name keeps the one given
     expect((await clients(r))[0]!.name).toBe("ChatGPT");
     expect((await kindsOf(r, "outside_grant")).map((row) => [
@@ -177,10 +177,10 @@ describe("an outside client's grant", () => {
       row["request_digest"]])).toEqual([
       [true, CHATGPT.client, "scoped", 2, policyDigest({
         client: CHATGPT.client, mode: "scoped", scopes: [READ], name: "ChatGPT", revision: 2,
-        profile: "directory" })],
+        profile: "custom" })],
       [true, CHATGPT.client, "full", 3, policyDigest({
         client: CHATGPT.client, mode: "full", scopes: [], name: "ChatGPT", revision: 3,
-        profile: "directory" })]]);
+        profile: "custom" })]]);
   });
 
   it("is revoked by the owner's account without a session, as a key's revoke is",
@@ -739,7 +739,7 @@ describe("a grant's revision apart from its authority (S4-S5 review round 2, L1)
                                          scopes: scopes as never, expected_revision: expected,
                                          name });
     expect(await set("full", [], "ChatGPT", 1)).toEqual({
-      client: CHATGPT.client, mode: "full", scopes: [], profile: "directory", generation: 1,
+      client: CHATGPT.client, mode: "full", scopes: [], profile: "custom", generation: 1,
       revision: 2 });
     expect(await set("scoped", [READ, WRITE], "", 2))
       .toMatchObject({ generation: 2, revision: 3 });
@@ -760,7 +760,7 @@ describe("a grant's revision apart from its authority (S4-S5 review round 2, L1)
     expect(receipts.map((row) => row["generation"])).toEqual([1, 2, 2, 3, 4, 5, 5]);
     expect(receipts[0]!["request_digest"]).toBe(policyDigest({
       client: CHATGPT.client, mode: "full", scopes: [], name: "ChatGPT", revision: 2,
-      profile: "directory" }));
+      profile: "custom" }));
     expect(new Set(receipts.map((row) => row["request_digest"])).size).toBe(7);
   });
 
@@ -856,20 +856,20 @@ describe("a grant's revision apart from its authority (S4-S5 review round 2, L1)
 });
 
 describe("a grant's tool profile (slice M)", () => {
-  it("names the directory's until the owner names another, and moves the generation",
+  it("names custom until the owner names another, and moves the generation",
      async () => {
     const r = await rig();
     await r.stub.outsideAgents(r.bind(CHATGPT));
     const [free] = await clients(r);
-    expect(free).toMatchObject({ profile: "directory", generation: 1 });
+    expect(free).toMatchObject({ profile: "custom", generation: 1 });
     const row = free!;
-    const custom = await r.stub.grantSet(r.session(null), {
+    const listed = await r.stub.grantSet(r.session(null), {
       client: CHATGPT.client, source: "mcp", mode: "full", scopes: [],
-      expected_revision: row.revision, name: "", profile: "custom" });
-    expect(custom).toMatchObject({ profile: "custom", generation: 2 });
+      expected_revision: row.revision, name: "", profile: "directory" });
+    expect(listed).toMatchObject({ profile: "directory", generation: 2 });
     // A set that names no profile keeps the grant's own, and moves only the revision.
     const renamed = await rename(r, CHATGPT, "ChatGPT");
-    expect(renamed).toMatchObject({ profile: "custom", generation: 2 });
+    expect(renamed).toMatchObject({ profile: "directory", generation: 2 });
     for (const profile of ["run", "everything", 7, null]) {
       const refused = await failure(() => r.stub.grantSet(r.session(null), {
         client: CHATGPT.client, source: "mcp", mode: "full", scopes: [],
@@ -879,11 +879,11 @@ describe("a grant's tool profile (slice M)", () => {
     }
   });
 
-  it("is held by the row's own rule: a free row names the directory's", async () => {
+  it("is held by the row's own rule: a free row names custom", async () => {
     const r = await rig();
     await r.stub.outsideAgents(r.bind(CLAUDE));
     const changed = await failure(() => r.sql(
-      "UPDATE outside_clients SET profile = 'custom' WHERE client = ?", CLAUDE.client));
+      "UPDATE outside_clients SET profile = 'directory' WHERE client = ?", CLAUDE.client));
     expect(changed.message).toMatch(/CHECK/);
     const unknown = await failure(() => r.sql(
       "UPDATE outside_clients SET owner_set = 1, profile = 'run' WHERE client = ?",

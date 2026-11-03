@@ -190,8 +190,10 @@ export const SHARE = 0.5;
 const ROW = 256;
 /**
  * A row's owner-wide change (slice M): its integer, in the row and in its
- * `collection_changes` entry, with that entry's rowid; the entry's collection key is
- * within `ROW`, as every index's key is.
+ * `collection_changes` entry, with that entry's rowid. In the history only an erase entry
+ * holds one (its `collection_erasures` entry too), one a key among its kept revisions, so
+ * each history row is charged a null's byte and its share of one change; an erase entry's
+ * private writer is within `ROW`, as its writer is.
  */
 const CHANGE_BYTES = 3 * 9;
 const KIB = 1024;
@@ -343,7 +345,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                        by: "maxOwnerRows; rows and history bytes within maxOwnerBytes; its " +
                          "change and that index's entry (slice M)" },
     collection_history: { rows: C.maxOwnerRows * C.maxRevisions,
-                          bytes: ROW + C.maxOwnerBytes /
+                          bytes: ROW + 1 + CHANGE_BYTES / C.maxRevisions + C.maxOwnerBytes /
                                        (C.maxOwnerRows * C.maxRevisions),
                           by: "maxRevisions a row; bytes within maxOwnerBytes" },
     collection_seqs: { rows: C.maxOwnerRows, bytes: ROW, by: "one per collection" },

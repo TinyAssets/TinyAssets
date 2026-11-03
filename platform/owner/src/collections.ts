@@ -12,9 +12,11 @@
  * is refused. Only the owner deletes a row, or clears a collection or one writer's
  * rows in it (the object enforces that at its RPC door).
  *
- * Each write also takes the owner-wide clock's next change (`collection_clock`), so one
- * cursor covers many collections (`changed`): a main agent's digests (slice M) read the
- * board and every room in one call.
+ * Each write, and each delete's or clear's history entry, also takes the owner-wide
+ * clock's next change (`collection_clock`), so one cursor covers many collections
+ * (`changed`): a main agent's digests (slice M) read the board and every room in one call,
+ * deletions included. A row keeps the privacy it was made with, so a row turns private
+ * only by being deleted and made again, which its delete reports.
  *
  * `collection_history` is the primitive's own record: each write appends the revision
  * it committed (its writer, op and body), and a delete or clear appends one body-less
@@ -96,11 +98,14 @@ export interface Page {
   readonly rows: Row[];
 }
 
-/** A row as a digest shows it: where it lives, and its owner-wide change. */
-export interface Changed extends Row {
-  readonly collection: string;
-  readonly change: number;
-}
+/**
+ * A row as a digest shows it, where it lives and its owner-wide change; or a row's
+ * deletion (a delete or a clear, by its writer), shown to whoever could see the row.
+ */
+export type Changed =
+  | (Row & { readonly collection: string; readonly change: number; readonly deleted: false })
+  | { readonly collection: string; readonly row_id: string; readonly change: number;
+      readonly deleted: true; readonly op: string; readonly writer: string };
 
 /** Rows changed after an owner-wide cursor, and the next cursor. */
 export interface Changes {
@@ -264,8 +269,7 @@ export class Collections {
           "DO UPDATE SET seq = excluded.seq", collection, seq,
       );
       const at = now();
-      const change = sql.exec<{ change: number }>(
-        "UPDATE collection_clock SET change = change + 1 RETURNING change").one().change;
+      const change = this.#tick();
       // An upsert on the row's key alone: a seq collision fails loudly on
       // UNIQUE (collection, seq) instead of replacing another row.
       sql.exec(
@@ -280,7 +284,8 @@ export class Collections {
         isPrivate ? 1 : 0, body, at, caller, change,
       );
       sql.exec(
-        "INSERT INTO collection_history VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO collection_history (collection, key, revision, op, body_json, at, " +
+          "writer) VALUES (?, ?, ?, ?, ?, ?, ?)",
         collection, rowId, revision, historyOp, body, at, caller,
       );
       return shown(sql.exec<StoredRow>(
@@ -338,18 +343,26 @@ export class Collections {
       : ["collection >= ? AND collection < ?",
          [where.prefix, where.prefix.slice(0, -1) + String.fromCodePoint(
            where.prefix.codePointAt(where.prefix.length - 1)! + 1)]];
-    const rows = this.#sql.exec<StoredRow>(
-      `SELECT * FROM collection_rows WHERE ${test} AND change > ? ` +
-        "AND (private = 0 OR writer = ?) ORDER BY change LIMIT ?",
-      ...keys, after, caller, limit,
+    // Each part reads by its change index from the cursor on: the rows written past it, and
+    // the deletions past it of rows this caller could see.
+    const rows = this.#sql.exec<StoredRow & { deleted: number; op: string }>(
+      "SELECT collection, row_id, revision, seq, etag, writer, private, body, change, " +
+        `0 AS deleted, '' AS op FROM collection_rows WHERE change > ? AND ${test} ` +
+        "AND (private = 0 OR writer = ?) " +
+        "UNION ALL SELECT collection, key, revision, 0, '', writer, 0, '', change, 1, op " +
+        `FROM collection_history WHERE change > ? AND ${test} ` +
+        "AND (private_writer IS NULL OR private_writer = ?) ORDER BY change LIMIT ?",
+      after, ...keys, caller, after, ...keys, caller, limit,
     ).toArray();
     const top = this.#sql.exec<{ change: number }>(
       "SELECT change FROM collection_clock").one().change;
     const last = rows.at(-1);
     return {
       cursor: rows.length === limit && last !== undefined ? last.change : Math.max(after, top),
-      rows: rows.map((row) => ({ ...shown(row), collection: row.collection,
-                                 change: row.change })),
+      rows: rows.map((row): Changed => row.deleted === 1
+        ? { collection: row.collection, row_id: row.row_id, change: row.change, deleted: true,
+            op: row.op, writer: row.writer }
+        : { ...shown(row), collection: row.collection, change: row.change, deleted: false }),
     };
   }
 
@@ -392,9 +405,10 @@ export class Collections {
   #erase(caller: string, collection: string, op: string, where: string,
          params: unknown[]): number {
     const sql = this.#sql;
-    const rows = sql.exec<{ row_id: string; revision: number }>(
-      "SELECT row_id, revision FROM collection_rows WHERE collection = ?" + where,
-      collection, ...params,
+    const rows = sql.exec<{ row_id: string; revision: number; private: number;
+                            writer: string }>(
+      "SELECT row_id, revision, private, writer FROM collection_rows WHERE collection = ?" +
+        where, collection, ...params,
     ).toArray();
     // The high-water seq stays where the rows had it, so no cursor goes back.
     sql.exec(
@@ -402,11 +416,13 @@ export class Collections {
         "DO UPDATE SET seq = excluded.seq", collection, this.top(collection),
     );
     const at = now();
-    for (const { row_id: rowId, revision } of rows) {
+    for (const { row_id: rowId, revision, private: hidden, writer } of rows) {
       sql.exec("DELETE FROM collection_history WHERE collection = ? AND key = ?",
                collection, rowId);
-      sql.exec("INSERT INTO collection_history VALUES (?, ?, ?, ?, '', ?, ?)",
-               collection, rowId, revision + 1, op, at, caller);
+      sql.exec("INSERT INTO collection_history (collection, key, revision, op, body_json, " +
+                 "at, writer, change, private_writer) VALUES (?, ?, ?, ?, '', ?, ?, ?, ?)",
+               collection, rowId, revision + 1, op, at, caller, this.#tick(),
+               hidden ? writer : null);
       sql.exec("DELETE FROM collection_rows WHERE collection = ? AND row_id = ?",
                collection, rowId);
     }
@@ -454,6 +470,12 @@ export class Collections {
     return this.#storage.transactionSync(() => ({
       deleted: this.#erase(caller, collection, "clear", where, params),
     }));
+  }
+
+  /** The owner-wide clock's next change (`collection_clock`), in the caller's transaction. */
+  #tick(): number {
+    return this.#sql.exec<{ change: number }>(
+      "UPDATE collection_clock SET change = change + 1 RETURNING change").one().change;
   }
 
   /**

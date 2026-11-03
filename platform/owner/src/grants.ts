@@ -16,11 +16,11 @@
  * runs slice (R) brings back).
  *
  * A grant also names its **tool profile** (`profile`, slice M; `doors/profiles.json`):
- * which of the MCP door's tools the client is served. `directory`, what the public
- * connector directories allow (no `code`), until the owner names `custom`, the owner's own
- * choice of tools (its policy's `tools.custom`). Code mode is the owner's explicit choice
- * that way, so no capability stands for it. A profile is authority: changing it moves the
- * generation.
+ * which of the MCP door's tools the client is served. `custom` (the owner's own choice of
+ * tools, its policy's `tools.custom`), since every grant here is a custom connector's; the
+ * owner may name `directory` (no `code`). Code mode is the owner's choice that way, and its
+ * policy's switch, so no capability stands for it. A profile is authority: changing it
+ * moves the generation.
  *
  * Enforced here now:
  * - Every call from an outside client is admitted, in the object that holds its grant,
@@ -166,7 +166,7 @@ export interface GrantChange {
   readonly scopes: unknown;
   readonly expected_revision: unknown;
   readonly name: unknown;
-  /** The tool profile; omitted, the grant keeps its own (a new one, `directory`). */
+  /** The tool profile; omitted, the grant keeps its own (a new one, `custom`). */
   readonly profile?: unknown;
 }
 

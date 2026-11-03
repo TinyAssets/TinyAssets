@@ -38,13 +38,13 @@ describe.each([
   ["2026-07-28", { pin: "2026-07-28" }],
   ["2025-11-25", "legacy"],
 ] as const)("MCP %s", (revision, mode) => {
-  it("serves a new client the directory's profile, in order, with every hint explicit",
+  it("serves a new client the custom profile, in order, with every hint explicit",
      async () => {
     const tokens = await connect(await registerClient(), { owner: owner() });
     const client = await mcpClient(tokens, mode);
     expect(client.getNegotiatedProtocolVersion()).toBe(revision);
     const { tools } = await client.listTools();
-    expect(tools.map((tool) => tool.name)).toEqual(profileNames("directory"));
+    expect(tools.map((tool) => tool.name)).toEqual(profileNames("custom"));
     for (const tool of tools) {
       const row = toolTable().find((r) => r.name === tool.name)!;
       expect(tool.title).toBe(row.title);

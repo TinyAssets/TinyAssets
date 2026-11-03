@@ -26,6 +26,11 @@
  * explicit and moves only with a review here. It is 1,000,000: live probe P1 found calls
  * stopped at exactly 10,000 at the default, and Paid accepts it. It is the only
  * wrangler config in the owner Worker. Edge Workers bind `OWNER` from their own configs.
+ *
+ * Its one store, at top level only, is `CONTROL` (slice M review M1): the namespace of the
+ * platform's control record alone, the doors' own `CONTROL` by the same id, so the object
+ * reads the gates again at code mode's calls and reaches no directory entry or other
+ * owner's state. Only `control-gate.ts` reads it, by `readControl`, and nothing writes it.
  */
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,7 +40,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { PLATFORM } from "./sources";
+import { PLATFORM, workerSources } from "./sources";
 
 const OWNER = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = "wrangler.jsonc";
@@ -51,7 +56,8 @@ const ENV_KEYS: ReadonlySet<string> = new Set([
 /** The owner Worker's limits, wherever they are set: subrequests, as live probe P1 set them. */
 const LIMITS = Object.freeze({ subrequests: 1_000_000 });
 /** The keys the top level may set: an environment's, the schema, the environments, its secret. */
-const TOP_KEYS: ReadonlySet<string> = new Set([...ENV_KEYS, "$schema", "env", "secrets"]);
+const TOP_KEYS: ReadonlySet<string> = new Set([...ENV_KEYS, "$schema", "env", "secrets",
+                                                 "kv_namespaces"]);
 /**
  * The owner Worker's one secret, declared by name (it binds nothing): the routing key the
  * sandbox tokens are MAC'd under (`doors/src/routing-mac.ts`), the doors Worker's too.
@@ -183,6 +189,18 @@ function serviceProblems(services: unknown, where: string,
   });
 }
 
+/**
+ * Whether `held` is exactly the control record's namespace: `CONTROL`, by the doors'
+ * `CONTROL` id, so it is the namespace that holds the record and nothing else.
+ */
+function controlOnly(held: unknown): boolean {
+  const doors = platformConfigs().get("tinyassets-doors")?.["kv_namespaces"];
+  const theirs = Array.isArray(doors)
+    ? (doors as Config[]).find((namespace) => namespace["binding"] === "CONTROL") : undefined;
+  return theirs !== undefined && JSON.stringify(held)
+    === JSON.stringify([{ binding: "CONTROL", id: theirs["id"] }]);
+}
+
 /** Each way `config` lets the owner Worker reach past its own object. */
 export function configProblems(config: Config,
                                bound: ReadonlyMap<string, Config> = new Map()): string[] {
@@ -193,6 +211,8 @@ export function configProblems(config: Config,
         problems.push(...serviceProblems(scope[key], where, bound));
       } else if (!allowed.has(key)) {
         problems.push(`${where}${key} is not an allowed key`);
+      } else if (key === "kv_namespaces" && !controlOnly(scope[key])) {
+        problems.push(`${where}kv_namespaces is other than the doors' CONTROL namespace`);
       } else if (key === "limits" && JSON.stringify(scope[key]) !== JSON.stringify(LIMITS)) {
         problems.push(`${where}limits are not ${JSON.stringify(LIMITS)}`);
       } else if (key === "secrets" && JSON.stringify(scope[key]) !== JSON.stringify(SECRETS)) {
@@ -335,6 +355,28 @@ describe("owner Worker config", () => {
                 "binding allows"]);
   });
 
+  it("binds one store, the doors' control namespace, and only control-gate.ts reads it",
+     () => {
+    expect(config["kv_namespaces"]).toEqual([{ binding: "CONTROL",
+                                               id: "not-provisioned-control" }]);
+    for (const kv_namespaces of [[{ binding: "DIRECTORY", id: "not-provisioned-directory" }],
+                                 [{ binding: "CONTROL", id: "not-provisioned-other" }],
+                                 [{ binding: "CONTROL", id: "not-provisioned-control" },
+                                  { binding: "CACHE", id: "not-provisioned-cache" }]]) {
+      expect(configProblems({ ...config, kv_namespaces }, platformConfigs()))
+        .toEqual(["kv_namespaces is other than the doors' CONTROL namespace"]);
+    }
+    expect(configProblems({ ...config, env: { prod: { kv_namespaces: [] } } },
+                          platformConfigs())).toEqual(["env.prod.kv_namespaces is not an allowed key"]);
+    const readers = [...workerSources()].filter(([path, text]) =>
+      path.startsWith("owner/src/") && /\bCONTROL\b/.test(text)).map(([path]) => path);
+    expect(readers.sort()).toEqual(["owner/src/control-gate.ts", "owner/src/owner-do.ts"]);
+    const gate = workerSources().get("owner/src/control-gate.ts")!;
+    expect(gate).not.toMatch(/\.(?:put|delete|list|getWithMetadata)\(/);
+    expect(workerSources().get("owner/src/owner-do.ts")!.match(/env\.CONTROL\b[^,)]*/g))
+      .toEqual(["env.CONTROL"]);
+  });
+
   it("sets the platform's subrequests per invocation explicitly", () => {
     expect(config["limits"]).toEqual({ subrequests: 1_000_000 });
     for (const limits of [undefined, {}, { subrequests: 50 }, { subrequests: 10000 },
@@ -455,9 +497,11 @@ describe("owner Worker config", () => {
     const top = Object.keys(schema.definitions["RawConfig"]!.properties);
     const env = Object.keys(schema.definitions["RawEnvironment"]!.properties);
     expect([...TOP_KEYS, "services"].filter((key) => !top.includes(key))).toEqual([]);
+    // The one store the top level may hold is the doors' control namespace (controlOnly).
+    expect(TOP_KEYS.has("kv_namespaces") && !ENV_KEYS.has("kv_namespaces")).toBe(true);
     expect([...ENV_KEYS, "services"].filter((key) => !env.includes(key))).toEqual([]);
     // Every key wrangler offers beyond the allow-list is refused, bindings among them.
-    for (const key of ["durable_objects", "kv_namespaces", "r2_buckets",
+    for (const key of ["durable_objects", "r2_buckets",
                        "d1_databases", "queues", "vars", "ai", "workflows", "browser",
                        "vectorize", "hyperdrive", "analytics_engine_datasets",
                        "dispatch_namespaces", "mtls_certificates", "send_email",

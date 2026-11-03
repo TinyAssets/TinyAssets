@@ -146,9 +146,10 @@ export default defineConfig({
     projects: [
       {
         // Runs in workerd. OWNER is bound for the tests only: wrangler.jsonc gives the
-        // Worker no binding to its own namespace. AGENT, GATED and BOUNDED are the test
-        // Worker's own classes of the object (test/worker.ts): its internal paths in reach,
-        // its gateway calls watched, and code mode's bounds small. FILES, GATEWAY and HOOKS
+        // Worker no binding to its own namespace. AGENT, GATED, BOUNDED and SWITCHED are the
+        // test Worker's own classes of the object (test/worker.ts): its internal paths in
+        // reach, its gateway calls watched, code mode's bounds small, its control record
+        // flipped. FILES, GATEWAY and HOOKS
         // are the config's own bindings, to the files, gateway and hooks Workers run beside it. TEST_KEYRING is the gateway's
         // keyring, so a test can seal under an older kid; the tests' own fetches reach the
         // fake. ROUTING_MAC_KEY is the config's one secret, the sandbox tokens' routing key.
@@ -162,6 +163,7 @@ export default defineConfig({
                 AGENT: { className: "FauxOwnerDO", useSQLite: true },
                 GATED: { className: "GatedOwnerDO", useSQLite: true },
                 BOUNDED: { className: "BoundedOwnerDO", useSQLite: true },
+                SWITCHED: { className: "SwitchedOwnerDO", useSQLite: true },
               },
               bindings: { TEST_KEYRING: KEYRING, ROUTING_MAC_KEY: ROUTING_KEY },
               outboundService: "fake-upstream",
