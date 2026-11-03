@@ -60,6 +60,17 @@ export const SIGNIN_MODELS_CHARS = 2048;
  * stays within its page share at it (the owner-bound guard costs the leases at it).
  */
 export const SIGNIN_LIST_CHARS = 256;
+/**
+ * A sign-in's vendor URL, visible ASCII: RFC 9110 section 4.1 has senders and recipients
+ * support URIs of at least 8000 octets, so a longer one is not the vendor's page.
+ */
+export const SIGNIN_URL_MAX = 8000;
+/**
+ * The longest code a sign-in shows the owner: device codes are short by design (RFC 8628
+ * section 6.1 recommends 8 characters for the user to type; the records' shapes, `XXXX-XXXXX`
+ * and Kimi's, are within 16), so a longer "code" is not the vendor's prompt.
+ */
+export const SIGNIN_CODE_MAX = 16;
 
 /** `msg_` and 32 hex: a ledger message's id. */
 export const MESSAGE_ID_CHARS = 36;

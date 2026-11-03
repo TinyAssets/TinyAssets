@@ -63,6 +63,23 @@ was well under one sandbox-hour (most of it a 2 vCPU / 512 MiB base sandbox or t
 | Owed to the founder's live test | A Gemini run loading its `{system}` settings with no "Parent directory is not owned by root" warning, yolo kept (needs a run past the sign-in; the runner test checks every ancestor is root's as the CLI sees it). |
 | Clean-up | Each sandbox killed; the account listed **0 running or paused** after. |
 
+## Sign-in up to its prompt (slice SIGNIN, 2026-11-03, templates `se0d866e5d827bf05` and `s6dec61a38e839d37`; 4 throwaway sandboxes, under 10 sandbox-minutes)
+
+The template build's standing check (`build.py`, `check_logins`): each record's login run by
+`ta-runner login-probe` as a pool user on a terminal (`script`), stopped at its prompt, no
+account used.
+
+| Record (region) | Result on `s6dec61a38e839d37` |
+|---|---|
+| claude-code | ok: a URL on `claude.com`, no code; its redirect is not localhost. |
+| codex | ok: a URL on `auth.openai.com` and a device code. On `se0d866e5d827bf05` it failed: Codex refuses a `CODEX_HOME` that does not exist ("CODEX_HOME points to ... but that path does not exist"), so a first sign-in (an empty store) showed nothing. The runner now makes each directory the record's `home_env` names in every home. |
+| gemini | ok: a URL on `accounts.google.com` (`NO_BROWSER`), no code. |
+| kimi (global) | ok: a URL on `www.kimi.ai` and a device code. |
+| kimi (mainland-cn) | ok: a URL on `www.kimi.com` and a device code. |
+
+Every sandbox killed; the account listed **0 running** after. A completed sign-in on each
+vendor needs the founder's accounts (owed below).
+
 ## Real CLIs, not signed in (the runner live, an in-sandbox doors stand-in)
 
 The runner posted its sign-ins (`claude-code`, `codex`: `signed_in: false`), synced in, ran the

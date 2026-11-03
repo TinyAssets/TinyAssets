@@ -17,7 +17,9 @@ locks and this script), so a change to any of them is a new template version; th
 Worker's `E2B_TEMPLATE` names it (`sandbox/guards/template.test.ts` holds the two equal).
 
     python3 -m venv v && v/bin/pip install e2b==2.62.0
-    E2B_API_KEY=... v/bin/python platform/sandbox/template/build.py [--tag-only]
+    E2B_API_KEY=... v/bin/python platform/sandbox/template/build.py [--tag-only | --check-logins]
+
+Every build ends with the standing check of every record's sign-in (`check_logins`).
 """
 import hashlib
 import json
@@ -142,6 +144,44 @@ def template(stage: Path):
     return t
 
 
+def check_logins(name):
+    """The standing check of every record's sign-in on the template just built (slice SIGNIN):
+    on a throwaway sandbox, each record's login run up to its prompt (`ta-runner login-probe`,
+    each region of a record with regions) and stopped, its URL on the record's login hosts and
+    never sending the browser to localhost. A pinned CLI's version bump that changes its
+    sign-in fails the build here, not in a user's sign-in. No account is needed; the sandbox is
+    killed whatever happens."""
+    from e2b import Sandbox
+
+    results = []
+    sandbox = Sandbox.create(template=name, timeout=900)
+    try:
+        sandbox.commands.run("/usr/local/bin/ta-runner prepare 1.1.1.1", user="root",
+                             timeout=300)
+        for path in sorted(SOURCES.glob("*.json")):
+            record = json.loads(path.read_text())
+            cli = record.get("cli") or {}
+            if cli.get("login") is None or record.get("unwired"):
+                continue
+            for region in sorted(cli.get("regions") or {}) or [None]:
+                command = f"/usr/local/bin/ta-runner login-probe {record['id']}"
+                if region is not None:
+                    command += f" {region}"
+                try:
+                    done = sandbox.commands.run(command, user="root", timeout=180)
+                    out = done.stdout
+                except Exception as error:  # a non-zero exit: its answer is still printed
+                    out = getattr(error, "stdout", "") or ""
+                results.append(json.loads(out) if out.strip() else
+                               {"engine": record["id"], "region": region, "ok": False,
+                                "reason": "no answer"})
+    finally:
+        sandbox.kill()
+    print(json.dumps({"logins": results}), flush=True)
+    if not all(result["ok"] for result in results):
+        raise SystemExit("a record's sign-in is not its record's shape on this template")
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         stage = Path(tmp)
@@ -150,11 +190,15 @@ def main():
         if "--tag-only" in sys.argv:
             print(name)
             return
+        if "--check-logins" in sys.argv:
+            check_logins(name)
+            return
         from e2b import Template
         info = Template.build(template(stage), name, cpu_count=CPU, memory_mb=MEMORY_MB,
                               on_build_logs=lambda entry: print(str(entry)[:2000], flush=True))
         print(json.dumps({"template": name, "template_id": getattr(info, "template_id", None),
                           "build_id": getattr(info, "build_id", None)}))
+        check_logins(name)
 
 
 if __name__ == "__main__":

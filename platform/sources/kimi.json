@@ -38,7 +38,11 @@
             "refresh_token"
           ]
         }
-      ]
+      ],
+      "hosted_use": {
+        "verdict": "unclear",
+        "citation": "subscription-engines.md section 5 and 12: the help center warns that use with unauthorized platforms or tools may be a violation and enforces a client whitelist; hosting the first-party CLI is not addressed"
+      }
     },
     "regions": {
       "mainland-cn": {
@@ -73,7 +77,7 @@
     "unattended": {
       "vendor_login_in_sandbox": {
         "allowed": false,
-        "reason": "No Kimi page read addresses hosted or unattended use of the CLI on a membership, and its help center warns that use with unauthorized platforms or tools may be a violation (subscription-engines §5, §11)."
+        "reason": "No Kimi page read addresses hosted or unattended use of the CLI on a membership, and its help center warns that use with unauthorized platforms or tools may be a violation (subscription-engines \u00a75, \u00a711)."
       }
     },
     "per_credential": {

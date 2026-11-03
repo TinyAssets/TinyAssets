@@ -35,6 +35,8 @@ const DEFERRED: Readonly<Record<string, string>> = Object.freeze({
   fileUploadCommit: "tasks 2, owed by 6.1: file bytes streamed by the binder",
   fileUploadAbort: "tasks 2, owed by 6.1: file bytes streamed by the binder",
   fileChanges: "tasks 6: the sandbox's sync feed, reached by its sync token",
+  runList: "slice SIGNIN, owed: an MCP tool for the past runs (the owner app's runs route " +
+    "serves them)",
 });
 /** Outside-callable doors the doors call themselves, never a tool, and why. */
 const DOORS_ONLY: Readonly<Record<string, string>> = Object.freeze({

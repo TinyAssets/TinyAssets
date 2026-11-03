@@ -122,6 +122,8 @@ export interface DoorsEnv {
   readonly DIRECTORY: KVNamespace;
   /** The platform's control record alone (`c:control`), the owner Worker's too. */
   readonly CONTROL: KVNamespace;
+  /** The owner app's own files (`app/`), served only through `pages.ts`. */
+  readonly ASSETS: Fetcher;
   /** Dynamic client registration, the deprecated fallback: exactly "true" or "false". */
   readonly DCR_ENABLED: string;
   /**

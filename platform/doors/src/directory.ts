@@ -68,6 +68,13 @@ export interface Control {
    * none: then only the disk's own pressure lets scratch go.
    */
   readonly scratch_retention_days: number | null;
+  /**
+   * Each source's vendor sign-in, on or off (slice SIGNIN), which the founder edits here with
+   * no deploy: a source the record does not name takes its record's verdict on the vendor's
+   * terms for hosted use (`cli.login.hosted_use`: on when `allowed`). Null when the record
+   * names none.
+   */
+  readonly signins: Readonly<Record<string, boolean>> | null;
 }
 
 /**
@@ -109,7 +116,7 @@ const CONTROL_KEYS: readonly string[] = Object.freeze(["canary", "inbound", "ord
                                                        "outside"]);
 const CONTROL_OPTIONAL: readonly string[] = Object.freeze([
   "tiers", "sandbox_runtime_ceiling_s", "sandbox_concurrency_ceiling",
-  "sandbox_renewal_window_s", "scratch_retention_days"]);
+  "sandbox_renewal_window_s", "scratch_retention_days", "signins"]);
 
 function keyName(keyId: string): string {
   if (!KEY_ID.test(keyId)) {
@@ -155,7 +162,13 @@ export function parseControl(value: unknown): Control | null {
     return null;
   }
   const record = value as Record<string, unknown>;
-  const { outside, ordinary, canary, inbound, tiers } = record;
+  const { outside, ordinary, canary, inbound, tiers, signins } = record;
+  if (signins !== undefined && (typeof signins !== "object" || signins === null
+                                || Array.isArray(signins)
+                                || !Object.entries(signins).every(([id, on]) =>
+                                  /^[a-z0-9][a-z0-9-]{0,63}$/.test(id) && typeof on === "boolean"))) {
+    return null;
+  }
   const sandbox = SANDBOX_KEYS.map((key) => record[key]);
   const retention = record["scratch_retention_days"];
   if ((retention !== undefined && !positive(retention))
@@ -171,6 +184,8 @@ export function parseControl(value: unknown): Control | null {
     // never a guess.
     return { outside, ordinary, inbound, canary: Object.freeze(canary.map(principal)),
              tiers: tiers === undefined ? null : parseTiers(tiers),
+             signins: signins === undefined ? null
+               : Object.freeze({ ...(signins as Record<string, boolean>) }),
              sandbox: sandbox[0] === undefined ? null
                : sandboxCeilings(sandbox[0], sandbox[1], sandbox[2]),
              scratch_retention_days: retention === undefined ? null : retention as number };

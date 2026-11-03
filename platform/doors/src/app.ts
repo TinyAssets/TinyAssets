@@ -25,7 +25,30 @@
  *   W): the owner pastes the `/fire` or routine URL and token a vendor showed it, which go
  *   straight to the gateway's seal (`connect.ts`), the object storing only the blob under the
  *   id derived here (the answer never echoes the token); one ended by its id; and the owner's
- *   own wake settings for an agent (`policyWakeLimits`), off by default.
+ *   own wake settings for an agent (`policyWakeLimits`), off by default; and
+ *   `agent/doorbell/kinds`, the wake kinds whose records have the owner paste the URL and
+ *   token (id and the agents each wakes), so the app's wake-up form is the records' data.
+ * - The owner app's reads and settings (the app slice), each one door: `account` (the
+ *   owner's tier, `tierRead`, beside the control record's tier numbers and its file usage:
+ *   tiers differ only by simultaneous runs and storage), `notices`, `policy` and
+ *   `policy/write` (code mode's switch and the owner's `custom` tools are policy),
+ *   `grants` and `grants/set` (a client's mode, scopes and profile; a revoke goes by
+ *   `grants/revoke` alone, so the provider's refresh tokens die with it), `files/read` and
+ *   `files/write` (an agent is files: the owner reads and writes them as UTF-8 text, a file
+ *   of at most one chunk).
+ * - `sources`: the source records' public facts (name, how each connects, which engines a
+ *   key runs, which credentials an engine takes, why one is unwired), so the app's connect
+ *   screen is the records' data, never a list of its own.
+ * - `tools`: the MCP door's table, each tool's name and title (the owner's `custom` choice).
+ * - `tools/<name>`: the owner calling one tool of the MCP door's table (`tools.ts`) as
+ *   itself, the same doors and fields an outside client's call takes, held by the object to
+ *   the owner's own authority.
+ * - `signin/start`, `signin/code`, `signin/cancel`, `signin/list` (slice SIGNIN): the
+ *   vendor's own sign-in (or sign-out) inside the owner's own sandbox or one client's, its
+ *   prompt watched on the app socket by the sign-in's id (`agent/socket-ticket` takes it as
+ *   its `conversation_id`), a pasted code handed back, a sign-in stopped, and the sign-ins in
+ *   progress with each engine's presence.
+ * - `runs` (slice SIGNIN): the owner's past runs, newest first, a page at a time.
  * - `agent/submit`, `agent/run`, `agent/status`, `agent/cancel`: the run doors (slice R),
  *   the same doors `converse`, `run_graph`, `run_status` and `run_cancel` call for an
  *   outside client; the control record's tier numbers ride the binding (`withTiers`).
@@ -51,7 +74,7 @@ import { jsonObject } from "./body";
 import {
   APP_BODY_MAX, APP_RESOURCE, type DoorsEnv, FIRST_PARTY_CLIENTS, MCP_RESOURCE,
 } from "./config";
-import { ownerGate, ownerRead } from "./control";
+import { ownerGate, ownerRead, signinOn } from "./control";
 import {
   deleteOwnKey, KeyRefused, looksLikeKey, mintKey, registeringEntry, revokeKey,
 } from "./api-keys";
@@ -60,12 +83,12 @@ import { revokeClient } from "./revoke";
 import { authorizationServer } from "./oauth";
 import { clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
 import type { Sources } from "./sources";
-import { refusal } from "./tools";
+import { callDoor, refusal, toolTable } from "./tools";
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
 import { SOCKET_FAILED, TICKET_REFUSED } from "../../owner/src/socket-shape";
 import {
-  callbackSecret, callbackUrl, follows, kindNamed, subscriptionId,
+  callbackSecret, callbackUrl, follows, kindNamed, subscriptionId, wakeKinds,
 } from "../../owner/src/wake-kinds";
 
 export const OUTSIDE_CREDENTIAL = "an outside credential never reaches the owner's surface";
@@ -114,6 +137,106 @@ async function signOut(env: DoorsEnv, { binding, stub }: Bound, _request: unknow
   return json(200, { ...closed, signed_out: true }, { "Set-Cookie": clearedCookie() });
 }
 
+/** Whether a body names exactly `required` and at most `optional` besides. */
+function shaped(request: Record<string, unknown>, required: readonly string[],
+                optional: readonly string[] = []): boolean {
+  const keys = Object.keys(request);
+  return required.every((key) => keys.includes(key))
+    && keys.every((key) => required.includes(key) || optional.includes(key));
+}
+
+const NO_FIELDS = "this route takes an empty object";
+
+/** A door that takes no request, behind a closed empty body. */
+async function read(request: Record<string, unknown>, door: () => Promise<unknown>):
+    Promise<Response> {
+  return shaped(request, []) ? json(200, await door()) : failure(400, NO_FIELDS);
+}
+
+/**
+ * `account`: what the owner's tier gives it, honestly: its tier (the platform's, on its own
+ * admission row), every tier's numbers as the control record holds them (simultaneous runs
+ * and storage, nothing else), and the files it holds now.
+ */
+const account: Route = (_env, { binding, stub }, request) => read(request, async () => {
+  const { tier } = await stub.tierRead(binding);
+  return { tier, tiers: binding.tiers ?? null, usage: await stub.fileUsage(binding) };
+});
+
+/** `grants/set`: a client's mode, scopes or profile; never a revoke, which is `grants/revoke`. */
+const grantSet: Route = async (_env, { binding, stub }, request) => {
+  if (request["mode"] === "revoked") {
+    return failure(400, "a revoke goes by grants/revoke, which also ends the client's tokens");
+  }
+  return json(200, await stub.grantSet(binding, request as never));
+};
+
+/** `files/read` `{path}`: one file as UTF-8 text, or why it is not shown as text. */
+const fileRead: Route = async (_env, { binding, stub }, request) => {
+  if (!shaped(request, ["path"])) {
+    return failure(400, "a read names the file's path");
+  }
+  const { entry, inline } = await stub.fileRead(binding, { path: request["path"] as string });
+  if (inline === undefined) {
+    return json(200, { entry, text: null, why: "larger than one chunk" });
+  }
+  try {
+    return json(200, { entry, text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(inline) });
+  } catch {
+    return json(200, { entry, text: null, why: "not UTF-8 text" });
+  }
+};
+
+/** `files/write` `{path, expected_etag, text}`: one file's whole text, against its etag. */
+const fileWrite: Route = async (_env, { binding, stub }, request) => {
+  const text = request["text"];
+  const fields = ["path", "expected_etag", "text"];
+  if (!shaped(request, fields) || typeof text !== "string") {
+    return failure(400, "a write names the path, the expected etag and the text");
+  }
+  // The etag goes to the object as it came: the object's compare-and-swap decides.
+  const { path, expected_etag: expected } = request;
+  return json(200, await stub.fileWrite(binding, {
+    path: path as string, expected_etag: expected as string | null,
+    content: new TextEncoder().encode(text) }));
+};
+
+/** `sources`: what the app shows of each record; nothing sealed, no endpoint, no argv. */
+function sourceList(sources: Sources, switches: Readonly<Record<string, boolean>> | null):
+    unknown {
+  return {
+    sources: sources.ids().map((id) => {
+      const record = sources.get(id)!;
+      return {
+        id, display_name: record.display_name, help_url: record.help_url ?? null,
+        suggested: record.suggested, connect: record.connect, unwired: record.unwired ?? null,
+        engines: record.engines ?? [], credentials: record.cli?.credential ?? [],
+        // The vendor's own sign-in, as the app offers it: whether there is one, and the
+        // regions the owner chooses among (their names alone).
+        signin: record.cli?.login === undefined ? null : {
+          regions: Object.entries(record.cli.regions ?? {}).map(([region, { display_name }]) =>
+            ({ id: region, display_name })),
+          // Whether the platform offers it (the control record's switch, or the verdict), and
+          // the verdict on the vendor's terms for hosted use, cited.
+          enabled: signinOn(record, switches),
+          hosted_use: (record.cli.login as { hosted_use: unknown }).hosted_use },
+      };
+    }),
+  };
+}
+
+const TOOLS = "tools/";
+
+/** `tools/<name>`: one tool of the table, called by the owner as itself. */
+async function ownerTool(name: string, { binding, stub }: Bound,
+                         request: Record<string, unknown>): Promise<Response> {
+  const tool = toolTable().find((row) => row.name === name);
+  if (tool === undefined) {
+    return failure(404, "no such tool");
+  }
+  return json(200, await callDoor(stub, binding, tool, request));
+}
+
 /**
  * `agent/doorbell`: the owner's pasted wake token for one of its agents, for a kind whose
  * record has the owner hand it over. Checked against the record here and again in the
@@ -149,12 +272,31 @@ async function doorbell(env: DoorsEnv, { binding, stub }: Bound,
     rooms: follow.rooms, blob: sealed.blob, kid: sealed.kid, version: 1 }));
 }
 
+/** `agent/doorbell/kinds`: the wake kinds the owner pastes a URL and token for. */
+function doorbellKinds(): unknown {
+  return { kinds: wakeKinds().filter((kind) => kind.push?.callback === "owner")
+    .map(({ id, vendor, agents }) => ({ id, vendor, agents })) };
+}
+
 const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
   "agent/doorbell": doorbell,
   "agent/doorbell/end": async (_env, { binding, stub }, request) =>
     json(200, await stub.agentDoorbellEnd(binding, request as never)),
   "agent/wake-limits": async (_env, { binding, stub }, request) =>
     json(200, await stub.policyWakeLimits(binding, request as never)),
+  "agent/doorbell/kinds": (_env, _owner, request) =>
+    read(request, () => Promise.resolve(doorbellKinds())),
+  "account": account,
+  "notices": (_env, { binding, stub }, request) => read(request, () => stub.noticeList(binding)),
+  "policy": (_env, { binding, stub }, request) => read(request, () => stub.policyRead(binding)),
+  "policy/write": async (_env, { binding, stub }, request) =>
+    json(200, await stub.policyWrite(binding, request as never)),
+  "grants": (_env, { binding, stub }, request) => read(request, () => stub.grantList(binding)),
+  "grants/set": grantSet,
+  "tools": (_env, _owner, request) => read(request, async () => ({
+    tools: toolTable().map(({ name, title }) => ({ name, title })) })),
+  "files/read": fileRead,
+  "files/write": fileWrite,
   "keys": async (env, owner, request) => json(200, await mintKey(env, owner, request)),
   "keys/revoke": async (env, owner, request) => json(200, await revokeKey(env, owner, request)),
   "keys/delete": async (env, owner, request) =>
@@ -174,6 +316,16 @@ const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
     json(200, await stub.agentStatus(binding, request as never)),
   "agent/cancel": async (_env, { binding, stub }, request) =>
     json(200, await stub.agentCancel(binding, request as never)),
+  "runs": async (_env, { binding, stub }, request) =>
+    json(200, await stub.runList(binding, request as never)),
+  "signin/start": async (_env, { binding, stub }, request) =>
+    json(200, await stub.signinStart(binding, request as never)),
+  "signin/code": async (_env, { binding, stub }, request) =>
+    json(200, await stub.signinCode(binding, request as never)),
+  "signin/cancel": async (_env, { binding, stub }, request) =>
+    json(200, await stub.signinCancel(binding, request as never)),
+  "signin/list": (_env, { binding, stub }, request) =>
+    read(request, () => stub.signinList(binding)),
 });
 
 /** The owner app's socket door's path, and its ticket door's, under the owner surface. */
@@ -265,9 +417,12 @@ export async function serveApp(request: Request, env: DoorsEnv, sources: Sources
   const path = new URL(request.url).pathname.slice(OWNER_SURFACE.length);
   const registering = path === "outside-agents";
   const ticketing = path === TICKET_PATH;
+  const listing = path === "sources";
+  const tool = path.startsWith(TOOLS) ? path.slice(TOOLS.length) : null;
   const route = Object.hasOwn(ROUTES, path) ? ROUTES[path] : undefined;
   const connect = Object.hasOwn(CONNECT_ROUTES, path) ? CONNECT_ROUTES[path] : undefined;
-  if (route === undefined && connect === undefined && !registering && !ticketing) {
+  if (route === undefined && connect === undefined && !registering && !ticketing
+      && tool === null && !listing) {
     return failure(404, "not found");
   }
   if (request.method !== "POST") {
@@ -298,6 +453,21 @@ export async function serveApp(request: Request, env: DoorsEnv, sources: Sources
     }
     if (connect !== undefined) {
       return await connect({ env, bound: owner, body: parsed, request, sources });
+    }
+    if (listing) {
+      return shaped(parsed, []) ? json(200, sourceList(sources, gated.signins))
+        : failure(400, NO_FIELDS);
+    }
+    if (tool !== null) {
+      return await ownerTool(tool, owner, parsed);
+    }
+    if (path === "signin/start") {
+      // Each source's sign-in sits behind its own switch: off, the object is never asked.
+      const rec = typeof parsed["engine"] === "string" ? sources.get(parsed["engine"]) : undefined;
+      if (rec !== undefined && !signinOn(rec, gated.signins)) {
+        return failure(403, "signin_off: signing in to this source inside a sandbox is off " +
+                       "until its vendor's terms for hosted use are verified");
+      }
     }
     return await route!(env, owner, parsed, presented!);
   } catch (error) {

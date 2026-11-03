@@ -1,9 +1,9 @@
 /**
  * The runner's test harness, in Node, tests only: a temporary root standing for the
  * sandbox's `/` (`TA_RUNNER_ROOT`) with the template's users as an unprivileged pool
- * (`ta-run-<n>`, uids from 4300, each its own group), the sync agent (`ta-sync`, 4250) and
- * the shared group `ta` (4243), so a root operation that followed a link an engine's user
- * planted shows as a changed owner, mode or content; a fake CLI per record at the record's
+ * (`ta-run-<n>`, each its own group), the sync agent (`ta-sync`) and the shared group `ta`,
+ * in a block of ids the test process takes for itself (`ID_BASE`), so a root operation that
+ * followed a link an engine's user planted shows as a changed owner, mode or content; a fake CLI per record at the record's
  * own binary path; and a fake doors server for the run's event door, the sign-in report and
  * the sync doors. The runner under test is the bundle the template carries
  * (`template/bundle.mjs`), run as its own processes, as root.
@@ -23,9 +23,15 @@ import { binPath, type StartDoc } from "./engine";
 const HERE = dirname(fileURLToPath(import.meta.url));
 let bundled: string | null = null;
 
-export const TA_GID = 4243;
-export const SYNC_UID = 4250;
-export const POOL_UIDS = Object.freeze([4300, 4301, 4302, 4303]);
+/**
+ * The test sandbox's ids: real uids, and the runner kills a pool user's every process by uid,
+ * so each test process takes a block of its own (from its pid), and two suites running on one
+ * host (two worktrees) never kill each other's users' processes.
+ */
+const ID_BASE = 100_000 + (process.pid % 100_000) * 8;
+export const TA_GID = ID_BASE;
+export const SYNC_UID = ID_BASE + 1;
+export const POOL_UIDS = Object.freeze([ID_BASE + 2, ID_BASE + 3, ID_BASE + 4, ID_BASE + 5]);
 
 /** The runner's bundle, built once per test file, readable by the sync agent's user. */
 export function runnerBundle(): string {
@@ -58,6 +64,15 @@ export interface FakeCli {
   readonly daemon?: boolean;
   /** What `status_argv` prints and exits with. */
   readonly status?: { readonly out: string; readonly exit: number };
+  /**
+   * A sign-in (its record's `login.argv`): `lines` printed at once (stdout, or stderr with
+   * `stderr`); with `code`, one line read from stdin, then `writes` made and exit 0; without
+   * it, `writes` made at once, then it stays up (a CLI that does not exit once signed in)
+   * unless `exit` is given.
+   */
+  readonly login?: { readonly lines: readonly string[]; readonly code?: boolean;
+                     readonly stderr?: boolean; readonly writes?: Readonly<Record<string, string>>;
+                     readonly exit?: number; readonly tty?: boolean };
 }
 
 /** The fake CLI's own program: what it was run with goes to `<root>/fake-seen`. */
@@ -116,7 +131,43 @@ const done = () => {
   }
   setTimeout(() => process.exit(plan.exit || 0), plan.sleepMs || 0);
 };
-if (!process.argv.includes("status")) {
+if (plan.login && !process.argv.includes("status")) {
+  const record = (extra) => {
+    const at = performance.timeOrigin + performance.now();
+    fs.writeFileSync(path.join(root, "fake-seen",
+                               path.basename(me) + "." + at.toFixed(3) + "." + process.pid + ".json"),
+      JSON.stringify({ at, argv: process.argv.slice(2), env: process.env, cwd: process.cwd(),
+                       stdin, uid: process.getuid(), gid: process.getgid(),
+                       groups: process.getgroups(), dumps: {}, owners: {},
+                       tty: process.stdout.isTTY === true,
+                       homes: Object.fromEntries(Object.entries(process.env)
+                         .filter(([, value]) => value.startsWith(process.env.HOME + "/"))
+                         .map(([name, value]) => [name, fs.existsSync(value)])), ...extra }));
+  };
+  const finish = () => {
+    for (const [file, text] of Object.entries(plan.login.writes || {})) {
+      fs.mkdirSync(path.dirname(where(file)), { recursive: true });
+      fs.writeFileSync(where(file), text);
+    }
+    record({});
+    if (plan.login.code || plan.login.exit !== undefined) {
+      process.exit(plan.login.exit || 0);
+    }
+    setInterval(() => {}, 1000);  // up until stopped
+  };
+  process.on("SIGTERM", () => process.exit(143));
+  for (const line of plan.login.lines) {
+    (plan.login.stderr ? process.stderr : process.stdout).write(line + "\n");
+  }
+  if (plan.login.code) {
+    process.stdin.on("data", (d) => {
+      stdin += d;
+      if (stdin.includes("\n")) { finish(); }
+    });
+  } else {
+    finish();
+  }
+} else if (!process.argv.includes("status")) {
   process.stdin.on("data", (d) => { stdin += d; });
   process.stdin.on("end", done);
   process.stdin.on("error", done);
@@ -159,7 +210,8 @@ export class Doors {
           response.writeHead(status, { "content-type": "application/json", ...headers });
           response.end(JSON.stringify(value));
         };
-        if (/^\/r\/run_[0-9a-f]{32}\/events$/.test(path)) {
+        if (/^\/r\/run_[0-9a-f]{32}\/events$/.test(path)
+            || /^\/signin\/si_[0-9a-f]{32}\/events$/.test(path)) {
           if (this.ended) {
             return json(403, { error: { code: "run_ended" } });
           }
@@ -251,7 +303,7 @@ export class Doors {
     const until = Date.now() + ms;
     for (;;) {
       const end = this.events().find((post) => post.body["end"] !== undefined
-        && (run === undefined || post.path === `/r/${run}/events`));
+        && (run === undefined || post.path.endsWith(`/${run}/events`)));
       if (end !== undefined) {
         return end;
       }
@@ -365,6 +417,19 @@ export class Sandbox {
     writeFileSync(this.path(`/var/lib/ta/inbox/${start.run}.json`), JSON.stringify(start));
     writeFileSync(this.path("/var/lib/ta/lease.json"), JSON.stringify({
       lease: start.lease, authority,
+      tokens: { runner_token: "r".repeat(64), sync_token: "sync-token", egress_token: "x" } }));
+  }
+
+  /** A sign-in's document and the lease's secrets, as the sandbox Worker leaves them. */
+  login(doc: { id: string; engine: string; region?: string | null; mode?: "in" | "out";
+               authority?: string }, doors: Doors): void {
+    writeFileSync(this.path(`/var/lib/ta/inbox/${doc.id}.json`), JSON.stringify({
+      id: doc.id, engine: doc.engine, region: doc.region ?? null, mode: doc.mode ?? "in",
+      authority: doc.authority ?? "owner",
+      urls: { events: `${doors.origin}/signin/${doc.id}/events`,
+              signin: `${doors.origin}/signin` } }));
+    writeFileSync(this.path("/var/lib/ta/lease.json"), JSON.stringify({
+      lease: { lease_id: "b".repeat(32), epoch: 1 }, authority: doc.authority ?? "owner",
       tokens: { runner_token: "r".repeat(64), sync_token: "sync-token", egress_token: "x" } }));
   }
 

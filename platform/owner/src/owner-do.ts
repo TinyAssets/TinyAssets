@@ -119,8 +119,12 @@ import { type Ask, CONVERSATION_BUSY, SIGNIN_REQUIRED, type LiveRun, type MailAn
          type PostedFrame, QUEUE_FULL, type RunReceipt, Runs, RUN_ENDED, type RunSchedule,
          scheduleAuthority, secretHash } from "./runs";
 import { ENGINE_SIGNINS, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS } from "./run-rows";
-import { EVENT_FRAMES_MAX, EVENTS_RACED, eventsBounded, FRAME_UNITS_MAX, PostGate } from "./run-events";
-import { SANDBOX_ABSENT, SANDBOX_WAITING, type SandboxService, started } from "./sandbox";
+import {
+  EVENT_FRAMES_MAX, EVENTS_RACED, eventsBounded, FRAME_UNITS_MAX, FRAME_VERSION, PostGate,
+} from "./run-events";
+import {
+  SANDBOX_ABSENT, SANDBOX_WAITING, type SandboxService, type Started, started,
+} from "./sandbox";
 import { TICKET_REFUSED } from "./socket-shape";
 import { Tickets } from "./tickets";
 import {
@@ -175,8 +179,12 @@ import {
   type SandboxBinding, sandboxBinding, settleRequest,
 } from "./egress";
 import {
-  type EgressPolicy, networkDocument, type NetworkPlan, runUrls, sandboxEnv,
+  EGRESS_ORIGIN, type EgressPolicy, networkDocument, type NetworkPlan, runUrls, sandboxEnv,
 } from "./network";
+import {
+  pastedCode, SIGNIN_ID, signinAuthority, type SigninMode, type SigninView, Signins,
+  signinView,
+} from "./signins";
 import {
   CLOSED, Doorbell, type RingAnswer, runWakes, WAKE_RETRY_S, WAKE_SEND_MS, type WakeSender,
   WAKES_PER_ALARM,
@@ -272,6 +280,38 @@ export interface EventsRequest {
 export interface ConversationRequest {
   readonly conversation_id: string;
 }
+
+/** The owner's ask to sign in to an engine inside a sandbox (`signinStart`). */
+export interface SigninStartRequest {
+  readonly engine: string;
+  /** `owner` (the default), or one client's id: that client's own sandbox. */
+  readonly authority?: string;
+  /** The owner's choice among the record's `cli.regions`, when it has any. */
+  readonly region?: string;
+  readonly mode?: SigninMode;
+}
+
+export interface SigninRequestById {
+  readonly id: string;
+}
+
+export interface SigninCodeRequest extends SigninRequestById {
+  readonly code: string;
+}
+
+/** A sign-in's runner's post: its frames, and its end. */
+export interface SigninEventsRequest extends SigninRequestById {
+  readonly frames: unknown;
+  readonly end?: unknown;
+}
+
+export interface RunListRequest {
+  readonly before?: number;
+  readonly limit?: number;
+}
+
+/** A past run in the caller's list: its receipt without its result (its own door's). */
+export type RunListed = Omit<RunReceipt, "result"> & { readonly seq: number };
 
 /**
  * The runner's report of the sandbox's engines' sign-ins (`signinReport`): for each engine
@@ -1274,6 +1314,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #runs: Runs;
   /** The owner app's sockets and the runs' live tails (`relay.ts`), a Lifecycle capability. */
   readonly #relay: Relay;
+  /** The vendor's own sign-ins in progress inside a sandbox (`signins.ts`). */
+  readonly #signins: Signins;
   readonly #tickets: Tickets;
   /** The runners' events posts held at once (`EVENTS_IN_FLIGHT`). */
   readonly #posts = new PostGate();
@@ -1423,6 +1465,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return { generation, settings: modelSettings(document) };
     });
     this.#tickets = new Tickets(storage);
+    this.#signins = new Signins(storage);
     this.#runs = new Runs(storage, {
       unadmitted: () => workRefusal(admission(storage)),
       sandboxBound: () => env.SANDBOX !== undefined,
@@ -1452,7 +1495,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         live: (now, authority) => this.#files.sandboxLease(now, authority),
         all: (now) => this.#files.liveLeases(now),
         open: (now, authority) => this.#openLease(owner, now, authority),
-        release: (leaseId, epoch) => this.#files.leaseRelease(leaseId, epoch).released,
+        // A lease a sign-in holds stays: its sandbox is in use with no run (slice SIGNIN).
+        release: (leaseId, epoch) => !this.#signins.holds(leaseId)
+          && this.#files.leaseRelease(leaseId, epoch).released,
         renew: (leaseId, epoch) => {
           this.#files.leaseRenew(leaseId, epoch);
         },
@@ -1481,7 +1526,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       admit: (binding, conversation, ticket) =>
         this.#door(() => this.#socketAdmit(binding, conversation, ticket)),
       check: (state) => this.#door(() => this.#socketCheck(state)),
-      live: (conversation) => this.#door(() => this.#runs.liveIn(conversation)),
+      // A sign-in's socket gets its own tail on attach, as a conversation's gets its runs'.
+      live: (conversation) => this.#door(() => this.#signinOwned(conversation) ? [conversation]
+        : this.#runs.liveIn(conversation)),
       now: clock,
     });
     // The lanes of the one schedule. There is no global tick; each owner's object
@@ -3585,6 +3632,212 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
   }
 
+
+  // -- THE VENDOR'S OWN SIGN-IN, inside a sandbox (slice SIGNIN; `signins.ts`) -----------
+
+  /** Whether `id` is a live sign-in's: an app socket may watch it (the owner's own). A read. */
+  #signinOwned(id: unknown): boolean {
+    if (typeof id !== "string" || !SIGNIN_ID.test(id)) {
+      return false;
+    }
+    try {
+      this.#signins.get(id);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** In a unit: a lease no run and no sign-in holds now given back, as a settle gives it. */
+  #leaseFreed(leaseId: string, epoch: number): void {
+    if (this.#runs.liveRuns().some((run) => run.lease_id === leaseId)
+        || this.#signins.holds(leaseId)) {
+      return;
+    }
+    if (this.#files.leaseRelease(leaseId, epoch).released) {
+      this.#egress.end("lease", (live) => live.lease === leaseId);
+      queueMicrotask(() => void this.#sandboxRelease(leaseId));
+    }
+  }
+
+  /**
+   * Begin the vendor's own sign-in to `engine` (`mode: "in"`), or its sign-out (`"out"`),
+   * inside the owner's own sandbox or one client's (`authority`, that client's id: a login is
+   * never copied between sandboxes). The owner's own door, on its own account: the object
+   * opens that sandbox's lease with no run (or joins the live one), and the sandbox Worker
+   * starts the record's `cli.login` there (`SandboxService.signin`). The answer is the
+   * sign-in's id, which the owner's app watches on its socket (`ta.signin` frames: the
+   * vendor's URL to open in the owner's own browser, a code to type there, whether it takes
+   * a pasted code), or the code the Worker answered (`sandbox_waiting`, ...).
+   */
+  async signinStart(binding: Binding, request: SigninStartRequest):
+      Promise<SigninView | { started: false; code: string }> {
+    const begun = await this.#door(() => {
+      this.#owner(binding, "work", "sign in inside a sandbox");
+      if (this.env.SANDBOX === undefined) {
+        throw new Refused(SANDBOX_ABSENT);
+      }
+      const r = runFields(request, ["engine"], ["authority", "region", "mode"]);
+      const rec = typeof r["engine"] === "string" ? bundledSources().get(r["engine"]) : undefined;
+      const cli = rec?.cli;
+      if (rec === undefined || cli === undefined || rec.unwired !== undefined
+          || cli.login === undefined || !cli.credential.includes("vendor_login_in_sandbox")) {
+        throw new Invalid("a sign-in names an engine that signs in with the vendor's own login");
+      }
+      const mode = (r["mode"] ?? "in") as SigninMode;
+      if (mode !== "in" && mode !== "out") {
+        throw new Invalid("a sign-in's mode is in or out");
+      }
+      const regions = cli.regions === undefined ? [] : Object.keys(cli.regions);
+      const region = r["region"] ?? null;
+      if (mode === "in" ? (regions.length === 0 ? region !== null
+                                                : !regions.includes(region as string))
+          : region !== null) {
+        throw new Invalid(regions.length === 0 ? "this sign-in takes no region"
+          : `this sign-in takes the owner's choice of region: ${regions.join(", ")}`);
+      }
+      const authority = signinAuthority(r["authority"]);
+      if (authority !== OWNER_AUTHORITY && !this.#grants.live(authority)) {
+        throw new Refused("no such client: a client's own sandbox is signed in for a client " +
+                          "the owner has connected");
+      }
+      const now = clock();
+      this.#signins.lost(now, new Set(this.#files.liveLeases(now).map((each) => each.lease_id)));
+      const live = this.#files.sandboxLease(now, authority);
+      const opened = live === null ? this.#openLease(this.#ownerName, now, authority) : null;
+      const lease = live ?? opened!.lease;
+      const row = this.#signins.begin(authority, rec.id, mode, region as string | null,
+                                      { lease_id: lease.lease_id, epoch: lease.epoch }, now);
+      return { row, opened, region: region as string | null,
+               lease: { lease_id: lease.lease_id, epoch: lease.epoch } };
+    });
+    let answer: Started | null = null;
+    try {
+      answer = started(await this.env.SANDBOX!.signin(this.#ownerName(), {
+        id: begun.row.id, engine: begun.row.engine, region: begun.region, mode: begun.row.mode,
+        authority: begun.row.authority, lease: begun.lease,
+        tokens: begun.opened?.tokens ?? null, network: begun.opened?.network ?? null,
+        urls: { events: `${EGRESS_ORIGIN}/signin/${begun.row.id}/events`,
+                signin: runUrls(`run_${"0".repeat(32)}`, "0".repeat(64)).signin } }));
+    } catch {
+      console.error("a sign-in's start had no answer");
+      answer = null;
+    }
+    if (answer?.started === true) {
+      return signinView(begun.row);
+    }
+    await this.#door(() => {
+      this.#signins.end(begun.row.id);
+      this.#leaseFreed(begun.lease.lease_id, begun.lease.epoch);
+    });
+    return { started: false, code: answer === null ? "start_lost" : answer.code };
+  }
+
+  /**
+   * The runner's frames of a sign-in (`ta.signin`: its state, the vendor's URL and code),
+   * on the egress host by the egress token and the runner's secret of the live lease that
+   * holds it: the latest prompt kept, the lease renewed (its beat), each frame relayed to the
+   * owner's app sockets on the sign-in's id; its end ends it, and the lease goes once nothing
+   * holds it.
+   */
+  async signinEvents(binding: Binding, request: SigninEventsRequest):
+      Promise<{ accepted: number; ended: boolean }> {
+    const { row, ended, refused, events, frames } = await this.#door(() => {
+      this.#bind(binding, "reduce", "egress");
+      const lease = this.#runner(binding);
+      if (lease === null) {
+        throw new Refused(RUN_ENDED);
+      }
+      const r = eventsRequest({ frames: request.frames, ...(request.end === undefined ? {}
+        : { end: request.end }) });
+      const now = clock();
+      const done = this.#signins.frames(request.id, lease, r.frames.map((frame) => frame.event),
+                                        r.end !== null, now);
+      this.#files.leaseRenew(lease.lease_id, lease.epoch);
+      if (done.ended) {
+        this.#leaseFreed(lease.lease_id, lease.epoch);
+      }
+      return { ...done, frames: r.frames };
+    });
+    // Only what the trusted side kept: each frame's own, checked event.
+    const last = frames.at(-1);
+    this.#relay.relay(row.id, events.map((event, i) => ({
+      v: FRAME_VERSION, run: row.id, seq: (last?.seq ?? 0) - events.length + i + 1,
+      at: last?.at ?? clock(), kind: "event" as const, event })));
+    if (ended) {
+      this.#relay.settled(row.id);  // its tail goes with it
+    }
+    if (refused) {
+      // Its CLI stopped: what it showed is not the vendor's page.
+      await this.env.SANDBOX?.signinCancel(this.#ownerName(), { authority: row.authority,
+                                                                id: row.id })
+        .catch(() => console.error("a refused sign-in's stop did not reach the sandbox"));
+    }
+    return { accepted: frames.length, ended };
+  }
+
+  /**
+   * The code the vendor's page showed the owner, pasted back: to the sign-in's CLI's stdin
+   * (`SandboxService.signinInput`). The owner's own door.
+   */
+  async signinCode(binding: Binding, request: SigninCodeRequest):
+      Promise<{ delivered: boolean }> {
+    const { row, code } = await this.#door(() => {
+      this.#owner(binding, "work", "sign in inside a sandbox");
+      const r = runFields(request, ["id", "code"]);
+      return { row: this.#signins.get(r["id"]), code: pastedCode(r["code"]) };
+    });
+    const sandbox = this.env.SANDBOX;
+    if (sandbox === undefined) {
+      throw new Refused(SANDBOX_ABSENT);
+    }
+    return sandbox.signinInput(this.#ownerName(), { authority: row.authority, id: row.id,
+                                                    code });
+  }
+
+  /** A sign-in stopped: its CLI's run ends `cancelled`. The owner's own door. */
+  async signinCancel(binding: Binding, request: SigninRequestById):
+      Promise<{ cancelled: boolean }> {
+    const row = await this.#door(() => {
+      this.#owner(binding, "reduce", "stop a sign-in");
+      return this.#signins.get(runFields(request, ["id"])["id"]);
+    });
+    const sandbox = this.env.SANDBOX;
+    if (sandbox === undefined) {
+      throw new Refused(SANDBOX_ABSENT);
+    }
+    return sandbox.signinCancel(this.#ownerName(), { authority: row.authority, id: row.id });
+  }
+
+  /**
+   * The sign-ins in progress, and each engine's presence in the owner's own sandbox as its
+   * runner last reported it (never a credential). The owner's own door.
+   */
+  signinList(binding: Binding): Promise<{ signins: SigninView[];
+                                           engines: ReturnType<Runs["signins"]> }> {
+    return this.#door(() => {
+      this.#owner(binding, "read", "see its sign-ins");
+      const now = clock();
+      this.#signins.lost(now, new Set(this.#files.liveLeases(now).map((each) => each.lease_id)));
+      return { signins: this.#signins.list().map(signinView), engines: this.#runs.signins() };
+    });
+  }
+
+  /**
+   * The caller's past runs, newest first, a page at a time (`before`, the last page's
+   * `next`): the owner's every run, an outside client's its own alone, as their receipts show
+   * them (the result is the run's own door's, `agentStatus`).
+   */
+  runList(binding: Binding, request: RunListRequest):
+      Promise<{ runs: RunListed[]; next: number | null }> {
+    return this.#door(() => {
+      const account = this.#account(binding, "read");
+      this.#runDoor(account, null, null);
+      const r = runFields(request, [], ["before", "limit"]);
+      return this.#runs.list(account.origin?.client ?? null, r["before"], r["limit"]);
+    });
+  }
+
   /**
    * The runner's report of the engines' sign-ins (`SigninRequest`), on the egress host by
    * the egress token of the live lease: each engine's row (signed in or not, when it was
@@ -4049,7 +4302,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       this.#owner(binding, "read", "open an app socket");
       const r = runFields(request, ["conversation_id"]);
       const conversation = r["conversation_id"];
-      if (!this.#runs.owns(conversation, null)) {
+      if (!this.#runs.owns(conversation, null) && !this.#signinOwned(conversation)) {
         throw new Refused(TICKET_REFUSED);
       }
       const grant = binding.grant;
@@ -4102,7 +4355,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       throw new Invalid("an app socket carries no session");
     }
     const ticket = this.#tickets.consume(hash, conversation, clock());
-    if (!this.#runs.owns(conversation, null)) {
+    if (!this.#runs.owns(conversation, null) && !this.#signinOwned(conversation)) {
       throw new Refused(TICKET_REFUSED);
     }
     return { v: 1, owner: account.owner, conversation, grant: ticket.grant,
@@ -4140,6 +4393,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         throw new Refused(PLATFORM_TIER_ONLY);
       }
       return setTier(this.#storage, request);
+    });
+  }
+
+  /**
+   * The owner's own tier, for its app (`read`): its admission row's, which only the platform
+   * sets. The numbers are the control record's, which the doors read and show beside it.
+   */
+  tierRead(binding: Binding): Promise<{ tier: TierName }> {
+    return this.#door(() => {
+      this.#owner(binding, "read", "read its tier");
+      return { tier: ownerTier(this.#storage) };
     });
   }
 

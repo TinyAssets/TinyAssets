@@ -38,7 +38,16 @@
         "authMethod": "claude.ai"
       },
       "url_pattern": "(https://(?:claude\\.com/cai|claude\\.ai)/oauth/authorize[^\\s\\u001b]+)",
-      "accepts_code": true
+      "accepts_code": true,
+      "logout_argv": [
+        "{bin}",
+        "auth",
+        "logout"
+      ],
+      "hosted_use": {
+        "verdict": "allowed",
+        "citation": "code.claude.com/docs/en/legal-and-compliance.md (read 2026-11-03): an end user may sign in to the unmodified Claude Code binary with their own subscription, including where a platform hosts it, under the Commercial Terms; the platform may not collect, store or intermediate the credentials"
+      }
     },
     "api_key_env": {
       "anthropic": {

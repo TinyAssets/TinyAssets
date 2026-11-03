@@ -151,6 +151,24 @@ No published app, user content or third-party page SHALL ever be served on `http
 - **WHEN** a CIMD document or a registered client names a redirect on `tinyassets.io` or a subdomain such as `mcp.tinyassets.io`
 - **THEN** its authorization is refused before the consent page
 
+### Requirement: The doors serve the owner app on the owner surface's origin
+The doors Worker SHALL serve the owner app at `/app`, `/app/signed-in`, `/app/connected` and its named files under `/app/static/`, from its own `ASSETS`, and nothing else under `/app` but the owner surface. Each answer SHALL carry `Referrer-Policy: no-referrer` and a strict CSP (this origin only, nothing inline, no framing). Each return page's first and only script SHALL clear the code from the address bar before anything else.
+
+#### Scenario: The connect callback hands the app its code
+- **WHEN** a provider returns the owner's browser to `/oauth/connect/callback/<source>`, which hands the code to `/app/connected` in the fragment
+- **THEN** the page's own script clears the fragment before any other script runs, and posts the code to `connections/oauth/finish` with no referrer
+
+#### Scenario: A path under /app that the app does not name
+- **WHEN** a browser asks for `/app/index.html` or any unnamed file
+- **THEN** the doors answer `404`, and the assets are reached for nothing
+
+### Requirement: The owner app's routes are each one door
+The owner surface SHALL serve the owner app's reads and settings, each one owner door behind the first-party token: `account` (the owner's tier with the control record's numbers and the file usage), `notices`, `policy`, `policy/write`, `grants`, `grants/set`, `files/read`, `files/write` (text, against etags), `sources` (each record's public facts), `tools`, and `tools/<name>` (one table tool, the owner as itself). A revoke SHALL go by `grants/revoke` alone.
+
+#### Scenario: The owner sets a client's grant to revoked through grants/set
+- **WHEN** the owner's app posts `grants/set` with mode `revoked`
+- **THEN** it is refused `400`, and nothing changes
+
 ### Requirement: Sign-out ends the device's access, and devices sign in apart
 Each sign-in of the owner's app SHALL keep its own grant, so devices stay signed in together. Sign-out SHALL close the session and revoke the presented token's grant, leaving other devices signed in.
 
@@ -159,7 +177,7 @@ Each sign-in of the owner's app SHALL keep its own grant, so devices stay signed
 - **THEN** the phone's token is refused at once and the laptop's still works
 
 ### Requirement: The doors Worker cannot deploy before cutover
-The doors config SHALL bind exactly `OWNER` (the owner Worker's `OwnerDO`, by script name), `GATEWAY` (the gateway Worker's `ConnectGateway` entrypoint), `EGRESS` (its `EgressGateway` entrypoint), `OAUTH_KV`, `DIRECTORY` and `CONTROL` (distinct placeholder ids) and the `DCR_ENABLED` var, with no routes, custom domain, workers.dev or preview URL, and the flags `nodejs_compat`, `disable_ctx_exports` and `global_fetch_strictly_public`.
+The doors config SHALL bind exactly `OWNER` (the owner Worker's `OwnerDO`, by script name), `GATEWAY` (the gateway Worker's `ConnectGateway` entrypoint), `EGRESS` (its `EgressGateway` entrypoint), `OAUTH_KV`, `DIRECTORY` and `CONTROL` (distinct placeholder ids), `ASSETS` (the owner app's files, `./app`, the Worker first on every request) and the `DCR_ENABLED` var, with no routes, custom domain, workers.dev or preview URL, and the flags `nodejs_compat`, `disable_ctx_exports` and `global_fetch_strictly_public`.
 
 #### Scenario: A route is added
 - **WHEN** a route, another service, a real KV id or another binding is added to the doors config
@@ -313,6 +331,21 @@ The doors SHALL serve the in-VM sync agent's doors on the egress host (`/sync/ch
 #### Scenario: A sync token taken out of the VM
 - **WHEN** a request presents a live sync token without its lease's egress token
 - **THEN** it is refused and no lease's files are read or written
+
+### Requirement: A subscription is signed in inside the sandbox by the vendor's own flow
+The owner SHALL sign in to a source only by the record's `cli.login`, run on a terminal inside the owner's sandbox (or one client's, for that client) as a user of its own; only the record's URL or device-code shapes SHALL leave the VM, checked again by the owner's object; each source's sign-in SHALL sit behind its own control-record switch, defaulting to the record's cited verdict on hosted use.
+
+#### Scenario: A pasted code
+- **WHEN** the owner pastes the vendor's code into a live sign-in
+- **THEN** it reaches only that login's stdin, is never logged or stored, and is refused once the login has ended
+
+#### Scenario: A look-alike sign-in page
+- **WHEN** the runner relays a URL off the record's login hosts
+- **THEN** the object refuses it, the sign-in ends `refused`, and the owner never sees the link
+
+#### Scenario: A source whose terms are unverified
+- **WHEN** the owner asks to sign in to a source whose switch is off
+- **THEN** the doors refuse it `signin_off` and the object is never asked
 
 ### Requirement: The runner runs each CLI from its record, as its own user
 The in-VM runner SHALL post an empty batch as soon as it runs, before the sync; set the run's environment to the allow-list alone (`config.env` filled and `config.inherit` from its own), `HOME` the run's own home, made from its engine's store (the record's `secret_paths` and `session_paths` alone); run the CLI as a user of the run's own from the template's pool (no `sudo`, checked at each boot), killing every process of that user at the run's end, with `/proc` mounted `hidepid=2` and the runner's secrets in its root-only state directory; never follow, as root, a path another user could have placed (each write and ownership change by a no-follow descriptor, a link refused or replaced); keep no path writable by another user but those the design needs, each named with its reason, verified at every boot and resume; invoke the record's `argv`, or `resume_argv` with the session id, each option joined to its value (`--model=<id>`); and post its events within the object's bounds, one post in flight, at least every 20 s, an event past a frame's bound cut and marked, a post answered `events_busy` posted again after `Retry-After`, the end after the sync-out. It SHALL refuse a run whose env files the CLI would load (its home's settings, the agent's project files, and each ancestor's `.env` and `.gemini/.env` from its cwd up) set a variable its credential forbids, a credential- or endpoint-shaped one, or a credential helper; project into each engine's skills path the agent's own skills and the owner's shared ones (`/workspace/.agents/skills`, `/workspace/skills`), the agent's winning a clash, a client's sandbox only what it may read; and SHALL stop the CLI with SIGTERM, then a kill after its grace, on a cancel or when the object ended the run.

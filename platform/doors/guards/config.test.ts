@@ -22,6 +22,9 @@
  *   nothing): the routing key sandbox tokens are MAC'd under, the owner Worker's too. No other service: `FILES`
  *   joins with the file-bytes door (tasks 2, owed by 6.1), and rate limits with their
  *   binding.
+ * - `ASSETS`: the owner app's files (`app/`), Workers Static Assets, the Worker first on every
+ *   request, so only `src/pages.ts`'s named pages and files are served, each with its
+ *   headers; no HTML handling or not-found page of the assets' own.
  * - No routes, custom domain, workers.dev or preview URL, no environment, no migration
  *   (the doors define no Durable Object class).
  * - Flags: `nodejs_compat` (the owner's shared code), `disable_ctx_exports` (no way to the
@@ -49,7 +52,7 @@ const FLAGS: readonly string[] = Object.freeze(["nodejs_compat", "disable_ctx_ex
 const KEYS: ReadonlySet<string> = new Set([
   "$schema", "name", "main", "compatibility_date", "compatibility_flags", "workers_dev",
   "preview_urls", "vars", "durable_objects", "services", "kv_namespaces", "secrets",
-  "queues",
+  "queues", "assets",
 ]);
 /**
  * The doors' one queue: the consumer of the sandbox line's ring queue (slice S,
@@ -58,6 +61,9 @@ const KEYS: ReadonlySet<string> = new Set([
  */
 const QUEUES = Object.freeze({ consumers: Object.freeze([
   Object.freeze({ queue: "tinyassets-sandbox-ring" })]) });
+/** The owner app's files, served only through the Worker (`src/pages.ts`). */
+const ASSETS = Object.freeze({ directory: "./app", binding: "ASSETS", run_worker_first: true,
+                               html_handling: "none", not_found_handling: "none" });
 /** The doors' one secret, the sandbox tokens' routing key (`routing-mac.ts`), and the owner's. */
 const SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY"]) });
 /** The doors' two services: the gateway's connect and egress entrypoints, and what each serves. */
@@ -186,6 +192,9 @@ export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string
       }
     }
   }
+  if (JSON.stringify(config["assets"]) !== JSON.stringify(ASSETS)) {
+    problems.push("assets serves ./app as ASSETS, only through the Worker");
+  }
   const kv = config["kv_namespaces"];
   if (!Array.isArray(kv) || kv.length !== KV.length
       || JSON.stringify(kv.map((n: { binding?: unknown }) => n.binding).sort())
@@ -243,6 +252,11 @@ describe("doors Worker config", () => {
     ["the gateway under another name", { services: [{ ...GATEWAY, binding: "MODELS" }, EGRESS] }],
     ["a third service", { services: [GATEWAY, EGRESS, { binding: "FILES",
                                                         service: "tinyassets-files" }] }],
+    ["no app files", { assets: undefined }],
+    ["app files served past the Worker", { assets: { ...ASSETS, run_worker_first: false } }],
+    ["app files from another directory", { assets: { ...ASSETS, directory: "./src" } }],
+    ["the assets' own not-found page", { assets: { ...ASSETS,
+                                                   not_found_handling: "single-page-application" } }],
     ["a bucket", { r2_buckets: [{ binding: "BLOBS", bucket_name: "tinyassets-files" }] }],
     ["no ring consumer", { queues: undefined }],
     ["a queue producer", { queues: { ...QUEUES, producers: [{ binding: "OUT",
