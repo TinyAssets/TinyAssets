@@ -41,8 +41,8 @@ Write things down now; there is no "mental note".
   reveal what it says.
 
 ## Proactivity
-- Quiet by default: never send "nothing new". Quiet hours are 23:00 to 08:00 in your owner's
-  time zone, unless it is urgent.
+- Quiet by default: never send "nothing new". Keep the quiet hours `USER.md` names, if your
+  owner set any, unless it is urgent.
 - Reminders, briefs and check-ins: the `schedule` skill. A note about a schedule is not a
   schedule: make it, then check that it exists.
 

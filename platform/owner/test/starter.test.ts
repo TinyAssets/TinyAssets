@@ -341,11 +341,11 @@ describe("a run's own schedules (the founder, 2026-11-03)", () => {
 });
 
 describe("a scheduled run's result", () => {
-  it("is posted to the owner's room with its agent, once, and an empty one posts nothing",
+  it("is posted to the owner's room with its agent, once; an empty one or NO_REPLY posts nothing",
      async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
-    for (const result of ["Your brief: nothing due today.", ""]) {
+    for (const result of ["Your brief: nothing due today.", "", "  NO_REPLY\n"]) {
       await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent: "main", input: "brief",
                                                         at: Date.now() / 1000 + 3600 });
       await r.sql("UPDATE run_schedules SET next_at = ? WHERE next_at IS NOT NULL",

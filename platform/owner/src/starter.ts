@@ -47,7 +47,10 @@ import { type Content, cut, chunkedId, FileConflict, type Files, INLINE_BYTES, i
 import type { OwnerStorage, Write } from "./gate";
 import { ownersOnly, storedPath } from "./paths";
 
-/** The most files a package may hold: the receipts' bound (one row a path; the owner-bound guard). */
+/**
+ * The most paths a package may name, its files and the paths it once shipped and dropped
+ * (`retired`) together: the receipts' bound (one row a path; the owner-bound guard).
+ */
 export const STARTER_FILES_MAX = 64;
 /** How long a pass that failed waits before it is tried again. */
 export const STARTER_RETRY_S = 300;
@@ -70,6 +73,11 @@ export interface StarterFile {
 export interface StarterPackage {
   readonly version: number;
   readonly files: readonly StarterFile[];
+  /**
+   * Paths an earlier version shipped and this one does not: their receipts are kept, so a
+   * file the owner deleted stays deleted if a later version ships its path again.
+   */
+  readonly retired: readonly string[];
 }
 
 export interface Receipt {
@@ -83,13 +91,19 @@ export interface Receipt {
   readonly offered: string | null;
 }
 
-/** A package checked whole: a positive version, at most `STARTER_FILES_MAX` files, `agent.json` last. */
+/**
+ * A package checked whole: a positive version, its files and retired paths at most
+ * `STARTER_FILES_MAX` together and none twice, `agent.json` last.
+ */
 export function starterPackage(value: unknown): StarterPackage {
-  const pkg = value as { version?: unknown; files?: unknown };
+  const pkg = value as { version?: unknown; files?: unknown; retired?: unknown };
+  const retired = pkg?.retired ?? [];
   if (typeof pkg !== "object" || pkg === null || !Number.isSafeInteger(pkg.version)
       || (pkg.version as number) < 1 || !Array.isArray(pkg.files) || pkg.files.length < 1
-      || pkg.files.length > STARTER_FILES_MAX) {
-    throw new Invalid(`a starter package is a version and 1 to ${STARTER_FILES_MAX} files`);
+      || !Array.isArray(retired)
+      || pkg.files.length + retired.length > STARTER_FILES_MAX) {
+    throw new Invalid(`a starter package is a version and 1 to ${STARTER_FILES_MAX} files ` +
+                      "and retired paths");
   }
   const paths = new Set<string>();
   const files = pkg.files.map((file: Partial<StarterFile>): StarterFile => {
@@ -117,7 +131,16 @@ export function starterPackage(value: unknown): StarterPackage {
   for (const agent of agents) {
     agentFile(agent.text);
   }
-  return Object.freeze({ version: pkg.version as number, files: Object.freeze(files) });
+  const gone = retired.map((path: unknown) => {
+    const at = storedPath(path);
+    if (paths.has(at)) {
+      throw new Invalid(`starter path ${at} is retired and shipped at once`);
+    }
+    paths.add(at);
+    return at;
+  });
+  return Object.freeze({ version: pkg.version as number, files: Object.freeze(files),
+                         retired: Object.freeze(gone) });
 }
 
 /** The package this code carries, checked. */
@@ -175,6 +198,8 @@ export class Starter {
   readonly #deps: StarterDeps;
   /** The package it reconciles; null for none (a test's object of other things). */
   readonly #pkg: StarterPackage | null;
+  /** The pass running now, which the lane and a door share: one at a time. */
+  #running: Promise<void> | null = null;
 
   constructor(deps: StarterDeps, pkg: StarterPackage | null) {
     this.#deps = deps;
@@ -219,8 +244,31 @@ export class Starter {
     return Math.max(now, state?.retry_at ?? now);
   }
 
+  /**
+   * The seed, awaited by a door that needs an agent (`converse`, `run_graph`): a pass now when
+   * the owner has none reconciled, joined if one runs; nothing once seeded, or while a failed
+   * pass waits its retry (its notice says why).
+   */
+  async seeded(now: number): Promise<void> {
+    if (this.#running !== null) {
+      await this.#running;
+    } else if (this.version() === 0) {
+      await this.run(now);
+    }
+  }
+
+  /** One pass, single-flight: the lane's and a door's share it. */
+  run(now: number): Promise<void> {
+    if (this.#running === null) {
+      this.#running = this.#pass(now).finally(() => {
+        this.#running = null;
+      });
+    }
+    return this.#running;
+  }
+
   /** One pass: the package reconciled, or the failure kept in the row and told once. */
-  async run(now: number): Promise<void> {
+  async #pass(now: number): Promise<void> {
     if (this.next(now) === null || this.next(now)! > now) {
       return;
     }
@@ -267,6 +315,15 @@ export class Starter {
       if (receipt?.state === "deleted") {
         continue;  // never restored
       }
+      if (receipt?.state === "proposed" && entry === null) {
+        // A proposal of a new file not adopted yet: still a proposal, its offer kept current.
+        if (receipt.offered !== id) {
+          await this.#offer(file, bytes, receipt, "proposed", null, id);
+          proposed.push(`${file.path}: ${widening(file, receipt.version, null, bytes)
+            ?? "a newer version of a proposal you have not adopted"}`);
+        }
+        continue;
+      }
       if (receipt !== undefined && entry === null) {
         await this.#record(file, receipt.version, "deleted", receipt.installed, receipt.offered);
         continue;
@@ -309,12 +366,20 @@ export class Starter {
         continue;
       }
       if (receipt.offered !== id) {
-        await this.#offer(file, bytes, receipt, "edited", receipt.installed, id);
-        edited.push(file.path);
+        // Edited: never overwritten. A widening is still a proposal, whatever the edit.
+        const why = widening(file, receipt.version, content === null ? null
+          : await this.#bytes(content), bytes);
+        await this.#offer(file, bytes, receipt, why === null ? "edited" : "proposed",
+                          receipt.installed, id);
+        if (why === null) {
+          edited.push(file.path);
+        } else {
+          proposed.push(`${file.path}: ${why}`);
+        }
       }
     }
     await this.#deps.write(() => {
-      const kept = pkg.files.map((file) => file.path);
+      const kept = [...pkg.files.map((file) => file.path), ...pkg.retired];
       this.#sql.exec(`DELETE FROM starter_receipts WHERE path NOT IN (${
         kept.map(() => "?").join(", ")})`, ...kept);
       this.#sql.exec(

@@ -67,12 +67,15 @@ export function blobId(text: string): string {
 /**
  * Every character that renders as nothing or as something else: controls but tab, line feed
  * and carriage return; format characters (zero-width, bidirectional overrides and isolates,
- * the byte-order mark, the soft hyphen); private-use and unpaired surrogates; tag characters;
+ * the byte-order mark, the soft hyphen); the line and paragraph separators (U+2028, U+2029);
+ * private-use and unpaired surrogates; tag characters; the blank letters that render as
+ * nothing (the Hangul fillers U+115F, U+1160, U+3164, U+FFA0 and the braille blank U+2800);
  * and variation selectors, which can carry hidden data.
  */
 export function hiddenUnicode(text: string): Hidden[] {
   const found: Hidden[] = [];
-  const hidden = /[\p{Cc}\p{Cf}\p{Co}\p{Cs}\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}]/u;
+  const hidden = new RegExp("[\\p{Cc}\\p{Cf}\\p{Co}\\p{Cs}\\p{Zl}\\p{Zp}\\u{115F}\\u{1160}" +
+                            "\\u{2800}\\u{3164}\\u{FFA0}\\u{FE00}-\\u{FE0F}\\u{E0100}-\\u{E01EF}]", "u");
   text.split("\n").forEach((line, index) => {
     let column = 0;
     for (const char of line) {
@@ -108,14 +111,33 @@ export function report(pin: Pin, upstream: Upstream, vendored: string): Report {
   const readmeChanged = blobId(upstream.readme) !== pin.readme_blob;
   const known = new Set(pin.tags ?? []);
   const newTags = upstream.tags.filter((tag) => !known.has(tag));
-  const hidden = hiddenUnicode(upstream.spec);
   const moved = readmeChanged ? relocation(upstream.readme) : [];
+  // Everything upstream that reaches the pull request is checked, not the spec alone.
+  const hidden = [...hiddenUnicode(upstream.spec),
+                  ...[...moved, ...newTags].flatMap((text) => hiddenUnicode(text)
+                    .map((at) => ({ ...at, line: 0 })))];
   return {
     changed: specChanged || readmeChanged || newTags.length > 0,
     spec_changed: specChanged, readme_changed: readmeChanged, relocation: moved,
     new_tags: newTags, version: versionOf(upstream.spec), pinned_version: versionOf(vendored),
     hidden, widens: hidden.length > 0,
   };
+}
+
+/**
+ * Upstream text, quoted where nothing in it can act on the page: each string as JSON, every
+ * character but printable ASCII escaped (backticks and tildes too), inside one fenced block,
+ * so no `<!--`, fence, markup or invisible character of upstream's hides or changes what the
+ * reviewer reads.
+ */
+export function quoted(texts: readonly string[]): string {
+  if (texts.length === 0) {
+    return "none";
+  }
+  // Every character but printable ASCII as its escape, so nothing hidden reaches the page.
+  const safe = texts.map((text) => JSON.stringify(text).replace(/[^ -}]|[`~]/gu, (char) =>
+    char.split("").map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`).join("")));
+  return `\n\n\`\`\`text\n${safe.join("\n")}\n\`\`\`\n`;
 }
 
 /** The pull request's body: what changed, the checks, and what happens next. */
@@ -126,25 +148,48 @@ export function prBody(pin: Pin, upstream: Upstream, found: Report): string {
     `- SPEC.md: ${found.spec_changed ? "changed" : "unchanged"}; its version line says ` +
       `${found.version ?? "nothing"} (pinned: ${found.pinned_version ?? "nothing"}). A version ` +
       "number alone never decides anything here: read the diff.",
-    `- README.md: ${found.readme_changed ? "changed" : "unchanged"}` +
-      (found.relocation.length > 0 ? `; it may say the spec moved: ${
-        found.relocation.map((line) => `"${line}"`).join("; ")}` : ""),
-    `- Tags not seen before: ${found.new_tags.length > 0 ? found.new_tags.join(", ") : "none"}`,
-    `- Hidden or control characters in the new spec: ${found.hidden.length === 0 ? "none"
+    `- Hidden or control characters (in the spec, by line:column; in the README lines and ` +
+      `tags below, line 0): ${found.hidden.length === 0 ? "none"
       : found.hidden.slice(0, 50).map((at) => `${at.code} at ${at.line}:${at.column}`).join(", ")}`,
+    `- README.md: ${found.readme_changed ? "changed" : "unchanged"}; its lines that may say ` +
+      `the spec moved, quoted: ${quoted(found.relocation)}`,
+    `- Tags not seen before, quoted: ${quoted(found.new_tags)}`,
     "", "## What happens next",
     "This pull request is a draft for about 7 days (a cooldown, as Renovate's " +
       "minimumReleaseAge), so a bad upstream commit can be caught and reverted first. Then " +
-      "the watcher marks it ready and asks for the automated review; it is never merged on a " +
-      "version number, and never by this workflow.",
+      "the watcher marks it ready, which starts its checks, and asks for the review every pull " +
+      "request needs; it is never merged on a version number, and never by this workflow.",
     found.widens ? "It carries text no reviewer can see, which could widen what every " +
       "owner's agent does: the founder reviews it (`needs-founder`)."
-      : "Nothing in it widens what the agent may do: the automated review decides.",
-    "Merging it raises the starter's version: each owner's unedited copy of the reference is " +
-      "replaced at its next wake; an edited one gets a `.ta-new` beside it and a notice.",
+      : "Nothing in it widens what the agent may do: the review decides.",
+    found.spec_changed ? "Merging it raises the starter's version: each owner's unedited copy " +
+      "of the reference is replaced at its next wake; an edited one gets a `.ta-new` beside it " +
+      "and a notice." : "The spec's bytes are unchanged: merging it moves the pin's README and " +
+      "tags only, and raises no starter version, so no owner's files change.",
     "", "Registry row(s): S17", "Net core lines: 0",
   ];
   return `${lines.join("\n")}\n`;
+}
+
+/**
+ * What a proposal changes: the pin always (the README's blob, the tags); the vendored spec,
+ * its provenance line and the starter's version only when the spec's bytes changed, so a
+ * README or a tag alone ships nothing to any owner.
+ */
+export function applied<M extends { version: number; okf: Pin }>(
+    manifest: M, vendored: string, upstream: Upstream, found: Report):
+    { manifest: M; vendored: string } {
+  const pin = manifest.okf;
+  const okf = { ...pin, commit: found.spec_changed ? upstream.commit : pin.commit,
+                spec_blob: blobId(upstream.spec), readme_blob: blobId(upstream.readme),
+                tags: [...upstream.tags] };
+  if (!found.spec_changed) {
+    return { manifest: { ...manifest, okf }, vendored };
+  }
+  const provenance = vendored.slice(0, vendored.indexOf("\n"))
+    .replaceAll(pin.commit, upstream.commit).replaceAll(pin.spec_blob, blobId(upstream.spec));
+  return { manifest: { ...manifest, okf, version: manifest.version + 1 },
+           vendored: `${provenance}\n${upstream.spec}` };
 }
 
 /** The upstream as a clone at `dir` holds it: its head commit, spec, README and tags. */
@@ -194,13 +239,11 @@ function main(argv: readonly string[]): void {
   if (body === null || !found.changed) {
     throw new Error("apply needs --body, and a change to apply");
   }
-  const provenance = vendored.slice(0, vendored.indexOf("\n"))
-    .replaceAll(pin.commit, upstream.commit).replaceAll(pin.spec_blob, blobId(upstream.spec));
-  writeFileSync(vendoredPath, `${provenance}\n${upstream.spec}`);
-  manifest.okf = { ...pin, commit: upstream.commit, spec_blob: blobId(upstream.spec),
-                   readme_blob: blobId(upstream.readme), tags: upstream.tags };
-  manifest.version += 1;
-  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  const next = applied(manifest, vendored, upstream, found);
+  if (next.vendored !== vendored) {
+    writeFileSync(vendoredPath, next.vendored);
+  }
+  writeFileSync(manifestPath, `${JSON.stringify(next.manifest, null, 2)}\n`);
   execFileSync(process.execPath, [join(HERE, "bundle.mjs")], { stdio: "inherit" });
   writeFileSync(body, prBody(pin, upstream, found));
 }

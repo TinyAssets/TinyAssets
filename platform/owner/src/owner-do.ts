@@ -170,8 +170,8 @@ import {
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
 import {
-  type Front, frontmatter, indexLines, READ_DEFAULT_BYTES, score, SEARCH_RESULTS, SEARCH_SCAN,
-  targets, textOf, titleOf, windowEnd, words,
+  frontmatter, READ_DEFAULT_BYTES, SEARCH_QUERY_BYTES, SEARCH_SCAN, searchPage, textOf, titleOf,
+  windowEnd, words,
 } from "./file-search";
 import { carried, type Receipt as StarterReceipt, Starter, type StarterPackage }
   from "./starter";
@@ -611,6 +611,8 @@ export interface FetchMetadata {
   readonly type?: string;
   readonly description?: string;
   readonly tags?: readonly string[];
+  /** Whether the file is not UTF-8 text: its text is then empty. */
+  readonly binary?: true;
   /** Whether the text stops short of the file's end: `file_read` reads on from `next_offset`. */
   readonly truncated: boolean;
   readonly next_offset?: number;
@@ -3247,6 +3249,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
     const { content, offset, max } = asked;
     const read = await this.#window(content, offset, max);
+    if (read.text === null) {
+      throw new Invalid(`${content.entry.path} is not UTF-8 text`);
+    }
     return { entry: content.entry, offset, text: read.text, next_offset: read.next };
   }
 
@@ -3255,7 +3260,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * inline bytes, or the chunks the window spans (at most two reads).
    */
   async #window(content: Content, offset: number, max: number):
-      Promise<{ text: string; next: number | null }> {
+      Promise<{ text: string | null; next: number | null }> {
     const size = content.entry.size;
     const want = Math.min(size, offset + max + 4);  // a character's tail past the window
     let bytes: Uint8Array;
@@ -3284,18 +3289,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (end === null) {
       throw new Invalid("offset is inside a character: start at a window's next_offset");
     }
-    const text = textOf(bytes.subarray(0, end));
-    if (text === null) {
-      throw new Invalid(`${content.entry.path} is not UTF-8 text`);
-    }
-    return { text, next: offset + end < size ? offset + end : null };
+    return { text: textOf(bytes.subarray(0, end)),
+             next: offset + end < size ? offset + end : null };
   }
 
   /**
-   * A search of the owner's files (`search`; `file-search.ts`): the query's words against
-   * each file's path, and each small file's frontmatter, text and index lines, over at most
-   * `SEARCH_SCAN` entries from `cursor`; the best `SEARCH_RESULTS`, and `next_cursor` when
-   * it stopped short of the end.
+   * A search of the owner's files (`search`; `file-search.ts`): the query's words, whole,
+   * against each file's path, and each small file's frontmatter, text and index lines, a
+   * page of the manifest at a time from `cursor` (`SEARCH_SCAN` entries, `SEARCH_ANSWER_BYTES`
+   * of results); every match of the page, best first, and `next_cursor` right after the last
+   * one answered or the last entry read, null at the end; a query of at most
+   * `SEARCH_QUERY_BYTES`.
    */
   fileSearch(binding: Binding, request: FileSearchRequest):
       Promise<{ results: SearchResult[]; next_cursor: string | null; note?: string }> {
@@ -3303,61 +3307,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       this.#filer(binding, "read", "read_files");
       const r = fileFields(request, ["query"], ["cursor"]);
       const query = r["query"];
-      if (typeof query !== "string" || [...query].length > 1024) {
-        throw new Invalid("a query is text of at most 1024 characters");
+      if (typeof query !== "string" || utf8Bytes(query) > SEARCH_QUERY_BYTES) {
+        throw new Invalid(`a query is text of at most ${SEARCH_QUERY_BYTES} bytes`);
       }
-      const terms = words(query);
-      if (terms.length === 0) {
+      const terms = new Set(words(query));
+      if (terms.size === 0) {
         throw new Invalid("a query has at least one word");
       }
       const cursor = r["cursor"] === undefined ? null : storedPath(r["cursor"]);
-      const page = this.#files.scan(cursor, SEARCH_SCAN);
-      const texts = new Map<string, string>();
-      const fronts = new Map<string, Front>();
-      const lines = new Map<string, string[]>();
-      for (const entry of page.entries) {
-        const text = entry.kind === "file" && entry.inline !== null ? textOf(entry.inline) : null;
-        if (text === null) {
-          continue;
-        }
-        texts.set(entry.path, text);
-        fronts.set(entry.path, frontmatter(text));
-        if (nameOf(entry.path) !== "index.md") {
-          continue;
-        }
-        for (const line of indexLines(text)) {
-          const found = targets(parentOf(entry.path), line.target)
-            .find((path) => this.#files.stat(path)?.kind === "file");
-          if (found !== undefined) {
-            lines.set(found, [...(lines.get(found) ?? []), line.text]);
-          }
-        }
-      }
-      const hits = page.entries.filter((entry) => entry.kind === "file").map((entry) => {
-        const front = fronts.get(entry.path) ?? null;
-        const text = texts.get(entry.path);
-        const fields = [{ text: entry.path, weight: 2 },
-                        ...(lines.get(entry.path) ?? []).map((line) => ({ text: line, weight: 3 }))];
-        if (front !== null) {
-          fields.push({ text: front.title ?? "", weight: 4 },
-                      { text: front.description ?? "", weight: 3 },
-                      { text: front.tags.join(" "), weight: 3 }, { text: front.type ?? "", weight: 1 });
-        }
-        if (text !== undefined) {
-          fields.push({ text, weight: 1 });
-        }
-        return { entry, front, score: score({ path: entry.path, fields }, terms) };
-      }).filter((hit) => hit.score[0] > 0)
-        .sort((a, b) => b.score[0] - a.score[0] || b.score[1] - a.score[1]
-                        || (a.entry.path < b.entry.path ? -1 : 1))
-        .slice(0, SEARCH_RESULTS);
-      const results = hits.map((hit) => ({ id: hit.entry.path,
-                                           title: titleOf(hit.entry.path, hit.front),
-                                           url: fileUrl(hit.entry.path) }));
-      return page.next === null ? { results, next_cursor: null }
-        : { results, next_cursor: page.next,
-            note: `only the first ${SEARCH_SCAN} entries from the cursor were searched: ` +
-              "search again with next_cursor for the rest" };
+      const scanned = this.#files.scan(cursor, SEARCH_SCAN);
+      const page = searchPage(scanned.entries, scanned.next !== null, terms, fileUrl);
+      return page.resume === null ? { results: [...page.results], next_cursor: null }
+        : { results: [...page.results], next_cursor: page.resume,
+            note: "more of the files are still to search: search again with next_cursor" };
     });
   }
 
@@ -3375,18 +3337,21 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return this.#files.open(r["id"]);
     });
     const read = await this.#window(content, 0, CHUNK_BYTES);
-    const front = frontmatter(read.text);
+    // A file search found that is not text (a scan, an image) is answered with its metadata
+    // and no text, never refused: every id a search answers is fetchable (review L4).
+    const front = frontmatter(read.text ?? "");
     const path = content.entry.path;
     return {
-      id: path, title: titleOf(path, front), text: read.text, url: fileUrl(path),
+      id: path, title: titleOf(path, front), text: read.text ?? "", url: fileUrl(path),
       metadata: { path, size: content.entry.size, version: content.entry.version,
                   modified: new Date(content.entry.mtime_ms).toISOString(),
                   writer: content.entry.writer,
                   ...(front.type === undefined ? {} : { type: front.type }),
                   ...(front.description === undefined ? {} : { description: front.description }),
                   ...(front.tags.length === 0 ? {} : { tags: front.tags }),
-                  truncated: read.next !== null,
-                  ...(read.next === null ? {} : { next_offset: read.next }) },
+                  ...(read.text === null ? { binary: true } : {}),
+                  truncated: read.text !== null && read.next !== null,
+                  ...(read.text === null || read.next === null ? {} : { next_offset: read.next }) },
     };
   }
 
@@ -3643,6 +3608,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                conversation: (r["conversation_id"] ?? null) as string | null,
                request: requestKey(client, r["client_send_id"]) };
     });
+    await this.#seeded();
     const read = await this.#readAgent(asked.agent);
     const run = await this.#launch(read, () => {
       const account = this.#account(binding, "work");
@@ -3691,6 +3657,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     if (!asked.now) {
       return asked.schedule;
     }
+    await this.#seeded();
     const read = await this.#readAgent(asked.agent);
     const run = await this.#launch(read, () => {
       const account = this.#account(binding, "work");
@@ -3948,14 +3915,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * In a unit: a run door's caller held: a run's own call never converses, and for a door
-   * that starts work, `need` held where it acts (a scoped client's agent; a run's grant, and
+   * In a unit: a run door's caller held: a run's own call never converses, and reads or
+   * cancels only holding `run_graph`; for a door that starts work, `need` held where it acts (a scoped client's agent; a run's grant, and
    * a client's run's stamped grant as well, for the agent it launches); its universe.
    */
   #runDoor(account: Account, need: "converse" | "run_graph" | null, agent: string | null):
       string | null {
     if (account.run !== null && need === "converse") {
       throw new Refused(RUN_STARTS_NONE);
+    }
+    if (account.run !== null && need === null) {
+      // A run reads and cancels runs and schedules only as its agent may make them: an
+      // agent the owner narrowed is held to it (review H1).
+      this.#scope(account, "run_graph");
     }
     if (need === null || agent === null) {
       return null;
@@ -3993,6 +3965,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return { initiator: "client", origin: account.origin,
              stamp: { client: account.origin.client, generation: account.grant.generation,
                       authenticated_at: binding.authenticated_at ?? null, universe, agent } };
+  }
+
+  /**
+   * A new owner's starter seed, awaited before a door reads an agent: its first `converse`
+   * finds `main` however soon it comes (review L3), the lane's pass joined if it runs.
+   */
+  async #seeded(): Promise<void> {
+    if (this.#starter.version() === 0) {
+      await this.#starter.seeded(clock());
+      await this.#schedule.sync();
+    }
   }
 
   /** An agent's `agent.json`, read whole, and the etag it was read at. */

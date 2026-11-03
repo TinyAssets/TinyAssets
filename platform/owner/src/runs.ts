@@ -106,6 +106,8 @@ export const OWNER_LIMIT = "owner_limit";
 export const NO_RUN = "no_run: no such run of the caller's";
 export const RUN_ENDED = "run_ended: the run is no longer live";
 export const NO_SCHEDULE = "no_schedule: no such schedule of the caller's";
+/** A scheduled run's whole answer when it has nothing to tell its owner: nothing is posted. */
+export const NO_REPLY = "NO_REPLY";
 
 export type RunState = "waiting" | "queued" | "running" | "succeeded" | "failed" | "unknown";
 export type Initiator = "owner" | "client" | "schedule" | "mail";
@@ -315,7 +317,8 @@ export interface RunGrant {
 
 /**
  * A run's result posted for it: a mail's run's, its agent's reply to that mail; a scheduled
- * run's (`mail` null), its agent's post in the owner's room with it, `dm:<its id>`, since no
+ * run's of the owner's own schedule (`mail` null), its agent's post in the owner's room with
+ * it, `dm:<its id>`, since no
  * one is waiting on a scheduled run. Under the run's authority either way.
  */
 export interface MailAnswer {
@@ -1150,6 +1153,12 @@ export class Runs {
       return null;
     }
     const granted = grantOf(grant);
+    // A schedule's result posts only for the owner's own schedule, and not when the run said
+    // there is nothing to tell (`NO_REPLY`). A client's schedule's result is that client's,
+    // read through its `run_status`, never posted into the owner's rooms (review M1).
+    if (row.mail === null && (granted.stamp !== null || result.trim() === NO_REPLY)) {
+      return null;
+    }
     return { run: row.id, agent: row.agent, mail: row.mail, result, stamp: granted.stamp,
              origin: granted.origin };
   }

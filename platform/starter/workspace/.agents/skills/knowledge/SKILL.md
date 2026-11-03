@@ -54,9 +54,10 @@ okf_version: "0.2"
 ## Work
 - **Ingest** a source: keep it in `raw/`, then update every page it touches (often several),
   each page's `sources`, the indexes on the way up, and this month's log.
-- **Query**: read the root `index.md`, follow indexes down, open only the pages you need;
-  `grep -ri` when the indexes do not lead there. Cite the pages you used. File a good answer
-  back as a page.
+- **Query**: read the root `index.md`, follow indexes down, open only the pages you need.
+  When the indexes do not lead there: in a sandbox, `grep -ri`; over MCP alone (a main
+  agent), the `tinyassets` tools `search` (by words) then `fetch`, or `file_list` with
+  `head_chars` and `file_read`. Cite the pages you used. File a good answer back as a page.
 - **Lint**, when asked or after many ingests: broken links, pages missing from an index,
   index lines whose description differs from the page's, pages with no `type` or
   `description`, a root index over 20 KB, contradictions and stale claims. Fix what is

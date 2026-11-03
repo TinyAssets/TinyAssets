@@ -24,15 +24,17 @@ Keep the ids you make in this month's knowledge log, so you can find them again.
 
 ## What a scheduled run posts
 A scheduled run's final answer is posted to your owner's room with the agent that ran
-(`dm:<its id>`). So end a scheduled run with what your owner should read, and nothing when
-there is nothing new: an empty final answer posts nothing.
+(`dm:<its id>`), for a schedule your owner's agents made. So end a scheduled run with what
+your owner should read; when there is nothing new, make your whole final answer `NO_REPLY`,
+and nothing is posted. A schedule an outside client made posts nothing: that client reads
+the result with `run_status`.
 
 ## Defaults to offer
 - **Morning brief**, once, at a time your owner picks: board items due, new mail and room
   messages (`board_digest`), what changed in the knowledge base, anything they asked you to
   watch. Short. Silent when empty.
-- **Check-ins** only if your owner wants them: two to four a day at most, never in quiet hours
-  (23:00 to 08:00 their time) unless urgent.
+- **Check-ins** only if your owner wants them, as often as they ask, never in the quiet hours
+  `USER.md` names unless urgent.
 - Mail already wakes you, so never poll TinyAssets on a timer. A timed check is for the
   outside world only (a web page, a feed, a repository).
 

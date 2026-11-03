@@ -1333,9 +1333,25 @@ R, S, M and W.
     (`dm:<the agent's id>`, main's for main), once; an empty one posts nothing.
   - The MCP door reads files: `file_read` (`fileText`, UTF-8 windows at a character),
     `head_chars` on `file_list` (small files), and lexical, bounded `search` and `fetch` in
-    ChatGPT's deep research shape (`file-search.ts`; `SEARCH_SCAN` 5,000 entries a call,
-    loud `next_cursor`), held to `read_files`, in the directory, custom and run profiles. A
-    run's `file_list` is held to its grant (it went to the sync token's check).
+    ChatGPT's deep research shape (`file-search.ts`; whole words; paged by matches, every
+    match reachable; `SEARCH_SCAN`, `SEARCH_ANSWER_BYTES` and `SEARCH_QUERY_BYTES` each a
+    measured technical ceiling in `limits-audit.md`; `fetch` serves every id `search`
+    answers), held to `read_files`, in the directory, custom and run profiles. A run's
+    `file_list` is held to its grant (it went to the sync token's check).
+  - Review round 1 (rvsa, REQUEST_CHANGES), its attack tests now the fixed behaviour
+    (`owner/test/starter-review.test.ts`): a run's `run_status` and `run_cancel` held to its
+    agent's `run_graph` (H1); only the owner's own schedules post to `dm:<agent>`, a
+    client's result read through its `run_status` (M1), and `NO_REPLY` posts nothing; a
+    widening of an edited file is a proposal (M2); `search` split into words once and paged
+    by matches, its worst case measured (`guards/search-cpu.test.ts`: 766 ms of CPU at
+    5,000 matching 4 KiB files and a 1 MiB query) (M3); the rooms skill says how mail
+    between agents is answered (M4); the OKF watcher opens, readies and labels with
+    `MERGE_ATTRIBUTION_TOKEN` as `main-red.yml` does (fails loudly without it), asks the
+    founder's login, quotes upstream text escaped inside a fence, checks it for hidden
+    characters, and holds least permissions with pinned actions (M5, L6); a retired path's
+    deletion is kept (L1), an unadopted proposal stays one (L2), a door that needs an agent
+    awaits the seed (L3), the blank letters and separators are hidden characters (L5), and a
+    README- or tag-only upstream change ships no starter version (L7).
   - The OKF watcher (`.github/workflows/okf-watch.yml`, `platform/starter/okf-watch.ts`):
     daily, a content diff of the canonical spec's blob, its README for a relocation
     banner, new tags and hidden Unicode; one draft pull request a change, a cooldown of 7
@@ -1350,6 +1366,21 @@ R, S, M and W.
     request they built, with no `CLAUDE.md` fallback needed; Kimi Code 2.4.1 (no key
     credential) read `AGENTS.md` before stopping at its sign-in.
 - [ ] Owed by the starter slice:
+  - **Widenings through `policy_propose`** (the research, §3.4; review M2, L10): a held
+    policy proposal applies only as a whole owner policy document (`Policy.write`), and an
+    `agent.json` scope or a script is a file, not policy, so `policy_propose` cannot carry
+    it to an apply. Until a design for a file-applying proposal is chosen (research first,
+    Fact 14), a widening stays a `.ta-new` beside its file with a `starter_proposal` notice,
+    applied only by the owner moving it.
+  - **ChatGPT reads the first page of a search only** (review L8): deep research and
+    company knowledge do not follow `next_cursor`, so past `SEARCH_SCAN` entries they see
+    the first page in path order. A known gap: scanning `/workspace/knowledge` first is one
+    answer.
+  - The OKF watcher's review has no consumer of its own: a readied proposal waits for an
+    agent review session's receipt, as every pull request does (founder item, if an
+    automatic reviewer is wanted).
+  - **Lands after `platform-store`**: the `scratch` skill describes STORE's runner
+    (`TA_SCRATCH`, scratch caches, the cleared notice).
   - **Codex ignores `OPENAI_BASE_URL`** (0.166.0, live above): with only the record's
     variable its request went to api.openai.com; `-c openai_base_url="..."` reached the
     capture server. Codex's API-key runs need that argument in its record (slice E's

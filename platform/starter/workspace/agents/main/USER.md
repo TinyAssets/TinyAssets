@@ -12,5 +12,6 @@ Keep this file under 4,000 characters; detail belongs in the knowledge base.
 - Time zone:
 - Wants help with:
 - Proactivity: low (off, low or high)
+- Quiet hours:
 
 ## Directives

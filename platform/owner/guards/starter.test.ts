@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
-  blobId, hiddenUnicode, prBody, relocation, report, vendoredSpec, versionOf,
+  applied, blobId, hiddenUnicode, prBody, quoted, relocation, report, vendoredSpec, versionOf,
 } from "../../starter/okf-watch";
 import { agentFile } from "../src/agent-file";
 import { PLATFORM } from "./sources";
@@ -171,5 +171,48 @@ describe("the OKF watcher", () => {
     expect(body).toContain("U+200B at 4:");
     expect(body).toContain("needs-founder");
     expect(body).toContain("never merged on a version number");
+  });
+
+  it("flags the blank letters and separators too (review L5)", () => {
+    const blanks = [0x2028, 0x2029, 0x115f, 0x1160, 0x3164, 0xffa0, 0x2800]
+      .map((code) => `a${String.fromCodePoint(code)}b`).join("\n");
+    expect(hiddenUnicode(blanks).map((at) => at.code)).toEqual(
+      ["U+2028", "U+2029", "U+115F", "U+1160", "U+3164", "U+FFA0", "U+2800"]);
+  });
+
+  it("checks what it quotes from upstream, and quotes it where nothing in it acts (M5)",
+     () => {
+    const moved = `${readme}\nOKF now lives in <!-- hide the rest --> \`x\` ~~~ here\n`;
+    const tag = `v1${String.fromCodePoint(0x200b)}`;
+    const found = report(pin, { commit: "e".repeat(40), spec, readme: moved, tags: [tag] }, spec);
+    expect(found).toMatchObject({ widens: true, spec_changed: false });
+    const body = prBody(pin, { commit: "e".repeat(40), spec, readme: moved, tags: [tag] }, found);
+    const fenced = body.split("```");
+    // Every upstream string sits inside a fence, as JSON, with no backtick or tilde of its own.
+    expect(fenced.filter((_, i) => i % 2 === 0).join("")).not.toContain("<!--");
+    expect(body).toContain('"OKF now lives in <!-- hide the rest --> \\u0060x\\u0060 ' +
+                           '\\u007e\\u007e\\u007e here"');
+    expect(body).toContain('"v1\\u200b"');
+    expect(quoted([])).toBe("none");
+  });
+
+  it("raises the starter's version only for new spec bytes (review L7)", () => {
+    const manifest = { version: 4, okf: pin, files: [] };
+    const vendored = `<!-- provenance ${pin.commit} ${pin.spec_blob} -->\n${spec}`;
+    const readmeOnly = { commit: "1".repeat(40), spec, readme: `${readme}more\n`, tags: ["v9"] };
+    const kept = applied(manifest, vendored, readmeOnly, report(pin, readmeOnly, spec));
+    expect(kept.manifest.version).toBe(4);
+    expect(kept.vendored).toBe(vendored);
+    expect(kept.manifest.okf).toMatchObject({ commit: pin.commit, spec_blob: pin.spec_blob,
+                                              readme_blob: blobId(`${readme}more\n`),
+                                              tags: ["v9"] });
+    const newer = `${spec}A new rule.\n`;
+    const changed = { commit: "2".repeat(40), spec: newer, readme, tags: [] };
+    const shipped = applied(manifest, vendored, changed, report(pin, changed, spec));
+    expect(shipped.manifest.version).toBe(5);
+    expect(shipped.manifest.okf).toMatchObject({ commit: "2".repeat(40), spec_blob: blobId(newer) });
+    expect(vendoredSpec(shipped.vendored)).toBe(newer);
+    expect(shipped.vendored.slice(0, shipped.vendored.indexOf("\n")))
+      .toContain("2".repeat(40));
   });
 });

@@ -1,5 +1,5 @@
 {
-  "about": "The starter package: the files every new owner's default agent, main, is seeded with, and the version their updates ship under (starter_research.md section 3). Each file's path is where it lands in the owner's files; its source is the same path under this directory. managed files are replaced while unedited, and an edited one gets a .ta-new copy beside it and one notice; personal files are seeded once and never updated. A file whose change in a version widens what the agent may do names that version and why in widens: it then arrives as a proposal even unedited. agent.json is written last. bundle.mjs makes starter.json, which the owner's object carries; raise version with every change.",
+  "about": "The starter package: the files every new owner's default agent, main, is seeded with, and the version their updates ship under (starter_research.md section 3). Each file's path is where it lands in the owner's files; its source is the same path under this directory. managed files are replaced while unedited, and an edited one gets a .ta-new copy beside it and one notice; personal files are seeded once and never updated. A file whose change in a version widens what the agent may do names that version and why in widens: it then arrives as a proposal even unedited. agent.json is written last. A path a version drops goes in retired, so a file the owner deleted stays deleted if a later version ships it again. bundle.mjs makes starter.json, which the owner's object carries; raise version with every change.",
   "version": 1,
   "okf": {
     "repository": "GoogleCloudPlatform/open-knowledge-format",
@@ -8,6 +8,7 @@
     "readme_blob": "0e88bcf81ca9ade7e830f077f9687bb89ec0319c",
     "vendored": "/workspace/.agents/skills/knowledge/references/okf-spec.md"
   },
+  "retired": [],
   "files": [
     { "path": "/workspace/.agents/skills/knowledge/SKILL.md", "class": "managed" },
     { "path": "/workspace/.agents/skills/knowledge/references/okf-spec.md", "class": "managed" },

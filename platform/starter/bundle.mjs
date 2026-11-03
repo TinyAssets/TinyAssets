@@ -17,7 +17,8 @@ export function bundle() {
     }
     return { ...file, text: readFileSync(join(HERE, file.path.slice(1)), "utf8") };
   });
-  return `${JSON.stringify({ version: manifest.version, okf: manifest.okf, files }, null, 1)}\n`;
+  return `${JSON.stringify({ version: manifest.version, okf: manifest.okf, files,
+                            retired: manifest.retired ?? [] }, null, 1)}\n`;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
