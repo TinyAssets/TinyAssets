@@ -974,7 +974,8 @@ R, S, M and W.
     and whether a person sent it (`attended`: the owner's own call).
   - Mail to an agent waits `queued` for the `runs` lane, which starts the agent's run
     through slice R's admission: its input its own mail's envelope (sender name, kind and
-    id, room, message id) and then the body verbatim, all a woken agent needs to answer by
+    id, room, message id) and then the body verbatim, fenced by the message's random id so no
+    body can forge an envelope (review N4), all a woken agent needs to answer by
     a deliberate post (review N1); attended only when a person sent it
     (a run's mail and a client's are unattended); its conversation the thread's (one a
     thread, agent and authority, keyed by their digest, no index); its authority the
