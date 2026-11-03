@@ -541,14 +541,22 @@ export class Files {
   readonly #reclaim: Reclaim;
   /** The `FILES` puts in flight on this instance, which the erasure waits for. */
   readonly #puts = new Set<Promise<unknown>>();
+  /**
+   * Told of each workspace path a change makes or takes away, in that change's own unit:
+   * what follows a path (an agent's ledger identity its `agent.json`). A refusal refuses
+   * the change.
+   */
+  readonly #changed: (path: string, present: boolean, now: number) => void;
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
-              write: Write, reclaim: Reclaim = () => false) {
+              write: Write, reclaim: Reclaim = () => false,
+              changed: (path: string, present: boolean, now: number) => void = () => {}) {
     this.#storage = storage;
     this.#store = store;
     this.#limits = limits;
     this.#write = write;
     this.#reclaim = reclaim;
+    this.#changed = changed;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -909,6 +917,7 @@ export class Files {
       version, path, op, kind, contentId, size, mode, writer, now,
     );
     this.#retain(path, kind !== null);
+    this.#changed(path, kind === "file", now);
     return version;
   }
 

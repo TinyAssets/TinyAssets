@@ -5,7 +5,7 @@
  * through the files plane's own path: an upload cut into 4 MiB chunks (`Files.begin`, the
  * bytes to `FILES`, recorded stored), then, in the writing unit, the content made and named
  * by the row (`Files.adopt`), whose triggers count the reference on the content and in its
- * writer's files scope (migration 13). So the files plane's quota counts the bytes against
+ * writer's files scope (migration 14). So the files plane's quota counts the bytes against
  * the tier's storage (`chunk_bytes`, `max_bytes`) and an outside writer's share of it
  * (`client_share`, `owner_reserve`), its housekeeping deletes content nothing names, and the
  * erasure deletes every chunk.

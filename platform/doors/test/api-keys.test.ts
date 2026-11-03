@@ -116,7 +116,7 @@ describe("the key format", () => {
       o: o.owner, h: await secretHash("Z".repeat(43)), c: now() - 86_400 }));
     const response = await api(imported, "agents_list", {});
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ agents: [] });
+    expect(await response.json()).toEqual({ agents: [], owner_agents: [] });
   });
 });
 

@@ -24,8 +24,11 @@
  * files (ADR-034), so what the owner's object holds is its own bounded rows only.
  *
  * The worst case, with the limits that ship (`limits-audit.md`, `limits-audit.test.ts`), is
- * 42.3% of the limit (4,225,851,030.75 bytes), 774.1 MB under half. A new table, or a raised
- * bound, must stay under half the limit, or the guard fails.
+ * 40.98% of the limit (4,097,993,580.75 bytes), 902.0 MB under half. Slice ID added
+ * `native_agents` (the owner's own agents in the registry's rows), a mail's authority and
+ * attendance, and a run's mail; it adds no index (an identity and a mail thread's
+ * conversation are found by their keys, digests). A new table, or a raised bound, must stay
+ * under half the limit, or the guard fails.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -159,6 +162,10 @@ const ENGINE_SIGNINS = constant("run-rows", "ENGINE_SIGNINS");
 const SIGNIN_MODELS_CHARS = constant("run-rows", "SIGNIN_MODELS_CHARS");
 const SIGNIN_LIST_CHARS = constant("run-rows", "SIGNIN_LIST_CHARS");
 const SOCKET_TICKETS = constant("socket-shape", "SOCKET_TICKETS");
+/** Mail that starts runs (slice ID): a message's id, an own agent's id, a mail's authority. */
+const MESSAGE_ID_CHARS = constant("run-rows", "MESSAGE_ID_CHARS");
+const NATIVE_ID_CHARS = constant("run-rows", "NATIVE_ID_CHARS");
+const AUTHORITY_CHARS = constant("run-rows", "AUTHORITY_CHARS");
 /** A stamp's JSON, as the schema's check holds it, in characters (each up to 4 bytes). */
 const STAMP_CHARS = inline("schema", /stamp TEXT CHECK \(stamp IS NULL OR length\(stamp\) <= ([0-9]+)\)/);
 /** An origin's JSON is visible ASCII (the schema's check), so a character is a byte. */
@@ -370,11 +377,18 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                                  sqlite_autoindex_outside_agents_2: key(4 * UNIVERSE_CHARS,
                                                                         64, 64),
                                  outside_identities: key(64, 64) } },
+    // The owner's own agents (slice ID): counted with the outside agents in the registry's
+    // rows, so the two terms together count it twice over. `WITHOUT ROWID`, keyed by its id.
+    native_agents: { rows: L.maxAgentRows, bytes: ROW + 128 + NATIVE_ID_CHARS + 4 * 8,
+                     by: "maxAgentRows, live or retired, each its name (ASCII), id and " +
+                       "counters" },
     ledger_messages: { rows: L.maxMessages,
                        bytes: ROW + MESSAGE_ID + 4 * UNIVERSE_CHARS + 4 * ROOM_CHARS + AGENT_ID
-                         + 4 * CMID_CHARS + 64 + 4 * PARENT_CHARS + MESSAGE_ID + 7,
+                         + 4 * CMID_CHARS + 64 + 4 * PARENT_CHARS + MESSAGE_ID + 7
+                         + AUTHORITY_CHARS + 8,
                        by: "maxMessages, each its ids, universe, room, client message id, " +
-                         "body hash and parent at the validators' widest",
+                         "body hash, parent, authority (visible ASCII) and whether a person " +
+                         "sent it, at the validators' widest",
                        indexes: { sqlite_autoindex_ledger_messages_1: key(MESSAGE_ID),
                                   sqlite_autoindex_ledger_messages_2: key(AGENT_ID,
                                                                           4 * CMID_CHARS),
@@ -465,10 +479,11 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // Runs (slice R): settled receipts kept and the live ones, each its widest; a live run's
     // grant; the conversations; the runs lane's schedules; the tier numbers kept; tickets.
     runs: { rows: RUNS_KEPT + RUNS_CEILING + QUEUE_ROWS,
-            bytes: ROW + RESULT_BYTES + ERROR_BYTES + 4 * STAMP_CHARS + 256 + 512 + 32 + 16,
+            bytes: ROW + RESULT_BYTES + ERROR_BYTES + 4 * STAMP_CHARS + 256 + 512 + 32 + 16
+              + MESSAGE_ID_CHARS,
             by: "RUNS_KEPT settled receipts, RUNS_CEILING live and QUEUE_ROWS waiting, each " +
-              "its result, error, stamp, model, ids, counters, lease and heartbeat at their " +
-              "widest",
+              "its result, error, stamp, model, ids, counters, lease, heartbeat and mail at " +
+              "their widest",
             indexes: { sqlite_autoindex_runs_1: key(RUN_ID_CHARS), runs_by_request: key(64),
                        runs_live: key(9), runs_by_conversation: key(CONVERSATION_ID_CHARS,
                                                                    NUMBER),
@@ -495,6 +510,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                   bytes: ROW + 4 * STAMP_CHARS + ORIGIN_CHARS + 512 + 128 + 64,
                   by: "one a live run, its stamp, origin, scopes, connection and secret's " +
                     "hash" },
+    // A mail thread's conversation is found by its key, the thread's digest: no index.
     conversations: { rows: CONVERSATIONS_KEPT, bytes: ROW + 128 + 64 + 64 + 256 + 128,
                      by: "CONVERSATIONS_KEPT, each its agent, source, client and session id",
                      indexes: { conversations_by_age: key(NUMBER, CONVERSATION_ID_CHARS) } },
@@ -546,6 +562,13 @@ export function ownerTables(schema: string = source("schema")): string[] {
   }
   tables.delete("schema_version");
   return [...tables].sort();
+}
+
+/** The indexes the schema makes on `table`, by name. */
+function indexesOn(table: string): string[] {
+  return [...source("schema").matchAll(
+    /CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([a-zA-Z_0-9]+) ON ([a-zA-Z_0-9]+)/g)]
+    .filter((match) => match[2] === table).map((match) => match[1]!).sort();
 }
 
 /** The indexes the schema makes on the manifest's tables. */
@@ -716,6 +739,19 @@ describe("the owner's database bound", () => {
                                                          bytes: COLLECTIONS.maxHistoryCharge });
     expect(source("schema")).toContain("\"message_id TEXT NOT NULL PRIMARY KEY, agent_id TEXT " +
                                        "NOT NULL, seq INTEGER NOT NULL, \" +");
+  });
+
+  it("charges every index of slice ID's tables: the identities and the mail threads add none",
+     () => {
+    // An identity is found by its key (its name's digest), a mail thread's conversation by
+    // its key (the thread's digest), and an agent's due mail by `recipients_by_state`: no
+    // index past the row's own `ROW` is made for them, so none goes uncharged.
+    expect(indexesOn("native_agents")).toEqual([]);
+    expect(indexesOn("conversations")).toEqual(["conversations_by_age"]);
+    expect(indexesOn("ledger_recipients"))
+      .toEqual(["recipients_by_seq", "recipients_by_state", "recipients_unacked"]);
+    expect(indexesOn("ledger_messages")).toEqual(["messages_done"]);
+    expect(source("schema")).not.toMatch(/native_agents \([^)]*UNIQUE|agent_id TEXT NOT NULL UNIQUE/);
   });
 
   it("counts Lifecycle's own rows, apart from the tables", () => {

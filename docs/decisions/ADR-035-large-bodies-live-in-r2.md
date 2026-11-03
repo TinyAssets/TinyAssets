@@ -49,7 +49,7 @@ R2's read latency is not documented [I: a network round trip from the object, te
 2. **Through the files plane's own path.**
    - In its first unit, the write door begins a placement upload, and its chunks' rows are held before any byte is sent. A body is at most `BODY_BYTES_MAX` (16 MiB), four 4 MiB chunks, sent two to a `FILES` call.
    - The door puts the bytes to R2 through `FILES`, which verifies each SHA-256.
-   - A second unit adopts the upload. It makes the content, and the row names it in the same transaction. Migration 13's triggers count each reference on the content, and each reference in its writer's files scope.
+   - A second unit adopts the upload. It makes the content, and the row names it in the same transaction. Migration 14's triggers count each reference on the content, and each reference in its writer's files scope.
 
    Every write stays a gate unit. Nothing about the content is committed before R2 holds it. A post checks its room and its resend before the put, so a refused or repeated post sends no byte.
 3. **Crash safety.** A crash between the put and the commit leaves an upload that no row names. A placement upload expires in `PLACE_TTL_S` (10 minutes), not the 24 hours a file upload has, and housekeeping then releases it. Its chunks become garbage, and the sweep deletes them from R2 after its grace. A read of a body that a later write let go still finds it within that grace.
@@ -67,7 +67,9 @@ R2's read latency is not documented [I: a network round trip from the object, te
 
    The guard costs every term at the widest name its validator allows, and a test checks that SQLite makes no index the guard does not count.
 7. **Reads.**
-   - A get, a pull, a history read, a mailbox read and a conflict answer the stored body through the same path. A door reads the placed bodies from R2 outside any unit, after its unit locates them.
+   - A get, a pull, a history read, a mailbox read, a mail chain and a conflict answer the stored body through the same path, and the runs lane reads a mail's body for its run's input the same way. A door reads the placed bodies from R2 outside any unit, after its unit locates them.
+   - A mail run's reply (slice ID) past the threshold is placed after its settle's unit and posted in a unit of its own. A crash between the two loses the reply, never the run's result, which its receipt keeps.
+   - A mail to one of the owner's own agents is that agent's run's input, which waits as one row: at most `RUN_MAIL_BYTES` (1 MiB), under a Durable Object's 2 MB row.
    - A pull, a history read or a mailbox read returns at most `READ_PAGE_BYTES` (8 MiB) of bodies after its first item. A history read past one page answers `more` and a `before_revision` cursor.
 8. **Erasure leaves no orphan.**
    - Once the erasure's mark stands, every upload and every chunk put is refused.
@@ -79,7 +81,7 @@ R2's read latency is not documented [I: a network round trip from the object, te
 ## Consequences
 
 - The ledger, the collections and their history no longer cost the object their bytes: only their rows. Their bodies are storage, counted against the tier and the writer's share.
-- With the audit's other structural changes, the worst case at the validators' widest names is 4,019,734,080.75 bytes, 40.20% of the 10 GB: 980.3 MB under half, where the raises had 2.1 MB. The other changes:
+- With the audit's other structural changes, the worst case at the validators' widest names is 4,097,993,580.75 bytes, 40.98% of the 10 GB: 902.0 MB under half, where the raises had 2.1 MB (slice ID's agent identities and mail authority included). The other changes:
   - collection rows and history counted in laid-out bytes;
   - one recipient a message;
   - the mailboxes' caps within the ceilings;

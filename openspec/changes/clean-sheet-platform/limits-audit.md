@@ -37,14 +37,14 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,019,734,080.75 bytes, 40.20% of the 10 GB: 980.3 MB under
-half** (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
+**The worst case that ships is 4,097,993,580.75 bytes, 40.98% of the 10 GB: 902.0 MB under
+half**, slice ID's agent identities and mail authority included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
 2.1 MB). Without each structural change, the same bounds would cost: bodies in their rows
-843.6 GB; history as rows times revisions 111.1 GB; recipients as messages times agents
-45.8 GB; scopes at 512 code points of JSON each 6.3 GB, each past the half.
+843.6 GB; history as rows times revisions 111.2 GB; recipients as messages times agents
+45.8 GB; scopes at 512 code points of JSON each 6.4 GB, each past the half.
 
 The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collection_rows`
-604.0 MB, `ledger_messages` 322.5 MB, `ledger_receipts` 309.6 MB, `collection_history`
+604.0 MB, `ledger_messages` 399.2 MB, `ledger_receipts` 309.6 MB, `collection_history`
 302.0 MB, `connections` 269.3 MB, `message_bodies` 219.7 MB, `ledger_recipients` 107.9 MB.
 
 ## Summary
@@ -52,8 +52,8 @@ The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collect
 - **tier**: 3
 - **owner setting**: 12
 - **vendor limit**: 4
-- **technical ceiling**: 105
-- **total**: 124
+- **technical ceiling**: 106
+- **total**: 125
 
 Removed by this slice, since only the tier's storage bounds what they bounded, or no
 platform fact stood behind them:
@@ -127,9 +127,10 @@ Flagged for the founder:
 | `owner/src/bodies.ts` `BODY_BYTES_MAX` (`LIMITS.maxRowBytes`, `MAX_BODY_BYTES`) | 16 MiB | one row's, history entry's or message's body | a larger body refused | technical ceiling | One call through the object whole, as `WHOLE_BYTES`: the isolate's 128 MB. Placed in four 4 MiB chunks. Live memory probe owed to slice L. |
 | `owner/src/collections.ts` `LIMITS.maxRowsCharge` | 256 MiB laid out | every collection row, its index entries and its collection's seq row, as SQLite lays them out | a write refused: the owner's collections are full | technical ceiling | The 10 GB: guard term `collection_rows`, 604.0 MB at `WORST_FILL`. About 262,000 rows at the narrowest names; an outside writer's share by `client_share`. |
 | `owner/src/collections.ts` `LIMITS.maxHistoryCharge` | 128 MiB laid out | the history's entries, erased keys' last entries among them | the oldest entries pruned, never refused | technical ceiling | The 10 GB: guard term `collection_history`, 302.0 MB at `WORST_FILL`. |
-| `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgents` | 1,000 | enabled outside agents | the 1,001st registration refused | technical ceiling | The 10 GB, within `maxAgentRows`. A message has one recipient, so no term moves with it. |
+| `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgents` | 1,000 | enabled agents: outside agents and the owner's own live agents (slice ID) together | the 1,001st outside agent's registration, or live agent's `agent.json` write, refused (`ledger_agents_full`) | technical ceiling | The 10 GB, within `maxAgentRows`. A message has one recipient, so no term moves with it. |
+| `owner/src/ledger.ts` `RUN_MAIL_BYTES` | 1 MiB | a mail's body to one of the owner's own agents, its run's input | a larger mail to an own agent refused | technical ceiling | The run's input waits as one `run_inputs` row, which a Durable Object holds at 2 MB at most, with its envelope, within `QUEUE_BYTES`. Mail to anyone else is `BODY_BYTES_MAX`. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgentRows` | 1,000 | agent rows, tombstones included | a registration refused past it | technical ceiling | The 10 GB: guard terms `outside_agents`, `ledger_readers`, `ledger_rings`, `ledger_usage`. |
-| `owner/src/ledger.ts` `LEDGER_LIMITS.maxMessages` | 50,000 | messages held | the oldest acked message evicted; refused `ledger_full` if every one is unread | technical ceiling | The 10 GB: guard terms `ledger_messages` 322.5 MB, `message_bodies` 219.7 MB (each body up to 2 KiB) and `ledger_recipients` 107.9 MB. |
+| `owner/src/ledger.ts` `LEDGER_LIMITS.maxMessages` | 50,000 | messages held | the oldest acked message evicted; refused `ledger_full` if every one is unread | technical ceiling | The 10 GB: guard terms `ledger_messages` 399.2 MB, `message_bodies` 219.7 MB (each body up to 2 KiB) and `ledger_recipients` 107.9 MB. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxOwnerUnacked` | 10,000 | messages unread by the owner | a post to the owner refused past it | technical ceiling | Within `maxMessages` (`checkLimits`), so no mailbox holds the whole ledger. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgentUnacked` | 1,000 | messages unread in one agent's mailbox | a post to that agent refused | technical ceiling | As above. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxSenderUnacked` | 5,000 | one sender's messages unread by the owner | a sender's post refused past it | technical ceiling | Within `maxOwnerUnacked`, so no agent fills the owner's mailbox. |

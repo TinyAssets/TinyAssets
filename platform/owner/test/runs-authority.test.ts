@@ -515,33 +515,23 @@ describe("a client's revoke (review H-2)", () => {
 });
 
 describe("a client's schedule (review H-3)", () => {
-  it("starts its run at its time, on its cron and on the owner's mail, as that client",
-     async () => {
+  it("starts its run at its time and on its cron, as that client", async () => {
     const r = await gated();
     const file = await keyed(r);
     await defineAgent(r.stub, r.bind(), "main", file);
     const client = await fullClient(r);
-    for (const when of [{ at: Date.now() / 1000 + 3600 }, { cron: "0 * * * *" },
-                        { on_mail: true }]) {
+    for (const when of [{ at: Date.now() / 1000 + 3600 }, { cron: "0 * * * *" }]) {
       await r.stub.agentRun({ ...client, tiers: TIERS }, { agent: "main", input: "later",
                                                            ...when });
     }
-    // Mail reaches the owner (a registered agent's post rings the mail schedules).
-    const { card_id, digest } = await r.stub.registerPropose(client, {
-      command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
-      recipe_id: null });
-    const agent = await r.stub.registerAgent(r.session(), { card_id, digest });
-    await r.stub.roomPost(client, { room_id: `dm:${agent.agent_id}`, client_message_id: "m-1",
-                                    body: "hello", parent_id: null });
     await r.sql("UPDATE run_schedules SET next_at = ? WHERE next_at IS NOT NULL",
                 Date.now() / 1000 - 1);
     await laneRuns(r);
     expect(await r.sql("SELECT initiator, client, state FROM runs ORDER BY initiator"))
-      .toEqual([{ initiator: "mail", client: MUSE.client, state: "running" },
-                { initiator: "schedule", client: MUSE.client, state: "running" },
+      .toEqual([{ initiator: "schedule", client: MUSE.client, state: "running" },
                 { initiator: "schedule", client: MUSE.client, state: "running" }]);
     expect((await recorder(r.stub)).starts.map((start) => start.authority))
-      .toEqual(Array(3).fill(MUSE.client));
+      .toEqual(Array(2).fill(MUSE.client));
     expect(await r.sql("SELECT last_error FROM run_schedules WHERE last_error IS NOT NULL"))
       .toEqual([]);
     // A fire its admission refuses keeps its fixed code and a notice, and writes nothing.
