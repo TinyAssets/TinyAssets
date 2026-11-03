@@ -21,6 +21,21 @@
  * - `connections/key`, `connections/oauth`, `connections/oauth/finish`,
  *   `connections/revoke`, `connections/list`: the model connect doors (`connect.ts`).
  *
+ * - The owner app's reads and settings (the app slice), each one door: `account` (the
+ *   owner's tier, `tierRead`, beside the control record's tier numbers and its file usage:
+ *   tiers differ only by simultaneous runs and storage), `notices`, `policy` and
+ *   `policy/write` (code mode's switch and the owner's `custom` tools are policy),
+ *   `grants` and `grants/set` (a client's mode, scopes and profile; a revoke goes by
+ *   `grants/revoke` alone, so the provider's refresh tokens die with it), `files/read` and
+ *   `files/write` (an agent is files: the owner reads and writes them as UTF-8 text, a file
+ *   of at most one chunk).
+ * - `sources`: the source records' public facts (name, how each connects, which engines a
+ *   key runs, which credentials an engine takes, why one is unwired), so the app's connect
+ *   screen is the records' data, never a list of its own.
+ * - `tools`: the MCP door's table, each tool's name and title (the owner's `custom` choice).
+ * - `tools/<name>`: the owner calling one tool of the MCP door's table (`tools.ts`) as
+ *   itself, the same doors and fields an outside client's call takes, held by the object to
+ *   the owner's own authority.
  * - `agent/submit`, `agent/run`, `agent/status`, `agent/cancel`: the run doors (slice R),
  *   the same doors `converse`, `run_graph`, `run_status` and `run_cancel` call for an
  *   outside client; the control record's tier numbers ride the binding (`withTiers`).
@@ -55,7 +70,7 @@ import { revokeClient } from "./revoke";
 import { authorizationServer } from "./oauth";
 import { clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
 import type { Sources } from "./sources";
-import { refusal } from "./tools";
+import { callDoor, refusal, toolTable } from "./tools";
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
 import { SOCKET_FAILED, TICKET_REFUSED } from "../../owner/src/socket-shape";
@@ -106,7 +121,104 @@ async function signOut(env: DoorsEnv, { binding, stub }: Bound, _request: unknow
   return json(200, { ...closed, signed_out: true }, { "Set-Cookie": clearedCookie() });
 }
 
+/** Whether a body names exactly `required` and at most `optional` besides. */
+function shaped(request: Record<string, unknown>, required: readonly string[],
+                optional: readonly string[] = []): boolean {
+  const keys = Object.keys(request);
+  return required.every((key) => keys.includes(key))
+    && keys.every((key) => required.includes(key) || optional.includes(key));
+}
+
+const NO_FIELDS = "this route takes an empty object";
+
+/** A door that takes no request, behind a closed empty body. */
+function read(door: (bound: Bound) => Promise<unknown>): Route {
+  return async (_env, owner, request) =>
+    shaped(request, []) ? json(200, await door(owner)) : failure(400, NO_FIELDS);
+}
+
+/**
+ * `account`: what the owner's tier gives it, honestly: its tier (the platform's, on its own
+ * admission row), every tier's numbers as the control record holds them (simultaneous runs
+ * and storage, nothing else), and the files it holds now.
+ */
+const account = read(async ({ binding, stub }) => {
+  const { tier } = await stub.tierRead(binding);
+  return { tier, tiers: binding.tiers ?? null, usage: await stub.fileUsage(binding) };
+});
+
+/** `grants/set`: a client's mode, scopes or profile; never a revoke, which is `grants/revoke`. */
+const grantSet: Route = async (_env, { binding, stub }, request) => {
+  if (request["mode"] === "revoked") {
+    return failure(400, "a revoke goes by grants/revoke, which also ends the client's tokens");
+  }
+  return json(200, await stub.grantSet(binding, request as never));
+};
+
+/** `files/read` `{path}`: one file as UTF-8 text, or why it is not shown as text. */
+const fileRead: Route = async (_env, { binding, stub }, request) => {
+  if (!shaped(request, ["path"])) {
+    return failure(400, "a read names the file's path");
+  }
+  const { entry, inline } = await stub.fileRead(binding, { path: request["path"] as string });
+  if (inline === undefined) {
+    return json(200, { entry, text: null, why: "larger than one chunk" });
+  }
+  try {
+    return json(200, { entry, text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(inline) });
+  } catch {
+    return json(200, { entry, text: null, why: "not UTF-8 text" });
+  }
+};
+
+/** `files/write` `{path, expected_etag, text}`: one file's whole text, against its etag. */
+const fileWrite: Route = async (_env, { binding, stub }, request) => {
+  if (!shaped(request, ["path", "expected_etag", "text"]) || typeof request["text"] !== "string") {
+    return failure(400, "a write names the path, the expected etag and the text");
+  }
+  return json(200, await stub.fileWrite(binding, {
+    path: request["path"] as string, expected_etag: request["expected_etag"] as string | null,
+    content: new TextEncoder().encode(request["text"]) }));
+};
+
+/** `sources`: what the app shows of each record; nothing sealed, no endpoint, no argv. */
+function sourceList(sources: Sources): unknown {
+  return {
+    sources: sources.ids().map((id) => {
+      const record = sources.get(id)!;
+      return {
+        id, display_name: record.display_name, help_url: record.help_url ?? null,
+        suggested: record.suggested, connect: record.connect, unwired: record.unwired ?? null,
+        engines: record.engines ?? [], credentials: record.cli?.credential ?? [],
+      };
+    }),
+  };
+}
+
+const TOOLS = "tools/";
+
+/** `tools/<name>`: one tool of the table, called by the owner as itself. */
+async function ownerTool(name: string, { binding, stub }: Bound,
+                         request: Record<string, unknown>): Promise<Response> {
+  const tool = toolTable().find((row) => row.name === name);
+  if (tool === undefined) {
+    return failure(404, "no such tool");
+  }
+  return json(200, await callDoor(stub, binding, tool, request));
+}
+
 const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
+  "account": account,
+  "notices": read(({ binding, stub }) => stub.noticeList(binding)),
+  "policy": read(({ binding, stub }) => stub.policyRead(binding)),
+  "policy/write": async (_env, { binding, stub }, request) =>
+    json(200, await stub.policyWrite(binding, request as never)),
+  "grants": read(({ binding, stub }) => stub.grantList(binding)),
+  "grants/set": grantSet,
+  "tools": read(async () => ({
+    tools: toolTable().map(({ name, title }) => ({ name, title })) })),
+  "files/read": fileRead,
+  "files/write": fileWrite,
   "keys": async (env, owner, request) => json(200, await mintKey(env, owner, request)),
   "keys/revoke": async (env, owner, request) => json(200, await revokeKey(env, owner, request)),
   "keys/delete": async (env, owner, request) =>
@@ -217,9 +329,12 @@ export async function serveApp(request: Request, env: DoorsEnv, sources: Sources
   const path = new URL(request.url).pathname.slice(OWNER_SURFACE.length);
   const registering = path === "outside-agents";
   const ticketing = path === TICKET_PATH;
+  const listing = path === "sources";
+  const tool = path.startsWith(TOOLS) ? path.slice(TOOLS.length) : null;
   const route = Object.hasOwn(ROUTES, path) ? ROUTES[path] : undefined;
   const connect = Object.hasOwn(CONNECT_ROUTES, path) ? CONNECT_ROUTES[path] : undefined;
-  if (route === undefined && connect === undefined && !registering && !ticketing) {
+  if (route === undefined && connect === undefined && !registering && !ticketing
+      && tool === null && !listing) {
     return failure(404, "not found");
   }
   if (request.method !== "POST") {
@@ -250,6 +365,12 @@ export async function serveApp(request: Request, env: DoorsEnv, sources: Sources
     }
     if (connect !== undefined) {
       return await connect({ env, bound: owner, body: parsed, request, sources });
+    }
+    if (listing) {
+      return shaped(parsed, []) ? json(200, sourceList(sources)) : failure(400, NO_FIELDS);
+    }
+    if (tool !== null) {
+      return await ownerTool(tool, owner, parsed);
     }
     return await route!(env, owner, parsed, presented!);
   } catch (error) {

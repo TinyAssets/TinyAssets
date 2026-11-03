@@ -1,0 +1,137 @@
+:root {
+  --ink: #1b1d22;
+  --muted: #5b616e;
+  --line: #d9dce3;
+  --paper: #ffffff;
+  --wash: #f4f5f8;
+  --accent: #2f5bd3;
+  --bad: #b3261e;
+  --good: #1e7a3c;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e8eaef;
+    --muted: #a3a9b6;
+    --line: #353a45;
+    --paper: #16181d;
+    --wash: #1f2229;
+    --accent: #8aa8ff;
+    --bad: #ff8a80;
+    --good: #7fd69a;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--ink);
+  background: var(--wash);
+}
+
+a { color: var(--accent); }
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 10px 16px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand { font-weight: 700; text-decoration: none; color: var(--ink); }
+
+nav { display: flex; flex-wrap: wrap; gap: 4px 12px; flex: 1; }
+nav a { text-decoration: none; padding: 2px 0; }
+nav a[aria-current="page"] { font-weight: 700; text-decoration: underline; }
+
+#who { color: var(--muted); font-size: 14px; }
+
+main { max-width: 960px; margin: 0 auto; padding: 16px; }
+main.return { max-width: 560px; padding-top: 48px; }
+
+h1 { font-size: 24px; margin: 8px 0 16px; }
+h2 { font-size: 18px; margin: 24px 0 8px; }
+
+section, .card {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 0 0 16px;
+}
+
+.muted, small { color: var(--muted); }
+small { display: block; font-size: 13px; }
+
+#notice:empty { display: none; }
+#notice { max-width: 960px; margin: 12px auto 0; padding: 0 16px; }
+.message { padding: 10px 12px; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--paper); display: flex; gap: 12px; align-items: center;
+           flex-wrap: wrap; }
+.message.bad { border-color: var(--bad); color: var(--bad); }
+.message.good { border-color: var(--good); color: var(--good); }
+
+.field { display: block; margin: 0 0 12px; }
+.field > span { display: block; font-weight: 600; margin-bottom: 4px; }
+
+input[type="text"], input[type="password"], input:not([type]), select, textarea {
+  width: 100%;
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+textarea { min-height: 96px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+           font-size: 14px; }
+textarea.editor { min-height: 320px; }
+
+button {
+  font: inherit;
+  padding: 7px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--paper);
+  cursor: pointer;
+}
+button.quiet { background: transparent; color: var(--accent); }
+button.danger { border-color: var(--bad); background: transparent; color: var(--bad); }
+button:disabled { opacity: 0.55; cursor: progress; }
+
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.checks { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 0 12px; }
+.checks label { display: flex; gap: 6px; align-items: center; }
+
+table { width: 100%; border-collapse: collapse; font-size: 15px; }
+th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line);
+         vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+.scroll { overflow-x: auto; }
+
+.log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+       max-height: 360px; overflow: auto; background: var(--wash); border-radius: 6px;
+       padding: 8px; margin: 8px 0; white-space: pre-wrap; word-break: break-word; }
+.log:empty::before { content: "Nothing yet."; color: var(--muted); }
+.frame { padding: 2px 0; border-bottom: 1px dotted var(--line); }
+.frame b { margin-right: 6px; }
+
+.said { padding: 8px 10px; border-radius: 6px; margin: 6px 0; background: var(--wash); }
+.said.me { border-left: 3px solid var(--accent); }
+.said.agent { border-left: 3px solid var(--good); white-space: pre-wrap; }
+
+.secret { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all;
+          background: var(--wash); padding: 8px; border-radius: 6px; }
+
+section > h2:first-child { margin-top: 0; }
+.card { display: grid; gap: 8px; justify-items: start; margin-bottom: 12px; }
+.card .row { width: 100%; }
+.row input { flex: 1 1 220px; width: auto; }

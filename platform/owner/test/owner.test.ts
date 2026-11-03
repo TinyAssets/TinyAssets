@@ -42,7 +42,7 @@ const RPC_METHODS = Object.freeze([
   "policyRead", "policyReceipts", "policyWakeLimits", "policyWrite", "registerAgent",
   "registerProposal", "registerPropose", "roomPost", "runEvents", "sessionClose",
   "sessionCloseAll", "sessionExtend", "sessionOpen", "signinReport", "socketTicket",
-  "socketsEnd", "tierSet", "toolProfile", "usageReceipts",
+  "socketsEnd", "tierRead", "tierSet", "toolProfile", "usageReceipts",
 ]);
 
 /** The runtime's reserved methods the object hands to Lifecycle: no RPC reaches them. */

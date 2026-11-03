@@ -186,7 +186,13 @@ describe("admission", () => {
     // No client, request or owner sets the tier: only the platform.
     expect((await failure(() => r.stub.tierSet(r.bind(), { tier: "paid" }))).message)
       .toBe(PLATFORM_TIER_ONLY);
+    expect(await r.stub.tierRead(r.bind())).toEqual({ tier: "free" });
     expect(await tierSet(r, "paid")).toEqual({ tier: "paid" });
+    // The owner reads its tier (its app shows it); an outside client never does.
+    expect(await r.stub.tierRead(r.bind())).toEqual({ tier: "paid" });
+    expect((await failure(() => r.stub.tierRead(
+      r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn() })))).message)
+      .toMatch(/^only the owner may read its tier|^outside client/);
     for (let i = 0; i < 5; i++) {
       await ownerRun(r.stub, r.bind());
     }

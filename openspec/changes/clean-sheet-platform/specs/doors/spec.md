@@ -151,6 +151,24 @@ No published app, user content or third-party page SHALL ever be served on `http
 - **WHEN** a CIMD document or a registered client names a redirect on `tinyassets.io` or a subdomain such as `mcp.tinyassets.io`
 - **THEN** its authorization is refused before the consent page
 
+### Requirement: The doors serve the owner app on the owner surface's origin
+The doors Worker SHALL serve the owner app at `/app`, `/app/signed-in`, `/app/connected` and its named files under `/app/static/`, from its own `ASSETS`, and nothing else under `/app` but the owner surface. Each answer SHALL carry `Referrer-Policy: no-referrer` and a strict CSP (this origin only, nothing inline, no framing). Each return page's first and only script SHALL clear the code from the address bar before anything else.
+
+#### Scenario: The connect callback hands the app its code
+- **WHEN** a provider returns the owner's browser to `/oauth/connect/callback/<source>`, which hands the code to `/app/connected` in the fragment
+- **THEN** the page's own script clears the fragment before any other script runs, and posts the code to `connections/oauth/finish` with no referrer
+
+#### Scenario: A path under /app that the app does not name
+- **WHEN** a browser asks for `/app/index.html` or any unnamed file
+- **THEN** the doors answer `404`, and the assets are reached for nothing
+
+### Requirement: The owner app's routes are each one door
+The owner surface SHALL serve the owner app's reads and settings, each one owner door behind the first-party token: `account` (the owner's tier with the control record's numbers and the file usage), `notices`, `policy`, `policy/write`, `grants`, `grants/set`, `files/read`, `files/write` (text, against etags), `sources` (each record's public facts), `tools`, and `tools/<name>` (one table tool, the owner as itself). A revoke SHALL go by `grants/revoke` alone.
+
+#### Scenario: The owner sets a client's grant to revoked through grants/set
+- **WHEN** the owner's app posts `grants/set` with mode `revoked`
+- **THEN** it is refused `400`, and nothing changes
+
 ### Requirement: Sign-out ends the device's access, and devices sign in apart
 Each sign-in of the owner's app SHALL keep its own grant, so devices stay signed in together. Sign-out SHALL close the session and revoke the presented token's grant, leaving other devices signed in.
 
@@ -159,7 +177,7 @@ Each sign-in of the owner's app SHALL keep its own grant, so devices stay signed
 - **THEN** the phone's token is refused at once and the laptop's still works
 
 ### Requirement: The doors Worker cannot deploy before cutover
-The doors config SHALL bind exactly `OWNER` (the owner Worker's `OwnerDO`, by script name), `GATEWAY` (the gateway Worker's `ConnectGateway` entrypoint), `EGRESS` (its `EgressGateway` entrypoint), `OAUTH_KV`, `DIRECTORY` and `CONTROL` (distinct placeholder ids) and the `DCR_ENABLED` var, with no routes, custom domain, workers.dev or preview URL, and the flags `nodejs_compat`, `disable_ctx_exports` and `global_fetch_strictly_public`.
+The doors config SHALL bind exactly `OWNER` (the owner Worker's `OwnerDO`, by script name), `GATEWAY` (the gateway Worker's `ConnectGateway` entrypoint), `EGRESS` (its `EgressGateway` entrypoint), `OAUTH_KV`, `DIRECTORY` and `CONTROL` (distinct placeholder ids), `ASSETS` (the owner app's files, `./app`, the Worker first on every request) and the `DCR_ENABLED` var, with no routes, custom domain, workers.dev or preview URL, and the flags `nodejs_compat`, `disable_ctx_exports` and `global_fetch_strictly_public`.
 
 #### Scenario: A route is added
 - **WHEN** a route, another service, a real KV id or another binding is added to the doors config
