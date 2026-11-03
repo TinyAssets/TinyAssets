@@ -41,7 +41,9 @@ import { createHash, randomBytes } from "node:crypto";
 
 import { MANIFEST_PARTS } from "../../files/src/keys";
 import type { ChangeLog } from "./changelog";
-import { chunkLine, decodeCursor, encodeCursor, endLine, readPage } from "./export";
+import {
+  chunkLine, decodeCursor, encodeCursor, endLine, EXPORT_PAGE_BYTES, readPage,
+} from "./export";
 import { CHUNK_BYTES, type ChunkStore, type ChunkSpace } from "./files";
 import type { OwnerStorage, Write } from "./gate";
 
@@ -72,6 +74,18 @@ export const SEGMENT_ENTRY = 16 + 1 + 16 + 1 + 64 + 1 + 7 + 1;
  * two parts' worth, about 24 MiB of the isolate's 128 MB at its peak.
  */
 const GATHER_BYTES = 2 * CHUNK_BYTES;
+/**
+ * A generation's sizes: a base page's rows, a part's bytes, a burst's. The production
+ * figures are these; a test passes smaller ones (`BackupParts.sizes`) to cut a small
+ * fixture into many pages, parts and bursts, the bound logic the same at any size.
+ */
+export interface GenerationSizes {
+  readonly page: number;
+  readonly part: number;
+  readonly gather: number;
+}
+export const GENERATION_SIZES: GenerationSizes = Object.freeze({
+  page: EXPORT_PAGE_BYTES, part: CHUNK_BYTES, gather: GATHER_BYTES });
 /** The notice an owner is given, once, when its generation passes `MANIFEST_PARTS`. */
 export const MANIFEST_CEILING = "manifest_ceiling";
 /** The notice an owner is given, once, when its unshipped log passed `LOG_BYTES`. */
@@ -165,6 +179,8 @@ export interface BackupParts {
   readonly halted: () => boolean;
   /** In a unit: the owner told something its work reports (`notices.ts`). */
   readonly notice: (type: string, detail: string) => void;
+  /** Its sizes, `GENERATION_SIZES` unless a test shrinks them. */
+  readonly sizes?: GenerationSizes;
 }
 
 export class Backups {
@@ -509,13 +525,14 @@ export class Backups {
       let next: string | null = at.cursor;
       let e: number | null = null;
       let endedAt = 0;
-      while (size < GATHER_BYTES) {
+      const sizes = this.#parts.sizes ?? GENERATION_SIZES;
+      while (size < sizes.gather) {
         const cursor = next;
         const page = await this.#write(() => {
           const read = readPage(this.#sql, decodeCursor(cursor),
                                 { schema: this.#parts.schema, owner: this.#parts.owner(),
                                   at: Date.now(), gen: at.gen, s: at.s },
-                                Number.MAX_SAFE_INTEGER);
+                                Number.MAX_SAFE_INTEGER, sizes.page);
           return { read, last: read.next === null ? log.state().last : null, at: Date.now() };
         });
         for (const line of [...page.read.lines,
@@ -535,7 +552,7 @@ export class Backups {
       let text = "";
       for (const line of lines) {
         const add = `${line}\n`;
-        if (text !== "" && new TextEncoder().encode(text + add).byteLength > CHUNK_BYTES) {
+        if (text !== "" && new TextEncoder().encode(text + add).byteLength > sizes.part) {
           parts.push(new TextEncoder().encode(text));
           text = "";
         }

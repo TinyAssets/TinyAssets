@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
-import { Backups } from "../src/backup";
+import { Backups, type GenerationSizes } from "../src/backup";
 import { ChangeLog } from "../src/changelog";
 import { exported } from "../src/export";
 import type { ChunkStore, Files } from "../src/files";
@@ -22,6 +22,14 @@ import { drainDue, filesOn, TIERS } from "./support";
 import type { FauxOwnerDO } from "./worker";
 
 export type Line = Record<string, unknown> & { t: string };
+
+/**
+ * A generation's sizes under test: pages of 16 KiB, parts of 32 KiB, bursts of 64 KiB, so a
+ * fixture of a few hundred KB is cut into the pages, parts, bursts and outside calls a
+ * production base of hundreds of MB is. The bound logic is the same at any size.
+ */
+export const SMALL: GenerationSizes = Object.freeze({ page: 16 * 1024, part: 32 * 1024,
+                                                      gather: 64 * 1024 });
 /** Rows as a reader keeps them: each table's rows by key, the last line for a key winning. */
 export type Rows = Record<string, Record<string, string>>;
 
@@ -103,6 +111,8 @@ export interface Harness {
   readonly onePass?: boolean;
   /** The schema version the lane runs under (the code's, unless a migration is played). */
   readonly schema?: number;
+  /** Its sizes: `SMALL` unless a test asks for others (production's `GENERATION_SIZES`). */
+  readonly sizes?: GenerationSizes;
 }
 
 /**
@@ -115,10 +125,13 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
     const gate = new WriteGate(state.storage);
     const log = new ChangeLog(gate.storage);
     const files = filesOn(gate.storage, gate.write);
+    // The owner's digest at each E a pass fixes: right after the unit that read the base's
+    // last page (its answer names `last`, E), before anything else writes. Only there, so
+    // the harness costs one digest a pass, never one a unit.
     const digests = new Map<number, string>();
-    const note = () => {
-      const { last } = log.state();
-      if (!digests.has(last)) {
+    const note = (value: unknown) => {
+      const last = (value as { last?: unknown } | null)?.last;
+      if (typeof last === "number" && !digests.has(last)) {
         digests.set(last, digest(standing(state.storage.sql)));
       }
     };
@@ -126,7 +139,6 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
     const call = <A extends unknown[], R>(made: (...args: A) => Promise<R>) =>
       async (...args: A): Promise<R> => {
         const n = ++calls;
-        note();
         await harness.duringCall?.({ files, gate, n });
         if (harness.failAt?.call === n && harness.failAt.when === "before") {
           throw new Error("an outside call failed before it was made");
@@ -153,7 +165,7 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
     let units = 100_000;
     const quiet = async <T>(unit: () => T): Promise<T> => {
       const value = await gate.quiet(unit);
-      note();
+      note(value);
       await harness.afterUnit?.({ files, gate, n: ++units });
       return value;
     };
@@ -161,7 +173,7 @@ export function generate(stub: DurableObjectStub<OwnerDO>, harness: Harness = {}
     const lane = () => new Backups({
       storage: gate.storage, write: quiet, store, log, space: () => files.space(),
       owner: () => "owner", serves: () => true, schema: harness.schema ?? MIGRATIONS.length,
-      halted: () => false, notice: (type) => notices.push(type),
+      halted: () => false, notice: (type) => notices.push(type), sizes: harness.sizes ?? SMALL,
     });
     // The one under way, or a new one, begun now (its owner changed since the last).
     if (state.storage.sql.exec("SELECT 1 FROM owner_backups WHERE state = 'writing'")

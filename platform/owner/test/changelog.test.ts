@@ -94,7 +94,7 @@ describe("the change log", () => {
     for (const how of ["full"] as const) {
       const o = await owner();
       await sqlIn(o.stub, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n " +
-        "WHERE i < 9000) INSERT INTO owner_notices (at, type, detail) SELECT 0, 'x', " +
+        "WHERE i < 200) INSERT INTO owner_notices (at, type, detail) SELECT 0, 'x', " +
         "printf('%.1000c', 'a') FROM n");
       const made = await generate(o.stub, {
         duringCall: async ({ gate, n }) => {
@@ -124,7 +124,7 @@ describe("the change log", () => {
      "L5-1)", async () => {
     const o = await owner();
     await sqlIn(o.stub, "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n " +
-      "WHERE i < 9000) INSERT INTO owner_notices (at, type, detail) SELECT 0, 'x', " +
+      "WHERE i < 200) INSERT INTO owner_notices (at, type, detail) SELECT 0, 'x', " +
       "printf('%.1000c', 'a') FROM n");
     // Its models at their ceiling in bytes, every one a character JSON escapes, and its
     // egress scope at its own.

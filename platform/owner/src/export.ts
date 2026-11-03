@@ -314,11 +314,11 @@ export const EXPORTS_OPEN = 16;
 
 /**
  * One page of a generation's base pass from `cursor`, read in the caller's unit: at most
- * `EXPORT_PAGE_BYTES` of rows' text past the first row, or chunks up to `chunkBytes` in all
- * (at least one), then the next cursor, or null once the base is read.
+ * `pageBytes` (`EXPORT_PAGE_BYTES`) of rows' text past the first row, or chunks up to
+ * `chunkBytes` in all (at least one), then the next cursor, or null once the base is read.
  */
 export function readPage(sql: Pick<SqlStorage, "exec">, cursor: Cursor, header: Header,
-                         chunkBytes: number): Page {
+                         chunkBytes: number, pageBytes: number = EXPORT_PAGE_BYTES): Page {
   const lines: string[] = [];
   const all = exported();
   const names = Object.keys(all);
@@ -347,7 +347,7 @@ export function readPage(sql: Pick<SqlStorage, "exec">, cursor: Cursor, header: 
       lines.push(line);
       bytes += line.length;
       after = key.map((column) => row[column] as string | number);
-      if (bytes >= EXPORT_PAGE_BYTES) {
+      if (bytes >= pageBytes) {
         return { lines, chunks: [], next: { section, after } };
       }
     }

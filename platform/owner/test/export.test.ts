@@ -150,9 +150,9 @@ describe("the owner export", () => {
   it("resumes from every cursor it ever handed out, to the same owner at E (review R4-2)",
      async () => {
     const o = await owner();
-    await notices(o, 12_000);  // past one burst, so writes land between its pages
+    await notices(o, 150);  // past one burst, so writes land between its pages
     // A generation with a writer at every outside call: base parts and log segments.
-    const made = await generate(o.stub, { duringCall: busy(5) });
+    const made = await generate(o.stub, { duringCall: busy(2) });
     expect(made.lines.some((line) => line["seq"] !== undefined)).toBe(true);
     // An export now reads it (nothing changed since it began, by the owner's doors).
     const whole = await exportFrom(o, null);
@@ -232,7 +232,7 @@ describe("a generation", () => {
   it("ends as the owner at E though the owner writes at every outside call and after " +
      "every unit (review R4-3)", async () => {
     const o = await owner();
-    await notices(o, 3000);
+    await notices(o, 200);
     let after = 0;
     const made = await generate(o.stub, {
       duringCall: busy(10),
@@ -251,7 +251,7 @@ describe("a generation", () => {
 
   it("settles though a 5,000-file sync runs through its pass (review R4-3)", async () => {
     const o = await owner();
-    await notices(o, 80_000);  // a dozen bursts: some two hundred units and calls
+    await notices(o, 1_600);  // some twenty-five bursts: hundreds of units and calls
     let written = 0;
     // The sync's files land at every outside call and after every unit, as they come.
     const sync = async (at: { files: Files; gate: WriteGate; n: number }) => {
@@ -264,18 +264,20 @@ describe("a generation", () => {
       .toMatchObject({ written: 5000, notices: [] });
     expect(made.atE).toBeDefined();
     expect(digest(replay(made.lines))).toBe(made.atE);
-  }, 900_000);  // some 80 s alone; minutes on a shared, loaded host
+  }, 120_000);
 
   it("repeats only what was not acknowledged, wherever a pass is cut: before or after " +
      "each outside call (review R4-1; crash points)", async () => {
     const plain = await owner();
-    await notices(plain, 10_000);
-    const { calls } = await generate(plain.stub, { duringCall: busy(3) });
+    await notices(plain, 100);  // two bursts: segments before E and after
+    const { calls, lines } = await generate(plain.stub, { duringCall: busy(3) });
     expect(calls).toBeGreaterThan(3);
+    // Its root names log segments through E: crash points fall between the base's bursts.
+    expect(lines.some((line) => line["seq"] !== undefined)).toBe(true);
     for (let call = 1; call <= calls; call++) {
       for (const when of ["before", "after"] as const) {
         const o = await owner();
-        await notices(o, 10_000);
+        await notices(o, 100);
         const made = await generate(o.stub, { duringCall: busy(3), failAt: { call, when } });
         expect([call, when, made.notices]).toEqual([call, when, []]);
         expect([call, when, digest(replay(made.lines))]).toEqual([call, when, made.atE]);
@@ -286,7 +288,7 @@ describe("a generation", () => {
   it("gives up one a migration ran under, loudly, and begins a fresh one under the new " +
      "schema: never two schemas in one (review L5-2)", async () => {
     const o = await owner();
-    await notices(o, 10_000);
+    await notices(o, 200);
     const before = await generate(o.stub, { onePass: true });
     const [begun] = await sqlIn(o.stub, "SELECT gen, schema FROM owner_backups");
     expect(begun).toEqual({ gen: before.gen, schema: MIGRATIONS.length });
