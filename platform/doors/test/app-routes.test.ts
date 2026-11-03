@@ -9,6 +9,7 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { wakeKinds } from "../../owner/src/wake-kinds";
 import { mcpOrigin } from "../src/binder";
 import { bundledSources } from "../src/sources";
 import { profileNames, toolNames } from "../src/tools";
@@ -124,6 +125,19 @@ describe("the owner app's settings routes", () => {
     const { tools } = await answered(await appPost("tools", app.access_token, null, {})) as
       { tools: { name: string; title: string }[] };
     expect(tools.map((tool) => tool.name)).toEqual(toolNames());
+  });
+});
+
+describe("the owner app's wake-up kinds", () => {
+  it("are the records whose owner pastes the URL and token, as data", async () => {
+    const app = await signInApp({ owner: owner() });
+    const { kinds } = await answered(await appPost("agent/doorbell/kinds", app.access_token,
+                                                   null, {})) as
+      { kinds: { id: string; vendor: string; agents: string }[] };
+    const pasted = wakeKinds().filter((kind) => kind.push?.callback === "owner");
+    expect(pasted.length).toBeGreaterThan(0);
+    expect(kinds).toEqual(pasted.map(({ id, vendor, agents }) => ({ id, vendor, agents })));
+    expect(kinds.map((kind) => kind.id)).not.toContain("chatgpt_mcp_events");
   });
 });
 

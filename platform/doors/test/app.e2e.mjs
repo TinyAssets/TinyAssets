@@ -377,9 +377,10 @@ test("every screen opens on the doors' answers, and says plainly what is not her
   await page.locator(".message.good", { hasText: "Saved." }).waitFor();
   assert.equal(await page.locator("section", { hasText: "Code mode" }).getByRole("checkbox")
     .isChecked(), false);
-  // The wake-ups and the export need doors other slices bring: said, never faked.
-  await page.goto(`${ORIGIN}/app#agents/main`);
-  await page.getByText("is not on this platform yet").waitFor();
+  // No main agent has joined, so no wake-up is offered; the export needs slice P's door:
+  // said, never faked.
+  await page.goto(`${ORIGIN}/app#apps`);
+  await page.getByText("No main agent has joined yet.").waitFor();
   await page.goto(`${ORIGIN}/app#data`);
   await page.getByRole("button", { name: "Export everything" }).click();
   await page.locator(".message.bad", { hasText: "not here yet" }).waitFor();

@@ -326,7 +326,6 @@ async function agent(name) {
   };
   const newFile = h("input", { type: "text", placeholder: "skills/notes/SKILL.md" });
 
-  const wakes = h("div", {});
   fill(main,
        h("p", {}, h("a", { href: "#agents" }, "All agents")),
        h("h1", {}, name),
@@ -345,8 +344,7 @@ async function agent(name) {
            const path = `${agentDir(name)}/${newFile.value.trim().replace(/^\/+/, "")}`;
            await edit(editor, path, listFiles, true);
          }, report, { class: "quiet" })),
-         editor),
-       h("section", {}, h("h2", {}, "Wake-ups"), wakes));
+         editor));
   showSaid();
   showRun();
   for (const frame of talk.frames) {
@@ -356,7 +354,6 @@ async function agent(name) {
     watch(talk.conversation).catch(report);
   }
   await listFiles();
-  await doorbells(wakes, name);
 }
 
 /** A file's text in an editor, saved against the etag it was read at. */
@@ -395,32 +392,28 @@ async function ensureDirs(dir) {
   }
 }
 
-/** An agent's doorbells: the URL and token a main agent's vendor showed the owner. */
-async function doorbells(box, name) {
-  let kinds;
-  try {
-    ({ kinds } = await call("agent/doorbell/kinds"));
-  } catch (error) {
-    if (error instanceof Refused && error.status === 404) {
-      fill(box, h("p", { class: "muted" }, "Waking a main agent (a Claude scheduled task or a " +
-        "Grok routine) when something changes is not on this platform yet."));
-      return;
-    }
-    throw error;
+/**
+ * A main agent's wake-up: the address and token its vendor showed the owner (the kinds
+ * whose records have the owner paste them), sealed by the gateway, never shown again.
+ */
+function doorbell(agent, kinds) {
+  if (kinds.length === 0) {
+    return h("p", { class: "muted" }, "No main agent's app takes a pasted wake-up.");
   }
   const kind = h("select", {}, kinds.map((k) => h("option", { value: k.id }, k.agents)));
   const url = h("input", { type: "text", placeholder: "The address your app showed you", autocomplete: "off" });
   const secret = h("input", { type: "password", autocomplete: "off" });
-  fill(box,
-       h("p", { class: "muted" }, "Paste the address and token your main agent's app showed " +
-         "you. TinyAssets seals the token and never shows it again."),
-       field("Which main agent", kind), field("Address", url), field("Token", secret),
-       action("Save the wake-up", async () => {
-         await call("agent/doorbell", { agent_id: name, kind: kind.value, url: url.value.trim(),
-                                        secret: secret.value });
-         secret.value = "";
-         say("Saved. That main agent is woken when something changes for it.");
-       }, report));
+  return h("div", { class: "card" },
+    h("b", {}, agent.display_name),
+    h("p", { class: "muted" }, "Paste the address and token its app showed you to wake it " +
+      "when something changes for it. TinyAssets seals the token and never shows it again."),
+    field("Its app", kind), field("Address", url), field("Token", secret),
+    action("Save the wake-up", async () => {
+      await call("agent/doorbell", { agent_id: agent.agent_id, kind: kind.value,
+                                     url: url.value.trim(), secret: secret.value });
+      secret.value = "";
+      say(`Saved. ${agent.display_name} is woken when something changes for it.`);
+    }, report));
 }
 
 // -- Rooms and board ------------------------------------------------------------------
@@ -533,8 +526,9 @@ async function sources() {
 // -- Connected apps: code mode, each client's tools, revokes --------------------------
 
 async function apps() {
-  const [policy, { clients }, { tools }] = await Promise.all([
-    call("policy"), call("grants"), call("tools")]);
+  const [policy, { clients }, { tools }, { agents: mains }, { kinds }] = await Promise.all([
+    call("policy"), call("grants"), call("tools"), call("tools/agents_list"),
+    call("agent/doorbell/kinds")]);
   const document_ = policy.policy;
   const codemode = h("input", { type: "checkbox", checked: document_.hooks?.codemode !== false });
   const custom = document_.tools?.custom ?? null;
@@ -566,6 +560,13 @@ async function apps() {
            const chosen = picks.map((p) => p.firstChild).filter((c) => c.checked).map((c) => c.value);
            return write(every.checked ? rest : { ...rest, tools: { custom: chosen } });
          }, report)),
+       h("section", {},
+         h("h2", {}, "Your main agents"),
+         h("p", { class: "muted" }, "A main agent is an app's own agent (a Claude scheduled " +
+           "task, ChatGPT, a Grok routine) that joined your rooms and board."),
+         mains.filter((a) => a.disabled_reason === null).length === 0
+           ? h("p", { class: "muted" }, "No main agent has joined yet.")
+           : mains.filter((a) => a.disabled_reason === null).map((a) => doorbell(a, kinds))),
        h("section", {},
          h("h2", {}, "Apps you connected"),
          outside.length === 0 ? h("p", { class: "muted" }, "No app is connected.")

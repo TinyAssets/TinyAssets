@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
   checkLimits, clock, LEDGER_LIMITS, type Ledger, type LedgerLimits, type Origin, OWNER,
 } from "../src/ledger";
-import { counters, DOT, MCP, MUSE, origin, rig } from "./ledger-support";
+import { counters, DOT, MCP, MUSE, origin, rig, subscription } from "./ledger-support";
 import { failure } from "./support";
 
 const PULL = { command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
@@ -191,11 +191,11 @@ describe("the ledger's bounds", () => {
     expect(usage).toEqual(actual);
   });
 
-  it("deletes an agent with its mail, wakes, rings and receipts", async () => {
+  it("deletes an agent with its mail, wakes, subscriptions and receipts", async () => {
     const r = await rig();
     const muse = await r.register(MUSE, "Muse", "mcp_event", { batch_window_s: 0 });
     const dot = await r.register(DOT, "Dot");
-    await r.subscribe(MUSE, muse);
+    await r.subscribe(MUSE);
     const first = await r.post(null, `dm:${muse}`, { cmid: "o1" });
     await r.tick(clock() + 1);
     await r.read(MUSE);
@@ -216,73 +216,16 @@ describe("the ledger's bounds", () => {
       .toEqual([[dot, "read", toDot.message_id]]);
     expect((await r.table("ledger_readers")).map((x) => x["reader"]).sort())
       .toEqual([dot, OWNER].sort());
-    expect((await r.table("ledger_wakes")).map((w) => [w["agent_id"], w["kind"]]))
-      .toEqual([[muse, "revoke"]]);  // its callbacks are still to be erased
-    expect(await r.table("ledger_rings")).toEqual([]);
-    // Its row stays as a tombstone until that revoke settles, listed to no one.
-    expect((await r.table("outside_agents")).map((a) => [a["agent_id"], a["disabled_reason"],
-                                                         a["deleted_at"] !== null]))
-      .toEqual([[muse, "deleted", true], [dot, null, false]]);
-    expect((await r.stub.outsideAgents(r.bind(null))).agents.map((a) => a.agent_id))
-      .toEqual([dot]);
+    expect(await r.table("ledger_wakes")).toEqual([]);
+    expect(await r.sql("SELECT * FROM wake_callbacks")).toEqual([]);
+    expect((await r.table("outside_agents")).map((a) => a["agent_id"])).toEqual([dot]);
     const [usage, actual] = await counters(r);
     expect(usage).toEqual(actual);
     expect((await failure(() => r.stub.deleteAgent(r.session(null), { agent_id: muse })))
       .message).toBe("agent not found");
-    await r.tick();
-    expect(r.sender.revoked).toEqual([[muse, 1]]);
-    expect((await r.table("outside_agents")).map((a) => a["agent_id"])).toEqual([dot]);
   });
 
-  it("bounds pending revokes by the registry: a deleted agent's tombstone counts",
-     async () => {
-    const r = await rig();
-    const people = Array.from({ length: 30 }, (_, n) => origin(n));
-    const [ids, refused] = await r.inLedger({ maxAgents: 3, maxAgentRows: 3 },
-                                            (ledger: Ledger) => {
-      const made: string[] = [];
-      let full = 0;
-      for (const who of people) {  // 30 register, subscribe and delete cycles
-        try {
-          const id = ledger.register(who, MCP, RINGS).agent_id;
-          ledger.subscriber(who, "alpha", id);
-          ledger.remove(id);
-          made.push(id);
-        } catch (error) {
-          // N1: the refusal names the tombstones that hold the registry.
-          expect((error as Error).message).toBe(
-            "the owner's agent registry is full (3 of its rows are deleted agents, kept " +
-            "while a revoke of their callbacks is pending)");
-          full++;
-        }
-      }
-      // A tombstone is no agent: no door reaches it.
-      for (const act of [() => ledger.disable(made[0], "x"), () => ledger.remove(made[0]),
-                         () => ledger.setWakeLimits(made[0], 12, 60)]) {
-        expect(refusal(act)).toBe("agent not found");
-      }
-      expect(refusal(() => ledger.post(null, `dm:${made[0]}`, "c1", "x", null)))
-        .toBe("room is not an enabled agent's dm");
-      expect(ledger.agents(null)).toEqual([]);
-      // Its identity registers again as itself, its generation kept.
-      const again = ledger.register(people[0]!, MCP, RINGS);
-      expect([again.agent_id, again.subscription, again.revoked_through, again.deleted_at])
-        .toEqual([made[0], 1, 1, null]);
-      return [made, full] as const;
-    });
-    expect([ids.length, refused]).toEqual([3, 27]);
-    expect((await r.table("ledger_wakes")).filter((w) => w["kind"] === "revoke")).toHaveLength(3);
-    await r.tick();  // the doorbell erases them, and the tombstones go
-    expect(r.sender.revoked.map(([id]) => id).sort()).toEqual([...ids].sort());
-    expect((await r.table("outside_agents")).map((a) => a["agent_id"])).toEqual([ids[0]]);
-    await r.inLedger({ maxAgents: 3, maxAgentRows: 3 }, (ledger: Ledger) => {
-      ledger.register(people[29]!, MCP, PULL);  // room again
-    });
-    const [usage, actual] = await counters(r);
-    expect([usage, usage["agents"]]).toEqual([actual, 2]);
-  });
-
-  it("schedules no revoke for an agent that never subscribed, and leaves no row", async () => {
+  it("leaves no row for a deleted agent", async () => {
     const r = await rig();
     await r.inLedger({}, (ledger: Ledger) => {
       const muse = ledger.register(MUSE, MCP, RINGS).agent_id;
@@ -307,8 +250,7 @@ describe("the ledger's bounds", () => {
         .toBe("the owner's enabled agents are at their limit");  // re-enabling counts
       ledger.disable(dot, "paused");
       expect(refusal(() => ledger.register(origin(3), MCP, PULL)))
-        .toBe("the owner's agent registry is full (0 of its rows are deleted agents, kept " +
-              "while a revoke of their callbacks is pending)");
+        .toBe("the owner's agent registry is full; delete a disabled agent to make room");
       ledger.remove(muse);
       ledger.register(origin(3), MCP, PULL);
     });
@@ -353,7 +295,7 @@ describe("the ledger's bounds", () => {
     const now = clock();
     await r.inLedger({ maxSettledWakes: 2 }, (ledger: Ledger) => {
       const muse = ledger.register(MUSE, MCP, RINGS).agent_id;
-      ledger.setWakeLimits(muse, 12, 0);
+      ledger.setWakeLimits(muse, null, 0);
       for (const n of [1, 2, 3]) {
         ledger.post(null, `dm:${muse}`, `c${n}`, `body ${n}`, null, now + n);
         const [wake] = ledger.dueOpen(now + n, 1);
@@ -373,8 +315,7 @@ describe("the ledger's bounds", () => {
       ledger.post(null, `dm:${agent!.agent_id}`, "c4", "body 4", null, later);
       ledger.disable(agent!.agent_id, "revoked", null, later);
     });
-    expect((await r.table("ledger_wakes")).map((w) => [w["kind"], w["state"]]))
-      .toEqual([["wake", "suppressed"]]);
+    expect((await r.table("ledger_wakes")).map((w) => w["state"])).toEqual(["suppressed"]);
     const [usage, actual] = await counters(r);
     expect([usage, usage["settled_wakes"]]).toEqual([actual, 1]);
   });
@@ -423,7 +364,8 @@ describe("the ledger's bounds", () => {
         "this agent's mailbox is full", "the owner's mailbox is full",
         "this agent's unacked mail to the owner is full", "room is not an enabled agent's dm",
         "this outside identity is not one enabled agent",
-        "the owner's enabled agents are at their limit", "the owner's agent registry is full",
+        "the owner's enabled agents are at their limit",
+        "the owner's agent registry is full; delete a disabled agent to make room",
         "agent not found", "ack is past this reader's mail",
       ]);
       const idOf = (who: Origin) => ledger.agents(who).find((a) => a.disabled_reason === null)

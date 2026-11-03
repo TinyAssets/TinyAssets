@@ -21,6 +21,13 @@
  * - `connections/key`, `connections/oauth`, `connections/oauth/finish`,
  *   `connections/revoke`, `connections/list`: the model connect doors (`connect.ts`).
  *
+ * - `agent/doorbell`, `agent/doorbell/end`, `agent/wake-limits`: an agent's doorbell (slice
+ *   W): the owner pastes the `/fire` or routine URL and token a vendor showed it, which go
+ *   straight to the gateway's seal (`connect.ts`), the object storing only the blob under the
+ *   id derived here (the answer never echoes the token); one ended by its id; and the owner's
+ *   own wake settings for an agent (`policyWakeLimits`), off by default; and
+ *   `agent/doorbell/kinds`, the wake kinds whose records have the owner paste the URL and
+ *   token (id and the agents each wakes), so the app's wake-up form is the records' data.
  * - The owner app's reads and settings (the app slice), each one door: `account` (the
  *   owner's tier, `tierRead`, beside the control record's tier numbers and its file usage:
  *   tiers differ only by simultaneous runs and storage), `notices`, `policy` and
@@ -65,7 +72,7 @@ import { ownerGate, ownerRead } from "./control";
 import {
   deleteOwnKey, KeyRefused, looksLikeKey, mintKey, registeringEntry, revokeKey,
 } from "./api-keys";
-import { CONNECT_ROUTES, ConnectRefused } from "./connect";
+import { CONNECT_ROUTES, ConnectRefused, sealDoorbell } from "./connect";
 import { revokeClient } from "./revoke";
 import { authorizationServer } from "./oauth";
 import { clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
@@ -74,6 +81,9 @@ import { callDoor, refusal, toolTable } from "./tools";
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
 import { SOCKET_FAILED, TICKET_REFUSED } from "../../owner/src/socket-shape";
+import {
+  callbackSecret, callbackUrl, follows, kindNamed, subscriptionId, wakeKinds,
+} from "../../owner/src/wake-kinds";
 
 export const OUTSIDE_CREDENTIAL = "an outside credential never reaches the owner's surface";
 
@@ -211,7 +221,55 @@ async function ownerTool(name: string, { binding, stub }: Bound,
   return json(200, await callDoor(stub, binding, tool, request));
 }
 
+/**
+ * `agent/doorbell`: the owner's pasted wake token for one of its agents, for a kind whose
+ * record has the owner hand it over. Checked against the record here and again in the
+ * gateway, which seals it with the URL; the object stores the blob under the id derived
+ * from the owner, URL, kind and what it follows. Never echoed.
+ */
+async function doorbell(env: DoorsEnv, { binding, stub }: Bound,
+                        request: Record<string, unknown>): Promise<Response> {
+  const keys = Object.keys(request);
+  const kind = typeof request["kind"] === "string" ? kindNamed(request["kind"]) : null;
+  if (!["agent_id", "kind", "url", "secret"].every((key) => keys.includes(key))
+      || !keys.every((key) => ["agent_id", "kind", "url", "secret", "board", "rooms"]
+        .includes(key))
+      || typeof request["agent_id"] !== "string" || kind === null || kind.push === null
+      || kind.push.callback !== "owner") {
+    return failure(400, "a doorbell names an agent, its kind, the URL and the token");
+  }
+  let follow;
+  let url: string;
+  let secret: string;
+  try {
+    follow = follows({ board: request["board"] ?? false, rooms: request["rooms"] ?? [] });
+    url = callbackUrl(kind.push, request["url"]);
+    secret = callbackSecret(kind.push, request["secret"]);
+  } catch (error) {
+    return failure(400, error instanceof Error ? error.message : "invalid doorbell");
+  }
+  const args = { agent_id: request["agent_id"], board: follow.board, rooms: follow.rooms };
+  const id = subscriptionId("owner", url, kind.id, args);
+  const sealed = await sealDoorbell(env, binding.owner, id, { record: kind.id, url, secret });
+  return json(200, await stub.agentDoorbell(binding, {
+    agent_id: request["agent_id"], kind: kind.id, subscription_id: id, board: follow.board,
+    rooms: follow.rooms, blob: sealed.blob, kid: sealed.kid, version: 1 }));
+}
+
+/** `agent/doorbell/kinds`: the wake kinds the owner pastes a URL and token for. */
+function doorbellKinds(): unknown {
+  return { kinds: wakeKinds().filter((kind) => kind.push?.callback === "owner")
+    .map(({ id, vendor, agents }) => ({ id, vendor, agents })) };
+}
+
 const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
+  "agent/doorbell": doorbell,
+  "agent/doorbell/end": async (_env, { binding, stub }, request) =>
+    json(200, await stub.agentDoorbellEnd(binding, request as never)),
+  "agent/wake-limits": async (_env, { binding, stub }, request) =>
+    json(200, await stub.policyWakeLimits(binding, request as never)),
+  "agent/doorbell/kinds": (_env, _owner, request) =>
+    read(request, () => Promise.resolve(doorbellKinds())),
   "account": account,
   "notices": (_env, { binding, stub }, request) => read(request, () => stub.noticeList(binding)),
   "policy": (_env, { binding, stub }, request) => read(request, () => stub.policyRead(binding)),

@@ -68,7 +68,8 @@ async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext):
   return mcpResource(async (req, environment, token) => {
     const bound = await bindMcp(environment, token);
     const read = await outsideRead(environment, bound.binding.owner);
-    return read instanceof Response ? read : serveMcp(req, withTiers(bound, read.tiers));
+    return read instanceof Response ? read : serveMcp(req, withTiers(bound, read.tiers),
+                                                      environment);
   }).fetch(request, env, ctx);
 }
 
