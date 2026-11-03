@@ -120,7 +120,7 @@ import { type Ask, CONVERSATION_BUSY, SIGNIN_REQUIRED, type LiveRun, type MailAn
          scheduleAuthority, secretHash } from "./runs";
 import { ENGINE_SIGNINS, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS } from "./run-rows";
 import { EVENT_FRAMES_MAX, EVENTS_RACED, eventsBounded, FRAME_UNITS_MAX, PostGate } from "./run-events";
-import { SANDBOX_ABSENT, type SandboxService, started } from "./sandbox";
+import { SANDBOX_ABSENT, SANDBOX_WAITING, type SandboxService, started } from "./sandbox";
 import { TICKET_REFUSED } from "./socket-shape";
 import { Tickets } from "./tickets";
 import {
@@ -137,8 +137,9 @@ import {
 } from "./connections";
 import { Invalid, Refused } from "./errors";
 import {
-  type Change as FileChange, CHUNK_BYTES, CHUNK_DELETING, type ChunkRef, type ChunkStore, type Content,
-  type Entry, FileConflict, Files, type Lease, OWNER_AUTHORITY, type SandboxLease, type SyncOp,
+  type Change as FileChange, CHUNK_BYTES, CHUNK_DELETING, type ChunkRef, type ChunkStore,
+  type Content, type Entry, FileConflict, FileFault, Files, type Lease, OWNER_AUTHORITY,
+  type SandboxLease, type SyncOp,
   type SyncOutcome, type Usage,
 } from "./files";
 import { type OwnerStorage, type Write, WriteGate } from "./gate";
@@ -486,11 +487,12 @@ export interface AdmissionRequest {
 }
 
 /**
- * The object's environment: three service bindings, `FILES`, to the files Worker, which
+ * The object's environment: four service bindings, `FILES`, to the files Worker, which
  * binds no Durable Object and no service, `GATEWAY`, to the model gateway, which binds
- * nothing, and `HOOKS`, to the hooks Worker, which binds only its own class (the config
- * guard checks every config), and no Durable Object namespace. `SANDBOX`, the sandbox
- * Worker, is typed here and bound by no config until slice S.
+ * nothing, `HOOKS`, to the hooks Worker, which binds only its own class, and `SANDBOX`, to
+ * the sandbox Worker (slice S), which binds only its own class and the directory and
+ * reaches nothing but E2B (the config guard checks every config); and no Durable Object
+ * namespace.
  */
 export interface OwnerEnv {
   readonly FILES: ChunkStore;
@@ -507,8 +509,8 @@ export interface OwnerEnv {
    */
   readonly ROUTING_MAC_KEY: string;
   /**
-   * The sandbox Worker (`sandbox.ts`), slice S's: unbound until then, so every run is
-   * refused (`SANDBOX_ABSENT`) and none reaches `running`.
+   * The sandbox Worker (`sandbox.ts`, `platform/sandbox`). Absent (a config without it, a
+   * test's), every run is refused (`SANDBOX_ABSENT`) and none reaches `running`.
    */
   readonly SANDBOX?: SandboxService;
 }
@@ -686,6 +688,18 @@ export interface SandboxConfig {
 
 export interface SyncCommitRequest extends LeaseRequest {
   readonly ops: SyncOp[];
+}
+
+/** The sync agent's upload, begun as its lease's writer (`fileSyncUploadBegin`). */
+export interface SyncUploadBeginRequest extends LeaseRequest {
+  readonly size: number;
+  readonly chunks: string[];
+}
+
+/** The sync agent's chunk bytes for its own upload (`fileSyncUploadChunks`). */
+export interface SyncUploadChunksRequest extends LeaseRequest {
+  readonly intent_id: string;
+  readonly chunks: { readonly sha256: string; readonly bytes: Uint8Array }[];
 }
 
 /** A lost file compare-and-swap: answered with the entry as it stands. */
@@ -1438,7 +1452,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         renew: (leaseId, epoch) => {
           this.#files.leaseRenew(leaseId, epoch);
         },
-        lapsed: (now) => this.#files.leasesLapsed(now),
+        lapsed: (now) => {
+          // Each lapsed lease's sandbox paused, as a given-back one's is (slice S).
+          for (const leaseId of this.#files.leasesLapsed(now)) {
+            queueMicrotask(() => void this.#sandboxRelease(leaseId));
+          }
+        },
       },
       stop: (runs) => this.#cancelInSandbox(runs),
       answer: (answer) => this.#answer(answer),
@@ -1450,6 +1469,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       },
       leaseEnded: (leaseId) => {
         this.#egress.end("lease", (live) => live.lease === leaseId);
+        // Once the unit is over, its sandbox paused: no run lives in it (slice S).
+        queueMicrotask(() => void this.#sandboxRelease(leaseId));
       },
     });
     this.#relay = new Relay({
@@ -1478,6 +1499,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         this.#egress.drop();
         this.#relay.closeAll("erased");
         this.#cancelInSandbox(this.#runs.liveRuns());
+      },
+      // Every sandbox of the owner killed, paused ones included, and the sandbox Worker's
+      // state of them deleted (slice S review H-6). None bound, none was ever made.
+      sandboxes: async () => {
+        await this.env.SANDBOX?.erase(this.#ownerName());
       },
       // Every R2 copy of the owner's: files and placed bodies alike are the files plane's
       // chunks (ADR-035), deleted by the namespace's prefix once every put this instance
@@ -2740,8 +2766,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const sandbox = sandboxBinding(binding.sandbox);
     const lease = sandbox.kind === "sync"
       ? this.#files.leaseByToken("sync", sandbox.token, clock()) : null;
-    if (lease === null || (request !== null && (request.lease_id !== lease.lease_id
-                                                || request.epoch !== lease.epoch))) {
+    // The call came from inside the lease's own sandbox: E2B's transform set that lease's
+    // egress token beside the sync token (review M-5).
+    const inside = sandbox.kind === "sync"
+      ? this.#files.leaseByToken("egress", sandbox.egress, clock()) : null;
+    if (lease === null || inside?.lease_id !== lease.lease_id
+        || (request !== null && (request.lease_id !== lease.lease_id
+                                 || request.epoch !== lease.epoch))) {
       throw new Refused(SYNC_FENCED);
     }
     // A client's sandbox always reads its live runs' agents' own definitions (their
@@ -3060,12 +3091,34 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
   }
 
+  /**
+   * A read door's caller: a file door's (`read_files`, every path it reaches visible), or the
+   * sync agent's by its sync token (slice S), held to the same readable set its change feed
+   * is filtered by (`#syncer`), so no content door shows a path the feed would not.
+   */
+  #reader(binding: Binding, door: "read", capability: "read_files"):
+      (path: string) => boolean {
+    if (binding.sandbox === undefined) {
+      this.#filer(binding, door, capability);
+      return () => true;
+    }
+    return this.#syncer(binding, door, null).test;
+  }
+
+  /** A path the reader may not see is refused as one that does not exist. */
+  #visible(visible: (path: string) => boolean, path: unknown): void {
+    if (typeof path === "string" && !visible(path)) {
+      throw new FileFault("not_found", "no such file");
+    }
+  }
+
   fileList(binding: Binding, request: FileListRequest):
       Promise<{ entries: Entry[]; next: string | null }> {
     return this.#door(() => {
-      this.#filer(binding, "read", "read_files");
+      const visible = this.#reader(binding, "read", "read_files");
       const r = fileFields(request, ["dir", "limit"], ["after"]);
-      return this.#files.list(r["dir"], r["after"] ?? null, r["limit"]);
+      const listed = this.#files.list(r["dir"], r["after"] ?? null, r["limit"]);
+      return { ...listed, entries: listed.entries.filter((entry) => visible(entry.path)) };
     });
   }
 
@@ -3076,8 +3129,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   fileRead(binding: Binding, request: FileReadRequest):
       Promise<{ entry: Entry; not_modified?: true; inline?: Uint8Array; chunks?: ChunkRef[] }> {
     return this.#door(() => {
-      this.#filer(binding, "read", "read_files");
+      const visible = this.#reader(binding, "read", "read_files");
       const r = fileFields(request, ["path"], ["etag"]);
+      this.#visible(visible, r["path"]);
       const content: Content = this.#files.open(r["path"]);
       if (r["etag"] !== undefined && r["etag"] === content.entry.etag) {
         return { entry: content.entry, not_modified: true };
@@ -3091,8 +3145,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   async fileReadChunks(binding: Binding, request: FileChunksRequest):
       Promise<{ chunks: Uint8Array[] }> {
     const reads = await this.#door(() => {
-      this.#filer(binding, "read", "read_files");
+      const visible = this.#reader(binding, "read", "read_files");
       const r = fileFields(request, ["path", "version", "first", "count"]);
+      this.#visible(visible, r["path"]);
       const { chunks = [] } = this.#files.openVersion(r["path"], r["version"]);
       const first = r["first"];
       const many = r["count"];
@@ -3717,6 +3772,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         this.#runs.settle(admitted.run, "unknown", "start_lost", null, clock());
       } else if (answer.started) {
         this.#runs.started(admitted.run, clock());
+      } else if (answer.code === SANDBOX_WAITING) {
+        // E2B runs as many sandboxes as its plan allows: the run waits, never refused, and
+        // the lane starts it again when the platform's line rings the owner (`sandboxRung`).
+        // The founder's alert reads E2B's own count (owed: `sandbox-probe.md`); this line is
+        // the Worker log's record of it.
+        if (this.#runs.waitForSandbox(admitted.run, admitted.prompt)) {
+          console.warn(`${SANDBOX_WAITING}: a run waits for a sandbox to free`);
+        }
       } else {
         this.#runs.settle(admitted.run, "failed", answer.code, null, clock());
         if (answer.code === SIGNIN_REQUIRED) {
@@ -3775,6 +3838,44 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     } catch {
       console.error("a run's cancel did not reach the sandbox");
     }
+  }
+
+  /**
+   * A lease that ended, its sandbox paused through the sandbox Worker (zero idle tail). A
+   * release that does not reach it is logged: the sandbox Worker reaps a sandbox idle for a
+   * lease's TTL on its own (by then a lease no run renews has lapsed), and keeps asking E2B
+   * for a pause that did not land.
+   */
+  async #sandboxRelease(leaseId: string): Promise<void> {
+    const sandbox = this.env.SANDBOX;
+    if (sandbox === undefined) {
+      return;  // no sandbox bound, so no lease was opened under one
+    }
+    try {
+      await sandbox.release(this.#ownerName(), { lease_id: leaseId });
+    } catch {
+      console.error("a lease's release did not reach the sandbox; its idle reap pauses it");
+    }
+  }
+
+  /**
+   * The platform's line rang this owner (slice S; `sandbox/src/slots.ts`, through the doors
+   * Worker's ring consumer): a sandbox freed, so each run waiting for one starts again
+   * through its whole admission, oldest first. It takes no binding: it carries nothing,
+   * reads nothing and grants nothing, and only the doors' consumer, which binds `OWNER`,
+   * reaches it. With no run waiting the owner leaves the line, so the next owner is rung.
+   * An erased or erasing owner does nothing (its erasure takes it out of the line).
+   */
+  async sandboxRung(): Promise<{ waiting: number }> {
+    if (this.#tombstone || this.#erasure.erased || erasing(this.#storage)) {
+      return { waiting: 0 };
+    }
+    const waiting = await this.#door(() => this.#runs.sandboxRung());
+    if (waiting === 0) {
+      await this.env.SANDBOX?.unwait(this.#ownerName());
+    }
+    await this.#schedule.sync();
+    return { waiting };
   }
 
   /** From a unit: each run's cancel sent to the sandbox once the unit is over. */
@@ -4292,5 +4393,35 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return this.#files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"],
                                       ops: r["ops"] });
     });
+  }
+
+  /**
+   * The sync agent's upload of a file past one inline write (`INLINE_BYTES`), through the
+   * files plane's own upload (slice S review M-6): begun as the lease's own writer, so its
+   * sync commit (`intent_id`) takes it, fenced by the live lease.
+   */
+  fileSyncUploadBegin(binding: Binding, request: SyncUploadBeginRequest):
+      Promise<{ intent_id: string; missing: string[]; expires_at: number }> {
+    return this.#filing(() => {
+      this.#syncer(binding, "work", request);
+      const r = fileFields(request, ["lease_id", "epoch", "size", "chunks"]);
+      return this.#files.begin(r["size"], r["chunks"],
+                               this.#files.syncWriter(r["lease_id"], r["epoch"]));
+    });
+  }
+
+  /** The sync agent's chunk bytes for its own upload, at most two chunks a call. */
+  async fileSyncUploadChunks(binding: Binding, request: SyncUploadChunksRequest):
+      Promise<{ created: number }> {
+    const r = await this.#door(() => {
+      this.#syncer(binding, "work", request);
+      const fields = fileFields(request, ["lease_id", "epoch", "intent_id", "chunks"]);
+      if (this.#files.intentWriter(fields["intent_id"])
+          !== this.#files.syncWriter(fields["lease_id"], fields["epoch"])) {
+        throw new Refused(SYNC_FENCED);
+      }
+      return fields;
+    });
+    return this.#files.upload(r["intent_id"], r["chunks"]);
   }
 }

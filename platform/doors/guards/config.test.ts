@@ -51,11 +51,19 @@ const FLAGS: readonly string[] = Object.freeze(["nodejs_compat", "disable_ctx_ex
                                                 "enable_request_signal"]);
 const KEYS: ReadonlySet<string> = new Set([
   "$schema", "name", "main", "compatibility_date", "compatibility_flags", "workers_dev",
-  "preview_urls", "vars", "durable_objects", "services", "kv_namespaces", "secrets", "assets",
+  "preview_urls", "vars", "durable_objects", "services", "kv_namespaces", "secrets",
+  "queues", "assets",
 ]);
 /** The owner app's files, served only through the Worker (`src/pages.ts`). */
 const ASSETS = Object.freeze({ directory: "./app", binding: "ASSETS", run_worker_first: true,
                                html_handling: "none", not_found_handling: "none" });
+/**
+ * The doors' one queue: the consumer of the sandbox line's ring queue (slice S,
+ * `src/ring.ts`), which turns `{owner}` into that owner's `sandboxRung` and nothing else.
+ * No producer: the doors put nothing on a queue.
+ */
+const QUEUES = Object.freeze({ consumers: Object.freeze([
+  Object.freeze({ queue: "tinyassets-sandbox-ring" })]) });
 /** The doors' one secret, the sandbox tokens' routing key (`routing-mac.ts`), and the owner's. */
 const SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY"]) });
 /** The doors' two services: the gateway's connect and egress entrypoints, and what each serves. */
@@ -197,6 +205,9 @@ export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string
     problems.push("kv_namespaces are exactly OAUTH_KV, DIRECTORY and CONTROL, distinct " +
                   "placeholders");
   }
+  if (JSON.stringify(config["queues"]) !== JSON.stringify(QUEUES)) {
+    problems.push("queues is the sandbox ring's consumer alone");
+  }
   return problems;
 }
 
@@ -247,6 +258,10 @@ describe("doors Worker config", () => {
     ["the assets' own not-found page", { assets: { ...ASSETS,
                                                    not_found_handling: "single-page-application" } }],
     ["a bucket", { r2_buckets: [{ binding: "BLOBS", bucket_name: "tinyassets-files" }] }],
+    ["no ring consumer", { queues: undefined }],
+    ["a queue producer", { queues: { ...QUEUES, producers: [{ binding: "OUT",
+                                                              queue: "tinyassets-x" }] } }],
+    ["another queue's consumer", { queues: { consumers: [{ queue: "tinyassets-x" }] } }],
     ["a migration", { migrations: [{ tag: "v1", new_sqlite_classes: ["X"] }] }],
     ["a rate limit", { ratelimits: [{ name: "KEY_RL", namespace_id: "1",
                                       simple: { limit: 120, period: 60 } }] }],

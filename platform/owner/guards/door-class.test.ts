@@ -3,7 +3,8 @@
  * `work`, `read` or `reduce`), which decides what a suspension leaves it: a billing
  * suspension refuses only `work`, an abuse suspension every door. A door declares it in
  * its binding check, the one place admission is read: each call of the object's binding
- * helpers (`#bind`, `#account`, `#owner`, `#widening`, `#collector`, `#filer`) in a door
+ * helpers (`#bind`, `#account`, `#owner`, `#widening`, `#collector`, `#filer`, `#reader`,
+ * `#syncer`) in a door
  * names the class as its second argument, a literal, and every door makes one. The
  * platform's own doors alone (`admissionSet`, `tierSet`) bind as `admission`, which reads
  * no admission.
@@ -18,7 +19,7 @@ import { parse, PLATFORM } from "./sources";
 
 const OWNER_DO = "owner/src/owner-do.ts";
 const HELPERS: ReadonlySet<string> = new Set(["#bind", "#account", "#owner", "#widening",
-                                              "#collector", "#filer"]);
+                                              "#collector", "#filer", "#reader", "#syncer"]);
 const CLASSES: ReadonlySet<string> = new Set(["work", "read", "reduce"]);
 const PLATFORM_DOORS: ReadonlySet<string> = new Set(["admissionSet", "tierSet"]);
 

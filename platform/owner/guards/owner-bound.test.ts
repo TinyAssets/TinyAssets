@@ -24,7 +24,9 @@
  * files (ADR-034), so what the owner's object holds is its own bounded rows only.
  *
  * The worst case, with the limits that ship (`limits-audit.md`, `limits-audit.test.ts`), is
- * 44.50% of the limit (4,449,862,167.75 bytes), 550.1 MB under half. Slice W added
+ * 44.50% of the limit (4,449,862,167.75 bytes), 550.1 MB under half. Slice S's columns
+ * (a run's `sandbox_wait`, one byte in `runs`, in place of a recheck time) move no term
+ * at its page share, and it adds no table: the sandbox Worker keeps its own. Slice W added
  * `wake_callbacks` (`SUBSCRIPTIONS_PER_AGENT` doorbells for each of `maxAgents` enabled
  * agents, each its sealed blobs and arguments at their widest, and its index) and took out
  * `ledger_rings` and the revoke tombstones' rows. Slice ID added `native_agents` (the
@@ -498,10 +500,10 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // grant; the conversations; the runs lane's schedules; the tier numbers kept; tickets.
     runs: { rows: RUNS_KEPT + RUNS_CEILING + QUEUE_ROWS,
             bytes: ROW + RESULT_BYTES + ERROR_BYTES + 4 * STAMP_CHARS + 256 + 512 + 32 + 16
-              + MESSAGE_ID_CHARS,
+              + 1 + MESSAGE_ID_CHARS,
             by: "RUNS_KEPT settled receipts, RUNS_CEILING live and QUEUE_ROWS waiting, each " +
-              "its result, error, stamp, model, ids, counters, lease, heartbeat and mail at " +
-              "their widest",
+              "its result, error, stamp, model, ids, counters, lease, heartbeat, whether it " +
+              "waits for a sandbox (slice S) and mail at their widest",
             indexes: { sqlite_autoindex_runs_1: key(RUN_ID_CHARS), runs_by_request: key(64),
                        runs_live: key(9), runs_by_conversation: key(CONVERSATION_ID_CHARS,
                                                                    NUMBER),

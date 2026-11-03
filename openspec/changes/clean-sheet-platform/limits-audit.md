@@ -14,7 +14,7 @@ four classes:
   share is named by the guard's term.
 
 Not listed, since none refuses or truncates what a user does:
-- internal timings and backoffs: leases, retries, garbage-collection grace, lane passes, wake retries, a placement upload's 10-minute expiry, how long one read of the control record serves a script's calls (`CONTROL_FRESH_MS`), an egress reservation's beat and its lost detection three beats on (`EGRESS_BEAT_S`, `LOST_AFTER_S`), the erasure's day under its mark before its R2 step and wipe (`PUT_GRACE_MS`), its job waking it, and the deadlines on the gateway's own calls to a provider (the setup check, a token endpoint);
+- internal timings and backoffs: leases, retries, garbage-collection grace, lane passes, wake retries, a placement upload's 10-minute expiry, how long one read of the control record serves a script's calls (`CONTROL_FRESH_MS`), an egress reservation's beat and its lost detection three beats on (`EGRESS_BEAT_S`, `LOST_AFTER_S`), the erasure's day under its mark before its R2 step and wipe (`PUT_GRACE_MS`), its job waking it, the deadlines on the gateway's own calls to a provider (the setup check, a token endpoint), and the sandbox's own (slice S): a renewal's window (`sandbox_renewal_window_s`, the control record's) and its measured edge, the sandbox look's and the line's back-offs, a runner command's deadline (a lease's TTL), and the idle reap a lease's TTL on;
 - pages a read returns, which the caller pages past: a pull, a mailbox or history read, a file list, a receipts list, a chunk read, a run door's wait;
 - the SQLite layout constants (`manifest.ts`), hashes and key sizes, and the ids we mint;
 - the owner app's own protocol frames, and the HTTP status of each fixed code.
@@ -52,9 +52,9 @@ The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collect
 
 - **tier**: 3
 - **owner setting**: 12
-- **vendor limit**: 6
-- **technical ceiling**: 108
-- **total**: 129
+- **vendor limit**: 9
+- **technical ceiling**: 113
+- **total**: 137
 
 Counted by a script over every table row (`| ` lines past the header, six cells each), the first row and the names row among them.
 
@@ -234,3 +234,11 @@ reason; none refuses a write.
 | `gateway/src/model-record.ts` numbers | as the owner's | a declared model record | refused past them | technical ceiling | As the owner's model numbers. |
 | `hooks/src/codemode.ts` `CODEMODE_INTERRUPT_BUDGET` | 1,000,000 polls (about 100 s) | a script's CPU | a compute-bound script ends `timeout` | technical ceiling | Within the hooks Worker's `cpu_ms`. |
 | `hooks/src/codemode.ts` `CODEMODE_MEMORY_BYTES` | 32 MiB | a script's VM memory | a script past it fails | technical ceiling | The isolate's 128 MB, shared by its VMs. |
+| control record `sandbox_runtime_ceiling_s` (`doors/src/directory.ts`) | the E2B plan's: Hobby 3,600 s, Pro 86,400 s | how long one sandbox runs at a stretch | nothing ends: its runs are renewed (paused and resumed with their memory) at a quiet moment before it | vendor limit | E2B's continuous runtime per plan (docs.e2b.dev, sandbox lifetime), which a pause resets (probed, `sandbox-probe.md`); edited in the record with no deploy. |
+| control record `sandbox_concurrency_ceiling` (`doors/src/directory.ts`) | the E2B plan's: Hobby 20, Pro 100 | sandboxes the E2B team runs at once | a run waits `sandbox_waiting` in the platform's line, never refused | vendor limit | E2B's concurrent sandboxes per plan; E2B's own refusal (`429`) holds it regardless. |
+| `sandbox/runner/guards.ts` `ATOM_MIN` | 39 characters | the shortest value or line of a `secret_paths` file the content backstop matches | a synced file or transcript line holding one refused | vendor limit | A Google API key, 39 characters: the shortest credential any record's provider issues. |
+| `sandbox/template/build.py` run pool | `RUNS_CEILING` (1,000) users | runs live in one sandbox at once | a run past it refused, every run user taken | technical ceiling | One uid a live run (review H-4); one authority's sandbox holds at most its owner's live runs, which `RUNS_CEILING` bounds. |
+| `doors/src/egress.ts` `SYNC_BODY_MAX` | 12 MiB | one sync door's body | the sync agent sends more calls | technical ceiling | Two 4 MiB chunks' base64 and the call's fields: the files plane's most a call (`BATCH_BYTES`). |
+| `sandbox/runner/runner.ts` `CANCEL_GRACE_MS` | 20 s | a cancelled CLI's grace after SIGTERM | killed past it | technical ceiling | One heartbeat (`HEARTBEAT_MS`): the run's end and its last post reach the object inside its lease's TTL. |
+| `sandbox/runner/users.ts` `KILL_WITHIN_MS` | 20 s | how long a run user's processes may outlive their SIGKILL | the run's end fails loudly, the user not given back | technical ceiling | One heartbeat; a process still there is stuck in the kernel. |
+| `sandbox/runner/runner.ts` a failed CLI's stderr | `FRAME_UNITS_MAX` | the stderr a failed run shows | its head cut | technical ceiling | As much as one frame shows; the frame's own cut marks the rest. |
