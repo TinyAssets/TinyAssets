@@ -44,9 +44,13 @@ purchase, a booking, an edit of a shared file or area), claim it on the board:
   its `until:` is ahead;
 - when it is done, update the same row (on its etag) to `status: done`, with what was done
   and where the result is (a link, a confirmation, a file);
+- if you give it up, release it: write the row on its etag as `status: open`, or `blocked`
+  with why, so no one waits out your `until:`;
 - a row still `doing` past its `until:` may be taken over: first check whether the act's
-  result already exists (the message sent, the form submitted, the booking made), and if
-  it does not, write the row on its etag, saying in the body that you took it over and when.
+  result already exists (the message sent, the form submitted, the booking made), where the
+  act would leave its trace: the sent items, the destination's own record, the notes in the
+  row. If it does not, write the row on its etag, saying in the body that you took it over
+  and when.
 The `rooms-and-board` skill has the board's details.
 
 ## 4. When your memory and the workspace differ
@@ -55,9 +59,11 @@ and tell your owner when the two differ. If yours is newer, update the workspace
 
 ## 5. Assistants not yet connected
 When your owner says, or clearly shows, that they use an AI assistant, check whether
-`agents_list` shows it connected to TinyAssets. A file that merely mentions a product is not
-your owner using it. If it is not connected, and `/workspace/USER.md` says neither that it
-was offered nor not to suggest it, offer it once:
+`agents_list` shows it connected to TinyAssets; if `agents_list` lists no apps, ask your
+owner whether it is already connected. A file that merely mentions a product is not your
+owner using it. Name the app as `<app>`: its id as `agents_list` gives it, lower-case, the
+same in the claim and in the directives. If it is not connected, and `/workspace/USER.md`
+says neither that it was offered nor not to suggest it, offer it once:
 - after doing what was asked, claim `offer:connect:<app>` on the board (rule 3), then say
   briefly that it can share this same workspace, with its connect step:
   its `connect_url` from `agents_list` (TinyAssets' list of apps, `apps.json`), or

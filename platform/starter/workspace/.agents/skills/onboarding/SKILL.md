@@ -10,6 +10,9 @@ metadata:
 The owner's request always comes first. Onboarding never blocks real work, and it runs once
 for all of the owner's agents: never again once `/workspace/USER.md`'s profile has an
 `Onboarded:` date. A profile that already has a time zone counts as onboarded too.
+Before you start, claim `onboarding` on the board (the `shared-brain` skill, rule 3), so two
+agents never onboard your owner at once; a conflict means another agent is doing it: leave
+it. Mark the claim done once you write the `Onboarded:` date.
 
 1. After you have done what was asked, ask only what is missing, in one short message:
    - what to call them, and what they would like to call you;
@@ -20,15 +23,16 @@ for all of the owner's agents: never again once `/workspace/USER.md`'s profile h
    - how much agents should message them unasked, and any times not to.
 2. Write the answers: their name, time zone, wants and their words on messaging them
    unasked in `/workspace/USER.md`'s profile, which all their agents share; your name (and a
-   vibe, if they gave one) on `SOUL.md`'s `Name:` and `Vibe:` lines. Read both back in one line each.
+   vibe, if they gave one) on `SOUL.md`'s `Name:` and `Vibe:` lines. Read both back briefly.
 3. Their other assistants: ask which other AI assistants they use, and write them on the
    profile's `Assistants I use:` line. Name the ones `agents_list` shows already connected
-   to TinyAssets. For each of the rest, offer to connect it, with its connect step:
+   to TinyAssets; if `agents_list` lists no apps, ask which are already connected. For each
+   of the rest, offer to connect it, with its connect step:
    its `connect_url` from `agents_list` (TinyAssets' list of apps, `apps.json`), or
    `https://tinyassets.io/connect` where it shows none. Connecting is their act, in that
    app; once it is connected, it shares this same workspace. Write
-   `- Offered to connect <app>` as a directive for each one you offered (the `shared-brain`
-   skill, rule 5).
+   `- Offered to connect <app>` as a directive for each one you offered, `<app>` its id as
+   `agents_list` gives it, lower-case (the `shared-brain` skill, rule 5).
 4. Offer the pass and brief (the `schedule` skill). On a yes, make it at the times they
    pick, check it exists, and say when it runs in their time and in UTC.
 5. Write `- Onboarded: <YYYY-MM-DD>` on the profile, whatever they answered. If they skip a

@@ -53,10 +53,14 @@ Notes.
   writing the row on its etag; a conflict means it was taken over, so stop. Right before the
   act itself, read the row again, and act only while it is still yours and its `until:` is
   ahead.
+- **Giving up:** release a claim you will not finish: write the row on its etag as
+  `status: open`, or `blocked` with why, so no one waits out your `until:`.
 - **Taking over:** a row still `doing` past its `until:` may be taken over. First check
   whether the act's result already exists (the message sent, the form submitted, the booking
-  made); if it does not, write the row on its current etag (compare and swap), with a line in
-  the body saying who took it over and when. A conflict means someone else got there first.
+  made), where the act would leave its trace: the sent items, the destination's own record,
+  the notes in the row. If it does not, write the row on its current etag (compare and
+  swap), with a line in the body saying who took it over and when. A conflict means someone
+  else got there first.
 - **Done:** write the row on its etag with `status: done`, what was done and where the result
   is (a link, a confirmation, a file), so the next agent sees it before acting.
 - Never mark your owner's own task done. Say it looks done and let them close it.
