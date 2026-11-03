@@ -514,13 +514,21 @@ export class Files {
   readonly #limits: () => FileLimits;
   /** The object's write gate: the units the methods that cross to `FILES` write through. */
   readonly #write: Write;
+  /**
+   * Told of each workspace path a change makes or takes away, in that change's own unit:
+   * what follows a path (an agent's ledger identity its `agent.json`). A refusal refuses
+   * the change.
+   */
+  readonly #changed: (path: string, present: boolean, now: number) => void;
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
-              write: Write) {
+              write: Write,
+              changed: (path: string, present: boolean, now: number) => void = () => {}) {
     this.#storage = storage;
     this.#store = store;
     this.#limits = limits;
     this.#write = write;
+    this.#changed = changed;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -864,6 +872,7 @@ export class Files {
       version, path, op, kind, contentId, size, mode, writer, now,
     );
     this.#retain(path, kind !== null);
+    this.#changed(path, kind === "file", now);
     return version;
   }
 

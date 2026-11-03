@@ -30,7 +30,9 @@
  * what a public connector directory allows, for the listing's own MCP resource once the
  * listing is submitted (the founder's call: a new door); `run`, a run's own MCP door on
  * the egress host, the table but the run tools (work between agents is mail, ADR-034
- * decision 11). The object answers a caller's profile (`toolProfile`) and builds `code`'s
+ * decision 11) and the mailbox tools, `inbox_digest` among them, since a run's mail is
+ * its input and its agent's mailbox holds every authority's mail (slice ID). The object
+ * answers a caller's profile (`toolProfile`) and builds `code`'s
  * tools from it.
  * `guards/tools.test.ts` holds every row to these rules and to a real outside-callable
  * door, and names the outside-callable doors without a tool yet, each with the slice that
@@ -121,14 +123,17 @@ export function toolTable(): readonly Tool[] {
       input: args({ through: int("The last sequence number read") }) },
     { name: "room_post", door: "roomPost", capability: "write_graph",
       title: "Post to room", ...CHANGE,
-      description: "Post a message to a room of the owner's account.",
+      description: "Post a message to a room of the owner's account: dm:<agent> with the " +
+        "owner, or dm:<agent>+<agent> between two agents. Mail to one of the owner's own " +
+        "agents starts its run, whose result is its reply.",
       input: args({ room_id: str("The room's id"),
                     client_message_id: str("Your id for this message, for retries"),
                     body: str("The message text"),
                     parent_id: orNull("The message replied to, or null") }) },
     { name: "agents_list", door: "outsideAgents", capability: null,
       title: "List agents", ...READ,
-      description: "List the agents registered for this connection.",
+      description: "List the agents registered for this connection, and the owner's own " +
+        "agents, each with the id its rooms name.",
       input: args({}) },
     { name: "agent_register", door: "registerPropose", capability: null,
       title: "Request agent registration", readOnlyHint: false, destructiveHint: false,
@@ -220,15 +225,13 @@ export function toolTable(): readonly Tool[] {
     { name: "run_graph", door: "agentRun", capability: "run_graph",
       title: "Run an agent", ...CHANGE,
       description: "Launch one of the owner's agents on an input, in a fresh conversation of " +
-        "its own: now, at a time, at each time a cron names, or each time mail reaches the " +
-        "owner. Answers the run, or the schedule, at once.",
+        "its own: now, at a time, or at each time a cron names. Answers the run, or the " +
+        "schedule, at once.",
       input: args({ agent: str("Which of the owner's agents, such as main"),
                     input: str("What the agent is asked to do") },
                   { at: num("When to run it, in seconds since the epoch"),
                     cron: str("Run it at each time this names: minute, hour, day of the " +
-                              "month, month and day of the week, in UTC"),
-                    on_mail: bool("Run it each time mail reaches the owner"),
-                    if_mail: bool("Run it only when the owner has unacknowledged mail") }) },
+                              "month, month and day of the week, in UTC") }) },
     { name: "run_status", door: "agentStatus", capability: null,
       title: "Run status", ...READ,
       description: "Read one of your runs, its state and its result once done, or one of " +

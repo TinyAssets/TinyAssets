@@ -209,8 +209,9 @@ function runnerOf(request: Request): Response | Presented {
 
 /**
  * A run's own doors (ADR-034 decisions 6 and 10): its MCP door, the table's tools but the
- * run tools, every one held by the object to the run's grant (the `run` profile), by the run's
- * own secret; and its event door, the runner's `POST` of its frames and its end
+ * run and mailbox tools, every one held by the object to the run's grant (the `run`
+ * profile), by the run's own secret; and its event door, the runner's `POST` of its frames
+ * and its end
  * (`runEvents`), by the runner's secret, each frame and the post bounded (`EVENTS_BODY_MAX`,
  * `EVENT_FRAMES_MAX`, `FRAME_UNITS_MAX`). Only the engine and the runner in the sandbox call
  * them, so an `Origin` (a browser's) is refused.

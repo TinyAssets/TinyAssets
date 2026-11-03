@@ -21,10 +21,14 @@
  * unmodified engines, their sessions in the owner's files (ADR-034), so what the owner's
  * object holds is its own bounded rows only, whatever its agents do.
  *
- * The worst case is 42.3% of the limit (slice M: 4,232,734,503.75 bytes), about 767 MB under
- * half; with every raise the limits audit proposes, 49.98% (4,997,921,365.75 bytes,
- * `limits-proposed.test.ts`), 2.1 MB under half. Slice M added each collection row's
- * owner-wide change and its index entry, and the one-row `collection_clock`.
+ * The worst case is 42.3% of the limit (slice M on ID: 4,234,269,003.75 bytes), about 766 MB
+ * under half; with every raise the limits audit proposes, 49.99% (4,999,455,865.75 bytes,
+ * `limits-proposed.test.ts`), 0.5 MB under half. Slice ID added `native_agents` (1.5 MB,
+ * the owner's own agents in the registry's rows); a mail's authority and attendance and a
+ * run's mail fit within the pages their rows were already counted at, and it adds no index
+ * (an identity and a mail thread's conversation are found by their keys, digests). Slice M
+ * added each collection row's owner-wide change and its `collection_changes` entry, an
+ * erase entry's in `collection_erasures`, and the one-row `collection_clock`.
  * ADR-034's deletion slice took out the agent's thread rows, their live and usage rows,
  * the run receipts and the model turns' counters and owners, and Lifecycle's wake job and
  * key per live thread (slice D: 40.6%, 4,064,822,714 bytes; G4 was 46.3%). The runs slice
@@ -166,6 +170,10 @@ const ENGINE_SIGNINS = constant("run-rows", "ENGINE_SIGNINS");
 const SIGNIN_MODELS_CHARS = constant("run-rows", "SIGNIN_MODELS_CHARS");
 const SIGNIN_LIST_CHARS = constant("run-rows", "SIGNIN_LIST_CHARS");
 const SOCKET_TICKETS = constant("socket-shape", "SOCKET_TICKETS");
+/** Mail that starts runs (slice ID): a message's id, an own agent's id, a mail's authority. */
+const MESSAGE_ID_CHARS = constant("run-rows", "MESSAGE_ID_CHARS");
+const NATIVE_ID_CHARS = constant("run-rows", "NATIVE_ID_CHARS");
+const AUTHORITY_CHARS = constant("run-rows", "AUTHORITY_CHARS");
 /** A stamp's JSON, as the schema's check holds it, in characters (each up to 4 bytes). */
 const STAMP_CHARS = inline("schema", /stamp TEXT CHECK \(stamp IS NULL OR length\(stamp\) <= ([0-9]+)\)/);
 /** An origin's JSON is visible ASCII (the schema's check), so a character is a byte. */
@@ -325,8 +333,14 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     owner_sessions: { rows: S.maxSessions, bytes: ROW, by: "maxSessions" },
     outside_agents: { rows: L.maxAgentRows, bytes: ROW + 1 * KIB,
                       by: "maxAgentRows, every row: a tombstone a revoke holds too" },
-    ledger_messages: { rows: L.maxMessages, bytes: ROW + 1 * KIB,
-                       by: "maxMessages" },
+    // The owner's own agents (slice ID): counted with the outside agents in the registry's
+    // rows, so the two terms together count it twice over.
+    native_agents: { rows: L.maxAgentRows, bytes: ROW + 128 + NATIVE_ID_CHARS + 4 * 8,
+                     by: "maxAgentRows, live or retired, each its name (ASCII), id and " +
+                       "counters" },
+    ledger_messages: { rows: L.maxMessages, bytes: ROW + 1 * KIB + AUTHORITY_CHARS + 8,
+                       by: "maxMessages, each with its authority (visible ASCII) and whether " +
+                         "a person sent it" },
     message_bodies: { rows: L.maxMessages,
                       bytes: ROW + L.maxBodyBytes / L.maxMessages,
                       by: "maxBodyBytes over maxMessages" },
@@ -379,10 +393,11 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // Runs (slice R): settled receipts kept and the live ones, each its widest; a live run's
     // grant; the conversations; the runs lane's schedules; the tier numbers kept; tickets.
     runs: { rows: RUNS_KEPT + RUNS_CEILING + QUEUE_ROWS,
-            bytes: ROW + RESULT_BYTES + ERROR_BYTES + 4 * STAMP_CHARS + 256 + 512 + 32 + 16,
+            bytes: ROW + RESULT_BYTES + ERROR_BYTES + 4 * STAMP_CHARS + 256 + 512 + 32 + 16
+              + MESSAGE_ID_CHARS,
             by: "RUNS_KEPT settled receipts, RUNS_CEILING live and QUEUE_ROWS waiting, each " +
-              "its result, error, stamp, model, ids, counters, lease and heartbeat at their " +
-              "widest" },
+              "its result, error, stamp, model, ids, counters, lease, heartbeat and mail at " +
+              "their widest" },
     // The sandbox leases (review H-1): one an authority, opened only for a live run.
     sandbox_leases: { rows: RUNS_CEILING,
                       bytes: ROW + 64 + 32 + 8 + 128 + 16 + 3 * 64 + 8 + SIGNIN_LIST_CHARS
@@ -405,6 +420,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                   bytes: ROW + 4 * STAMP_CHARS + ORIGIN_CHARS + 512 + 128 + 64,
                   by: "one a live run, its stamp, origin, scopes, connection and secret's " +
                     "hash" },
+    // A mail thread's conversation is found by its key, the thread's digest: no index.
     conversations: { rows: CONVERSATIONS_KEPT, bytes: ROW + 128 + 64 + 64 + 256 + 128,
                      by: "CONVERSATIONS_KEPT, each its agent, source, client and session id" },
     run_schedules: { rows: SCHEDULES_KEPT,
@@ -454,6 +470,13 @@ export function ownerTables(schema: string = source("schema")): string[] {
   }
   tables.delete("schema_version");
   return [...tables].sort();
+}
+
+/** The indexes the schema makes on `table`, by name. */
+function indexesOn(table: string): string[] {
+  return [...source("schema").matchAll(
+    /CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([a-zA-Z_0-9]+) ON ([a-zA-Z_0-9]+)/g)]
+    .filter((match) => match[2] === table).map((match) => match[1]!).sort();
 }
 
 /** The indexes the schema makes on the manifest's tables. */
@@ -583,6 +606,31 @@ describe("the owner's database bound", () => {
                                        "2048 AND \" +\n      \"path NOT GLOB '*[^ -~]*'), \" +");
     expect(TERMS["outside_clients"]!.rows * TERMS["outside_clients"]!.bytes)
       .toBe(2000 * (256 + 8) + 1000 * (64 * (3 * 512 * 6 + 64) + 80 * 4));
+  });
+
+  it("charges every index of slice ID's tables: the identities and the mail threads add none",
+     () => {
+    // An identity is found by its key (its name's digest), a mail thread's conversation by
+    // its key (the thread's digest), and an agent's due mail by `recipients_by_state`: no
+    // index past the row's own `ROW` is made for them, so none goes uncharged.
+    expect(indexesOn("native_agents")).toEqual([]);
+    expect(indexesOn("conversations")).toEqual(["conversations_by_age"]);
+    expect(indexesOn("ledger_recipients"))
+      .toEqual(["recipients_by_seq", "recipients_by_state", "recipients_unacked"]);
+    expect(indexesOn("ledger_messages")).toEqual(["messages_done"]);
+    expect(source("schema")).not.toMatch(/native_agents \([^)]*UNIQUE|agent_id TEXT NOT NULL UNIQUE/);
+  });
+
+  it("charges slice M's indexes: the change orders of the rows and the erase entries", () => {
+    // Each charged in its table's term (`CHANGE_BYTES`): `collection_changes` a row's,
+    // `collection_erasures` a delete's or clear's history entry's, partial on them alone.
+    expect(indexesOn("collection_rows"))
+      .toEqual(["collection_changes", "collection_creators", "collection_writers"]);
+    expect(indexesOn("collection_history")).toEqual(["collection_erasures"]);
+    expect(source("schema")).toContain(
+      "CREATE INDEX collection_erasures ON collection_history (change) WHERE change IS NOT NULL");
+    expect(TERMS["collection_rows"]!.bytes)
+      .toBeGreaterThanOrEqual(256 + CHANGE_BYTES);
   });
 
   it("counts Lifecycle's own rows, apart from the tables", () => {
