@@ -38,12 +38,10 @@ export interface Front {
   readonly tags: readonly string[];
 }
 
-const DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
-
 /** Bytes as UTF-8 text, or null when they are not. */
 export function textOf(bytes: Uint8Array): string | null {
   try {
-    return DECODER.decode(bytes);
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
   } catch {
     return null;
   }
