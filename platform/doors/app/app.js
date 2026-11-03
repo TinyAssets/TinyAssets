@@ -190,7 +190,7 @@ async function agents(arg) {
     connections.filter((c) => c.status === "active").map((c) =>
       h("option", { value: c.connection }, `${c.display_name} (${c.source})`)));
   // What a run may hold, as the object lists it; none is chosen for the owner.
-  const checks = capabilities.filter((c) => c.runs).map((c) =>
+  const checks = capabilities.map((c) =>
     h("label", {}, h("input", { type: "checkbox", value: c.id }), c.words));
   const create = async () => {
     const chosen = name.value.trim();

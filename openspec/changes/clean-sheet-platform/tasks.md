@@ -506,7 +506,9 @@ account and no deploy.
     credential is named as unable to run yet.
   - **run events (found by the review, outside the slice, fixed here):** a session id outside
     the conversations' shape (`[!-~]{1,256}`) failed the runner's whole post with a SQLite
-    error; it is refused as the run's fixed error `session_id_refused`, its frames relayed.
+    error; the object refuses it as the run's fixed error `session_id_refused` (`runs.ts`), its
+    frames relayed. The check is the object's, not `run-events.ts`', so the runner's bundle
+    and the template tag stay as slice S built them.
 - [ ] Each RFC 6749 source's provider registration of its own redirect URI,
   `https://tinyassets.io/oauth/connect/callback/<source-id>`, registered exactly, never as
   a prefix, and matched exactly by the provider (RFC 9700 §4.1); OpenRouter's key exchange
@@ -525,33 +527,60 @@ account and no deploy.
 - [ ] Mobile connects and sign-in (the app slice): on mobile the OAuth runs in an external
   browser (RFC 8252), whose cookies are not the WebView's, so a binding cookie set in the
   WebView never comes back with the callback. **Decided (app slice, 2026-11-03, corrected
-  by its review M2), built with the store app (web first):** the store app is the same web
-  app on the same origin; every OAuth runs in the platform's auth session (Android Custom
-  Tabs, iOS `ASWebAuthenticationSession`), never an embedded WebView; only the two return
-  pages, `/app/signed-in` and `/app/connected`, are claimed https redirects (App Links,
-  Universal Links), and the doors' own callbacks are never claimed. Each flow begins inside
-  the auth session, so its binding cookie is in the jar the callback runs in:
+  by its review M2 and the in-flight research §4b), built with the store app (web first):**
+  the store app is the Capacitor shell that already loads `https://tinyassets.io/app`
+  (`mobile/capacitor.config.json`), so the doors Worker serving `/app` keeps it working.
+  - **The browser.** Every OAuth runs in the platform's auth session, never an embedded
+    WebView, with PKCE.
+  - **The return path.** The auth session's own https callback hands the final return page
+    straight to the app that began the flow:
+    - iOS 17.4 and later: `ASWebAuthenticationSession` with
+      `Callback.https(host: "tinyassets.io", path: "/app/signed-in")` (and `/app/connected`);
+    - Android: Auth Tab (`androidx.browser` 1.9.0 `AuthTabIntent`, https host and path),
+      verified by Digital Asset Links.
+
+    The doors serve `/.well-known/apple-app-site-association` (`webcredentials`) and
+    `/.well-known/assetlinks.json` for them. The doors' own callbacks
+    (`/oauth/upstream/callback`, `/oauth/connect/callback/*`) are never a return path: they
+    run in the auth session's browser, which holds each flow's binding.
+  - **The fallbacks.** The shell's existing pieces:
+    - below iOS 17.4, its `ASWebAuthenticationSession` plugin with the `tinyassets://` scheme
+      (`mobile/native/system-auth/ios`; RFC 8252 §7.1 private-use, PKCE as always);
+    - on Android without Auth Tab, its loopback catcher (`mobile/native/android/
+      LocalCallbackPlugin.java`, RFC 8252 §7.3) in Custom Tabs.
+
+    Each fallback is a redirect URI of the mobile client's own CIMD document, never a
+    prefix.
+  - **Which client it is.** The mobile client is named by its own first-party client id
+    (`/oauth/clients/ios.json`, `/oauth/clients/android.json`, beside `web.json` in
+    `FIRST_PARTY_CLIENTS`), from the verified token, never by a header or a query flag.
   - **Sign-in.** The app opens `/authorize` in the auth session, which sets the provider's
-    upstream binding there and the callback checks it there, as on the web. The callback
-    cannot set the WebView's session cookie, so for the mobile client (its own CIMD document
-    and claimed redirect) it hands `/app/signed-in` a single-use session handoff (at most
-    60 s) instead. The handoff is bound to the sign-in's PKCE: the app redeems it on a
-    same-origin route only with the verifier it alone holds, and the route sets the Strict
-    cookie in the WebView. A handoff that falls back into a browser (the link not verified,
-    the app not installed) is then worthless there.
-  - **Connect.** `connections/oauth`, for the mobile client, answers a single-use launch URL
-    on our origin (`/oauth/connect/start?ticket=`, routing-MAC'd, short-lived, bound to the
-    flow begun in the owner's session) instead of setting the binding cookie in the WebView.
-    The auth session opens it; it sets the flow's `__Host-ta-connect-*` cookie in that jar
-    and redirects to the provider, so the callback's binding check holds as on the web. The
-    callback hands the code to `/app/connected` in the fragment, the claimed link brings it
-    into the app, and `connections/oauth/finish` takes it in the owner's session (`flowFinish`
-    in the beginning session), its binding check made at the callback, in the jar that holds
-    the cookie.
-  - **iOS floor.** An https callback in `ASWebAuthenticationSession` (`Callback.https`) needs
-    iOS 17.4 or later. Below it, the fallback is an RFC 8252 §7.1 private-use scheme in
-    reverse-domain form (`io.tinyassets.app:/app/signed-in`), PKCE as always, registered as
-    the mobile client's second redirect only for those versions.
+    upstream binding there, and the callback checks it there, as on the web. The callback
+    cannot set the WebView's session cookie, so for a mobile client it hands the return page
+    a single-use session handoff (at most 60 s) instead. The handoff is bound to the
+    sign-in's PKCE: the app redeems it on a same-origin route only with the verifier it
+    alone holds, and that route sets the Strict cookie in the WebView. A handoff that lands
+    anywhere else is worthless.
+  - **Connect.** `connections/oauth`, for a mobile client, answers a single-use launch URL on
+    our origin (`/oauth/connect/start?ticket=`) instead of setting the binding cookie in the
+    WebView. It is routing-MAC'd, short-lived and bound to the flow begun in the owner's
+    session.
+    1. The auth session opens it; it sets the flow's `__Host-ta-connect-*` cookie in that jar
+       and redirects to the provider.
+    2. The callback's binding check holds there as on the web, and it hands the code to
+       `/app/connected` in the fragment, which the auth session returns to the app.
+    3. `connections/oauth/finish` takes it in the owner's session (`flowFinish`, in the
+       session that began it). For a mobile client its binding check is the one made at the
+       callback.
+
+    No binding value ever sits in a URL or leaves the app's memory.
+  - **Owed by the store app beyond these** (App Store review guidelines):
+    - Sign in with Apple, enabled in AuthKit, whenever Google or GitHub sign-in is offered
+      (4.8);
+    - deleting the account from inside the app, the erasure door reached from "Your data"
+      (5.1.1(v); slice L wires the door);
+    - the shell's native features (notifications, voice) kept, so the app is more than a
+      repackaged website (4.2).
 - [x] G4 (slice 8a) The egress door, the sandbox's identity, its spend and its network
   document, in workerd, nothing deployed and no E2B call; 8b (the sandbox) only calls it.
   The door is the main path for API-key model use: a provider CLI in the sandbox (or pi,

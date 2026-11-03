@@ -143,14 +143,14 @@ describe("the owner surface's answers", () => {
     }
   });
 
-  it("list the capabilities in plain words, the run's marked, from the object's own list",
-     async () => {
+  it("list the capabilities in plain words, from the object's own list", async () => {
     const app = await signInApp({ owner: owner() });
     const { capabilities } = await answered(await appPost("capabilities", app.access_token,
                                                           null, {})) as
-      { capabilities: { id: string; words: string; runs: boolean }[] };
+      { capabilities: { id: string; words: string }[] };
+    // A run's and a key's capabilities are one list: both forms show it whole.
+    expect([...RUN_CAPABILITIES]).toEqual([...CAPABILITIES]);
     expect(capabilities.map((c) => c.id)).toEqual([...CAPABILITIES]);
-    expect(capabilities.filter((c) => c.runs).map((c) => c.id)).toEqual([...RUN_CAPABILITIES]);
     expect(capabilities.every((c) => c.words.length > 0)).toBe(true);
   });
 });

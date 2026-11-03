@@ -40,8 +40,8 @@
  *   key runs, which credentials an engine takes, why one is unwired), so the app's connect
  *   screen is the records' data, never a list of its own.
  * - `tools`: the MCP door's table, each tool's name and title (the owner's `custom` choice).
- * - `capabilities`: the grant capabilities, each in plain words and whether a run may hold
- *   it, so the app's agent and key forms are the object's own list.
+ * - `capabilities`: the capabilities an agent's runs and a key's scopes hold (one list, the
+ *   grants' own), each in plain words, so the app's agent and key forms are the object's.
  * - `tools/<name>`: the owner calling one tool of the MCP door's table (`tools.ts`) as
  *   itself, the same doors and fields an outside client's call takes, held by the object to
  *   the owner's own authority. **Which need the session** (app review M1): every change to
@@ -90,8 +90,7 @@ import type { Sources } from "./sources";
 import { callDoor, refusal, toolTable } from "./tools";
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
-import { RUN_CAPABILITIES } from "../../owner/src/agent-file";
-import { CAPABILITIES, CAPABILITY_WORDS } from "../../owner/src/grants";
+import { CAPABILITY_WORDS, RUN_CAPABILITIES } from "../../owner/src/agent-file";
 import { SOCKET_FAILED, TICKET_REFUSED } from "../../owner/src/socket-shape";
 import {
   callbackSecret, callbackUrl, follows, kindNamed, subscriptionId, wakeKinds,
@@ -311,8 +310,7 @@ const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
   "grants": (_env, { binding, stub }, request) => read(request, () => stub.grantList(binding)),
   "grants/set": grantSet,
   "capabilities": (_env, _owner, request) => read(request, async () => ({
-    capabilities: CAPABILITIES.map((id) => ({ id, words: CAPABILITY_WORDS[id],
-                                              runs: RUN_CAPABILITIES.includes(id) })) })),
+    capabilities: RUN_CAPABILITIES.map((id) => ({ id, words: CAPABILITY_WORDS[id] })) })),
   "tools": (_env, _owner, request) => read(request, async () => ({
     tools: toolTable().map(({ name, title }) => ({ name, title })) })),
   "files/read": fileRead,

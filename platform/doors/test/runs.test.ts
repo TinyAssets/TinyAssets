@@ -19,7 +19,8 @@ import { defineAgent, secretOf } from "../../owner/test/runs-support";
 import { EGRESS_ORIGIN } from "../src/config";
 import { refusedStatus, RUN_HEADER, RUNNER_HEADER } from "../src/egress";
 import { profileNames } from "../src/tools";
-import { EVENT_FRAMES_MAX, SESSION_REFUSED } from "../../owner/src/run-events";
+import { EVENT_FRAMES_MAX } from "../../owner/src/run-events";
+import { SESSION_REFUSED } from "../../owner/src/runs";
 import type { OwnerDO } from "./entry";
 import {
   appPost, call, connect, OPEN, reached, registerClient, rpcBody, serveFirstPartyDocument,

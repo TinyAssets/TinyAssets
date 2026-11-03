@@ -91,16 +91,6 @@ export const CAPABILITIES = Object.freeze(
   ["read_graph", "write_graph", "propose_policy", "read_files", "write_files", "converse",
    "run_graph"] as const);
 export type Capability = (typeof CAPABILITIES)[number];
-/** Each capability in plain words, for the owner's app: what a holder of it may do. */
-export const CAPABILITY_WORDS: Readonly<Record<Capability, string>> = Object.freeze({
-  read_graph: "Read rooms, the board and mail",
-  write_graph: "Post to rooms and the board",
-  propose_policy: "Propose changes to your settings",
-  read_files: "Read your files",
-  write_files: "Write your files",
-  converse: "Talk to your agents",
-  run_graph: "Start your agents' runs",
-});
 export const OUTSIDE_SOURCES: readonly string[] = Object.freeze(["mcp", "api_key"]);
 /** Clients one owner forget names at most. */
 const MAX_FORGET = 100;

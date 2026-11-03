@@ -140,25 +140,13 @@ export function textOf(value: unknown): string | null {
 /** What one event is, by its record's matchers. */
 export interface Read {
   readonly kind: FrameKind;
-  /** The session id it names (`init`), if any, in the conversations' shape. */
+  /** The session id it names (`init`), if any. */
   readonly session_id: string | null;
-  /** Whether it named one outside that shape, which is refused (`SESSION_REFUSED`). */
-  readonly session_refused: boolean;
   /** The result text it carries, and whether the matcher accumulates it. */
   readonly text: { readonly value: string; readonly accumulate: boolean } | null;
   /** The error it reports. */
   readonly error: string | null;
 }
-
-/**
- * A session id the conversations keep: 1 to 256 printable ASCII characters, no space (the
- * `conversations.session_id` CHECK). The VM is untrusted, so any other is refused here,
- * never handed to SQLite to fail the whole post.
- */
-export const SESSION_ID = /^[!-~]{1,256}$/;
-/** The run's error when its engine named a session id outside that shape: a fixed code. */
-export const SESSION_REFUSED = "session_id_refused: the engine named a session id outside " +
-  "its shape, so this conversation does not resume";
 
 /** `event`, read by `events`. */
 export function readEvent(events: EngineEvents, event: unknown): Read {
@@ -172,9 +160,8 @@ export function readEvent(events: EngineEvents, event: unknown): Read {
   const text = result === undefined ? null : textOf(valueAt(event, result.path));
   return {
     kind,
-    session_id: typeof session === "string" && SESSION_ID.test(session) ? session : null,
-    session_refused: session !== undefined && session !== null
-      && !(typeof session === "string" && SESSION_ID.test(session)),
+    session_id: typeof session === "string" && session.length > 0 && session.length <= 256
+      ? session : null,
     text: text === null ? null : { value: text, accumulate: result?.accumulate === true },
     error: error === undefined ? null
       : textOf(valueAt(event, error.path)) ?? "the engine reported an error",
