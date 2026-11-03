@@ -4,8 +4,15 @@
  * it from anywhere else and the alarm reads it locally. The Python's `owner_admission`
  * record (`tinyassets/broker/admission.py`), ported:
  *
- * - `admitted`: the owner's object was made (migration 10 writes the row with the
- *   schema), or every suspension was lifted;
+ * - `pending`: the owner's object was made (migration 10 writes the row with the schema)
+ *   and the platform has not admitted it: every door and lane refuses (`OWNER_UNADMITTED`).
+ *   Any `getByName` makes an object, so being made never admits it: only the platform's
+ *   explicit admit at sign-up does (`admissionSet` with `{admit: true}`, which the doors'
+ *   sign-in callback sends when the owner directory holds no record of the owner, slice
+ *   L). A stale `getByName` of a wiped owner whose tombstone a crash lost therefore makes
+ *   an object that refuses everything, and the directory's erased record keeps the
+ *   platform from ever admitting that name again: `erase.ts`'s window, closed;
+ * - `admitted`: the platform admitted the owner, or every suspension was lifted;
  * - `suspended`, for `billing`, `abuse` or both: the platform's word, and no work runs.
  *   Each door declares its class (`DoorClass`) in its binding check (`OwnerDO`'s `#bind`):
  *   a billing suspension refuses `work` (spend and growth) and leaves the owner its reads,
@@ -41,12 +48,14 @@ export const SUSPENSIONS: readonly string[] = Object.freeze(["abuse", "billing"]
 /** The refusals, each fixed: what a door or a `require_work` lane answers. */
 export const OWNER_SUSPENDED = "owner_suspended: the owner's account is suspended";
 export const OWNER_ERASED = "owner_erased: the owner's account was erased";
+export const OWNER_UNADMITTED = "owner_unadmitted: the platform has not admitted this owner";
+export const NEVER_ADMITTED = "an owner the platform never admitted is not suspended";
 export const PLATFORM_ONLY = "only the platform sets an owner's admission";
 export const PLATFORM_RESERVED = "the platform caller reaches no owner door but admission";
 
 /** The owner's admission as its row holds it. */
 export interface Admission {
-  readonly state: "admitted" | "suspended" | "erased";
+  readonly state: "pending" | "admitted" | "suspended" | "erased";
   /** Why it is suspended, sorted; empty unless it is. */
   readonly reasons: readonly string[];
 }
@@ -65,7 +74,8 @@ export function admission(storage: OwnerStorage): Admission {
 export function workRefusal(state: Admission): string | null {
   return state.state === "admitted" ? null
     : state.state === "erased" ? OWNER_ERASED
-      : `${OWNER_SUSPENDED} (${state.reasons.join(", ")})`;
+      : state.state === "pending" ? OWNER_UNADMITTED
+        : `${OWNER_SUSPENDED} (${state.reasons.join(", ")})`;
 }
 
 /**
@@ -98,15 +108,32 @@ export function requireWork(storage: OwnerStorage): void {
 }
 
 /**
- * In a unit: the platform suspends (`suspended` true) or resumes the owner for `reason`;
- * the admission as it then stands. The owner is suspended while any reason holds. An erased
+ * In a unit: the platform admits a pending owner (`{admit: true}`, at sign-up; an owner
+ * admitted or suspended already is left as it stands, so a repeated sign-up admits nothing
+ * twice and lifts no suspension), or suspends (`suspended` true) or resumes it for
+ * `reason`; the admission as it then stands. The owner is suspended while any reason
+ * holds; a pending owner is never suspended (there is nothing yet to suspend). An erased
  * owner never reaches here: its object holds only the tombstone, which the binding check
  * refuses before any door acts.
  */
 export function setAdmission(storage: OwnerStorage, request: unknown): Admission {
-  if (typeof request !== "object" || request === null || Array.isArray(request)
-      || Object.keys(request).sort().join() !== "reason,suspended") {
-    throw new Invalid("an admission change is a reason and whether it suspends");
+  if (typeof request !== "object" || request === null || Array.isArray(request)) {
+    throw new Invalid(CHANGE);
+  }
+  const keys = Object.keys(request).sort().join();
+  const now = admission(storage);
+  if (keys === "admit") {
+    if ((request as Record<string, unknown>)["admit"] !== true) {
+      throw new Invalid("an admit is {admit: true}");
+    }
+    if (now.state !== "pending") {
+      return now;
+    }
+    storage.sql.exec("UPDATE owner_admission SET state = 'admitted'");
+    return { state: "admitted", reasons: [] };
+  }
+  if (keys !== "reason,suspended") {
+    throw new Invalid(CHANGE);
   }
   const { reason, suspended } = request as Record<string, unknown>;
   if (typeof reason !== "string" || !SUSPENSIONS.includes(reason)
@@ -114,7 +141,10 @@ export function setAdmission(storage: OwnerStorage, request: unknown): Admission
     throw new Invalid("an admission change is a reason (abuse or billing) and whether it " +
                       "suspends");
   }
-  const reasons = new Set(admission(storage).reasons);
+  if (now.state === "pending") {
+    throw new Refused(NEVER_ADMITTED);
+  }
+  const reasons = new Set(now.reasons);
   if (suspended) {
     reasons.add(reason);
   } else {
@@ -126,6 +156,8 @@ export function setAdmission(storage: OwnerStorage, request: unknown): Admission
                    JSON.stringify(sorted));
   return { state, reasons: sorted };
 }
+
+const CHANGE = "an admission change is an admit, or a reason and whether it suspends";
 
 /** The owner's tier (`tier.ts`), from its own admission row, which only the platform sets. */
 export function ownerTier(storage: OwnerStorage): TierName {

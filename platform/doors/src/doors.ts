@@ -12,8 +12,14 @@
  *   (`403` otherwise), then the resource host (the token), the kill switch, the binder
  *   and the MCP handler.
  * - `/api/*`: the `Cookie` header removed, then the key (`api.ts`).
- * - `/hooks/*`: the inbound door is owed (tasks 2), so `404`, and its request is never
- *   read; the inbound door strips the `Cookie` header as `/mcp` and `/api` do.
+ * - `/hooks/inbound/<token>`: the inbound door (`inbound.ts`), the `Cookie` header removed;
+ *   any other `/hooks/` path is `404`, its request never read.
+ *
+ * No caller is counted or capped by the doors (the founder's rule: no invented limits;
+ * slice L's review). An owner object the runtime reports overloaded (Cloudflare's soft
+ * limit of 1,000 requests a second an object) is answered `429` with `Retry-After`, never
+ * retried: a technical ceiling, not ours. Abuse at volume meets Cloudflare's own DDoS
+ * protection, in front of every Worker.
  * - `/app/api/*`: the owner surface (`app.ts`).
  * - `/app` and its named pages and files: the owner app itself (`pages.ts`).
  * - `/authorize`, `/oauth/upstream/callback`: the sign-in (`authorize.ts`).
@@ -35,10 +41,11 @@ import { authorize, callback } from "./authorize";
 import { connectCallback } from "./connect";
 import { bindMcp, withTiers } from "./binder";
 import {
-  CONNECT_CALLBACK_PATH, type DoorsEnv, EGRESS_ORIGIN, MCP_ORIGINS, PUBLIC_ORIGIN, WEB_CLIENT,
-  WEB_REDIRECT,
+  CONNECT_CALLBACK_PATH, type DoorsEnv, EGRESS_ORIGIN, INBOUND_PATH, MCP_ORIGINS, PUBLIC_ORIGIN,
+  WEB_CLIENT, WEB_REDIRECT,
 } from "./config";
 import { outsideRead } from "./control";
+import { serveInbound } from "./inbound";
 import { serveMcp } from "./mcp";
 import { authorizationServer, mcpResource } from "./oauth";
 import { appPath, servePage } from "./pages";
@@ -73,9 +80,33 @@ async function mcpDoor(request: Request, env: DoorsEnv, ctx: ExecutionContext):
   }).fetch(request, env, ctx);
 }
 
+/**
+ * Whether `error` is the runtime's report that a Durable Object is overloaded (its
+ * `.overloaded`, which Cloudflare's error-handling page says never to retry).
+ */
+export function overloaded(error: unknown): boolean {
+  return typeof error === "object" && error !== null
+    && (error as { overloaded?: unknown }).overloaded === true;
+}
+
 /** Serve one request through the doors, with `upstream` as the owner's sign-in. */
 export async function serve(request: Request, env: DoorsEnv, ctx: ExecutionContext,
-                            upstream: Upstream, sources: Sources): Promise<Response> {
+                            upstream: Upstream | (() => Upstream), sources: Sources):
+    Promise<Response> {
+  try {
+    return await route(request, env, ctx, upstream, sources);
+  } catch (error) {
+    if (overloaded(error)) {
+      return new Response("this account is busy; try again shortly", {
+        status: 429, headers: { "Retry-After": "1", "Cache-Control": "no-store" } });
+    }
+    throw error;
+  }
+}
+
+async function route(request: Request, env: DoorsEnv, ctx: ExecutionContext,
+                     upstream: Upstream | (() => Upstream), sources: Sources):
+    Promise<Response> {
   const url = new URL(request.url);
   if (url.origin === EGRESS_ORIGIN) {
     return serveEgress(withoutCookie(request), env, ctx);
@@ -89,6 +120,9 @@ export async function serve(request: Request, env: DoorsEnv, ctx: ExecutionConte
   }
   if (path.startsWith("/api/")) {
     return serveApi(withoutCookie(request), env);
+  }
+  if (path.startsWith(INBOUND_PATH)) {
+    return serveInbound(withoutCookie(request), env);
   }
   if (path.startsWith("/hooks/")) {
     return notFound();

@@ -790,6 +790,32 @@ export class Policy {
     });
   }
 
+  /**
+   * In the mint's unit (`OwnerDO.keyMint`): an agent's held key request applied with its
+   * key's grant, once (the Python's `_apply_key_request`). The card must be pending,
+   * unexpired, an `api_key_request` whose scopes are exactly the grant's, with the digest
+   * the owner was shown; it is marked applied here.
+   */
+  applyKeyRequest(proposal: unknown, scopes: unknown, now: number): void {
+    if (!plain(proposal) || !keys(proposal, ["request_id", "digest"])
+        || !cardId(proposal["request_id"]) || !cardId(proposal["digest"])) {
+      throw new Invalid("invalid proposal apply");
+    }
+    const held = this.#sql.exec<{ digest: string; document: string }>(
+      "SELECT digest, document FROM policy_proposals WHERE request_id = ? " +
+        "AND applied_at IS NULL AND at > ?",
+      proposal["request_id"] as string, now - this.#limits.proposalTtlS,
+    ).toArray()[0];
+    const change: unknown = held === undefined ? {} : JSON.parse(held.document);
+    if (held === undefined || held.digest !== proposal["digest"] || !plain(change)
+        || change["type"] !== "api_key_request"
+        || canonical(change["scopes"]) !== canonical(scopes)) {
+      throw new Refused("proposal is not the pending card shown");
+    }
+    this.#sql.exec("UPDATE policy_proposals SET applied_at = ? WHERE request_id = ?", now,
+                   proposal["request_id"] as string);
+  }
+
   /** The pending, unexpired proposal held under a card id, and its digest, or null. */
   held(requestId: unknown, now: number): { change: Change; digest: string } | null {
     if (!cardId(requestId)) {

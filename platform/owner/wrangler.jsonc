@@ -39,6 +39,11 @@
     { "binding": "HOOKS", "service": "tinyassets-hooks" },
     { "binding": "SANDBOX", "service": "tinyassets-sandbox" }
   ],
+  "queues": {
+    "producers": [
+      { "binding": "ERASURES", "queue": "tinyassets-erasure" }
+    ]
+  },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["OwnerDO"] }
   ]

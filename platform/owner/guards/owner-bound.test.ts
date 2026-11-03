@@ -171,6 +171,12 @@ const ENGINE_SIGNINS = constant("run-rows", "ENGINE_SIGNINS");
 const SIGNIN_MODELS_CHARS = constant("run-rows", "SIGNIN_MODELS_CHARS");
 const SIGNIN_LIST_CHARS = constant("run-rows", "SIGNIN_LIST_CHARS");
 const SOCKET_TICKETS = constant("socket-shape", "SOCKET_TICKETS");
+/** The doors' records in the object (slice L): the key store and the inbound bindings. */
+const MAX_KEYS = constant("keys", "MAX_KEYS");
+const KEY_NAME_MAX = constant("keys", "KEY_NAME_MAX");
+const MAX_BINDINGS = constant("inbound", "MAX_BINDINGS");
+const SECRET_MAX = constant("inbound", "SECRET_MAX");
+const ROUTE_MAX = constant("inbound", "ROUTE_MAX");
 /** Mail that starts runs (slice ID): a message's id, an own agent's id, a mail's authority. */
 const MESSAGE_ID_CHARS = constant("run-rows", "MESSAGE_ID_CHARS");
 const NATIVE_ID_CHARS = constant("run-rows", "NATIVE_ID_CHARS");
@@ -361,12 +367,13 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                        bytes: ROW + 64, by: "one per client",
                        indexes: { sqlite_autoindex_proposal_shares_1: key(64) } },
     policy_usage: { rows: 1, bytes: ROW, by: "one row" },
-    outside_clients: { rows: G.maxFreeClients + G.maxOwnerClients,
-                       bytes: ROW + 8 + GRANT_BYTES * G.maxOwnerClients
-                         / (G.maxFreeClients + G.maxOwnerClients),
-                       by: "free clients (no scopes, no name) and owner-set ones (their " +
-                         "scopes' JSON at the schema's byte ceiling, and a name), each with " +
-                         "its revision (migration 9)",
+    outside_clients: { rows: G.maxFreeClients + 2 * G.maxOwnerClients,
+                       bytes: ROW + 8 + (GRANT_BYTES + CLIENT_NAME * 4) * G.maxOwnerClients
+                         / (G.maxFreeClients + 2 * G.maxOwnerClients),
+                       by: "free clients (no scopes, no name), live owner-set ones (their " +
+                         "scopes' JSON at the schema's byte ceiling, and a name) and as many " +
+                         "revoked ones (no scopes, a name; slice L), each with its revision " +
+                         "(migration 9)",
                        indexes: { sqlite_autoindex_outside_clients_1: key(64),
                                   outside_clients_listed: key(NUMBER, 64),
                                   outside_clients_free: key(NUMBER) } },
@@ -545,6 +552,21 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // The owner's admission: one row, its reasons a short fixed list; after the erasure, the
     // erased tombstone, alone in the database.
     owner_admission: { rows: 1, bytes: ROW + 64, by: "one row (the schema's CHECK)" },
+    // The key store (slice L): a row only while its key's owner-set grant row stands.
+    owner_keys: { rows: Math.max(MAX_KEYS, G.maxOwnerClients),
+                bytes: ROW + 16 + 64 + 4 * KEY_NAME_MAX + 3 * 9,
+                by: "maxOwnerClients (a key's grant is an owner-set client), each its id, " +
+                  "client, name and times",
+                indexes: { sqlite_autoindex_owner_keys_1: key(16),
+                           sqlite_autoindex_owner_keys_2: key(64) } },
+    // The inbound bindings (slice L): each its route, agent, owner-held proof and secret.
+    inbound_bindings: { rows: MAX_BINDINGS,
+                        bytes: ROW + 32 + 10 + 64 + 9 + ROUTE_MAX + 1024 + 4 * SECRET_MAX + 64
+                          + 3 * 9,
+                        by: "MAX_BINDINGS, each its id, kind, agent, revision, route, proof " +
+                          "(ASCII), secret, breaker and times",
+                        indexes: { sqlite_autoindex_inbound_bindings_1: key(32),
+                                   sqlite_autoindex_inbound_bindings_2: key(ROUTE_MAX) } },
   });
 }
 
@@ -752,7 +774,7 @@ describe("the owner's database bound", () => {
     expect(source("schema")).toContain("\"path TEXT NOT NULL CHECK (length(path) BETWEEN 1 AND " +
                                        "2048 AND \" +\n      \"path NOT GLOB '*[^ -~]*'), \" +");
     expect(TERMS["outside_clients"]!.rows * TERMS["outside_clients"]!.bytes)
-      .toBe(2000 * (256 + 8) + 1000 * (65_536 + 80 * 4));
+      .toBe(3000 * (256 + 8) + 1000 * (65_536 + 80 * 4) + 1000 * 80 * 4);
     // The structural bounds (ADR-035): one recipient a message; history in bytes.
     expect(TERMS["ledger_recipients"]!.rows).toBe(LEDGER_LIMITS.maxMessages);
     expect(TERMS["collection_history"]).toMatchObject({ rows: 1, charged: true,
