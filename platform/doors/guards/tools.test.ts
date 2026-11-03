@@ -22,8 +22,8 @@ import { describe, expect, it } from "vitest";
 
 import { parse, PLATFORM } from "../../owner/guards/sources";
 import profiles from "../profiles.json" with { type: "json" };
-import { CLIENT_PROFILES, DEFAULT_PROFILE, MAILBOX_TOOLS, profileNames, type Tool, toolNames,
-         toolTable } from "../src/tools";
+import { CLIENT_PROFILES, DEFAULT_PROFILE, profileNames, type Tool, toolNames, toolTable }
+  from "../src/tools";
 
 /** Outside-callable doors without a tool yet, and what owes each. */
 const DEFERRED: Readonly<Record<string, string>> = Object.freeze({
@@ -35,14 +35,20 @@ const DEFERRED: Readonly<Record<string, string>> = Object.freeze({
   fileUploadCommit: "tasks 2, owed by 6.1: file bytes streamed by the binder",
   fileUploadAbort: "tasks 2, owed by 6.1: file bytes streamed by the binder",
   fileChanges: "tasks 6: the sandbox's sync feed, reached by its sync token",
-  wakeSubscribe: "tasks 7 (slice W2): the MCP door's events/subscribe, after its signed " +
-    "callback challenge",
-  wakeUnsubscribe: "tasks 7 (slice W2): the MCP door's events/unsubscribe",
 });
 /** Outside-callable doors the doors call themselves, never a tool, and why. */
 const DOORS_ONLY: Readonly<Record<string, string>> = Object.freeze({
   toolProfile: "the MCP and API doors' read of which tools the caller is served",
+  wakeEvents: "the MCP door's events/list (MCP Events, slice W), never a tool",
+  wakeSubscribe: "the MCP door's events/subscribe, after its signed callback challenge",
+  wakeUnsubscribe: "the MCP door's events/unsubscribe",
 });
+/**
+ * The mailbox tools, which a run never holds (slice ID): its mail is its input, and its
+ * agent's mailbox holds every authority's mail; `inbox_digest`'s mail part is a mailbox read.
+ */
+const MAILBOX_TOOLS: readonly string[] = Object.freeze(["mailbox_read", "mailbox_ack",
+                                                        "inbox_digest"]);
 /** The run doors' tools: what a run's own MCP door never serves (ADR-034 decision 11). */
 const RUN_TOOLS: readonly string[] = Object.freeze(["converse", "run_graph", "run_status",
                                                     "run_cancel"]);
@@ -299,17 +305,16 @@ describe("tool table guard", () => {
   it("serves the run tools, and a run's own profile serves none of them", () => {
     expect(toolTable().filter((tool) => RUN_TOOLS.includes(tool.name)).map((tool) => tool.door))
       .toEqual(["agentSubmit", "agentRun", "agentStatus", "agentCancel"]);
-    expect(profileNames("run").filter((name) => RUN_TOOLS.includes(name)
-                                      || MAILBOX_TOOLS.includes(name))).toEqual([]);
+    expect(profileNames("run").filter((name) => RUN_TOOLS.includes(name))).toEqual([]);
   });
 
   it("lists exactly each profile's tools: the directory's all but code, a run's all but " +
-     "the run tools, custom's by default all", () => {
+     "the run and mailbox tools, custom's by default all", () => {
     const all = toolNames();
     expect(Object.keys(profiles).sort()).toEqual(["custom", "directory", "run"]);
     expect(profileNames("directory")).toEqual(all.filter((name) => name !== "code"));
     expect(profileNames("run")).toEqual(all.filter((name) => !RUN_TOOLS.includes(name)
-                                                   && !MAILBOX_TOOLS.includes(name)));
+                                                    && !MAILBOX_TOOLS.includes(name)));
     expect(profileNames("custom")).toEqual(all);
     expect(profileNames("directory")).not.toContain("code");
     expect([...CLIENT_PROFILES]).toEqual(["directory", "custom"]);
@@ -327,6 +332,12 @@ describe("tool table guard", () => {
                                           openWorldHint: false });
     expect(DOORS.has("toolProfile")).toBe(true);
     expect(toolTable().map((tool) => tool.door)).not.toContain("toolProfile");
+  });
+
+  it("serves a run no mailbox tool: its mail is its input (slice ID)", () => {
+    expect(profileNames("run").filter((name) => MAILBOX_TOOLS.includes(name))).toEqual([]);
+    expect(profileNames("run").length).toBe(toolTable().length - RUN_TOOLS.length
+                                            - MAILBOX_TOOLS.length);
   });
 
   it("sees an ack marked other than idempotent, and a post marked idempotent", () => {

@@ -430,6 +430,9 @@ describe("a run and the mailbox (review H1)", () => {
       .toBe(RUN_NO_MAILBOX);
     expect((await failure(() => r.stub.mailboxAck(asRun, { through: 1 }))).message)
       .toBe(RUN_NO_MAILBOX);
+    // Nor its digest, whose mail part is a mailbox read (slice M on ID).
+    expect((await failure(() => r.stub.inboxDigest(asRun, { limit: 10, after: 0 }))).message)
+      .toBe(RUN_NO_MAILBOX);
     // An owner run reads none either: every run's mail is its input.
     await drainDue(r.stub);
     const ownersRun = await newest(r);

@@ -62,7 +62,7 @@ Each external tool SHALL call exactly one owner door an outside client can reach
 - **THEN** the tool guard fails CI
 
 ### Requirement: No tool is open world, and the run tools are run doors
-Every tool SHALL be confined to the owner's account, `openWorldHint` false. The run tools (slice R) SHALL be run doors: `converse` (`agentSubmit`, `converse` held where its agent acts) and `run_graph` (`agentRun`, `run_graph`) start an engine run in the owner's sandbox, destructive and not idempotent; `run_status` (`agentStatus`) reads one of the caller's own runs or schedules, from the run's receipt; `run_cancel` (`agentCancel`) cancels one, destructive and idempotent. The owner's `/app/api/agent/{submit,run,status,cancel}` routes SHALL call the same doors. A run's own MCP door SHALL serve the `run` profile: the table but the run tools.
+Every tool SHALL be confined to the owner's account, `openWorldHint` false. The run tools (slice R) SHALL be run doors: `converse` (`agentSubmit`, `converse` held where its agent acts) and `run_graph` (`agentRun`, `run_graph`) start an engine run in the owner's sandbox, destructive and not idempotent; `run_status` (`agentStatus`) reads one of the caller's own runs or schedules, from the run's receipt; `run_cancel` (`agentCancel`) cancels one, destructive and idempotent. The owner's `/app/api/agent/{submit,run,status,cancel}` routes SHALL call the same doors. A run's own MCP door SHALL serve the `run` profile: the table but the run tools and the mailbox tools (`mailbox_read`, `mailbox_ack`, `inbox_digest`; slice ID).
 
 #### Scenario: A tool marked open world
 - **WHEN** a tool is marked open world

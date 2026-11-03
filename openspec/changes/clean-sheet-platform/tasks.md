@@ -1111,7 +1111,9 @@ R, S, M and W.
     `custom`. The object answers a caller's tools (`toolProfile`), asked by
     `/mcp`, the run's MCP door and `/api` before any tool is listed or called; a refused
     caller (revoked, fenced, ended run) gets `403` and no tool. Removed as redundant:
-    `RUN_TOOLS`/`runProfile()` (the `run` profile) and the `run_code` capability with
+    `RUN_TOOLS`/`runProfile()` (the `run` profile, which on merging slice ID also leaves out
+    the mailbox tools, `inbox_digest` among them, its door refusing a run `run_no_mailbox`)
+    and the `run_code` capability with
     `authority.ts`'s `EXPLICIT` (code mode is the owner's choice of profile, not a
     capability).
   - **`code`** (`codeRun`): refused `code_mode_off` once the owner's policy turns

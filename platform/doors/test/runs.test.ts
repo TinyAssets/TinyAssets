@@ -206,6 +206,9 @@ describe("a run's own doors on the egress host", () => {
     const client = await engine(start!);
     const { tools } = await client.listTools();
     expect(tools.filter((tool) => RUN_TOOLS.includes(tool.name))).toEqual([]);
+    // Nor a mailbox tool (slice ID): the inbox digest's mail part is a mailbox read.
+    expect(tools.some((tool) => ["mailbox_read", "mailbox_ack", "inbox_digest"]
+      .includes(tool.name))).toBe(false);
     // Exactly the run profile, code mode on by default.
     expect(tools.map((tool) => tool.name)).toEqual(profileNames("run"));
     expect(structured(await client.callTool({ name: "file_stat",

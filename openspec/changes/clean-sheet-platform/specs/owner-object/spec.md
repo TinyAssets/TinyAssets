@@ -931,7 +931,7 @@ A room SHALL be a pair's: `dm:<a>` the owner and `a`, `dm:<a>+<b>` two agents (`
 - **THEN** no further run starts, and the owner reads the question in the chain
 
 ### Requirement: A run reads no mailbox
-A run SHALL read and ack no ledger mailbox (`run_no_mailbox`), and its MCP profile SHALL hold no mailbox tool: its mail is its input, and its agent's mailbox holds every authority's mail. An agent's `queued` and `held_cap` rows SHALL be the `runs` lane's alone.
+A run SHALL read and ack no ledger mailbox (`run_no_mailbox`, at `mailboxRead`, `mailboxAck` and `inboxDigest`), and its MCP profile (`run`, `doors/profiles.json`) SHALL hold no mailbox tool, `inbox_digest` among them: its mail is its input, and its agent's mailbox holds every authority's mail. An agent's `queued` and `held_cap` rows SHALL be the `runs` lane's alone.
 
 #### Scenario: A client's run
 - **WHEN** a client's mail starts an agent's run while the owner's mail to that agent waits

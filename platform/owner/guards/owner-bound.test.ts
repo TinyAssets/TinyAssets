@@ -21,12 +21,14 @@
  * unmodified engines, their sessions in the owner's files (ADR-034), so what the owner's
  * object holds is its own bounded rows only, whatever its agents do.
  *
- * The worst case is 42.3% of the limit (slice ID: 4,234,268,166.75 bytes), about 766 MB under
- * half; with every raise the limits audit proposes, 49.99% (4,999,455,028.75 bytes,
+ * The worst case is 42.3% of the limit (slice M on ID: 4,234,269,003.75 bytes), about 766 MB
+ * under half; with every raise the limits audit proposes, 49.99% (4,999,455,865.75 bytes,
  * `limits-proposed.test.ts`), 0.5 MB under half. Slice ID added `native_agents` (1.5 MB,
  * the owner's own agents in the registry's rows); a mail's authority and attendance and a
  * run's mail fit within the pages their rows were already counted at, and it adds no index
- * (an identity and a mail thread's conversation are found by their keys, digests).
+ * (an identity and a mail thread's conversation are found by their keys, digests). Slice M
+ * added each collection row's owner-wide change and its `collection_changes` entry, an
+ * erase entry's in `collection_erasures`, and the one-row `collection_clock`.
  * ADR-034's deletion slice took out the agent's thread rows, their live and usage rows,
  * the run receipts and the model turns' counters and owners, and Lifecycle's wake job and
  * key per live thread (slice D: 40.6%, 4,064,822,714 bytes; G4 was 46.3%). The runs slice
@@ -618,6 +620,18 @@ describe("the owner's database bound", () => {
       .toEqual(["recipients_by_seq", "recipients_by_state", "recipients_unacked"]);
     expect(indexesOn("ledger_messages")).toEqual(["messages_done"]);
     expect(source("schema")).not.toMatch(/native_agents \([^)]*UNIQUE|agent_id TEXT NOT NULL UNIQUE/);
+  });
+
+  it("charges slice M's indexes: the change orders of the rows and the erase entries", () => {
+    // Each charged in its table's term (`CHANGE_BYTES`): `collection_changes` a row's,
+    // `collection_erasures` a delete's or clear's history entry's, partial on them alone.
+    expect(indexesOn("collection_rows"))
+      .toEqual(["collection_changes", "collection_creators", "collection_writers"]);
+    expect(indexesOn("collection_history")).toEqual(["collection_erasures"]);
+    expect(source("schema")).toContain(
+      "CREATE INDEX collection_erasures ON collection_history (change) WHERE change IS NOT NULL");
+    expect(TERMS["collection_rows"]!.bytes)
+      .toBeGreaterThanOrEqual(256 + CHANGE_BYTES);
   });
 
   it("counts Lifecycle's own rows, apart from the tables", () => {

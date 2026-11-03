@@ -30,7 +30,9 @@
  * what a public connector directory allows, for the listing's own MCP resource once the
  * listing is submitted (the founder's call: a new door); `run`, a run's own MCP door on
  * the egress host, the table but the run tools (work between agents is mail, ADR-034
- * decision 11) and the mailbox tools (a run's mail is its input, slice ID). The object answers a caller's profile (`toolProfile`) and builds `code`'s
+ * decision 11) and the mailbox tools, `inbox_digest` among them, since a run's mail is
+ * its input and its agent's mailbox holds every authority's mail (slice ID). The object
+ * answers a caller's profile (`toolProfile`) and builds `code`'s
  * tools from it.
  * `guards/tools.test.ts` holds every row to these rules and to a real outside-callable
  * door, and names the outside-callable doors without a tool yet, each with the slice that
@@ -257,12 +259,6 @@ export type ProfileName = "directory" | "custom" | "run";
 export const CLIENT_PROFILES: readonly ProfileName[] = Object.freeze(["directory", "custom"]);
 /** What a grant names until the owner names another: every client is a custom connector. */
 export const DEFAULT_PROFILE: ProfileName = "custom";
-
-/**
- * The mailbox tools, which a run never holds (slice ID): its mail is its input, and its
- * agent's mailbox holds every authority's mail, which no one run's authority covers.
- */
-export const MAILBOX_TOOLS: readonly string[] = Object.freeze(["mailbox_read", "mailbox_ack"]);
 
 /** A profile's tool names, as its data lists them (`custom`: the default of the owner's choice). */
 export function profileNames(name: ProfileName): readonly string[] {

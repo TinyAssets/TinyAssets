@@ -889,3 +889,40 @@ describe("a grant's tool profile (slice M)", () => {
     expect(unknown.message).toMatch(/CHECK/);
   });
 });
+
+describe("a grant's tool profile (slice M)", () => {
+  it("names custom until the owner names another, and moves the generation",
+     async () => {
+    const r = await rig();
+    await r.stub.outsideAgents(r.bind(CHATGPT));
+    const [free] = await clients(r);
+    expect(free).toMatchObject({ profile: "custom", generation: 1 });
+    const row = free!;
+    const listed = await r.stub.grantSet(r.session(null), {
+      client: CHATGPT.client, source: "mcp", mode: "full", scopes: [],
+      expected_revision: row.revision, name: "", profile: "directory" });
+    expect(listed).toMatchObject({ profile: "directory", generation: 2 });
+    // A set that names no profile keeps the grant's own, and moves only the revision.
+    const renamed = await rename(r, CHATGPT, "ChatGPT");
+    expect(renamed).toMatchObject({ profile: "directory", generation: 2 });
+    for (const profile of ["run", "everything", 7, null]) {
+      const refused = await failure(() => r.stub.grantSet(r.session(null), {
+        client: CHATGPT.client, source: "mcp", mode: "full", scopes: [],
+        expected_revision: renamed.revision, name: "", profile: profile as never }));
+      expect([refused.name, refused.message])
+        .toEqual(["Invalid", "a grant's profile is one of directory, custom"]);
+    }
+  });
+
+  it("is held by the row's own rule: a free row names custom", async () => {
+    const r = await rig();
+    await r.stub.outsideAgents(r.bind(CLAUDE));
+    const changed = await failure(() => r.sql(
+      "UPDATE outside_clients SET profile = 'directory' WHERE client = ?", CLAUDE.client));
+    expect(changed.message).toMatch(/CHECK/);
+    const unknown = await failure(() => r.sql(
+      "UPDATE outside_clients SET owner_set = 1, profile = 'run' WHERE client = ?",
+      CLAUDE.client));
+    expect(unknown.message).toMatch(/CHECK/);
+  });
+});

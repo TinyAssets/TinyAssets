@@ -2193,41 +2193,19 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   // -- DIGESTS and CODE MODE: a main agent's few calls (slice M) -------------------
 
   /**
-   * A run reads and acks no mailbox: its mail is its input, and its agent's mailbox holds
-   * every authority's mail, which no one run's authority covers. A run sees its own thread,
-   * under its own authority, as its conversation.
-   */
-  #noMailbox(account: Account): void {
-    if (account.run !== null) {
-      throw new Refused(RUN_NO_MAILBOX);
-    }
-  }
-
-  /**
-   * The owner's view of a mail chain (agents' mail to each other included), from any of its
-   * messages, such as the mail a run's receipt names: oldest first, after `after`.
-   */
-  mailChain(binding: Binding, request: ChainRequest):
-      Promise<{ root: string; messages: ChainMail[]; more: boolean }> {
-    return this.#door(() => {
-      this.#owner(binding, "read", "read its agents' mail chains");
-      const r = ledgerFields(request, ["message_id", "limit"], ["after"]);
-      return this.#ledger.chain(r["message_id"], r["after"] ?? 0, r["limit"]);
-    });
-  }
-
-  /**
    * What changed for this agent since its cursor, in one read: its unacknowledged mail
    * (`mailboxRead`'s page, from its own acknowledged cursor) and the owner's rooms' rows
    * (`room:<app>:<room>`) written past `after`, an owner-wide cursor, each as its head.
    * Held to its grant as the mailbox and the collections are: `read_graph`, and a private
-   * row only to its writer.
+   * row only to its writer. Its mail part is a mailbox read, so a run is refused it
+   * (`run_no_mailbox`, slice ID), as at `mailboxRead`; a run reads the board's digest.
    */
   inboxDigest(binding: Binding, request: InboxDigestRequest):
       Promise<{ mail: MailPage; rooms: Heads }> {
     return this.#door(() => {
       const account = this.#account(binding, "read");
       const r = ledgerFields(request, ["limit", "after"], ["max_bytes", "head_chars"]);
+      this.#noMailbox(account);
       this.#scope(account, "read_graph");
       const head = headChars(r["head_chars"]);
       return {
@@ -2388,6 +2366,30 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       throw new Error(refused.message);
     }
+  }
+
+  /**
+   * A run reads and acks no mailbox: its mail is its input, and its agent's mailbox holds
+   * every authority's mail, which no one run's authority covers. A run sees its own thread,
+   * under its own authority, as its conversation.
+   */
+  #noMailbox(account: Account): void {
+    if (account.run !== null) {
+      throw new Refused(RUN_NO_MAILBOX);
+    }
+  }
+
+  /**
+   * The owner's view of a mail chain (agents' mail to each other included), from any of its
+   * messages, such as the mail a run's receipt names: oldest first, after `after`.
+   */
+  mailChain(binding: Binding, request: ChainRequest):
+      Promise<{ root: string; messages: ChainMail[]; more: boolean }> {
+    return this.#door(() => {
+      this.#owner(binding, "read", "read its agents' mail chains");
+      const r = ledgerFields(request, ["message_id", "limit"], ["after"]);
+      return this.#ledger.chain(r["message_id"], r["after"] ?? 0, r["limit"]);
+    });
   }
 
   /**
