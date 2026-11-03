@@ -81,7 +81,8 @@ describe("the limits that ship", () => {
     const now = { ...TERMS, ...RUNTIME };
     const figures = {
       budget: HALF, worst: worstCase(), margin: HALF - worstCase(),
-      terms: Object.fromEntries(Object.keys(now).map((name) => [name, termBytes(name, now[name]!)])),
+      terms: Object.fromEntries(Object.keys(now).map((name) =>
+        [name, termBytes(name, now[name]!)])),
       without: Object.fromEntries(Object.entries(WITHOUT).map(([change, without]) =>
         [change, total(without())])),
     };

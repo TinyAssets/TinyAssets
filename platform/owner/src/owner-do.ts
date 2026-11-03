@@ -2091,7 +2091,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const read = unit();
       return { value: read.value, located: this.#bodies.locate(read.contents) };
     });
-    return located.size === 0 ? fill(value, new Map()) : fill(value, await this.#bodies.fetch(located));
+    return fill(value, located.size === 0 ? new Map() : await this.#bodies.fetch(located));
   }
 
   collectionWrite(binding: Binding, request: WriteRequest): Promise<{ row: Row } | Conflicted> {

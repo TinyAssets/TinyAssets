@@ -496,7 +496,8 @@ export class Egress {
         || this.#count("SELECT COUNT(*) AS n FROM egress_reservations WHERE state = 'open'")
           >= this.#limits.openPerRun * runs
         || this.#count("SELECT COUNT(*) AS n FROM egress_reservations WHERE opened_at > ? " +
-                         "AND state != 'refused'", now - 60) >= this.#limits.perRunPerMinute * runs) {
+                         "AND state != 'refused'", now - 60)
+          >= this.#limits.perRunPerMinute * runs) {
       return refuse("egress_rate");
     }
     let charge: Charged | null = null;
