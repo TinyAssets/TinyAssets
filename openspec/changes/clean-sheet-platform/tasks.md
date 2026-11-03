@@ -472,7 +472,8 @@ account and no deploy.
   `guards/app-files.test.ts`, the config guard's `ASSETS`, `owner/test/agent-doors.test.ts`
   (the session on every agent-file door, receipted), and the browser test
   `doors/test/app.e2e.mjs` (`npm run test:app` in `platform/doors`, and the `platform-app`
-  CI job: Chromium at the Playwright version `platform/package-lock.json` pins, its network
+  CI job, which `required-tests` needs with `platform-tests`, each to succeed (before
+  this slice a red platform job merged): Chromium at the Playwright version `platform/package-lock.json` pins, its network
   mapped to the doors in workerd over HTTPS, so its cookies, `Sec-Fetch-*` and socket are
   the browser's own; it fails, never skips, without Playwright or Chromium): sign-in, a key
   connect, an OAuth connect through `/app/connected`, an agent made, a run started and its

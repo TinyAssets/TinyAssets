@@ -163,7 +163,7 @@ jobs:
         run: python -m scripts.ci_structural_guards
 
   # The TypeScript platform workspace (ADR-032): typecheck, then its tests in the
-  # real workerd runtime. Not a required check yet, and nothing here deploys.
+  # real workerd runtime. Required through `required-tests`' needs; nothing here deploys.
   platform-tests:
     name: platform-tests
     runs-on: ubuntu-latest
@@ -183,8 +183,8 @@ jobs:
       - run: npm test
 
   # The owner app in a real browser (slice APP): Chromium at the Playwright version the
-  # platform lockfile pins, against the doors in workerd. Not a required check yet, as
-  # platform-tests above. It fails, never skips, when Playwright or Chromium is missing.
+  # platform lockfile pins, against the doors in workerd. Required through
+  # `required-tests`' needs. It fails, never skips, when Playwright or Chromium is missing.
   platform-app:
     name: platform-app
     runs-on: ubuntu-latest
@@ -577,7 +577,8 @@ jobs:
     # with the `gh api` protection update in
     # docs/decisions/ADR-003-required-test-aggregator.md.
     name: required-tests
-    needs: [select, required-tests-shard, affected-tests, structural-guards]
+    needs: [select, required-tests-shard, affected-tests, structural-guards, platform-tests,
+            platform-app]
     # `always()` is the ONE condition this job may carry, and it is required,
     # not optional. Without it a failed or cancelled shard makes GitHub SKIP
     # this job, and a skipped required check is accepted by branch protection
@@ -601,6 +602,18 @@ jobs:
         run: |
           if [ "$STRUCTURAL_RESULT" != success ]; then
             echo "::error::Required checks failed (structural=$STRUCTURAL_RESULT). Fix the named job and rerun Tests."
+            exit 1
+          fi
+
+      # The TypeScript platform (ADR-032) and the owner app in a browser gate every event
+      # too: each must have run and succeeded; skipped or cancelled fails here.
+      - name: Require the platform's tests and the owner app's browser test
+        env:
+          PLATFORM_RESULT: ${{ needs.platform-tests.result }}
+          APP_RESULT: ${{ needs.platform-app.result }}
+        run: |
+          if [ "$PLATFORM_RESULT" != success ] || [ "$APP_RESULT" != success ]; then
+            echo "::error::Platform checks did not pass (platform-tests=$PLATFORM_RESULT, platform-app=$APP_RESULT). Fix the named job and rerun Tests."
             exit 1
           fi
 
