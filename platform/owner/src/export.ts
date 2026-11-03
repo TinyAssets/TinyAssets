@@ -100,8 +100,9 @@ export function exported(): Readonly<Record<string, ExportTable>> {
     file_chunks: t("sha256 size state stored refs holds gc_after holder", "sha256"),
     // Collections.
     collection_rows: t("collection row_id revision seq etag writer private body updated_at " +
-                       "creator change", "collection row_id"),
-    collection_history: t("collection key revision op body_json at writer change private_writer",
+                       "creator change body_bytes content_id filer", "collection row_id"),
+    collection_history: t("collection key revision op body_json at writer change " +
+                          "private_writer body_bytes content_id filer",
                           "collection key revision"),
     collection_seqs: t("collection seq", "collection"),
     collection_clock: t("only change", "only"),
@@ -109,17 +110,17 @@ export function exported(): Readonly<Record<string, ExportTable>> {
     outside_agents: t("agent_id command_center_id outside_client outside_family source " +
                       "source_ref display_name delivery_method recipe_id revision " +
                       "disabled_reason created_at max_wakes_per_hour batch_window_s " +
-                      "unacked_to_owner unacked_to_owner_bytes", "agent_id",
+                      "unacked_to_owner", "agent_id",
                       { wake_tat: "the doorbell's rate pacing, an internal mark" }),
-    native_agents: t("agent_id agent created_at retired_at unacked_to_owner " +
-                     "unacked_to_owner_bytes", "agent_id"),
+    native_agents: t("agent_id agent created_at retired_at unacked_to_owner", "agent_id"),
     ledger_messages: t("seq message_id command_center_id room_id sender_kind sender_id " +
                        "client_message_id body_sha256 parent_id chain_root chain_depth " +
                        "created_at body_bytes unacked authority attended", "seq"),
-    message_bodies: t("message_id room_id body created_at", "message_id"),
+    message_bodies: t("message_id room_id body created_at body_bytes content_id filer",
+                      "message_id"),
     ledger_recipients: t("message_id agent_id seq state changed_at unacked", "message_id agent_id"),
     ledger_receipts: t("seq agent_id kind ref at detail_json", "seq"),
-    ledger_readers: t("reader through_seq acked_at unacked unacked_bytes", "reader"),
+    ledger_readers: t("reader through_seq acked_at unacked", "reader"),
     // Spend.
     model_spend: t("period source cost", "period source"),
     model_reservations: t("seq id run connection_id source model state rule max_output_tokens " +
@@ -127,8 +128,8 @@ export function exported(): Readonly<Record<string, ExportTable>> {
                           "created_at settled_at", "seq"),
     egress_reservations: t("id lease_id epoch run source charge rule max_output_tokens " +
                            "est_tokens est_cost tokens cost day month served connection_id " +
-                           "version method path generation bytes_hint opened_at state code " +
-                           "ended outcome status bytes settled_at", "id",
+                           "version method path generation bytes_hint opened_at beat_at state " +
+                           "code ended outcome status bytes settled_at", "id",
                            { token: "the sandbox's egress token" }),
     // Runs, their inputs, schedules and conversations, and the sandbox time they took.
     runs: t("seq id agent conversation source credential model state initiator client stamp " +
@@ -157,6 +158,7 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   file_scope_contents: "counters the schema's triggers derive",
   file_scope_chunks: "counters the schema's triggers derive",
   collection_usage: "counters the schema's triggers derive",
+  collection_space: "counters the schema's triggers derive, and the change feed's floors",
   ledger_usage: "counters the schema's triggers derive",
   policy_usage: "counters the schema's triggers derive",
   proposal_shares: "counters the schema's triggers derive",

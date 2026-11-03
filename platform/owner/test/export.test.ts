@@ -15,7 +15,7 @@ import { CHUNK_BYTES, INLINE_BYTES } from "../src/files";
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { MIGRATIONS } from "../src/schema";
 import { MCP, MUSE, signedIn } from "./ledger-support";
-import { drainDue, failure, laneAt, sqlIn } from "./support";
+import { drainDue, failure, laneAt, sqlIn, TIERS } from "./support";
 import type { FauxOwnerDO } from "./worker";
 
 type Line = Record<string, unknown> & { t: string };
@@ -34,7 +34,7 @@ async function owner() {
   const stub: DurableObjectStub<FauxOwnerDO> = env.AGENT.getByName(name);
   const at = signedIn();
   const bind = (origin: typeof MUSE | null = null, extra: Partial<Binding> = {}): Binding =>
-    ({ owner: name, caller: name, origin,
+    ({ owner: name, caller: name, origin, tiers: TIERS,
        ...(origin === null ? {} : { source: MCP, authenticated_at: at }), ...extra });
   const { session } = await stub.sessionOpen(bind(null, { authenticated_at: at }));
   return { name, stub, bind, session: () => bind(null, { session }) };
