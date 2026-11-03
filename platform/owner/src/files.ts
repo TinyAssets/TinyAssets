@@ -282,6 +282,10 @@ export interface Usage {
   readonly chunk_bytes: number;
   readonly inline_bytes: number;
   readonly manifest_bytes: number;
+  /** Inline bodies of collection rows, their history and mail. */
+  readonly body_bytes: number;
+  /** All the user content the tier's storage counts: chunks, small files, inline bodies. */
+  readonly stored: number;
   readonly intents: number;
   readonly intent_chunks: number;
   readonly limits: FileLimits;
@@ -290,7 +294,7 @@ export interface Usage {
    * each quota, or the owner's own writers'.
    */
   readonly share: Pick<Usage, "entries" | "history" | "chunk_bytes" | "inline_bytes" |
-                              "manifest_bytes">;
+                              "manifest_bytes" | "body_bytes" | "stored">;
 }
 
 export interface Lease {
@@ -399,6 +403,14 @@ type Space = {
   chunk_bytes: number;
   inline_bytes: number;
   manifest_bytes: number;
+  /** Inline bodies of collection rows, their history and mail (the schema's triggers). */
+  body_bytes: number;
+  /**
+   * Everything the owner's writers store, wherever it lives: chunk bytes in R2 (files and
+   * placed bodies), small files and inline bodies in the object. The tier's one storage
+   * number (`max_bytes`) bounds it. Computed by the reads, never stored.
+   */
+  stored: number;
   intents: number;
   intent_chunks: number;
   epoch: number;
@@ -409,7 +421,7 @@ type Space = {
 };
 
 type Counters = Pick<Space, "entries" | "history" | "chunk_bytes" | "inline_bytes" |
-                             "manifest_bytes">;
+                             "manifest_bytes" | "body_bytes" | "stored">;
 
 /** What a change is checked against: the owner's counters, its writer's share and all clients'. */
 interface Before {
@@ -419,11 +431,14 @@ interface Before {
 }
 
 const NO_SHARE: Counters = Object.freeze({ entries: 0, history: 0, chunk_bytes: 0,
-                                           inline_bytes: 0, manifest_bytes: 0 });
+                                           inline_bytes: 0, manifest_bytes: 0, body_bytes: 0,
+                                           stored: 0 });
+/** What the tier's storage counts, as a column expression over a counters row. */
+const STORED = "chunk_bytes + inline_bytes + body_bytes";
 
 /** Each counter a quota bounds: its setting, and what it is called in a refusal. */
 const QUOTAS: readonly (readonly [keyof Counters, keyof FileLimits, string])[] = Object.freeze([
-  Object.freeze(["chunk_bytes", "max_bytes", "file bytes"] as const),
+  Object.freeze(["stored", "max_bytes", "stored bytes"] as const),
   Object.freeze(["inline_bytes", "max_inline_bytes", "small-file bytes"] as const),
   Object.freeze(["manifest_bytes", "max_manifest_bytes", "file manifest bytes"] as const),
   Object.freeze(["entries", "max_entries", "file entries"] as const),
@@ -590,7 +605,7 @@ export class Files {
   }
 
   #space(): Space {
-    return this.#sql.exec<Space>("SELECT * FROM file_space").one();
+    return this.#sql.exec<Space>(`SELECT *, ${STORED} AS stored FROM file_space`).one();
   }
 
   /**
@@ -605,6 +620,16 @@ export class Files {
     const made = randomBytes(16).toString("hex");
     this.#sql.exec("UPDATE file_space SET ns = ?", made);
     return made;
+  }
+
+  /**
+   * In a unit: `act`, a change made outside the files plane that may store user content (a
+   * collection write, a post, a mail's reply, their inline bodies counted by the schema's
+   * triggers), held to the tier's storage as a file change is, in `filer`'s scopes: retention
+   * makes room first, then a change past the bound is refused (`file_quota`, `file_share`).
+   */
+  held<T>(filer: string, act: () => T): T {
+    return this.#change(filer, () => act());
   }
 
   /**
@@ -656,8 +681,8 @@ export class Files {
   /** One share row's counters (`file_shares`, kept by the schema's triggers), or zeros. */
   #share(who: string): Counters {
     return this.#sql.exec<Counters>(
-      "SELECT entries, history, chunk_bytes, inline_bytes, manifest_bytes FROM file_shares " +
-        "WHERE who = ?", who).toArray()[0] ?? NO_SHARE;
+      "SELECT entries, history, chunk_bytes, inline_bytes, manifest_bytes, body_bytes, " +
+        `${STORED} AS stored FROM file_shares WHERE who = ?`, who).toArray()[0] ?? NO_SHARE;
   }
 
   #before(writer: string | null): Before {
@@ -738,8 +763,8 @@ export class Files {
       // Retention kept in R2 makes room first (ADR-035): past the byte quota, the scope's
       // oldest placed history and acked mail go before the change is held to it.
       const bytes = limits.max_bytes;
-      while (bytes !== null && scope.now().chunk_bytes > Math.max(
-               shareOf(bytes, scope.percent), scope.before.chunk_bytes)
+      while (bytes !== null && scope.now().stored > Math.max(
+               shareOf(bytes, scope.percent), scope.before.stored)
              && this.#reclaim(scope.filer)) {
         // one entry or message a step, until the scope fits or nothing is left
       }
@@ -936,10 +961,11 @@ export class Files {
    * scope's: an outside client's share, or the owner's own writers'.
    */
   usage(writer = "owner"): Usage {
-    const { entries, history, chunk_bytes, inline_bytes, manifest_bytes, intents,
-            intent_chunks } = this.#space();
-    return { entries, history, chunk_bytes, inline_bytes, manifest_bytes, intents,
-             intent_chunks, limits: this.#limits(), share: this.#share(scopesOf(writer).at(-1)!) };
+    const { entries, history, chunk_bytes, inline_bytes, manifest_bytes, body_bytes, stored,
+            intents, intent_chunks } = this.#space();
+    return { entries, history, chunk_bytes, inline_bytes, manifest_bytes, body_bytes, stored,
+             intents, intent_chunks, limits: this.#limits(),
+             share: this.#share(scopesOf(writer).at(-1)!) };
   }
 
   // -- WRITING ------------------------------------------------------------------

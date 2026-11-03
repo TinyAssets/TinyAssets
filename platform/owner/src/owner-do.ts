@@ -1850,6 +1850,32 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
   }
 
+  // -- STORAGE: the tier's one storage number, used and left -------------------
+
+  /**
+   * What the owner stores against its one storage number (founder, 2026-11-03): every byte
+   * of user content wherever it lives (`used_bytes`: chunks in R2, small files and inline
+   * bodies in the object), the bound (`limit_bytes`: the tier's storage, or the owner's own
+   * lower setting; null until the binder has handed the tier numbers), and where it is:
+   * mail (`messages`), collection rows and their history (`collections`), and files, the
+   * rest. Platform bookkeeping (indexes, receipts, counters) is not user content.
+   */
+  storageUsage(binding: Binding): Promise<{
+      used_bytes: number; limit_bytes: number | null;
+      breakdown: { files: number; messages: number; collections: number } }> {
+    return this.#door(() => {
+      this.#owner(binding, "read", "read its storage");
+      const usage = this.#files.usage();
+      const used = usage.stored;
+      // Each kind's bodies, inline or placed (a placed content counted once); files are the
+      // rest, so the parts always sum to what is used.
+      const messages = Math.min(used, this.#ledger.storedBytes());
+      const collections = Math.min(used - messages, this.#collections.storedBytes());
+      return { used_bytes: used, limit_bytes: usage.limits.max_bytes,
+               breakdown: { files: used - messages - collections, messages, collections } };
+    });
+  }
+
   // -- OWNER_EXPORT: everything the owner holds (`export.ts`) --------------------
 
   /**
@@ -2923,6 +2949,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     // A body whose chunk the sweep is deleting this moment begins again once the delete
     // lands (review rvlim L5), a few times, then the refusal stands.
     let first: { done: { value: T; located: Located } } | { placing: Placing } | undefined;
+    // Whose files scope the write's bodies count in: the tier's one storage number holds
+    // them, inline or placed, retention making room first (`Files.held`).
+    let writer = "owner";
     for (let tries = 1; first === undefined; tries++) {
       try {
         first = await this.#door(():
@@ -2931,8 +2960,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           if ("done" in prepared) {
             return { done: located(prepared.done) };
           }
+          writer = prepared.writer;
           const placing = this.#bodies.begin(prepared.body as string, prepared.writer);
-          return placing === null ? { done: located(act(null)) } : { placing };
+          return placing === null ? { done: located(this.#files.held(writer, () => act(null))) }
+            : { placing };
         });
       } catch (error) {
         if (!(error instanceof Refused) || error.message !== CHUNK_DELETING
@@ -2948,7 +2979,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     } else {
       const placed = await this.#bodies.send(first.placing);
       try {
-        done = await this.#door(() => located(act(placed)));
+        done = await this.#door(() => located(this.#files.held(writer, () => act(placed))));
       } finally {
         await this.#bodies.release(placed);
       }
@@ -3623,8 +3654,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** A mail's reply posted in this unit, its body placed or not; a refusal a notice. */
   #reply(answer: MailAnswer, authority: MailAuthority | null, placed: Placed | null): void {
     try {
-      this.#ledger.answer({ native: answer.agent }, answer.mail, answer.run, answer.result,
-                          clock(), authority, placed);
+      // The reply is the owner's agents' content: held to the tier's storage too.
+      this.#files.held("owner", () => this.#ledger.answer(
+        { native: answer.agent }, answer.mail, answer.run, answer.result, clock(), authority,
+        placed));
     } catch (error) {
       if (!(error instanceof Refused || error instanceof Invalid)) {
         console.error("a mail's reply failed in the ledger; the run's settle stands");

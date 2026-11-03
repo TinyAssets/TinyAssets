@@ -49,4 +49,12 @@ describe("the owner export door", () => {
     const client = await appPost("export", mcp.access_token, null, {});
     expect([client.status, await client.json()]).toEqual([403, { error: OUTSIDE_CREDENTIAL }]);
   });
+
+  it("answers the owner's storage, used and left, at the owner surface", async () => {
+    const app = await signInApp({ owner: owner() });
+    const response = await appPost("storage", app.access_token, app.session, {});
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      used_bytes: 0, breakdown: { files: 0, messages: 0, collections: 0 } });
+  });
 });

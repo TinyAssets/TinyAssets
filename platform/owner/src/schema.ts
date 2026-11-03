@@ -189,9 +189,11 @@ const CHARGED_TOKENS = (row: string) =>
 const RUN = (row: string, requests: string, tokens: string, cost: string) =>
   `UPDATE runs SET requests = requests + ${requests}, tokens = tokens + (${tokens}), ` +
   `cost = cost + (${cost}) WHERE id = ${row}.run;`;
-type ShareCounter = "entries" | "history" | "chunk_bytes" | "inline_bytes" | "manifest_bytes";
+type ShareCounter = "entries" | "history" | "chunk_bytes" | "inline_bytes" | "manifest_bytes"
+  | "body_bytes";
 const SHARE_COUNTERS: readonly ShareCounter[] =
-  Object.freeze(["entries", "history", "chunk_bytes", "inline_bytes", "manifest_bytes"]);
+  Object.freeze(["entries", "history", "chunk_bytes", "inline_bytes", "manifest_bytes",
+                 "body_bytes"]);
 /** Which share rows a charge goes to: the rows to charge, as a query, and as a list. */
 interface Scopes {
   readonly rows: string;
@@ -227,6 +229,12 @@ const SHARE_USAGE = (scopes: Scopes, sign: "+" | "-",
       `FROM ${scopes.rows} WHERE 1 ON CONFLICT (who) DO UPDATE SET ${moved.map((counter) =>
         `${counter} = ${counter} + excluded.${counter}`).join(", ")};`;
 };
+/** The tables whose rows keep a body inline under `PLACE_BYTES`: user content all. */
+const INLINE_BODIES = Object.freeze(["collection_rows", "collection_history", "message_bodies"]);
+/** Count a row's inline body (`+`), or take it out (`-`): owner-wide, and in its filer's scopes. */
+const INLINE = (row: string, sign: "+" | "-") =>
+  `UPDATE file_space SET body_bytes = body_bytes ${sign} ${row}.body_bytes; ${
+    SHARE_USAGE(WRITER(row, "filer"), sign, { body_bytes: `${row}.body_bytes` })}`;
 /** A row's writer's scopes, by the column naming its files scope writer. */
 const WRITER = (row: string, column = "writer"): Scopes => SCOPES(`${row}.${column}`);
 /**
@@ -985,6 +993,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   Object.freeze([
     "ALTER TABLE file_space ADD COLUMN manifest_bytes INTEGER NOT NULL DEFAULT 0 " +
       "CHECK (manifest_bytes >= 0)",
+    "ALTER TABLE file_space ADD COLUMN body_bytes INTEGER NOT NULL DEFAULT 0 " +
+      "CHECK (body_bytes >= 0)",
     `ALTER TABLE file_chunks ADD COLUMN holder TEXT NOT NULL DEFAULT '${OWNER_SCOPE}'`,
     "ALTER TABLE file_temps ADD COLUMN writer TEXT NOT NULL DEFAULT 'system'",
     "ALTER TABLE file_intents ADD COLUMN writer TEXT NOT NULL DEFAULT 'system'",
@@ -997,7 +1007,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "history INTEGER NOT NULL CHECK (history >= 0), " +
       "chunk_bytes INTEGER NOT NULL CHECK (chunk_bytes >= 0), " +
       "inline_bytes INTEGER NOT NULL CHECK (inline_bytes >= 0), " +
-      "manifest_bytes INTEGER NOT NULL CHECK (manifest_bytes >= 0)) WITHOUT ROWID",
+      "manifest_bytes INTEGER NOT NULL CHECK (manifest_bytes >= 0), " +
+      // The inline bodies (collection rows, their history, mail) its writers keep in the
+      // object, under `PLACE_BYTES` each: user content, held to the tier's storage too.
+      "body_bytes INTEGER NOT NULL DEFAULT 0 CHECK (body_bytes >= 0)) WITHOUT ROWID",
     "CREATE TABLE file_scope_contents (scope TEXT NOT NULL, content_id TEXT NOT NULL, " +
       "refs INTEGER NOT NULL CHECK (refs >= 0), PRIMARY KEY (scope, content_id)) WITHOUT ROWID",
     "CREATE TABLE file_scope_chunks (scope TEXT NOT NULL, sha256 TEXT NOT NULL, " +
@@ -1007,8 +1020,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "manifest_bytes) SELECT 'a file row from before migration 7', 0, 0, 0, 0, 0 " +
       "WHERE EXISTS (SELECT 1 FROM file_entries) OR EXISTS (SELECT 1 FROM file_history) " +
       "OR EXISTS (SELECT 1 FROM file_chunks) OR EXISTS (SELECT 1 FROM file_temps)",
-    `INSERT INTO file_shares VALUES ('${CLIENTS}', 0, 0, 0, 0, ${SHARE_BYTES}), ('${
-      OWNER_SCOPE}', 0, 0, 0, 0, ${SHARE_BYTES})`,
+    `INSERT INTO file_shares VALUES ('${CLIENTS}', 0, 0, 0, 0, ${SHARE_BYTES}, 0), ('${
+      OWNER_SCOPE}', 0, 0, 0, 0, ${SHARE_BYTES}, 0)`,
     `UPDATE file_space SET manifest_bytes = 2 * ${SHARE_BYTES}`,
     `CREATE TRIGGER file_shares_charged AFTER INSERT ON file_shares WHEN NEW.who NOT IN ('${
       CLIENTS}', '${OWNER_SCOPE}') BEGIN UPDATE file_shares SET manifest_bytes = ` +
@@ -1017,7 +1030,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     `CREATE TRIGGER file_shares_emptied AFTER UPDATE ON file_shares WHEN NEW.who NOT IN ('${
       CLIENTS}', '${OWNER_SCOPE}') AND NEW.entries = 0 AND NEW.history = 0 ` +
       "AND NEW.chunk_bytes = 0 " +
-      `AND NEW.inline_bytes = 0 AND NEW.manifest_bytes = ${SHARE_BYTES} BEGIN ` +
+      `AND NEW.inline_bytes = 0 AND NEW.body_bytes = 0 AND NEW.manifest_bytes = ${
+        SHARE_BYTES} BEGIN ` +
       "DELETE FROM file_shares WHERE who = NEW.who; END",
     `CREATE TRIGGER file_shares_credited AFTER DELETE ON file_shares WHEN OLD.who NOT IN ('${
       CLIENTS}', '${OWNER_SCOPE}') BEGIN UPDATE file_shares SET manifest_bytes = ` +
@@ -1572,6 +1586,21 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TABLE sandbox_days (day TEXT PRIMARY KEY CHECK (length(day) = 8 " +
       "AND day NOT GLOB '*[^0-9]*'), ms INTEGER NOT NULL CHECK (ms >= 0)) WITHOUT ROWID",
     "ALTER TABLE runs ADD COLUMN sandbox_ms INTEGER CHECK (sandbox_ms IS NULL OR sandbox_ms >= 0)",
+    // The one storage number (founder, 2026-11-03): a body kept inline in its row is user
+    // content too, counted in `body_bytes`, owner-wide and in its writer's files scope (its
+    // `filer`), so the tier's storage holds every byte a user stores wherever it lives.
+    ...INLINE_BODIES.flatMap((table) => [
+      `CREATE TRIGGER ${table}_inline_added AFTER INSERT ON ${table} ` +
+        `WHEN NEW.content_id IS NULL AND NEW.body_bytes > 0 BEGIN ${INLINE("NEW", "+")} END`,
+      `CREATE TRIGGER ${table}_inline_removed AFTER DELETE ON ${table} ` +
+        `WHEN OLD.content_id IS NULL AND OLD.body_bytes > 0 BEGIN ${INLINE("OLD", "-")} END`,
+      `CREATE TRIGGER ${table}_inline_came AFTER UPDATE OF body_bytes, content_id, filer ON ` +
+        `${table} WHEN NEW.content_id IS NULL AND NEW.body_bytes > 0 BEGIN ${
+          INLINE("NEW", "+")} END`,
+      `CREATE TRIGGER ${table}_inline_went AFTER UPDATE OF body_bytes, content_id, filer ON ` +
+        `${table} WHEN OLD.content_id IS NULL AND OLD.body_bytes > 0 BEGIN ${
+          INLINE("OLD", "-")} END`,
+    ]),
   ]),
 ]);
 

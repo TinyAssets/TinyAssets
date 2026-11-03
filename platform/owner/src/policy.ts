@@ -145,8 +145,11 @@ export interface PolicyEntry {
  * Owner files policy (plan §6): quotas and history retention. Each is an owner-editable
  * default: the document's optional `files` table sets any of them, and the rest keep
  * these values. Quotas are refused loudly at the bound and never make room by dropping
- * history. `max_bytes` counts unique chunk bytes, live and in history, and the bodies
- * placed in R2 (ADR-035): it is the tier's storage (free 25 GB, paid 250 GB, the control
+ * history. `max_bytes` counts every byte of user content the owner stores, wherever it
+ * lives (the one storage number, founder 2026-11-03): unique chunk bytes, live and in
+ * history, the bodies placed in R2 (ADR-035), the small files kept inline, and the
+ * collection rows', their history's and mail's bodies kept inline in the object; never the
+ * platform's own bookkeeping (indexes, receipts, counters). It is the tier's storage (free 25 GB, paid 250 GB, the control
  * record's, `tier.ts`), never a number of ours, which the owner may set lower and no
  * higher (`fileLimits`); `max_inline_bytes`
  * the small files kept in the object itself; `max_manifest_bytes` everything the manifest

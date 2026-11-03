@@ -1566,10 +1566,18 @@ export class Ledger {
    * whose placed body the writers `filer` names (`FILERS`) sent, evicted,
    * so its bytes can go; false when none is left.
    */
+  /** The bytes of every mail body the owner stores, inline or placed (once a content). A read. */
+  storedBytes(): number {
+    return this.#sql.exec<{ bytes: number }>(
+      "SELECT coalesce((SELECT SUM(body_bytes) FROM message_bodies WHERE content_id IS NULL), " +
+        "0) + coalesce((SELECT SUM(size) FROM file_contents WHERE content_id IN (SELECT " +
+        "content_id FROM message_bodies WHERE content_id IS NOT NULL)), 0) AS bytes").one().bytes;
+  }
+
   readonly reclaim = (filer: string): boolean => {
     const done = this.#sql.exec<{ message_id: string }>(
       "SELECT m.message_id FROM ledger_messages m JOIN message_bodies b ON b.message_id = " +
-        `m.message_id WHERE m.unacked = 0 AND b.content_id IS NOT NULL AND ${
+        `m.message_id WHERE m.unacked = 0 AND b.body_bytes > 0 AND ${
           FILERS.replaceAll("filer", "b.filer")} ORDER BY m.seq LIMIT 1`, filer, filer, filer)
       .toArray()[0];
     if (done === undefined) {

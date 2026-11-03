@@ -29,6 +29,7 @@
  * - `agent/submit`, `agent/run`, `agent/status`, `agent/cancel`: the run doors (slice R),
  *   the same doors `converse`, `run_graph`, `run_status` and `run_cancel` call for an
  *   outside client; the control record's tier numbers ride the binding (`withTiers`).
+ * - `storage`: the owner's one storage number, used and left (`storageUsage`).
  * - `export`: the owner's export (`owner/src/export.ts`), streamed as newline-delimited
  *   JSON (`exportStream`), resumable from any page's cursor line.
  * - `agent/socket-ticket`: a single-use socket ticket for one of the owner's conversations
@@ -197,6 +198,7 @@ async function doorbell(env: DoorsEnv, { binding, stub }: Bound,
 
 const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
   "export": exportStream,
+  "storage": async (_env, { binding, stub }) => json(200, await stub.storageUsage(binding)),
   "agent/doorbell": doorbell,
   "agent/doorbell/end": async (_env, { binding, stub }, request) =>
     json(200, await stub.agentDoorbellEnd(binding, request as never)),
