@@ -46,7 +46,7 @@ function owner(): string {
 }
 
 function ownerBinding(who: string): Binding {
-  return { owner: who, caller: who, origin: null };
+  return { owner: who, caller: who, origin: null, tiers: OPEN.tiers };
 }
 
 /** An owner signed in to its app, with its `main` agent defined. */

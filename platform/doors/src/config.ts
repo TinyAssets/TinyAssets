@@ -94,7 +94,7 @@ export const INBOUND_BODY_MAX = API_BODY_MAX;
 
 /** The files Worker's chunk entrypoint, as the file door's bytes reach it (`file-bytes.ts`). */
 export interface FilesService {
-  putChunks(ns: string, chunks: ChunkPut[]): Promise<{ created: number }>;
+  putChunks(ns: string, key: string, chunks: ChunkPut[]): Promise<{ created: number }>;
 }
 
 /**

@@ -13,7 +13,7 @@ import type { DoorsEnv } from "../src/config";
 import { BILLED_WINDOW_S } from "../../owner/src/sandbox-time";
 import { E2B_HOOK_PATH, HOOK_BODY_MAX, lifecycleEvent, signed } from "../src/e2b-hooks";
 import { openRoute, sealRoute } from "../src/routing-mac";
-import { call, doorsEnv, url } from "./support";
+import { admitOwner, call, doorsEnv, url } from "./support";
 
 const SECRET = "test-e2b-webhook-signature-secret";
 
@@ -24,6 +24,13 @@ function signature(body: string, secret = SECRET): string {
 
 function owner(): string {
   return `user_${crypto.randomUUID().replace(/-/g, "")}`;
+}
+
+/** An owner the platform admitted, whose object answers its doors. */
+async function admitted(): Promise<string> {
+  const who = owner();
+  await admitOwner(who);
+  return who;
 }
 
 function event(who: string, over: Record<string, unknown> = {}) {
@@ -54,7 +61,7 @@ function deliver(body: string, sig: string | null = signature(body),
 describe("E2B's lifecycle webhook", () => {
   it("counts a verified billed execution once, in the owner's object, by its sealed route",
      async () => {
-    const who = owner();
+    const who = await admitted();
     const body = JSON.stringify(event(who));
     const first = await deliver(body);
     expect([first.status, await first.json()]).toEqual([200, { counted: true }]);
@@ -73,7 +80,7 @@ describe("E2B's lifecycle webhook", () => {
 
   it("counts one execution once, though a pause and a later kill both carry it (review L1)",
      async () => {
-    const who = owner();
+    const who = await admitted();
     const paused = event(who, { sandbox_execution_id: "exec-1" });
     paused.event_data.execution.execution_time = 60_000;
     const killed = { ...paused, id: crypto.randomUUID(), type: "sandbox.lifecycle.killed",
@@ -89,7 +96,7 @@ describe("E2B's lifecycle webhook", () => {
 
   it("refuses an event older than its window, or ahead of the clock, by its signed time " +
      "(review L2)", async () => {
-    const who = owner();
+    const who = await admitted();
     const old = event(who, { timestamp: new Date(Date.now() - BILLED_WINDOW_S * 1000 - 60_000)
       .toISOString() });
     expect(await (await deliver(JSON.stringify(old))).json()).toEqual({ counted: false });

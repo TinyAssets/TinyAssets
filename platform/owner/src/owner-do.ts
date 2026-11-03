@@ -2690,14 +2690,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * owner's namespace weakens no isolation.
    */
   async fileUploadTarget(binding: Binding, request: IntentRequest):
-      Promise<{ namespace: string; chunks: { sha256: string; size: number }[];
+      Promise<{ namespace: string; key: string; chunks: { sha256: string; size: number }[];
                 pending: string[] }> {
     const plan = await this.#door(() => {
       this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["intent_id"]);
       return this.#files.uploadPlan(r["intent_id"]);
     });
-    return { namespace: await this.#files.namespace(), ...plan };
+    // The namespace and its wrapped data key, which only `FILES` opens (slice P, M4).
+    const { ns, key } = await this.#files.space();
+    return { namespace: ns, key, ...plan };
   }
 
   /**

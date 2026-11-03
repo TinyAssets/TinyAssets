@@ -211,9 +211,10 @@ describe("the deploy kit", () => {
     const none = secretPlan({ doors: [], owner: [], gateway: [], sandbox: [] }, new Set(), NONE);
     expect(none.filter(({ name }) => name === "ROUTING_MAC_KEY").map(({ worker }) => worker)
       .sort()).toEqual(["doors", "owner"]);
-    const both = secretPlan({ doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY"],
+    const both = secretPlan({ doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET"],
                               owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
-                              sandbox: ["E2B_API_KEY"] }, new Set(), NONE);
+                              sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] },
+                            new Set(), NONE);
     expect(both).toEqual([{ worker: "doors", name: "INBOUND_SLACK_SIGNING_SECRET" }]);
     expect(() => secretPlan({ doors: ["ROUTING_MAC_KEY"], owner: [] }, new Set(), NONE))
       .toThrow(/--rotate/);
@@ -223,11 +224,12 @@ describe("the deploy kit", () => {
 
   it("never generates or replaces a held keyring, and rotates one only by adding a key",
      () => {
-    const held = { doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "INBOUND_SLACK_SIGNING_SECRET"],
+    const held = { doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET",
+                           "INBOUND_SLACK_SIGNING_SECRET"],
                    owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
-                   sandbox: ["E2B_API_KEY"] };
+                   sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] };
     const values = (ring: string) => (name: string) =>
-      name === "GATEWAY_KEYRING" ? ring : undefined;
+      name === "GATEWAY_KEYRING" || name === "FILES_KEYRING" ? ring : undefined;
     expect(secretPlan(held, new Set(), values(RING))).toEqual([]);
     expect(() => secretPlan(held, new Set(["GATEWAY_KEYRING"]), values(RING)))
       .toThrow(/adding a key/);
@@ -236,6 +238,11 @@ describe("the deploy kit", () => {
       .toThrow(/active key among its keys/);
     expect(secretPlan(held, new Set(["GATEWAY_KEYRING"]), values(ROTATED)))
       .toEqual([{ worker: "gateway", name: "GATEWAY_KEYRING" }]);
+    // The files Worker's data keys' ring, by the same rule (slice P).
+    expect(() => secretPlan(held, new Set(["FILES_KEYRING"]), values(RING)))
+      .toThrow(/FILES_KEYRING holds/);
+    expect(secretPlan(held, new Set(["FILES_KEYRING"]), values(ROTATED)))
+      .toEqual([{ worker: "files", name: "FILES_KEYRING" }]);
     const kit = readFileSync(join(PLATFORM, "deploy", "deploy.ts"), "utf8");
     // The kit never makes a secret's value in a deploy: only keyring-new and keyring-add,
     // which write a local file for the founder to store.

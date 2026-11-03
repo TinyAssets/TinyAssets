@@ -683,11 +683,6 @@ export class Files {
     });
   }
 
-  /** The namespace from outside a unit: made through the gate on first use. */
-  async namespace(): Promise<string> {
-    return this.#space().ns ?? await this.#write(() => this.ns());
-  }
-
   /**
    * Run `act` in one transaction. At the end, history is first fitted
    * to its quotas from gone paths' rows (`#fit`); then the quotas are checked (`#bounds`),

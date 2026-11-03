@@ -239,7 +239,7 @@ describe("the owner app's file routes", () => {
     const { env } = await import("cloudflare:workers");
     const stub = (env as unknown as { OWNER: DurableObjectNamespace<
       import("../../owner/src/owner-do").OwnerDO> }).OWNER.getByName(who);
-    await stub.fileWrite({ owner: who, caller: who, origin: null },
+    await stub.fileWrite({ owner: who, caller: who, origin: null, tiers: TIERS },
                          { path: "/workspace/blob.bin", expected_etag: null,
                            content: new Uint8Array([0xff, 0xfe, 0x00]) });
     expect(await answered(await appPost("files/read", app.access_token, null,
