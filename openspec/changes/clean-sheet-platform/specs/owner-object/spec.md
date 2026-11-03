@@ -502,16 +502,16 @@ A version MAY be restored as a new one, or have its content redacted unless it i
 ### Requirement: File quotas are owner policy, refused loudly
 Chunk, inline and manifest bytes, entries, history rows, open uploads and their chunks, and a file's size SHALL each be bounded by owner policy or a fixed ceiling, read from counters the schema's triggers keep. A change past a bound SHALL be refused in its own unit before it commits (an upload before any byte is sent), leaving nothing, its reason starting with a fixed code: `storage_full` for the owner's whole storage (the one wall, below), `file_quota` for another owner's bound, `file_share` for a client's share.
 
+#### Scenario: The owner's entries at their quota
+- **WHEN** a write would add an entry past `max_entries`
+- **THEN** it is refused `file_quota`, and no parent directory, history row or content of it is kept
+
 ### Requirement: The tier's storage is the one wall, in one set of words
 Every refusal at the owner's storage figure (the tier's, from the control record, or the owner's own lower setting) SHALL start with the fixed code `storage_full`, then say in plain words what is used, the whole, how to free space, and the upgrade path: the next tier's storage, or that the owner's own lower limit is what binds (never an upgrade then), or that no larger tier exists; then the same facts as one JSON object (`used_bytes`, `limit_bytes`, `tier`, `tier_bytes`, `own_limit`, `upgrade`, `free`) the app reads. The doors SHALL answer it 507. A change that adds no storage (a read, a delete, a purge) SHALL never be refused at it. An outside client's share of the storage keeps `file_share`, and the index's own ceilings `file_quota`: neither is the user's storage being full.
 
 #### Scenario: Full on the free tier
 - **WHEN** a write would take the owner's storage past the free tier's figure
 - **THEN** it is refused `storage_full`, naming what is used, the figure, what to free and the paid tier's storage as the upgrade, and the owner can still read and delete
-
-#### Scenario: The owner's entries at their quota
-- **WHEN** a write would add an entry past `max_entries`
-- **THEN** it is refused `file_quota`, and no parent directory, history row or content of it is kept
 
 ### Requirement: Every manifest row is bounded in bytes as the object stores it
 Every manifest row (entry, history row, content with its inline bytes and chunk list, chunk, temporary directory, share row, scope reference) SHALL be charged, by triggers only, the page bytes of each b-tree record and index entry it makes, its text in bytes and its overflow pages included, against `max_manifest_bytes`. The charge SHALL bound the database's growth within the guard's worst-case fill factor, `WORST_FILL`, for every path length (up to 4,096 bytes).

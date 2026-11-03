@@ -338,6 +338,10 @@ Sync-out SHALL read a file a chunk at a time, hashing and scanning it as it read
 ### Requirement: A full disk never loses the run
 The runner SHALL keep a reserve on the disk (`RESERVE_BYTES`) that it lets go when its own state write meets `ENOSPC`, and before sync-out when the disk is full; a state write that fails even so SHALL leave the state in memory and the run going, so a full disk never leaves a run `unknown`.
 
+#### Scenario: The disk fills mid-run
+- **WHEN** a run's clone fills the sandbox's disk
+- **THEN** the tool's write fails `ENOSPC`, the runner's state and the run's end are still written and posted, and the sync agent has its room for sync-out
+
 ### Requirement: The runner never syncs a secret's bytes
 The sandbox runner (slices R and S) SHALL refuse to sync out any file, or any transcript line, that contains the bytes of a file under its engine's `secret_paths`, read from the records, so a secret an engine's own tool printed or copied never leaves the sandbox by its content (ADR-031 decision 2), whatever path it was written to.
 

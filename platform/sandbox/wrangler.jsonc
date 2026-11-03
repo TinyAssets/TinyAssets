@@ -26,7 +26,7 @@
   "compatibility_flags": ["nodejs_compat", "disable_ctx_exports", "global_fetch_strictly_public"],
   "workers_dev": false,
   "preview_urls": false,
-  "vars": { "E2B_TEMPLATE": "tinyassets-sandbox:sfbd5920361a47279" },
+  "vars": { "E2B_TEMPLATE": "tinyassets-sandbox:s199bb8d75bf69493" },
   "secrets": { "required": ["E2B_API_KEY"] },
   "durable_objects": {
     "bindings": [
