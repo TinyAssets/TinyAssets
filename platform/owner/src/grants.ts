@@ -315,6 +315,15 @@ export class Grants {
     return grant;
   }
 
+  /**
+   * Whether a client's grant is full, the default (the founder's rule: every agent of the
+   * owner may do what any other may), not one the owner narrowed or revoked. A read.
+   */
+  full(client: string): boolean {
+    return this.#sql.exec<{ mode: string }>(
+      "SELECT mode FROM outside_clients WHERE client = ?", client).toArray()[0]?.mode === "full";
+  }
+
   /** `outside_live`: whether a client's grant stands at all (a row, not revoked). */
   live(client: string): boolean {
     const row = this.#sql.exec<{ mode: string }>(

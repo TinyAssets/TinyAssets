@@ -1,7 +1,7 @@
 /**
  * Slice L's doors, in workerd through the real owner object: the platform's explicit admit
  * at sign-up and the erasure's outside record (an erased owner's name resolving nothing
- * again); a set to `revoked` through the provider revoke; the key store; `/hooks/inbound`'s
+ * again); the key store; `/hooks/inbound`'s
  * two shapes (a bad HMAC, a replay, the gate, the breaker); no caller counted or capped by
  * the doors (slice L's review, N1); and the file door's bytes, streamed to `FILES` by the
  * binder.
@@ -267,39 +267,6 @@ describe("the erasure", () => {
     }
     expect(await sqlIn(who, "SELECT COUNT(*) AS n FROM owner_erasure")).toEqual([{ n: 0 }]);
     expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "admitted" });
-  });
-});
-
-describe("a grant set to revoked", () => {
-  it("revokes the client at the provider too, as grants/revoke does", async () => {
-    const who = owner();
-    const app = await signInApp({ owner: who });
-    const client = await registerClient();
-    const tokens = await connect(client, { owner: who });
-    await legacyTool(tokens.access_token, "agents_list", {});  // its grant row, recorded
-    const [row] = (await env.OWNER.getByName(who).grantList(ownerBinding(who))).clients;
-    const set = await appPost("grants/set", app.access_token, app.session, {
-      client: row!.client, source: "mcp", mode: "revoked", scopes: [],
-      expected_revision: row!.revision, name: "" });
-    expect(set.status).toBe(200);
-    expect(await set.json()).toMatchObject({ mode: "revoked", grants: 1 });
-    expect((await refresh(client, tokens.refresh_token)).status).toBe(400);
-  });
-
-  it("deletes a key's directory entry, as a key's revoke does", async () => {
-    const who = owner();
-    const app = await signInApp({ owner: who });
-    const minted = await json<{ key_id: string }>(
-      await appPost("keys", app.access_token, app.session, { name: "laptop", scopes: SCOPES }));
-    const [row] = (await env.OWNER.getByName(who).grantList(ownerBinding(who))).clients;
-    const set = await appPost("grants/set", app.access_token, app.session, {
-      client: row!.client, source: "api_key", mode: "revoked", scopes: [],
-      expected_revision: row!.revision, name: "" });
-    expect(set.status).toBe(200);
-    expect(await env.DIRECTORY.get(`k:${minted.key_id}`)).toBeNull();
-    const [key] = (await json<{ keys: { revoked_at: number | null }[] }>(
-      await appPost("keys/list", app.access_token, null, {}))).keys;
-    expect(key!.revoked_at).toEqual(expect.any(Number));
   });
 });
 

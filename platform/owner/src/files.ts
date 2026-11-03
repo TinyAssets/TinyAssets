@@ -1922,7 +1922,8 @@ export class Files {
    * conflict name (`conflictName`). A directory is removed only once empty (the scan
    * removes its contents first), so a sync never deletes what the API wrote below it.
    */
-  syncCommit(request: { lease_id: unknown; epoch: unknown; ops: unknown }):
+  syncCommit(request: { lease_id: unknown; epoch: unknown; ops: unknown },
+             fullGrant: (client: string) => boolean = () => false):
       { outcomes: SyncOutcome[] } {
     const ops = request.ops;
     if (!Array.isArray(ops) || ops.length === 0 || ops.length > MAX_SYNC_OPS) {
@@ -1930,8 +1931,10 @@ export class Files {
     }
     return this.#change(null, (now) => {
       const { epoch, authority } = this.#fenced(request.lease_id, request.epoch, now);
-      // A client's sandbox writes as that client, never into the owner's own trees.
+      // A client's sandbox writes as that client, into the owner's agent trees only while
+      // its grant is full, the default; a narrowed one's never (the founder's rule).
       const client = authority !== OWNER_AUTHORITY;
+      const trees = !client || fullGrant(authority);
       const writer = client ? `client:${authority}` : `lease:${epoch}`;
       const seen = new Set<string>();
       const outcomes = (ops as unknown[]).map((raw) => {
@@ -1945,7 +1948,7 @@ export class Files {
               throw new Invalid("a sync op names one workspace path, once");
             }
             seen.add(path);
-            if (client && ownersOnly(path)) {
+            if (!trees && ownersOnly(path)) {
               throw new Refused(AGENTS_OWNER_ONLY);
             }
             const outcome = this.#syncOp(op, path, epoch, writer, now);

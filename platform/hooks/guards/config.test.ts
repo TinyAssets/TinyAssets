@@ -14,14 +14,14 @@
  * false; the one flag is `disable_ctx_exports`. Its compatibility date is the owner
  * Worker's. It is the hooks Worker's only wrangler config.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-import { PLATFORM } from "../../owner/guards/sources";
+import { configFiles, PLATFORM } from "../../owner/guards/sources";
 
 const HOOKS = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG = "wrangler.jsonc";
@@ -82,11 +82,7 @@ export function hooksConfigProblems(config: Config, ownerDate: unknown): string[
 }
 
 function wranglerConfigs(root: string): string[] {
-  return readdirSync(root, { recursive: true, encoding: "utf8" })
-    .map((path) => path.split("\\").join("/"))
-    .filter((path) => !path.split("/").includes("node_modules")
-                      && /^wrangler\./i.test(path.split("/").at(-1) ?? ""))
-    .sort();
+  return configFiles(root);
 }
 
 const config = parseConfig(readFileSync(join(HOOKS, CONFIG), "utf8"));

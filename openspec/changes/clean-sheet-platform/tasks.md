@@ -62,9 +62,10 @@ test, cutover.
 - [x] An owner's `grantSet` to `revoked` (the object's set door) revokes no OAuth provider
   grant: only the doors' `grantRevoke` path (`revoke.ts`) kills the client's refresh
   tokens. Route a set to `revoked` through the same provider revoke (rename review N1).
-  Slice L: the owner surface's `grants/set` (`revoke.ts`'s `setClient`) runs the same
-  `providerRevoke` as `grants/revoke` when the set leaves the grant `revoked`, and deletes a
-  key's directory entry as a key's revoke does; the object marks the key store's row.
+  Settled at slice L's merge with the app slice: the owner surface's `grants/set` refuses
+  a set to `revoked` (`400`, the doors spec), so a client is revoked only by `grants/revoke`
+  (the object, then `providerRevoke`) or a key by `keys/revoke`; slice L's `setClient`,
+  which ran the provider revoke inside the set, went with the second door.
 - [x] Live AuthKit wiring (slice L; its live check owed to the founder's deploy): an
   `Upstream` (`doors/src/upstream.ts`) for AuthKit's
   production environment, with its redirect URI `https://tinyassets.io/oauth/upstream/callback`,
@@ -512,11 +513,111 @@ account and no deploy.
   the connection's source record id. Owner changes: `connectionPrepare` begins the OAuth
   flow (the `flowBegin` door deleted), `connectionCommit` takes `failed`, migration 6's
   `connections` gains `revocable` and a provider revoke may be due on an `error` row.
-- [ ] The owner app's connect page `/app/connected` (the website slice): read the code,
-  the state and the redirect URI from the fragment and post them to
-  `connections/oauth/finish`. `history.replaceState` clears the fragment before any other
-  script runs; the page loads no third-party script; it is served with
-  `Referrer-Policy: no-referrer` and a strict CSP.
+- [x] The owner app's connect page `/app/connected` (the app slice, not the website's): the
+  callback's fragment (code, state, redirect URI) is read and cleared by `history.replaceState`
+  in the page's first and only script, a classic one in the head (`doors/app/connected.js`),
+  then posted to `connections/oauth/finish` in the tab's sign-in; the page loads no
+  third-party script and is served with `Referrer-Policy: no-referrer` and the strict CSP
+  (`doors/src/pages.ts`). `/app/signed-in` clears its code the same way. Proved in Chromium
+  (`doors/test/app.e2e.mjs`): the instrumented `replaceState` saw the fragment while the
+  page held only that script, the finish carried no referrer, the connect committed.
+- [x] The owner app, first version (slice APP), in workerd, nothing deployed. **Where it
+  lives (decided):** the doors Worker serves `/app` from its own files (`doors/app/`, Workers
+  Static Assets bound as `ASSETS`, the Worker first on every request, `doors/src/pages.ts`),
+  not the website's static export, because the `__Host-` Strict session cookie and the CSRF
+  rule ride only same-origin posts to `/app/api`, the return pages are the doors' own
+  constants (`WEB_REDIRECT`, `CONNECTED_PAGE`), the pages need headers GitHub Pages cannot
+  set (`Referrer-Policy`, a strict CSP with `frame-ancestors`), the static export's runtime
+  injects inline scripts a strict CSP refuses, and the pages ship in one deploy with the
+  doors they call. The routes slice adds `tinyassets.io/app*` to the doors' routes. **What
+  it is:** plain HTML and modules, no framework, no build, no third-party request, no HTML
+  string sink (Trusted Types on). Screens: sign-in (PKCE, our own authorization server),
+  home (the plan: tier, runs at once and storage, both tiers' numbers, nothing else;
+  notices), agents (made as two files, `agent.json` and `AGENTS.md`, then edited as files;
+  talk, the live run over the socket ticket, stop), rooms and board (the digests, a post),
+  model sources (from the records: a key, OAuth, and what is not here yet), connected apps
+  (code mode's switch, the owner's custom tools, each client's profile, disconnect), API
+  keys (make, shown once; turn off), your data (files, export), and each main agent's
+  wake-up. **New doors:** the owner's `tierRead`; the owner-surface routes `account`,
+  `notices`, `policy`, `policy/write`, `grants`, `grants/set` (never a revoke), `files/read`,
+  `files/write`, `sources`, `capabilities` (the grant capabilities in plain words, which the
+  agent and key forms show, none chosen for the owner), `tools`, `tools/<name>` (the table,
+  the owner as itself) and `agent/doorbell/kinds`; every owner-surface answer carries
+  `nosniff` and a CSP of none. **Who changes the agent trees** (`OWNER_TREES`: agents'
+  `agent.json`, instructions and skills; write, upload, mkdir, rename, remove, restore). The
+  founder's rule (2026-11-03): every agent of the owner has full power by default to do what
+  any other can, so an outside client under its default full grant, a run, and a sandbox
+  sync change them; a grant the owner narrowed (`scoped`), its runs and its sync never do
+  (`AGENTS_OWNER_ONLY`; the object and `Files.syncCommit`, by the client's grant as it stands).
+  The owner's own app is a human's path, so its bearer token alone changes nothing there: a
+  widening in the object, on every route, taken only in the `__Host-` session (review M1),
+  against a leaked app token. The other `tools/<name>` need no session. This replaces the
+  earlier rule that only the owner changed those trees. Owed to slice S's follow-up: the
+  runner still projects a client's run's agent definitions read-only on its sandbox's disk,
+  so a full grant's client run edits them through its MCP door's file tools or the owner's
+  doors, not its CLI's own file tools, until the runner reads the client's grant too. A new agent is its `AGENTS.md` first and its `agent.json` last, the one
+  write that makes the agent. Tests: `doors/test/app-pages.test.ts`, `app-routes.test.ts`,
+  `guards/app-files.test.ts`, the config guard's `ASSETS`, `owner/test/agent-doors.test.ts`
+  (the session on every agent-file door, receipted), and the browser test
+  `doors/test/app.e2e.mjs` (`npm run test:app` in `platform/doors`, and the `platform-app`
+  CI job, which `required-tests` needs with `platform-tests`, each to succeed (before
+  this slice a red platform job merged): Chromium at the Playwright version `platform/package-lock.json` pins, its network
+  mapped to the doors in workerd over HTTPS, so its cookies, `Sec-Fetch-*` and socket are
+  the browser's own; it fails, never skips, without Playwright or Chromium): sign-in, a key
+  connect, an OAuth connect through `/app/connected`, an agent made, a run started and its
+  live frames and result seen, every screen opened, and the review's attacks kept as tests
+  (`pages.ts` probes, the CSP's refusals, payloads through every rendered field, a malformed
+  hash, framing, CSRF, a stranger's code, a leaked token alone, a missing tool's real 404),
+  no third-party request. `replaceState` clears the code from this tab's history only; the
+  browser's global history keeps the return URL, harmless as each code is single-use and
+  PKCE-bound. Only the doors this app knows are missing say "not here yet" (`MISSING` in
+  `app.js`), each before anything is clicked; any other refusal, a 404 included, is shown as
+  the doors gave it. Owed by other slices:
+  - **the sandbox sign-in** (a Claude or ChatGPT subscription signed in inside the sandbox):
+    no door starts a record's `login.argv`, relays its URL to the app or takes its code back
+    (slice S checks `status_argv` only). Owed: an owner door that starts the login run, its
+    URL relayed as a frame on the app socket, and a door that hands the pasted code to the
+    runner; the app shows it on the record's card.
+  - **wake-ups** (the Claude `/fire` and Grok routine tokens), served since slice W landed:
+    Connected apps lists the main agents that joined, each with a wake-up form from the
+    records (`agent/doorbell/kinds`: the kinds whose `push.callback` is `owner`) posting W's
+    `agent/doorbell`. Owed to the live test: a paste for a really registered main agent
+    (W's `events.test.ts` covers the route; the browser test has no main agent to wake).
+  - **export**: slice P's owner export door; until it lands the Export section says so, with
+    no button, and the app's `MISSING.export` goes when it does.
+  - **the key store** (slice L): the key list is the grant rows (names, no ids), so a listed
+    key is turned off by `grants/revoke` (its directory entry stays until deleted by id);
+    delete and last use come with L's list route. That route (`keys/list`: id, name, mint
+    time, last use, revoke time) landed with slice L's merge; owed: the app's API keys screen
+    reads it, turns a key off by `keys/revoke` and deletes by `keys/delete`.
+  - **a run list**: the sign-in slice (`platform-signin`) adds the door; until then Talk says
+    plainly that only this tab's conversation is shown and is not kept across reloads.
+  - **the sandbox sign-in**, again for the forms: no credential `vendor_login_in_sandbox` is
+    offered for a new agent until the sign-in slice lands, and an engine that has only that
+    credential is named as unable to run yet.
+  - **the runner tests' failures (review N3, slice S's suite, fixed here):** one to seven
+    different runner tests failed a run whenever two runner suites overlapped on one host
+    (two worktrees, or a rerun beside a run). The harness gave every suite the same fixed
+    uids (4243, 4250, 4300 to 4303), and real uids are the host's: the runner's `killAll`
+    and `take` in one suite killed the other suite's CLIs and status checks mid-test. Each
+    suite now claims a block of ids of its own under a host-wide lock
+    (`sandbox/runner/harness.ts`, `claimIds`); the runner reads its ids from the sandbox's
+    `/etc/passwd`, so the runner and its template are unchanged. With that gone, two pairs
+    of overlapping suites on a loaded host still showed three timing assumptions: two runs
+    "at once" held live by a 1.5 s sleep, and two renewal tests whose CLI was to fail or
+    stay up across the renewal by a 3 s and an 8 s sleep. Each is now held by an event (the
+    fake CLI's `holdUntil`, a file the test writes when the step it waits for is done), and the
+    fake's record of each call is written whole and renamed into place, so a test polling it
+    never reads half of one. Proved:
+    the old harness, two suites overlapping, 3 and 7 failures; the fixed one, ten rounds of
+    two overlapping suites, 32 of 32 in each. CI never showed it: of the last 40 Tests runs,
+    `platform-tests` failed twice, both PR branches' own bugs at the time (platform-s, all 32
+    runner tests in 0.3 s; platform-id, one agent-mail test), since a GitHub job runs alone.
+  - **run events (found by the review, outside the slice, fixed here):** a session id outside
+    the conversations' shape (`[!-~]{1,256}`) failed the runner's whole post with a SQLite
+    error; the object refuses it as the run's fixed error `session_id_refused` (`runs.ts`), its
+    frames relayed. The check is the object's, not `run-events.ts`', so the runner's bundle
+    and the template tag stay as slice S built them.
 - [x] Each RFC 6749 source's provider registration of its own redirect URI,
   `https://tinyassets.io/oauth/connect/callback/<source-id>`, registered exactly, never as
   a prefix, and matched exactly by the provider (RFC 9700 §4.1); OpenRouter's key exchange
@@ -540,10 +641,79 @@ account and no deploy.
   object it is never edited (G3 edited migration 6 in place only because nothing is
   deployed), held by a guard that pins each deployed migration's text by digest.
 - [ ] Mobile connects and sign-in (the app slice): on mobile the OAuth runs in an external
-  browser (RFC 8252), whose cookies are not the WebView's, so the Lax connect binding (and
-  the provider's own upstream binding for the owner's sign-in) does not come back with
-  the callback; the app slice decides how (a claimed https redirect into the app, or the
-  binding carried another way).
+  browser (RFC 8252), whose cookies are not the WebView's, so a binding cookie set in the
+  WebView never comes back with the callback. **Decided (app slice, 2026-11-03, corrected
+  by its review M2 and the in-flight research §4b), built with the store app (web first):**
+  the store app is the Capacitor shell that already loads `https://tinyassets.io/app`
+  (`mobile/capacitor.config.json`), so the doors Worker serving `/app` keeps it working.
+  - **The browser.** Every OAuth runs in the platform's auth session, never an embedded
+    WebView, with PKCE.
+  - **The return path.** The auth session's own https callback hands the final return page
+    straight to the app that began the flow:
+    - iOS 17.4 and later: `ASWebAuthenticationSession` with
+      `Callback.https(host: "tinyassets.io", path: "/app/signed-in")` (and `/app/connected`);
+    - Android: Auth Tab (`androidx.browser` 1.9.0 `AuthTabIntent`, https host and path),
+      verified by Digital Asset Links.
+
+    The doors serve `/.well-known/apple-app-site-association` (`webcredentials`) and
+    `/.well-known/assetlinks.json` for them. The doors' own callbacks
+    (`/oauth/upstream/callback`, `/oauth/connect/callback/*`) are never a return path: they
+    run in the auth session's browser, which holds each flow's binding.
+  - **The fallbacks.** The shell's existing pieces:
+    - below iOS 17.4, its `ASWebAuthenticationSession` plugin with the `tinyassets://` scheme
+      (`mobile/native/system-auth/ios`; RFC 8252 §7.1 private-use, PKCE as always);
+    - on Android without Auth Tab, its loopback catcher (`mobile/native/android/
+      LocalCallbackPlugin.java`, RFC 8252 §7.3) in Custom Tabs.
+
+    Each fallback is a redirect URI of the mobile client's own CIMD document, never a
+    prefix.
+  - **Which client it is.** The mobile client is named by its own first-party client id
+    (`/oauth/clients/ios.json`, `/oauth/clients/android.json`, beside `web.json` in
+    `FIRST_PARTY_CLIENTS`), from the verified token, never by a header or a query flag.
+  - **Sign-in.** The app opens `/authorize` in the auth session, which sets the provider's
+    upstream binding there, and the callback checks it there, as on the web. The callback
+    cannot set the WebView's session cookie, so for a mobile client it hands the return page
+    a single-use session handoff (at most 60 s) instead. The handoff is bound to the
+    sign-in's PKCE: the app redeems it on a same-origin route only with the verifier it
+    alone holds, and that route sets the Strict cookie in the WebView. A handoff that lands
+    anywhere else is worthless.
+  - **Connect.** `connections/oauth`, for a mobile client, answers a single-use launch URL on
+    our origin (`/oauth/connect/start?ticket=`) instead of setting the binding cookie in the
+    WebView. It is routing-MAC'd, short-lived and bound to the flow begun in the owner's
+    session.
+    1. The auth session opens it; it sets the flow's `__Host-ta-connect-*` cookie in that jar
+       and redirects to the provider.
+    2. The callback's binding check holds there as on the web, and it hands the code to
+       `/app/connected` in the fragment, which the auth session returns to the app.
+    3. `connections/oauth/finish` takes it in the owner's session (`flowFinish`, in the
+       session that began it). For a mobile client its binding check is the one made at the
+       callback.
+
+    No binding value ever sits in a URL or leaves the app's memory.
+  - **Where a connect returns** (review N2). The callback's return target is the flow's
+    client's, recorded on the flow at begin (`connectionPrepare`), never read from the
+    request: the web client's is `CONNECTED_PAGE`, a mobile client's is the return its auth
+    session was opened with, one of its CIMD document's redirects:
+    - iOS 17.4+ and Android Auth Tab: `https://tinyassets.io/app/connected`, the fragment
+      handed to the app by the auth session's https callback;
+    - below iOS 17.4: the shell's `tinyassets://app/connected` scheme (its
+      `ASWebAuthenticationSession` plugin's `callbackURLScheme`), the fragment intact, since the
+      system hands the app the whole URL;
+    - Android without Auth Tab: the shell's loopback catcher,
+      `http://127.0.0.1:<port>/app/connected` in Custom Tabs. A fragment never reaches a
+      loopback server, so for this target alone the callback puts the code and state in the
+      query. That is safe there: the code needs the flow's PKCE verifier and the owner's
+      session that began it, and the port is the app's own, open for this flow only.
+
+    In each case the shell's plugin hands the URL to the app's `/app/connected` script,
+    which finishes in the WebView's session as on the web.
+  - **Owed by the store app beyond these** (App Store review guidelines):
+    - Sign in with Apple, enabled in AuthKit, whenever Google or GitHub sign-in is offered
+      (4.8);
+    - deleting the account from inside the app, the erasure door reached from "Your data"
+      (5.1.1(v); slice L wires the door);
+    - the shell's native features (notifications, voice) kept, so the app is more than a
+      repackaged website (4.2).
 - [x] G4 (slice 8a) The egress door, the sandbox's identity, its spend and its network
   document, in workerd, nothing deployed and no E2B call; 8b (the sandbox) only calls it.
   The door is the main path for API-key model use: a provider CLI in the sandbox (or pi,
@@ -1325,9 +1495,8 @@ R, S, M and W.
     `doors/test/profiles.test.ts` (the real MCP client and hooks Worker), the tool guard's
     profiles; the doors' tests now run the real hooks Worker behind the object's `HOOKS`.
   - Owed by slice L (dark deploy), below: H2's probes and the live connector tests.
-  - Owed by the owner surface (tasks 2): an `/app/api` route for the owner to name a
-    client's profile and its `tools.custom` (the doors reach `grantSet` and `policyWrite`
-    today, no route names a profile).
+  - Owed by the owner surface (tasks 2), done in the app slice: `grants/set` names a
+    client's profile, and `policy/write` the owner's `tools.custom` and code mode's switch.
 - [ ] H2 live, narrowed to code mode (its probes built by slice L as
   `platform/deploy/h2-probes.ts`, run by `deploy.ts --yes --h2` once the doors are routed
   and two probe owners hold keys; owed to slice L's dark deploy, which needs the
@@ -1555,6 +1724,30 @@ R, S, M and W.
   volume into object storage, each imported owner admitted (`admissionSet` from the
   platform caller, and its `o:` record), as sign-up admits one; DNS switched; the droplet paths deleted. S36 reads
   converged.
+  Owed before slice L's deploy kit runs mode `routes`, each with this change since each moves
+  production routing (slice L's final check, recorded, not yet fixed):
+  - **R1, the old proxy's own deploy.** `deploy-worker.yml` deploys `tinyassets-mcp-proxy`
+    on every push to `main` that touches `deploy/cloudflare-worker/**`, from
+    `deploy/cloudflare-worker/wrangler.toml`, which still lists all five routes. After the
+    handover its next routine deploy fails (wrangler refuses `mcp*` while the doors hold
+    it), or, with `mcp*` removed to make it pass, re-adds the narrower
+    `.well-known/oauth-*` routes and takes OAuth discovery back from the doors, breaking
+    every connector's sign-in. So the cutover cuts that `wrangler.toml` to the routes the
+    proxy keeps (`app*`, `api*`), with a guard holding it to the handover's end state (the
+    handover test's `LIVE` table).
+  - **The apply job runs the plan it was approved on.** `platform-deploy.yml`'s `apply`
+    recomputes its plan rather than comparing it with the one the `plan` job showed for
+    approval, so a live change between the two jobs makes it do something not shown. The
+    plan passes as an artifact and `apply` stops on any difference.
+  - **`/app` itself, found at L's merge with the app slice.** `deploy.ts`'s `ROUTES` give
+    the doors `tinyassets.io/app/api/*` only, and the handover keeps `app*` on the proxy
+    (`guards/deploy.test.ts` asserts `/app` stays the proxy's). The app slice serves `/app`
+    and its pages from the doors, among them the return pages the doors name
+    (`WEB_REDIRECT` `/app/signed-in`, `CONNECTED_PAGE` `/app/connected`), and expects the
+    routes to give the doors `tinyassets.io/app*`. As built, after `routes` those pages
+    still reach the daemon, so the owner app's sign-in and OAuth connects do not finish.
+    Settle it in the handover before `routes`: the doors take `app*` in place (a `PUT`, as
+    `mcp*`), the proxy keeps `api*` alone, and R1's cut and guard follow that end state.
 
 ## 10. The plan's later slices
 

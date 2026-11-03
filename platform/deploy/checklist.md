@@ -38,8 +38,9 @@ Run mode `plan` once and read the list. Then run mode `dark`, read its plan, and
   the variable `OWNER_TOKEN_CLAIMS`, a JSON object (the `fetch-prod-logs` workflow shows a
   claim receipt). The kit reads only those two, so leave out `sub` and the rest. Without it, the kit uses the
   discovery's `claims_supported`. A field that is absent counts as unknown, and unknown stops
-  the kit; it never passes. If the token has no `auth_time`, the kit stops and you choose:
-  ask AuthKit for it (`max_age=0`), or accept the binder's clock at the code exchange.
+  the kit; it never passes. If the token has no `auth_time`, the kit stops. The way on is
+  to have AuthKit send it (`max_age=0`). Taking the binder's clock at the code exchange
+  instead is not something the code can do: it would need its own change and your approval.
 - **The sandbox's template is built.** `E2B_TEMPLATE` in `platform/sandbox/wrangler.jsonc`
   must have a ready build at E2B (`platform/sandbox/template/build.py`). The kit checks this
   through E2B's API and stops if it is missing.
@@ -83,7 +84,7 @@ It never counts as "absent".
 5. **The control record, written only when the API answered that it is absent.** It starts
    with everything closed: outside access off, maintenance admitting no owner, inbound events
    off. It also holds your tier numbers: free 5 runs and 25 GB, paid 10 runs and 250 GB. If the
-   record is there, or the read fails, the kit leaves it alone.
+   record is there, the kit leaves it alone. If the read fails, the whole run stops.
 6. **One WorkOS redirect URI, registered if WorkOS's listing lacks it:**
    `https://tinyassets.io/oauth/upstream/callback`. The kit never deletes one.
 7. **The handles canary** (Fact 11) runs against `tinyassets.io/mcp`, with

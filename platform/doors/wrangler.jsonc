@@ -43,6 +43,10 @@
 // `global_fetch_strictly_public` is required for Client ID Metadata Documents: the
 // provider fetches a client's metadata URL, and the flag keeps that fetch off same-zone
 // routing (its SSRF protection); without it the provider will not advertise CIMD.
+// - ASSETS: the owner app's own files (`app/`: its pages, script and style), Workers Static
+//   Assets, served only through src/pages.ts (`run_worker_first`), which names each page and
+//   sets its security headers; no file is served past the Worker. The app sits on the same
+//   origin as `/app/api`, so its session cookie and CSP hold (tasks 2, the owner app).
 // `enable_request_signal` fires a request's `signal` when its client disconnects, so the
 // egress door settles a call whose client left before the answer at once.
 {
@@ -67,6 +71,8 @@
     { "binding": "EGRESS", "service": "tinyassets-gateway", "entrypoint": "EgressGateway" },
     { "binding": "FILES", "service": "tinyassets-files" }
   ],
+  "assets": { "directory": "./app", "binding": "ASSETS", "run_worker_first": true,
+              "html_handling": "none", "not_found_handling": "none" },
   "kv_namespaces": [
     { "binding": "OAUTH_KV", "id": "not-provisioned-oauth" },
     { "binding": "DIRECTORY", "id": "not-provisioned-directory" },

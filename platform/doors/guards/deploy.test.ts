@@ -97,11 +97,15 @@ describe("the deploy kit", () => {
     for (const worker of present) {
       const checked = configOf(worker);
       const deployed = deployedConfig(worker, IDS, UPSTREAM, false);
-      const { kv_namespaces: kv, main, vars, $schema: _schema, ...rest } = checked as Json;
-      const { kv_namespaces: deployedKv, main: deployedMain, vars: deployedVars, ...others } =
-        deployed;
+      const { kv_namespaces: kv, main, vars, assets, $schema: _schema, ...rest } =
+        checked as Json;
+      const { kv_namespaces: deployedKv, main: deployedMain, vars: deployedVars,
+              assets: deployedAssets, ...others } = deployed;
       expect([worker, others]).toEqual([worker, rest]);
       expect(String(deployedMain)).toBe(join(PLATFORM, worker, String(main)));
+      // Written outside the Worker's folder: the app files' directory is absolute too.
+      expect(deployedAssets).toEqual(assets === undefined ? undefined : {
+        ...(assets as Json), directory: join(PLATFORM, worker, String((assets as Json)["directory"])) });
       expect(deployedKv).toEqual(((kv ?? undefined) as { binding: string }[] | undefined)
         ?.map((namespace) => ({ ...namespace, id: IDS[namespace.binding] })));
       expect(deployed["routes"]).toBeUndefined();

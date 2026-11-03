@@ -346,12 +346,18 @@ export interface UpstreamValues {
 /**
  * The deployed config of `worker`: its checked-in config with the namespace ids it names
  * filled, the doors' upstream values set and, with `routes`, the doors' routes; nothing
- * else changes, so what the guards hold is what deploys.
+ * else changes, so what the guards hold is what deploys. It is written outside the Worker's
+ * folder, so its paths (`main`, and the doors' app files' `assets.directory`) are made
+ * absolute: wrangler reads each relative to the config file.
  */
 export function deployedConfig(worker: string, ids: Readonly<Record<string, string>>,
                                upstream: UpstreamValues, routes: boolean): Json {
   const config = structuredClone(configOf(worker));
   config["main"] = join(PLATFORM, worker, String(config["main"]));
+  const assets = config["assets"] as Json | undefined;
+  if (assets !== undefined) {
+    assets["directory"] = join(PLATFORM, worker, String(assets["directory"]));
+  }
   delete config["$schema"];
   for (const kv of (config["kv_namespaces"] ?? []) as { binding: string; id: string }[]) {
     const id = ids[kv.binding];
