@@ -135,7 +135,7 @@ export function exported(): Readonly<Record<string, ExportTable>> {
     runs: t("seq id agent conversation source credential model state initiator client stamp " +
             "request unattended mail cancel_requested requests tokens cost last_seq result " +
             "result_cut error code exit_code created_at started_at settled_at epoch beat_at " +
-            "sandbox_ms",
+            "sandbox_ms sandbox_wait",
             "seq", { lease_id: "the sandbox lease's claim token" }),
     run_inputs: t("run prompt bytes origin", "run"),
     run_schedules: t("id agent input trigger cron next_at client stamp origin last_run " +
@@ -167,6 +167,7 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   grant_fences: "the grants' revoke fence, an internal mark",
   platform_tiers: "the platform's tier numbers as last read, not the owner's",
   owner_erasure: "an erasure in progress",
+  schema_digests: "the applied migrations' digests, the start's own check",
   owner_backups: "the nightly manifest's own bookkeeping",
   sandbox_meter: "the sandbox meter's cursor in the sandbox Worker's log",
   sandbox_spans: "the sandbox meter's open and recent spans",

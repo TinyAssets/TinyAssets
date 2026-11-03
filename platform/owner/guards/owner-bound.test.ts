@@ -547,6 +547,9 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     socket_tickets: { rows: SOCKET_TICKETS, bytes: ROW + 64 + 35 + 4 * 128 + 16,
                       by: "SOCKET_TICKETS, each a hash, a conversation and a grant id" },
     owner_erasure: { rows: 1, bytes: ROW, by: "one row" },
+    // Each applied migration's digest (`migrate`): one row a migration of the code's list.
+    schema_digests: { rows: 1024, bytes: ROW + 8 + 64,
+                      by: "one a migration; 1,024 past any list the code will hold" },
     // Slice P: the nightly manifest's bookkeeping, at most two manifests (`backup.ts`).
     owner_backups: { rows: 2, bytes: ROW + CURSOR_CHARS + MANIFEST_PARTS * PART_ENTRY + 7 * 8,
                      by: "the newest finished manifest and the one being written, each its " +

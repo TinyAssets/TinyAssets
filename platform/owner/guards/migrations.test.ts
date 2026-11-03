@@ -18,14 +18,13 @@
  * first (a changed one refuses the pin), and every migration the code now holds is pinned;
  * the deploy commits the lock with the code it deployed.
  */
-import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { MIGRATIONS, type Migration } from "../src/schema";
+import { MIGRATIONS, type Migration, migrationDigest } from "../src/schema";
 
 const LOCK = join(dirname(fileURLToPath(import.meta.url)), "..", "migrations.json");
 
@@ -35,9 +34,9 @@ export interface Lock {
   readonly deployed: readonly string[];
 }
 
-/** One migration's digest: SHA-256 over its statements as JSON, as the code evaluates them. */
+/** One migration's digest, the object's own (`migrationDigest`), which its start checks too. */
 export function digest(migration: Migration): string {
-  return createHash("sha256").update(JSON.stringify(migration)).digest("hex");
+  return migrationDigest(migration);
 }
 
 /** Each way `migrations` breaks `lock`: a pinned one changed or gone, or a pin unmarked. */

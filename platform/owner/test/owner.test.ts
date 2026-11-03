@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { LIMITS } from "../src/collections";
 import { CHUNK_BYTES, PLACE_BYTES } from "../src/manifest";
 import { OwnerDO } from "../src/owner-do";
-import { MIGRATIONS, migrate } from "../src/schema";
+import { MIGRATION_CHANGED, MIGRATIONS, migrate, migrationDigest } from "../src/schema";
 import { failure, ownerObject } from "./support";
 
 function version(state: DurableObjectState): number {
@@ -102,6 +102,21 @@ describe("schema migration on wake", () => {
       expect(version(state)).toBe(MIGRATIONS.length);
       expect(state.storage.sql.exec(
         "SELECT name FROM sqlite_master WHERE name = 'probe_b'").toArray()).toEqual([]);
+    });
+  });
+
+  it("refuses to start once a migration it applied reads differently (Flyway's validate)",
+     async () => {
+    const { stub, as, name } = ownerObject();
+    await stub.collectionPull(as(name), PULL);
+    await runInDurableObject(stub, (_instance: OwnerDO, state) => {
+      expect(state.storage.sql.exec("SELECT version, sha256 FROM schema_digests").toArray())
+        .toEqual([{ version: 1, sha256: migrationDigest(MIGRATIONS[0]!) }]);
+      const edited = [[...MIGRATIONS[0]!, "CREATE TABLE probe_edit (n INTEGER)"]];
+      expect(() => migrate(state.storage, edited)).toThrow(MIGRATION_CHANGED);
+      // The code as applied still starts, and a new migration after it applies.
+      expect(migrate(state.storage, [...MIGRATIONS, ["CREATE TABLE probe_next (n INTEGER)"]]))
+        .toBe(MIGRATIONS.length + 1);
     });
   });
 

@@ -19,6 +19,8 @@
  * reference on the content, so the files plane's quota, garbage collection and erasure
  * cover the placed bytes.
  */
+import { createHash } from "node:crypto";
+
 import { CRON_MAX_CHARS } from "./cron";
 import { GC_GRACE_S } from "./files";
 import type { OwnerStorage } from "./gate";
@@ -1553,7 +1555,22 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
 ]);
 
 
-/** Apply every migration past the stored version; return the version now stored. */
+/** A migration's digest: SHA-256 over its statements as JSON, as the code evaluates them. */
+export function migrationDigest(migration: Migration): string {
+  return createHash("sha256").update(JSON.stringify(migration)).digest("hex");
+}
+
+/** What a start answers when a migration it applied before reads differently now. */
+export const MIGRATION_CHANGED = "an applied migration's text changed since it ran; refusing to run";
+
+/**
+ * Apply every migration past the stored version; return the version now stored. Each
+ * applied migration's digest is kept beside the version (`schema_digests`), and every start
+ * checks the migrations it already applied against them first, as Flyway's `validate`
+ * does: one whose text changed since it ran (a hotfix branch, a revert, a squash after the
+ * first deploy) stops the object loudly before anything runs, whatever the repo's guard
+ * missed.
+ */
 export function migrate(
   storage: OwnerStorage,
   migrations: readonly Migration[] = MIGRATIONS,
@@ -1563,12 +1580,23 @@ export function migrate(
     "CREATE TABLE IF NOT EXISTS schema_version " +
       "(only INTEGER PRIMARY KEY CHECK (only = 1), version INTEGER NOT NULL)",
   );
+  sql.exec("CREATE TABLE IF NOT EXISTS schema_digests (version INTEGER PRIMARY KEY, " +
+             "sha256 TEXT NOT NULL CHECK (length(sha256) = 64))");
   const stored = sql.exec<{ version: number }>("SELECT version FROM schema_version").toArray();
   const current = stored[0]?.version ?? 0;
   if (current > migrations.length) {
     throw new Error(
       `schema version ${current} is newer than this code's ${migrations.length}; refusing to run`,
     );
+  }
+  const applied = new Map(sql.exec<{ version: number; sha256: string }>(
+    "SELECT version, sha256 FROM schema_digests").toArray()
+    .map((row) => [row.version, row.sha256]));
+  for (let version = 1; version <= current; version++) {
+    const held = applied.get(version);
+    if (held !== undefined && held !== migrationDigest(migrations[version - 1]!)) {
+      throw new Error(`${MIGRATION_CHANGED} (migration ${version})`);
+    }
   }
   for (let version = current + 1; version <= migrations.length; version++) {
     const statements = migrations[version - 1] ?? [];
@@ -1581,6 +1609,8 @@ export function migrate(
           "ON CONFLICT (only) DO UPDATE SET version = excluded.version",
         version,
       );
+      sql.exec("INSERT OR REPLACE INTO schema_digests (version, sha256) VALUES (?, ?)", version,
+               migrationDigest(statements));
     });
   }
   return migrations.length;
