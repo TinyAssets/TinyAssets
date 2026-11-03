@@ -1704,6 +1704,8 @@ R, S, M and W.
 
   Verification round 4 (REQUEST_CHANGES), fixed: the run's heartbeat posts through sync-in and sync-out (the sync agent a child the runner waits on without blocking), so a sync longer than the lease keeps it; the matcher fast with no cap on lines (pattern lines behind a length and character check, each name and directory matched once), the reviewer's hostile lists 0.012 to 0.048 ms a path, a slow match said in the run's report; the notice's "may hold back" sentence on every added line, the sandbox's count only for the owner's own lease. Then main (slice L) merged: the lease column is migration 16.
 
+  Verification round 5 (REQUEST_CHANGES), fixed: pattern lines bounded together at `PATTERN_CHARS` (384, derived from the measured worst case at the highest `max_entries` against E2B Hobby's hour), those past it not applied and said in the report and the notice; the matcher's memory bounded by its keys' bytes (16 MiB); the sync child's stdin errors handled, so a child that dies before reading its job ends the run loudly.
+
   Research: the STORE research and its cross-reviews. Probes:
   - `latency-probe.md`: option A measured;
   - `sandbox-probe.md`, "Scratch and the disk".

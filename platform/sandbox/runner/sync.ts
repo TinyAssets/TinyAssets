@@ -44,7 +44,8 @@ import type { SourceRecord } from "../../doors/src/sources";
 import { isKept, keptPaths } from "./engine";
 import { remove, safeDirs, safePieces, safeRead, safeStream, safeWrite, walkFiles } from "./fsafe";
 import { heldSecret } from "./guards";
-import { defaultSyncIgnore, ignoredBy, SYNC_IGNORE } from "../../owner/src/sync-ignore";
+import { defaultSyncIgnore, ignoredBy, SYNC_IGNORE, unappliedLines }
+  from "../../owner/src/sync-ignore";
 
 export { DEFAULT_IGNORES, defaultSyncIgnore, ignoredBy, SYNC_IGNORE, wildcard }
   from "../../owner/src/sync-ignore";
@@ -478,6 +479,12 @@ export interface SyncReport {
   readonly skipped_unlisted: number;
   /** How long matching the sync-ignore list took this sync, in ms. */
   readonly match_ms: number;
+  /**
+   * The list's pattern lines past `PATTERN_CHARS`, not applied (the files they name go on
+   * syncing): the first `LISTED`, and how many in all.
+   */
+  readonly unapplied: readonly string[];
+  readonly unapplied_count: number;
 }
 
 /** Held-back files a report lists by path, at most: past them it counts them. */
@@ -785,7 +792,10 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     }
   }
   await send();
-  const matcher = ignoredBy(syncIgnore(place.local));
+  const rules = syncIgnore(place.local);
+  const matcher = ignoredBy(rules);
+  // Pattern lines past the ceiling (`PATTERN_CHARS`) are not applied, and said.
+  const unapplied = unappliedLines(rules);
   // How long matching the list took, so a slow list says so in the run's report.
   let matchMs = 0;
   const ignored = (rel: string) => {
@@ -844,7 +854,8 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
   await offer(SYNC_IGNORE, place.local, localOf(place, SYNC_IGNORE));
   await send();
   return { committed, conflicts, refused, skipped, skipped_unlisted: Math.max(0, held - LISTED),
-           match_ms: Math.round(matchMs) };
+           match_ms: Math.round(matchMs), unapplied: unapplied.slice(0, LISTED),
+           unapplied_count: unapplied.length };
 }
 
 /** Whether a kept file's sandbox copy differs from what the owner's files hold. */

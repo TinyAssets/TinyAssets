@@ -708,6 +708,33 @@ describe("the sync", () => {
     expect(doors.ops().map((op) => op.path)).toContain("/workspace/agents/main/notes.md");
   }, 90_000);
 
+  it("ends the run loudly when the sync agent dies before reading a job past the pipe's " +
+     "buffer (verification round 4, R4-3)", async () => {
+    // A thousand kept sessions make the `known` job well past 64 KiB.
+    for (let i = 0; i < 1_000; i++) {
+      box.write(`/var/lib/ta/store/claude-code/.claude/projects/main/${
+        `s-${i}`.padEnd(100, "x")}.jsonl`, "{}\n");
+    }
+    const release = box.path("/release");
+    box.cli("codex", { lines: SHAPES["codex"]!.lines, holdUntil: release });
+    const start = startDoc(doors, "codex", { config: config("codex") });
+    box.start(start, "owner");
+    expect(box.runner("launch", start.run).code).toBe(0);
+    await waitFor(() => box.ran("codex").length === 1);
+    // The sync agent's user can no longer read the runner: it dies before reading its job.
+    const bundle = runnerBundle();
+    chmodSync(bundle, 0o600);
+    try {
+      writeFileSync(release, "");
+      const end = await doors.ended_(25_000, start.run);
+      expect((end.body["end"] as { exit_code: number }).exit_code).toBe(1);
+      expect(String(doors.frames().find((frame) => frame["type"] === "ta.runner_error")
+        ?.["message"])).toMatch(/the sync agent failed/);
+    } finally {
+      chmodSync(bundle, 0o644);
+    }
+  }, 60_000);
+
   it("sends a file past one chunk through the upload doors, chunk by chunk", async () => {
     const big = "a".repeat(4 * 1024 * 1024) + "b".repeat(4 * 1024 * 1024) + "c".repeat(1024);
     box.cli("codex", { lines: SHAPES["codex"]!.lines, writes: { "big.bin": big } });

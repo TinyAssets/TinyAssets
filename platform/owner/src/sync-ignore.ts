@@ -174,15 +174,30 @@ function matchAny(patterns: readonly Pattern[], text: string): Kind | null {
 }
 
 /**
+ * The most characters the list's pattern lines (those with `*` or `?`, each distinct line
+ * once) take together: a technical ceiling. A pattern's match costs its length times the
+ * text's in the worst case (a run of `?` before a letter tries every position), so this
+ * bounds a sync-out's matching at the files plane's own ceilings, well inside the sandbox's
+ * shortest session (`limits-audit.md` gives the arithmetic: about 280 s of an hour at the
+ * highest `max_entries`, measured). Literal lines are set lookups and take none of it. A
+ * pattern line past it is not applied, the safe way: the files it names go on syncing, and
+ * the sync's report and the owner's notice say which lines.
+ */
+export const PATTERN_CHARS = 384;
+
+/**
  * The sync-ignore's lines compiled once: each a name anywhere or a path from the workspace;
  * a literal line a set member (a lookup per path segment, however many lines), a line with
- * `*` or `?` a pattern; duplicates dropped. Whether a line is a default one is by its text.
+ * `*` or `?` a pattern, in the file's order until `PATTERN_CHARS`; duplicates dropped.
+ * Whether a line is a default one is by its text.
  */
 function compiled(lines: readonly string[]) {
   const defaults = new Set(DEFAULT_IGNORES);
   const names = { custom: new Set<string>(), default: new Set<string>() };
   const paths = { custom: new Set<string>(), default: new Set<string>() };
   const patterns = { names: new Map<string, Pattern>(), paths: new Map<string, Pattern>() };
+  const unapplied: string[] = [];
+  let used = 0;
   for (const line of lines) {
     const text = line.trim().replace(/\/+$/, "");
     if (text === "" || text.startsWith("#")) {
@@ -192,25 +207,40 @@ function compiled(lines: readonly string[]) {
     const path = text.includes("/");
     const anchored = path ? text.replace(/^\/+/, "") : text;
     if (/[*?]/.test(anchored)) {
-      // A custom line first, so the pass can stop at it.
-      (path ? patterns.paths : patterns.names).set(`${kind}\n${anchored}`,
-                                                    patternOf(anchored, kind));
+      const into = path ? patterns.paths : patterns.names;
+      const key = `${kind}\n${anchored}`;
+      if (into.has(key)) {
+        continue;
+      }
+      if (used + anchored.length > PATTERN_CHARS) {
+        unapplied.push(line.trim());
+        continue;
+      }
+      used += anchored.length;
+      into.set(key, patternOf(anchored, kind));
     } else {
       (path ? paths : names)[kind].add(anchored);
     }
   }
   const ordered = (all: Map<string, Pattern>) =>
     [...all.values()].sort((a, b) => Number(a.kind === "default") - Number(b.kind === "default"));
+  // A custom line first, so a pass can stop at it.
   return { names, paths, namePatterns: ordered(patterns.names),
-           pathPatterns: ordered(patterns.paths) };
+           pathPatterns: ordered(patterns.paths), unapplied };
+}
+
+/** The list's pattern lines past `PATTERN_CHARS`, in its order: lines not applied. */
+export function unappliedLines(lines: readonly string[]): string[] {
+  return compiled(lines).unapplied;
 }
 
 /**
- * The most names and path prefixes a matcher remembers: a tree's directories repeat in
- * every path under them, so each is matched once; past it the memory starts again, so it
- * holds the same however large the tree.
+ * The most a matcher's memory of names and path prefixes holds, in their characters
+ * (two bytes each): a tree's directories repeat in every path under them, so each is
+ * matched once; past it the memory starts again, so it holds at most 16 MiB of keys (and
+ * their entries) however large the tree or long its paths. Refuses nothing.
  */
-const REMEMBERED = 65_536;
+const REMEMBERED_CHARS = 8 * 1024 * 1024;
 
 /**
  * The matcher of a sync-ignore's lines: for a workspace path (relative to `/workspace`),
@@ -223,17 +253,21 @@ export function ignoredBy(lines: readonly string[]): (rel: string) => Kind | nul
   const { names, paths, namePatterns, pathPatterns } = compiled(lines);
   const byName = new Map<string, Kind | null>();
   const byPrefix = new Map<string, Kind | null>();
+  let held = 0;
   const remembered = (memory: Map<string, Kind | null>, key: string,
                       work: () => Kind | null): Kind | null => {
     const known = memory.get(key);
     if (known !== undefined) {
       return known;
     }
-    if (memory.size >= REMEMBERED) {
-      memory.clear();
+    if (held + key.length > REMEMBERED_CHARS) {
+      byName.clear();
+      byPrefix.clear();
+      held = 0;
     }
     const kind = work();
     memory.set(key, kind);
+    held += key.length;
     return kind;
   };
   const nameKind = (name: string) => remembered(byName, name, () =>

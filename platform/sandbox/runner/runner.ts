@@ -69,6 +69,7 @@ import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, s
          writeOrRelease } from "./scratch";
 import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
          statesHold } from "./login";
+import { PATTERN_CHARS } from "../../owner/src/sync-ignore";
 import { openMirror, SESSIONS, SyncClient, SyncFenced, syncIn, syncOut, type SyncReport }
   from "./sync";
 import { asUser, give, group, type Identity, killAll, POOL_PREFIX, take, user } from "./users";
@@ -674,6 +675,9 @@ async function syncAgent(job: SyncJob):
   const err: Buffer[] = [];
   child.stdout!.on("data", (chunk: Buffer) => { out.push(chunk); });
   child.stderr!.on("data", (chunk: Buffer) => { err.push(chunk); });
+  // A child that dies before reading its whole job closes its stdin under the write: the
+  // write's EPIPE is let go here, and the child's exit status says what happened.
+  child.stdin!.on("error", () => undefined);
   child.stdin!.end(JSON.stringify(job));
   const status = await new Promise<number | null>((resolve, reject) => {
     child.on("error", reject);
@@ -798,6 +802,16 @@ function reportSync(outbox: Outbox, report: SyncReport | null): void {
   }
   if ((report?.conflicts ?? []).length > 0) {
     outbox.push({ type: "ta.sync_conflicts", paths: report!.conflicts });
+  }
+  // Pattern lines past the ceiling are not applied, never in silence.
+  if ((report?.unapplied_count ?? 0) > 0) {
+    outbox.push({ type: "ta.sync_ignore_unapplied", lines: report!.unapplied,
+                  count: report!.unapplied_count,
+                  message: `${report!.unapplied_count} line${report!.unapplied_count === 1 ? ""
+                    : "s"} with * or ? in /workspace/.ta/sync-ignore ${
+                    report!.unapplied_count === 1 ? "is" : "are"} past the ${PATTERN_CHARS} ` +
+                    "characters such lines may take together, so not applied: the files they " +
+                    "name go on syncing." });
   }
   // A slow list says so, so the owner sees why a sync took long: its pattern lines (`*`,
   // `?`) cost the most. Said past `SLOW_MATCH_MS`, which refuses nothing.

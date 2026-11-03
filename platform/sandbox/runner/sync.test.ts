@@ -18,6 +18,7 @@ import { join } from "node:path";
 
 import { afterAll, describe, expect, it } from "vitest";
 
+import { PATTERN_CHARS, unappliedLines } from "../../owner/src/sync-ignore";
 import {
   ignoredBy, memoryMirror, type Mirror, openMirror, type Place, SyncClient, SyncFenced,
   syncIn, syncOut, wildcard,
@@ -479,6 +480,64 @@ describe("the sync-ignore matcher against hostile lists (verification round 3, R
     const report = await syncOut(client((door, body) => door === "commit" ? commitAll(body)
       : { status: 404, body: {} }), p, memoryMirror(), LEASE, []);
     expect(typeof report.match_ms).toBe("number");
+  });
+});
+
+describe("the pattern lines' ceiling (verification round 4, R4-1)", () => {
+  // A line of `len` characters with a `*` in it.
+  const pattern = (len: number, tag: string) => `*${tag}${"?".repeat(len - 1 - tag.length)}`;
+
+  it("applies pattern lines up to PATTERN_CHARS together, and not one past it", () => {
+    const at = [pattern(PATTERN_CHARS - 100, "a"), pattern(100, "b")];
+    expect(unappliedLines(at)).toEqual([]);
+    // One more character, in another line: that line alone is not applied.
+    expect(unappliedLines([...at, "*c"])).toEqual(["*c"]);
+    // A literal line takes none of it, and a repeated line counts once.
+    expect(unappliedLines([...at, "node_modules", at[0]!, "plain/path"])).toEqual([]);
+    // A pattern line not applied matches nothing; the ones before it still do.
+    const matches = ignoredBy([...at, "*.log"]);
+    expect(matches("run.log")).toBeNull();
+    expect(matches(`a${"x".repeat(PATTERN_CHARS - 102)}`)).toBe("custom");
+  });
+
+  it("keeps syncing the files a line past the ceiling names, and says so", async () => {
+    const { place: p, local } = place();
+    mkdirSync(join(local, ".ta"), { recursive: true });
+    writeFileSync(join(local, ".ta", "sync-ignore"),
+                  `${pattern(PATTERN_CHARS, "z")}\n*.log\n`);
+    writeFileSync(join(local, "run.log"), "kept syncing");
+    const sent: string[] = [];
+    const report = await syncOut(client((door, body) => door === "commit"
+      ? commitAll(body, sent) : { status: 404, body: {} }), p, memoryMirror(), LEASE, []);
+    expect(sent).toContain("/workspace/run.log");
+    expect(report.unapplied).toEqual(["*.log"]);
+    expect(report.unapplied_count).toBe(1);
+  });
+
+  it("matches the reviewer's long-? lines over unique long names in well under a ms a name",
+     () => {
+    // 2,000 lines of `*`, 100 to 199 `?`, a letter, `*`: 62 ms a path before the ceiling.
+    const lines = Array.from({ length: 2_000 }, (_, i) => `*${"?".repeat(100 + (i % 100))}${
+      String.fromCharCode(97 + (i % 26))}*`);
+    const matches = ignoredBy(lines);
+    const started = performance.now();
+    for (let i = 0; i < 400; i++) {
+      matches(`${String(i).padStart(8, "0")}`.padEnd(250, "abcdefghij"));
+    }
+    expect((performance.now() - started) / 400).toBeLessThan(2);
+  });
+
+  it("answers the same across its memory's starting again, whatever its keys' length", () => {
+    const matches = ignoredBy(["*q", "deep/*/x?"]);
+    const long = (i: number) => `${String(i).padStart(6, "0")}${"d".repeat(3_800)}`;
+    // 2,400 prefixes of 3,800 characters: past the memory's 8 Mi characters.
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < 2_400; i++) {
+        expect(matches(`${long(i)}/file.q`)).toBe("custom");
+      }
+    }
+    expect(matches("deep/a/x1")).toBe("custom");
+    expect(matches("deep/a/y1")).toBeNull();
   });
 });
 
