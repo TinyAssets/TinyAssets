@@ -95,7 +95,8 @@ const HOOKS_OWN = Object.freeze({
 /** The service bindings the owner Worker may hold, by binding name. */
 const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
   FILES: Object.freeze({ service: "tinyassets-files",
-                         bindings: Object.freeze({ r2_buckets: 1 }) }),
+                         bindings: Object.freeze({ r2_buckets: 1 }),
+                         secrets: Object.freeze(["FILES_KEYRING"]) }),
   GATEWAY: Object.freeze({ service: "tinyassets-gateway", bindings: Object.freeze({}),
                            secrets: Object.freeze(["GATEWAY_KEYRING"]) }),
   HOOKS: Object.freeze({ service: "tinyassets-hooks",
@@ -396,15 +397,14 @@ describe("owner Worker config", () => {
       .not.toEqual([]);
   });
 
-  it("refuses a secrets key on a bound Worker allowed none", () => {
+  it("refuses a secret on a bound Worker other than the one it is allowed", () => {
     const files = { name: "tinyassets-files", main: "src/index.ts",
                     r2_buckets: [{ binding: "BLOBS", bucket_name: "tinyassets-files" }],
                     secrets: { required: ["X"] } };
     expect(configProblems({ ...config, services: [{ binding: "FILES",
                                                     service: "tinyassets-files" }] },
                           new Map([["tinyassets-files", files as Config]])))
-      .toEqual(["services.FILES: secrets is not a binding the owner's tinyassets-files " +
-                "binding allows"]);
+      .toEqual(["services.FILES: secrets declares other than FILES_KEYRING"]);
   });
 
   it("binds one store, the doors' control namespace, and only control-gate.ts reads it",

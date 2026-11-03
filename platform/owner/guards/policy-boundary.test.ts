@@ -15,6 +15,11 @@
  * so are the sandbox's egress rows and the owner's erasure mark, and the runs' rows (slice R:
  * runs, their grants, conversations and schedules, the tier numbers kept, the socket
  * tickets), each its module's and the schema's. The lists only shrink.
+ *
+ * One module names every table to read it, never to write it: the owner export
+ * (`export.ts`, slice P), which reads everything the owner holds for the owner alone. Its
+ * source is held to SQL that only reads (`READ_ONLY`): no statement but `SELECT`, and no
+ * policy module imported.
  */
 import { posix } from "node:path";
 
@@ -24,6 +29,10 @@ import { describe, expect, it } from "vitest";
 import { workerSources } from "./sources";
 
 const OWNER_DO = "owner/src/owner-do.ts";
+/** The owner export: it names tables only to read them (held below). */
+const READ_ONLY = "owner/src/export.ts";
+/** SQL that writes or changes a table, as a statement's first word. */
+const WRITES = /\b(?:INSERT|UPDATE|DELETE|REPLACE|UPSERT|CREATE|DROP|ALTER|PRAGMA|ATTACH|VACUUM)\b/;
 const SCHEMA = "owner/src/schema.ts";
 const MODULES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   policy: Object.freeze([OWNER_DO, "owner/src/grants.ts", SCHEMA]),
@@ -95,7 +104,7 @@ export function reach(sources: Map<string, string>): Record<string, string[]> {
       }
     }
     for (const table of Object.keys(TABLES)) {
-      if (new RegExp(`\\b${table}\\b`).test(source)) {
+      if (path !== READ_ONLY && new RegExp(`\\b${table}\\b`).test(source)) {
         (found[table] ??= []).push(path);
       }
     }
@@ -112,6 +121,14 @@ export function reach(sources: Map<string, string>): Record<string, string[]> {
 }
 
 describe("policy-boundary guard", () => {
+  it("holds the owner export to reading: no SQL that writes, no policy module", () => {
+    const source = workerSources().get(READ_ONLY)!;
+    const literals = [...source.matchAll(/"[^"\n]*"|`[^`]*`/g)].map((match) => match[0]);
+    expect(literals.filter((literal) => WRITES.test(literal))).toEqual([]);
+    expect(Object.keys(MODULES).filter((module) => importer(module).test(source))).toEqual([]);
+    expect(WRITES.test('"UPDATE owner_policy SET x = 1"')).toBe(true);
+  });
+
   it("lets only the object reach the session and grant modules, and each table its own",
      () => {
     const expected = Object.fromEntries([

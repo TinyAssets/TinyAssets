@@ -24,6 +24,8 @@
  * - `agent/submit`, `agent/run`, `agent/status`, `agent/cancel`: the run doors (slice R),
  *   the same doors `converse`, `run_graph`, `run_status` and `run_cancel` call for an
  *   outside client; the control record's tier numbers ride the binding (`withTiers`).
+ * - `export`: the owner's export (`owner/src/export.ts`), streamed as newline-delimited
+ *   JSON (`exportStream`), resumable from any page's cursor line.
  * - `agent/socket-ticket`: a single-use socket ticket for one of the owner's conversations
  *   (A6, salvaged), behind every check above, bound to the token's grant and expiry
  *   (`bindOwnerGrant`).
@@ -106,7 +108,52 @@ async function signOut(env: DoorsEnv, { binding, stub }: Bound, _request: unknow
   return json(200, { ...closed, signed_out: true }, { "Set-Cookie": clearedCookie() });
 }
 
+/**
+ * The pages one export response carries before it ends with its cursor line, so one
+ * request's work in this Worker stays bounded (a technical ceiling: a request's CPU; at
+ * most 8 MiB of chunks a page, about 512 MiB a response). The client asks again with the
+ * last cursor line it read.
+ */
+export const EXPORT_PAGES = 64;
+
+/**
+ * The owner's export, as newline-delimited JSON (`application/x-ndjson`): the object's
+ * pages one after another, each but the last followed by its cursor line
+ * (`{"t":"cursor","cursor":...}`), until the stream's `end` line or `EXPORT_PAGES`. The
+ * first page is read before the response begins, so a refusal is the door's status; a
+ * page that fails after it cuts the stream short of its `end` line, and the client resumes
+ * from the last cursor it read.
+ */
+async function exportStream(_env: DoorsEnv, { binding, stub }: Bound,
+                            request: Record<string, unknown>): Promise<Response> {
+  if (Object.keys(request).some((key) => key !== "cursor")) {
+    return failure(400, "an export request is at most its cursor");
+  }
+  let page = await stub.ownerExport(binding, { cursor: request["cursor"] as string | null });
+  let pages = 0;
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      pages++;
+      const lines = [...page.lines];
+      const next = page.next;
+      if (next !== null) {
+        lines.push(JSON.stringify({ t: "cursor", cursor: next }));
+      }
+      controller.enqueue(encoder.encode(lines.join("\n") + "\n"));
+      if (next === null || pages >= EXPORT_PAGES) {
+        controller.close();
+        return;
+      }
+      page = await stub.ownerExport(binding, { cursor: next });
+    },
+  });
+  return new Response(body, { status: 200, headers: {
+    "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" } });
+}
+
 const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
+  "export": exportStream,
   "keys": async (env, owner, request) => json(200, await mintKey(env, owner, request)),
   "keys/revoke": async (env, owner, request) => json(200, await revokeKey(env, owner, request)),
   "keys/delete": async (env, owner, request) =>

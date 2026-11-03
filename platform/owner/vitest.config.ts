@@ -32,12 +32,12 @@ function transpiled(path: string): string {
 
 /**
  * The real files Worker, as the FILES service binding's target: its own source, its own
- * config's runtime and its one bucket. Miniflare runs auxiliary Workers from JavaScript,
+ * config's runtime, its one bucket and its data keys' ring as its one secret. Miniflare runs auxiliary Workers from JavaScript,
  * so its modules are transpiled here, named as their sources import them.
  */
-function filesWorker() {
+function filesWorker(keyring: string) {
   const files = config(FILES);
-  const modules = ["index", "keys"].map((name) => ({
+  const modules = ["index", "keys", "datakey"].map((name) => ({
     type: "ESModule" as const,
     path: join(FILES, "src", name),
     contents: transpiled(join(FILES, "src", `${name}.ts`)),
@@ -49,6 +49,7 @@ function filesWorker() {
     compatibilityDate: files.compatibility_date,
     compatibilityFlags: files.compatibility_flags,
     r2Buckets: (files.r2_buckets ?? []).map((bucket) => bucket.binding),
+    bindings: { FILES_KEYRING: keyring },
   };
 }
 
@@ -141,6 +142,11 @@ const KEYRING = JSON.stringify({
   keys: { k1: randomBytes(32).toString("base64"), k2: randomBytes(32).toString("base64") },
 });
 
+/** The files Worker's data keys' ring, made fresh for each run. */
+const FILES_RING = JSON.stringify({
+  active: "k1", keys: { k1: randomBytes(32).toString("base64") },
+});
+
 export default defineConfig({
   test: {
     projects: [
@@ -168,7 +174,8 @@ export default defineConfig({
               },
               bindings: { TEST_KEYRING: KEYRING, ROUTING_MAC_KEY: ROUTING_KEY },
               outboundService: "fake-upstream",
-              workers: [filesWorker(), gatewayWorker(KEYRING), hooksWorker(), fakeUpstream()],
+              workers: [filesWorker(FILES_RING), gatewayWorker(KEYRING), hooksWorker(),
+                        fakeUpstream()],
             },
           }),
         ],

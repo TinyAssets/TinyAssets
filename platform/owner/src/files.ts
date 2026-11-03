@@ -3,8 +3,11 @@
  *
  * The bytes are immutable chunks of at most 4 MiB in one R2 bucket shared by every
  * owner, each named by its SHA-256 under this owner's random 128-bit namespace `ns`,
- * which is made on first use and held only here. The files Worker (`FILES`) moves them
- * and never sees a path. Everything that says what a file is lives in this object's
+ * which is made on first use and held only here, and each put and read under this owner's
+ * own data key (SSE-C), which this object holds only wrapped (`data_key`, made with the
+ * namespace by `FILES.mintKey`): opened by the files Worker's keyring for one call at a
+ * time, never here, and gone with the object at erasure (crypto-erasure, `datakey.ts`).
+ * The files Worker (`FILES`) moves them and never sees a path. Everything that says what a file is lives in this object's
  * SQLite: paths, versions and history, which chunks make which content, the chunks'
  * reference counts, upload intents, quotas, the change feed and the sync lease. Files of
  * 4 KiB or less are kept inline, so reading `AGENTS.md` or a skill touches no bucket.
@@ -182,13 +185,29 @@ export function scopesOf(writer: string): readonly string[] {
   return isClient(writer) ? [CLIENTS, writer] : [OWNER_SCOPE];
 }
 
-/** What the files Worker does for the object; the `FILES` binding. */
+/**
+ * What the files Worker does for the object; the `FILES` binding. `key` is always this
+ * owner's wrapped data key, which only the files Worker can open.
+ */
 export interface ChunkStore {
-  putChunks(ns: string, chunks: { sha256: string; bytes: Uint8Array }[]):
+  mintKey(ns: string): Promise<{ key: string }>;
+  putChunks(ns: string, key: string, chunks: { sha256: string; bytes: Uint8Array }[]):
     Promise<{ created: number }>;
-  getChunks(ns: string, reads: { sha256: string; offset?: number; length?: number }[]):
+  getChunks(ns: string, key: string,
+            reads: { sha256: string; offset?: number; length?: number }[]):
     Promise<Uint8Array[]>;
   deleteChunks(ns: string, sha256s: string[]): Promise<{ deleted: number }>;
+  putManifestPart(ns: string, key: string, day: string, part: number, bytes: Uint8Array):
+    Promise<{ sha256: string; size: number }>;
+  putManifestRoot(ns: string, key: string, day: string,
+                  parts: readonly { sha256: string; size: number }[]): Promise<void>;
+  deleteManifest(ns: string, day: string, parts: number): Promise<void>;
+}
+
+/** The owner's place in the bucket: its namespace and its wrapped data key. */
+export interface ChunkSpace {
+  readonly ns: string;
+  readonly key: string;
 }
 
 export type FileKind = "file" | "dir";
@@ -349,6 +368,7 @@ type StoredEntry = {
 
 type Space = {
   ns: string | null;
+  data_key: string | null;
   seq: number;
   feed_floor: number;
   entries: number;
@@ -551,6 +571,29 @@ export class Files {
     const made = randomBytes(16).toString("hex");
     this.#sql.exec("UPDATE file_space SET ns = ?", made);
     return made;
+  }
+
+  /**
+   * The namespace and its wrapped data key, from outside a unit: the namespace made through
+   * the gate on first use, then its key minted by `FILES` and kept in a unit of its own
+   * unless one was kept meanwhile (a lost race's key opens nothing anyone stored under).
+   */
+  async space(): Promise<ChunkSpace> {
+    const held = this.#space();
+    if (held.ns !== null && held.data_key !== null) {
+      return { ns: held.ns, key: held.data_key };
+    }
+    const ns = held.ns ?? await this.#write(() => this.ns());
+    const { key } = await this.#store.mintKey(ns);
+    return this.#write(() => {
+      this.#sql.exec("UPDATE file_space SET data_key = ? WHERE data_key IS NULL", key);
+      return { ns, key: this.#space().data_key! };
+    });
+  }
+
+  /** The namespace if it was made, else null: never made here. A read. */
+  heldNamespace(): string | null {
+    return this.#space().ns;
   }
 
   /** The namespace from outside a unit: made through the gate on first use. */
@@ -799,11 +842,11 @@ export class Files {
     if (reads.length === 0) {
       return [];
     }
-    const ns = await this.namespace();
+    const { ns, key } = await this.space();
     const groups = batches(reads.map((read) => ({ read, size: read.length ?? CHUNK_BYTES })));
     const out: Uint8Array[] = [];
     for (const group of groups) {
-      out.push(...await this.#store.getChunks(ns, group.map((item) => item.read)));
+      out.push(...await this.#store.getChunks(ns, key, group.map((item) => item.read)));
     }
     return out;
   }
@@ -1105,8 +1148,8 @@ export class Files {
    */
   async #put(chunks: readonly { sha256: string; bytes: Uint8Array }[], intentId: string):
       Promise<void> {
-    await this.#store.putChunks(await this.namespace(),
-                                chunks.map(({ sha256, bytes }) => ({ sha256, bytes })));
+    const { ns, key } = await this.space();
+    await this.#store.putChunks(ns, key, chunks.map(({ sha256, bytes }) => ({ sha256, bytes })));
     await this.#write(() => this.#storage.transactionSync(() => {
       const sent = new Set(chunks.map(({ sha256 }) => sha256));
       for (const sha256 of sent) {

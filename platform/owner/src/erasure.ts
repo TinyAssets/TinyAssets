@@ -7,7 +7,11 @@
  *    erasure instead of driving Lifecycle).
  * 2. **End every run**: the sandbox's in-flight egress streams end (`Egress.drop`), and the
  *    step is recorded done (`step` 2). The runs and sandbox slices (R, S) add the sandbox's
- *    kill and the engines' session files' purge to this step (ADR-034).
+ *    kill and the engines' session files' purge to this step (ADR-034). Then the nightly
+ *    manifests are deleted from R2 (`Backups.purge`): each carries the owner's wrapped data
+ *    key, so once the wipe takes the object's own copy nothing holds it, and a chunk the
+ *    bucket still keeps is unreadable (crypto-erasure, `files/src/datakey.ts`). The mark
+ *    halted the manifest lane, and the purge waits out a pass under way.
  * 3. **`deleteAll()` the owner**, Lifecycle's alarm disabled first, so nothing is written
  *    after it but the tombstone: the erased admission row (`admission.ts`), written into the
  *    empty database in the same synchronous turn (`WriteGate.wipe`); a killed turn can

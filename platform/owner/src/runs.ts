@@ -82,6 +82,7 @@ import {
 import { type Frame, FRAME_VERSION, readEvent } from "./run-events";
 import type { NetworkPlan } from "./network";
 import { type RunConfig, SANDBOX_ABSENT } from "./sandbox";
+import type { RunMeter } from "./sandbox-time";
 import { TIER_RUNS, type TierName, type Tiers } from "./tier";
 import { utf8Bytes } from "./text";
 
@@ -297,6 +298,12 @@ export interface RunReceipt {
   readonly settled_at: number | null;
   /** The mail it answers, when mail started it: the owner reads its chain (`mailChain`). */
   readonly mail: string | null;
+  /**
+   * How long its sandbox ran between its start and its settle, in seconds, from the
+   * sandbox Worker's own log (`sandbox-time.ts`); null until that log is read past its
+   * settle. The founder's cost view: it limits nothing.
+   */
+  readonly sandbox_s: number | null;
 }
 
 /** A run grant, as the run-scoped door and egress read it. */
@@ -349,6 +356,7 @@ type RunRow = {
   requests: number; tokens: number; cost: number; last_seq: number; result: string | null;
   result_cut: number; error: string | null; code: string | null; exit_code: number | null;
   created_at: number; started_at: number | null; settled_at: number | null;
+  sandbox_ms: number | null;
 };
 
 type GrantRow = {
@@ -414,6 +422,27 @@ export function cut(text: string, bytes: number): { text: string; cut: boolean }
   return { text: new TextDecoder().decode(encoded.subarray(0, end)), cut: true };
 }
 
+/** The runs' side of the sandbox meter (`sandbox-time.ts`), over the object's storage. */
+export function runMeter(sql: OwnerStorage["sql"]): RunMeter {
+  return {
+    unmetered: () => sql.exec("SELECT 1 FROM runs WHERE settled_at IS NOT NULL AND " +
+                                "sandbox_ms IS NULL LIMIT 1").toArray().length > 0,
+    settledBy: (readAt) => sql.exec<{ id: string; client: string | null;
+                                      started_at: number | null; settled_at: number }>(
+      "SELECT id, client, started_at, settled_at FROM runs WHERE settled_at IS NOT NULL " +
+        "AND sandbox_ms IS NULL AND settled_at * 1000 <= ?", readAt).toArray()
+      .map((run) => ({ id: run.id, authority: authorityOf(run.client === null ? null
+                                                            : { client: run.client }),
+                       started_at: run.started_at, settled_at: run.settled_at })),
+    metered: (id, ms) => {
+      sql.exec("UPDATE runs SET sandbox_ms = ? WHERE id = ? AND sandbox_ms IS NULL", ms, id);
+    },
+    oldestUnmetered: () => sql.exec<{ at: number | null }>(
+      "SELECT MIN(started_at) AS at FROM runs WHERE sandbox_ms IS NULL AND " +
+        "started_at IS NOT NULL").one().at,
+  };
+}
+
 function receipt(row: RunRow): RunReceipt {
   return {
     run_id: row.id, conversation_id: row.conversation, agent: row.agent, engine: row.source,
@@ -421,7 +450,7 @@ function receipt(row: RunRow): RunReceipt {
     code: row.code, result: row.result, result_cut: row.result_cut === 1, error: row.error,
     exit_code: row.exit_code, requests: row.requests, tokens: row.tokens, cost: row.cost,
     created_at: row.created_at, started_at: row.started_at, settled_at: row.settled_at,
-    mail: row.mail,
+    mail: row.mail, sandbox_s: row.sandbox_ms === null ? null : row.sandbox_ms / 1000,
   };
 }
 
@@ -924,6 +953,13 @@ export class Runs {
     this.#sql.exec("DELETE FROM runs WHERE settled_at IS NOT NULL AND seq NOT IN (SELECT seq " +
                      "FROM runs WHERE settled_at IS NOT NULL ORDER BY settled_at DESC, seq DESC " +
                      "LIMIT ?)", RUNS_KEPT);
+  }
+
+  // -- SANDBOX TIME: the meter's side of the runs (`sandbox-time.ts`) -----------------
+
+  /** The runs' side of the sandbox meter: its reads and its one write, here alone. */
+  meter(): RunMeter {
+    return runMeter(this.#sql);
   }
 
   // -- A RUN'S LIFE ------------------------------------------------------------------

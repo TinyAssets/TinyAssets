@@ -567,7 +567,7 @@ describe("a revoke of a suppressed agent's callbacks", () => {
     await r.stub.disableAgent(r.session(null), { agent_id: muse, reason: "again" });
     expect(await revokes()).toEqual([[muse, "pending", 1]]);  // once for that subscription
     expect(await r.wakesAt()).toBeNull();  // no doorbell yet: held, no job
-    expect(await r.alarmAt()).toBeNull();
+    expect(await r.alarmAt()).toBe(await r.nightAt());  // only the nightly manifest's
     expect(await r.tick()).toBe(0);
     expect([r.sender.revoked, r.sender.callbacks.get(muse)]).toEqual([[[muse, 1]], new Set()]);
     expect(await revokes()).toEqual([[muse, "sent", 1]]);
@@ -755,13 +755,14 @@ describe("the wakes lane of the object's one schedule", () => {
     const muse = await r.register(MUSE, "Muse", "mcp_event");
     await r.post(null, `dm:${muse}`);
     expect(await r.wakesAt()).toBeNull();  // nothing can send it, so nothing fires for it
-    expect(await r.alarmAt()).toBeNull();
+    expect(await r.alarmAt()).toBe(await r.nightAt());  // only the nightly manifest's
     await r.sql("UPDATE ledger_wakes SET due = due - 120");
     await evictDurableObject(r.stub);
     await r.stub.outsideAgents(r.bind(null));  // a wake re-derives the schedule as stored
     await fireAlarm(r);
     expect(await states(r)).toEqual(["pending"]);  // held, not lost
-    expect([await r.wakesAt(), await r.alarmAt()]).toEqual([null, null]);  // and no busy loop
+    // And no busy loop: only the nightly manifest's job is left.
+    expect([await r.wakesAt(), await r.alarmAt()]).toEqual([null, await r.nightAt()]);
   });
 
   it("recovers a lapsed claim behind a full pass of due open wakes, its job due now, never " +
@@ -795,8 +796,8 @@ describe("the wakes lane of the object's one schedule", () => {
     const byId = Object.fromEntries((await wakes(r)).map((w) => [w["wake_id"], w["state"]]));
     expect(byId[claimed]).toBe("unknown");  // marked: never replayed
     expect(Object.values(byId).filter((s) => s === "pending")).toHaveLength(16);
-    // The 16 cannot be sent without a doorbell: the job is gone and the alarm unset.
-    expect([await r.wakesAt(), await r.alarmAt()]).toEqual([null, null]);
+    // The 16 cannot be sent without a doorbell: the job is gone, the alarm the night's.
+    expect([await r.wakesAt(), await r.alarmAt()]).toEqual([null, await r.nightAt()]);
   });
 
   it("arms for a live lease, and at once for due work, never earlier than now", async () => {
@@ -849,9 +850,10 @@ describe("the wakes lane of the object's one schedule", () => {
     await runInDurableObject(r.stub, (_i: OwnerDO, state) => state.storage.deleteAlarm());
     await evictDurableObject(r.stub);
     await r.stub.outsideAgents(r.bind(null));  // any call wakes it
-    expect(await laneJobs(r.stub))
-      .toEqual({ wakes: { time: Math.ceil(lease * 1000),
-                          payload: { due: Math.ceil(lease * 1000) } } });
+    const jobs = await laneJobs(r.stub);
+    expect(Object.keys(jobs)).toEqual(["manifest", "wakes"]);
+    expect(jobs["wakes"]).toEqual({ time: Math.ceil(lease * 1000),
+                                    payload: { due: Math.ceil(lease * 1000) } });
     expect(await r.alarmAt()).toBe(Math.ceil(lease * 1000) / 1000);
   });
 });

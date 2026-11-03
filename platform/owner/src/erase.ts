@@ -39,6 +39,8 @@ export interface ErasureParts {
   readonly clock: () => number;
   /** The ending of every run in flight, in a unit (`Egress.drop`: its streams). */
   readonly ended: () => void;
+  /** The nightly manifests deleted from R2, each a copy of the wrapped key (`Backups.purge`). */
+  readonly purge: () => Promise<void>;
   /** The object's Lifecycle, whose alarm the last step disables for good. */
   readonly lifecycle: { disableAlarms(): Promise<void> };
   /** The object's whole database deleted, and the tombstone left (`WriteGate.wipe`). */
@@ -99,7 +101,7 @@ export class Erasure extends LifecycleCapability {
     if (this.#erased) {
       return;
     }
-    const { storage, write, clock, ended, lifecycle, wipe } = this.#parts;
+    const { storage, write, clock, ended, purge, lifecycle, wipe } = this.#parts;
     if (erasureStep(storage) < 2) {
       // 1. The mark, and the job that resumes this after a crash (pushed again on a resume,
       // which also sets the alarm again).
@@ -115,6 +117,8 @@ export class Erasure extends LifecycleCapability {
         runsEnded(storage);
       });
     }
+    // The manifests, each holding the wrapped key, gone before the object's own copy is.
+    await purge();
     // 3. The owner wiped whole, Lifecycle's alarm disabled first so nothing is written after.
     await lifecycle.disableAlarms();
     await wipe();

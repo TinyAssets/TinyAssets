@@ -177,6 +177,8 @@ export async function rig(namespace: DurableObjectNamespace<OwnerDO> = env.OWNER
     alarmAt: (): Promise<number | null> => alarmOf(stub),
     /** The `wakes` lane's Lifecycle job due time in seconds, or null when it has none. */
     wakesAt: (): Promise<number | null> => laneAt(stub, "wakes"),
+    /** The nightly manifest's job (`backup.ts`): the alarm every owner's object keeps. */
+    nightAt: (): Promise<number | null> => laneAt(stub, "manifest"),
   };
 }
 

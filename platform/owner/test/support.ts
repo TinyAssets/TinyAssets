@@ -44,6 +44,25 @@ export function faulty(write: Write, fails: (n: number) => boolean): Write {
  * over its gate's view; a test that calls their synchronous changes directly passes the
  * storage itself.
  */
+/**
+ * The files Worker as the `FILES` binding reaches it, with `overrides` in place of some of
+ * its methods: a store that fails or records one call and passes the rest through.
+ */
+export function through(overrides: Partial<ChunkStore>): ChunkStore {
+  const files = env.FILES;
+  return {
+    mintKey: (ns) => files.mintKey(ns),
+    putChunks: (ns, key, chunks) => files.putChunks(ns, key, chunks),
+    getChunks: (ns, key, reads) => files.getChunks(ns, key, reads),
+    deleteChunks: (ns, sha256s) => files.deleteChunks(ns, sha256s),
+    putManifestPart: (ns, key, day, part, bytes) =>
+      files.putManifestPart(ns, key, day, part, bytes),
+    putManifestRoot: (ns, key, day, parts) => files.putManifestRoot(ns, key, day, parts),
+    deleteManifest: (ns, day, parts) => files.deleteManifest(ns, day, parts),
+    ...overrides,
+  };
+}
+
 export function filesOn(storage: OwnerStorage, write: Write, store: ChunkStore = env.FILES,
                         limits: Partial<FileLimits> = {}): Files {
   return new Files(storage, store, () => ({ ...FILE_DEFAULTS, ...limits }), write);

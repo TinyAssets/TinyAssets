@@ -22,6 +22,10 @@
  *   `unknown` if the runner is lost.
  * - `status`: whether the run's runner still runs, for slice S's lost-runner checks; the
  *   object's status doors read the run's receipt, never this.
+ * - `meter` (slice P): the Worker's own log of the owner's sandboxes started, paused,
+ *   resumed and killed, each with its authority and time, after a cursor; the object reads
+ *   it into its sandbox time (`sandbox-time.ts`), and the Worker may drop what a cursor
+ *   passed. It limits nothing: the founder's cost view.
  *
  * Absent, nothing reaches `running`: admission refuses before it writes anything
  * (`SANDBOX_ABSENT`). Tests put a recording fake behind the interface, in tests only.
@@ -29,6 +33,7 @@
 import type { CredentialKind } from "../../doors/src/sources";
 
 import type { NetworkPlan } from "./network";
+import type { MeterEvent } from "./sandbox-time";
 
 export const SANDBOX_ABSENT = "sandbox_absent: no sandbox is bound, so no run can start";
 
@@ -97,6 +102,9 @@ export interface SandboxService {
     Promise<{ readonly cancelled: boolean }>;
   status(owner: string, request: { readonly run: string; readonly lease_id: string }):
     Promise<{ readonly state: "running" | "exited" | "gone" }>;
+  /** The log after `after`: at most `METER_BATCH` entries, and the cursor past them. */
+  meter(owner: string, request: { readonly after: number }):
+    Promise<{ readonly events: readonly MeterEvent[]; readonly next: number }>;
 }
 
 /** A start's answer, checked: a refusal's code is a fixed code, never prose. */

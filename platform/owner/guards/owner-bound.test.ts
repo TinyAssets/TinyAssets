@@ -52,6 +52,7 @@ import {
 } from "../src/manifest";
 import { NOTICE_DETAIL, NOTICES_KEPT } from "../src/notices";
 import { SESSION_LIMITS } from "../src/sessions";
+import { MANIFEST_PARTS } from "../../files/src/keys";
 import { USAGE_LIMITS } from "../src/usage";
 import { PLATFORM } from "./sources";
 
@@ -170,6 +171,10 @@ const ENGINE_SIGNINS = constant("run-rows", "ENGINE_SIGNINS");
 const SIGNIN_MODELS_CHARS = constant("run-rows", "SIGNIN_MODELS_CHARS");
 const SIGNIN_LIST_CHARS = constant("run-rows", "SIGNIN_LIST_CHARS");
 const SOCKET_TICKETS = constant("socket-shape", "SOCKET_TICKETS");
+const CURSOR_CHARS = constant("export", "CURSOR_CHARS");
+const PART_ENTRY = constant("backup", "PART_ENTRY");
+const SPANS_KEPT = constant("sandbox-time", "SPANS_KEPT");
+const DAYS_KEPT = constant("sandbox-time", "DAYS_KEPT");
 /** Mail that starts runs (slice ID): a message's id, an own agent's id, a mail's authority. */
 const MESSAGE_ID_CHARS = constant("run-rows", "MESSAGE_ID_CHARS");
 const NATIVE_ID_CHARS = constant("run-rows", "NATIVE_ID_CHARS");
@@ -394,10 +399,10 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // grant; the conversations; the runs lane's schedules; the tier numbers kept; tickets.
     runs: { rows: RUNS_KEPT + RUNS_CEILING + QUEUE_ROWS,
             bytes: ROW + RESULT_BYTES + ERROR_BYTES + 4 * STAMP_CHARS + 256 + 512 + 32 + 16
-              + MESSAGE_ID_CHARS,
+              + MESSAGE_ID_CHARS + 9,
             by: "RUNS_KEPT settled receipts, RUNS_CEILING live and QUEUE_ROWS waiting, each " +
-              "its result, error, stamp, model, ids, counters, lease, heartbeat and mail at " +
-              "their widest" },
+              "its result, error, stamp, model, ids, counters, lease, heartbeat, mail and " +
+              "sandbox time at their widest" },
     // The sandbox leases (review H-1): one an authority, opened only for a live run.
     sandbox_leases: { rows: RUNS_CEILING,
                       bytes: ROW + 64 + 32 + 8 + 128 + 16 + 3 * 64 + 8 + SIGNIN_LIST_CHARS
@@ -430,6 +435,18 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     socket_tickets: { rows: SOCKET_TICKETS, bytes: ROW + 64 + 35 + 4 * 128 + 16,
                       by: "SOCKET_TICKETS, each a hash, a conversation and a grant id" },
     owner_erasure: { rows: 1, bytes: ROW, by: "one row" },
+    // Slice P: the nightly manifest's bookkeeping, at most two manifests (`backup.ts`).
+    owner_backups: { rows: 2, bytes: ROW + CURSOR_CHARS + MANIFEST_PARTS * PART_ENTRY + 7 * 8,
+                     by: "the newest finished manifest and the one being written, each its " +
+                       "cursor and its list of at most MANIFEST_PARTS parts" },
+    // Slice P: the sandbox meter (`sandbox-time.ts`).
+    sandbox_meter: { rows: 1, bytes: ROW + 3 * 8, by: "one row: the log's cursor" },
+    sandbox_spans: { rows: SPANS_KEPT + 1 + G.maxFreeClients + G.maxOwnerClients,
+                     bytes: ROW + 64 + 2 * 8,
+                     by: "SPANS_KEPT closed spans, and one open an authority (the owner's " +
+                       "and each client's)" },
+    sandbox_days: { rows: DAYS_KEPT, bytes: ROW + 8 + 8,
+                    by: "DAYS_KEPT days of sandbox seconds" },
     // The owner's admission: one row, its reasons a short fixed list; after the erasure, the
     // erased tombstone, alone in the database.
     owner_admission: { rows: 1, bytes: ROW + 64, by: "one row (the schema's CHECK)" },

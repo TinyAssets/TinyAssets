@@ -4,9 +4,10 @@
  * The owner Worker may hold a service binding to this Worker only because this Worker
  * binds no Durable Object and no service (`owner/guards/config.test.ts` checks that
  * against this file). So its config is an allow-list too: the keys that name it, its
- * entry and runtime, the R2 bucket `BLOBS`, and no URL of its own (`workers_dev` and
- * `preview_urls` false, no route). No environment may add anything. It is the only
- * wrangler config in the files Worker.
+ * entry and runtime, the R2 bucket `BLOBS`, its one secret, the data keys' ring
+ * `FILES_KEYRING` (`secrets.required`, so a deploy without it fails), and no URL of its own
+ * (`workers_dev` and `preview_urls` false, no route). No environment may add anything. It
+ * is the only wrangler config in the files Worker.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -22,8 +23,9 @@ const CONFIG = "wrangler.jsonc";
 const NO_EXPORTS = "disable_ctx_exports";
 const KEYS: ReadonlySet<string> = new Set([
   "$schema", "name", "main", "compatibility_date", "compatibility_flags", "workers_dev",
-  "preview_urls", "r2_buckets",
+  "preview_urls", "r2_buckets", "secrets",
 ]);
+const SECRETS = { required: ["FILES_KEYRING"] };
 
 type Config = Record<string, unknown>;
 
@@ -54,6 +56,9 @@ export function filesConfigProblems(config: Config): string[] {
       || typeof (buckets[0] as Config)["bucket_name"] !== "string") {
     problems.push("r2_buckets is exactly the one bucket BLOBS");
   }
+  if (JSON.stringify(config["secrets"]) !== JSON.stringify(SECRETS)) {
+    problems.push("secrets is exactly the required FILES_KEYRING");
+  }
   return problems;
 }
 
@@ -71,7 +76,8 @@ describe("files Worker config", () => {
 
   const base = { name: "tinyassets-files", main: "src/index.ts",
                  compatibility_flags: [NO_EXPORTS], workers_dev: false, preview_urls: false,
-                 r2_buckets: [{ binding: "BLOBS", bucket_name: "tinyassets-files" }] };
+                 r2_buckets: [{ binding: "BLOBS", bucket_name: "tinyassets-files" }],
+                 secrets: SECRETS };
 
   it.each([
     ["a Durable Object binding", { ...base, durable_objects: { bindings: [
@@ -90,6 +96,8 @@ describe("files Worker config", () => {
     ["a preview URL", { ...base, preview_urls: true }],
     ["a var", { ...base, vars: { NS: "x" } }],
     ["no ctx.exports flag", { ...base, compatibility_flags: [] }],
+    ["no keyring", { ...base, secrets: undefined }],
+    ["a second secret", { ...base, secrets: { required: ["FILES_KEYRING", "OTHER"] } }],
     ["ctx.exports turned back on", { ...base, compatibility_flags: [NO_EXPORTS,
       "enable_ctx_exports"] }],
   ])("sees %s", (_what, probe) => {

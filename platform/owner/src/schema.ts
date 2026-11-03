@@ -29,6 +29,9 @@ import {
   RUN_ID_CHARS, SCHEDULE_ID_CHARS, SCHEDULES_KEPT, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS,
 } from "./run-rows";
 import { SOCKET_TICKETS } from "./socket-shape";
+import { PART_ENTRY } from "./backup";
+import { CURSOR_CHARS } from "./export";
+import { MANIFEST_PARTS } from "../../files/src/keys";
 import { RUNS_CEILING } from "./tier";
 
 export type Migration = readonly string[];
@@ -640,8 +643,11 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // its content.
   Object.freeze([
     "CREATE TABLE file_space (only INTEGER PRIMARY KEY CHECK (only = 1), " +
-      // The owner's chunk namespace, made on first use (files.ts `ns`).
+      // The owner's chunk namespace, made on first use (files.ts `ns`), and its data key,
+      // wrapped: only the files Worker's keyring opens it (`files/src/datakey.ts`).
       "ns TEXT CHECK (ns IS NULL OR (length(ns) = 32 AND ns NOT GLOB '*[^0-9a-f]*')), " +
+      "data_key TEXT CHECK (data_key IS NULL OR (ns IS NOT NULL AND length(data_key) <= 117 " +
+      "AND data_key GLOB 'v1.*')), " +
       "seq INTEGER NOT NULL, feed_floor INTEGER NOT NULL, " +
       "entries INTEGER NOT NULL CHECK (entries >= 0), " +
       "history INTEGER NOT NULL CHECK (history >= 0), " +
@@ -656,7 +662,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       // the rows for a newer one.
       "retained_keep INTEGER NOT NULL, retained_recent INTEGER NOT NULL, " +
       "retained_days INTEGER NOT NULL, retain_cursor TEXT)",
-    `INSERT INTO file_space VALUES (1, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, ${
+    `INSERT INTO file_space VALUES (1, NULL, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, ${
       FILE_DEFAULTS.keep_versions}, ${FILE_DEFAULTS.keep_recent}, ${
       FILE_DEFAULTS.retention_days}, NULL)`,
     "CREATE TRIGGER file_epoch_rises BEFORE UPDATE OF epoch ON file_space " +
@@ -1389,6 +1395,33 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "UPDATE native_agents SET unacked_to_owner = unacked_to_owner - 1, " +
       "unacked_to_owner_bytes = unacked_to_owner_bytes - OLD.body_bytes " +
       "WHERE agent_id = OLD.sender_id; END",
+  ]),
+  // 14: before real data (slice P). The nightly manifest's bookkeeping (backup.ts): at most
+  // two manifests, the newest finished and the one being written, each with its parts as
+  // R2 verified them (`<sha256>:<size>`, comma-joined, at most MANIFEST_PARTS). The sandbox meter (sandbox-time.ts): the cursor of the sandbox
+  // Worker's log, each authority's running spans a run not yet metered may overlap (one
+  // open at most), the seconds a UTC day, and each run's own (`runs.sandbox_ms`).
+  Object.freeze([
+    "CREATE TABLE owner_backups (day TEXT PRIMARY KEY CHECK (length(day) = 8 " +
+      "AND day NOT GLOB '*[^0-9]*'), " +
+      "state TEXT NOT NULL CHECK (state IN ('writing', 'done')), " +
+      `cursor TEXT CHECK (cursor IS NULL OR length(cursor) <= ${CURSOR_CHARS}), ` +
+      `parts INTEGER NOT NULL CHECK (parts BETWEEN 0 AND ${MANIFEST_PARTS}), ` +
+      `part_list TEXT NOT NULL CHECK (length(part_list) <= ${MANIFEST_PARTS * PART_ENTRY}), ` +
+      "bytes INTEGER NOT NULL CHECK (bytes >= 0), started_at REAL NOT NULL, " +
+      "finished_at REAL, retry_at REAL, " +
+      "CHECK ((state = 'done') = (finished_at IS NOT NULL))) WITHOUT ROWID",
+    "CREATE TABLE sandbox_meter (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      "after INTEGER NOT NULL CHECK (after >= 0), read_at INTEGER NOT NULL, retry_at REAL)",
+    "INSERT INTO sandbox_meter VALUES (1, 0, 0, NULL)",
+    "CREATE TABLE sandbox_spans (" +
+      // The owner's own work's (`owner`) or one outside client's id.
+      "authority TEXT NOT NULL CHECK (length(authority) BETWEEN 1 AND 64), " +
+      "started_at INTEGER NOT NULL, ended_at INTEGER CHECK (ended_at IS NULL " +
+      "OR ended_at >= started_at), PRIMARY KEY (authority, started_at)) WITHOUT ROWID",
+    "CREATE TABLE sandbox_days (day TEXT PRIMARY KEY CHECK (length(day) = 8 " +
+      "AND day NOT GLOB '*[^0-9]*'), ms INTEGER NOT NULL CHECK (ms >= 0)) WITHOUT ROWID",
+    "ALTER TABLE runs ADD COLUMN sandbox_ms INTEGER CHECK (sandbox_ms IS NULL OR sandbox_ms >= 0)",
   ]),
 ]);
 

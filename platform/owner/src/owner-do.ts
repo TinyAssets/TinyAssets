@@ -131,8 +131,8 @@ import {
 } from "./connections";
 import { Invalid, Refused } from "./errors";
 import {
-  type Change as FileChange, CHUNK_BYTES, type ChunkRef, type ChunkStore, type Content,
-  type Entry, FileConflict, Files, type Lease, OWNER_AUTHORITY, type SandboxLease, type SyncOp,
+  BATCH_BYTES, type Change as FileChange, CHUNK_BYTES, type ChunkRef, type ChunkStore,
+  type Content, type Entry, FileConflict, Files, type Lease, OWNER_AUTHORITY, type SandboxLease, type SyncOp,
   type SyncOutcome, type Usage,
 } from "./files";
 import { type OwnerStorage, type Write, WriteGate } from "./gate";
@@ -157,7 +157,10 @@ import { type Card, Registrations } from "./registrations";
 import { type Lane, Schedule } from "./schedule";
 import { AGENTS_DIR, AGENTS_OWNER_ONLY, OWNER_TREES, ownersOnly, storedPath, within }
   from "./paths";
-import { migrate } from "./schema";
+import { MIGRATIONS, migrate } from "./schema";
+import { chunkLine, decodeCursor, encodeCursor, END_LINE, readPage } from "./export";
+import { Backups } from "./backup";
+import { METER_BATCH, meterRead, SandboxTime } from "./sandbox-time";
 import { Sessions } from "./sessions";
 import { CONTROL_FRESH_MS, ControlGate, type Gate } from "./control-gate";
 import { codePoints, principal } from "./text";
@@ -1013,6 +1016,16 @@ export interface LaneDeps {
     next(now: number): number | null;
     run(now: number, until: number): Promise<void>;
   };
+  /** The `manifest` lane: the nightly manifest (`backup.ts`). */
+  readonly manifest: {
+    next(now: number): number | null;
+    run(now: number, until: number): Promise<void>;
+  };
+  /** The `sandbox` lane: the sandbox Worker's log read into the meter (`sandbox-time.ts`). */
+  readonly sandbox: {
+    next(now: number): number | null;
+    run(now: number, until: number): Promise<void>;
+  };
   /** The doorbell, or null until tasks 7 constructs one: read at each use, never kept. */
   readonly sender: () => WakeSender | null;
   /** Whether the owner is admitted (`require_work`): read at each use. */
@@ -1031,7 +1044,7 @@ export interface LaneDeps {
  * Exported so the wiring is tested with recording passes; `OwnerDO` gives it the real ones.
  */
 export function ownerLanes(deps: LaneDeps):
-    Readonly<Record<"wakes" | "files" | "connections" | "runs", Lane>> {
+    Readonly<Record<"wakes" | "files" | "connections" | "runs" | "manifest" | "sandbox", Lane>> {
   return {
     // Lapsed claims, then due wakes and revokes; open rows count only with a doorbell, and
     // only while the owner is admitted (`require_work`): a suspended owner's wait.
@@ -1048,6 +1061,12 @@ export function ownerLanes(deps: LaneDeps):
     // Runs: a schedule due, or a live run's lease expiry; never a poll for work.
     runs: { next: (now) => deps.runs.next(now),
             run: (now, until) => deps.runs.run(now, until) },
+    // The nightly manifest: once a night, at the owner's own hour; never a poll.
+    manifest: { next: (now) => deps.manifest.next(now),
+                run: (now, until) => deps.manifest.run(now, until) },
+    // Sandbox time: a settled run not yet metered, or an open span's next look.
+    sandbox: { next: (now) => deps.sandbox.next(now),
+               run: (now, until) => deps.sandbox.run(now, until) },
   };
 }
 
@@ -1122,6 +1141,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #sessions: Sessions;
   readonly #ledger: Ledger;
   readonly #files: Files;
+  /** The nightly manifest (`backup.ts`). */
+  readonly #backups: Backups;
+  /** Sandbox time, per run and per day (`sandbox-time.ts`). */
+  readonly #sandboxTime: SandboxTime;
   readonly #registrations: Registrations;
   readonly #notices: Notices;
   readonly #connections: Connections;
@@ -1194,6 +1217,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                                 }
                               }
                             });
+    this.#backups = new Backups({
+      storage, write, store: env.FILES, space: () => this.#files.space(),
+      ns: () => this.#files.heldNamespace(),
+      owner: () => this.ctx.id.name ?? "", schema: MIGRATIONS.length,
+      serves: () => storage.sql.exec("SELECT 1 FROM object_owner").toArray().length > 0,
+      halted: () => wiped(storage.sql) || erasing(storage),
+    });
+
     this.#registrations = new Registrations(storage, this.#grants);
     this.#notices = new Notices(storage);
     const owner = () => {
@@ -1298,6 +1329,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         this.#egress.end("lease", (live) => live.lease === leaseId);
       },
     });
+    this.#sandboxTime = new SandboxTime(storage, this.#runs.meter());
     this.#relay = new Relay({
       admit: (binding, conversation, ticket) =>
         this.#door(() => this.#socketAdmit(binding, conversation, ticket)),
@@ -1314,6 +1346,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       runs: { next: (now) => admitted() && this.#ledger.mailDue(
                 this.#runs.queueRoom(MAIL_INPUT_BYTES)) ? now : this.#runs.next(now, admitted()),
               run: (now, until) => this.#runsPass(now, until) },
+      manifest: { next: (now) => this.#backups.next(now),
+                  run: (now, until) => this.#backups.run(now, until) },
+      sandbox: { next: (now) => this.#sandboxTime.next(now),
+                 run: (now, until) => this.#meterPass(until) },
       sender: () => this.#sender, admitted, clock, write, runWakes,
     }), clock, write, undefined, () => wiped(storage.sql) || erasing(storage));
     const lifecycle = new Lifecycle<OwnerEnv>(this);
@@ -1325,6 +1361,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         this.#relay.closeAll("erased");
         this.#cancelInSandbox(this.#runs.liveRuns());
       },
+      // The nightly manifests carry the owner's wrapped key: none outlives the wipe.
+      purge: () => this.#backups.purge(),
       wipe: () => this.#gate.wipe(writeTombstone),
       retryMs: internals.eraseRetryMs ?? ERASE_RETRY_MS,
     });
@@ -1595,6 +1633,79 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
     this.#relay.closeAll("signedOut");  // account revocation: every device's sockets
     return closed;
+  }
+
+  // -- SANDBOX TIME: the sandbox Worker's log, metered (`sandbox-time.ts`) -----------
+
+  /**
+   * The `sandbox` lane's pass: the sandbox Worker's log read after the cursor, a batch at a
+   * time until the pass's end, each applied in a unit. Without a sandox bound there is no
+   * log, and runs that never started are metered at none. A read that fails backs the lane
+   * off in its row; the pass completes.
+   */
+  async #meterPass(until: number): Promise<void> {
+    const sandbox = this.env.SANDBOX;
+    const owner = this.ctx.id.name;
+    do {
+      const { after } = this.#sandboxTime.cursor();
+      let read: { events: ReturnType<typeof meterRead>["events"]; next: number };
+      const readAt = Date.now();
+      try {
+        read = sandbox === undefined || owner === undefined ? { events: [], next: after }
+          : meterRead(await sandbox.meter(owner, { after }), after);
+      } catch {
+        console.error("the sandbox meter's read failed; it is tried again later");
+        await this.#gate.write(() => this.#sandboxTime.failed(clock()));
+        return;
+      }
+      await this.#gate.write(() => this.#storage.transactionSync(
+        () => this.#sandboxTime.apply(read.events, read.next, readAt)));
+      if (read.events.length < METER_BATCH) {
+        return;
+      }
+    } while (Date.now() < until);
+  }
+
+  /** The owner's sandbox seconds a day, newest first: the founder's cost view. */
+  sandboxDays(binding: Binding, request: { days?: number }): Promise<{
+      days: { day: string; seconds: number }[] }> {
+    return this.#door(() => {
+      this.#owner(binding, "read", "read its sandbox time");
+      const days = request?.days ?? 31;
+      if (typeof days !== "number" || !Number.isSafeInteger(days) || days < 1 || days > 400) {
+        throw new Invalid("days is 1 to 400");
+      }
+      return { days: this.#sandboxTime.days(days) };
+    });
+  }
+
+  // -- OWNER_EXPORT: everything the owner holds (`export.ts`) --------------------
+
+  /**
+   * One page of the owner's export from `cursor` (null: the start): its lines, then the
+   * bytes of the chunks it names, read outside the unit, and the next page's cursor, or
+   * null once the page ended the stream. The owner's alone, in its live session: no
+   * outside client, no run, and no request without the session cookie reaches it. A
+   * `read` door, so a billing suspension still lets the owner take its data.
+   */
+  async ownerExport(binding: Binding, request: { cursor?: string | null }):
+      Promise<{ lines: string[]; next: string | null }> {
+    const page = await this.#door(() => {
+      const { owner } = this.#owner(binding, "read", "export everything it holds");
+      this.#sessions.live(binding.session, clock());
+      if (typeof request !== "object" || request === null || Array.isArray(request)
+          || Object.keys(request).some((key) => key !== "cursor")) {
+        throw new Invalid("an export request is at most its cursor");
+      }
+      return readPage(this.#storage.sql, decodeCursor(request.cursor),
+                      { schema: MIGRATIONS.length, owner, at: Date.now() }, BATCH_BYTES);
+    });
+    const bytes = await this.#files.fetch(page.chunks.map(({ sha256 }) => ({ sha256 })));
+    const lines = [...page.lines, ...page.chunks.map((chunk, at) => chunkLine(chunk, bytes[at]))];
+    if (page.next === null) {
+      lines.push(END_LINE);
+    }
+    return { lines, next: page.next === null ? null : encodeCursor(page.next) };
   }
 
   // -- OWNER_POLICY ------------------------------------------------------------

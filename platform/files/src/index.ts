@@ -25,23 +25,50 @@
  *   object's garbage collection is its only caller, for keys in its own chunk table, so
  *   nothing ever lists the bucket.
  *
+ * Every chunk is put and read under its owner's data key (SSE-C, R2's `ssecKey`;
+ * `datakey.ts`): each call presents the owner's wrapped key, which this Worker opens with
+ * its own keyring (`FILES_KEYRING`) for that call alone and never keeps. A put or get with
+ * no key, or a key that does not open for the namespace, is refused before R2 is reached.
+ * A delete needs none: it reads no bytes. So the bytes of an erased owner, whose wrapped
+ * key went with their object, are unreadable wherever a chunk outlived the prefix delete.
+ *
+ * The nightly manifest (`owner/src/backup.ts`) is the only other kind of object: its parts
+ * (`o/<ns>/m/<day>/<n>`), under the same data key, and its root (`o/<ns>/m/<day>`), a small
+ * JSON naming the parts' hashes and carrying the owner's wrapped key, so a recovery needs
+ * no object state but the keyring. The root is written last, after every part.
+ *
  * It serves no HTTP: no fetch handler, no `workers.dev` or preview URL, no route. Owner
  * objects reach it by the `FILES` service binding alone, which adds no request fee. Owed
- * before cutover: a per-owner SSE-C data key on every get and put (the binding documents
- * `ssecKey` on `get`, `put` and `createMultipartUpload`; what a keyless `head` or `get`
- * returns, and whether it combines with `onlyIf` and `sha256`, needs a live probe, and
- * miniflare does not emulate it).
+ * live (slice L): the probe of `ssecKey` with `onlyIf` and `sha256` on a put, and of a
+ * get with another key or none on an SSE-C object (miniflare ignores `ssecKey`, so the
+ * tests hold this Worker to R2's documented answers through `test/ssec.ts`).
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 
+import { type KeyringSecret, mint, unwrap } from "./datakey";
 import {
-  BATCH_BYTES, CHUNK_BYTES, chunkHash, chunkKey, DELETE_BATCH, Invalid, namespace,
+  BATCH_BYTES, CHUNK_BYTES, chunkHash, chunkKey, DELETE_BATCH, Invalid, MANIFEST_PARTS,
+  manifestDay, manifestKey, manifestPart, namespace,
 } from "./keys";
 /** How a binding reports R2's `BadDigest`: the code, or its message. */
 const BAD_DIGEST = /\(10037\)|did not match what we received/;
 
 export interface FilesEnv {
   readonly BLOBS: R2Bucket;
+  /** The data keys' keyring, a Worker secret read only by `datakey.ts`. */
+  readonly FILES_KEYRING?: KeyringSecret;
+}
+
+/** A nightly manifest's root, as `putManifestRoot` writes it and a recovery reads it. */
+export interface ManifestRoot {
+  readonly format: "tinyassets-manifest";
+  readonly version: 1;
+  readonly day: string;
+  /** The owner's wrapped data key, which the parts are under. */
+  readonly key: string;
+  /** Each part's SHA-256 and size, in order. */
+  readonly parts: readonly { readonly sha256: string; readonly size: number }[];
+  readonly at: number;
 }
 
 /** One chunk to store: its hash and its bytes. */
@@ -96,8 +123,18 @@ function range(read: ChunkGet): { range?: { offset: number; length: number }; bu
 }
 
 export default class FilesService extends WorkerEntrypoint<FilesEnv> {
+  /** A new data key for the namespace `ns`, wrapped: what its owner's object keeps. */
+  async mintKey(ns: string): Promise<{ key: string }> {
+    return { key: await mint(this.env.FILES_KEYRING, ns) };
+  }
+
+  /** The data key `key` holds for `ns`, refused unless it opens for that namespace. */
+  #key(ns: string, key: unknown): Promise<ArrayBuffer> {
+    return unwrap(this.env.FILES_KEYRING, namespace(ns), key);
+  }
+
   /** Store chunks under their hashes, each verified by R2; `created` counts the new ones. */
-  async putChunks(ns: string, chunks: ChunkPut[]): Promise<{ created: number }> {
+  async putChunks(ns: string, key: string, chunks: ChunkPut[]): Promise<{ created: number }> {
     namespace(ns);
     const puts = list<ChunkPut>(chunks, "a put").map((chunk) => {
       if (typeof chunk !== "object" || chunk === null) {
@@ -109,15 +146,18 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
         || puts.reduce((sum, put) => sum + put.bytes.byteLength, 0) > BATCH_BYTES) {
       throw new Invalid(`a put names distinct chunks of at most ${BATCH_BYTES} bytes in all`);
     }
-    const created = await Promise.all(puts.map((put) => this.#put(ns, put.sha256, put.bytes)));
+    const ssecKey = await this.#key(ns, key);
+    const created = await Promise.all(puts.map((put) => this.#put(ns, ssecKey, put.sha256,
+                                                                   put.bytes)));
     return { created: created.filter(Boolean).length };
   }
 
-  async #put(ns: string, sha256: string, bytes: Uint8Array): Promise<boolean> {
+  async #put(ns: string, ssecKey: ArrayBuffer, sha256: string, bytes: Uint8Array):
+      Promise<boolean> {
     let put: R2Object | null;
     try {
       put = await this.env.BLOBS.put(chunkKey(ns, sha256), bytes,
-                                     { sha256, onlyIf: { etagDoesNotMatch: "*" } });
+                                     { sha256, ssecKey, onlyIf: { etagDoesNotMatch: "*" } });
     } catch (error) {
       if (BAD_DIGEST.test(String((error as Error)?.message))) {
         throw new Invalid("the chunk's bytes do not match its sha256");
@@ -128,19 +168,27 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
       return true;
     }
     // The key exists. Every put here is verified, so it holds these bytes, unless
-    // something wrote around this Worker: that fails loudly, never as a dedup hit.
+    // something wrote around this Worker: that fails loudly, never as a dedup hit. It is
+    // read back under the owner's key (what a keyless `head` of an SSE-C object answers is
+    // unprobed), so bytes put under another key, or none, fail here too.
     if (await sha256Hex(bytes) !== sha256) {
       throw new Invalid("the chunk's bytes do not match its sha256");
     }
-    const head = await this.env.BLOBS.head(chunkKey(ns, sha256));
-    if (head === null || head.size !== bytes.byteLength || hex(head.checksums.sha256) !== sha256) {
+    let held: Uint8Array;
+    try {
+      const object = await this.env.BLOBS.get(chunkKey(ns, sha256), { ssecKey });
+      held = object === null ? new Uint8Array(0) : new Uint8Array(await object.arrayBuffer());
+    } catch {
+      throw new Error("a chunk key holds bytes this Worker did not verify");
+    }
+    if (held.byteLength !== bytes.byteLength || await sha256Hex(held) !== sha256) {
       throw new Error("a chunk key holds bytes this Worker did not verify");
     }
     return false;
   }
 
   /** Chunks' bytes, in order: each whole (its hash rechecked) or a range of it. */
-  async getChunks(ns: string, reads: ChunkGet[]): Promise<Uint8Array[]> {
+  async getChunks(ns: string, key: string, reads: ChunkGet[]): Promise<Uint8Array[]> {
     namespace(ns);
     const gets = list<ChunkGet>(reads, "a get").map((read) => {
       if (typeof read !== "object" || read === null) {
@@ -151,9 +199,11 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
     if (gets.reduce((sum, get) => sum + get.budget, 0) > BATCH_BYTES) {
       throw new Invalid(`a get moves at most ${BATCH_BYTES} bytes`);
     }
+    const ssecKey = await this.#key(ns, key);
     return Promise.all(gets.map(async (get) => {
       const object = await this.env.BLOBS.get(chunkKey(ns, get.sha256),
-                                              get.range === undefined ? {} : { range: get.range });
+                                              get.range === undefined ? { ssecKey }
+                                                : { ssecKey, range: get.range });
       if (object === null) {
         throw new Error("a chunk the manifest holds is missing from the bucket");
       }
@@ -174,5 +224,75 @@ export default class FilesService extends WorkerEntrypoint<FilesEnv> {
     }
     await this.env.BLOBS.delete(sha256s.map((sha256) => chunkKey(ns, chunkHash(sha256))));
     return { deleted: sha256s.length };
+  }
+
+  /**
+   * One part of the owner's nightly manifest of `day`, under the owner's key, verified by
+   * R2. A part is written again when a pass that wrote it did not record it.
+   */
+  async putManifestPart(ns: string, key: string, day: string, part: number,
+                        bytes: Uint8Array): Promise<{ sha256: string; size: number }> {
+    const body = chunkBytes(bytes);
+    const sha256 = await sha256Hex(body);
+    await this.env.BLOBS.put(manifestKey(ns, day, part), body,
+                             { sha256, ssecKey: await this.#key(ns, key) });
+    return { sha256, size: body.byteLength };
+  }
+
+  /**
+   * The manifest's root, written once every part is: the parts' hashes and sizes in order,
+   * and the owner's wrapped key, so a recovery needs only the keyring. It is plain JSON:
+   * the key in it opens nothing without the keyring.
+   */
+  async putManifestRoot(ns: string, key: string, day: string,
+                        parts: readonly { sha256: string; size: number }[]): Promise<void> {
+    await this.#key(ns, key);
+    if (!Array.isArray(parts) || parts.length === 0 || parts.length > MANIFEST_PARTS
+        || parts.some((part) => typeof part !== "object" || part === null
+                      || Object.keys(part).sort().join() !== "sha256,size"
+                      || typeof part.size !== "number" || !Number.isSafeInteger(part.size)
+                      || part.size < 1 || part.size > CHUNK_BYTES)) {
+      throw new Invalid(`a manifest has 1 to ${MANIFEST_PARTS} parts`);
+    }
+    const root: ManifestRoot = {
+      format: "tinyassets-manifest", version: 1, day: manifestDay(day), key,
+      parts: parts.map((part) => ({ sha256: chunkHash(part.sha256), size: part.size })),
+      at: Date.now(),
+    };
+    await this.env.BLOBS.put(manifestKey(ns, day), JSON.stringify(root));
+  }
+
+  /** A manifest's root, or null when there is none. */
+  async getManifestRoot(ns: string, day: string): Promise<ManifestRoot | null> {
+    const object = await this.env.BLOBS.get(manifestKey(ns, day));
+    return object === null ? null : await object.json<ManifestRoot>();
+  }
+
+  /** One manifest part's bytes, under the key `key` (the object's, or the root's), checked. */
+  async getManifestPart(ns: string, key: string, day: string, part: number,
+                        sha256: string): Promise<Uint8Array> {
+    const object = await this.env.BLOBS.get(manifestKey(ns, day, part),
+                                            { ssecKey: await this.#key(ns, key) });
+    if (object === null) {
+      throw new Error("a manifest part its root names is missing from the bucket");
+    }
+    const bytes = new Uint8Array(await object.arrayBuffer());
+    if (await sha256Hex(bytes) !== chunkHash(sha256)) {
+      throw new Error("a manifest part's bytes no longer match its hash");
+    }
+    return bytes;
+  }
+
+  /** A manifest deleted (`parts` of them and its root): the root first, so none dangles. */
+  async deleteManifest(ns: string, day: string, parts: number): Promise<void> {
+    if (parts !== 0) {
+      manifestPart(parts - 1);
+    }
+    await this.env.BLOBS.delete(manifestKey(ns, day));
+    const all = Array.from({ length: parts }, (_, part) => part);
+    for (let at = 0; at < all.length; at += DELETE_BATCH) {
+      await this.env.BLOBS.delete(all.slice(at, at + DELETE_BATCH)
+        .map((part) => manifestKey(ns, day, part)));
+    }
   }
 }

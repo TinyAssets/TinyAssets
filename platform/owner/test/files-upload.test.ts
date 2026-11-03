@@ -20,7 +20,7 @@ import { MIGRATIONS } from "../src/schema";
 import { rig, type Rig } from "./ledger-support";
 import {
   alarmOf, drainDue, failure, faulty, fileCounters, filesOn, inFiles, laneAt, lostContent, sqlIn,
-  STORAGE_FAULT, text,
+  STORAGE_FAULT, text, through,
 } from "./support";
 
 const W = "/workspace";
@@ -60,10 +60,11 @@ async function upload(r: Rig, path: string, pieces: Uint8Array[],
 const chunk = (r: Rig, sha256: string) =>
   sqlIn(r.stub, "SELECT state, stored, refs, holds, gc_after FROM file_chunks WHERE sha256 = ?",
         sha256).then((rows) => rows[0]);
-const ns = async (r: Rig) => (await sqlIn(r.stub, "SELECT ns FROM file_space"))[0]!["ns"] as string;
 const inBucket = async (r: Rig, sha256: string) => {
   try {
-    await env.FILES.getChunks(await ns(r), [{ sha256 }]);
+    const [space] = await sqlIn(r.stub, "SELECT ns, data_key FROM file_space");
+    await env.FILES.getChunks(space!["ns"] as string, space!["data_key"] as string,
+                              [{ sha256 }]);
     return true;
   } catch {
     return false;
@@ -144,11 +145,9 @@ describe("an upload", () => {
   it("marks a chunk stored only once the files Worker accepted its put", async () => {
     const r = await rig();
     const piece = filled(INLINE_BYTES + 1, 4);
-    const refusing: ChunkStore = {
+    const refusing: ChunkStore = through({
       putChunks: async () => { throw new Error("FILES refused the put"); },
-      getChunks: (space, reads) => env.FILES.getChunks(space, reads),
-      deleteChunks: (space, list) => env.FILES.deleteChunks(space, list),
-    };
+    });
     expect((await failure(() => inFiles(r.stub, {}, (files) =>
       files.write(`${W}/a`, piece, { expected: null, writer: "owner" }), refusing))).message)
       .toBe("FILES refused the put");
@@ -444,11 +443,9 @@ describe("a chunk", () => {
     const piece = filled(INLINE_BYTES + 1, 11);
     const sha = sha256Hex(piece);
     const begun = await begin(r, [piece]);
-    const refusing: ChunkStore = {
+    const refusing: ChunkStore = through({
       putChunks: async () => { throw new Error("FILES is down"); },
-      getChunks: (space, reads) => env.FILES.getChunks(space, reads),
-      deleteChunks: (space, shas) => env.FILES.deleteChunks(space, shas),
-    };
+    });
     expect((await failure(() => inFiles(r.stub, {}, (files) =>
       files.upload(begun.intent_id, [{ sha256: sha, bytes: piece }]), refusing))).message)
       .toBe("FILES is down");
@@ -480,11 +477,9 @@ describe("a chunk", () => {
     await sqlIn(r.stub, "UPDATE file_intents SET expires_at = 1");
     await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000));
     await sqlIn(r.stub, "UPDATE file_chunks SET gc_after = 1");
-    const failing: ChunkStore = {
-      putChunks: (space, chunks) => env.FILES.putChunks(space, chunks),
-      getChunks: (space, reads) => env.FILES.getChunks(space, reads),
+    const failing: ChunkStore = through({
       deleteChunks: async () => { throw new Error("FILES is down"); },
-    };
+    });
     // The failure stays in the chunk's row: the pass itself completes.
     await inFiles(r.stub, {}, (files) => files.collect(Date.now() / 1000), failing);
     const deleting = await chunk(r, sha);
@@ -609,14 +604,12 @@ describe("a chunk between a pass's units", () => {
       const piece = filled(INLINE_BYTES + 1, 13);
       await dueGarbage(r, piece);
       const deletes: string[][] = [];
-      const recording: ChunkStore = {
-        putChunks: (space, chunks) => env.FILES.putChunks(space, chunks),
-        getChunks: (space, reads) => env.FILES.getChunks(space, reads),
+      const recording: ChunkStore = through({
         deleteChunks: async (space, shas) => {
           deletes.push(shas);
           return env.FILES.deleteChunks(space, shas);
         },
-      };
+      });
       const failed = await runInDurableObject(r.stub, async (_instance: OwnerDO, storage) => {
         const gate = new WriteGate(storage.storage);
         const files = filesOn(gate.storage, faulty(gate.write, (n) => n === unit), recording);
@@ -634,7 +627,7 @@ describe("a chunk between a pass's units", () => {
     const begun = await begin(r, [piece]);
     const failed = await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
       const gate = new WriteGate(state.storage);
-      await filesOn(gate.storage, gate.write).namespace();  // made: the put goes out
+      await filesOn(gate.storage, gate.write).space();  // made: the put goes out
       const files = filesOn(gate.storage, faulty(gate.write, () => true));
       return failure(() => files.upload(begun.intent_id, [{ sha256: sha, bytes: piece }]));
     });
@@ -645,14 +638,12 @@ describe("a chunk between a pass's units", () => {
   it("fails a whole write with the fault that left its intent open, when its abort fails",
      async () => {
     const r = await rig();
-    const down: ChunkStore = {
+    const down: ChunkStore = through({
       putChunks: async () => { throw new Error("FILES is down"); },
-      getChunks: (space, reads) => env.FILES.getChunks(space, reads),
-      deleteChunks: (space, shas) => env.FILES.deleteChunks(space, shas),
-    };
+    });
     const failed = await runInDurableObject(r.stub, async (_instance: OwnerDO, state) => {
       const gate = new WriteGate(state.storage);
-      await filesOn(gate.storage, gate.write).namespace();
+      await filesOn(gate.storage, gate.write).space();
       // The write's units: its intent, then (the put refused) its abort, which fails.
       const files = filesOn(gate.storage, faulty(gate.write, (n) => n === 2), down);
       return failure(() => files.write(`${W}/a.bin`, filled(INLINE_BYTES + 1, 16),
