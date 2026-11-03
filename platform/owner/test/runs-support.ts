@@ -28,10 +28,25 @@ type Recorded = OwnerDO & { readonly recorder: RecordingSandbox };
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 
-/** `agent`'s `agent.json` written as `file`, by the owner (`binding`, origin null). */
-export async function defineAgent(stub: DurableObjectStub<OwnerDO>, binding: Binding,
+/**
+ * The owner's binding in a live session: an agent's files are a widening, as the owner's app
+ * writes them in its session. A binding with a session is kept as it is.
+ */
+export async function inSession(stub: DurableObjectStub<OwnerDO>, binding: Binding):
+    Promise<Binding> {
+  if (binding.session !== undefined || binding.origin !== null) {
+    return binding;
+  }
+  const { session } = await stub.sessionOpen({
+    ...binding, authenticated_at: Math.floor(Date.now() / 1000) - 5 });
+  return { ...binding, session };
+}
+
+/** `agent`'s `agent.json` written as `file`, by the owner (`owner`, origin null). */
+export async function defineAgent(stub: DurableObjectStub<OwnerDO>, owner: Binding,
                                   agent: string, file: Record<string, unknown>):
     Promise<void> {
+  const binding = await inSession(stub, owner);
   for (const path of ["/workspace/agents", `/workspace/agents/${agent}`]) {
     if ((await stub.fileStat(binding, { path })).entry === null) {
       await stub.fileMkdir(binding, { path, expected_etag: null });

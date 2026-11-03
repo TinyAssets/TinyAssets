@@ -6,6 +6,7 @@ declare namespace Cloudflare {
     OAUTH_KV: KVNamespace;
     DIRECTORY: KVNamespace;
     CONTROL: KVNamespace;
+    ASSETS: Fetcher;
     DCR_ENABLED: string;
     OWNER_ISSUER: string;
     FOREIGN_ISSUERS: string;

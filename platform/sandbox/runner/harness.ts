@@ -1,16 +1,16 @@
 /**
  * The runner's test harness, in Node, tests only: a temporary root standing for the
  * sandbox's `/` (`TA_RUNNER_ROOT`) with the template's users as an unprivileged pool
- * (`ta-run-<n>`, uids from 4300, each its own group), the sync agent (`ta-sync`, 4250) and
- * the shared group `ta` (4243), so a root operation that followed a link an engine's user
+ * (`ta-run-<n>`, each its own group), the sync agent (`ta-sync`) and the shared group `ta`,
+ * on ids of this suite's own (`claimIds`), so a root operation that followed a link an engine's user
  * planted shows as a changed owner, mode or content; a fake CLI per record at the record's
  * own binary path; and a fake doors server for the run's event door, the sign-in report and
  * the sync doors. The runner under test is the bundle the template carries
  * (`template/bundle.mjs`), run as its own processes, as root.
  */
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, chownSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync,
-         writeFileSync } from "node:fs";
+import { chmodSync, chownSync, closeSync, constants, mkdirSync, mkdtempSync, openSync,
+         readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -23,9 +23,72 @@ import { binPath, type StartDoc } from "./engine";
 const HERE = dirname(fileURLToPath(import.meta.url));
 let bundled: string | null = null;
 
-export const TA_GID = 4243;
-export const SYNC_UID = 4250;
-export const POOL_UIDS = Object.freeze([4300, 4301, 4302, 4303]);
+/**
+ * The ids this suite's sandboxes use, a block of its own on the host. The runner gives each
+ * run a real uid and kills a uid's every process (`killAll`), and real uids are the host's,
+ * not a sandbox root's: two suites on one host (two worktrees, or a rerun beside a run) that
+ * used the same fixed ids killed each other's CLIs and status checks mid-test, which is
+ * what failed one to six different runner tests a run. Each suite claims a free block under
+ * a host-wide lock (`/tmp/ta-runner-ids/<n>`, held by its pid, taken back from a dead one)
+ * and names only those ids in its sandboxes' `/etc/passwd` and `/etc/group`, which is all the
+ * runner reads; the template's own ids are its build's, never these.
+ */
+const ID_LOCKS = "/tmp/ta-runner-ids";
+const ID_BASE = 40_000;
+const ID_BLOCK = 8;
+const ID_BLOCKS = 512;
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function claimIds(): number {
+  mkdirSync(ID_LOCKS, { recursive: true, mode: 0o755 });
+  for (let block = 0; block < ID_BLOCKS; block += 1) {
+    const lock = join(ID_LOCKS, String(block));
+    let fd: number;
+    try {
+      fd = openSync(lock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o644);
+    } catch {
+      let holder = Number.NaN;
+      try {
+        holder = Number(readFileSync(lock, "utf8"));
+      } catch {
+        // given back meanwhile: the next pass takes it
+      }
+      if (Number.isInteger(holder) && holder > 0 && !alive(holder)) {
+        try {
+          unlinkSync(lock);
+        } catch {
+          // another suite took it back first
+        }
+        block -= 1;  // try this block again
+      }
+      continue;
+    }
+    writeSync(fd, String(process.pid));
+    closeSync(fd);
+    process.on("exit", () => {
+      try {
+        unlinkSync(lock);
+      } catch {
+        // gone already
+      }
+    });
+    return ID_BASE + block * ID_BLOCK;
+  }
+  throw new Error(`every one of the ${ID_BLOCKS} runner test id blocks is held`);
+}
+
+const IDS = claimIds();
+export const TA_GID = IDS;
+export const SYNC_UID = IDS + 1;
+export const POOL_UIDS = Object.freeze([IDS + 2, IDS + 3, IDS + 4, IDS + 5]);
 
 /** The runner's bundle, built once per test file, readable by the sync agent's user. */
 export function runnerBundle(): string {
@@ -58,6 +121,11 @@ export interface FakeCli {
   readonly daemon?: boolean;
   /** What `status_argv` prints and exits with. */
   readonly status?: { readonly out: string; readonly exit: number };
+  /**
+   * An absolute path it waits to exist before it exits (after its lines and `sleepMs`), so a
+   * test holds runs live together by an event, never by a guess at how long a start takes.
+   */
+  readonly holdUntil?: string;
 }
 
 /** The fake CLI's own program: what it was run with goes to `<root>/fake-seen`. */
@@ -86,11 +154,15 @@ const done = () => {
     owners[file] = chain;
   }
   const at = performance.timeOrigin + performance.now();
-  fs.writeFileSync(path.join(root, "fake-seen",
-                             path.basename(me) + "." + at.toFixed(3) + "." + process.pid + ".json"),
+  // Written whole, then renamed into place: a test reading the record while a CLI runs
+  // never sees half of it.
+  const seen = path.join(root, "fake-seen",
+                         path.basename(me) + "." + at.toFixed(3) + "." + process.pid + ".json");
+  fs.writeFileSync(seen + ".part",
     JSON.stringify({ at, argv: process.argv.slice(2), env: process.env, cwd: process.cwd(), stdin,
                      uid: process.getuid(), gid: process.getgid(), groups: process.getgroups(),
                      dumps, owners }));
+  fs.renameSync(seen + ".part", seen);
   if (process.argv.includes("status")) {
     const status = plan.status || { out: "", exit: 1 };
     process.stdout.write(status.out);
@@ -113,7 +185,13 @@ const done = () => {
   for (const line of plan.lines) {
     process.stdout.write((typeof line === "string" ? line : JSON.stringify(line)) + "\n");
   }
-  setTimeout(() => process.exit(plan.exit || 0), plan.sleepMs || 0);
+  const exit = () => setTimeout(() => process.exit(plan.exit || 0), plan.sleepMs || 0);
+  if (plan.holdUntil) {
+    const poll = () => fs.existsSync(plan.holdUntil) ? exit() : setTimeout(poll, 20);
+    poll();
+  } else {
+    exit();
+  }
 };
 if (!process.argv.includes("status")) {
   process.stdin.on("data", (d) => { stdin += d; });
