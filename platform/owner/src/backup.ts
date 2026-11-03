@@ -474,6 +474,16 @@ export class Backups {
         await this.#prune(until);
         return true;
       }
+      // The log so far first: what a pass that ended mid-burst, and the wait for the next,
+      // left unshipped never waits on another burst too.
+      const first = await this.#ship(ns, key, at, log.state().last, until);
+      if (first === null) {
+        await this.#abandon(ns, at, MANIFEST_CEILING);
+        return true;
+      }
+      if (!first) {
+        return false;
+      }
       // A burst of whole base pages, each read in a unit of its own, with no outside call
       // between them; the unit that reads the last fixes E, the log's last seq then.
       const lines: string[] = [];
