@@ -518,10 +518,17 @@ account and no deploy.
     and `take` in one suite killed the other suite's CLIs and status checks mid-test. Each
     suite now claims a block of ids of its own under a host-wide lock
     (`sandbox/runner/harness.ts`, `claimIds`); the runner reads its ids from the sandbox's
-    `/etc/passwd`, so the runner and its template are unchanged. Proved: the old harness, two
-    suites overlapping, 3 and 7 failures; the fixed one, three overlapping pairs and ten runs
-    in a row (most beside another session's suite), 32 of 32 every time. A single GitHub job
-    never overlaps, which is why `platform-tests` stayed green there.
+    `/etc/passwd`, so the runner and its template are unchanged. With that gone, two pairs
+    of overlapping suites on a loaded host still showed three timing assumptions: two runs
+    "at once" held live by a 1.5 s sleep, and two renewal tests whose CLI was to fail or
+    stay up across the renewal by a 3 s and an 8 s sleep. Each is now held by an event (the
+    fake CLI's `holdUntil`, a file the test writes when the step it waits for is done), and the
+    fake's record of each call is written whole and renamed into place, so a test polling it
+    never reads half of one. Proved:
+    the old harness, two suites overlapping, 3 and 7 failures; the fixed one, ten rounds of
+    two overlapping suites, 32 of 32 in each. CI never showed it: of the last 40 Tests runs,
+    `platform-tests` failed twice, both PR branches' own bugs at the time (platform-s, all 32
+    runner tests in 0.3 s; platform-id, one agent-mail test), since a GitHub job runs alone.
   - **run events (found by the review, outside the slice, fixed here):** a session id outside
     the conversations' shape (`[!-~]{1,256}`) failed the runner's whole post with a SQLite
     error; the object refuses it as the run's fixed error `session_id_refused` (`runs.ts`), its

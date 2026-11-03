@@ -121,6 +121,11 @@ export interface FakeCli {
   readonly daemon?: boolean;
   /** What `status_argv` prints and exits with. */
   readonly status?: { readonly out: string; readonly exit: number };
+  /**
+   * An absolute path it waits to exist before it exits (after its lines and `sleepMs`), so a
+   * test holds runs live together by an event, never by a guess at how long a start takes.
+   */
+  readonly holdUntil?: string;
 }
 
 /** The fake CLI's own program: what it was run with goes to `<root>/fake-seen`. */
@@ -149,11 +154,15 @@ const done = () => {
     owners[file] = chain;
   }
   const at = performance.timeOrigin + performance.now();
-  fs.writeFileSync(path.join(root, "fake-seen",
-                             path.basename(me) + "." + at.toFixed(3) + "." + process.pid + ".json"),
+  // Written whole, then renamed into place: a test reading the record while a CLI runs
+  // never sees half of it.
+  const seen = path.join(root, "fake-seen",
+                         path.basename(me) + "." + at.toFixed(3) + "." + process.pid + ".json");
+  fs.writeFileSync(seen + ".part",
     JSON.stringify({ at, argv: process.argv.slice(2), env: process.env, cwd: process.cwd(), stdin,
                      uid: process.getuid(), gid: process.getgid(), groups: process.getgroups(),
                      dumps, owners }));
+  fs.renameSync(seen + ".part", seen);
   if (process.argv.includes("status")) {
     const status = plan.status || { out: "", exit: 1 };
     process.stdout.write(status.out);
@@ -176,7 +185,13 @@ const done = () => {
   for (const line of plan.lines) {
     process.stdout.write((typeof line === "string" ? line : JSON.stringify(line)) + "\n");
   }
-  setTimeout(() => process.exit(plan.exit || 0), plan.sleepMs || 0);
+  const exit = () => setTimeout(() => process.exit(plan.exit || 0), plan.sleepMs || 0);
+  if (plan.holdUntil) {
+    const poll = () => fs.existsSync(plan.holdUntil) ? exit() : setTimeout(poll, 20);
+    poll();
+  } else {
+    exit();
+  }
 };
 if (!process.argv.includes("status")) {
   process.stdin.on("data", (d) => { stdin += d; });
