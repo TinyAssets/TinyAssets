@@ -10,7 +10,9 @@
 import type { GatewayService, Resealed } from "../src/connections";
 import type { Erasure } from "../src/erase";
 import { type OwnerEnv, OwnerDO, type SandboxLeases } from "../src/owner-do";
+import { RecordingErasures } from "./erasure-fake";
 import { RecordingSandbox } from "./sandbox-fake";
+import { PLATFORM_CALLER } from "../src/admission";
 
 export { OwnerDO } from "../src/owner-do";
 
@@ -22,16 +24,22 @@ export class FauxOwnerDO extends OwnerDO {
   readonly sandbox: SandboxLeases;
   /** The recording fake behind its `SANDBOX` binding. */
   readonly recorder: RecordingSandbox;
+  /** The erasure queue, recording, confirming the outside record as the doors would. */
+  readonly erasures: RecordingErasures;
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     const made: { erasure?: Erasure; sandbox?: SandboxLeases } = {};
     const recorder = new RecordingSandbox();
-    super(ctx, { ...env, SANDBOX: recorder },
+    const erasures = new RecordingErasures();
+    super(ctx, { ...env, SANDBOX: recorder, ERASURES: erasures },
           { erasure: (erasure) => { made.erasure = erasure; }, eraseRetryMs: 500, putGraceMs: 0,
             sandbox: (leases) => { made.sandbox = leases; } });
     this.erasure = made.erasure!;
     this.sandbox = made.sandbox!;
     this.recorder = recorder;
+    this.erasures = erasures;
+    erasures.confirm = (owner) => this.erasureOutsideDone(
+      { owner, caller: PLATFORM_CALLER, origin: null });
   }
 }
 

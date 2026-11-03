@@ -614,8 +614,8 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
     expect((await forgetRevoked(r, [MUSE.client])).forgotten).toEqual([MUSE.client]);
   });
 
-  it("refuses another client's grant at the bound, and never forgets a revoke for it " +
-     "(probe 2)", async () => {
+  it("counts no revoked row toward the live bound, and never forgets a revoke within the " +
+     "revoked bound (probe 2)", async () => {
     const r = await rig();
     const t = clock();
     const signedBefore = Math.floor(t - 40 * DAY);
@@ -633,12 +633,30 @@ describe("only the owner's own act lifts a revoke (slice 3's L1, slice 5's revie
         return (error as Error).message;
       }
     });
-    expect(out).toBe("the owner's managed outside clients are at their limit; forget " +
-                     "revoked clients to make room");
+    // A revoked row never holds a live client's place (slice L).
+    expect(out).toBe("set");
     expect((await clients(r)).find((c) => c.client === CHATGPT.client)!.mode).toBe("revoked");
     expect((await failure(() => r.stub.outsideAgents(
       r.bind(CHATGPT, { authenticated_at: signedBefore })))).message).toBe("outside client revoked");
     expect(await fence(r)).toBe(0);
+  });
+
+  it("forgets the oldest revoked row past the revoked bound, moving the fence (slice L)",
+     async () => {
+    const r = await rig();
+    const t = clock();
+    await r.stub.outsideAgents(r.bind(CHATGPT, { authenticated_at: Math.floor(t - 40 * DAY) }));
+    await r.stub.outsideAgents(r.bind(CLAUDE));
+    const evicted = await runInDurableObject(r.stub, (_i: OwnerDO, state) => {
+      const grants = new Grants(state.storage, new Policy(state.storage),
+                                { ...GRANT_LIMITS, maxOwnerClients: 1 });
+      grants.revoke(CHATGPT.client, t - 31 * DAY);
+      grants.revoke(CLAUDE.client, t - 30 * DAY);
+      return grants.evictRevoked(t);
+    });
+    expect(evicted).toEqual([CHATGPT.client]);
+    expect((await clients(r)).map((c) => c.client)).not.toContain(CHATGPT.client);
+    expect(await fence(r)).toBeGreaterThan(0);
   });
 
   it("keeps the fence at the newest revoke forgotten, and never lowers it (review L1)",

@@ -3,7 +3,8 @@
  * object takes `admissionSet` only from the caller named `PLATFORM_CALLER`
  * (`admission.ts`), and refuses that name at every other door and as an owner. So no
  * source may spell the name but where it is defined, and the platform's admin path
- * (`platform/admin`), which sends it; while that directory does not exist, no source may.
+ * (`platform/admin`), whose one constant the binder sends (the sign-up's explicit admit,
+ * slice L); no other source may.
  *
  * In every Worker source, this guard finds the name spelled as a string (a literal, a
  * template with no substitution, or the obvious split spellings: literals joined by `+`, a
@@ -26,8 +27,10 @@ const NAME = ["plat", "form"].join("");
 const CONSTANT = "PLATFORM_CALLER";
 const DEFINED = "owner/src/admission.ts";
 const READER = "owner/src/owner-do.ts";
-/** The platform's admin sources, which may send it. */
+/** The platform's admin sources, which may send it: its one constant, which the binder sends. */
 const ADMIN = "admin/";
+const ADMIN_SOURCE = "admin/src/caller.ts";
+const SENDER = "doors/src/binder.ts";
 
 /** A string expression's value when every part of it is literal, else undefined. */
 function literal(node: ts.Node): string | undefined {
@@ -104,8 +107,12 @@ describe("admission caller guard", () => {
     expect([...sources.keys()]).toContain(DEFINED);
     expect([...sources].flatMap(([path, source]) => callerReach(path, source))).toEqual([]);
     expect(sources.get(DEFINED)).toContain(`export const ${CONSTANT} = "${NAME}";`);
-    // No admin path exists yet, so no source may send the name.
-    expect([...sources.keys()].filter((path) => path.startsWith(ADMIN))).toEqual([]);
+    // The admin path is its one constant, and only the binder sends it (the sign-up's admit).
+    expect([...sources.keys()].filter((path) => path.startsWith(ADMIN))).toEqual([ADMIN_SOURCE]);
+    expect(sources.get(ADMIN_SOURCE)).toContain(`export const ADMIN_CALLER = "${NAME}";`);
+    expect([...sources].filter(([path, source]) => !path.startsWith(ADMIN)
+                                                 && source.includes("admin/src/caller"))
+      .map(([path]) => path)).toEqual([SENDER]);
   });
 
   it.each([
@@ -137,13 +144,14 @@ describe("admission caller guard", () => {
   });
 
   it("pins the tombstone's shape, which an erased owner's database keeps unmigrated", () => {
-    // A tombstone is never migrated, and migration 13 and the erasure share the table's
+    // A tombstone is never migrated, and migration 10 and the erasure share the table's
     // text: changing either is a new migration and a tombstone reader that still reads this.
+    // (Slice L added `pending` in place: nothing is deployed, so no tombstone exists yet.)
     const schema = readFileSync(join(PLATFORM, "owner", "src", "schema.ts"), "utf8");
     expect(schema).toContain(
       'export const ADMISSION_TABLE = "CREATE TABLE owner_admission (only INTEGER PRIMARY KEY " +\n' +
-      '  "CHECK (only = 1), state TEXT NOT NULL CHECK (state IN (\'admitted\', \'suspended\', " +\n' +
-      '  "\'erased\')), reasons TEXT NOT NULL CHECK (reasons IN (\'[]\', \'[\\"abuse\\"]\', " +\n');
+      '  "CHECK (only = 1), state TEXT NOT NULL CHECK (state IN (\'pending\', \'admitted\', " +\n' +
+      '  "\'suspended\', \'erased\')), reasons TEXT NOT NULL CHECK (reasons IN (\'[]\', " +\n');
     const admission = readFileSync(join(PLATFORM, DEFINED), "utf8");
     expect(admission).toContain('sql.exec<{ state: string }>("SELECT state FROM owner_admission")');
     expect(admission).toContain("INSERT INTO owner_admission (only, state, reasons) VALUES " +

@@ -21,7 +21,8 @@ const OWNER_DO = "owner/src/owner-do.ts";
 const HELPERS: ReadonlySet<string> = new Set(["#bind", "#account", "#owner", "#widening",
                                               "#collector", "#filer", "#reader", "#syncer"]);
 const CLASSES: ReadonlySet<string> = new Set(["work", "read", "reduce"]);
-const PLATFORM_DOORS: ReadonlySet<string> = new Set(["admissionSet", "tierSet"]);
+const PLATFORM_DOORS: ReadonlySet<string> = new Set(["admissionSet", "tierSet",
+                                                    "erasureOutside", "erasureOutsideDone"]);
 
 /** Each door's classes, as its binding calls name them, and each problem found. */
 export function doorClasses(source: string):

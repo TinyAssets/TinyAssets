@@ -8,12 +8,18 @@ export const TOO_LARGE = "the request body is too large";
 
 /** The body as UTF-8 text, or null when it is over `max` bytes. */
 export async function boundedText(request: Request, max: number): Promise<string | null> {
+  const bytes = await boundedBytes(request, max);
+  return bytes === null ? null : new TextDecoder().decode(bytes);
+}
+
+/** The body's bytes, verbatim, or null when it is over `max` bytes. */
+export async function boundedBytes(request: Request, max: number): Promise<Uint8Array | null> {
   const declared = request.headers.get("Content-Length");
   if (declared !== null && !(/^\d+$/.test(declared) && Number(declared) <= max)) {
     return null;
   }
   if (request.body === null) {
-    return "";
+    return new Uint8Array(0);
   }
   const reader = request.body.getReader();
   const parts: Uint8Array[] = [];
@@ -36,7 +42,7 @@ export async function boundedText(request: Request, max: number): Promise<string
     whole.set(part, at);
     at += part.byteLength;
   }
-  return new TextDecoder().decode(whole);
+  return whole;
 }
 
 /** The body as one JSON object; `413` or `400` as a response when it is not one. */

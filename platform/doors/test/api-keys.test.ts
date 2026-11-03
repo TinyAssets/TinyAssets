@@ -168,16 +168,23 @@ describe("a mint", () => {
     }
   });
 
-  it("refuses past MAX_KEYS_PER_OWNER live keys, a key a device or agent", async () => {
+  it("refuses past MAX_KEYS live keys, counted in the mint's own unit, and writes nothing",
+     async () => {
     const o = await signedIn();
-    expect(MAX_KEYS_PER_OWNER).toBe(GRANT_LIMITS.maxOwnerClients);
-    for (let i = 0; i < MAX_KEYS_PER_OWNER; i++) {
-      await mint(o);
-    }
+    await mint(o);
+    // The rest of the live keys, as earlier mints left them (a revoked one does not count).
+    await sqlIn(o.owner, "INSERT INTO owner_keys (key_id, client, name, created_at, revoked_at) " +
+                "SELECT printf('%016x', x), printf('%064x', x), 'k', 0, " +
+                "CASE WHEN x = 1 THEN 1 ELSE NULL END FROM (WITH RECURSIVE c(x) AS " +
+                "(SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < ?) SELECT x FROM c)",
+                MAX_KEYS_PER_OWNER);
+    const before = await sqlIn(o.owner, "SELECT COUNT(*) AS n FROM outside_clients");
     const over = await appPost("keys", o.token, o.session, { name: "one more", scopes: SCOPES });
     expect(over.status).toBe(403);
     expect(await over.json()).toEqual({ error: "too many live API keys; revoke one first" });
-  }, 300_000);
+    expect(await sqlIn(o.owner, "SELECT COUNT(*) AS n FROM outside_clients")).toEqual(before);
+    expect(MAX_KEYS_PER_OWNER).toBe(GRANT_LIMITS.maxOwnerClients);
+  });
 });
 
 describe("a key's use", () => {

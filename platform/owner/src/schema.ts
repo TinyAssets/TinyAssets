@@ -47,9 +47,9 @@ export type Migration = readonly string[];
  * in the wiped database, so it is spelled once, here.
  */
 export const ADMISSION_TABLE = "CREATE TABLE owner_admission (only INTEGER PRIMARY KEY " +
-  "CHECK (only = 1), state TEXT NOT NULL CHECK (state IN ('admitted', 'suspended', " +
-  "'erased')), reasons TEXT NOT NULL CHECK (reasons IN ('[]', '[\"abuse\"]', " +
-  "'[\"billing\"]', '[\"abuse\",\"billing\"]')), " +
+  "CHECK (only = 1), state TEXT NOT NULL CHECK (state IN ('pending', 'admitted', " +
+  "'suspended', 'erased')), reasons TEXT NOT NULL CHECK (reasons IN ('[]', " +
+  "'[\"abuse\"]', '[\"billing\"]', '[\"abuse\",\"billing\"]')), " +
   // The owner's tier (ADR-034 decision 8), which only the platform sets (`tierSet`).
   "tier TEXT NOT NULL DEFAULT 'free' CHECK (tier IN ('free', 'paid')), " +
   "CHECK ((state = 'suspended') = (reasons != '[]')))";
@@ -1186,12 +1186,13 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "CHECK (revision >= 1)",
   ]),
   // 10: the owner's admission (tasks 5, F1): `owner_admission` is the owner's one
-  // admission row (`admission.ts`): admitted when the object is first made, suspended for
-  // billing or abuse by the platform, or, as the last step of the owner's erasure, the
-  // erased tombstone, alone in the wiped database.
+  // admission row (`admission.ts`): pending when the object is first made, admitted only by
+  // the platform's explicit admit at sign-up (slice L), suspended for billing or abuse by
+  // the platform, or, as the last step of the owner's erasure, the erased tombstone, alone
+  // in the wiped database.
   Object.freeze([
     ADMISSION_TABLE,
-    "INSERT INTO owner_admission (only, state, reasons) VALUES (1, 'admitted', '[]')",
+    "INSERT INTO owner_admission (only, state, reasons) VALUES (1, 'pending', '[]')",
   ]),
   // 11: the egress door (tasks 4 G4; egress.ts). The owner's policy row keeps the egress
   // generation, moved only by a write that changes the egress table (each sandbox lease,
@@ -1407,25 +1408,6 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TRIGGER sandbox_leases_fenced BEFORE UPDATE OF authority, lease_id, epoch, " +
       "egress_token, sync_token, runner_token ON sandbox_leases BEGIN " +
       "SELECT RAISE(ABORT, 'a lease never changes what it was taken as'); END",
-    // The vendor's own sign-in in progress inside a sandbox (slice SIGNIN, `signins.ts`): one
-    // an authority, holding that sandbox's lease, its latest prompt (the vendor's URL and code,
-    // never a token) and its runner's last beat. Gone at its end.
-    "CREATE TABLE sandbox_signins (authority TEXT PRIMARY KEY CHECK (authority = 'owner' " +
-      "OR (length(authority) = 64 AND authority NOT GLOB '*[^0-9a-f]*')), " +
-      "id TEXT NOT NULL UNIQUE CHECK (length(id) = 35 AND id GLOB 'si_*'), " +
-      "engine TEXT NOT NULL CHECK (length(engine) BETWEEN 1 AND 64), " +
-      "mode TEXT NOT NULL CHECK (mode IN ('in', 'out')), " +
-      "region TEXT CHECK (region IS NULL OR length(region) BETWEEN 1 AND 64), " +
-      "lease_id TEXT NOT NULL CHECK (length(lease_id) = 32), epoch INTEGER NOT NULL, " +
-      "state TEXT NOT NULL CHECK (state IN ('starting', 'open', 'code_sent', 'signed_in', " +
-      "'signed_out', 'failed', 'cancelled', 'refused', 'expired')), " +
-      `url TEXT CHECK (url IS NULL OR length(url) <= ${SIGNIN_URL_MAX}), ` +
-      `code TEXT CHECK (code IS NULL OR length(code) <= ${SIGNIN_CODE_MAX}), ` +
-      "accepts_code INTEGER NOT NULL DEFAULT 0 CHECK (accepts_code IN (0, 1)), " +
-      "started_at REAL NOT NULL, beat_at REAL NOT NULL) WITHOUT ROWID",
-    "CREATE TRIGGER sandbox_signins_full BEFORE INSERT ON sandbox_signins WHEN (SELECT " +
-      `COUNT(*) FROM sandbox_signins) >= ${RUNS_CEILING} BEGIN SELECT RAISE(ABORT, ` +
-      `'sandbox_signins_full: ${RUNS_CEILING} sign-ins are live'); END`,
     "CREATE TABLE run_grants (" +
       `run TEXT PRIMARY KEY CHECK (length(run) = ${RUN_ID_CHARS}), ` +
       // The SHA-256 of the run's own secret, which only its CLI's environment holds.
@@ -1471,11 +1453,6 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       `'run_schedules_full: ${SCHEDULES_KEPT} schedules are kept; cancel one first'); END`,
     "CREATE TABLE platform_tiers (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "tiers TEXT NOT NULL CHECK (length(tiers) <= 1024), read_at REAL NOT NULL)",
-    // The served records whose vendor sign-in the control record switches on, as the binder
-    // last handed them (slice SIGNIN, `signins.ts`): comma-joined ids, one row.
-    "CREATE TABLE platform_signins (only INTEGER PRIMARY KEY CHECK (only = 1), " +
-      `engines TEXT NOT NULL CHECK (length(engines) <= ${SIGNIN_LIST_CHARS} ` +
-      "AND engines NOT GLOB '*[^a-z0-9_,-]*'), read_at REAL NOT NULL)",
     "CREATE TABLE socket_tickets (hash TEXT PRIMARY KEY CHECK (length(hash) = 64 " +
       "AND hash NOT GLOB '*[^0-9a-f]*'), " +
       `conversation TEXT NOT NULL CHECK (length(conversation) = ${CONVERSATION_ID_CHARS}), ` +
@@ -1567,6 +1544,57 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       `OLD.filer BEGIN ${PLACED("NEW", "+")} ${PLACED("OLD", "-")} END`,
     "CREATE TRIGGER message_bodies_kept BEFORE UPDATE ON message_bodies " +
       "BEGIN SELECT RAISE(ABORT, 'a message body is never changed'); END",
+  ]),
+  // 15: the doors' records in the owner's object (slice L). `owner_keys`, the key store
+  // (`keys.ts`): each API key's id, name, mint time, last use and revoke, its row only while
+  // its owner-set grant row stands (its `client`), so the owner's list and its erasure can
+  // enumerate them. `inbound_bindings` (`inbound.ts`): each inbound event source, its agent,
+  // its revision, the directory route the doors keep for it, an owner-held proof and its
+  // secret, and its breaker.
+  Object.freeze([
+    "CREATE TABLE owner_keys (key_id TEXT PRIMARY KEY CHECK (length(key_id) = 16 AND " +
+      "key_id NOT GLOB '*[^0-9a-f]*'), client TEXT NOT NULL UNIQUE CHECK " +
+      "(length(client) = 64), name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 80), " +
+      "created_at INTEGER NOT NULL, last_used_at INTEGER, revoked_at INTEGER)",
+    "CREATE TABLE inbound_bindings (binding_id TEXT PRIMARY KEY CHECK " +
+      "(length(binding_id) = 32), kind TEXT NOT NULL CHECK (kind IN ('capability', " +
+      "'shared')), agent TEXT NOT NULL CHECK (length(agent) BETWEEN 1 AND 64), " +
+      "enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)), revision INTEGER NOT NULL " +
+      "CHECK (revision >= 1), route TEXT NOT NULL UNIQUE CHECK (length(route) <= 160), " +
+      "profile TEXT CHECK (profile IS NULL OR length(profile) <= 1024), " +
+      "secret TEXT CHECK (secret IS NULL OR length(secret) <= 4096), " +
+      "failures TEXT NOT NULL DEFAULT '[]' CHECK (length(failures) <= 64), " +
+      "tripped INTEGER NOT NULL DEFAULT 0 CHECK (tripped IN (0, 1)), " +
+      "created_at INTEGER NOT NULL, changed_at INTEGER NOT NULL)",
+    // The erasure's outside record, confirmed by the doors (`erasure.ts` step 2).
+    "ALTER TABLE owner_erasure ADD COLUMN outside INTEGER NOT NULL DEFAULT 0 " +
+      "CHECK (outside IN (0, 1))",
+  ]),
+  // 16: the vendor's own sign-in inside a sandbox (slice SIGNIN, `signins.ts`).
+  // `sandbox_signins`: the sign-in in progress, one an authority, holding that sandbox's
+  // lease, its latest prompt (the vendor's URL and code, never a token) and its runner's last
+  // beat; gone at its end. `platform_signins`: the served records whose vendor sign-in the
+  // control record switches on, as the binder or the lane last read them.
+  Object.freeze([
+    "CREATE TABLE sandbox_signins (authority TEXT PRIMARY KEY CHECK (authority = 'owner' " +
+      "OR (length(authority) = 64 AND authority NOT GLOB '*[^0-9a-f]*')), " +
+      "id TEXT NOT NULL UNIQUE CHECK (length(id) = 35 AND id GLOB 'si_*'), " +
+      "engine TEXT NOT NULL CHECK (length(engine) BETWEEN 1 AND 64), " +
+      "mode TEXT NOT NULL CHECK (mode IN ('in', 'out')), " +
+      "region TEXT CHECK (region IS NULL OR length(region) BETWEEN 1 AND 64), " +
+      "lease_id TEXT NOT NULL CHECK (length(lease_id) = 32), epoch INTEGER NOT NULL, " +
+      "state TEXT NOT NULL CHECK (state IN ('starting', 'open', 'code_sent', 'signed_in', " +
+      "'signed_out', 'failed', 'cancelled', 'refused', 'expired')), " +
+      `url TEXT CHECK (url IS NULL OR length(url) <= ${SIGNIN_URL_MAX}), ` +
+      `code TEXT CHECK (code IS NULL OR length(code) <= ${SIGNIN_CODE_MAX}), ` +
+      "accepts_code INTEGER NOT NULL DEFAULT 0 CHECK (accepts_code IN (0, 1)), " +
+      "started_at REAL NOT NULL, beat_at REAL NOT NULL) WITHOUT ROWID",
+    "CREATE TRIGGER sandbox_signins_full BEFORE INSERT ON sandbox_signins WHEN (SELECT " +
+      `COUNT(*) FROM sandbox_signins) >= ${RUNS_CEILING} BEGIN SELECT RAISE(ABORT, ` +
+      `'sandbox_signins_full: ${RUNS_CEILING} sign-ins are live'); END`,
+    "CREATE TABLE platform_signins (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      `engines TEXT NOT NULL CHECK (length(engines) <= ${SIGNIN_LIST_CHARS} ` +
+      "AND engines NOT GLOB '*[^a-z0-9_,-]*'), read_at REAL NOT NULL)",
   ]),
 ]);
 
