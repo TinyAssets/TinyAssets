@@ -1082,3 +1082,10 @@ The object SHALL read the sandbox Worker's own log of each sandbox's start, paus
 - **WHEN** a run from 5 s to 30 s shares a sandbox that ran 0-10 s and 20-35 s
 - **THEN** its receipt carries 15 s and the day 25 s
 
+### Requirement: The owner has one storage number
+Every byte of user content the owner stores SHALL count toward the tier's storage (free 25 GB, paid 250 GB, from the control record), or the owner's own lower setting: file chunks live and in history, small files kept inline, and collection rows, their history and mail bodies whether kept inline in the object or placed in R2. Platform bookkeeping (indexes, receipts, counters) SHALL NOT count. A change past it SHALL first let retention make room (the oldest history entries no row still is, then the oldest acked mail, of the scope that is full), then be refused with the files quota's fixed code (`file_quota`, or `file_share` past an outside writer's share), leaving nothing behind. The owner SHALL read `{used_bytes, limit_bytes, breakdown: {files, messages, collections}}`, the parts summing to what is used.
+
+#### Scenario: Small bodies fill the storage
+- **WHEN** an owner whose tier stores 8,000 bytes keeps writing 1,500-byte collection rows
+- **THEN** old history entries go first, and once only live rows and their own entries are left the next write is refused `file_quota`, and the used bytes stay at or under 8,000
+

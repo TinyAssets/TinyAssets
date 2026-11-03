@@ -1312,6 +1312,14 @@ R, S, M and W.
   the sandbox Worker's log of starts, pauses, resumes and kills (`SandboxService.meter`) on
   its `sandbox` lane, and keeps each run's seconds on its receipt (`sandbox_s`) and each
   UTC day's sum; `sandboxDays` is the owner's read of it. It limits nothing.
+- [x] One storage number (founder, 2026-11-03; slice P): every byte of user content counts
+  toward the tier's storage wherever it lives. The inline bodies of collection rows, their
+  history and mail are counted by triggers (`body_bytes`, owner-wide and in each writer's
+  files scope), and the bound is `stored` = chunk bytes + small files + inline bodies against
+  `max_bytes`; collection writes, posts and mail replies are held to it (`Files.held`),
+  retention first (history no row still is, then acked mail, inline or placed), then
+  `file_quota`. `storageUsage` (the app's `POST /app/api/storage`) answers used, the limit and
+  where it is (files, messages, collections).
 - [ ] Owed by slice S (or merged with it): the sandbox Worker's side of `meter`, its
   `SandboxControl` logging each create, resume, pause and kill with its authority and time
   and dropping what a read's cursor passed.

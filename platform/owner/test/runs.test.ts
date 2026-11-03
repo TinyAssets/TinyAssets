@@ -206,7 +206,7 @@ describe("admission", () => {
   it("refuses a run when the control record held no tier numbers", async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
-    expect((await failure(() => r.stub.agentSubmit(r.bind(), {
+    expect((await failure(() => r.stub.agentSubmit(r.bind({ tiers: null }), {
       message: "x", client_send_id: "t-1" }))).message).toBe(TIER_UNREAD);
   });
 
@@ -214,7 +214,7 @@ describe("admission", () => {
     // The plain object: production's, with no `SANDBOX` until slice S binds it.
     const owner = `owner-${crypto.randomUUID()}`;
     const stub = env.OWNER.getByName(owner);
-    const bind: Binding = { owner, caller: owner, origin: null };
+    const bind: Binding = { owner, caller: owner, origin: null, tiers: TIERS };
     await defineAgent(stub, bind, "main", SIGNED_IN);
     expect((await failure(() => stub.agentSubmit({ ...bind, tiers: TIERS }, {
       message: "x", client_send_id: "n-1" }))).message).toBe(SANDBOX_ABSENT);

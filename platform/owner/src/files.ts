@@ -438,8 +438,8 @@ const STORED = "chunk_bytes + inline_bytes + body_bytes";
 
 /** Each counter a quota bounds: its setting, and what it is called in a refusal. */
 const QUOTAS: readonly (readonly [keyof Counters, keyof FileLimits, string])[] = Object.freeze([
-  Object.freeze(["stored", "max_bytes", "stored bytes"] as const),
   Object.freeze(["inline_bytes", "max_inline_bytes", "small-file bytes"] as const),
+  Object.freeze(["stored", "max_bytes", "stored bytes"] as const),
   Object.freeze(["manifest_bytes", "max_manifest_bytes", "file manifest bytes"] as const),
   Object.freeze(["entries", "max_entries", "file entries"] as const),
   Object.freeze(["history", "max_history", "file history rows"] as const),

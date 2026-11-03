@@ -86,7 +86,7 @@ describe("a file quota", () => {
     await refusedWithNothingLeft(r, { max_bytes: INLINE_BYTES + 1 }, (files) =>
       files.write(`${W}/b`, new Uint8Array(INLINE_BYTES + 1).fill(2),
                   { expected: null, writer: "owner" }),
-    "file_quota: the owner's file bytes are at their quota");
+    "file_quota: the owner's stored bytes are at their quota");
     expect(await sqlIn(r.stub, "SELECT COUNT(*) AS n FROM file_chunks")).toEqual([{ n: 1 }]);
   });
 
@@ -481,7 +481,7 @@ describe("the files policy", () => {
     expect((await r.stub.fileUsage(r.bind(null, { tiers: small }))).limits.max_bytes)
       .toBe(INLINE_BYTES + 1);
     expect((await failure(() => put(`${W}/b`, 2, small))).message)
-      .toBe("file_quota: the owner's file bytes are at their quota");
+      .toBe("file_quota: the owner's stored bytes are at their quota");
     // The owner's own figure binds only below the tier's.
     await setPolicy(r, { max_bytes: 10 * INLINE_BYTES });
     expect((await r.stub.fileUsage(r.bind(null))).limits.max_bytes).toBe(10 * INLINE_BYTES);

@@ -106,7 +106,7 @@ reason; none refuses a write.
 | Where | Value | Bounds | A user hits | Class | Reason |
 |---|---|---|---|---|---|
 | control record `tiers` (`owner/src/tier.ts`) | free 5, paid 10 | simultaneous runs | a run past them refused `tier_runs` | tier | ADR-034 decision 8, edited in the record with no deploy. |
-| `owner/src/policy.ts` `fileLimits` | the tier's storage: free 25 GB, paid 250 GB | the owner's file bytes, live and in history, and the placed bodies of collections and mail | placed history and acked mail let go first, then refused `file_quota`; with no tier numbers kept, `tier_unread` | tier | The control record's figure, kept from every door's binding. |
+| `owner/src/policy.ts` `fileLimits` | the tier's storage: free 25 GB, paid 250 GB | every byte of user content the owner stores, wherever it lives (slice P, the founder's one storage number of 2026-11-03): file chunks live and in history, small files kept inline, and the collections' rows, their history and mail, inline or placed in R2 (`file_space.stored`); never the platform's bookkeeping (indexes, receipts, counters) | history entries the rows no longer are and acked mail let go first, oldest first, then refused `file_quota` (`file_share` past an outside writer's share); with no tier numbers kept, `tier_unread`. The owner reads used and left (`storageUsage`, the app's `storage`) | tier | The control record's figure, kept from every door's binding. |
 | `owner/src/egress.ts` `EGRESS_LIMITS.openPerRun` | 16 a run (free 80, paid 160) | sandbox model calls streaming at once | a call refused `egress_rate` | tier | Scaled by the tier's runs. Guard term `egress_reservations`, 89.4 MB, costed at `RUNS_CEILING`. |
 | `owner/src/policy.ts` files `max_bytes` | none (the owner may set 0 to 1 PiB) | the owner's own file quota | only below the tier's storage | owner setting | Off by default: the tier's figure binds. |
 | `owner/src/policy.ts` `FILE_DEFAULTS.max_file_bytes` | 40 GiB, its most | one file's size | only the owner's own lower cap | owner setting | Off by default: the most one upload holds (`MAX_INTENT_CHUNKS`). |
@@ -234,3 +234,20 @@ reason; none refuses a write.
 | `gateway/src/model-record.ts` numbers | as the owner's | a declared model record | refused past them | technical ceiling | As the owner's model numbers. |
 | `hooks/src/codemode.ts` `CODEMODE_INTERRUPT_BUDGET` | 1,000,000 polls (about 100 s) | a script's CPU | a compute-bound script ends `timeout` | technical ceiling | Within the hooks Worker's `cpu_ms`. |
 | `hooks/src/codemode.ts` `CODEMODE_MEMORY_BYTES` | 32 MiB | a script's VM memory | a script past it fails | technical ceiling | The isolate's 128 MB, shared by its VMs. |
+
+## Slice P's bounds
+
+Slice P (before real data) invented no limit a user meets: the one it changed is the tier's
+storage, which now counts every byte of user content (the `fileLimits` row above). Its other
+bounds are technical ceilings or retentions of the platform's own records, none refusing what
+a user does:
+
+| Where | Value | Bounds | A user hits | Class | Reason |
+|---|---|---|---|---|---|
+| `files/src/keys.ts` `MANIFEST_PARTS` | 4,096 parts of 4 MiB (16 GiB) | one nightly manifest's stream | nothing: an object's whole export without the chunks' bytes is far under it | technical ceiling | The owner object's 10 GB: its rows as JSON fit 16 GiB. `owner_backups` holds the part list, 3.2 MB at most a manifest (guard term `owner_backups`). |
+| `owner/src/backup.ts` | 2 manifests | the nightly manifests kept | nothing: the newest finished is kept, an older one deleted once a new one finishes | technical ceiling | A recovery copy of the object; Durable Objects' own point-in-time recovery covers 30 days. Each manifest is the platform's, not counted in the owner's storage. |
+| `owner/src/export.ts` `CURSOR_CHARS` | 16,384 characters | an export cursor | nothing: a cursor past it was never handed out | technical ceiling | The widest key a cursor holds (a path of 4 KiB and its name) as base64url JSON. |
+| `doors/src/app.ts` `EXPORT_PAGES` | 64 pages a response | one export response | the stream ends with its cursor line; the client asks again from it | technical ceiling | One request's work in the doors Worker (8 MiB of chunks a page at most, about 512 MiB a response). A page, never what is held. |
+| `owner/src/sandbox-time.ts` `SPANS_KEPT` | 1,000 closed spans | the sandbox meter's spans kept for runs not yet metered | nothing: a run older than every kept span is metered from what is kept | technical ceiling | The 10 GB: guard term `sandbox_spans`, with one open span an authority. Years of an always-renewing sandbox. |
+| `owner/src/sandbox-time.ts` `DAYS_KEPT` | 400 days | the sandbox seconds a day kept | nothing: an older day's sum leaves the object (the nightly manifest holds it while kept) | technical ceiling | The 10 GB: guard term `sandbox_days`. Past a year of the founder's cost view, which limits nothing. |
+

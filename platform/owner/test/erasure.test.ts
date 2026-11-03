@@ -24,7 +24,7 @@ import { clock, Ledger } from "../src/ledger";
 import { type Binding, OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
 import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
-import { alarmOf, failure, sqlIn } from "./support";
+import { alarmOf, failure, sqlIn, TIERS } from "./support";
 import type { FauxOwnerDO } from "./worker";
 
 /** An owner of its own on the class whose erasure is in reach, signed in, with a row. */
@@ -33,7 +33,7 @@ async function rig() {
   const stub = (): DurableObjectStub<FauxOwnerDO> => env.AGENT.getByName(owner);
   const at = signedIn();
   const bind = (origin: typeof MUSE | null, extra: Partial<Binding> = {}): Binding =>
-    ({ owner, caller: owner, origin,
+    ({ owner, caller: owner, origin, tiers: TIERS,
        ...(origin === null ? {} : { source: MCP, authenticated_at: at }), ...extra });
   const { session: cookie } = await stub().sessionOpen(bind(null, { authenticated_at: at }));
   const session = (): Binding => bind(null, { session: cookie });

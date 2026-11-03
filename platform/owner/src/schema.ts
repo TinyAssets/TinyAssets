@@ -229,8 +229,6 @@ const SHARE_USAGE = (scopes: Scopes, sign: "+" | "-",
       `FROM ${scopes.rows} WHERE 1 ON CONFLICT (who) DO UPDATE SET ${moved.map((counter) =>
         `${counter} = ${counter} + excluded.${counter}`).join(", ")};`;
 };
-/** The tables whose rows keep a body inline under `PLACE_BYTES`: user content all. */
-const INLINE_BODIES = Object.freeze(["collection_rows", "collection_history", "message_bodies"]);
 /** Count a row's inline body (`+`), or take it out (`-`): owner-wide, and in its filer's scopes. */
 const INLINE = (row: string, sign: "+" | "-") =>
   `UPDATE file_space SET body_bytes = body_bytes ${sign} ${row}.body_bytes; ${
@@ -1589,18 +1587,30 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // The one storage number (founder, 2026-11-03): a body kept inline in its row is user
     // content too, counted in `body_bytes`, owner-wide and in its writer's files scope (its
     // `filer`), so the tier's storage holds every byte a user stores wherever it lives.
-    ...INLINE_BODIES.flatMap((table) => [
-      `CREATE TRIGGER ${table}_inline_added AFTER INSERT ON ${table} ` +
-        `WHEN NEW.content_id IS NULL AND NEW.body_bytes > 0 BEGIN ${INLINE("NEW", "+")} END`,
-      `CREATE TRIGGER ${table}_inline_removed AFTER DELETE ON ${table} ` +
-        `WHEN OLD.content_id IS NULL AND OLD.body_bytes > 0 BEGIN ${INLINE("OLD", "-")} END`,
-      `CREATE TRIGGER ${table}_inline_came AFTER UPDATE OF body_bytes, content_id, filer ON ` +
-        `${table} WHEN NEW.content_id IS NULL AND NEW.body_bytes > 0 BEGIN ${
-          INLINE("NEW", "+")} END`,
-      `CREATE TRIGGER ${table}_inline_went AFTER UPDATE OF body_bytes, content_id, filer ON ` +
-        `${table} WHEN OLD.content_id IS NULL AND OLD.body_bytes > 0 BEGIN ${
-          INLINE("OLD", "-")} END`,
-    ]),
+    `CREATE TRIGGER collection_rows_inline_added AFTER INSERT ON collection_rows WHEN NEW.content_id IS NULL ` +
+      `AND NEW.body_bytes > 0 BEGIN ${INLINE("NEW", "+")} END`,
+    `CREATE TRIGGER collection_rows_inline_removed AFTER DELETE ON collection_rows WHEN OLD.content_id IS NULL ` +
+      `AND OLD.body_bytes > 0 BEGIN ${INLINE("OLD", "-")} END`,
+    `CREATE TRIGGER collection_rows_inline_came AFTER UPDATE OF body_bytes, content_id, filer ON collection_rows ` +
+      `WHEN NEW.content_id IS NULL AND NEW.body_bytes > 0 BEGIN ${INLINE("NEW", "+")} END`,
+    `CREATE TRIGGER collection_rows_inline_went AFTER UPDATE OF body_bytes, content_id, filer ON collection_rows ` +
+      `WHEN OLD.content_id IS NULL AND OLD.body_bytes > 0 BEGIN ${INLINE("OLD", "-")} END`,
+    `CREATE TRIGGER collection_history_inline_added AFTER INSERT ON collection_history WHEN NEW.content_id IS NULL ` +
+      `AND NEW.body_bytes > 0 BEGIN ${INLINE("NEW", "+")} END`,
+    `CREATE TRIGGER collection_history_inline_removed AFTER DELETE ON collection_history WHEN OLD.content_id IS NULL ` +
+      `AND OLD.body_bytes > 0 BEGIN ${INLINE("OLD", "-")} END`,
+    `CREATE TRIGGER collection_history_inline_came AFTER UPDATE OF body_bytes, content_id, filer ON collection_history ` +
+      `WHEN NEW.content_id IS NULL AND NEW.body_bytes > 0 BEGIN ${INLINE("NEW", "+")} END`,
+    `CREATE TRIGGER collection_history_inline_went AFTER UPDATE OF body_bytes, content_id, filer ON collection_history ` +
+      `WHEN OLD.content_id IS NULL AND OLD.body_bytes > 0 BEGIN ${INLINE("OLD", "-")} END`,
+    `CREATE TRIGGER message_bodies_inline_added AFTER INSERT ON message_bodies WHEN NEW.content_id IS NULL ` +
+      `AND NEW.body_bytes > 0 BEGIN ${INLINE("NEW", "+")} END`,
+    `CREATE TRIGGER message_bodies_inline_removed AFTER DELETE ON message_bodies WHEN OLD.content_id IS NULL ` +
+      `AND OLD.body_bytes > 0 BEGIN ${INLINE("OLD", "-")} END`,
+    `CREATE TRIGGER message_bodies_inline_came AFTER UPDATE OF body_bytes, content_id, filer ON message_bodies ` +
+      `WHEN NEW.content_id IS NULL AND NEW.body_bytes > 0 BEGIN ${INLINE("NEW", "+")} END`,
+    `CREATE TRIGGER message_bodies_inline_went AFTER UPDATE OF body_bytes, content_id, filer ON message_bodies ` +
+      `WHEN OLD.content_id IS NULL AND OLD.body_bytes > 0 BEGIN ${INLINE("OLD", "-")} END`,
   ]),
 ]);
 

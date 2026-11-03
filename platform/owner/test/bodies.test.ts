@@ -153,7 +153,7 @@ describe("the placement rule", () => {
     });
   });
 
-  it("counts placed bytes in the tier's storage, and adds none while it is not known",
+  it("counts placed and inline bytes in the tier's storage, and adds none while it is not known",
      async () => {
     const { stub, as, name } = ownerObject();
     const put = (rowId: string, body: string, binding: Binding) =>
@@ -164,11 +164,13 @@ describe("the placement rule", () => {
     await put("a", LARGE, { ...as(name), tiers: tight });
     expect((await failure(() => put("b", LARGE.replace("é", "e"), { ...as(name),
                                                                     tiers: tight }))).message)
-      .toBe("file_quota: the owner's file bytes are at their quota");
+      .toBe("file_quota: the owner's stored bytes are at their quota");
     // The same body again is the same chunk: it adds no byte.
     await put("c", LARGE, { ...as(name), tiers: tight });
-    // A small body is the row's own, whatever the tier's figure.
-    await put("d", SMALL, { ...as(name), tiers: tight });
+    // A small body kept in its row counts too (the one storage number, slice P): its row
+    // and its history entry would take the owner past the figure.
+    expect((await failure(() => put("d", SMALL, { ...as(name), tiers: tight }))).message)
+      .toBe("file_quota: the owner's stored bytes are at their quota");
     expect((await failure(() => put("e", `${LARGE}x`, { ...as(name), tiers: null }))).message)
       .toBe(TIER_UNREAD);
     expect(await sqlIn(stub, "SELECT COUNT(*) AS n FROM file_intents")).toEqual([{ n: 0 }]);
