@@ -80,7 +80,7 @@ import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, s
 import { type Captured, outsideConnects, reply, routeVerdict } from "./route";
 import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
          statesHold } from "./login";
-import { QUESTION_PIECE_CHARS } from "../../owner/src/sync-ignore";
+import { AUTOMATON_STATES, LIST_BYTES, stepNanos } from "../../owner/src/sync-ignore";
 import { openMirror, SESSIONS, SyncClient, SyncFenced, syncIn, syncOut, type SyncReport }
   from "./sync";
 import { asUser, give, group, type Identity, killAll, POOL_PREFIX, take, user } from "./users";
@@ -963,15 +963,24 @@ function reportSync(outbox: Outbox, report: SyncReport | null): void {
   if ((report?.conflicts ?? []).length > 0) {
     outbox.push({ type: "ta.sync_conflicts", paths: report!.conflicts });
   }
-  // Pattern lines past the ceiling are not applied, never in silence.
-  if ((report?.unapplied_count ?? 0) > 0) {
-    outbox.push({ type: "ta.sync_ignore_unapplied", lines: report!.unapplied,
-                  count: report!.unapplied_count,
-                  message: `${report!.unapplied_count} line${report!.unapplied_count === 1 ? ""
-                    : "s"} in /workspace/.ta/sync-ignore ${
-                    report!.unapplied_count === 1 ? "is" : "are"} past the ${
-                    QUESTION_PIECE_CHARS} characters of ?-pieces between stars the lines may ` +
-                    "take together, so not applied: the files they name go on syncing." });
+  // Lines past a ceiling are not applied, never in silence: which, how many, and why.
+  const unapplied = report?.unapplied ?? [];
+  const past = report?.list_bytes_past ?? 0;
+  if ((report?.unapplied_count ?? 0) > 0 || past > 0) {
+    const states = unapplied.filter((each) => each.reason === "states").length;
+    const said = [
+      states === 0 ? null : `${states} line${states === 1 ? "" : "s"} past the ${
+        AUTOMATON_STATES.toLocaleString("en")} automaton states the lines with *, ? or [ ] ` +
+        "may take together",
+      past === 0 && unapplied.every((each) => each.reason !== "bytes") ? null
+        : `the list past its ${LIST_BYTES.toLocaleString("en")} bytes (${
+          past.toLocaleString("en")} more bytes)`,
+    ].filter((each) => each !== null);
+    outbox.push({ type: "ta.sync_ignore_unapplied", lines: unapplied,
+                  count: report?.unapplied_count ?? 0, list_bytes_past: past,
+                  message: `In /workspace/.ta/sync-ignore, ${said.join(", and ")} ${
+                    said.length === 1 && states === 1 ? "is" : "are"} not applied, in file ` +
+                    "order: the files they name go on syncing." });
   }
   // A slow list says so, so the owner sees why a sync took long: its pattern lines (`*`,
   // `?`) cost the most. Said past `SLOW_MATCH_MS`, which refuses nothing.
@@ -2293,6 +2302,10 @@ export async function main(argv: readonly string[]): Promise<number> {
       return loginProbe(args[0] ?? "", args[1] ?? null);
     case "route-probe":
       return routeProbe(args);
+    case "matcher-probe":
+      // The sync-ignore automaton's step, timed here (the template build's standing check).
+      process.stdout.write(`${JSON.stringify({ step_ns: stepNanos() })}\n`);
+      return OK;
     case "signin-check":
       return await signedIn(record(args[0] ?? "")) ? OK : NO;
     case "launch":

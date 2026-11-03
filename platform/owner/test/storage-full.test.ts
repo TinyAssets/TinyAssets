@@ -14,6 +14,8 @@ import {
   heldOnly, shownBytes, STORAGE_FULL, storageFull, storageFullMessage, storageFullOf,
   UPLOADS_OPEN,
 } from "../src/storage-full";
+import { LIST_BYTES } from "../src/sync-ignore";
+import { CHUNK_BYTES, sha256Hex } from "../src/files";
 import { rig, type Rig } from "./ledger-support";
 import { failure, inFiles, sqlIn, text } from "./support";
 
@@ -235,17 +237,29 @@ describe("the sync's ignore list", () => {
     expect(await changed()).not.toContain("hold back");
   });
 
-  it("names the pattern lines past their ceiling, not applied, in the notice", async () => {
+  it("says a list past `LIST_BYTES` is not applied past it, in the notice", async () => {
     const r = await rig();
-    const at = r.bind(null, { tiers: SMALL });
-    const long = `*${"?".repeat(390)}a*`;
-    await r.stub.fileWrite(at, { path: `${W}/.ta/sync-ignore`, expected_etag: null,
-                                 content: text(`node_modules\n${long}\n*.tmp\n`) });
+    // Past a written file's most, so uploaded a 4 MiB chunk at a time, as a binder uploads.
+    const line = "*.ext-0123456789\n";
+    const bytes = text(line.repeat(Math.ceil((LIST_BYTES + 1) / line.length)));
+    const pieces: Uint8Array[] = [];
+    for (let at = 0; at < bytes.length; at += CHUNK_BYTES) {
+      pieces.push(bytes.subarray(at, at + CHUNK_BYTES));
+    }
+    const begun = await r.stub.fileUploadBegin(r.bind(null), {
+      size: bytes.length, chunks: pieces.map((piece) => sha256Hex(piece)) });
+    for (const piece of pieces) {
+      await r.stub.fileUploadChunks(r.bind(null), { intent_id: begun.intent_id,
+        chunks: [{ sha256: sha256Hex(piece), bytes: piece }] });
+    }
+    await r.stub.fileUploadCommit(r.bind(null), { intent_id: begun.intent_id,
+                                                  path: `${W}/.ta/sync-ignore`,
+                                                  expected_etag: null });
     const [notice] = (await r.stub.noticeList(r.bind(null))).notices
       .filter((each) => each.type === "sync_ignore_changed");
-    expect(notice!.detail).toContain("1 line is past the 384 characters of ?-pieces between " +
-                                     "stars the lines may take together, so not applied");
-  });
+    expect(notice!.detail).toContain(`The list past its ${LIST_BYTES.toLocaleString("en")} ` +
+                                     "bytes is not applied");
+  }, 120_000);
 
   it("never gives an outside client's sandbox count, which sees only its part of the files " +
      "(verification round 3, R3-2)", async () => {

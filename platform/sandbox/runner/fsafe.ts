@@ -109,6 +109,15 @@ export function safeWrite(base: string, path: string, bytes: Uint8Array, mode: n
 
 /** A regular file's bytes, read with no link followed on its path; null when not one. */
 export function safeRead(base: string, path: string): Buffer | null {
+  return safeReadHead(base, path, Number.POSITIVE_INFINITY)?.bytes ?? null;
+}
+
+/**
+ * A regular file's first `max` bytes at most, and its whole size, read with no link
+ * followed on its path; null when not one.
+ */
+export function safeReadHead(base: string, path: string, max: number):
+    { bytes: Buffer; size: number } | null {
   const segments = below(base, path);
   let at = base;
   for (const segment of segments.slice(0, -1)) {
@@ -128,15 +137,16 @@ export function safeRead(base: string, path: string): Buffer | null {
     if (!stat.isFile()) {
       return null;
     }
-    const out = Buffer.alloc(stat.size);
-    for (let read = 0; read < stat.size;) {
-      const got = readSync(fd, out, read, stat.size - read, read);
+    const want = Math.min(stat.size, max);
+    const out = Buffer.alloc(want);
+    for (let read = 0; read < want;) {
+      const got = readSync(fd, out, read, want - read, read);
       if (got === 0) {
-        return out.subarray(0, read);
+        return { bytes: out.subarray(0, read), size: stat.size };
       }
       read += got;
     }
-    return out;
+    return { bytes: out, size: stat.size };
   } finally {
     closeSync(fd);
   }
@@ -198,7 +208,8 @@ export async function safePieces(base: string, path: string, pieceBytes: number,
  * one at a time: each directory is read entry by entry (`opendir`), so what the walk holds is
  * one open directory a level of depth, never the tree's paths, however many there are.
  */
-export function* walkFiles(dir: string, skip: (rel: string) => boolean = () => false,
+export function* walkFiles(dir: string,
+                           skip: (rel: string, isDir: boolean) => boolean = () => false,
                            base = dir): Generator<string> {
   if (kind(dir) !== "dir") {
     return;
@@ -213,10 +224,10 @@ export function* walkFiles(dir: string, skip: (rel: string) => boolean = () => f
     for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
       const path = join(dir, entry.name);
       const rel = relative(base, path);
-      if (skip(rel)) {
+      const found = kind(path);
+      if (skip(rel, found === "dir")) {
         continue;
       }
-      const found = kind(path);
       if (found === "dir") {
         yield* walkFiles(path, skip, base);
       } else if (found === "file") {

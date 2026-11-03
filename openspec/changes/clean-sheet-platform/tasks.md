@@ -1768,6 +1768,8 @@ R, S, M and W.
 
   Verification round 5 (REQUEST_CHANGES), fixed: pattern lines bounded together by their `?` pieces between stars, `QUESTION_PIECE_CHARS` (384, derived from the measured worst case, a name past the basic plane, at the highest `max_entries` against E2B Hobby's hour; round 6 moved it from all pattern characters, which turned off honest lines), text past the basic plane matched the same linear way, those past it not applied and said in the report and the notice; the matcher's memory bounded by its keys' bytes (16 MiB); the sync child's stdin errors handled, so a child that dies before reading its job ends the run loudly.
 
+  Verification round 7 (R6-1, research first, `matcher_research.md`): the matcher replaced by its compiled shape, indexes for lines whose cost does not grow with their count and one bit-parallel automaton for the rest, behind `AUTOMATON_STATES` (8,192) and `LIST_BYTES` (8 MiB, from the heap limit and the agent's peak measured in a sandbox); the lines read as git reads a `.gitignore` (the founder's ruling), `git check-ignore` the test oracle over GitHub's 310 templates and random lists; the automaton's step a standing check of the template build.
+
   Research: the STORE research and its cross-reviews. Probes:
   - `latency-probe.md`: option A measured;
   - `sandbox-probe.md`, "Scratch and the disk".

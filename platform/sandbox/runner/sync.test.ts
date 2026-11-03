@@ -7,24 +7,28 @@
  *   offered, so a change made meanwhile is sent next time and a file gone meanwhile is noted;
  * - an upload given up (its file changed mid-sync) is aborted at once;
  * - the sync-ignore never hides itself, and its defaults never stop a path already kept;
- * - the ignore list's matcher is linear time;
+ * - lines past the matcher's ceilings keep their files syncing, and are said (the matcher
+ *   itself, as git reads a .gitignore, is `sync-ignore.test.ts`);
  * - memory stays bounded both ways: sync-in of a file larger than the sandbox's memory, and
  *   sync-out over many paths.
  */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync,
          writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterAll, describe, expect, it } from "vitest";
 
-import {
-  defaultSyncIgnore, QUESTION_PIECE_CHARS, questionPieceChars, unappliedLines,
-} from "../../owner/src/sync-ignore";
+import { AUTOMATON_STATES, LIST_BYTES, SANDBOX_HEAP } from "../../owner/src/sync-ignore";
 import {
   ignoredBy, memoryMirror, type Mirror, openMirror, type Place, SyncClient, SyncFenced,
   syncIn, syncOut, wildcard,
 } from "./sync";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 type Handler = (door: string, body: Record<string, unknown>) =>
   { status: number; body: unknown } | Promise<{ status: number; body: unknown }>;
@@ -380,41 +384,6 @@ describe("verification round 2", () => {
   });
 });
 
-describe("the sync-ignore matcher's cost (verification round 2, R2-1)", () => {
-  const rel = (i: number) =>
-    `project-${i % 50}/src/module-${i % 997}/lib/component-file-number-${i}.ts`;
-
-  it("matches 30,000 kept paths against a 4 KiB list of 2,000 one-letter lines in well " +
-     "under a second", () => {
-    const lines = Array.from({ length: 2_000 }, (_, i) => String.fromCharCode(97 + (i % 26)));
-    const matches = ignoredBy(lines);
-    const started = performance.now();
-    for (let i = 0; i < 30_000; i++) {
-      matches(rel(i));
-    }
-    expect(performance.now() - started).toBeLessThan(1_000);
-  });
-
-  it("matches 500,000 kept paths against a few lines, patterns among them, in seconds", () => {
-    const matches = ignoredBy(["*.log", "data/raw", "tmp*", "src/**/gen"]);
-    const started = performance.now();
-    let n = 0;
-    for (let i = 0; i < 500_000; i++) {
-      n += matches(rel(i)) === "custom" ? 1 : 0;
-    }
-    expect(n).toBe(0);
-    expect(performance.now() - started).toBeLessThan(5_000);
-  });
-
-  it("matches literal names and paths, and patterns, as the lines say", () => {
-    const matches = ignoredBy(["node_modules", "docs/draft", "*.log", "a?c", "x*y*z", "dist"]);
-    expect(["node_modules/x", "src/node_modules/y/z.js", "docs/draft/a.md", "out/run.log",
-            "abc", "q/xAyBz", "dist/a"].map(matches))
-      .toEqual(["default", "default", "custom", "custom", "custom", "custom", "default"]);
-    expect(["docs/drafts/a.md", "src/docs/draft", "run.logs", "ac", "xyq"].map(matches))
-      .toEqual([null, null, null, null, null]);
-  });
-});
 
 describe("the list's own write carries what it holds back", () => {
   it("offers the sync-ignore last, with the kept files its lines hold back counted", async () => {
@@ -440,42 +409,7 @@ describe("the list's own write carries what it holds back", () => {
   });
 });
 
-describe("the sync-ignore matcher against hostile lists (verification round 3, R3-1)", () => {
-  // The reviewer's paths: six segments, each file's name its own; its directories repeat.
-  const rel = (i: number) =>
-    `project-${i % 50}/src/module-${i % 997}/lib/deeper/component-file-number-${i}.ts`;
-  const perPath = (lines: string[], paths: number) => {
-    const matches = ignoredBy(lines);
-    const started = performance.now();
-    for (let i = 0; i < paths; i++) {
-      matches(rel(i));
-    }
-    return (performance.now() - started) / paths;
-  };
-
-  // Measured on this host: 0.012, 0.029, 0.029 and 0.048 ms a path (they were 1.27, 5.9 and
-  // 16.8 before); the bound is ten times that, for a slower host.
-  it.each([
-    ["star-only", (i: number) => `*${i}*x*y*z`],
-    ["?-patterns", (i: number) => `?*${i}*q`],
-    ["?-path patterns", (i: number) => `?*/*${i}*q`],
-    ["patterns whose characters every path holds", (i: number) => `p*/?*${i}*-`],
-  ])("matches 2,000 %s at well under a millisecond a path", (_, line) => {
-    expect(perPath(Array.from({ length: 2_000 }, (_, i) => line(i)), 3_000)).toBeLessThan(0.5);
-  });
-
-  it("matches ? and * as before, whatever it remembered", () => {
-    const matches = ignoredBy(["?.log", "a*b?d", "src/*/gen", "*.tmp", "node_modules"]);
-    for (let pass = 0; pass < 2; pass++) {
-      expect(["x.log", "xy.log", "aXXbcd", "abd", "src/a/gen/f", "src/gen", "q/r.tmp",
-              "node_modules/x", "a/node_modules"].map(matches))
-        .toEqual(["custom", null, "custom", null, "custom", null, "custom", "default",
-                  "default"]);
-    }
-    expect(wildcard("?", "\u{1F600}")).toBe(true);
-    expect(wildcard("??", "\u{1F600}")).toBe(false);
-  });
-
+describe("the sync-ignore's ceilings, at sync-out", () => {
   it("says how long matching took in the sync's report", async () => {
     const { place: p, local } = place();
     writeFileSync(join(local, "a.txt"), "a");
@@ -483,111 +417,85 @@ describe("the sync-ignore matcher against hostile lists (verification round 3, R
       : { status: 404, body: {} }), p, memoryMirror(), LEASE, []);
     expect(typeof report.match_ms).toBe("number");
   });
-});
 
-describe("the ?-pieces' ceiling (verification rounds 4 and 5, R4-1)", () => {
-  // A line whose one middle piece, `len` characters, holds a `?`: charged `len`.
-  const pattern = (len: number, tag: string) => `*${tag}${"?".repeat(len - tag.length)}*`;
-
-  it("charges only middle pieces holding a ?, and applies up to the ceiling, not past it", () => {
-    expect([questionPieceChars("*.log"), questionPieceChars("a?c"), questionPieceChars("?*x*?"),
-            questionPieceChars("*a?b*c*"), questionPieceChars("x*??*y*z?q*")])
-      .toEqual([0, 0, 0, 3, 5]);
-    const at = [pattern(QUESTION_PIECE_CHARS - 100, "a"), pattern(100, "b")];
-    expect(unappliedLines(at)).toEqual([]);
-    // One more charged character, in another line: that line alone is not applied.
-    expect(unappliedLines([...at, "*?c*"])).toEqual(["*?c*"]);
-    // A literal line, a line with no ?-piece and a repeated line take none of it.
-    expect(unappliedLines([...at, "node_modules", "*.tmp", "/dist/**", at[0]!])).toEqual([]);
-    // A line not applied matches nothing; the ones before it still do.
-    const matches = ignoredBy([...at, "*?log*"]);
-    expect(matches("run.log")).toBeNull();
-    expect(matches(`a${"x".repeat(QUESTION_PIECE_CHARS - 101)}`)).toBe("custom");
-  });
-
-  // GitHub's templates (github.com/github/gitignore, CC0), as fetched 2026-11-03.
-  it("applies GitHub's own gitignore templates in full", () => {
-    const template = (name: string) => readFileSync(join(__dirname, "fixtures", "gitignore",
-                                                         `${name}.gitignore`), "utf8").split("\n");
-    for (const names of [["VisualStudio"], ["Node", "macOS", "VisualStudioCode", "JetBrains"],
-                         ["Unity"]]) {
-      expect(unappliedLines([...defaultSyncIgnore(), ...names.flatMap(template)])).toEqual([]);
-    }
-  });
-
-  it("needs no ceiling for lines with no ?-piece: 2,000 of them over long unique names", () => {
-    const lines = Array.from({ length: 2_000 }, (_, i) => `*${"ab".repeat(20)}${i}*${
-      String.fromCharCode(97 + (i % 26))}*.x`);
-    expect(unappliedLines(lines)).toEqual([]);
-    const matches = ignoredBy(lines);
-    const started = performance.now();
-    for (let i = 0; i < 400; i++) {
-      matches(`${"ab".repeat(20)}${String(i).padStart(8, "0")}`.padEnd(250, "abcdefghij"));
-    }
-    expect((performance.now() - started) / 400).toBeLessThan(2);
-  });
-
-  it("still charges the hostile shape its whole ?-piece", () => {
-    const line = `*${"?".repeat(150)}a*`;
-    expect(questionPieceChars(line)).toBe(151);
-    expect(unappliedLines([line, line.replace("a*", "b*"), line.replace("a*", "c*")]))
-      .toEqual([line.replace("a*", "c*")]);
-  });
-
-  it("matches names past the basic plane as fast, and by code points", () => {
-    expect([wildcard("?", "\u{1F600}"), wildcard("??", "\u{1F600}"), wildcard("a?b", "a\u{1F600}b"),
-            wildcard("*\u{1F600}*", "x\u{1F600}y"), wildcard("*?.md", "\u{1F600}.md"),
-            wildcard("*??.md", "\u{1F600}.md"), wildcard("x*?", "x\u{1F600}"),
-            wildcard("\u{1F600}*", "\u{1F600}")])
-      .toEqual([true, false, true, true, true, false, true, true]);
-    const lines = Array.from({ length: 2_000 }, (_, i) => `*${"ab".repeat(20)}${i}*${
-      String.fromCharCode(97 + (i % 26))}*.x`);
-    const matches = ignoredBy(lines);
-    const started = performance.now();
-    for (let i = 0; i < 400; i++) {
-      matches(`\u{1F600}${"ab".repeat(20)}${String(i).padStart(8, "0")}`.padEnd(250, "abcdefghij"));
-    }
-    expect((performance.now() - started) / 400).toBeLessThan(2);
-  });
-
-  it("keeps syncing the files a line past the ceiling names, and says so", async () => {
+  it("keeps syncing the files lines past the automaton's states name, and says which, why",
+     async () => {
     const { place: p, local } = place();
     mkdirSync(join(local, ".ta"), { recursive: true });
-    writeFileSync(join(local, ".ta", "sync-ignore"),
-                  `${pattern(QUESTION_PIECE_CHARS, "z")}\n*?log*\n`);
+    // Automaton lines filling its states, then one more naming `run.log`.
+    const filler = Array.from({ length: Math.ceil(AUTOMATON_STATES / 10) },
+                              (_, i) => `*x${i}?${"y".repeat(14)}`);
+    writeFileSync(join(local, ".ta", "sync-ignore"), `${[...filler, "*?log"].join("\n")}\n`);
     writeFileSync(join(local, "run.log"), "kept syncing");
     const sent: string[] = [];
     const report = await syncOut(client((door, body) => door === "commit"
       ? commitAll(body, sent) : { status: 404, body: {} }), p, memoryMirror(), LEASE, []);
     expect(sent).toContain("/workspace/run.log");
-    expect(report.unapplied).toEqual(["*?log*"]);
-    expect(report.unapplied_count).toBe(1);
+    // Said in file order, each with its ceiling: the first listed, all counted.
+    expect(report.unapplied[0]).toMatchObject({ reason: "states" });
+    expect(report.unapplied_count).toBeGreaterThan(report.unapplied.length);
+    expect(report.list_bytes_past).toBe(0);
   });
 
-  it("matches the reviewer's long-? lines over unique long names in well under a ms a name",
-     () => {
-    // 2,000 lines of `*`, 100 to 199 `?`, a letter, `*`: 62 ms a path before the ceiling.
-    const lines = Array.from({ length: 2_000 }, (_, i) => `*${"?".repeat(100 + (i % 100))}${
-      String.fromCharCode(97 + (i % 26))}*`);
-    const matches = ignoredBy(lines);
-    const started = performance.now();
-    for (let i = 0; i < 400; i++) {
-      matches(`${String(i).padStart(8, "0")}`.padEnd(250, "abcdefghij"));
-    }
-    expect((performance.now() - started) / 400).toBeLessThan(2);
-  });
-
-  it("answers the same across its memory's starting again, whatever its keys' length", () => {
-    const matches = ignoredBy(["*q", "deep/*/x?"]);
-    const long = (i: number) => `${String(i).padStart(6, "0")}${"d".repeat(3_800)}`;
-    // 2,400 prefixes of 3,800 characters: past the memory's 8 Mi characters.
-    for (let pass = 0; pass < 2; pass++) {
-      for (let i = 0; i < 2_400; i++) {
-        expect(matches(`${long(i)}/file.q`)).toBe("custom");
-      }
-    }
-    expect(matches("deep/a/x1")).toBe("custom");
-    expect(matches("deep/a/y1")).toBeNull();
+  it("reads the list to `LIST_BYTES` alone, the rest said, and the sync completes", async () => {
+    const { place: p, local } = place();
+    mkdirSync(join(local, ".ta"), { recursive: true });
+    const line = "*.ext-0123456789-";
+    const count = Math.ceil(LIST_BYTES / (line.length + 6)) + 1_000;
+    writeFileSync(join(local, ".ta", "sync-ignore"),
+                  `${Array.from({ length: count }, (_, i) => `${line}${i}`).join("\n")}\nlast.txt\n`);
+    writeFileSync(join(local, "last.txt"), "named past the cut: kept syncing");
+    const sent: string[] = [];
+    const report = await syncOut(client((door, body) => door === "commit"
+      ? commitAll(body, sent) : { status: 404, body: {} }), p, memoryMirror(), LEASE, []);
+    expect(sent).toContain("/workspace/last.txt");
+    expect(report.list_bytes_past).toBeGreaterThan(0);
   });
 });
 
+describe("a list larger than the sandbox's heap would hold whole", () => {
+  it("is cut at `LIST_BYTES` in a sync agent given the sandbox's heap, which completes", () => {
+    // The sync, bundled as the template bundles the runner, run in a Node given the heap a
+    // sync agent has in the sandbox (`SANDBOX_HEAP`), over a 20 MiB list of `*.x` lines (the
+    // list that crashed the agent before `LIST_BYTES`).
+    const { root, local } = place();
+    mkdirSync(join(local, ".ta"), { recursive: true });
+    const lines: string[] = [];
+    for (let i = 0, bytes = 0; bytes < 20 * 1024 * 1024; i++) {
+      lines.push(`*.x${i.toString(36)}`);
+      bytes += lines.at(-1)!.length + 1;
+    }
+    writeFileSync(join(local, ".ta", "sync-ignore"), `${lines.join("\n")}\n`);
+    lines.length = 0;
+    writeFileSync(join(local, "kept.txt"), "kept");
+    const entry = join(root, "entry.mjs");
+    const require = createRequire(join(HERE, "..", "..", "package.json"));
+    (require("esbuild") as { buildSync: (options: unknown) => void }).buildSync({
+      stdin: { contents: `
+        import { memoryMirror, SyncClient, syncOut } from ${JSON.stringify(join(HERE, "sync.ts"))};
+        const fetcher = async (_url, init) => {
+          const body = JSON.parse(init.body);
+          return new Response(JSON.stringify({ outcomes: (body.ops ?? []).map((op) => ({
+            path: op.path, outcome: "committed", entry: { version: 1 } })) }), { status: 200 });
+        };
+        const report = await syncOut(new SyncClient("https://egress.test", "t", 1, 2, fetcher),
+          { local: ${JSON.stringify(local)}, sessionsIn: ${JSON.stringify(join(root, "in"))},
+            sessionsOut: ${JSON.stringify(join(root, "out"))}, authority: "owner",
+            records: new Map() }, memoryMirror(), { lease_id: "l", epoch: 1 }, []);
+        process.stdout.write(JSON.stringify({ committed: report.committed,
+                                              past: report.list_bytes_past }));
+      `, resolveDir: HERE, loader: "ts" },
+      outfile: entry, bundle: true, platform: "node", target: "node22", format: "esm",
+      banner: { js: "import { createRequire as __r } from 'node:module'; " +
+                    "const require = __r(import.meta.url);" },
+      logLevel: "error" });
+    // `--max-old-space-size` is the old space; the young space adds its own to the limit.
+    const run = spawnSync(process.execPath, [
+      `--max-old-space-size=${Math.floor(SANDBOX_HEAP / 1024 / 1024) - 48}`, entry],
+                          { encoding: "utf8" });
+    expect(run.status, run.stderr).toBe(0);
+    const out = JSON.parse(run.stdout) as { committed: number; past: number };
+    expect(out.committed).toBeGreaterThan(0);
+    expect(out.past).toBeGreaterThan(10 * 1024 * 1024);
+  }, 300_000);
+});

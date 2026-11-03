@@ -1235,6 +1235,23 @@ describe("the sync", () => {
     }
   }, 60_000);
 
+  it("says the sync-ignore lines past its ceilings, which, how many and why, and keeps " +
+     "their files syncing", async () => {
+    // Automaton lines past `AUTOMATON_STATES`, the last naming a file the run writes.
+    const filler = Array.from({ length: 900 }, (_, i) => `*x${i}?${"y".repeat(14)}`);
+    box.write("/workspace/.ta/sync-ignore", `${[...filler, "*?log"].join("\n")}\n`);
+    box.cli("codex", { lines: SHAPES["codex"]!.lines, writes: { "run.log": "kept syncing" } });
+    await run("codex");
+    const said = doors.frames().find((frame) => frame["type"] === "ta.sync_ignore_unapplied")!;
+    expect(said).toBeDefined();
+    const lines = said["lines"] as { line: string; reason: string }[];
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.every((each) => each.reason === "states")).toBe(true);
+    expect(said["count"]).toBeGreaterThanOrEqual(lines.length);
+    expect(String(said["message"])).toMatch(/past the 8,192 automaton states/);
+    expect(doors.ops().map((op) => op.path)).toContain("/workspace/agents/main/run.log");
+  });
+
   it("sends a file past one chunk through the upload doors, chunk by chunk", async () => {
     const big = "a".repeat(4 * 1024 * 1024) + "b".repeat(4 * 1024 * 1024) + "c".repeat(1024);
     box.cli("codex", { lines: SHAPES["codex"]!.lines, writes: { "big.bin": big } });

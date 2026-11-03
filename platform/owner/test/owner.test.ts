@@ -246,9 +246,10 @@ describe("the object's RPC surface", () => {
       void Promise.resolve(prop).catch(() => {});
       return prop({ owner: name, caller: name, origin: null }, {});
     };
+    // Read off the class itself: an RPC call on a method the object lacks rejects in the
+    // pool's stub outside the call's own promise (round 6's unhandled rejection).
     for (const method of ["claimWake", "markWake", "settleWake", "dueWakes", "wakeSender"]) {
-      expect((await failure(() => call(method))).message)
-        .toBe(`The RPC receiver does not implement "${method}".`);
+      expect(Reflect.has(OwnerDO.prototype, method)).toBe(false);
     }
     expect((await failure(() => call("alarm"))).message).toMatch(/reserved method/);
   });

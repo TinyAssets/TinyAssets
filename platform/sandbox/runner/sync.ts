@@ -42,9 +42,10 @@ import { DatabaseSync } from "node:sqlite";
 import type { SourceRecord } from "../../doors/src/sources";
 
 import { isKept, keptPaths } from "./engine";
-import { remove, safeDirs, safePieces, safeRead, safeStream, safeWrite, walkFiles } from "./fsafe";
+import { remove, safeDirs, safePieces, safeRead, safeReadHead, safeStream, safeWrite,
+         walkFiles } from "./fsafe";
 import { heldSecret } from "./guards";
-import { defaultSyncIgnore, ignoredBy, SYNC_IGNORE, unappliedLines }
+import { defaultSyncIgnore, ignoredBy, LIST_BYTES, SYNC_IGNORE, type Unapplied }
   from "../../owner/src/sync-ignore";
 
 export { DEFAULT_IGNORES, defaultSyncIgnore, ignoredBy, SYNC_IGNORE, wildcard }
@@ -480,11 +481,13 @@ export interface SyncReport {
   /** How long matching the sync-ignore list took this sync, in ms. */
   readonly match_ms: number;
   /**
-   * The list's pattern lines past `QUESTION_PIECE_CHARS`, not applied (the files they name
-   * go on syncing): the first `LISTED`, and how many in all.
+   * The list's lines not applied (the files they name go on syncing), each with the ceiling
+   * it is past (`AUTOMATON_STATES` or `LIST_BYTES`): the first `LISTED`, and how many.
    */
-  readonly unapplied: readonly string[];
+  readonly unapplied: readonly Unapplied[];
   readonly unapplied_count: number;
+  /** The list's bytes past `LIST_BYTES`, never read nor applied. */
+  readonly list_bytes_past: number;
 }
 
 /** Held-back files a report lists by path, at most: past them it counts them. */
@@ -507,20 +510,27 @@ const RACY_MS = 2_000;
 const RACY = -1;
 
 /**
- * The sync-ignore rules of the workspace at `local`: its file's lines, or the defaults, the
- * file written with them (so the owner sees and edits them) when it is missing.
+ * The sync-ignore rules of the workspace at `local`: its file's lines, read to `LIST_BYTES`
+ * at most (a line the cut falls in, and every one after it, not applied: `past` says how
+ * many bytes), or the defaults, the file written with them (so the owner sees and edits
+ * them) when it is missing.
  */
-export function syncIgnore(local: string): readonly string[] {
+export function syncIgnore(local: string): { lines: readonly string[]; past: number } {
   const path = localOf({ local }, SYNC_IGNORE);
-  const read = safeRead(local, path);
+  const read = safeReadHead(local, path, LIST_BYTES);
   if (read !== null) {
-    return read.toString("utf8").split("\n");
+    let text = read.bytes;
+    if (read.size > read.bytes.length) {
+      const cut = text.lastIndexOf(10);
+      text = text.subarray(0, cut < 0 ? 0 : cut);
+    }
+    return { lines: text.toString("utf8").split("\n"), past: read.size - text.length };
   }
   if (!existsSync(path)) {
     safeWrite(local, path, new TextEncoder().encode(`${defaultSyncIgnore().join("\n")}\n`),
               0o664, undefined, 0o2775);
   }
-  return defaultSyncIgnore();
+  return { lines: defaultSyncIgnore(), past: 0 };
 }
 
 /** A file offered: what it is and what the mirror knew; its bytes only when it is small. */
@@ -792,29 +802,30 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     }
   }
   await send();
-  const rules = syncIgnore(place.local);
-  const matcher = ignoredBy(rules);
-  // Pattern lines past the ceiling (`QUESTION_PIECE_CHARS`) are not applied, and said.
-  const unapplied = unappliedLines(rules);
+  const list = syncIgnore(place.local);
+  const matcher = ignoredBy(list.lines);
+  // Lines past a ceiling (`AUTOMATON_STATES`, `LIST_BYTES`) are not applied, and said.
+  const unapplied = matcher.unapplied;
   // How long matching the list took, so a slow list says so in the run's report.
   let matchMs = 0;
-  const ignored = (rel: string) => {
+  const ignored = (rel: string, isDir = false) => {
     const began = performance.now();
     try {
-      return matcher(rel);
+      return matcher(rel, isDir);
     } finally {
       matchMs += performance.now() - began;
     }
   };
   /** Kept out: a custom line's path, or a default line's path the owner does not keep yet. */
-  const out = (rel: string): boolean => {
-    const why = ignored(rel);
+  const out = (rel: string, isDir: boolean): boolean => {
+    const why = ignored(rel, isDir);
     return why === "custom" || (why === "default"
                                 && !mirror.knowsUnder(`/workspace/${rel}`));
   };
-  for (const rel of walkFiles(place.local, (each) => {
+  for (const rel of walkFiles(place.local, (each, isDir) => {
     const name = each.split("/").at(-1)!;
-    return each === ".sessions" || name.startsWith(".ta-") || out(each.split("\\").join("/"));
+    return each === ".sessions" || name.startsWith(".ta-")
+      || out(each.split("\\").join("/"), isDir);
   })) {
     const path = `/workspace/${rel.split("\\").join("/")}`;
     if (place.authority !== "owner" && inOwnerTrees(path)) {
@@ -855,7 +866,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
   await send();
   return { committed, conflicts, refused, skipped, skipped_unlisted: Math.max(0, held - LISTED),
            match_ms: Math.round(matchMs), unapplied: unapplied.slice(0, LISTED),
-           unapplied_count: unapplied.length };
+           unapplied_count: unapplied.length, list_bytes_past: list.past };
 }
 
 /** Whether a kept file's sandbox copy differs from what the owner's files hold. */
