@@ -168,6 +168,7 @@ import { migrate } from "./schema";
 import { Sessions } from "./sessions";
 import { CONTROL_FRESH_MS, ControlGate, type Gate } from "./control-gate";
 import { codePoints, principal, utf8Bytes } from "./text";
+import { storageFull, storageFullMessage } from "./storage-full";
 import { priced, Usage as ModelUsage, type UsageReceipt } from "./usage";
 import {
   Egress, type EgressOpened, type EgressReceipt, type EgressRefusal, egressRequest,
@@ -1339,7 +1340,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
             this.#ledger.retire(agent, now);
           }
         }
-      });
+      },
+      // The one wall's refusal names the owner's tier and the next one up (`storage_full`).
+      (used, limit) => storageFullMessage(storageFull(used, limit, ownerTier(storage),
+                                                      keptTiers(storage))));
     this.#bodies = new Bodies(this.#files, storage, write);
     // An outside writer's share of the collections is the owner's own `client_share`.
     this.#collections = new Collections(storage, undefined, this.#bodies.adopt,

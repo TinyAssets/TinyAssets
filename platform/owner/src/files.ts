@@ -86,11 +86,14 @@ import {
   parentOf, storedPath, TEMP, within, WORKSPACE,
 } from "./paths";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
+import { storageFull, storageFullMessage } from "./storage-full";
 
 export { CHUNK_BYTES } from "./manifest";
 /**
- * The fixed codes a quota's refusal starts with: an owner-wide bound (`file_quota`), and an
- * outside client's share of one, or all clients' together (`file_share`).
+ * The fixed codes a quota's refusal starts with: the owner's whole storage, the tier's
+ * figure or the owner's own lower one (`storage_full`, `storage-full.ts`: the one wall a
+ * user meets); another owner-wide bound (`file_quota`); and an outside client's share of
+ * one, or all clients' together (`file_share`).
  */
 export const FILE_QUOTA = "file_quota";
 export const FILE_SHARE = "file_share";
@@ -553,16 +556,25 @@ export class Files {
    * the change.
    */
   readonly #changed: (path: string, present: boolean, now: number) => void;
+  /**
+   * The refusal at the tier's storage figure (`storage-full.ts`): the one wall, its message
+   * naming what is used, the whole, how to free space and the upgrade path. The object names
+   * the owner's tier; without one, the facts it has.
+   */
+  readonly #full: (used: number, limit: number) => string;
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
               write: Write, reclaim: Reclaim = () => false,
-              changed: (path: string, present: boolean, now: number) => void = () => {}) {
+              changed: (path: string, present: boolean, now: number) => void = () => {},
+              full: (used: number, limit: number) => string = (used, limit) =>
+                storageFullMessage(storageFull(used, limit, null, null))) {
     this.#storage = storage;
     this.#store = store;
     this.#limits = limits;
     this.#write = write;
     this.#reclaim = reclaim;
     this.#changed = changed;
+    this.#full = full;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -675,7 +687,10 @@ export class Files {
           throw new Refused(TIER_UNREAD);  // the tier's storage is not known: no guess
         }
         if (after[counter] > shareOf(bound, scope.percent)) {
-          throw new Refused(scope.refusal(what));
+          // The owner's whole storage is the one wall a user meets: `storage_full`. A
+          // client's share of it, and the index's own ceilings, keep their codes.
+          throw new Refused(setting === "max_bytes" && scope.percent === 100
+            && scope.filer === "*" ? this.#full(after[counter], bound) : scope.refusal(what));
         }
       }
     }

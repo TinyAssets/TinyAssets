@@ -301,10 +301,16 @@ export function callDoor(stub: DurableObjectStub<OwnerDO>, binding: Binding, too
   return Reflect.apply(door, stub, takesRequest(tool) ? [binding, request] : [binding]);
 }
 
-/** An owner object's refusal or invalid request, as opposed to a bug. */
-export function refusal(error: unknown): { status: 400 | 403; message: string } | null {
+/**
+ * An owner object's refusal or invalid request, as opposed to a bug. A refusal at the
+ * owner's storage figure (`storage_full`, `owner/src/storage-full.ts`) is 507 Insufficient
+ * Storage, so a client tells the one wall from a permission.
+ */
+export function refusal(error: unknown): { status: 400 | 403 | 507; message: string } | null {
   if (error instanceof Error && (error.name === "Refused" || error.name === "Invalid")) {
-    return { status: error.name === "Refused" ? 403 : 400, message: error.message };
+    return { status: error.name === "Invalid" ? 400
+               : error.message.startsWith("storage_full:") ? 507 : 403,
+             message: error.message };
   }
   return null;
 }
