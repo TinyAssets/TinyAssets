@@ -186,6 +186,10 @@ describe("the owner export", () => {
   });
 });
 
+/** A manifest finished long ago, so tonight's is due now. */
+const LAST_YEARS = "INSERT INTO owner_backups (day, state, cursor, parts, part_list, bytes, " +
+  "started_at, finished_at) VALUES ('20200101', 'done', NULL, 0, '', 0, 1, 1)";
+
 describe("the nightly manifest", () => {
   it("is written by the owner's own schedule, under its key, and the older one let go",
      async () => {
@@ -198,8 +202,7 @@ describe("the nightly manifest", () => {
     expect(await laneAt(o.stub, "manifest")).toBe(tomorrow + spread(o.name));
     expect(await laneAt(o.stub, "manifest")).toBeGreaterThan(now);
     // Last night's was written long ago: tonight's is due now.
-    await sqlIn(o.stub, "INSERT INTO owner_backups (day, state, cursor, parts, bytes, " +
-                        "started_at, finished_at) VALUES ('20200101', 'done', NULL, 0, 0, 1, 1)");
+    await sqlIn(o.stub, LAST_YEARS);
     await o.stub.fileMkdir(o.bind(), { path: `${W}/d`, expected_etag: null });  // re-derives jobs
     await drainDue(o.stub);
     const day = manifestDay(Date.now() / 1000);
@@ -228,8 +231,7 @@ describe("the nightly manifest", () => {
   it("is deleted with every copy of the owner's key when the owner is erased", async () => {
     const o = await owner();
     await write(o, `${W}/gone.bin`, filled(INLINE_BYTES + 10, 6));
-    await sqlIn(o.stub, "INSERT INTO owner_backups (day, state, cursor, parts, bytes, " +
-                        "started_at, finished_at) VALUES ('20200101', 'done', NULL, 0, 0, 1, 1)");
+    await sqlIn(o.stub, LAST_YEARS);
     await o.stub.fileMkdir(o.bind(), { path: `${W}/d`, expected_etag: null });
     await drainDue(o.stub);
     const day = manifestDay(Date.now() / 1000);

@@ -109,9 +109,8 @@ export function exported(): Readonly<Record<string, ExportTable>> {
     outside_agents: t("agent_id command_center_id outside_client outside_family source " +
                       "source_ref display_name delivery_method recipe_id revision " +
                       "disabled_reason created_at max_wakes_per_hour batch_window_s " +
-                      "unacked_to_owner unacked_to_owner_bytes revoked_through deleted_at",
-                      "agent_id", { subscription: "a doorbell's delivery address, which " +
-                                    "may carry the outside agent's own secret" }),
+                      "unacked_to_owner unacked_to_owner_bytes", "agent_id",
+                      { wake_tat: "the doorbell's rate pacing, an internal mark" }),
     native_agents: t("agent_id agent created_at retired_at unacked_to_owner " +
                      "unacked_to_owner_bytes", "agent_id"),
     ledger_messages: t("seq message_id command_center_id room_id sender_kind sender_id " +
@@ -162,7 +161,7 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   policy_usage: "counters the schema's triggers derive",
   proposal_shares: "counters the schema's triggers derive",
   ledger_wakes: "doorbell deliveries in flight",
-  ledger_rings: "the doorbell's hourly rate window",
+  wake_callbacks: "sealed doorbell tokens (ADR-018: credentials are never exported)",
   grant_fences: "the grants' revoke fence, an internal mark",
   platform_tiers: "the platform's tier numbers as last read, not the owner's",
   owner_erasure: "an erasure in progress",
