@@ -98,16 +98,18 @@ describe("the starter package", () => {
     }
   });
 
-  it("holds the default agent's files, the owner-wide profile and map, and the shared " +
-     "skills, agent.json last", () => {
+  it("holds the default agent's files, the owner-wide profile, map and goals, and the " +
+     "shared skills, agent.json last", () => {
     expect(bundled.files.map((file) => file.path.replace(/^\/workspace\//, ""))).toEqual([
       ".agents/skills/knowledge/SKILL.md", ".agents/skills/knowledge/references/okf-spec.md",
       ".agents/skills/schedule/SKILL.md", ".agents/skills/rooms-and-board/SKILL.md",
       ".agents/skills/onboarding/SKILL.md", ".agents/skills/scratch/SKILL.md",
-      ".agents/skills/shared-brain/SKILL.md", "agents/main/SOUL.md", "USER.md", "index.md",
+      ".agents/skills/shared-brain/SKILL.md", ".agents/skills/goals/SKILL.md",
+      "agents/main/SOUL.md", "USER.md", "index.md", "goals/index.md",
       "agents/main/AGENTS.md", "agents/main/agent.json"]);
     expect(bundled.files.filter((file) => file.class === "personal").map((file) => file.path))
-      .toEqual(["/workspace/agents/main/SOUL.md", "/workspace/USER.md", "/workspace/index.md"]);
+      .toEqual(["/workspace/agents/main/SOUL.md", "/workspace/USER.md", "/workspace/index.md",
+                "/workspace/goals/index.md"]);
     // The profile moved from main's own folder to the workspace's root, shared by every agent.
     expect(fileAt("/workspace/USER.md")).toMatchObject({
       moved_from: "/workspace/agents/main/USER.md" });
@@ -115,11 +117,24 @@ describe("the starter package", () => {
       .toEqual(["/workspace/agents/main/USER.md"]);
     expect(fileAt("/agents/main/AGENTS.md").text).toContain("/workspace/USER.md");
     expect(fileAt("/agents/main/AGENTS.md").text).toContain("/workspace/index.md");
+    expect(fileAt("/agents/main/AGENTS.md").text).toContain("/workspace/goals/index.md");
+    // The goals index: an OKF index of its sections, seeded empty, the owner's own.
+    const goals = fileAt("/workspace/goals/index.md").text;
+    expect(goals.startsWith("---")).toBe(false);
+    expect(goals.split("\n").filter((line) => line.startsWith("# ")))
+      .toEqual(["# Goals", "# Active", "# Paused", "# Ended"]);
     // The map is OKF index lines, no frontmatter: data, not behaviour.
     const map = fileAt("/workspace/index.md").text;
     expect(map.startsWith("---")).toBe(false);
     expect(map.split("\n").filter((line) => line.startsWith("* ")).every((line) =>
-      /^\* \[[^\]]+\]\(\/[^)]*\) - \S/.test(line))).toBe(true);
+      /^\* \[[^\]]+\]\(\/workspace\/[^)]*\) - \S/.test(line))).toBe(true);
+    expect(map).toContain("(/workspace/goals/index.md)");
+    // One link rule for the whole workspace: every root-absolute link is from /workspace.
+    for (const file of bundled.files.filter((each) => each.path.endsWith(".md")
+                                            && !each.path.endsWith("/okf-spec.md"))) {
+      const links = [...file.text.matchAll(/\]\((\/[^)\s]*)\)/g)].map((found) => found[1]!);
+      expect(links.filter((link) => !link.startsWith("/workspace/")), file.path).toEqual([]);
+    }
     // The engine is the strongest connected source; its scopes let it schedule its own runs.
     const agent = agentFile(fileAt("/agent.json").text);
     expect(agent).toMatchObject({ engine: "auto", model: null, credential: null,
@@ -137,7 +152,8 @@ describe("the starter package", () => {
                      "allowed-tools", "disable-model-invocation"];
     const skills = bundled.files.filter((file) => file.path.endsWith("/SKILL.md"));
     expect(skills.map((file) => file.path.split("/").at(-2))).toEqual(
-      ["knowledge", "schedule", "rooms-and-board", "onboarding", "scratch", "shared-brain"]);
+      ["knowledge", "schedule", "rooms-and-board", "onboarding", "scratch", "shared-brain",
+       "goals"]);
     for (const skill of skills) {
       const front = frontOf(skill.text);
       expect([...front.keys()].filter((key) => !allowed.includes(key))).toEqual([]);

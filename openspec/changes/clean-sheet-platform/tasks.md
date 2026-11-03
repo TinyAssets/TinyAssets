@@ -1693,6 +1693,24 @@ R, S, M and W.
     file may now sit outside the owner's trees; a managed one may not. The doors' part
     (client instructions, `file_write` and `file_edit`, descriptions, the connect page,
     plugins) is the BRAIN slice's, after STARTER and STORE merge.
+  - **Goals and proactivity** (`goals_research.md` §6.1; starter version 3): a new `goals`
+    skill (one page a goal under `/workspace/goals`: Done when, Agreed, Not wanted, Now,
+    Links; the owner's own word alone sets the first three; its steward works on an active,
+    confirmed goal unasked, inside the workspace, an outward act only as Agreed names it, and
+    spending or anything irreversible always asks); the goals' index `/workspace/goals/index.md`
+    seeded (personal: `# Active`, `# Paused`, `# Ended`); `AGENTS.md` reads the index at the
+    start of a conversation, its Proactivity section is initiative per goal and interruption
+    per owner, and its Trust names the goal pages; `USER.md`'s off/low/high dial and quiet
+    hours become "When not to message me"; onboarding asks what the owner is working toward;
+    the schedule skill's brief is a pass over the goals at the owner's times, a dated step
+    may get its own `at` run; a board row names its goal on its second line; the
+    shared-brain skill reads the goals' index before acting. `/workspace/goals` joins
+    `OWNER_TREES` (a narrowed grant changes no goal; the default grant writes them; a client
+    sandbox's always-read set stays the abilities' trees, `ABILITY_TREES`). One link rule for
+    the whole workspace: root-absolute from `/workspace` (the knowledge skill and the map
+    changed to it; a guard holds every link in the package to it). No counts, default
+    schedules or fixed numbers in the text: the knowledge skill's page and index sizes
+    became "short". The goals clause in the client instructions and the plugins are BRAIN's.
   - The OKF watcher's review has no consumer of its own: a readied proposal waits for an
     agent review session's receipt, as every pull request does (founder item, if an
     automatic reviewer is wanted).

@@ -18,10 +18,11 @@ pinned to the commit its first line names. Read it only for detail the core does
 ## Layout
 - `raw/`: sources exactly as received (uploads, saved pages, transcripts). Never edit them.
 - Pages: one `.md` file a concept (a person, project, topic, decision, how-to), in
-  directories that suit the subject. A few KB each; split a page past about 20,000 characters.
+  directories that suit the subject. Keep each page to its concept; split a page that grows
+  to cover several.
 - `index.md` in every directory: no frontmatter, one line a child,
-  `* [Title](/path/page.md) - its description`, under `#` section headings. The root
-  `index.md` stays under about 20 KB: point to directory indexes rather than list everything.
+  `* [Title](/workspace/<path>/page.md) - its description`, under `#` section headings. The
+  root `index.md` stays short: point to directory indexes rather than list everything.
 - Anywhere in `/workspace`: a directory you make gets an `index.md` and a line in its
   parent's index, up to `/workspace/index.md`, so every agent finds it by reading down.
 - A derived map (a summary of a project, a list made from other files) is kept small, carries
@@ -40,14 +41,15 @@ title: Display name
 description: One sentence; it is copied into index.md and search results.
 tags: [optional, list]
 sources:               # where it came from
-  - { id: s1, resource: /raw/2026-11-03-call-notes.md, title: Call notes }
+  - { id: s1, resource: /workspace/knowledge/raw/2026-11-03-call-notes.md, title: Call notes }
 generated: { by: <agent>/<engine>, at: 2026-11-03T14:00:00Z }
 status: stable         # draft | stable | deprecated
 ---
-Body in markdown. Link pages with root-absolute links: [Ana](/people/ana.md).
+Body in markdown. Link pages with root-absolute links: [Ana](/workspace/knowledge/people/ana.md).
 ```
 Times are ISO 8601 with an offset (`2026-11-03T14:00:00Z`). Links are standard markdown,
-root-absolute from `/workspace/knowledge`, so they work in grep, the owner's app and Obsidian.
+root-absolute from `/workspace`, as everywhere in the workspace, so they work in grep, the
+owner's app and Obsidian.
 A broken link is allowed: it is knowledge not written yet.
 
 ## Starting a base
@@ -66,9 +68,9 @@ okf_version: "0.2"
   When the indexes do not lead there: in a sandbox, `grep -ri`; over MCP alone (a main
   agent), the `tinyassets` tools `search` (by words) then `fetch`, or `file_list` with
   `head_chars` and `file_read`. Cite the pages you used. File a good answer back as a page.
-- **Lint**, when asked or after many ingests: broken links, pages missing from an index,
+- **Lint**, when asked or after a run of ingests: broken links, pages missing from an index,
   index lines whose description differs from the page's, pages with no `type` or
-  `description`, a root index over 20 KB, contradictions and stale claims. Fix what is
+  `description`, a root index that lists pages instead of directory indexes, contradictions and stale claims. Fix what is
   clear; ask about the rest.
 - **Older bases**: a base whose root index declares another `okf_version` is still read as
   it is. Bring pages to 0.2 as you touch them (`sources` in frontmatter, not a citations

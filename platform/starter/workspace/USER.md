@@ -12,7 +12,6 @@ it short: detail belongs in the knowledge base.
 - Call them:
 - Time zone:
 - Wants help with:
-- Proactivity: low (off, low or high)
-- Quiet hours:
+- When not to message me:
 
 ## Directives

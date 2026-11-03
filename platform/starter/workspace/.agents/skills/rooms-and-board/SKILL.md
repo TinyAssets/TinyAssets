@@ -31,12 +31,14 @@ metadata:
 The board is the collection `board`: one row a task. A row's body is a short markdown task:
 ```
 # Title
+goal: /workspace/goals/<short-name>.md
 status: open | doing | blocked | done
 owner: <who does it>
 due: 2026-11-07
 links: /workspace/knowledge/projects/x.md
 Notes.
 ```
+- A row names the goal it serves on its second line, so `board_digest` heads show it.
 - Read it with `board_digest` (each row with its etag and the head of its body) and a whole
   row with `collection_get`.
 - **Take** a task by writing it with `collection_write` on its current etag, `owner` set to

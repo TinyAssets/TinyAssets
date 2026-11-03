@@ -294,6 +294,49 @@ describe("the shared brain's move of the profile (starter version 2)", () => {
   });
 });
 
+describe("the goals (starter version 3)", () => {
+  const GOALS = "/workspace/goals";
+  const MAP = "/workspace/index.md";
+  const OLD_MAP = "* [Profile](/workspace/USER.md) - the owner";
+  const shipped = carried()!;
+  // The package as it was before the goals: no goals skill, no goals index.
+  const before = starterPackage({ version: shipped.version - 1, retired: shipped.retired,
+    files: shipped.files.filter((each) => !each.path.startsWith(GOALS)
+                                          && each.path !== `${SKILLS}/goals/SKILL.md`)
+      .map((each) => each.path === MAP ? { ...each, text: OLD_MAP } : each) });
+  const textOf = (path: string) => shipped.files.find((each) => each.path === path)!.text;
+
+  it("reach an owner seeded before them: the skill installed, the index seeded, an edited " +
+     "file offered beside it, the owner's own goals index kept", async () => {
+    const r = await rig();
+    await pass(r, before);
+    const { entry } = await r.stub.fileStat(r.bind(null), { path: `${AGENTS}/AGENTS.md` });
+    await r.stub.fileWrite(r.session(null), { path: `${AGENTS}/AGENTS.md`,
+      expected_etag: entry!.etag, content: text("# mine") });
+    await pass(r, shipped);
+    expect(await readText(r, `${SKILLS}/goals/SKILL.md`)).toBe(textOf(`${SKILLS}/goals/SKILL.md`));
+    expect(await readText(r, `${GOALS}/index.md`)).toBe(textOf(`${GOALS}/index.md`));
+    expect(await readText(r, `${AGENTS}/AGENTS.md`)).toBe("# mine");
+    expect(await readText(r, `${AGENTS}/AGENTS.md${NEWER}`)).toBe(textOf(`${AGENTS}/AGENTS.md`));
+    // Personal files are seeded once: the map keeps the version it was seeded with.
+    expect(await readText(r, MAP)).toBe(OLD_MAP);
+    expect(await notices(r, "starter_proposal")).toEqual([]);  // nothing widens
+    expect(await notices(r, "starter_update")).toHaveLength(1);
+    expect((await r.stub.starterReceipts(r.bind(null))).version).toBe(shipped.version);
+
+    // An owner who wrote a goals index of their own before the starter's keeps it.
+    const theirs = await rig();
+    await pass(theirs, before);
+    await theirs.stub.fileMkdir(theirs.session(null), { path: GOALS, expected_etag: null });
+    await theirs.stub.fileWrite(theirs.session(null), { path: `${GOALS}/index.md`,
+      expected_etag: "", content: text("# Active") });
+    await pass(theirs, shipped);
+    expect(await readText(theirs, `${GOALS}/index.md`)).toBe("# Active");
+    expect(await readText(theirs, `${GOALS}/index.md${NEWER}`))
+      .toBe(textOf(`${GOALS}/index.md`));
+  });
+});
+
 describe("seeding before the tier's numbers are known (after slice L)", () => {
   it("waits for them, writing nothing and telling nothing, rather than failing", async () => {
     const r = await rig();

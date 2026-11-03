@@ -173,7 +173,7 @@ import {
 import { type Card, Registrations } from "./registrations";
 import { type Lane, Schedule } from "./schedule";
 import {
-  AGENTS_DIR, AGENTS_OWNER_ONLY, nameOf, OWNER_TREES, ownersOnly, parentOf, storedPath, within,
+  ABILITY_TREES, AGENTS_DIR, AGENTS_OWNER_ONLY, nameOf, ownersOnly, parentOf, storedPath, within,
 } from "./paths";
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
@@ -3365,7 +3365,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         .map((agent) => `${AGENTS_DIR}/${agent}`);
       return { lease: lease.lease_id, scope: agents.join("\n"),
                test: (path) => path === AGENTS_DIR || agents.some((dir) => within(path, dir))
-                 || OWNER_TREES.some((tree) => tree !== AGENTS_DIR && within(path, tree)) };
+                 || ABILITY_TREES.some((tree) => within(path, tree)) };
     }
   }
 
@@ -3601,7 +3601,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * A change to the owner's agent definitions (`OWNER_TREES`: its agents' files, skills and
+   * A change to the owner's agent definitions (`OWNER_TREES`: its agents' files, skills, goals and
    * `agent.json`). The founder's rule (2026-11-03): every agent of the owner has full power by
    * default to do what any other of its agents can, so an agent (an outside client's call, or
    * a run) under a full grant, the default, changes them; one under a grant the owner narrowed

@@ -1,6 +1,6 @@
 ---
 name: schedule
-description: Make, list and cancel your own schedules on TinyAssets - reminders, a morning brief, check-ins, any work at a time or on a cron - and decide what a scheduled run posts. Use when your owner asks for anything later or recurring.
+description: Make, list and cancel your own schedules on TinyAssets - reminders, a pass and brief on your owner's goals, check-ins, any work at a time or on a cron - and decide what a scheduled run posts. Use when your owner asks for anything later or recurring.
 metadata:
   ta-starter: "schedule@1"
 ---
@@ -12,7 +12,7 @@ Call `run_graph` with `agent` (yourself, unless asked for another of your owner'
 `input`, and either `at` (seconds since the epoch) or `cron` (minute hour day-of-month month
 day-of-week). It answers the schedule with its `schedule_id`.
 - **Cron is UTC.** Convert from the time zone in `/workspace/USER.md`, and tell your owner
-  both, for example "08:00 in Lisbon (07:00 UTC in winter)". Daylight saving moves the UTC
+  both, in the form "<time> in <their city> (<time> UTC)". Daylight saving moves the UTC
   hour: say so.
 - **The input stands alone.** A scheduled run starts a fresh conversation that remembers
   nothing of this one. Write everything it needs: what to do, where to look, who it is for.
@@ -30,12 +30,15 @@ your owner should read; when there is nothing new, make your whole final answer 
 and nothing is posted. A schedule an outside client made posts nothing: that client reads
 the result with `run_status`.
 
-## Defaults to offer
-- **Morning brief**, once, at a time your owner picks: board items due, new mail and room
-  messages (`board_digest`), what changed in the knowledge base, anything they asked you to
-  watch. Short. Silent when empty.
-- **Check-ins** only if your owner wants them, as often as they ask, never in the quiet hours
-  `/workspace/USER.md` names unless urgent.
+## To offer
+- **A pass and brief**, at the times your owner picks: for each active, confirmed goal you
+  steward, do the next inside steps (the `goals` skill) and rewrite its Now; then brief them
+  on what moved and what waits on them, with board items due and new mail and room messages
+  (`board_digest`). Short. `NO_REPLY` when nothing moved and nothing waits.
+- **A dated step** (a deadline) may get its own one-off run (`at`); put its `schedule_id` in
+  the goal's Links, and cancel it when the goal ends.
+- **Check-ins** only if your owner wants them, as often as they ask, never in the times
+  `/workspace/USER.md` says not to message unless urgent.
 - Mail already wakes you, so never poll TinyAssets on a timer. A timed check is for the
   outside world only (a web page, a feed, a repository).
 

@@ -12,7 +12,9 @@ engine. It holds what they told any agent, their work, and the tasks agents have
 rules keep it one brain instead of many.
 
 ## 1. Look here before asking
-Before you ask your owner something about them or their work, or answer from your own memory:
+Before acting for your owner, read `/workspace/goals/index.md` (their goals, the `goals`
+skill). Before you ask them something about them or their work, or answer from your own
+memory:
 1. read `/workspace/USER.md` (their profile and standing preferences);
 2. read `/workspace/index.md` (the map of the workspace) and follow it down;
 3. search: in a sandbox, `grep -ri` under `/workspace`; over MCP, the `tinyassets` tools
