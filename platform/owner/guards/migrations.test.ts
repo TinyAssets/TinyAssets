@@ -145,12 +145,16 @@ export function replaceProblems(sources: ReadonlyMap<string, string>,
                                 migrations: readonly Migration[],
                                 tables: ReadonlySet<string>): string[] {
   const problems: string[] = [];
-  const statement = /\b(?:INSERT\s+OR\s+REPLACE\s+INTO|REPLACE\s+INTO|UPDATE\s+OR\s+REPLACE)\s+([A-Za-z_]+)/gi;
+  // Its target: anything up to a space or a parenthesis. Only a plain literal name of a
+  // table not exported passes (review L6-2): a template, a quoted name or a schema prefix
+  // could name an exported one, so it fails too.
+  const statement = /\b(?:INSERT\s+OR\s+REPLACE\s+INTO|REPLACE\s+INTO|UPDATE\s+OR\s+REPLACE)\s+([^\s(]+)/gi;
+  const passes = (target: string) => /^[a-z_][a-z0-9_]*$/.test(target) && !tables.has(target);
   for (const [path, source] of sources) {
     const joined = source.replace(/["'`]\s*\+\s*["'`]/g, "");
     for (const found of joined.matchAll(statement)) {
-      if (tables.has(found[1]!)) {
-        problems.push(`${path}: a REPLACE against the exported ${found[1]}`);
+      if (!passes(found[1]!)) {
+        problems.push(`${path}: a REPLACE against ${found[1]}, an exported table or no plain name`);
       }
     }
   }
@@ -160,8 +164,8 @@ export function replaceProblems(sources: ReadonlyMap<string, string>,
       problems.push(`the exported ${table} resolves a conflict by REPLACE`);
     }
     for (const found of sql.matchAll(statement)) {
-      if (tables.has(found[1]!)) {
-        problems.push(`a migration REPLACEs into the exported ${found[1]}`);
+      if (!passes(found[1]!)) {
+        problems.push(`a migration REPLACEs into ${found[1]}, an exported table or no plain name`);
       }
     }
   }
@@ -183,6 +187,14 @@ describe("no REPLACE against an exported table (review L5-2)", () => {
     expect(at('sql.exec("INSERT OR " +\n  "REPLACE INTO connections (id) VALUES (?)")')).toHaveLength(1);
     expect(replaceProblems(new Map(), [["CREATE TABLE owner_notices (seq INTEGER PRIMARY KEY " +
       "ON CONFLICT REPLACE)"]], tables)).toHaveLength(1);
+    // A target it cannot read as a plain name fails, whatever it names (review L6-2).
+    expect(at("sql.exec(`INSERT OR REPLACE INTO ${table} (k) VALUES (?)`)")).toHaveLength(1);
+    expect(at('sql.exec("INSERT OR REPLACE INTO \\"schema_digests\\" (k) VALUES (?)")'))
+      .toHaveLength(1);
+    expect(at('sql.exec("REPLACE INTO main.schema_digests (k) VALUES (?)")')).toHaveLength(1);
+    expect(at('sql.exec("UPDATE OR REPLACE [runs] SET k = 1")')).toHaveLength(1);
+    expect(replaceProblems(new Map(), [["INSERT OR REPLACE INTO main.runs (seq) VALUES (1)"]],
+                           tables)).toHaveLength(1);
     // A table not exported may: the applied migrations' digests are the start's own check.
     expect(at('sql.exec("INSERT OR REPLACE INTO schema_digests (version) VALUES (?)")'))
       .toEqual([]);

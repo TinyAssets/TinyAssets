@@ -146,6 +146,25 @@ export function exportedMethods(source: string): Map<string, string[]> {
   return found;
 }
 
+/**
+ * What the exported class `name` of `source` extends, its type arguments left out, or null:
+ * an entrypoint must extend `WorkerEntrypoint` itself, since RPC serves inherited methods
+ * too (review L6-1).
+ */
+export function extendsOf(source: string, name: string): string | null {
+  const file = ts.createSourceFile("index.ts", source, ts.ScriptTarget.Latest, true);
+  let found: string | null = null;
+  file.forEachChild((node) => {
+    if (ts.isClassDeclaration(node) && node.name?.text === name) {
+      const clause = node.heritageClauses?.find((each) =>
+        each.token === ts.SyntaxKind.ExtendsKeyword);
+      found = clause === undefined || clause.types.length !== 1 ? null
+        : clause.types[0]!.expression.getText(file);
+    }
+  });
+  return found;
+}
+
 /** Each way `config` binds more than the doors need, or could deploy. */
 export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string, Config>,
                                     gatewaySource: string,
@@ -209,8 +228,10 @@ export function doorsConfigProblems(config: Config, platform: ReadonlyMap<string
       }
     }
     if (JSON.stringify(exportedMethods(filesSource).get(FILES.entrypoint))
-        !== JSON.stringify(UPLOAD_METHODS)) {
-      problems.push(`the files Worker's ${FILES.entrypoint} serves exactly putChunks`);
+        !== JSON.stringify(UPLOAD_METHODS)
+        || extendsOf(filesSource, FILES.entrypoint) !== "WorkerEntrypoint") {
+      problems.push(`the files Worker's ${FILES.entrypoint} extends WorkerEntrypoint and ` +
+                    "serves exactly putChunks");
     }
   }
   if (JSON.stringify(config["assets"]) !== JSON.stringify(ASSETS)) {
@@ -370,5 +391,16 @@ describe("doors Worker config", () => {
     const grown = FILES_SOURCE.replace(head, `${head}\n  ${member}`);
     expect(grown).not.toBe(FILES_SOURCE);
     expect(doorsConfigProblems(config, platform, gatewaySource, grown)).not.toEqual([]);
+  });
+
+  it("sees the upload entrypoint inherit the whole service, its own members unchanged " +
+     "(review L6-1)", () => {
+    const head = "export class FilesUpload extends WorkerEntrypoint<FilesEnv> {";
+    expect(FILES_SOURCE.includes(head)).toBe(true);
+    expect(extendsOf(FILES_SOURCE, "FilesUpload")).toBe("WorkerEntrypoint");
+    const inherits = FILES_SOURCE.replace(head, "export class FilesUpload extends FilesService {");
+    // Its own members are still putChunks alone; RPC would serve every inherited method.
+    expect(exportedMethods(inherits).get("FilesUpload")).toEqual(["putChunks"]);
+    expect(doorsConfigProblems(config, platform, gatewaySource, inherits)).not.toEqual([]);
   });
 });

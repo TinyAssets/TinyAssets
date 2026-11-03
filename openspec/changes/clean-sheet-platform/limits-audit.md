@@ -208,7 +208,7 @@ reason; none refuses a write.
 | `owner/src/connections.ts` `CONNECTION_LIMITS.flowTtlS` | 600 s | an OAuth flow's life | the owner starts the connect again | technical ceiling | An authorization code's most recommended life, 10 minutes (RFC 6749 §4.1.2). |
 | `owner/src/connections.ts` `CONNECTION_LIMITS.maxModels` | 1,024 | models one connection lists | models past it refused at commit | technical ceiling | Inside `connections`; the largest built-in catalog has 386. |
 | `owner/src/connections.ts` `MODELS_JSON_MAX` | 640 KiB | a connection's models, as JSON, in bytes (the schema's check too, review L5-1) | a larger list refused at commit | technical ceiling | As above. |
-| `owner/src/connections.ts` `EGRESS_JSON_MAX` | 16 KiB | a connection's egress scope | many custom paths refused at commit | technical ceiling | As above. |
+| `owner/src/connections.ts` `EGRESS_JSON_MAX` | 16 KiB | a connection's egress scope, in bytes (review L5-1) | many custom paths refused at commit | technical ceiling | As above. |
 | `owner/src/connections.ts` `BLOB_MAX` | 64 KiB | a connection's sealed blob | a credential past it refused | technical ceiling | Guard term `connection_secrets`; the gateway's own bound too. |
 | `owner/src/connections.ts` model numbers | $1,000,000 a million tokens; 100,000,000 tokens; 16 tiers | a model record's prices, windows and tiers | a record past them refused | technical ceiling | A charge, price times tokens, stays an exact integer in a JavaScript number (2^53). Far past every catalog's. |
 | `owner/src/connections.ts` redirect | 2,048 characters | an OAuth redirect URI | a longer URI refused | technical ceiling | The 10 GB: inside `connection_flows`' 4 KiB a flow. |

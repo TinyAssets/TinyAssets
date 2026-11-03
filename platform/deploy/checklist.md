@@ -39,9 +39,20 @@ Run mode `plan` once and read the list. Then run mode `dark`, read its plan, and
     webhook (`/hooks/e2b/lifecycle`). Its registration at E2B is owed (tasks.md).
 - **The migration lock, pinned at the commit you deploy.** The kit refuses to run unless
   `platform/owner/migrations.json` marks the first deploy and pins every migration the code
-  ships. Pin it with `PIN_MIGRATIONS=<commit> npx vitest run --project guards
-  guards/migrations.test.ts` in `platform/owner`, and land the lock with the code. From then
-  on a deployed migration is never edited; a new shape is a new migration.
+  ships, in order. To pin it:
+  1. **Who and when.** You, or a session you ask, do it once, in the same sitting as the
+     first deploy. The deploy itself is yours to approve.
+  2. **Pin.** On a branch made from the current `main`, run this in `platform/owner`:
+     `PIN_MIGRATIONS=$(git rev-parse HEAD) npx vitest run --project guards guards/migrations.test.ts`.
+     It writes `platform/owner/migrations.json`: the first-deploy marker (time and commit)
+     and a digest for every migration.
+  3. **Land it.** Commit only that file and merge it to `main` by pull request. The workflow
+     runs only from `main`, and the kit reads the lock there.
+  4. **Deploy.** Run the Platform deploy workflow from `main`: `plan`, then `dark`.
+  5. **Every later deploy that adds a migration** repeats steps 2 and 3 first. The pin only
+     appends, and the kit refuses until it is done.
+  6. **Pin only when you deploy.** Pinning freezes the baseline for good: from then on a
+     schema change is a new migration, even if no deploy follows.
 - **`auth_time`, settled before anything changes.** Every sign-in needs AuthKit's tokens to
   carry `auth_time`. Store one real AuthKit token's `iss` and `auth_time`, copied from it, as
   the variable `OWNER_TOKEN_CLAIMS`, a JSON object (the `fetch-prod-logs` workflow shows a
