@@ -21,6 +21,11 @@
  * - `connections/key`, `connections/oauth`, `connections/oauth/finish`,
  *   `connections/revoke`, `connections/list`: the model connect doors (`connect.ts`).
  *
+ * - `agent/doorbell`, `agent/doorbell/end`, `agent/wake-limits`: an agent's doorbell (slice
+ *   W): the owner pastes the `/fire` or routine URL and token a vendor showed it, which go
+ *   straight to the gateway's seal (`connect.ts`), the object storing only the blob under the
+ *   id derived here (the answer never echoes the token); one ended by its id; and the owner's
+ *   own wake settings for an agent (`policyWakeLimits`), off by default.
  * - `agent/submit`, `agent/run`, `agent/status`, `agent/cancel`: the run doors (slice R),
  *   the same doors `converse`, `run_graph`, `run_status` and `run_cancel` call for an
  *   outside client; the control record's tier numbers ride the binding (`withTiers`).
@@ -52,7 +57,7 @@ import { ownerGate, ownerRead } from "./control";
 import {
   deleteOwnKey, KeyRefused, looksLikeKey, mintKey, registeringEntry, revokeKey,
 } from "./api-keys";
-import { CONNECT_ROUTES, ConnectRefused } from "./connect";
+import { CONNECT_ROUTES, ConnectRefused, sealDoorbell } from "./connect";
 import { revokeClient } from "./revoke";
 import { authorizationServer } from "./oauth";
 import { clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
@@ -61,6 +66,9 @@ import { refusal } from "./tools";
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
 import { SOCKET_FAILED, TICKET_REFUSED } from "../../owner/src/socket-shape";
+import {
+  callbackSecret, callbackUrl, follows, kindNamed, subscriptionId,
+} from "../../owner/src/wake-kinds";
 
 export const OUTSIDE_CREDENTIAL = "an outside credential never reaches the owner's surface";
 
@@ -152,8 +160,48 @@ async function exportStream(_env: DoorsEnv, { binding, stub }: Bound,
     "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" } });
 }
 
+/**
+ * `agent/doorbell`: the owner's pasted wake token for one of its agents, for a kind whose
+ * record has the owner hand it over. Checked against the record here and again in the
+ * gateway, which seals it with the URL; the object stores the blob under the id derived
+ * from the owner, URL, kind and what it follows. Never echoed.
+ */
+async function doorbell(env: DoorsEnv, { binding, stub }: Bound,
+                        request: Record<string, unknown>): Promise<Response> {
+  const keys = Object.keys(request);
+  const kind = typeof request["kind"] === "string" ? kindNamed(request["kind"]) : null;
+  if (!["agent_id", "kind", "url", "secret"].every((key) => keys.includes(key))
+      || !keys.every((key) => ["agent_id", "kind", "url", "secret", "board", "rooms"]
+        .includes(key))
+      || typeof request["agent_id"] !== "string" || kind === null || kind.push === null
+      || kind.push.callback !== "owner") {
+    return failure(400, "a doorbell names an agent, its kind, the URL and the token");
+  }
+  let follow;
+  let url: string;
+  let secret: string;
+  try {
+    follow = follows({ board: request["board"] ?? false, rooms: request["rooms"] ?? [] });
+    url = callbackUrl(kind.push, request["url"]);
+    secret = callbackSecret(kind.push, request["secret"]);
+  } catch (error) {
+    return failure(400, error instanceof Error ? error.message : "invalid doorbell");
+  }
+  const args = { agent_id: request["agent_id"], board: follow.board, rooms: follow.rooms };
+  const id = subscriptionId("owner", url, kind.id, args);
+  const sealed = await sealDoorbell(env, binding.owner, id, { record: kind.id, url, secret });
+  return json(200, await stub.agentDoorbell(binding, {
+    agent_id: request["agent_id"], kind: kind.id, subscription_id: id, board: follow.board,
+    rooms: follow.rooms, blob: sealed.blob, kid: sealed.kid, version: 1 }));
+}
+
 const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
   "export": exportStream,
+  "agent/doorbell": doorbell,
+  "agent/doorbell/end": async (_env, { binding, stub }, request) =>
+    json(200, await stub.agentDoorbellEnd(binding, request as never)),
+  "agent/wake-limits": async (_env, { binding, stub }, request) =>
+    json(200, await stub.policyWakeLimits(binding, request as never)),
   "keys": async (env, owner, request) => json(200, await mintKey(env, owner, request)),
   "keys/revoke": async (env, owner, request) => json(200, await revokeKey(env, owner, request)),
   "keys/delete": async (env, owner, request) =>
