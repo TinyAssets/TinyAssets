@@ -182,6 +182,28 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm test
 
+  # The owner app in a real browser (slice APP): Chromium at the Playwright version the
+  # platform lockfile pins, against the doors in workerd. Not a required check yet, as
+  # platform-tests above. It fails, never skips, when Playwright or Chromium is missing.
+  platform-app:
+    name: platform-app
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: platform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: platform/package-lock.json
+      - run: npm ci
+      - name: Install Chromium at the pinned Playwright's version
+        run: npx --no-install playwright install --with-deps chromium
+      - run: npm run test:app -w doors
+
   # The required surface runs as SHARDS in parallel, then ONE aggregate job
   # (`required-tests`, below) decides the gate over the union. Measured before
   # the split: ~21,900 tests serially, 19-22 min on an idle runner (runs

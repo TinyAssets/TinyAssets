@@ -149,7 +149,7 @@ describe("an agent's identity", () => {
     const lateRun = await newest(r);
     expect(told(lateRun).message).toBe(late.message_id);
     const dir = (await r.stub.fileStat(r.bind(), { path: "/workspace/agents/main" })).entry!;
-    await r.stub.fileRemove(r.bind(), { path: "/workspace/agents/main", expected_etag: dir.etag,
+    await r.stub.fileRemove(r.session(), { path: "/workspace/agents/main", expected_etag: dir.etag,
                                         recursive: true });
     expect((await identity(r, "main")).retired_at).not.toBeNull();
     // Its history stays readable: the owner rereads the reply it sent.
@@ -177,9 +177,9 @@ describe("an agent's identity", () => {
     // A renamed agent directory moves the file: the old name retired, the new one made.
     const moving = (await r.stub.fileStat(r.bind(), { path: "/workspace/agents/main" }))
       .entry!;
-    await r.stub.fileRename(r.bind(), { from: "/workspace/agents/main",
-                                        to: "/workspace/agents/helper",
-                                        expected_etag: moving.etag, replace: false });
+    await r.stub.fileRename(r.session(), { from: "/workspace/agents/main",
+                                           to: "/workspace/agents/helper",
+                                           expected_etag: moving.etag, replace: false });
     expect((await identity(r, "main")).retired_at).not.toBeNull();
     expect((await identity(r, "helper")).retired_at).toBeNull();
     expect((await failure(() => ownerMail(r, "dm:ta_0123456789abcdef", "who?"))).message)

@@ -458,15 +458,32 @@ account and no deploy.
   keys (make, shown once; turn off), your data (files, export), and each main agent's
   wake-up. **New doors:** the owner's `tierRead`; the owner-surface routes `account`,
   `notices`, `policy`, `policy/write`, `grants`, `grants/set` (never a revoke), `files/read`,
-  `files/write`, `sources`, `tools`, `tools/<name>` (the table, the owner as itself) and
-  `agent/doorbell/kinds`. Tests: `doors/test/app-pages.test.ts`,
-  `app-routes.test.ts`, `guards/app-files.test.ts`, the config guard's `ASSETS`, and the
-  browser test `doors/test/app.e2e.mjs` (`npm run test:app` in `platform/doors`: Chromium
-  through the host's own Playwright, its network mapped to the doors in workerd over HTTPS,
-  so its cookies, `Sec-Fetch-*` and socket are the browser's own: sign-in, a key connect, an
-  OAuth connect through `/app/connected`, an agent made, a run started and its live frames
-  and result seen, every screen opened, no third-party request). Owed by other slices, each
-  shown in the app as "not here yet", never faked:
+  `files/write`, `sources`, `capabilities` (the grant capabilities in plain words, which the
+  agent and key forms show, none chosen for the owner), `tools`, `tools/<name>` (the table,
+  the owner as itself) and `agent/doorbell/kinds`; every owner-surface answer carries
+  `nosniff` and a CSP of none. **The session (review M1):** the owner's own change to its
+  agent definitions (`OWNER_TREES`: write, upload, mkdir, rename, remove, restore) is a
+  widening in the object, on every route alike, so a leaked first-party token without the
+  `__Host-` session cookie widens no scope, plants no instruction and removes no agent file;
+  the other `tools/<name>` (collections, other files, digests, runs, `code`, whose calls are
+  held the same way) change no agent's authority, so the token suffices for them, as for a
+  full-mode API key. A new agent is its `AGENTS.md` first and its `agent.json` last, the one
+  write that makes the agent. Tests: `doors/test/app-pages.test.ts`, `app-routes.test.ts`,
+  `guards/app-files.test.ts`, the config guard's `ASSETS`, `owner/test/agent-doors.test.ts`
+  (the session on every agent-file door, receipted), and the browser test
+  `doors/test/app.e2e.mjs` (`npm run test:app` in `platform/doors`, and the `platform-app`
+  CI job: Chromium at the Playwright version `platform/package-lock.json` pins, its network
+  mapped to the doors in workerd over HTTPS, so its cookies, `Sec-Fetch-*` and socket are
+  the browser's own; it fails, never skips, without Playwright or Chromium): sign-in, a key
+  connect, an OAuth connect through `/app/connected`, an agent made, a run started and its
+  live frames and result seen, every screen opened, and the review's attacks kept as tests
+  (`pages.ts` probes, the CSP's refusals, payloads through every rendered field, a malformed
+  hash, framing, CSRF, a stranger's code, a leaked token alone, a missing tool's real 404),
+  no third-party request. `replaceState` clears the code from this tab's history only; the
+  browser's global history keeps the return URL, harmless as each code is single-use and
+  PKCE-bound. Only the doors this app knows are missing say "not here yet" (`MISSING` in
+  `app.js`), each before anything is clicked; any other refusal, a 404 included, is shown as
+  the doors gave it. Owed by other slices:
   - **the sandbox sign-in** (a Claude or ChatGPT subscription signed in inside the sandbox):
     no door starts a record's `login.argv`, relays its URL to the app or takes its code back
     (slice S checks `status_argv` only). Owed: an owner door that starts the login run, its
@@ -477,14 +494,19 @@ account and no deploy.
     records (`agent/doorbell/kinds`: the kinds whose `push.callback` is `owner`) posting W's
     `agent/doorbell`. Owed to the live test: a paste for a really registered main agent
     (W's `events.test.ts` covers the route; the browser test has no main agent to wake).
-  - **export**: slice P's owner export door, which the app calls as `POST /app/api/export`.
+  - **export**: slice P's owner export door; until it lands the Export section says so, with
+    no button, and the app's `MISSING.export` goes when it does.
   - **the key store** (slice L): the key list is the grant rows (names, no ids), so a listed
     key is turned off by `grants/revoke` (its directory entry stays until deleted by id);
     delete and last use come with L's list route.
-  - **a run list**: no door lists an agent's past runs or conversations, so the app shows the
-    conversation this tab started; the transcript is in the owner's files (`session_paths`).
-  - **CI**: the browser test is not in `npm test` (the host's Playwright is not in the
-    lockfile); wiring it needs Playwright pinned in `platform/package-lock.json`.
+  - **a run list**: the sign-in slice (`platform-signin`) adds the door; until then Talk says
+    plainly that only this tab's conversation is shown and is not kept across reloads.
+  - **the sandbox sign-in**, again for the forms: no credential `vendor_login_in_sandbox` is
+    offered for a new agent until the sign-in slice lands, and an engine that has only that
+    credential is named as unable to run yet.
+  - **run events (found by the review, outside the slice, fixed here):** a session id outside
+    the conversations' shape (`[!-~]{1,256}`) failed the runner's whole post with a SQLite
+    error; it is refused as the run's fixed error `session_id_refused`, its frames relayed.
 - [ ] Each RFC 6749 source's provider registration of its own redirect URI,
   `https://tinyassets.io/oauth/connect/callback/<source-id>`, registered exactly, never as
   a prefix, and matched exactly by the provider (RFC 9700 §4.1); OpenRouter's key exchange
@@ -501,25 +523,35 @@ account and no deploy.
   object it is never edited (G3 edited migration 6 in place only because nothing is
   deployed), held by a guard that pins each deployed migration's text by digest.
 - [ ] Mobile connects and sign-in (the app slice): on mobile the OAuth runs in an external
-  browser (RFC 8252), whose cookies are not the WebView's, so the Lax connect binding (and
-  the provider's own upstream binding for the owner's sign-in) does not come back with
-  the callback. **Decided (app slice, 2026-11-03), built with the store app (web first):**
-  the store app is the same web app on the same origin, and every OAuth runs in the
-  platform's auth session (Android Custom Tabs, iOS `ASWebAuthenticationSession`) with a
-  claimed https redirect (App Links, Universal Links) on the two return pages only,
-  `/app/signed-in` and `/app/connected`. The doors' own callbacks
-  (`/oauth/upstream/callback`, `/oauth/connect/callback/*`) are never claimed, so they run
-  in the external browser, whose jar holds the flow's binding: each binding is checked
-  there as on the web. What crosses into the app is the code, useless without the PKCE
-  verifier only the app holds. Two changes the store-app slice makes: (1) the sign-in
-  callback, for the mobile client (its own CIMD document and claimed redirect), hands the
-  session as a single-use handoff in `/app/signed-in`'s query instead of a cookie the
-  WebView never sees, which the app trades on a same-origin route for the Strict cookie;
-  (2) `connections/oauth/finish` takes, from the mobile client only, the flow's binding
-  value the begin answered to that app in place of the binding cookie (the begin is in
-  the owner's session, so only the app that began holds it). Why not carry the cookie or
-  share the jar: neither platform lets a WebView read the auth session's jar, and an
-  embedded WebView sign-in is what RFC 8252 and the providers forbid.
+  browser (RFC 8252), whose cookies are not the WebView's, so a binding cookie set in the
+  WebView never comes back with the callback. **Decided (app slice, 2026-11-03, corrected
+  by its review M2), built with the store app (web first):** the store app is the same web
+  app on the same origin; every OAuth runs in the platform's auth session (Android Custom
+  Tabs, iOS `ASWebAuthenticationSession`), never an embedded WebView; only the two return
+  pages, `/app/signed-in` and `/app/connected`, are claimed https redirects (App Links,
+  Universal Links), and the doors' own callbacks are never claimed. Each flow begins inside
+  the auth session, so its binding cookie is in the jar the callback runs in:
+  - **Sign-in.** The app opens `/authorize` in the auth session, which sets the provider's
+    upstream binding there and the callback checks it there, as on the web. The callback
+    cannot set the WebView's session cookie, so for the mobile client (its own CIMD document
+    and claimed redirect) it hands `/app/signed-in` a single-use session handoff (at most
+    60 s) instead. The handoff is bound to the sign-in's PKCE: the app redeems it on a
+    same-origin route only with the verifier it alone holds, and the route sets the Strict
+    cookie in the WebView. A handoff that falls back into a browser (the link not verified,
+    the app not installed) is then worthless there.
+  - **Connect.** `connections/oauth`, for the mobile client, answers a single-use launch URL
+    on our origin (`/oauth/connect/start?ticket=`, routing-MAC'd, short-lived, bound to the
+    flow begun in the owner's session) instead of setting the binding cookie in the WebView.
+    The auth session opens it; it sets the flow's `__Host-ta-connect-*` cookie in that jar
+    and redirects to the provider, so the callback's binding check holds as on the web. The
+    callback hands the code to `/app/connected` in the fragment, the claimed link brings it
+    into the app, and `connections/oauth/finish` takes it in the owner's session (`flowFinish`
+    in the beginning session), its binding check made at the callback, in the jar that holds
+    the cookie.
+  - **iOS floor.** An https callback in `ASWebAuthenticationSession` (`Callback.https`) needs
+    iOS 17.4 or later. Below it, the fallback is an RFC 8252 §7.1 private-use scheme in
+    reverse-domain form (`io.tinyassets.app:/app/signed-in`), PKCE as always, registered as
+    the mobile client's second redirect only for those versions.
 - [x] G4 (slice 8a) The egress door, the sandbox's identity, its spend and its network
   document, in workerd, nothing deployed and no E2B call; 8b (the sandbox) only calls it.
   The door is the main path for API-key model use: a provider CLI in the sandbox (or pi,

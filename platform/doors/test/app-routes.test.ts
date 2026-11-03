@@ -9,6 +9,8 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { RUN_CAPABILITIES } from "../../owner/src/agent-file";
+import { CAPABILITIES } from "../../owner/src/grants";
 import { wakeKinds } from "../../owner/src/wake-kinds";
 import { mcpOrigin } from "../src/binder";
 import { bundledSources } from "../src/sources";
@@ -128,6 +130,31 @@ describe("the owner app's settings routes", () => {
   });
 });
 
+describe("the owner surface's answers", () => {
+  it("are never sniffed or framed, refusals and connect routes alike (review L7)", async () => {
+    const app = await signInApp({ owner: owner() });
+    for (const response of [await appPost("account", app.access_token, null, {}),
+                            await appPost("no/such/route", app.access_token, null, {}),
+                            await appPost("connections/list", app.access_token, null, {}),
+                            await call(new Request(url("/app/api/account"), { method: "POST" }))]) {
+      expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+      expect(response.headers.get("Content-Security-Policy"))
+        .toBe("default-src 'none'; frame-ancestors 'none'");
+    }
+  });
+
+  it("list the capabilities in plain words, the run's marked, from the object's own list",
+     async () => {
+    const app = await signInApp({ owner: owner() });
+    const { capabilities } = await answered(await appPost("capabilities", app.access_token,
+                                                          null, {})) as
+      { capabilities: { id: string; words: string; runs: boolean }[] };
+    expect(capabilities.map((c) => c.id)).toEqual([...CAPABILITIES]);
+    expect(capabilities.filter((c) => c.runs).map((c) => c.id)).toEqual([...RUN_CAPABILITIES]);
+    expect(capabilities.every((c) => c.words.length > 0)).toBe(true);
+  });
+});
+
 describe("the owner app's wake-up kinds", () => {
   it("are the records whose owner pastes the URL and token, as data", async () => {
     const app = await signInApp({ owner: owner() });
@@ -144,33 +171,66 @@ describe("the owner app's wake-up kinds", () => {
 describe("the owner app's file routes", () => {
   it("write and read an agent's files as text, against their etags", async () => {
     const app = await signInApp({ owner: owner() });
+    const { access_token: token, session } = app;
     for (const path of ["/workspace/agents", "/workspace/agents/main"]) {
-      await answered(await appPost("tools/file_mkdir", app.access_token, null,
+      await answered(await appPost("tools/file_mkdir", token, session,
                                    { path, expected_etag: null }));
     }
     const path = "/workspace/agents/main/AGENTS.md";
     const text = "# main\n\nBe brief. Ünïcode stays.\n";
-    const written = await answered(await appPost("files/write", app.access_token, null,
+    const written = await answered(await appPost("files/write", token, session,
                                                  { path, expected_etag: "", text }));
     const entry = written["entry"] as { etag: string; size: number };
     expect(entry.size).toBe(new TextEncoder().encode(text).byteLength);
-    expect(await answered(await appPost("files/read", app.access_token, null, { path })))
+    expect(await answered(await appPost("files/read", token, null, { path })))
       .toMatchObject({ entry: { path, etag: entry.etag }, text });
     // A create where a file is, or a stale etag, is the object's conflict, never an
     // overwrite.
     for (const expected of ["", "0".repeat(64)]) {
-      const stale = await answered(await appPost("files/write", app.access_token, null,
+      const stale = await answered(await appPost("files/write", token, session,
                                                  { path, expected_etag: expected, text: "x" }));
       expect(stale).not.toHaveProperty("entry");
     }
-    const changed = await answered(await appPost("files/write", app.access_token, null,
+    const changed = await answered(await appPost("files/write", token, session,
                                                  { path, expected_etag: entry.etag, text: "y" }));
     expect(changed).toHaveProperty("entry");
-    await answered(await appPost("files/write", app.access_token, null,
+    await answered(await appPost("files/write", token, session,
                                  { path, expected_etag: (changed["entry"] as { etag: string }).etag,
                                    text }));
-    expect((await answered(await appPost("files/read", app.access_token, null, { path })))["text"])
+    expect((await answered(await appPost("files/read", token, null, { path })))["text"])
       .toBe(text);
+  });
+
+  it("take no change to an agent's definition from the token alone (review M1)", async () => {
+    const app = await signInApp({ owner: owner() });
+    const { access_token: token, session } = app;
+    await answered(await appPost("tools/file_mkdir", token, session,
+                                 { path: "/workspace/agents/main", expected_etag: null }));
+    const path = "/workspace/agents/main/agent.json";
+    const made = await answered(await appPost("files/write", token, session, {
+      path, expected_etag: "", text: JSON.stringify({ engine: "auto", scopes: ["read_files"] }) }));
+    const etag = (made["entry"] as { etag: string }).etag;
+    // A leaked bearer widens no scope, plants no instruction and removes nothing there.
+    const SESSION = { error: "interactive owner session required" };
+    expect(await answered(await appPost("files/write", token, null, { path, expected_etag: etag,
+      text: JSON.stringify({ engine: "auto", scopes: ["read_files", "run_graph", "converse"] }) }),
+                          403)).toEqual(SESSION);
+    expect(await answered(await appPost("files/write", token, null, {
+      path: "/workspace/agents/main/AGENTS.md", expected_etag: "", text: "planted" }), 403))
+      .toEqual(SESSION);
+    expect(await answered(await appPost("tools/file_remove", token, null,
+      { path, expected_etag: null, recursive: false }), 403)).toEqual(SESSION);
+    expect(await answered(await appPost("tools/file_rename", token, null,
+      { from: path, to: "/workspace/x.json", expected_etag: null, replace: false }), 403))
+      .toEqual(SESSION);
+    // A cookie that is not the owner's live session is no session either.
+    expect(await answered(await appPost("tools/file_remove", token, "x".repeat(43),
+      { path, expected_etag: null, recursive: false }), 403)).toEqual(SESSION);
+    expect((await answered(await appPost("files/read", token, null, { path })))["entry"])
+      .toMatchObject({ etag });
+    // In its session, the owner's app changes it.
+    expect(await answered(await appPost("tools/file_remove", token, session,
+      { path, expected_etag: etag, recursive: false }))).toEqual({ removed: 1 });
   });
 
   it("show a file that is not UTF-8 as not text, and take only closed bodies", async () => {

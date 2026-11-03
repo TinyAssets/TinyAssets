@@ -79,7 +79,7 @@ import {
   CONVERSATION_ID, CONVERSATIONS_KEPT, ERROR_BYTES, INPUT_BYTES, QUEUE_BYTES, QUEUE_ROWS,
   RESULT_BYTES, RUN_ID, RUNS_KEPT, SCHEDULE_ID,
 } from "./run-rows";
-import { type Frame, FRAME_VERSION, readEvent } from "./run-events";
+import { type Frame, FRAME_VERSION, readEvent, SESSION_REFUSED } from "./run-events";
 import type { NetworkPlan } from "./network";
 import { type RunConfig, SANDBOX_ABSENT } from "./sandbox";
 import { TIER_RUNS, type TierName, type Tiers } from "./tier";
@@ -425,6 +425,9 @@ function batch(row: RunRow, events: EngineEvents, frames: readonly PostedFrame[]
     const read = readEvent(events, frame.event);
     if (read.session_id !== null) {
       session = read.session_id;
+    }
+    if (read.session_refused && error === null) {
+      error = SESSION_REFUSED;  // its frames still relayed; the id is never kept
     }
     if (read.text !== null) {
       const joined = read.text.accumulate && result !== null ? result + read.text.value

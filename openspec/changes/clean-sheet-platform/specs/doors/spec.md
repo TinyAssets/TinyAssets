@@ -163,7 +163,11 @@ The doors Worker SHALL serve the owner app at `/app`, `/app/signed-in`, `/app/co
 - **THEN** the doors answer `404`, and the assets are reached for nothing
 
 ### Requirement: The owner app's routes are each one door
-The owner surface SHALL serve the owner app's reads and settings, each one owner door behind the first-party token: `account` (the owner's tier with the control record's numbers and the file usage), `notices`, `policy`, `policy/write`, `grants`, `grants/set`, `files/read`, `files/write` (text, against etags), `sources` (each record's public facts), `tools`, and `tools/<name>` (one table tool, the owner as itself). A revoke SHALL go by `grants/revoke` alone.
+The owner surface SHALL serve the owner app's reads and settings, each one owner door behind the first-party token: `account` (the owner's tier with the control record's numbers and the file usage), `notices`, `policy`, `policy/write`, `grants`, `grants/set`, `files/read`, `files/write` (text, against etags), `sources`, `capabilities`, `tools`, `agent/doorbell/kinds`, and `tools/<name>` (one table tool, the owner as itself). A revoke SHALL go by `grants/revoke` alone.
+
+#### Scenario: Any owner-surface answer opened as a page
+- **WHEN** a browser opens an owner-surface answer as a document
+- **THEN** it carries `nosniff` and a CSP of none, so it is never sniffed, run or framed
 
 #### Scenario: The owner sets a client's grant to revoked through grants/set
 - **WHEN** the owner's app posts `grants/set` with mode `revoked`
