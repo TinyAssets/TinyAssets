@@ -3154,12 +3154,41 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * That an outside client's change leaves the owner's agent definitions alone: its agents'
-   * files and skills (`OWNER_TREES`).
+   * A change to the owner's agent definitions (`OWNER_TREES`: its agents' files, skills and
+   * `agent.json`). The founder's rule (2026-11-03): every agent of the owner has full power by
+   * default to do what any other of its agents can, so an agent (an outside client's call, or
+   * a run) under a full grant, the default, changes them; one under a grant the owner narrowed
+   * (`scoped`) is refused. The owner's own app is a human's path, so its bearer token alone
+   * changes nothing there: it is a widening, taken only in the owner's live session and
+   * receipted when refused, against a leaked app token.
    */
-  #ownersTree(account: Account, ...paths: unknown[]): void {
-    if (account.origin !== null && paths.some((path) => ownersOnly(storedPath(path)))) {
-      throw new Refused(AGENTS_OWNER_ONLY);
+  #ownersTree(binding: Binding, account: Account, action: string, request: unknown,
+              ...paths: unknown[]): void {
+    if (!paths.some((path) => ownersOnly(storedPath(path)))) {
+      return;
+    }
+    if (account.run !== null) {
+      const stamp = account.run.stamp;
+      if (stamp !== null && !this.#grants.full(stamp.client)) {
+        throw new Refused(AGENTS_OWNER_ONLY);
+      }
+      return;
+    }
+    if (account.origin !== null) {
+      if (account.grant?.mode !== "full") {
+        throw new Refused(AGENTS_OWNER_ONLY);
+      }
+      return;
+    }
+    try {
+      this.#sessions.live(binding.session, clock());
+    } catch (error) {
+      try {
+        this.#policy.refusal(action, { request, origin: null }, clock());
+      } catch {
+        console.error("owner-session refusal receipt unavailable");  // refuse regardless
+      }
+      throw error;
     }
   }
 
@@ -3400,7 +3429,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const { account, r, content } = await this.#door(() => {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "expected_etag", "content"], ["mode"]);
-      this.#ownersTree(account, r["path"]);
+      this.#ownersTree(binding, account, "FILES.write", request, r["path"]);
       const content = r["content"];
       if (!(content instanceof Uint8Array) || content.byteLength > CHUNK_BYTES) {
         throw new Invalid("a written file is bytes, at most 4 MiB; larger ones are uploaded");
@@ -3449,7 +3478,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#filing(() => {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["intent_id", "path", "expected_etag"], ["mode"]);
-      this.#ownersTree(account, r["path"]);
+      this.#ownersTree(binding, account, "FILES.write", { path: r["path"] }, r["path"]);
       return fileConflicted(() => ({
         entry: this.#files.commit(r["intent_id"], r["path"], {
           expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account) }),
@@ -3470,7 +3499,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#filing(() => {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "expected_etag"]);
-      this.#ownersTree(account, r["path"]);
+      this.#ownersTree(binding, account, "FILES.mkdir", request, r["path"]);
       return fileConflicted(() => ({
         entry: this.#files.mkdir(r["path"], { expected: r["expected_etag"],
                                               writer: fileWriter(account) }),
@@ -3483,7 +3512,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#filing(() => {
       const account = this.#filer(binding, "reduce", "write_files");
       const r = fileFields(request, ["path", "expected_etag", "recursive"]);
-      this.#ownersTree(account, r["path"]);
+      this.#ownersTree(binding, account, "FILES.remove", request, r["path"]);
       return fileConflicted(() => this.#files.remove(r["path"], {
         expected: r["expected_etag"], recursive: flag(r["recursive"], "recursive"),
         writer: fileWriter(account) }));
@@ -3495,7 +3524,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#filing(() => {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["from", "to", "expected_etag", "replace"]);
-      this.#ownersTree(account, r["from"], r["to"]);
+      this.#ownersTree(binding, account, "FILES.rename", request, r["from"], r["to"]);
       return fileConflicted(() => ({
         entry: this.#files.rename(r["from"], r["to"], {
           expected: r["expected_etag"], replace: flag(r["replace"], "replace"),
@@ -3518,7 +3547,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#filing(() => {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "version", "expected_etag"]);
-      this.#ownersTree(account, r["path"]);
+      this.#ownersTree(binding, account, "FILES.restore", request, r["path"]);
       return fileConflicted(() => ({
         entry: this.#files.restore(r["path"], r["version"], {
           expected: r["expected_etag"], writer: fileWriter(account) }),
@@ -4443,6 +4472,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
   }
 
+  /**
+   * The owner's own tier, for its app (`read`): its admission row's, which only the platform
+   * sets. The numbers are the control record's, which the doors read and show beside it.
+   */
+  tierRead(binding: Binding): Promise<{ tier: TierName }> {
+    return this.#door(() => {
+      this.#owner(binding, "read", "read its tier");
+      return { tier: ownerTier(this.#storage) };
+    });
+  }
+
   // -- THE SANDBOX: its one lease, its network and its egress (tasks 4 G4) -----------
   //
   // The sandbox holds one lease, the file sync lease (`files.ts`): its id is the claim
@@ -4665,7 +4705,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       const r = fileFields(request, ["lease_id", "epoch", "ops"]);
       return this.#files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"],
-                                      ops: r["ops"] });
+                                      ops: r["ops"] },
+                                    (authority) => this.#grants.full(authority));
     });
   }
 

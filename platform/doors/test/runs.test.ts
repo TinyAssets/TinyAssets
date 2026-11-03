@@ -20,6 +20,7 @@ import { EGRESS_ORIGIN } from "../src/config";
 import { refusedStatus, RUN_HEADER, RUNNER_HEADER } from "../src/egress";
 import { profileNames } from "../src/tools";
 import { EVENT_FRAMES_MAX } from "../../owner/src/run-events";
+import { SESSION_REFUSED } from "../../owner/src/runs";
 import type { OwnerDO } from "./entry";
 import {
   appPost, call, connect, OPEN, reached, registerClient, rpcBody, serveFirstPartyDocument,
@@ -424,6 +425,27 @@ describe("a run's live events", () => {
     early.ws.close(1000, "done");
     late.ws.close(1000, "done");
   }, 60_000);
+
+  it("relay a frame whose session id is outside its shape, refusing the id with a fixed code " +
+     "(app review)", async () => {
+    const { who, app } = await owned();
+    const run = await (await appPost("agent/submit", app.access_token, null, {
+      message: "go", client_send_id: "bad-sid" })).json<{ run_id: string;
+                                                          conversation_id: string }>();
+    const [start] = await starts(who);
+    const sent = await report(start!, { frames: [
+      { seq: 1, at: 1, event: { type: "system", subtype: "init", session_id: "has a space" } },
+      { seq: 2, at: 2, event: { type: "result", result: "done" } }], end: { exit_code: 0 } });
+    expect(sent.status).toBe(200);
+    expect(await sent.json()).toMatchObject({ accepted: 2 });
+    const status = await (await appPost("agent/status", app.access_token, null,
+                                        { run_id: run.run_id })).json<Record<string, unknown>>();
+    expect(status["error"]).toBe(SESSION_REFUSED);
+    const kept = await runInDurableObject(env.OWNER.getByName(who), (_instance, state) =>
+      state.storage.sql.exec("SELECT session_id FROM conversations WHERE id = ?",
+                             run.conversation_id).toArray());
+    expect(kept).toEqual([{ session_id: null }]);
+  });
 
   it("keep a settled run's tail no longer: the live runs' tails have its room", async () => {
     const { who, app } = await owned();
