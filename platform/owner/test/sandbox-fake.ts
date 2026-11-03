@@ -6,6 +6,7 @@
  * one, tested against a fake E2B in its own package.
  */
 import type { SandboxService, SandboxSignin, SandboxStart, Started } from "../src/sandbox";
+import type { MeterEvent } from "../src/sandbox-time";
 
 export class RecordingSandbox implements SandboxService {
   readonly starts: SandboxStart[] = [];
@@ -76,5 +77,23 @@ export class RecordingSandbox implements SandboxService {
   async erase(owner: string): Promise<{ killed: number }> {
     this.erasures.push(owner);
     return { killed: 1 };
+  }
+
+  /** The sandbox Worker's log as a test writes it, and whether a read fails. */
+  readonly log: MeterEvent[] = [];
+  meterFails = false;
+
+  /** A sandbox started, paused, resumed or killed at `at` (ms): one more log entry. */
+  record(authority: string, kind: MeterEvent["kind"], at: number): void {
+    this.log.push({ seq: this.log.length + 1, authority, kind, at });
+  }
+
+  async meter(_owner: string, request: { after: number }):
+      Promise<{ events: MeterEvent[]; next: number }> {
+    if (this.meterFails) {
+      throw new Error("the sandbox did not answer");
+    }
+    const events = this.log.filter((event) => event.seq > request.after).slice(0, 1000);
+    return { events, next: events.at(-1)?.seq ?? request.after };
   }
 }

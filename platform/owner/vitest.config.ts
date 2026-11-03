@@ -33,12 +33,12 @@ function transpiled(path: string): string {
 
 /**
  * The real files Worker, as the FILES service binding's target: its own source, its own
- * config's runtime and its one bucket. Miniflare runs auxiliary Workers from JavaScript,
+ * config's runtime, its one bucket and its data keys' ring as its one secret. Miniflare runs auxiliary Workers from JavaScript,
  * so its modules are transpiled here, named as their sources import them.
  */
-function filesWorker() {
+function filesWorker(keyring: string) {
   const files = config(FILES);
-  const modules = ["index", "keys"].map((name) => ({
+  const modules = ["index", "keys", "datakey", "cipher"].map((name) => ({
     type: "ESModule" as const,
     path: join(FILES, "src", name),
     contents: transpiled(join(FILES, "src", `${name}.ts`)),
@@ -50,6 +50,7 @@ function filesWorker() {
     compatibilityDate: files.compatibility_date,
     compatibilityFlags: files.compatibility_flags,
     r2Buckets: (files.r2_buckets ?? []).map((bucket) => bucket.binding),
+    bindings: { FILES_KEYRING: keyring },
   };
 }
 
@@ -177,6 +178,12 @@ const KEYRING = JSON.stringify({
   keys: { k1: randomBytes(32).toString("base64"), k2: randomBytes(32).toString("base64") },
 });
 
+/** The files Worker's data keys' ring, made fresh for each run: rotated, `k1` the older kid. */
+const FILES_RING = JSON.stringify({
+  active: "k2",
+  keys: { k1: randomBytes(32).toString("base64"), k2: randomBytes(32).toString("base64") },
+});
+
 export default defineConfig({
   test: {
     projects: [
@@ -187,7 +194,8 @@ export default defineConfig({
         // in reach, its gateway calls watched, code mode's bounds small, its control record
         // flipped (read at each call, or once a second). FILES, GATEWAY and HOOKS
         // are the config's own bindings, to the files, gateway and hooks Workers run beside it. TEST_KEYRING is the gateway's
-        // keyring, so a test can seal under an older kid; the tests' own fetches reach the
+        // keyring, so a test can seal under an older kid, and FILES_TEST_RING the files
+        // Worker's, so a test can wrap a data key under its older kid; the tests' own fetches reach the
         // fake. ROUTING_MAC_KEY is the config's one secret, the sandbox tokens' routing key.
         plugins: [
           cloudflareTest({
@@ -204,11 +212,13 @@ export default defineConfig({
                 SWITCHED: { className: "SwitchedOwnerDO", useSQLite: true },
                 CACHED: { className: "CachedOwnerDO", useSQLite: true },
               },
-              bindings: { TEST_KEYRING: KEYRING, ROUTING_MAC_KEY: ROUTING_KEY },
+              bindings: { TEST_KEYRING: KEYRING, FILES_TEST_RING: FILES_RING,
+                          ROUTING_MAC_KEY: ROUTING_KEY },
               serviceBindings: { CONNECT: { name: "tinyassets-gateway",
                                             entrypoint: "ConnectGateway" } },
               outboundService: "fake-upstream",
-              workers: [filesWorker(), gatewayWorker(KEYRING), hooksWorker(), sandboxWorker(),
+              workers: [filesWorker(FILES_RING), gatewayWorker(KEYRING), hooksWorker(),
+                        sandboxWorker(),
                         fakeUpstream()],
             },
           }),
@@ -218,7 +228,11 @@ export default defineConfig({
                 setupFiles: ["./test/admitted.ts"] },
       },
       {
-        // Static guards over the source and config, in Node.
+        // Static guards over the source and config, in Node. The migrations guard imports
+        // the schema, whose imports reach the Agents SDK's Lifecycle: Node takes a stub of it
+        // (`guards/lifecycle-stub.ts`), since the real one loads `cloudflare:` modules.
+        resolve: { alias: { "agents/lifecycle": join(PLATFORM, "owner", "guards",
+                                                     "lifecycle-stub.ts") } },
         test: { name: "guards", include: ["guards/**/*.test.ts"], environment: "node" },
       },
     ],

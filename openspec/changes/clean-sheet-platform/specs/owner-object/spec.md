@@ -89,7 +89,7 @@ A service binding the owner Worker holds SHALL be only to a Worker the config gu
 
 #### Scenario: The bindings today
 - **WHEN** the owner Worker's config is checked
-- **THEN** it holds `FILES`, to the files Worker holding exactly one `r2_buckets` entry, `GATEWAY`, to the model gateway holding no binding and declaring only its keyring secret by name, and `HOOKS`, to the hooks Worker binding only its own `CodemodeSandbox` class; one store, `CONTROL`, the doors' namespace of the platform's control record alone, which only `control-gate.ts` reads; and no Durable Object namespace; `SANDBOX`, the sandbox Worker the runs call (`sandbox.ts`), is unbound until slice S adds that Worker and its allow-list entry, so every run is refused `sandbox_absent` meanwhile
+- **THEN** it holds `FILES`, to the files Worker holding exactly one `r2_buckets` entry and declaring only its data keys' ring secret (`FILES_KEYRING`) by name, `GATEWAY`, to the model gateway holding no binding and declaring only its keyring secret by name, and `HOOKS`, to the hooks Worker binding only its own `CodemodeSandbox` class; one store, `CONTROL`, the doors' namespace of the platform's control record alone, which only `control-gate.ts` reads; and no Durable Object namespace; `SANDBOX`, the sandbox Worker the runs call (`sandbox.ts`), is unbound until slice S adds that Worker and its allow-list entry, so every run is refused `sandbox_absent` meanwhile
 
 #### Scenario: The bound Worker gains a way on
 - **WHEN** the files Worker's config gains a Durable Object namespace, a service, a queue producer, a workflow, a dispatch namespace, a Worker loader, an unsafe binding, a tail consumer, a KV namespace, a D1 database or a second bucket, at top level or in an environment
@@ -598,14 +598,14 @@ A sync op made against a version that has moved on SHALL leave the current versi
 - **THEN** the sandbox's content is saved as `notes.md.ta-conflict-<epoch>-2` and the other file stays
 
 ### Requirement: The files Worker moves bytes and never sees a path
-The files Worker SHALL hold the platform's only bucket binding and bind nothing else, serve no URL, and take only hex namespaces, chunk hashes and bytes, moving at most two chunks' bytes a call. Its keys SHALL be only `o/<ns>/c/<sha256>`, built by one function. A put SHALL be create-once and verified by R2's SHA-256 check; an existing key SHALL count as stored only when it holds those bytes.
+The files Worker SHALL hold the platform's only bucket binding and bind nothing else, serve no URL, and take only hex namespaces, chunk hashes and bytes, moving at most two chunks' bytes a call. Its keys SHALL be only `o/<ns>/c/<sha256>` and the nightly manifest's `o/<ns>/m/<day>[/<part>]`, built by one module. A put SHALL be create-once and verified by R2's SHA-256 check; an existing key SHALL count as stored only when it holds those bytes, read back under the owner's key.
 
 #### Scenario: Bytes that miss their hash
 - **WHEN** a put names a hash its bytes do not have
 - **THEN** it is refused and nothing is stored
 
 ### Requirement: The binder may stream an owner's chunks
-The binder is the trust root: the HTTP door's binder MAY read an owner's namespace from that owner's object and stream chunks to the files Worker itself, since a binder already reaches every owner's object; no owner's object SHALL hand out another owner's namespace.
+The binder is the trust root: the HTTP door's binder MAY read an owner's namespace and wrapped data key from that owner's object and stream chunks to the files Worker itself, since a binder already reaches every owner's object; no owner's object SHALL hand out another owner's namespace.
 
 #### Scenario: The binder streams a large read
 - **WHEN** the binder serves Alice's large file
@@ -809,7 +809,11 @@ A change under `/workspace/agents`, `/workspace/.agents`, `/workspace/skills` or
 - **THEN** it is refused `AGENTS_OWNER_ONLY`
 
 ### Requirement: Erasing the owner ends every run before the owner is wiped
-Erasing the owner SHALL mark it erasing, after which every door refuses and no lane runs; end every run (the sandbox's in-flight egress streams, the owner app's sockets, and each live run's cancel through the sandbox; the sandbox slice adds the sandbox's kill and the session files' purge), recorded as the erasure's second step; wait for the doors' confirmation of the outside record (the erasure queue, sent by the erasure's own job at the mark and at each attempt until confirmed); delete every chunk its rows name from R2, its files' and its placed bodies' (ADR-035), repeatable; then `deleteAll()` the owner and leave one `erased` admission row, the tombstone, in the wiped database. Each step SHALL resume after a crash from the step the mark records. An object holding the tombstone SHALL migrate nothing, start no Lifecycle and refuse every door.
+Erasing the owner SHALL mark it erasing, after which every door refuses and no lane runs; end every run (the sandbox's in-flight egress streams, the owner app's sockets, and each live run's cancel through the sandbox; the sandbox slice adds the sandbox's kill and the session files' purge), recorded as the erasure's second step; wait for the doors' confirmation of the outside record (the erasure queue, sent by the erasure's own job at the mark and at each attempt until confirmed); delete every chunk its rows name from R2, its files' and its placed bodies' (ADR-035), and every generation (each root a copy of the owner's wrapped data key), repeatable; then `deleteAll()` the owner and leave one `erased` admission row, the tombstone, in the wiped database. Each step SHALL resume after a crash from the step the mark records. An object holding the tombstone SHALL migrate nothing, start no Lifecycle and refuse every door.
+
+#### Scenario: Erasure is complete past the platform's recovery window
+- **WHEN** the owner is erased
+- **THEN** the account-erase answer names `complete_at`, the wipe plus 30 days: a Durable Object's point-in-time recovery can restore its database, and with it the wrapped data key, for 30 days, so crypto-erasure is complete only past that window
 
 #### Scenario: A crash mid-erasure
 - **WHEN** the object dies after the mark, or after every run ended, or after Lifecycle's alarm was disabled, or its wipe failed
@@ -1064,6 +1068,72 @@ Each frame (`{v, run, seq, at, kind, event}`) SHALL be relayed to the owner app'
 #### Scenario: A late joiner
 - **WHEN** a socket attaches to a conversation whose run has relayed frames
 - **THEN** it receives the run's tail first, then each frame as it comes
+
+### Requirement: Every chunk is put and read under its owner's data key
+Every chunk get and put, a file's and a placed body's alike, and every nightly manifest part SHALL be under its owner's own data key: R2's SSE-C (`ssecKey`) by default, or AES-256-GCM per object in the files Worker (`FILES_CIPHER` `aes-gcm`, the object's R2 key as additional data) should the live probe find SSE-C does not combine with the create-once put. The data key SHALL be 32 random bytes made by the files Worker for one namespace and kept only wrapped: AES-256-GCM under a wrapping key derived for that namespace from the files Worker's own keyring (`FILES_KEYRING`, HKDF-SHA256), its additional data binding the namespace and the kid, so the owner's object holds no key it can use and a wrapped key presented for another namespace fails. A get or put with no key, or one that does not open, SHALL be refused before R2 is reached; a missing or malformed ring SHALL fail every call loudly. Erasure SHALL leave no copy of the wrapped key, so a chunk that outlives the prefix delete is unreadable. A chunk's R2 name SHALL be an HMAC of its hash under a key derived from the data key, so a listing of the bucket confirms no known file. A key rotation SHALL re-wrap the same data key under the active kid (`rewrapKey`), the object's copy and then every manifest root it keeps (`dataKeyRewrap`, the platform's door), an idle owner's included, and a kid SHALL leave the ring only after every owner's re-wrap answered.
+
+#### Scenario: Another owner's key
+- **WHEN** a chunk put under Alice's key is read with Bob's wrapped key, or with a second key minted for Alice's own namespace
+- **THEN** Bob's key is refused `data_key_refused` before R2 is reached, and the second key names no chunk the first put
+
+#### Scenario: A rotation, an idle owner
+- **WHEN** the owner's key was wrapped under a kid that is retiring, and the owner has changed nothing since its last manifest
+- **THEN** the platform's re-wrap leaves the object's key and its manifest root under the active kid, and every chunk still reads
+
+#### Scenario: An erased owner's stray chunk
+- **WHEN** the owner is erased and a chunk of theirs is still in the bucket
+- **THEN** no manifest root and no object row holds their wrapped key, so the chunk cannot be read
+
+### Requirement: The owner export streams everything the owner holds, to the owner alone
+The owner's export SHALL be a generation, the same artifact the nightly manifest's root names, in the format `tinyassets-export` version 2 (`export.ts`): a fuzzy base copy (a header naming the schema, the generation and its log's first seq S, every row of every exported table in its key's order, every chunk some content names by hash and size), then the change log captured while the base was read (each change's row image or `gone` line with its seq, through E), then `{"t":"end","at","seq":E}`; read last line per key wins, it SHALL be exactly the owner at E however the owner wrote meanwhile, and it SHALL never begin again for a change. Every change to an exported row while a generation runs SHALL write its image in the writing unit's own transaction, and nothing SHALL be deleted from the log before R2 holds it, so a crash anywhere repeats only what was not acknowledged. Past `LOG_BYTES` of unshipped log, or an image past `IMAGE_MAX`, the generation SHALL fail with one notice and the write SHALL land. Every exported row's widest image SHALL fit `IMAGE_MAX`, so no change to a real row fails a generation. A migration while a generation runs SHALL give it up with one notice and begin a fresh one under the new schema; a generation SHALL never hold two schemas. No `REPLACE` SHALL meet an exported table. An export SHALL read the generation running, the newest finished while nothing changed since, or a new one, by a cursor of the generation and an object's index; any cursor it handed out SHALL resume it, and it SHALL pin its generation from deletion for `EXPORT_LIFE_S`, under the garbage grace, so every chunk it names is still in the bucket; a chunk gone (the owner's garbage collected early past its figure) SHALL be refused by name. Every table of the schema SHALL be either exported, with every column exported or kept out with its reason, or kept out with its reason; sealed credentials, flows, session and ticket hashes (a policy receipt's session hash among them), run and lease secrets, the namespace and the wrapped key SHALL never be exported. Its door SHALL answer only the owner, in its live session: no outside client, no run, and no request without the session.
+
+#### Scenario: A round trip
+- **WHEN** the owner exports after writing a small file, a chunked file and a collection row
+- **THEN** each exported table's rows equal the table's, and the files rebuild byte for byte from the manifest and the chunks fetched by hash
+
+#### Scenario: An export holds nothing
+- **WHEN** an export is open and a file written after it is deleted, its grace past
+- **THEN** the sweep deletes its chunk as it would with no export, and opening export after export renews nothing
+
+#### Scenario: The owner writes all through a generation
+- **WHEN** the owner syncs 5,000 files, and changes and deletes rows, during every outside call of a generation and after every unit, and a pass is cut before or after any outside call
+- **THEN** the generation still ends, and its lines replayed last per key are exactly the owner's rows at E; an export resumed from any cursor it handed out reads the same
+
+#### Scenario: A client asks
+- **WHEN** an outside client, an API key or an MCP token calls the export
+- **THEN** it is refused, and the owner surface answers `403`
+
+### Requirement: The nightly manifest is written by the owner's own schedule
+Each owner's object SHALL write its export manifest to R2 once a night when anything changed since the last one began, from its own `manifest` lane (its day's start in UTC plus the owner's own offset), never from a platform cron of every owner; with no change, the lane SHALL keep no job. A manifest SHALL be a generation's root, naming its base parts, its log segments through E, S and E; one a pass did not finish SHALL go on `MANIFEST_CONTINUE_S` later, never at once; past `MANIFEST_PARTS` (measured against the worst stream, JSON's escaping included) it SHALL be given up and the owner told once, never retried in a loop. A garbage chunk SHALL wait 30 days, the object's point-in-time recovery window, before it is deleted, so no recovery point names a swept chunk; deleted bytes SHALL leave the owner's storage number at once (the app says "Deleted files are kept up to 30 days, within your storage; past that the oldest go first."), and once an owner's garbage in its grace passes the owner's storage figure, the oldest SHALL be collected early, never a chunk the newest finished generation names while it is under `MANIFEST_PROTECT_S` old, and garbage waiting on a failed delete SHALL never set the files lane due at once. The parts SHALL be under the owner's data key and the root, written last, SHALL carry the wrapped key under the active kid and the parts' hashes and sizes sealed under the data key, so a recovery needs only the keyring. The newest finished generation SHALL be kept, and each an open export pins; an older one SHALL be deleted root first once a new one finishes and no export pins it.
+
+#### Scenario: Tonight's manifest
+- **WHEN** the owner's manifest is due
+- **THEN** the object's own alarm writes its parts and root and deletes the older one; with no change since, it sets no job, and the first change sets it for the next night
+
+#### Scenario: Garbage past the owner's figure
+- **WHEN** an owner on a tier of three files' storage deletes four files
+- **THEN** each leaves the owner's number at once, the oldest file's chunk is deleted early, and the other three wait out their 30 days
+
+### Requirement: A deployed migration is never edited
+Once the owner Worker's first deploy is marked in `platform/owner/migrations.json`, every deployed migration SHALL be pinned there by the SHA-256 of its statements as the code evaluates them, and the migrations guard SHALL fail a pinned migration that changed or is gone; a new shape SHALL be a new migration at the end. Each object SHALL keep the digest of every migration it applied and refuse to start when one reads differently now, or when one's digest is gone. The lock itself SHALL only grow against the base branch: its first-deploy marker never changes once set, and its pins are never edited or taken away (a structural guard). The deploy SHALL mark the first deploy and pin each migration it ships, and refuse to deploy unless the lock pins every migration it ships; nothing SHALL be pinned without that mark, and until it is set migrations may be edited in place.
+
+#### Scenario: A deployed migration edited in place
+- **WHEN** a pinned migration's statements change, with its pin or without
+- **THEN** the guard fails (the structural guard when the pin changed with it), and the deploy refuses to pin
+
+### Requirement: Sandbox time is metered per run and per day, and limits nothing
+What E2B bills SHALL be the truth: its signed lifecycle events (paused, killed), verified by E2B's signature scheme and routed by the sealed route the sandbox carries in its metadata, SHALL add each execution's billed ms, vCPU-ms and MB-ms to the UTC days it ran, once by its execution id (each live sandbox's last kept until its kill), and only while the event's own signed time is inside `BILLED_WINDOW_S`, every execution counted kept that long, so a replay counts nothing; past `BILLED_KEPT` it SHALL be counted and tallied unverified on its day, shown in the view; its body SHALL be read no further than its bound. As the estimate and the fallback, the object SHALL read the sandbox Worker's own log of each sandbox's start, pause, resume and kill on its `sandbox` lane, after a settled run has no sandbox time and while a span stands open, and apply it in one unit. A run's receipt SHALL carry its sandbox seconds (`sandbox_s`), the time its sandbox ran between its start and its settle, once the log is read past its settle; each UTC day SHALL sum the owner's sandboxes' running time once however many runs they held. No door, admission or run SHALL read it to refuse anything.
+
+#### Scenario: A pause and a resume inside a run
+- **WHEN** a run from 5 s to 30 s shares a sandbox that ran 0-10 s and 20-35 s
+- **THEN** its receipt carries 15 s and the day 25 s
+
+### Requirement: The owner has one storage number
+Every byte of user content the owner stores SHALL count toward the tier's storage (free 25 GB, paid 250 GB, from the control record), or the owner's own lower setting: file chunks live and in history, small files kept inline, and collection rows, their history and mail bodies whether kept inline in the object or placed in R2. Platform bookkeeping (indexes, receipts, counters) SHALL NOT count. A change past it SHALL first let retention make room (the oldest history entries no row still is, then the oldest acked mail, of the scope that is full), then be refused with the files quota's fixed code (`file_quota`, or `file_share` past an outside writer's share), leaving nothing behind. The owner SHALL read `{used_bytes, limit_bytes, breakdown: {files, messages, collections}}`, the parts summing to what is used.
+
+#### Scenario: Small bodies fill the storage
+- **WHEN** an owner whose tier stores 8,000 bytes keeps writing 1,500-byte collection rows
+- **THEN** old history entries go first, and once only live rows and their own entries are left the next write is refused `file_quota`, and the used bytes stay at or under 8,000
 
 ### Requirement: The key store and the inbound bindings are the object's own rows
 The object SHALL keep each API key's id, name, mint time, last use and revoke, written with its grant in one unit that counts live keys strictly. It SHALL keep each inbound binding's agent, revision, route, owner-held proof and breaker. `inboundAccept` SHALL take only an inbound route's binding, and post the event as the owner's mail to its agent, keyed by binding, revision and event id.

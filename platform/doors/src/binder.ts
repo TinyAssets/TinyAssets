@@ -253,6 +253,15 @@ export function ringOwner(env: DoorsEnv, owner: string): DurableObjectStub<Owner
 }
 
 /**
+ * A verified E2B lifecycle event's owner (`e2b-hooks.ts`, slice P), by the route E2B echoed
+ * and the doors opened: that owner's object, whose one door here (`sandboxBilled`) records
+ * the sandbox time E2B billed. It carries no binding: the event grants nothing.
+ */
+export function sandboxHookOwner(env: DoorsEnv, owner: string): DurableObjectStub<OwnerDO> {
+  return env.OWNER.getByName(principal(owner));
+}
+
+/**
  * What a sandbox's call presents beside its egress token: a run's own secret (its path's,
  * on its model calls and MCP door), or the runner's (`x-ta-runner`, on its event door and
  * sign-in report). The binding carries only each one's SHA-256, which the object checks.

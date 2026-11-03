@@ -68,6 +68,12 @@
  * - `agent/submit`, `agent/run`, `agent/status`, `agent/cancel`: the run doors (slice R),
  *   the same doors `converse`, `run_graph`, `run_status` and `run_cancel` call for an
  *   outside client; the control record's tier numbers ride the binding (`withTiers`).
+ * - `storage`: the owner's one storage number, used and left (`storageUsage`).
+ * - `export`: the owner's export manifest (`owner/src/export.ts`), streamed as
+ *   newline-delimited JSON (`exportStream`), resumable from any cursor line (it names the
+ *   export's id), ending as the owner at one moment however the owner writes meanwhile (a
+ *   generation, `owner/src/backup.ts`); `export/chunks` its chunks' bytes by hash;
+ *   `export/end` its id let go.
  * - `agent/socket-ticket`: a single-use socket ticket for one of the owner's conversations
  *   (A6, salvaged), behind every check above, bound to the token's grant and expiry
  *   (`bindOwnerGrant`).
@@ -280,6 +286,54 @@ async function ownerTool(name: string, { binding, stub }: Bound,
 }
 
 /**
+ * The pages one export response carries before it ends with its cursor line, so one
+ * request's work in this Worker stays bounded (a technical ceiling: a request's CPU; about
+ * 4 MiB an object, 256 MiB a response). The client asks again with the last cursor line it
+ * read, which names its export_id.
+ */
+export const EXPORT_PAGES = 64;
+
+/**
+ * The owner's export, as newline-delimited JSON (`application/x-ndjson`): its generation's
+ * objects one after another, each but the last followed by its cursor line
+ * (`{"t":"cursor","cursor":...,"export_id":...}`), until the stream's `end` line,
+ * `EXPORT_PAGES`, or an object not yet written (the client asks again later). The
+ * first page is read before the response begins, so a refusal is the door's status; a
+ * page that fails after it cuts the stream short of its `end` line, and the client resumes
+ * from the last cursor it read.
+ */
+async function exportStream(_env: DoorsEnv, { binding, stub }: Bound,
+                            request: Record<string, unknown>): Promise<Response> {
+  if (Object.keys(request).some((key) => key !== "cursor" && key !== "export_id")) {
+    return failure(400, "an export request is at most its cursor and its export_id");
+  }
+  let page = await stub.ownerExport(binding, request as { cursor?: string | null;
+                                                          export_id?: string });
+  const exportId = page.export_id;
+  let pages = 0;
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      pages++;
+      const lines = [...page.lines];
+      const next = page.next;
+      if (next !== null) {
+        lines.push(JSON.stringify({ t: "cursor", cursor: next, export_id: exportId }));
+      }
+      controller.enqueue(encoder.encode(lines.join("\n") + "\n"));
+      // An object not yet written: the response ends at its cursor, to ask again.
+      if (next === null || pages >= EXPORT_PAGES || page.pending) {
+        controller.close();
+        return;
+      }
+      page = await stub.ownerExport(binding, { cursor: next, export_id: exportId });
+    },
+  });
+  return new Response(body, { status: 200, headers: {
+    "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" } });
+}
+
+/**
  * `agent/doorbell`: the owner's pasted wake token for one of its agents, for a kind whose
  * record has the owner hand it over. Checked against the record here and again in the
  * gateway, which seals it with the URL; the object stores the blob under the id derived
@@ -321,6 +375,12 @@ function doorbellKinds(): unknown {
 }
 
 const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
+  "export": exportStream,
+  "export/chunks": async (_env, { binding, stub }, request) =>
+    json(200, await stub.exportChunks(binding, request as never)),
+  "export/end": async (_env, { binding, stub }, request) =>
+    json(200, await stub.exportEnd(binding, request as never)),
+  "storage": async (_env, { binding, stub }) => json(200, await stub.storageUsage(binding)),
   "agent/doorbell": doorbell,
   "agent/doorbell/end": async (_env, { binding, stub }, request) =>
     json(200, await stub.agentDoorbellEnd(binding, request as never)),

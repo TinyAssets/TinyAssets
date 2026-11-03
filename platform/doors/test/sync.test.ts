@@ -33,7 +33,7 @@ const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_log
 async function leased() {
   const who = `user_${crypto.randomUUID().replace(/-/g, "")}`;
   const app = await signInApp({ owner: who });
-  const binding: Binding = { owner: who, caller: who, origin: null };
+  const binding: Binding = { owner: who, caller: who, origin: null, tiers: OPEN.tiers };
   await defineAgent(env.OWNER.getByName(who), binding, "main", SIGNED_IN);
   await env.OWNER.getByName(who).fileWrite(binding, {
     path: "/workspace/notes.md", expected_etag: null, content: new TextEncoder().encode("hi") });

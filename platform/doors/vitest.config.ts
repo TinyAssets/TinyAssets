@@ -96,14 +96,15 @@ function hooksWorker() {
 
 /**
  * The real files Worker, as the FILES service binding's target (the doors' file bytes, and
- * the owner object's in this script): its own source, transpiled, with its one bucket.
+ * the owner object's in this script, whose export's generations are in R2): its own source,
+ * transpiled, with its one bucket and a test keyring as its one secret.
  */
-function filesWorker() {
+function filesWorker(keyring: string) {
   const files = config(FILES);
   return {
     name: files.name,
     modulesRoot: FILES,
-    modules: ["index", "keys"].map((name) => ({
+    modules: ["index", "keys", "datakey", "cipher"].map((name) => ({
       type: "ESModule" as const,
       path: join(FILES, "src", name),
       contents: ts.transpileModule(readFileSync(join(FILES, "src", `${name}.ts`), "utf8"), {
@@ -113,6 +114,7 @@ function filesWorker() {
     compatibilityDate: files.compatibility_date,
     compatibilityFlags: files.compatibility_flags,
     r2Buckets: (files.r2_buckets ?? []).map((bucket) => bucket.binding),
+    bindings: { FILES_KEYRING: keyring },
   };
 }
 
@@ -158,12 +160,16 @@ export default defineConfig({
             miniflare: {
               durableObjects: { OWNER: { className: "OwnerDO", useSQLite: true } },
               bindings: { OWNER_ISSUER: "https://upstream.test", ROUTING_MAC_KEY: ROUTING_KEY,
+                          E2B_WEBHOOK_SECRET: "test-e2b-webhook-signature-secret",
                           WORKOS_API_KEY: "test-client-secret",
                           INBOUND_SLACK_SIGNING_SECRET: SLACK_SECRET },
-              // HOOKS: the owner object's (in this script for the tests), to the real
-              // hooks Worker, as the owner config binds it.
-              serviceBindings: { PROVIDERS: "fake-providers", HOOKS: "tinyassets-hooks" },
-              workers: [gatewayWorker(KEYRING), hooksWorker(), fakeProviders(), filesWorker()],
+              // HOOKS and OWNER_FILES: the owner object's (in this script for the tests), to
+              // the real hooks and files Workers, as the owner config binds them: the owner's
+              // FILES is the files Worker's whole service, the doors' its upload entrypoint.
+              serviceBindings: { PROVIDERS: "fake-providers", HOOKS: "tinyassets-hooks",
+                                 OWNER_FILES: "tinyassets-files" },
+              workers: [gatewayWorker(KEYRING), hooksWorker(), fakeProviders(),
+                        filesWorker(KEYRING)],
             },
           }),
         ],

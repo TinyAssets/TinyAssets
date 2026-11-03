@@ -11,7 +11,7 @@ import { type Binding, OwnerDO } from "../src/owner-do";
 import { AGENTS_DIR, AGENTS_OWNER_ONLY, OWNER_TREES, within } from "../src/paths";
 import { MCP, MUSE, rig as ledgerRig, signedIn } from "./ledger-support";
 import { ALL_SCOPES } from "./runs-support";
-import { failure } from "./support";
+import { failure, TIERS } from "./support";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 
@@ -21,7 +21,7 @@ async function rig() {
   const stub = env.OWNER.getByName(owner);
   const at = signedIn();
   const unbound = (origin: Origin | null): Binding =>
-    ({ owner, caller: owner, origin,
+    ({ owner, caller: owner, origin, tiers: TIERS,
        ...(origin === null ? {} : { source: MCP, authenticated_at: at }) });
   const { session } = await stub.sessionOpen({ ...unbound(null), authenticated_at: at });
   // The owner's own changes to its agents' files are made in its session, as its app makes

@@ -10,7 +10,8 @@
  *    SHA-256 of each 4 MiB of it; its intent, and the chunks it still needs.
  * 2. `PUT files/upload/<intent_id>/<index>` (`application/octet-stream`), one per chunk of
  *    the plan, in any order and again after any failure: exactly that chunk's bytes. The
- *    door reads the plan and the owner's namespace (`fileUploadTarget`), checks the bytes
+ *    door reads the plan, the owner's namespace and its wrapped data key, which only `FILES`
+ *    opens (`fileUploadTarget`), checks the bytes
  *    against the chunk's declared SHA-256, puts a chunk the intent still needs to `FILES`
  *    (R2 checks its hash again) and reports it (`fileUploadStored`). It answers the chunk's
  *    SHA-256 as `Content-Digest` (RFC 9530) and checks one the client sent. A chunk sent
@@ -122,7 +123,8 @@ export async function streamUpload(request: Request, env: DoorsEnv, { binding, s
     }
     const needed = target.pending.includes(chunk.sha256);
     if (needed) {
-      await env.FILES.putChunks(target.namespace, [{ sha256: chunk.sha256, bytes }]);
+      await env.FILES.putChunks(target.namespace, target.key,
+                                [{ sha256: chunk.sha256, bytes }]);
       await stub.fileUploadStored(binding, { intent_id: intentId, chunks: [chunk.sha256] });
     }
     return Response.json({ intent_id: intentId, index, stored: needed,

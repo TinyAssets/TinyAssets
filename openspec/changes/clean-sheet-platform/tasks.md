@@ -701,9 +701,36 @@ account and no deploy.
   are allowed. Slice L: a record may be marked
   `curated: false`, and `catalogOf` refuses any catalog serving one with OAuth beside a key
   exchange, naming the mix-up (`guards/registrations.test.ts`).
-- [ ] Append-only migrations from the first deploy: once a migration has run on a live
+- [x] Append-only migrations from the first deploy: once a migration has run on a live
   object it is never edited (G3 edited migration 6 in place only because nothing is
-  deployed), held by a guard that pins each deployed migration's text by digest.
+  deployed), held by a guard that pins each deployed migration's text by digest. Slice P:
+  `platform/owner/migrations.json` (`first_deploy`, `deployed` SHA-256s over each
+  migration's statements as the code evaluates them) and `owner/guards/migrations.test.ts`,
+  which fails a pinned migration changed or gone and anything pinned before the marker;
+  today's migrations (slice S's column folded in) squashed into one baseline, checked equal
+  to the old chain by a one-off workerd comparison. Each object's start also refuses to run
+  when a migration it applied reads differently now (`schema_digests`, Flyway's
+  `validate`), which catches what the repo's guard cannot (a hotfix branch, a revert), and
+  refuses a migration it applied whose digest row is gone (it never passes by default).
+  The lock itself only grows: the structural guard `tests/test_migration_lock_append_only.py`
+  holds `migrations.json` against `origin/main` (the base's first-deploy marker never
+  changes; the base's pins stay the head's first pins, in order), so a change that edits a
+  deployed migration and its pin together fails in review. Until the marker is set, slices
+  still edit in place.
+- [x] The deploy kit holds the migration lock (slice P, review M5-2): mark the first deploy and pin each deploy's migrations,
+  `PIN_MIGRATIONS=<commit> npx vitest run --project guards guards/migrations.test.ts` in
+  `platform/owner` (it refuses to pin a changed one), committing the lock with the deployed
+  code; and refuse to deploy the owner Worker unless the lock pins every migration it
+  ships. The exact check, run on the commit being deployed before `wrangler deploy`:
+  `node -e` reading `platform/owner/migrations.json` and the code's `MIGRATIONS` (the
+  guards project's import of `owner/src/schema.ts`), and failing unless `first_deploy` is
+  set and `deployed` equals `MIGRATIONS.map(migrationDigest)` element for element (same
+  length, same order); that is, the guard test passes and
+  `lock.deployed.length === MIGRATIONS.length`. Done: `platform/deploy/deploy.ts`
+  `lockRefusal`, checked in every mode before any change, its digests from the guards
+  project (`MIGRATION_DIGESTS`), refusing an unmarked lock, a migration unpinned, gone,
+  changed or reordered (`doors/guards/deploy.test.ts`). Today's lock is unmarked, so the
+  kit refuses until the founder pins at the first deploy's commit (the checklist).
 - [ ] Mobile connects and sign-in (the app slice): on mobile the OAuth runs in an external
   browser (RFC 8252), whose cookies are not the WebView's, so a binding cookie set in the
   WebView never comes back with the callback. **Decided (app slice, 2026-11-03, corrected
@@ -1744,14 +1771,122 @@ R, S, M and W.
   awaited `deleteAll`). The design was: top-level `ThreadStore` objects hosted by
   `ThreadHost`, which slice D deleted with the in-object loop; Q1's ceiling and Q8's
   window still hold for the owner's object.
-- [ ] Before cutover: per-owner SSE-C data keys on every chunk get and put, after a live
-  probe of keyless `head`/`get` and of `ssecKey` with `onlyIf` and `sha256` (miniflare
-  does not emulate it); a live probe of the files Worker's create-once put, which
-  miniflare passed but the live bucket must also: `onlyIf: { etagDoesNotMatch: "*" }`
-  as a wildcard, and which R2 checks first when a key exists and the bytes miss the
-  `sha256` (the precondition or the digest), since the Worker's recheck of an existing
-  key reads either answer; the manifest tables in the nightly export; each droplet volume
+- [x] Per-owner SSE-C data keys on every chunk get and put (slice P, in workerd): Cloudflare
+  documents `ssecKey` on the Workers binding's `get`, `put` and `createMultipartUpload`
+  (r2/examples/ssec, the Workers API reference, read 2026-11-03), so it is SSE-C, not
+  client-side encryption. Each owner's data key is 32 random bytes the files Worker mints
+  for its namespace and the object keeps only wrapped (`file_space.data_key`: AES-256-GCM
+  under HKDF-SHA256 of the files Worker's own `FILES_KEYRING`, bound to the namespace and
+  kid; `files/src/datakey.ts`); every put and get presents it, a keyless or foreign one is
+  refused before R2; an existing key is checked by a get under the key, never a keyless
+  `head`. Erasure deletes the nightly manifests (each carries the wrapped key) before the
+  wipe, so a stray chunk is unreadable. Miniflare ignores `ssecKey`, so the files tests
+  hold the Worker to R2's documented answers (`files/test/ssec.ts`). A chunk's R2 name is
+  HMAC-SHA256 of its hash under a key derived from the data key (`chunkName`), so a listing
+  of the bucket confirms no known file; a manifest's root keeps the wrapped key in the clear
+  and its part list sealed under the data key (review L5).
+- [ ] Owed live (slice L): a probe of `ssecKey` with `onlyIf` and `sha256` on a put, of a get
+  with another key and with none on an SSE-C object, and of a ranged SSE-C get. Should SSE-C
+  not combine with the create-once put or R2's `sha256`, set `FILES_CIPHER` to `aes-gcm`: the
+  fallback (AES-256-GCM per object in the files Worker, `files/src/cipher.ts`) is built and
+  tested, and the config guards take either; the files
+  Worker's create-once put on the live bucket (`onlyIf: { etagDoesNotMatch: "*" }` as a
+  wildcard, and which R2 checks first when a key exists and the bytes miss the `sha256`);
+  `FILES_KEYRING` generated and set at the files Worker's deploy. Each droplet volume
   imported into the manifest and bucket in the cutover window (9).
+- [x] Key rotation's re-wrap (review M4): the files Worker's `rewrapKey` (the same data key
+  wrapped again under the active kid) and `rewrapManifestRoot` (a root's wrapped key
+  re-wrapped in place, only if the root did not change meanwhile); `putManifestRoot` always
+  writes the active kid. The owner's `dataKeyRewrap` (the platform's door, as
+  `admissionSet`) re-wraps `file_space.data_key` and then every finished manifest root, an
+  idle owner's too, so no copy under a retiring kid outlives the sweep.
+- [ ] Owed by slice L's admin path, at the first rotation: add the new kid as active, call
+  `dataKeyRewrap` for every owner, and remove a kid from `FILES_KEYRING` only after every
+  owner's call has answered (the object's key and each manifest root under the new kid).
+- [x] The owner export and the nightly manifest (slice P), one artifact: a generation
+  (`backup_shape_research.md` (d); `owner/src/backup.ts`, `changelog.ts`), format
+  `tinyassets-export` version 2 (`export.ts`). A fuzzy base copy of every row of every
+  exported table, read in bursts and put as whole-line parts, and a change log of full row
+  images captured from S while the base is read (one trigger an exported table and event,
+  `LOGGED`, in the writing unit's own transaction), shipped to R2 after every part as
+  segments (`o/<ns>/m/<gen>/l/<a>-<b>`), each recorded pending, put, then acknowledged and
+  deleted; the unit that reads the base's last page fixes E, the unit that records it turns
+  capture off, and the root names the parts, the segments through E, S and E. Read last line
+  per key wins, it is exactly the owner at E, however the owner writes meanwhile, and a crash
+  anywhere repeats only what was not acknowledged (reviews M1, N1, R4-1 to R4-3). The export
+  is a generation (the one running, the newest while nothing changed, or a new one), read by
+  a cursor of the generation and an object's index, so any cursor resumes and any number of
+  exports read at once; `owner_exports` pins its generation for the export's 7 days. Every
+  table is exported (each column decided) or kept out with its reason; credentials, hashes (a
+  policy receipt's session hash too, review M2), secrets and the wrapped key never. The one
+  bound is `LOG_BYTES` (68 MiB, a quarter of the room under the database's half): past it, or an image past
+  `IMAGE_MAX` (1.5 MiB, the widest real row's image, review L5-1), capture stops and the
+  generation fails with one notice; the write lands. A migration while a generation runs
+  gives it up with one notice (`manifest_schema`) and begins a fresh one under the new
+  schema, never mixing two; and no `REPLACE` meets an exported table (a guard), since its
+  delete fires no trigger (review L5-2). A
+  generation a pass did not finish goes on `MANIFEST_CONTINUE_S` (5 s) later. Deleted bytes
+  leave the owner's number at once, and garbage past the owner's storage figure is collected
+  early, oldest first, never a chunk the newest finished generation names while it is under
+  `MANIFEST_PROTECT_S` (2 days) old, and garbage waiting on a failed delete's retry never
+  re-arms the files lane at once (reviews H1, N2, N3). The owner alone, in its live session:
+  the owner surface's `export`, `export/chunks`, `export/end`. Nightly, only when something
+  changed (the first change sets the lane's job), so an idle owner's object is never woken
+  for it; past `MANIFEST_PARTS` objects it is given up once and the owner told.
+- [ ] Owed by slice L: a live probe of the owner's sustained write rate against the change
+  log's ship rate (R2 puts of 4 MiB segments), against `LOG_BYTES`.
+- [ ] Owed (founder's cost decision): capture always on (`backup_shape_research.md` (c)): the
+  same code with the log never off, giving a recovery point of minutes instead of a night.
+  Each exported-row change then costs an image insert and a delete always: about $2 per
+  million changes (Durable Objects bill rows written at $1 a million, deletes count); a heavy
+  owner (about 12 changes a second) about $62 a month, a light one (an hour a day at one a
+  second) about $0.20; R2 at most about $1.17 a month for a put every 10 s. Today, capture only
+  during a generation costs the same heavy owner about $0.70 a month.
+- [ ] Owed by the app slice: the storage view's line "Deleted files are kept up to 30 days,
+  within your storage; past that the oldest go first.", labelled "deleted content", from
+  `storageUsage`'s `deleted_content` (`kept_bytes`, `kept_up_to_days`), and the storage
+  setting showing that a lower figure shortens recovery.
+- [ ] Owed (founder's spending decision): a manifest copy outside this account and bucket
+  (3-2-1); today's recovery point lives in the same bucket.
+- [x] Sandbox time metered per owner (slice P, `owner/src/sandbox-time.ts`). The truth is
+  E2B's: its signed lifecycle webhook (`POST /hooks/e2b/lifecycle`, `doors/src/e2b-hooks.ts`)
+  is verified by E2B's signature scheme against `E2B_WEBHOOK_SECRET`, parsed strictly and
+  routed by a sealed route the sandbox carries in its metadata (`ta_route`, `sealRoute`),
+  and each paused or killed execution's billed ms, vCPU-ms and MB-ms is counted once by its
+  `sandbox_execution_id` (a pause and a later kill may both carry it, review L1; each live
+  sandbox's last execution kept until its kill, review N4), and only while the event's own
+  signed `timestamp` is inside a day (`BILLED_WINDOW_S`), every execution counted kept that
+  long by 8 bytes of its id's digest (100,000 of them), so a replay is refused by its time
+  or its id (review L2); past that, an execution is counted anyway and tallied
+  `unverified_executions` on its day, which `sandboxDays` shows (review N5); the body is read through a byte count that stops at its bound (review L3); split
+  across UTC days. The estimate, and the fallback: the sandbox Worker
+  logs each create, resume, pause and kill (`SandboxControl`, `meter`), which the object
+  reads on its `sandbox` lane onto each run's receipt (`sandbox_s`) and each day.
+  `sandboxDays` shows both. It limits nothing.
+- [ ] Owed by slice L's deploy kit: register E2B's lifecycle webhook
+  (`POST https://api.e2b.app/events/webhooks`, events `sandbox.lifecycle.paused` and
+  `.killed`, the URL `https://tinyassets.io/hooks/e2b/lifecycle`) with a generated
+  signature secret, set as the doors' `E2B_WEBHOOK_SECRET`; and one platform-wide pull of
+  `/events/sandboxes` to catch deliveries E2B gave up on. Probe live: whether a kill of a
+  paused sandbox carries the pause's `execution` (and the same `sandbox_execution_id`), and
+  E2B's retry timing against `BILLED_WINDOW_S`.
+- [ ] Owed by slice L's erasure door (`account/erase`, which marks first and answers at the
+  mark): answer `erasureAnswer(markedAt, wipedAt)` (`owner/src/erasure.ts`, review L6):
+  `erased` once the wipe ran, and `complete_at` = `max(mark + PUT_GRACE_MS, wipe)` +
+  `RECOVERY_WINDOW_S` (30 days), so the answer at the mark already names the earliest
+  completion and a retry that wiped later names its own.
+- [x] One storage number (founder, 2026-11-03; slice P): every byte of user content counts
+  toward the tier's storage wherever it lives. The inline bodies of collection rows, their
+  history and mail are counted by triggers (`body_bytes`, owner-wide and in each writer's
+  files scope), and the bound is `stored` = chunk bytes + small files + inline bodies against
+  `max_bytes`; collection writes, posts and mail replies are held to it (`Files.held`),
+  retention first (history no row still is, then acked mail, inline or placed), then
+  `file_quota`. `storageUsage` (the app's `POST /app/api/storage`) answers used, the limit and
+  where it is (files, messages, collections).
+- [x] The sandbox Worker's side of `meter` (slice P, after slice S merged): `SandboxControl`
+  logs each create, resume, pause (its own, and one E2B made, as first seen) and kill (a
+  sandbox gone while it ran) with its authority and time, and drops what a read's cursor
+  passed.
 
 ## 7. Wakes and outside agents
 

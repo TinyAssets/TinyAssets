@@ -6,7 +6,9 @@
  * import the ledger stores, and only those stores named their files. Here, only the
  * object and its alarm's wake runner import the ledger module, and only the ledger and
  * the schema name its tables, so no other module can read or write mail around the
- * ledger's rules. That list only shrinks.
+ * ledger's rules. That list only shrinks. The owner export (`export.ts`, slice P) names
+ * them too, only to read them for the owner (its source holds no SQL but `SELECT`, held by
+ * the policy-boundary guard's read-only check).
  */
 import { describe, expect, it } from "vitest";
 
@@ -14,7 +16,7 @@ import { workerSources } from "./sources";
 
 const LEDGER = "owner/src/ledger.ts";
 const IMPORTERS = new Set(["owner/src/owner-do.ts", "owner/src/wakes.ts"]);
-const NAMERS = new Set([LEDGER, "owner/src/schema.ts"]);
+const NAMERS = new Set([LEDGER, "owner/src/schema.ts", "owner/src/export.ts"]);
 const TABLES = Object.freeze(["outside_agents", "native_agents", "ledger_messages",
   "ledger_recipients",
   "ledger_receipts", "ledger_readers", "ledger_wakes", "ledger_usage",

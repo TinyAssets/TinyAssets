@@ -20,7 +20,7 @@ import { describe, expect, it } from "vitest";
 import { PLATFORM } from "../../owner/guards/sources";
 import {
   BUCKET, CALLBACK, type CfAnswer, configOf, DARK_CONTROL, deployedConfig, EGRESS_DOMAIN,
-  DOORS, handover, kvPresent, listed, NAMESPACES, namespacesOf, PUBLIC_INPUTS, registerRedirect,
+  DOORS, handover, kvPresent, listed, lockRefusal, NAMESPACES, namespacesOf, PUBLIC_INPUTS, registerRedirect,
   ROUTES, type Route, routesOf, runHandover, SECRET_INPUTS, zoneOf,
   SECRETS, secretPlan, secretsOf, templateReady, upstreamFrom, versionOf, WORKERS,
 } from "../../deploy/deploy";
@@ -211,9 +211,10 @@ describe("the deploy kit", () => {
     const none = secretPlan({ doors: [], owner: [], gateway: [], sandbox: [] }, new Set(), NONE);
     expect(none.filter(({ name }) => name === "ROUTING_MAC_KEY").map(({ worker }) => worker)
       .sort()).toEqual(["doors", "owner"]);
-    const both = secretPlan({ doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY"],
+    const both = secretPlan({ doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET"],
                               owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
-                              sandbox: ["E2B_API_KEY"] }, new Set(), NONE);
+                              sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] },
+                            new Set(), NONE);
     expect(both).toEqual([{ worker: "doors", name: "INBOUND_SLACK_SIGNING_SECRET" }]);
     expect(() => secretPlan({ doors: ["ROUTING_MAC_KEY"], owner: [] }, new Set(), NONE))
       .toThrow(/--rotate/);
@@ -223,11 +224,12 @@ describe("the deploy kit", () => {
 
   it("never generates or replaces a held keyring, and rotates one only by adding a key",
      () => {
-    const held = { doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "INBOUND_SLACK_SIGNING_SECRET"],
+    const held = { doors: ["ROUTING_MAC_KEY", "WORKOS_API_KEY", "E2B_WEBHOOK_SECRET",
+                           "INBOUND_SLACK_SIGNING_SECRET"],
                    owner: ["ROUTING_MAC_KEY"], gateway: ["GATEWAY_KEYRING"],
-                   sandbox: ["E2B_API_KEY"] };
+                   sandbox: ["E2B_API_KEY"], files: ["FILES_KEYRING"] };
     const values = (ring: string) => (name: string) =>
-      name === "GATEWAY_KEYRING" ? ring : undefined;
+      name === "GATEWAY_KEYRING" || name === "FILES_KEYRING" ? ring : undefined;
     expect(secretPlan(held, new Set(), values(RING))).toEqual([]);
     expect(() => secretPlan(held, new Set(["GATEWAY_KEYRING"]), values(RING)))
       .toThrow(/adding a key/);
@@ -236,10 +238,37 @@ describe("the deploy kit", () => {
       .toThrow(/active key among its keys/);
     expect(secretPlan(held, new Set(["GATEWAY_KEYRING"]), values(ROTATED)))
       .toEqual([{ worker: "gateway", name: "GATEWAY_KEYRING" }]);
+    // The files Worker's data keys' ring, by the same rule (slice P).
+    expect(() => secretPlan(held, new Set(["FILES_KEYRING"]), values(RING)))
+      .toThrow(/FILES_KEYRING holds/);
+    expect(secretPlan(held, new Set(["FILES_KEYRING"]), values(ROTATED)))
+      .toEqual([{ worker: "files", name: "FILES_KEYRING" }]);
     const kit = readFileSync(join(PLATFORM, "deploy", "deploy.ts"), "utf8");
     // The kit never makes a secret's value in a deploy: only keyring-new and keyring-add,
     // which write a local file for the founder to store.
     expect(kit.match(/randomBytes\(/g)).toHaveLength(2);
+  });
+
+  it("refuses to deploy the owner Worker unless the migration lock pins every migration it " +
+     "ships, in order (review M5-2)", () => {
+    const code = ["a".repeat(64), "b".repeat(64)];
+    const first = { at: "2026-11-04T00:00:00.000Z", commit: "abc123" };
+    expect(lockRefusal({ first_deploy: first, deployed: code }, code)).toBeNull();
+    // Unmarked: the first deploy pins first.
+    expect(lockRefusal({ first_deploy: null, deployed: [] }, code)).toMatch(/no first deploy/);
+    // A migration the lock does not pin, one it pins that is gone, one changed, or reordered.
+    for (const deployed of [[code[0]], [...code, "c".repeat(64)], [code[0], "c".repeat(64)],
+                            [code[1], code[0]]]) {
+      expect(lockRefusal({ first_deploy: first, deployed }, code)).toMatch(/PIN_MIGRATIONS/);
+    }
+    expect(lockRefusal({ deployed: code }, code)).toMatch(/out of shape/);
+    expect(lockRefusal(null, code)).toMatch(/out of shape/);
+    // The kit checks it before any change, on the lock the commit holds.
+    const kit = readFileSync(join(PLATFORM, "deploy", "deploy.ts"), "utf8");
+    const main = kit.slice(kit.indexOf("async function main()"));
+    expect(main.indexOf("lockRefusal(")).toBeGreaterThan(-1);
+    expect(main.indexOf("lockRefusal(")).toBeLessThan(main.indexOf("deployWorker("));
+    expect(main.indexOf("lockRefusal(")).toBeLessThan(main.indexOf("wrangler(["));
   });
 
   it("never reads a failed secret listing as no secrets", async () => {

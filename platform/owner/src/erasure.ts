@@ -17,9 +17,13 @@
  *    the owner deleted (`SandboxService.erase`, slice S); the sandbox's in-flight egress
  *    streams end (`Egress.drop`); and the step is recorded done (`step` 2).
  * 4. **Delete every R2 copy**: every object under the owner's namespace prefix, its files'
- *    and its placed bodies' (ADR-035), once `PUT_GRACE_MS` (a day) has passed since the mark,
- *    its job waking it then, and every put this instance began has landed (no put begins
- *    under the mark); repeatable, and repeated after the wipe.
+ *    and its placed bodies' (ADR-035) chunks and its generations (the nightly manifests and
+ *    exports, slice P), once `PUT_GRACE_MS` (a day) has passed since the mark, its job waking
+ *    it then, and every put this instance began has landed (no put begins under the mark, and
+ *    the manifest lane is halted); repeatable, and repeated after the wipe. Each generation's
+ *    root carries the owner's wrapped data key, so once they and the object's own copy are
+ *    gone nothing holds it: a chunk the bucket still keeps is unreadable (crypto-erasure,
+ *    `files/src/datakey.ts`).
  * 5. **`deleteAll()` the owner**, Lifecycle's alarm disabled first, so nothing is written
  *    after it but the tombstone: the erased admission row (`admission.ts`), written into the
  *    empty database in the same synchronous turn (`WriteGate.wipe`). A killed turn can lose
@@ -40,6 +44,31 @@
  */
 import { Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
+
+/**
+ * How long after the wipe an erasure is complete: a SQLite Durable Object can be restored
+ * "to any point in the past 30 days" (Cloudflare's SQLite storage API, point-in-time
+ * recovery), and that copy holds the owner's wrapped data key. So the prefix deletes are the
+ * erasure, and crypto-erasure (`files/src/datakey.ts`) its backstop, complete only once the
+ * wipe is older than this window. The account-erase answer says so (`erasureAnswer`).
+ */
+export const RECOVERY_WINDOW_S = 30 * 86_400;
+
+/**
+ * What the account-erase door answers (slice L's door, which marks first and answers at
+ * the mark): `erased` once the wipe ran (`wipedAt`, s), and, either way, `complete_at`: the
+ * wipe's earliest time, the mark plus `PUT_GRACE_MS` (or the wipe itself, should a retry
+ * have run it later), plus the platform's own point-in-time recovery. The contract slice L's
+ * door answers with (tasks.md).
+ */
+export function erasureAnswer(markedAt: number, wipedAt: number | null):
+    { erased: boolean; complete_at: number; note: string } {
+  const wipe = Math.max(markedAt + PUT_GRACE_MS / 1000, wipedAt ?? 0);
+  return { erased: wipedAt !== null, complete_at: wipe + RECOVERY_WINDOW_S,
+           note: "Every door is closed and the owner's data is being deleted. A platform " +
+             "recovery copy of the owner's database exists for 30 days after the deletion; " +
+             "past complete_at, nothing of it remains." };
+}
 
 /** What every door and lane answers while the owner is erased. */
 export const ERASING = "this owner is being erased";

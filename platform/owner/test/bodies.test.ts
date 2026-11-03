@@ -27,14 +27,19 @@ const sha = (body: string) => createHash("sha256").update(body, "utf8").digest("
 const LARGE = "é".repeat(PLACE_BYTES);
 const SMALL = "s".repeat(PLACE_BYTES);
 
+/** Each namespace's wrapped data key, as its object held it when the test read it. */
+const KEYS = new Map<string, string>();
+
 async function namespace(stub: DurableObjectStub<OwnerDO>): Promise<string> {
-  return (await sqlIn(stub, "SELECT ns FROM file_space"))[0]!["ns"] as string;
+  const [space] = await sqlIn(stub, "SELECT ns, data_key FROM file_space");
+  KEYS.set(space!["ns"] as string, space!["data_key"] as string);
+  return space!["ns"] as string;
 }
 
 /** What R2 holds under a chunk's hash, as UTF-8, or the failure reading it. */
 async function inR2(ns: string, body: string, sha256 = sha(body)): Promise<string> {
   try {
-    const [bytes] = await env.FILES.getChunks(ns, [{ sha256 }]);
+    const [bytes] = await env.FILES.getChunks(ns, KEYS.get(ns)!, [{ sha256 }]);
     return new TextDecoder().decode(bytes);
   } catch (error) {
     return `missing: ${(error as Error).message}`;
@@ -127,7 +132,8 @@ describe("the placement rule", () => {
       expect(PLACE_TTL_S).toBe(600);
       const placing = (await gate.write(() => bodies.begin(LARGE, "owner")))!;
       await bodies.send(placing);
-      const ns = files.ns();
+      const { ns, key } = await files.space();
+      KEYS.set(ns, key);
       expect(await inR2(ns, LARGE)).toBe(LARGE);
       const sql = state.storage.sql;
       expect(sql.exec("SELECT COUNT(*) AS n FROM collection_rows WHERE content_id IS NOT NULL " +
@@ -147,7 +153,7 @@ describe("the placement rule", () => {
     });
   });
 
-  it("counts placed bytes in the tier's storage, and adds none while it is not known",
+  it("counts placed and inline bytes in the tier's storage, and adds none while it is not known",
      async () => {
     const { stub, as, name } = ownerObject();
     const put = (rowId: string, body: string, binding: Binding) =>
@@ -158,11 +164,13 @@ describe("the placement rule", () => {
     await put("a", LARGE, { ...as(name), tiers: tight });
     expect((await failure(() => put("b", LARGE.replace("é", "e"), { ...as(name),
                                                                     tiers: tight }))).message)
-      .toBe("file_quota: the owner's file bytes are at their quota");
+      .toBe("file_quota: the owner's stored bytes are at their quota");
     // The same body again is the same chunk: it adds no byte.
     await put("c", LARGE, { ...as(name), tiers: tight });
-    // A small body is the row's own, whatever the tier's figure.
-    await put("d", SMALL, { ...as(name), tiers: tight });
+    // A small body kept in its row counts too (the one storage number, slice P): its row
+    // and its history entry would take the owner past the figure.
+    expect((await failure(() => put("d", SMALL, { ...as(name), tiers: tight }))).message)
+      .toBe("file_quota: the owner's stored bytes are at their quota");
     expect((await failure(() => put("e", `${LARGE}x`, { ...as(name), tiers: null }))).message)
       .toBe(TIER_UNREAD);
     expect(await sqlIn(stub, "SELECT COUNT(*) AS n FROM file_intents")).toEqual([{ n: 0 }]);
@@ -393,7 +401,7 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
     // A put whose row is gone (an instance lost mid-put): only the prefix finds it.
     const stray = new TextEncoder().encode("a stray chunk");
     const straySha = createHash("sha256").update(stray).digest("hex");
-    await env.FILES.putChunks(ns, [{ sha256: straySha, bytes: stray }]);
+    await env.FILES.putChunks(ns, KEYS.get(ns)!, [{ sha256: straySha, bytes: stray }]);
     await runInDurableObject(stub, async (_instance: FauxOwnerDO, state) => {
       state.storage.sql.exec("INSERT INTO owner_erasure (only, started_at) VALUES (1, 1)");
       const gate = new WriteGate(state.storage);

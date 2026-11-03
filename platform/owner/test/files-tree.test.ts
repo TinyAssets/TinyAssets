@@ -142,7 +142,7 @@ describe("a rename", () => {
     await write(r, `${W}/src/a.txt`, "a");
     await write(r, `${W}/src/deep/b.bin`, big);
     await mkdir(r, `${W}/src/empty`);
-    const [space] = await sqlIn(r.stub, "SELECT ns FROM file_space");
+    const [space] = await sqlIn(r.stub, "SELECT ns, data_key FROM file_space");
     const before = await sqlIn(r.stub, "SELECT sha256, refs FROM file_chunks");
     const moved = entryOf(await rename(r, `${W}/src`, `${W}/dst`));
     expect(moved).toMatchObject({ path: `${W}/dst`, kind: "dir" });
@@ -151,8 +151,9 @@ describe("a rename", () => {
     expect((await r.stub.fileRead(r.bind(null), { path: `${W}/dst/a.txt` })).inline)
       .toEqual(text("a"));
     expect(await sqlIn(r.stub, "SELECT sha256, refs FROM file_chunks")).toEqual(before);
-    expect(await env.FILES.getChunks(space!["ns"] as string, [{ sha256: before[0]!["sha256"] as
-                                                                 string }])).toEqual([big]);
+    expect(await env.FILES.getChunks(space!["ns"] as string, space!["data_key"] as string,
+                                     [{ sha256: before[0]!["sha256"] as string }]))
+      .toEqual([big]);
     // History continues on both sides: the old paths end, the new ones begin.
     const from = await r.stub.fileHistory(r.bind(null), { path: `${W}/src/deep/b.bin`, limit: 5 });
     const to = await r.stub.fileHistory(r.bind(null), { path: `${W}/dst/deep/b.bin`, limit: 5 });

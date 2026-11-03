@@ -46,7 +46,7 @@ function owner(): string {
 }
 
 function ownerBinding(who: string): Binding {
-  return { owner: who, caller: who, origin: null };
+  return { owner: who, caller: who, origin: null, tiers: OPEN.tiers };
 }
 
 /** An owner signed in to its app, with its `main` agent defined. */
@@ -707,6 +707,18 @@ describe("the file door's bytes", () => {
       method: "PUT", body, headers: { Authorization: `Bearer ${token}`,
                                       "Content-Type": "application/octet-stream", ...headers } }));
   }
+
+  it("reach the files Worker's upload entrypoint alone: no read and no key call (review M5-1)",
+     async () => {
+    const files = (env as unknown as {
+      FILES: Record<string, (...args: unknown[]) => Promise<unknown>> }).FILES;
+    for (const method of ["getChunks", "getManifestRoot", "getManifestPart", "getManifestSegment",
+                          "rewrapKey", "mintKey", "deleteNamespace"]) {
+      const refused = await Promise.resolve().then(() => files[method]!("0".repeat(32), "k"))
+        .then(() => null, (error: unknown) => String(error));
+      expect([method, refused]).toEqual([method, expect.stringMatching(/does not implement/)]);
+    }
+  });
 
   it("takes one chunk a PUT, in any order, resumes, serves each Content-Digest, and commits",
      async () => {
