@@ -37,8 +37,8 @@ the result with `run_status`.
   (`board_digest`). Short. `NO_REPLY` when nothing moved and nothing waits.
 - **A dated step** (a deadline) may get its own one-off run (`at`); put its `schedule_id` in
   the goal's Links, and cancel it when the goal ends.
-- **Check-ins** only if your owner wants them, as often as they ask, never in the times
-  `/workspace/USER.md` says not to message unless urgent.
+- **Check-ins** only if your owner wants them, as often as they ask, as `/workspace/USER.md`'s
+  "Messaging me unasked" allows.
 - Mail already wakes you, so never poll TinyAssets on a timer. A timed check is for the
   outside world only (a web page, a feed, a repository).
 

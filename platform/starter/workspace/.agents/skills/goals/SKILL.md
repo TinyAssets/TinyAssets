@@ -57,6 +57,8 @@ Keep a page short, so a search reads all of it; put detail in the knowledge base
 - After working, rewrite Now and the index line, so any agent in any app can carry on.
 - For a step only another of your owner's agents can do (an app or account only it has),
   mail it in your room with it, naming the goal's path, and say so in Now.
+- If the app you run in has its own goal or loop command, point it at the goal's page
+  rather than copying the page into it.
 
 ## On your own
 Unasked work on a goal is its steward's, in its scheduled pass and when mail about it

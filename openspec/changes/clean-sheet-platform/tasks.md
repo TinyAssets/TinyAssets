@@ -1701,9 +1701,11 @@ R, S, M and W.
     seeded (personal: `# Active`, `# Paused`, `# Ended`); `AGENTS.md` reads the index at the
     start of a conversation, its Proactivity section is initiative per goal and interruption
     per owner, and its Trust names the goal pages; `USER.md`'s off/low/high dial and quiet
-    hours become "When not to message me"; onboarding asks what the owner is working toward;
+    hours become "Messaging me unasked", in the owner's words (more, less, none, and when
+    not), which come before the default rule; onboarding asks what the owner is working toward;
     the schedule skill's brief is a pass over the goals at the owner's times, a dated step
-    may get its own `at` run; a board row names its goal on its second line; the
+    may get its own `at` run; an app's own goal or loop command is pointed at the goal's
+    page; a board row names its goal on its second line; the
     shared-brain skill reads the goals' index before acting. `/workspace/goals` joins
     `OWNER_TREES` (a narrowed grant changes no goal; the default grant writes them; a client
     sandbox's always-read set stays the abilities' trees, `ABILITY_TREES`). One link rule for

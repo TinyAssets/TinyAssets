@@ -12,6 +12,6 @@ it short: detail belongs in the knowledge base.
 - Call them:
 - Time zone:
 - Wants help with:
-- When not to message me:
+- Messaging me unasked:
 
 ## Directives
