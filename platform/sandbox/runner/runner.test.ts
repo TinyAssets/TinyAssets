@@ -691,6 +691,96 @@ describe("a secret written back (review M3: compare-and-swap)", () => {
   }, 40_000);
 });
 
+describe("the store's generation and its lock (review round 2: N2, N3)", () => {
+  const KIMI = "/var/lib/ta/store/kimi/.kimi-code/credentials/kimi-code.json";
+  const KIMI_LINES = [{ role: "assistant", content: "ok" }];
+
+  async function liveKimi(sleepMs: number, writes: Record<string, string>) {
+    box.cli("kimi", { lines: KIMI_LINES, sleepMs, writes });
+    const start = startDoc(doors, "kimi", { config: config("kimi") });
+    box.start(start);
+    box.runner("launch", start.run);
+    return start;
+  }
+
+  it("keeps a live run's refresh when a sign-in only begins and fails meanwhile", async () => {
+    box.write(KIMI, "v1");
+    const start = await liveKimi(5000, {
+      "~/.kimi-code/credentials/kimi-code.json": "v2-refreshed" });
+    await waitFor(() => box.ran("kimi").length > 0);
+    // A sign-in begun and failed at once (no region; the same for a stop or an expiry).
+    const id = signinId();
+    box.login({ id, engine: "kimi", region: null }, doors);
+    box.runner("login-launch", id);
+    await doors.ended_(25_000, id);
+    expect(signinFrames(id).at(-1)).toMatchObject({ state: "failed" });
+    await doors.ended_(25_000, start.run);
+    expect(readFileSync(box.path(KIMI), "utf8")).toBe("v2-refreshed");
+  });
+
+  it("keeps a live run's refresh when a sign-in is stopped meanwhile", async () => {
+    box.write(KIMI, "v1");
+    const start = await liveKimi(6000, {
+      "~/.kimi-code/credentials/kimi-code.json": "v2-refreshed" });
+    await waitFor(() => box.ran("kimi").length > 0);
+    box.cli("kimi", { lines: KIMI_LINES, sleepMs: 6000,
+                      writes: { "~/.kimi-code/credentials/kimi-code.json": "v2-refreshed" },
+                      login: { lines: LOGINS["kimi"]!.lines, code: true } });
+    const id = signinId();
+    box.login({ id, engine: "kimi", region: "global" }, doors);
+    box.runner("login-launch", id);
+    await frameWhere(id, (frame) => frame["state"] === "open");
+    box.runner("login-cancel", id);
+    await doors.ended_(25_000, id);
+    await doors.ended_(25_000, start.run);
+    expect(readFileSync(box.path(KIMI), "utf8")).toBe("v2-refreshed");
+  });
+
+  it("lets a completed sign-in's new login win over a run live across it", async () => {
+    box.write(KIMI, "old-login");
+    const start = await liveKimi(6000, {
+      "~/.kimi-code/credentials/kimi-code.json": "old-login-refreshed" });
+    await waitFor(() => box.ran("kimi").length > 0);
+    const login = JSON.stringify({ access_token: "a".repeat(40), refresh_token: "b".repeat(40) });
+    box.cli("kimi", { lines: KIMI_LINES, sleepMs: 6000,
+                      writes: { "~/.kimi-code/credentials/kimi-code.json": "old-login-refreshed" },
+                      login: { lines: LOGINS["kimi"]!.lines, exit: 0,
+                               writes: { "~/.kimi-code/credentials/kimi-code.json": login } } });
+    const id = signinId();
+    box.login({ id, engine: "kimi", region: "global" }, doors);
+    box.runner("login-launch", id);
+    await doors.ended_(25_000, id);
+    expect(signinFrames(id).at(-1)).toMatchObject({ state: "signed_in" });
+    await doors.ended_(25_000, start.run);
+    expect(readFileSync(box.path(KIMI), "utf8")).toBe(login);
+  });
+
+  it("takes over a lock a pid of another boot names: a reused pid never holds it", async () => {
+    const lock = box.path("/var/lib/ta/locks/kimi");
+    mkdirSync(lock, { recursive: true });
+    writeFileSync(`${lock}/holder`, "1 a-boot-before-this-one");  // pid 1: always alive
+    const start = await liveKimi(0, {});
+    const end = await doors.ended_(25_000, start.run);
+    expect(end.body["end"]).toEqual({ exit_code: 0 });
+    expect(box.ran("kimi")).toHaveLength(1);
+  });
+
+  it("waits a bounded time on a lock its live holder keeps, heartbeating, then fails loudly",
+     async () => {
+    const lock = box.path("/var/lib/ta/locks/kimi");
+    mkdirSync(lock, { recursive: true });
+    const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    writeFileSync(`${lock}/holder`, `${process.pid} ${boot}`);  // this test: alive, this boot
+    const start = await liveKimi(0, {});
+    const end = await doors.ended_(90_000, start.run);
+    expect((end.body["end"] as { exit_code: number }).exit_code).not.toBe(0);
+    expect(box.ran("kimi")).toEqual([]);
+    // Its event loop was never blocked: it beat while it waited.
+    expect(doors.events().filter((post) => post.path.includes(start.run)).length)
+      .toBeGreaterThan(2);
+  }, 120_000);
+});
+
 describe("each run's own user", () => {
   it("is not the next run's: its processes and its files are gone", async () => {
     box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines, daemon: true,

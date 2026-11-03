@@ -216,37 +216,62 @@ function binOf(rec: SourceRecord): string {
 
 // -- homes and the engines' stores ----------------------------------------------------
 
+/** This boot's id: a pid names a process only within the boot it was taken in. */
+function bootId(): string {
+  try {
+    return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+/** How long a store's lock is waited for: one command's bound, then the call fails loudly. */
+const LOCK_WAIT_MS = COMMAND_MS;
+
 /**
  * The engine's store held by this process alone while `act` runs (a home copied from it, a
  * run's secrets written back, a sign-in's or sign-out's generation): a lock directory naming
- * its holder, taken over only once that holder is gone.
+ * its holder as its pid and its boot (review N3). It is taken over once that holder is gone:
+ * its process dead, or of another boot (a pid repeats after a reboot, which a lock on disk
+ * outlives), or never named and older than a command's bound. The wait sleeps, so the
+ * runner's heartbeats go on, and it is bounded (`LOCK_WAIT_MS`): past it the call fails
+ * loudly. Every hold is short and synchronous, and none is nested.
  */
-function withStore<T>(rec: SourceRecord, act: () => T): T {
+async function withStore<T>(rec: SourceRecord, act: () => T): Promise<T> {
   const locks = `${STATE}/locks`;
   safeDirs(TOP, locks, 0o700);
   const lock = `${locks}/${rec.id}`;
-  const pause = new Int32Array(new SharedArrayBuffer(4));
+  const boot = bootId();
+  const until = Date.now() + LOCK_WAIT_MS;
   for (;;) {
     try {
       mkdirSync(lock, { mode: 0o700 });
-      writeFileSync(`${lock}/pid`, String(process.pid), { mode: 0o600 });
+      writeFileSync(`${lock}/holder`, `${process.pid} ${boot}`, { mode: 0o600 });
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
         throw error;
       }
-      let holder: number | null = null;
+      let gone: boolean;
       try {
-        holder = Number(readFileSync(`${lock}/pid`, "utf8"));
+        const [pid, of] = readFileSync(`${lock}/holder`, "utf8").split(" ");
+        gone = of !== boot || !alive(Number(pid));
       } catch {
         // its holder has not named itself yet, or it died before it could
-        holder = lstatSync(lock).mtimeMs + COMMAND_MS < Date.now() ? 0 : null;
+        try {
+          gone = lstatSync(lock).mtimeMs + COMMAND_MS < Date.now();
+        } catch {
+          gone = false;  // let go meanwhile: the next pass takes it
+        }
       }
-      if (holder !== null && !alive(holder)) {
+      if (gone) {
         remove(lock);
         continue;
       }
-      Atomics.wait(pause, 0, 0, 20);
+      if (Date.now() >= until) {
+        throw new Error(`the store of ${rec.id} stayed locked past ${LOCK_WAIT_MS} ms`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
     }
   }
   try {
@@ -257,9 +282,10 @@ function withStore<T>(rec: SourceRecord, act: () => T): T {
 }
 
 /**
- * The engine's store generation: a sign-in and a sign-out each move it on, and a run's home
- * made under an older one never writes a secret back (review M3: a run live across a
- * sign-out never undoes it, nor clobbers a new sign-in).
+ * The engine's store generation: a sign-in that writes new secrets and a sign-out each move
+ * it on (review N2: a sign-in that only began, failed or was stopped moves nothing), and a
+ * run's home made under an older one never writes a secret back (review M3: a run live
+ * across a sign-out never undoes it, nor clobbers a new sign-in).
  */
 function generation(rec: SourceRecord): number {
   const path = `${STATE}/generations/${rec.id}`;
@@ -293,7 +319,7 @@ function dropHome(home: string): void {
  * secret's digest); `giveTree` then gives it to the run's user entry by entry: no other
  * user can reach it while it is made.
  */
-function makeHome(name: string, rec: SourceRecord): string {
+async function makeHome(name: string, rec: SourceRecord): Promise<string> {
   const homes = `${ROOT}${HOMES}`;
   safeDirs(TOP, homes, 0o711);
   const home = `${homes}/${name}`;
@@ -302,7 +328,7 @@ function makeHome(name: string, rec: SourceRecord): string {
   const store = `${STORE}/${rec.id}`;
   const { secrets, sessions } = keptPaths(rec);
   const copied: Record<string, string> = {};
-  const made = withStore(rec, () => {
+  const made = await withStore(rec, () => {
     for (const rel of safeWalk(store)) {
       if (isKept([...secrets, ...sessions], rel)) {
         const bytes = safeRead(store, join(store, rel));
@@ -346,19 +372,22 @@ function giveTree(path: string, as: Identity): void {
 /**
  * The run's kept paths back into its engine's store, once no process of its user is left
  * (so nothing changes the home while it is read), no link followed, under the store's lock.
- * A secret is written back by compare-and-swap (review M3): only one this run changed, only
- * while the store still holds the copy the run started from, and only under the generation
- * its home was made in. So a stale copy never replaces a newer one (a vendor's refresh token
- * is single-use), and a run live across a sign-in or sign-out never undoes it.
+ * A run's secret is written back by compare-and-swap (review M3): only one this run changed,
+ * only while the store still holds the copy the run started from, and only under the
+ * generation its home was made in. So a stale copy never replaces a newer one (a vendor's
+ * refresh token is single-use), and a run live across a sign-in or sign-out never undoes
+ * it. A completed sign-in's (`signin`) new secrets are the owner's new login: written
+ * whatever the store holds, and they move the generation on, then and only then (N2).
  */
-function keepHome(home: string, rec: SourceRecord): void {
+async function keepHome(home: string, rec: SourceRecord, signin = false): Promise<void> {
   const store = `${STORE}/${rec.id}`;
   safeDirs(TOP, store, 0o700);
   const { secrets, sessions } = keptPaths(rec);
   const path = snapshotOf(home);
   const snapshot = existsSync(path) ? readJson<Snapshot>(path) : null;
-  withStore(rec, () => {
+  await withStore(rec, () => {
     const current = generation(rec);
+    let renewed = false;
     for (const rel of safeWalk(home)) {
       if (!isKept([...secrets, ...sessions], rel)) {
         continue;
@@ -370,12 +399,19 @@ function keepHome(home: string, rec: SourceRecord): void {
       if (isKept(secrets, rel)) {
         const base = snapshot?.secrets[rel] ?? null;
         const stored = safeRead(store, join(store, rel));
-        if (snapshot === null || snapshot.generation !== current || digest(bytes) === base
-            || (stored === null ? null : digest(stored)) !== base) {
+        if (digest(bytes) === base) {
+          continue;  // unchanged: never written back
+        }
+        if (!signin && (snapshot === null || snapshot.generation !== current
+                        || (stored === null ? null : digest(stored)) !== base)) {
           continue;
         }
+        renewed ||= signin;
       }
       safeWrite(store, join(store, rel), bytes, 0o600);
+    }
+    if (renewed) {
+      nextGeneration(rec);
     }
   });
   remove(path);
@@ -424,7 +460,7 @@ function atoms(): string[] {
  * Whether the engine is signed in inside this sandbox: its record's `status_argv` (and
  * `status_equals`), or, for a record with none, its `state_checks` over the engine's store.
  */
-export function signedIn(rec: SourceRecord): boolean {
+export async function signedIn(rec: SourceRecord): Promise<boolean> {
   const login = rec.cli?.login as { status_argv?: string[];
                                     status_equals?: Record<string, unknown> } | undefined;
   if (login === undefined) {
@@ -440,7 +476,7 @@ export function signedIn(rec: SourceRecord): boolean {
   }
   const name = `check-${rec.id}-${process.pid}`;
   const as = take(ROOT, STATE, name);
-  const home = makeHome(name, rec);
+  const home = await makeHome(name, rec);
   try {
     giveTree(home, as);
     const argv = asUser(as, [shared()], login.status_argv.map((arg) =>
@@ -674,7 +710,7 @@ async function renewWait(deadline: number): Promise<number> {
   }
 }
 
-function recover(): number {
+async function recover(): Promise<number> {
   const dir = `${STATE}/runs`;
   for (const run of existsSync(dir) ? readdirSync(dir).filter((each) => RUN.test(each)) : []) {
     const state = readState(run);
@@ -684,8 +720,8 @@ function recover(): number {
       const start = readJson<StartDoc>(`${runDir(run)}/start.json`);
       const home = `${ROOT}${HOMES}/${run}`;
       if (existsSync(home)) {
-        keepHome(home, record(start.engine));
-        remove(home);
+        await keepHome(home, record(start.engine));
+        dropHome(home);
       }
       detach(run, ["--recover"]);
     }
@@ -1071,7 +1107,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     synced = true;
     importSessions();
     as = take(ROOT, STATE, run);
-    home = makeHome(run, rec);
+    home = await makeHome(run, rec);
     safeDirs(TOP, `${ROOT}${SYSTEM}`, 0o755);
     remove(system);
     mkdirSync(system, { mode: 0o750 });
@@ -1197,7 +1233,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
         killAll(as.uid);
         cleanScratch(as.uid);
         if (home !== null) {
-          keepHome(home, rec);
+          await keepHome(home, rec);
         }
       }
       if (synced) {
@@ -1254,9 +1290,13 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
 }
 
 async function reportSignins(start: StartDoc, lease: LeaseFile): Promise<void> {
-  const signins = [...RECORDS.values()].filter((rec) => rec.unwired === undefined
-    && rec.cli!.credential.includes("vendor_login_in_sandbox") && rec.cli!.login !== undefined)
-    .map((rec) => ({ engine: rec.id, signed_in: safeSignedIn(rec) }));
+  const signins: { engine: string; signed_in: boolean }[] = [];
+  for (const rec of RECORDS.values()) {
+    if (rec.unwired === undefined && rec.cli!.credential.includes("vendor_login_in_sandbox")
+        && rec.cli!.login !== undefined) {
+      signins.push({ engine: rec.id, signed_in: await safeSignedIn(rec) });
+    }
+  }
   await postSignins(start.urls.signin, lease, signins);
 }
 
@@ -1273,9 +1313,9 @@ async function postSignins(url: string, lease: LeaseFile,
   }
 }
 
-function safeSignedIn(rec: SourceRecord): boolean {
+async function safeSignedIn(rec: SourceRecord): Promise<boolean> {
   try {
-    return signedIn(rec);
+    return await signedIn(rec);
   } catch {
     return false;
   }
@@ -1432,7 +1472,7 @@ async function loginRun(id: string): Promise<number> {
     if (doc.mode === "out") {
       // The store's generation moved on first, so no run live now writes its secret back
       // afterwards; and each such run stopped, so none keeps using the login signed out.
-      withStore(rec, () => nextGeneration(rec));
+      await withStore(rec, () => nextGeneration(rec));
       for (const { run } of liveRuns()) {
         if (readJson<StartDoc>(`${runDir(run)}/start.json`).engine === rec.id) {
           cancel(run);
@@ -1442,7 +1482,7 @@ async function loginRun(id: string): Promise<number> {
       const logout = login["logout_argv"] as string[] | undefined;
       if (logout !== undefined) {
         as = take(ROOT, STATE, id);
-        home = makeHome(id, rec);
+        home = await makeHome(id, rec);
         giveTree(home, as);
         const madeHome = home;
         const argv = asUser(as, [shared()], logout.map((arg) => arg.replaceAll("{bin}", binOf(rec))
@@ -1452,7 +1492,7 @@ async function loginRun(id: string): Promise<number> {
       }
       // Its secrets gone from the store: no later run's home carries the sign-in.
       const store = `${STORE}/${rec.id}`;
-      withStore(rec, () => {
+      await withStore(rec, () => {
         for (const rel of existsSync(store) ? safeWalk(store) : []) {
           if (isKept(keptPaths(rec).secrets, rel)) {
             remove(join(store, rel));
@@ -1461,10 +1501,8 @@ async function loginRun(id: string): Promise<number> {
       });
       end = "signed_out";
     } else {
-      // A new generation: a run live now never writes an older login back over this one.
-      withStore(rec, () => nextGeneration(rec));
       as = take(ROOT, STATE, id);
-      home = makeHome(id, rec);
+      home = await makeHome(id, rec);
       const madeHome = home;
       const files = rec.cli!.per_credential?.vendor_login_in_sandbox?.files ?? {};
       for (const [path, text] of Object.entries(files)) {
@@ -1562,11 +1600,18 @@ async function loginRun(id: string): Promise<number> {
         clearTimeout(expiry);
       }
       killAll(as.uid);
-      keepHome(madeHome, rec);
+      // Only a sign-in that completed keeps what it wrote, as the owner's new login (which
+      // moves the store's generation on); one refused, stopped, expired or failed keeps
+      // nothing, so it never discards a live run's refresh (review N2).
+      const stopped = reason !== null || (existsSync(`${dir}/cancel`) && !complete)
+        || (expired && !complete);
+      if (!stopped && (exit === 0 || complete)) {
+        await keepHome(madeHome, rec, true);
+      }
       end = reason !== null ? "refused"
         : existsSync(`${dir}/cancel`) && !complete ? "cancelled"
           : expired && !complete ? "expired"
-            : (exit === 0 || complete) && safeSignedIn(rec) ? "signed_in" : "failed";
+            : (exit === 0 || complete) && await safeSignedIn(rec) ? "signed_in" : "failed";
     }
   } catch (error) {
     // Its why stays in the VM (this sign-in's own root-only log), never in a frame.
@@ -1590,7 +1635,8 @@ async function loginRun(id: string): Promise<number> {
       }
     }
   }
-  await postSignins(doc.urls.signin, lease, [{ engine: rec.id, signed_in: safeSignedIn(rec) }]);
+  await postSignins(doc.urls.signin, lease, [{ engine: rec.id,
+                                               signed_in: await safeSignedIn(rec) }]);
   outbox.push({ type: "ta.signin", state: end,
                 ...(end === "refused" && reason !== null ? { reason } : {}) });
   clearInterval(pump);
@@ -1615,7 +1661,7 @@ async function loginProbe(engine: string, region: string | null): Promise<number
   }
   const name = `probe-${rec.id}-${process.pid}`;
   const as = take(ROOT, STATE, name);
-  const home = makeHome(name, rec);
+  const home = await makeHome(name, rec);
   let shown: Prompt = { url: null, code: null };
   try {
     const files = rec.cli!.per_credential?.vendor_login_in_sandbox?.files ?? {};
@@ -1693,7 +1739,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     case "login-probe":
       return loginProbe(args[0] ?? "", args[1] ?? null);
     case "signin-check":
-      return signedIn(record(args[0] ?? "")) ? OK : NO;
+      return await signedIn(record(args[0] ?? "")) ? OK : NO;
     case "launch":
       return launch(args[0] ?? "");
     case "run":

@@ -464,17 +464,24 @@ account and no deploy.
     stored, and refused once the login ended. The end: the secrets kept in the engine's
     store, presence reported (`status_argv`, or `state_checks` for a record with none). A
     sign-out runs the record's `logout_argv` first, then deletes its `secret_paths`.
-  - The vendor's code's lifetime is each record's `cli.login.expires`, cited: Codex 900 s
-    (its CLI's own text), Gemini 300 s and Kimi 900 s (their pinned CLIs' own timers), Claude
-    600 s (RFC 6749 section 4.1.2's recommended maximum for the code the owner pastes;
-    Anthropic documents none and the CLI sets no timer). The runner stops the login there,
+  - An open sign-in's bound is each record's `cli.login.expires`, cited: Codex 900 s (its
+    CLI's own text), Gemini 300 s and Kimi 900 s (their pinned CLIs' own timers): the
+    vendors' own. Claude's 600 s is the platform's own bound on an open sign-in (from its
+    start, so the owner's password and 2FA too), since an open sign-in keeps a metered
+    sandbox up: Anthropic documents none and the CLI sets no timer, and RFC 6749's 10-minute
+    code lifetime is context only (`limits-audit.md`); the time a real sign-in with 2FA takes
+    is owed to the founder's live test, and sets it if too tight. The runner stops the login there,
     and the owner's object ends the sign-in `expired` one lease TTL past it however its
     runner beats, stopping its CLI and freeing its lease; the app then offers to start again.
   - A secret goes back to the store by compare-and-swap under a per-engine store generation:
     only one the run changed, only while the store still holds the copy the run started
-    from, and only in the generation its home was made in. A sign-in and a sign-out each move
-    the generation on, so a run live across one never undoes it; a sign-out also stops that
-    engine's live runs in the sandbox. Every home's snapshot goes with the home.
+    from, and only in the generation its home was made in. A completed sign-in that writes
+    new secrets, and a sign-out, each move the generation on, so a run live across one never
+    undoes it; one that only began, failed or was stopped moves nothing, so it never discards
+    a live run's refresh. A sign-out also stops that engine's live runs in the sandbox. Every
+    home's snapshot goes with the home. The store's lock names its holder with its boot (a
+    pid repeats after a reboot), is waited on without blocking the runner's heartbeats, and
+    for at most a command's bound, then the call fails loudly.
   - Each source's sign-in sits behind its own switch in the control record (`signins`),
     defaulting to its record's verdict on the vendor's terms for hosted use
     (`cli.login.hosted_use`, cited): Claude Code `allowed` (on); Codex, Gemini and Kimi
@@ -482,8 +489,9 @@ account and no deploy.
     records with every binding, as they hand the tier numbers, and the owner's object holds
     to them on every path: a sign-in (never a sign-out: a login is always removable), a
     pasted code, and a run's choice of source (a named engine refused `signin_off`, never a
-    silent key; `auto` passes over a switched-off plan), the lane's runs by the list last
-    handed.
+    silent key; `auto` passes over a switched-off plan). The runs lane reads the control
+    record itself (`ControlGate.signins`, fail-closed) at each pass, so a source switched
+    off stops powering a schedule's or a mail's run though the owner makes no door call.
   - A standing check: every template build ends by running each record's login up to its
     prompt on a throwaway sandbox under the production egress allowlist (the egress door
     alone, widened by that engine's own hosts), `ta-runner login-probe`, `build.py

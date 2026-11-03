@@ -6,6 +6,7 @@
  * back; the end lets the lease go. A client's sandbox signs in only inside itself. And the
  * owner's past runs, newest first, a page at a time, held to the caller's grant.
  */
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { NO_SOURCE, RUN_ENDED } from "../src/runs";
@@ -16,7 +17,7 @@ import { gated, type Gated } from "./gateway-support";
 import { MCP, MUSE, signedIn } from "./ledger-support";
 import { defineAgent, ownerRun, recorder, runnerBinding, runnerSandbox, startOf,
          TIERS } from "./runs-support";
-import { failure } from "./support";
+import { drainDue, failure } from "./support";
 
 /** Claude's sign-in page as its pinned CLI shows it (template s6dec61a38e839d37, live). */
 const CLAUDE_PAGE = "https://claude.com/cai/oauth/authorize?code=true&client_id=" +
@@ -414,8 +415,7 @@ describe("the per-source switch, in the owner's object (review H1)", () => {
     expect((await recorder(r.stub)).codes).toEqual([]);
   });
 
-  it("never runs on a switched-off source's vendor login, named or by auto, the lane's too",
-     async () => {
+  it("never runs on a switched-off source's vendor login, named or by auto", async () => {
     const r = await gated();
     const off = r.bind({ signins: ["claude-code"] });
     await defineAgent(r.stub, off, "coder", { engine: "codex",
@@ -440,6 +440,63 @@ describe("the per-source switch, in the owner's object (review H1)", () => {
     const on = r.bind({ signins: ["claude-code", "codex"] });
     expect((await ownerRun(r.stub, on, undefined, "coder")).start)
       .toMatchObject({ engine: "codex", credential: "vendor_login_in_sandbox" });
+  });
+});
+
+describe("the runs lane's own read of the switches (review round 2, N1)", () => {
+  const OPEN = Object.freeze({ outside: "on", ordinary: "all", canary: [], inbound: false });
+
+  /** `agent`'s schedule due now, the lane run once, with no door call handing a list. */
+  async function laneRuns(r: Gated, agent: string):
+      Promise<{ engine: string; credential: string }[]> {
+    await r.stub.agentRun(r.bind({ tiers: TIERS }), { agent, input: "nightly",
+                                                     at: Date.now() / 1000 + 3600 });
+    await r.sql("UPDATE run_schedules SET next_at = ? WHERE next_at IS NOT NULL",
+                Date.now() / 1000 - 1);
+    // A door call that hands no list (`signins` undefined) syncs the schedule to the row.
+    await r.stub.fileMkdir(r.bind({ signins: undefined }),
+                           { path: `/workspace/d-${crypto.randomUUID()}`, expected_etag: null });
+    await drainDue(r.stub);
+    return (await recorder(r.stub)).starts;
+  }
+
+  it("stops a switched-off source powering the lane's runs, though no door call hands a list",
+     async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", { engine: "claude-code",
+                                                  credential: "vendor_login_in_sandbox",
+                                                  scopes: [] });
+    try {
+      // The founder switches Claude Code off in the control record the object reads.
+      await env.CONTROL.put("c:control", JSON.stringify({ ...OPEN,
+                                                         signins: { "claude-code": false } }));
+      expect(await laneRuns(r, "main")).toEqual([]);
+      expect((await r.stub.noticeList(r.bind())).notices.map((notice) => notice.detail))
+        .toContainEqual(expect.stringContaining("signin_off"));
+      // Switched on again, the lane's next schedule runs on it.
+      await env.CONTROL.put("c:control", JSON.stringify({ ...OPEN,
+                                                         signins: { "claude-code": true } }));
+      expect((await laneRuns(r, "main")).map((start) => [start.engine, start.credential]))
+        .toEqual([["claude-code", "vendor_login_in_sandbox"]]);
+    } finally {
+      await env.CONTROL.delete("c:control");
+    }
+  });
+
+  it("fails closed: a control record the lane cannot read switches every sign-in off",
+     async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", { engine: "claude-code",
+                                                  credential: "vendor_login_in_sandbox",
+                                                  scopes: [] });
+    try {
+      await env.CONTROL.put("c:control", "{not json");
+      expect(await laneRuns(r, "main")).toEqual([]);
+      expect((await r.stub.noticeList(r.bind())).notices.map((notice) => notice.detail))
+        .toContainEqual(expect.stringContaining("signin_off"));
+    } finally {
+      await env.CONTROL.delete("c:control");
+    }
   });
 });
 

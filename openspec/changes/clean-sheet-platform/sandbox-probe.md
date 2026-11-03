@@ -94,6 +94,10 @@ alone, widened by that engine's own hosts, all else denied, the resolver pinned)
 against the pinned pages (claude.com, auth.openai.com with a code, accounts.google.com,
 www.kimi.ai and www.kimi.com with a code). Every sandbox killed; 0 running after.
 
+The verification round's fixes (the runner's store lock and generation) changed the runner, so
+the template was built again as `s354d7998f07439db`: its standing check passed all five the same
+way (1 throwaway sandbox, under 3 sandbox-minutes, 0 running after).
+
 ## Real CLIs, not signed in (the runner live, an in-sandbox doors stand-in)
 
 The runner posted its sign-ins (`claude-code`, `codex`: `signed_in: false`), synced in, ran the

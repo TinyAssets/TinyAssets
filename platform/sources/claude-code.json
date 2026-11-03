@@ -64,7 +64,7 @@
       },
       "expires": {
         "s": 600,
-        "citation": "RFC 6749 section 4.1.2: an authorization code's recommended maximum lifetime is 10 minutes (the code the owner pastes is one); Anthropic documents none, and claude 2.1.309's auth login waits for the code with no timer of its own (waitForAuthorizationCode); measured with an account, owed to the founder's live test"
+        "citation": "the platform's own bound on an open sign-in, not Anthropic's: it runs from the sign-in's start, so it covers the owner's password, 2FA and account steps too, and an open sign-in keeps a metered sandbox up (limits-audit.md). Anthropic documents no lifetime, and claude 2.1.309's auth login waits for the code with no timer of its own (waitForAuthorizationCode); RFC 6749 section 4.1.2's 10-minute maximum for an authorization code is context only, since it runs from the code's issue. The time a real sign-in with 2FA takes is owed to the founder's live test, and sets this if 600 s is too tight"
       },
       "hosted_use": {
         "verdict": "allowed",

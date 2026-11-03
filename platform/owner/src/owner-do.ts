@@ -4169,6 +4169,17 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
+   * The switched-on sign-ins, read by the lane itself from the control record the object
+   * binds (`CONTROL`), and kept (review N1): so a source switched off stops powering the
+   * lane's runs (a schedule's, a mail's, a waiting one's) at its next pass, though the owner
+   * makes no door call (`ControlGate.signins`, fail-closed).
+   */
+  async #laneSignins(): Promise<void> {
+    const on = await this.#control().signins();
+    await this.#door(() => switchedOn(this.#storage, on, clock()));
+  }
+
+  /**
    * The `runs` lane's pass: runs whose runner was lost settled `unknown`; then each waiting
    * run whose turn came started, oldest first, through the same admission as a door's (one
    * its turn refuses settles `failed`, the refusal in the owner's notices); then each mail
@@ -4177,6 +4188,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * on its row and in the owner's notices, never thrown.
    */
   async #runsPass(_now: number, until: number): Promise<void> {
+    await this.#laneSignins();
     await this.#door(() => this.#runs.lost(clock()));
     while (clock() < until) {
       const waiting = await this.#door(() => {
