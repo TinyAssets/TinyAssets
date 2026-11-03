@@ -11,7 +11,7 @@
  * which reads the record at every outside and owner call, hands its `tiers` to the run
  * doors in the binding (`Binding.tiers`), never a request field; the object keeps the last
  * numbers it was handed, with when (`platform_tiers`), for the runs its own `runs` lane
- * starts (a schedule's, the owner's mail's). An edit reaches an owner's door-started runs
+ * starts (a schedule's, a mail's). An edit reaches an owner's door-started runs
  * at once, its lane's at its next door call.
  *
  * **Where an owner's tier lives.** In the owner's own admission row (its `tier` column,

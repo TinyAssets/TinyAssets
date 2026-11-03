@@ -792,7 +792,7 @@ The sandbox lifecycle's `config` SHALL hand an API-key run, for its connection, 
 - **THEN** the run's environment names that one alone
 
 ### Requirement: A run is admitted in one unit
-A run (ADR-034 decision 4) SHALL be admitted in one gate unit, each refusal a fixed code and nothing written, in its authority's own sandbox (the owner's own work's, or each outside client's; runs of different authority never share one), holding a 256-bit secret of its own, of which the object keeps only the SHA-256 and which only its CLI's environment holds (its URLs carry it): the owner admitted for work; a `SANDBOX` bound (`sandbox_absent`); the agent's `agent.json` read whole and still at its etag (`agent_undefined`, `agent_changed`) and enabled (`agent_disabled`); the initiator's stamp standing, the owner's own or a client's grant at its stamped generation; a retry of the same request key the same run; a continued conversation the caller's own and of this agent (`no_conversation`); fewer live runs than the owner's tier allows (`tier_runs`), the runs whose lease lapsed settled `unknown` first; the source chosen: `agent.json`'s engine on its credential (or its record's in order), an API-key run on the named connection or the strongest connected one whose source lists the engine, or for `auto` the strongest source that lists an engine, the owner's connections and its signed-in engines ranked together; an unattended run (a schedule's, the owner's mail's) only on a credential its record allows unattended (`unattended_refused`); an API-key run under the owner's own spending caps (`owner_limit`), off by default; and the run's environment made. Then, in the same unit: the conversation made or touched, the run written `queued`, the sandbox's lease opened (its tokens minted) or joined, and the run grant minted: the lease, the stamp and origin, the scopes (the agent's, or for a client's run those its grant also holds where it acts) and the run's own connection. The start SHALL then go to the sandbox, and the run be `running` once it took it, `failed` with the sandbox's code when it refused, or `unknown` when no answer came (and cancelled). There SHALL be no platform run deadline: a run's only time bound is the sandbox's own continuous-runtime ceiling, its lease's tokens' life.
+A run (ADR-034 decision 4) SHALL be admitted in one gate unit, each refusal a fixed code and nothing written, in its authority's own sandbox (the owner's own work's, or each outside client's; runs of different authority never share one), holding a 256-bit secret of its own, of which the object keeps only the SHA-256 and which only its CLI's environment holds (its URLs carry it): the owner admitted for work; a `SANDBOX` bound (`sandbox_absent`); the agent's `agent.json` read whole and still at its etag (`agent_undefined`, `agent_changed`) and enabled (`agent_disabled`); the initiator's stamp standing, the owner's own or a client's grant at its stamped generation; a retry of the same request key the same run; a continued conversation the caller's own and of this agent (`no_conversation`); fewer live runs than the owner's tier allows (`tier_runs`; a mail's run waits its turn instead), the runs whose lease lapsed settled `unknown` first; the source chosen: `agent.json`'s engine on its credential (or its record's in order), an API-key run on the named connection or the strongest connected one whose source lists the engine, or for `auto` the strongest source that lists an engine, the owner's connections and its signed-in engines ranked together; an unattended run (a schedule's, a mail's) only on a credential its record allows unattended (`unattended_refused`); an API-key run under the owner's own spending caps (`owner_limit`), off by default; and the run's environment made. Then, in the same unit: the conversation made or touched, the run written `queued`, the sandbox's lease opened (its tokens minted) or joined, and the run grant minted: the lease, the stamp and origin, the scopes (the agent's, or for a client's run those its grant also holds where it acts) and the run's own connection. The start SHALL then go to the sandbox, and the run be `running` once it took it, `failed` with the sandbox's code when it refused, or `unknown` when no answer came (and cancelled). There SHALL be no platform run deadline: a run's only time bound is the sandbox's own continuous-runtime ceiling, its lease's tokens' life.
 
 #### Scenario: A sixth run on the free tier
 - **WHEN** five runs are live and the control record gives the free tier five
@@ -839,7 +839,7 @@ The tier numbers SHALL come only from the platform control record, handed by the
 - **THEN** it is refused, and the tier stands
 
 ### Requirement: A run's calls are held to its run grant
-A call carrying a run's binding (the egress token, the run its path names, and the SHA-256 of the run's own secret its path carried) SHALL be resolved to the live lease, that run live under it, and its grant, whose secret's hash it SHALL match: a run id alone authorizes nothing. Every door SHALL hold it to the grant's scopes, as its initiator (the owner's own work as the owner, a client's as that client, its stamp rechecked at every call). It SHALL never act as the owner itself at an owner-only door, nor start, read or cancel a run (`run_starts_none`). A cancel SHALL revoke the run's grant at once. A grant change or revoke SHALL settle the client's runs in its unit, `failed` (`revoked`), live or waiting: their grants deleted, their tier slots free, their CLIs cancelled through the sandbox, and the client's schedules removed. The runner's own doors (a run's events, the sign-in report) SHALL take only the runner's secret, which no CLI holds.
+A call carrying a run's binding (the egress token, the run its path names, and the SHA-256 of the run's own secret its path carried) SHALL be resolved to the live lease, that run live under it, and its grant, whose secret's hash it SHALL match: a run id alone authorizes nothing. Every door SHALL hold it to the grant's scopes, as its initiator (the owner's own work as the owner, a client's as that client, its stamp rechecked at every call), and the ledger SHALL take its posts as its own agent's, never its initiator's, under its initiator's authority; it SHALL read and ack no mailbox (`run_no_mailbox`), its mail being its input. It SHALL never act as the owner itself at an owner-only door, nor start, read or cancel a run (`run_starts_none`). A cancel SHALL revoke the run's grant at once. A grant change or revoke SHALL settle the client's runs in its unit, `failed` (`revoked`), live or waiting: their grants deleted, their tier slots free, their CLIs cancelled through the sandbox, and the client's schedules removed. The runner's own doors (a run's events, the sign-in report) SHALL take only the runner's secret, which no CLI holds.
 
 #### Scenario: A client revoked mid-run
 - **WHEN** the owner revokes a client whose run is live
@@ -853,11 +853,58 @@ The runner's frames SHALL be read by the run's record's matchers in the object, 
 - **THEN** the run is settled `unknown` by the next admission or the `runs` lane, and never replayed
 
 ### Requirement: The runs lane starts runs only when there is work
-The `runs` lane's next time SHALL be the earliest due schedule (while the owner is admitted), a waiting run's turn, and, for each live run, its lease's expiry or its own heartbeat's lapse; with none, the lane SHALL have no job. A schedule a client set SHALL start its run as that client (its stamp, origin and sandbox), and a refused fire SHALL keep its fixed code, leave a notice and write nothing else. A due schedule SHALL be claimed once (a cron's next occurrence set, an `at` removed, a mail run's cleared) and start its run, unattended, through the same admission as a door's, only when it has work: a run on the owner's mail, or a timed one that asks for mail, only with the owner's mail unacked. A post to the owner SHALL ring each run-on-mail schedule in its own unit. A refusal SHALL be kept on the schedule and in the owner's notices.
+The `runs` lane's next time SHALL be the earliest due schedule (while the owner is admitted), a waiting run's turn, mail to one of the owner's agents that no run has taken (while the owner is admitted; held mail only once the inputs' queue has room for any mail), and, for each live run, its lease's expiry or its own heartbeat's lapse; with none, the lane SHALL have no job. A schedule a client set SHALL start its run as that client (its stamp, origin and sandbox), and a refused fire SHALL keep its fixed code, leave a notice and write nothing else. A due schedule SHALL be claimed once (a cron's next occurrence set, an `at` removed) and start its run, unattended, through the same admission as a door's. A refusal SHALL be kept on the schedule and in the owner's notices. There SHALL be no schedule on the owner's mail: an agent answers mail by being mailed itself.
 
 #### Scenario: An empty poll
-- **WHEN** no schedule is due
+- **WHEN** no schedule is due, no run waits and no mail waits for a run
 - **THEN** the lane has no job and no sandbox is started
+
+### Requirement: Each of the owner's agents is a ledger identity that follows its file
+Each `/workspace/agents/<agent>/agent.json` SHALL be a ledger identity, keyed by `ta_` and its name's digest, beside the outside agents: made as the file appears and retired as it goes, in the file change's own unit, and live again as itself, its mail kept, when the file comes back. A live one SHALL count among the enabled agents whose mailboxes the ledger reserves (`ledger_agents_full` past them), and its row among the registry's, the oldest retired one forgotten first. A retired agent's mail SHALL stay readable by its other side; new mail to or from it SHALL be refused (`agent_retired`), and its untaken mail, to it or from it, SHALL fail, as a disabled outside agent's does.
+
+#### Scenario: An agent's directory removed
+- **WHEN** the owner removes `/workspace/agents/main`, whose agent sent the owner mail
+- **THEN** its identity is retired, the owner still reads that mail, and a new post to it is refused `agent_retired`
+
+#### Scenario: A retired agent's untaken mail
+- **WHEN** an agent whose mail to another agent no run has taken is retired
+- **THEN** that mail fails and starts no run
+
+### Requirement: A room is a pair, and a post wakes only the members it addresses
+A room SHALL be a pair's: `dm:<a>` the owner and `a`, `dm:<a>+<b>` two agents (`a` before `b`), at least one the owner's own. A post SHALL go to the other member, from the caller's verified identity (a run's own agent's), and an agent's mail to the owner SHALL count against its share of the owner's mailbox. A post SHALL wake only the members it addresses: a deliberate post addresses the other member; a run's result addresses only the person or outside client whose mail started the run, and is posted as the reply to that mail, never to another agent's. A further turn between agents SHALL take a deliberate post, which needs `converse`. The owner SHALL read any chain whole from any of its messages (`mailChain`). There SHALL be no turn or chain-depth cap of the platform's.
+
+#### Scenario: One question between two agents
+- **WHEN** an agent's run posts a question to another agent and that agent's run ends with a result, posting nothing
+- **THEN** no further run starts, and the owner reads the question in the chain
+
+### Requirement: A run reads no mailbox
+A run SHALL read and ack no ledger mailbox (`run_no_mailbox`), and its MCP profile SHALL hold no mailbox tool: its mail is its input, and its agent's mailbox holds every authority's mail. An agent's `queued` and `held_cap` rows SHALL be the `runs` lane's alone.
+
+#### Scenario: A client's run
+- **WHEN** a client's mail starts an agent's run while the owner's mail to that agent waits
+- **THEN** the run's mailbox read is refused, and the owner's mail starts its own run
+
+### Requirement: Mail to an agent starts its run
+Mail to one of the owner's agents SHALL wait `queued` until the `runs` lane starts that agent's run on it through the same admission as a door's: its input its own mail's envelope (who sent it, by name, kind and id; the room; the message to answer as parent) and then the body verbatim inside a fence named by the message's id, which its sender cannot know as it writes the body, so a body can neither close the fence nor open an envelope outside it; nothing past its own mail; attended only when a person sent it (the owner's own call), unattended for a run's mail and a client's; its conversation the thread's (one a thread, agent and authority); its authority the sender's, kept with the mail (a client's grant at its generation, the run held to the intersection with it, refused once it moved); its retry key the mail. Posting it SHALL need `converse` on that agent (a client's scoped grant, a run's scopes). The mail SHALL be taken in the admission's unit and held until the run settles; past the tier, or behind a busy conversation, the run SHALL wait its turn; with the inputs' queue full the mail SHALL stay held in the ledger; any other refusal SHALL fail the mail with a notice. A result answering a person's or a client's mail SHALL be posted before the settle, once; a reply the ledger does not post SHALL leave a notice, and the settle SHALL stand.
+
+#### Scenario: A client's mail to an agent
+- **WHEN** an outside client whose scoped grant holds `converse` and `read_graph` for `main` mails `main`, whose scopes are every capability
+- **THEN** `main`'s run starts unattended in that client's sandbox under its stamp, holding `read_graph` and `converse` only, and its result is `main`'s reply to the client in their room
+
+#### Scenario: The owner's mail on an attended-only source
+- **WHEN** the owner mails an agent on a sign-in its record allows only attended, and another agent mails it too
+- **THEN** the owner's mail starts its run, and the other agent's fails `unattended_refused`
+
+#### Scenario: A revoked sender
+- **WHEN** a client's mail to an agent is still untaken when the owner revokes the client
+- **THEN** no run starts, the mail fails, and the owner has a notice
+
+### Requirement: Agents mailing each other are bounded by the tier and the owner's own limits
+Agents that keep posting to each other SHALL be bounded only by what bounds every run: the tier's simultaneous runs, the inputs' queue and each agent's mailbox (each refused loudly), the owner's own limits (an API-key turn past the owner's caps refused `owner_limit`, the mail failed and noticed), and the vendor's limits.
+
+#### Scenario: Two agents on a key, past the owner's daily cap
+- **WHEN** two agents take turns by posts and the owner's daily cap is spent
+- **THEN** the next turn starts no run, its mail fails, the owner has a notice, and the lane has no job
 
 ### Requirement: A run's live output is relayed, never committed
 Each frame (`{v, run, seq, at, kind, event}`) SHALL be relayed to the owner app's sockets on the run's conversation, and kept in memory only in a bounded tail for late joiners (4 Mi UTF-16 units in all, the longest tail's oldest frame first, a frame past 256 Ki units never kept), dropped at the run's settle. A socket SHALL be attached only through the binder's exact upgrade shape, its single-use ticket consumed in the attach's unit, and close with a fixed code at its token's expiry, its grant's sign-out, every session's close, an admission refusing reads, or the erasure.

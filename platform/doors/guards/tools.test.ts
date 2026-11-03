@@ -18,7 +18,7 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { parse, PLATFORM } from "../../owner/guards/sources";
-import { RUN_TOOLS, runProfile, type Tool, toolTable } from "../src/tools";
+import { MAILBOX_TOOLS, RUN_TOOLS, runProfile, type Tool, toolTable } from "../src/tools";
 
 /** Outside-callable doors without a tool yet, and what owes each. */
 const DEFERRED: Readonly<Record<string, string>> = Object.freeze({
@@ -286,7 +286,8 @@ describe("tool table guard", () => {
     expect(toolTable().filter((tool) => RUN_TOOLS.includes(tool.name)).map((tool) => tool.door))
       .toEqual(["agentSubmit", "agentRun", "agentStatus", "agentCancel"]);
     expect(runProfile().filter((tool) => RUN_TOOLS.includes(tool.name))).toEqual([]);
-    expect(runProfile().length).toBe(toolTable().length - 4);
+    expect(runProfile().length).toBe(toolTable().length - 6);
+    expect(runProfile().filter((tool) => MAILBOX_TOOLS.includes(tool.name))).toEqual([]);
   });
 
   it("sees an ack marked other than idempotent, and a post marked idempotent", () => {
