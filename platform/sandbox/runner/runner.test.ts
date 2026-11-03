@@ -15,7 +15,7 @@ import { chmodSync, chownSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { bundledSources, runEnv } from "../../doors/src/sources";
 import { readEvent } from "../../owner/src/run-events";
@@ -62,7 +62,19 @@ const SHAPES: Record<string, { lines: unknown[]; session: string | null; text: s
 let doors: Doors;
 let box: Sandbox;
 
+beforeAll(() => {
+  // Real root and real uids, or a loud failure: never a skip (`root-tests.mjs` runs these
+  // through passwordless sudo where the user is not root, as GitHub's runner allows).
+  if (process.getuid?.() !== 0) {
+    throw new Error("the runner's tests need real root and real uids: run `npm test` in " +
+                    "platform/sandbox (root-tests.mjs), as root or with passwordless sudo");
+  }
+});
+
 beforeEach(async () => {
+  // Nothing of the last test's is closed twice, and a failed construction leaves none.
+  doors = undefined as unknown as Doors;
+  box = undefined as unknown as Sandbox;
   runnerBundle();
   doors = new Doors();
   await doors.listen();
@@ -73,8 +85,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  doors.close();
-  box.remove();
+  (doors as Doors | undefined)?.close();
+  (box as Sandbox | undefined)?.remove();
 });
 
 /** A run's whole environment as the lease makes it (`runEnv`), on the record's first credential. */

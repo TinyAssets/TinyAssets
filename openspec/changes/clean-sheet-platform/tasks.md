@@ -962,7 +962,10 @@ R, S, M and W.
     template (`template/build.py`, its tag the digest of the runner's bundle, the records,
     their locks and `tier.ts`, `E2B_TEMPLATE` held to it by `guards/template.test.ts`); the
     runner (`runner/*.ts`, bundled; 34 workerd and 32 Node tests against a fake E2B and fake
-    CLIs of each record's event shapes, the review's five attacks among them, refused); the
+    CLIs of each record's event shapes, the review's five attacks among them, refused; the
+    runner's tests need real root and real uids, so `root-tests.mjs` runs them as root or
+    through passwordless sudo, as on GitHub's runner, and fails loudly otherwise, never a
+    skip); the
     sync doors on the egress host (`/sync/*`); `SANDBOX` in the owner config guard's
     `SERVICES` (its classes, the control record, the ring's producer, one var, its key) and
     bound. Probed live: `sandbox-probe.md`.

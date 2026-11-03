@@ -263,35 +263,41 @@ export class Sandbox {
   readonly root = mkdtempSync(join(tmpdir(), "ta-runner-root-"));
 
   constructor() {
-    chmodSync(this.root, 0o755);
-    const engines = sources.ids().map((id) => sources.get(id)!).filter((rec) => rec.cli);
-    mkdirSync(join(this.root, "etc"), { recursive: true });
-    writeFileSync(join(this.root, "etc", "passwd"), [
-      "root:x:0:0::/root:/bin/sh",
-      `ta-sync:x:${SYNC_UID}:${SYNC_UID}::/nonexistent:/usr/sbin/nologin`,
-      ...POOL_UIDS.map((uid, i) => `ta-run-${i}:x:${uid}:${uid}::/nonexistent:/usr/sbin/nologin`),
-    ].join("\n"));
-    writeFileSync(join(this.root, "etc", "group"), `ta:x:${TA_GID}:\n`);
-    writeFileSync(join(this.root, "etc", "resolv.conf"), "");
-    mkdirSync(join(this.root, "var", "lib"), { recursive: true, mode: 0o755 });
-    mkdirSync(join(this.root, "var", "lib", "ta", "inbox"), { recursive: true, mode: 0o700 });
-    chmodSync(join(this.root, "var", "lib", "ta"), 0o700);
-    mkdirSync(join(this.root, "var", "lib", "ta-sync"), { mode: 0o700 });
-    chownSync(join(this.root, "var", "lib", "ta-sync"), SYNC_UID, SYNC_UID);
-    mkdirSync(join(this.root, "workspace"), { mode: 0o2775 });
-    chownSync(join(this.root, "workspace"), 0, TA_GID);
-    chmodSync(join(this.root, "workspace"), 0o2775);
-    for (const dir of ["tmp", "var/tmp", "dev/shm"]) {
-      mkdirSync(join(this.root, dir), { recursive: true });
-      chmodSync(join(this.root, dir), 0o1777);
-    }
-    mkdirSync(join(this.root, "fake-seen"), { mode: 0o777 });
-    chmodSync(join(this.root, "fake-seen"), 0o777);
-    for (const rec of engines) {
-      const bin = join(this.root, binPath(rec));
-      mkdirSync(dirname(bin), { recursive: true, mode: 0o755 });
-      writeFileSync(bin, FAKE, { mode: 0o755 });
-      this.cli(rec.id, { lines: [] });
+    try {
+      chmodSync(this.root, 0o755);
+      const engines = sources.ids().map((id) => sources.get(id)!).filter((rec) => rec.cli);
+      mkdirSync(join(this.root, "etc"), { recursive: true });
+      writeFileSync(join(this.root, "etc", "passwd"), [
+        "root:x:0:0::/root:/bin/sh",
+        `ta-sync:x:${SYNC_UID}:${SYNC_UID}::/nonexistent:/usr/sbin/nologin`,
+        ...POOL_UIDS.map((uid, i) => `ta-run-${i}:x:${uid}:${uid}::/nonexistent:/usr/sbin/nologin`),
+      ].join("\n"));
+      writeFileSync(join(this.root, "etc", "group"), `ta:x:${TA_GID}:\n`);
+      writeFileSync(join(this.root, "etc", "resolv.conf"), "");
+      mkdirSync(join(this.root, "var", "lib"), { recursive: true, mode: 0o755 });
+      mkdirSync(join(this.root, "var", "lib", "ta", "inbox"), { recursive: true, mode: 0o700 });
+      chmodSync(join(this.root, "var", "lib", "ta"), 0o700);
+      mkdirSync(join(this.root, "var", "lib", "ta-sync"), { mode: 0o700 });
+      chownSync(join(this.root, "var", "lib", "ta-sync"), SYNC_UID, SYNC_UID);
+      mkdirSync(join(this.root, "workspace"), { mode: 0o2775 });
+      chownSync(join(this.root, "workspace"), 0, TA_GID);
+      chmodSync(join(this.root, "workspace"), 0o2775);
+      for (const dir of ["tmp", "var/tmp", "dev/shm"]) {
+        mkdirSync(join(this.root, dir), { recursive: true });
+        chmodSync(join(this.root, dir), 0o1777);
+      }
+      mkdirSync(join(this.root, "fake-seen"), { mode: 0o777 });
+      chmodSync(join(this.root, "fake-seen"), 0o777);
+      for (const rec of engines) {
+        const bin = join(this.root, binPath(rec));
+        mkdirSync(dirname(bin), { recursive: true, mode: 0o755 });
+        writeFileSync(bin, FAKE, { mode: 0o755 });
+        this.cli(rec.id, { lines: [] });
+      }
+    } catch (error) {
+      // A sandbox half made (as a user who may not chown) leaves nothing behind.
+      rmSync(this.root, { recursive: true, force: true });
+      throw error;
     }
   }
 

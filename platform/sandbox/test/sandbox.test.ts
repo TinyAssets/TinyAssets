@@ -397,8 +397,9 @@ describe("cancel, status and release", () => {
     const who = owner();
     await stub(who).start(who, start());
     expect(await stub(who).release(who, { lease_id: LEASE.lease_id })).toEqual({ paused: false });
-    // The look comes back at once, not at the renewal window.
-    expect(await alarmOf(who)).toBeLessThan(Date.now() + 5_000);
+    // The look comes back at once, not at the renewal window (or the runtime ran it already).
+    const at = await alarmOf(who);
+    expect(at === null || at < Date.now() + 5_000).toBe(true);
     // The look is due at once: the runtime may run it before the test does.
     await runDurableObjectAlarm(stub(who));
     const until = Date.now() + 5_000;
