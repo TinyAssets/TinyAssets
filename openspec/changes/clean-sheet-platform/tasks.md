@@ -1542,6 +1542,17 @@ R, S, M and W.
     company knowledge do not follow `next_cursor`, so past `SEARCH_SCAN` entries they see
     the first page in path order. A known gap: scanning `/workspace/knowledge` first is one
     answer.
+  - Review round 2 (rvsa): a widening at a path the owner already holds is a proposal,
+    a first seed over the owner's own `agent.json` included (R2-M1); a withdrawn widening's
+    unadopted `.ta-new` is removed with one `starter_withdrawn` notice (R2-L1);
+    `bundle.mjs` refuses a path dropped without being retired (R2-L4); `SEARCH_ANSWER_BYTES`
+    bounds the whole serialised answer (worst case measured at 14.2 of 16 MiB); the
+    watcher tells the founder by a bot comment and Pushover, never by a review request
+    (the token is the founder's own), never failing the run on a notification, with the
+    user token only in the steps that push or call `gh`, and its loops touching only its
+    own `okf-watch/` branches (R2-M2, R2-L3).
+  - **Migration 15:** slice L (PR #5401) adds a migration 15 too. Once it lands, merge
+    main and renumber the starter's.
   - The OKF watcher's review has no consumer of its own: a readied proposal waits for an
     agent review session's receipt, as every pull request does (founder item, if an
     automatic reviewer is wanted).

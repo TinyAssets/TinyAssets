@@ -7,8 +7,9 @@
  * (`okf-watch.ts`) against fixtures: a content diff, a relocation banner, new tags and hidden
  * Unicode, never a version number.
  */
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -53,6 +54,38 @@ describe("the starter package", () => {
     expect(bundled.version).toBe(manifest.version);
     expect(bundled.files.map((file) => file.path)).toEqual(
       manifest.files.map((file: { path: string }) => file.path));
+  });
+
+  it("refuses to bundle a path dropped without being retired (review R2-L4)", () => {
+    const copy = mkdtempSync(join(tmpdir(), "starter-"));
+    try {
+      cpSync(STARTER, copy, { recursive: true });
+      const manifestPath = join(copy, "manifest.json");
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      const gone = manifest.files.splice(5, 1)[0].path as string;  // the scratch skill
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+      const refused = spawnSync(process.execPath, [join(copy, "bundle.mjs")], { encoding: "utf8" });
+      expect(refused.status).toBe(1);
+      expect(refused.stderr).toContain(gone);
+      manifest.retired = [gone];
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+      const kept = spawnSync(process.execPath, [join(copy, "bundle.mjs")], { encoding: "utf8" });
+      expect([kept.status, kept.stderr]).toEqual([0, ""]);
+      expect(JSON.parse(readFileSync(join(copy, "starter.json"), "utf8")).retired)
+        .toEqual([gone]);
+    } finally {
+      rmSync(copy, { recursive: true, force: true });
+    }
+    // And against main's bundle, where the history holds one: nothing dropped unretired.
+    const main = spawnSync("git", ["show", "origin/main:platform/starter/starter.json"],
+                           { cwd: PLATFORM, encoding: "utf8" });
+    if (main.status === 0) {
+      const previous = JSON.parse(main.stdout) as Bundled & { retired?: string[] };
+      const named = new Set([...bundled.files.map((file) => file.path),
+                             ...((bundled as Bundled & { retired?: string[] }).retired ?? [])]);
+      expect([...previous.files.map((file) => file.path), ...(previous.retired ?? [])]
+        .filter((path) => !named.has(path))).toEqual([]);
+    }
   });
 
   it("holds the default agent's four files and the shared skills, agent.json last", () => {

@@ -13,12 +13,18 @@ name: okf-watch
 # minimumReleaseAge), so a bad upstream commit can be caught first. Then it marks the pull
 # request ready, which starts its checks and auto-enrolment like any pull request's, and asks
 # for the review every pull request needs; a change that could widen what agents do (hidden
-# text, `needs-founder`) asks the founder instead and stays a draft.
+# text, `needs-founder`) stays a draft and the founder is told.
 #
 # The pull request is pushed, opened and readied with MERGE_ATTRIBUTION_TOKEN, a user token,
 # as main-red.yml opens its revert pull requests: events GITHUB_TOKEN causes start no
-# workflow, so its checks and enrolment would never run. With the secret unset, the job
-# fails loudly and nothing is proposed (fail loudly, never fall back to GITHUB_TOKEN).
+# workflow, so its checks and enrolment would never run. The token is in scope only for the
+# steps that push or call `gh`. With the secret unset, the job fails loudly and nothing is
+# proposed (fail loudly, never fall back to GITHUB_TOKEN). That token is the founder's own
+# (docs/ops/org-transfer-runbook.md), so the founder is the pull request's author and is
+# notified of none of its own acts: the founder is told by the bot (a GITHUB_TOKEN comment
+# naming them, as the repo's other workflows reach them through issues the bot opens) and by
+# Pushover when its secrets are set (as p0-outage-triage.yml pages). A failed notification
+# never fails the run; it is a warning, and the founder is asked again the next day.
 #
 # Nothing here merges. Drafts are not auto-enrolled (auto-enroll-merge.yml), and a ready
 # pull request merges only with the review receipt every pull request needs
@@ -40,8 +46,10 @@ concurrency:
 env:
   UPSTREAM: https://github.com/GoogleCloudPlatform/open-knowledge-format.git
   COOLDOWN_DAYS: '7'
-  # The founder's own login (.github/CODEOWNERS): an organization cannot be asked to review.
+  # The founder's own login (.github/CODEOWNERS).
   FOUNDER: Jonnyton
+  # Only the watcher's own branches: the close and ready loops touch nothing else.
+  PREFIX: okf-watch/
 
 jobs:
   watch:
@@ -84,21 +92,15 @@ jobs:
             exit 1
           fi
 
-      - name: Open the draft proposal
+      - name: Make the proposal (no token)
         if: steps.check.outputs.changed == 'true'
+        id: make
         env:
-          GH_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN }}
-          GH_REPO: ${{ github.repository }}
           COMMIT: ${{ steps.check.outputs.commit }}
           SPEC: ${{ steps.check.outputs.spec }}
-          WIDENS: ${{ steps.check.outputs.widens }}
         run: |
           set -euo pipefail
-          branch="okf-watch/${COMMIT:0:12}"
-          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
-            echo "The upstream at ${COMMIT:0:12} is already proposed."
-            exit 0
-          fi
+          branch="${PREFIX}${COMMIT:0:12}"
           git switch -c "$branch"
           node platform/starter/okf-watch.ts apply --upstream "$RUNNER_TEMP/okf" \
             --body "$RUNNER_TEMP/body.md"
@@ -111,25 +113,49 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add platform/starter
           git commit -m "$title"
+          {
+            echo "branch=$branch"
+            echo "title=$title"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Push and open the draft
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ steps.make.outputs.branch }}
+          TITLE: ${{ steps.make.outputs.title }}
+          WIDENS: ${{ steps.check.outputs.widens }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${GH_REPO}/branches/${BRANCH}" --silent 2>/dev/null; then
+            echo "This upstream is already proposed on ${BRANCH}."
+            exit 0
+          fi
+          me=$(gh api user --jq .login)
           git push -q "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" \
-            "HEAD:refs/heads/$branch"
+            "HEAD:refs/heads/${BRANCH}"
           gh label create okf-watch --color 0e8a16 \
             --description "The OKF watcher's proposals" --force
           gh label create needs-founder --color d93f0b \
             --description "Could widen what agents do: the founder reviews it" --force
           labels="okf-watch"
           if [ "$WIDENS" = "true" ]; then labels="okf-watch,needs-founder"; fi
-          for n in $(gh pr list --label okf-watch --state open --json number --jq '.[].number'); do
+          # Older proposals: the watcher's own alone (its prefix, its author), never a pull
+          # request someone else labelled.
+          for n in $(gh pr list --label okf-watch --state open --json number,headRefName,author \
+                       --jq ".[] | select((.headRefName | startswith(\"${PREFIX}\")) and .author.login == \"${me}\") | .number"); do
             gh pr close "$n" --delete-branch \
-              --comment "Superseded: the upstream moved on to ${COMMIT:0:12}."
+              --comment "Superseded: the upstream moved on (${BRANCH#"$PREFIX"})."
           done
-          gh pr create --draft --base main --head "$branch" --label "$labels" \
-            --title "$title" --body-file "$RUNNER_TEMP/body.md"
+          gh pr create --draft --base main --head "$BRANCH" --label "$labels" \
+            --title "$TITLE" --body-file "$RUNNER_TEMP/body.md"
 
   cooldown:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions: {}   # every write is the user token's
+    permissions:
+      pull-requests: write   # GITHUB_TOKEN's one use: the bot's note to the founder
     steps:
       - name: Require the user token
         env:
@@ -140,31 +166,106 @@ jobs:
             exit 1
           fi
 
-      - name: Ready the proposals past their cooldown
+      - name: Find the watcher's proposals past their cooldown
+        id: due
         env:
           GH_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           cutoff=$(date -u -d "-${COOLDOWN_DAYS} days" +%s)
-          gh label create okf-review-due --color fbca04 \
-            --description "Past its cooldown: ready for review" --force
-          gh label create founder-asked --color d93f0b \
-            --description "The founder was asked to review" --force
-          gh pr list --label okf-watch --state open --json number,createdAt,isDraft,labels \
-            --jq '.[] | select(.isDraft) | [.number, .createdAt, ([.labels[].name] | join(","))] | @tsv' |
+          me=$(gh api user --jq .login)
+          ready=""
+          founder=""
           while IFS=$'\t' read -r number created labels; do
+            [ -n "$number" ] || continue
             if [ "$(date -u -d "$created" +%s)" -gt "$cutoff" ]; then
               continue
             fi
             case ",$labels," in
               *,founder-asked,*) ;;
-              *,needs-founder,*)
-                gh pr edit "$number" --add-reviewer "$FOUNDER" --add-label founder-asked
-                gh pr comment "$number" --body "The cooldown is over. This change carries text no reviewer can see, which could widen what every owner's agent does, so the founder reviews it before it is marked ready." ;;
-              *)
-                gh pr ready "$number"
-                gh pr edit "$number" --add-label okf-review-due
-                gh pr comment "$number" --body "The cooldown is over: ready for review. Read the spec diff, not the version line; the checks are in the description. It merges only with an approving review receipt." ;;
+              *,needs-founder,*) founder="$founder $number" ;;
+              *) ready="$ready $number" ;;
             esac
+          done < <(gh pr list --label okf-watch --state open \
+                     --json number,createdAt,isDraft,labels,headRefName,author \
+                     --jq ".[] | select(.isDraft and (.headRefName | startswith(\"${PREFIX}\")) and .author.login == \"${me}\") | [.number, .createdAt, ([.labels[].name] | join(\",\"))] | @tsv")
+          {
+            echo "ready=${ready# }"
+            echo "founder=${founder# }"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Ready the ordinary ones
+        if: steps.due.outputs.ready != ''
+        env:
+          GH_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          READY: ${{ steps.due.outputs.ready }}
+        run: |
+          set -euo pipefail
+          gh label create okf-review-due --color fbca04 \
+            --description "Past its cooldown: ready for review" --force
+          for number in $READY; do
+            gh pr ready "$number"
+            gh pr edit "$number" --add-label okf-review-due
+            gh pr comment "$number" --body "The cooldown is over: ready for review. Read the spec diff, not the version line; the checks are in the description. It merges only with an approving review receipt."
+          done
+
+      - name: Tell the founder (never fails the run)
+        id: told
+        if: steps.due.outputs.founder != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ASK: ${{ steps.due.outputs.founder }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [ -z "$PUSHOVER_USER_KEY" ] || [ -z "$PUSHOVER_APP_TOKEN" ]; then
+            echo "::notice::Pushover secrets unset: the founder is told by the bot's comment alone."
+          fi
+          told=""
+          for number in $ASK; do
+            url="${GITHUB_SERVER_URL}/${GH_REPO}/pull/${number}"
+            text="@${FOUNDER}: the OKF watcher's proposal ${url} is past its cooldown and carries text no reviewer can see, which could widen what every owner's agent does. It stays a draft until you review it."
+            sent=0
+            if gh pr comment "$number" --body "$text"; then
+              sent=1
+            else
+              echo "::warning::The bot's comment on #${number} failed; asked again tomorrow."
+            fi
+            if [ -n "$PUSHOVER_USER_KEY" ] && [ -n "$PUSHOVER_APP_TOKEN" ]; then
+              if curl -fsS --max-time 20 https://api.pushover.net/1/messages.json \
+                   --form-string "token=${PUSHOVER_APP_TOKEN}" \
+                   --form-string "user=${PUSHOVER_USER_KEY}" \
+                   --form-string "title=OKF watcher: your review" \
+                   --form-string "message=Proposal #${number} could widen what agents do." \
+                   --form-string "url=${url}" >/dev/null; then
+                sent=1
+              else
+                echo "::warning::The Pushover page for #${number} failed."
+              fi
+            fi
+            if [ "$sent" = 1 ]; then
+              told="$told $number"
+            else
+              echo "::warning::The founder could not be told of #${number}; asked again tomorrow."
+            fi
+          done
+          echo "told=${told# }" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Mark the founder told
+        if: steps.told.outputs.told != ''
+        env:
+          GH_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TOLD: ${{ steps.told.outputs.told }}
+        run: |
+          set -euo pipefail
+          gh label create founder-asked --color d93f0b \
+            --description "The founder was told to review" --force
+          for number in $TOLD; do
+            gh pr edit "$number" --add-label founder-asked
           done

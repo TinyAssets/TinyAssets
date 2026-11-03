@@ -35,11 +35,23 @@ import { nameOf } from "./paths";
  */
 export const SEARCH_SCAN = 5000;
 /**
- * The most bytes of results one answer holds, a technical ceiling: half the platform's one
- * body ceiling (`EGRESS_BODY_MAX`), since the MCP door answers the results twice, as
- * structured content and as its JSON text copy. Past it, `next_cursor` continues.
+ * What one answer holds beside its results, with room to spare: the JSON-RPC envelope, the
+ * MCP result's keys, the server-sent event's framing, `note`, and `next_cursor` (a stored
+ * path of at most 4,096 bytes, at most 6 bytes a byte as JSON, in both copies, the text
+ * copy's escaping doubling it: about 74 KiB at worst).
  */
-export const SEARCH_ANSWER_BYTES = EGRESS_BODY_MAX / 2;
+export const SEARCH_ENVELOPE_BYTES = 128 * 1024;
+/**
+ * The most bytes of results, as JSON, one answer holds, a technical ceiling: the whole
+ * answer stays within the platform's one body ceiling (`EGRESS_BODY_MAX`, 16 MiB). The MCP
+ * door answers the results twice, as structured content (their JSON, once) and as a text
+ * copy of that JSON escaped into a string, which at worst doubles it (each `"` and `\`
+ * becomes two bytes; nothing else grows); so the answer is at most three times the results'
+ * JSON plus `SEARCH_ENVELOPE_BYTES`. A search counts each result's JSON in UTF-8 bytes as it
+ * adds it. Past it, `next_cursor` continues.
+ */
+/** `(EGRESS_BODY_MAX - SEARCH_ENVELOPE_BYTES) / 3`, rounded down (a test holds the two equal). */
+export const SEARCH_ANSWER_BYTES = 5_548_714;
 /**
  * The most UTF-8 bytes a query holds, a technical ceiling of the isolate's 128 MB (Workers
  * limits): a query's set of words takes about 15 bytes of heap a query byte (measured,

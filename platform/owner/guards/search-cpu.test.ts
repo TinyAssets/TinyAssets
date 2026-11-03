@@ -9,8 +9,9 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { EGRESS_BODY_MAX } from "../src/network";
 import {
-  SEARCH_QUERY_BYTES, SEARCH_SCAN, type Scanned, searchPage, words,
+  SEARCH_ANSWER_BYTES, SEARCH_QUERY_BYTES, SEARCH_SCAN, type Scanned, searchPage, words,
 } from "../src/file-search";
 
 const INLINE = 4096;
@@ -75,6 +76,37 @@ describe("the search's worst case", () => {
     const ms = cpuMs(() => searchPage(entries, false, terms, () => "u"));
     console.log(`search worst case, full indexes: ${Math.round(ms)} ms CPU`);
     expect(ms).toBeLessThan(3_000);
+  }, 60_000);
+
+  it("keeps the worst answer, envelope and escapes included, under the body ceiling", () => {
+    // Every result at its widest and worst to escape: a 4,096-byte path of quotes and
+    // backslashes in names of 255 bytes, a title of as many, a url of its encoded folder.
+    const name = '"\\'.repeat(127) + "x";
+    const parts: string[] = [];
+    while (`/workspace/${[...parts, name].join("/")}`.length <= 4096 - 10) {
+      parts.push(name);
+    }
+    const dir = `/workspace/${parts.join("/")}`;
+    const title = '"\\'.repeat(1900);
+    const entries: Scanned[] = Array.from({ length: SEARCH_SCAN }, (_, i) => ({
+      path: `${dir}/${String(i).padStart(5, "0")}.md`, kind: "file",
+      inline: encoder.encode(`---\ntitle: ${title}\n---\nneedle`) }));
+    const url = (path: string) => `https://tinyassets.io/app#data/${
+      encodeURIComponent(path.slice(0, path.lastIndexOf("/")))}`;
+    const page = searchPage(entries, true, new Set(["needle"]), url);
+    expect(page.resume).not.toBeNull();  // it stopped at its bytes, not its scan
+    const result = { results: page.results, next_cursor: page.resume,
+                     note: "more of the files are still to search: search again with next_cursor" };
+    // As the MCP door answers it (`mcp.ts`): structured content and its JSON text copy, in
+    // a JSON-RPC response, framed as a server-sent event.
+    const answer = `event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: Number.MAX_SAFE_INTEGER,
+      result: { content: [{ type: "text", text: JSON.stringify(result) }],
+                structuredContent: result } })}\n\n`;
+    const bytes = encoder.encode(answer).byteLength;
+    console.log(`worst answer: ${page.results.length} results, ${bytes} bytes of ${EGRESS_BODY_MAX}`);
+    expect(bytes).toBeLessThanOrEqual(EGRESS_BODY_MAX);
+    expect(encoder.encode(JSON.stringify(page.results)).byteLength)
+      .toBeLessThanOrEqual(SEARCH_ANSWER_BYTES);
   }, 60_000);
 
   it("holds a query's words to their measured heap", () => {

@@ -300,6 +300,7 @@ export class Starter {
     const seeded = this.version() > 0;
     const edited: string[] = [];
     const proposed: string[] = [];
+    const withdrawn: string[] = [];
     for (const file of pkg.files) {
       const bytes = new TextEncoder().encode(file.text);
       const id = contentIdOf(bytes);
@@ -330,19 +331,33 @@ export class Starter {
       }
       if (content?.content_id === id) {
         await this.#record(file, pkg.version, "installed", id, null);
+        await this.#withdraw(file, receipt, id, withdrawn);
         continue;
       }
       if (receipt === undefined) {
+        const from = seeded ? this.version() : null;
+        // The owner's own file there before the starter's (or one written as the pass ran):
+        // never overwritten, and a widening over it is still a proposal (review R2-M1).
+        const owned = async (current: Content | null) => {
+          const why = widening(file, from, current === null ? null : await this.#bytes(current),
+                               bytes);
+          await this.#offer(file, bytes, null, why === null ? "edited" : "proposed", null, id);
+          if (why === null) {
+            edited.push(file.path);
+          } else {
+            proposed.push(`${file.path}: ${why}`);
+          }
+        };
         if (entry !== null) {
-          // The owner's own file there before the starter's: never overwritten.
-          await this.#offer(file, bytes, null, "edited", null, id);
-          edited.push(file.path);
+          await owned(content);
         } else if (seeded && widening(file, this.version(), null, bytes) !== null) {
           await this.#offer(file, bytes, null, "proposed", null, id);
           proposed.push(`${file.path}: ${widening(file, this.version(), null, bytes)}`);
         } else if (!await this.#install(file, bytes, "")) {
-          await this.#offer(file, bytes, null, "edited", null, id);
-          edited.push(file.path);
+          await owned(await this.#deps.write(() => {
+            const now = this.#deps.files.stat(file.path);
+            return now?.kind === "file" ? this.#deps.files.open(file.path) : null;
+          }));
         }
         continue;
       }
@@ -362,6 +377,8 @@ export class Starter {
         } else if (!await this.#install(file, bytes, content.entry.etag)) {
           await this.#offer(file, bytes, receipt, "edited", base, id);
           edited.push(file.path);
+        } else {
+          await this.#withdraw(file, receipt, id, withdrawn);
         }
         continue;
       }
@@ -392,6 +409,12 @@ export class Starter {
           `so ${edited.length === 1 ? "it was" : "they were"} left as you made them, and the ` +
           `new version is beside ${edited.length === 1 ? "it" : "each"} as ${NEWER}: ${
             edited.join(", ")}. Ask your agent to merge, or delete the ${NEWER} file.`);
+      }
+      if (withdrawn.length > 0) {
+        this.#deps.notice("starter_withdrawn", `A TinyAssets update (version ${pkg.version}) ` +
+          `takes back what it had proposed for ${withdrawn.join(", ")}: the ${NEWER} ` +
+          `${withdrawn.length === 1 ? "copy is" : "copies are"} gone, and nothing you have ` +
+          "was changed by it.");
       }
       if (proposed.length > 0) {
         this.#deps.notice("starter_proposal", `A TinyAssets update (version ${pkg.version}) ` +
@@ -435,6 +458,37 @@ export class Starter {
     }
     await this.#record(file, this.#pkg!.version, "installed", contentIdOf(bytes), null);
     return true;
+  }
+
+  /**
+   * A proposal a later version withdrew (its file now installed as something else): its
+   * `.ta-new` removed while it still holds the offered bytes, so nothing withdrawn can be
+   * adopted (review R2-L1). One the owner changed is theirs, and stays.
+   */
+  async #withdraw(file: StarterFile, receipt: Receipt | undefined, installed: string,
+                  withdrawn: string[]): Promise<void> {
+    if (receipt?.state !== "proposed" || receipt.offered === null
+        || receipt.offered === installed) {
+      return;
+    }
+    const path = `${file.path}${NEWER}`;
+    const copy = await this.#deps.write(() => {
+      const entry = this.#deps.files.stat(path);
+      return entry?.kind === "file" ? this.#deps.files.open(path) : null;
+    });
+    if (copy === null || copy.content_id !== receipt.offered) {
+      return;
+    }
+    try {
+      await this.#deps.write(() => this.#deps.files.remove(path, {
+        expected: copy.entry.etag, recursive: false, writer: "owner" }));
+    } catch (error) {
+      if (error instanceof FileConflict) {
+        return;  // changed as the pass ran: the owner's now
+      }
+      throw error;
+    }
+    withdrawn.push(file.path);
   }
 
   /** The version written beside the file as `.ta-new`, and the receipt that says so. */

