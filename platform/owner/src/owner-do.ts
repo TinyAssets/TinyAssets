@@ -93,7 +93,6 @@
  * `wakes` lane's claim). Only the platform, as the reserved `PLATFORM_CALLER`, sets it, at
  * `admissionSet`, the one door that caller reaches.
  */
-import { Buffer } from "node:buffer";
 import { createHash, randomBytes } from "node:crypto";
 
 import { Lifecycle } from "agents/lifecycle";
@@ -780,15 +779,36 @@ export const CODE_MODE_OFF = "code_mode_off: the owner's policy has code mode of
 export const CODE_NOT_SERVED = "tool_not_served: not in this caller's tool profile";
 const CODE_TIMED_OUT = "the script is past its time";
 /**
- * The most a script's answer may carry, as UTF-8 JSON: Workers RPC's 32 MiB of serialized
- * arguments or return value (its own error: "Serialized RPC arguments or return values are
- * limited to 32MiB"), less 1 MiB for the RPC's own envelope. UTF-8 JSON is never smaller
- * than V8's serialization of the same strings (one byte a Latin-1 character, two a UTF-16
- * unit), so an answer within it crosses.
+ * The most a script's answer may take as V8 serializes it (`serializedBytes`): Workers RPC's
+ * 32 MiB of serialized arguments or return value (its own error: "Serialized RPC arguments
+ * or return values are limited to 32MiB"), less 1 MiB for the RPC's own envelope.
  */
 export const CODE_ANSWER_MAX = 31 * 1024 * 1024;
 export const CODE_ANSWER_TOO_LARGE = "answer_too_large: the script's value and output are " +
   "past the 31 MiB an answer across the RPC carries; return less, or write it with a tool";
+/** A string V8 keeps one byte a unit: every unit Latin-1. */
+const ONE_BYTE = /^[\u0000-\u00ff]*$/;
+/** A value's per-item framing in V8's serialization, at most: a tag and a length or a number. */
+const FRAME_BYTES = 10;
+
+/**
+ * At least what V8's serializer takes for a JSON value: a string one byte a unit when every
+ * unit is Latin-1, else two bytes a unit (the whole string, however few units are wide), and
+ * each item's framing; an object's keys as strings.
+ */
+export function serializedBytes(value: unknown): number {
+  if (typeof value === "string") {
+    return FRAME_BYTES + (ONE_BYTE.test(value) ? 1 : 2) * value.length;
+  }
+  if (Array.isArray(value)) {
+    return value.reduce<number>((bytes, item) => bytes + serializedBytes(item), FRAME_BYTES);
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.entries(value).reduce<number>(
+      (bytes, [key, item]) => bytes + serializedBytes(key) + serializedBytes(item), FRAME_BYTES);
+  }
+  return FRAME_BYTES;
+}
 /** A digest's head of each body, in characters, unless the caller names another. */
 const HEAD_CHARS = 512;
 
@@ -2086,10 +2106,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       if (!names.includes(CODE)) {
         throw new Refused(CODE_NOT_SERVED);
       }
+      // The gate its door read: every `/mcp` and `/api` binding carries the client's origin,
+      // the owner's own MCP clients' too, so they take the outside gate; a run (the egress
+      // door) and the owner's app (no origin) the maintenance gate.
+      const gate: Gate = account.origin !== null && account.run === null ? "outside" : "owner";
       return { owner: account.owner, script: r["script"],
-               tools: toolsNamed(names.filter((name) => name !== CODE)),
-               gate: (account.origin !== null && account.run === null ? "outside" : "owner") as
-                 Gate };
+               tools: toolsNamed(names.filter((name) => name !== CODE)), gate };
     });
     const control = new ControlGate(this.env.CONTROL, this.#controlFreshMs);
     const closed = await control.refusal(gate, owner);
@@ -2144,7 +2166,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         : { ok: false, error, output: result.output, calls, landed };
       // The answer crosses an RPC to the doors: past what one carries it is refused whole,
       // its calls kept, so the caller learns what landed.
-      return Buffer.byteLength(JSON.stringify(answer), "utf8") <= CODE_ANSWER_MAX ? answer
+      return serializedBytes(answer) <= CODE_ANSWER_MAX ? answer
         : { ok: false, error: { kind: "answer_too_large", message: CODE_ANSWER_TOO_LARGE },
             output: [], calls, landed };
     } finally {

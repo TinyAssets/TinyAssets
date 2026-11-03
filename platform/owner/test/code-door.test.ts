@@ -18,7 +18,8 @@ import { OUTSIDE_OFF } from "../../doors/src/control";
 import { profileNames } from "../../doors/src/tools";
 import type { Origin } from "../src/ledger";
 import {
-  CODE_ANSWER_TOO_LARGE, CODE_MODE_OFF, CODE_NOT_SERVED, type OwnerDO,
+  CODE_ANSWER_MAX, CODE_ANSWER_TOO_LARGE, CODE_MODE_OFF, CODE_NOT_SERVED, type OwnerDO,
+  serializedBytes,
 } from "../src/owner-do";
 import { customTools, validate } from "../src/policy";
 import { MUSE, rig, type Rig } from "./ledger-support";
@@ -203,26 +204,70 @@ describe("the code door", () => {
                                    { name: "collection_write", status: "error", count: 3 }]);
     expect((await r.stub.collectionGet(r.bind(null), { collection: "board", row_id: "w2" }))
       .row).toBeNull();
+    // The door's own read and one at each of the five calls.
+    expect(await (env.SWITCHED.getByName(r.owner)).controlReads()).toBe(6);
     // The record off at the start refuses the call itself.
     expect((await failure(() => r.stub.codeRun(r.bind(MUSE), { script: "return 1;" })))
       .message).toBe(OUTSIDE_OFF);
   });
 
+  it("serves a script's calls from one read of the control record within a second",
+     async () => {
+    // Production's freshness: the record reads open three times then off, but a script of
+    // five quick calls reads it once, at its start, and all five land.
+    const r = await rig(env.CACHED as unknown as DurableObjectNamespace<OwnerDO>);
+    await r.stub.outsideAgents(r.bind(MUSE));
+    const result = await r.stub.codeRun(r.bind(MUSE), { script: lines(
+      "for (let n = 0; n < 5; n++) {",
+      "  await tools.collection_write({ collection: 'board', row_id: 'c' + n, body: 'b',",
+      "    expected_etag: '', private: false });",
+      "}",
+      "return 5;") });
+    expect(result).toMatchObject({ ok: true, value: 5,
+      landed: [{ name: "collection_write", status: "ok", count: 5 }] });
+    expect(await env.CACHED.getByName(r.owner).controlReads()).toBe(1);
+  });
+
+  it("measures an answer as V8 serializes it: a string two bytes a unit if any unit is " +
+     "wide", async () => {
+    expect(serializedBytes("x".repeat(100))).toBe(110);
+    expect(serializedBytes("x".repeat(99) + String.fromCharCode(0x4e00))).toBe(210);
+    expect(serializedBytes("x".repeat(99) + String.fromCharCode(0xe9))).toBe(110);
+    expect(serializedBytes({ ab: ["c"] })).toBe(10 + 12 + 10 + 11);
+    const r = await rig();
+    // The review's X1: 15 items of (1 Mi - 1) ASCII and one U+4E00, and 3 Mi of ASCII:
+    // about 18 MiB of UTF-8 JSON, about 33 MiB as V8 serializes it, past the RPC.
+    const x1 = await r.stub.codeRun(r.bind(null), { script: lines(
+      "const chunk = 'x'.repeat(1024 * 1024 - 1) + String.fromCharCode(0x4e00);",
+      "for (let n = 0; n < 15; n++) { text(chunk); await tools.agents_list({}); }",
+      "return 'y'.repeat(3 * 1024 * 1024);") });
+    expect(x1).toEqual({ ok: false, error: { kind: "answer_too_large",
+                                             message: CODE_ANSWER_TOO_LARGE },
+                         output: [], calls: { ok: 15, error: 0, cancelled: 0 }, landed: [] });
+    // Twice as much ASCII alone, one byte a unit, crosses whole.
+    const ascii = await r.stub.codeRun(r.bind(null), { script: lines(
+      "const chunk = 'x'.repeat(1024 * 1024);",
+      "for (let n = 0; n < 15; n++) { text(chunk); await tools.agents_list({}); }",
+      "return 'y'.repeat(3 * 1024 * 1024).length;") });
+    expect(ascii).toMatchObject({ ok: true, value: 3 * 1024 * 1024 });
+    expect(serializedBytes(ascii)).toBeLessThan(CODE_ANSWER_MAX);
+  }, 120_000);
+
   it("refuses an answer past what the RPC carries, keeping what landed", async () => {
     const r = await rig();
-    // 12 Mi characters of a two-byte character: 24 MiB as V8 serializes it, 36 MiB as the
-    // answer's UTF-8 JSON, past CODE_ANSWER_MAX; each tool call carries its own output.
+    // 16 Mi - 16 characters of a two-byte character: 32 MiB as V8 serializes it, past
+    // CODE_ANSWER_MAX and within pi's own output bound; each tool call carries its output.
     const output = await r.stub.codeRun(r.bind(null), { script: lines(
-      "const chunk = String.fromCharCode(0x4e00).repeat(1024 * 1024);",
-      "for (let n = 0; n < 12; n++) { text(chunk); await tools.agents_list({}); }",
+      "const chunk = String.fromCharCode(0x4e00).repeat(1024 * 1024 - 1);",
+      "for (let n = 0; n < 16; n++) { text(chunk); await tools.agents_list({}); }",
       "return 1;") });
     expect(output).toEqual({ ok: false, error: { kind: "answer_too_large",
                                                  message: CODE_ANSWER_TOO_LARGE },
-                             output: [], calls: { ok: 12, error: 0, cancelled: 0 },
+                             output: [], calls: { ok: 16, error: 0, cancelled: 0 },
                              landed: [] });
     const value = await r.stub.codeRun(r.bind(null), { script: lines(
       "const chunk = String.fromCharCode(0x4e00).repeat(1024 * 1024);",
-      "for (let n = 0; n < 8; n++) { text(chunk); await tools.agents_list({}); }",
+      "for (let n = 0; n < 12; n++) { text(chunk); await tools.agents_list({}); }",
       "await tools.collection_write({ collection: 'board', row_id: 'big', body: 'b',",
       "  expected_etag: '', private: false });",
       "return chunk.repeat(4);") });

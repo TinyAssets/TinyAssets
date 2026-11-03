@@ -277,6 +277,58 @@ export function platformConfigs(): Map<string, Config> {
   return found;
 }
 
+/**
+ * Every use of the name `CONTROL` in the owner's source, read from its syntax, so no
+ * spelling (`env.CONTROL`, `env["CONTROL"]`, a destructuring) hides one: allowed only as
+ * `OwnerEnv`'s field and the one `this.env.CONTROL` handed to `new ControlGate`, which only
+ * reads it (`storeWrites`).
+ */
+function controlUses(sources: ReadonlyMap<string, string>): string[] {
+  const uses: string[] = [];
+  for (const [path, text] of sources) {
+    if (!path.startsWith("owner/src/")) {
+      continue;
+    }
+    const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
+    const visit = (node: ts.Node): void => {
+      const named = (ts.isIdentifier(node) || ts.isStringLiteralLike(node))
+        && node.text === "CONTROL";
+      if (named) {
+        const parent = node.parent;
+        if (ts.isPropertySignature(parent) && ts.isInterfaceDeclaration(parent.parent)
+            && parent.parent.name.text === "OwnerEnv") {
+          uses.push(`${path}: OwnerEnv's CONTROL field`);
+        } else if (ts.isPropertyAccessExpression(parent) && parent.name === node
+                   && parent.expression.getText(file) === "this.env"
+                   && ts.isNewExpression(parent.parent)
+                   && parent.parent.expression.getText(file) === "ControlGate") {
+          uses.push(`${path}: this.env.CONTROL, handed to new ControlGate`);
+        } else {
+          uses.push(`${path}: ${parent.getText(file).slice(0, 60)}`);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+  }
+  return uses.sort();
+}
+
+/** Each write a source could make through a KV namespace: put, delete or list, by any spelling. */
+function storeWrites(text: string): string[] {
+  const file = ts.createSourceFile("gate.ts", text, ts.ScriptTarget.Latest, true);
+  const writes: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if ((ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteralLike(node))
+        && ["put", "delete", "list", "getWithMetadata"].includes(node.text)) {
+      writes.push(node.parent.getText(file));
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return writes;
+}
+
 const config = parseConfig(readFileSync(join(OWNER, CONFIG), "utf8"));
 
 describe("owner Worker config", () => {
@@ -368,14 +420,28 @@ describe("owner Worker config", () => {
     }
     expect(configProblems({ ...config, env: { prod: { kv_namespaces: [] } } },
                           platformConfigs())).toEqual(["env.prod.kv_namespaces is not an allowed key"]);
-    const readers = [...workerSources()].filter(([path, text]) =>
-      path.startsWith("owner/src/") && /\bCONTROL\b/.test(text)).map(([path]) => path);
-    expect(readers.sort()).toEqual(["owner/src/control-gate.ts", "owner/src/owner-do.ts"]);
-    const gate = workerSources().get("owner/src/control-gate.ts")!;
-    expect(gate).not.toMatch(/\.(?:put|delete|list|getWithMetadata)\(/);
-    // Handed to the gate twice: code mode's script calls, and the wakes lane (slice W).
-    expect(workerSources().get("owner/src/owner-do.ts")!.match(/env\.CONTROL\b[^,)]*/g))
-      .toEqual(["env.CONTROL", "env.CONTROL"]);
+    expect(controlUses(workerSources())).toEqual([
+      "owner/src/owner-do.ts: OwnerEnv's CONTROL field",
+      "owner/src/owner-do.ts: this.env.CONTROL, handed to new ControlGate"]);
+    expect(storeWrites(workerSources().get("owner/src/control-gate.ts")!)).toEqual([]);
+  });
+
+  it.each([
+    ["a bracket read", "const kv = this.env[\"CONTROL\"];"],
+    ["a second dotted read", "const kv = this.env.CONTROL;"],
+    ["a destructured read", "const { CONTROL } = this.env;"],
+  ])("sees %s of CONTROL outside the gate's one hand-off", (_what, line) => {
+    const sources = new Map(workerSources());
+    sources.set("owner/src/extra.ts", `class X { f() { ${line} } }`);
+    expect(controlUses(sources)).not.toEqual(controlUses(workerSources()));
+  });
+
+  it("sees a write through the gate's store, however it is spelled", () => {
+    for (const line of ["this.#store.put('c:control', '{}');",
+                        "this.#store[\"delete\"]('c:control');",
+                        "const { list } = this.#store;"]) {
+      expect(storeWrites(`class G { f() { ${line} } }`), line).not.toEqual([]);
+    }
   });
 
   it("sets the platform's subrequests per invocation explicitly", () => {
