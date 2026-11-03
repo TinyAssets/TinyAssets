@@ -17,6 +17,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 LOCK = "platform/owner/migrations.json"
 BASE = os.environ.get("MIGRATION_LOCK_BASE", "origin/main")
@@ -65,3 +67,6 @@ def test_an_edited_pin_is_refused_with_the_migration_it_pins() -> None:
     # Before the first deploy, migrations may still change in place.
     assert problems({"first_deploy": None, "deployed": []},
                     {"first_deploy": first, "deployed": ["e" * 64]}) == []
+
+
+pytestmark = pytest.mark.verifies('clean-sheet-platform:A deployed migration is never edited')
