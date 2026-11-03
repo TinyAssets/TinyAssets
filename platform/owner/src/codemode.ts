@@ -13,7 +13,7 @@
  *   caller's grant, its profile and the owner's switch.
  * - **No stub is held:** each execution's `remote()` calls `HOOKS.codemodeExecute` with a
  *   name of its own, which resolves when the VM has stopped.
- * - **When:** only while the owner's policy turns it on (`hooks.codemode`, off by default).
+ * - **When:** only while the owner's policy turns it on (`hooks.codemode`, on by default, `HOOK_DEFAULTS`).
  * - **How long:** `CODEMODE_TIMEOUT_MS` of wall time, tool calls included, and the hooks
  *   Worker's interrupt budget of compute between them; the tests pass smaller bounds.
  */

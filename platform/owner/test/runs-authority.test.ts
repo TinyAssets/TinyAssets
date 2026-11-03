@@ -333,8 +333,8 @@ describe("a client's sandbox's files (review round 2, M2)", () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", await keyed(r));
     await defineAgent(r.stub, r.bind(), "other", SIGNED_IN);
-    await r.stub.fileMkdir(r.bind(), { path: "/workspace/skills", expected_etag: null });
-    await r.stub.fileWrite(r.bind(), { path: "/workspace/skills/s.md", expected_etag: null,
+    await r.stub.fileMkdir(r.session(), { path: "/workspace/skills", expected_etag: null });
+    await r.stub.fileWrite(r.session(), { path: "/workspace/skills/s.md", expected_etag: null,
                                        content: text("a skill") });
     await r.stub.fileWrite(r.bind(), { path: "/workspace/notes.txt", expected_etag: null,
                                        content: text("the owner's") });
@@ -374,7 +374,7 @@ describe("a client's sandbox's readable set (review round 3, M1)", () => {
     const file = await keyed(r);
     await defineAgent(r.stub, r.bind(), "main", file);
     await defineAgent(r.stub, r.bind(), "other", file);
-    await r.stub.fileWrite(r.bind(), { path: "/workspace/agents/other/AGENTS.md",
+    await r.stub.fileWrite(r.session(), { path: "/workspace/agents/other/AGENTS.md",
                                        expected_etag: null, content: text("other's rules") });
     // A converse-only client, on both agents.
     const client = r.bind({ origin: MUSE, source: MCP, authenticated_at: signedIn() });

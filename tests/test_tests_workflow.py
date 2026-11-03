@@ -519,6 +519,28 @@ def test_required_tests_cannot_decline_to_report() -> None:
         f"{condition!r}: without it a failed shard SKIPS the required check, "
         f"and protection treats skipped as SUCCESS"
     )
+    # The platform's jobs (ADR-032's TypeScript workspace and the owner app's
+    # browser test) gate through the aggregate, on every event: each is in its
+    # `needs`, carries no `if:` of its own (so it runs on every event the
+    # workflow does), and one unconditional step fails unless each result is
+    # exactly success -- skipped or cancelled included. Without this a red
+    # platform job merged, since only `required-tests` is the protected context.
+    agg = wf["jobs"]["required-tests"]
+    agg_needs = agg.get("needs")
+    agg_needs = [agg_needs] if isinstance(agg_needs, str) else list(agg_needs or [])
+    platform = {"platform-tests": "PLATFORM_RESULT", "platform-app": "APP_RESULT"}
+    for job in platform:
+        assert job in agg_needs, f"{job} must be in required-tests' needs: {agg_needs}"
+        assert "if" not in wf["jobs"][job], f"{job} must run on every event, with no `if:`"
+    gate = [s for s in agg["steps"]
+            if all(f"needs.{job}.result" in str(s.get("env", {})) for job in platform)]
+    assert len(gate) == 1, "one step must read both platform jobs' results"
+    step = gate[0]
+    assert "if" not in step, "the platform gate must run on every event, unconditionally"
+    for job, var in platform.items():
+        assert step["env"][var] == f"${{{{ needs.{job}.result }}}}", step["env"]
+        assert f'"${var}" != success' in str(step["run"]), step["run"]
+    assert "exit 1" in str(step["run"])
     # The heavy run happens ONCE, on the merge-group commit (founder
     # 2026-09-30: "cut the double CI run in the merge queue"). Shards may skip
     # on exactly one event -- the pull request -- and on nothing else, so the

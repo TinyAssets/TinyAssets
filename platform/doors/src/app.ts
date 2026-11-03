@@ -40,15 +40,25 @@
  *   key runs, which credentials an engine takes, why one is unwired), so the app's connect
  *   screen is the records' data, never a list of its own.
  * - `tools`: the MCP door's table, each tool's name and title (the owner's `custom` choice).
+ * - `capabilities`: the capabilities an agent's runs and a key's scopes hold (one list, the
+ *   grants' own), each in plain words, so the app's agent and key forms are the object's.
  * - `tools/<name>`: the owner calling one tool of the MCP door's table (`tools.ts`) as
  *   itself, the same doors and fields an outside client's call takes, held by the object to
- *   the owner's own authority.
+ *   the owner's own authority. **Which need the session** (app review M1): every change to
+ *   the owner's agent definitions (`OWNER_TREES`: `file_mkdir`, `file_remove`, `file_rename`,
+ *   `file_restore` there, as `files/write`), which the object takes only in the owner's live
+ *   session on every route alike, since an agent's files are its instructions and authority.
+ *   The rest (collections, other files, digests, runs, `code`, whose script calls are held
+ *   the same way) change no agent's authority, so the owner's token suffices, as it does for
+ *   a full-mode API key.
  * - `signin/start`, `signin/code`, `signin/cancel`, `signin/list` (slice SIGNIN): the
  *   vendor's own sign-in (or sign-out) inside the owner's own sandbox or one client's, its
  *   prompt watched on the app socket by the sign-in's id (`agent/socket-ticket` takes it as
  *   its `conversation_id`), a pasted code handed back, a sign-in stopped, and the sign-ins in
  *   progress with each engine's presence.
  * - `runs` (slice SIGNIN): the owner's past runs, newest first, a page at a time.
+ *
+ * Every answer but a socket's upgrade carries `SURFACE_HEADERS` (nosniff, a CSP of none).
  * - `agent/submit`, `agent/run`, `agent/status`, `agent/cancel`: the run doors (slice R),
  *   the same doors `converse`, `run_graph`, `run_status` and `run_cancel` call for an
  *   outside client; the control record's tier numbers ride the binding (`withTiers`).
@@ -86,6 +96,7 @@ import type { Sources } from "./sources";
 import { callDoor, refusal, toolTable } from "./tools";
 import type { ValidatedAccessToken } from "@cloudflare/workers-oauth-provider";
 
+import { CAPABILITY_WORDS, RUN_CAPABILITIES } from "../../owner/src/agent-file";
 import { SOCKET_FAILED, TICKET_REFUSED } from "../../owner/src/socket-shape";
 import {
   callbackSecret, callbackUrl, follows, kindNamed, subscriptionId, wakeKinds,
@@ -95,6 +106,27 @@ export const OUTSIDE_CREDENTIAL = "an outside credential never reaches the owner
 
 function json(status: number, body: unknown, headers: HeadersInit = {}): Response {
   return Response.json(body, { status, headers: { "Cache-Control": "no-store", ...headers } });
+}
+
+/**
+ * Every owner-surface answer but the socket's upgrade carries these: JSON is never sniffed
+ * into anything else, and no answer runs or frames anything if opened as a page.
+ */
+export const SURFACE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+  "X-Content-Type-Options": "nosniff",
+  "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+});
+
+function surfaced(answer: Response): Response {
+  if (answer.status === 101) {
+    return answer;
+  }
+  const headers = new Headers(answer.headers);
+  for (const [name, value] of Object.entries(SURFACE_HEADERS)) {
+    headers.set(name, value);
+  }
+  return new Response(answer.body, { status: answer.status, statusText: answer.statusText,
+                                     headers });
 }
 
 function failure(status: number, message: string): Response {
@@ -293,6 +325,8 @@ const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
     json(200, await stub.policyWrite(binding, request as never)),
   "grants": (_env, { binding, stub }, request) => read(request, () => stub.grantList(binding)),
   "grants/set": grantSet,
+  "capabilities": (_env, _owner, request) => read(request, async () => ({
+    capabilities: RUN_CAPABILITIES.map((id) => ({ id, words: CAPABILITY_WORDS[id] })) })),
   "tools": (_env, _owner, request) => read(request, async () => ({
     tools: toolTable().map(({ name, title }) => ({ name, title })) })),
   "files/read": fileRead,
@@ -404,6 +438,11 @@ async function ownerToken(env: DoorsEnv, token: string | null) {
 }
 
 export async function serveApp(request: Request, env: DoorsEnv, sources: Sources):
+    Promise<Response> {
+  return surfaced(await surface(request, env, sources));
+}
+
+async function surface(request: Request, env: DoorsEnv, sources: Sources):
     Promise<Response> {
   if (new URL(request.url).pathname.slice(OWNER_SURFACE.length) === SOCKET_PATH) {
     return socketUpgrade(request, env);  // its credential is its ticket, never a bearer

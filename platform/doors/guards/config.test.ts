@@ -54,6 +54,9 @@ const KEYS: ReadonlySet<string> = new Set([
   "preview_urls", "vars", "durable_objects", "services", "kv_namespaces", "secrets",
   "queues", "assets",
 ]);
+/** The owner app's files, served only through the Worker (`src/pages.ts`). */
+const ASSETS = Object.freeze({ directory: "./app", binding: "ASSETS", run_worker_first: true,
+                               html_handling: "none", not_found_handling: "none" });
 /**
  * The doors' one queue: the consumer of the sandbox line's ring queue (slice S,
  * `src/ring.ts`), which turns `{owner}` into that owner's `sandboxRung` and nothing else.
@@ -61,9 +64,6 @@ const KEYS: ReadonlySet<string> = new Set([
  */
 const QUEUES = Object.freeze({ consumers: Object.freeze([
   Object.freeze({ queue: "tinyassets-sandbox-ring" })]) });
-/** The owner app's files, served only through the Worker (`src/pages.ts`). */
-const ASSETS = Object.freeze({ directory: "./app", binding: "ASSETS", run_worker_first: true,
-                               html_handling: "none", not_found_handling: "none" });
 /** The doors' one secret, the sandbox tokens' routing key (`routing-mac.ts`), and the owner's. */
 const SECRETS = Object.freeze({ required: Object.freeze(["ROUTING_MAC_KEY"]) });
 /** The doors' two services: the gateway's connect and egress entrypoints, and what each serves. */

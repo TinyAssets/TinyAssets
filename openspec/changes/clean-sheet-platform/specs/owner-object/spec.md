@@ -284,15 +284,26 @@ An agent's wake settings SHALL be the owner's own, stored per agent and off by d
 - **THEN** the change is refused, the agent's limits are unchanged, and a refusal receipt is left
 
 ### Requirement: The object checks the owner's session itself
-An agent's register, disable or delete, a policy write, a wake-limits change and a grant set (a rename included) SHALL be served only when the binding's session cookie opens a live session row in the object's own store. The object SHALL mint each session's cookie, keep only its hash, and open a session only for the owner itself from a verified sign-in at most 600 s old. A stored hash, another owner's cookie or an expired or closed session SHALL never be a proof.
+An agent's register, disable, delete or file change, a policy write, a wake-limits change and a grant set (a rename included) SHALL be served only when the binding's session cookie opens a live session row in the object's own store. The object SHALL mint each session's cookie, keep only its hash, and open a session only for the owner itself from a verified sign-in at most 600 s old. A stored hash, another owner's cookie or an expired or closed session SHALL never be a proof.
 
 #### Scenario: A session that has expired
 - **WHEN** the owner writes its policy with the cookie of a session whose row has expired
 - **THEN** the write is refused with "interactive owner session required" and the generation is unchanged
 
+#### Scenario: A leaked first-party token rewrites an agent's file
+- **WHEN** the owner's token, with no session, writes `agent.json` or removes a file under `/workspace/agents`
+- **THEN** it is refused with "interactive owner session required", receipted, and the file is unchanged
+
 #### Scenario: The stored hash offered as the proof
 - **WHEN** a call presents the hash of the owner's live cookie as its session
 - **THEN** it is refused as having no session
+
+### Requirement: The owner changes its agents' files only in its session
+The owner's own write, upload, mkdir, rename, remove or restore under `OWNER_TREES` (an agent's instructions, skills and `agent.json`, its authority) SHALL be a widening on every route alike: served only in the owner's live session and receipted when refused. An outside client SHALL be refused there whatever its grant.
+
+#### Scenario: The owner's token alone renames an agent's folder
+- **WHEN** the owner's first-party token, with no session, renames `/workspace/agents/main`
+- **THEN** it is refused with "interactive owner session required" and the agent stands
 
 ### Requirement: A refused widening leaves a refusal receipt
 A widening refused after its call reached the owner's account SHALL leave a `refusal` receipt in the policy receipts, holding the digest of what was asked and never the session proof, written after the refused change rolled back. Owner changes, agent proposals and refusals SHALL be kept and listed in buckets apart.
@@ -983,7 +994,7 @@ A call carrying a run's binding (the egress token, the run its path names, and t
 - **THEN** the run is settled `failed` (`revoked`), its next call is refused `run_ended`, its tier slot is free and its cancel reaches the sandbox
 
 ### Requirement: A run settles once, from its runner's end
-The runner's frames SHALL be read by the run's record's matchers in the object, never trusted as the VM framed them: each new frame (its `seq` past the last) kept as the run's session id, result (cut to 16 KiB, marked) and first error, renewing the lease. The runner's end SHALL settle the run `succeeded` (exit 0, no error event) or `failed` (`exit`, `engine_error`, or `cancelled` after a cancel), and a run whose lease lapsed SHALL settle `unknown` (`lost`), never replayed. A live run whose own heartbeat (the runner's last post for it) lapsed for the lease's life SHALL settle `unknown` (`lost`) too, though another run keeps the lease. A settle SHALL delete the run grant, end the run's streams, give the lease back when no live run holds it, and prune the receipts to the newest `RUNS_KEPT` by when they settled (as every write of a run does), never the one settling nor a live or waiting one, so the rows stay within the guard's term however runs are queued and cancelled. A runner's events post SHALL be at most `EVENTS_BODY_MAX` bytes, `EVENT_FRAMES_MAX` frames and `FRAME_UNITS_MAX` units a frame, so the object holds it within the relay's memory budget. The object SHALL hold at most `EVENTS_IN_FLIGHT` posts at once, whatever the tier, one more answered `events_busy` for its runner to post again.
+The runner's frames SHALL be read by the run's record's matchers in the object, never trusted as the VM framed them: each new frame (its `seq` past the last) kept as the run's session id (1 to 256 printable characters, no space; any other refused as the run's fixed error `session_id_refused`, its frame still relayed and the id never kept), result (cut to 16 KiB, marked) and first error, renewing the lease. The runner's end SHALL settle the run `succeeded` (exit 0, no error event) or `failed` (`exit`, `engine_error`, or `cancelled` after a cancel), and a run whose lease lapsed SHALL settle `unknown` (`lost`), never replayed. A live run whose own heartbeat (the runner's last post for it) lapsed for the lease's life SHALL settle `unknown` (`lost`) too, though another run keeps the lease. A settle SHALL delete the run grant, end the run's streams, give the lease back when no live run holds it, and prune the receipts to the newest `RUNS_KEPT` by when they settled (as every write of a run does), never the one settling nor a live or waiting one, so the rows stay within the guard's term however runs are queued and cancelled. A runner's events post SHALL be at most `EVENTS_BODY_MAX` bytes, `EVENT_FRAMES_MAX` frames and `FRAME_UNITS_MAX` units a frame, so the object holds it within the relay's memory budget. The object SHALL hold at most `EVENTS_IN_FLIGHT` posts at once, whatever the tier, one more answered `events_busy` for its runner to post again.
 
 #### Scenario: A runner lost
 - **WHEN** a run's lease lapses with no heartbeat

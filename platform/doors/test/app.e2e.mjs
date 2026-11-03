@@ -10,19 +10,20 @@
 // test OAuth source's authorization server (`auth.test`, which approves). Any other request
 // is refused and fails the test: the app makes no third-party request.
 //
-// Run: `npm run test:app` in platform/doors. Playwright and Chromium are the host's own
-// (PLAYWRIGHT_BROWSERS_PATH); nothing is installed.
+// Run: `npm run test:app` in platform/doors. Playwright is the version the platform lockfile
+// pins, and its Chromium must be installed (`npx playwright install chromium`, or the host's
+// PLAYWRIGHT_BROWSERS_PATH): with either missing the run fails, never skips.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
+import { chromium } from "playwright";
 import ts from "typescript";
 import { unstable_getMiniflareWorkerOptions } from "wrangler";
 
@@ -37,16 +38,6 @@ const WHO = `user_${randomBytes(16).toString("hex")}`;
 const TIERS = { free: { runs: 5, storage_bytes: 25_000_000_000 },
                 paid: { runs: 10, storage_bytes: 250_000_000_000 } };
 const OPEN = { outside: "on", ordinary: "all", canary: [], inbound: false, tiers: TIERS };
-
-/** Playwright: this package's, or the host's global one (never installed here). */
-function playwright() {
-  try {
-    return createRequire(import.meta.url)("playwright");
-  } catch {
-    const root = execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim();
-    return createRequire(join(root, "noop.js"))("playwright");
-  }
-}
 
 function config(dir) {
   return ts.parseConfigFileTextToJson("wrangler.jsonc",
@@ -180,7 +171,7 @@ before(async () => {
     .filter(([name]) => !/proxy/i.test(name)));
   const local = ["tinyassets.io", "egress.tinyassets.io", "upstream.test", "auth.test"]
     .map((host) => `MAP ${host}:443 127.0.0.1:${port}`).join(", ");
-  browser = await playwright().chromium.launch({ env, args: [
+  browser = await chromium.launch({ env, args: [
     "--no-proxy-server",
     // Our hosts and the two hand-off hosts to the local workerd; nothing else resolves.
     `--host-resolver-rules=${local}, MAP * ~NOTFOUND`,
@@ -189,7 +180,7 @@ before(async () => {
   context = await browser.newContext({ serviceWorkers: "block", ignoreHTTPSErrors: true });
   context.on("request", (request) => seen.push({
     url: request.url(), navigation: request.isNavigationRequest(), type: request.resourceType(),
-    referer: request.headers()["referer"] ?? null }));
+    referer: request.headers()["referer"] ?? null, main: request.frame().page() === page }));
   context.on("requestfailed", (request) => {
     if (!request.url().startsWith(`${ORIGIN}/`)) {
       outside.push(request.url());
@@ -234,17 +225,28 @@ after(async () => {
   await mf?.dispose();
 });
 
+const LEASE_TOKENS = new Map();
+
 /** The starts the owner's object asked of its recording sandbox. */
 async function starts() {
-  return (await mf.dispatchFetch(`https://e2e.internal/starts/${WHO}`)).json();
+  const all = await (await mf.dispatchFetch(`https://e2e.internal/starts/${WHO}`)).json();
+  // A lease's tokens come only with the start that opened it; later runs on it reuse them.
+  for (const start of all) {
+    if (start.tokens !== null) {
+      LEASE_TOKENS.set(start.lease.lease_id, start.tokens);
+    }
+  }
+  return all;
 }
 
 /** The runner's post of its run's events, as the sandbox would send it. */
 async function report(start, body) {
+  await starts();
+  const tokens = LEASE_TOKENS.get(start.lease.lease_id);
   const answer = await mf.dispatchFetch(`${EGRESS}/r/${start.run}/events`, {
     method: "POST", body: JSON.stringify(body),
-    headers: { "Content-Type": "application/json", "x-ta-sandbox": start.tokens.egress_token,
-               "x-ta-network-generation": "1", "x-ta-runner": start.tokens.runner_token } });
+    headers: { "Content-Type": "application/json", "x-ta-sandbox": tokens.egress_token,
+               "x-ta-network-generation": "1", "x-ta-runner": tokens.runner_token } });
   assert.equal(answer.status, 200, await answer.clone().text());
   return answer.json();
 }
@@ -315,6 +317,7 @@ test("the owner makes an agent, starts a run and sees its live frames and its re
   const connection = form.getByLabel(/^API key connection/);
   const groq = await connection.locator("option", { hasText: "groq" }).getAttribute("value");
   await connection.selectOption(groq);
+  await form.getByRole("checkbox", { name: "Read your files" }).check();
   await form.getByRole("button", { name: "Make the agent" }).click();
   await page.waitForURL(`${ORIGIN}/app#agents/main`);
   await page.getByRole("link", { name: "agent.json" }).waitFor();
@@ -418,6 +421,7 @@ test("every screen opens on the doors' answers, and says plainly what is not her
   // A key, shown once.
   await page.goto(`${ORIGIN}/app#keys`);
   await page.getByLabel(/^Name/).fill("laptop");
+  await page.getByRole("checkbox", { name: "Read your files" }).check();
   await page.getByRole("button", { name: "Make the key" }).click();
   assert.match(await page.locator(".secret").innerText(), /^ta_key_[0-9a-f]{16}_/);
   // Code mode off, in the owner's session.
@@ -428,20 +432,314 @@ test("every screen opens on the doors' answers, and says plainly what is not her
   await page.locator(".message.good", { hasText: "Saved." }).waitFor();
   assert.equal(await page.locator("section", { hasText: "Code mode" }).getByRole("checkbox")
     .isChecked(), false);
-  // No main agent has joined, so no wake-up is offered; the export needs slice P's door:
-  // said, never faked.
+  // No main agent has joined, so no wake-up is offered.
   await page.goto(`${ORIGIN}/app#apps`);
   await page.getByText("No main agent has joined yet.").waitFor();
+  // "Every tool" holds every pick on, fixed, so no choice is silently dropped (review L5).
+  const picks = page.locator("section", { hasText: "Tools your connected apps see" });
+  assert.equal(await picks.getByRole("checkbox", { name: /Every tool/ }).isChecked(), true);
+  assert.equal(await picks.getByRole("checkbox", { name: "List agents" }).isDisabled(), true);
+  await picks.getByRole("checkbox", { name: /Every tool/ }).uncheck();
+  assert.equal(await picks.getByRole("checkbox", { name: "List agents" }).isDisabled(), false);
+  // The doors this app knows are missing say so before anything is clicked, with no button;
+  // past runs are said plainly under Talk (review M3).
   await page.goto(`${ORIGIN}/app#data`);
-  await page.getByRole("button", { name: "Export everything" }).click();
-  await page.locator(".message.bad", { hasText: "not here yet" }).waitFor();
+  await page.getByText(/^Exporting everything you hold is not here yet/).waitFor();
+  assert.equal(await page.getByRole("button", { name: /Export/ }).count(), 0);
+  await page.goto(`${ORIGIN}/app#agents/main`);
+  await page.getByText(/not kept across reloads/).waitFor();
+});
+
+// -- The review's attacks, kept as tests (slice APP review) ---------------------------------
+
+const P_IMG = `<img src=x onerror="window.__xss=(window.__xss||0)+1">`;
+const P_SVG = `"><svg onload="window.__xss=(window.__xss||0)+1"></svg>`;
+const P_SCRIPT = `</textarea><script>window.__xss=(window.__xss||0)+1</script>`;
+const PAYLOAD = `${P_IMG}${P_SVG}${P_SCRIPT}`;
+
+/** One owner-surface call from the page itself: its token, and its cookie. */
+async function api(path, body = {}) {
+  return page.evaluate(async ([p, b]) => {
+    const held = JSON.parse(sessionStorage.getItem("ta.app.tokens"));
+    const answer = await fetch(`/app/api/${p}`, { method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${held.access_token}` },
+      body: JSON.stringify(b) });
+    return { status: answer.status, body: await answer.json().catch(() => null) };
+  }, [path, body]);
+}
+
+/** One owner-surface call with the token alone: no session cookie, as a leaked token. */
+async function bare(path, body) {
+  const token = await page.evaluate(() =>
+    JSON.parse(sessionStorage.getItem("ta.app.tokens")).access_token);
+  const answer = await mf.dispatchFetch(`${ORIGIN}/app/api/${path}`, { method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`,
+               Origin: ORIGIN, "Sec-Fetch-Site": "same-origin" },
+    body: JSON.stringify(body) });
+  return { status: answer.status, body: await answer.json().catch(() => null) };
+}
+
+test("pages.ts serves only its names: traversal, encodings and prototype names are 404",
+     async () => {
+  const probes = ["/app/static/%2e%2e/index.html", "/app/static/..%2findex.html",
+    "/app/static/..%2f..%2fwrangler.jsonc", "/app/static/%2e%2e%2f%2e%2e%2fsrc%2fpages.ts",
+    "/app/static/app.js%00", "/app/static/APP.JS", "/app/static/__proto__",
+    "/app/static/constructor", "/app/static/hasOwnProperty", "/app/static/toString",
+    "/app//static/app.js", "/app/static//app.js", "/app/static/%61pp.js", "/app/signed-in/",
+    "/APP", "/wrangler.jsonc", "/app.css", "/index.html", "/app/", "/app/static/app.js;x",
+    "/app/static/.%2e/connected.html", "/app/static/app.js%2f", "/app/static/%5c..%5cindex.html",
+    "/app/__proto__", "/app/static/signed-in.html", "/app/static/index.html"];
+  for (const path of probes) {
+    const answer = await mf.dispatchFetch(`${ORIGIN}${path}`);
+    const text = await answer.text();
+    assert.equal(answer.status, 404, path);
+    assert.ok(!/compatibility_date|import type/.test(text), `${path} served source`);
+    if (/^\/app(?:\/|$)/.test(path)) {
+      assert.ok(answer.headers.get("Content-Security-Policy"), `${path} 404 without the CSP`);
+    }
+  }
+  assert.equal((await mf.dispatchFetch(`${ORIGIN}/app/static/app.js?x=1`)).status, 200);
+});
+
+test("the CSP refuses inline script, inline style, HTML sinks, string code and javascript:",
+     { timeout: 60_000 }, async () => {
+  await page.goto(`${ORIGIN}/app#home`);
+  await page.getByRole("heading", { name: "Home" }).waitFor();
+  const tried = await page.evaluate(async () => {
+    const out = {};
+    const attempt = (name, act) => {
+      try {
+        act();
+        out[name] = "ran";
+      } catch (e) {
+        out[name] = `threw ${e.name}`;
+      }
+    };
+    const s = document.createElement("script");
+    attempt("textContent", () => { s.textContent = "window.__inline = 1"; });
+    document.head.append(s);
+    attempt("insertAdjacentHTML", () =>
+      document.body.insertAdjacentHTML("beforeend", "<img src=x onerror='window.__xss=99'>"));
+    attempt("innerHTML", () => { document.getElementById("main").innerHTML = "<b>x</b>"; });
+    const b = document.createElement("button");
+    attempt("onclick", () => b.setAttribute("onclick", "window.__xss=98"));
+    document.body.append(b);
+    b.click();
+    const d = document.createElement("div");
+    d.setAttribute("style", "color: rgb(1, 2, 3)");
+    document.body.append(d);
+    out.style = getComputedStyle(d).color;
+    const a = document.createElement("a");
+    a.href = "javascript:window.__xss=97";
+    document.body.append(a);
+    a.click();
+    attempt("setTimeoutString", () => setTimeout("window.__xss=96", 0));
+    // Outside the inspector's own evaluation, which lifts the eval block for itself.
+    await new Promise((resolve) => setTimeout(() => {
+      attempt("eval", () => (0, eval)("1"));
+      attempt("Function", () => new Function("return 1")());
+      resolve();
+    }, 0));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    out.inline = window.__inline ?? null;
+    out.xss = window.__xss ?? null;
+    return out;
+  });
+  assert.equal(tried.inline, null);
+  assert.equal(tried.xss, null);
+  assert.notEqual(tried.style, "rgb(1, 2, 3)");
+  for (const sink of ["textContent", "insertAdjacentHTML", "innerHTML", "onclick",
+                      "setTimeoutString", "eval", "Function"]) {
+    assert.match(tried[sink], /^threw/, sink);
+  }
+  // The console's reports of those refusals are this test's own, not the app's.
+  errors.splice(0);
+});
+
+test("no payload runs through file names, file text, frames, results, posts or the hash",
+     { timeout: 180_000 }, async () => {
+  const dialogs = [];
+  const onDialog = (dialog) => {
+    dialogs.push(dialog.message());
+    dialog.dismiss();
+  };
+  page.on("dialog", onDialog);
+  for (const path of [`/workspace/agents/main/${P_IMG}.md`, `/workspace/${P_SVG}.md`]) {
+    assert.equal((await api("files/write", { path, expected_etag: "", text: PAYLOAD })).status,
+                 200, path);
+  }
+  const agentsMd = (await api("files/read", { path: "/workspace/agents/main/AGENTS.md" })).body;
+  assert.equal((await api("files/write", { path: "/workspace/agents/main/AGENTS.md",
+    expected_etag: agentsMd.entry.etag, text: PAYLOAD })).status, 200);
+  await page.goto(`${ORIGIN}/app#agents/main`);
+  await page.reload();
+  await page.getByRole("link", { name: "AGENTS.md" }).click();
+  await page.locator("textarea.editor").waitFor();
+  assert.equal(await page.locator("textarea.editor").inputValue(), PAYLOAD);
+  await page.getByRole("link", { name: `${P_IMG}.md` }).click();
+  await page.locator("textarea.editor").waitFor();
+  // A run whose frames and result are the payload, and one frame with no event (review L2).
+  const before = (await starts()).length;
+  await page.getByPlaceholder("Say something to main").fill(PAYLOAD);
+  await page.getByRole("button", { name: "Send" }).click();
+  let start;
+  for (let i = 0; i < 100 && start === undefined; i++) {
+    start = (await starts())[before];
+    if (start === undefined) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  assert.ok(start, "the run started");
+  await report(start, { frames: [
+    { seq: 1, at: 1, event: { type: "session", id: "<img/src=x/onerror=window.__xss=1>" } },
+    { seq: 2, at: 2, event: { type: PAYLOAD, tool: PAYLOAD } },
+    { seq: 3, at: 3, event: PAYLOAD }, { seq: 4, at: 4, event: null }] });
+  await page.locator(".frame", { hasText: "onerror" }).first().waitFor();
+  await report(start, { frames: [{ seq: 5, at: 5, event: { type: "message_end",
+    message: { role: "assistant", content: PAYLOAD } } }], end: { exit_code: 0 } });
+  await page.locator(".said.agent", { hasText: "onerror" }).waitFor();
+  // The view opens again on its kept frames, the eventless one among them.
+  await page.goto(`${ORIGIN}/app#home`);
+  await page.goto(`${ORIGIN}/app#agents/main`);
+  await page.locator(".frame", { hasText: "onerror" }).first().waitFor();
+  // A room post, and the listings of the payload names; the hash as an agent and a folder.
+  await page.goto(`${ORIGIN}/app#rooms`);
+  await page.getByLabel(/^Message/).fill(PAYLOAD);
+  await page.getByRole("button", { name: "Post" }).click();
+  await page.locator(".message.good", { hasText: "Posted." }).waitFor();
+  await page.goto(`${ORIGIN}/app#data`);
+  await page.getByRole("heading", { name: "Files in /workspace" }).waitFor();
+  for (const hash of [`#agents/${encodeURIComponent(PAYLOAD)}`,
+                      `#data/${encodeURIComponent(PAYLOAD)}`, `#agents/${PAYLOAD}`]) {
+    await page.goto(`${ORIGIN}/app${hash}`);
+    await page.locator("main p.muted", { hasText: "Loading" }).waitFor({ state: "detached" });
+  }
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.equal(await page.evaluate(() => window.__xss ?? 0), 0, "a payload ran");
+  assert.deepEqual(dialogs, []);
+  page.off("dialog", onDialog);
+});
+
+test("a malformed hash opens home, with no page error (review L1)", { timeout: 30_000 },
+     async () => {
+  await page.goto(`${ORIGIN}/app#data`);
+  await page.getByRole("heading", { name: "Your data" }).waitFor();
+  await page.goto(`${ORIGIN}/app#agents/%E0%A4%A`);
+  await page.getByRole("heading", { name: "Home" }).waitFor();
+  assert.deepEqual(errors, []);
+});
+
+test("the app refuses to be framed", { timeout: 30_000 }, async () => {
+  const evil = await context.newPage();
+  await evil.route("https://evil.test/**", (route) => route.fulfill({ status: 200,
+    contentType: "text/html", body: `<iframe src="${ORIGIN}/app"></iframe>` +
+      `<iframe src="${ORIGIN}/app/connected"></iframe>` }));
+  await evil.goto("https://evil.test/");
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  for (const frame of evil.frames().slice(1)) {
+    const rendered = await frame.evaluate(() => document.getElementById("main") !== null
+      || document.getElementById("status") !== null).catch(() => false);
+    assert.equal(rendered, false, frame.url());
+  }
+  await evil.close();
+});
+
+test("no cross-site post changes anything (CSRF)", { timeout: 60_000 }, async () => {
+  const policy = await api("policy");
+  const generation = policy.body.generation;
+  const evil = await context.newPage();
+  await evil.route("https://evil.test/**", (route) => route.fulfill({ status: 200,
+    contentType: "text/html", body: "<p>hi</p>" }));
+  await evil.goto("https://evil.test/");
+  const body = JSON.stringify({ expected_generation: generation,
+                                policy: { ...policy.body.policy, hooks: { codemode: true } } });
+  await evil.evaluate(async ([origin, b]) => {
+    for (const init of [
+      { mode: "no-cors", credentials: "include", headers: { "Content-Type": "text/plain" } },
+      { mode: "cors", credentials: "include", headers: { "Content-Type": "application/json" } }]) {
+      await fetch(`${origin}/app/api/policy/write`, { method: "POST", body: b, ...init })
+        .catch(() => undefined);
+    }
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.enctype = "text/plain";
+    form.action = `${origin}/app/api/policy/write`;
+    const input = document.createElement("input");
+    input.name = b.slice(0, -1);
+    input.value = "}";
+    form.append(input);
+    document.body.append(form);
+    form.submit();
+  }, [ORIGIN, body]);
+  await evil.waitForLoadState("load").catch(() => undefined);
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  await evil.close();
+  assert.equal((await api("policy")).body.generation, generation);
+});
+
+test("the return pages exchange no stranger's code and send no one off-site", { timeout: 60_000 },
+     async () => {
+  const probe = await context.newPage();
+  const asked = [];
+  probe.on("request", (r) => asked.push({ url: r.url(), referer: r.headers()["referer"] ?? null }));
+  await probe.goto(`${ORIGIN}/app/signed-in?code=stolen&state=attacker&iss=` +
+                   encodeURIComponent("https://evil.test"));
+  await probe.locator("#status", { hasText: "not started in this tab" }).waitFor();
+  assert.equal(probe.url(), `${ORIGIN}/app/signed-in`);
+  assert.ok(!asked.some((r) => r.url.includes("/oauth/token")), "a stranger's code was exchanged");
+  const sub = asked.filter((r) => r.url.includes("/app/static/"));
+  assert.ok(sub.length > 0 && sub.every((r) => !r.referer));
+  await probe.close();
+  const from = seen.length;
+  await page.goto(`${ORIGIN}/app/connected#state=forged&code=forged-code&redirect_uri=` +
+                  encodeURIComponent("https://evil.test/x"));
+  await page.locator("#status", { hasText: "not finished" }).waitFor();
+  assert.equal(page.url(), `${ORIGIN}/app/connected`);
+  assert.ok(!seen.slice(from).some((r) => r.url.startsWith("https://evil.test")));
+});
+
+test("a leaked token alone changes no agent's definition, and a missing door is a real 404 " +
+     "(review M1, M3)", { timeout: 60_000 }, async () => {
+  await page.goto(`${ORIGIN}/app#home`);
+  await page.getByRole("heading", { name: "Home" }).waitFor();
+  const read = await bare("files/read", { path: "/workspace/agents/main/agent.json" });
+  assert.equal(read.status, 200);
+  const widened = { ...JSON.parse(read.body.text),
+                    scopes: ["read_graph", "write_graph", "read_files", "write_files",
+                             "propose_policy", "converse", "run_graph"] };
+  const SESSION = { error: "interactive owner session required" };
+  const wrote = await bare("files/write", { path: "/workspace/agents/main/agent.json",
+    expected_etag: read.body.entry.etag, text: JSON.stringify(widened) });
+  assert.deepEqual([wrote.status, wrote.body], [403, SESSION]);
+  const removed = await bare("tools/file_remove", { path: "/workspace/agents/main/AGENTS.md",
+                                                    expected_etag: null, recursive: false });
+  assert.deepEqual([removed.status, removed.body], [403, SESSION]);
+  assert.equal((await bare("files/read", { path: "/workspace/agents/main/agent.json" }))
+    .body.entry.etag, read.body.entry.etag);
+  // The policy is the session's too; a revoke goes by grants/revoke alone.
+  const policy = await api("policy");
+  assert.equal((await bare("policy/write", { expected_generation: policy.body.generation,
+                                             policy: policy.body.policy })).status, 403);
+  // A name the table lacks is the doors' own 404, never a planned gap.
+  for (const name of ["__proto__", "constructor", "nope"]) {
+    assert.deepEqual(await api(`tools/${name}`), { status: 404, body: { error: "no such tool" } });
+  }
+  // An API key or an outside client's token never reaches the owner's surface.
+  for (const path of ["account", "policy", "files/read", "tools/file_list",
+                      "agent/doorbell/kinds", "sources", "tools", "capabilities"]) {
+    const answer = await mf.dispatchFetch(`${ORIGIN}/app/api/${path}`, { method: "POST",
+      headers: { "Content-Type": "application/json",
+                 Authorization: "Bearer ta_key_0123456789abcdef_x" }, body: "{}" });
+    assert.equal(answer.status, 403, path);
+  }
 });
 
 test("the app made no third-party request and threw nothing", () => {
   assert.deepEqual(errors, []);
   assert.deepEqual(outside, []);
-  const elsewhere = seen.filter((r) => !r.url.startsWith(`${ORIGIN}/`));
-  // Only the two hand-offs the owner is sent to, each a top-level navigation.
+  // The app's own tab: only the two hand-offs the owner is sent to leave the origin, each a
+  // top-level navigation (the attack tests' own pages are theirs).
+  const elsewhere = seen.filter((r) => r.main && !r.url.startsWith(`${ORIGIN}/`));
   for (const request of elsewhere) {
     assert.ok(request.navigation && request.type === "document", request.url);
     assert.ok(request.url.startsWith(`${UPSTREAM}/authorize?`)

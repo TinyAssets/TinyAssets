@@ -18,16 +18,21 @@ const SECTIONS = Object.freeze([
   ["data", "Your data"],
 ]);
 
-/** What an agent's runs may do, in plain words (`agent.json`'s `scopes`). */
-const ABILITIES = Object.freeze([
-  ["read_graph", "Read rooms, board and mail", true],
-  ["write_graph", "Post to rooms and the board", true],
-  ["read_files", "Read your files", true],
-  ["write_files", "Write your files", true],
-  ["propose_policy", "Propose changes to your settings", false],
-  ["converse", "Talk to your other agents", false],
-  ["run_graph", "Start your other agents' runs", false],
-]);
+/**
+ * The doors this app knows are not on the platform yet, each with its slice: only these say
+ * "not here yet", shown before anything is clicked. Any other missing door is a bug, and its
+ * refusal is shown as it came. Each entry goes when its door lands.
+ */
+const MISSING = Object.freeze({
+  export: "Exporting everything you hold is not here yet: its door is being built.",
+});
+
+/** What the Talk section holds: this tab's conversation; the rest is under Past runs. */
+const TALK_NOTE = "Only this tab's conversation is shown, and it is not kept across reloads: " +
+  "your past runs are under Past runs. Each engine's own transcript is kept in your files.";
+
+/** The credential of a subscription signed in inside the sandbox (its record's switch). */
+const SIGNIN_CREDENTIAL = "vendor_login_in_sandbox";
 
 const SESSION_NEEDED = "interactive owner session required";
 
@@ -44,10 +49,6 @@ function report(error) {
         h("button", { type: "button", onclick: () => signIn() }, "Sign in again"));
     return;
   }
-  if (error instanceof Refused && error.status === 404) {
-    say("This needs a part of the platform that is not here yet.", "bad");
-    return;
-  }
   if (error instanceof Refused && error.status === 503) {
     say(`TinyAssets is down for maintenance right now: ${error.message}`, "bad");
     return;
@@ -57,10 +58,17 @@ function report(error) {
 
 // -- Routing --------------------------------------------------------------------------
 
+/** Where the hash points; a hash that is not one of ours is home. */
 function place() {
   const [section, ...rest] = location.hash.slice(1).split("/");
   const known = SECTIONS.some(([id]) => id === section);
-  return { section: known ? section : "home", arg: rest.length > 0 ? decodeURIComponent(rest.join("/")) : null };
+  let arg = null;
+  try {
+    arg = rest.length > 0 ? decodeURIComponent(rest.join("/")) : null;
+  } catch {
+    return { section: "home", arg: null };
+  }
+  return { section: known ? section : "home", arg };
 }
 
 function signedOutView() {
@@ -156,23 +164,38 @@ async function agents(arg) {
   if (arg !== null) {
     return agent(arg);
   }
-  const [{ owner_agents: owned }, { sources }, { connections }] = await Promise.all([
-    call("tools/agents_list"), call("sources"), call("connections/list")]);
+  const [{ owner_agents: owned }, { sources }, { connections }, { capabilities }] =
+    await Promise.all([call("tools/agents_list"), call("sources"), call("connections/list"),
+                       call("capabilities")]);
   const live = owned.filter((a) => a.retired_at === null);
-  const engines = sources.filter((s) => s.credentials.length > 0 && s.unwired === null);
+  // Each engine's credentials are its record's; a subscription's only while its sign-in is
+  // switched on.
+  const usable = (record) => record.credentials.filter((kind) => kind !== SIGNIN_CREDENTIAL
+                                                       || record.signin?.enabled === true);
+  const engines = sources.filter((s) => s.unwired === null && usable(s).length > 0);
+  const signinOnly = sources.filter((s) => s.unwired === null && s.credentials.length > 0
+                                           && usable(s).length === 0);
   const name = h("input", { type: "text", placeholder: "main", autocomplete: "off" });
   const engine = h("select", {}, h("option", { value: "auto" },
     "Your strongest connected source"), engines.map((s) => h("option", { value: s.id },
     s.display_name)));
-  const credential = h("select", {},
-    h("option", { value: "" }, "Whichever the engine has"),
-    h("option", { value: "vendor_login_in_sandbox" }, "Your subscription, signed in inside your sandbox"),
-    h("option", { value: "api_key" }, "An API key you connected"));
+  const credential = h("select", {});
+  const words = { api_key: "An API key you connected",
+                  [SIGNIN_CREDENTIAL]: "Your subscription, signed in inside your sandbox" };
+  const credentials = () => {
+    const record = engines.find((s) => s.id === engine.value);
+    fill(credential, h("option", { value: "" }, "Whichever the engine has"),
+         (record === undefined ? [] : usable(record)).map((kind) =>
+           h("option", { value: kind }, words[kind] ?? kind)));
+  };
+  engine.addEventListener("change", credentials);
+  credentials();
   const connection = h("select", {}, h("option", { value: "" }, "None"),
     connections.filter((c) => c.status === "active").map((c) =>
       h("option", { value: c.connection }, `${c.display_name} (${c.source})`)));
-  const checks = ABILITIES.map(([id, label, on]) =>
-    h("label", {}, h("input", { type: "checkbox", value: id, checked: on }), label));
+  // What a run may hold, as the object lists it; none is chosen for the owner.
+  const checks = capabilities.map((c) =>
+    h("label", {}, h("input", { type: "checkbox", value: c.id }), c.words));
   const create = async () => {
     const chosen = name.value.trim();
     if (!AGENT_NAME.test(chosen)) {
@@ -188,11 +211,12 @@ async function agents(arg) {
     if (connection.value !== "") {
       file.connection = connection.value;
     }
-    await ensureDir("/workspace/agents");
-    await ensureDir(agentDir(chosen));
-    await writeNew(`${agentDir(chosen)}/agent.json`, `${JSON.stringify(file, null, 2)}\n`);
+    // The agent is its agent.json, so that file is written last, in one write: until it
+    // lands there is no agent, and a failure before it leaves only a folder and its notes.
+    await call("tools/file_mkdir", { path: agentDir(chosen), expected_etag: null });
     await writeNew(`${agentDir(chosen)}/AGENTS.md`,
                    `# ${chosen}\n\nWrite this agent's instructions here.\n`);
+    await writeNew(`${agentDir(chosen)}/agent.json`, `${JSON.stringify(file, null, 2)}\n`);
     location.hash = `#agents/${encodeURIComponent(chosen)}`;
   };
   fill(main,
@@ -208,6 +232,10 @@ async function agents(arg) {
            "AGENTS.md. This writes both; you change them later as files."),
          field("Name", name),
          field("Engine", engine, "What runs the agent: a provider's own app in your sandbox."),
+         signinOnly.length === 0 ? null : h("p", { class: "muted" }, "Signing in with a " +
+           `subscription is switched off for ${signinOnly.map((s) => s.display_name)
+             .join(", ")}, so ${signinOnly.length === 1 ? "it" : "they"} cannot run an ` +
+           "agent yet (Model sources says why)."),
          field("Runs on", credential),
          field("API key connection", connection, "Only for an agent that runs on an API key."),
          h("div", { class: "field" }, h("span", {}, "What its runs may do"),
@@ -227,7 +255,8 @@ function talkOf(name) {
 }
 
 function frameLine(frame) {
-  const event = typeof frame.event === "string" ? frame.event : JSON.stringify(frame.event);
+  const event = typeof frame.event === "string" ? frame.event
+    : String(JSON.stringify(frame.event) ?? "");
   return h("div", { class: "frame" }, h("b", {}, frame.kind ?? "event"),
            event.length > 600 ? `${event.slice(0, 600)}…` : event);
 }
@@ -331,6 +360,7 @@ async function agent(name) {
        h("h1", {}, name),
        h("section", {},
          h("h2", {}, "Talk"),
+         h("p", { class: "muted" }, TALK_NOTE),
          said, field("Message", message),
          h("div", { class: "row" }, action("Send", send, report), cancel),
          state,
@@ -595,13 +625,13 @@ async function sources() {
         location.assign(url);
       }, report));
     }
-    if (record.connect.includes("cli") && record.credentials.includes("vendor_login_in_sandbox")
+    if (record.connect.includes("cli") && record.credentials.includes(SIGNIN_CREDENTIAL)
         && record.signin !== null) {
       ways.push(signinPanel(record, presence.get(record.id) ?? null,
                             live.find((each) => each.engine === record.id
                                       && each.authority === "owner") ?? null));
     }
-    if (record.connect.includes("cli") && !record.credentials.includes("vendor_login_in_sandbox")) {
+    if (record.connect.includes("cli") && record.credentials.includes("api_key")) {
       ways.push(h("p", { class: "muted" }, "An engine for your agents: it runs on an API key " +
         "you connect here."));
     }
@@ -647,6 +677,17 @@ async function apps() {
   const picks = tools.map((tool) => h("label", {},
     h("input", { type: "checkbox", value: tool.name,
                  checked: custom === null || custom.includes(tool.name) }), tool.title));
+  // While "Every tool" is on, the picks are all on and fixed: no choice is silently dropped.
+  const held = () => {
+    for (const pick of picks.map((p) => p.firstChild)) {
+      pick.disabled = every.checked;
+      if (every.checked) {
+        pick.checked = true;
+      }
+    }
+  };
+  every.addEventListener("change", held);
+  held();
   const write = async (changed) => {
     await call("policy/write", { expected_generation: policy.generation, policy: changed });
     say("Saved.");
@@ -664,7 +705,7 @@ async function apps() {
                 report)),
        h("section", {},
          h("h2", {}, "Tools your connected apps see"),
-         h("label", {}, every, " Every tool"),
+         h("label", {}, every, " Every tool, including ones added later"),
          h("div", { class: "checks" }, picks),
          action("Save", () => {
            const { tools: _tools, ...rest } = document_;
@@ -710,14 +751,14 @@ async function apps() {
 // -- API keys -------------------------------------------------------------------------
 
 async function keys() {
-  const { clients } = await call("grants");
+  const [{ clients }, { capabilities }] = await Promise.all([call("grants"),
+                                                             call("capabilities")]);
   const listed = clients.filter((c) => c.source === "api_key" && c.mode !== "revoked");
   const name = h("input", { type: "text", placeholder: "laptop" });
   const space = h("input", { type: "text", value: "main" });
   const agentName = h("input", { type: "text", value: "main" });
-  const checks = ABILITIES.map(([id, label, on]) =>
-    h("label", {}, h("input", { type: "checkbox", value: id, checked: on && id.startsWith("read") }),
-      label));
+  const checks = capabilities.map((c) =>
+    h("label", {}, h("input", { type: "checkbox", value: c.id }), c.words));
   const minted = h("div", {});
   fill(main,
        h("h1", {}, "API keys"),
@@ -761,12 +802,7 @@ async function data(arg) {
          h("h2", {}, "Export"),
          h("p", {}, `You hold ${bytes(account.usage.chunk_bytes + account.usage.inline_bytes)} ` +
            `in ${account.usage.entries} files and folders.`),
-         action("Export everything", async () => {
-           const answer = await call("export");
-           const blob = new Blob([JSON.stringify(answer)], { type: "application/json" });
-           const link = h("a", { href: URL.createObjectURL(blob), download: "tinyassets-export.json" });
-           link.click();
-         }, report)),
+         h("p", { class: "muted" }, MISSING.export)),
        h("section", {},
          h("h2", {}, `Files in ${dir}`),
          parent !== null && dir !== "/workspace"

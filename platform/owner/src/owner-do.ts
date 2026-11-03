@@ -3093,12 +3093,31 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * That an outside client's change leaves the owner's agent definitions alone: its agents'
-   * files and skills (`OWNER_TREES`).
+   * A change to the owner's agent definitions (`OWNER_TREES`: its agents' files and skills,
+   * which are their instructions and authority): an outside client's is refused, and the
+   * owner's own is a widening, taken only in its live session and receipted when refused, as
+   * an agent's registration, disable or delete is. A run's account is held by its own rules.
    */
-  #ownersTree(account: Account, ...paths: unknown[]): void {
-    if (account.origin !== null && paths.some((path) => ownersOnly(storedPath(path)))) {
+  #ownersTree(binding: Binding, account: Account, action: string, request: unknown,
+              ...paths: unknown[]): void {
+    if (!paths.some((path) => ownersOnly(storedPath(path)))) {
+      return;
+    }
+    if (account.origin !== null) {
       throw new Refused(AGENTS_OWNER_ONLY);
+    }
+    if (account.run !== null) {
+      return;
+    }
+    try {
+      this.#sessions.live(binding.session, clock());
+    } catch (error) {
+      try {
+        this.#policy.refusal(action, { request, origin: null }, clock());
+      } catch {
+        console.error("owner-session refusal receipt unavailable");  // refuse regardless
+      }
+      throw error;
     }
   }
 
@@ -3195,7 +3214,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const { account, r, content } = await this.#door(() => {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "expected_etag", "content"], ["mode"]);
-      this.#ownersTree(account, r["path"]);
+      this.#ownersTree(binding, account, "FILES.write", request, r["path"]);
       const content = r["content"];
       if (!(content instanceof Uint8Array) || content.byteLength > CHUNK_BYTES) {
         throw new Invalid("a written file is bytes, at most 4 MiB; larger ones are uploaded");
@@ -3244,7 +3263,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#filing(() => {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["intent_id", "path", "expected_etag"], ["mode"]);
-      this.#ownersTree(account, r["path"]);
+      this.#ownersTree(binding, account, "FILES.write", { path: r["path"] }, r["path"]);
       return fileConflicted(() => ({
         entry: this.#files.commit(r["intent_id"], r["path"], {
           expected: r["expected_etag"], mode: r["mode"], writer: fileWriter(account) }),
@@ -3265,7 +3284,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#filing(() => {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "expected_etag"]);
-      this.#ownersTree(account, r["path"]);
+      this.#ownersTree(binding, account, "FILES.mkdir", request, r["path"]);
       return fileConflicted(() => ({
         entry: this.#files.mkdir(r["path"], { expected: r["expected_etag"],
                                               writer: fileWriter(account) }),
@@ -3278,7 +3297,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#filing(() => {
       const account = this.#filer(binding, "reduce", "write_files");
       const r = fileFields(request, ["path", "expected_etag", "recursive"]);
-      this.#ownersTree(account, r["path"]);
+      this.#ownersTree(binding, account, "FILES.remove", request, r["path"]);
       return fileConflicted(() => this.#files.remove(r["path"], {
         expected: r["expected_etag"], recursive: flag(r["recursive"], "recursive"),
         writer: fileWriter(account) }));
@@ -3290,7 +3309,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#filing(() => {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["from", "to", "expected_etag", "replace"]);
-      this.#ownersTree(account, r["from"], r["to"]);
+      this.#ownersTree(binding, account, "FILES.rename", request, r["from"], r["to"]);
       return fileConflicted(() => ({
         entry: this.#files.rename(r["from"], r["to"], {
           expected: r["expected_etag"], replace: flag(r["replace"], "replace"),
@@ -3313,7 +3332,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#filing(() => {
       const account = this.#filer(binding, "work", "write_files");
       const r = fileFields(request, ["path", "version", "expected_etag"]);
-      this.#ownersTree(account, r["path"]);
+      this.#ownersTree(binding, account, "FILES.restore", request, r["path"]);
       return fileConflicted(() => ({
         entry: this.#files.restore(r["path"], r["version"], {
           expected: r["expected_etag"], writer: fileWriter(account) }),
