@@ -141,6 +141,57 @@ export function safeRead(base: string, path: string): Buffer | null {
   }
 }
 
+/**
+ * A regular file's bytes a piece at a time (`pieceBytes` each, the last shorter), read with
+ * no link followed on its path, so a large file never sits whole in memory: `each` is
+ * awaited with every piece in order, on one descriptor (an empty file is one empty piece).
+ * False when it is not a regular file this user may read.
+ */
+export async function safePieces(base: string, path: string, pieceBytes: number,
+                                 each: (piece: Buffer, index: number) => void | Promise<void>):
+    Promise<boolean> {
+  const segments = below(base, path);
+  let at = base;
+  for (const segment of segments.slice(0, -1)) {
+    at = join(at, segment);
+    if (kind(at) !== "dir") {
+      return false;
+    }
+  }
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    return false;
+  }
+  try {
+    if (!fstatSync(fd).isFile()) {
+      return false;
+    }
+    const piece = Buffer.alloc(pieceBytes);
+    for (let index = 0, offset = 0; ; index += 1) {
+      let filled = 0;
+      while (filled < pieceBytes) {
+        const got = readSync(fd, piece, filled, pieceBytes - filled, offset + filled);
+        if (got === 0) {
+          break;
+        }
+        filled += got;
+      }
+      if (filled === 0 && index > 0) {
+        return true;
+      }
+      await each(Buffer.from(piece.subarray(0, filled)), index);
+      offset += filled;
+      if (filled < pieceBytes) {
+        return true;
+      }
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** Every regular file under `dir`, by path from it, by `lstat` alone: links never entered. */
 export function safeWalk(dir: string, skip: (rel: string) => boolean = () => false,
                          out: string[] = [], base = dir): string[] {

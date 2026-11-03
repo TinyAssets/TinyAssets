@@ -52,6 +52,9 @@ import { remove, safeDirs, safeRead, safeWalk, safeWrite } from "./fsafe";
 import { ancestorEnvFile, heldSecret, homeEnvFile, projectEnvFile, projectEnvRefusal,
          secretAtoms } from "./guards";
 import { project } from "./project";
+import { keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, scratchEnv, scratchNotice,
+         writeIndex,
+         writeOrRelease } from "./scratch";
 import { readMirror, SyncClient, SyncFenced, syncIn, syncOut } from "./sync";
 import { asUser, give, group, type Identity, killAll, POOL_PREFIX, take, user } from "./users";
 
@@ -64,6 +67,13 @@ const STORE = `${STATE}/store`;
 const SYNC_HOME = `${ROOT}/var/lib/ta-sync`;
 const CONVERSATIONS = `${ROOT}/var/lib/ta-conv`;
 const LOCAL_WORKSPACE = `${ROOT}${WORKSPACE}`;
+/** The agents' scratch (`scratch.ts`): kept between runs, never synced, never counted. */
+const LOCAL_SCRATCH = `${ROOT}${SCRATCH}`;
+/** When each agent's scratch was last used, and the runner's reserve on the disk. */
+const SCRATCH_INDEX = `${STATE}/scratch.json`;
+const RESERVE = `${STATE}/reserve`;
+/** Its size: `RESERVE_BYTES` in the sandbox; a mebibyte under a test's root, the same path. */
+const RESERVE_SIZE = ROOT === "" ? RESERVE_BYTES : 1024 * 1024;
 
 /** The runner's heartbeat: slice R's lease renewal cadence (a batch at least every 20 s). */
 export const HEARTBEAT_MS = 20_000;
@@ -339,6 +349,9 @@ function prepare(servers: readonly string[]): number {
   }
   lockDown();
   lockSudo();
+  // The runner's own room on the disk, kept while there is room for it (`scratch.ts`).
+  mkdirSync(STATE, { recursive: true, mode: 0o700 });
+  keepReserve(RESERVE, RESERVE_SIZE);
   return OK;
 }
 
@@ -385,6 +398,9 @@ function lockSudo(): void {
 /**
  * What may stay writable by a user other than root, each for its reason:
  * - `/workspace`, group `ta`: the owner's files every run shares by design;
+ * - `/scratch`, group `ta` below its top: the agents' working files (`scratch.ts`), every
+ *   run of the sandbox's by design, as the founder's rule has every agent of a user full
+ *   power by default;
  * - each run's own home, each conversation's own cwd, the sync agent's directory: their
  *   own users', 0700, reached by no one else;
  * - `/proc` and `/sys`: the kernel's own;
@@ -393,7 +409,8 @@ function lockSudo(): void {
  * (a node is no file root runs or reads as code; a link's own mode means nothing).
  */
 const WRITABLE: readonly string[] = Object.freeze(["/proc", "/sys", WORKSPACE, HOMES,
-                                                   "/var/lib/ta-conv", "/var/lib/ta-sync"]);
+                                                   "/var/lib/ta-conv", "/var/lib/ta-sync",
+                                                   SCRATCH]);
 /**
  * Every path another user may write made root's alone, then checked: anything left fails
  * `prepare` loudly. E2B's base image boots with root's own programs world-writable
@@ -832,6 +849,33 @@ function cleanScratch(uid: number): void {
   }
 }
 
+/**
+ * The run's agent's scratch (`scratch.ts`): made (root's at the top, group `ta`'s below), old
+ * scratch let go first (unused past the control record's retention, then least recently used
+ * while the disk is low, never a live run's agent), and the agent's marked used now. What
+ * went, in plain words for the agent and the user, or null.
+ */
+function scratchFor(start: StartDoc, run: string): { dir: string; notice: string | null } {
+  const dir = `${LOCAL_SCRATCH}/${start.agent}`;
+  safeDirs(TOP, LOCAL_SCRATCH, 0o755);
+  const live = new Set([start.agent, ...liveRuns().filter((each) => each.run !== run)
+    .flatMap((each) => {
+      try {
+        return [readJson<StartDoc>(`${runDir(each.run)}/start.json`).agent];
+      } catch {
+        return [];
+      }
+    })]);
+  const index = readIndex(SCRATCH_INDEX);
+  const pruned = pruneScratch(LOCAL_SCRATCH, index, Date.now(),
+                              start.scratch_retention_days ?? null, live);
+  safeDirs(LOCAL_SCRATCH, dir, 0o2775, { uid: 0, gid: shared() });
+  index.used[start.agent] = Date.now();
+  writeOrRelease(() => writeIndex(SCRATCH_INDEX, index), RESERVE);
+  keepReserve(RESERVE, RESERVE_SIZE);
+  return { dir, notice: scratchNotice(pruned) };
+}
+
 async function runCommand(run: string, recovering: boolean): Promise<number> {
   const dir = runDir(run);
   const start = readJson<StartDoc>(`${dir}/start.json`);
@@ -842,7 +886,14 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
   const state: RunState = { pid: process.pid, cli_pid: null, seq: prior?.seq ?? 0,
                             session_id: prior?.session_id ?? start.session_id,
                             last_kind: null, ended: false, renewing: false };
-  const save = () => writeJson(`${dir}/state.json`, state);
+  // A full disk never stops the runner: its reserve goes first, and a write that still
+  // fails leaves the state in memory, the run going on and reporting its end.
+  const save = () => {
+    writeOrRelease(() => writeJson(`${dir}/state.json`, state), RESERVE);
+  };
+  const mark = (name: string) => {
+    writeOrRelease(() => writeFileSync(`${dir}/${name}`, ""), RESERVE);
+  };
   const outbox = new Outbox(state.seq);
   const cli_: { child: ChildProcess | null; kill: ReturnType<typeof setTimeout> | null;
                 stopped: boolean; renewed: boolean } =
@@ -879,7 +930,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
       await poster.drain();
       state.renewing = true;
       save();
-      writeFileSync(`${dir}/renewing-ack`, "");
+      mark("renewing-ack");
     })();
   });
   process.on("SIGUSR2", () => {
@@ -888,7 +939,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     cli_.renewed = cli_.child !== null && cli_.child.exitCode === null;
     outbox.push({ type: "ta.renewed" });
     save();
-    writeFileSync(`${dir}/renewed-ack`, "");
+    mark("renewed-ack");
   });
   if (existsSync(`${dir}/cancel`)) {
     stop();  // cancelled before its runner was up
@@ -927,6 +978,10 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     const agentDir = `${ROOT}${AGENTS_DIR}/${start.agent}`;
     if (!existsSync(`${agentDir}/agent.json`)) {
       throw new Error(`the agent ${start.agent} has no definition in the sandbox`);
+    }
+    const scratch = scratchFor(start, run);
+    if (scratch.notice !== null) {
+      outbox.push({ type: "ta.scratch_cleared", text: scratch.notice });
     }
     let conversationDir: string | undefined;
     let continued = false;
@@ -974,7 +1029,8 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
         }
         process.umask(0o002);
         const child = spawn(argv[0]!, argv.slice(1), {
-          cwd: call.cwd, env: { ...call.env, TMPDIR: join(runHome, "tmp") }, detached: true,
+          cwd: call.cwd, env: { ...call.env, TMPDIR: join(runHome, "tmp"),
+                                ...scratchEnv(scratch.dir) }, detached: true,
           stdio: [call.stdin === null ? "ignore" : "pipe", "pipe", "pipe"] });
         cli_.child = child;
         child.on("error", reject);
@@ -1072,9 +1128,18 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
         if (done.code === FENCED) {
           outbox.push({ type: "ta.sync_fenced" });
         } else {
-          const report = done.report as { refused?: unknown[]; conflicts?: string[] } | null;
+          const report = done.report as { refused?: { path: string; reason: string }[];
+                                          conflicts?: string[] } | null;
           for (const refused of report?.refused ?? []) {
-            outbox.push({ type: "ta.sync_refused", ...(refused as object) });
+            outbox.push({ type: "ta.sync_refused", ...refused });
+          }
+          // The owner's storage is full: the one place an upgrade is offered. What did not
+          // fit stays in the sandbox and is offered again by the next run.
+          const full = (report?.refused ?? []).filter((refused) =>
+            refused.reason.startsWith("storage_full:"));
+          if (full.length > 0) {
+            outbox.push({ type: "ta.storage_full", message: full[0]!.reason,
+                          kept_in_sandbox: full.map((refused) => refused.path) });
           }
           if ((report?.conflicts ?? []).length > 0) {
             outbox.push({ type: "ta.sync_conflicts", paths: report!.conflicts! });

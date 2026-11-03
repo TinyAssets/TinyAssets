@@ -18,6 +18,7 @@ import { TICKET_REFUSED } from "../../owner/src/socket-shape";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";
 import { EGRESS_ORIGIN } from "../src/config";
 import { refusedStatus, RUN_HEADER, RUNNER_HEADER } from "../src/egress";
+import { RUN_INSTRUCTIONS } from "../src/mcp";
 import { profileNames } from "../src/tools";
 import { EVENT_FRAMES_MAX } from "../../owner/src/run-events";
 import type { OwnerDO } from "./entry";
@@ -211,6 +212,8 @@ describe("a run's own doors on the egress host", () => {
       .includes(tool.name))).toBe(false);
     // Exactly the run profile, code mode on by default.
     expect(tools.map((tool) => tool.name)).toEqual(profileNames("run"));
+    // The engine is told where working files go: its scratch, never the owner's storage.
+    expect(client.getInstructions()).toBe(RUN_INSTRUCTIONS);
     expect(structured(await client.callTool({ name: "file_stat",
                                               arguments: { path: "/workspace" } })))
       .toMatchObject({ entry: { kind: "dir" } });

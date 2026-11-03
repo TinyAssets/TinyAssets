@@ -61,6 +61,13 @@ export interface Control {
    * when the record holds none, and the sandbox Worker then starts nothing.
    */
   readonly sandbox: SandboxCeilings | null;
+  /**
+   * How many days an agent's sandbox scratch may go unused before it is deleted
+   * (`scratch_retention_days`; `sandbox/runner/scratch.ts`): a chosen retention, refusing
+   * nothing, which the sandbox Worker hands each run's runner. Null when the record names
+   * none: then only the disk's own pressure lets scratch go.
+   */
+  readonly scratch_retention_days: number | null;
 }
 
 /**
@@ -102,7 +109,7 @@ const CONTROL_KEYS: readonly string[] = Object.freeze(["canary", "inbound", "ord
                                                        "outside"]);
 const CONTROL_OPTIONAL: readonly string[] = Object.freeze([
   "tiers", "sandbox_runtime_ceiling_s", "sandbox_concurrency_ceiling",
-  "sandbox_renewal_window_s"]);
+  "sandbox_renewal_window_s", "scratch_retention_days"]);
 
 function keyName(keyId: string): string {
   if (!KEY_ID.test(keyId)) {
@@ -150,7 +157,9 @@ export function parseControl(value: unknown): Control | null {
   const record = value as Record<string, unknown>;
   const { outside, ordinary, canary, inbound, tiers } = record;
   const sandbox = SANDBOX_KEYS.map((key) => record[key]);
-  if ((outside !== "on" && outside !== "off")
+  const retention = record["scratch_retention_days"];
+  if ((retention !== undefined && !positive(retention))
+      || (outside !== "on" && outside !== "off")
       || (ordinary !== "all" && ordinary !== "canary" && ordinary !== "none")
       || typeof inbound !== "boolean" || !Array.isArray(canary) || canary.length > MAX_CANARY
       || !(sandbox.every((value) => value === undefined)
@@ -163,7 +172,8 @@ export function parseControl(value: unknown): Control | null {
     return { outside, ordinary, inbound, canary: Object.freeze(canary.map(principal)),
              tiers: tiers === undefined ? null : parseTiers(tiers),
              sandbox: sandbox[0] === undefined ? null
-               : sandboxCeilings(sandbox[0], sandbox[1], sandbox[2]) };
+               : sandboxCeilings(sandbox[0], sandbox[1], sandbox[2]),
+             scratch_retention_days: retention === undefined ? null : retention as number };
   } catch {
     return null;
   }

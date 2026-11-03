@@ -69,6 +69,7 @@ const me = process.argv[1];
 const root = me.split("/opt/ta/engines/")[0];
 const plan = JSON.parse(fs.readFileSync(me + ".plan.json", "utf8"));
 const where = (file) => file.startsWith("~/") ? path.join(process.env.HOME, file.slice(2))
+  : file.startsWith("$TA_SCRATCH/") ? path.join(process.env.TA_SCRATCH, file.slice(12))
   : path.resolve(file);
 let stdin = "";
 const done = () => {
@@ -139,6 +140,8 @@ export class Doors {
   ended = false;
   /** Upload intents begun, and the chunks they received, by intent id. */
   readonly uploads = new Map<string, { size: number; chunks: string[]; got: string[] }>();
+  /** A commit op the object refuses, by its path: its reason, or null to commit it. */
+  refuse: (path: string) => string | null = () => null;
   #server: Server | null = null;
   #version = 100;
   origin = "";
@@ -207,8 +210,12 @@ export class Doors {
         }
         if (path === "/sync/commit") {
           const ops = body["ops"] as { path: string; op: string }[];
-          return json(200, { outcomes: ops.map((op) => ({ path: op.path, outcome: "committed",
-            entry: op.op === "remove" ? null : { version: this.#version += 1 } })) });
+          return json(200, { outcomes: ops.map((op) => {
+            const reason = this.refuse(op.path);
+            return reason !== null ? { path: op.path, outcome: "refused", reason }
+              : { path: op.path, outcome: "committed",
+                  entry: op.op === "remove" ? null : { version: this.#version += 1 } };
+          }) });
         }
         return json(404, { error: { code: "not_found" } });
       });

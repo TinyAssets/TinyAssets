@@ -20,6 +20,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bundledSources, runEnv } from "../../doors/src/sources";
 import { readEvent } from "../../owner/src/run-events";
 
+import { SCRATCH_ENV } from "./scratch";
 import { processesOf } from "./users";
 import { Doors, POOL_UIDS, runnerBundle, Sandbox, startDoc, SYNC_UID, TA_GID } from "./harness";
 
@@ -150,7 +151,10 @@ describe.each(Object.keys(SHAPES))("a run of %s", (engine) => {
     expect(seen.env["HOME"]).toBe(box.path(`/var/lib/ta-homes/${start.run}`));
     expect(Object.keys(seen.env).sort()).toEqual(
       [...new Set([...Object.keys(start.config.env), "PATH", "TMPDIR",
+                   ...Object.keys(SCRATCH_ENV),
                    ...(process.env["LANG"] === undefined ? [] : ["LANG"])])].sort());
+    // Its working files and its tools' caches go to its agent's scratch, kept between runs.
+    expect(seen.env["TA_SCRATCH"]).toBe(box.path(`/scratch/${start.agent}`));
     const record = sources.get(engine)!.cli!;
     if (record.engine.stdin !== undefined) {
       expect(seen.stdin).toBe("do the thing");
@@ -442,6 +446,77 @@ describe("the sync", () => {
     expect(doors.ops().filter((op) => op.path.startsWith("/workspace/agents/"))).toEqual([]);
     expect(statSync(box.path("/workspace/agents/main/AGENTS.md")).mode & 0o222).toBe(0);
     expect(statSync(box.path("/workspace/agents/main")).mode & 0o020).toBe(0);
+  });
+
+  it("sends the sessions first, in a commit of their own", async () => {
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines,
+                             writes: { "notes.md": "plain notes",
+                                       "~/.claude/projects/main/cs-1.jsonl": "{\"type\":\"user\"}\n" } });
+    await run("claude-code");
+    const commits = doors.posts.filter((post) => post.path === "/sync/commit")
+      .map((post) => (post.body["ops"] as { path: string }[]).map((op) => op.path));
+    expect(commits[0]!.every((path) => path.startsWith("/workspace/.sessions/"))).toBe(true);
+    expect(commits.slice(1).flat()).toContain("/workspace/agents/main/notes.md");
+  });
+
+  it("never syncs what the owner's sync-ignore names, its defaults written for the owner",
+     async () => {
+    box.cli("codex", { lines: SHAPES["codex"]!.lines,
+                       writes: { "node_modules/pkg/index.js": "module.exports = 1;",
+                                 "dist/app.js": "built", "src/app.ts": "source" } });
+    await run("codex");
+    const paths = doors.ops().map((op) => op.path);
+    expect(paths).toContain("/workspace/agents/main/src/app.ts");
+    expect(paths).toContain("/workspace/.ta/sync-ignore");
+    expect(paths.some((path) => path.includes("/node_modules/") || path.includes("/dist/")))
+      .toBe(false);
+    // The owner's own edit is the rule from then on: an empty list syncs them too.
+    doors.files.set("/workspace/.ta/sync-ignore", { text: "# keep everything\n", version: 900 });
+    box.cli("codex", { lines: SHAPES["codex"]!.lines });
+    await run("codex");
+    expect(doors.ops().map((op) => op.path))
+      .toContain("/workspace/agents/main/node_modules/pkg/index.js");
+  });
+
+  it("keeps what did not fit when the owner's storage is full, says so once, and sends it " +
+     "again next run", async () => {
+    const full = "storage_full: your storage is full: 25.0 GB of 25.0 GB used. Free some " +
+      "space (delete files you no longer need) or upgrade to paid for 250 GB. {}";
+    doors.refuse = (path) => path.endsWith("/notes.md") ? full : null;
+    box.cli("codex", { lines: SHAPES["codex"]!.lines, writes: { "notes.md": "kept for later" } });
+    await run("codex");
+    const event = doors.frames().find((each) => each["type"] === "ta.storage_full")!;
+    expect(event["message"]).toBe(full);
+    expect(event["kept_in_sandbox"]).toEqual(["/workspace/agents/main/notes.md"]);
+    expect(readFileSync(box.path("/workspace/agents/main/notes.md"), "utf8"))
+      .toBe("kept for later");
+    doors.refuse = () => null;
+    const before = doors.ops().length;
+    box.cli("codex", { lines: SHAPES["codex"]!.lines });
+    await run("codex");
+    expect(doors.ops().slice(before).map((op) => op.path))
+      .toContain("/workspace/agents/main/notes.md");
+  });
+});
+
+describe("the scratch area", () => {
+  it("keeps an agent's scratch between runs, never syncs it, and points its caches there",
+     async () => {
+    box.cli("codex", { lines: SHAPES["codex"]!.lines,
+                       writes: { "$TA_SCRATCH/repo/README.md": "a cloned repository" } });
+    const { start } = await run("codex");
+    expect(doors.ops().some((op) => op.path.includes("repo/README.md"))).toBe(false);
+    expect(readFileSync(box.path(`/scratch/${start.agent}/repo/README.md`), "utf8"))
+      .toBe("a cloned repository");
+    const seen = box.ran("codex").at(-1)!;
+    expect(seen.env["XDG_CACHE_HOME"]).toBe(box.path(`/scratch/${start.agent}/.cache`));
+    // Group ta's, so every run user of the sandbox works in it.
+    const dir = statSync(box.path(`/scratch/${start.agent}`));
+    expect([dir.uid, dir.gid, dir.mode & 0o7777]).toEqual([0, TA_GID, 0o2775]);
+    box.cli("codex", { lines: SHAPES["codex"]!.lines, dumps: ["$TA_SCRATCH/repo/README.md"] });
+    await run("codex");
+    expect(box.ran("codex").at(-1)!.dumps["$TA_SCRATCH/repo/README.md"])
+      .toBe("a cloned repository");
   });
 });
 

@@ -207,10 +207,13 @@ function httpsDoors(urls: SandboxStart["urls"]): boolean {
   });
 }
 
-/** The start's document as the runner reads it: everything but the lease's own secrets. */
-function startDocument(start: SandboxStart): unknown {
+/**
+ * The start's document as the runner reads it: everything but the lease's own secrets, and
+ * the control record's scratch retention (`scratch_retention_days`, null when it names none).
+ */
+function startDocument(start: SandboxStart, retentionDays: number | null): unknown {
   const { tokens: _tokens, network: _network, ...rest } = start;
-  return rest;
+  return { ...rest, scratch_retention_days: retentionDays };
 }
 
 /** A hex SHA-256 of `text`, its first 32 characters: an opaque name in E2B's metadata. */
@@ -503,7 +506,9 @@ export class SandboxControl extends DurableObject<SandboxEnv> {
           return { started: false, code: CODES.signin };
         }
       }
-      await e2b.upload(handle, `${STATE_DIR}/inbox/${start.run}.json`, json(startDocument(start)));
+      const control = await readControl(this.env.CONTROL);
+      await e2b.upload(handle, `${STATE_DIR}/inbox/${start.run}.json`, json(startDocument(start,
+        control.kind === "read" ? control.control.scratch_retention_days : null)));
       const launched = await this.#run(handle, ["launch", start.run]);
       if (launched.code !== OK) {
         throw new Error(`the runner did not launch run ${start.run}`);

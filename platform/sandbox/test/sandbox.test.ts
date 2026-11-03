@@ -169,6 +169,19 @@ describe("a start", () => {
     expect(state.sandboxes[0]!.network.allowOut).toEqual(["github.com",
                                                           "egress.tinyassets.io"]);
     expect(state.commands.map((command) => command.argv[1])).toEqual(["prepare", "launch"]);
+    // No scratch retention in the record: the runner deletes no agent's scratch by age.
+    const doc = state.files[`${state.sandboxes[0]!.id}:/var/lib/ta/inbox/${RUN}.json`]!;
+    expect(JSON.parse(doc).scratch_retention_days).toBeNull();
+  });
+
+  it("hands the control record's scratch retention to the runner", async () => {
+    await control({ ...OPEN, ...NUMBERS, scratch_retention_days: 30 });
+    const who = owner();
+    expect(await stub(who).start(who, start({ credential: "api_key" })))
+      .toEqual({ started: true });
+    const state = await seen();
+    const doc = state.files[`${state.sandboxes[0]!.id}:/var/lib/ta/inbox/${RUN}.json`]!;
+    expect(JSON.parse(doc).scratch_retention_days).toBe(30);
   });
 
   it("joins the live sandbox with no create and no lease secrets; another engine's hosts added",
