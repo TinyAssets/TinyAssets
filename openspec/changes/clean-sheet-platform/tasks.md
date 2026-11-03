@@ -1039,7 +1039,17 @@ R, S, M and W.
   change (M3); H2's probe list gains the starvation probe (M4); citations fixed (L1); the
   change indexes are on `change` alone (L2); a script's answer lists what landed (L3); the
   compute-stop test asserts the interrupt budget's message (L4); the gateway's forward test
-  has its own 30 s timeout (L5). The details below are as built:
+  has its own 30 s timeout (L5). Verification (REQUEST_CHANGES), all taken: an answer is
+  measured as V8 serializes it (`serializedBytes`: a string two bytes a unit when any unit
+  is past Latin-1), the review's X1 a test (M2); `changed` names its indexes (`INDEXED
+  BY collection_changes`, `collection_erasures`), its plan held by a test (L2); the
+  `CONTROL` guard reads the source's syntax, so no spelling hides a use; a test of the
+  control record's one-second read (`CachedOwnerDO`); a key's delete entry kept through the
+  trim while the key is made again private under another writer; the doorbell below reads
+  `CONTROL`. An owner's own MCP client is an outside client to the object (every `/mcp`
+  and `/api` binding carries the client's origin), so its scripts take the outside gate in
+  the object as at the door; only the owner's app (origin none) and a run take the
+  maintenance gate, as their doors do. The details below are as built:
   - **Profiles, data** (`doors/profiles.json`): `custom` (the owner's own choice: policy
     `tools.custom`, else every tool), which every grant on `/mcp` and every API key names,
     since each is a custom connector (`outside_clients.profile`, a free row `custom`);
@@ -1070,7 +1080,7 @@ R, S, M and W.
     to back (623,807 calls in 101 s against a 2 s bound), so the object ends the execution
     itself. The answer counts calls by outcome, lists the calls of tools that change
     something (`landed`, run-length), and is refused `answer_too_large` past
-    `CODE_ANSWER_MAX` (31 MiB of UTF-8 JSON, under Workers RPC's 32 MiB).
+    `CODE_ANSWER_MAX` (31 MiB as V8 serializes it, under Workers RPC's 32 MiB).
   - **Digests:** `inbox_digest` (the caller's unread mail from its own acknowledged cursor,
     and the rooms' rows past an owner-wide change cursor) and `board_digest` (the board's),
     each row as its head (`head_chars`, 512 by default) with its etag, and each delete or
@@ -1224,11 +1234,11 @@ R, S, M and W.
   fails.
   Deferred from 3.4, as the Python's tick had them: no wake is claimed while the outside
   kill switch (`TINYASSETS_OUTSIDE_DENY`) is off or the owner is not admitted
-  (`require_work`: the claim reads the admission row in its own unit, built in F1). The kill switch reaches the alarm through a `DOORBELL` service
-  binding on the owner Worker, to a `tinyassets-doorbell` Worker that binds only
-  `DIRECTORY` and reads its `c:control` record; the `wakes` lane asks `DOORBELL.open()`
-  once a pass before it claims and claims nothing on closed or a failure, and the owner
-  config guard admits it as `{kv_namespaces: 1}`. Admission is the object's own row (2).
+  (`require_work`: the claim reads the admission row in its own unit, built in F1). The kill switch reaches the alarm through the owner Worker's own `CONTROL` binding
+  (slice M), the namespace of the `c:control` record alone: the `wakes` lane reads it
+  through `ControlGate` (`control-gate.ts`, the outside gate) once a pass before it claims,
+  and claims nothing on closed or a failure. No doorbell Worker is needed for it.
+  Admission is the object's own row (2).
 
 ## 8. Founder live test
 

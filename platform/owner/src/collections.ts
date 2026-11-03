@@ -151,6 +151,22 @@ function shown(row: StoredRow): Row {
   };
 }
 
+/**
+ * `changed`'s query: each part read by its change index (named, so a plan that would scan
+ * a collection's rows instead fails loudly) from the cursor on, the rows written past it and
+ * the deletions past it of rows the caller could see; then filtered by collection.
+ */
+export function changedSql(where: "collection" | "prefix"): string {
+  const test = where === "collection" ? "collection = ?" : "collection >= ? AND collection < ?";
+  return "SELECT collection, row_id, revision, seq, etag, writer, private, body, change, " +
+    "0 AS deleted, '' AS op FROM collection_rows INDEXED BY collection_changes " +
+    `WHERE change > ? AND ${test} AND (private = 0 OR writer = ?) ` +
+    "UNION ALL SELECT collection, key, revision, 0, '', writer, 0, '', change, 1, op " +
+    "FROM collection_history INDEXED BY collection_erasures " +
+    `WHERE change > ? AND ${test} AND (private_writer IS NULL OR private_writer = ?) ` +
+    "ORDER BY change LIMIT ?";
+}
+
 function now(): number {
   return Date.now() / 1000;
 }
@@ -258,9 +274,17 @@ export class Collections {
         "SELECT COALESCE(MAX(revision), 0) AS top FROM collection_history " +
           "WHERE collection = ? AND key = ?", collection, rowId,
       ).one().top);
+      // A key made again private keeps its delete's entry through the trim, one more
+      // revision trimmed in its place, while that entry tells anyone but this row's writer
+      // of the delete: they cannot see the new row, so it supersedes nothing for them.
+      const kept = isPrivate && this.#limits.maxRevisions > 1 && sql.exec(
+        "SELECT 1 FROM collection_history WHERE collection = ? AND key = ? " +
+          "AND change IS NOT NULL AND (private_writer IS NULL OR private_writer != ?)",
+        collection, rowId, caller).toArray().length > 0;
       sql.exec(
-        "DELETE FROM collection_history WHERE collection = ? AND key = ? AND revision <= ?",
-        collection, rowId, revision - this.#limits.maxRevisions,
+        "DELETE FROM collection_history WHERE collection = ? AND key = ? AND revision <= ? " +
+          "AND NOT (? AND change IS NOT NULL)",
+        collection, rowId, revision - this.#limits.maxRevisions + (kept ? 1 : 0), kept ? 1 : 0,
       );
       this.#bound(owner, caller, collection, row, body);
       const seq = this.top(collection) + 1;
@@ -338,20 +362,11 @@ export class Collections {
       throw new Invalid(`limit is 1 to ${this.#limits.maxPull}`);
     }
     // A prefix is the range from itself to the name just past every name it starts.
-    const [test, keys] = "collection" in where
-      ? ["collection = ?", [name(where.collection, "collection")]]
-      : ["collection >= ? AND collection < ?",
-         [where.prefix, where.prefix.slice(0, -1) + String.fromCodePoint(
-           where.prefix.codePointAt(where.prefix.length - 1)! + 1)]];
-    // Each part reads by its change index from the cursor on: the rows written past it, and
-    // the deletions past it of rows this caller could see.
+    const keys = "collection" in where ? [name(where.collection, "collection")]
+      : [where.prefix, where.prefix.slice(0, -1) + String.fromCodePoint(
+          where.prefix.codePointAt(where.prefix.length - 1)! + 1)];
     const rows = this.#sql.exec<StoredRow & { deleted: number; op: string }>(
-      "SELECT collection, row_id, revision, seq, etag, writer, private, body, change, " +
-        `0 AS deleted, '' AS op FROM collection_rows WHERE change > ? AND ${test} ` +
-        "AND (private = 0 OR writer = ?) " +
-        "UNION ALL SELECT collection, key, revision, 0, '', writer, 0, '', change, 1, op " +
-        `FROM collection_history WHERE change > ? AND ${test} ` +
-        "AND (private_writer IS NULL OR private_writer = ?) ORDER BY change LIMIT ?",
+      changedSql("collection" in where ? "collection" : "prefix"),
       after, ...keys, caller, after, ...keys, caller, limit,
     ).toArray();
     const top = this.#sql.exec<{ change: number }>(

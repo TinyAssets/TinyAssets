@@ -5,11 +5,13 @@
  * reported too, to whoever could see the row; and only what its grant holds: `read_graph`, a
  * private row only to its writer, no revoked client.
  */
+import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import type { Binding, RowHead } from "../src/owner-do";
+import { changedSql } from "../src/collections";
+import type { Binding, OwnerDO, RowHead } from "../src/owner-do";
 import { MUSE, rig, type Rig } from "./ledger-support";
-import { failure } from "./support";
+import { failure, inObject } from "./support";
 
 type Live = Extract<RowHead, { deleted: false }>;
 
@@ -158,3 +160,48 @@ describe("a digest's deletions", () => {
       .toEqual([["room:app:lobby", "m1", true]]);
   });
 });
+
+describe("a digest's reads", () => {
+  it("read by the change indexes from the cursor on, never a collection's rows", async () => {
+    const r = await rig();
+    await write(r, "board", "t1", "a task");
+    const plans = await runInDurableObject(r.stub, (_instance: OwnerDO, state) =>
+      (["collection", "prefix"] as const).map((where) => {
+        const keys = where === "collection" ? ["board"] : ["room:", "room;"];
+        return state.storage.sql.exec<{ detail: string }>(
+          `EXPLAIN QUERY PLAN ${changedSql(where)}`,
+          0, ...keys, "owner", 0, ...keys, "owner", 10).toArray()
+          .map((row) => row.detail).join("; ");
+      }));
+    for (const plan of plans) {
+      expect(plan).toMatch(/SEARCH collection_rows USING INDEX collection_changes \(change>\?\)/);
+      expect(plan).toMatch(
+        /SEARCH collection_history USING INDEX collection_erasures \(change>\?\)/);
+      expect(plan).not.toMatch(/SCAN collection_|collection_writers|collection_creators/);
+    }
+  });
+
+  it("keeps a key's delete through the trim once the key is made again private",
+     async () => {
+    const r = await rig();
+    const bob = "bob";
+    await inObject(r.stub, { maxRevisions: 3 }, (store) => {
+      const made = store.write(r.owner, r.owner, "board", "t", "public", "", false);
+      const before = store.changed("muse", { collection: "board" }, 0, 10).cursor;
+      store.delete(r.owner, "board", "t", made.etag);
+      let etag = store.write(r.owner, bob, "board", "t", "mine", "", true).etag;
+      for (let n = 0; n < 5; n++) {
+        etag = store.write(r.owner, bob, "board", "t", `mine ${n}`, etag, true).etag;
+      }
+      // Anyone but bob still learns the public row is gone; bob sees his row.
+      expect(store.changed("muse", { collection: "board" }, before, 10).rows
+        .map((row) => [row.row_id, row.deleted])).toEqual([["t", true]]);
+      expect(store.changed(bob, { collection: "board" }, before, 10).rows
+        .map((row) => [row.row_id, row.deleted])).toEqual([["t", true], ["t", false]]);
+      // The kept entry takes a revision's place: the key holds maxRevisions entries.
+      expect(store.history(bob, "board", "t").entries.map((entry) => entry.op))
+        .toEqual(["delete", "write", "write"]);
+    });
+  });
+});
+
