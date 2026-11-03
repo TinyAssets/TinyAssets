@@ -828,7 +828,7 @@ The tier numbers SHALL come only from the platform control record, handed by the
 - **THEN** it is refused, and the tier stands
 
 ### Requirement: A run's calls are held to its run grant
-A call carrying a run's binding (the egress token, the run its path names, and the SHA-256 of the run's own secret its path carried) SHALL be resolved to the live lease, that run live under it, and its grant, whose secret's hash it SHALL match: a run id alone authorizes nothing. Every door SHALL hold it to the grant's scopes, as its initiator (the owner's own work as the owner, a client's as that client, its stamp rechecked at every call), and the ledger SHALL take it as its own agent's identity, never its initiator's: its mailbox the agent's, its posts the agent's, under its initiator's authority. It SHALL never act as the owner itself at an owner-only door, nor start, read or cancel a run (`run_starts_none`). A cancel SHALL revoke the run's grant at once. A grant change or revoke SHALL settle the client's runs in its unit, `failed` (`revoked`), live or waiting: their grants deleted, their tier slots free, their CLIs cancelled through the sandbox, and the client's schedules removed. The runner's own doors (a run's events, the sign-in report) SHALL take only the runner's secret, which no CLI holds.
+A call carrying a run's binding (the egress token, the run its path names, and the SHA-256 of the run's own secret its path carried) SHALL be resolved to the live lease, that run live under it, and its grant, whose secret's hash it SHALL match: a run id alone authorizes nothing. Every door SHALL hold it to the grant's scopes, as its initiator (the owner's own work as the owner, a client's as that client, its stamp rechecked at every call), and the ledger SHALL take its posts as its own agent's, never its initiator's, under its initiator's authority; it SHALL read and ack no mailbox (`run_no_mailbox`), its mail being its input. It SHALL never act as the owner itself at an owner-only door, nor start, read or cancel a run (`run_starts_none`). A cancel SHALL revoke the run's grant at once. A grant change or revoke SHALL settle the client's runs in its unit, `failed` (`revoked`), live or waiting: their grants deleted, their tier slots free, their CLIs cancelled through the sandbox, and the client's schedules removed. The runner's own doors (a run's events, the sign-in report) SHALL take only the runner's secret, which no CLI holds.
 
 #### Scenario: A client revoked mid-run
 - **WHEN** the owner revokes a client whose run is live
@@ -849,28 +849,50 @@ The `runs` lane's next time SHALL be the earliest due schedule (while the owner 
 - **THEN** the lane has no job and no sandbox is started
 
 ### Requirement: Each of the owner's agents is a ledger identity that follows its file
-Each `/workspace/agents/<agent>/agent.json` SHALL be a ledger identity (`ta_` and 16 hex) beside the outside agents, made as the file appears and retired as it goes (a remove, a rename away, a directory's removal), in the file change's own unit, and live again as itself, its id and mail kept, when the file comes back. A live one SHALL count among the enabled agents whose mailboxes the ledger reserves, and an agent file past them SHALL be refused (`ledger_agents_full`); its row SHALL count among the registry's rows, the oldest retired one forgotten first at that bound (its mail kept). A retired agent's mail SHALL be kept and readable by whoever else it was to or from; new mail to or from it SHALL be refused (`agent_retired`), and its mail that no run took SHALL fail. A room SHALL be a pair's: `dm:<a>` the owner and `a`, `dm:<a>+<b>` two agents (`a` before `b`), at least one of them the owner's own; a post SHALL go to the other member, from the caller's verified identity (a run's own agent's), and an agent's mail to the owner SHALL count against its share of the owner's mailbox as an outside agent's does.
+Each `/workspace/agents/<agent>/agent.json` SHALL be a ledger identity, keyed by `ta_` and its name's digest, beside the outside agents: made as the file appears and retired as it goes, in the file change's own unit, and live again as itself, its mail kept, when the file comes back. A live one SHALL count among the enabled agents whose mailboxes the ledger reserves (`ledger_agents_full` past them), and its row among the registry's, the oldest retired one forgotten first. A retired agent's mail SHALL stay readable by its other side; new mail to or from it SHALL be refused (`agent_retired`), and its untaken mail, to it or from it, SHALL fail, as a disabled outside agent's does.
 
 #### Scenario: An agent's directory removed
 - **WHEN** the owner removes `/workspace/agents/main`, whose agent sent the owner mail
 - **THEN** its identity is retired, the owner still reads that mail, and a new post to it is refused `agent_retired`
 
+#### Scenario: A retired agent's untaken mail
+- **WHEN** an agent whose mail to another agent no run has taken is retired
+- **THEN** that mail fails and starts no run
+
+### Requirement: A room is a pair, and a post wakes only the members it addresses
+A room SHALL be a pair's: `dm:<a>` the owner and `a`, `dm:<a>+<b>` two agents (`a` before `b`), at least one the owner's own. A post SHALL go to the other member, from the caller's verified identity (a run's own agent's), and an agent's mail to the owner SHALL count against its share of the owner's mailbox. A post SHALL wake only the members it addresses: a deliberate post addresses the other member; a run's result addresses only the person or outside client whose mail started the run, and is posted as the reply to that mail, never to another agent's. A further turn between agents SHALL take a deliberate post, which needs `converse`. The owner SHALL read any chain whole from any of its messages (`mailChain`). There SHALL be no turn or chain-depth cap of the platform's.
+
+#### Scenario: One question between two agents
+- **WHEN** an agent's run posts a question to another agent and that agent's run ends with a result, posting nothing
+- **THEN** no further run starts, and the owner reads the question in the chain
+
+### Requirement: A run reads no mailbox
+A run SHALL read and ack no ledger mailbox (`run_no_mailbox`), and its MCP profile SHALL hold no mailbox tool: its mail is its input, and its agent's mailbox holds every authority's mail. An agent's `queued` and `held_cap` rows SHALL be the `runs` lane's alone.
+
+#### Scenario: A client's run
+- **WHEN** a client's mail starts an agent's run while the owner's mail to that agent waits
+- **THEN** the run's mailbox read is refused, and the owner's mail starts its own run
+
 ### Requirement: Mail to an agent starts its run
-Mail to one of the owner's agents SHALL wait `queued` in its recipient row until the `runs` lane starts that agent's run on it, through the same admission as a door's, unattended: its input the mail's body, its conversation the mail thread's (one a thread, agent and authority, made with the run when the thread has none, its engine's session resumed after), its retry key the mail and agent. The mail's authority SHALL be the sender's, kept with it: none for the owner's own work, else the client's grant at its generation (from the post's verified binding, or the posting run's stamp), where a scoped grant acts; the run SHALL be held to the intersection of the agent's scopes and that grant there, and refused once the grant moved or was revoked. To post mail that starts an agent's run, a client's scoped grant SHALL hold `converse` for that agent, and a run SHALL hold `converse` among its scopes. The mail SHALL be taken (read, no longer held) in the admission's own unit; past the tier's simultaneous runs, or behind a busy conversation, the run SHALL wait its turn, never refused for the tier; when the inputs' queue is full the mail SHALL stay held in the ledger until it has room; any other refusal SHALL fail the mail with its code and leave the owner a notice. A run started by mail that succeeds with a result SHALL post it, in its settle's unit, as its agent's reply to that mail in its room, under the run's authority, once; a reply the ledger refuses SHALL leave a notice and the settle SHALL stand.
+Mail to one of the owner's agents SHALL wait `queued` until the `runs` lane starts that agent's run on it through the same admission as a door's: its input the mail's body; attended only when a person sent it (the owner's own call), unattended for a run's mail and a client's; its conversation the thread's (one a thread, agent and authority); its authority the sender's, kept with the mail (a client's grant at its generation, the run held to the intersection with it, refused once it moved); its retry key the mail. Posting it SHALL need `converse` on that agent (a client's scoped grant, a run's scopes). The mail SHALL be taken in the admission's unit and held until the run settles; past the tier, or behind a busy conversation, the run SHALL wait its turn; with the inputs' queue full the mail SHALL stay held in the ledger; any other refusal SHALL fail the mail with a notice. A result answering a person's or a client's mail SHALL be posted before the settle, once; a reply the ledger does not post SHALL leave a notice, and the settle SHALL stand.
 
 #### Scenario: A client's mail to an agent
 - **WHEN** an outside client whose scoped grant holds `converse` and `read_graph` for `main` mails `main`, whose scopes are every capability
-- **THEN** `main`'s run starts in that client's sandbox under its stamp, holding `read_graph` and `converse` only, and its result is `main`'s reply to the client in their room
+- **THEN** `main`'s run starts unattended in that client's sandbox under its stamp, holding `read_graph` and `converse` only, and its result is `main`'s reply to the client in their room
+
+#### Scenario: The owner's mail on an attended-only source
+- **WHEN** the owner mails an agent on a sign-in its record allows only attended, and another agent mails it too
+- **THEN** the owner's mail starts its run, and the other agent's fails `unattended_refused`
 
 #### Scenario: A revoked sender
 - **WHEN** a client's mail to an agent is still untaken when the owner revokes the client
 - **THEN** no run starts, the mail fails, and the owner has a notice
 
 ### Requirement: Agents mailing each other are bounded by the tier and the owner's own limits
-Agents that mail each other SHALL be bounded only by what bounds every run: the tier's simultaneous runs (a turn past them waits), the inputs' queue and each agent's mailbox (technical ceilings, each refused loudly to the sender), the owner's own limits (an API-key turn past the owner's spending caps refused `owner_limit`, the mail failed and noticed), and the vendor's limits. The platform SHALL add no cap of its own on turns or chain depth.
+Agents that keep posting to each other SHALL be bounded only by what bounds every run: the tier's simultaneous runs, the inputs' queue and each agent's mailbox (each refused loudly), the owner's own limits (an API-key turn past the owner's caps refused `owner_limit`, the mail failed and noticed), and the vendor's limits.
 
 #### Scenario: Two agents on a key, past the owner's daily cap
-- **WHEN** two agents take turns by mail and the owner's daily cap is spent
+- **WHEN** two agents take turns by posts and the owner's daily cap is spent
 - **THEN** the next turn starts no run, its mail fails, the owner has a notice, and the lane has no job
 
 ### Requirement: A run's live output is relayed, never committed

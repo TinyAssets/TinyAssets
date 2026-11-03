@@ -385,7 +385,7 @@ TinyAssets builds no delegation tool. Work between two TinyAssets agents, possib
 
 **Read and act.** On its own schedule or on a doorbell, it reads with `mailbox_read`, `collection_list` (board, `room:<app>:<room>`) and `collection_get`. It posts as itself with `room_post` and `collection_write`. A board claim is a compare-and-swap write on the row's etag. All of this exists and is tested.
 
-**The owner's own agents beside it (slice ID, built).** Each `agent.json` is a ledger identity too (`ta_` + hex), made and retired with its file. A main agent mails one in their pair's room (`dm:<agent>+<ta agent>`, `converse` needed there), which starts that agent's run under the main agent's grant, and the run's result is the reply in the thread. Group rooms of three or more are S4's.
+**The owner's own agents beside it (slice ID, built).** Each `agent.json` is a ledger identity too (`ta_` + hex), made and retired with its file. A main agent mails one in their pair's room (`dm:<agent>+<ta agent>`, `converse` needed there), which starts that agent's run under the main agent's grant, and the run's result is the reply in the thread. A post wakes only the members it addresses: a run's result never wakes another agent, so agents take turns only by deliberate posts. Group rooms of three or more, and room ids off member-encoding, are S4's.
 
 **Doorbells (tasks 7, unchanged):**
 - ChatGPT: MCP Events;

@@ -955,41 +955,54 @@ R, S, M and W.
   - owed probes: E2B's transform on `/r/<run>/<secret>/mcp` and `/r/<run>/events`; whether a
     WebSocket would carry the frames (the POST batches are the path today).
 - [x] Slice ID: TinyAssets agents get an identity in the ledger (`ledger.ts`, migration 13,
-  `test/agent-mail.test.ts`). Core to the product: group chats that mix people, main
-  agents and TinyAssets agents.
-  - Each `/workspace/agents/<id>/agent.json` is a ledger identity (`native_agents`, `ta_` and
-    16 hex) beside the outside agents, made as the file appears and retired as it goes, in
-    the file change's own unit (`Files`' path observer). A live one takes one of the
-    ledger's reserved mailboxes (`ledger_agents_full` past them); its row counts in the
-    registry, the oldest retired one forgotten first. A retired agent's mail is kept and
-    readable by the other side; new mail to or from it is refused `agent_retired`, and its
-    untaken mail fails.
+  `test/agent-mail.test.ts`), with its review's fixes (H1-H3, M1-M3, L1-L4). Core to the
+  product: group chats that mix people, main agents and TinyAssets agents.
+  - Each `/workspace/agents/<id>/agent.json` is a ledger identity (`native_agents`, keyed by
+    `ta_` and its name's digest) beside the outside agents, made as the file appears and
+    retired as it goes, in the file change's own unit (`Files`' path observer). A live one
+    takes one of the ledger's reserved mailboxes (`ledger_agents_full` past them); its row
+    counts in the registry, the oldest retired one forgotten first. A retired agent's mail
+    is kept and readable by the other side; new mail to or from it is refused
+    `agent_retired`, and its untaken mail fails, what it sent included (a disabled outside
+    agent's too).
   - Rooms are pairs: `dm:<a>` (the owner and `a`), `dm:<a>+<b>` (two agents, one at least
-    the owner's own). A run acts in the ledger as its own agent (its mailbox, its posts),
-    never as the owner or client that started it; the posting caller's authority (none, a
-    client's grant at its generation, a run's stamp) is kept with the mail
-    (`ledger_messages.authority`).
+    the owner's own). A run posts as its own agent, never as the owner or client that
+    started it, and reads and acks no mailbox (`run_no_mailbox`; the mailbox tools are out
+    of the run profile): its mail is its input, and its agent's mailbox holds every
+    authority's mail. Each mail keeps its sender's authority (`ledger_messages.authority`)
+    and whether a person sent it (`attended`: the owner's own call).
   - Mail to an agent waits `queued` for the `runs` lane, which starts the agent's run
-    through slice R's admission, unattended: its input the mail, its conversation the
-    thread's (`conversations.thread`, one a thread, agent and authority), its authority the
+    through slice R's admission: its input the mail; attended only when a person sent it
+    (a run's mail and a client's are unattended); its conversation the thread's (one a
+    thread, agent and authority, keyed by their digest, no index); its authority the
     mail's (a client's mail held to the intersection with its grant, refused once the grant
-    moved), its retry key the mail. Past the tier it waits as R's inputs do; when the
-    inputs' queue is full the mail is held in the ledger until it has room. Its result is
-    the agent's reply in the thread, posted in the settle's unit. Posting mail that starts
-    an agent's run needs `converse` there (a client's scoped grant, a run's scopes).
+    moved); its retry key the mail. Past the tier it waits as R's inputs do; when the
+    inputs' queue is full the mail is held in the ledger until it has room. The mail stays
+    held until the run settles. Posting mail that starts an agent's run needs `converse`
+    there (a client's scoped grant, a run's scopes); `agents_list` shows a scoped caller only
+    the owner's agents it holds `converse` on (`owner_agents`).
+  - The wake rule (H3, the group rule too): a post wakes only the members it addresses. A
+    run's result is the reply only to a person's or an outside client's mail; a run woken
+    by another agent's mail posts no automatic reply, so agents take turns only by
+    deliberate `room_post`s, each needing `converse`. The owner reads any chain whole
+    (`mailChain`, from the mail a run's receipt names).
   - Slice R's owner-mail schedules (`on_mail`, `if_mail`), their tests and spec text are
-    gone; `agents_list` also lists the owner's agents (`owner_agents`).
-  - Loops: no cap of the platform's. The tier's simultaneous runs, the inputs' queue, each
-    mailbox and the owner's own spending caps bound agents mailing each other, each refused
-    loudly (tested). Owed, raised for the founder: a loop on a subscription, with the
-    owner's caps off (the default), runs one turn at a time until the vendor's own limit.
-    An owner setting, off by default (a turn or chain-depth limit on agent-to-agent mail),
-    would be the founder's call; none is built.
-  - Owed to later slices: group rooms of three or more (S4, rooms and status: the owner,
-    main agents and TinyAssets agents together, one post to each member); a room's history
-    read for the owner over agent-to-agent mail; the app's view of mail-started runs (the
-    owner app, S6); the agent's own mail tools in its run's MCP profile are today's
-    `room_post`, `mailbox_read` and `mailbox_ack` (slice M's `inbox_digest` reads them too).
+    gone.
+  - Loops: no cap of the platform's, and no default turn: a chain advances only when a run
+    chooses to post. The tier's simultaneous runs, the inputs' queue, each mailbox and the
+    owner's own spending caps bound agents that do keep posting, each refused loudly
+    (tested). For the founder: an owner setting, off by default (a chain-depth stop on
+    agent-to-agent mail), is not built.
+  - For the founder (H2's mismatch): a client's mail starts an unattended run, but a
+    client's `converse` starts an attended one (`unattended: false`), so one client gets two
+    answers to "is a person present" by door. Either both read the client's sign-in, or
+    `converse` takes the mail's rule; neither is changed here.
+  - Owed to slice S4 (rooms and status): group rooms of three or more (the owner, main
+    agents and TinyAssets agents together, one post waking each member it addresses), and
+    moving room ids off member-encoding (`dm:a+b`) onto a rooms table with members: S4 owns
+    that migration, and moving the mail threads and conversations keyed by `chain_root`.
+  - Owed to later slices: the app's view of mail-started runs and agents' chains (the owner
+    app, S6); slice M's `inbox_digest` over the owner's and outside agents' mailboxes.
 - [ ] Owed by slice E's review, outside slice S's checks:
   - Price server tools as data (Codex's web search, Anthropic's `mcp_servers`, OpenAI's
     `web_search_options`), so a call that enables one can be metered rather than refused

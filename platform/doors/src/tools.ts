@@ -17,8 +17,8 @@
  * `converse` with the same `client_send_id` is the same run); `run_status` reads a run's
  * receipt; `run_cancel` ends one (destructive, idempotent). An engine's own tools are its
  * vendor's, and are never served here. A run's own MCP door (`runProfile`, on the egress
- * host) serves the table but the run tools: work between agents is mail (ADR-034
- * decision 11).
+ * host) serves the table but the run tools, since work between agents is mail (ADR-034
+ * decision 11), and the mailbox tools, since a run's mail is its input (slice ID).
  * `guards/tools.test.ts` holds every row to these rules and to a real outside-callable
  * door, and names the outside-callable doors without a tool yet, each with the slice that
  * owes it.
@@ -215,11 +215,18 @@ export const RUN_TOOLS: readonly string[] = Object.freeze(["converse", "run_grap
                                                            "run_status", "run_cancel"]);
 
 /**
- * A run's own MCP door's tools (ADR-034 decision 6): the table but the run tools, each
- * held by the object to the run grant's scopes.
+ * The mailbox tools, which a run never holds (slice ID): its mail is its input, and its
+ * agent's mailbox holds every authority's mail, which no one run's authority covers.
+ */
+export const MAILBOX_TOOLS: readonly string[] = Object.freeze(["mailbox_read", "mailbox_ack"]);
+
+/**
+ * A run's own MCP door's tools (ADR-034 decision 6): the table but the run tools and the
+ * mailbox tools, each held by the object to the run grant's scopes.
  */
 export function runProfile(): readonly Tool[] {
-  return toolTable().filter((tool) => !RUN_TOOLS.includes(tool.name));
+  return toolTable().filter((tool) => !RUN_TOOLS.includes(tool.name)
+                            && !MAILBOX_TOOLS.includes(tool.name));
 }
 
 /** The tool named `name`, or undefined. */

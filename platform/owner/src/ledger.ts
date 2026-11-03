@@ -44,23 +44,33 @@
  *   wakes and revokes their callbacks (`suppressClient`, P0-3's M3).
  *
  * The owner's own agents are identities here too (slice ID; `native_agents`), beside the
- * outside agents: each `/workspace/agents/<agent>/agent.json` is one, `ta_` and 16 hex,
- * made as the file appears and retired as it goes, in the file change's own unit
- * (`appear`, `retire`). A live one counts among the enabled agents whose mailboxes are
- * reserved, so an agent file past them is refused (`LEDGER_AGENTS_FULL`), and its rows among
- * the registry's, a retired one's forgotten first at that bound. A retired agent's mail is
- * kept, readable by whoever else it was to or from; new mail to it, or from it, is refused
- * (`AGENT_RETIRED`), and its untaken mail fails. Its runs act in the ledger as it (a
- * `Native` actor), never as the owner or the client that started them.
+ * outside agents: each `/workspace/agents/<agent>/agent.json` is one, `ta_` and its name's
+ * digest (`nativeId`, the row's key), made as the file appears and retired as it goes, in
+ * the file change's own unit (`appear`, `retire`). A live one counts among the enabled
+ * agents whose mailboxes are reserved, so an agent file past them is refused
+ * (`ledger_agents_full`), and its rows among the registry's, a retired one's forgotten first
+ * at that bound. A retired agent's mail is kept, readable by whoever else it was to or from;
+ * new mail to it, or from it, is refused (`AGENT_RETIRED`), and its untaken mail fails, the
+ * mail it sent included (as a disabled outside agent's). Its runs post as it (a `Native`
+ * actor), never as the owner or the client that started them, and read no mailbox
+ * (`RUN_NO_MAILBOX`): a run's mail is its input, and its agent's mailbox holds every
+ * authority's mail. Its mailbox's `queued` and `held_cap` rows are the `runs` lane's alone.
  *
  * Rooms are pairs (`dm:<a>`, the owner and `a`; `dm:<a>+<b>`, two agents, at least one the
  * owner's own, `a` before `b`): a post goes to the other member. Mail to one of the owner's
  * agents waits `queued` in its recipient row for the `runs` lane, which starts that agent's
- * run on it (`nextMail`) and marks it taken (`taken`) in the run's admission, or failed
- * (`undeliverable`) when no run may take it; a run that has to wait for the inputs' queue
- * holds it at `held_cap` until the queue has room. The mail's authority (an outside
- * client's grant at its generation, from the post's verified binding or the posting run's
- * stamp) is kept with it, and bounds that run.
+ * run on it (`nextMail`) and marks it taken (`taken`) in the run's admission, held until
+ * the run settles (`settled`), or failed (`undeliverable`) when no run may take it; a run
+ * that has to wait for the inputs' queue holds it at `held_cap` until the queue has room.
+ * The mail's authority (an outside client's grant at its generation, from the post's
+ * verified binding or the posting run's stamp) is kept with it, and bounds that run; so is
+ * whether a person sent it (`attended`: the owner's own call), which the run inherits.
+ *
+ * The wake rule: a post wakes only the members it addresses. A deliberate post addresses
+ * the room's other member; a run's result addresses only the person or outside client whose
+ * mail started it (`answer`), never another agent, so agents take turns only by deliberate
+ * posts (each needing `converse`), never by default. The owner reads any chain whole
+ * (`chain`).
  *
  * Every change runs in one `transactionSync`, so a refusal leaves nothing behind. The
  * object is its owner, so the Python's `owner` columns are gone. The owner's session
@@ -81,8 +91,20 @@ import { codePoints, isPrintable, utf8Bytes } from "./text";
 export const OWNER = "owner";
 const OUTSIDE_ID = /^agent_[0-9a-f]{16}$/;
 const NATIVE_ID = /^ta_[0-9a-f]{16}$/;
-/** The mail to the owner's own agents that no run has taken: the index's own predicate. */
-const DUE = "state IN ('queued', 'held_cap') AND agent_id GLOB 'ta_*'";
+/**
+ * The mail to the owner's own agents that no run has taken: each agent's rows by
+ * `recipients_by_state`, an index seek an agent.
+ */
+const DUE = "state IN ('queued', 'held_cap') AND agent_id IN (SELECT agent_id FROM " +
+  "native_agents)";
+/** A run's mail is its input: it reads and acks no mailbox. */
+export const RUN_NO_MAILBOX = "run_no_mailbox: a run's mail is its input; it reads and acks " +
+  "no mailbox";
+
+/** The ledger id of the owner's agent `agent`: `ta_` and its name's digest, 16 hex. */
+export function nativeId(agent: string): string {
+  return "ta_" + digest(`tinyassets-native-agent\0${agent}`).slice(0, 16);
+}
 /** New mail to or from an agent whose `agent.json` is gone. */
 export const AGENT_RETIRED = "agent_retired: this agent's agent.json was removed; its mail " +
   "is kept, and new mail to or from it is refused";
@@ -287,7 +309,14 @@ export interface Delivery {
   readonly body: string | null;
   readonly integrity: Integrity;
   readonly authority: MailAuthority | null;
+  /** Whether a person sent it (the owner's own call): the run it starts is attended. */
+  readonly attended: boolean;
 }
+
+/** A message of a mail chain, as the owner reads the chain: who it went to, and how far. */
+export type ChainMail = Mail & {
+  readonly recipients: readonly { readonly agent_id: string; readonly state: string }[];
+};
 
 export type Agent = {
   readonly agent_id: string;
@@ -429,6 +458,7 @@ type StoredMessage = {
   body_bytes: number;
   unacked: number;
   authority: string | null;
+  attended: number;
 };
 
 type StoredNative = NativeAgent & { unacked_to_owner: number; unacked_to_owner_bytes: number };
@@ -651,8 +681,8 @@ export class Ledger {
   }
 
   #nativeNamed(agent: string): StoredNative | undefined {
-    return this.#sql.exec<StoredNative>("SELECT * FROM native_agents WHERE agent = ?", agent)
-      .toArray()[0];
+    return this.#sql.exec<StoredNative>("SELECT * FROM native_agents WHERE agent_id = ?",
+                                        nativeId(agent)).toArray()[0];
   }
 
   /** A live own agent by name, or refused: gone (`AGENT_RETIRED`) or never one (`NO_AGENT`). */
@@ -690,34 +720,37 @@ export class Ledger {
           limits.maxAgents} enabled agents, each a reserved mailbox`);
       }
       if (row !== undefined) {
-        sql.exec("UPDATE native_agents SET retired_at = NULL WHERE agent = ?", agent);
+        sql.exec("UPDATE native_agents SET retired_at = NULL WHERE agent_id = ?", row.agent_id);
         return;
       }
       if (usage.agents >= limits.maxAgentRows) {
+        // At most `maxAgentRows` rows to look through, and only when the registry is full.
         const forgotten = sql.exec<{ agent_id: string }>(
-          "DELETE FROM native_agents WHERE agent = (SELECT agent FROM native_agents WHERE " +
-            "retired_at IS NOT NULL ORDER BY retired_at, agent LIMIT 1) RETURNING agent_id",
+          "DELETE FROM native_agents WHERE agent_id = (SELECT agent_id FROM native_agents " +
+            "WHERE retired_at IS NOT NULL ORDER BY retired_at, agent_id LIMIT 1) " +
+            "RETURNING agent_id",
         ).toArray()[0];
         if (forgotten === undefined) {
           throw new Refused("ledger_agents_full: the owner's agent registry is full");
         }
         sql.exec("DELETE FROM ledger_readers WHERE reader = ?", forgotten.agent_id);
       }
-      sql.exec("INSERT INTO native_agents (agent, agent_id, created_at) VALUES (?, ?, ?)",
-               agent, "ta_" + token(8), now);
+      sql.exec("INSERT INTO native_agents (agent_id, agent, created_at) VALUES (?, ?, ?)",
+               nativeId(agent), agent, now);
     });
   }
 
   /**
    * In the file change's unit: `agent`'s `agent.json` is gone, so its identity is retired.
-   * Its mail is kept; what it held unacked is released, and what no run took yet fails.
+   * Its mail is kept; what it held unacked is released, and what no run took yet fails,
+   * the mail it sent another agent included.
    */
   retire(agent: string, now: number = clock()): void {
     const sql = this.#sql;
     this.#storage.transactionSync(() => {
       const row = sql.exec<{ agent_id: string }>(
-        "UPDATE native_agents SET retired_at = ? WHERE agent = ? AND retired_at IS NULL " +
-          "RETURNING agent_id", now, agent).toArray()[0];
+        "UPDATE native_agents SET retired_at = ? WHERE agent_id = ? AND retired_at IS NULL " +
+          "RETURNING agent_id", now, nativeId(agent)).toArray()[0];
       if (row === undefined) {
         return;
       }
@@ -725,7 +758,22 @@ export class Ledger {
                  "agent_id = ? AND state IN ('queued', 'held_cap')", now, row.agent_id);
       sql.exec("UPDATE ledger_recipients SET unacked = 0 WHERE agent_id = ? AND unacked = 1",
                row.agent_id);
+      this.#failSent(row.agent_id, now);
     });
+  }
+
+  /**
+   * The mail `sender` sent the owner's agents that no run took yet: failed, with a receipt
+   * (its sender retired or disabled, it starts nothing). An index range of its messages.
+   */
+  #failSent(sender: string, now: number): void {
+    for (const { message_id: messageId, agent_id: agentId } of this.#sql.exec<
+      { message_id: string; agent_id: string }>(
+      "UPDATE ledger_recipients SET state = 'failed', unacked = 0, changed_at = ? WHERE " +
+        `${DUE} AND message_id IN (SELECT message_id FROM ledger_messages WHERE ` +
+        "sender_id = ?) RETURNING message_id, agent_id", now, sender).toArray()) {
+      this.#receipt(agentId, "failed", messageId, now, { reason: "sender_gone" });
+    }
   }
 
   register(origin: Origin | null, source: unknown, request: Registration,
@@ -834,6 +882,7 @@ export class Ledger {
                  "WHERE agent_id = ?", reason, agentId);
       sql.exec("UPDATE ledger_recipients SET unacked = 0 WHERE agent_id = ? AND unacked = 1",
                agentId);
+      this.#failSent(agentId, now);
       this.#suppress(agentId, "disabled", now);
       return this.#agent(agentId)!;
     });
@@ -913,7 +962,7 @@ export class Ledger {
       return OWNER;
     }
     if (isNative(origin)) {
-      return this.#liveNative(origin.native).agent_id;
+      throw new Refused(RUN_NO_MAILBOX);
     }
     const rows = this.#sql.exec<{ agent_id: string }>(
       "SELECT agent_id FROM outside_agents WHERE outside_client = ? AND outside_family = ? " +
@@ -1081,10 +1130,10 @@ export class Ledger {
       const seq = sql.exec<{ seq: number }>(
         "INSERT INTO ledger_messages (message_id, command_center_id, room_id, sender_kind, " +
           "sender_id, client_message_id, body_sha256, parent_id, chain_root, chain_depth, " +
-          "created_at, body_bytes, authority) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
-          "RETURNING seq",
+          "created_at, body_bytes, authority, attended) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
+          "?, ?, ?, ?) RETURNING seq",
         messageId, center, room, kind, sender, cmid, sha, parentKey,
-        parent?.chain_root ?? messageId, depth, now, size, kept,
+        parent?.chain_root ?? messageId, depth, now, size, kept, origin === null ? 1 : 0,
       ).one().seq;
       sql.exec("INSERT INTO message_bodies VALUES (?, ?, ?, ?)", messageId, room, body, now);
       sql.exec("INSERT INTO ledger_recipients (message_id, agent_id, seq, state, changed_at) " +
@@ -1121,15 +1170,66 @@ export class Ledger {
   /**
    * In the settle's unit: a mail's run's result, posted as its agent's reply in that mail's
    * room, the mail its parent and `postId` (the run's id) its own id, so it posts once.
+   *
+   * A post wakes only the members it addresses, and a result addresses only the person or
+   * outside client whose mail started the run: mail from another of the owner's agents gets
+   * no automatic reply (null), so no agent's result ever wakes another agent. A further turn
+   * between agents is a deliberate post, which needs `converse` (`roomPost`).
    */
   answer(actor: Native, mailId: string, postId: string, body: string, now: number,
-         authority: MailAuthority | null): Posted {
-    const mail = this.#sql.exec<{ room_id: string }>(
-      "SELECT room_id FROM ledger_messages WHERE message_id = ?", mailId).toArray()[0];
+         authority: MailAuthority | null): Posted | null {
+    const mail = this.#sql.exec<{ room_id: string; sender_kind: string }>(
+      "SELECT room_id, sender_kind FROM ledger_messages WHERE message_id = ?", mailId)
+      .toArray()[0];
     if (mail === undefined) {
+      // Gone with its other side (an outside agent the owner deleted): nothing to answer.
       throw new Refused("the mail answered is no longer held");
     }
+    if (mail.sender_kind === "native") {
+      return null;
+    }
     return this.post(actor, mail.room_id, postId, body, mailId, now, authority);
+  }
+
+  /**
+   * The owner's view of a mail chain: the chain holding `messageId`, oldest first, after
+   * `after`, each message with its recipients and how far each took it. A read of the held
+   * messages by their sequence (at most the ledger's `maxMessages`).
+   */
+  chain(messageId: unknown, after: unknown, limit: unknown): { root: string;
+                                                               messages: ChainMail[];
+                                                               more: boolean } {
+    const maxRead = this.#limits.maxRead;
+    if (typeof messageId !== "string" || !count(after, 0, Number.MAX_SAFE_INTEGER)
+        || !count(limit, 1, maxRead)) {
+      throw new Invalid(`a chain read names a message id, after a seq, and 1 to ${maxRead}`);
+    }
+    const sql = this.#sql;
+    const root = sql.exec<{ chain_root: string }>(
+      "SELECT chain_root FROM ledger_messages WHERE message_id = ?", messageId).toArray()[0];
+    if (root === undefined) {
+      throw new Refused("no such message held");
+    }
+    const rows = sql.exec<StoredMessage>(
+      "SELECT * FROM ledger_messages WHERE seq > ? AND chain_root = ? ORDER BY seq LIMIT ?",
+      after, root.chain_root, (limit as number) + 1).toArray();
+    const messages = rows.slice(0, limit as number).map((row): ChainMail => {
+      const stored = sql.exec<{ body: string }>(
+        "SELECT body FROM message_bodies WHERE message_id = ?", row.message_id).toArray()[0];
+      const [body, integrity]: [string | null, Integrity] = stored === undefined
+        ? [null, "missing"]
+        : digest(stored.body) !== row.body_sha256 ? [null, "tampered"] : [stored.body, "ok"];
+      return {
+        seq: row.seq, message_id: row.message_id, room_id: row.room_id,
+        sender_kind: row.sender_kind, sender_id: row.sender_id, parent_id: row.parent_id,
+        chain_depth: row.chain_depth, created_at: row.created_at, reply_s: null, body,
+        integrity,
+        recipients: sql.exec<{ agent_id: string; state: string }>(
+          "SELECT agent_id, state FROM ledger_recipients WHERE message_id = ? ORDER BY agent_id",
+          row.message_id).toArray(),
+      };
+    });
+    return { root: root.chain_root, messages, more: rows.length > messages.length };
   }
 
   // -- MAIL TO THE OWNER'S OWN AGENTS: what the `runs` lane delivers -------------
@@ -1147,11 +1247,10 @@ export class Ledger {
   /** The oldest mail no run has taken, its body checked against its hash. A read. */
   nextMail(): Delivery | null {
     const row = this.#sql.exec<StoredMessage & { recipient: string; agent: string }>(
-      "SELECT m.*, r.agent_id AS recipient, n.agent FROM ledger_recipients r " +
+      "SELECT m.*, r.agent_id AS recipient, n.agent FROM native_agents n " +
+        "JOIN ledger_recipients r ON r.agent_id = n.agent_id AND r.state = 'queued' " +
         "JOIN ledger_messages m ON m.message_id = r.message_id " +
-        "JOIN native_agents n ON n.agent_id = r.agent_id " +
-        "WHERE r.state IN ('queued', 'held_cap') AND r.agent_id GLOB 'ta_*' " +
-        "AND r.state = 'queued' ORDER BY r.seq LIMIT 1").toArray()[0];
+        "ORDER BY r.seq LIMIT 1").toArray()[0];
     if (row === undefined) {
       return null;
     }
@@ -1162,17 +1261,30 @@ export class Ledger {
       : digest(stored.body) !== row.body_sha256 ? [null, "tampered"] : [stored.body, "ok"];
     return { message_id: row.message_id, agent: row.agent, agent_id: row.recipient,
              room_id: row.room_id, thread: row.chain_root, sender_id: row.sender_id, body,
-             integrity, authority: authorityOf(row.authority, row.command_center_id) };
+             integrity, authority: authorityOf(row.authority, row.command_center_id),
+             attended: row.attended === 1 };
   }
 
-  /** In the run's admission unit: the mail taken by its agent's run, read and no longer held. */
+  /**
+   * In the run's admission unit: the mail taken by its agent's run, read. Its recipient row
+   * still holds it, so it is never evicted before the run answers it (`settled`).
+   */
   taken(messageId: string, agentId: string, now: number = clock()): void {
     const sql = this.#sql;
-    if (sql.exec("UPDATE ledger_recipients SET state = 'read', unacked = 0, changed_at = ? " +
+    if (sql.exec("UPDATE ledger_recipients SET state = 'read', changed_at = ? " +
                    `WHERE message_id = ? AND agent_id = ? AND ${DUE} RETURNING agent_id`, now,
                  messageId, agentId).toArray().length === 1) {
       this.#receipt(agentId, "read", messageId, now);
     }
+  }
+
+  /**
+   * In a run's settle unit, however it settles: the mail it took no longer held by its
+   * agent's recipient row.
+   */
+  settled(messageId: string, agent: string): void {
+    this.#sql.exec("UPDATE ledger_recipients SET unacked = 0 WHERE message_id = ? AND " +
+                     "agent_id = ? AND unacked = 1", messageId, nativeId(agent));
   }
 
   /** In a unit: mail no run may take (its refusal's code), failed and no longer held. */

@@ -16,6 +16,7 @@ import { AGENT_DISABLED, AGENT_UNDEFINED, agentFile } from "../src/agent-file";
 import { WriteGate } from "../src/gate";
 import { AUTHORITY_CHANGED } from "../src/authority";
 import type { Binding } from "../src/owner-do";
+import { RUN_NO_MAILBOX } from "../src/ledger";
 import { RUN_STARTS_NONE, SANDBOX_ONLY } from "../src/owner-do";
 import { QUEUE_BYTES, QUEUE_ROWS } from "../src/run-rows";
 import { NO_CONVERSATION, NO_RUN, QUEUE_FULL, RUN_ENDED, Runs, SIGNIN_LAPSED,
@@ -602,7 +603,7 @@ describe("the admission unit", () => {
         standing: never, tier: never, caps: never, spent: never,
         lease: { live: never, all: never, open: never, release: never, renew: never,
                  lapsed: never }, stop: never,
-        ended: never, leaseEnded: never, capacity: never });
+        ended: never, answer: never, mailSettled: never, leaseEnded: never, capacity: never });
       return gate.write(() => runs.admit({
         initiator: "schedule", stamp: null, origin: null, agent: "main",
         file: agentFile(JSON.stringify(SIGNED_IN)), conversation: null, request: null,
@@ -637,7 +638,8 @@ describe("the admission unit", () => {
         egressible: never, standing: never, tier: never, caps: never, spent: never,
         lease: { live: never, all: never, open: never, release: never, renew: never,
                  lapsed: never }, stop: never,
-        ended: never, leaseEnded: never, capacity: () => capacity });
+        ended: never, answer: never, mailSettled: never, leaseEnded: never,
+        capacity: () => capacity });
       return [null, 1, 2].map((capacity) => runs(capacity).nextWaiting()?.id ?? null);
     });
     expect(picked).toEqual([null, null, run(3)]);
@@ -726,7 +728,8 @@ describe("a run's own calls", () => {
       .toMatchObject({ run_id: run.run_id });
     const start = (await recorder(r.stub)).starts.at(-1)!;
     const asRun = runBinding(r, start);
-    expect(await r.stub.mailboxRead(asRun, { limit: 1 })).toMatchObject({ messages: [] });
+    expect((await failure(() => r.stub.mailboxRead(asRun, { limit: 1 }))).message)
+      .toBe(RUN_NO_MAILBOX);
     expect((await failure(() => r.stub.fileStat(asRun, { path: "/workspace" }))).message)
       .toBe("outside client capability not granted");
     // The owner revokes the client: its run's grant goes at once, and its CLI is stopped.

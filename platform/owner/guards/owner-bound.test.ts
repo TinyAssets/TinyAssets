@@ -24,8 +24,9 @@
  * The worst case is 42.3% of the limit (slice ID: 4,234,268,166.75 bytes), about 766 MB under
  * half; with every raise the limits audit proposes, 49.99% (4,999,455,028.75 bytes,
  * `limits-proposed.test.ts`), 0.5 MB under half. Slice ID added `native_agents` (1.5 MB,
- * the owner's own agents in the registry's rows); a mail's authority, a run's mail and a
- * conversation's thread fit within the pages their rows were already counted at.
+ * the owner's own agents in the registry's rows); a mail's authority and attendance and a
+ * run's mail fit within the pages their rows were already counted at, and it adds no index
+ * (an identity and a mail thread's conversation are found by their keys, digests).
  * ADR-034's deletion slice took out the agent's thread rows, their live and usage rows,
  * the run receipts and the model turns' counters and owners, and Lifecycle's wake job and
  * key per live thread (slice D: 40.6%, 4,064,822,714 bytes; G4 was 46.3%). The runs slice
@@ -327,8 +328,9 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     native_agents: { rows: L.maxAgentRows, bytes: ROW + 128 + NATIVE_ID_CHARS + 4 * 8,
                      by: "maxAgentRows, live or retired, each its name (ASCII), id and " +
                        "counters" },
-    ledger_messages: { rows: L.maxMessages, bytes: ROW + 1 * KIB + AUTHORITY_CHARS,
-                       by: "maxMessages, each with its authority (visible ASCII)" },
+    ledger_messages: { rows: L.maxMessages, bytes: ROW + 1 * KIB + AUTHORITY_CHARS + 8,
+                       by: "maxMessages, each with its authority (visible ASCII) and whether " +
+                         "a person sent it" },
     message_bodies: { rows: L.maxMessages,
                       bytes: ROW + L.maxBodyBytes / L.maxMessages,
                       by: "maxBodyBytes over maxMessages" },
@@ -379,10 +381,11 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // Runs (slice R): settled receipts kept and the live ones, each its widest; a live run's
     // grant; the conversations; the runs lane's schedules; the tier numbers kept; tickets.
     runs: { rows: RUNS_KEPT + RUNS_CEILING + QUEUE_ROWS,
-            bytes: ROW + RESULT_BYTES + ERROR_BYTES + 4 * STAMP_CHARS + 256 + 512 + 32 + 16,
+            bytes: ROW + RESULT_BYTES + ERROR_BYTES + 4 * STAMP_CHARS + 256 + 512 + 32 + 16
+              + MESSAGE_ID_CHARS,
             by: "RUNS_KEPT settled receipts, RUNS_CEILING live and QUEUE_ROWS waiting, each " +
-              "its result, error, stamp, model, ids, counters, lease and heartbeat at their " +
-              "widest" },
+              "its result, error, stamp, model, ids, counters, lease, heartbeat and mail at " +
+              "their widest" },
     // The sandbox leases (review H-1): one an authority, opened only for a live run.
     sandbox_leases: { rows: RUNS_CEILING,
                       bytes: ROW + 64 + 32 + 8 + 128 + 16 + 3 * 64 + 8 + SIGNIN_LIST_CHARS
@@ -396,21 +399,18 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // page (a `WITHOUT ROWID` record keeps 1,002 bytes in place), and its overflow at most a
     // page past its bytes', which the two pages cover whatever the spread.
     run_inputs: { rows: QUEUE_ROWS,
-                  bytes: ROW + 36 + ORIGIN_CHARS + MESSAGE_ID_CHARS + QUEUE_BYTES / QUEUE_ROWS
-                    + 2 * 4092,
-                  by: "QUEUE_ROWS, QUEUE_BYTES of input in all, each its run, origin and mail" },
+                  bytes: ROW + 36 + ORIGIN_CHARS + QUEUE_BYTES / QUEUE_ROWS + 2 * 4092,
+                  by: "QUEUE_ROWS, QUEUE_BYTES of input in all, each its run and origin" },
     // Each engine's sign-in as the runner reports it: presence, times and models, no secret.
     engine_signins: { rows: ENGINE_SIGNINS, bytes: ROW + 64 + SIGNIN_MODELS_CHARS + 16,
                       by: "ENGINE_SIGNINS, each its engine and models (visible ASCII)" },
     run_grants: { rows: RUNS_CEILING,
-                  bytes: ROW + 4 * STAMP_CHARS + ORIGIN_CHARS + 512 + 128 + 64
-                    + MESSAGE_ID_CHARS,
-                  by: "one a live run, its stamp, origin, scopes, connection, secret's " +
-                    "hash and mail" },
-    conversations: { rows: CONVERSATIONS_KEPT,
-                     bytes: ROW + 128 + 64 + 64 + 256 + 128 + MESSAGE_ID_CHARS,
-                     by: "CONVERSATIONS_KEPT, each its agent, source, client, session id and " +
-                       "mail thread" },
+                  bytes: ROW + 4 * STAMP_CHARS + ORIGIN_CHARS + 512 + 128 + 64,
+                  by: "one a live run, its stamp, origin, scopes, connection and secret's " +
+                    "hash" },
+    // A mail thread's conversation is found by its key, the thread's digest: no index.
+    conversations: { rows: CONVERSATIONS_KEPT, bytes: ROW + 128 + 64 + 64 + 256 + 128,
+                     by: "CONVERSATIONS_KEPT, each its agent, source, client and session id" },
     run_schedules: { rows: SCHEDULES_KEPT,
                      bytes: ROW + INPUT_BYTES + 4 * STAMP_CHARS + ORIGIN_CHARS + 4 * 256 + 256,
                      by: "SCHEDULES_KEPT, each its input, stamp, origin and last error" },
@@ -458,6 +458,13 @@ export function ownerTables(schema: string = source("schema")): string[] {
   }
   tables.delete("schema_version");
   return [...tables].sort();
+}
+
+/** The indexes the schema makes on `table`, by name. */
+function indexesOn(table: string): string[] {
+  return [...source("schema").matchAll(
+    /CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([a-zA-Z_0-9]+) ON ([a-zA-Z_0-9]+)/g)]
+    .filter((match) => match[2] === table).map((match) => match[1]!).sort();
 }
 
 /** The indexes the schema makes on the manifest's tables. */
@@ -587,6 +594,19 @@ describe("the owner's database bound", () => {
                                        "2048 AND \" +\n      \"path NOT GLOB '*[^ -~]*'), \" +");
     expect(TERMS["outside_clients"]!.rows * TERMS["outside_clients"]!.bytes)
       .toBe(2000 * (256 + 8) + 1000 * (64 * (3 * 512 * 6 + 64) + 80 * 4));
+  });
+
+  it("charges every index of slice ID's tables: the identities and the mail threads add none",
+     () => {
+    // An identity is found by its key (its name's digest), a mail thread's conversation by
+    // its key (the thread's digest), and an agent's due mail by `recipients_by_state`: no
+    // index past the row's own `ROW` is made for them, so none goes uncharged.
+    expect(indexesOn("native_agents")).toEqual([]);
+    expect(indexesOn("conversations")).toEqual(["conversations_by_age"]);
+    expect(indexesOn("ledger_recipients"))
+      .toEqual(["recipients_by_seq", "recipients_by_state", "recipients_unacked"]);
+    expect(indexesOn("ledger_messages")).toEqual(["messages_done"]);
+    expect(source("schema")).not.toMatch(/native_agents \([^)]*UNIQUE|agent_id TEXT NOT NULL UNIQUE/);
   });
 
   it("counts Lifecycle's own rows, apart from the tables", () => {

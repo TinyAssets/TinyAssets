@@ -295,6 +295,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       // a mail to one of the owner's own agents starts (`ledger.ts`, migration 13).
       `authority TEXT CHECK (authority IS NULL OR (length(authority) <= ${AUTHORITY_CHARS} ` +
       "AND authority NOT GLOB '*[^ -~]*')), " +
+      // Whether a person sent it (the owner's own call): a run it starts is attended. A
+      // run's mail and a client's are not.
+      "attended INTEGER NOT NULL DEFAULT 0 CHECK (attended IN (0, 1)), " +
       "UNIQUE (sender_id, client_message_id))",
     // The messages no recipient holds, oldest first: what eviction takes.
     "CREATE INDEX messages_done ON ledger_messages (seq) WHERE unacked = 0",
@@ -1159,6 +1162,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "stamp TEXT CHECK (stamp IS NULL OR length(stamp) <= 1024), " +
       "request TEXT CHECK (request IS NULL OR length(request) = 64), " +
       "unattended INTEGER NOT NULL CHECK (unattended IN (0, 1)), " +
+      // The mail it answers, when mail to one of the owner's agents started it (slice ID):
+      // the mail is held in the ledger until the run settles.
+      `mail TEXT CHECK (mail IS NULL OR length(mail) = ${MESSAGE_ID_CHARS}), ` +
       "cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0, 1)), " +
       "requests INTEGER NOT NULL DEFAULT 0 CHECK (requests >= 0), " +
       "tokens INTEGER NOT NULL DEFAULT 0 CHECK (tokens >= 0), " +
@@ -1191,7 +1197,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "WHEN OLD.state NOT IN ('waiting', 'queued', 'running') BEGIN SELECT RAISE(ABORT, " +
       "'a run is settled once'); END",
     "CREATE TRIGGER runs_kept BEFORE UPDATE OF seq, id, agent, conversation, initiator, " +
-      "client, stamp, request, unattended, created_at ON runs BEGIN " +
+      "client, stamp, request, unattended, mail, created_at ON runs BEGIN " +
       "SELECT RAISE(ABORT, 'a run never changes what it was admitted as'); END",
     // A waiting run's source is chosen again as it starts; a started one's never moves.
     "CREATE TRIGGER runs_source_kept BEFORE UPDATE OF source, credential ON runs " +
@@ -1203,8 +1209,6 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       // The client's origin, as its run grant will carry it once the run starts.
       "origin TEXT CHECK (origin IS NULL OR (length(origin) <= 256 " +
       "AND origin NOT GLOB '*[^ -~]*')), " +
-      // The mail it answers, when mail to one of the owner's agents started it (slice ID).
-      `mail TEXT CHECK (mail IS NULL OR length(mail) = ${MESSAGE_ID_CHARS}), ` +
       "CHECK (bytes = length(CAST(prompt AS BLOB)))) WITHOUT ROWID",
     "CREATE TRIGGER run_inputs_full BEFORE INSERT ON run_inputs WHEN (SELECT COUNT(*) " +
       `FROM run_inputs) >= ${QUEUE_ROWS} OR (SELECT coalesce(SUM(bytes), 0) FROM run_inputs) ` +
@@ -1258,8 +1262,6 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "AND origin NOT GLOB '*[^ -~]*')), " +
       "scopes TEXT NOT NULL CHECK (length(scopes) <= 512), " +
       "connection TEXT CHECK (connection IS NULL OR length(connection) = 25), " +
-      // The mail the run answers: its result is its agent's reply in that mail's thread.
-      `mail TEXT CHECK (mail IS NULL OR length(mail) = ${MESSAGE_ID_CHARS}), ` +
       "created_at REAL NOT NULL, CHECK ((stamp IS NULL) = (origin IS NULL))) WITHOUT ROWID",
     "CREATE TABLE conversations (" +
       `id TEXT PRIMARY KEY CHECK (length(id) = ${CONVERSATION_ID_CHARS}), ` +
@@ -1269,13 +1271,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "session_id TEXT CHECK (session_id IS NULL OR (length(session_id) BETWEEN 1 AND 256 " +
       "AND session_id NOT GLOB '*[^!-~]*')), " +
       `last_run TEXT CHECK (last_run IS NULL OR length(last_run) = ${RUN_ID_CHARS}), ` +
-      // A mail thread's conversation (slice ID): the thread's first message, whose
-      // conversation each later mail in it to this agent, under this authority, continues.
-      `thread TEXT CHECK (thread IS NULL OR length(thread) = ${MESSAGE_ID_CHARS}), ` +
       "created_at REAL NOT NULL, last_at REAL NOT NULL) WITHOUT ROWID",
     "CREATE INDEX conversations_by_age ON conversations (last_at)",
-    "CREATE UNIQUE INDEX conversations_by_thread ON conversations (agent, thread, " +
-      "coalesce(client, '')) WHERE thread IS NOT NULL",
     "CREATE TRIGGER conversations_full BEFORE INSERT ON conversations WHEN (SELECT COUNT(*) " +
       `FROM conversations) >= ${CONVERSATIONS_KEPT} BEGIN SELECT RAISE(ABORT, ` +
       `'conversations_full: ${CONVERSATIONS_KEPT} conversations are kept'); END`,
@@ -1325,22 +1322,22 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   // it goes, in the file change's own unit: a mail recipient and sender beside the outside
   // agents, counted with them in the registry's rows and, while live, its reserved
   // mailboxes (`ledger_usage`). A retired one keeps its row, and its mail stays readable.
-  // Mail to one waits `queued` in its recipient row until the `runs` lane starts the run
-  // that takes it.
+  // Mail to one waits `queued` in its recipient row (read by its agent through
+  // `recipients_by_state`) until the `runs` lane starts the run that takes it. The identity
+  // is keyed by its ledger id, which is its name's digest, so a name finds its row by the
+  // key and no second index is kept.
   Object.freeze([
     "CREATE TABLE native_agents (" +
-      "agent TEXT PRIMARY KEY CHECK (length(agent) BETWEEN 1 AND 128 " +
-      "AND agent NOT GLOB '*[^A-Za-z0-9._-]*'), " +
-      `agent_id TEXT NOT NULL UNIQUE CHECK (length(agent_id) = ${NATIVE_ID_CHARS} ` +
+      `agent_id TEXT PRIMARY KEY CHECK (length(agent_id) = ${NATIVE_ID_CHARS} ` +
       "AND agent_id GLOB 'ta_*' AND substr(agent_id, 4) NOT GLOB '*[^0-9a-f]*'), " +
+      "agent TEXT NOT NULL CHECK (length(agent) BETWEEN 1 AND 128 " +
+      "AND agent NOT GLOB '*[^A-Za-z0-9._-]*'), " +
       "created_at REAL NOT NULL, retired_at REAL, " +
       // Messages this agent sent the owner that the owner has not acked yet, and their
       // bytes: its share of the owner's mailbox, as an outside agent's.
       "unacked_to_owner INTEGER NOT NULL DEFAULT 0 CHECK (unacked_to_owner >= 0), " +
       "unacked_to_owner_bytes INTEGER NOT NULL DEFAULT 0 CHECK (unacked_to_owner_bytes >= 0)) " +
       "WITHOUT ROWID",
-    "CREATE INDEX native_agents_retired ON native_agents (retired_at) " +
-      "WHERE retired_at IS NOT NULL",
     // An identity's name and ledger id never change: its mail names the id.
     "CREATE TRIGGER native_agents_kept BEFORE UPDATE OF agent, agent_id ON native_agents " +
       "BEGIN SELECT RAISE(ABORT, 'an agent identity never changes its name or id'); END",
@@ -1369,9 +1366,6 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "UPDATE native_agents SET unacked_to_owner = unacked_to_owner - 1, " +
       "unacked_to_owner_bytes = unacked_to_owner_bytes - OLD.body_bytes " +
       "WHERE agent_id = OLD.sender_id; END",
-    // The mail no run has taken yet, oldest first: what the `runs` lane delivers.
-    "CREATE INDEX recipients_native_due ON ledger_recipients (seq) " +
-      "WHERE state IN ('queued', 'held_cap') AND agent_id GLOB 'ta_*'",
   ]),
 ]);
 

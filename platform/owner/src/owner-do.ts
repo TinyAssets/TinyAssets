@@ -103,6 +103,7 @@ import { AGENT_UNDEFINED, type AgentFile, agentFile, agentFilePath } from "./age
 import { agentId, AUTHORITY_CHANGED, refusalCode, type Stamped } from "./authority";
 import { type CloseKind, OWNERS_SOCKET, Relay, type SocketState } from "./relay";
 import { type Ask, CONVERSATION_BUSY, SIGNIN_REQUIRED, type LiveRun, type MailAnswer,
+         mailConversation,
          type PostedFrame, QUEUE_FULL, type RunReceipt, Runs, RUN_ENDED, type RunSchedule,
          scheduleAuthority, secretHash } from "./runs";
 import { ENGINE_SIGNINS, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS } from "./run-rows";
@@ -126,7 +127,8 @@ import { type OwnerStorage, type Write, WriteGate } from "./gate";
 import { type Capability, type Client, type Grant, Grants, holds, type Scope } from "./grants";
 import type { HooksService } from "./codemode";
 import {
-  type Actor, type Agent, clock, type Delivery, Ledger, type MailAuthority, type MailPage,
+  type Actor, type Agent, type ChainMail, clock, type Delivery, Ledger, type MailAuthority,
+  type MailPage, RUN_NO_MAILBOX,
   MAX_BODY, type NativeAgent, type Origin, outsideOrigin, type Posted, registrant,
   type Source,
 } from "./ledger";
@@ -334,6 +336,13 @@ export interface ReadRequest {
   readonly limit: number;
   readonly max_bytes?: number;
   readonly pad_bytes?: number;
+}
+
+/** A mail chain the owner reads, from one of its messages (`mailChain`). */
+export interface ChainRequest {
+  readonly message_id: string;
+  readonly limit: number;
+  readonly after?: number;
 }
 
 export interface AckRequest {
@@ -1114,6 +1123,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         lapsed: (now) => this.#files.leasesLapsed(now),
       },
       stop: (runs) => this.#cancelInSandbox(runs),
+      answer: (answer) => this.#answer(answer),
+      mailSettled: (mail, agent) => this.#ledger.settled(mail, agent),
       ended: (run) => {
         this.#egress.end("run", (live) => live.run === run);
         this.#relay.settled(run);
@@ -1605,14 +1616,23 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /**
    * The owner sees every outside agent; an outside caller only its own identity's. Beside
    * them, the owner's own agents, each a ledger identity while its `agent.json` exists:
-   * every one for the owner, the live ones (whose ids its rooms name) for anyone else.
+   * every one for the owner; for anyone else, the live ones its grant covers (a scoped
+   * grant, or a run's under one, only those it holds `converse` on where it acts: the ones
+   * it may mail).
    */
   outsideAgents(binding: Binding): Promise<{ agents: Agent[]; owner_agents: NativeAgent[] }> {
     return this.#door(() => {
       const account = this.#account(binding, "read");
-      return { agents: this.#ledger.agents(account.origin),
-               owner_agents: this.#ledger.natives(account.origin === null
-                                                   && account.run === null) };
+      const own = account.origin === null && account.run === null;
+      let natives = this.#ledger.natives(own);
+      const grant = account.grant;
+      if (!own && grant !== null && grant.mode === "scoped") {
+        const universe = account.run !== null ? account.run.stamp?.universe ?? null
+          : this.#universe(account);
+        natives = natives.filter((native) => universe !== null && holds(grant, {
+          universe, agent: native.agent, capability: "converse" }));
+      }
+      return { agents: this.#ledger.agents(account.origin), owner_agents: natives };
     });
   }
 
@@ -1893,8 +1913,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#door(() => {
       const account = this.#account(binding, "read");
       const r = ledgerFields(request, ["limit"], ["max_bytes", "pad_bytes"]);
+      this.#noMailbox(account);
       this.#scope(account, "read_graph");
-      return this.#ledger.read(this.#actor(account), r["limit"], r["max_bytes"] ?? null,
+      return this.#ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null,
                                r["pad_bytes"] ?? 0);
     });
   }
@@ -1903,8 +1924,33 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     return this.#door(() => {
       const account = this.#account(binding, "reduce");
       const r = ledgerFields(request, ["through"]);
+      this.#noMailbox(account);
       this.#scope(account, "write_graph");
-      return this.#ledger.ack(this.#actor(account), r["through"]);
+      return this.#ledger.ack(account.origin, r["through"]);
+    });
+  }
+
+  /**
+   * A run reads and acks no mailbox: its mail is its input, and its agent's mailbox holds
+   * every authority's mail, which no one run's authority covers. A run sees its own thread,
+   * under its own authority, as its conversation.
+   */
+  #noMailbox(account: Account): void {
+    if (account.run !== null) {
+      throw new Refused(RUN_NO_MAILBOX);
+    }
+  }
+
+  /**
+   * The owner's view of a mail chain (agents' mail to each other included), from any of its
+   * messages, such as the mail a run's receipt names: oldest first, after `after`.
+   */
+  mailChain(binding: Binding, request: ChainRequest):
+      Promise<{ root: string; messages: ChainMail[]; more: boolean }> {
+    return this.#door(() => {
+      this.#owner(binding, "read", "read its agents' mail chains");
+      const r = ledgerFields(request, ["message_id", "limit"], ["after"]);
+      return this.#ledger.chain(r["message_id"], r["after"] ?? 0, r["limit"]);
     });
   }
 
@@ -2562,11 +2608,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           throw new Refused(RUN_ENDED);
         }
         const r = eventsRequest(request);
-        const done = this.#runs.events(binding.run as string, lease, r.frames, r.end, clock());
-        if (done.answer !== null) {
-          this.#answer(done.answer);
-        }
-        return done;
+        return this.#runs.events(binding.run as string, lease, r.frames, r.end, clock());
       } catch (error) {
         this.#posts.leave();
         throw error;
@@ -2585,10 +2627,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * In the settle's unit: a mail's run's result posted as its agent's reply to that mail, in
-   * its thread, under the run's authority (its run id the post's own id, so it is posted
-   * once). A reply the ledger refuses (the room's other member retired, its mailbox full)
-   * leaves the owner a notice; the run's settle stands.
+   * In the settle's unit, before the run settles: a mail's run's result posted as its
+   * agent's reply to that mail, in its thread, under the run's authority (its run id the
+   * post's own id, so it is posted once), when the mail is one a result answers: a person's
+   * or an outside client's, never another agent's (`Ledger.answer`), so a reply never wakes
+   * an agent and starts no run (no `converse` to check). A reply the ledger does not post,
+   * for any reason (the other side gone, its mailbox full, a broken invariant), leaves the
+   * owner a notice, and the settle stands.
    */
   #answer(answer: MailAnswer): void {
     const authority: MailAuthority | null = answer.stamp === null || answer.origin === null
@@ -2601,9 +2646,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                           clock(), authority);
     } catch (error) {
       if (!(error instanceof Refused || error instanceof Invalid)) {
-        throw error;
+        console.error("a mail's reply failed in the ledger; the run's settle stands");
       }
-      this.#notices.add("mail_reply_refused", `${answer.agent}: ${error.message}`, clock());
+      this.#notices.add("mail_reply_refused", `${answer.agent}: ${
+        error instanceof Error ? error.message : "the ledger failed"}`, clock());
     }
   }
 
@@ -2950,14 +2996,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       const prompt = mail.body;
       const read = await this.#readAgent(mail.agent);
+      const conversation = mailConversation(mail.agent, mail.thread, origin?.client ?? null);
       await this.#launch(read, () => ({
         initiator: "mail", stamp, origin, agent: mail.agent,
-        conversation: this.#runs.threadConversation(mail.agent, mail.thread,
-                                                    origin?.client ?? null),
+        conversation: this.#runs.kept(conversation, mail.agent, origin?.client ?? null)
+          ? conversation : null,
         request: createHash("sha256").update(`mail\0${mail.message_id}\0${mail.agent_id}`,
                                              "utf8").digest("hex"),
-        tiers: tierNumbers(this.#storage, undefined, clock()), unattended: true, prompt,
-        mail: { message: mail.message_id, thread: mail.thread } }), null,
+        tiers: tierNumbers(this.#storage, undefined, clock()), unattended: !mail.attended,
+        prompt, mail: { message: mail.message_id, conversation } }), null,
                          () => this.#ledger.taken(mail.message_id, mail.agent_id, clock()));
     } catch (error) {
       if (!(error instanceof Refused || error instanceof Invalid)) {
