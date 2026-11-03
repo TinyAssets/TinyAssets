@@ -15,6 +15,7 @@ import {
 import { ours } from "../src/authorize";
 import { authorizationServer } from "../src/oauth";
 import { revokeClient } from "../src/revoke";
+import { profileNames } from "../src/tools";
 import { mintKeyFor } from "./keys";
 import {
   appPost, authorizeMcp, authorizeUrl, call, connect, consent, decide, doorsEnv, handleOf, Jar, legacyPost,
@@ -534,8 +535,10 @@ describe("L7: the doors' routes and gates", () => {
 
   it("never sends a bug's detail to the client", async () => {
     const tokens = await connect(await registerClient(), { owner: owner() });
-    const broken = { getByName: () => ({ outsideAgents: () =>
-      Promise.reject(new Error("db at 10.0.0.7 is down")) }) };
+    const broken = { getByName: () => ({
+      toolProfile: () => Promise.resolve({ profile: "directory",
+                                           tools: profileNames("directory") }),
+      outsideAgents: () => Promise.reject(new Error("db at 10.0.0.7 is down")) }) };
     const environment = { ...doorsEnv, OWNER: broken } as unknown as DoorsEnv;
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const response = await legacyPost(tokens.access_token, AGENTS_LIST, {}, environment);

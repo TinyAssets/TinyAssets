@@ -12,6 +12,10 @@
  * is refused. Only the owner deletes a row, or clears a collection or one writer's
  * rows in it (the object enforces that at its RPC door).
  *
+ * Each write also takes the owner-wide clock's next change (`collection_clock`), so one
+ * cursor covers many collections (`changed`): a main agent's digests (slice M) read the
+ * board and every room in one call.
+ *
  * `collection_history` is the primitive's own record: each write appends the revision
  * it committed (its writer, op and body), and a delete or clear appends one body-less
  * entry and drops the row's earlier bodies, so a row made again under that key goes on
@@ -92,6 +96,18 @@ export interface Page {
   readonly rows: Row[];
 }
 
+/** A row as a digest shows it: where it lives, and its owner-wide change. */
+export interface Changed extends Row {
+  readonly collection: string;
+  readonly change: number;
+}
+
+/** Rows changed after an owner-wide cursor, and the next cursor. */
+export interface Changes {
+  readonly cursor: number;
+  readonly rows: Changed[];
+}
+
 /** The expected etag is not the row's; `current` is the row as stored, or null. */
 export class Conflict extends Error {
   override readonly name = "Conflict";
@@ -111,6 +127,7 @@ type StoredRow = {
   body: string;
   updated_at: number;
   creator: string;
+  change: number;
 };
 
 export function digest(body: string): string {
@@ -247,17 +264,20 @@ export class Collections {
           "DO UPDATE SET seq = excluded.seq", collection, seq,
       );
       const at = now();
+      const change = sql.exec<{ change: number }>(
+        "UPDATE collection_clock SET change = change + 1 RETURNING change").one().change;
       // An upsert on the row's key alone: a seq collision fails loudly on
       // UNIQUE (collection, seq) instead of replacing another row.
       sql.exec(
         "INSERT INTO collection_rows (collection, row_id, revision, seq, etag, writer, " +
-          "private, body, updated_at, creator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+          "private, body, updated_at, creator, change) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
           "ON CONFLICT (collection, row_id) DO UPDATE SET " +
           "revision = excluded.revision, seq = excluded.seq, etag = excluded.etag, " +
           "writer = excluded.writer, private = excluded.private, body = excluded.body, " +
-          "updated_at = excluded.updated_at",
+          "updated_at = excluded.updated_at, change = excluded.change",
         collection, rowId, revision, seq, digest(`${seq}:${body}`), caller,
-        isPrivate ? 1 : 0, body, at, caller,
+        isPrivate ? 1 : 0, body, at, caller, change,
       );
       sql.exec(
         "INSERT INTO collection_history VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -294,6 +314,42 @@ export class Collections {
     return {
       cursor: rows.length === limit && last !== undefined ? last.seq : top,
       rows: rows.map(shown),
+    };
+  }
+
+  /**
+   * Rows this caller may see, in `collection` or in every collection whose name starts
+   * with `prefix`, whose latest write is past the owner-wide change `after`, oldest change
+   * first; and the next cursor: the page's last change when it is full, else the owner's
+   * latest, so a reader never rescans and its cursor never goes back.
+   */
+  changed(caller: string, where: { collection: string } | { prefix: string }, after: unknown,
+          limit: unknown): Changes {
+    if (typeof after !== "number" || !Number.isSafeInteger(after) || after < 0) {
+      throw new Invalid("after is a change cursor");
+    }
+    if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit <= 0
+        || limit > this.#limits.maxPull) {
+      throw new Invalid(`limit is 1 to ${this.#limits.maxPull}`);
+    }
+    // A prefix is the range from itself to the name just past every name it starts.
+    const [test, keys] = "collection" in where
+      ? ["collection = ?", [name(where.collection, "collection")]]
+      : ["collection >= ? AND collection < ?",
+         [where.prefix, where.prefix.slice(0, -1) + String.fromCodePoint(
+           where.prefix.codePointAt(where.prefix.length - 1)! + 1)]];
+    const rows = this.#sql.exec<StoredRow>(
+      `SELECT * FROM collection_rows WHERE ${test} AND change > ? ` +
+        "AND (private = 0 OR writer = ?) ORDER BY change LIMIT ?",
+      ...keys, after, caller, limit,
+    ).toArray();
+    const top = this.#sql.exec<{ change: number }>(
+      "SELECT change FROM collection_clock").one().change;
+    const last = rows.at(-1);
+    return {
+      cursor: rows.length === limit && last !== undefined ? last.change : Math.max(after, top),
+      rows: rows.map((row) => ({ ...shown(row), collection: row.collection,
+                                 change: row.change })),
     };
   }
 

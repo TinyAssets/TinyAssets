@@ -31,7 +31,10 @@
  *   The Python's per-turn limits were code constants; here they are policy.
  * - The optional `hooks` table holds one switch: whether code mode scripts may run
  *   (`codemode`, off by default; `HOOK_DEFAULTS`, tasks 5 H1), their VMs in the hooks
- *   Worker.
+ *   Worker. The MCP door's `code` tool refuses while it is off (slice M).
+ * - The optional `tools` table is the owner's own tool profile (`custom`, slice M): the
+ *   MCP door's tools a client whose grant names `custom` is served, each a tool of the
+ *   table, none twice. Left out, `custom` is every tool (`doors/profiles.json`).
  *
  * The Python closed the owner's public egress tunnels before a write committed and
  * cancelled its live streams after. Here a policy write ends the owner's sandbox egress
@@ -71,6 +74,7 @@ import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import { CHUNK_BYTES, KEEP_CEILING, MAX_INTENT_CHUNKS } from "./files";
 import { checkDestination } from "./network";
+import { profileNames, toolNames } from "../../doors/src/tools";
 import { codePoints, SOURCE_ID } from "./text";
 
 export { EGRESS_IP_LITERAL } from "./network";
@@ -230,6 +234,24 @@ function validHooks(hooks: unknown): boolean {
     key === "codemode" && typeof value === "boolean");
 }
 
+/** The document's `tools` table, as written: the owner's `custom` profile. */
+export interface ToolPolicy {
+  readonly custom?: readonly string[];
+}
+
+/** The tools the owner's `custom` profile serves: its own choice, else every tool. */
+export function customTools(document: PolicyDocument): readonly string[] {
+  return document.tools?.custom ?? profileNames("custom");
+}
+
+/** The `tools` table: `custom` alone, distinct names of the table's tools. */
+function validTools(tools: unknown): boolean {
+  const names = toolNames();
+  return plain(tools) && Object.entries(tools).every(([key, value]) =>
+    key === "custom" && Array.isArray(value) && new Set(value).size === value.length
+    && value.every((name) => typeof name === "string" && names.includes(name)));
+}
+
 /**
  * Owner model policy (gateway research §4): what one sandbox run's model calls may spend
  * (held at the egress door, `egress.ts`; the `turn_` names stay until slice R names them
@@ -323,6 +345,7 @@ export interface PolicyDocument {
   readonly files?: Partial<FileSettings>;
   readonly hooks?: HookPolicy;
   readonly models?: ModelPolicy;
+  readonly tools?: ToolPolicy;
   readonly entries: PolicyEntry[];
   readonly egress: { readonly mode: string;
                      readonly destinations: { readonly host: string; readonly port: number }[] };
@@ -441,7 +464,7 @@ function whole(value: unknown): value is number {
 export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS):
     PolicyDocument {
   if (!plain(document) || !keys(document, ["entries", "spend", "egress",
-    ...(["files", "models", "hooks"] as const).filter((table) =>
+    ...(["files", "models", "hooks", "tools"] as const).filter((table) =>
       Object.hasOwn(document, table))])) {
     throw new Invalid("invalid policy document");
   }
@@ -450,6 +473,9 @@ export function validate(document: unknown, limits: PolicyLimits = POLICY_LIMITS
   }
   if (document["hooks"] !== undefined && !validHooks(document["hooks"])) {
     throw new Invalid("invalid hooks policy: codemode, a boolean");
+  }
+  if (document["tools"] !== undefined && !validTools(document["tools"])) {
+    throw new Invalid("invalid tools policy: custom, distinct names of the MCP door's tools");
   }
   const files = document["files"];
   if (files !== undefined && (!plain(files) || Object.entries(files).some(([key, value]) =>

@@ -21,9 +21,10 @@
  * unmodified engines, their sessions in the owner's files (ADR-034), so what the owner's
  * object holds is its own bounded rows only, whatever its agents do.
  *
- * The worst case is 42.3% of the limit (slice R: 4,232,733,666.75 bytes), about 767 MB under
- * half; with every raise the limits audit proposes, 49.98% (4,997,920,528.75 bytes,
- * `limits-proposed.test.ts`), 2.1 MB under half.
+ * The worst case is 42.3% of the limit (slice M: 4,232,734,503.75 bytes), about 767 MB under
+ * half; with every raise the limits audit proposes, 49.98% (4,997,921,365.75 bytes,
+ * `limits-proposed.test.ts`), 2.1 MB under half. Slice M added each collection row's
+ * owner-wide change and its index entry, and the one-row `collection_clock`.
  * ADR-034's deletion slice took out the agent's thread rows, their live and usage rows,
  * the run receipts and the model turns' counters and owners, and Lifecycle's wake job and
  * key per live thread (slice D: 40.6%, 4,064,822,714 bytes; G4 was 46.3%). The runs slice
@@ -187,6 +188,12 @@ export const DATABASE_BYTES = 10_000_000_000;
 export const SHARE = 0.5;
 /** A row's fixed overhead past its payload: keys, indexes and SQLite's own record. */
 const ROW = 256;
+/**
+ * A row's owner-wide change (slice M): its integer, in the row and in its
+ * `collection_changes` entry, with that entry's rowid; the entry's collection key is
+ * within `ROW`, as every index's key is.
+ */
+const CHANGE_BYTES = 3 * 9;
 const KIB = 1024;
 /** A JSON string's most bytes for each code point: a control character's `\u00XX`. */
 const JSON_POINT = 6;
@@ -331,9 +338,10 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     ledger_wakes: { rows: L.maxAgentRows + L.maxSettledWakes,
                     bytes: ROW + 1 * KIB, by: "an open wake per agent, maxSettledWakes settled" },
     ledger_usage: { rows: L.maxAgentRows + 1, bytes: ROW, by: "one per agent" },
-    collection_rows: { rows: C.maxOwnerRows, bytes: ROW + C.maxOwnerBytes /
+    collection_rows: { rows: C.maxOwnerRows, bytes: ROW + CHANGE_BYTES + C.maxOwnerBytes /
                                                                 C.maxOwnerRows,
-                       by: "maxOwnerRows; rows and history bytes within maxOwnerBytes" },
+                       by: "maxOwnerRows; rows and history bytes within maxOwnerBytes; its " +
+                         "change and that index's entry (slice M)" },
     collection_history: { rows: C.maxOwnerRows * C.maxRevisions,
                           bytes: ROW + C.maxOwnerBytes /
                                        (C.maxOwnerRows * C.maxRevisions),
@@ -341,6 +349,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     collection_seqs: { rows: C.maxOwnerRows, bytes: ROW, by: "one per collection" },
     collection_usage: { rows: 4 * C.maxOwnerRows, bytes: ROW,
                         by: "owner, collection, writer and creator counters" },
+    collection_clock: { rows: 1, bytes: ROW, by: "one row" },
     agent_cards: { rows: K.maxPending, bytes: ROW + K.maxRequest,
                    by: "maxPending cards of maxRequest" },
     owner_notices: { rows: N.kept, bytes: ROW + N.detail * 4, by: "N.kept" },

@@ -15,8 +15,8 @@ import { TEST_SOURCES } from "./entry";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 import {
   appPost, authorizeMcp, authorizeUrl, call, connect, consent, decide, doorsEnv, handleOf, Jar,
-  legacyTool, NAVIGATE, OPEN, pkce, refresh, registerClient, serveFirstPartyDocument,
-  setControl, signInApp, sqlIn, type ToolResult, upstreamReturns, url,
+  legacyPost, legacyTool, NAVIGATE, OPEN, pkce, refresh, registerClient,
+  serveFirstPartyDocument, setControl, signInApp, sqlIn, type ToolResult, upstreamReturns, url,
 } from "./support";
 
 function owner(): string {
@@ -306,9 +306,11 @@ describe("a revoke", () => {
       await sqlIn(alice, "UPDATE outside_clients SET mode = 'full', revoked_at = ? " +
                          "WHERE client = ?", now() - 60, origin.client);
       const before = await connect(client, { owner: alice, authenticatedAt: now() - 120 });
-      const refused = await fileCard(before.access_token);
-      expect(refused.isError).toBe(true);
-      expect(refused.content[0]!.text).toBe("a fresh sign-in is required after a revoke");
+      // Refused before any tool is listed: the object answers the client's profile first.
+      const refused = await legacyPost(before.access_token,
+                                       { jsonrpc: "2.0", id: 1, method: "tools/list" });
+      expect([refused.status, await refused.json()])
+        .toEqual([403, { error: "a fresh sign-in is required after a revoke" }]);
       const after = await connect(client, { owner: alice, authenticatedAt: now() });
       expect((await fileCard(after.access_token)).isError).toBeUndefined();
     } finally {

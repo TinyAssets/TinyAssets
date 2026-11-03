@@ -1,0 +1,166 @@
+/**
+ * The MCP door's tool profiles and code mode (slice M), over the real MCP client SDK and
+ * the real hooks Worker: each client is served exactly its own grant's profile (the
+ * directory's until the owner names `custom`, the owner's own choice), `code` only while
+ * the owner's policy turns code mode on; one `code` call runs a script of several tool
+ * calls; a revoked client is refused before any tool is listed; an API key is held to its
+ * profile at `/api` as a client is at `/mcp`.
+ */
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { env } from "cloudflare:workers";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { apiKeyOrigin } from "../../owner/src/ledger";
+import type { Binding } from "../../owner/src/owner-do";
+import { mcpOrigin } from "../src/binder";
+import { profileNames } from "../src/tools";
+import {
+  appPost, call, connect, legacyPost, OPEN, registerClient, serveFirstPartyDocument,
+  setControl, signInApp, type Tokens, url,
+} from "./support";
+
+function owner(): string {
+  return `user_${crypto.randomUUID().replace(/-/g, "")}`;
+}
+
+async function mcpClient(tokens: Tokens): Promise<Client> {
+  const client = new Client({ name: "test-agent", version: "1.0.0" },
+                            { versionNegotiation: { mode: { pin: "2026-07-28" } } });
+  const transport = new StreamableHTTPClientTransport(new URL(url("/mcp")), {
+    fetch: (input, init) => call(new Request(input, init)),
+    requestInit: { headers: { Authorization: `Bearer ${tokens.access_token}` } },
+  });
+  await client.connect(transport);
+  return client;
+}
+
+async function listed(tokens: Tokens): Promise<string[]> {
+  const client = await mcpClient(tokens);
+  const { tools } = await client.listTools();
+  await client.close();
+  return tools.map((tool) => tool.name);
+}
+
+/** A signed-in owner, and what it changes in its own session. */
+async function signedIn() {
+  const who = owner();
+  const app = await signInApp({ owner: who });
+  const stub = env.OWNER.getByName(who);
+  const own: Binding = { owner: who, caller: who, origin: null };
+  const session: Binding = { ...own, session: app.session };
+  return {
+    who, app, stub, own,
+    policy: async (codemode: boolean, custom?: string[]) => {
+      const { generation, policy } = await stub.policyRead(own);
+      const { tools: _tools, ...rest } = policy as typeof policy & { tools?: unknown };
+      await stub.policyWrite(session, { expected_generation: generation, policy: {
+        ...rest, hooks: { codemode }, ...(custom === undefined ? {} : { tools: { custom } }) } });
+    },
+    profile: async (client: string, profile: string) => {
+      const row = (await stub.grantList(own)).clients.find((c) => c.client === client)!;
+      await stub.grantSet(session, { client, source: row.source, mode: row.mode,
+                                     scopes: row.scopes as never,
+                                     expected_revision: row.revision, name: "", profile });
+    },
+  };
+}
+
+let restore: () => void = () => undefined;
+
+beforeEach(async () => {
+  await setControl(OPEN);
+  restore = serveFirstPartyDocument();
+});
+
+afterEach(() => {
+  restore();
+});
+
+describe("the MCP door's tool profiles", () => {
+  it("serves each client exactly its own grant's profile", async () => {
+    const o = await signedIn();
+    const listedClient = await registerClient("Listed");
+    const customClient = await registerClient("Custom");
+    const listedTokens = await connect(listedClient, { owner: o.who });
+    const customTokens = await connect(customClient, { owner: o.who });
+    // The directory's profile until the owner names another: no code.
+    expect(await listed(listedTokens)).toEqual(profileNames("directory"));
+    expect(await listed(customTokens)).toEqual(profileNames("directory"));
+    const custom = await mcpOrigin(customClient.clientId, customClient.redirectUri);
+    await o.profile(custom.client, "custom");
+    // Code mode off: every custom tool but code.
+    expect(await listed(customTokens))
+      .toEqual(profileNames("custom").filter((name) => name !== "code"));
+    await o.policy(true);
+    expect(await listed(customTokens)).toEqual(profileNames("custom"));
+    expect(await listed(listedTokens)).toEqual(profileNames("directory"));
+    // The owner's own choice of custom tools.
+    await o.policy(true, ["agents_list", "code"]);
+    expect(await listed(customTokens)).toEqual(["agents_list", "code"]);
+    const client = await mcpClient(customTokens);
+    const outside = await client.callTool({ name: "file_usage", arguments: {} })
+      .then((result) => JSON.stringify(result), (error: Error) => error.message);
+    expect(outside).toMatch(/not found/i);
+    await client.close();
+  });
+
+  it("runs one script of several tool calls in one code call", async () => {
+    const o = await signedIn();
+    const registered = await registerClient();
+    const tokens = await connect(registered, { owner: o.who });
+    expect(await listed(tokens)).not.toContain("code");  // its first call records its grant
+    await o.profile((await mcpOrigin(registered.clientId, registered.redirectUri)).client,
+                    "custom");
+    await o.policy(true);
+    const client = await mcpClient(tokens);
+    const ran = await client.callTool({ name: "code", arguments: { script: [
+      "await tools.collection_write({ collection: 'board', row_id: 't', body: 'todo',",
+      "  expected_etag: '', private: false });",
+      "const digest = await tools.board_digest({ limit: 5, after: 0 });",
+      "return digest.rows.map((row) => row.head);",
+    ].join("\n") } });
+    expect(ran.isError).toBeFalsy();
+    expect(ran.structuredContent).toMatchObject({ ok: true, value: ["todo"],
+                                                  calls: { ok: 2, error: 0 } });
+    // With code mode off again, the call is refused with its reason.
+    await o.policy(false);
+    const refused = await client.callTool({ name: "code", arguments: { script: "return 1;" } })
+      .then((result) => JSON.stringify(result), (error: Error) => error.message);
+    expect(refused).toMatch(/not found|code_mode_off/);
+    await client.close();
+  });
+
+  it("refuses a revoked client before any tool is listed", async () => {
+    const o = await signedIn();
+    const registered = await registerClient();
+    const tokens = await connect(registered, { owner: o.who });
+    expect(await listed(tokens)).toEqual(profileNames("directory"));
+    await o.stub.grantRevoke(o.own, {
+      client: (await mcpOrigin(registered.clientId, registered.redirectUri)).client });
+    const response = await legacyPost(tokens.access_token,
+                                      { jsonrpc: "2.0", id: 1, method: "tools/list" });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "outside client revoked" });
+  });
+});
+
+describe("the API door's tool profiles", () => {
+  it("holds a key to its grant's profile", async () => {
+    const o = await signedIn();
+    const minted = await appPost("keys", o.app.access_token, o.app.session, {
+      name: "laptop", scopes: [{ universe: "cc", agent: "main", capability: "read_graph" }] });
+    const { key, key_id } = await minted.json<{ key: string; key_id: string }>();
+    const api = (tool: string, body: unknown) => call(new Request(url(`/api/tools/${tool}`), {
+      method: "POST", body: JSON.stringify(body),
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" } }));
+    await o.policy(true);
+    expect((await api("code", { script: "return 1;" })).status).toBe(404);
+    expect((await api("agents_list", {})).status).toBe(200);
+    await o.profile(apiKeyOrigin(key_id).client, "custom");
+    const ran = await api("code", { script: "return (await tools.agents_list({})).agents;" });
+    expect([ran.status, await ran.json()]).toEqual([200, expect.objectContaining({
+      ok: true, value: [] })]);
+    await o.policy(true, ["code"]);
+    expect((await api("agents_list", {})).status).toBe(404);
+  });
+});

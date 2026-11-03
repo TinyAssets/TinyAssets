@@ -55,14 +55,14 @@ The owner's revoke of an MCP client SHALL be made in the owner's object first, t
 - **THEN** both see the same table and reach the same door
 
 ### Requirement: One external tool per outside-callable owner door
-Each external tool SHALL call exactly one owner door an outside client can reach, with that door's capability and arguments, a title, and explicit `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint`. No tool SHALL select an operation by a field, and an engine's own tools (`read`, `write`, `edit`, `bash`, `ta`) SHALL never be served as ours. Each outside-callable door without a tool SHALL be named with the slice that owes it.
+Each external tool SHALL call exactly one owner door an outside client can reach, with that door's capability and arguments, a title, and explicit `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint`. No tool SHALL select an operation by a field, and an engine's own tools (`read`, `write`, `edit`, `bash`, `ta`) SHALL never be served as ours. Each outside-callable door without a tool SHALL be named with the slice that owes it, or as the doors' own (`toolProfile`).
 
 #### Scenario: A tool added for an owner-only door
 - **WHEN** a tool names `grantSet`, `policyWrite` or any door bound through `#owner` or `#widening`
 - **THEN** the tool guard fails CI
 
 ### Requirement: No tool is open world, and the run tools are run doors
-Every tool SHALL be confined to the owner's account, `openWorldHint` false. The run tools (slice R) SHALL be run doors: `converse` (`agentSubmit`, `converse` held where its agent acts) and `run_graph` (`agentRun`, `run_graph`) start an engine run in the owner's sandbox, destructive and not idempotent; `run_status` (`agentStatus`) reads one of the caller's own runs or schedules, from the run's receipt; `run_cancel` (`agentCancel`) cancels one, destructive and idempotent. The owner's `/app/api/agent/{submit,run,status,cancel}` routes SHALL call the same doors. A run's own MCP door SHALL serve the table but the run tools (`runProfile`).
+Every tool SHALL be confined to the owner's account, `openWorldHint` false. The run tools (slice R) SHALL be run doors: `converse` (`agentSubmit`, `converse` held where its agent acts) and `run_graph` (`agentRun`, `run_graph`) start an engine run in the owner's sandbox, destructive and not idempotent; `run_status` (`agentStatus`) reads one of the caller's own runs or schedules, from the run's receipt; `run_cancel` (`agentCancel`) cancels one, destructive and idempotent. The owner's `/app/api/agent/{submit,run,status,cancel}` routes SHALL call the same doors. A run's own MCP door SHALL serve the `run` profile: the table but the run tools.
 
 #### Scenario: A tool marked open world
 - **WHEN** a tool is marked open world
@@ -71,6 +71,24 @@ Every tool SHALL be confined to the owner's account, `openWorldHint` false. The 
 #### Scenario: Another client asks for a run
 - **WHEN** an outside client reads or cancels a run another client started
 - **THEN** it is refused `no_run`, as for a run that does not exist
+
+### Requirement: Each caller is served exactly its own tool profile
+A profile SHALL be data (`doors/profiles.json`) listing table tools in the table's order: `directory`, every tool but `code`, a generic executor, as OpenAI's directory (each operation its own tool, no generic executor) and Anthropic's (narrow, unambiguous tools) require, cited there; `custom`, the owner's own choice (by default every tool); `run`, the table but the run tools. `/mcp`, a run's MCP door and `/api` SHALL serve a request only the tools the object answers for its caller (`toolProfile`), asked before any tool is listed; a caller the object refuses SHALL be answered that refusal (`403`) and no tool, and a tool outside the profile SHALL be unknown (`/api`: `404`).
+
+#### Scenario: Two clients of one owner
+- **WHEN** the owner names one client's profile `custom` and leaves another's
+- **THEN** the first lists the custom tools and the second exactly the directory's
+
+#### Scenario: A revoked client lists its tools
+- **WHEN** a revoked client sends `tools/list`
+- **THEN** it is answered `403` "outside client revoked"
+
+### Requirement: A main agent spends few calls
+`/mcp` SHALL serve `inbox_digest` and `board_digest` (what changed for the caller since its cursor, in one read) and `code` (one script calling the caller's other tools as `await tools.<name>(args)`, its VM in the hooks Worker, refused unless the owner's policy turns code mode on and the caller's profile holds it).
+
+#### Scenario: A script of two calls
+- **WHEN** a custom client with code mode on calls `code` with a script that writes a board row and reads the board digest
+- **THEN** one MCP call answers the script's value, with two calls counted `ok`
 
 ### Requirement: The tier's numbers ride the control record to the run doors
 The control record (`c:control`) MAY hold `tiers`: each tier's simultaneous runs (1 to 1,000, the owner database's ceiling) and storage bytes, which the founder edits with no deploy. A record whose `tiers` are malformed SHALL be malformed whole. The doors SHALL read the record once per outside or owner call and hand its `tiers` in the binding (`withTiers`), never from a request; a record without them hands `null`, and the object then forgets the numbers it kept and refuses every run `tier_unread`.

@@ -229,7 +229,7 @@ The object SHALL admit each call from an outside client against that client's gr
 - **THEN** the write is refused with "outside client capability not granted" and a pull by it is served
 
 ### Requirement: A grant's revision is apart from its authority
-A grant's revision SHALL move on every owner set and revoke, and the owner's set SHALL name it, a stale one refused. Its generation SHALL move only with its mode or the set of its scopes (a revoke is a mode), and stamps SHALL carry it alone, scopes read from the grant as it stands. Where this spec ends a client's work on a grant change, a grant change is a set that moves the generation, or a revoke; a set that moves only the revision SHALL end none of it.
+A grant's revision SHALL move on every owner set and revoke, and the owner's set SHALL name it, a stale one refused. Its generation SHALL move only with its mode, the set of its scopes or its tool profile (a revoke is a mode), and stamps SHALL carry it alone, scopes read from the grant as it stands. Where this spec ends a client's work on a grant change, a grant change is a set that moves the generation, or a revoke; a set that moves only the revision SHALL end none of it.
 
 #### Scenario: A client renamed
 - **WHEN** the owner renames a client with a registered agent and an open wake
@@ -242,6 +242,28 @@ A grant's revision SHALL move on every owner set and revoke, and the owner's set
 #### Scenario: The same scopes reordered, or a revoked grant set revoked again
 - **WHEN** the owner sets a scoped grant's triples in another order, or sets a revoked grant revoked under a new name
 - **THEN** the generation is unchanged, and a revoked grant keeps its revoke's time as its fence
+
+### Requirement: A grant names its tool profile
+Each outside client's grant SHALL name its tool profile (`doors/profiles.json`): `directory` until the owner names `custom` in its session; a free row SHALL name `directory`. The object SHALL answer a caller's tools (`toolProfile`): a run's, the `run` profile; a client's, its grant's, where `custom` is the owner's policy's `tools.custom` (distinct names of the MCP door's tools), or every tool when the policy names none; `code` only while the owner's policy turns `hooks.codemode` on. Code mode SHALL be no capability: the profile is the owner's choice of it.
+
+#### Scenario: A new client
+- **WHEN** an MCP client's first verified call records its grant
+- **THEN** its grant names `directory`, and it is served no `code`
+
+#### Scenario: The owner names custom
+- **WHEN** the owner names a client's profile `custom`
+- **THEN** the grant's generation moves, and the client is served the owner's `tools.custom`
+
+### Requirement: A main agent's digests are held to its grant
+`inboxDigest` SHALL answer, in one read, the caller's unacknowledged mail (the mailbox read from its own acknowledged cursor) and the rows of the owner's rooms (`room:<app>:<room>`) written past an owner-wide change cursor; `boardDigest` the board's. Each row SHALL be its head (`head_chars`, 512 when omitted) with its etag, seq, writer and body length, oldest change first, and the next cursor the page's last change when it is full, else the owner's latest, never behind the one given. Every collection write SHALL take the owner-wide clock's next change (`collection_clock`, which only rises). Both SHALL need `read_graph` where a scoped grant acts, and show a private row only to its writer.
+
+#### Scenario: Nothing new
+- **WHEN** an agent asks for its digest past the cursor its last digest answered, and nothing was written since
+- **THEN** it gets no rows and the same cursor
+
+#### Scenario: A scoped client without read_graph
+- **WHEN** a client scoped to `write_graph` asks for either digest
+- **THEN** it is refused with "outside client capability not granted"
 
 ### Requirement: A scoped grant names the capabilities the doors check
 A scoped grant SHALL hold exact `{universe, agent, capability}` triples naming only the capabilities the object's doors check: `read_graph` and `write_graph` at the mailbox, its doorbell subscription and the collections; `propose_policy` at an agent's policy proposal; and `read_files` and `write_files` at the file doors.
@@ -710,7 +732,15 @@ The `tinyassets-hooks` Worker SHALL bind the namespace of its own `CodemodeSandb
 - **THEN** the owner config guard refuses the owner's `HOOKS` binding
 
 ### Requirement: Code mode's VM runs in the hooks Worker
-Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox` through the `HOOKS` binding's `codemodeExecute`, which hands out no stub and refuses an execution with no name, an empty one or one past 512 characters, each execution named by its owner and a random id; a script's `tools.*` SHALL be the tools its caller hands it, each held by the caller to its own grant; with no hooks Worker bound it SHALL fail loudly. Nothing in production reaches the executor until slice M's MCP `code` tool, which SHALL refuse unless the owner's policy turns `hooks.codemode` on (off by default) and SHALL need `run_code`, which a client holds only where its scoped grant names it, never by a full grant; until then only the policy's parse of the switch is tested.
+Code mode's executor SHALL run a script by pi-codemode's `RemoteCodemodeSandbox` through the `HOOKS` binding's `codemodeExecute`, which hands out no stub and refuses an execution with no name, an empty one or one past 512 characters, each execution named by its owner and a random id; a script's `tools.*` SHALL be the tools its caller hands it, each held by the caller to its own grant; with no hooks Worker bound it SHALL fail loudly. The MCP door's `code` tool SHALL reach it only through `codeRun`, which SHALL refuse (`code_mode_off`) unless the owner's policy turns `hooks.codemode` on (off by default), and (`tool_not_served`) unless the caller's profile holds `code`. A script's tools SHALL be the caller's profile's other tools, each call that tool's own door with the caller's binding, admitted again and held to the caller's profile and the switch as they stand at that call. A script SHALL end `timeout` past `CODEMODE_TIMEOUT_MS` of wall time, checked at each tool call as well as by pi-codemode's timer, or past the hooks Worker's interrupt budget of compute; its answer counts its calls by outcome, never lists them.
+
+#### Scenario: Code mode off
+- **WHEN** an outside client whose profile holds `code` calls `codeRun` while the owner's policy has code mode off
+- **THEN** it is refused `code_mode_off`, and its tools list no `code`
+
+#### Scenario: A tool outside the profile
+- **WHEN** a script reads `tools.file_usage` and the caller's profile does not hold it
+- **THEN** the script gets a `TypeError`, and no door is called
 
 #### Scenario: A script's tool calls
 - **WHEN** a script calls two of the tools its caller handed it

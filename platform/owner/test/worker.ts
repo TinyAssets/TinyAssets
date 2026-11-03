@@ -33,6 +33,17 @@ export class FauxOwnerDO extends OwnerDO {
   }
 }
 
+/**
+ * The owner object as production builds it but for code mode's bounds, which are small
+ * here (production's are `CODEMODE_TIMEOUT_MS` and the hooks Worker's own budget), so a
+ * test sees a script stopped past each.
+ */
+export class BoundedOwnerDO extends OwnerDO {
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    super(ctx, env, { codemode: { timeoutMs: 2_000, interruptBudget: 2_000 } });
+  }
+}
+
 /** One call the object made to its GATEWAY binding, as text: what crossed the binding. */
 export interface GatewayCall {
   readonly method: string;
