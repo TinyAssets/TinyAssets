@@ -35,12 +35,40 @@ export function defaultSyncIgnore(): readonly string[] {
 
 /**
  * Whether `text` matches `pattern` (`*` any run of characters, `?` any one), in time linear
- * in the text for a pattern: the pattern's positions are walked together (a set of states,
- * no backtracking), so no pattern can make a match slow.
+ * in the text for a pattern. A pattern of `*` alone (the common one, `*.pyc`) is matched by
+ * its literal pieces in order, leftmost first; one with `?` walks the pattern's positions
+ * together (a set of states, no backtracking). No pattern can make a match slow.
  */
 export function wildcard(pattern: string, text: string): boolean {
+  return pattern.includes("?") ? states(pattern, text) : stars(pattern, text);
+}
+
+function stars(pattern: string, text: string): boolean {
+  const pieces = pattern.split("*");
+  if (pieces.length === 1) {
+    return pattern === text;
+  }
+  const first = pieces[0]!;
+  const last = pieces.at(-1)!;
+  if (text.length < first.length + last.length || !text.startsWith(first)
+      || !text.endsWith(last)) {
+    return false;
+  }
+  const end = text.length - last.length;
+  let at = first.length;
+  for (const piece of pieces.slice(1, -1)) {
+    const found = piece === "" ? at : text.indexOf(piece, at);
+    if (found < 0 || found + piece.length > end) {
+      return false;
+    }
+    at = found + piece.length;
+  }
+  return true;
+}
+
+function states(pattern: string, text: string): boolean {
   const p = [...pattern];
-  let states = new Uint8Array(p.length + 1);
+  let now = new Uint8Array(p.length + 1);
   const close = (from: Uint8Array) => {
     for (let i = 0; i < p.length; i++) {
       if (from[i] === 1 && p[i] === "*") {
@@ -48,12 +76,12 @@ export function wildcard(pattern: string, text: string): boolean {
       }
     }
   };
-  states[0] = 1;
-  close(states);
+  now[0] = 1;
+  close(now);
   for (const ch of text) {
     const next = new Uint8Array(p.length + 1);
     for (let i = 0; i < p.length; i++) {
-      if (states[i] !== 1) {
+      if (now[i] !== 1) {
         continue;
       }
       if (p[i] === "*") {
@@ -63,46 +91,71 @@ export function wildcard(pattern: string, text: string): boolean {
       }
     }
     close(next);
-    states = next;
+    now = next;
   }
-  return states[p.length] === 1;
+  return now[p.length] === 1;
 }
 
-/** One sync-ignore line as a matcher: a name anywhere, or a path from the workspace. */
-function rule(line: string): ((rel: string) => boolean) | null {
-  const text = line.trim().replace(/\/+$/, "");
-  if (text === "" || text.startsWith("#")) {
-    return null;
+type Kind = "custom" | "default";
+
+/**
+ * The sync-ignore's lines compiled once: each a name anywhere or a path from the workspace;
+ * a literal line a set member (a lookup per path segment, however many lines), a line with
+ * `*` or `?` a pattern; duplicates dropped. Whether a line is a default one is by its text.
+ */
+function compiled(lines: readonly string[]) {
+  const defaults = new Set(DEFAULT_IGNORES);
+  const names = { custom: new Set<string>(), default: new Set<string>() };
+  const paths = { custom: new Set<string>(), default: new Set<string>() };
+  const patterns = new Map<string, { text: string; path: boolean; kind: Kind }>();
+  for (const line of lines) {
+    const text = line.trim().replace(/\/+$/, "");
+    if (text === "" || text.startsWith("#")) {
+      continue;
+    }
+    const kind: Kind = defaults.has(line.trim()) ? "default" : "custom";
+    const path = text.includes("/");
+    const anchored = path ? text.replace(/^\/+/, "") : text;
+    if (/[*?]/.test(anchored)) {
+      const key = `${kind}\n${path}\n${anchored}`;
+      patterns.set(key, { text: anchored, path, kind });
+    } else {
+      (path ? paths : names)[kind].add(anchored);
+    }
   }
-  if (text.includes("/")) {
-    const anchored = text.replace(/^\/+/, "");
-    return (rel) => {
-      const parts = rel.split("/");
-      return parts.some((_, i) => wildcard(anchored, parts.slice(0, i + 1).join("/")));
-    };
-  }
-  return (rel) => rel.split("/").some((part) => wildcard(text, part));
+  return { names, paths, patterns: [...patterns.values()] };
 }
 
 /**
  * The matcher of a sync-ignore's lines: for a workspace path (relative to `/workspace`),
  * `custom` when a line of the owner's own (or a run's) names it, `default` when only a
- * default line does, or null. The sync-ignore file itself is never matched.
+ * default line does, or null. The sync-ignore file itself is never matched. Its cost a path
+ * is a set lookup a segment and prefix, and one match a pattern line.
  */
-export function ignoredBy(lines: readonly string[]):
-    (rel: string) => "custom" | "default" | null {
-  const defaults = new Set(DEFAULT_IGNORES);
-  const rules = lines.map((line) => ({ matches: rule(line), default: defaults.has(line.trim()) }))
-    .filter((r): r is { matches: (rel: string) => boolean; default: boolean } =>
-      r.matches !== null);
+export function ignoredBy(lines: readonly string[]): (rel: string) => Kind | null {
+  const { names, paths, patterns } = compiled(lines);
   return (rel) => {
     if (rel === SYNC_IGNORE_REL || SYNC_IGNORE_REL.startsWith(`${rel}/`)) {
       return null;  // the file itself, and the folders on its way, are never kept out
     }
-    let found: "default" | null = null;
-    for (const r of rules) {
-      if (r.matches(rel)) {
-        if (!r.default) {
+    const parts = rel.split("/");
+    const prefixes = parts.map((_, i) => parts.slice(0, i + 1).join("/"));
+    let found: Kind | null = null;
+    for (const part of parts) {
+      if (names.custom.has(part)) {
+        return "custom";
+      }
+      found = found ?? (names.default.has(part) ? "default" : null);
+    }
+    for (const prefix of prefixes) {
+      if (paths.custom.has(prefix)) {
+        return "custom";
+      }
+      found = found ?? (paths.default.has(prefix) ? "default" : null);
+    }
+    for (const pattern of patterns) {
+      if ((pattern.path ? prefixes : parts).some((each) => wildcard(pattern.text, each))) {
+        if (pattern.kind === "custom") {
           return "custom";
         }
         found = "default";
@@ -110,4 +163,10 @@ export function ignoredBy(lines: readonly string[]):
     }
     return found;
   };
+}
+
+/** The rule lines among `lines` (no comment, no blank), as the matcher reads each. */
+export function ruleLines(lines: readonly string[]): string[] {
+  return lines.map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"));
 }

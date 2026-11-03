@@ -27,10 +27,9 @@ const MISSING = Object.freeze({
   export: "Exporting everything you hold is not here yet: its door is being built.",
   runs: "Only this tab's conversation is shown, and it is not kept across reloads: a list " +
     "of past runs is not here yet. Each engine's own transcript is kept in your files.",
-  signin: "Signing in with a subscription inside your sandbox is not here yet.",
 });
 
-/** The credential a record's engine runs on that needs a door not here yet. */
+/** The credential of a subscription signed in inside the sandbox (its record's switch). */
 const SIGNIN_CREDENTIAL = "vendor_login_in_sandbox";
 
 const SESSION_NEEDED = "interactive owner session required";
@@ -167,8 +166,10 @@ async function agents(arg) {
     await Promise.all([call("tools/agents_list"), call("sources"), call("connections/list"),
                        call("capabilities")]);
   const live = owned.filter((a) => a.retired_at === null);
-  // Each engine's credentials are its record's; the sandbox sign-in's door is not here yet.
-  const usable = (record) => record.credentials.filter((kind) => kind !== SIGNIN_CREDENTIAL);
+  // Each engine's credentials are its record's; a subscription's only while its sign-in is
+  // switched on (slice SIGNIN).
+  const usable = (record) => record.credentials.filter((kind) => kind !== SIGNIN_CREDENTIAL
+                                                       || record.signin?.enabled === true);
   const engines = sources.filter((s) => s.unwired === null && usable(s).length > 0);
   const signinOnly = sources.filter((s) => s.unwired === null && s.credentials.length > 0
                                            && usable(s).length === 0);
@@ -177,7 +178,8 @@ async function agents(arg) {
     "Your strongest connected source"), engines.map((s) => h("option", { value: s.id },
     s.display_name)));
   const credential = h("select", {});
-  const words = { api_key: "An API key you connected" };
+  const words = { api_key: "An API key you connected",
+                  [SIGNIN_CREDENTIAL]: "Your subscription, signed in inside your sandbox" };
   const credentials = () => {
     const record = engines.find((s) => s.id === engine.value);
     fill(credential, h("option", { value: "" }, "Whichever the engine has"),
@@ -228,8 +230,10 @@ async function agents(arg) {
            "AGENTS.md. This writes both; you change them later as files."),
          field("Name", name),
          field("Engine", engine, "What runs the agent: a provider's own app in your sandbox."),
-         signinOnly.length === 0 ? null : h("p", { class: "muted" }, `${MISSING.signin} ` +
-           `So ${signinOnly.map((s) => s.display_name).join(", ")} cannot run an agent yet.`),
+         signinOnly.length === 0 ? null : h("p", { class: "muted" }, "Signing in with a " +
+           `subscription is switched off for ${signinOnly.map((s) => s.display_name)
+             .join(", ")}, so ${signinOnly.length === 1 ? "it" : "they"} cannot run an ` +
+           "agent yet (Model sources says why)."),
          field("Runs on", credential),
          field("API key connection", connection, "Only for an agent that runs on an API key."),
          h("div", { class: "field" }, h("span", {}, "What its runs may do"),

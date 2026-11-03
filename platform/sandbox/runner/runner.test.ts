@@ -671,6 +671,27 @@ describe("the sync", () => {
       .toBe("/workspace/agents/main/leak.txt");
   });
 
+  it("refuses a session holding a secret's bytes once, not again each run it stays", async () => {
+    const token = "sk-ant-oat01-" + "Y".repeat(40);
+    box.cli("claude-code", {
+      lines: SHAPES["claude-code"]!.lines,
+      writes: { "~/.claude/.credentials.json": JSON.stringify({ claudeAiOauth: {
+        accessToken: token } }) } });
+    await run("claude-code");
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines,
+                             writes: { "~/.claude/projects/main/cs-9.jsonl":
+                                         `{"leak":"${token}"}\n` } });
+    await run("claude-code");
+    const refusals = () => doors.frames().filter((event) => event["type"] === "ta.sync_refused"
+      && String(event["path"]).endsWith("cs-9.jsonl"));
+    expect(refusals()).toHaveLength(1);
+    box.cli("claude-code", { lines: SHAPES["claude-code"]!.lines });
+    await run("claude-code");
+    expect(refusals()).toHaveLength(1);
+    expect(JSON.stringify(doors.posts.filter((post) => post.path === "/sync/commit")))
+      .not.toContain(token);
+  });
+
   it("sends a file past one chunk through the upload doors, chunk by chunk", async () => {
     const big = "a".repeat(4 * 1024 * 1024) + "b".repeat(4 * 1024 * 1024) + "c".repeat(1024);
     box.cli("codex", { lines: SHAPES["codex"]!.lines, writes: { "big.bin": big } });

@@ -53,8 +53,8 @@ The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collect
 - **tier**: 3
 - **owner setting**: 12
 - **vendor limit**: 10
-- **technical ceiling**: 115
-- **total**: 140
+- **technical ceiling**: 116
+- **total**: 141
 
 Counted by a script over every table row (`| ` lines past the header, six cells each), the first row and the names row among them.
 
@@ -246,4 +246,5 @@ reason; none refuses a write.
 | `doors/src/egress.ts` `SYNC_BODY_MAX` | 12 MiB | one sync door's body | the sync agent sends more calls | technical ceiling | Two 4 MiB chunks' base64 and the call's fields: the files plane's most a call (`BATCH_BYTES`). |
 | `sandbox/runner/runner.ts` `CANCEL_GRACE_MS` | 20 s | a cancelled CLI's grace after SIGTERM | killed past it | technical ceiling | One heartbeat (`HEARTBEAT_MS`): the run's end and its last post reach the object inside its lease's TTL. |
 | `sandbox/runner/users.ts` `KILL_WITHIN_MS` | 20 s | how long a run user's processes may outlive their SIGKILL | the run's end fails loudly, the user not given back | technical ceiling | One heartbeat; a process still there is stuck in the kernel. |
+| `sandbox/runner/runner.ts` `EVENT_PATHS`, `sandbox/runner/sync.ts` `LISTED` | 100 paths | the files one sync's event names (refused, kept in the sandbox, held back by a sync-ignore line) | the rest counted, not named; each stays in the sandbox and the next sync reports it | technical ceiling | One run event is one frame (`FRAME_UNITS_MAX`, 32 Ki units): a hundred typical workspace paths fit it, and the count says the rest. |
 | `sandbox/runner/runner.ts` a failed CLI's stderr | `FRAME_UNITS_MAX` | the stderr a failed run shows | its head cut | technical ceiling | As much as one frame shows; the frame's own cut marks the rest. |

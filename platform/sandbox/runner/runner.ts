@@ -87,6 +87,10 @@ const LOCAL_SCRATCH = `${ROOT}${SCRATCH}`;
 /** Each agent's stamp of its scratch's last use (`scratch.ts`), and the runner's reserve. */
 const SCRATCH_INDEX = `${STATE}/scratch-used`;
 const RESERVE = `${STATE}/reserve`;
+/** The engines' sessions as last hashed, so an unchanged one is not read again a run. */
+const SESSIONS_SEEN = `${STATE}/sessions-seen.json`;
+/** A change time the runner trusts: older than the coarsest filesystem tick (`sync.ts`). */
+const RACY_MS = 2_000;
 /** Its size: `RESERVE_BYTES` in the sandbox; a mebibyte under a test's root, the same path. */
 const RESERVE_SIZE = ROOT === "" ? RESERVE_BYTES : 1024 * 1024;
 
@@ -289,6 +293,24 @@ function keepHome(home: string, rec: SourceRecord): void {
         safeWrite(store, join(store, rel), bytes, 0o600);
       }
     }
+  }
+}
+
+/** A session in an engine's store as last hashed: its identity, and a secret refusal's. */
+interface SeenSession {
+  readonly size: number;
+  readonly mtime_ms: number;
+  readonly sha256: string;
+  /** The digest of the secrets it was refused against, when it held one's bytes. */
+  readonly refused?: string;
+}
+
+/** The engines' sessions as last hashed (`SESSIONS_SEEN`), or none. */
+function readSeen(): Record<string, SeenSession> {
+  try {
+    return existsSync(SESSIONS_SEEN) ? readJson<Record<string, SeenSession>>(SESSIONS_SEEN) : {};
+  } catch {
+    return {};  // unreadable: every session is hashed again, nothing skipped
   }
 }
 
@@ -1214,23 +1236,44 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
         // and any an earlier sync-out left unsent (refused at a full storage, changed while
         // sent, fenced, cut short), so each is offered again until it lands, whether or not
         // a later run touches it. A session the files hold already is never copied.
+        // A session's hash is read again only when its size or change time moved since it
+        // was last hashed (or that time was too recent to trust, `RACY_MS`); one refused for
+        // a secret's bytes is said once, until it or the secrets change.
+        const seen = readSeen();
+        const next: Record<string, SeenSession> = {};
+        const against = digest(new TextEncoder().encode(JSON.stringify([...secrets].sort())));
         const sessions: { rec: SourceRecord; rel: string; path: string; digest: string }[] = [];
         for (const each of RECORDS.values()) {
           const store = `${STORE}/${each.id}`;
           for (const rel of walkFiles(store)) {
-            const bytes = isKept(keptPaths(each).sessions, rel) ? safeRead(store, join(store, rel))
-              : null;
-            if (bytes !== null) {
-              sessions.push({ rec: each, rel, digest: digest(bytes),
-                              path: `${SESSIONS}/${start.authority}/${each.id}/${rel}` });
+            if (!isKept(keptPaths(each).sessions, rel)) {
+              continue;
             }
+            const path = `${SESSIONS}/${start.authority}/${each.id}/${rel}`;
+            const at = Date.now();
+            const stat = lstatSync(join(store, rel));
+            const was = seen[path];
+            let sha = was !== undefined && was.size === stat.size && was.mtime_ms === stat.mtimeMs
+              && stat.mtimeMs < at - RACY_MS ? was.sha256 : null;
+            if (sha === null) {
+              const bytes = safeRead(store, join(store, rel));
+              if (bytes === null) {
+                continue;
+              }
+              sha = digest(bytes);
+            }
+            next[path] = { size: stat.size, mtime_ms: stat.mtimeMs, sha256: sha,
+                           ...(was?.sha256 === sha && was.refused !== undefined
+                             ? { refused: was.refused } : {}) };
+            sessions.push({ rec: each, rel, digest: sha, path });
           }
         }
         const held = sessions.length === 0 ? {}
           : (syncAgent({ ...job("known"), paths: sessions.map((each) => each.path) })
             .report?.["known"] ?? {}) as Record<string, string | null>;
         for (const session of sessions) {
-          if (held[session.path] === session.digest) {
+          if (held[session.path] === session.digest
+              || next[session.path]!.refused === against) {
             continue;
           }
           const store = `${STORE}/${session.rec.id}`;
@@ -1241,11 +1284,13 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
           if (heldSecret(bytes.toString("latin1"), secrets) !== null) {
             outbox.push({ type: "ta.sync_refused", path: `{home}/${session.rel}`,
                           reason: "holds a secret's bytes" });
+            next[session.path] = { ...next[session.path]!, refused: against };
             continue;
           }
           safeWrite(SYNC_HOME, join(out, session.rec.id, session.rel), bytes, 0o644, undefined,
                     0o755);
         }
+        safeWrite(STATE, SESSIONS_SEEN, new TextEncoder().encode(JSON.stringify(next)), 0o600);
         const done = syncAgent(job("out", secrets));
         remove(out);
         if (done.code === FENCED) {

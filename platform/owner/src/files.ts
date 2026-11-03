@@ -850,15 +850,6 @@ export class Files {
       "SELECT MAX(version) AS version FROM file_history WHERE path = ?", path).one().version ?? 0;
   }
 
-  /** Each file kept under `/workspace`, its path, visited a row at a time. A read. */
-  *workspaceFiles(): Generator<string> {
-    for (const row of this.#sql.exec<{ parent: string; name: string }>(
-      "SELECT parent, name FROM file_entries WHERE kind = 'file' AND (parent = ? OR " +
-        "(parent >= ? AND parent < ?))", WORKSPACE, `${WORKSPACE}/`, `${WORKSPACE}0`)) {
-      yield `${row.parent}/${row.name}`;
-    }
-  }
-
   #content(contentId: string, size: number): { inline?: Uint8Array; chunks?: ChunkRef[] } {
     if (size <= INLINE_BYTES) {
       const row = this.#sql.exec<{ inline: ArrayBuffer | null }>(

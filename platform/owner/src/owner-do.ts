@@ -173,7 +173,7 @@ import { Sessions } from "./sessions";
 import { CONTROL_FRESH_MS, ControlGate, type Gate } from "./control-gate";
 import { codePoints, principal, utf8Bytes } from "./text";
 import { storageFull, storageFullMessage } from "./storage-full";
-import { DEFAULT_IGNORES, ignoredBy, SYNC_IGNORE } from "./sync-ignore";
+import { DEFAULT_IGNORES, ruleLines, SYNC_IGNORE } from "./sync-ignore";
 import { priced, Usage as ModelUsage, type UsageReceipt } from "./usage";
 import {
   Egress, type EgressOpened, type EgressReceipt, type EgressRefusal, egressRequest,
@@ -1067,8 +1067,27 @@ const PLACE_TRIES = 5;
 const CHAINS = "read its agents' mail chains";
 /** An agent's file, whose agent is a ledger identity while it exists (slice ID). */
 const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
-/** Kept files a sync-ignore notice names, at most: past them, its count says how many. */
-const HELD_EXAMPLES = 5;
+/**
+ * What a sync commit's write of the sync-ignore list says of the files it holds back, as its
+ * sync agent counted them (`sync.ts`): the kept files its lines name, and those with changes.
+ */
+function heldBackOf(ops: unknown): { kept: number; changed: number } | null {
+  const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0
+    ? value as number : null;
+  for (const op of Array.isArray(ops) ? ops as unknown[] : []) {
+    const fields = (typeof op === "object" && op !== null ? op : {}) as Record<string, unknown>;
+    const held = fields["held_back"] as Record<string, unknown> | undefined;
+    if (fields["path"] === SYNC_IGNORE && fields["op"] === "write" && typeof held === "object"
+        && held !== null) {
+      const kept = count(held["kept"]);
+      const changed = count(held["changed"]);
+      if (kept !== null && changed !== null && changed <= kept) {
+        return { kept, changed };
+      }
+    }
+  }
+  return null;
+}
 
 /** A run's own MCP door reaches no run door: work between agents is mail (ADR-034 d11). */
 export const RUN_STARTS_NONE = "run_starts_none: a run starts, reads and cancels no run";
@@ -1320,6 +1339,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #egress: Egress;
   /** The owner's runs: admission, grants, conversations, schedules (`runs.ts`). */
   readonly #runs: Runs;
+  /** The held-back count a sync commit in progress carries for the sync-ignore list. */
+  #heldBack: { kept: number; changed: number } | null = null;
   /** The owner app's sockets and the runs' live tails (`relay.ts`), a Lifecycle capability. */
   readonly #relay: Relay;
   /** The vendor's own sign-ins in progress inside a sandbox (`signins.ts`). */
@@ -3101,39 +3122,28 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const who = this.#writerNamed(change.writer);
     this.#policy.receipt("write", { rule: "sync_ignore", outcome, decision: who }, now);
     let held = "";
-    if (present && change.content_id !== null) {
+    const synced = this.#heldBack;
+    if (present && synced !== null) {
+      // A sandbox's sync wrote it: its sync agent counted, in its own sandbox, the files the
+      // owner keeps that the list holds back (`sync.ts`), never this write's unit.
+      if (synced.kept > 0) {
+        held = ` In the sync that wrote it, its lines hold back ${synced.kept} file${
+          synced.kept === 1 ? "" : "s"} you keep (${synced.changed} with changes in the ` +
+          "sandbox): your files keep the version they have, and each sync reports them.";
+      }
+    } else if (present && change.content_id !== null) {
+      // Any other writer: its new lines are read (a set's work, the list at most an inline
+      // file), never matched against the owner's files here.
       const lines = (bytes: Uint8Array | null) => bytes === null ? null
-        : new TextDecoder().decode(bytes).split("\n").map((line) => line.trim());
+        : ruleLines(new TextDecoder().decode(bytes).split("\n"));
       const after = lines(this.#files.inlineOf(change.content_id));
       const before = this.#files.contentBefore(SYNC_IGNORE, this.#files.lastVersion(SYNC_IGNORE));
-      const was = before === null ? [] : lines(this.#files.inlineOf(before.content_id));
-      if (after === null || was === null) {
-        // A list past an inline file is no list a person writes: say so, never guess.
-        held = " It is too large to check here which files you keep its lines hold back.";
-      } else {
-        // A default line never stops a kept file (the sync agent's rule); a new line of
-        // anyone's own does: those files' later changes stay in the sandbox.
-        const defaults = new Set(DEFAULT_IGNORES);
-        const added = after.filter((line) => !was.includes(line) && !defaults.has(line));
-        const matches = ignoredBy(added);
-        let count = 0;
-        const examples: string[] = [];
-        for (const kept of added.length === 0 ? [] : this.#files.workspaceFiles()) {
-          const rel = kept.slice("/workspace/".length);
-          if (rel.startsWith(".sessions/") || matches(rel) !== "custom") {
-            continue;
-          }
-          count += 1;
-          if (examples.length < HELD_EXAMPLES) {
-            examples.push(kept);
-          }
-        }
-        if (count > 0) {
-          held = ` Its new lines stop ${count} file${count === 1 ? "" : "s"} you keep from ` +
-            `syncing their changes (${examples.join(", ")}${count > examples.length
-              ? `, and ${count - examples.length} more` : ""}); your files keep the version ` +
-            "they have, and the sandbox keeps its changes.";
-        }
+      const was = new Set(before === null ? [] : lines(this.#files.inlineOf(before.content_id))
+        ?? []);
+      const defaults = new Set(DEFAULT_IGNORES);
+      if (after === null || after.some((line) => !was.has(line) && !defaults.has(line))) {
+        held = " Its new lines may hold back files you keep from syncing their changes; " +
+          "each sandbox sync reports the files they hold back.";
       }
     }
     this.#notices.add("sync_ignore_changed", `${SYNC_IGNORE} was ${outcome} by ${who}: what ` +
@@ -3153,7 +3163,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         : `a run of your agent${agents.length === 1 ? "" : "s"} ${agents.slice(0, 3).join(", ")}${
           agents.length > 3 ? " and others" : ""}`;
     }
-    const client = /^client:([0-9a-f]{64})$/.exec(writer)?.[1];
+    const client = /^client:(.+)$/.exec(writer)?.[1];
     if (client !== undefined) {
       const name = this.#grants.name(client);
       return `the outside client ${name !== "" ? `"${name}"` : client.slice(0, 12)}`;
@@ -4741,9 +4751,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         this.#syncer(binding, "work", request);
       }
       const r = fileFields(request, ["lease_id", "epoch", "ops"]);
-      return this.#files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"],
-                                      ops: r["ops"] },
-                                    (authority) => this.#grants.full(authority));
+      this.#heldBack = heldBackOf(r["ops"]);
+      try {
+        return this.#files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"],
+                                        ops: r["ops"] },
+                                      (authority) => this.#grants.full(authority));
+      } finally {
+        this.#heldBack = null;
+      }
     });
   }
 

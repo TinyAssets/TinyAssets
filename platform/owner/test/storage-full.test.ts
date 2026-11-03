@@ -200,41 +200,54 @@ describe("the sync's ignore list", () => {
     expect(receipts.map((receipt) => receipt.decision)).toEqual(["you", "you"]);
   });
 
-  it("says when a new line stops files the owner keeps from syncing, how many and which",
-     async () => {
+  it("gives the sync agent's count of the kept files a sync's list holds back, and never " +
+     "scans the owner's files in the write", async () => {
     const r = await rig();
-    const at = r.bind(null, { tiers: SMALL });
-    for (const name of ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts"]) {
-      await r.stub.fileWrite(at, { path: `${W}/src/${name}`, expected_etag: null,
-                                   content: text(name) });
-    }
-    await r.stub.fileWrite(at, { path: `${W}/notes.md`, expected_etag: null,
-                                 content: text("kept") });
-    // A sandbox's sync writes the list (its writer the owner's lease), with a line of its own.
+    // A sandbox's sync writes the list (its writer the owner's lease) with the count its
+    // sync agent made in the sandbox. The object holds none of those files: it scans nothing.
     const lease = await inFiles(r.stub, {}, (files) =>
       files.leaseAcquire("owner", "sandbox-1", TOKENS));
-    const sync = (inline: string, base: number | null = null) =>
+    const sync = (inline: string, held: unknown, base: number | null = null) =>
       r.stub.fileSyncCommit(r.bind(null), { lease_id: lease.lease_id, epoch: lease.epoch,
-        ops: [{ op: "write", path: `${W}/.ta/sync-ignore`, base, inline: text(inline) }] });
-    expect((await sync("node_modules\nsrc\n")).outcomes.map((each) => each.outcome))
-      .toEqual(["committed"]);
+        ops: [{ op: "write", path: `${W}/.ta/sync-ignore`, base, inline: text(inline),
+                held_back: held } as never] });
+    expect((await sync("node_modules\nsrc\n", { kept: 6, changed: 2 })).outcomes
+      .map((each) => each.outcome)).toEqual(["committed"]);
     const changed = async () => (await r.stub.noticeList(r.bind(null))).notices
       .filter((each) => each.type === "sync_ignore_changed")[0]!.detail;
     const detail = await changed();
     expect(detail).toContain("by a run in your sandbox:");
-    expect(detail).toContain("Its new lines stop 6 files you keep from syncing their changes");
-    expect(detail).toContain(`${W}/src/a.ts`);
-    expect(detail).toContain("and 1 more");
-    expect(detail).not.toContain("notes.md");
+    expect(detail).toContain("its lines hold back 6 files you keep (2 with changes in the " +
+                             "sandbox)");
     const [receipt] = (await r.stub.policyReceipts(r.bind(null))).receipts
       .filter((each) => each.rule === "sync_ignore");
     expect(receipt!.decision).toBe("a run in your sandbox");
-    // A default line added stops nothing kept, and the notice says nothing of it.
-    const lines = (await r.stub.fileRead(r.bind(null), { path: `${W}/.ta/sync-ignore` })) as
-      { entry: { version: number } };
-    expect(lines.entry.version).toBeGreaterThan(0);
-    await sync("node_modules\nsrc\ndist\n", lines.entry.version);
-    expect(await changed()).not.toContain("stop");
+    // Nothing held back, or a count that is no count: the notice says nothing of it.
+    const version = async () => ((await r.stub.fileRead(r.bind(null),
+      { path: `${W}/.ta/sync-ignore` })) as { entry: { version: number } }).entry.version;
+    await sync("node_modules\nsrc\ndist\n", { kept: 0, changed: 0 }, await version());
+    expect(await changed()).not.toContain("hold back");
+    await sync("node_modules\nsrc\n", { kept: 1, changed: 5 }, await version());
+    expect(await changed()).not.toContain("hold back");
+  });
+
+  it("says a list written outside a sync may hold back kept files when it adds a line, at " +
+     "the cost of reading its lines alone", async () => {
+    const r = await rig();
+    const at = r.bind(null, { tiers: SMALL });
+    // The worst list an inline file holds: 2,000 one-letter lines, read as a set.
+    const lines = Array.from({ length: 2_000 }, (_, i) => String.fromCharCode(97 + (i % 26)))
+      .join("\n");
+    const made = await r.stub.fileWrite(at, { path: `${W}/.ta/sync-ignore`, expected_etag: null,
+                                              content: text(lines) });
+    const notices = async () => (await r.stub.noticeList(r.bind(null))).notices
+      .filter((each) => each.type === "sync_ignore_changed");
+    expect((await notices())[0]!.detail).toContain("Its new lines may hold back files you keep");
+    // A default line added alone says nothing of it.
+    await r.stub.fileWrite(at, { path: `${W}/.ta/sync-ignore`,
+                                 expected_etag: (made as { entry: { etag: string } }).entry.etag,
+                                 content: text(`${lines}\ndist`) });
+    expect((await notices())[0]!.detail).not.toContain("hold back");
   });
 });
 

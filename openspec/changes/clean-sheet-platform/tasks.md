@@ -1575,6 +1575,8 @@ R, S, M and W.
 
   Verification round 2 (REQUEST_CHANGES), fixed: sessions staged by the sync mirror's hash, so one an earlier sync-out did not commit is sent again by the next run; a sync's uploads name their lease, and only those end with it, on every path that ends a lease (a new lease's taking among them), never a client's own write; each sync-ignore change's receipt and notice name who made it, and a new line that holds back kept files says how many and which, each sync-out reporting them too; a failed control read keeps the last scratch retention read, loudly; a change time within the filesystem's coarsest tick is never trusted, so the mirror's hash is of the bytes sent; the reserve's note says staging happens before the sync lock.
 
+  Verification round 3 (REQUEST_CHANGES), fixed: the sync-ignore notice never scans the owner's files in a write (a sync's write carries its sync agent's count; any other says files may be held back), the matcher a set lookup for literal lines; the agent form's subscription signed in inside the sandbox restored beside APP's filter, with `test:app` cases for both paths; a session hashed again only when its size or change time moved; a secret-refused session reported once; a client named by its display name whatever its id.
+
   Research: the STORE research and its cross-reviews. Probes:
   - `latency-probe.md`: option A measured;
   - `sandbox-probe.md`, "Scratch and the disk".

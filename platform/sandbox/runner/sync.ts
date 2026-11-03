@@ -638,6 +638,8 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
   const refused: { path: string; reason: string }[] = [];
   const conflicts: string[] = [];
   const skipped: { path: string; reason: string }[] = [];
+  /** Kept files a custom line holds back, and of those the ones with changes here. */
+  let kept = 0;
   let held = 0;
   let committed = 0;
   let batch: Op[] = [];
@@ -653,7 +655,11 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     const ops: Op[] = [];
     for (const op of taken) {
       const fields = { op: op.op, path: op.path, base: op.base,
-                       ...(op.mode === undefined ? {} : { mode: op.mode }) };
+                       ...(op.mode === undefined ? {} : { mode: op.mode }),
+                       // The list's own write carries what it holds back, for the owner's
+                       // notice (counted here, in the sandbox, never in the object's write).
+                       ...(op.path === SYNC_IGNORE && op.op === "write"
+                         ? { held_back: { kept, changed: held } } : {}) };
       if (op.op === "remove") {
         sent.push(fields);
       } else if (op.inline !== undefined) {
@@ -792,6 +798,9 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     if (place.authority !== "owner" && inOwnerTrees(path)) {
       continue;
     }
+    if (path === SYNC_IGNORE) {
+      continue;  // offered last, once what its lines hold back is counted
+    }
     await offer(path, place.local, localOf(place, path));
   }
   // What the mirror knows and the workspace no longer holds goes, page by page; a path a
@@ -805,6 +814,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
       }
       if (ignored(path.slice("/workspace/".length)) === "custom") {
         // Never removed (the owner keeps it as it was); its changes, never sent, are said.
+        kept += 1;
         if (await heldBack(place, path, mirror.get(path)!)) {
           held += 1;
           if (held <= LISTED) {
@@ -819,6 +829,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     }
     after = known.at(-1)!;
   }
+  await offer(SYNC_IGNORE, place.local, localOf(place, SYNC_IGNORE));
   await send();
   return { committed, conflicts, refused, skipped, skipped_unlisted: Math.max(0, held - LISTED) };
 }

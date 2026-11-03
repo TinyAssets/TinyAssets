@@ -376,3 +376,64 @@ describe("verification round 2", () => {
     expect(again).toEqual([]);
   });
 });
+
+describe("the sync-ignore matcher's cost (verification round 2, R2-1)", () => {
+  const rel = (i: number) =>
+    `project-${i % 50}/src/module-${i % 997}/lib/component-file-number-${i}.ts`;
+
+  it("matches 30,000 kept paths against a 4 KiB list of 2,000 one-letter lines in well " +
+     "under a second", () => {
+    const lines = Array.from({ length: 2_000 }, (_, i) => String.fromCharCode(97 + (i % 26)));
+    const matches = ignoredBy(lines);
+    const started = performance.now();
+    for (let i = 0; i < 30_000; i++) {
+      matches(rel(i));
+    }
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
+  it("matches 500,000 kept paths against a few lines, patterns among them, in seconds", () => {
+    const matches = ignoredBy(["*.log", "data/raw", "tmp*", "src/**/gen"]);
+    const started = performance.now();
+    let n = 0;
+    for (let i = 0; i < 500_000; i++) {
+      n += matches(rel(i)) === "custom" ? 1 : 0;
+    }
+    expect(n).toBe(0);
+    expect(performance.now() - started).toBeLessThan(5_000);
+  });
+
+  it("matches literal names and paths, and patterns, as the lines say", () => {
+    const matches = ignoredBy(["node_modules", "docs/draft", "*.log", "a?c", "x*y*z", "dist"]);
+    expect(["node_modules/x", "src/node_modules/y/z.js", "docs/draft/a.md", "out/run.log",
+            "abc", "q/xAyBz", "dist/a"].map(matches))
+      .toEqual(["default", "default", "custom", "custom", "custom", "custom", "default"]);
+    expect(["docs/drafts/a.md", "src/docs/draft", "run.logs", "ac", "xyq"].map(matches))
+      .toEqual([null, null, null, null, null]);
+  });
+});
+
+describe("the list's own write carries what it holds back", () => {
+  it("offers the sync-ignore last, with the kept files its lines hold back counted", async () => {
+    const { place: p, local } = place();
+    mkdirSync(join(local, "src"), { recursive: true });
+    writeFileSync(join(local, "src", "a.ts"), "a");
+    writeFileSync(join(local, "src", "b.ts"), "b");
+    const mirror = memoryMirror();
+    await syncOut(client((door, body) => door === "commit" ? commitAll(body)
+      : { status: 404, body: {} }), p, mirror, LEASE, []);
+    writeFileSync(join(local, ".ta", "sync-ignore"), "src\n");
+    writeFileSync(join(local, "src", "a.ts"), "a, changed");
+    const ops: Record<string, unknown>[] = [];
+    await syncOut(client((door, body) => {
+      if (door === "commit") {
+        ops.push(...(body["ops"] as Record<string, unknown>[]));
+        return commitAll(body);
+      }
+      return { status: 404, body: {} };
+    }), p, mirror, LEASE, []);
+    expect(ops.map((op) => [op["path"], op["held_back"]]))
+      .toEqual([["/workspace/.ta/sync-ignore", { kept: 2, changed: 1 }]]);
+  });
+});
+
