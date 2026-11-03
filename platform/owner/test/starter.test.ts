@@ -136,8 +136,8 @@ describe("a new owner", () => {
      async () => {
     const r = await rig();
     // Something of the owner's is in the way: a file where the agent's directory goes.
-    await r.stub.fileMkdir(r.bind(null), { path: "/workspace/agents", expected_etag: null });
-    await r.stub.fileWrite(r.bind(null), { path: AGENTS, expected_etag: null,
+    await r.stub.fileMkdir(r.session(null), { path: "/workspace/agents", expected_etag: null });
+    await r.stub.fileWrite(r.session(null), { path: AGENTS, expected_etag: null,
                                            content: text("not a directory") });
     const now = Date.now() / 1000;
     await pass(r, V1, now);
@@ -154,7 +154,7 @@ describe("a new owner", () => {
     expect(await notices(r, "starter_failed")).toHaveLength(1);
     // Out of the way, it lands whole, agent.json last.
     const { entry } = await r.stub.fileStat(r.bind(null), { path: AGENTS });
-    await r.stub.fileRemove(r.bind(null), { path: AGENTS, expected_etag: entry!.etag,
+    await r.stub.fileRemove(r.session(null), { path: AGENTS, expected_etag: entry!.etag,
                                             recursive: false });
     await pass(r, V1, now + 700);
     expect(await readText(r, `${AGENTS}/agent.json`)).toBe(agentJson(["read_files"]));
@@ -168,8 +168,8 @@ describe("a new owner", () => {
   it("keeps a file the owner made before the seed, offering the starter's beside it",
      async () => {
     const r = await rig();
-    await r.stub.fileMkdir(r.bind(null), { path: AGENTS, expected_etag: null });
-    await r.stub.fileWrite(r.bind(null), { path: `${AGENTS}/AGENTS.md`, expected_etag: null,
+    await r.stub.fileMkdir(r.session(null), { path: AGENTS, expected_etag: null });
+    await r.stub.fileWrite(r.session(null), { path: `${AGENTS}/AGENTS.md`, expected_etag: null,
                                            content: text("mine") });
     await pass(r, V1);
     expect(await readText(r, `${AGENTS}/AGENTS.md`)).toBe("mine");
@@ -187,13 +187,13 @@ describe("a starter update", () => {
     // The owner edits b and SOUL.md, and deletes c.
     const edit = async (path: string, value: string) => {
       const { entry } = await r.stub.fileStat(r.bind(null), { path });
-      await r.stub.fileWrite(r.bind(null), { path, expected_etag: entry!.etag,
+      await r.stub.fileWrite(r.session(null), { path, expected_etag: entry!.etag,
                                              content: text(value) });
     };
     await edit(`${SKILLS}/b/SKILL.md`, "b-mine");
     await edit(`${AGENTS}/SOUL.md`, "soul-mine");
     const { entry: c } = await r.stub.fileStat(r.bind(null), { path: `${SKILLS}/c/SKILL.md` });
-    await r.stub.fileRemove(r.bind(null), { path: `${SKILLS}/c/SKILL.md`, expected_etag: c!.etag,
+    await r.stub.fileRemove(r.session(null), { path: `${SKILLS}/c/SKILL.md`, expected_etag: c!.etag,
                                             recursive: false });
     await pass(r, V2);
     expect(await readText(r, `${SKILLS}/a/SKILL.md`)).toBe("a2");
@@ -244,13 +244,13 @@ describe("a starter update", () => {
     const path = `${SKILLS}/a/SKILL.md`;
     const { changes } = await r.stub.fileHistory(r.bind(null), { path, limit: 5 });
     const { entry } = await r.stub.fileStat(r.bind(null), { path });
-    await r.stub.fileRestore(r.bind(null), { path, version: changes[1]!.version,
+    await r.stub.fileRestore(r.session(null), { path, version: changes[1]!.version,
                                              expected_etag: entry!.etag });
     expect(await readText(r, path)).toBe("a1");
     // Adopt: the owner moves the proposal over its file.
     const json = `${AGENTS}/agent.json`;
     const { entry: offered } = await r.stub.fileStat(r.bind(null), { path: `${json}${NEWER}` });
-    await r.stub.fileRename(r.bind(null), { from: `${json}${NEWER}`, to: json,
+    await r.stub.fileRename(r.session(null), { from: `${json}${NEWER}`, to: json,
                                             expected_etag: offered!.etag, replace: true });
     await pass(r, V3);
     // The restored file is the owner's choice now: never replaced, the update offered.
@@ -373,9 +373,9 @@ describe("a scheduled run's result", () => {
 describe("the MCP door's file readers", () => {
   async function seededWithKnowledge() {
     const r = await rig();
-    const write = (path: string, value: string) => r.stub.fileWrite(r.bind(null), {
+    const write = (path: string, value: string) => r.stub.fileWrite(r.session(null), {
       path, expected_etag: null, content: text(value) });
-    await r.stub.fileMkdir(r.bind(null), { path: "/workspace/knowledge/people",
+    await r.stub.fileMkdir(r.session(null), { path: "/workspace/knowledge/people",
                                            expected_etag: null });
     await write("/workspace/knowledge/index.md",
                 "---\nokf_version: \"0.2\"\n---\n# People\n\n* [People](people/index.md) - who\n");
@@ -429,7 +429,7 @@ describe("the MCP door's file readers", () => {
   it("cut a window at a character, refuse a start inside one, and refuse what is not text",
      async () => {
     const r = await rig();
-    await r.stub.fileWrite(r.bind(null), { path: "/workspace/u.md", expected_etag: null,
+    await r.stub.fileWrite(r.session(null), { path: "/workspace/u.md", expected_etag: null,
                                            content: text("aé€😀z") });
     const one = await r.stub.fileText(r.bind(null), { path: "/workspace/u.md", max_bytes: 4 });
     expect(one).toMatchObject({ text: "aé", next_offset: 3 });
@@ -438,7 +438,7 @@ describe("the MCP door's file readers", () => {
     expect((await failure(() => r.stub.fileText(r.bind(null), { path: "/workspace/u.md",
                                                                  offset: 2 }))).message)
       .toMatch(/inside a character/);
-    await r.stub.fileWrite(r.bind(null), { path: "/workspace/b.bin", expected_etag: null,
+    await r.stub.fileWrite(r.session(null), { path: "/workspace/b.bin", expected_etag: null,
                                            content: new Uint8Array([0xff, 0xfe, 0x00]) });
     expect((await failure(() => r.stub.fileText(r.bind(null), { path: "/workspace/b.bin" })))
       .message).toMatch(/not UTF-8 text/);
@@ -490,7 +490,7 @@ describe("the MCP door's file readers", () => {
     expect(SEARCH_SCAN).toBe(5000);
     const r = await rig();
     for (const path of ["/workspace/a.md", "/workspace/d/b.md", "/workspace/d/e/c.md"]) {
-      await r.stub.fileWrite(r.bind(null), { path, expected_etag: null,
+      await r.stub.fileWrite(r.session(null), { path, expected_etag: null,
                                              content: text("needle") });
     }
     const all = await r.stub.fileSearch(r.bind(null), { query: "needle" });

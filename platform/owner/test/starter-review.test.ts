@@ -69,7 +69,7 @@ describe("starter updates (review L1, M2, L2)", () => {
     const v3 = starterPackage({ version: 3, files: [file(`${SKILLS}/c/SKILL.md`, "c3"), json] });
     await pass(r, v1);
     const { entry } = await r.stub.fileStat(r.bind(null), { path: `${SKILLS}/c/SKILL.md` });
-    await r.stub.fileRemove(r.bind(null), { path: `${SKILLS}/c/SKILL.md`,
+    await r.stub.fileRemove(r.session(null), { path: `${SKILLS}/c/SKILL.md`,
                                             expected_etag: entry!.etag, recursive: false });
     await pass(r, v2);  // c leaves the package: its receipt stays, as retired
     expect((await receipts(r))[`${SKILLS}/c/SKILL.md`]).toBeDefined();
@@ -93,7 +93,7 @@ describe("starter updates (review L1, M2, L2)", () => {
     // The owner picks an engine: an edit that widens nothing.
     const path = `${AGENTS}/agent.json`;
     const { entry } = await r.stub.fileStat(r.bind(null), { path });
-    await r.stub.fileWrite(r.bind(null), { path, expected_etag: entry!.etag,
+    await r.stub.fileWrite(r.session(null), { path, expected_etag: entry!.etag,
                                            content: text(agentJson(["read_files"], "codex")) });
     await pass(r, v2);
     expect(await readText(r, path)).toBe(agentJson(["read_files"], "codex"));
@@ -199,7 +199,7 @@ describe("the MCP door's search (review M3, L4)", () => {
   it("answers every match, with nothing out of reach", async () => {
     const r = await rig();
     for (let i = 0; i < 25; i++) {
-      await r.stub.fileWrite(r.bind(null), { path: `/workspace/n${String(i).padStart(2, "0")}.md`,
+      await r.stub.fileWrite(r.session(null), { path: `/workspace/n${String(i).padStart(2, "0")}.md`,
                                              expected_etag: null, content: text("needle") });
     }
     const found = await r.stub.fileSearch(r.bind(null), { query: "needle" });
@@ -233,7 +233,7 @@ describe("the MCP door's search (review M3, L4)", () => {
 
   it("fetches every id a search answers, a file that is not text as its metadata", async () => {
     const r = await rig();
-    await r.stub.fileWrite(r.bind(null), { path: "/workspace/receipt-scan.pdf",
+    await r.stub.fileWrite(r.session(null), { path: "/workspace/receipt-scan.pdf",
                                            expected_etag: null,
                                            content: new Uint8Array([0x25, 0x50, 0xff, 0xfe]) });
     const ids = (await r.stub.fileSearch(r.bind(null), { query: "receipt" })).results

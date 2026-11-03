@@ -55,8 +55,10 @@ describe("the owner app's account route", () => {
     const account = await answered(await appPost("account", app.access_token, null, {}));
     expect(account["tier"]).toBe("free");
     expect(account["tiers"]).toEqual(TIERS);
+    // A new owner holds its starter files (the starter slice), as many as its seed has written.
     expect(account["usage"]).toMatchObject({ entries: expect.any(Number),
-                                             chunk_bytes: 0, inline_bytes: 0 });
+                                             chunk_bytes: expect.any(Number),
+                                             inline_bytes: expect.any(Number) });
     // A closed empty body.
     expect(await answered(await appPost("account", app.access_token, null, { tier: "paid" }), 400))
       .toEqual({ error: "this route takes an empty object" });
