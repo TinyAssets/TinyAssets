@@ -67,9 +67,10 @@ R2's read latency is not documented [I: a network round trip from the object, te
 
    The guard costs every term at the widest name its validator allows, and a test checks that SQLite makes no index the guard does not count.
 7. **Reads.**
-   - A get, a pull, a history read, a mailbox read, a mail chain and a conflict answer the stored body through the same path, and the runs lane reads a mail's body for its run's input the same way. A door reads the placed bodies from R2 outside any unit, after its unit locates them.
-   - A mail run's reply (slice ID) past the threshold is placed after its settle's unit and posted in a unit of its own. A crash between the two loses the reply, never the run's result, which its receipt keeps.
-   - A mail to one of the owner's own agents is that agent's run's input, which waits as one row: at most `RUN_MAIL_BYTES` (1 MiB), under a Durable Object's 2 MB row.
+   - A get, a pull, a history read, a mailbox read, a mail chain, a digest (slice M) and a conflict answer the stored body through the same path. A door reads the placed bodies from R2 outside any unit, after its unit locates them.
+   - A mail to one of the owner's own agents (slice ID) is bounded by the body bound alone. Its run reads the body from R2 as it starts. A run that waits for its conversation keeps only the mail's reference in its input row (the run's `mail`), and reads the mail again when its turn comes. The mail is held until the run settles, so its body stays.
+   - A mail run's reply past the threshold is placed in R2 before the settle's unit, read ahead from the same batch (`Runs.answering`), and the settle's unit posts it by reference. A crash before the settle leaves only an orphan upload, which expires and is swept; the runner's batch is posted again, and the reply with it. No reply is lost.
+   - A delete's or clear's history entry (slice M) carries no body, so nothing of it is placed. Its change and private writer are counted in the history's charge with its `collection_erasures` entry, as a row's change is with its `collection_changes` entry.
    - A pull, a history read or a mailbox read returns at most `READ_PAGE_BYTES` (8 MiB) of bodies after its first item. A history read past one page answers `more` and a `before_revision` cursor.
 8. **Erasure leaves no orphan.**
    - Once the erasure's mark stands, every upload and every chunk put is refused.
@@ -81,7 +82,7 @@ R2's read latency is not documented [I: a network round trip from the object, te
 ## Consequences
 
 - The ledger, the collections and their history no longer cost the object their bytes: only their rows. Their bodies are storage, counted against the tier and the writer's share.
-- With the audit's other structural changes, the worst case at the validators' widest names is 4,097,993,580.75 bytes, 40.98% of the 10 GB: 902.0 MB under half, where the raises had 2.1 MB (slice ID's agent identities and mail authority included). The other changes:
+- With the audit's other structural changes, the worst case at the validators' widest names is 4,097,994,417.75 bytes, 40.98% of the 10 GB: 902.0 MB under half, where the raises had 2.1 MB (slice ID's agent identities and mail authority, and slice M's change orders and clock, included). The other changes:
   - collection rows and history counted in laid-out bytes;
   - one recipient a message;
   - the mailboxes' caps within the ceilings;

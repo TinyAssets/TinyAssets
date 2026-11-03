@@ -61,22 +61,23 @@ const NUMBER = 9;
 /**
  * What one collection row takes in the object, laid out as SQLite lays it (`manifest.ts`'s
  * `record`): its own record, its names, inline body and content id in it, and its entry in
- * each of its four indexes (its key, its seq, its writer's and its creator's). The rows are
- * bounded by these bytes (`LIMITS.maxRowsCharge`), whatever their names' lengths.
+ * each of its five indexes (its key, its seq, its writer's, its creator's and its change's,
+ * slice M's `collection_changes`). The rows are bounded by these bytes
+ * (`LIMITS.maxRowsCharge`), whatever their names' lengths.
  */
 export const ROW_CHARGE = (row: string) =>
   `(${record(`${TEXT_BYTES(`${row}.collection`)} + ${TEXT_BYTES(`${row}.row_id`)} + ` +
              `${TEXT_BYTES(`${row}.etag`)} + ${TEXT_BYTES(`${row}.writer`)} + ` +
              `${TEXT_BYTES(`${row}.body`)} + ${TEXT_BYTES(`${row}.creator`)} + ` +
              `${OR_NONE(`${row}.content_id`)} + ${TEXT_BYTES(`${row}.filer`)} + ` +
-             `${6 * NUMBER} + 1`, TABLE_KEPT)} + ` +
+             `${7 * NUMBER} + 1`, TABLE_KEPT)} + ` +
   `${record(`${TEXT_BYTES(`${row}.collection`)} + ${TEXT_BYTES(`${row}.row_id`)} + ${NUMBER}`,
             INDEX_KEPT)} + ` +
   `${record(`${TEXT_BYTES(`${row}.collection`)} + ${2 * NUMBER}`, INDEX_KEPT)} + ` +
   `${record(`${TEXT_BYTES(`${row}.collection`)} + ${TEXT_BYTES(`${row}.writer`)} + ${NUMBER}`,
             INDEX_KEPT)} + ` +
   `${record(`${TEXT_BYTES(`${row}.collection`)} + ${TEXT_BYTES(`${row}.creator`)} + ${NUMBER}`,
-            INDEX_KEPT)})`;
+            INDEX_KEPT)} + ${record(`${2 * NUMBER}`, INDEX_KEPT)})`;
 /** A collection's high-water seq row: its record and its key's index entry. */
 export const SEQ_CHARGE = (seq: string) =>
   `(${record(`${TEXT_BYTES(`${seq}.collection`)} + ${NUMBER}`, TABLE_KEPT)} + ` +
@@ -86,17 +87,20 @@ export const USAGE_CHARGE = (usage: string) =>
   record(`${TEXT_BYTES(`${usage}.who`)} + ${NUMBER}`, INDEX_KEPT);
 /**
  * What one collection history entry takes in the object, laid out as SQLite lays it: its
- * own record (names, op, inline body, content id, numbers), its primary key's index entry,
- * and its entry in the age index the prune reads. The history is bounded by these bytes
- * (`LIMITS.maxHistoryCharge`), not by rows times revisions.
+ * own record (names, op, inline body, content id, a delete's change and private writer,
+ * numbers), its primary key's index entry, its entry in the age index the prune reads, and
+ * a delete's or clear's entry in slice M's `collection_erasures`. The history is bounded by
+ * these bytes (`LIMITS.maxHistoryCharge`), not by rows times revisions.
  */
 export const HISTORY_CHARGE = (entry: string) =>
   `(${record(`${TEXT_BYTES(`${entry}.collection`)} + ${TEXT_BYTES(`${entry}.key`)} + ` +
              `${TEXT_BYTES(`${entry}.op`)} + ${TEXT_BYTES(`${entry}.writer`)} + ` +
              `${TEXT_BYTES(`${entry}.body_json`)} + ${OR_NONE(`${entry}.content_id`)} + ` +
-             `${TEXT_BYTES(`${entry}.filer`)} + ${4 * NUMBER}`, TABLE_KEPT)} + ` +
+             `${TEXT_BYTES(`${entry}.filer`)} + ${OR_NONE(`${entry}.private_writer`)} + ` +
+             `${5 * NUMBER}`, TABLE_KEPT)} + ` +
   `${record(`${TEXT_BYTES(`${entry}.collection`)} + ${TEXT_BYTES(`${entry}.key`)} + ` +
-            `${2 * NUMBER}`, INDEX_KEPT)} + ${record(`${2 * NUMBER}`, INDEX_KEPT)})`;
+            `${2 * NUMBER}`, INDEX_KEPT)} + ${record(`${2 * NUMBER}`, INDEX_KEPT)} + ` +
+  `CASE WHEN ${entry}.change IS NULL THEN 0 ELSE ${record(`${2 * NUMBER}`, INDEX_KEPT)} END)`;
 /** Move the collections' own counters (`collection_space`) by `charge`, times `sign`. */
 const SPACE = (column: "charge" | "rows_charge", sign: string, charge: string) =>
   `UPDATE collection_space SET ${column} = ${column} ${sign} ${charge};`;
@@ -262,6 +266,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "updated_at REAL NOT NULL, " +
       // Who created the row; a takeover never changes it (a clear by writer matches it).
       "creator TEXT NOT NULL, " +
+      // The owner-wide change of its latest write (`collection_clock`, slice M).
+      "change INTEGER NOT NULL, " +
       `body_bytes INTEGER NOT NULL, content_id TEXT, ${FILER}, ${PLACEMENT("body")}, ` +
       "PRIMARY KEY (collection, row_id), UNIQUE (collection, seq))",
     // A clear by writer matches either.
@@ -275,7 +281,12 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "collection TEXT NOT NULL, key TEXT NOT NULL, revision INTEGER NOT NULL, " +
       `op TEXT NOT NULL, body_json TEXT NOT NULL CHECK (length(CAST(body_json AS BLOB)) <= ${
         PLACE_BYTES}), at REAL NOT NULL, writer TEXT NOT NULL, ` +
+      // A delete's or clear's entry (slice M's digests): its owner-wide change, and the
+      // erased row's writer when the row was private, so only that writer is told.
+      "change INTEGER, private_writer TEXT, " +
       `body_bytes INTEGER NOT NULL, content_id TEXT, ${FILER}, ${PLACEMENT("body_json")}, ` +
+      "CHECK ((change IS NULL) = (op NOT IN ('delete', 'clear'))), " +
+      "CHECK (private_writer IS NULL OR change IS NOT NULL), " +
       "PRIMARY KEY (collection, key, revision))",
     // The collections are bounded in what they take, laid out as SQLite lays them, whatever
     // their names: `rows_charge` is every row with its four index entries (`ROW_CHARGE`), each
@@ -319,6 +330,20 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       SPACE("rows_charge", "-", USAGE_CHARGE("OLD"))} END`,
     "CREATE TRIGGER collection_usage_emptied AFTER UPDATE OF charge ON collection_usage " +
       "WHEN NEW.charge = 0 BEGIN DELETE FROM collection_usage WHERE who = NEW.who; END",
+    // The owner-wide change order (slice M's digests): every write, delete and clear takes
+    // the clock's next change for its row or its erase entry, so one cursor covers many
+    // collections. It only ever rises.
+    "CREATE TABLE collection_clock (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      "change INTEGER NOT NULL CHECK (change >= 0))",
+    "INSERT INTO collection_clock VALUES (1, 0)",
+    "CREATE TRIGGER collection_clock_rises BEFORE UPDATE ON collection_clock " +
+      "WHEN NEW.change < OLD.change OR NEW.only != OLD.only " +
+      "BEGIN SELECT RAISE(ABORT, 'the collection clock only ever rises'); END",
+    "CREATE TRIGGER collection_clock_kept BEFORE DELETE ON collection_clock " +
+      "BEGIN SELECT RAISE(ABORT, 'the collection clock only ever rises'); END",
+    // A digest reads only what changed past its cursor.
+    "CREATE INDEX collection_changes ON collection_rows (change)",
+    "CREATE INDEX collection_erasures ON collection_history (change) WHERE change IS NOT NULL",
   ]),
   // 2: the message ledger (S30, S3a, S3b), its bodies, and the W3 wake limits (ledger.ts).
   // The object is its owner, so no row carries an owner column. Every bound the ledger
@@ -569,8 +594,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "owner_set INTEGER NOT NULL DEFAULT 0 CHECK (owner_set IN (0, 1)), " +
       "agents INTEGER NOT NULL DEFAULT 0 CHECK (agents >= 0), " +
       "held INTEGER NOT NULL DEFAULT 0 CHECK (held >= 0), " +
+      // The tool profile it is served (slice M, `doors/profiles.json`).
+      "profile TEXT NOT NULL DEFAULT 'custom' CHECK (profile IN ('directory', 'custom')), " +
       "CHECK (owner_set = 1 OR (source = 'mcp' AND mode = 'full' AND generation = 1 " +
-      "AND revoked_at IS NULL AND scopes = '[]' AND name = '')))",
+      "AND revoked_at IS NULL AND scopes = '[]' AND name = '' AND profile = 'custom')))",
     "CREATE INDEX outside_clients_listed ON outside_clients (first_seen, client)",
     "CREATE INDEX outside_clients_free ON outside_clients (last_seen) " +
       "WHERE owner_set = 0 AND agents = 0 AND held = 0",
@@ -1285,7 +1312,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "it was admitted as'); END",
     "CREATE TABLE run_inputs (" +
       `run TEXT PRIMARY KEY CHECK (length(run) = ${RUN_ID_CHARS}), ` +
-      "prompt TEXT NOT NULL, bytes INTEGER NOT NULL CHECK (bytes >= 1), " +
+      // The input, or '' for a mail's run, whose `mail` is its input's reference (ADR-035).
+      "prompt TEXT NOT NULL, bytes INTEGER NOT NULL CHECK (bytes >= 0), " +
       // The client's origin, as its run grant will carry it once the run starts.
       "origin TEXT CHECK (origin IS NULL OR (length(origin) <= 256 " +
       "AND origin NOT GLOB '*[^ -~]*')), " +

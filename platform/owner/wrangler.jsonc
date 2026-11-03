@@ -4,7 +4,9 @@
 // which itself binds no Durable Object and no service; the GATEWAY service, the model
 // gateway, which binds nothing at all; and the HOOKS service, the hooks Worker, which
 // binds only its own class, where code mode's VMs run; so none is a way to another
-// owner's object. It binds no Durable Object namespace. `disable_ctx_exports` keeps the
+// owner's object. It binds no Durable Object namespace. Its one store is CONTROL, the
+// platform's control record alone (the doors' namespace of it, the same placeholder id),
+// which code mode's calls read for the gates the door read; it holds no owner's state. `disable_ctx_exports` keeps the
 // runtime from handing the object its own namespaces as `ctx.exports`
 // (guards/config.test.ts checks this config and the files Worker's).
 // `limits.subrequests` is the platform's per-invocation count of the calls the object
@@ -26,6 +28,9 @@
   "preview_urls": false,
   "limits": { "subrequests": 10000000 },
   "secrets": { "required": ["ROUTING_MAC_KEY"] },
+  "kv_namespaces": [
+    { "binding": "CONTROL", "id": "not-provisioned-control" }
+  ],
   "services": [
     { "binding": "FILES", "service": "tinyassets-files" },
     { "binding": "GATEWAY", "service": "tinyassets-gateway" },

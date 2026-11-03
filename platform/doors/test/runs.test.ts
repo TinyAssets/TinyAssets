@@ -18,13 +18,17 @@ import { TICKET_REFUSED } from "../../owner/src/socket-shape";
 import { defineAgent, secretOf } from "../../owner/test/runs-support";
 import { EGRESS_ORIGIN } from "../src/config";
 import { refusedStatus, RUN_HEADER, RUNNER_HEADER } from "../src/egress";
+import { profileNames } from "../src/tools";
 import { EVENT_FRAMES_MAX } from "../../owner/src/run-events";
-import { RUN_TOOLS } from "../src/tools";
 import type { OwnerDO } from "./entry";
 import {
   appPost, call, connect, OPEN, reached, registerClient, serveFirstPartyDocument, setControl,
   signInApp, type Tokens, url,
 } from "./support";
+
+/** The run doors' tools: what a run's own MCP door never serves. */
+const RUN_TOOLS: readonly string[] = Object.freeze(["converse", "run_graph", "run_status",
+                                                    "run_cancel"]);
 
 function owner(): string {
   return `user_${crypto.randomUUID().replace(/-/g, "")}`;
@@ -202,7 +206,11 @@ describe("a run's own doors on the egress host", () => {
     const client = await engine(start!);
     const { tools } = await client.listTools();
     expect(tools.filter((tool) => RUN_TOOLS.includes(tool.name))).toEqual([]);
-    expect(tools.some((tool) => tool.name === "file_stat")).toBe(true);
+    // Nor a mailbox tool (slice ID): the inbox digest's mail part is a mailbox read.
+    expect(tools.some((tool) => ["mailbox_read", "mailbox_ack", "inbox_digest"]
+      .includes(tool.name))).toBe(false);
+    // Exactly the run profile, code mode on by default.
+    expect(tools.map((tool) => tool.name)).toEqual(profileNames("run"));
     expect(structured(await client.callTool({ name: "file_stat",
                                               arguments: { path: "/workspace" } })))
       .toMatchObject({ entry: { kind: "dir" } });

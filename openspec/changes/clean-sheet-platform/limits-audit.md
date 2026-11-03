@@ -14,7 +14,7 @@ four classes:
   share is named by the guard's term.
 
 Not listed, since none refuses or truncates what a user does:
-- internal timings and backoffs: leases, retries, garbage-collection grace, lane passes, wake retries, a placement upload's 10-minute expiry, and the deadlines on the gateway's own calls to a provider (the setup check, a token endpoint);
+- internal timings and backoffs: leases, retries, garbage-collection grace, lane passes, wake retries, a placement upload's 10-minute expiry, how long one read of the control record serves a script's calls (`CONTROL_FRESH_MS`), and the deadlines on the gateway's own calls to a provider (the setup check, a token endpoint);
 - pages a read returns, which the caller pages past: a pull, a mailbox or history read, a file list, a receipts list, a chunk read, a run door's wait;
 - the SQLite layout constants (`manifest.ts`), hashes and key sizes, and the ids we mint;
 - the owner app's own protocol frames, and the HTTP status of each fixed code.
@@ -37,8 +37,8 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,097,993,580.75 bytes, 40.98% of the 10 GB: 902.0 MB under
-half**, slice ID's agent identities and mail authority included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
+**The worst case that ships is 4,097,994,417.75 bytes, 40.98% of the 10 GB: 902.0 MB under
+half**, slice ID's agent identities and mail authority and slice M's change orders included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
 2.1 MB). Without each structural change, the same bounds would cost: bodies in their rows
 843.6 GB; history as rows times revisions 111.2 GB; recipients as messages times agents
 45.8 GB; scopes at 512 code points of JSON each 6.4 GB, each past the half.
@@ -103,6 +103,7 @@ Flagged for the founder:
 | `owner/src/ledger.ts` `WAKE_DEFAULTS` | 60 wakes an hour, 60 s batch | an agent's doorbells | wakes past it wait for the hour | owner setting | Off by default: the most (`WAKE_SETTINGS`); per agent (`policyWakeLimits`), 1 to 60 an hour. |
 | `owner/src/network.ts` `EGRESS_DEADLINE_S` | 86,400 s | one streamed sandbox model call | a stream past a day is cut `deadline`, settled `unknown` | vendor limit | An E2B Pro sandbox lives at most 24 hours (`engines-replan.md` §3); a subrequest has no time limit while its client stays connected (Workers limits). `LOST_AFTER_S` follows. |
 | `gateway/src/forward.ts` `FORWARD_DEADLINE_MS` | 24 hours | one forwarded request | as `EGRESS_DEADLINE_S` | vendor limit | Held equal to it by a test. |
+| `owner/src/owner-do.ts` `CODE_ANSWER_MAX` | 31 MiB as V8 serializes it | a `code` script's answer (value and output) | answered `answer_too_large`, its calls and what landed kept | technical ceiling | Workers RPC's 32 MiB of serialized arguments or return value (its own error, observed in workerd: "Serialized RPC arguments or return values are limited to 32MiB"), the owner-to-doors hop, less 1 MiB for the envelope. Measured as V8 serializes (`serializedBytes`): a string one byte a unit when every unit is Latin-1, else two bytes a unit for the whole string, so mostly ASCII text with one wide character counts double. pi-codemode's own output bound (16 Mi characters, 100,000 items) is the vendor's, not ours, and is not this path's ceiling: 16 Mi two-byte characters are 32 MiB serialized. |
 | `owner/src/codemode.ts` `CODEMODE_TIMEOUT_MS` | 300 s | one code mode script's wall time | a longer script ends `timeout` | vendor limit | The hooks Worker's `cpu_ms`, Workers Paid's most, 5 minutes (Workers limits). |
 | `hooks/wrangler.jsonc` `limits.cpu_ms` | 300,000 ms | the hooks Worker's CPU an invocation | a script past it resets its sandbox | vendor limit | Workers Paid's most, 5 minutes (Workers limits). |
 | `owner/wrangler.jsonc` `limits.subrequests` | 10,000,000 | the owner object's calls an invocation | the platform's error past it | technical ceiling | Workers Paid's most (Workers limits: "10,000 (up to 10M)"). P1 probed 1,000,000; a live check at the most is owed. |
@@ -128,7 +129,6 @@ Flagged for the founder:
 | `owner/src/collections.ts` `LIMITS.maxRowsCharge` | 256 MiB laid out | every collection row, its index entries and its collection's seq row, as SQLite lays them out | a write refused: the owner's collections are full | technical ceiling | The 10 GB: guard term `collection_rows`, 604.0 MB at `WORST_FILL`. About 262,000 rows at the narrowest names; an outside writer's share by `client_share`. |
 | `owner/src/collections.ts` `LIMITS.maxHistoryCharge` | 128 MiB laid out | the history's entries, erased keys' last entries among them | the oldest entries pruned, never refused | technical ceiling | The 10 GB: guard term `collection_history`, 302.0 MB at `WORST_FILL`. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgents` | 1,000 | enabled agents: outside agents and the owner's own live agents (slice ID) together | the 1,001st outside agent's registration, or live agent's `agent.json` write, refused (`ledger_agents_full`) | technical ceiling | The 10 GB, within `maxAgentRows`. A message has one recipient, so no term moves with it. |
-| `owner/src/ledger.ts` `RUN_MAIL_BYTES` | 1 MiB | a mail's body to one of the owner's own agents, its run's input | a larger mail to an own agent refused | technical ceiling | The run's input waits as one `run_inputs` row, which a Durable Object holds at 2 MB at most, with its envelope, within `QUEUE_BYTES`. Mail to anyone else is `BODY_BYTES_MAX`. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgentRows` | 1,000 | agent rows, tombstones included | a registration refused past it | technical ceiling | The 10 GB: guard terms `outside_agents`, `ledger_readers`, `ledger_rings`, `ledger_usage`. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxMessages` | 50,000 | messages held | the oldest acked message evicted; refused `ledger_full` if every one is unread | technical ceiling | The 10 GB: guard terms `ledger_messages` 399.2 MB, `message_bodies` 219.7 MB (each body up to 2 KiB) and `ledger_recipients` 107.9 MB. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxOwnerUnacked` | 10,000 | messages unread by the owner | a post to the owner refused past it | technical ceiling | Within `maxMessages` (`checkLimits`), so no mailbox holds the whole ledger. |

@@ -80,14 +80,14 @@ describe("code mode's executor", () => {
     expect(named).not.toMatch(/a code mode execution is named/);
   });
 
-  it("is off in the owner's policy until the owner turns it on, its one switch", () => {
+  it("is on in the owner's policy until the owner turns it off, its one switch", () => {
     const base = { entries: [], egress: { mode: "open", destinations: [] },
                    spend: { daily: null, monthly: null, transaction: null, ask_above: null,
                             source_ceilings: {} } };
-    expect(HOOK_DEFAULTS).toEqual({ codemode: false });
-    expect(hookSettings(validate(base))).toEqual({ codemode: false });
-    expect(hookSettings(validate({ ...base, hooks: { codemode: true } })))
-      .toEqual({ codemode: true });
+    expect(HOOK_DEFAULTS).toEqual({ codemode: true });
+    expect(hookSettings(validate(base))).toEqual({ codemode: true });
+    expect(hookSettings(validate({ ...base, hooks: { codemode: false } })))
+      .toEqual({ codemode: false });
     for (const hooks of [{ codemode: 1 }, { timeout_ms: 2000 }, { cpu_ms: 50 }, []]) {
       expect(() => validate({ ...base, hooks })).toThrow("invalid hooks policy");
     }

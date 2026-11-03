@@ -1,0 +1,36 @@
+{
+  "directory": {
+    "about": "What a client listed from a public connector directory is to be served: every tool but code, a generic executor. OpenAI's plugin guidelines expose each model-callable operation as its own tool, and refuse a generic executor that enables operations not individually exposed for review; that rule alone keeps code out. Anthropic's software directory policy has no rule against an executor (2A asks for narrow, unambiguous tool descriptions, 5E for readOnlyHint, destructiveHint and title, 5B for frugal token use). No grant names this profile yet: a listing submission gets its own MCP resource whose grants are pinned to it.",
+    "sources": [
+      "https://developers.openai.com/plugins/plugin-guidelines (Tools: Tool independence and exposure; Correct annotation), read 2026-11-03",
+      "https://support.claude.com/en/articles/13145358-anthropic-software-directory-policy (2A, 5B, 5E), read 2026-11-03"
+    ],
+    "tools": [
+      "inbox_digest", "board_digest", "mailbox_read", "mailbox_ack", "room_post",
+      "agents_list", "agent_register", "policy_propose", "collection_get", "collection_list",
+      "collection_history", "collection_write", "collection_delete", "collection_clear",
+      "file_stat", "file_list", "file_history", "file_usage", "file_mkdir", "file_remove",
+      "file_rename", "file_restore", "converse", "run_graph", "run_status", "run_cancel"
+    ]
+  },
+  "custom": {
+    "about": "Every grant on the MCP door and every API key, a custom connector until a directory listing has its own resource: the owner's own choice of tools, the policy's tools.custom, or every tool when the policy names none.",
+    "tools": [
+      "inbox_digest", "board_digest", "mailbox_read", "mailbox_ack", "room_post",
+      "agents_list", "agent_register", "policy_propose", "collection_get", "collection_list",
+      "collection_history", "collection_write", "collection_delete", "collection_clear",
+      "file_stat", "file_list", "file_history", "file_usage", "file_mkdir", "file_remove",
+      "file_rename", "file_restore", "converse", "run_graph", "run_status", "run_cancel",
+      "code"
+    ]
+  },
+  "run": {
+    "about": "A run's own MCP door, on the egress host (ADR-034 decision 6): every tool but the run tools, since work between agents is mail (decision 11), and but the mailbox tools (mailbox_read, mailbox_ack and inbox_digest, whose mail part is a mailbox read): a run's mail is its input, and its agent's mailbox holds every authority's mail, which no one run's authority covers (slice ID).",
+    "tools": [
+      "board_digest", "room_post", "agents_list", "agent_register", "policy_propose",
+      "collection_get", "collection_list", "collection_history", "collection_write",
+      "collection_delete", "collection_clear", "file_stat", "file_list", "file_history",
+      "file_usage", "file_mkdir", "file_remove", "file_rename", "file_restore", "code"
+    ]
+  }
+}

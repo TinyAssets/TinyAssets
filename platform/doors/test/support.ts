@@ -39,9 +39,9 @@ export function url(path: string): string {
 /** The control record, as the founder's admin path writes it; null removes it. */
 export async function setControl(value: unknown): Promise<void> {
   if (value === null) {
-    await env.DIRECTORY.delete("c:control");
+    await env.CONTROL.delete("c:control");
   } else {
-    await env.DIRECTORY.put("c:control", JSON.stringify(value));
+    await env.CONTROL.put("c:control", JSON.stringify(value));
   }
 }
 

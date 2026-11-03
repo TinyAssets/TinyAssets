@@ -26,7 +26,8 @@ const PULL = { collection: "board", after: 0, limit: 1 };
  * slice brings them back as run doors).
  */
 const RPC_METHODS = Object.freeze([
-  "admissionSet", "agentCancel", "agentRun", "agentStatus", "agentSubmit", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory",
+  "admissionSet", "agentCancel", "agentRun", "agentStatus", "agentSubmit", "boardDigest",
+  "codeRun", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory",
   "collectionPull",
   "collectionWrite", "connectionCommit", "connectionList", "connectionPrepare",
   "connectionRevoke", "deleteAgent", "disableAgent", "egressOpen", "egressReceipts",
@@ -35,13 +36,14 @@ const RPC_METHODS = Object.freeze([
   "fileRestore", "fileStat", "fileSyncCommit", "fileUploadAbort", "fileUploadBegin",
   "fileUploadChunks", "fileUploadCommit", "fileUsage", "fileWrite",
   "flowFinish", "grantForget",
-  "grantForgetRevoked", "grantList", "grantRevoke", "grantSet", "mailChain", "mailboxAck",
+  "grantForgetRevoked", "grantList", "grantRevoke", "grantSet", "inboxDigest", "mailChain",
+  "mailboxAck",
   "mailboxRead",
   "mailboxSubscriber", "noticeList", "outsideAgents", "policyProposal", "policyPropose",
   "policyRead", "policyReceipts", "policyWakeLimits", "policyWrite", "registerAgent",
   "registerProposal", "registerPropose", "roomPost", "runEvents", "sessionClose",
   "sessionCloseAll", "sessionExtend", "sessionOpen", "signinReport", "socketTicket",
-  "socketsEnd", "tierSet", "usageReceipts",
+  "socketsEnd", "tierSet", "toolProfile", "usageReceipts",
 ]);
 
 /** The runtime's reserved methods the object hands to Lifecycle: no RPC reaches them. */
@@ -122,8 +124,8 @@ describe("schema migration on wake", () => {
       const insert = (body: string, bytes: number, content: string | null) =>
         state.storage.sql.exec(
           "INSERT INTO collection_rows (collection, row_id, revision, seq, etag, writer, " +
-            "private, body, updated_at, creator, body_bytes, content_id, filer) " +
-            "VALUES ('c', 'r', 1, 1, 'e', 'w', 0, ?, 0, 'w', ?, ?, 'owner')", body, bytes, content);
+            "private, body, updated_at, creator, body_bytes, content_id, filer, change) " +
+            "VALUES ('c', 'r', 1, 1, 'e', 'w', 0, ?, 0, 'w', ?, ?, 'owner', 1)", body, bytes, content);
       expect(() => insert("x".repeat(ceiling + 1), ceiling + 1, null)).toThrow(/CHECK/);
       // A placed body's row names its content and keeps no text; a small one is never placed.
       expect(() => insert("x", ceiling + 1, "c".repeat(64))).toThrow(/CHECK/);

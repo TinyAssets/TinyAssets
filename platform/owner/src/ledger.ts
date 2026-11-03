@@ -159,13 +159,6 @@ export const HOUR_S = 3600;
  * (`BODY_BYTES_MAX`); past `PLACE_BYTES` it is placed in R2 (ADR-035).
  */
 export const MAX_BODY_BYTES = BODY_BYTES_MAX;
-/**
- * The most UTF-8 bytes of a mail to one of the owner's own agents: it is that agent's run's
- * input, which waits for its conversation as one row (a Durable Object holds a row of at
- * most 2 MB), its envelope (`MAIL_HEADER_BYTES`) with it, within the waiting inputs'
- * `QUEUE_BYTES`. A technical ceiling; a larger thing is a file the mail names.
- */
-export const RUN_MAIL_BYTES = 1024 * 1024;
 /** The open schedule rows: the `wakes_open` index's own predicate, so the planner uses it. */
 const OPEN = "state IN ('pending', 'rate_limited')";
 /** The states a wake never leaves: its outcome is known, or unknown and never replayed. */
@@ -1161,10 +1154,6 @@ export class Ledger {
         paused_reason: "",
       } };
     }
-    if (to.kind === "native" && utf8Bytes(body) > RUN_MAIL_BYTES) {
-      throw new Invalid(`a mail to one of the owner's agents is its run's input: at most ${
-        RUN_MAIL_BYTES} bytes`);
-    }
     let parent: StoredMessage | undefined;
     if (parentKey !== null) {
       parent = sql.exec<StoredMessage>(
@@ -1367,6 +1356,34 @@ export class Ledger {
     if (row === undefined) {
       return null;
     }
+    return this.#delivery(row, placed);
+  }
+
+  /**
+   * A held mail to the owner's agent `agentId`, as `nextMail` reads it: a waiting run's
+   * input, whose row keeps only the mail's reference (the run's `mail`) and reads the body
+   * again as the run starts, a placed one (ADR-035) from R2 as `nextMail`'s. Null once the
+   * mail is no longer held for it. A read.
+   */
+  mailFor(messageId: string, agentId: string,
+          placed: ReadonlyMap<string, string> = new Map()): Delivery | null {
+    const row = this.#sql.exec<StoredMessage & { recipient: string; agent: string;
+                                                 sender_name: string | null }>(
+      "SELECT m.*, r.agent_id AS recipient, n.agent, coalesce(s.agent, o.display_name) " +
+        "AS sender_name FROM ledger_recipients r " +
+        "JOIN native_agents n ON n.agent_id = r.agent_id " +
+        "JOIN ledger_messages m ON m.message_id = r.message_id " +
+        "LEFT JOIN native_agents s ON s.agent_id = m.sender_id " +
+        "LEFT JOIN outside_agents o ON o.agent_id = m.sender_id " +
+        "WHERE r.message_id = ? AND r.agent_id = ? AND r.unacked = 1",
+      messageId, agentId).toArray()[0];
+    return row === undefined ? null : this.#delivery(row, placed);
+  }
+
+  /** A mail row as its run reads it, its body checked against its hash. */
+  #delivery(row: StoredMessage & { recipient: string; agent: string;
+                                   sender_name: string | null },
+            placed: ReadonlyMap<string, string>): Delivery {
     const stored = this.#sql.exec<{ body: string; content_id: string | null }>(
       "SELECT body, content_id FROM message_bodies WHERE message_id = ?", row.message_id)
       .toArray()[0];
@@ -1376,9 +1393,9 @@ export class Ledger {
     const [body, integrity]: [string | null, Integrity] = kept === undefined
       ? [null, "missing"]
       : digest(kept) !== row.body_sha256 ? [null, "tampered"] : [kept, "ok"];
-    return { content_id: unread, message_id: row.message_id, agent: row.agent, agent_id: row.recipient,
-             room_id: row.room_id, thread: row.chain_root, sender_id: row.sender_id,
-             sender_kind: row.sender_kind,
+    return { content_id: unread, message_id: row.message_id, agent: row.agent,
+             agent_id: row.recipient, room_id: row.room_id, thread: row.chain_root,
+             sender_id: row.sender_id, sender_kind: row.sender_kind,
              sender_name: row.sender_kind === OWNER ? OWNER : row.sender_name ?? "", body,
              integrity, authority: authorityOf(row.authority, row.command_center_id),
              attended: row.attended === 1 };

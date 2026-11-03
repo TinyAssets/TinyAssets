@@ -24,11 +24,14 @@
  * files (ADR-034), so what the owner's object holds is its own bounded rows only.
  *
  * The worst case, with the limits that ship (`limits-audit.md`, `limits-audit.test.ts`), is
- * 40.98% of the limit (4,097,993,580.75 bytes), 902.0 MB under half. Slice ID added
+ * 40.98% of the limit (4,097,994,417.75 bytes), 902.0 MB under half. Slice ID added
  * `native_agents` (the owner's own agents in the registry's rows), a mail's authority and
  * attendance, and a run's mail; it adds no index (an identity and a mail thread's
- * conversation are found by their keys, digests). A new table, or a raised bound, must stay
- * under half the limit, or the guard fails.
+ * conversation are found by their keys, digests). Slice M added each collection row's
+ * owner-wide change and its `collection_changes` entry, an erase entry's change, private
+ * writer and `collection_erasures` entry (all in the collections' charges), and the one-row
+ * `collection_clock`. A new table, or a raised bound, must stay under half the limit, or the
+ * guard fails.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -423,7 +426,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                                wakes_open: key(NUMBER), wakes_sending: key(NUMBER),
                                wakes_settled: key(NUMBER) } },
     ledger_usage: { rows: L.maxAgentRows + 1, bytes: ROW, by: "one per agent" },
-    // The rows in bytes, as SQLite lays them out with their four index entries, whatever
+    // The rows in bytes, as SQLite lays them out with their five index entries, whatever
     // their names (`ROW_CHARGE`), each collection's seq row and each writer's counter with
     // them: refused past `maxRowsCharge`. A body past PLACE_BYTES is in R2 (ADR-035).
     collection_rows: { rows: 1, bytes: C.maxRowsCharge, charged: true,
@@ -432,14 +435,17 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                        indexes: { sqlite_autoindex_collection_rows_1: 0,
                                   sqlite_autoindex_collection_rows_2: 0,
                                   collection_writers: 0, collection_creators: 0,
+                                  collection_changes: 0,
                                   sqlite_autoindex_collection_seqs_1: 0 } },
     // The history in bytes, as SQLite lays its entries out (`HISTORY_CHARGE`), erased keys'
     // tombstones among them, pruned at it.
     collection_history: { rows: 1, bytes: C.maxHistoryCharge, charged: true,
                           by: "maxHistoryCharge at WORST_FILL, charged by its triggers",
                           indexes: { sqlite_autoindex_collection_history_1: 0,
-                                     collection_history_by_age: 0 } },
+                                     collection_history_by_age: 0,
+                                     collection_erasures: 0 } },
     collection_space: { rows: 1, bytes: ROW, by: "one row" },
+    collection_clock: { rows: 1, bytes: ROW, by: "one row (slice M)" },
     agent_cards: { rows: K.maxPending, bytes: ROW + 37 + 64 + 64 + 64 + K.maxRequest + 64,
                    by: "maxPending cards of maxRequest",
                    indexes: { sqlite_autoindex_agent_cards_1: key(37),
@@ -752,6 +758,21 @@ describe("the owner's database bound", () => {
       .toEqual(["recipients_by_seq", "recipients_by_state", "recipients_unacked"]);
     expect(indexesOn("ledger_messages")).toEqual(["messages_done"]);
     expect(source("schema")).not.toMatch(/native_agents \([^)]*UNIQUE|agent_id TEXT NOT NULL UNIQUE/);
+  });
+
+  it("charges slice M's indexes: the change orders of the rows and the erase entries", () => {
+    // Each charged by its table's trigger-kept charge: `collection_changes` a row's in
+    // `ROW_CHARGE`, `collection_erasures` a delete's or clear's history entry's in
+    // `HISTORY_CHARGE`, partial on them alone.
+    expect(indexesOn("collection_rows"))
+      .toEqual(["collection_changes", "collection_creators", "collection_writers"]);
+    expect(indexesOn("collection_history"))
+      .toEqual(["collection_erasures", "collection_history_by_age"]);
+    expect(source("schema")).toContain(
+      "CREATE INDEX collection_erasures ON collection_history (change) WHERE change IS NOT NULL");
+    expect(TERMS["collection_rows"]!.indexes).toHaveProperty("collection_changes", 0);
+    expect(TERMS["collection_history"]!.indexes).toHaveProperty("collection_erasures", 0);
+    expect(source("schema")).toMatch(/collection_erasures`/);
   });
 
   it("counts Lifecycle's own rows, apart from the tables", () => {

@@ -53,14 +53,43 @@ describe("the owner-bound guard against the database", () => {
       const charged = charge() - before;
       const N = 9;
       const [collection, row, principal] = [1024, 1024, 2048];
-      // The reviewer's recount (rvlim_guard): the row's record and its four index entries,
-      // its collection's seq row, laid out as the guard lays them.
-      const honest = laid(collection + row + 4 * N + 64 + 2 * principal + 1 + PLACE_BYTES + 71,
+      // The reviewer's recount (rvlim_guard): the row's record (slice M's change in it) and
+      // its five index entries (slice M's `collection_changes` among them), its collection's
+      // seq row, laid out as the guard lays them.
+      const honest = laid(collection + row + 5 * N + 64 + 2 * principal + 1 + PLACE_BYTES + 71,
                           TABLE_KEPT)
         + laid(collection + row + N, INDEX_KEPT) + laid(collection + 2 * N, INDEX_KEPT)
-        + 2 * laid(collection + principal + N, INDEX_KEPT)
+        + 2 * laid(collection + principal + N, INDEX_KEPT) + laid(2 * N, INDEX_KEPT)
         + laid(collection + N, TABLE_KEPT) + laid(collection + N, INDEX_KEPT);
       expect(charged * WORST_FILL).toBeGreaterThanOrEqual(honest);
+    });
+  });
+
+  it("charges a delete's history entry at the widest names at least what it takes, slice " +
+     "M's change, private writer and `collection_erasures` entry with it", async () => {
+    const { stub } = ownerObject();
+    await runInDurableObject(stub, (_instance: OwnerDO, state) => {
+      const charge = () => state.storage.sql.exec<{ charge: number }>(
+        "SELECT charge FROM collection_space").one().charge;
+      const name = (letter: string) => "𝄞".repeat(255) + letter;
+      const who = "𝄞".repeat(512);
+      const store = new Collections(state.storage, LIMITS);
+      const made = store.write(who, who, name("c"), name("r"), "b", "", true);
+      store.delete(who, name("c"), name("r"), made.etag);
+      // The delete drops the row's earlier entries: its own is the history's one entry.
+      expect(state.storage.sql.exec<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM collection_history WHERE op = 'delete' AND change IS NOT " +
+          "NULL AND private_writer IS NOT NULL").one().n).toBe(1);
+      expect(state.storage.sql.exec<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM collection_history").one().n).toBe(1);
+      const N = 9;
+      const [collection, key, principal] = [1024, 1024, 2048];
+      // Its record (names, op, writer, files scope, private writer, numbers), its key's,
+      // its age's and its change's (`collection_erasures`) index entries.
+      const honest = laid(collection + key + 6 + principal + 5 + principal + 5 * N, TABLE_KEPT)
+        + laid(collection + key + 2 * N, INDEX_KEPT) + laid(2 * N, INDEX_KEPT)
+        + laid(2 * N, INDEX_KEPT);
+      expect(charge() * WORST_FILL).toBeGreaterThanOrEqual(honest);
     });
   });
 });

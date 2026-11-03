@@ -33,6 +33,63 @@ export class FauxOwnerDO extends OwnerDO {
   }
 }
 
+/**
+ * The owner object as production builds it but for code mode's bounds, which are small
+ * here (production's are `CODEMODE_TIMEOUT_MS` and the hooks Worker's own budget), so a
+ * test sees a script stopped past each.
+ */
+export class BoundedOwnerDO extends OwnerDO {
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    super(ctx, env, { codemode: { timeoutMs: 2_000, interruptBudget: 2_000 } });
+  }
+}
+
+/** A control record that reads open three times, then has outside access off; reads counted. */
+function switching(): { store: KVNamespace; reads: () => number } {
+  let reads = 0;
+  const open = { outside: "on", ordinary: "all", canary: [], inbound: false };
+  const store = {
+    get: async () => (reads++ < 3 ? open : { ...open, outside: "off" }),
+  } as unknown as KVNamespace;
+  return { store, reads: () => reads };
+}
+
+/**
+ * The owner object as production builds it but for its CONTROL namespace (`switching`), and
+ * a script's read of it serving no call past its own (`controlFreshMs` 0): a test sees the
+ * gates read again at each of a script's calls.
+ */
+export class SwitchedOwnerDO extends OwnerDO {
+  readonly #reads: () => number;
+
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    const control = switching();
+    super(ctx, { ...env, CONTROL: control.store }, { controlFreshMs: 0 });
+    this.#reads = control.reads;
+  }
+
+  /** How many times the object read the control record. */
+  controlReads(): number {
+    return this.#reads();
+  }
+}
+
+/** As `SwitchedOwnerDO`, with production's freshness: one read serves a second of calls. */
+export class CachedOwnerDO extends OwnerDO {
+  readonly #reads: () => number;
+
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    const control = switching();
+    super(ctx, { ...env, CONTROL: control.store });
+    this.#reads = control.reads;
+  }
+
+  /** How many times the object read the control record. */
+  controlReads(): number {
+    return this.#reads();
+  }
+}
+
 /** One call the object made to its GATEWAY binding, as text: what crossed the binding. */
 export interface GatewayCall {
   readonly method: string;

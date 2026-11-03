@@ -16,14 +16,31 @@
  * so the agent's effects cannot be taken back (destructive, not idempotent; a retry of
  * `converse` with the same `client_send_id` is the same run); `run_status` reads a run's
  * receipt; `run_cancel` ends one (destructive, idempotent). An engine's own tools are its
- * vendor's, and are never served here. A run's own MCP door (`runProfile`, on the egress
- * host) serves the table but the run tools, since work between agents is mail (ADR-034
- * decision 11), and the mailbox tools, since a run's mail is its input (slice ID).
+ * vendor's, and are never served here.
+ *
+ * Slice M's tools, so a main agent spends few calls: `inbox_digest` and `board_digest`
+ * (what changed for the caller since its cursor, in one read) and `code` (code mode: one
+ * script calls the caller's other tools, each held to its grant, its VM in the hooks
+ * Worker). `code` is a generic executor, so it is never in the directory profile, by
+ * OpenAI's plugin guidelines (no generic executor enabling operations not exposed for review).
+ *
+ * **Profiles** (`profiles.json`, data): which of the table's tools a caller is served.
+ * `custom`, the owner's own choice (its policy's `tools.custom`, or every tool), which every
+ * grant on the MCP door and every API key names: each is a custom connector; `directory`,
+ * what a public connector directory allows, for the listing's own MCP resource once the
+ * listing is submitted (the founder's call: a new door); `run`, a run's own MCP door on
+ * the egress host, the table but the run tools (work between agents is mail, ADR-034
+ * decision 11) and the mailbox tools, `inbox_digest` among them, since a run's mail is
+ * its input and its agent's mailbox holds every authority's mail (slice ID). The object
+ * answers a caller's profile (`toolProfile`) and builds `code`'s
+ * tools from it.
  * `guards/tools.test.ts` holds every row to these rules and to a real outside-callable
  * door, and names the outside-callable doors without a tool yet, each with the slice that
  * owes it.
  */
 import type { Binding, OwnerDO } from "../../owner/src/owner-do";
+
+import profiles from "../profiles.json" with { type: "json" };
 
 type JsonSchema = Record<string, unknown>;
 
@@ -74,7 +91,25 @@ export function toolTable(): readonly Tool[] {
   const row = str("The row's id");
   const path = str("An absolute path in the owner's files, such as /workspace/notes.md");
   const etag = orNull("The entry's current etag, or null to create it");
+  const after = int("Changes after this cursor: 0 at first, then the last answer's cursor");
+  const head = int("At most this many characters of each row's body (512 when omitted)");
   return [
+    { name: "inbox_digest", door: "inboxDigest", capability: "read_graph",
+      title: "Inbox digest", ...READ,
+      description: "Read what is new for this agent in one call: its unacknowledged mail, " +
+        "oldest first, and the rows of the owner's rooms changed after a cursor, each " +
+        "with the head of its body. Acknowledge mail with mailbox_ack; read a whole row " +
+        "with collection_get.",
+      input: args({ limit: int("At most this many messages, and this many room rows"),
+                    after },
+                  { max_bytes: int("At most this many mail body bytes in all"),
+                    head_chars: head }) },
+    { name: "board_digest", door: "boardDigest", capability: "read_graph",
+      title: "Board digest", ...READ,
+      description: "Read the owner's board rows changed after a cursor in one call, each " +
+        "with its etag and the head of its body. Claim a row with collection_write on " +
+        "its etag; read a whole row with collection_get.",
+      input: args({ limit: int("At most this many rows"), after }, { head_chars: head }) },
     { name: "mailbox_read", door: "mailboxRead", capability: "read_graph",
       title: "Read mailbox", ...READ,
       description: "Read this agent's unacknowledged mailbox messages, oldest first.",
@@ -209,35 +244,46 @@ export function toolTable(): readonly Tool[] {
       openWorldHint: false,
       description: "Cancel one of your runs (its engine is stopped), or one of your schedules.",
       input: args({}, { run_id: str("The run's id"), schedule_id: str("The schedule's id") }) },
+    { name: "code", door: "codeRun", capability: null,
+      title: "Run a script of tool calls", ...CHANGE,
+      description: "Run one JavaScript script that calls your other tools here as " +
+        "`await tools.<name>(args)`, each held to your grant, and answer its return value " +
+        "and output: many tool calls in one. Its effects are the effects of the tools it " +
+        "calls. Only while the owner's policy turns code mode on; a script past its time " +
+        "or compute bound is stopped.",
+      input: args({ script: str("The script: the body of an async function") }) },
   ];
 }
 
-/** The run doors' tools: what a run's own MCP door never serves. */
-export const RUN_TOOLS: readonly string[] = Object.freeze(["converse", "run_graph",
-                                                           "run_status", "run_cancel"]);
+/** A profile's name: what a caller is served (`profiles.json`). */
+export type ProfileName = "directory" | "custom" | "run";
+/** The profiles an outside client's grant may name; `run` is a run's own door's. */
+export const CLIENT_PROFILES: readonly ProfileName[] = Object.freeze(["directory", "custom"]);
+/** What a grant names until the owner names another: every client is a custom connector. */
+export const DEFAULT_PROFILE: ProfileName = "custom";
 
-/**
- * The mailbox tools, which a run never holds (slice ID): its mail is its input, and its
- * agent's mailbox holds every authority's mail, which no one run's authority covers.
- */
-export const MAILBOX_TOOLS: readonly string[] = Object.freeze(["mailbox_read", "mailbox_ack"]);
-
-/**
- * A run's own MCP door's tools (ADR-034 decision 6): the table but the run tools and the
- * mailbox tools, each held by the object to the run grant's scopes.
- */
-export function runProfile(): readonly Tool[] {
-  return toolTable().filter((tool) => !RUN_TOOLS.includes(tool.name)
-                            && !MAILBOX_TOOLS.includes(tool.name));
+/** A profile's tool names, as its data lists them (`custom`: the default of the owner's choice). */
+export function profileNames(name: ProfileName): readonly string[] {
+  return Object.freeze([...profiles[name].tools]);
 }
 
-/** The tool named `name`, or undefined. */
-export function toolNamed(name: string): Tool | undefined {
-  return toolTable().find((tool) => tool.name === name);
+/** Every tool name of the table, in its order. */
+export function toolNames(): readonly string[] {
+  return toolTable().map((tool) => tool.name);
+}
+
+/** The table's tools `names` lists, in the table's order; an unknown name is a bug. */
+export function toolsNamed(names: readonly string[]): readonly Tool[] {
+  const table = toolTable();
+  const unknown = names.filter((name) => !table.some((tool) => tool.name === name));
+  if (unknown.length > 0) {
+    throw new Error(`no tool named ${unknown.join(", ")}`);
+  }
+  return table.filter((tool) => names.includes(tool.name));
 }
 
 /** Whether a door takes a request argument after its binding. */
-function takesRequest(tool: Tool): boolean {
+export function takesRequest(tool: Tool): boolean {
   return Object.keys((tool.input["properties"] ?? {}) as object).length > 0;
 }
 

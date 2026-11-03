@@ -11,10 +11,10 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { toolNamed } from "../../doors/src/tools";
+import { toolsNamed } from "../../doors/src/tools";
 import { PLACE_BYTES } from "../src/bodies";
 import { AGENT_RETIRED, type Ledger, MAIL_HEADER_BYTES, mailInput, NO_AGENT, nativeId,
-         RUN_MAIL_BYTES, RUN_NO_MAILBOX } from "../src/ledger";
+         RUN_NO_MAILBOX } from "../src/ledger";
 import type { Binding } from "../src/owner-do";
 import { mailConversation, type RunReceipt, UNATTENDED_REFUSED } from "../src/runs";
 import type { SandboxStart } from "../src/sandbox";
@@ -299,11 +299,28 @@ describe("mail to an agent", () => {
     const chain = await r.stub.mailChain(r.bind(), { message_id: ping.message_id, limit: 10 });
     expect(chain.messages.map((m) => m.body)).toEqual([long, answer]);
     expect(Object.keys(chain)).toEqual(["root", "messages", "more"]);
-    // A mail to an own agent is its run's input: at most RUN_MAIL_BYTES.
-    expect((await failure(() => ownerMail(r, `dm:${main.agent_id}`,
-                                           "x".repeat(RUN_MAIL_BYTES + 1)))).message)
-      .toMatch(/its run's input: at most/);
+    // Placed before the settle's unit, posted by reference in it: no upload is left open.
+    expect(await r.sql("SELECT COUNT(*) AS n FROM file_intents")).toEqual([{ n: 0 }]);
   });
+
+  it("waits by reference: a long mail's waiting run keeps only its mail, and is told it " +
+     "whole as it starts", async () => {
+    const r = await gated();
+    await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
+    const main = await identity(r, "main");
+    for (let i = 0; i < 5; i++) {
+      await ownerMail(r, `dm:${main.agent_id}`, `job ${i}`);
+    }
+    // Past a chunk: bounded by the body bound alone, as any mail.
+    const long = "w".repeat(5 * 1024 * 1024) + "!";
+    await ownerMail(r, `dm:${main.agent_id}`, long);
+    await drainDue(r.stub);
+    expect(await r.sql("SELECT prompt, bytes FROM run_inputs")).toEqual([{ prompt: "", bytes: 0 }]);
+    await end(r, (await starts(r))[0]!, "done 0");
+    await drainDue(r.stub);
+    expect(told((await starts(r)).at(-1)!).body).toBe(long);
+    expect(await r.sql("SELECT COUNT(*) AS n FROM run_inputs")).toEqual([{ n: 0 }]);
+  }, 120_000);
 
   it("from a client starts a run held to the intersection with that client's grant",
      async () => {
@@ -457,6 +474,9 @@ describe("a run and the mailbox (review H1)", () => {
     expect((await failure(() => r.stub.mailboxRead(asRun, { limit: 10 }))).message)
       .toBe(RUN_NO_MAILBOX);
     expect((await failure(() => r.stub.mailboxAck(asRun, { through: 1 }))).message)
+      .toBe(RUN_NO_MAILBOX);
+    // Nor its digest, whose mail part is a mailbox read (slice M on ID).
+    expect((await failure(() => r.stub.inboxDigest(asRun, { limit: 10, after: 0 }))).message)
       .toBe(RUN_NO_MAILBOX);
     // An owner run reads none either: every run's mail is its input.
     await drainDue(r.stub);
@@ -810,7 +830,7 @@ describe("the owner-mail schedules slice R stood in with", () => {
       expect((await failure(() => r.stub.agentRun(r.bind({ tiers: TIERS }), {
         agent: "main", input: "x", ...extra } as never))).message).toBe("invalid run request");
     }
-    const properties = Object.keys(toolNamed("run_graph")!.input["properties"] as object);
+    const properties = Object.keys(toolsNamed(["run_graph"])[0]!.input["properties"] as object);
     expect(properties.filter((name) => name.includes("mail"))).toEqual([]);
     expect((await r.sql("SELECT sql FROM sqlite_master WHERE name = 'run_schedules'"))[0]!["sql"])
       .not.toMatch(/mail/);

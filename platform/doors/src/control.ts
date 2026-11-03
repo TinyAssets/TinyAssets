@@ -12,8 +12,9 @@
  *   unreadable closes them, as the Python's `router_traffic.admits` did, since a gate
  *   that cannot be read is never taken as open.
  *
- * A flip reaches every location within KV's 60 s; no revoke depends on it. The switch
- * reaching the object's alarm (the doorbell) is task 7's.
+ * A flip reaches every location within KV's 60 s; no revoke depends on it. A `code` call's
+ * script reads the same gates again at each tool call, in the object (`control-gate.ts`).
+ * The switch reaching the object's alarm (the doorbell) is task 7's.
  */
 import type { DoorsEnv } from "./config";
 import { type Control, type ControlRead, readControl } from "./directory";
@@ -59,14 +60,14 @@ function tiersOf(read: ControlRead): unknown {
 /** The outside gate, read once: its refusal, or the record's tier numbers. */
 export async function outsideRead(env: DoorsEnv, owner: string):
     Promise<Response | { readonly tiers: unknown }> {
-  const read = await readControl(env);
+  const read = await readControl(env.CONTROL);
   return outsideOpen(read, owner) ? { tiers: tiersOf(read) } : refusal(OUTSIDE_OFF);
 }
 
 /** The maintenance gate, read once: its refusal, or the record's tier numbers. */
 export async function ownerRead(env: DoorsEnv, owner: string):
     Promise<Response | { readonly tiers: unknown }> {
-  const read = await readControl(env);
+  const read = await readControl(env.CONTROL);
   return ownerOpen(read, owner) ? { tiers: tiersOf(read) } : refusal(MAINTENANCE);
 }
 

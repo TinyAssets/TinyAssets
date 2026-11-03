@@ -5,6 +5,7 @@ declare namespace Cloudflare {
     OWNER: DurableObjectNamespace<import("../../owner/src/owner-do").OwnerDO>;
     OAUTH_KV: KVNamespace;
     DIRECTORY: KVNamespace;
+    CONTROL: KVNamespace;
     DCR_ENABLED: string;
     OWNER_ISSUER: string;
     FOREIGN_ISSUERS: string;
