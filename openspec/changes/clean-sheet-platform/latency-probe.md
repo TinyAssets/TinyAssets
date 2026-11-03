@@ -13,7 +13,25 @@ It follows the store probe (`store-probe.md`) and the facet probe (`facet-probe.
 
 ## Found
 
-_Results pending: the run is recorded at the end of this file._
+Run 2 (41640819262, 2026-11-03, results at the end) measured **option A only**.
+- The repository's `CLOUDFLARE_API_TOKEN` has no R2 access: the bucket create and the bucket list both answered 403 "Authentication error". So no bucket was made, and option B was not run.
+- **Option B needs a token with Account → Workers R2 Storage: Edit**, then one more run.
+
+Run 1 (41640309636) deployed nothing. Its cleanup's proof read that 403 as an unreadable list. Fixed in `delete.sh`: a token that cannot list buckets made none.
+
+- **Placement.** The door was entered at ORD and the owner object ran at ORD. All four shards the owner made by its first call to them also ran at ORD: a shard is placed in the owner's colo.
+- **A call doing nothing (ping), sequential:** p50 5 ms, p95 8, p99 10 (n 300).
+- **A small SQLite write and read on a warm shard:**
+  - sequential: p50 30 ms, p95 38, p99 42 (n 300);
+  - 6-parallel: p50 35, p95 46, p99 55 (n 300; 300 calls in 1.9 s).
+- **The first call to a new shard** (it makes the object):
+  - sequential: p50 285 ms, p95 452, p99 3,768 (n 100; max 4.9 s);
+  - 6-parallel: p50 277, p95 349, p99 445 (n 100).
+- **Reading.** A shard's write costs about 25 ms more than a ping. That is the shard's own durable commit: its answer waits for the write to be confirmed before it leaves.
+  - A journaled write that touches the owner object and one shard therefore pays the shard's commit (about 30 ms at p50) on top of the owner's own units.
+  - A new shard costs about 0.3 s on its first write, with a tail of seconds.
+
+Against the reading key: option A's per-write cost is now known (about 30 ms p50, 40 to 55 ms p95). Option B's is still owed. The index decision waits on run 3, with R2.
 
 ## What it decides
 
@@ -95,3 +113,23 @@ Three throwaway Workers and one throwaway bucket, made, driven and deleted by on
 It proves the harness, never a reading.
 
 ## Results
+
+### Run 2 (41640819262, 2026-11-03), option A only
+
+- Commit `c44406706`, started by a push to `probe-latency-run`, which the founder approved.
+- Workers deployed at 13:03:05Z. Cases from 13:03:21 to 13:04:18Z. Cleanup at 13:04:22Z.
+- **Bucket:** not made. The R2 API answered 403 "Authentication error" (the token has no R2 access). Option B was not run.
+- **Placement:** the door entered at ORD; the owner object at ORD (US); four shards made by the owner, all at ORD.
+
+| Case | n | p50 ms | p95 ms | p99 ms | min | max | mean | failed | wall s |
+|---|---|---|---|---|---|---|---|---|---|
+| A ping, sequential | 300 | 5 | 8 | 10 | 2 | 16 | 5.2 | 0 | 1.6 |
+| A write+read, warm, sequential | 300 | 30 | 38 | 42 | 26 | 52 | 30.9 | 0 | 9.3 |
+| A write+read, warm, 6-parallel | 300 | 35 | 46 | 55 | 29 | 55 | 36 | 0 | 1.9 |
+| A write+read, cold (new shard), sequential | 100 | 285 | 452 | 3768 | 208 | 4905 | 376.4 | 0 | 37.6 |
+| A write+read, cold (new shard), 6-parallel | 100 | 277 | 349 | 445 | 205 | 463 | 287.1 | 0 | 5.8 |
+
+**Cleanup**, from the step log:
+- `ta-latencyprobe-door`, `ta-latencyprobe` and `ta-latencyprobe-files` each answered "delete HTTP 200", then 404 on a read back.
+- The Worker and Durable Object namespace lists then held nothing named `ta-latencyprobe*`.
+- R2 was not checked, since the token cannot reach it and so made no bucket.
