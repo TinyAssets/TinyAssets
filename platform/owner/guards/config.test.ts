@@ -17,7 +17,9 @@
  * `HOOKS`, the hooks Worker (H0, narrowed to code mode by ADR-034), that is the namespace
  * of its own one class, exactly (`CodemodeSandbox`, no `script_name`, so no other Worker's
  * class), made by its migrations as SQLite, and its `limits` exactly: no `OWNER`, no
- * storage binding and no Worker Loader, so a script reaches no owner. Its
+ * storage binding and no Worker Loader, so a script reaches no owner. For `DOORBELL`, the
+ * kill switch's Worker (slice W), that is one KV namespace, the owner directory it reads
+ * the control record from, and nothing else: it reaches no object and no Worker. Its
  * compatibility flags carry
  * `disable_ctx_exports`, so the runtime does not hand the object its own namespaces as
  * `ctx.exports`. Its `limits` are exactly `LIMITS`, set at top level: the platform's count
@@ -95,6 +97,8 @@ const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
   HOOKS: Object.freeze({ service: "tinyassets-hooks",
                          bindings: Object.freeze({}), own: HOOKS_OWN,
                          limits: Object.freeze({ cpu_ms: 30_000 }) }),
+  DOORBELL: Object.freeze({ service: "tinyassets-doorbell",
+                            bindings: Object.freeze({ kv_namespaces: 1 }) }),
 });
 
 type Config = Record<string, unknown>;
@@ -261,13 +265,34 @@ const config = parseConfig(readFileSync(join(OWNER, CONFIG), "utf8"));
 
 describe("owner Worker config", () => {
   it("binds only FILES, to a Worker that binds one bucket, GATEWAY, to one that binds " +
-     "nothing, and HOOKS, to one that binds its own class, and turns ctx.exports off", () => {
+     "nothing, HOOKS, to one that binds its own class, and DOORBELL, to one that binds the " +
+     "directory, and turns ctx.exports off", () => {
     expect(configProblems(config, platformConfigs())).toEqual([]);
     expect(config["compatibility_flags"]).toContain(NO_EXPORTS);
     expect(config["services"]).toEqual([{ binding: "FILES", service: "tinyassets-files" },
                                         { binding: "GATEWAY", service: "tinyassets-gateway" },
-                                        { binding: "HOOKS", service: "tinyassets-hooks" }]);
+                                        { binding: "HOOKS", service: "tinyassets-hooks" },
+                                        { binding: "DOORBELL", service: "tinyassets-doorbell" }]);
     expect(config["durable_objects"]).toBeUndefined();
+  });
+
+  it("binds DOORBELL to a Worker that binds the doors' own directory and nothing else", () => {
+    const doorbell = platformConfigs().get("tinyassets-doorbell")!;
+    const doors = platformConfigs().get("tinyassets-doors")!;
+    const directory = (doors["kv_namespaces"] as Config[])
+      .find((kv) => kv["binding"] === "DIRECTORY");
+    expect(doorbell["kv_namespaces"]).toEqual([directory]);
+    for (const extra of [{ kv_namespaces: [directory, { binding: "OAUTH_KV", id: "x" }] },
+                         { services: [{ binding: "OWNER", service: "tinyassets-owner" }] },
+                         { r2_buckets: [{ binding: "B", bucket_name: "tinyassets-files" }] },
+                         { durable_objects: { bindings: [{ name: "OWNER", class_name: "OwnerDO",
+                                                           script_name: "tinyassets-owner" }] } },
+                         { routes: ["tinyassets.io/doorbell/*"] },
+                         { secrets: { required: ["ROUTING_MAC_KEY"] } }]) {
+      expect(configProblems(config, new Map([...platformConfigs(),
+                                             ["tinyassets-doorbell", { ...doorbell, ...extra }]])))
+        .not.toEqual([]);
+    }
   });
 
   it.each([
@@ -349,12 +374,13 @@ describe("owner Worker config", () => {
       .toEqual([`env.prod.limits are not ${JSON.stringify(LIMITS)}`]);
   });
 
-  it("refuses FILES, GATEWAY and HOOKS when their Workers' configs are not in the platform",
-     () => {
+  it("refuses FILES, GATEWAY, HOOKS and DOORBELL when their Workers' configs are not in " +
+     "the platform", () => {
     expect(configProblems(config)).toEqual(
       ["services binds tinyassets-files, whose config is not in the platform",
        "services binds tinyassets-gateway, whose config is not in the platform",
-       "services binds tinyassets-hooks, whose config is not in the platform"]);
+       "services binds tinyassets-hooks, whose config is not in the platform",
+       "services binds tinyassets-doorbell, whose config is not in the platform"]);
   });
 
   const hooks = { name: "tinyassets-hooks", main: "src/index.ts",

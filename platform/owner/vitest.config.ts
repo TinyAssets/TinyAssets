@@ -14,9 +14,11 @@ const PLATFORM = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FILES = join(PLATFORM, "files");
 const GATEWAY = join(PLATFORM, "gateway");
 const HOOKS = join(PLATFORM, "hooks");
+const DOORBELL = join(PLATFORM, "doorbell");
 
 type WorkerConfig = { name: string; compatibility_date: string; compatibility_flags: string[];
                       r2_buckets?: { binding: string }[];
+                      kv_namespaces?: { binding: string }[];
                       durable_objects?: { bindings: { name: string; class_name: string }[] } };
 
 function config(dir: string): WorkerConfig {
@@ -120,6 +122,40 @@ function hooksWorker() {
   }
 }
 
+/**
+ * The real doorbell Worker, as the DOORBELL service binding's target: bundled by wrangler
+ * from its own config (it imports the doors' control record reader), with its own runtime
+ * and flags, and its one binding, the directory, on the namespace the tests' own
+ * `DIRECTORY` binding writes, so a test sets the kill switch the doorbell reads.
+ */
+function doorbellWorker() {
+  const doorbell = config(DOORBELL);
+  const out = mkdtempSync(join(tmpdir(), "owner-doorbell-"));
+  try {
+    const wrangler = join(dirname(createRequire(join(HOOKS, "package.json"))
+      .resolve("wrangler/package.json")), "bin", "wrangler.js");
+    execFileSync(process.execPath, [wrangler, "deploy", "--dry-run", "--outdir", out,
+                                    "--config", join(DOORBELL, "wrangler.jsonc")],
+                 { cwd: DOORBELL, stdio: "pipe",
+                   env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
+    return {
+      name: doorbell.name,
+      modulesRoot: DOORBELL,
+      modules: [{ type: "ESModule" as const, path: join(DOORBELL, "index.js"),
+                  contents: readFileSync(join(out, "index.js"), "utf8") }],
+      compatibilityDate: doorbell.compatibility_date,
+      compatibilityFlags: doorbell.compatibility_flags,
+      kvNamespaces: Object.fromEntries((doorbell.kv_namespaces ?? [])
+        .map((kv) => [kv.binding, DIRECTORY_NAMESPACE])),
+    };
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+}
+
+/** The directory's namespace, which the tests and the doorbell Worker share. */
+const DIRECTORY_NAMESPACE = "owner-tests-directory";
+
 /** The gateway's fake outside world (`gateway/test/fake-upstream.ts`), transpiled. */
 function fakeUpstream() {
   const path = join(GATEWAY, "test", "fake-upstream.ts");
@@ -146,10 +182,12 @@ export default defineConfig({
     projects: [
       {
         // Runs in workerd. OWNER is bound for the tests only: wrangler.jsonc gives the
-        // Worker no binding to its own namespace. AGENT, GATED and BOUNDED are the test
+        // Worker no binding to its own namespace. AGENT, GATED, BOUNDED and RUNG are the test
         // Worker's own classes of the object (test/worker.ts): its internal paths in reach,
-        // its gateway calls watched, and code mode's bounds small. FILES, GATEWAY and HOOKS
-        // are the config's own bindings, to the files, gateway and hooks Workers run beside it. TEST_KEYRING is the gateway's
+        // its gateway calls watched, code mode's bounds small, and its doorbell's requests
+        // recorded. FILES, GATEWAY, HOOKS and DOORBELL are the config's own bindings, to the
+        // files, gateway, hooks and doorbell Workers run beside it; DIRECTORY, the tests'
+        // own, is the doorbell's directory, where a test sets the kill switch. TEST_KEYRING is the gateway's
         // keyring, so a test can seal under an older kid; the tests' own fetches reach the
         // fake. ROUTING_MAC_KEY is the config's one secret, the sandbox tokens' routing key.
         plugins: [
@@ -162,10 +200,13 @@ export default defineConfig({
                 AGENT: { className: "FauxOwnerDO", useSQLite: true },
                 GATED: { className: "GatedOwnerDO", useSQLite: true },
                 BOUNDED: { className: "BoundedOwnerDO", useSQLite: true },
+                RUNG: { className: "RungOwnerDO", useSQLite: true },
               },
+              kvNamespaces: { DIRECTORY: DIRECTORY_NAMESPACE },
               bindings: { TEST_KEYRING: KEYRING, ROUTING_MAC_KEY: ROUTING_KEY },
               outboundService: "fake-upstream",
-              workers: [filesWorker(), gatewayWorker(KEYRING), hooksWorker(), fakeUpstream()],
+              workers: [filesWorker(), gatewayWorker(KEYRING), hooksWorker(), doorbellWorker(),
+                        fakeUpstream()],
             },
           }),
         ],

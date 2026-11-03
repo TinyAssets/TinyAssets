@@ -171,18 +171,40 @@ Lifecycle SHALL own the object's single physical alarm, which the lanes' jobs an
 - **THEN** it fails, since the object defines no `fetch`
 
 ### Requirement: Only the wakes lane claims and settles wakes
-Wakes, and revokes of an agent's callbacks, SHALL be rows on the object's one schedule, the `wakes` lane. No RPC method SHALL claim, mark or settle one; the lane's pass SHALL, in process, with the doorbell's sender. Each pass SHALL first recover lapsed claims by their own index, then, with a sender, claim due open rows. The lane SHALL have a job for open rows only with a sender, so without one they stay pending and arm nothing.
+Wakes, and revokes of an agent's callbacks, SHALL be rows on the object's one schedule, the `wakes` lane. No RPC method SHALL claim, mark or settle one; the lane's pass SHALL, in process, with the doorbell the object constructs (`Doorbell`, `wakes.ts`). Each pass SHALL first recover lapsed claims by their own index, then, when rows are due, ask the kill switch once (`DOORBELL.open`, bounded at `WAKE_SEND_MS`) and claim nothing on closed, a failure or no answer, holding its job `WAKE_RETRY_S` without touching a row; then claim due open rows. The lane SHALL have a job for open rows only while the owner is admitted.
 
 #### Scenario: A lapsed claim behind due wakes
-- **WHEN** a claim's lease has lapsed behind more due open wakes than one pass takes, and the object has no sender
-- **THEN** one pass recovers it, as `unknown` if it was marked, and the lane is left with no job
+- **WHEN** a claim's lease has lapsed behind more due open wakes than one pass takes, and the kill switch is closed
+- **THEN** one pass recovers it, as `unknown` if it was marked, claims none of the rest, and holds the lane's job a retry out
+
+#### Scenario: The kill switch is closed
+- **WHEN** the directory's `c:control` record is missing, malformed, unreadable, `outside` off, or its maintenance gate leaves the owner out
+- **THEN** the `tinyassets-doorbell` Worker answers closed, no wake is claimed, and the lane's job waits `WAKE_RETRY_S`, never a busy loop
+
+### Requirement: Each vendor's wake is a record, sent by one doorbell
+Each vendor's wake mechanism SHALL be one record of `owner/wake-kinds.json`, checked whole: its delivery method, whether it pushes, who hands TinyAssets the callback (the agent's client over MCP Events, or the owner in session), the callback's URL and secret rules, the auth scheme (`bearer` or `standard_webhooks`), header and body templates, the statuses that say the callback is gone, the vendor's own limits and its citations. A record with no push (Muse) SHALL never ring: its agent catches up through `inbox_digest` and `board_digest` on its own schedule, and TinyAssets polls nothing. No code SHALL name a vendor. A wake SHALL carry identifiers, the agent's mailbox cursor, what kind of change it is (`mail`, `rooms`, `board`), the owner-wide change cursor it is after and the digests that answer it, never content. The request SHALL never follow a redirect, and its answer's body SHALL never be read.
+
+#### Scenario: A board row changes
+- **WHEN** the owner writes a board row that is not private, and an MCP Events agent and a `/fire` agent are subscribed
+- **THEN** each is sent its own record's shape, naming `board_digest` and the cursor before the change, and that digest after it returns just the row
+
+#### Scenario: An agent writes the board itself
+- **WHEN** a ringing agent writes a board row
+- **THEN** every other ringing agent is woken and it is not
+
+### Requirement: A send that may have left is never replayed
+The doorbell SHALL mark a wake before its first byte and recheck the agent's callback and its client's grant immediately before it; a revoke, disable or grant change that landed meanwhile SHALL send nothing. A transport failure after the mark SHALL settle `unknown`; a send past `WAKE_SEND_MS` SHALL be left to its lease and recover `unknown`; neither SHALL be sent again.
+
+#### Scenario: A slow send
+- **WHEN** a callback never answers
+- **THEN** the pass moves on, the wake recovers `unknown` after its lease, and it is never sent again
 
 #### Scenario: A door names a wake claim
 - **WHEN** a binding calls a claim, mark or settle method on the object
 - **THEN** the call fails because the object has no such method
 
 ### Requirement: Wake limits are owner policy
-An agent's wake limits SHALL be stored per agent, 12 wakes an hour and a 60 s batch window by default, and changed only by the owner in its own session, as a policy write: against the policy generation, which the change bumps, and receipted. A registration SHALL never carry or reset them.
+An agent's wake settings SHALL be the owner's own, stored per agent and off by default (no hourly cap, no batch window), and changed only by the owner in its own session, as a policy write: against the policy generation, which the change bumps, and receipted. A registration SHALL never carry or reset them. An uncapped agent SHALL keep no ring rows; a cap's high (60 an hour) is the ring table's technical ceiling.
 
 #### Scenario: An agent registers again
 - **WHEN** the owner has set an agent's limits and the agent registers again
@@ -325,7 +347,7 @@ A grant change SHALL suppress the client's agents' open wakes and schedule the r
 - **THEN** the wake is suppressed, its callback is revoked on the next alarm, and nothing is sent
 
 ### Requirement: A revoke is fenced by the subscription generation
-Each `mailbox.message` subscribe SHALL open the agent's next subscription generation, which tags the doorbell's callback. Disabling an agent, moving it off `mcp_event` or deleting it SHALL schedule a revoke only when the agent has subscribed since its last revoke, carrying the newest generation, with at most one open per agent. The doorbell SHALL erase only callbacks at or before a revoke's generation.
+Each subscribe (the agent's client's MCP Events `wakeSubscribe`, or the owner's `agentDoorbell` for a `/fire` or webhook token) SHALL store the agent's one callback in the same transaction that opens the agent's next subscription generation, which tags it. Disabling an agent, moving it to another delivery method, deleting it or changing its client's grant SHALL, when the agent has subscribed since its last revoke, erase its callbacks in that transaction and schedule a revoke carrying the newest generation, with at most one open per agent. The doorbell SHALL erase only callbacks at or before a revoke's generation, and send only to a callback past the agent's newest scheduled revoke.
 
 #### Scenario: An agent re-enabled before its revoke runs
 - **WHEN** a subscribed agent is disabled, registers again and subscribes again before the alarm runs its revoke

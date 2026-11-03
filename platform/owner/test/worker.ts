@@ -107,3 +107,52 @@ export class GatedOwnerDO extends OwnerDO {
     this.calls.push(...pending);
   }
 }
+
+/** One request the doorbell sent, as it left: its URL, headers and body. */
+export interface Rang {
+  readonly url: string;
+  readonly method: string;
+  readonly redirect: string;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly body: string;
+}
+
+/**
+ * The doorbell's transport in the tests: every request recorded as it left, answered from
+ * a script (a status, `throw` for a connection lost after the byte, `hang` for one that
+ * never answers), 202 when the script is empty. `during` runs as a request leaves, so a
+ * test lands a change mid-pass.
+ */
+export class RecordingTransport {
+  readonly rang: Rang[] = [];
+  readonly answers: (number | "throw" | "hang")[] = [];
+  readonly retryAfter: (string | null)[] = [];
+  during: (() => Promise<void>) | null = null;
+
+  readonly send = async (request: Request): Promise<Response> => {
+    this.rang.push({ url: request.url, method: request.method, redirect: request.redirect,
+                     headers: Object.fromEntries(request.headers), body: await request.text() });
+    await this.during?.();
+    const answer = this.answers.shift() ?? 202;
+    if (answer === "throw") {
+      throw new Error("the connection was lost after the request left");
+    }
+    if (answer === "hang") {
+      return new Promise<Response>(() => undefined);
+    }
+    const retry = this.retryAfter.shift() ?? null;
+    return new Response("not read", { status: answer,
+                                      headers: retry === null ? {} : { "Retry-After": retry } });
+  };
+}
+
+/** The owner object as production builds it, its doorbell's requests recorded, not sent. */
+export class RungOwnerDO extends OwnerDO {
+  readonly doorbell: RecordingTransport;
+
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    const transport = new RecordingTransport();
+    super(ctx, env, { transport: transport.send });
+    this.doorbell = transport;
+  }
+}

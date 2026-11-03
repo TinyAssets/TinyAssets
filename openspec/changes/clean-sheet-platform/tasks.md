@@ -1176,8 +1176,19 @@ R, S, M and W.
 
 ## 7. Wakes and outside agents
 
-- [ ] Alarms, doorbells for ChatGPT and Claude, the board with the W8 decisions.
-- [ ] The doorbell: a `WakeSender` the object constructs and its alarm calls in process
+- [x] Alarms, doorbells for ChatGPT and Claude, the board with the W8 decisions. Built in
+  slice W: a board or room row another writer changes (not a private one) rings every
+  ringing agent, mail rings its recipient, each folded into the agent's one open wake,
+  which says what changed (`mail`, `rooms`, `board`) and the owner-wide change cursor it is
+  after, so `inbox_digest` or `board_digest` after it returns just the change. Wake kinds
+  are data (`owner/wake-kinds.json`, `wake-kinds.ts`): ChatGPT MCP Events (the client
+  subscribes; Standard Webhooks), Claude `/fire` and Grok webhook routines (the owner
+  pastes the vendor's URL and token in session, `agentDoorbell`; bearer), Muse with no
+  push (it catches up on its own schedule; nothing polls). Each record cites its vendor
+  page and its limits. The wake cap is the owner's own setting, off by default (no
+  hourly cap, no batch window; the cap's high of 60 is the ring table's recorded
+  ceiling, `limits-audit.md`).
+- [x] The doorbell: a `WakeSender` the object constructs and its alarm calls in process
   (ChatGPT MCP Events, then Claude `/fire`), its construction tested through the object,
   since the lanes read it through a getter whose capture no test can tell until then; it
   consumes the schedule's open wakes and
@@ -1187,9 +1198,9 @@ R, S, M and W.
   lease, never sent again; a late revoke is due again after it), and the
   pass takes no new row past `LANE_PASS_S`, so a pass ends inside its lane's hung
   timeout whatever the batch.
-  The subscribe door tags each callback with the generation `mailboxSubscriber`
+  The subscribe door tags each callback with the generation `wakeSubscribe`
   returns, and a revoke erases only callbacks at or before its generation. The door
-  stores the callback in the same object transaction as `mailboxSubscriber`, or the
+  stores the callback in the same object transaction as `wakeSubscribe`, or the
   store re-checks, as it writes, that the generation is past the agent's
   `revoked_through` and that the agent is still enabled, so a revoke scheduled between
   the two can never be outlived by the callback. The doorbell rechecks the client's
@@ -1205,6 +1216,28 @@ R, S, M and W.
   `DIRECTORY` and reads its `c:control` record; the `wakes` lane asks `DOORBELL.open()`
   once a pass before it claims and claims nothing on closed or a failure, and the owner
   config guard admits it as `{kv_namespaces: 1}`. Admission is the object's own row (2).
+  Built in slice W (`wakes.ts` `Doorbell`, `doorbell/`, `test/doorbell.test.ts`): the
+  callback is stored in the subscribe's own transaction (`wakeSubscribe`, `agentDoorbell`,
+  `wake_callbacks`), and a revoke erases it in the transaction that schedules the revoke,
+  so the scheduled revoke now only repeats it; the doorbell rechecks the callback and grant
+  after the mark, immediately before the byte. A closed switch holds the lane's job
+  `WAKE_RETRY_S` (a pass may answer `Held`, `schedule.ts`). The owner Worker sends with
+  `global_fetch_strictly_public`, never following a redirect.
+- [ ] Owed by slice W2: the MCP door's `events/list`, `events/subscribe` and
+  `events/unsubscribe` (the Python's `mcp_events_http.py` envelope on 2026-07-28, its
+  signed single-use callback challenge before `wakeSubscribe`, `ttlMs` as `expires_at`,
+  and advertising the `events` capability), which the ChatGPT live test needs; the doors'
+  tool guard names both doors as owed. Then the scheduled revoke rows and the deleted
+  agents' tombstones can go (Direction 6): the callback is the object's own row, erased in
+  the revoke's transaction, so nothing outside needs a later revoke.
+- [ ] Owed live, the founder's accounts (none run here): a ChatGPT dot and a Work chat wake
+  on an MCP Event, per tier (Pro, Business), proving the event reaches the dot and it calls
+  `inbox_digest` (the forum reports a 200 that never woke a dot); a Claude scheduled task
+  fires on `/fire` and its run sees the TinyAssets connector's tools (#106037, #102388
+  re-test); a Grok Bot webhook routine fires on our POST and calls our MCP (and
+  TinyAssets' OAuth passes Grok Bot's redirect_uri check); a Muse recurring task with the
+  ADR-028 key reads the digests unprompted (its minimum interval, and whether it needs a
+  fresh approval).
 
 ## 8. Founder live test
 

@@ -119,7 +119,7 @@ export type ControlRead =
   | { readonly kind: "malformed" }
   | { readonly kind: "unreadable" };
 
-export async function readControl(env: DoorsEnv): Promise<ControlRead> {
+export async function readControl(env: Pick<DoorsEnv, "DIRECTORY">): Promise<ControlRead> {
   let value: unknown;
   try {
     value = await env.DIRECTORY.get(CONTROL, { type: "json" });

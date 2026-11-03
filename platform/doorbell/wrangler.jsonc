@@ -1,0 +1,21 @@
+// The doorbell's kill switch (slice W, tasks 7): the owner Worker's `DOORBELL` service
+// binding, which its `wakes` lane asks once a pass before it claims a wake. Not deployed:
+// no workflow deploys platform/. It binds only `DIRECTORY`, the owner directory the doors
+// Worker binds (its id a placeholder until the doors go live, as theirs is), and reads only
+// its `c:control` record. It serves no URL (no route, no workers.dev or preview URL), so
+// only the owner Worker's binding reaches it, and it holds no secret
+// (owner/guards/config.test.ts checks this config as `DOORBELL`'s target).
+// - compatibility_date: the owner Worker's.
+// - disable_ctx_exports: no way to the Worker's own namespaces but its binding.
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "tinyassets-doorbell",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-23",
+  "compatibility_flags": ["disable_ctx_exports"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "kv_namespaces": [
+    { "binding": "DIRECTORY", "id": "not-provisioned-directory" }
+  ]
+}

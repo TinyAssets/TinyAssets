@@ -31,7 +31,8 @@ against another. Today's worst case is 4,232,733,666.75 bytes (42.33%; slice D's
 **Every proposed raise together** (`owner/guards/limits-proposed.test.ts`, `PROPOSED`, which
 the guard's own `termsFor` costs, all applied at once, and which also passes the ledger's
 `checkLimits` and the collections' nesting) gives a worst case of 4,997,920,528.75 bytes
-(49.98%), 2.1 MB under half (2,079,471.25 bytes). Slice D left 169.9 MB of margin for
+(49.98%), 2.1 MB under half (2,079,471.25 bytes); slice W's `wake_callbacks` took 0.6 MB
+of it (4,998,540,720.75 bytes, 1.5 MB under half). Slice D left 169.9 MB of margin for
 slice R's tables; slice R took 168.0 MB of it (`runs` 85.0 MB with its waiting runs,
 `conversations` 30.7 MB, `run_schedules` 26.1 MB, `run_inputs` 9.8 MB, `run_grants`
 9.7 MB, `socket_tickets` 3.1 MB, `sandbox_leases` 3.1 MB, `engine_signins` 0.4 MB,
@@ -64,13 +65,13 @@ each fixed code.
 
 - **tier**: 4
 - **owner setting**: 8
-- **technical ceiling**: 70
+- **technical ceiling**: 71
 - **budget allocation**: 3
 - **raise**: 38
 - **security**: 8
 - **label or page**: 16
 - **convention**: 15
-- **total**: 162 (slice R added 25: `## Slice R's bounds`)
+- **total**: 163 (slice R added 25: `## Slice R's bounds`; slice W one, the doorbell callback's size, and turned the wake cap off by default)
 
 Flagged for the founder: the files default `max_bytes` (1 GiB, to become the tier's storage); the egress tokens' `RUN_DEADLINE_S` (a day: a token lifetime, with the proposal to tie it to the lease); and the model policy's per-run caps (`turn_requests` 100, `turn_tokens` 10M, `turn_cost` $25), on by default where ADR-034 decision 7 makes the owner's own limits off by default: proposed off.
 
@@ -173,8 +174,9 @@ Flagged for the founder: the files default `max_bytes` (1 GiB, to become the tie
 | `owner/src/ledger.ts:173` | 50,000 | read and reply receipts kept | the oldest let go | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`ledger_receipts`): 230.4 MB, 4.61% of the 5 GB budget. A history. Moving receipts out of the object (R2, append-only) would lift it. |
 | `owner/src/ledger.ts:175` | 1,000 | settled wakes kept | the oldest let go | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`ledger_wakes`): 9.2 MB, 0.18% of the 5 GB budget. |
 | `owner/src/ledger.ts:176` | 100 | messages one read returns | the caller pages | label or page | A page. |
-| `owner/src/ledger.ts:93` | 12 wakes an hour, 60 s batch | an agent's doorbells | wakes past 12 an hour wait for the hour | owner setting | Owner setting per agent (`policyWakeLimits`), 1 to 60 an hour. Proposed default 60. |
-| `owner/src/ledger.ts:95` | 60 an hour at most | the wake setting's high | a higher setting refused | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`ledger_rings`): 50.2 MB, 1.00% of the 5 GB budget. The rings keep an hour's wakes for each agent row. |
+| `owner/src/ledger.ts` `WAKE_DEFAULTS` | none (slice W: was 12 wakes an hour and a 60 s batch, a platform default with no outside reason) | an agent's doorbells | nothing by default; with a cap the owner set, wakes past it wait for the hour | owner setting | The owner's own setting per agent (`policyWakeLimits`), off by default: no hourly cap (`max_wakes_per_hour` null) and no batch window (0 s, any whole seconds the owner sets). With none, each change rings, one open wake at a time, and the vendor's own limit answers 429, which the wake waits out (`wake-kinds.json` records each vendor's: Claude `/fire` 30 an hour per task, Grok routines 200 an hour, ChatGPT event-triggered tasks 30 an hour). A result never wakes another agent (slice ID), so no runaway loop needs a cap. |
+| `owner/src/ledger.ts` `WAKE_SETTINGS` | 60 an hour at most | the owner's cap's high | a higher cap refused (no cap at all is the default) | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`ledger_rings`): 50.2 MB, 1.00% of the 5 GB budget. A capped agent's rings are kept an hour, one row a ring; an uncapped agent keeps none. |
+| `owner/src/wake-kinds.ts` `CALLBACK_URL_CHARS`, `CALLBACK_SECRET_CHARS` | 2,048 and 512 printable ASCII characters | a doorbell callback's URL and secret | a longer callback refused | technical ceiling | The 10 GB, as the rows above: one callback per enabled agent (`wake_callbacks`, slice W; a revoke erases it in its own transaction). Its guard term: 0.6 MB, 0.01% of the 5 GB budget. A vendor's own URL and token are far shorter (a `/fire` path, a `whsec_` key of 24 to 64 bytes). |
 | `owner/src/ledger.ts:407` | 80 characters | an agent's display name | a longer name refused | label or page | A label. |
 | `owner/src/registrations.ts:52` | 200 pending, 10 per client, 4,096-byte card | registration cards waiting for the owner | a client's 11th card refused | technical ceiling | The 10 GB: the object's 10 GB SQLite database (Durable Objects' per-object storage [I: Cloudflare's Durable Objects limits, not reachable from this session]; the facet probe's Q1 measured about 10 GiB in production, `facet-probe.md`), which the owner-bound guard holds the worst case under half of. Its guard terms (`agent_cards`): 1.1 MB, 0.02% of the 5 GB budget. Cards wait for the owner's apply. |
 | `owner/src/registrations.ts:43` | 86,400 s | how long a filed card waits | the client files again | raise | Invented. Proposed 7 days: an owner away for a weekend misses no card. |

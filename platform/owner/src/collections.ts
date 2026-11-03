@@ -353,6 +353,11 @@ export class Collections {
     };
   }
 
+  /** The owner-wide change cursor: the latest change any write took. A read of one row. */
+  clock(): number {
+    return this.#sql.exec<{ change: number }>("SELECT change FROM collection_clock").one().change;
+  }
+
   #visible(caller: string, collection: string, rowId: string): StoredRow | undefined {
     name(collection, "collection");
     name(rowId, "row_id");

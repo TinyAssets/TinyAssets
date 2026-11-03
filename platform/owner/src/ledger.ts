@@ -29,14 +29,24 @@
  *   wake per ringing recipient (`one_open_wake`), claimed under a lease, settled from the
  *   doorbell's answer, and never replayed once a byte may have left. Status comes only
  *   from receipts.
- * - Revokes are fenced like claims. Each `mailbox.message` subscribe opens the agent's
- *   next subscription generation, which the doorbell tags its callback with. Disabling
- *   an agent, moving it off `mcp_event` or deleting it, when it has subscribed since its
- *   last revoke, schedules one revoke carrying that generation, and the doorbell erases
- *   only callbacks at or before it: a stale revoke still erases the old callback but
- *   never a re-enabled agent's newer one. A revoke is safe to repeat. A deleted agent
- *   whose revoke has not run stays as a tombstone in the registry (so the registry bound
- *   bounds pending revokes) until its revoke settles.
+ * - What rings is data (`wake-kinds.ts`, slice W): an agent rings when its delivery
+ *   method's record has a push (MCP Events, `/fire`, a webhook routine); a `pull` agent
+ *   never does, and catches up through the digests on its own schedule. A wake says what
+ *   changed (`changes`: mail to the agent, a room's rows, the board's) and the owner-wide
+ *   change cursor it is after, so the agent's digest returns just the change. Mail to an
+ *   agent opens its wake (`post`); a board or room row another writer changes opens one for
+ *   every ringing agent (`changed`), folded into any wake already open.
+ * - Each agent has at most one doorbell callback (`wake_callbacks`), stored by `subscribe`
+ *   in the same transaction that opens the agent's next subscription generation, which
+ *   tags it: its client's MCP Events subscribe, or the owner pasting a `/fire` or webhook
+ *   token. Revokes are fenced like claims. Disabling an agent, moving it to another
+ *   delivery method or deleting it, when it has subscribed since its last revoke,
+ *   schedules one revoke carrying that generation, and the doorbell erases only callbacks
+ *   at or before it: a stale revoke still erases the old callback but never a re-enabled
+ *   agent's newer one. A revoke is safe to repeat. Until it runs, the doorbell sends to
+ *   no callback at or before `revoked_through` (`callback`), so a revoke scheduled is never
+ *   outlived. A deleted agent whose revoke has not run stays as a tombstone in the
+ *   registry (so the registry bound bounds pending revokes) until its revoke settles.
  *
  * - A wake is sent only while its agent's outside client still holds a grant
  *   (`GrantReader.live`), and a changed or revoked grant ends the client's agents' open
@@ -52,16 +62,18 @@ import { digest } from "./collections";
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
+import {
+  admittedMethods, type Callback, callbackSecret, callbackUrl, type Change, CHANGES, kindFor,
+  ringingMethods,
+} from "./wake-kinds";
 
 /** The reader and sender id of the object's owner. An agent id is `agent_` + hex. */
 export const OWNER = "owner";
 export const DELIVERY_METHODS: readonly string[] =
   Object.freeze(["mcp_event", "routine_fire", "webhook", "a2a", "pull"]);
-/** S3b admits the `mailbox.message` doorbell beside pull. Routine and webhook wakes wait
- * for the credential-vault reshape (S9); a2a for its own slice. */
-const ADMITTED_DELIVERY: readonly string[] = Object.freeze(["pull", "mcp_event"]);
-/** The admitted methods that ring; a pull agent is never woken (W3). */
-const WAKING: readonly string[] = Object.freeze(["mcp_event"]);
+/** A wake's `changes` bits, in `CHANGES` order. */
+const CHANGE_BIT: Readonly<Record<Change, number>> = Object.freeze({ mail: 1, rooms: 2,
+                                                                     board: 4 });
 /** A claimed send's lease: past it, the may-have-sent mark decides whether a byte left. */
 export const WAKE_LEASE_S = 60;
 export const HOUR_S = 3600;
@@ -77,23 +89,29 @@ const WAKE_RECEIPTS: Readonly<Record<string, string>> = Object.freeze({
   sent: "wake_accepted", rate_limited: "rate_limited", failed: "failed", unknown: "wake_sent",
 });
 const HEX64 = /^[0-9a-f]{64}$/;
+/** An MCP Events subscription id, as the agent's client names it. */
+const SUBSCRIPTION_ID = /^[!-~]{1,256}$/;
 const KEY_ID = /^[0-9a-f]{16}$/;
 const REASON = /^[a-z_]{1,32}$/;
 const SECRETISH = /(ta_key_|bearer|eyJ|sk-|sk_|https?[:/]|token[=:])/i;
 const LONE_SURROGATE = /\p{Cs}/u;
 
 /**
- * Per-agent wake limits (W3): owner policy, stored per agent with the codespec's
- * defaults and changed only by the owner (`policyWakeLimits`). The plan of record ("Doors,
- * wakes and outside agents") has owner policy set per-agent caps and batching, 12 an
- * hour by default: Claude's scheduled-task fire allows 30 an hour per task, and a woken
- * assistant pulls its whole mailbox anyway, so a minute's batch costs nothing and folds
- * a burst into one ring. The schema's column defaults are these numbers.
+ * Per-agent wake settings (W3): the owner's own, stored per agent and changed only by the
+ * owner (`policyWakeLimits`), and off by default (slice W, the founder's rule: the only
+ * limits are the tier's, the owner's own settings off by default, vendors' and recorded
+ * technical ceilings). With no hourly cap an agent is woken on each change, one open wake
+ * at a time, and its vendor's own limits answer with a 429, which the wake waits out
+ * (`wake-kinds.json` records each vendor's). A batch window of 0 rings at once; a longer
+ * one folds a burst into one ring. The cap's high, 60, is a technical ceiling: each ring of
+ * a capped agent is a `ledger_rings` row kept an hour, so it bounds that table in the
+ * owner's database (the owner-bound guard; `limits-audit.md`). The schema's column defaults
+ * are these.
  */
-export const WAKE_DEFAULTS = Object.freeze({ maxWakesPerHour: 12, batchWindowS: 60 });
+export const WAKE_DEFAULTS = Object.freeze({ maxWakesPerHour: null, batchWindowS: 0 });
 export const WAKE_SETTINGS = Object.freeze({
   maxWakesPerHour: Object.freeze({ low: 1, high: 60 }),
-  batchWindowS: Object.freeze({ low: 0, high: 3600 }),
+  batchWindowS: Object.freeze({ low: 0, high: 9_007_199_254_740_991 }),  // any whole seconds
 });
 /** A 429's Retry-After, clamped to 1 s to one day; an unreadable one waits a minute. */
 export const RETRY_AFTER = Object.freeze({ low: 1, high: 86_400, unreadable: 60 });
@@ -223,7 +241,8 @@ export type Agent = {
   readonly revision: number;
   readonly disabled_reason: string | null;
   readonly created_at: number;
-  readonly max_wakes_per_hour: number;
+  /** The owner's hourly cap on this agent's wakes; null, the default, for none. */
+  readonly max_wakes_per_hour: number | null;
   readonly batch_window_s: number;
   /** Messages this agent sent that the owner has not acked yet, and their bytes. */
   readonly unacked_to_owner: number;
@@ -281,7 +300,10 @@ export type Wake = {
   readonly claim_id: string | null;
 };
 
-/** What a doorbell may carry: identifiers and the mailbox cursor, never a body (S31). */
+/**
+ * What a doorbell may carry: identifiers, the mailbox cursor, what kind of change it is
+ * and the owner-wide change cursor it is after; never a body (S31).
+ */
 export interface WakeTarget {
   readonly wake_id: string;
   readonly claim_id: string;
@@ -291,7 +313,32 @@ export interface WakeTarget {
   readonly family: string;
   readonly cursor: number;
   readonly through: number;
+  readonly changes: readonly Change[];
+  readonly after: number;
 }
+
+/** An agent's doorbell callback as the doorbell sends to it: live, and its kind's. */
+export interface LiveCallback extends Callback {
+  readonly agent_id: string;
+  readonly generation: number;
+}
+
+/**
+ * A subscribe's fields, as the door checked their names: `agent_id`, `url`, `secret`, and
+ * from an agent's client its `command_center_id`, its own `subscription_id` (which only it
+ * may unsubscribe) and `expires_at` (seconds, or null).
+ */
+export type Subscription = Readonly<Record<string, unknown>>;
+
+type CallbackRow = {
+  agent_id: string;
+  generation: number;
+  kind: string;
+  url: string;
+  secret: string;
+  subscription_id: string | null;
+  delivery_method: string;
+};
 
 /**
  * A claimed revoke: erase this agent's callbacks at or before `generation`, never a
@@ -362,6 +409,8 @@ type StoredWake = {
   marked: number;
   through_seq: number | null;
   generation: number | null;
+  changes: number;
+  after: number | null;
 };
 
 export function clock(): number {
@@ -399,7 +448,7 @@ function count(value: unknown, low: number, high: number): value is number {
 
 /** An enabled agent that rings: the only kind a wake is sent to. */
 function rings(agent: Agent): boolean {
-  return agent.disabled_reason === null && WAKING.includes(agent.delivery_method);
+  return agent.disabled_reason === null && ringingMethods().includes(agent.delivery_method);
 }
 
 /** `connected_agents.display_name`: untrusted metadata, never a place to keep a secret. */
@@ -502,12 +551,17 @@ export class Ledger {
   /** Whether the owner is admitted (`admission.ts`'s `require_work`), read in each claim. */
   readonly #admitted: () => boolean;
 
+  /** The owner-wide change cursor (`Collections.clock`): what a mail wake is after. */
+  readonly #changes: () => number;
+
   constructor(storage: OwnerStorage, grants: GrantReader,
-              limits: LedgerLimits = LEDGER_LIMITS, admitted: () => boolean = () => true) {
+              limits: LedgerLimits = LEDGER_LIMITS, admitted: () => boolean = () => true,
+              changes: () => number = () => 0) {
     this.#storage = storage;
     this.#grants = grants;
     this.#limits = checkLimits(limits);
     this.#admitted = admitted;
+    this.#changes = changes;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -559,11 +613,12 @@ export class Ledger {
     if (typeof method !== "string" || !DELIVERY_METHODS.includes(method)) {
       throw new Invalid("unknown delivery method");
     }
-    if (!ADMITTED_DELIVERY.includes(method)) {
-      throw new Refused("only pull and mcp_event delivery are available yet");
+    if (!admittedMethods().includes(method)) {
+      throw new Refused(`only ${admittedMethods().join(", ")} delivery are available yet`);
     }
-    if (verified.kind === "api_key" && WAKING.includes(method)) {
-      throw new Refused("an API-key agent reads by pull; mcp_event is for MCP clients");
+    // A client subscribes its own callback over the MCP door; an API key has no such door.
+    if (verified.kind === "api_key" && kindFor(method)?.push?.callback === "subscribe") {
+      throw new Refused(`an API-key agent cannot subscribe; ${method} is for MCP clients`);
     }
     const sql = this.#sql;
     const limits = this.#limits;
@@ -606,8 +661,8 @@ export class Ledger {
         // tombstone comes back as itself, its mail gone but its subscription generation
         // kept, so its pending revoke still fences only the callbacks it was made for.
         agentId = row.agent_id;
-        if (!WAKING.includes(method)) {
-          this.#revokeSubscribed(row, now);
+        if (method !== row.delivery_method) {
+          this.#revokeSubscribed(row, now);  // a callback of another kind never rings it
         }
         sql.exec(
           "UPDATE outside_agents SET source = ?, source_ref = ?, display_name = ?, " +
@@ -616,7 +671,7 @@ export class Ledger {
           ...fields, agentId,
         );
       }
-      if (!WAKING.includes(method)) {
+      if (!ringingMethods().includes(method)) {
         this.#suppress(agentId, "delivery_method", now);
       }
       return this.#agent(agentId)!;
@@ -704,12 +759,12 @@ export class Ledger {
       throw new Invalid("agent_id is an agent id");
     }
     const { low: hourLow, high: hourHigh } = WAKE_SETTINGS.maxWakesPerHour;
-    if (!count(maxWakesPerHour, hourLow, hourHigh)) {
-      throw new Invalid(`max_wakes_per_hour is ${hourLow} to ${hourHigh}`);
+    if (maxWakesPerHour !== null && !count(maxWakesPerHour, hourLow, hourHigh)) {
+      throw new Invalid(`max_wakes_per_hour is ${hourLow} to ${hourHigh}, or null for none`);
     }
     const { low: batchLow, high: batchHigh } = WAKE_SETTINGS.batchWindowS;
     if (!count(batchWindowS, batchLow, batchHigh)) {
-      throw new Invalid(`batch_window_s is ${batchLow} to ${batchHigh}`);
+      throw new Invalid(`batch_window_s is a whole number of seconds from ${batchLow}`);
     }
     return this.#storage.transactionSync(() => {
       if (!this.#sql.exec(
@@ -830,14 +885,9 @@ export class Ledger {
                  "VALUES (?, ?, ?, 'queued', ?)", messageId, recipient, seq, now);
       // One open wake per ringing recipient; never one for the message's own sender. A
       // new wake waits out the agent's batch window, so a burst of mail rings once (W3).
-      if (WAKING.includes(agent.delivery_method) && recipient === agent.agent_id
+      if (ringingMethods().includes(agent.delivery_method) && recipient === agent.agent_id
           && recipient !== sender) {
-        sql.exec(
-          "INSERT INTO ledger_wakes (wake_id, agent_id, state, due, created_at) " +
-            "SELECT ?, ?, 'pending', ?, ? WHERE NOT EXISTS " +
-            `(SELECT 1 FROM ledger_wakes WHERE agent_id = ? AND kind = 'wake' AND ${OPEN})`,
-          "wake_" + token(16), recipient, now + agent.batch_window_s, now, recipient,
-        );
+        this.#open([agent.agent_id], CHANGE_BIT.mail, this.#changes(), now);
       }
       if (parent !== undefined) {
         sql.exec("UPDATE ledger_recipients SET state = 'replied', changed_at = ? " +
@@ -1026,22 +1076,148 @@ export class Ledger {
   }
 
   /**
-   * W4: a `mailbox.message` subscribe names the caller's own ringing agent. It opens
-   * that agent's next subscription generation, which the doorbell tags the callback
-   * with, so a revoke made before it can never erase it.
+   * W4 and slice W: store an enabled ringing agent's one doorbell callback, in the same
+   * transaction that opens the agent's next subscription generation, which tags it; it
+   * replaces the agent's earlier callback. Who may hand it over is its wake kind's
+   * record's: the agent's own client in the agent's own command center (`subscribe`, MCP
+   * Events, from its verified `origin`), or the owner (`owner`, `origin` null: a `/fire` or
+   * webhook token the vendor showed it). The callback is checked against the record (its
+   * host, path and secret). Being one transaction, a revoke scheduled before it never
+   * erases it, and it is never stored for an agent a revoke already disabled.
    */
-  subscriber(origin: Origin | null, commandCenterId: unknown, agentId: unknown): number {
-    const rows = origin === null || typeof commandCenterId !== "string"
-        || typeof agentId !== "string" ? [] : this.#sql.exec<{ subscription: number }>(
-      "UPDATE outside_agents SET subscription = subscription + 1 WHERE agent_id = ? AND " +
-        "command_center_id = ? AND outside_client = ? AND outside_family = ? AND " +
-        "disabled_reason IS NULL AND delivery_method = 'mcp_event' RETURNING subscription",
-      agentId, commandCenterId, origin.client, origin.family,
-    ).toArray();
-    if (!rows.length) {
-      throw new Refused("not this caller's mcp_event agent");
+  subscribe(origin: Origin | null, request: Subscription, now: number = clock()): number {
+    const agentId = request["agent_id"];
+    if (typeof agentId !== "string") {
+      throw new Invalid("agent_id is an agent id");
     }
-    return rows[0]!.subscription;
+    const subscription = request["subscription_id"] ?? null;
+    if (origin !== null && (typeof subscription !== "string"
+                            || !SUBSCRIPTION_ID.test(subscription))) {
+      throw new Invalid("subscription_id is 1 to 256 printable ASCII characters");
+    }
+    const expires = request["expires_at"] ?? null;
+    if (expires !== null && (typeof expires !== "number" || !Number.isFinite(expires)
+                             || expires <= now)) {
+      throw new Invalid("expires_at is a time after now, or null");
+    }
+    return this.#storage.transactionSync(() => {
+      const agent = this.#agent(agentId);
+      const push = agent === undefined ? null : kindFor(agent.delivery_method)?.push ?? null;
+      const mine = origin === null ? push?.callback === "owner"
+        : push?.callback === "subscribe" && origin.client === agent!.outside_client
+          && origin.family === agent!.outside_family
+          && request["command_center_id"] === agent!.command_center_id;
+      if (agent === undefined || agent.disabled_reason !== null || push === null || !mine) {
+        throw new Refused(origin === null ? "not an agent whose doorbell the owner sets"
+          : "not this caller's subscribing agent");
+      }
+      const kind = kindFor(agent.delivery_method)!;
+      const url = callbackUrl(push, request["url"]);
+      const secret = callbackSecret(push, request["secret"]);
+      const generation = this.#sql.exec<{ subscription: number }>(
+        "UPDATE outside_agents SET subscription = subscription + 1 WHERE agent_id = ? " +
+          "RETURNING subscription", agentId,
+      ).one().subscription;
+      this.#sql.exec(
+        "INSERT INTO wake_callbacks (agent_id, generation, kind, url, secret, subscription_id, " +
+          "expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (agent_id) DO " +
+          "UPDATE SET generation = excluded.generation, kind = excluded.kind, " +
+          "url = excluded.url, secret = excluded.secret, " +
+          "subscription_id = excluded.subscription_id, expires_at = excluded.expires_at, " +
+          "created_at = excluded.created_at",
+        agentId, generation, kind.id, url, secret, subscription, expires, now,
+      );
+      return generation;
+    });
+  }
+
+  /**
+   * The client that holds an agent's callback ends it (MCP Events `events/unsubscribe`):
+   * erased, if it is still the one named. Repeating it is harmless.
+   */
+  unsubscribe(origin: Origin | null, agentId: unknown, subscriptionId: unknown): boolean {
+    if (origin === null || typeof agentId !== "string" || typeof subscriptionId !== "string") {
+      throw new Invalid("an unsubscribe names the caller's agent and its subscription");
+    }
+    return this.#storage.transactionSync(() => this.#sql.exec(
+      "DELETE FROM wake_callbacks WHERE agent_id = ? AND subscription_id = ? AND agent_id IN " +
+        "(SELECT agent_id FROM outside_agents WHERE agent_id = ? AND outside_client = ? " +
+        "AND outside_family = ?) RETURNING agent_id",
+      agentId, subscriptionId, agentId, origin.client, origin.family,
+    ).toArray().length > 0);
+  }
+
+  /**
+   * The agent's callback the doorbell may send to now: stored past the agent's newest
+   * scheduled revoke, for its current delivery method's kind, unexpired, while the agent is
+   * enabled. A read, so the doorbell rechecks it immediately before it sends.
+   */
+  callback(agentId: string, now: number): LiveCallback | null {
+    const row = this.#sql.exec<CallbackRow>(
+      "SELECT c.agent_id, c.generation, c.kind, c.url, c.secret, c.subscription_id, " +
+        "a.delivery_method FROM wake_callbacks c JOIN outside_agents a " +
+        "ON a.agent_id = c.agent_id WHERE c.agent_id = ? AND c.generation > a.revoked_through " +
+        "AND a.disabled_reason IS NULL AND a.deleted_at IS NULL " +
+        "AND (c.expires_at IS NULL OR c.expires_at > ?)", agentId, now,
+    ).toArray()[0];
+    if (row === undefined || kindFor(row.delivery_method)?.id !== row.kind) {
+      return null;
+    }
+    const { delivery_method: _method, ...callback } = row;
+    return callback;
+  }
+
+  /**
+   * Erase the agent's callbacks at or before `generation`, never a newer one: a revoke's,
+   * or a callback the vendor answered gone. Repeating it is harmless.
+   */
+  eraseCallbacks(agentId: string, generation: number): number {
+    return this.#storage.transactionSync(() => this.#sql.exec(
+      "DELETE FROM wake_callbacks WHERE agent_id = ? AND generation <= ? RETURNING agent_id",
+      agentId, generation,
+    ).toArray().length);
+  }
+
+  /**
+   * A board or room row changed (`change` the clock's cursor before it): every ringing
+   * agent but the writer's own has it in its open wake, opened if none is.
+   */
+  changed(change: Exclude<Change, "mail">, after: number, writer: Origin | null,
+          now: number = clock()): number {
+    return this.#storage.transactionSync(() => {
+      const ringing = this.#sql.exec<{ agent_id: string; outside_client: string;
+                                       outside_family: string }>(
+        "SELECT agent_id, outside_client, outside_family FROM outside_agents " +
+          "WHERE disabled_reason IS NULL AND delivery_method IN " +
+          `(SELECT value FROM json_each(?))`, JSON.stringify(ringingMethods()),
+      ).toArray().filter((agent) => writer === null || agent.outside_client !== writer.client
+                                    || agent.outside_family !== writer.family);
+      this.#open(ringing.map((agent) => agent.agent_id), CHANGE_BIT[change], after, now);
+      return ringing.length;
+    });
+  }
+
+  /**
+   * Fold `bit` and `after` into each agent's open wake, or open one that waits out the
+   * agent's batch window (W3), so a burst rings once.
+   */
+  #open(agentIds: readonly string[], bit: number, after: number, now: number): void {
+    const sql = this.#sql;
+    for (const agentId of agentIds) {
+      if (sql.exec(
+        "UPDATE ledger_wakes SET changes = changes | ?, after = MIN(after, ?) " +
+          `WHERE agent_id = ? AND kind = 'wake' AND ${OPEN} RETURNING wake_id`,
+        bit, after, agentId,
+      ).toArray().length) {
+        continue;
+      }
+      sql.exec(
+        "INSERT INTO ledger_wakes (wake_id, agent_id, state, due, changes, after, created_at) " +
+          "SELECT ?, agent_id, 'pending', ? + batch_window_s, ?, ?, ? FROM outside_agents " +
+          "WHERE agent_id = ?",
+        "wake_" + token(16), now, bit, after, now, agentId,
+      );
+    }
   }
 
   /**
@@ -1085,6 +1261,11 @@ export class Ledger {
     const generation = agent.subscription;
     sql.exec("UPDATE outside_agents SET revoked_through = ? WHERE agent_id = ?", generation,
              agent.agent_id);
+    // The callback is the object's own row (slice W), so it goes in this transaction: no
+    // agent but an enabled ringing one ever holds one. The scheduled revoke still runs, and
+    // erasing again is harmless.
+    sql.exec("DELETE FROM wake_callbacks WHERE agent_id = ? AND generation <= ?",
+             agent.agent_id, generation);
     if (!sql.exec(
       "UPDATE ledger_wakes SET generation = MAX(generation, ?) WHERE agent_id = ? " +
         `AND kind = 'revoke' AND ${OPEN} RETURNING wake_id`, generation, agent.agent_id,
@@ -1184,17 +1365,21 @@ export class Ledger {
       }
       sql.exec("DELETE FROM ledger_rings WHERE agent_id = ? AND at <= ?", agent.agent_id,
                now - HOUR_S);
-      const rung = sql.exec<{ at: number }>(
-        "SELECT at FROM ledger_rings WHERE agent_id = ? ORDER BY at", agent.agent_id,
-      ).toArray();
-      if (rung.length >= agent.max_wakes_per_hour) {
-        const due = rung[rung.length - agent.max_wakes_per_hour]!.at + HOUR_S;
-        sql.exec("UPDATE ledger_wakes SET due = MAX(due, ?) WHERE wake_id = ?", due, wakeId);
-        sql.exec("UPDATE ledger_recipients SET state = 'held_cap', changed_at = ? " +
-                   "WHERE agent_id = ? AND state = 'queued'", now, agent.agent_id);
-        return { outcome: "capped", due };
+      // Only an agent its owner capped counts its rings; with no cap none is kept.
+      const cap = agent.max_wakes_per_hour;
+      if (cap !== null) {
+        const rung = sql.exec<{ at: number }>(
+          "SELECT at FROM ledger_rings WHERE agent_id = ? ORDER BY at", agent.agent_id,
+        ).toArray();
+        if (rung.length >= cap) {
+          const due = rung[rung.length - cap]!.at + HOUR_S;
+          sql.exec("UPDATE ledger_wakes SET due = MAX(due, ?) WHERE wake_id = ?", due, wakeId);
+          sql.exec("UPDATE ledger_recipients SET state = 'held_cap', changed_at = ? " +
+                     "WHERE agent_id = ? AND state = 'queued'", now, agent.agent_id);
+          return { outcome: "capped", due };
+        }
+        sql.exec("INSERT INTO ledger_rings VALUES (?, ?)", agent.agent_id, now);
       }
-      sql.exec("INSERT INTO ledger_rings VALUES (?, ?)", agent.agent_id, now);
       const cursor = this.#cursor(agent.agent_id);
       const through = this.#newest(agent.agent_id);
       sql.exec(
@@ -1208,6 +1393,8 @@ export class Ledger {
           wake_id: wakeId, claim_id: claimId, agent_id: agent.agent_id,
           command_center_id: agent.command_center_id, client: agent.outside_client,
           family: agent.outside_family, cursor, through,
+          changes: CHANGES.filter((change) => (wake.changes & CHANGE_BIT[change]) !== 0),
+          after: wake.after ?? 0,
         },
       };
     });
@@ -1285,9 +1472,10 @@ export class Ledger {
       // waits out any Retry-After.
       if ((state === "pending" || state === "rate_limited") && sql.exec(
         "UPDATE ledger_wakes SET due = MAX(due, ?), state = CASE WHEN ? = 'rate_limited' " +
-          "THEN 'rate_limited' ELSE state END, generation = MAX(generation, ?) " +
+          "THEN 'rate_limited' ELSE state END, generation = MAX(generation, ?), " +
+          "changes = changes | ?, after = MIN(after, ?) " +
           `WHERE agent_id = ? AND kind = ? AND ${OPEN} RETURNING wake_id`,
-        due, state, wake.generation, wake.agent_id, wake.kind,
+        due, state, wake.generation, wake.changes, wake.after, wake.agent_id, wake.kind,
       ).toArray().length) {
         state = "suppressed";
         detail = { ...detail, folded: true };

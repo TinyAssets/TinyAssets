@@ -9,12 +9,23 @@ import {
 } from "../src/ledger";
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { Policy } from "../src/policy";
-import { runWakes, type WakeSender } from "../src/wakes";
+import { CLOSED, runWakes, type WakeSender } from "../src/wakes";
 import { alarmOf, laneAt } from "./support";
 
 export const MUSE: Origin = Object.freeze({ client: "a".repeat(64), family: "b".repeat(64) });
 export const DOT: Origin = Object.freeze({ client: "c".repeat(64), family: "d".repeat(64) });
 export const MCP: Source = Object.freeze({ kind: "mcp", ref: "conn-1" });
+/** A callback an agent's client subscribes (MCP Events): a public HTTPS URL, a `whsec_` key. */
+export const CALLBACK = "https://hooks.example.com/tinyassets/events";
+export const WHSEC = "whsec_" + btoa(String.fromCharCode(...Array.from({ length: 32 },
+                                                                       (_, n) => n + 1)));
+
+/** A subscribe's fields from an agent's own client, with this callback. */
+export function subscription(agentId: string, commandCenter = "alpha",
+                             extra: Record<string, unknown> = {}) {
+  return { command_center_id: commandCenter, agent_id: agentId, subscription_id: "sub-1",
+           url: CALLBACK, secret: WHSEC, expires_at: null, ...extra };
+}
 
 /** The `n`th distinct outside identity, for tests that need many agents. */
 export function origin(n: number): Origin {
@@ -30,6 +41,8 @@ type Row = Record<string, SqlStorageValue>;
  * a revoke erases only those at or before its generation, as the contract says.
  */
 export class FakeSender implements WakeSender {
+  /** Whether the kill switch is closed: `open()` answers its negation. */
+  closed = false;
   readonly sent: WakeTarget[] = [];
   readonly revoked: [string, number][] = [];
   readonly answers: (Outcome | "crash")[] = [];
@@ -38,6 +51,10 @@ export class FakeSender implements WakeSender {
   /** The subscribe door storing a callback tagged with its generation. */
   subscribed(agentId: string, generation: number): void {
     this.callbacks.set(agentId, (this.callbacks.get(agentId) ?? new Set()).add(generation));
+  }
+
+  async open(): Promise<boolean> {
+    return !this.closed;
   }
 
   async send(target: WakeTarget, mark: () => Promise<void>): Promise<Outcome> {
@@ -152,10 +169,10 @@ export async function rig(namespace: DurableObjectNamespace<OwnerDO> = env.OWNER
       stub.mailboxRead(bind(origin), { limit, ...budget }),
     ack: (origin: Origin | null, through: number) =>
       stub.mailboxAck(bind(origin), { through }),
-    /** The agent's own client subscribes to its mailbox; the doorbell keeps the callback. */
+    /** The agent's own client subscribes its callback; the fake doorbell keeps it too. */
     subscribe: async (origin: Origin, agentId: string, commandCenter = "alpha") => {
-      const { generation } = await stub.mailboxSubscriber(
-        bind(origin), { command_center_id: commandCenter, agent_id: agentId });
+      const { generation } = await stub.wakeSubscribe(bind(origin),
+                                                      subscription(agentId, commandCenter));
       sender.subscribed(agentId, generation);
       return generation;
     },
@@ -169,7 +186,7 @@ export async function rig(namespace: DurableObjectNamespace<OwnerDO> = env.OWNER
     inLedger: <R>(limits: Partial<LedgerLimits>, act: (ledger: Ledger) => R): Promise<R> =>
       runInDurableObject(stub, (_i: OwnerDO, state) => act(ledgerOn(state.storage, limits))),
     /** One alarm pass at `now`, with the scripted doorbell. */
-    tick: (now: number = clock()): Promise<number> =>
+    tick: (now: number = clock()): Promise<number | typeof CLOSED> =>
       runInDurableObject(stub, (_i: OwnerDO, state) =>
         runWakes(ledgerOn(state.storage), sender, () => now,
                  new WriteGate(state.storage).write)),

@@ -14,7 +14,7 @@ import { GRANT_LIMITS, Grants } from "../src/grants";
 import { apiKeyOrigin, clock, Ledger, type Origin } from "../src/ledger";
 import type { OwnerDO } from "../src/owner-do";
 import { Policy, POLICY_LIMITS, policyDigest } from "../src/policy";
-import { DOT, MCP, MUSE, rig, type Rig, signedIn } from "./ledger-support";
+import { DOT, MCP, MUSE, rig, type Rig, signedIn, subscription } from "./ledger-support";
 import { failure } from "./support";
 
 const CHATGPT: Origin = Object.freeze({ client: "1".repeat(64), family: "2".repeat(64) });
@@ -86,8 +86,8 @@ describe("an outside client's grant", () => {
      async () => {
     const r = await rig();
     const agent = await r.register(CHATGPT, "Muse", "mcp_event");
-    const subscribe = (center = "alpha") => r.stub.mailboxSubscriber(
-      r.bind(CHATGPT), { command_center_id: center, agent_id: agent });
+    const subscribe = (center = "alpha") => r.stub.wakeSubscribe(
+      r.bind(CHATGPT), subscription(agent, center));
     await grant(r, CHATGPT, "scoped", [WRITE]);
     expect((await failure(() => subscribe())).message)
       .toBe("outside client capability not granted");

@@ -21,10 +21,11 @@
  * unmodified engines, their sessions in the owner's files (ADR-034), so what the owner's
  * object holds is its own bounded rows only, whatever its agents do.
  *
- * The worst case is 42.3% of the limit (slice M: 4,232,734,503.75 bytes), about 767 MB under
- * half; with every raise the limits audit proposes, 49.98% (4,997,921,365.75 bytes,
- * `limits-proposed.test.ts`), 2.1 MB under half. Slice M added each collection row's
- * owner-wide change and its index entry, and the one-row `collection_clock`.
+ * The worst case is 42.3% of the limit (slice W: 4,233,297,553.75 bytes), about 767 MB under
+ * half; with every raise the limits audit proposes, 49.99% (4,998,540,720.75 bytes,
+ * `limits-proposed.test.ts`), 1.5 MB under half. Slice W added `wake_callbacks` (0.6 MB,
+ * one per enabled agent). Slice M added each collection row's owner-wide change and its
+ * index entry, and the one-row `collection_clock`.
  * ADR-034's deletion slice took out the agent's thread rows, their live and usage rows,
  * the run receipts and the model turns' counters and owners, and Lifecycle's wake job and
  * key per live thread (slice D: 40.6%, 4,064,822,714 bytes; G4 was 46.3%). The runs slice
@@ -49,6 +50,7 @@ import {
 import { NOTICE_DETAIL, NOTICES_KEPT } from "../src/notices";
 import { SESSION_LIMITS } from "../src/sessions";
 import { USAGE_LIMITS } from "../src/usage";
+import { CALLBACK_SECRET_CHARS, CALLBACK_URL_CHARS } from "../src/wake-kinds";
 import { PLATFORM } from "./sources";
 
 const SRC = join(PLATFORM, "owner", "src");
@@ -338,6 +340,11 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     ledger_wakes: { rows: L.maxAgentRows + L.maxSettledWakes,
                     bytes: ROW + 1 * KIB, by: "an open wake per agent, maxSettledWakes settled" },
     ledger_usage: { rows: L.maxAgentRows + 1, bytes: ROW, by: "one per agent" },
+    wake_callbacks: { rows: L.maxAgents,
+                      bytes: ROW + CALLBACK_URL_CHARS + CALLBACK_SECRET_CHARS + 256,
+                      by: "one doorbell callback per enabled agent (slice W: a revoke erases " +
+                        "it in its own transaction): its URL, secret and subscription id at " +
+                        "the schema's ceilings, printable ASCII" },
     collection_rows: { rows: C.maxOwnerRows, bytes: ROW + CHANGE_BYTES + C.maxOwnerBytes /
                                                                 C.maxOwnerRows,
                        by: "maxOwnerRows; rows and history bytes within maxOwnerBytes; its " +

@@ -264,11 +264,11 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "CHECK (delivery_method IN ('mcp_event', 'routine_fire', 'webhook', 'a2a', 'pull')), " +
       "recipe_id TEXT, revision INTEGER NOT NULL, disabled_reason TEXT, " +
       "created_at REAL NOT NULL, " +
-      // Owner policy (W3): set only by the owner's wake-limits setter, never by a
-      // registration; the codespec's defaults.
-      "max_wakes_per_hour INTEGER NOT NULL DEFAULT 12 " +
-      "CHECK (max_wakes_per_hour BETWEEN 1 AND 60), " +
-      "batch_window_s INTEGER NOT NULL DEFAULT 60 CHECK (batch_window_s BETWEEN 0 AND 3600), " +
+      // The owner's own settings (W3): set only by the owner's wake-limits setter, never by
+      // a registration, and off by default (`WAKE_DEFAULTS`): no hourly cap, no batch window.
+      "max_wakes_per_hour INTEGER " +
+      "CHECK (max_wakes_per_hour IS NULL OR max_wakes_per_hour BETWEEN 1 AND 60), " +
+      "batch_window_s INTEGER NOT NULL DEFAULT 0 CHECK (batch_window_s >= 0), " +
       // Messages this agent sent that the owner has not acked yet, and their bytes: its
       // share of the owner's mailbox.
       "unacked_to_owner INTEGER NOT NULL DEFAULT 0 CHECK (unacked_to_owner >= 0), " +
@@ -284,6 +284,9 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "deleted_at REAL CHECK (deleted_at IS NULL OR disabled_reason IS NOT NULL), " +
       "UNIQUE (command_center_id, outside_client, outside_family))",
     "CREATE INDEX outside_identities ON outside_agents (outside_client, outside_family)",
+    // The enabled agents by delivery method: who a board or room change rings (slice W).
+    "CREATE INDEX outside_ringing ON outside_agents (delivery_method) " +
+      "WHERE disabled_reason IS NULL",
     // A registration's id, universe and client never change: its client's grant row counts
     // it (`outside_clients.agents`, moved only on insert and delete), and its universe is
     // where a scoped stamp acts.
@@ -342,6 +345,11 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "marked INTEGER NOT NULL DEFAULT 0 CHECK (marked IN (0, 1)), through_seq INTEGER, " +
       // A revoke's fence: it erases only callbacks at or before this subscription.
       "generation INTEGER CHECK ((kind = 'revoke') = (generation IS NOT NULL)), " +
+      // What a wake says changed (slice W, `wake-kinds.ts`): bits for mail 1, rooms 2 and
+      // board 4, and the owner-wide change cursor its rooms and board changes are after.
+      "changes INTEGER NOT NULL DEFAULT 0 CHECK (changes BETWEEN 0 AND 7), " +
+      "after INTEGER CHECK (((kind = 'wake') = (after IS NOT NULL)) " +
+      "AND (after IS NULL OR after >= 0)), " +
       "receipt_json TEXT, created_at REAL NOT NULL, settled_at REAL)",
     "CREATE UNIQUE INDEX one_open_wake ON ledger_wakes (agent_id, kind) " +
       "WHERE state IN ('pending', 'rate_limited')",
@@ -351,6 +359,21 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE INDEX wakes_open ON ledger_wakes (due) WHERE state IN ('pending', 'rate_limited')",
     "CREATE INDEX wakes_sending ON ledger_wakes (due) WHERE state = 'sending'",
     "CREATE INDEX wakes_settled ON ledger_wakes (settled_at) WHERE settled_at IS NOT NULL",
+    // Each enabled ringing agent's one doorbell callback (slice W): the subscription
+    // generation it was stored under, in the same transaction that opened it, and the wake
+    // kind whose record sends it. A revoke erases it in the transaction that schedules the
+    // revoke (and the doorbell's run of it again); a newer subscribe replaces it. Its secret
+    // is the vendor's (a Standard Webhooks key, a bearer token) and the doorbell's alone: no
+    // door returns it. Printable ASCII only, so a character is a byte (the owner bound).
+    "CREATE TABLE wake_callbacks (agent_id TEXT PRIMARY KEY, " +
+      "generation INTEGER NOT NULL CHECK (generation >= 1), " +
+      "kind TEXT NOT NULL CHECK (length(kind) BETWEEN 1 AND 64 AND kind NOT GLOB '*[^a-z0-9_]*'), " +
+      "url TEXT NOT NULL CHECK (length(url) BETWEEN 9 AND 2048 AND url NOT GLOB '*[^!-~]*'), " +
+      "secret TEXT NOT NULL CHECK (length(secret) BETWEEN 1 AND 512 " +
+      "AND secret NOT GLOB '*[^!-~]*'), " +
+      "subscription_id TEXT CHECK (subscription_id IS NULL " +
+      "OR (length(subscription_id) BETWEEN 1 AND 256 AND subscription_id NOT GLOB '*[^!-~]*')), " +
+      "expires_at REAL, created_at REAL NOT NULL) WITHOUT ROWID",
     // Each claim's time, kept one hour: what the per-agent hourly cap counts.
     "CREATE TABLE ledger_rings (agent_id TEXT NOT NULL, at REAL NOT NULL)",
     "CREATE INDEX rings_by_agent ON ledger_rings (agent_id, at)",

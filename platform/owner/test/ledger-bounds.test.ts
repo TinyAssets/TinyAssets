@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
   checkLimits, clock, LEDGER_LIMITS, type Ledger, type LedgerLimits, type Origin, OWNER,
 } from "../src/ledger";
-import { counters, DOT, MCP, MUSE, origin, rig } from "./ledger-support";
+import { counters, DOT, MCP, MUSE, origin, rig, subscription } from "./ledger-support";
 import { failure } from "./support";
 
 const PULL = { command_center_id: "alpha", display_name: "Muse", delivery_method: "pull",
@@ -245,7 +245,7 @@ describe("the ledger's bounds", () => {
       for (const who of people) {  // 30 register, subscribe and delete cycles
         try {
           const id = ledger.register(who, MCP, RINGS).agent_id;
-          ledger.subscriber(who, "alpha", id);
+          ledger.subscribe(who, subscription(id));
           ledger.remove(id);
           made.push(id);
         } catch (error) {

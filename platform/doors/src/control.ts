@@ -13,7 +13,9 @@
  *   that cannot be read is never taken as open.
  *
  * A flip reaches every location within KV's 60 s; no revoke depends on it. The switch
- * reaching the object's alarm (the doorbell) is task 7's.
+ * reaches the owner object's `wakes` lane through the `tinyassets-doorbell` Worker
+ * (`platform/doorbell`), which answers `outsideOpen` for the owner before any wake is
+ * claimed.
  */
 import type { DoorsEnv } from "./config";
 import { type Control, type ControlRead, readControl } from "./directory";
