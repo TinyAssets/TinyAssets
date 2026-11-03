@@ -45,10 +45,21 @@ was well under one sandbox-hour (most of it a 2 vCPU / 512 MiB base sandbox or t
 | Pinned CLIs | claude 2.1.309, codex 0.166.0, gemini 0.66.0, kimi 2.4.1, pi 1.4.0, Node v22.22.0, installed from the committed locks. |
 | `--version` as the engine's user | claude 540 ms, codex 44 ms, gemini 1,718 ms, kimi 1,437 ms, pi 361 ms. |
 | Peak RSS of a not-signed-in run (all its processes) | claude 226 MB, gemini 354 MB, codex 172 MB: 1 GiB holds one run of each, not two of Gemini beside the rest. Real turns, owed. |
-| Users | Each engine its own uid in group `ta`, home 0700; **E2B's `useradd` put them in `sudo`**, the build takes them out (`sudo -n`: password required); the engine user cannot list `/var/lib/ta` or read the runner. |
+| Users | (First round: one uid an engine; replaced, review H-4.) The run pool: 1,000 users `ta-run-<n>` (`RUNS_CEILING`), each its own group and `ta`; `ta-sync` reads the runner bundle, which holds no secret. |
+| `sudo` | **E2B's provisioning puts its default `user` back in `sudo` and adds `user ALL=(ALL:ALL) NOPASSWD: ALL` to `/etc/sudoers` at each boot**, though the build removed both (its own check passed). `prepare` now takes both away at every boot and resume and checks: `user`, `ta-sync` and `ta-run-0` each "not allowed to run sudo". |
 | hidepid | `mount -o remount,hidepid=2 /proc` works as root; an engine user sees its own processes only. |
 | **World-writable system files** | E2B's base image boots with `/usr/local/bin` (the runner's Node), `/usr/bin/envd`, `/etc/inittab` and systemd units writable by every user, and a template build's `chmod` does not survive into the sandbox. The runner's `prepare` takes every user's write away (once a boot, about 7 s) and fails loudly if any remains; verified after it and across a pause. |
 | Config files | The run's MCP config is root's, read-only to the CLI (an append failed). |
+
+## The review round (2026-11-03, template `s2470aee6d75344fc`; 3 throwaway sandboxes, under 2 sandbox-minutes)
+
+| Probe | Result |
+|---|---|
+| `secure: true` on the Worker's create | The answer carries `envdAccessToken`. envd refuses a process start **without** it (`401`) and with another token (`401`), and takes the right one (`200`). |
+| The list by metadata, both states | `GET /v2/sandboxes?metadata=ta_owner%3D<tag>&state=running,paused` answered exactly the tagged sandbox: the erasure's stray search. `X-Total-Running` present (`1`). |
+| `ta-runner prepare` on the built template | Exit 0: `/proc` hidden, nothing writable by another user left, `sudo` taken away; `ta-runner state` answers `{live: 0, quiet: true}`. |
+| Modes across a memory pause and resume | Nothing writable by another user (others, or group `ta`) right after the resume, before any `prepare`: **E2B did not loosen modes on a memory resume** (`pauseMode: full`). `prepare` re-checks at every resume regardless. |
+| Clean-up | Each sandbox killed; the account listed **0 running or paused** after. |
 
 ## Real CLIs, not signed in (the runner live, an in-sandbox doors stand-in)
 

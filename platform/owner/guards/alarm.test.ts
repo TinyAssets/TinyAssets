@@ -59,16 +59,20 @@ const ERASE = "owner/src/erase.ts";
 const GATE = "owner/src/gate.ts";
 /** The banned names each source may still use, as an identifier only. */
 /**
- * The one Worker source that keeps its own clock (slice S): the sandbox Worker's
- * `SandboxControl`, a Durable Object of that Worker's own with no Lifecycle and no owner's
- * data, whose one alarm is its sandboxes' renewal before their runtime ceiling. It may set
- * and clear its alarm, by identifier, and its `alarm` is its own.
+ * The Worker sources that keep their own clock (slice S): the sandbox Worker's own Durable
+ * Objects, with no Lifecycle and no owner's data: `SandboxControl`, whose alarm is its
+ * sandboxes' look before their runtime ceiling, and `SandboxSlots`, whose alarm rings the
+ * platform's line again. Each may set and clear its alarm, by identifier, and its `alarm` is
+ * its own.
  */
-const OWN_CLOCK = "sandbox/src/control.ts";
+const OWN_CLOCKS: ReadonlySet<string> = new Set(["sandbox/src/control.ts",
+                                                 "sandbox/src/slots.ts"]);
 const OWN_CLOCK_NAMES: readonly string[] = Object.freeze(["setAlarm", "deleteAlarm"]);
 const WIPES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   [GATE]: Object.freeze(["deleteAll"]),
   [ERASE]: Object.freeze(["disableAlarms"]),
+  // An owner's erasure deletes the sandbox Worker's own state of that owner whole.
+  "sandbox/src/control.ts": Object.freeze(["deleteAll"]),
 });
 const HAND_OFF = "await this.#lifecycle.alarm();";
 /** The object's source, the one that may have a `fetch` hand-off. */
@@ -135,7 +139,7 @@ export function alarmReach(fileName: string, source: string): string[] {
     if ((ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteralLike(node))
         && BANNED.has(node.text) && !((WIPES[fileName] ?? []).includes(node.text)
                                       && ts.isIdentifier(node))
-        && !(fileName === OWN_CLOCK && OWN_CLOCK_NAMES.includes(node.text)
+        && !(OWN_CLOCKS.has(fileName) && OWN_CLOCK_NAMES.includes(node.text)
              && ts.isIdentifier(node))) {
       report(node, `names ${node.text}, which only Lifecycle calls`);
     } else if ((ts.isStringLiteralLike(node) || ts.isTemplateHead(node)
@@ -180,7 +184,7 @@ export function alarmReach(fileName: string, source: string): string[] {
         report(node, `${member} does more than \`${RESERVED[member]}\``);
       }
     }
-    if (member === "alarm" && fileName !== OWN_CLOCK) {
+    if (member === "alarm" && !OWN_CLOCKS.has(fileName)) {
       const body = ts.isMethodDeclaration(node) ? node.body : undefined;
       if (body === undefined || body.statements.length !== 1
           || body.statements[0]!.getText(file) !== HAND_OFF) {

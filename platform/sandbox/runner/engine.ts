@@ -44,14 +44,14 @@ export const WORKSPACE = "/workspace";
 export const AGENTS_DIR = "/workspace/agents";
 export const ENGINE_ROOT = "/opt/ta/engines";
 
-/** An engine's own unprivileged user and its home (`{home}`, sandbox-only). */
-export function engineUser(engine: string): string {
-  return `ta-${engine}`;
-}
-
-export function engineHome(engine: string): string {
-  return `/home/${engineUser(engine)}`;
-}
+/**
+ * Where one run's own home is made (`{home}`): a fresh directory a run, owned by the run's
+ * own user, filled from its engine's store and emptied back into it (`runner.ts`); and its
+ * own root-owned directory (`{system}`), for the files a CLI takes only from a path root
+ * owns at every level.
+ */
+export const HOMES = "/var/lib/ta-homes";
+export const SYSTEM = "/etc/ta/runs";
 
 /** The engine's binary as the template installs it. */
 export function binPath(record: SourceRecord): string {
@@ -162,19 +162,24 @@ export function invocation(record: SourceRecord, start: StartDoc,
                            options: { readonly continued: boolean; readonly prompt?: string;
                                       readonly resume?: boolean;
                                       /** A prefix of every path: none in the sandbox. */
-                                      readonly root?: string }): Invocation {
+                                      readonly root?: string;
+                                      /** The run's own home and system directory. */
+                                      readonly home: string; readonly system: string;
+                                      /** A `continue_in_cwd` conversation's own cwd. */
+                                      readonly conversationDir?: string }): Invocation {
   const cli = record.cli;
   if (cli === undefined || record.unwired !== undefined
       || !cli.credential.includes(start.credential)) {
     throw new Error(`engine ${record.id} does not run on ${start.credential}`);
   }
   const root = options.root ?? "";
-  const home = `${root}${engineHome(record.id)}`;
+  const home = options.home;
+  const system = options.system;
   const agentDir = `${root}${AGENTS_DIR}/${start.agent}`;
   const mcp = "unsupported" in cli.mcp ? null : cli.mcp;
   const secretInHeader = mcp?.template?.includes("{run_secret}") === true;
   const values: Record<string, string> = {
-    bin: `${root}${binPath(record)}`, home, agent: start.agent,
+    bin: `${root}${binPath(record)}`, home, system, agent: start.agent,
     mcp_url: secretInHeader ? start.urls.mcp_bare : start.urls.mcp,
     run_secret: runSecret(start.urls.mcp),
   };
@@ -257,24 +262,37 @@ export function invocation(record: SourceRecord, start: StartDoc,
     write(mcp.file, mcp.template);
   }
   for (const path of files.keys()) {
-    if (!path.startsWith(`${home}/`)) {
-      throw new Error("a record's files are under its engine home");
+    if (!path.startsWith(`${home}/`) && !path.startsWith(`${system}/`)) {
+      throw new Error("a record's files are under the run's home or its system directory");
     }
   }
-  const cwd = cli.engine.resume === "continue_in_cwd"
-    ? `${home}/conversations/${start.conversation}` : agentDir;
+  if (cli.engine.resume === "continue_in_cwd" && options.conversationDir === undefined) {
+    throw new Error("a run that continues in its cwd is given its conversation's own");
+  }
+  const cwd = cli.engine.resume === "continue_in_cwd" ? options.conversationDir! : agentDir;
   return { argv, stdin: cli.engine.stdin === undefined ? null : prompt, env, cwd, files,
            resumed };
 }
 
-/** Every `secret_paths` entry of every record, resolved under its engine's home. */
-export function secretPaths(records: readonly SourceRecord[]): string[] {
-  return records.flatMap((record) => record.cli === undefined ? []
-    : record.cli.secret_paths.map((path) => path.replace("{home}", engineHome(record.id))));
+/** A record's `secret_paths` and `session_paths`, each from its home (`a/b`, `a/` a tree). */
+export function keptPaths(record: SourceRecord): { secrets: string[]; sessions: string[] } {
+  const rel = (path: string) => path.slice("{home}/".length);
+  return { secrets: (record.cli?.secret_paths ?? []).map(rel),
+           sessions: (record.cli?.session_paths ?? []).map(rel) };
 }
 
-/** Every `session_paths` entry of `record`, resolved under its engine's home. */
-export function sessionPaths(record: SourceRecord): string[] {
-  return (record.cli?.session_paths ?? []).map((path) =>
-    path.replace("{home}", engineHome(record.id)));
+/**
+ * Whether `rel`, a path in a home, is one of `kept`: that file, or under that tree (`a/`),
+ * a `*` segment matching any one segment.
+ */
+export function isKept(kept: readonly string[], rel: string): boolean {
+  const parts = rel.split("/");
+  return kept.some((path) => {
+    const tree = path.endsWith("/");
+    const want = (tree ? path.slice(0, -1) : path).split("/");
+    if (tree ? parts.length <= want.length : parts.length !== want.length) {
+      return false;
+    }
+    return want.every((segment, i) => segment === "*" || segment === parts[i]);
+  });
 }

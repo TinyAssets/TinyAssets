@@ -1,7 +1,8 @@
 /**
  * The template the sandbox Worker starts (`E2B_TEMPLATE`) is the one built from these
  * sources: its tag is `template/build.py`'s digest of the runner's bundle, the records, their
- * locks and the build script, recomputed here the same way. A change to the runner or a
+ * locks, the build script and the run pool's size's source (`owner/src/tier.ts`), recomputed
+ * here the same way. A change to the runner or a
  * record without a new template build fails CI, so no sandbox runs a runner older than its
  * code.
  */
@@ -46,6 +47,7 @@ function tag(): string {
       ["runner.mjs", readFileSync(join(out, "runner.mjs"))],
       ["build.py", readFileSync(join(TEMPLATE, "build.py"))],
       ["ta-runner", readFileSync(join(TEMPLATE, "ta-runner"))],
+      ["tier.ts", readFileSync(join(PLATFORM, "owner", "src", "tier.ts"))],
       ...files(SOURCES).map((path) => relative(SOURCES, path).split("\\").join("/"))
         .sort(byParts).map((name): [string, Buffer] => [name, readFileSync(join(SOURCES, name))]),
     ];

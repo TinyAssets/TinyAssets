@@ -955,51 +955,83 @@ R, S, M and W.
   - owed probes: E2B's transform on `/r/<run>/<secret>/mcp` and `/r/<run>/events`; whether a
     WebSocket would carry the frames (the POST batches are the path today).
   - Built (slice S, `platform/sandbox`): the Worker (`src/index.ts`, `src/e2b.ts`, the one
-    module that fetches, E2B's two hosts alone) and its own class `SandboxControl`, one per
-    owner, which serializes that owner's E2B calls (so a release's pause never freezes a run
-    a start just launched) and renews its sandboxes; the versioned template
-    (`template/build.py`, its tag the digest of the runner's bundle, the records and their
-    locks, `E2B_TEMPLATE` held to it by `guards/template.test.ts`); the runner
-    (`runner/*.ts`, bundled; 38 workerd and Node tests against a fake E2B and fake CLIs of
-    each record's event shapes); the sync doors on the egress host (`/sync/*`, by the sync
-    token alone, the object's read doors held to the feed's readable set); `SANDBOX` in the
-    owner config guard's `SERVICES` (its class, the directory, one var, its key) and bound.
-    Probed live: `sandbox-probe.md`.
-  - The founder's rule (2026-11-03): `sandbox_runtime_ceiling_s` and
-    `sandbox_concurrency_ceiling` are the control record's (`directory.ts`); the Worker
-    renews a sandbox (pause with memory, resume) from a sixth of the ceiling before it at
-    a quiet moment, forced a thirtieth before it, `ta.renewing` and `ta.renewed` frames to
-    the app; a CLI that fails just after is resumed from its session; a filesystem-only pause
-    restarts the runs (`recover`); an idle sandbox pauses (`release`, and E2B's timeout).
-    Past the concurrency ceiling (E2B's own `X-Total-Running`, or E2B refusing for room)
-    a start answers `sandbox_waiting` and the run waits (`waiting`, `wait_until`), never
-    refused, the lane starting it again after `SANDBOX_RECHECK_S`. Decided: E2B's own count,
-    not a platform object, since only E2B sees a sandbox its timeout paused, and E2B refuses
-    past its plan regardless.
+    module that fetches, E2B's two hosts alone) and its own classes: `SandboxControl`, one
+    per owner, which serializes that owner's E2B calls (so a release's pause never freezes a
+    run a start just launched) and looks after its sandboxes; and `SandboxSlots`, the
+    platform's one line for one more running sandbox (`src/slots.ts`). The versioned
+    template (`template/build.py`, its tag the digest of the runner's bundle, the records,
+    their locks and `tier.ts`, `E2B_TEMPLATE` held to it by `guards/template.test.ts`); the
+    runner (`runner/*.ts`, bundled; 34 workerd and 32 Node tests against a fake E2B and fake
+    CLIs of each record's event shapes, the review's five attacks among them, refused); the
+    sync doors on the egress host (`/sync/*`); `SANDBOX` in the owner config guard's
+    `SERVICES` (its classes, the control record, the ring's producer, one var, its key) and
+    bound. Probed live: `sandbox-probe.md`.
+  - The founder's rule (2026-11-03): `sandbox_runtime_ceiling_s`,
+    `sandbox_concurrency_ceiling` and `sandbox_renewal_window_s` are the control record's
+    (`directory.ts`, no bound of the platform's own but the window inside the ceiling). The
+    Worker renews a sandbox (pause with memory, resume, its slot its own) at a quiet moment
+    inside the window before E2B's `endAt`, forced at the measured edge (`renewing` 252 ms +
+    the longest pause 705 ms), `ta.renewing` and `ta.renewed` frames to the app; a CLI that
+    fails just after is resumed from its session; a filesystem-only pause restarts the runs
+    (`recover`). Its alarm is armed again on every path: a failed look backs off from the
+    measured request time, never past the soonest edge; an unreadable control record is read
+    as the last numbers read; a sandbox paused while a lease runs in it is resumed, E2B's
+    refusal asked again and logged `sandbox_renewal_refused` (review H-5). An idle sandbox
+    pauses at its release, at its renewal look, or once idle a lease's TTL (the release
+    never come); a pause E2B answered busy is asked again.
+  - The line (review M-3, M-4): a start needing one more running sandbox waits its turn, so
+    a newcomer never takes a freed slot ahead of an owner that waited longer; past the
+    concurrency ceiling (E2B's team-wide `X-Total-Running`, advisory: none and the create is
+    tried) or refused by E2B for room, the run waits (`waiting`, `sandbox_wait`), never
+    refused and never polled. Each sandbox the platform pauses or kills rings the first in
+    line through the ring queue, whose consumer (the doors) calls that owner's
+    `sandboxRung`; the first in line is rung again, backing off from `LEASE_TTL_S` to the
+    runtime ceiling, for frees no ring sees (other sandboxes of the team, E2B's own capacity).
+  - The runner (review H-1 to H-4, M-1, M-2, M-7): root never follows a path another user
+    placed (`fsafe.ts`: no-follow descriptors, ownership on the descriptor, a link replaced,
+    never written through); each run runs as a user of its own from the template's pool
+    (`ta-run-<n>`, `RUNS_CEILING` of them), its home made from its engine's store (the
+    record's `secret_paths` and `session_paths` alone; each engine's store its own, only its
+    `session_paths` restored), every process of that user killed at the run's end; the sync
+    agent runs as `ta-sync`; the env-file refusal covers the CLIs' home settings and Gemini's
+    upward `.env` search; Gemini's settings are a root-owned per-run system file outside
+    `{home}` (`{system}`, folder trust off), which the records' checker admits; the agent's
+    skills and the owner's shared ones (`/workspace/.agents/skills`, `/workspace/skills`)
+    are projected into each engine's skills path, the agent's winning, a client's sandbox
+    only what it may read; every path another user may write (others, or group `ta`) is made
+    root's at every boot and resume and checked, the design's writable paths named with their
+    reasons; and no user but root may `sudo` (E2B grants `user` it again at each boot:
+    `prepare` takes it away and checks).
+  - The sandbox's doors (review M-5, M-6, M-8, H-6): the sync doors take the sync token only
+    beside its own lease's egress token (from inside that sandbox); a file past an inline
+    write goes by the files plane's upload (`/sync/upload_begin`, `/sync/upload_chunks`),
+    never refused for its size; sandboxes are created `secure` (envd refuses a call without
+    the sandbox's token, probed); a run's doors must be `https` on the egress host; the
+    owner's erasure kills every sandbox of theirs (paused ones, and strays its metadata tag
+    finds) and deletes the Worker's state of them, in its step 2.
   - Deviations, each for the founder's rule or a live finding: `SandboxService` gained
-    `release`, and the object `sandbox_waiting` (`runs.ts`, `wait_until` on `runs`); the
-    Worker keeps a class of its own (the plan said stateless: renewal needs a clock outside
-    the VM, and one owner's calls need one order); `RUN_BASICS` gained
-    `NODE_EXTRA_CA_CERTS` (E2B re-signs the egress door's HTTPS); `prepare` locks down E2B's
-    world-writable system files at each boot.
+    `release`, `unwait` and `erase`, and the object `sandbox_waiting` and `sandboxRung`
+    (`runs.ts`, `sandbox_wait` on `runs`); the Worker keeps classes of its own (the plan said
+    stateless: renewal needs a clock outside the VM, one owner's calls need one order, and
+    waiting owners need one line); `RUN_BASICS` gained `NODE_EXTRA_CA_CERTS` (E2B re-signs
+    the egress door's HTTPS). `sandbox_wait` is in migration 12 itself, as slice ID's columns
+    are in theirs: no workflow deploys platform/, so no object holds an older schema.
 - [ ] Owed by slice S:
   - The vendor sign-in flow (`cli.login`): a door in the object that opens the sandbox's
     lease with no run, the app's terminal to the CLI's prompt, and the end-of-sign-in report.
     Needs a vendor account to verify; `signin-check` and the report at each start are built.
+  - E2B's lifecycle webhooks as a second doorbell, so a free outside the platform rings at
+    once rather than at the line's back-off: their payload and signature were not readable
+    from this session (`e2b.dev` is outside its network), and registering one is a deploy act.
   - The founder's alerts: runs waiting on the concurrency ceiling (each wait is logged
-    `sandbox_waiting`), and E2B credit or spend, which E2B's public API does not expose (no
-    balance or spend endpoint; team metrics give concurrency only). The repo's founder
-    channel is Pushover from GitHub workflows (`scripts/pushover_page.py`), which no Worker
-    reaches: a scheduled workflow reading E2B's `/teams/{id}/metrics/max` against the
-    ceiling is the fit, with `E2B_API_KEY` as a repository secret.
-  - Gemini CLI loads no system settings under the engine's home (it checks every ancestor
-    is root's, probed): the records' checker to admit a root-owned path outside `{home}` for
-    it, and its folder trust, before a Gemini run holds its MCP door and instructions.
-  - Files over one chunk (4 MiB) wait for the upload doors (tasks 6.1's owed byte door);
-    the runner refuses and reports them. The shared abilities (`/workspace/.agents`) are
-    not projected into an engine's skills path; the agent's own are.
-  - Deploy (slice L): the Worker, its secret, the template's build in the deploying
-    project, and the directory's id.
+    `sandbox_waiting`), a renewal's resume E2B refused (`sandbox_renewal_refused`), and E2B
+    credit or spend, which E2B's public API does not expose (no balance or spend endpoint;
+    team metrics give concurrency only). The repo's founder channel is Pushover from GitHub
+    workflows (`scripts/pushover_page.py`), which no Worker reaches: a scheduled workflow
+    reading E2B's `/teams/{id}/metrics/max` against the ceiling is the fit, with
+    `E2B_API_KEY` as a repository secret.
+  - Deploy (slice L): the Worker, its secret, the ring queue, the template's build in the
+    deploying project, and the control namespace's id.
 - [x] Slice ID: TinyAssets agents get an identity in the ledger (`ledger.ts`, migration 13,
   `test/agent-mail.test.ts`), with its review's fixes (H1-H3, M1-M3, L1-L4). Core to the
   product: group chats that mix people, main agents and TinyAssets agents.

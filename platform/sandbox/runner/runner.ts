@@ -1,73 +1,103 @@
 /**
  * The in-VM runner (`ta-runner`; ADR-034 decision 4.3, `engines-replan.md` §2.1 steps 4-7),
  * baked into the versioned template (`template/build.py`) and run as root by the sandbox
- * Worker through envd. Each command is one subcommand; a run's own runner is detached
- * (`launch`) and lives as long as its CLI:
+ * Worker through envd. Root never follows a path another user controls (slice S review
+ * H-1 to H-3): every file it writes or reads in a tree another user can write goes through
+ * `fsafe.ts` (no link followed, owner and mode set on the descriptor), the sync agent runs
+ * as its own user (`ta-sync`), and each run as a user of its own from the template's pool
+ * (`users.ts`), its own home and its own root-owned system directory made fresh for it.
  *
  * - `prepare <dns...>`: the sandbox just started or resumed: `/etc/resolv.conf` pinned to
  *   the network's resolvers (E2B opens the firewall only), `/proc` remounted `hidepid=2`,
- *   so no engine's user sees another's processes or environment.
- * - `signin-check <engine>`: the record's `status_argv` as the engine's own user: 0 signed
- *   in, 3 not.
+ *   and nothing root runs left writable by another user (`lockDown`), fixed and checked
+ *   at every start and resume.
+ * - `signin-check <engine>`: the record's `status_argv`, as a run user on a home made from
+ *   the engine's store: 0 signed in, 3 not.
  * - `launch <run>`: the start document the Worker put in the root-only inbox taken, and the
  *   run's runner started detached; 0 once it runs.
- * - `run <run>` (the detached runner): a first empty post (the run's first heartbeat,
- *   before anything slow), the sandbox's sign-ins reported, the owner's files synced in,
- *   the engine's sessions restored, its projection, the refusal of project env files, the
- *   CLI as its own user from the record, its events framed and posted (a batch at least
- *   every `HEARTBEAT_MS`), the files synced out, then the end.
+ * - `run <run>` (the detached runner): a first empty post (the run's first heartbeat), the
+ *   sandbox's sign-ins reported, the owner's files synced in (as `ta-sync`), the run's user
+ *   taken and its home made from the engine's store (its `secret_paths` and
+ *   `session_paths`, nothing else: a CLI's other home files never outlive a run), the
+ *   refusal of env files the CLI would load (its home's, the agent's, and every ancestor's
+ *   of its cwd), the CLI as that user from the record, its events framed and posted (a batch
+ *   at least every `HEARTBEAT_MS`); at its end every process of the user killed, the kept
+ *   paths back into the store, the files synced out, the user given back, then the end.
  * - `cancel <run>`: SIGTERM to the CLI, a kill after `CANCEL_GRACE_MS`; 3 when not live.
  * - `status <run>`: 0 while its runner runs, else 3.
  * - `state`: the live runs and whether every CLI is quiet (`{live, quiet}`).
- * - `renewing` / `renewed`: around a renewal's pause, each live run's runner posts a
- *   `ta.renewing` frame and holds its posts, then a `ta.renewed` frame and reconnects.
- * - `recover`: after a resume that rebooted the sandbox (E2B kept its files only), each run
- *   that was live is started again from its session (`resume_argv`).
- *
- * The runner's secret (`x-ta-runner`) and the sync token are in its root-only state
- * directory; each CLI runs as its own unprivileged user, `HOME` its engine home, its
- * environment the run's allow-list alone, and its umask 002 so the workspace it shares
- * with the other engines' users (group `ta`) stays shared.
+ * - `quiet-wait <until_ms>`: until every live CLI is quiet (between turns, as its events
+ *   show) or `until`, then the live runs and whether they are quiet (`{live, quiet}`): the
+ *   renewal's look for a quiet moment, signalling nothing.
+ * - `renew-wait <deadline_ms>`: until every live CLI is quiet or the deadline, then each
+ *   run's runner posts `ta.renewing` and holds its posts; `renewed`: each posts
+ *   `ta.renewed` and goes on.
+ * - `recover`: after a resume that rebooted the sandbox, each run that was live is started
+ *   again from its session (`resume_argv`).
+ * - `sync` (internal, as `ta-sync`, its job on stdin): the sync agent and the projection.
  */
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { chmodSync, chownSync, closeSync, cpSync, existsSync, lstatSync, mkdirSync, openSync,
-         readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { chownSync, closeSync, existsSync, lchownSync, lstatSync, mkdirSync, openSync,
+         readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 
 import { bundledSources, RUN_BASICS, type SourceRecord } from "../../doors/src/sources";
 import { readEvent } from "../../owner/src/run-events";
 
-import { AGENTS_DIR, engineHome, engineUser, invocation, secretPaths, sessionPaths,
-         type StartDoc, WORKSPACE } from "./engine";
+import { AGENTS_DIR, HOMES, invocation, isKept, keptPaths, type StartDoc, SYSTEM,
+         WORKSPACE } from "./engine";
 import { lineEvent, Outbox } from "./frames";
-import { heldSecret, projectEnvFile, projectEnvRefusal, secretAtoms } from "./guards";
-import { readMirror, SyncClient, SyncFenced, syncIn, syncOut, walk, writeMirror } from "./sync";
+import { remove, safeDirs, safeRead, safeWalk, safeWrite } from "./fsafe";
+import { ancestorEnvFile, heldSecret, homeEnvFile, projectEnvFile, projectEnvRefusal,
+         secretAtoms } from "./guards";
+import { project } from "./project";
+import { readMirror, SyncClient, SyncFenced, syncIn, syncOut } from "./sync";
+import { asUser, give, group, type Identity, killAll, POOL_PREFIX, take, user } from "./users";
 
 /** Every path the runner touches is under this root: `/` in the sandbox, a temp dir in tests. */
 const ROOT = process.env["TA_RUNNER_ROOT"] ?? "";
+const TOP = ROOT === "" ? "/" : ROOT;
 const STATE = `${ROOT}/var/lib/ta`;
+const STORE = `${STATE}/store`;
+/** The sync agent's own directory (`ta-sync`, 0700): its mirror, sessions in and out. */
+const SYNC_HOME = `${ROOT}/var/lib/ta-sync`;
+const CONVERSATIONS = `${ROOT}/var/lib/ta-conv`;
 const LOCAL_WORKSPACE = `${ROOT}${WORKSPACE}`;
-/** Where the engines' sessions live among the owner's files, by authority and engine. */
-const SESSIONS = `${WORKSPACE}/.sessions`;
 
+/** The runner's heartbeat: slice R's lease renewal cadence (a batch at least every 20 s). */
 export const HEARTBEAT_MS = 20_000;
+/** How often the runner flushes what its CLI wrote: the frames' own cadence (§2.2). */
 const FLUSH_MS = 250;
-export const CANCEL_GRACE_MS = 10_000;
-/** A CLI that fails this soon after a renewal is resumed from its session, once. */
-const RENEW_RESUME_MS = 120_000;
-const STATUS_MS = 20_000;
+/**
+ * A cancelled CLI's grace before the kill: one heartbeat, so its end reaches the object
+ * well inside the lease's TTL (`LEASE_TTL_MS`), its runner's last post included.
+ */
+export const CANCEL_GRACE_MS = HEARTBEAT_MS;
+/**
+ * The lease's TTL (`owner/src/files.ts`'s `LEASE_TTL_S`, which `guards/config.test.ts` holds
+ * this equal to; the runner's bundle takes nothing of the object's storage modules).
+ */
+export const LEASE_TTL_MS = 60_000;
+/**
+ * The longest a status check, or the wait for a runner's ack, may take: the lease's TTL,
+ * past which a start's run is lost anyway (a run with no post within it is settled lost).
+ */
+const COMMAND_MS = LEASE_TTL_MS;
 const OK = 0;
 const NO = 3;
+const FENCED = 4;
 /** The input a run resumed after a renewal or a reboot is continued with. */
 export const CONTINUE_PROMPT = "The sandbox paused to renew its runtime and your last step " +
   "was interrupted. Continue the task where you left off.";
 
 const sources = bundledSources();
+const RECORDS = new Map(sources.ids().map((id) => [id, sources.get(id)!] as const)
+  .filter(([, rec]) => rec.cli !== undefined));
 
 function record(engine: string): SourceRecord {
-  const found = sources.get(engine);
-  if (found?.cli === undefined) {
+  const found = RECORDS.get(engine);
+  if (found === undefined) {
     throw new Error(`engine ${engine} has no CLI record`);
   }
   return found;
@@ -77,9 +107,10 @@ function readJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, "utf8")) as T;
 }
 
-function writeJson(path: string, value: unknown, mode = 0o600): void {
+/** A file of root's own state directory (no other user reaches it). */
+function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(`${path}.tmp`, JSON.stringify(value), { mode });
+  writeFileSync(`${path}.tmp`, JSON.stringify(value), { mode: 0o600 });
   renameSync(`${path}.tmp`, path);
 }
 
@@ -98,7 +129,6 @@ interface RunState {
   seq: number;
   session_id: string | null;
   last_kind: string | null;
-  last_at: number;
   ended: boolean;
   renewing: boolean;
 }
@@ -132,33 +162,13 @@ function liveRuns(): { run: string; state: RunState }[] {
   });
 }
 
-/** An engine's user and group ids, from the template's own `/etc/passwd`. */
-function identity(engine: string): { uid: number; gid: number } {
-  const name = engineUser(engine);
-  for (const line of readFileSync(`${ROOT}/etc/passwd`, "utf8").split("\n")) {
-    const [user, , uid, gid] = line.split(":");
-    if (user === name) {
-      return { uid: Number(uid), gid: Number(gid) };
-    }
-  }
-  throw new Error(`the template has no user ${name}`);
+function shared(): number {
+  return group(ROOT, "ta");
 }
 
-/** The group the engines' users share the workspace through. */
-function sharedGroup(): number | null {
-  for (const line of readFileSync(`${ROOT}/etc/group`, "utf8").split("\n")) {
-    const [group, , gid] = line.split(":");
-    if (group === "ta") {
-      return Number(gid);
-    }
-  }
-  return null;
-}
-
-/** The engine's environment for its own commands (its status check): the record's own. */
-function engineEnv(rec: SourceRecord): Record<string, string> {
+/** The engine's record variables, filled for a home (its status check's environment). */
+function engineEnv(rec: SourceRecord, home: string): Record<string, string> {
   const cli = rec.cli!;
-  const home = `${ROOT}${engineHome(rec.id)}`;
   const env: Record<string, string> = {};
   for (const name of RUN_BASICS) {
     const value = process.env[name];
@@ -169,10 +179,113 @@ function engineEnv(rec: SourceRecord): Record<string, string> {
   const fill = (text: string) => text.replaceAll("{home}", home).replaceAll("{agent}", "");
   for (const [name, value] of Object.entries({
     ...cli.home_env, ...cli.env, ...("env" in cli.no_update ? cli.no_update.env : {}) })) {
-    env[name] = fill(value);
+    if (!value.includes("{system}")) {
+      env[name] = fill(value);
+    }
   }
   env["HOME"] = home;
   return env;
+}
+
+function binOf(rec: SourceRecord): string {
+  const install = rec.cli!.install;
+  return install.manager === "npm"
+    ? `${ROOT}/opt/ta/engines/${rec.id}/node_modules/.bin/${install.bin}`
+    : `${ROOT}/opt/ta/engines/${rec.id}/bin/${install.bin}`;
+}
+
+// -- homes and the engines' stores ----------------------------------------------------
+
+/**
+ * A run's home, made fresh by root in its root-only parent from the engine's store (its
+ * kept paths alone); `giveTree` then gives it to the run's user entry by entry: no other
+ * user can reach it while it is made.
+ */
+function makeHome(name: string, rec: SourceRecord): string {
+  const homes = `${ROOT}${HOMES}`;
+  safeDirs(TOP, homes, 0o711);
+  const home = `${homes}/${name}`;
+  remove(home);
+  mkdirSync(home, { mode: 0o700 });
+  const store = `${STORE}/${rec.id}`;
+  const { secrets, sessions } = keptPaths(rec);
+  for (const rel of safeWalk(store)) {
+    if (isKept([...secrets, ...sessions], rel)) {
+      const bytes = safeRead(store, join(store, rel));
+      if (bytes !== null) {
+        safeWrite(home, join(home, rel), bytes, 0o600);
+      }
+    }
+  }
+  mkdirSync(join(home, "tmp"), { mode: 0o700 });
+  return home;
+}
+
+/** Every entry of a tree root just made given to `as`, links as links. */
+function giveTree(path: string, as: Identity): void {
+  lchownSync(path, as.uid, as.gid);
+  if (lstatSync(path).isDirectory()) {
+    for (const entry of readdirSync(path)) {
+      giveTree(join(path, entry), as);
+    }
+  }
+}
+
+/**
+ * The run's kept paths back into its engine's store, once no process of its user is left
+ * (so nothing changes the home while it is read), no link followed.
+ */
+function keepHome(home: string, rec: SourceRecord): void {
+  const store = `${STORE}/${rec.id}`;
+  safeDirs(TOP, store, 0o700);
+  const { secrets, sessions } = keptPaths(rec);
+  for (const rel of safeWalk(home)) {
+    if (isKept([...secrets, ...sessions], rel)) {
+      const bytes = safeRead(home, join(home, rel));
+      if (bytes !== null) {
+        safeWrite(store, join(store, rel), bytes, 0o600);
+      }
+    }
+  }
+}
+
+/** The engines' sessions the sync agent took from the feed, into each store it lacks. */
+function importSessions(): void {
+  const staged = `${SYNC_HOME}/in`;
+  for (const rel of safeWalk(staged)) {
+    const [engine, ...rest] = rel.split("/");
+    const rec = RECORDS.get(engine ?? "");
+    const inHome = rest.join("/");
+    if (rec === undefined || !isKept(keptPaths(rec).sessions, inHome)) {
+      continue;
+    }
+    const store = join(STORE, rec.id);
+    const target = join(store, inHome);
+    if (!existsSync(target)) {
+      const bytes = safeRead(staged, join(staged, rel));
+      if (bytes !== null) {
+        safeDirs(TOP, store, 0o700);
+        safeWrite(store, target, bytes, 0o600);
+      }
+    }
+  }
+}
+
+/** Every secret's atoms, from every engine's store (its `secret_paths` files). */
+function atoms(): string[] {
+  const found: string[] = [];
+  for (const rec of RECORDS.values()) {
+    const store = `${STORE}/${rec.id}`;
+    for (const rel of safeWalk(store)) {
+      if (isKept(keptPaths(rec).secrets, rel)) {
+        const bytes = safeRead(store, join(store, rel));
+        if (bytes !== null) {
+          found.push(...secretAtoms(bytes.toString("utf8")));
+        }
+      }
+    }
+  }
+  return found;
 }
 
 /** Whether the engine is signed in inside this sandbox: its record's `status_argv`. */
@@ -182,36 +295,32 @@ export function signedIn(rec: SourceRecord): boolean {
   if (login?.status_argv === undefined) {
     return false;
   }
-  const bin = `${ROOT}${binOf(rec)}`;
-  const home = `${ROOT}${engineHome(rec.id)}`;
-  const argv = login.status_argv.map((arg) => arg.replaceAll("{bin}", bin)
-    .replaceAll("{home}", home));
-  const { uid, gid } = identity(rec.id);
-  if (!existsSync(home)) {
-    mkdirSync(home, { recursive: true, mode: 0o700 });
-    chownSync(home, uid, gid);
-  }
-  const done = spawnSync(argv[0]!, argv.slice(1), {
-    env: engineEnv(rec), uid, gid, cwd: home, timeout: STATUS_MS, encoding: "utf8" });
-  if (done.status !== 0) {
-    return false;
-  }
-  if (login.status_equals === undefined) {
-    return true;
-  }
+  const name = `check-${rec.id}-${process.pid}`;
+  const as = take(ROOT, STATE, name);
+  const home = makeHome(name, rec);
   try {
-    const status = JSON.parse(done.stdout) as Record<string, unknown>;
-    return Object.entries(login.status_equals).every(([key, value]) => status[key] === value);
-  } catch {
-    return false;
+    giveTree(home, as);
+    const argv = asUser(as, [shared()], login.status_argv.map((arg) =>
+      arg.replaceAll("{bin}", binOf(rec)).replaceAll("{home}", home)));
+    const done = spawnSync(argv[0]!, argv.slice(1), {
+      env: engineEnv(rec, home), cwd: home, timeout: COMMAND_MS, encoding: "utf8" });
+    if (done.status !== 0) {
+      return false;
+    }
+    if (login.status_equals === undefined) {
+      return true;
+    }
+    try {
+      const status = JSON.parse(done.stdout) as Record<string, unknown>;
+      return Object.entries(login.status_equals).every(([key, value]) => status[key] === value);
+    } catch {
+      return false;
+    }
+  } finally {
+    killAll(as.uid);
+    remove(home);
+    give(STATE, as);
   }
-}
-
-function binOf(rec: SourceRecord): string {
-  const install = rec.cli!.install;
-  return install.manager === "npm"
-    ? `/opt/ta/engines/${rec.id}/node_modules/.bin/${install.bin}`
-    : `/opt/ta/engines/${rec.id}/bin/${install.bin}`;
 }
 
 // -- prepare --------------------------------------------------------------------------
@@ -228,46 +337,90 @@ function prepare(servers: readonly string[]): number {
   if (done.status !== 0 || !/ \/proc proc [^ ]*hidepid=(?:2|invisible)/.test(mounts)) {
     throw new Error(`/proc could not be hidden: ${done.stderr}`);
   }
-  // Once a boot (the marker on tmpfs): the modes are on disk and outlive a pause, and the
-  // scan of the whole root takes seconds (probed: about 7 s).
-  if (!existsSync(LOCKED)) {
-    lockDown();
-    writeFileSync(LOCKED, "");
-  }
+  lockDown();
+  lockSudo();
   return OK;
 }
 
-const LOCKED = `${ROOT}/run/ta-locked-down`;
-
 /**
- * The places every user may write, outside a user's own: none but the sticky scratch
- * directories. E2B's base image leaves root's own programs world-writable at boot (probed:
- * `/usr/bin/envd`, `/usr/local/bin`, systemd's units), so an engine's user could replace
- * what root runs; `prepare` takes every user's write away from them at each start and
- * resume, and fails loudly if any is left.
+ * No user but root may `sudo`, checked at every boot: E2B's provisioning puts its default
+ * `user` back in group `sudo` and grants it `NOPASSWD: ALL` in `/etc/sudoers` at each boot
+ * (probed live: the template's build removed both, and a fresh sandbox had both again). No
+ * run's user can become `user` (it has no password, and only the Worker reaches envd), so
+ * this is the template's promise kept, not a door closed: `/etc/sudoers` keeps its defaults,
+ * its includes and root's line and nothing else, the `sudo` group has no member, and each of
+ * `user`, `ta-sync` and a pool user is checked refused.
  */
-const SCRATCH = Object.freeze(["/proc", "/sys", "/dev", "/run", "/tmp", "/var/tmp", "/home",
-                               "/workspace"]);
-function lockDown(): void {
-  const prune = SCRATCH.flatMap((path, i) => [...(i === 0 ? [] : ["-o"]), "-path", path]);
-  const find = (extra: readonly string[]) => spawnSync("find", [
-    "/", "-xdev", "(", ...prune, ")", "-prune", "-o", "!", "-type", "l", "-perm", "-0002",
-    "!", "-perm", "-1000", ...extra], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-  const fixed = find(["-exec", "chmod", "o-w", "{}", "+"]);
-  const left = find(["-print"]);
-  if (fixed.status !== 0 || left.status !== 0 || left.stdout.trim() !== "") {
-    throw new Error(`world-writable paths remain: ${left.stdout.slice(0, 300)}`);
+function lockSudo(): void {
+  const kept = readFileSync("/etc/sudoers", "utf8").split("\n").filter((line) =>
+    line.trim() === "" || /^\s*(#|Defaults|@include|root\s)/.test(line));
+  writeFileSync("/etc/sudoers.ta", `${kept.join("\n").trimEnd()}\n`, { mode: 0o440 });
+  const valid = spawnSync("visudo", ["-cf", "/etc/sudoers.ta"], { encoding: "utf8" });
+  if (valid.status !== 0) {
+    throw new Error(`the sudoers kept are not valid: ${valid.stdout}${valid.stderr}`);
+  }
+  renameSync("/etc/sudoers.ta", "/etc/sudoers");
+  for (const line of readFileSync("/etc/group", "utf8").split("\n")) {
+    const [name, , , members] = line.split(":");
+    if ((name === "sudo" || name === "admin") && members !== undefined && members !== "") {
+      for (const member of members.split(",")) {
+        spawnSync("gpasswd", ["-d", member, name], { encoding: "utf8" });
+      }
+    }
+  }
+  for (const file of existsSync("/etc/sudoers.d") ? readdirSync("/etc/sudoers.d") : []) {
+    rmSync(`/etc/sudoers.d/${file}`, { force: true });
+  }
+  for (const name of ["user", "ta-sync", `${POOL_PREFIX}0`]) {
+    const listed = spawnSync("sudo", ["-l", "-U", name], { encoding: "utf8" });
+    if (!/is not allowed to run sudo/.test(listed.stdout)) {
+      throw new Error(`${name} may still sudo: ${listed.stdout.slice(-300)}`);
+    }
   }
 }
 
-// -- launch, cancel, status, state ----------------------------------------------------
+/**
+ * What may stay writable by a user other than root, each for its reason:
+ * - `/workspace`, group `ta`: the owner's files every run shares by design;
+ * - each run's own home, each conversation's own cwd, the sync agent's directory: their
+ *   own users', 0700, reached by no one else;
+ * - `/proc` and `/sys`: the kernel's own;
+ * and, wherever they are, sticky directories (`/tmp`, `/var/tmp`, `/dev/shm`, `/run/lock`:
+ * every user's own entries, none another's), and device, socket and pipe nodes and links
+ * (a node is no file root runs or reads as code; a link's own mode means nothing).
+ */
+const WRITABLE: readonly string[] = Object.freeze(["/proc", "/sys", WORKSPACE, HOMES,
+                                                   "/var/lib/ta-conv", "/var/lib/ta-sync"]);
+/**
+ * Every path another user may write made root's alone, then checked: anything left fails
+ * `prepare` loudly. E2B's base image boots with root's own programs world-writable
+ * (probed: `/usr/bin/envd`, `/usr/local/bin`, systemd's units), and a template build's
+ * modes do not survive into the sandbox. A path is writable by another user when others
+ * may write it, or group `ta` (every run user's) may. Every mount is walked (`/run`,
+ * `/dev`), at every start and resume.
+ */
+function lockDown(): void {
+  const ta = String(shared());
+  const prune = WRITABLE.flatMap((path, i) => [...(i === 0 ? [] : ["-o"]), "-path", path]);
+  const find = (action: readonly string[]) => spawnSync("find", [
+    "/", "(", ...prune, ")", "-prune", "-o", "!", "-type", "l", "!", "-type", "c", "!",
+    "-type", "b", "!", "-type", "s", "!", "-type", "p", "(", "(", "-perm", "-0002", "!",
+    "-perm", "-1000", ")", "-o", "(", "-perm", "-0020", "-group", ta, ")", ")", ...action],
+  { encoding: "utf8", maxBuffer: Number.POSITIVE_INFINITY });
+  find(["-exec", "chmod", "go-w", "{}", "+"]);
+  const left = find(["-print"]);
+  if (left.status !== 0 || left.stdout.trim() !== "") {
+    throw new Error(`writable paths remain: ${left.stdout.slice(0, 300)}`);
+  }
+}
+
+// -- launch, cancel, status, state, renewal ------------------------------------------
 
 function launch(run: string): number {
   const dir = runDir(run);
   const inbox = `${STATE}/inbox/${run}.json`;
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   renameSync(inbox, `${dir}/start.json`);
-  chmodSync(`${dir}/start.json`, 0o600);
   return detach(run, []);
 }
 
@@ -280,8 +433,7 @@ function detach(run: string, extra: readonly string[]): number {
   closeSync(log);
   child.unref();
   writeJson(`${dir}/state.json`, { ...(readState(run) ?? { seq: 0, session_id: null,
-                                                            last_kind: null, last_at: 0,
-                                                            cli_pid: null }),
+                                                            last_kind: null, cli_pid: null }),
                                    pid: child.pid, ended: false, renewing: false });
   return OK;
 }
@@ -302,13 +454,14 @@ function status(run: string): number {
 }
 
 /**
- * Whether a CLI is between turns, as its events show: its last event a tool call, a result
- * or a usage report (its model call answered), or none for `QUIET_MS`.
+ * Whether a run's CLI is between turns, as its events show: none running (its runner is
+ * syncing, or between a renewal's resume and its CLI's), or its last event a tool call, a
+ * result or a usage report (its model call answered). A CLI that is never quiet is renewed
+ * at the ceiling's edge regardless.
  */
-const QUIET_MS = 30_000;
 function quiet(state: RunState): boolean {
-  return state.last_kind === "tool_call" || state.last_kind === "result"
-    || state.last_kind === "usage" || Date.now() - state.last_at >= QUIET_MS;
+  return !alive(state.cli_pid) || state.last_kind === "tool_call"
+    || state.last_kind === "result" || state.last_kind === "usage";
 }
 
 function stateCommand(): number {
@@ -318,17 +471,52 @@ function stateCommand(): number {
   return OK;
 }
 
-async function around(signal: "SIGUSR1" | "SIGUSR2", ack: string): Promise<number> {
+/** Each live runner signalled, and its ack waited for while its runner lives. */
+async function signalled(signal: "SIGUSR1" | "SIGUSR2", ack: string,
+                         deadline: number): Promise<void> {
   const live = liveRuns();
   for (const { run, state } of live) {
     rmSync(`${runDir(run)}/${ack}`, { force: true });
     process.kill(state.pid, signal);
   }
-  const until = Date.now() + 15_000;
-  while (Date.now() < until && !live.every(({ run }) => existsSync(`${runDir(run)}/${ack}`))) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
+  while (Date.now() < deadline && !live.every(({ run, state }) =>
+    existsSync(`${runDir(run)}/${ack}`) || !alive(state.pid))) {
+    await new Promise((resolve) => setTimeout(resolve, FLUSH_MS / 5));
   }
-  return OK;
+}
+
+async function quietWait(until: number): Promise<number> {
+  if (!Number.isSafeInteger(until)) {
+    throw new Error("quiet-wait takes its end, in ms");
+  }
+  for (;;) {
+    const live = liveRuns();
+    const still = live.every(({ state }) => quiet(state));
+    if (live.length === 0 || still || Date.now() >= until) {
+      process.stdout.write(JSON.stringify({ live: live.length, quiet: still }));
+      return OK;
+    }
+    await new Promise((resolve) => setTimeout(resolve, FLUSH_MS));
+  }
+}
+
+async function renewWait(deadline: number): Promise<number> {
+  if (!Number.isSafeInteger(deadline)) {
+    throw new Error("renew-wait takes its deadline, in ms");
+  }
+  for (;;) {
+    const live = liveRuns();
+    if (live.length === 0) {
+      process.stdout.write(JSON.stringify({ live: 0 }));
+      return OK;
+    }
+    if (live.every(({ state }) => quiet(state)) || Date.now() >= deadline) {
+      await signalled("SIGUSR1", "renewing-ack", deadline);
+      process.stdout.write(JSON.stringify({ live: live.length }));
+      return OK;
+    }
+    await new Promise((resolve) => setTimeout(resolve, FLUSH_MS));
+  }
 }
 
 function recover(): number {
@@ -336,13 +524,21 @@ function recover(): number {
   for (const run of existsSync(dir) ? readdirSync(dir).filter((each) => RUN.test(each)) : []) {
     const state = readState(run);
     if (state !== null && !state.ended && !alive(state.pid)) {
+      // The rebooted run's home: its kept paths into the store first (its processes died
+      // with the boot), so its session resumes from where it was.
+      const start = readJson<StartDoc>(`${runDir(run)}/start.json`);
+      const home = `${ROOT}${HOMES}/${run}`;
+      if (existsSync(home)) {
+        keepHome(home, record(start.engine));
+        remove(home);
+      }
       detach(run, ["--recover"]);
     }
   }
   return OK;
 }
 
-// -- a run ----------------------------------------------------------------------------
+// -- the sync agent, as its own user ---------------------------------------------------
 
 interface LeaseFile {
   readonly lease: { readonly lease_id: string; readonly epoch: number };
@@ -350,11 +546,115 @@ interface LeaseFile {
   readonly tokens: { readonly runner_token: string; readonly sync_token: string };
 }
 
+interface SyncJob {
+  readonly direction: "in" | "out";
+  readonly origin: string;
+  readonly token: string;
+  readonly lease: { readonly lease_id: string; readonly epoch: number };
+  readonly authority: string;
+  readonly agent: string;
+  readonly engine: string;
+  readonly run: string;
+  readonly atoms: readonly string[];
+}
+
+/** The sync agent run as `ta-sync`, its job on stdin; its report, or its refusal. */
+function syncAgent(job: SyncJob): { report: Record<string, unknown> | null; code: number } {
+  const as = user(ROOT, "ta-sync");
+  const argv = asUser(as, [shared()], [process.execPath, ...process.execArgv,
+                                       process.argv[1]!, "sync"]);
+  const env: Record<string, string> = {};
+  for (const name of [...RUN_BASICS, "TA_RUNNER_ROOT"]) {
+    if (process.env[name] !== undefined) {
+      env[name] = process.env[name]!;
+    }
+  }
+  const done = spawnSync(argv[0]!, argv.slice(1), { input: JSON.stringify(job), env,
+                                                     encoding: "utf8",
+                                                     // Its report whole, however many paths.
+                                                     maxBuffer: Number.POSITIVE_INFINITY });
+  let report: Record<string, unknown> | null = null;
+  try {
+    report = JSON.parse(done.stdout) as Record<string, unknown>;
+  } catch {
+    report = null;
+  }
+  if (done.status !== OK && done.status !== FENCED) {
+    throw new Error(`the sync agent failed (${done.status}): ${done.stderr.slice(-300)}`);
+  }
+  return { report, code: done.status };
+}
+
+/** The sync agent's own side (as `ta-sync`), one at a time in the sandbox by its lock. */
+async function syncCommand(): Promise<number> {
+  const job = JSON.parse(readFileSync(0, "utf8")) as SyncJob;
+  const lock = `${SYNC_HOME}/lock`;
+  for (let wait = FLUSH_MS / 10; ; wait = Math.min(wait * 2, FLUSH_MS * 4)) {
+    try {
+      mkdirSync(lock, { mode: 0o700 });
+      writeFileSync(`${lock}/pid`, String(process.pid));
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+      let holder = 0;
+      try {
+        holder = Number(readFileSync(`${lock}/pid`, "utf8"));
+      } catch {
+        holder = 0;
+      }
+      if (holder !== 0 && !alive(holder)) {
+        remove(lock);  // its holder died
+        continue;
+      }
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+  }
+  try {
+    const client = new SyncClient(job.origin, job.token, HEARTBEAT_MS);
+    const place = { local: LOCAL_WORKSPACE, sessionsIn: `${SYNC_HOME}/in`,
+                    sessionsOut: `${SYNC_HOME}/out/${job.run}`, authority: job.authority,
+                    records: RECORDS };
+    safeDirs(SYNC_HOME, place.sessionsIn, 0o700);
+    const mirrorPath = `${SYNC_HOME}/mirror.json`;
+    const mirror = readMirror(mirrorPath);
+    const save = () => safeWrite(SYNC_HOME, mirrorPath,
+                                 new TextEncoder().encode(JSON.stringify(mirror)), 0o600);
+    if (job.direction === "in") {
+      await syncIn(client, place, mirror);
+      save();
+      const projected = `${SYNC_HOME}/projection-${job.agent}.json`;
+      const previous = existsSync(projected) ? readJson<string[]>(projected) : [];
+      const made = project(LOCAL_WORKSPACE, job.agent, record(job.engine).cli!.skills_paths,
+                           previous);
+      safeWrite(SYNC_HOME, projected, new TextEncoder().encode(JSON.stringify(made)), 0o600);
+      process.stdout.write(JSON.stringify({ ok: true }));
+      return OK;
+    }
+    const report = await syncOut(client, place, mirror, job.lease, job.atoms);
+    save();
+    process.stdout.write(JSON.stringify(report));
+    return OK;
+  } catch (error) {
+    if (error instanceof SyncFenced) {
+      process.stdout.write(JSON.stringify({ fenced: true }));
+      return FENCED;
+    }
+    throw error;
+  } finally {
+    remove(lock);
+  }
+}
+
+// -- a run ----------------------------------------------------------------------------
+
 /** The run's posts to its event door: one in flight, held during a renewal's pause. */
 class Poster {
   holding = false;
   #last = 0;
   #busy = false;
+  #wait = FLUSH_MS;
   #refused: string | null = null;
 
   constructor(readonly url: string, readonly token: string, readonly outbox: Outbox,
@@ -366,8 +666,9 @@ class Poster {
 
   /**
    * One post of the next frames, with `end` when they are the last ones: `taken`, `retry`
-   * (the network, or the object's `events_busy` after its `Retry-After`), or `refused`
-   * (the object ended the run: cancelled, revoked, settled, its lease closed).
+   * (the network, or `events_busy` after its `Retry-After`, a retry's wait doubling to at
+   * most a heartbeat), or `refused` (the object ended the run: cancelled, revoked, settled,
+   * its lease closed).
    */
   async #post(end: { exit_code: number } | null): Promise<"taken" | "retry" | "refused"> {
     const frames = this.outbox.peek();
@@ -379,7 +680,7 @@ class Poster {
         headers: { "content-type": "application/json", "x-ta-runner": this.token },
         body: JSON.stringify({ frames, ...(last ? { end } : {}) }) });
     } catch {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, this.#wait));
       return "retry";
     }
     const text = await response.text();
@@ -389,9 +690,9 @@ class Poster {
       return "taken";
     }
     if (response.status === 503 || response.status === 429) {
-      const after = Number(response.headers.get("retry-after") ?? "1");
-      await new Promise((resolve) => setTimeout(
-        resolve, Math.min(30, Math.max(1, Number.isFinite(after) ? after : 1)) * 1000));
+      const after = Number(response.headers.get("retry-after") ?? "0") * 1000;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(HEARTBEAT_MS,
+        Number.isFinite(after) && after > 0 ? after : this.#wait)));
       return "retry";
     }
     if (response.status === 401 || response.status === 403 || response.status === 404) {
@@ -399,27 +700,18 @@ class Poster {
       this.onRefused(this.#refused);
       return "refused";
     }
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await new Promise((resolve) => setTimeout(resolve, this.#wait));
     return "retry";
   }
 
   async #once(end: { exit_code: number } | null): Promise<"taken" | "retry" | "refused"> {
     this.#busy = true;
     try {
-      return await this.#post(end);
+      const answer = await this.#post(end);
+      this.#wait = answer === "retry" ? Math.min(this.#wait * 2, HEARTBEAT_MS) : FLUSH_MS;
+      return answer;
     } finally {
       this.#busy = false;
-    }
-  }
-
-  /** The post in flight finished, and every frame that waits posted (or a try's bound). */
-  async drain(): Promise<void> {
-    for (let tries = 0; this.#busy && tries < 300; tries += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    for (let tries = 0; this.outbox.pending > 0 && this.#refused === null && tries < 20;
-         tries += 1) {
-      await this.#once(null);
     }
   }
 
@@ -429,6 +721,16 @@ class Poster {
       return;
     }
     if (this.outbox.pending > 0 || Date.now() - this.#last >= HEARTBEAT_MS) {
+      await this.#once(null);
+    }
+  }
+
+  /** The post in flight finished, and every frame that waits posted (or refused). */
+  async drain(): Promise<void> {
+    while (this.#busy) {
+      await new Promise((resolve) => setTimeout(resolve, FLUSH_MS / 5));
+    }
+    while (this.outbox.pending > 0 && this.#refused === null) {
       await this.#once(null);
     }
   }
@@ -451,45 +753,80 @@ class Poster {
   }
 }
 
-/** Copy a tree's regular files, keeping their modes; links skipped. */
-function copyTree(from: string, to: string, uid: number, gid: number): void {
-  for (const rel of walk(from)) {
-    const target = join(to, rel);
-    mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-    cpSync(join(from, rel), target, { preserveTimestamps: true });
-    chownSync(target, uid, gid);
-  }
+class RunRefused extends Error {
+  override readonly name = "RunRefused";
 }
 
-/** A tree's owner set, for the engine's own user. */
-function own(path: string, uid: number, gid: number): void {
-  if (!existsSync(path)) {
-    return;
-  }
-  chownSync(path, uid, gid);
-  if (lstatSync(path).isDirectory()) {
-    for (const entry of readdirSync(path)) {
-      own(join(path, entry), uid, gid);
-    }
-  }
-}
-
-/** Every secret's atoms, from every record's `secret_paths` that exists in this sandbox. */
-function atoms(): string[] {
-  const found: string[] = [];
-  const records = sources.ids().map((id) => sources.get(id)!).filter((rec) => rec.cli);
-  for (const path of secretPaths(records)) {
-    const local = `${ROOT}${path}`;
-    if (!existsSync(local)) {
+/**
+ * The run's config files (its MCP config, its settings, its models file) are root's,
+ * readable and never writable by its CLI, so an agent cannot rewrite its own MCP door or
+ * trust; a directory in the home that holds nothing but them is root's too. In `{system}`,
+ * root's, readable by the run's own group alone.
+ */
+function configOwned(rec: SourceRecord, home: string, system: string,
+                     files: Iterable<string>, as: Identity): void {
+  const cli = rec.cli!;
+  const kept = [...Object.values(cli.home_env), ...cli.session_paths, ...cli.secret_paths]
+    .map((path) => path.replaceAll("{home}", home).replace(/\/+$/, ""));
+  for (const file of files) {
+    if (file.startsWith(`${system}/`)) {
+      lchownSync(file, 0, as.gid);
       continue;
     }
-    const files = lstatSync(local).isDirectory() ? walk(local).map((rel) => join(local, rel))
-      : [local];
-    for (const file of files) {
-      found.push(...secretAtoms(readFileSync(file, "utf8")));
+    lchownSync(file, 0, 0);
+    for (let dir = dirname(file); dir.startsWith(`${home}/`); dir = dirname(dir)) {
+      if (kept.some((path) => path === dir || path.startsWith(`${dir}/`))) {
+        break;
+      }
+      lchownSync(dir, 0, 0);
     }
   }
-  return found;
+}
+
+/** The env files a CLI would load: its home's, its cwd's, and each ancestor's of its cwd. */
+function envFiles(home: string, cwd: string): { home: Map<string, string>;
+                                                 project: Map<string, string>;
+                                                 above: Map<string, string> } {
+  const read = (base: string, rel: string) => safeRead(base, join(base, rel))?.toString("utf8");
+  const out = { home: new Map<string, string>(), project: new Map<string, string>(),
+                above: new Map<string, string>() };
+  for (const rel of safeWalk(home)) {
+    const text = homeEnvFile(rel) === null ? undefined : read(home, rel);
+    if (text !== undefined) {
+      out.home.set(rel, text);
+    }
+  }
+  const depth = (rel: string) => {
+    const parts = rel.split("/");
+    return parts.length > 2 || (parts.length === 2 && !parts[0]!.startsWith("."))
+      || (parts.length === 1 && !parts[0]!.startsWith("."));
+  };
+  for (const rel of safeWalk(cwd, depth)) {
+    const text = projectEnvFile(rel) === null ? undefined : read(cwd, rel);
+    if (text !== undefined) {
+      out.project.set(rel, text);
+    }
+  }
+  for (let dir = dirname(cwd); ; dir = dirname(dir)) {
+    for (const rel of safeWalk(dir, depth)) {
+      const text = ancestorEnvFile(rel) === null ? undefined : read(dir, rel);
+      if (text !== undefined) {
+        out.above.set(`${dir}/${rel}`, text);
+      }
+    }
+    if (dir === dirname(dir) || dir === TOP) {
+      break;
+    }
+  }
+  return out;
+}
+
+/** Files a run's user left in the shared scratch directories, removed (links as links). */
+function cleanScratch(uid: number): void {
+  for (const dir of ["/tmp", "/var/tmp", "/dev/shm"]) {
+    spawnSync("find", [`${ROOT}${dir}`, "-xdev", "-mindepth", "1", "-user", String(uid),
+                       "-delete"], { stdio: "ignore" });
+  }
 }
 
 async function runCommand(run: string, recovering: boolean): Promise<number> {
@@ -501,12 +838,12 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
   const prior = readState(run);
   const state: RunState = { pid: process.pid, cli_pid: null, seq: prior?.seq ?? 0,
                             session_id: prior?.session_id ?? start.session_id,
-                            last_kind: null, last_at: Date.now(), ended: false,
-                            renewing: false };
+                            last_kind: null, ended: false, renewing: false };
   const save = () => writeJson(`${dir}/state.json`, state);
   const outbox = new Outbox(state.seq);
   const cli_: { child: ChildProcess | null; kill: ReturnType<typeof setTimeout> | null;
-                stopped: boolean } = { child: null, kill: null, stopped: false };
+                stopped: boolean; renewed: boolean } =
+    { child: null, kill: null, stopped: false, renewed: false };
   // SIGTERM to the CLI's process group, then a kill after its grace.
   const stop = () => {
     cli_.stopped = true;
@@ -528,7 +865,6 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     }
   };
   const poster = new Poster(start.urls.events, lease.tokens.runner_token, outbox, stop);
-  let renewedAt = 0;
   // The signals first, so none arriving early takes its default (ending the runner).
   process.on("SIGTERM", stop);
   process.on("SIGUSR1", () => {
@@ -546,7 +882,7 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
   process.on("SIGUSR2", () => {
     poster.holding = false;
     state.renewing = false;
-    renewedAt = Date.now();
+    cli_.renewed = cli_.child !== null && cli_.child.exitCode === null;
     outbox.push({ type: "ta.renewed" });
     save();
     writeFileSync(`${dir}/renewed-ack`, "");
@@ -561,82 +897,81 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     void poster.tick();
   }, FLUSH_MS);
   let exitCode = 1;
+  let as: Identity | null = null;
+  let home: string | null = null;
+  const system = `${ROOT}${SYSTEM}/${run}`;
+  const job = (direction: "in" | "out", secrets: readonly string[] = []): SyncJob => ({
+    direction, origin: new URL(start.urls.events).origin, token: lease.tokens.sync_token,
+    lease: lease.lease, authority: start.authority, agent: start.agent, engine: start.engine,
+    run, atoms: secrets });
+  let synced = false;
   try {
     if (recovering) {
       outbox.push({ type: "ta.recovered" });
     }
-    // The sandbox's sign-ins, for every engine that signs in with the vendor's own login.
     await reportSignins(start, lease);
-    const client = new SyncClient(new URL(start.urls.events).origin, lease.tokens.sync_token);
-    const gid = sharedGroup();
-    const place = { local: LOCAL_WORKSPACE, gid, client: start.authority !== "owner" };
-    const mirrorPath = `${STATE}/mirror.json`;
-    const mirror = readMirror(mirrorPath);
-    await syncIn(client, place, mirror);
-    writeMirror(mirrorPath, mirror);
-    const { uid, gid: engineGid } = identity(rec.id);
-    const home = `${ROOT}${engineHome(rec.id)}`;
-    mkdirSync(home, { recursive: true, mode: 0o700 });
-    chownSync(home, uid, engineGid);
-    // The engine's sessions restored from the owner's files: a cold create continues.
-    const stored = `${ROOT}${SESSIONS}/${start.authority}/${rec.id}`;
-    if (existsSync(stored)) {
-      for (const rel of walk(stored)) {
-        const target = join(home, rel);
-        if (!existsSync(target)) {
-          mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-          cpSync(join(stored, rel), target, { preserveTimestamps: true });
-          own(target, uid, engineGid);
-        }
-      }
-      own(home, uid, engineGid);
+    if (syncAgent(job("in")).code === FENCED) {
+      throw new SyncFenced("the sync door fenced the lease");
     }
+    synced = true;
+    importSessions();
+    as = take(ROOT, STATE, run);
+    home = makeHome(run, rec);
+    safeDirs(TOP, `${ROOT}${SYSTEM}`, 0o755);
+    remove(system);
+    mkdirSync(system, { mode: 0o750 });
+    chownSync(system, 0, as.gid);
     const agentDir = `${ROOT}${AGENTS_DIR}/${start.agent}`;
     if (!existsSync(`${agentDir}/agent.json`)) {
       throw new Error(`the agent ${start.agent} has no definition in the sandbox`);
     }
-    project(rec, agentDir);
-    // The agent's own files never set what the run's environment does not.
-    const forbid = cli.per_credential?.[start.credential]?.forbid_env ?? [];
-    const scanned = new Map<string, string>();
-    for (const rel of walk(agentDir)) {
-      if (projectEnvFile(rel) !== null) {
-        scanned.set(rel, readFileSync(join(agentDir, rel), "utf8"));
-      }
+    let conversationDir: string | undefined;
+    let continued = false;
+    if (cli.engine.resume === "continue_in_cwd") {
+      conversationDir = `${CONVERSATIONS}/${rec.id}/${start.conversation}`;
+      continued = existsSync(conversationDir);
+      safeDirs(TOP, conversationDir, 0o700);
+      lchownSync(conversationDir, as.uid, as.gid);
     }
-    const refusal = projectEnvRefusal(scanned, forbid);
-    if (refusal !== null) {
-      outbox.push({ type: "ta.refused", reason: refusal });
-      throw new RunRefused(refusal);
-    }
-    const continuedDir = cli.engine.resume === "continue_in_cwd"
-      ? `${home}/conversations/${start.conversation}` : null;
-    const continued = continuedDir !== null && existsSync(continuedDir);
     let call = invocation(rec, start, process.env, {
-      continued, root: ROOT, ...(recovering ? { prompt: CONTINUE_PROMPT, resume: true } : {}) });
+      continued, root: ROOT, home, system,
+      ...(conversationDir === undefined ? {} : { conversationDir }),
+      ...(recovering ? { prompt: CONTINUE_PROMPT, resume: true } : {}) });
     if (recovering && !call.resumed) {
       throw new RunRefused("recover_unresumable: the run's session is unknown, so the " +
                            "rebooted sandbox cannot continue it");
     }
-    if (continuedDir !== null) {
-      conversationDir(continuedDir, agentDir, uid, engineGid);
+    // The env files the CLI would load: never one that sets what the run's own
+    // environment does not take.
+    const forbid = cli.per_credential?.[start.credential]?.forbid_env ?? [];
+    const found = envFiles(home, call.cwd);
+    const refusal = projectEnvRefusal(found.home, forbid, homeEnvFile)
+      ?? projectEnvRefusal(found.project, forbid)
+      ?? projectEnvRefusal(found.above, forbid, () => "dotenv");
+    if (refusal !== null) {
+      outbox.push({ type: "ta.refused", reason: refusal });
+      throw new RunRefused(refusal);
     }
     for (const [path, text] of call.files) {
-      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-      writeFileSync(path, text, { mode: 0o600 });
+      const inSystem = path.startsWith(`${system}/`);
+      safeWrite(inSystem ? system : home, path, new TextEncoder().encode(text),
+                inSystem ? 0o640 : 0o644, undefined, inSystem ? 0o750 : 0o755);
     }
-    own(home, uid, engineGid);
-    configOwned(rec, home, call.files.keys());
+    giveTree(home, as);
+    configOwned(rec, home, system, call.files.keys(), as);
     const events = cli.engine.events;
     for (let attempt = 0; ; attempt += 1) {
+      cli_.renewed = false;
+      const argv = asUser(as, [shared()], call.argv);
+      const runHome = home;
       exitCode = await new Promise<number>((resolve, reject) => {
-        process.umask(0o002);
         if (cli_.stopped) {
           resolve(128 + 15);
           return;
         }
-        const child = spawn(call.argv[0]!, call.argv.slice(1), {
-          cwd: call.cwd, env: call.env, uid, gid: engineGid, detached: true,
+        process.umask(0o002);
+        const child = spawn(argv[0]!, argv.slice(1), {
+          cwd: call.cwd, env: { ...call.env, TMPDIR: join(runHome, "tmp") }, detached: true,
           stdio: [call.stdin === null ? "ignore" : "pipe", "pipe", "pipe"] });
         cli_.child = child;
         child.on("error", reject);
@@ -660,7 +995,6 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
             state.session_id = read.session_id;
           }
           state.last_kind = read.kind;
-          state.last_at = Date.now();
           state.seq = outbox.seq;
           save();
         });
@@ -675,53 +1009,22 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
           resolve(code ?? (signal === null ? 1 : 128 + 15));
         });
       });
-      // A CLI that failed just after a renewal (its model call cut by the pause) is resumed
-      // from its session, once; a cancel is never resumed.
+      state.cli_pid = null;
+      save();
+      // A CLI that failed across a renewal (its model call cut by the pause) is resumed
+      // from its session, once; a cancel never is.
       if (exitCode === 0 || attempt > 0 || cli_.stopped || existsSync(`${dir}/cancel`)
-          || renewedAt === 0 || Date.now() - renewedAt > RENEW_RESUME_MS) {
+          || !cli_.renewed) {
         break;
       }
-      const resumed = { ...start, session_id: state.session_id };
-      call = invocation(rec, resumed, process.env, { continued: true, root: ROOT,
-                                                      prompt: CONTINUE_PROMPT });
+      killAll(as.uid);
+      call = invocation(rec, { ...start, session_id: state.session_id }, process.env, {
+        continued: true, root: ROOT, home, system, prompt: CONTINUE_PROMPT,
+        ...(conversationDir === undefined ? {} : { conversationDir }) });
       if (!call.resumed) {
         break;
       }
       outbox.push({ type: "ta.resumed", after: "renewal" });
-    }
-    // The engine's sessions into the owner's files, then every change out; no secret's
-    // bytes in either.
-    const secrets = atoms();
-    const sessions = `${ROOT}${SESSIONS}/${start.authority}/${rec.id}`;
-    for (const path of sessionPaths(rec)) {
-      const local = `${ROOT}${path}`;
-      if (!existsSync(local)) {
-        continue;
-      }
-      const isDir = lstatSync(local).isDirectory();
-      for (const file of isDir ? walk(local).map((rel) => join(local, rel)) : [local]) {
-        const rel = relative(home, file);
-        if (heldSecret(readFileSync(file, "latin1"), secrets) !== null) {
-          outbox.push({ type: "ta.sync_refused", path: `{home}/${rel}`,
-                        reason: "holds a secret's bytes" });
-          continue;
-        }
-        const target = join(sessions, rel);
-        mkdirSync(dirname(target), { recursive: true, mode: 0o2770 });
-        cpSync(file, target, { preserveTimestamps: true });
-        chmodSync(target, 0o640);
-        if (gid !== null) {
-          chownSync(target, 0, gid);
-        }
-      }
-    }
-    const report = await syncOut(client, place, mirror, lease.lease, secrets);
-    writeMirror(mirrorPath, mirror);
-    for (const refused of report.refused) {
-      outbox.push({ type: "ta.sync_refused", ...refused });
-    }
-    if (report.conflicts.length > 0) {
-      outbox.push({ type: "ta.sync_conflicts", paths: report.conflicts.slice(0, 64) });
     }
   } catch (error) {
     if (error instanceof SyncFenced) {
@@ -732,85 +1035,72 @@ async function runCommand(run: string, recovering: boolean): Promise<number> {
     exitCode = exitCode === 0 ? 1 : exitCode;
   } finally {
     clearInterval(pump);
-    await poster.finish(exitCode);
-    state.ended = true;
-    state.seq = outbox.seq;
-    save();
+    try {
+      if (as !== null) {
+        // Every process the run's user left is gone before its home is read.
+        killAll(as.uid);
+        cleanScratch(as.uid);
+        if (home !== null) {
+          keepHome(home, rec);
+        }
+      }
+      if (synced) {
+        const secrets = atoms();
+        const out = `${SYNC_HOME}/out/${run}`;
+        remove(out);
+        for (const rel of home === null || as === null ? [] : safeWalk(home)) {
+          if (!isKept(keptPaths(rec).sessions, rel)) {
+            continue;
+          }
+          const bytes = safeRead(home!, join(home!, rel));
+          if (bytes === null) {
+            continue;
+          }
+          if (heldSecret(bytes.toString("latin1"), secrets) !== null) {
+            outbox.push({ type: "ta.sync_refused", path: `{home}/${rel}`,
+                          reason: "holds a secret's bytes" });
+            continue;
+          }
+          safeWrite(SYNC_HOME, join(out, rec.id, rel), bytes, 0o644, undefined, 0o755);
+        }
+        const done = syncAgent(job("out", secrets));
+        remove(out);
+        if (done.code === FENCED) {
+          outbox.push({ type: "ta.sync_fenced" });
+        } else {
+          const report = done.report as { refused?: unknown[]; conflicts?: string[] } | null;
+          for (const refused of report?.refused ?? []) {
+            outbox.push({ type: "ta.sync_refused", ...(refused as object) });
+          }
+          if ((report?.conflicts ?? []).length > 0) {
+            outbox.push({ type: "ta.sync_conflicts", paths: report!.conflicts!.slice(0, 64) });
+          }
+        }
+      }
+    } catch (error) {
+      outbox.push({ type: "ta.runner_error", message: String(error).slice(0, 1024) });
+      exitCode = exitCode === 0 ? 1 : exitCode;
+    } finally {
+      if (home !== null) {
+        remove(home);
+      }
+      remove(system);
+      if (as !== null) {
+        give(STATE, as);
+      }
+      await poster.finish(exitCode);
+      state.ended = true;
+      state.seq = outbox.seq;
+      save();
+    }
   }
   return OK;
 }
 
-class RunRefused extends Error {
-  override readonly name = "RunRefused";
-}
-
-/** Whether a path is there, a dangling link included (`existsSync` follows links). */
-function present(path: string): boolean {
-  try {
-    lstatSync(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * The record's projection (§2.1 step 4.3): each of its skills paths, in the agent's
- * directory, a link to the agent's `.agents/skills`; never a file that would shadow its
- * `AGENTS.md`. Links are never synced.
- */
-function project(rec: SourceRecord, agentDir: string): void {
-  for (const path of rec.cli!.skills_paths) {
-    const target = join(agentDir, path);
-    if (path === ".agents/skills" || present(target)) {
-      continue;
-    }
-    mkdirSync(dirname(target), { recursive: true });
-    symlinkSync(relative(dirname(target), join(agentDir, ".agents/skills")), target);
-  }
-}
-
-/**
- * The run's config files (its MCP config, its system settings, its models file: the record's
- * templates) are root's, readable and never writable by the CLI, so an agent cannot rewrite
- * its own MCP door or trust; and a directory that holds nothing but them is root's too
- * (Gemini CLI skips a system settings file whose directory its user owns, probed). A
- * directory the CLI keeps state in (an ancestor of its home variables, sessions or secrets)
- * stays its own.
- */
-function configOwned(rec: SourceRecord, home: string, files: Iterable<string>): void {
-  const cli = rec.cli!;
-  const kept = [...Object.values(cli.home_env), ...cli.session_paths, ...cli.secret_paths]
-    .map((path) => path.replaceAll("{home}", home).replace(/\/+$/, ""));
-  for (const file of files) {
-    chownSync(file, 0, 0);
-    chmodSync(file, 0o644);
-    for (let dir = dirname(file); dir.startsWith(`${home}/`); dir = dirname(dir)) {
-      if (kept.some((path) => path === dir || path.startsWith(`${dir}/`))) {
-        break;
-      }
-      chownSync(dir, 0, 0);
-      chmodSync(dir, 0o755);
-    }
-  }
-}
-
-/** A conversation's own cwd (`continue_in_cwd`): links to the agent's files. */
-function conversationDir(dir: string, agentDir: string, uid: number, gid: number): void {
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    for (const entry of readdirSync(agentDir)) {
-      symlinkSync(join(agentDir, entry), join(dir, entry));
-    }
-  }
-  own(dir, uid, gid);
-}
-
 async function reportSignins(start: StartDoc, lease: LeaseFile): Promise<void> {
-  const signins = sources.ids().map((id) => sources.get(id)!).filter((rec) =>
-    rec.cli !== undefined && rec.unwired === undefined
-    && rec.cli.credential.includes("vendor_login_in_sandbox")
-    && (rec.cli.login as { status_argv?: unknown } | undefined)?.status_argv !== undefined)
+  const signins = [...RECORDS.values()].filter((rec) => rec.unwired === undefined
+    && rec.cli!.credential.includes("vendor_login_in_sandbox")
+    && (rec.cli!.login as { status_argv?: unknown } | undefined)?.status_argv !== undefined)
     .map((rec) => ({ engine: rec.id, signed_in: safeSignedIn(rec) }));
   try {
     await fetch(start.urls.signin, {
@@ -848,12 +1138,17 @@ export async function main(argv: readonly string[]): Promise<number> {
       return status(args[0] ?? "");
     case "state":
       return stateCommand();
-    case "renewing":
-      return around("SIGUSR1", "renewing-ack");
+    case "quiet-wait":
+      return quietWait(Number(args[0]));
+    case "renew-wait":
+      return renewWait(Number(args[0]));
     case "renewed":
-      return around("SIGUSR2", "renewed-ack");
+      await signalled("SIGUSR2", "renewed-ack", Date.now() + COMMAND_MS);
+      return OK;
     case "recover":
       return recover();
+    case "sync":
+      return syncCommand();
     default:
       process.stderr.write(`ta-runner: no command ${String(command)}\n`);
       return 2;
@@ -867,4 +1162,3 @@ if (process.argv[1] !== undefined && /runner\.(?:mjs|ts|js)$/.test(process.argv[
     process.exit(1);
   });
 }
-

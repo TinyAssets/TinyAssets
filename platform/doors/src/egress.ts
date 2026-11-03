@@ -297,19 +297,25 @@ async function serveSignin(request: Request, env: DoorsEnv): Promise<Response> {
 
 /**
  * The in-VM sync agent's doors (slice S's runner), on the egress host by its sync token
- * (`x-ta-sync`, the lease's `sync` kind; never the egress token, which reaches none of them):
- * the change feed (`changes`), a listing for a feed reset (`list`), a file's entry and
- * bytes (`read`, `chunks`) and the fenced commit (`commit`). The object holds each to its
- * live lease and, for an outside client's sandbox, to the readable set the feed is filtered
- * by (`#syncer`), so a content door never shows a path the feed would not. Bytes cross as
- * base64; a commit's body is bounded (`SYNC_BODY_MAX`), so the runner sends more commits,
- * not bigger ones.
+ * (`x-ta-sync`, the lease's `sync` kind) together with the egress token E2B's transform sets
+ * on every HTTPS call out of that sandbox (review M-5): the sync token alone, taken out of
+ * the VM, reaches nothing. The doors: the change feed (`changes`), a listing for a feed
+ * reset (`list`), a file's entry and bytes (`read`, `chunks`), the upload of a file past an
+ * inline write (`upload_begin`, `upload_chunks`, the files plane's own upload) and the
+ * fenced commit (`commit`). The object holds each to its live lease and, for an outside
+ * client's sandbox, to the readable set the feed is filtered by (`#syncer`), so a content
+ * door never shows a path the feed would not. Bytes cross as base64; a body is bounded
+ * (`SYNC_BODY_MAX`), so the runner sends more calls, not bigger ones.
  */
-const SYNC_DOOR = /^\/sync\/(changes|list|read|chunks|commit)$/;
-type SyncDoor = "changes" | "list" | "read" | "chunks" | "commit";
+const SYNC_DOOR = /^\/sync\/(changes|list|read|chunks|commit|upload_begin|upload_chunks)$/;
+type SyncDoor = "changes" | "list" | "read" | "chunks" | "commit" | "upload_begin"
+  | "upload_chunks";
 export const SYNC_HEADER = "x-ta-sync";
-/** A sync door's body: one 4 MiB file's base64 and its op, with room for the rest. */
-export const SYNC_BODY_MAX = 8 * 1024 * 1024;
+/**
+ * A sync door's body: two 4 MiB chunks' base64 (the files plane's most a call,
+ * `BATCH_BYTES`), or the object's read of them, with room for the request's own fields.
+ */
+export const SYNC_BODY_MAX = 12 * 1024 * 1024;
 
 function base64(bytes: Uint8Array): string {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
@@ -332,6 +338,23 @@ function decodedOps(ops: unknown): unknown {
   });
 }
 
+/** An upload's chunks with each `bytes` decoded from base64; anything else as sent. */
+function decodedChunks(chunks: unknown): unknown {
+  if (!Array.isArray(chunks)) {
+    return chunks;
+  }
+  return chunks.map((chunk: unknown) => {
+    if (typeof chunk !== "object" || chunk === null || !("bytes" in chunk)) {
+      return chunk;
+    }
+    const bytes = (chunk as { bytes: unknown }).bytes;
+    if (typeof bytes !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(bytes)) {
+      return { ...chunk, bytes: null };  // refused by the object's own check
+    }
+    return { ...chunk, bytes: new Uint8Array(Buffer.from(bytes, "base64")) };
+  });
+}
+
 async function serveSync(request: Request, env: DoorsEnv, door: SyncDoor): Promise<Response> {
   if (request.headers.get("Origin") !== null) {
     return refused("not_found", 404);
@@ -350,11 +373,16 @@ async function serveSync(request: Request, env: DoorsEnv, door: SyncDoor): Promi
   if (parsed.expires <= Date.now() / 1000) {
     return refused("sync_token_expired", 401);
   }
-  const gated = await ownerGate(env, parsed.owner);
-  if (gated !== null) {
-    return gated;
+  // From inside the sandbox: its egress token, verified as the egress doors verify it (its
+  // MAC, its expiry, its generation and the gate), naming the same owner.
+  const inside = await sandboxToken(request, env);
+  if (inside instanceof Response) {
+    return inside;
   }
-  const { binding, stub } = bindSync(env, parsed.owner, parsed.hash);
+  if (inside.owner !== parsed.owner) {
+    return refused("sync_token_unknown", 401);
+  }
+  const { binding, stub } = bindSync(env, parsed.owner, parsed.hash, inside.hash);
   const body = await jsonObject(request, SYNC_BODY_MAX);
   if (body instanceof Response) {
     return body;
@@ -379,6 +407,11 @@ async function serveSync(request: Request, env: DoorsEnv, door: SyncDoor): Promi
       case "commit":
         return answer(await stub.fileSyncCommit(binding, {
           ...body, ops: decodedOps(body["ops"]) } as never));
+      case "upload_begin":
+        return answer(await stub.fileSyncUploadBegin(binding, body as never));
+      case "upload_chunks":
+        return answer(await stub.fileSyncUploadChunks(binding, {
+          ...body, chunks: decodedChunks(body["chunks"]) } as never));
     }
   } catch (error) {
     if (error instanceof Error && error.name === "FileFault") {

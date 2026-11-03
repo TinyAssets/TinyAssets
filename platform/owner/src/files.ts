@@ -1775,8 +1775,27 @@ export class Files {
   }
 
   /** In a unit: every lapsed lease's row gone (its runs settled first, `Runs.lost`). */
-  leasesLapsed(now: number): void {
-    this.#sql.exec(`DELETE FROM sandbox_leases WHERE NOT (${LIVE_LEASE})`, now, now);
+  /** Each lapsed lease's row gone: the ids of those that went. */
+  leasesLapsed(now: number): string[] {
+    return this.#sql.exec<{ lease_id: string }>(
+      `DELETE FROM sandbox_leases WHERE NOT (${LIVE_LEASE}) RETURNING lease_id`, now, now)
+      .toArray().map((row) => row.lease_id);
+  }
+
+  /**
+   * The writer a live lease's sync commits as (its client's, or the owner's own lease's
+   * epoch), the lease fenced as a commit fences it: what a sync upload begins as, so its
+   * commit may take it. A read.
+   */
+  syncWriter(leaseId: unknown, epoch: unknown): string {
+    const lease = this.#fenced(leaseId, epoch, Date.now() / 1000);
+    return lease.authority !== OWNER_AUTHORITY ? `client:${lease.authority}`
+      : `lease:${lease.epoch}`;
+  }
+
+  /** Who began an open upload (`begin`'s writer). A read. */
+  intentWriter(intentId: unknown): string {
+    return this.#intent(intentId, Date.now() / 1000).writer;
   }
 
   /**

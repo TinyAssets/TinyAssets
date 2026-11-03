@@ -19,6 +19,8 @@ function fakeE2b() {
                   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
                 }).outputText }],
     compatibilityDate: "2026-10-23",
+    // The ring queue's consumer in tests: each ring recorded at once.
+    queueConsumers: { "tinyassets-sandbox-ring": { maxBatchSize: 1, maxBatchTimeout: 0 } },
   };
 }
 

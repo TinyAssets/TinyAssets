@@ -1,57 +1,80 @@
 /**
- * The runner's sync agent (`engines-replan.md` §2.1 steps 4 and 7): the owner's files into
- * the sandbox's `/workspace` before a run, and the run's changes back out after it, through
- * the sync doors on the egress host by the lease's sync token (`doors/src/egress.ts`), the
- * object fencing each commit by the lease's id and epoch.
+ * The runner's sync agent (`engines-replan.md` §2.1 steps 4 and 7), run as its own
+ * unprivileged user (`ta-sync`, in group `ta`), never root (slice S review H-2): the owner's
+ * files into the sandbox's `/workspace` before a run, and the run's changes back out after
+ * it, through the sync doors on the egress host by the lease's sync token (`x-ta-sync`,
+ * beside the egress token E2B's transform sets, so the token is good from inside the VM
+ * alone), the object fencing each commit by the lease's id and epoch.
  *
- * - **In:** the change feed from the mirror's cursor, each path's last change applied; a
- *   reset (history the cursor needed was pruned, or a client sandbox's readable set moved)
- *   reads the whole tree again by listing. A file's bytes come inline or chunk by chunk.
+ * - **In:** the change feed from the mirror's cursor, each path's last change applied with
+ *   no link followed (`fsafe.ts`); a reset reads the whole tree again by listing. A file's
+ *   bytes come inline or chunk by chunk. The engines' sessions
+ *   (`/workspace/.sessions/<authority>/<engine>/...`) are never written into the shared
+ *   workspace, where every engine's user could reach them (review H-3): only a path under
+ *   that engine's own `session_paths` is taken, into the sync agent's own directory, for
+ *   the root runner to put in that engine's store.
  * - **Out:** every regular file under `/workspace` whose bytes differ from what was last
- *   synced, written on its base version (a conflict keeps both sides, the object's rule),
- *   and every synced file now gone, removed. Symbolic links are never synced (the runner's
- *   projections are links). A client's sandbox never offers a path in the owner's own
- *   trees (`OWNER_TREES`: the object refuses them anyway). A file holding a secret's bytes
- *   (`guards.ts`), or one past one chunk (4 MiB: a bigger file waits for the upload doors,
- *   owed by tasks 6.1), is refused here and reported, never sent.
+ *   synced (links never; the `.sessions` tree never, from the workspace), and each engine's
+ *   sessions the runner staged; a file within one chunk (4 MiB) inline, a larger one through
+ *   the files plane's upload doors chunk by chunk. A client's sandbox never offers a path in
+ *   the owner's own trees. A file holding a secret's bytes (`guards.ts`) is refused here and
+ *   reported, never sent.
  */
 import { createHash } from "node:crypto";
-import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync,
-         renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { join, relative } from "node:path";
 
+import type { SourceRecord } from "../../doors/src/sources";
+
+import { isKept, keptPaths } from "./engine";
+import { remove, safeDirs, safeRead, safeWalk, safeWrite } from "./fsafe";
 import { heldSecret } from "./guards";
 
-/** The object's sync bounds: ops a commit, a file's inline bytes, a door's body. */
+/**
+ * The object's sync bounds: ops a commit (`MAX_SYNC_OPS`), a chunk (`CHUNK_BYTES`), and an
+ * inline write (`INLINE_BYTES`): a file past it goes through the files plane's upload. The
+ * runner's bundle takes nothing of the object's storage modules, so `guards/config.test.ts`
+ * holds each equal to the object's.
+ */
 export const COMMIT_OPS = 1000;
-export const INLINE_MAX = 4 * 1024 * 1024;
-const BODY_MAX = 8 * 1024 * 1024 - 64 * 1024;
-const FEED_LIMIT = 500;
+export const CHUNK_BYTES = 4 * 1024 * 1024;
+export const INLINE_BYTES = 4096;
+/** A sync door's body, the doors' own most (`SYNC_BODY_MAX`). */
+export const SYNC_BODY = 12 * 1024 * 1024;
+/**
+ * A commit's ops, each counted at its size: the door's body less the commit's own fields
+ * (its lease id, epoch and the JSON around them, under 128 bytes).
+ */
+const BODY_MAX = SYNC_BODY - 128;
+/** The feed's page, at the object's own most (`MAX_LIST`). */
+export const FEED_LIMIT = 1000;
 /** The owner's trees a client's sandbox never writes (`owner/src/paths.ts`). */
 export const OWNER_TREES = Object.freeze(["/workspace/agents", "/workspace/.agents",
                                           "/workspace/skills", "/workspace/prompts"]);
+export const SESSIONS = "/workspace/.sessions";
 
 export class SyncFenced extends Error {
   override readonly name = "SyncFenced";
 }
 
-/** The sync doors, by the sync token. */
+/**
+ * The sync doors. A transient failure (the network, `429`, `503`) is tried again, its wait
+ * doubling to at most `ceilingMs` (the runner's heartbeat, the cadence the lease is renewed
+ * at), with no count: the run's own cancel ends it. Any other answer fails at once.
+ */
 export class SyncClient {
-  constructor(readonly origin: string, readonly token: string,
+  constructor(readonly origin: string, readonly token: string, readonly ceilingMs: number,
               readonly fetcher: typeof fetch = fetch) {}
 
   async post(door: string, body: unknown): Promise<Record<string, unknown>> {
-    for (let attempt = 0; ; attempt += 1) {
+    for (let wait = 250; ; wait = Math.min(wait * 2, this.ceilingMs)) {
       let response: Response;
       try {
         response = await this.fetcher(`${this.origin}/sync/${door}`, {
           method: "POST", body: JSON.stringify(body),
           headers: { "content-type": "application/json", "x-ta-sync": this.token } });
-      } catch (error) {
-        if (attempt >= 5) {
-          throw error;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, wait));
         continue;
       }
       const text = await response.text();
@@ -64,8 +87,8 @@ export class SyncClient {
       if (response.status === 404 && door === "read") {
         return { missing: true };
       }
-      if ((response.status === 503 || response.status === 429) && attempt < 5) {
-        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+      if (response.status === 503 || response.status === 429) {
+        await new Promise((resolve) => setTimeout(resolve, wait));
         continue;
       }
       throw new Error(`the sync door ${door} answered ${response.status}: ${text.slice(0, 200)}`);
@@ -84,24 +107,21 @@ export function readMirror(path: string): Mirror {
     : { cursor: 0, files: {} };
 }
 
-export function writeMirror(path: string, mirror: Mirror): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(`${path}.tmp`, JSON.stringify(mirror), { mode: 0o600 });
-  renameSync(`${path}.tmp`, path);
-}
-
 function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/** Where the sandbox keeps the owner's files: the workspace path under the runner's root. */
+/** Where the sandbox keeps the owner's files, and the sync agent's own directories. */
 export interface Place {
-  /** The local directory standing for `/workspace` (the root's own in the sandbox). */
+  /** The local directory standing for `/workspace`. */
   readonly local: string;
-  /** The group every engine's user is in, which the synced files are shared with. */
-  readonly gid: number | null;
-  /** A client's sandbox: the owner's trees read-only, never written back. */
-  readonly client: boolean;
+  /** The sync agent's own directory: sessions in from the feed, and out from the store. */
+  readonly sessionsIn: string;
+  readonly sessionsOut: string;
+  /** Whose sandbox: `owner`, or a client's id (the owner's trees read-only, never written). */
+  readonly authority: string;
+  /** The records, for each engine's own `session_paths`. */
+  readonly records: ReadonlyMap<string, SourceRecord>;
 }
 
 function localOf(place: Place, path: string): string {
@@ -112,18 +132,24 @@ function inOwnerTrees(path: string): boolean {
   return OWNER_TREES.some((tree) => path === tree || path.startsWith(`${tree}/`));
 }
 
-/** A synced file written whole (a temporary file renamed over it), shared with the group. */
-function put(place: Place, path: string, bytes: Uint8Array, mode: number): void {
-  const local = localOf(place, path);
-  mkdirSync(dirname(local), { recursive: true, mode: 0o2775 });
-  const readOnly = place.client && inOwnerTrees(path);
-  writeFileSync(`${local}.ta-sync`, bytes);
-  chmodSync(`${local}.ta-sync`, readOnly ? (mode === 1 ? 0o555 : 0o444)
-    : (mode === 1 ? 0o775 : 0o664));
-  if (place.gid !== null) {
-    chownSync(`${local}.ta-sync`, 0, place.gid);
+/**
+ * A session path's engine and its path in that engine's home, when it is under one of the
+ * engine's own `session_paths`; null for anything else (another authority's, a path no
+ * session path names: never restored).
+ */
+export function sessionOf(place: Place, path: string):
+    { engine: string; rel: string } | null {
+  const prefix = `${SESSIONS}/${place.authority}/`;
+  if (!path.startsWith(prefix)) {
+    return null;
   }
-  renameSync(`${local}.ta-sync`, local);
+  const [engine, ...rest] = path.slice(prefix.length).split("/");
+  const record = engine === undefined ? undefined : place.records.get(engine);
+  const rel = rest.join("/");
+  if (record?.cli === undefined || rel === "" || rel.split("/").includes("..")) {
+    return null;
+  }
+  return isKept(keptPaths(record).sessions, rel) ? { engine: engine!, rel } : null;
 }
 
 async function fetchBytes(client: SyncClient, path: string):
@@ -156,9 +182,24 @@ async function fetchBytes(client: SyncClient, path: string):
 /** One path's state after the feed: gone, a directory, or a file at a version. */
 async function apply(client: SyncClient, place: Place, mirror: Mirror, path: string,
                      kind: string | null): Promise<void> {
+  if (path === SESSIONS || path.startsWith(`${SESSIONS}/`)) {
+    const session = sessionOf(place, path);
+    if (session === null || kind !== "file") {
+      return;
+    }
+    const got = await fetchBytes(client, path);
+    if (got !== null) {
+      safeWrite(place.sessionsIn, join(place.sessionsIn, session.engine, session.rel),
+                got.bytes, 0o600);
+      mirror.files[path] = { version: got.version, size: got.bytes.byteLength, mtime_ms: 0,
+                             sha256: sha256(got.bytes) };
+    }
+    return;
+  }
   const local = localOf(place, path);
+  const readOnly = place.authority !== "owner" && inOwnerTrees(path);
   if (kind === null) {
-    rmSync(local, { recursive: true, force: true });
+    remove(local);
     for (const known of Object.keys(mirror.files)) {
       if (known === path || known.startsWith(`${path}/`)) {
         delete mirror.files[known];
@@ -167,14 +208,16 @@ async function apply(client: SyncClient, place: Place, mirror: Mirror, path: str
     return;
   }
   if (kind === "dir") {
-    mkdirSync(local, { recursive: true, mode: 0o2775 });
+    safeDirs(place.local, local, readOnly ? 0o2755 : 0o2775);
     return;
   }
   const got = await fetchBytes(client, path);
   if (got === null) {
     return;  // gone since the feed was read: a later change says so
   }
-  put(place, path, got.bytes, got.mode);
+  const dirMode = readOnly ? 0o2755 : 0o2775;
+  const mode = readOnly ? (got.mode === 1 ? 0o555 : 0o444) : (got.mode === 1 ? 0o775 : 0o664);
+  safeWrite(place.local, local, got.bytes, mode, undefined, dirMode);
   mirror.files[path] = { version: got.version, size: got.bytes.byteLength,
                          mtime_ms: lstatSync(local).mtimeMs, sha256: sha256(got.bytes) };
 }
@@ -184,7 +227,7 @@ async function listAll(client: SyncClient, dir: string,
                        out: Map<string, string>): Promise<void> {
   let after: string | null = null;
   for (;;) {
-    const page = await client.post("list", { dir, limit: 500,
+    const page = await client.post("list", { dir, limit: FEED_LIMIT,
                                              ...(after === null ? {} : { after }) });
     const entries = page["entries"] as { path: string; kind: string }[];
     for (const entry of entries) {
@@ -202,7 +245,6 @@ async function listAll(client: SyncClient, dir: string,
 
 /** The owner's files into the sandbox, from the mirror's cursor; the mirror updated. */
 export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): Promise<void> {
-  mkdirSync(place.local, { recursive: true, mode: 0o2775 });
   for (;;) {
     const page = await client.post("changes", { after: mirror.cursor, limit: FEED_LIMIT });
     const changes = page["changes"] as { path: string; kind: string | null; version: number }[];
@@ -237,26 +279,41 @@ export async function syncIn(client: SyncClient, place: Place, mirror: Mirror): 
   }
 }
 
-/** Every regular file under `dir`, by path from it; links and other kinds skipped. */
-export function walk(dir: string, out: string[] = [], base = dir): string[] {
-  if (!existsSync(dir)) {
-    return out;
-  }
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      walk(path, out, base);
-    } else if (entry.isFile() && !entry.name.endsWith(".ta-sync")) {
-      out.push(relative(base, path));
-    }
-  }
-  return out;
-}
-
 export interface SyncReport {
   readonly committed: number;
   readonly conflicts: readonly string[];
   readonly refused: readonly { readonly path: string; readonly reason: string }[];
+}
+
+interface Op {
+  readonly op: "write" | "remove";
+  readonly path: string;
+  readonly base: number | null;
+  readonly mode?: number;
+  readonly bytes: Uint8Array | null;
+}
+
+/** A file past an inline write, uploaded through the files plane: its intent's id. */
+async function upload(client: SyncClient, bytes: Uint8Array,
+                      lease: { lease_id: string; epoch: number }): Promise<string> {
+  const chunks: Uint8Array[] = [];
+  for (let at = 0; at < bytes.byteLength; at += CHUNK_BYTES) {
+    chunks.push(bytes.subarray(at, Math.min(at + CHUNK_BYTES, bytes.byteLength)));
+  }
+  const hashes = chunks.map(sha256);
+  const begun = await client.post("upload_begin", { lease_id: lease.lease_id,
+                                                    epoch: lease.epoch, size: bytes.byteLength,
+                                                    chunks: hashes });
+  const missing = new Set(begun["missing"] as string[]);
+  for (let i = 0; i < chunks.length; i += 1) {
+    if (missing.has(hashes[i]!)) {
+      await client.post("upload_chunks", { lease_id: lease.lease_id, epoch: lease.epoch,
+                                           intent_id: begun["intent_id"], chunks: [
+        { sha256: hashes[i], bytes: Buffer.from(chunks[i]!).toString("base64") }] });
+      missing.delete(hashes[i]!);
+    }
+  }
+  return begun["intent_id"] as string;
 }
 
 /**
@@ -268,56 +325,76 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
                               atoms: readonly string[]): Promise<SyncReport> {
   const refused: { path: string; reason: string }[] = [];
   const conflicts: string[] = [];
-  const ops: { op: string; path: string; base: number | null; mode?: number;
-               inline?: string; size: number }[] = [];
+  const ops: Op[] = [];
   const present = new Set<string>();
-  for (const rel of walk(place.local)) {
-    const path = `/workspace/${rel.split("\\").join("/")}`;
-    present.add(path);
-    if (place.client && inOwnerTrees(path)) {
-      continue;
-    }
-    const local = localOf(place, path);
-    const stat = lstatSync(local);
+  const where = new Map<string, string>();
+  const offer = (path: string, base: string, local: string) => {
+    where.set(path, local);
     const known = mirror.files[path];
+    const stat = lstatSync(local);
     if (known !== undefined && known.size === stat.size && known.mtime_ms === stat.mtimeMs) {
-      continue;
+      return;
     }
-    const bytes = readFileSync(local);
+    const bytes = safeRead(base, local);
+    if (bytes === null) {
+      refused.push({ path, reason: "not a regular file the sync may read" });
+      return;
+    }
     const digest = sha256(bytes);
     if (known !== undefined && known.sha256 === digest) {
       known.mtime_ms = stat.mtimeMs;
-      continue;
+      return;
     }
-    if (bytes.byteLength > INLINE_MAX) {
-      refused.push({ path, reason: "over one chunk: the upload doors are owed" });
-      continue;
-    }
-    const secret = heldSecret(bytes.toString("latin1"), atoms)
-      ?? heldSecret(bytes.toString("utf8"), atoms);
-    if (secret !== null) {
+    if (heldSecret(bytes.toString("latin1"), atoms) !== null
+        || heldSecret(bytes.toString("utf8"), atoms) !== null) {
       refused.push({ path, reason: "holds a secret's bytes" });
-      continue;
+      return;
     }
     ops.push({ op: "write", path, base: known?.version ?? null,
-               mode: (stat.mode & 0o111) !== 0 ? 1 : 0, inline: bytes.toString("base64"),
-               size: bytes.byteLength });
+               mode: (stat.mode & 0o111) !== 0 ? 1 : 0, bytes });
+  };
+  for (const rel of safeWalk(place.local, (each) => each === ".sessions"
+                             || each.split("/").at(-1)!.startsWith(".ta-"))) {
+    const path = `/workspace/${rel.split("\\").join("/")}`;
+    present.add(path);
+    if (place.authority !== "owner" && inOwnerTrees(path)) {
+      continue;
+    }
+    offer(path, place.local, localOf(place, path));
+  }
+  for (const rel of safeWalk(place.sessionsOut)) {
+    const [engine, ...rest] = rel.split("/");
+    const path = `${SESSIONS}/${place.authority}/${engine}/${rest.join("/")}`;
+    if (sessionOf(place, path) !== null) {
+      offer(path, place.sessionsOut, join(place.sessionsOut, rel));
+    }
   }
   for (const [path, known] of Object.entries(mirror.files)) {
-    if (!present.has(path) && !(place.client && inOwnerTrees(path))) {
-      ops.push({ op: "remove", path, base: known.version, size: 0 });
+    if (!path.startsWith(`${SESSIONS}/`) && !present.has(path)
+        && !(place.authority !== "owner" && inOwnerTrees(path))) {
+      ops.push({ op: "remove", path, base: known.version, bytes: null });
     }
   }
   let committed = 0;
-  let batch: typeof ops = [];
+  let batch: Op[] = [];
   let bytes = 0;
   const send = async () => {
     if (batch.length === 0) {
       return;
     }
-    const answer = await client.post("commit", {
-      lease_id: lease.lease_id, epoch: lease.epoch,
-      ops: batch.map(({ size: _size, ...op }) => op) });
+    const sent: Record<string, unknown>[] = [];
+    for (const op of batch) {
+      const { bytes: content, ...rest } = op;
+      if (content === null) {
+        sent.push(rest);
+      } else if (content.byteLength <= INLINE_BYTES) {
+        sent.push({ ...rest, inline: Buffer.from(content).toString("base64") });
+      } else {
+        sent.push({ ...rest, intent_id: await upload(client, content, lease) });
+      }
+    }
+    const answer = await client.post("commit", { lease_id: lease.lease_id, epoch: lease.epoch,
+                                                  ops: sent });
     const outcomes = answer["outcomes"] as { path: string; outcome: string;
                                              entry?: { version: number } | null;
                                              reason?: string }[];
@@ -328,11 +405,9 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
         if (op?.op === "remove" || outcome.entry === null || outcome.entry === undefined) {
           delete mirror.files[outcome.path];
         } else {
-          const local = localOf(place, outcome.path);
-          const stat = lstatSync(local);
+          const stat = lstatSync(where.get(outcome.path)!);
           mirror.files[outcome.path] = { version: outcome.entry.version, size: stat.size,
-                                         mtime_ms: stat.mtimeMs,
-                                         sha256: sha256(readFileSync(local)) };
+                                         mtime_ms: stat.mtimeMs, sha256: sha256(op!.bytes!) };
         }
       } else if (outcome.outcome === "conflict") {
         conflicts.push(outcome.path);
@@ -344,7 +419,8 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     bytes = 0;
   };
   for (const op of ops) {
-    const size = (op.inline?.length ?? 0) + op.path.length + 64;
+    const size = op.bytes === null || op.bytes.byteLength > INLINE_BYTES ? op.path.length + 128
+      : Math.ceil(op.bytes.byteLength / 3) * 4 + op.path.length + 128;
     if (batch.length >= COMMIT_OPS || bytes + size > BODY_MAX) {
       await send();
     }

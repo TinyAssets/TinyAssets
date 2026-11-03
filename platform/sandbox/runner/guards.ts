@@ -24,7 +24,11 @@ const CREDENTIAL_NAME =
   /(?:^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTH|BASE_URL|ENDPOINT)(?:_|$)/;
 /** A settings key naming a credential helper. */
 const HELPER_KEY = /helper/i;
-/** The shortest secret atom: shorter strings (a flag, a region) are no credential. */
+/**
+ * The shortest secret atom: shorter strings (a flag, a region, a model name) occur in
+ * ordinary text and would refuse files that hold no secret, and every credential the
+ * records' engines write (OAuth access and refresh tokens, API keys) is far longer.
+ */
 export const ATOM_MIN = 16;
 
 /** Whether `name` is in `forbid` (an exact name, or a `PREFIX*`). */
@@ -89,9 +93,11 @@ export function projectEnvFile(relative: string): "dotenv" | "settings" | null {
  * directory to text, only those `projectEnvFile` names), or null.
  */
 export function projectEnvRefusal(files: ReadonlyMap<string, string>,
-                                  forbid: readonly string[]): string | null {
+                                  forbid: readonly string[],
+                                  kindOf: (path: string) => "dotenv" | "settings" | null
+                                    = projectEnvFile): string | null {
   for (const [path, text] of files) {
-    const kind = projectEnvFile(path);
+    const kind = kindOf(path);
     if (kind === null) {
       continue;
     }
@@ -116,6 +122,35 @@ export function projectEnvRefusal(files: ReadonlyMap<string, string>,
     }
   }
   return null;
+}
+
+/**
+ * Whether a path in the run's home (its CLIs' user-level settings: Claude's
+ * `$CLAUDE_CONFIG_DIR/settings.json` and `.claude.json`, Gemini's `settings.json`, any
+ * CLI's own, at any depth) is one the scan reads: every `.json` file as settings, every
+ * `.env` file as one. The home holds only what the engine's store keeps between runs (its
+ * `secret_paths` and `session_paths`) and the run's own config files.
+ */
+export function homeEnvFile(relative: string): "dotenv" | "settings" | null {
+  const name = relative.split("/").at(-1)!;
+  if (name === ".env" || name.startsWith(".env.")) {
+    return "dotenv";
+  }
+  return name.endsWith(".json") ? "settings" : null;
+}
+
+/**
+ * Whether a path, from one of the cwd's ancestors (a CLI searches upward from its cwd for
+ * an env file: Gemini CLI's `.env` and `.gemini/.env`), is one the scan reads: the
+ * ancestor's own `.env` files, and those one dot directory down.
+ */
+export function ancestorEnvFile(relative: string): "dotenv" | null {
+  const parts = relative.split("/");
+  const name = parts.at(-1)!;
+  if (parts.length > 2 || (parts.length === 2 && !parts[0]!.startsWith("."))) {
+    return null;
+  }
+  return name === ".env" || name.startsWith(".env.") ? "dotenv" : null;
 }
 
 /** A secret file's atoms: its JSON string values or its lines, long enough to be one. */

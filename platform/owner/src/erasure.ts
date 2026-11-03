@@ -5,9 +5,10 @@
  * 1. **Mark the owner erasing** (`owner_erasure`), in one unit. From then on every door
  *    refuses (`OwnerDO`'s binding check) and no lane runs (the object's alarm resumes the
  *    erasure instead of driving Lifecycle).
- * 2. **End every run**: the sandbox's in-flight egress streams end (`Egress.drop`), and the
- *    step is recorded done (`step` 2). The runs and sandbox slices (R, S) add the sandbox's
- *    kill and the engines' session files' purge to this step (ADR-034).
+ * 2. **End every run**: every sandbox of the owner killed, paused ones included, with the
+ *    engines' sign-ins and session files inside them, and the sandbox Worker's own state of
+ *    the owner deleted (`SandboxService.erase`, slice S); the sandbox's in-flight egress
+ *    streams end (`Egress.drop`); and the step is recorded done (`step` 2).
  * 3. **`deleteAll()` the owner**, Lifecycle's alarm disabled first, so nothing is written
  *    after it but the tombstone: the erased admission row (`admission.ts`), written into the
  *    empty database in the same synchronous turn (`WriteGate.wipe`); a killed turn can

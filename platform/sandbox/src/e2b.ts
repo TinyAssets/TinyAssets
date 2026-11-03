@@ -5,7 +5,8 @@
  * slice's probes (`openspec/changes/clean-sheet-platform/sandbox-probe.md`):
  *
  * - the platform API, `api.e2b.app`, by the project's API key (`X-API-Key`): create
- *   (`POST /v2/sandboxes`), info (`GET /sandboxes/{id}`), pause
+ *   (`POST /v2/sandboxes`, `secure: true`, so envd takes only the sandbox's own envd token,
+ *   probed live), info (`GET /sandboxes/{id}`), pause
  *   (`POST /sandboxes/{id}/pause`, `503` while a previous snapshot finishes: the sandbox
  *   keeps running), connect, which resumes a paused sandbox and only extends its timeout
  *   (`POST /v2/sandboxes/{id}/connect`), the network's replacement
@@ -194,11 +195,15 @@ export class E2b {
     return { status: response.status, json: text === "" ? null : JSON.parse(text) };
   }
 
-  /** A new sandbox from `template`, its network and its timeout, paused on timeout. */
+  /**
+   * A new sandbox from `template`, its network and its timeout, paused on timeout with its
+   * memory. `secure`: envd answers only a caller with the sandbox's envd token (without it,
+   * anything that reaches envd could run commands as root, undoing the per-run users).
+   */
   async create(request: { template: string; timeoutS: number; network: E2bNetwork;
                           metadata: Readonly<Record<string, string>> }): Promise<Created> {
     const { json } = await this.#api("POST", "/v2/sandboxes", {
-      templateID: request.template, timeout: request.timeoutS, autoPause: true,
+      templateID: request.template, timeout: request.timeoutS, secure: true, autoPause: true,
       autoPauseMemory: true, autoResume: { enabled: false }, network: request.network,
       metadata: request.metadata,
     }, [201, 200]);
@@ -260,19 +265,55 @@ export class E2b {
   }
 
   /**
-   * How many of the project's sandboxes run now: E2B's own count (`X-Total-Running`, the
-   * running sandboxes matching the list's filters before pagination), so one call reads it
-   * whatever the plan's size.
+   * How many sandboxes E2B runs now for the whole team the key is of (`X-Total-Running`,
+   * the running sandboxes before pagination: probes and other templates count too), or
+   * null when E2B gave no count. A count is advisory: two owners may read it at once, so
+   * E2B's own refusal (`noRoom`) is what holds the plan, and an unknown count means "try".
    */
-  async running(): Promise<number> {
+  async running(): Promise<number | null> {
     const response = await this.#fetch(`${E2B_API}/v2/sandboxes?state=running&limit=1`, {
       headers: { "X-API-Key": this.#key } });
     await response.arrayBuffer();
-    const total = response.headers.get("x-total-running");
-    if (response.status !== 200 || total === null || !/^[0-9]{1,9}$/.test(total)) {
-      throw new E2bError(response.status, null, "E2B's list gave no running count");
+    if (response.status !== 200) {
+      throw new E2bError(response.status, null, `E2B's list answered ${response.status}`);
     }
-    return Number(total);
+    const total = response.headers.get("x-total-running");
+    return total !== null && /^[0-9]{1,9}$/.test(total) ? Number(total) : null;
+  }
+
+  /**
+   * Every sandbox of the team, running or paused, whose metadata holds `key`=`value`: the
+   * ids, page by page (`x-next-token`) to the end.
+   */
+  async list(key: string, value: string): Promise<string[]> {
+    const ids: string[] = [];
+    let next: string | null = null;
+    do {
+      const query = new URLSearchParams({ metadata: `${encodeURIComponent(key)}=${
+        encodeURIComponent(value)}`, state: "running,paused" });
+      if (next !== null) {
+        query.set("nextToken", next);
+      }
+      const response = await this.#fetch(`${E2B_API}/v2/sandboxes?${query}`, {
+        headers: { "X-API-Key": this.#key } });
+      const text = await response.text();
+      if (response.status !== 200) {
+        throw new E2bError(response.status, null, `E2B's list answered ${response.status}`);
+      }
+      const page: unknown = JSON.parse(text);
+      if (!Array.isArray(page) || !page.every((each) => object(each)
+                                              && typeof each["sandboxID"] === "string")) {
+        throw new E2bError(502, null, "E2B's list is out of shape");
+      }
+      for (const each of page as { sandboxID: string; metadata?: unknown }[]) {
+        const metadata = object(each.metadata) ? each.metadata : {};
+        if (metadata[key] === value) {  // E2B's own filter, checked
+          ids.push(sandboxId(each.sandboxID));
+        }
+      }
+      next = response.headers.get("x-next-token");
+    } while (next !== null && next !== "");
+    return ids;
   }
 
   #envd(handle: Handle, user: string): Record<string, string> {

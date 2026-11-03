@@ -64,40 +64,45 @@ export interface Control {
 }
 
 /**
- * The E2B plan's two numbers, as data (`sandbox/src/control.ts`): how long one sandbox may
- * run before it is paused and resumed (`sandbox_runtime_ceiling_s`: Hobby's 1 hour, Pro's
- * 24), and how many sandboxes the project may run at once (`sandbox_concurrency_ceiling`:
- * Hobby 20, Pro 100 and more with add-ons). Both technical ceilings of the vendor's plan:
- * raising either needs the plan raised first, or E2B refuses.
+ * The sandbox's numbers, as data (`sandbox/src/control.ts`): how long one sandbox may run
+ * before it is paused and resumed (`sandbox_runtime_ceiling_s`: Hobby's 1 hour, Pro's 24),
+ * and how many sandboxes the E2B team may run at once (`sandbox_concurrency_ceiling`: Hobby
+ * 20, Pro 100 and more with add-ons), both the vendor plan's own ceilings, which raising
+ * needs the plan raised first, or E2B refuses; and how long before the runtime ceiling a
+ * renewal looks for a moment its CLIs are quiet (`sandbox_renewal_window_s`), the founder's
+ * choice of how long a turn may run on before a renewal cuts into it. Each is a positive
+ * whole number, the window shorter than the ceiling; the record bounds nothing else.
  */
 export interface SandboxCeilings {
   readonly runtime_ceiling_s: number;
   readonly concurrency_ceiling: number;
+  readonly renewal_window_s: number;
 }
 
-/** The longest runtime ceiling a record may name: a week, past any E2B plan's day. */
-const RUNTIME_MAX_S = 7 * 24 * 3600;
-/** The shortest: a minute, so a renewal's window and its edge are whole seconds. */
-const RUNTIME_MIN_S = 60;
-/** The most concurrent sandboxes a record may name, far past E2B's add-ons. */
-const CONCURRENCY_MAX = 100_000;
+const SANDBOX_KEYS: readonly string[] = Object.freeze([
+  "sandbox_runtime_ceiling_s", "sandbox_concurrency_ceiling", "sandbox_renewal_window_s"]);
 
-/** The two numbers checked, or a throw. */
-export function sandboxCeilings(runtime: unknown, concurrency: unknown): SandboxCeilings {
-  if (typeof runtime !== "number" || !Number.isSafeInteger(runtime) || runtime < RUNTIME_MIN_S
-      || runtime > RUNTIME_MAX_S || typeof concurrency !== "number"
-      || !Number.isSafeInteger(concurrency) || concurrency < 1
-      || concurrency > CONCURRENCY_MAX) {
-    throw new Error("the sandbox ceilings are whole numbers in their bounds");
+function positive(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+}
+
+/** The three numbers checked, or a throw. */
+export function sandboxCeilings(runtime: unknown, concurrency: unknown,
+                                window: unknown): SandboxCeilings {
+  if (!positive(runtime) || !positive(concurrency) || !positive(window) || window >= runtime) {
+    throw new Error("the sandbox numbers are positive whole numbers, the renewal window " +
+                    "shorter than the runtime ceiling");
   }
-  return Object.freeze({ runtime_ceiling_s: runtime, concurrency_ceiling: concurrency });
+  return Object.freeze({ runtime_ceiling_s: runtime, concurrency_ceiling: concurrency,
+                         renewal_window_s: window });
 }
 
-/** The record's keys: the gates always; the tiers, and the sandbox's two numbers, optional. */
+/** The record's keys: the gates always; the tiers, and the sandbox's numbers, optional. */
 const CONTROL_KEYS: readonly string[] = Object.freeze(["canary", "inbound", "ordinary",
                                                        "outside"]);
 const CONTROL_OPTIONAL: readonly string[] = Object.freeze([
-  "tiers", "sandbox_runtime_ceiling_s", "sandbox_concurrency_ceiling"]);
+  "tiers", "sandbox_runtime_ceiling_s", "sandbox_concurrency_ceiling",
+  "sandbox_renewal_window_s"]);
 
 function keyName(keyId: string): string {
   if (!KEY_ID.test(keyId)) {
@@ -144,12 +149,12 @@ export function parseControl(value: unknown): Control | null {
   }
   const record = value as Record<string, unknown>;
   const { outside, ordinary, canary, inbound, tiers } = record;
-  const runtime = record["sandbox_runtime_ceiling_s"];
-  const concurrency = record["sandbox_concurrency_ceiling"];
+  const sandbox = SANDBOX_KEYS.map((key) => record[key]);
   if ((outside !== "on" && outside !== "off")
       || (ordinary !== "all" && ordinary !== "canary" && ordinary !== "none")
       || typeof inbound !== "boolean" || !Array.isArray(canary) || canary.length > MAX_CANARY
-      || (runtime === undefined) !== (concurrency === undefined)) {
+      || !(sandbox.every((value) => value === undefined)
+           || sandbox.every((value) => value !== undefined))) {
     return null;
   }
   try {
@@ -157,7 +162,8 @@ export function parseControl(value: unknown): Control | null {
     // never a guess.
     return { outside, ordinary, inbound, canary: Object.freeze(canary.map(principal)),
              tiers: tiers === undefined ? null : parseTiers(tiers),
-             sandbox: runtime === undefined ? null : sandboxCeilings(runtime, concurrency) };
+             sandbox: sandbox[0] === undefined ? null
+               : sandboxCeilings(sandbox[0], sandbox[1], sandbox[2]) };
   } catch {
     return null;
   }

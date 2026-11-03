@@ -2,10 +2,12 @@
  * A fake E2B, in tests only: the platform API (`api.e2b.app`) and envd (`sandbox.e2b.app`)
  * as `sandbox/src/e2b.ts` speaks them, in the field names of E2B's OpenAPI document, with
  * sandboxes held in memory. The tests script it and read back what it received at
- * `https://fake.test/*` (through the `E2B` service binding).
+ * `https://fake.test/*` (through the `E2B` service binding). It is also the ring queue's
+ * consumer in tests, recording each ring.
  *
  * The runner's commands (`/usr/local/bin/ta-runner <command>`) answer as scripted: a
- * sign-in check by engine, the runner's state, and every other command 0.
+ * sign-in check by engine, the runner's state (for `state`, `quiet-wait` and `renew-wait`),
+ * and every other command 0.
  */
 interface FakeSandbox {
   id: string;
@@ -17,6 +19,7 @@ interface FakeSandbox {
   network: unknown;
   metadata: Record<string, string>;
   template: string;
+  secure: boolean;
 }
 
 interface Script {
@@ -30,13 +33,18 @@ interface Script {
   full: boolean;
   /** What the next pause saves. */
   pauseMode: "full" | "filesystem";
+  /** The list answers with no `X-Total-Running`. */
+  noCount: boolean;
+  /** How many info calls answer 500 (E2B unreachable) before they answer again. */
+  down: number;
 }
 
 const fake = {
   sandboxes: new Map<string, FakeSandbox>(),
-  calls: [] as { method: string; path: string; body: unknown }[],
+  calls: [] as { method: string; path: string; body: unknown; query: string }[],
   files: new Map<string, string>(),
   commands: [] as { sandbox: string; argv: string[]; user: string }[],
+  rings: [] as unknown[],
   script: null as unknown as Script,
   next: 0,
 };
@@ -46,16 +54,18 @@ function reset(): void {
   fake.calls = [];
   fake.files.clear();
   fake.commands = [];
+  fake.rings = [];
   fake.next = 0;
   fake.script = { signin: {}, state: { live: 1, quiet: false }, others: 0, busy: 0,
-                  full: false, pauseMode: "full" };
+                  full: false, pauseMode: "full", noCount: false, down: 0 };
 }
 reset();
 
 function info(box: FakeSandbox): unknown {
   return {
     templateID: box.template, sandboxID: box.id, clientID: "x", envdVersion: "0.10.0",
-    envdAccessToken: box.token, startedAt: new Date(box.startedAt).toISOString(),
+    ...(box.secure ? { envdAccessToken: box.token } : {}),
+    startedAt: new Date(box.startedAt).toISOString(),
     endAt: new Date(box.startedAt + box.timeout * 1000).toISOString(), cpuCount: 2,
     memoryMB: 1024, diskSizeMB: 20000, state: box.state, metadata: box.metadata,
     network: box.network, lifecycle: { autoResume: false, onTimeout: "pause" },
@@ -86,10 +96,18 @@ function runner(argv: string[]): { code: number; out: string } {
   if (command === "signin-check") {
     return { code: fake.script.signin[arg ?? ""] ?? 3, out: "" };
   }
-  if (command === "state") {
+  if (command === "state" || command === "quiet-wait") {
     return { code: 0, out: JSON.stringify(fake.script.state) };
   }
+  if (command === "renew-wait") {
+    return { code: 0, out: JSON.stringify({ live: fake.script.state.live }) };
+  }
   return { code: 0, out: "" };
+}
+
+function connected(box: FakeSandbox, status = 200): Response {
+  return Response.json({ sandboxID: box.id, envdAccessToken: box.token, templateID: "t",
+                         clientID: "x", envdVersion: "0.10.0" }, { status });
 }
 
 async function api(request: Request, url: URL): Promise<Response> {
@@ -98,24 +116,33 @@ async function api(request: Request, url: URL): Promise<Response> {
   }
   const text = request.method === "GET" ? "" : await request.text();
   const body: unknown = text === "" ? null : JSON.parse(text);
-  fake.calls.push({ method: request.method, path: url.pathname, body });
+  fake.calls.push({ method: request.method, path: url.pathname, body, query: url.search });
   const [, first, second, third, fourth] = url.pathname.split("/");
   if (request.method === "POST" && first === "v2" && second === "sandboxes" && !third) {
-    if (fake.script.full || running() >= 1_000_000) {
+    if (fake.script.full) {
       return Response.json({ code: 429, message: "concurrency" }, { status: 429 });
     }
-    const b = body as { templateID: string; timeout: number; network: unknown;
+    const b = body as { templateID: string; timeout: number; network: unknown; secure: boolean;
                         metadata: Record<string, string> };
     const id = `sbx${String(fake.next += 1).padStart(5, "0")}`;
     const box: FakeSandbox = { id, token: `envd-${id}`, state: "running", startedAt: Date.now(),
                                timeout: b.timeout, pauseMode: null, network: b.network,
-                               metadata: b.metadata, template: b.templateID };
+                               metadata: b.metadata, template: b.templateID,
+                               secure: b.secure === true };
     fake.sandboxes.set(id, box);
     return Response.json({ templateID: b.templateID, sandboxID: id, clientID: "x",
-                           envdVersion: "0.10.0", envdAccessToken: box.token }, { status: 201 });
+                           envdVersion: "0.10.0",
+                           ...(box.secure ? { envdAccessToken: box.token } : {}) },
+                         { status: 201 });
   }
   if (request.method === "GET" && first === "v2" && second === "sandboxes" && !third) {
-    return Response.json([], { headers: { "X-Total-Running": String(running()) } });
+    const states = (url.searchParams.get("state") ?? "running,paused").split(",");
+    const [key, value] = (url.searchParams.get("metadata") ?? "=").split("=")
+      .map(decodeURIComponent);
+    const listed = [...fake.sandboxes.values()].filter((box) => states.includes(box.state)
+      && (key === "" || box.metadata[key!] === value)).map(info);
+    return Response.json(listed, { headers: fake.script.noCount ? {}
+      : { "X-Total-Running": String(running()) } });
   }
   const id = first === "v2" ? third! : second!;
   const action = first === "v2" ? fourth : third;
@@ -124,6 +151,10 @@ async function api(request: Request, url: URL): Promise<Response> {
     return Response.json({ code: 404, message: "no sandbox" }, { status: 404 });
   }
   if (request.method === "GET" && action === undefined) {
+    if (fake.script.down > 0) {
+      fake.script.down -= 1;
+      return Response.json({ code: 500, message: "down" }, { status: 500 });
+    }
     return Response.json(info(box));
   }
   if (request.method === "DELETE") {
@@ -144,8 +175,7 @@ async function api(request: Request, url: URL): Promise<Response> {
   }
   if (action === "connect") {
     if (box.state === "running") {
-      return Response.json({ sandboxID: id, envdAccessToken: box.token, templateID: "t",
-                             clientID: "x", envdVersion: "0.10.0" });
+      return connected(box);
     }
     if (fake.script.full) {
       return Response.json({ code: 429, message: "concurrency" }, { status: 429 });
@@ -153,8 +183,7 @@ async function api(request: Request, url: URL): Promise<Response> {
     box.state = "running";
     box.startedAt = Date.now();
     box.timeout = (body as { timeout: number }).timeout;
-    return Response.json({ sandboxID: id, envdAccessToken: box.token, templateID: "t",
-                           clientID: "x", envdVersion: "0.10.0" }, { status: 201 });
+    return connected(box, 201);
   }
   if (action === "network" && request.method === "PUT") {
     box.network = body;
@@ -166,7 +195,7 @@ async function api(request: Request, url: URL): Promise<Response> {
 async function envd(request: Request, url: URL): Promise<Response> {
   const id = request.headers.get("E2b-Sandbox-Id") ?? "";
   const box = fake.sandboxes.get(id);
-  if (box === undefined || request.headers.get("X-Access-Token") !== box.token
+  if (box === undefined || (box.secure && request.headers.get("X-Access-Token") !== box.token)
       || request.headers.get("E2b-Sandbox-Port") !== "49983") {
     return new Response("unauthorized", { status: 401 });
   }
@@ -221,10 +250,34 @@ export default {
         fake.sandboxes.get(id)!.startedAt -= s * 1000;
         return Response.json({});
       }
+      if (url.pathname === "/pause") {
+        // E2B's own timeout pausing it, unseen by the Worker.
+        const { id } = await request.json() as { id: string };
+        fake.sandboxes.get(id)!.state = "paused";
+        fake.sandboxes.get(id)!.pauseMode = "full";
+        return Response.json({});
+      }
+      if (url.pathname === "/stray") {
+        // A sandbox E2B holds under a tag whose row the Worker lost.
+        const { metadata } = await request.json() as { metadata: Record<string, string> };
+        const id = `sbx${String(fake.next += 1).padStart(5, "0")}`;
+        fake.sandboxes.set(id, { id, token: `envd-${id}`, state: "paused", startedAt: Date.now(),
+                                 timeout: 60, pauseMode: "full", network: null, metadata,
+                                 template: "t", secure: true });
+        return Response.json({ id });
+      }
       return Response.json({ sandboxes: [...fake.sandboxes.values()], calls: fake.calls,
-                             files: Object.fromEntries(fake.files), commands: fake.commands });
+                             files: Object.fromEntries(fake.files), commands: fake.commands,
+                             rings: fake.rings });
     }
     return new Response(`the sandbox Worker reached ${url.host}, which is not E2B`,
                         { status: 599 });
+  },
+  /** The ring queue's consumer, in tests: each ring recorded. */
+  async queue(batch: MessageBatch<unknown>): Promise<void> {
+    for (const message of batch.messages) {
+      fake.rings.push(message.body);
+      message.ack();
+    }
   },
 };

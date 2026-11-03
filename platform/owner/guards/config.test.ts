@@ -85,6 +85,8 @@ interface Bound {
   readonly limits?: unknown;
   /** The plain-text variables it may set, by name exactly (each binds nothing); none. */
   readonly vars?: readonly string[];
+  /** Its queues, exactly: a producer of a queue whose consumer reaches nothing but a ring. */
+  readonly queues?: unknown;
 }
 
 /** The hooks Worker's own class, as its config binds it. */
@@ -94,12 +96,20 @@ const HOOKS_OWN = Object.freeze({
   classes: Object.freeze(["CodemodeSandbox"]),
 });
 
-/** The sandbox Worker's own class, as its config binds it. */
+/** The sandbox Worker's own classes, as its config binds them. */
 const SANDBOX_OWN = Object.freeze({
   durable_objects: Object.freeze({ bindings: Object.freeze([
-    Object.freeze({ name: "SANDBOXES", class_name: "SandboxControl" })]) }),
-  classes: Object.freeze(["SandboxControl"]),
+    Object.freeze({ name: "SANDBOXES", class_name: "SandboxControl" }),
+    Object.freeze({ name: "SLOTS", class_name: "SandboxSlots" })]) }),
+  classes: Object.freeze(["SandboxControl", "SandboxSlots"]),
 });
+/**
+ * The sandbox Worker's one queue: the producer of the ring queue, whose one consumer, the
+ * doors Worker, turns `{owner}` into that owner's `sandboxRung` (its waiting runs started
+ * again through their whole admission) and nothing else: a ring grants nothing.
+ */
+const SANDBOX_QUEUES = Object.freeze({ producers: Object.freeze([
+  Object.freeze({ binding: "RING", queue: "tinyassets-sandbox-ring" })]) });
 
 /** The service bindings the owner Worker may hold, by binding name. */
 const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
@@ -110,13 +120,15 @@ const SERVICES: Readonly<Record<string, Bound>> = Object.freeze({
   HOOKS: Object.freeze({ service: "tinyassets-hooks",
                          bindings: Object.freeze({}), own: HOOKS_OWN,
                          limits: Object.freeze({ cpu_ms: 30_000 }) }),
-  // The sandbox Worker (slice S): its own class (one per owner, its E2B calls), the
-  // directory read for its control record alone, and its one secret, the E2B key. It
-  // reaches nothing but E2B (`sandbox/guards/config.test.ts` reads its every fetch).
+  // The sandbox Worker (slice S): its own classes (one per owner, its E2B calls; one for
+  // the platform's line), the control record's namespace read for its sandbox numbers
+  // alone, the ring queue's producer, and its one secret, the E2B key. It reaches nothing
+  // but E2B and the ring (`sandbox/guards/config.test.ts` reads its every fetch).
   SANDBOX: Object.freeze({ service: "tinyassets-sandbox",
                            bindings: Object.freeze({ kv_namespaces: 1 }),
                            own: SANDBOX_OWN, vars: Object.freeze(["E2B_TEMPLATE"]),
-                           secrets: Object.freeze(["E2B_API_KEY"]) }),
+                           secrets: Object.freeze(["E2B_API_KEY"]),
+                           queues: SANDBOX_QUEUES }),
 });
 
 type Config = Record<string, unknown>;
@@ -147,7 +159,8 @@ export function boundProblems(config: Config, allowed: Bound): string[] {
                      && !(own !== undefined && (key === "durable_objects"
                                                 || key === "migrations"))
                      && !(key === "limits" && allowed.limits !== undefined)
-                     && !(key === "vars" && allowed.vars !== undefined))
+                     && !(key === "vars" && allowed.vars !== undefined)
+                     && !(key === "queues" && allowed.queues !== undefined))
     .map((key) => `${key} is not a binding the owner's ${allowed.service} binding allows`);
   if (own !== undefined) {
     if (JSON.stringify(config["durable_objects"]) !== JSON.stringify(own.durable_objects)) {
@@ -158,6 +171,10 @@ export function boundProblems(config: Config, allowed: Bound): string[] {
     if (JSON.stringify(made) !== JSON.stringify([["new_sqlite_classes", own.classes]])) {
       problems.push(`migrations make other than ${own.classes.join(" and ")}, SQLite`);
     }
+  }
+  if (allowed.queues !== undefined
+      && JSON.stringify(config["queues"]) !== JSON.stringify(allowed.queues)) {
+    problems.push(`queues are other than ${JSON.stringify(allowed.queues)}`);
   }
   if (allowed.limits !== undefined && config["limits"] !== undefined
       && JSON.stringify(config["limits"]) !== JSON.stringify(allowed.limits)) {
@@ -495,12 +512,14 @@ describe("owner Worker config", () => {
                     compatibility_flags: ["disable_ctx_exports", "global_fetch_strictly_public"],
                     workers_dev: false, vars: { E2B_TEMPLATE: "tinyassets-sandbox:s0" },
                     secrets: { required: ["E2B_API_KEY"] },
-                    kv_namespaces: [{ binding: "DIRECTORY", id: "directory" }],
+                    kv_namespaces: [{ binding: "CONTROL", id: "control" }],
                     durable_objects: SANDBOX_OWN.durable_objects,
-                    migrations: [{ tag: "v1", new_sqlite_classes: SANDBOX_OWN.classes }] };
+                    migrations: [{ tag: "v1", new_sqlite_classes: SANDBOX_OWN.classes }],
+                    queues: SANDBOX_QUEUES };
   const sandboxBinding = [{ binding: "SANDBOX", service: "tinyassets-sandbox" }];
 
-  it("allows SANDBOX to the sandbox Worker: its own class, the directory, its key", () => {
+  it("allows SANDBOX to the sandbox Worker: its own classes, the control record, the ring's " +
+     "producer, its key", () => {
     expect(configProblems({ ...config, services: sandboxBinding },
                           new Map([["tinyassets-sandbox", sandbox as Config]]))).toEqual([]);
   });
@@ -511,8 +530,13 @@ describe("owner Worker config", () => {
       { name: "OWNER", class_name: "OwnerDO", script_name: "tinyassets-owner" }] } }],
     ["its class as another Worker's", { durable_objects: { bindings: [
       { name: "SANDBOXES", class_name: "SandboxControl", script_name: "tinyassets-owner" }] } }],
-    ["a second KV namespace", { kv_namespaces: [{ binding: "DIRECTORY", id: "directory" },
+    ["a second KV namespace", { kv_namespaces: [{ binding: "CONTROL", id: "control" },
                                                 { binding: "OAUTH_KV", id: "oauth" }] }],
+    ["another queue's producer", { queues: { producers: [
+      { binding: "RING", queue: "tinyassets-other" }] } }],
+    ["a queue consumer", { queues: { ...SANDBOX_QUEUES,
+                                     consumers: [{ queue: "tinyassets-sandbox-ring" }] } }],
+    ["no ring", { queues: undefined }],
     ["a service", { services: [{ binding: "OWNER", service: "tinyassets-owner" }] }],
     ["a bucket", { r2_buckets: [{ binding: "B", bucket_name: "tinyassets-files" }] }],
     ["another var", { vars: { E2B_TEMPLATE: "t", OWNER: "alice" } }],

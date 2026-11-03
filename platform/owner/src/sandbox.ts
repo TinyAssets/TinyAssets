@@ -25,10 +25,14 @@
  *   object's status doors read the run's receipt, never this.
  * - `release` (slice S): the lease ended, so the sandbox is paused unless a run started in
  *   it since (zero idle tail).
+ * - `unwait` (slice S): the owner has no run waiting for a sandbox any more, so it leaves
+ *   the platform's line and the next owner in it is rung.
+ * - `erase` (slice S; the erasure's step 2): every sandbox of the owner killed, paused ones
+ *   included, and the sandbox Worker's own state of the owner deleted.
  *
  * A start may answer `sandbox_waiting` (`SANDBOX_WAITING`): E2B runs as many sandboxes as
- * its plan allows, and the run waits (`waiting`), never refused, for the lane to start it
- * again.
+ * its plan allows, and the run waits (`waiting`), never refused, until the platform's line
+ * rings the owner (`sandboxRung`, through the doors Worker's ring consumer).
  *
  * Absent, nothing reaches `running`: admission refuses before it writes anything
  * (`SANDBOX_ABSENT`). Tests put a recording fake behind the interface, in tests only.
@@ -98,18 +102,13 @@ export interface SandboxStart {
 export type Started = { readonly started: true } | { readonly started: false; readonly code: string };
 
 /**
- * The start's answer when the E2B project runs as many sandboxes as its plan allows (the
- * control record's `sandbox_concurrency_ceiling`, or E2B's own refusal): the run is never
- * refused for it. It waits (`waiting`, the app's "waiting to start") and the `runs` lane
- * starts it again, admitted whole, once `SANDBOX_RECHECK_S` passed (slice S).
+ * The start's answer when the E2B team runs as many sandboxes as its plan allows (the
+ * control record's `sandbox_concurrency_ceiling`, or E2B's own refusal), or another owner
+ * waits ahead in the platform's line: the run is never refused for it. It waits
+ * (`waiting`, the app's "waiting to start", `sandbox_wait`) until the line rings the owner,
+ * and the `runs` lane then starts it again, admitted whole (slice S).
  */
 export const SANDBOX_WAITING = "sandbox_waiting";
-/**
- * How long a run waiting for a sandbox waits before its start is tried again. E2B tells no
- * one when a sandbox frees, so the lane looks again: a waiting run is a due row, never an
- * empty poll, and the wait ends the moment a start finds room.
- */
-export const SANDBOX_RECHECK_S = 30;
 
 /** The sandbox Worker, as the owner's object binds it (`SANDBOX`). */
 export interface SandboxService {
@@ -121,11 +120,16 @@ export interface SandboxService {
   /**
    * The lease is over: no run lives under it. The sandbox Worker pauses that sandbox at
    * once unless a run started in it since (ADR-026's zero idle tail; a paused sandbox costs
-   * nothing and keeps its memory, files and sign-ins). Best effort: the sandbox's own
-   * timeout pauses it at its runtime ceiling otherwise.
+   * nothing and keeps its memory, files and sign-ins). The Worker keeps asking E2B until
+   * the pause lands, and reaps on its own a sandbox idle for a lease's TTL (a release that
+   * never reached it), so an idle sandbox is never left to its ceiling.
    */
   release(owner: string, request: { readonly lease_id: string }):
     Promise<{ readonly paused: boolean }>;
+  /** The owner waits for a sandbox no more: out of the platform's line. */
+  unwait(owner: string): Promise<void>;
+  /** The owner erased: each of their sandboxes killed, the Worker's state of them deleted. */
+  erase(owner: string): Promise<{ readonly killed: number }>;
 }
 
 /** A start's answer, checked: a refusal's code is a fixed code, never prose. */

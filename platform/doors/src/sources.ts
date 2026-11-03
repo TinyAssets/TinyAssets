@@ -418,7 +418,7 @@ const ARG = /^.{0,4096}$/su;
 /** The placeholders the runner fills, in an argv, an env value or a file template. */
 const PLACEHOLDERS: readonly string[] = Object.freeze([
   "{bin}", "{prompt}", "{sid}", "{model}", "{provider}", "{home}", "{agent}", "{mcp_url}",
-  "{mcp_config}", "{base_url}", "{tools}", "{tool}", "{region}", "{run_secret}",
+  "{mcp_config}", "{base_url}", "{tools}", "{tool}", "{region}", "{run_secret}", "{system}",
 ]);
 /**
  * The one shape `{prompt}` may take in an argv: joined to its option (`--prompt={prompt}`),
@@ -540,6 +540,20 @@ function homePath(value: unknown, wildcards: boolean): string[] | null {
     && (wildcards || segment !== "*")) ? segments : null;
 }
 
+/**
+ * A file the runner writes for one run: under `{home}`, or under `{system}`, the run's own
+ * directory outside the home that root owns at every level (`/etc/ta/runs/<run>`, readable
+ * by the run's user alone), for a file a CLI takes only from a root-owned path (Gemini
+ * CLI's system settings: it skips one any of whose ancestors another user owns, slice S's
+ * probe). Never a secret or session path, which live in the home.
+ */
+function runFilePath(value: unknown): string[] | null {
+  if (typeof value === "string" && value.startsWith("{system}/")) {
+    return homePath(`{home}/${value.slice("{system}/".length)}`, false);
+  }
+  return homePath(value, false);
+}
+
 /** Whether one home path is the other or under it, a `*` segment matching any one. */
 function overlaps(a: readonly string[], b: readonly string[]): boolean {
   const shorter = Math.min(a.length, b.length);
@@ -604,11 +618,11 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     }
     return map;
   };
-  /** A file the record writes: under `{home}`, no wildcard. */
+  /** A file the record writes: under `{home}` or `{system}`, no wildcard. */
   const sandboxPath = (item: unknown, what: string): string[] => {
-    const segments = homePath(item, false);
-    return segments ?? check.fail(`${what} is a path under {home}, with no *, . or .. ` +
-                                  "segment");
+    const segments = runFilePath(item);
+    return segments ?? check.fail(`${what} is a path under {home} or {system}, with no *, . ` +
+                                  "or .. segment");
   };
   const declared: string[] = [];
   const fileMap = (item: unknown, what: string): Record<string, string> => {
@@ -1130,8 +1144,8 @@ function instructionsSpec(check: ReturnType<typeof checker>, value: unknown): In
   if (max !== undefined && (!Number.isSafeInteger(max) || (max as number) < 1)) {
     check.fail("cli.instructions.max_bytes is a whole number from 1");
   }
-  if (fields["setting"] !== undefined && homePath(fields["setting"], false) === null) {
-    check.fail("cli.instructions.setting is a path under {home}");
+  if (fields["setting"] !== undefined && runFilePath(fields["setting"]) === null) {
+    check.fail("cli.instructions.setting is a path under {home} or {system}");
   }
   return Object.freeze({ ...fields, shadowed_by: Object.freeze(names) }) as unknown as
     Instructions;
@@ -1173,8 +1187,8 @@ function toolFilter(check: ReturnType<typeof checker>, value: unknown, what: str
                     argv: Argv): ToolFilter {
   if (object(value) && "file" in value) {
     const fields = check.keys(value, what, ["file", "key"]);
-    if (homePath(fields["file"], false) === null || !DOTTED.test(String(fields["key"]))) {
-      check.fail(`${what} names a file under {home} and a dotted key`);
+    if (runFilePath(fields["file"]) === null || !DOTTED.test(String(fields["key"]))) {
+      check.fail(`${what} names a file under {home} or {system} and a dotted key`);
     }
     return Object.freeze(fields) as unknown as ToolFilter;
   }

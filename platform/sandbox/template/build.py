@@ -2,12 +2,15 @@
 
 Built from the records as data: every served npm engine record's CLI, installed from the lock
 committed beside it (`platform/sources/locks/<id>/`, its digest checked against the record's
-`lock_sha256` before anything is sent), each engine's own unprivileged user (`ta-<id>`, home
-`/home/ta-<id>`, mode 0700, in group `ta`, never in `sudo`), the shared workspace
-(`/workspace`, root:ta 2775), the runner (`runner/runner.ts` bundled, `/opt/ta/runner`,
-root-only) and its command (`/usr/local/bin/ta-runner`, 0700), and the root-only state
-directory (`/var/lib/ta`, 0700). The resolver is pinned by the runner's `prepare` at every
-start and resume (E2B rewrites `/etc/resolv.conf` at boot, probed), as `/proc`'s `hidepid=2`.
+`lock_sha256` before anything is sent); the pool of run users (`ta-run-<n>`, one a live run,
+as many as the most live runs an owner may hold, `RUNS_CEILING` in `owner/src/tier.ts`; each
+its own group, in group `ta`, no home: the runner makes each run's home) and the sync agent's
+user (`ta-sync`, its directory `/var/lib/ta-sync` 0700), none able to `sudo` (checked); the
+shared workspace (`/workspace`, root:ta 2775); the runner (`runner/runner.ts` bundled,
+`/opt/ta/runner`, readable by the sync agent, which runs it, and written by root alone) and its
+command (`/usr/local/bin/ta-runner`, 0700); and the root-only state directory (`/var/lib/ta`,
+0700). The resolver is pinned by the runner's `prepare` at every start and resume (E2B
+rewrites `/etc/resolv.conf` at boot, probed), as `/proc`'s `hidepid=2`.
 
 The tag is the digest of what the template is made of (the runner's bundle, the records, their
 locks and this script), so a change to any of them is a new template version; the sandbox
@@ -35,6 +38,16 @@ NODE_TARBALL = f"node-{NODE}-linux-x64.tar.gz"
 NODE_SHA256 = "c33c39ed9c80deddde77c960d00119918b9e352426fd604ba41638d6526a4744"
 CPU = 2
 MEMORY_MB = 1024
+TIER = PLATFORM / "owner" / "src" / "tier.ts"
+
+
+def runs_ceiling() -> int:
+    """`RUNS_CEILING`, the most live runs an owner may hold: the pool's size."""
+    import re
+    found = re.search(r"export const RUNS_CEILING = ([0-9_]+);", TIER.read_text())
+    if found is None:
+        raise SystemExit("owner/src/tier.ts names no RUNS_CEILING")
+    return int(found.group(1).replace("_", ""))
 
 
 def engines():
@@ -65,7 +78,7 @@ def tag(runner: bytes) -> str:
     """The template's version: the digest of the bundle, the records, their locks, this script."""
     digest = hashlib.sha256()
     parts = [("runner.mjs", runner), ("build.py", Path(__file__).read_bytes()),
-             ("ta-runner", (HERE / "ta-runner").read_bytes())]
+             ("ta-runner", (HERE / "ta-runner").read_bytes()), ("tier.ts", TIER.read_bytes())]
     parts += [(str(p.relative_to(SOURCES)), p.read_bytes())
               for p in sorted(SOURCES.rglob("*")) if p.is_file()]
     for name, data in parts:
@@ -83,7 +96,7 @@ def template(stage: Path):
     shutil.copy(HERE / "ta-runner", stage / "ta-runner")
     for e in built:
         shutil.copytree(SOURCES / "locks" / e["id"], stage / "locks" / e["id"])
-    users = " ".join(f"ta-{e['id']}" for e in built)
+    pool = runs_ceiling()
     t = (Template(file_context_path=stage).from_base_image()
          .set_user("root")
          .run_cmd(f"cd /tmp && curl -fsSLO https://nodejs.org/dist/{NODE}/{NODE_TARBALL} && "
@@ -98,11 +111,15 @@ def template(stage: Path):
                   f"&& rm {NODE_TARBALL} && chown -R root:root /usr/local && "
                   f"chmod -R go-w /usr/local && node --version | grep -qx {NODE}")
          .run_cmd("groupadd -r ta && "
-                  f"for u in {users}; do useradd -m -d /home/$u -s /bin/bash -G ta $u "
-                  "&& chmod 700 /home/$u; done && "
-                  f"for u in {users} user; do gpasswd -d $u sudo 2>/dev/null || true; done")
-         .run_cmd("mkdir -p /var/lib/ta/inbox /opt/ta/runner /opt/ta/engines /workspace && "
-                  "chmod 700 /var/lib/ta /opt/ta/runner && chown root:ta /workspace && "
+                  "useradd -r -M -d /nonexistent -s /usr/sbin/nologin -U ta-sync && "
+                  f"for n in $(seq 0 {pool - 1}); do useradd -M -d /nonexistent -s /bin/bash "
+                  "-U -G ta ta-run-$n; done && "
+                  "gpasswd -d user sudo 2>/dev/null || true; rm -f /etc/sudoers.d/* && "
+                  # No user but root may sudo: checked, never assumed.
+                  "for u in user ta-sync ta-run-0; do sudo -l -U $u | grep -q 'not allowed'; done")
+         .run_cmd("mkdir -p /var/lib/ta/inbox /var/lib/ta-sync /opt/ta/runner /opt/ta/engines "
+                  "/workspace && chmod 700 /var/lib/ta && chown ta-sync:ta-sync /var/lib/ta-sync "
+                  "&& chmod 700 /var/lib/ta-sync && chown root:ta /workspace && "
                   "chmod 2775 /workspace"))
     for e in built:
         t = t.copy(f"locks/{e['id']}/package.json", f"/opt/ta/engines/{e['id']}/package.json")
@@ -112,13 +129,14 @@ def template(stage: Path):
         t = t.run_cmd(f"cd /opt/ta/engines/{e['id']} && (/usr/local/bin/npm ci --omit=dev "
                       f"--no-audit --no-fund{scripts} || (cat /root/.npm/_logs/*.log | tail -n 60; "
                       f"exit 1)) && test -x node_modules/.bin/{e['bin']}")
-    t = (t.copy("runner.mjs", "/opt/ta/runner/runner.mjs", user="root", mode=0o600)
+    t = (t.copy("runner.mjs", "/opt/ta/runner/runner.mjs", user="root", mode=0o644)
          .copy("ta-runner", "/usr/local/bin/ta-runner", user="root", mode=0o700)
-         # Root's alone, everything the runner or a CLI runs from; checked, never assumed
-         # (an engine's user that could write either would run as root).
+         # Root's alone to write, everything the runner or a CLI runs from; checked, never
+         # assumed (a run's user that could write either would run as root). The bundle holds
+         # no secret (the lease's are in /var/lib/ta), so the sync agent may read it.
          .run_cmd("chown -R root:root /opt/ta /usr/local && chmod -R go-w /opt/ta /usr/local "
-                  "&& chmod 600 /opt/ta/runner/runner.mjs && chmod 700 /opt/ta/runner "
-                  "/usr/local/bin/ta-runner && "
+                  "&& chmod 644 /opt/ta/runner/runner.mjs && chmod 755 /opt/ta/runner && "
+                  "chmod 700 /usr/local/bin/ta-runner && "
                   "test $(stat -c %a /usr/local/bin/ta-runner) = 700 && "
                   "test -z \"$(find /opt/ta /usr/local -perm /022 ! -type l)\""))
     return t

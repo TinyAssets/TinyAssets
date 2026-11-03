@@ -1,6 +1,7 @@
 /**
  * A recording fake behind the `SANDBOX` interface (`sandbox.ts`), in tests only: it records
- * every start, cancel, status and release the owner's object sends, and answers as a test
+ * every start, cancel, status, release, unwait and erase the owner's object sends, and
+ * answers as a test
  * sets it. Nothing is started: slice S's sandbox Worker (`platform/sandbox`) is the real
  * one, tested against a fake E2B in its own package.
  */
@@ -10,6 +11,8 @@ export class RecordingSandbox implements SandboxService {
   readonly starts: SandboxStart[] = [];
   readonly cancels: { run: string; lease_id: string }[] = [];
   readonly releases: { lease_id: string }[] = [];
+  readonly unwaits: string[] = [];
+  readonly erasures: string[] = [];
   /**
    * What a start answers: started, a refusal's code, or no answer at all (a throw); a list
    * answers each start in turn, its last answer from then on.
@@ -39,5 +42,14 @@ export class RecordingSandbox implements SandboxService {
   async release(_owner: string, request: { lease_id: string }): Promise<{ paused: boolean }> {
     this.releases.push({ lease_id: request.lease_id });
     return { paused: true };
+  }
+
+  async unwait(owner: string): Promise<void> {
+    this.unwaits.push(owner);
+  }
+
+  async erase(owner: string): Promise<{ killed: number }> {
+    this.erasures.push(owner);
+    return { killed: 1 };
   }
 }

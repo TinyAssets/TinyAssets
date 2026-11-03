@@ -123,7 +123,12 @@ export type SandboxBinding =
       readonly secret?: string;
       /** The SHA-256 of the runner's secret (`x-ta-runner`): the runner's own doors. */
       readonly runner?: string }
-  | { readonly kind: "sync"; readonly token: string };
+  /**
+   * The sync agent's call: its sync token's hash, and the egress token's E2B's transform
+   * set beside it (slice S review M-5): the sync token alone, taken out of the VM, reaches
+   * nothing, since only a call from inside the sandbox carries its own lease's egress token.
+   */
+  | { readonly kind: "sync"; readonly token: string; readonly egress: string };
 
 export interface EgressRequest {
   /** The run the call's path names (`/r/<run>/c/<connection>/...`). */
@@ -359,9 +364,10 @@ export function sandboxBinding(value: unknown): SandboxBinding {
       return { kind: "egress", token: value["token"], generation: value["generation"] };
     }
   }
-  if (plain(value, "kind,token") && value["kind"] === "sync"
-      && typeof value["token"] === "string" && HEX64.test(value["token"])) {
-    return { kind: "sync", token: value["token"] };
+  if (plain(value, "egress,kind,token") && value["kind"] === "sync"
+      && typeof value["token"] === "string" && HEX64.test(value["token"])
+      && typeof value["egress"] === "string" && HEX64.test(value["egress"])) {
+    return { kind: "sync", token: value["token"], egress: value["egress"] };
   }
   throw new Invalid("invalid sandbox binding");
 }

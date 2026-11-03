@@ -6,6 +6,8 @@
  * change ends; and each charge settled once (`egressSettle`) at the cost the gateway's
  * meter read, or kept whole when it could not. The egress door itself is the doors' tests'.
  */
+import { createHash } from "node:crypto";
+
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -49,8 +51,8 @@ interface Leased {
   readonly sync: string;
   /** The egress door's binding for this lease's egress token, at `generation`. */
   readonly as: (generation?: number, token?: string) => Binding;
-  /** A sync door's binding for this lease's sync token. */
-  readonly synced: (token?: string) => Binding;
+  /** A sync door's binding for this lease's sync token, beside an egress token's hash. */
+  readonly synced: (token?: string, egress?: string) => Binding;
 }
 
 /**
@@ -121,7 +123,8 @@ async function leased(r: Gated, apply = true, roomy = true,
     sync,
     as: (at = opened.network.generation, token = egress) =>
       r.bind({ sandbox: { kind: "egress", token, generation: at, ...secretFor(RUN) } }),
-    synced: (token = sync) => r.bind({ sandbox: { kind: "sync", token } }),
+    synced: (token = sync, by = egress) => r.bind({ sandbox: { kind: "sync", token,
+                                                                egress: by } }),
   };
 }
 
@@ -574,6 +577,44 @@ describe("the sync token", () => {
     await r.in((instance) => instance.sandbox.close(held(lease)));
     expect((await failure(() => r.stub.fileChanges(lease.synced(), { after: 0, limit: 10 })))
       .message).toBe(SYNC_FENCED);
+  });
+
+  it("works only beside its own lease's egress token: from inside that sandbox (M-5)",
+     async () => {
+    const r = await gated();
+    const lease = await leased(r);
+    for (const egress of ["f".repeat(64), lease.sync]) {
+      expect((await failure(() => r.stub.fileChanges(lease.synced(lease.sync, egress),
+                                                      { after: 0, limit: 10 }))).message)
+        .toBe(SYNC_FENCED);
+    }
+  });
+
+  it("uploads a file past an inline write as its lease's writer, which its commit takes",
+     async () => {
+    const r = await gated();
+    const lease = await leased(r);
+    const bytes = new TextEncoder().encode("y".repeat(6000));
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    const begun = await r.stub.fileSyncUploadBegin(lease.synced(), {
+      ...held(lease), size: bytes.byteLength, chunks: [hash] });
+    expect(begun.missing).toEqual([hash]);
+    expect(await r.stub.fileSyncUploadChunks(lease.synced(), {
+      ...held(lease), intent_id: begun.intent_id, chunks: [{ sha256: hash, bytes }] }))
+      .toEqual({ created: 1 });
+    expect(await r.stub.fileSyncCommit(lease.synced(), { ...held(lease), ops: [
+      { op: "write", path: "/workspace/big.txt", base: null, intent_id: begun.intent_id }] }))
+      .toMatchObject({ outcomes: [{ outcome: "committed", entry: { size: 6000 } }] });
+    // An upload the owner began is not the lease's to send bytes for.
+    const owners = await r.stub.fileUploadBegin(r.bind(), { size: bytes.byteLength,
+                                                            chunks: [hash] });
+    expect((await failure(() => r.stub.fileSyncUploadChunks(lease.synced(), {
+      ...held(lease), intent_id: owners.intent_id, chunks: [{ sha256: hash, bytes }] })))
+      .message).toBe(SYNC_FENCED);
+    // A lease lost is fenced at the begin.
+    expect((await failure(() => r.stub.fileSyncUploadBegin(lease.synced(), {
+      lease_id: lease.lease_id, epoch: lease.epoch + 1, size: bytes.byteLength,
+      chunks: [hash] }))).message).toBe(SYNC_FENCED);
   });
 });
 

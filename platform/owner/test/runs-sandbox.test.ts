@@ -4,13 +4,15 @@
  *
  * - a start the sandbox has no room for (`sandbox_waiting`: E2B runs as many sandboxes as
  *   its plan allows) puts the run back to `waiting`, never refused, its lease given back and
- *   its grant gone, and the `runs` lane starts it again, admitted whole, from its recheck on;
+ *   its grant gone; nothing polls it: the platform's line rings the owner (`sandboxRung`)
+ *   and the `runs` lane starts it again, admitted whole; rung with none waiting, the owner
+ *   leaves the line;
  * - a lease that ends (its last live run settled) is released to the sandbox Worker, which
  *   pauses that sandbox (zero idle tail).
  */
 import { describe, expect, it } from "vitest";
 
-import { SANDBOX_RECHECK_S, SANDBOX_WAITING } from "../src/sandbox";
+import { SANDBOX_WAITING } from "../src/sandbox";
 import { gated } from "./gateway-support";
 import { defineAgent, recorder, runnerBinding, startOf, TIERS } from "./runs-support";
 import { drainDue } from "./support";
@@ -19,7 +21,8 @@ const SIGNED_IN = Object.freeze({ engine: "claude-code", credential: "vendor_log
                                   scopes: [] });
 
 describe("a run the sandbox has no room for", () => {
-  it("waits, never refused, and starts again from its recheck, admitted whole", async () => {
+  it("waits, never refused and never polled, and starts again when the line rings",
+     async () => {
     const r = await gated();
     await defineAgent(r.stub, r.bind(), "main", SIGNED_IN);
     await r.in((instance) => {
@@ -33,17 +36,14 @@ describe("a run the sandbox has no room for", () => {
     expect(await r.sql("SELECT run FROM run_grants")).toEqual([]);
     expect(await r.sql("SELECT prompt FROM run_inputs WHERE run = ?", run.run_id))
       .toEqual([{ prompt: "the input" }]);
-    const rows = await r.sql("SELECT wait_until FROM runs WHERE id = ?",
-                             run.run_id) as { wait_until: number }[];
-    expect(rows[0]!.wait_until)
-      .toBeGreaterThanOrEqual(Date.now() / 1000 + SANDBOX_RECHECK_S - 5);
-    // Not before its recheck: the lane leaves it.
+    expect(await r.sql("SELECT sandbox_wait FROM runs WHERE id = ?", run.run_id))
+      .toEqual([{ sandbox_wait: 1 }]);
+    // Nothing rings: the lane leaves it, however often it runs.
+    await r.stub.fileMkdir(r.bind(), { path: "/workspace/poke", expected_etag: null });
     await drainDue(r.stub);
     expect((await recorder(r.stub)).starts).toHaveLength(1);
-    // From its recheck on, the lane starts it again: the same run, its input, a fresh lease.
-    await r.sql("UPDATE runs SET wait_until = ? WHERE id = ?", Date.now() / 1000 - 1,
-                run.run_id);
-    await r.stub.fileMkdir(r.bind(), { path: "/workspace/poke", expected_etag: null });
+    // The line rings: the same run, its input, a fresh lease.
+    expect(await r.stub.sandboxRung()).toEqual({ waiting: 1 });
     await drainDue(r.stub);
     const starts = (await recorder(r.stub)).starts;
     expect(starts).toHaveLength(2);
@@ -51,6 +51,13 @@ describe("a run the sandbox has no room for", () => {
     expect(starts[1]!.tokens).not.toBeNull();
     expect(await r.stub.agentStatus(r.bind(), { run_id: run.run_id }))
       .toMatchObject({ state: "running", code: null });
+    expect((await recorder(r.stub)).unwaits).toEqual([]);
+  });
+
+  it("leaves the line when rung with no run waiting", async () => {
+    const r = await gated();
+    expect(await r.stub.sandboxRung()).toEqual({ waiting: 0 });
+    expect((await recorder(r.stub)).unwaits).toHaveLength(1);
   });
 });
 

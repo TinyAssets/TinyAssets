@@ -227,16 +227,28 @@ export function bindSandbox(env: DoorsEnv, owner: string, tokenHash: string,
 
 /**
  * The in-VM sync agent's call (slice S's runner) by its sync token, verified at the door
- * (`routing-mac.ts`, the `sync` kind): the owner it names, and the SHA-256 of its secret,
- * which the object checks against its live lease (`#syncer`) on its sync doors alone.
+ * (`routing-mac.ts`, the `sync` kind), with the egress token E2B's transform set beside it
+ * (verified as the egress doors verify it): the owner both name, and the SHA-256 of each
+ * one's secret, which the object checks are its one live lease's (`#syncer`), so a sync
+ * token taken out of the VM reaches nothing. The sync doors alone take it.
  */
-export function bindSync(env: DoorsEnv, owner: string, tokenHash: string): Bound {
-  if (!HEX64.test(tokenHash)) {
-    throw new Error("a sync binding needs its token's hash");
+export function bindSync(env: DoorsEnv, owner: string, tokenHash: string,
+                         egressHash: string): Bound {
+  if (!HEX64.test(tokenHash) || !HEX64.test(egressHash)) {
+    throw new Error("a sync binding needs its token's hash and its egress token's");
   }
   const named = principal(owner);
   return bound(env, { owner: named, caller: named, origin: null,
-                      sandbox: { kind: "sync", token: tokenHash } });
+                      sandbox: { kind: "sync", token: tokenHash, egress: egressHash } });
+}
+
+/**
+ * The platform's sandbox line rang `owner` (slice S, the ring queue's consumer,
+ * `ring.ts`): that owner's object, to start its runs waiting for a sandbox again. It
+ * carries no binding: the ring grants nothing.
+ */
+export function ringOwner(env: DoorsEnv, owner: string): DurableObjectStub<OwnerDO> {
+  return env.OWNER.getByName(principal(owner));
 }
 
 /**

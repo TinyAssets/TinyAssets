@@ -39,6 +39,8 @@ export interface ErasureParts {
   readonly clock: () => number;
   /** The ending of every run in flight, in a unit (`Egress.drop`: its streams). */
   readonly ended: () => void;
+  /** Every sandbox of the owner killed and the sandbox Worker's state of them deleted. */
+  readonly sandboxes: () => Promise<void>;
   /** The object's Lifecycle, whose alarm the last step disables for good. */
   readonly lifecycle: { disableAlarms(): Promise<void> };
   /** The object's whole database deleted, and the tombstone left (`WriteGate.wipe`). */
@@ -99,7 +101,7 @@ export class Erasure extends LifecycleCapability {
     if (this.#erased) {
       return;
     }
-    const { storage, write, clock, ended, lifecycle, wipe } = this.#parts;
+    const { storage, write, clock, ended, sandboxes, lifecycle, wipe } = this.#parts;
     if (erasureStep(storage) < 2) {
       // 1. The mark, and the job that resumes this after a crash (pushed again on a resume,
       // which also sets the alarm again).
@@ -109,7 +111,9 @@ export class Erasure extends LifecycleCapability {
         return [jobs.push({ id: ERASE_JOB, fn: ERASE_FN, time: Date.now() + ERASE_RETRY_MS })];
       });
       await rearmed;
-      // 2. Every run ended.
+      // 2. Every run ended: the owner's sandboxes killed first, paused ones included (a
+      // failure rejects, and the erasure is tried again), then its streams and sockets.
+      await sandboxes();
       await write(() => {
         ended();
         runsEnded(storage);

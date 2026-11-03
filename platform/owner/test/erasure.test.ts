@@ -52,7 +52,8 @@ type Rig = Awaited<ReturnType<typeof rig>>;
 /** Every door of the object's, but the platform's. */
 const doors = () => Object.getOwnPropertyNames(OwnerDO.prototype)
   .filter((door) => !["constructor", "alarm", "admissionSet", "tierSet", "fetch",
-                      "webSocketMessage", "webSocketClose", "webSocketError"].includes(door));
+                      "webSocketMessage", "webSocketClose", "webSocketError",
+                      "sandboxRung"].includes(door));
 const call = (r: Rig, door: string, binding: Binding) =>
   (r.stub() as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[door]!(
     binding, {});
@@ -202,7 +203,12 @@ describe("the owner's erasure", () => {
     await r.in(async (instance) => {
       await instance.erasure.erase();
       expect(instance.erasure.erased).toBe(true);
+      // Every sandbox of the owner's killed and the sandbox Worker's state of it deleted,
+      // in the erasure's step 2 (slice S review H-6).
+      expect(instance.recorder.erasures).toEqual([r.owner]);
     });
+    // A ring of the line reaches an erased owner and does nothing.
+    expect(await r.stub().sandboxRung()).toEqual({ waiting: 0 });
     expect(await tables(r)).toEqual([{ name: "owner_admission" }]);
     expect(await sqlIn(r.stub(), "SELECT state, reasons FROM owner_admission"))
       .toEqual([{ state: "erased", reasons: "[]" }]);

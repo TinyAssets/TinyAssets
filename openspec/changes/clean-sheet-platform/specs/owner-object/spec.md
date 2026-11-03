@@ -852,11 +852,11 @@ One engine session runs one invocation at a time, so an input to a conversation 
 - **THEN** both wait, the first starts as that run settles, and the second as the first settles
 
 ### Requirement: A run waits for a sandbox, never refused for one
-When the sandbox Worker has no room to start a run's sandbox (`sandbox_waiting`: E2B runs as many sandboxes as the platform control record's `sandbox_concurrency_ceiling`, or E2B itself refuses for room), the run SHALL NOT be refused: it SHALL be put back to `waiting` (the app's "waiting to start", its code `sandbox_waiting`), its input kept, its grant gone and its lease given back as a settle would, and the `runs` lane SHALL start it again, admitted whole, from its recheck (`SANDBOX_RECHECK_S`) on, never before. When a run's lease ends (its last live run settled), the object SHALL release it to the sandbox Worker, which pauses that sandbox unless a run started in it since.
+When the sandbox Worker has no room to start a run's sandbox (`sandbox_waiting`: E2B runs as many sandboxes as the platform control record's `sandbox_concurrency_ceiling`, E2B itself refuses for room, or another owner waits ahead in the platform's line), the run SHALL NOT be refused: it SHALL be put back to `waiting` (the app's "waiting to start", its code `sandbox_waiting`, `sandbox_wait`), its input kept, its grant gone and its lease given back as a settle would, and nothing SHALL poll it: the `runs` lane SHALL start it again, admitted whole, once the platform's line rings the owner (`sandboxRung`, through the doors' ring consumer), never before; rung with no run waiting, the owner SHALL leave the line. When a run's lease ends (its last live run settled) or lapses, the object SHALL release it to the sandbox Worker, which pauses that sandbox unless a run started in it since. The owner's erasure SHALL kill every sandbox of the owner, paused ones included, and delete the sandbox Worker's state of the owner, in its step 2.
 
 #### Scenario: E2B at its plan's sandboxes
 - **WHEN** a run's start is answered `sandbox_waiting`
-- **THEN** the run is `waiting` with code `sandbox_waiting`, holds no lease or grant, and the lane starts it again once its recheck passed
+- **THEN** the run is `waiting` with code `sandbox_waiting`, holds no lease or grant, and the lane starts it again only once the line rings the owner
 
 #### Scenario: The last run of a lease settles
 - **WHEN** the runner's end settles the lease's last live run

@@ -645,6 +645,18 @@ export interface SyncCommitRequest extends LeaseRequest {
   readonly ops: SyncOp[];
 }
 
+/** The sync agent's upload, begun as its lease's writer (`fileSyncUploadBegin`). */
+export interface SyncUploadBeginRequest extends LeaseRequest {
+  readonly size: number;
+  readonly chunks: string[];
+}
+
+/** The sync agent's chunk bytes for its own upload (`fileSyncUploadChunks`). */
+export interface SyncUploadChunksRequest extends LeaseRequest {
+  readonly intent_id: string;
+  readonly chunks: { readonly sha256: string; readonly bytes: Uint8Array }[];
+}
+
 /** A lost file compare-and-swap: answered with the entry as it stands. */
 export interface FileConflicted {
   readonly conflict: Entry | null;
@@ -1285,7 +1297,12 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         renew: (leaseId, epoch) => {
           this.#files.leaseRenew(leaseId, epoch);
         },
-        lapsed: (now) => this.#files.leasesLapsed(now),
+        lapsed: (now) => {
+          // Each lapsed lease's sandbox paused, as a given-back one's is (slice S).
+          for (const leaseId of this.#files.leasesLapsed(now)) {
+            queueMicrotask(() => void this.#sandboxRelease(leaseId));
+          }
+        },
       },
       stop: (runs) => this.#cancelInSandbox(runs),
       answer: (answer) => this.#answer(answer),
@@ -1327,6 +1344,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         this.#egress.drop();
         this.#relay.closeAll("erased");
         this.#cancelInSandbox(this.#runs.liveRuns());
+      },
+      // Every sandbox of the owner killed, paused ones included, and the sandbox Worker's
+      // state of them deleted (slice S review H-6). None bound, none was ever made.
+      sandboxes: async () => {
+        await this.env.SANDBOX?.erase(this.#ownerName());
       },
       wipe: () => this.#gate.wipe(writeTombstone),
       retryMs: internals.eraseRetryMs ?? ERASE_RETRY_MS,
@@ -2411,8 +2433,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const sandbox = sandboxBinding(binding.sandbox);
     const lease = sandbox.kind === "sync"
       ? this.#files.leaseByToken("sync", sandbox.token, clock()) : null;
-    if (lease === null || (request !== null && (request.lease_id !== lease.lease_id
-                                                || request.epoch !== lease.epoch))) {
+    // The call came from inside the lease's own sandbox: E2B's transform set that lease's
+    // egress token beside the sync token (review M-5).
+    const inside = sandbox.kind === "sync"
+      ? this.#files.leaseByToken("egress", sandbox.egress, clock()) : null;
+    if (lease === null || inside?.lease_id !== lease.lease_id
+        || (request !== null && (request.lease_id !== lease.lease_id
+                                 || request.epoch !== lease.epoch))) {
       throw new Refused(SYNC_FENCED);
     }
     // A client's sandbox always reads its live runs' agents' own definitions (their
@@ -3203,9 +3230,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         this.#runs.started(admitted.run, clock());
       } else if (answer.code === SANDBOX_WAITING) {
         // E2B runs as many sandboxes as its plan allows: the run waits, never refused, and
-        // the lane starts it again (`SANDBOX_RECHECK_S`). The founder's alert reads E2B's own
-        // count (owed: `sandbox-probe.md`); this line is the Worker log's record of it.
-        if (this.#runs.waitForSandbox(admitted.run, admitted.prompt, clock())) {
+        // the lane starts it again when the platform's line rings the owner (`sandboxRung`).
+        // The founder's alert reads E2B's own count (owed: `sandbox-probe.md`); this line is
+        // the Worker log's record of it.
+        if (this.#runs.waitForSandbox(admitted.run, admitted.prompt)) {
           console.warn(`${SANDBOX_WAITING}: a run waits for a sandbox to free`);
         }
       } else {
@@ -3269,8 +3297,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * A lease that ended, its sandbox paused through the sandbox Worker (zero idle tail); a
-   * failure is logged, since the sandbox's own timeout pauses it at its runtime ceiling.
+   * A lease that ended, its sandbox paused through the sandbox Worker (zero idle tail). A
+   * release that does not reach it is logged: the sandbox Worker reaps a sandbox idle for a
+   * lease's TTL on its own (by then a lease no run renews has lapsed), and keeps asking E2B
+   * for a pause that did not land.
    */
   async #sandboxRelease(leaseId: string): Promise<void> {
     const sandbox = this.env.SANDBOX;
@@ -3280,8 +3310,28 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     try {
       await sandbox.release(this.#ownerName(), { lease_id: leaseId });
     } catch {
-      console.error("a lease's release did not reach the sandbox");
+      console.error("a lease's release did not reach the sandbox; its idle reap pauses it");
     }
+  }
+
+  /**
+   * The platform's line rang this owner (slice S; `sandbox/src/slots.ts`, through the doors
+   * Worker's ring consumer): a sandbox freed, so each run waiting for one starts again
+   * through its whole admission, oldest first. It takes no binding: it carries nothing,
+   * reads nothing and grants nothing, and only the doors' consumer, which binds `OWNER`,
+   * reaches it. With no run waiting the owner leaves the line, so the next owner is rung.
+   * An erased or erasing owner does nothing (its erasure takes it out of the line).
+   */
+  async sandboxRung(): Promise<{ waiting: number }> {
+    if (this.#tombstone || this.#erasure.erased || erasing(this.#storage)) {
+      return { waiting: 0 };
+    }
+    const waiting = await this.#door(() => this.#runs.sandboxRung());
+    if (waiting === 0) {
+      await this.env.SANDBOX?.unwait(this.#ownerName());
+    }
+    await this.#schedule.sync();
+    return { waiting };
   }
 
   /** From a unit: each run's cancel sent to the sandbox once the unit is over. */
@@ -3304,7 +3354,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     while (clock() < until) {
       const waiting = await this.#door(() => {
         const next = workRefusal(admission(this.#storage)) !== null ? null
-          : this.#runs.nextWaiting(clock());
+          : this.#runs.nextWaiting();
         return next === null ? null : { run: next.id, ask: this.#runs.waitingAsk(next.id)! };
       });
       if (waiting === null) {
@@ -3749,5 +3799,35 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       return this.#files.syncCommit({ lease_id: r["lease_id"], epoch: r["epoch"],
                                       ops: r["ops"] });
     });
+  }
+
+  /**
+   * The sync agent's upload of a file past one inline write (`INLINE_BYTES`), through the
+   * files plane's own upload (slice S review M-6): begun as the lease's own writer, so its
+   * sync commit (`intent_id`) takes it, fenced by the live lease.
+   */
+  fileSyncUploadBegin(binding: Binding, request: SyncUploadBeginRequest):
+      Promise<{ intent_id: string; missing: string[]; expires_at: number }> {
+    return this.#filing(() => {
+      this.#syncer(binding, "work", request);
+      const r = fileFields(request, ["lease_id", "epoch", "size", "chunks"]);
+      return this.#files.begin(r["size"], r["chunks"],
+                               this.#files.syncWriter(r["lease_id"], r["epoch"]));
+    });
+  }
+
+  /** The sync agent's chunk bytes for its own upload, at most two chunks a call. */
+  async fileSyncUploadChunks(binding: Binding, request: SyncUploadChunksRequest):
+      Promise<{ created: number }> {
+    const r = await this.#door(() => {
+      this.#syncer(binding, "work", request);
+      const fields = fileFields(request, ["lease_id", "epoch", "intent_id", "chunks"]);
+      if (this.#files.intentWriter(fields["intent_id"])
+          !== this.#files.syncWriter(fields["lease_id"], fields["epoch"])) {
+        throw new Refused(SYNC_FENCED);
+      }
+      return fields;
+    });
+    return this.#files.upload(r["intent_id"], r["chunks"]);
   }
 }
