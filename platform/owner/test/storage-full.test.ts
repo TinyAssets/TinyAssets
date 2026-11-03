@@ -238,13 +238,13 @@ describe("the sync's ignore list", () => {
   it("names the pattern lines past their ceiling, not applied, in the notice", async () => {
     const r = await rig();
     const at = r.bind(null, { tiers: SMALL });
-    const long = `*${"?".repeat(390)}a`;
+    const long = `*${"?".repeat(390)}a*`;
     await r.stub.fileWrite(at, { path: `${W}/.ta/sync-ignore`, expected_etag: null,
                                  content: text(`node_modules\n${long}\n*.tmp\n`) });
     const [notice] = (await r.stub.noticeList(r.bind(null))).notices
       .filter((each) => each.type === "sync_ignore_changed");
-    expect(notice!.detail).toContain("1 line with * or ? is past the 384 characters such " +
-                                     "lines may take together, so not applied");
+    expect(notice!.detail).toContain("1 line is past the 384 characters of ?-pieces between " +
+                                     "stars the lines may take together, so not applied");
   });
 
   it("never gives an outside client's sandbox count, which sees only its part of the files " +

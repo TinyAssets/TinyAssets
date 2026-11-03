@@ -80,7 +80,7 @@ import { diskOf, keepReserve, pruneScratch, readIndex, RESERVE_BYTES, SCRATCH, s
 import { type Captured, outsideConnects, reply, routeVerdict } from "./route";
 import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
          statesHold } from "./login";
-import { PATTERN_CHARS } from "../../owner/src/sync-ignore";
+import { QUESTION_PIECE_CHARS } from "../../owner/src/sync-ignore";
 import { openMirror, SESSIONS, SyncClient, SyncFenced, syncIn, syncOut, type SyncReport }
   from "./sync";
 import { asUser, give, group, type Identity, killAll, POOL_PREFIX, take, user } from "./users";
@@ -968,10 +968,10 @@ function reportSync(outbox: Outbox, report: SyncReport | null): void {
     outbox.push({ type: "ta.sync_ignore_unapplied", lines: report!.unapplied,
                   count: report!.unapplied_count,
                   message: `${report!.unapplied_count} line${report!.unapplied_count === 1 ? ""
-                    : "s"} with * or ? in /workspace/.ta/sync-ignore ${
-                    report!.unapplied_count === 1 ? "is" : "are"} past the ${PATTERN_CHARS} ` +
-                    "characters such lines may take together, so not applied: the files they " +
-                    "name go on syncing." });
+                    : "s"} in /workspace/.ta/sync-ignore ${
+                    report!.unapplied_count === 1 ? "is" : "are"} past the ${
+                    QUESTION_PIECE_CHARS} characters of ?-pieces between stars the lines may ` +
+                    "take together, so not applied: the files they name go on syncing." });
   }
   // A slow list says so, so the owner sees why a sync took long: its pattern lines (`*`,
   // `?`) cost the most. Said past `SLOW_MATCH_MS`, which refuses nothing.

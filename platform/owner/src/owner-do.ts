@@ -181,8 +181,9 @@ import { Sessions } from "./sessions";
 import { CONTROL_FRESH_MS, ControlGate, type Gate } from "./control-gate";
 import { codePoints, principal, utf8Bytes } from "./text";
 import { storageFull, storageFullMessage } from "./storage-full";
-import { DEFAULT_IGNORES, PATTERN_CHARS, ruleLines, SYNC_IGNORE, unappliedLines }
-  from "./sync-ignore";
+import {
+  DEFAULT_IGNORES, QUESTION_PIECE_CHARS, ruleLines, SYNC_IGNORE, unappliedLines,
+} from "./sync-ignore";
 import { priced, Usage as ModelUsage, type UsageReceipt } from "./usage";
 import {
   Egress, type EgressOpened, type EgressReceipt, type EgressRefusal, egressRequest,
@@ -3589,11 +3590,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       // Pattern lines past their ceiling are not applied: said here, never in silence.
       const past = after === null ? [] : unappliedLines(after);
       if (past.length > 0) {
-        held += ` ${past.length} line${past.length === 1 ? "" : "s"} with * or ? ${
-          past.length === 1 ? "is" : "are"} past the ${PATTERN_CHARS} characters such lines ` +
-          `may take together, so not applied: the files ${past.length === 1 ? "it names" :
-            "they name"} go on syncing (${past.slice(0, 3).join(", ")}${past.length > 3
-            ? ", …" : ""}).`;
+        held += ` ${past.length} line${past.length === 1 ? "" : "s"} ${
+          past.length === 1 ? "is" : "are"} past the ${QUESTION_PIECE_CHARS} characters of ` +
+          "?-pieces between stars the lines may take together, so not applied: the files " +
+          `${past.length === 1 ? "it names" : "they name"} go on syncing (${
+            past.slice(0, 3).join(", ")}${past.length > 3 ? ", …" : ""}).`;
       }
       // The owner's own sandbox, whose mirror is the owner's whole tree, adds what its sync
       // agent counted (`sync.ts`); an outside client's sees only its part, so its count is

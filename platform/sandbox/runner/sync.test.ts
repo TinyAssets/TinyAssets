@@ -18,7 +18,9 @@ import { join } from "node:path";
 
 import { afterAll, describe, expect, it } from "vitest";
 
-import { PATTERN_CHARS, unappliedLines } from "../../owner/src/sync-ignore";
+import {
+  defaultSyncIgnore, QUESTION_PIECE_CHARS, questionPieceChars, unappliedLines,
+} from "../../owner/src/sync-ignore";
 import {
   ignoredBy, memoryMirror, type Mirror, openMirror, type Place, SyncClient, SyncFenced,
   syncIn, syncOut, wildcard,
@@ -483,34 +485,82 @@ describe("the sync-ignore matcher against hostile lists (verification round 3, R
   });
 });
 
-describe("the pattern lines' ceiling (verification round 4, R4-1)", () => {
-  // A line of `len` characters with a `*` in it.
-  const pattern = (len: number, tag: string) => `*${tag}${"?".repeat(len - 1 - tag.length)}`;
+describe("the ?-pieces' ceiling (verification rounds 4 and 5, R4-1)", () => {
+  // A line whose one middle piece, `len` characters, holds a `?`: charged `len`.
+  const pattern = (len: number, tag: string) => `*${tag}${"?".repeat(len - tag.length)}*`;
 
-  it("applies pattern lines up to PATTERN_CHARS together, and not one past it", () => {
-    const at = [pattern(PATTERN_CHARS - 100, "a"), pattern(100, "b")];
+  it("charges only middle pieces holding a ?, and applies up to the ceiling, not past it", () => {
+    expect([questionPieceChars("*.log"), questionPieceChars("a?c"), questionPieceChars("?*x*?"),
+            questionPieceChars("*a?b*c*"), questionPieceChars("x*??*y*z?q*")])
+      .toEqual([0, 0, 0, 3, 5]);
+    const at = [pattern(QUESTION_PIECE_CHARS - 100, "a"), pattern(100, "b")];
     expect(unappliedLines(at)).toEqual([]);
-    // One more character, in another line: that line alone is not applied.
-    expect(unappliedLines([...at, "*c"])).toEqual(["*c"]);
-    // A literal line takes none of it, and a repeated line counts once.
-    expect(unappliedLines([...at, "node_modules", at[0]!, "plain/path"])).toEqual([]);
-    // A pattern line not applied matches nothing; the ones before it still do.
-    const matches = ignoredBy([...at, "*.log"]);
+    // One more charged character, in another line: that line alone is not applied.
+    expect(unappliedLines([...at, "*?c*"])).toEqual(["*?c*"]);
+    // A literal line, a line with no ?-piece and a repeated line take none of it.
+    expect(unappliedLines([...at, "node_modules", "*.tmp", "/dist/**", at[0]!])).toEqual([]);
+    // A line not applied matches nothing; the ones before it still do.
+    const matches = ignoredBy([...at, "*?log*"]);
     expect(matches("run.log")).toBeNull();
-    expect(matches(`a${"x".repeat(PATTERN_CHARS - 102)}`)).toBe("custom");
+    expect(matches(`a${"x".repeat(QUESTION_PIECE_CHARS - 101)}`)).toBe("custom");
+  });
+
+  // GitHub's templates (github.com/github/gitignore, CC0), as fetched 2026-11-03.
+  it("applies GitHub's own gitignore templates in full", () => {
+    const template = (name: string) => readFileSync(join(__dirname, "fixtures", "gitignore",
+                                                         `${name}.gitignore`), "utf8").split("\n");
+    for (const names of [["VisualStudio"], ["Node", "macOS", "VisualStudioCode", "JetBrains"],
+                         ["Unity"]]) {
+      expect(unappliedLines([...defaultSyncIgnore(), ...names.flatMap(template)])).toEqual([]);
+    }
+  });
+
+  it("needs no ceiling for lines with no ?-piece: 2,000 of them over long unique names", () => {
+    const lines = Array.from({ length: 2_000 }, (_, i) => `*${"ab".repeat(20)}${i}*${
+      String.fromCharCode(97 + (i % 26))}*.x`);
+    expect(unappliedLines(lines)).toEqual([]);
+    const matches = ignoredBy(lines);
+    const started = performance.now();
+    for (let i = 0; i < 400; i++) {
+      matches(`${"ab".repeat(20)}${String(i).padStart(8, "0")}`.padEnd(250, "abcdefghij"));
+    }
+    expect((performance.now() - started) / 400).toBeLessThan(2);
+  });
+
+  it("still charges the hostile shape its whole ?-piece", () => {
+    const line = `*${"?".repeat(150)}a*`;
+    expect(questionPieceChars(line)).toBe(151);
+    expect(unappliedLines([line, line.replace("a*", "b*"), line.replace("a*", "c*")]))
+      .toEqual([line.replace("a*", "c*")]);
+  });
+
+  it("matches names past the basic plane as fast, and by code points", () => {
+    expect([wildcard("?", "\u{1F600}"), wildcard("??", "\u{1F600}"), wildcard("a?b", "a\u{1F600}b"),
+            wildcard("*\u{1F600}*", "x\u{1F600}y"), wildcard("*?.md", "\u{1F600}.md"),
+            wildcard("*??.md", "\u{1F600}.md"), wildcard("x*?", "x\u{1F600}"),
+            wildcard("\u{1F600}*", "\u{1F600}")])
+      .toEqual([true, false, true, true, true, false, true, true]);
+    const lines = Array.from({ length: 2_000 }, (_, i) => `*${"ab".repeat(20)}${i}*${
+      String.fromCharCode(97 + (i % 26))}*.x`);
+    const matches = ignoredBy(lines);
+    const started = performance.now();
+    for (let i = 0; i < 400; i++) {
+      matches(`\u{1F600}${"ab".repeat(20)}${String(i).padStart(8, "0")}`.padEnd(250, "abcdefghij"));
+    }
+    expect((performance.now() - started) / 400).toBeLessThan(2);
   });
 
   it("keeps syncing the files a line past the ceiling names, and says so", async () => {
     const { place: p, local } = place();
     mkdirSync(join(local, ".ta"), { recursive: true });
     writeFileSync(join(local, ".ta", "sync-ignore"),
-                  `${pattern(PATTERN_CHARS, "z")}\n*.log\n`);
+                  `${pattern(QUESTION_PIECE_CHARS, "z")}\n*?log*\n`);
     writeFileSync(join(local, "run.log"), "kept syncing");
     const sent: string[] = [];
     const report = await syncOut(client((door, body) => door === "commit"
       ? commitAll(body, sent) : { status: 404, body: {} }), p, memoryMirror(), LEASE, []);
     expect(sent).toContain("/workspace/run.log");
-    expect(report.unapplied).toEqual(["*.log"]);
+    expect(report.unapplied).toEqual(["*?log*"]);
     expect(report.unapplied_count).toBe(1);
   });
 

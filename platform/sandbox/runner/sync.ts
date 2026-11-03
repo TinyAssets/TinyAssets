@@ -480,8 +480,8 @@ export interface SyncReport {
   /** How long matching the sync-ignore list took this sync, in ms. */
   readonly match_ms: number;
   /**
-   * The list's pattern lines past `PATTERN_CHARS`, not applied (the files they name go on
-   * syncing): the first `LISTED`, and how many in all.
+   * The list's pattern lines past `QUESTION_PIECE_CHARS`, not applied (the files they name
+   * go on syncing): the first `LISTED`, and how many in all.
    */
   readonly unapplied: readonly string[];
   readonly unapplied_count: number;
@@ -794,7 +794,7 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
   await send();
   const rules = syncIgnore(place.local);
   const matcher = ignoredBy(rules);
-  // Pattern lines past the ceiling (`PATTERN_CHARS`) are not applied, and said.
+  // Pattern lines past the ceiling (`QUESTION_PIECE_CHARS`) are not applied, and said.
   const unapplied = unappliedLines(rules);
   // How long matching the list took, so a slow list says so in the run's report.
   let matchMs = 0;

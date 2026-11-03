@@ -34,92 +34,105 @@ export function defaultSyncIgnore(): readonly string[] {
 }
 
 /**
- * Whether `text` matches `pattern` (`*` any run of characters, `?` any one), in time linear
- * in the text for a pattern: its pieces between the stars matched in order, leftmost first
- * (`?` any one character within a piece), the first piece at the start and the last at the
- * end. Text or a pattern past the basic plane (a `?` must take a whole code point) walks the
- * pattern's positions together instead (a set of states, no backtracking).
+ * Whether `text` matches `pattern` (`*` any run of characters, `?` any one code point): its
+ * pieces between the stars matched in order, leftmost first, the first piece at the start
+ * and the last at the end. A piece with no `?` is found by `indexOf` and the anchored pieces
+ * are compared once, so a pattern costs time linear in the text but for its middle pieces
+ * that hold a `?`, each tried at every position (`QUESTION_PIECE_CHARS` bounds those). Text
+ * past the basic plane takes the same way: a piece begins on a whole code point, so a
+ * literal one can only match on a boundary, and only a `?` takes care to step a whole one.
  */
 export function wildcard(pattern: string, text: string): boolean {
-  return WIDE.test(pattern) || WIDE.test(text) ? states(pattern, text)
-    : pieces(pattern.split("*"), text);
+  return pieces(pattern.split("*"), text, WIDE.test(text));
 }
 
 /** A surrogate: a code point past the basic plane, two string units. */
 const WIDE = /[\uD800-\uDFFF]/;
 
-/** Where `piece` (`?` any one unit) first matches `text` at or after `from`, or -1. */
-function find(piece: string, text: string, from: number): number {
-  if (!piece.includes("?")) {
-    return text.indexOf(piece, from);
-  }
-  for (let at = from; at + piece.length <= text.length; at++) {
-    if (fits(piece, text, at)) {
-      return at;
-    }
-  }
-  return -1;
+/** The string units of the code point at `at`: two for a surrogate pair, else one. */
+function unitsAt(text: string, at: number): number {
+  const code = text.charCodeAt(at);
+  return code >= 0xD800 && code <= 0xDBFF && at + 1 < text.length ? 2 : 1;
 }
 
-function fits(piece: string, text: string, at: number): boolean {
+/**
+ * Where `piece` matched at `at` ends, or -1: each `?` one code point (one unit when the
+ * text is all of the basic plane), each other unit itself.
+ */
+function fitsAt(piece: string, text: string, at: number, wide: boolean): number {
+  let to = at;
   for (let i = 0; i < piece.length; i++) {
-    if (piece[i] !== "?" && piece[i] !== text[at + i]) {
-      return false;
+    if (to >= text.length) {
+      return -1;
+    }
+    if (piece[i] === "?") {
+      to += wide ? unitsAt(text, to) : 1;
+    } else if (piece[i] === text[to]) {
+      to += 1;
+    } else {
+      return -1;
     }
   }
-  return true;
+  return to;
 }
 
-function pieces(parts: readonly string[], text: string): boolean {
+/** The first match of `piece` at or after `from`: its start and end, or null. */
+function find(piece: string, text: string, from: number, wide: boolean):
+    { start: number; end: number } | null {
+  if (!piece.includes("?")) {
+    const start = text.indexOf(piece, from);
+    return start < 0 ? null : { start, end: start + piece.length };
+  }
+  for (let at = from; at < text.length; at += wide ? unitsAt(text, at) : 1) {
+    const end = fitsAt(piece, text, at, wide);
+    if (end >= 0) {
+      return { start: at, end };
+    }
+  }
+  return null;
+}
+
+/** Where `piece`, anchored at the text's end, would start, or -1 when the text is short. */
+function startFromEnd(piece: string, text: string, wide: boolean): number {
+  if (!wide || !piece.includes("?")) {
+    return text.length - piece.length;
+  }
+  // Each `?` takes one code point, each other unit itself: walk back as many.
+  let at = text.length;
+  for (let i = piece.length - 1; i >= 0; i--) {
+    if (at <= 0) {
+      return -1;
+    }
+    const low = text.charCodeAt(at - 1);
+    at -= piece[i] === "?" && low >= 0xDC00 && low <= 0xDFFF && at >= 2 ? 2 : 1;
+  }
+  return at;
+}
+
+function pieces(parts: readonly string[], text: string, wide: boolean): boolean {
   if (parts.length === 1) {
-    return parts[0]!.length === text.length && fits(parts[0]!, text, 0);
+    return fitsAt(parts[0]!, text, 0, wide) === text.length;
   }
   const first = parts[0]!;
   const last = parts.at(-1)!;
-  const end = text.length - last.length;
-  if (end < first.length || !fits(first, text, 0) || !fits(last, text, end)) {
+  const head = fitsAt(first, text, 0, wide);
+  const tail = startFromEnd(last, text, wide);
+  if (head < 0 || tail < head || fitsAt(last, text, tail, wide) !== text.length) {
     return false;
   }
-  let at = first.length;
+  let at = head;
   for (let i = 1; i < parts.length - 1; i++) {
     const piece = parts[i]!;
-    const found = piece === "" ? at : find(piece, text, at);
-    if (found < 0 || found + piece.length > end) {
+    if (piece === "") {
+      continue;
+    }
+    const found = find(piece, text, at, wide);
+    if (found === null || found.end > tail) {
       return false;
     }
-    at = found + piece.length;
+    at = found.end;
   }
   return true;
-}
-
-function states(pattern: string, text: string): boolean {
-  const p = [...pattern];
-  let now = new Uint8Array(p.length + 1);
-  const close = (from: Uint8Array) => {
-    for (let i = 0; i < p.length; i++) {
-      if (from[i] === 1 && p[i] === "*") {
-        from[i + 1] = 1;
-      }
-    }
-  };
-  now[0] = 1;
-  close(now);
-  for (const ch of text) {
-    const next = new Uint8Array(p.length + 1);
-    for (let i = 0; i < p.length; i++) {
-      if (now[i] !== 1) {
-        continue;
-      }
-      if (p[i] === "*") {
-        next[i] = 1;
-      } else if (p[i] === "?" || p[i] === ch) {
-        next[i + 1] = 1;
-      }
-    }
-    close(next);
-    now = next;
-  }
-  return now[p.length] === 1;
 }
 
 type Kind = "custom" | "default";
@@ -162,11 +175,13 @@ function matchAny(patterns: readonly Pattern[], text: string): Kind | null {
   const chars = charsOf(text);
   const wide = WIDE.test(text);
   for (const pattern of patterns) {
-    if ((pattern.chars & chars) !== pattern.chars
-        || (!wide && (pattern.exact ? text.length !== pattern.min : text.length < pattern.min))) {
+    // Each pattern unit takes at least one text unit; with text past the basic plane, a `?`
+    // may take two, so only the bound below holds there.
+    if ((pattern.chars & chars) !== pattern.chars || text.length < pattern.min
+        || (!wide && pattern.exact && text.length !== pattern.min)) {
       continue;
     }
-    if (wide ? states(pattern.text, text) : pieces(pattern.parts, text)) {
+    if (pieces(pattern.parts, text, wide)) {
       return pattern.kind;  // the custom lines come first (`compiled`)
     }
   }
@@ -174,21 +189,32 @@ function matchAny(patterns: readonly Pattern[], text: string): Kind | null {
 }
 
 /**
- * The most characters the list's pattern lines (those with `*` or `?`, each distinct line
- * once) take together: a technical ceiling. A pattern's match costs its length times the
- * text's in the worst case (a run of `?` before a letter tries every position), so this
- * bounds a sync-out's matching at the files plane's own ceilings, well inside the sandbox's
- * shortest session (`limits-audit.md` gives the arithmetic: about 280 s of an hour at the
- * highest `max_entries`, measured). Literal lines are set lookups and take none of it. A
- * pattern line past it is not applied, the safe way: the files it names go on syncing, and
- * the sync's report and the owner's notice say which lines.
+ * What a pattern line costs to match beyond time linear in the text: the characters of its
+ * middle pieces (between two stars) that hold a `?`, each tried at every position of the
+ * text. A line with none (`*.log`, `dist/**`, `node_modules/*`, every line of GitHub's
+ * gitignore templates) costs nothing here.
  */
-export const PATTERN_CHARS = 384;
+export function questionPieceChars(pattern: string): number {
+  return pattern.split("*").slice(1, -1).filter((piece) => piece.includes("?"))
+    .reduce((sum, piece) => sum + piece.length, 0);
+}
+
+/**
+ * The most `questionPieceChars` the list's pattern lines take together, each distinct line
+ * once: a technical ceiling, the only term of a match's cost past linear. It bounds a
+ * sync-out's matching at the files plane's own ceilings well inside the sandbox's shortest
+ * session (`limits-audit.md` gives the measured worst case and the arithmetic). Literal
+ * lines, and pattern lines with no `?` piece between stars, take none of it. A line past it
+ * is not applied, the safe way: the files it names go on syncing, and the sync's report and
+ * the owner's notice say which lines.
+ */
+export const QUESTION_PIECE_CHARS = 384;
 
 /**
  * The sync-ignore's lines compiled once: each a name anywhere or a path from the workspace;
  * a literal line a set member (a lookup per path segment, however many lines), a line with
- * `*` or `?` a pattern, in the file's order until `PATTERN_CHARS`; duplicates dropped.
+ * `*` or `?` a pattern, in the file's order until `QUESTION_PIECE_CHARS`; duplicates
+ * dropped.
  * Whether a line is a default one is by its text.
  */
 function compiled(lines: readonly string[]) {
@@ -212,11 +238,12 @@ function compiled(lines: readonly string[]) {
       if (into.has(key)) {
         continue;
       }
-      if (used + anchored.length > PATTERN_CHARS) {
+      const cost = questionPieceChars(anchored);
+      if (used + cost > QUESTION_PIECE_CHARS) {
         unapplied.push(line.trim());
         continue;
       }
-      used += anchored.length;
+      used += cost;
       into.set(key, patternOf(anchored, kind));
     } else {
       (path ? paths : names)[kind].add(anchored);
@@ -229,7 +256,7 @@ function compiled(lines: readonly string[]) {
            pathPatterns: ordered(patterns.paths), unapplied };
 }
 
-/** The list's pattern lines past `PATTERN_CHARS`, in its order: lines not applied. */
+/** The list's pattern lines past `QUESTION_PIECE_CHARS`, in its order: not applied. */
 export function unappliedLines(lines: readonly string[]): string[] {
   return compiled(lines).unapplied;
 }
