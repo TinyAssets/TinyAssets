@@ -1646,6 +1646,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         },
       },
       stop: (runs) => this.#cancelInSandbox(runs),
+      notice: (type, detail) => this.#notices.add(type, detail, clock()),
       answer: (answer) => this.#answer(answer),
       mailSettled: (mail, agent) => this.#ledger.settled(mail, agent),
       ended: (run) => {

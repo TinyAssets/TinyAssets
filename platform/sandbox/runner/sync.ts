@@ -488,6 +488,13 @@ export interface SyncReport {
   readonly unapplied_count: number;
   /** The list's bytes past `LIST_BYTES`, never read nor applied. */
   readonly list_bytes_past: number;
+  /**
+   * Files and folders whose names are not UTF-8, so never synced (a path is text at the
+   * owner's files): each from `/workspace`, its bytes escaped (`\xNN`), the first `LISTED`,
+   * and how many.
+   */
+  readonly unnamed: readonly string[];
+  readonly unnamed_count: number;
 }
 
 /** Held-back files a report lists by path, at most: past them it counts them. */
@@ -822,10 +829,17 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
     return why === "custom" || (why === "default"
                                 && !mirror.knowsUnder(`/workspace/${rel}`));
   };
+  const unnamed: string[] = [];
+  let unnamedCount = 0;
   for (const rel of walkFiles(place.local, (each, isDir) => {
     const name = each.split("/").at(-1)!;
     return each === ".sessions" || name.startsWith(".ta-")
       || out(each.split("\\").join("/"), isDir);
+  }, place.local, (rel) => {
+    unnamedCount += 1;
+    if (unnamed.length < LISTED) {
+      unnamed.push(`/workspace/${rel}`);
+    }
   })) {
     const path = `/workspace/${rel.split("\\").join("/")}`;
     if (place.authority !== "owner" && inOwnerTrees(path)) {
@@ -866,7 +880,8 @@ export async function syncOut(client: SyncClient, place: Place, mirror: Mirror,
   await send();
   return { committed, conflicts, refused, skipped, skipped_unlisted: Math.max(0, held - LISTED),
            match_ms: Math.round(matchMs), unapplied: unapplied.slice(0, LISTED),
-           unapplied_count: unapplied.length, list_bytes_past: list.past };
+           unapplied_count: unapplied.length, list_bytes_past: list.past, unnamed,
+           unnamed_count: unnamedCount };
 }
 
 /** Whether a kept file's sandbox copy differs from what the owner's files hold. */

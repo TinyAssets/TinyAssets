@@ -1155,6 +1155,61 @@ def test_every_event_requires_both_platform_jobs_to_succeed(tmp_path):
         assert run.returncode == expected, (platform, app, run.returncode)
 
 
+def test_platform_tests_has_a_leg_for_every_workspace():
+    """`platform-tests` is a matrix, one leg a workspace, and none can be dropped silently.
+
+    Run whole, the platform's suite passed the job's ten minutes (PR #5403), so it runs
+    as parallel legs, each held to the same ten. A matrix job's result is every leg's,
+    so `required-tests` (which reads `needs.platform-tests.result`) still fails on any
+    red leg. Pinned here: every workspace `platform/package.json` lists has its tests run
+    by a leg, its `test` script whole (`npm run test -w <ws>`) or, when that script is
+    only `npm run a && npm run b`, each part by a leg; the typecheck has its leg; no leg
+    is excluded, conditional or allowed to fail; and each leg runs exactly one command.
+    """
+    import json
+
+    job = _load()["jobs"]["platform-tests"]
+    assert job["name"] == "platform-tests"
+    assert job["timeout-minutes"] <= 10, "each leg keeps the ten-minute limit"
+    strategy = job["strategy"]
+    assert set(strategy) <= {"fail-fast", "matrix"}, strategy
+    assert set(strategy["matrix"]) == {"include"}, (
+        "legs are listed whole in `include`: no axes, no `exclude` to drop one")
+    legs = strategy["matrix"]["include"]
+    assert all(set(leg) == {"leg", "command"} for leg in legs), legs
+    names = [leg["leg"] for leg in legs]
+    assert len(names) == len(set(names)), names
+    commands = {leg["command"] for leg in legs}
+    assert len(commands) == len(legs), "two legs run the same command"
+    assert job["defaults"]["run"]["working-directory"] == "platform"
+    runs = [step.get("run") for step in job["steps"] if "run" in step]
+    assert runs == ["npm ci", "${{ matrix.command }}"], runs
+
+    platform = _REPO / "platform"
+    manifest = json.loads((platform / "package.json").read_text(encoding="utf-8"))
+    assert "npm run typecheck" in commands
+    assert manifest["scripts"]["typecheck"] == "tsc --noEmit"
+    workspaces = manifest["workspaces"]
+    assert manifest["scripts"]["test"] == "npm run test --workspaces"
+    covered = set()
+    for ws in workspaces:
+        scripts = json.loads((platform / ws / "package.json").read_text(
+            encoding="utf-8"))["scripts"]
+        if f"npm run test -w {ws}" in commands:
+            covered.add(f"npm run test -w {ws}")
+            continue
+        parts = [part.strip() for part in scripts["test"].split("&&")]
+        assert all(re.fullmatch(r"npm run [\w:-]+", part) for part in parts), (
+            f"{ws}'s tests have no leg: its `test` script is not run by a leg, nor is it "
+            f"only `npm run` parts each a leg could run: {scripts['test']!r}")
+        for part in parts:
+            command = f"{part} -w {ws}"
+            assert command in commands, f"{ws}'s `{part}` has no leg"
+            covered.add(command)
+    assert commands - covered == {"npm run typecheck"}, (
+        f"a leg runs what no workspace's tests are: {commands - covered}")
+
+
 # Events that do not change the head. A workflow that listens to them must be
 # the receipt/label gate or auto-enroll, never the build or the test jobs.
 _NON_CODE_TYPES = frozenset({"edited", "labeled", "unlabeled"})

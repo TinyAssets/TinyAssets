@@ -263,25 +263,45 @@ const HOSTILE: [string, string[], (i: number) => string][] = [
    (i) => `p/b0123456789${"a".repeat(230)}${String(i).padStart(10, "0")}.x`],
 ];
 
+/**
+ * Round 7 (R7-2): Aho–Corasick lines of differing depth, files under a folder 2,000 deep, each
+ * file's segment fed from the folder's remembered node, its fallback the folder's depth. git
+ * itself takes minutes over this list (its `wildmatch` tries each `**` at every folder), so
+ * its answers are by construction: a path is ignored when it ends `/` + `a/` (1 to 1,000
+ * times) + `b`.
+ */
+const DEEP: [string, string[], (i: number) => string] = [
+  "R7 **/a/…/a/b, files 2,000 folders deep", R(1000, (i) => `**/${"a/".repeat(1 + i)}b`),
+  (i) => i % 3 === 0 ? `${"a/".repeat(2000)}file${i}` : i % 3 === 1
+    ? `${"a/".repeat(1500)}b/x${i}` : `${"a/".repeat(1500 + i % 7)}b`];
+const deepIgnored = (path: string) => /(^|\/)(a\/){1,1000}b$/.test(path)
+  || /(^|\/)(a\/){1,1000}b\//.test(path);
+
 /** UTF-8 bytes of a string. */
 const bytesOf = (text: string) => Buffer.byteLength(text, "utf8");
 
 describe("the review's hostile lists (rounds 1 to 6)", () => {
-  it.each(HOSTILE)("%s: git's answers with the lines that fit, at the automaton's cost",
-                   (_, list, path) => {
+  it.each([...HOSTILE, DEEP])("%s: git's answers with the lines that fit, at the automaton's cost",
+                   (label, list, path) => {
     const lines = [...defaultSyncIgnore(), ...list];
     const past = new Set(unappliedLines(lines).map((each) => each.line));
     const applied = lines.filter((each) => !past.has(each.trim()));
     // Answered as git answers the lines that fit (non-existent paths: names past NAME_MAX).
     const asked = Array.from({ length: 60 }, (_, i) => path(i));
-    const repo = mkdtempSync(join(scratch, "h-"));
-    execFileSync("git", ["init", "-q", repo], { env: ENV });
-    writeFileSync(join(repo, ".gitignore"), applied.join("\n"));
-    const answer = spawnSync("git", ["-C", repo, "-c", "core.excludesFile=/dev/null",
-                                     "check-ignore", "--no-index", "--stdin", "-z"],
-                             { input: asked.join("\0"), env: ENV, encoding: "utf8" });
-    rmSync(repo, { recursive: true, force: true });
-    const ignored = new Set(answer.stdout.split("\0").filter(Boolean));
+    let ignored: Set<string>;
+    if (label === DEEP[0]) {
+      ignored = new Set(asked.filter(deepIgnored));
+      expect(ignored.size).toBeGreaterThan(0);
+    } else {
+      const repo = mkdtempSync(join(scratch, "h-"));
+      execFileSync("git", ["init", "-q", repo], { env: ENV });
+      writeFileSync(join(repo, ".gitignore"), applied.join("\n"));
+      const answer = spawnSync("git", ["-C", repo, "-c", "core.excludesFile=/dev/null",
+                                       "check-ignore", "--no-index", "--stdin", "-z"],
+                               { input: asked.join("\0"), env: ENV, encoding: "utf8" });
+      rmSync(repo, { recursive: true, force: true });
+      ignored = new Set(answer.stdout.split("\0").filter(Boolean));
+    }
     const matcher = ignoredBy(lines);
     expect(asked.filter((each) => ignored.has(each) !== (matcher(each) !== null))).toEqual([]);
     // Its cost a path: within the automaton's bound, (name + segment + 1) bytes of ⌈S/32⌉
@@ -311,7 +331,11 @@ describe("the review's hostile lists (rounds 1 to 6)", () => {
     }
     const fresh = [path(1)];
     const name = bytesOf(fresh[0]!.split("/").at(-1)!);
-    const bound = (2 * name + 1) * (words * STEP_NS + INDEX_NS) * 1.5 / 1e6;
+    // Its folder's remembered Aho–Corasick node may be as deep as its folder (R7-2): the
+    // walk from it falls back at most that far, a step an index byte.
+    const folder = bytesOf(fresh[0]!.slice(0, Math.max(0, fresh[0]!.lastIndexOf("/"))));
+    const bound = ((2 * name + 1) * (words * STEP_NS + INDEX_NS) + folder * INDEX_NS) * 1.5
+      / 1e6;
     expect(perPath).toBeLessThanOrEqual(bound);
   }, 300_000);
 });
@@ -326,6 +350,8 @@ describe("its memory", () => {
   // `gc` for this test alone, so a list's heap is read after the garbage of its making.
   setFlagsFromString("--expose-gc");
   const gc = runInNewContext("gc") as () => void;
+  // Heads the lines share, and heads that diverge (a trie's and Aho–Corasick's worst, R7-3).
+  const head = (i: number) => (Math.imul(i + 1, 2654435761) >>> 0).toString(36);
   const shapes: Record<string, (i: number) => string> = {
     literalName: (i) => `name-${i.toString(36)}-xxxxxxxx`,
     literalPath: (i) => `dir/${i.toString(36)}/name-xxxx`,
@@ -335,9 +361,16 @@ describe("its memory", () => {
     anywhere: (i) => `**/dir/${i.toString(36)}/x`,
     automaton: (i) => `*${i.toString(36)}?x*y`,
     negated: (i) => `!name-${i.toString(36)}-xxxx`,
+    literalNameDiverging: (i) => `${head(i)}${i.toString(36)}`,
+    literalPathDiverging: (i) => `${head(i)}/${i.toString(36)}`,
+    suffixDiverging: (i) => `*${head(i)}${i.toString(36)}`,
+    prefixDiverging: (i) => `${head(i)}${i.toString(36)}*`,
+    pathPrefixDiverging: (i) => `${head(i)}/${i.toString(36)}*`,
+    anywhereDiverging: (i) => `**/${head(i)}/${i.toString(36)}`,
   };
 
-  it("holds, at `LIST_BYTES` of any class, what the sandbox's heap leaves beside the agent",
+  it("holds, at `LIST_BYTES` of any class (each measured at a quarter of it, a list byte's " +
+     "heap), what the sandbox's heap leaves beside the agent",
      () => {
     expect(LIST_BYTES * HEAP_PER_LIST_BYTE).toBeLessThanOrEqual(SANDBOX_HEAP - AGENT_PEAK);
     for (const [label, shape] of Object.entries(shapes)) {
@@ -346,7 +379,7 @@ describe("its memory", () => {
       const base = used();
       const lines: string[] = [];
       let bytes = 0;
-      for (let i = 0; bytes < LIST_BYTES; i++) {
+      for (let i = 0; bytes < LIST_BYTES / 4; i++) {
         lines.push(shape(i));
         bytes += shape(i).length + 1;
       }

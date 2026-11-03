@@ -453,6 +453,23 @@ describe("the sync-ignore's ceilings, at sync-out", () => {
   });
 });
 
+describe("names that are not UTF-8", () => {
+  it("are said, their bytes escaped, never silently missed; the rest syncs", async () => {
+    const { place: p, local } = place();
+    mkdirSync(join(local, "src"), { recursive: true });
+    writeFileSync(join(local, "src", "ok.txt"), "ok");
+    writeFileSync(Buffer.concat([Buffer.from(`${local}/src/`), Buffer.from([0x66, 0xff, 0x6f])]),
+                  "a name a string cannot hold");
+    mkdirSync(Buffer.concat([Buffer.from(`${local}/`), Buffer.from([0xc3, 0x28])]));
+    const sent: string[] = [];
+    const report = await syncOut(client((door, body) => door === "commit"
+      ? commitAll(body, sent) : { status: 404, body: {} }), p, memoryMirror(), LEASE, []);
+    expect(sent).toContain("/workspace/src/ok.txt");
+    expect([...report.unnamed].sort()).toEqual(["/workspace/\\xc3(", "/workspace/src/f\\xffo"]);
+    expect(report.unnamed_count).toBe(2);
+  });
+});
+
 describe("a list larger than the sandbox's heap would hold whole", () => {
   it("is cut at `LIST_BYTES` in a sync agent given the sandbox's heap, which completes", () => {
     // The sync, bundled as the template bundles the runner, run in a Node given the heap a

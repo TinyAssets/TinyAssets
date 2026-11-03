@@ -106,8 +106,13 @@ const RACY_MS = 2_000;
 /** Its size: `RESERVE_BYTES` in the sandbox; a mebibyte under a test's root, the same path. */
 const RESERVE_SIZE = ROOT === "" ? RESERVE_BYTES : 1024 * 1024;
 
-/** The runner's heartbeat: slice R's lease renewal cadence (a batch at least every 20 s). */
-export const HEARTBEAT_MS = 20_000;
+/**
+ * The runner's heartbeat: slice R's lease renewal cadence (a batch at least every 20 s). A
+ * test's root alone may shorten it (`TA_HEARTBEAT_MS`), so a test of a sync-out longer than
+ * a heartbeat is seconds long; the sandbox's root (`/`) never reads it.
+ */
+export const HEARTBEAT_MS = ROOT !== "" && process.env["TA_HEARTBEAT_MS"] !== undefined
+  ? Number(process.env["TA_HEARTBEAT_MS"]) : 20_000;
 /** How often the runner flushes what its CLI wrote: the frames' own cadence (§2.2). */
 const FLUSH_MS = 250;
 /**
@@ -981,6 +986,18 @@ function reportSync(outbox: Outbox, report: SyncReport | null): void {
                   message: `In /workspace/.ta/sync-ignore, ${said.join(", and ")} ${
                     said.length === 1 && states === 1 ? "is" : "are"} not applied, in file ` +
                     "order: the files they name go on syncing." });
+  }
+  // Names that are not UTF-8 never sync (a path is text at the owner's files): said, with
+  // their bytes escaped, never silently missed; the object makes it the owner's notice.
+  if ((report?.unnamed_count ?? 0) > 0) {
+    const count = report!.unnamed_count;
+    outbox.push({ type: "ta.sync_unnamed", paths: report!.unnamed, count,
+                  message: `${count} file${count === 1 ? "" : "s"} or folder${
+                    count === 1 ? "" : "s"} in your sandbox ${count === 1 ? "has a name" :
+                    "have names"} that ${count === 1 ? "is" : "are"} not UTF-8, so ${
+                    count === 1 ? "it does" : "they do"} not sync to your files: ${
+                    report!.unnamed.slice(0, 5).join(", ")}${count > 5 ? ", …" : ""}. ` +
+                    "Rename them to sync them." });
   }
   // A slow list says so, so the owner sees why a sync took long: its pattern lines (`*`,
   // `?`) cost the most. Said past `SLOW_MATCH_MS`, which refuses nothing.

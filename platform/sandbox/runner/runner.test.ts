@@ -29,8 +29,8 @@ import { processesOf } from "./users";
 import { Doors, POOL_UIDS, runnerBundle, Sandbox, startDoc, SYNC_UID, TA_GID } from "./harness";
 
 const sources = bundledSources();
-/** The runner's heartbeat (`runner.ts` `HEARTBEAT_MS`). */
-const HEARTBEAT_MS = 20_000;
+/** The runner's heartbeat in the heartbeat test (`TA_HEARTBEAT_MS`, a test root's alone). */
+const HEARTBEAT_MS = 2_000;
 
 /** Each record's own event shapes: a session id, a tool call, the final text, usage. */
 const SHAPES: Record<string, { lines: unknown[]; session: string | null; text: string;
@@ -1200,7 +1200,10 @@ describe("the sync", () => {
     // its event posts alone, so a sync-out that stopped them would lose it.
     doors.commitDelayMs = HEARTBEAT_MS + 3_000;
     box.cli("codex", { lines: SHAPES["codex"]!.lines, writes: { "notes.md": "long sync" } });
-    const { start } = await run("codex");
+    process.env["TA_HEARTBEAT_MS"] = String(HEARTBEAT_MS);
+    const { start } = await run("codex").finally(() => {
+      delete process.env["TA_HEARTBEAT_MS"];
+    });
     const commit = doors.posts.find((post) => post.path === "/sync/commit")!;
     const during = doors.posts.filter((post) => post.path === `/r/${start.run}/events`
       && post.at > commit.at + 1_000 && post.at < commit.at + HEARTBEAT_MS + 3_000);
@@ -1250,6 +1253,23 @@ describe("the sync", () => {
     expect(said["count"]).toBeGreaterThanOrEqual(lines.length);
     expect(String(said["message"])).toMatch(/past the 8,192 automaton states/);
     expect(doors.ops().map((op) => op.path)).toContain("/workspace/agents/main/run.log");
+  });
+
+  it("says the files whose names are not UTF-8, escaped, as it syncs the rest", async () => {
+    // As the run's user would: its directories in the workspace are group ta's.
+    for (const dir of ["/workspace/agents", "/workspace/agents/main"]) {
+      mkdirSync(box.path(dir), { recursive: true });
+      chownSync(box.path(dir), POOL_UIDS[3]!, TA_GID);
+      chmodSync(box.path(dir), 0o2775);
+    }
+    writeFileSync(Buffer.concat([Buffer.from(box.path("/workspace/agents/main/")),
+                                 Buffer.from([0x62, 0xfe])]), "unnamed");
+    box.cli("codex", { lines: SHAPES["codex"]!.lines, writes: { "fine.md": "fine" } });
+    await run("codex");
+    const said = doors.frames().find((frame) => frame["type"] === "ta.sync_unnamed")!;
+    expect(said).toMatchObject({ count: 1, paths: ["/workspace/agents/main/b\\xfe"] });
+    expect(String(said["message"])).toMatch(/not UTF-8, so it does not sync/);
+    expect(doors.ops().map((op) => op.path)).toContain("/workspace/agents/main/fine.md");
   });
 
   it("sends a file past one chunk through the upload doors, chunk by chunk", async () => {

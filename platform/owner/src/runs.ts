@@ -195,6 +195,11 @@ export interface RunDeps {
   readonly answer: (answer: MailAnswer) => void;
   /** In the unit, once a mail's run settled, however: its mail no longer held for it. */
   readonly mailSettled: (mail: string, agent: string) => void;
+  /**
+   * In the unit: what a run's sandbox said the owner must hear (its sync's files whose names
+   * are not UTF-8, `ta.sync_unnamed`), as the owner's notice.
+   */
+  readonly notice?: (type: string, detail: string) => void;
   /** In the unit, once the lease was given back: every stream under it ended. */
   readonly leaseEnded: (leaseId: string) => void;
   /** In the unit: a run settled lost or revoked, whose CLI the sandbox stops, once over. */
@@ -1190,6 +1195,13 @@ export class Runs {
       throw new Error(`run ${runId}'s engine ${row.source} has no record`);
     }
     const { last, result, resultCut, error, session, relayed } = batch(row, events, frames);
+    for (const frame of frames) {
+      const event = frame.event as { type?: unknown; message?: unknown } | null;
+      if (frame.seq > row.last_seq && event?.type === "ta.sync_unnamed"
+          && typeof event.message === "string") {
+        this.#deps.notice?.("sync_unnamed", `${row.agent}: ${event.message}`);
+      }
+    }
     // The batch is this run's own heartbeat, as it renews the lease.
     this.#sql.exec("UPDATE runs SET last_seq = ?, result = ?, result_cut = ?, error = ?, " +
                      "state = CASE WHEN state = 'queued' THEN 'running' ELSE state END, " +

@@ -18,8 +18,14 @@ import { ignoredBy, stepNanos } from "../../../platform/owner/src/sync-ignore";
 import { openMirror, SyncClient, syncOut } from "../../../platform/sandbox/runner/sync";
 
 const [mode, arg] = [process.argv[2], Number(process.argv[3] ?? 0)];
-/** Each class's lines: literal names and paths, a name's `*L` and `L*`, a path's `L*` and
- * `**\/L`, automaton lines (past its states, the rest held to be said), negations. */
+/** A head no two lines share (a trie's worst: every line its own branch from the root). */
+const head = (i: number) => (Math.imul(i + 1, 2654435761) >>> 0).toString(36);
+/**
+ * Each class's lines, two ways: heads the lines share (`*.ext-…`), and heads that diverge
+ * (round 7: a trie's or Aho–Corasick's worst): literal names and paths, a name's `*L` and
+ * `L*`, a path's `L*` and `**\/L`, automaton lines (past its states, the rest held to be
+ * said), negations.
+ */
 const SHAPES: Record<string, (i: number) => string> = {
   literalName: (i) => `name-${i.toString(36)}-xxxxxxxx`,
   literalPath: (i) => `dir/${i.toString(36)}/name-xxxx`,
@@ -29,6 +35,12 @@ const SHAPES: Record<string, (i: number) => string> = {
   anywhere: (i) => `**/dir/${i.toString(36)}/x`,
   automaton: (i) => `*${i.toString(36)}?x*y`,
   negated: (i) => `!name-${i.toString(36)}-xxxx`,
+  literalNameDiverging: (i) => `${head(i)}${i.toString(36)}`,
+  literalPathDiverging: (i) => `${head(i)}/${i.toString(36)}`,
+  suffixDiverging: (i) => `*${head(i)}${i.toString(36)}`,
+  prefixDiverging: (i) => `${head(i)}${i.toString(36)}*`,
+  pathPrefixDiverging: (i) => `${head(i)}/${i.toString(36)}*`,
+  anywhereDiverging: (i) => `**/${head(i)}/${i.toString(36)}`,
 };
 const say = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`);
 /** The heap and the typed arrays' backing stores: both hold the matcher. */

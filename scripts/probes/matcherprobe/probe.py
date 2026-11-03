@@ -51,7 +51,9 @@ def main():
             sandbox.files.write("/tmp/heap.mjs", js.read_text())
             node = "/usr/local/bin/node"
             classes = ["literalName", "literalPath", "suffix", "prefix", "pathPrefix",
-                       "anywhere", "automaton", "negated"]
+                       "anywhere", "automaton", "negated", "literalNameDiverging",
+                       "literalPathDiverging", "suffixDiverging", "prefixDiverging",
+                       "pathPrefixDiverging", "anywhereDiverging"]
 
             def run(name, command, timeout):
                 try:

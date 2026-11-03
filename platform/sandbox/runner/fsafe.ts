@@ -210,26 +210,36 @@ export async function safePieces(base: string, path: string, pieceBytes: number,
  */
 export function* walkFiles(dir: string,
                            skip: (rel: string, isDir: boolean) => boolean = () => false,
-                           base = dir): Generator<string> {
+                           base = dir, unnamed: (rel: string) => void = () => {}):
+    Generator<string> {
   if (kind(dir) !== "dir") {
     return;
   }
   let handle: Dir;
   try {
-    handle = opendirSync(dir);
+    // Buffer names (Node takes `buffer` here, though its types say only text encodings).
+    handle = opendirSync(dir, { encoding: "buffer" as BufferEncoding });
   } catch {
     return;  // one this user may not list: its contents are not ours to sync
   }
   try {
     for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
-      const path = join(dir, entry.name);
+      // Read by its bytes: a name that is not UTF-8 has no path a string can name, so it is
+      // told (`unnamed`, its bytes escaped), never silently missed.
+      const raw = entry.name as unknown as Buffer;
+      const name = raw.toString("utf8");
+      if (!Buffer.from(name, "utf8").equals(raw)) {
+        unnamed(join(relative(base, dir), escapedName(raw)));
+        continue;
+      }
+      const path = join(dir, name);
       const rel = relative(base, path);
       const found = kind(path);
       if (skip(rel, found === "dir")) {
         continue;
       }
       if (found === "dir") {
-        yield* walkFiles(path, skip, base);
+        yield* walkFiles(path, skip, base, unnamed);
       } else if (found === "file") {
         yield rel;
       }
@@ -237,6 +247,19 @@ export function* walkFiles(dir: string,
   } finally {
     handle.closeSync();
   }
+}
+
+/**
+ * A name's bytes as text a person reads: printable ASCII as itself (a backslash doubled),
+ * every other byte `\xNN`.
+ */
+export function escapedName(raw: Buffer): string {
+  let out = "";
+  for (const b of raw) {
+    out += b === 92 ? "\\\\" : b >= 32 && b < 127 ? String.fromCharCode(b)
+      : `\\x${b.toString(16).padStart(2, "0")}`;
+  }
+  return out;
 }
 
 /**

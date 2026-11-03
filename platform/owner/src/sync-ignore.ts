@@ -61,23 +61,25 @@ export const AUTOMATON_STATES = 8_192;
 /**
  * The most bytes of the list applied, in file order: a technical ceiling, the matcher's
  * memory in the sync agent's heap: (`SANDBOX_HEAP` − `AGENT_PEAK`) / `HEAP_PER_LIST_BYTE`,
- * all three measured in a sandbox of the template (`scripts/probes/matcherprobe/`), is 11.7
- * MiB, so 8 MiB (`limits-audit.md`). The sandbox compiled 12 MiB of every class beside the
- * agent's peak.
+ * measured in a sandbox of the template (`scripts/probes/matcherprobe/`), is 7.8 MiB with
+ * the worst class's heads diverging, so 6 MiB (`limits-audit.md`).
  */
-export const LIST_BYTES = 8 * 1024 * 1024;
+export const LIST_BYTES = 6 * 1024 * 1024;
 /** The sync agent's heap limit in the sandbox (Node's own, the agent spawned with no flag). */
 export const SANDBOX_HEAP = 460_587_008;
 /** The sync agent's own heap at its peak over a sync-out of 500,000 entries, measured there. */
-export const AGENT_PEAK = 67_202_784;
-/** The worst class's heap (and typed arrays) a list byte, measured there (a name's `*L`: 31.9). */
-export const HEAP_PER_LIST_BYTE = 32;
+export const AGENT_PEAK = 70_027_000;
+/**
+ * The worst class's heap (and typed arrays) a list byte, its lines' heads diverging (round 7,
+ * R7-3: a path's `L*` and a name's `*L`, 45.0 and 43.4; Aho–Corasick's `**\/L` 36.6).
+ */
+export const HEAP_PER_LIST_BYTE = 48;
 /**
  * The most nanoseconds one automaton step (a byte of text, a 32-state word) may take in the
  * sandbox: the constant of `AUTOMATON_STATES`'s derivation, measured there by the template
  * build's standing check (`stepNanos`), which fails the build past it.
  */
-export const STEP_NS = 3.5;
+export const STEP_NS = 6;
 
 export type Kind = "custom" | "default";
 
@@ -517,6 +519,12 @@ class Trie {
     }
   }
 
+  /** Its arrays cut to its nodes, once made (their doubling's slack let go). */
+  trim(): void {
+    this.any = this.any.slice(0, this.nodes);
+    this.all = this.all.slice(0, this.nodes);
+  }
+
   collect(node: number, best: Best): void {
     best.any = Math.max(best.any, this.any[node]!);
     best.all = Math.max(best.all, this.all[node]!);
@@ -610,6 +618,11 @@ class Anywhere {
         queue[tail++] = v;
       }
     }
+    // The walk's links are the build's alone: let go, and the trie's arrays cut to size.
+    this.first = new Int32Array(0);
+    this.sibling = new Int32Array(0);
+    this.into = new Uint8Array(0);
+    t.trim();
   }
 
   /** The node after `bytes`, from `node`. */
@@ -891,6 +904,9 @@ function compile(lines: readonly string[]): Compiled {
     }
   }
   anywhere.build();
+  suffix.trim();
+  prefix.trim();
+  pathPrefix.trim();
   return { rules, names, paths, suffix, prefix, pathPrefix, anywhere,
            nameAutomaton: new Automaton(automata.name, counted.name),
            pathAutomaton: new Automaton(automata.path, counted.path), unapplied };
@@ -1073,26 +1089,33 @@ export function ignoredBy(lines: readonly string[]): Matcher {
 // -- The constant, measured where it runs -------------------------------------------------------
 
 /**
- * Nanoseconds per automaton step (a byte of text, a 32-state word) at `AUTOMATON_STATES`
- * with every state alive: the median of five runs of `ms` each after a warm-up, so a
- * neighbour's moment on the sandbox's CPU moves it little. The template build's standing
- * check runs it in the sandbox and holds it to `STEP_NS`.
+ * Nanoseconds per automaton step (a byte of text, a 32-state word) at `AUTOMATON_STATES`,
+ * on the automaton's slowest branch (round 7, R7-1): lines with a `/**\/` each (so every byte
+ * reads and writes its passed states too), and text of `/` bytes (the branch that re-arms
+ * as well), with `*\/**\/…` and `**\/` lines keeping states alive throughout; the median of
+ * five runs of `ms` each after a warm-up, so a neighbour's moment on the sandbox's CPU moves
+ * it little; the slower of the two texts (`/` and none). The template build's standing check
+ * runs it in the sandbox and holds it to `STEP_NS`.
  */
 export function stepNanos(ms = 600): number {
   const lines: AutomatonLine[] = [];
   let states = 0;
-  for (;;) {
-    // `*`, 30 `?`, `*`: every state is entered by every byte, so none dies.
-    const tokens = tokenize(utf8(`*${"?".repeat(30)}*`), false)!;
+  const add = (pattern: string) => {
+    const tokens = tokenize(utf8(pattern), true)!;
     if (states + statesOf(tokens) > AUTOMATON_STATES) {
-      break;
+      return false;
     }
     lines.push({ tokens, rule: () => 0, dirOnly: false });
     states += statesOf(tokens);
+    return true;
+  };
+  // A leading `**/` keeps a line alive across `/`; `*` loops keep the rest alive between.
+  add(`**/*${"?".repeat(28)}*`);
+  while (add(`*/**/${"?".repeat(27)}*`)) {
+    // filled to the ceiling
   }
   const automaton = new Automaton(lines, AUTOMATON_STATES);
-  const text = utf8("ab-cd".repeat(51));
-  const timed = (span: number) => {
+  const timed = (text: Uint8Array, span: number) => {
     let runs = 0;
     const began = Date.now();
     while (Date.now() - began < span) {
@@ -1102,7 +1125,9 @@ export function stepNanos(ms = 600): number {
     }
     return ((Date.now() - began) * 1e6) / (runs * text.length * automaton.W);
   };
-  timed(ms);  // warm-up
-  const runs = Array.from({ length: 5 }, () => timed(ms)).sort((a, b) => a - b);
-  return runs[2]!;
+  const median = (text: Uint8Array) => {
+    timed(text, ms);  // warm-up
+    return Array.from({ length: 5 }, () => timed(text, ms)).sort((a, b) => a - b)[2]!;
+  };
+  return Math.max(median(utf8("ab-cd".repeat(51))), median(utf8("a/b/c".repeat(51))));
 }

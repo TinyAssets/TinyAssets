@@ -268,6 +268,24 @@ describe("admission", () => {
   });
 });
 
+describe("a run's sandbox report", () => {
+  it("makes files the sync cannot name (not UTF-8) the owner's notice, once a frame",
+     async () => {
+    const r = await gated();
+    const { start } = await ownerRun(r.stub, r.bind(), SIGNED_IN);
+    const said = { type: "ta.sync_unnamed", paths: ["/workspace/f\\xffo"], count: 1,
+                   message: "1 file or folder in your sandbox has a name that is not UTF-8, " +
+                     "so it does not sync to your files: /workspace/f\\xffo. Rename them " +
+                     "to sync them." };
+    await r.stub.runEvents(runnerBinding(r, start), { frames: frames(said) });
+    // The same frame posted again (a retry) is no second notice.
+    await r.stub.runEvents(runnerBinding(r, start), { frames: frames(said) });
+    const notices = (await r.stub.noticeList(r.bind())).notices
+      .filter((each) => each.type === "sync_unnamed");
+    expect(notices.map((each) => each.detail)).toEqual([`main: ${said.message}`]);
+  });
+});
+
 describe("a run's settle", () => {
   it("is succeeded, failed or unknown, from the runner's end, never replayed", async () => {
     const r = await gated();
