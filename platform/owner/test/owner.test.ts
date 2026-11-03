@@ -30,7 +30,7 @@ const RPC_METHODS = Object.freeze([
   "codeRun", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory",
   "collectionPull",
   "collectionWrite", "connectionCommit", "connectionList", "connectionPrepare",
-  "connectionRevoke", "deleteAgent", "disableAgent", "egressOpen", "egressReceipts",
+  "connectionRevoke", "deleteAgent", "disableAgent", "egressBeat", "egressOpen", "egressReceipts",
   "egressSettle", "fileChanges", "fileHistory", "fileHistoryPurge", "fileList",
   "fileMkdir", "fileRead", "fileReadChunks", "fileRedact", "fileRemove", "fileRename",
   "fileRestore", "fileStat", "fileSyncCommit", "fileUploadAbort", "fileUploadBegin",
@@ -118,7 +118,7 @@ describe("schema migration on wake", () => {
       .exec(MIGRATIONS.flat().join(" "))?.[1]);
     expect(ceiling).toBe(PLACE_BYTES);
     // A placed body is any size up to what one call moves whole, cut into chunks.
-    expect(LIMITS.maxRowBytes).toBe(4 * CHUNK_BYTES);
+    expect(LIMITS.maxRowBytes).toBe(2 * CHUNK_BYTES);
     const { stub } = ownerObject();
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       const insert = (body: string, bytes: number, content: string | null) =>

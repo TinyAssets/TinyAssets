@@ -269,7 +269,7 @@ describe("write-gate guard", () => {
     expect(bodies["#filing"]).toContain("await this.#door(act)");
     // The doors with a body (ADR-035): each begins in a unit, and every step that writes is
     // one, the R2 calls between them.
-    expect(bodies["#placing"]).toContain("const first = await this.#door(");
+    expect(bodies["#placing"]).toContain("first = await this.#door(");
     expect(bodies["#placing"]).toContain("done = await this.#door(() => located(act(placed)));");
     expect(bodies["#reading"]).toMatch(/^\{\n    const \{ value, located \} = await this\.#door\(/);
     expect(bodies["#rereading"]).toContain("const located = await this.#door(");

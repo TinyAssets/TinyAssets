@@ -522,6 +522,12 @@ export function batches<T extends { size: number }>(items: readonly T[]): T[][] 
  * A conflict copy's name: `name` cut at a code point to leave room, then
  * `.ta-conflict-<epoch>` and, past the first, `-<n>`, at most 255 bytes in all.
  */
+/**
+ * An upload names a chunk the sweep is deleting this moment: refused, nothing held, so its
+ * writer begins again once the delete lands (a placed body's door does so itself).
+ */
+export const CHUNK_DELETING = "a chunk of this upload is being deleted; begin again";
+
 export function conflictName(name: string, epoch: number, n: number): string {
   const suffix = `.ta-conflict-${epoch}${n > 1 ? `-${n}` : ""}`;
   const points = [...name];
@@ -1280,7 +1286,7 @@ export class Files {
           sql.exec("INSERT INTO file_chunks (sha256, size, state, stored, holds, holder) " +
                      "VALUES (?, ?, 'uploading', 0, 1, ?)", sha256, chunkSize, own);
         } else if (row.state === "deleting") {
-          throw new Refused("a chunk of this upload is being deleted; begin again");
+          throw new Refused(CHUNK_DELETING);
         } else if (row.state === "garbage") {
           sql.exec("UPDATE file_chunks SET state = 'uploading', holds = 1, gc_after = NULL " +
                      "WHERE sha256 = ?", sha256);
@@ -1923,10 +1929,19 @@ export class Files {
   #copyPath(path: string, epoch: number): string {
     const at = this.#blocked(path) ?? path;
     const rest = path.slice(at.length);
-    // Each copy is an entry, so the free name is within the entries quota's count.
-    for (let n = 1; n <= this.#limits().max_entries + 1; n++) {
+    // Each copy is an entry, so the free name is within the entries quota's count. Every
+    // candidate starts with the name as cut for the longest suffix that count allows, so the
+    // names taken are found in one range read of the parent's entries (review rvlim N6).
+    const most = this.#limits().max_entries + 1;
+    const longest = conflictName(nameOf(at), epoch, most);
+    const cut = longest.slice(0, longest.length - `.ta-conflict-${epoch}-${most}`.length);
+    const from = cut === "" ? "" : nameOf(storedPath(`${parentOf(at)}/${cut}`));
+    const taken = new Set(this.#sql.exec<{ name: string }>(
+      "SELECT name FROM file_entries WHERE parent = ? AND name >= ? AND name < ?",
+      parentOf(storedPath(at)), from, `${from}\u{10FFFF}`).toArray().map((row) => row.name));
+    for (let n = 1; n <= most; n++) {
       const copy = storedPath(`${parentOf(at)}/${conflictName(nameOf(at), epoch, n)}`);
-      if (this.#entry(copy) === undefined) {
+      if (!taken.has(nameOf(copy))) {
         if (utf8Bytes(copy + rest) > MAX_PATH_BYTES) {
           throw new Refused("the conflict copy's path would pass 4096 bytes; " +
                             "the sandbox keeps this file and reports it each sync");

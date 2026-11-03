@@ -14,7 +14,7 @@ four classes:
   share is named by the guard's term.
 
 Not listed, since none refuses or truncates what a user does:
-- internal timings and backoffs: leases, retries, garbage-collection grace, lane passes, wake retries, a placement upload's 10-minute expiry, how long one read of the control record serves a script's calls (`CONTROL_FRESH_MS`), and the deadlines on the gateway's own calls to a provider (the setup check, a token endpoint);
+- internal timings and backoffs: leases, retries, garbage-collection grace, lane passes, wake retries, a placement upload's 10-minute expiry, how long one read of the control record serves a script's calls (`CONTROL_FRESH_MS`), an egress reservation's beat and its lost detection three beats on (`EGRESS_BEAT_S`, `LOST_AFTER_S`), the erasure's day under its mark before its R2 step and wipe (`PUT_GRACE_MS`), its job waking it, and the deadlines on the gateway's own calls to a provider (the setup check, a token endpoint);
 - pages a read returns, which the caller pages past: a pull, a mailbox or history read, a file list, a receipts list, a chunk read, a run door's wait;
 - the SQLite layout constants (`manifest.ts`), hashes and key sizes, and the ids we mint;
 - the owner app's own protocol frames, and the HTTP status of each fixed code.
@@ -40,7 +40,7 @@ counted in bytes.
 **The worst case that ships is 4,097,994,417.75 bytes, 40.98% of the 10 GB: 902.0 MB under
 half**, slice ID's agent identities and mail authority and slice M's change orders included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
 2.1 MB). Without each structural change, the same bounds would cost: bodies in their rows
-843.6 GB; history as rows times revisions 111.2 GB; recipients as messages times agents
+423.8 GB; history as rows times revisions 111.2 GB; recipients as messages times agents
 45.8 GB; scopes at 512 code points of JSON each 6.4 GB, each past the half.
 
 The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collection_rows`
@@ -52,8 +52,10 @@ The largest terms: the file manifest 1,208.0 MB (24.16% of the budget), `collect
 - **tier**: 3
 - **owner setting**: 12
 - **vendor limit**: 4
-- **technical ceiling**: 106
-- **total**: 125
+- **technical ceiling**: 103
+- **total**: 122
+
+Counted by a script over every table row (`| ` lines past the header, six cells each), the first row and the names row among them.
 
 Removed by this slice, since only the tier's storage bounds what they bounded, or no
 platform fact stood behind them:
@@ -81,6 +83,22 @@ Flagged for the founder:
 - `max_entries` stays 30,000: the files policy's rule (`max_history` at least `max_entries`
   times the larger of `keep_versions` and `keep_recent`) caps it at 600,000 / 20. Counting
   the files' history in bytes, as the collections' now is, would lift it to about 480,000.
+
+## Chosen retentions
+
+Three expiries are not ceilings: each queue or area is bounded by its count or charge in the
+10 GB, and needs no expiry to fit. Each is a retention chosen for what it serves, with its
+reason; none refuses a write.
+
+- `owner/src/files.ts` `TEMP_TTL_S`, 7 days: a temporary directory under `/.ta/tmp` unused
+  for a week has its files deleted. The area is the sandbox's for spills, charged to the
+  owner's files; a week is long past any run (a sandbox lives a day at most, E2B Pro's 24
+  hours), so a crashed run's spills do not hold the owner's storage.
+- `owner/src/registrations.ts` `CARD_TTL_S`, 7 days: a filed registration card waits a week
+  for the owner, so an owner away for a week misses none; the client files again past it.
+- `owner/src/policy.ts` `POLICY_LIMITS.proposalTtlS`, 90 days: a pending policy proposal
+  waits a quarter for the owner's answer, then expires unanswered, so a stale proposal never
+  applies against a policy long since changed.
 
 ## The list
 
@@ -116,7 +134,6 @@ Flagged for the founder:
 | `owner/src/files.ts` `MAX_OPEN_INTENTS` | 64 | uploads open at once (placed bodies' among them) | a 65th refused until one commits | technical ceiling | The 10 GB, inside `file_intents`. |
 | `owner/src/files.ts` `MAX_HELD_CHUNKS` | 20,000 | chunks all open uploads hold | a new upload refused while they hold it | technical ceiling | The 10 GB, inside `file_intents`. |
 | `owner/src/files.ts` `INTENT_TTL_S` | 86,400 s | how long a file upload may stay open | a large upload over a slow link must finish within a day | technical ceiling | An open upload holds its chunks in `file_intents` and the quota until it ends; a 40 GiB file at 1 MB/s takes 11 hours. |
-| `owner/src/files.ts` `TEMP_TTL_S` | 7 days | a temporary directory under `/.ta/tmp` | its files deleted after a week unused | technical ceiling | Temporary files are charged to the manifest's share of the 10 GB; the area is for spills, not keeping. |
 | `owner/src/files.ts` `WHOLE_BYTES` | 16 MiB | one whole-file read or write through the object | a larger file is read by range, written by upload | technical ceiling | A Worker isolate's 128 MB of memory, which a whole file in one call holds with its copies. |
 | `owner/src/files.ts` `MAX_SYNC_OPS` | 1,000 | ops in one sandbox sync commit | the sync agent splits a larger commit | technical ceiling | One synchronous gate unit per commit, which must stay short in the object's request CPU. |
 | `owner/src/files.ts` `KEEP_CEILING` | 1,000 | the most `keep_versions` and `keep_recent` take | the setting refused above it | technical ceiling | The 10 GB, inside the manifest's bytes. |
@@ -125,7 +142,7 @@ Flagged for the founder:
 | `owner/src/paths.ts` `MAX_PATH_BYTES` | 4,096 bytes | a path | a longer path refused | technical ceiling | Linux's `PATH_MAX`, which the sandbox's disk holds. |
 | `owner/src/paths.ts` `MAX_NAME_BYTES` | 255 bytes | one path component | a longer name refused | technical ceiling | Linux's `NAME_MAX`. |
 | `owner/src/manifest.ts` `PLACE_BYTES` | 2,048 bytes | the most of a body kept in its row | nothing: a larger body is placed in R2 | technical ceiling | ADR-035: a rowid table keeps a record of 4,061 bytes in place; half is the body's, half the row's own names and ids, so a row keeps in its page. |
-| `owner/src/bodies.ts` `BODY_BYTES_MAX` (`LIMITS.maxRowBytes`, `MAX_BODY_BYTES`) | 16 MiB | one row's, history entry's or message's body | a larger body refused | technical ceiling | One call through the object whole, as `WHOLE_BYTES`: the isolate's 128 MB. Placed in four 4 MiB chunks. Live memory probe owed to slice L. |
+| `owner/src/bodies.ts` `BODY_BYTES_MAX` (`LIMITS.maxRowBytes`, `MAX_BODY_BYTES`) | 8 MiB | one row's, history entry's or message's body | a larger body refused | technical ceiling | Half the request body's ceiling (`EGRESS_BODY_MAX`), so the body with its JSON escapes fits the tool call that carries it; placed in two 4 MiB chunks. |
 | `owner/src/collections.ts` `LIMITS.maxRowsCharge` | 256 MiB laid out | every collection row, its index entries and its collection's seq row, as SQLite lays them out | a write refused: the owner's collections are full | technical ceiling | The 10 GB: guard term `collection_rows`, 604.0 MB at `WORST_FILL`. About 262,000 rows at the narrowest names; an outside writer's share by `client_share`. |
 | `owner/src/collections.ts` `LIMITS.maxHistoryCharge` | 128 MiB laid out | the history's entries, erased keys' last entries among them | the oldest entries pruned, never refused | technical ceiling | The 10 GB: guard term `collection_history`, 302.0 MB at `WORST_FILL`. |
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxAgents` | 1,000 | enabled agents: outside agents and the owner's own live agents (slice ID) together | the 1,001st outside agent's registration, or live agent's `agent.json` write, refused (`ledger_agents_full`) | technical ceiling | The 10 GB, within `maxAgentRows`. A message has one recipient, so no term moves with it. |
@@ -138,10 +155,8 @@ Flagged for the founder:
 | `owner/src/ledger.ts` `LEDGER_LIMITS.maxSettledWakes` | 1,000 | settled wakes kept | the oldest let go | technical ceiling | The 10 GB: guard term `ledger_wakes`. |
 | `owner/src/ledger.ts` `WAKE_SETTINGS.maxWakesPerHour` | 60 an hour at most | the wake setting's high | a higher setting refused | technical ceiling | The 10 GB: guard term `ledger_rings`, 72.0 MB, an hour's wakes for each agent row. |
 | `owner/src/registrations.ts` `CARD_LIMITS` | 200 pending, 10 a client, 4,096-byte card | registration cards waiting | a client's 11th card refused | technical ceiling | The 10 GB: guard term `agent_cards`. |
-| `owner/src/registrations.ts` `CARD_TTL_S` | 7 days | how long a filed card waits | the client files again | technical ceiling | The cards are a count-bounded queue in the 10 GB; an expiry frees a slot a client never returns for. |
 | `owner/src/policy.ts` `POLICY_LIMITS.maxDocument` | 65,536 characters | the owner policy document | a larger policy refused | technical ceiling | The 10 GB, one row read on every door. |
 | `owner/src/policy.ts` `POLICY_LIMITS.maxChange` | 16,000 characters | one agent's proposal | a larger proposal refused | technical ceiling | The 10 GB: guard term `policy_proposals`. |
-| `owner/src/policy.ts` `POLICY_LIMITS.proposalTtlS` | 90 days | a pending policy proposal | it expires unanswered | technical ceiling | As `CARD_TTL_S`: the proposals are a count-bounded queue. |
 | `owner/src/policy.ts` `POLICY_LIMITS.pendingProposals` | 200 (50 a client) | proposals waiting for the owner | a proposal refused past it | technical ceiling | The 10 GB, inside `policy_proposals`. |
 | `owner/src/policy.ts` `POLICY_LIMITS.appliedProposals` | 200 | applied proposals kept | the oldest let go | technical ceiling | As above. |
 | `owner/src/policy.ts` `POLICY_LIMITS.receiptsPerBucket` | 5,000 a bucket | policy receipts kept | the oldest let go | technical ceiling | The 10 GB: guard term `policy_receipts`, 65.0 MB. |
@@ -171,7 +186,7 @@ Flagged for the founder:
 | `owner/src/egress.ts` `MIN_OUTPUT` | 1,024 tokens | a sandbox call's least output | refused when a cap leaves less | technical ceiling | As `usage.ts`'s. |
 | `owner/src/egress.ts` `EGRESS_PATH_MAX` | 2,048 characters | a sandbox request's path and query | a longer path refused | technical ceiling | The 10 GB: each egress row keeps its path, costed at it in `egress_reservations`. |
 | `owner/src/network.ts` host | 253 characters | an egress destination's host | a longer host refused | technical ceiling | DNS's own bound (RFC 1035). |
-| `owner/src/network.ts` `EGRESS_BODY_MAX` | 16 MiB | one sandbox model request's body | refused `egress_too_large` | technical ceiling | The isolate's 128 MB, which holds the body and its decoded text while the gateway meters it. Providers take more, past what an isolate holds. Live memory probe owed to slice L. |
+| `owner/src/network.ts` `EGRESS_BODY_MAX` | 16 MiB | one sandbox model request's body | refused `egress_too_large` | technical ceiling | One request body a Worker reads whole: the text (16 MiB, at most twice that as UTF-16), its parsed copy and its serialized copy to the next hop come to 80 MiB at worst, within the isolate's 128 MB (Workers limits) with room for the rest; one ceiling for the egress door, the gateway, the API and the owner surface (`network.ts`). Live memory probe owed to slice L. Providers take more (Anthropic's Messages API, 128 MB), past what an isolate holds. |
 | `gateway/src/forward.ts` `BODY_MAX` | 16 MiB | a metered call's body | as `EGRESS_BODY_MAX` | technical ceiling | As `EGRESS_BODY_MAX`. |
 | `doors/src/routing-mac.ts` `LEASE_LIVED` | none of their own | the egress and sync tokens' life | a token lives while its lease's heartbeat renews it | technical ceiling | The lease's life (`LEASE_TTL_S` without a renewal); no run meets a fixed deadline. |
 | `owner/src/cron.ts` `CRON_MIN_GAP_MIN` | 1 minute | the shortest gap between a schedule's runs | nothing below cron's own minute | technical ceiling | Cron's resolution; the tier's runs bound what a schedule starts. |
@@ -205,7 +220,7 @@ Flagged for the founder:
 | `doors/src/config.ts` `REFRESH_TOKEN_TTL_S` | 30 days | a refresh token's life | an unused client signs in again | technical ceiling | As above: a refresh token's grant slides while used and ends when unused (RFC 9700). |
 | `doors/src/config.ts` consent freshness | 600 s | how fresh a sign-in is for consent | the owner signs in again | technical ceiling | `prompt=login`: a consent needs a sign-in the owner just made. |
 | `doors/src/config.ts` `AUTHORIZE_BODY_MAX` | 4 KiB | the consent form's body | refused `413` | technical ceiling | The form's own few short fields. |
-| `doors/src/config.ts` `API_BODY_MAX`, `APP_BODY_MAX` | 32 MiB | an `/api/tools/*` or owner-surface request body | refused `413` | technical ceiling | Carries a `BODY_BYTES_MAX` body as JSON with room for its escapes, within the isolate's 128 MB. |
+| `doors/src/config.ts` `API_BODY_MAX`, `APP_BODY_MAX` | 16 MiB | an `/api/tools/*` or owner-surface request body | refused `413` | technical ceiling | As `EGRESS_BODY_MAX`, held equal to it by a test. Streaming is not taken: a tool call's arguments are parsed whole as JSON at the door. |
 | `gateway/src/oauth.ts` token answer | 64 KiB | a provider's token endpoint answer | the connect fails | technical ceiling | It must fit the sealed blob it becomes (`BLOB_MAX`). |
 | `gateway/src/credential.ts` limits | 16 KiB secret; 16 endpoints of 64 paths; 64 declared models; 2,048-character URLs | a pasted credential and its declared endpoints | a larger record refused at seal | technical ceiling | Inside the 64 KiB sealed blob (`keyring.ts` `BLOB_MAX`). |
 | `gateway/src/model-record.ts` numbers | as the owner's | a declared model record | refused past them | technical ceiling | As the owner's model numbers. |

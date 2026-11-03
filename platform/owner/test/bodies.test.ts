@@ -190,13 +190,13 @@ describe("the placement rule", () => {
     const { stub, as, name } = ownerObject();
     const put = (rowId: string, body: string) => stub.collectionWrite(as(name), {
       collection: "board", row_id: rowId, body, expected_etag: "", private: false });
-    // A row of `maxRowBytes`, placed across four chunks: what one call moves whole.
-    expect(LIMITS.maxRowBytes).toBe(16 * 1024 * 1024);
+    // A row of `maxRowBytes`, placed across two chunks: half a request's 16 MiB ceiling.
+    expect(LIMITS.maxRowBytes).toBe(8 * 1024 * 1024);
     const most = "x".repeat(LIMITS.maxRowBytes);
     expect((await put("most", most)) as { row: { body: string } })
       .toMatchObject({ row: { revision: 1 } });
     expect(await sqlIn(stub, "SELECT COUNT(*) AS n FROM file_content_chunks"))
-      .toEqual([{ n: 4 }]);
+      .toEqual([{ n: 2 }]);
     expect((await stub.collectionGet(as("bob"), { collection: "board", row_id: "most" }))
       .row!.body === most).toBe(true);
     expect((await failure(() => put("past", "x".repeat(LIMITS.maxRowBytes + 1)))).message)
@@ -346,6 +346,26 @@ describe("the placement rule, held to the owner's own limits (review rvlim)", ()
     expect([older.entries.map((e) => e.body[0]), older.more, older.before_revision])
       .toEqual([["a", "b"], false, null]);
   }, 60_000);
+
+  it("L5: a placed write past a chunk the sweep is deleting begins again once it is gone",
+     async () => {
+    const { stub, as, name } = ownerObject();
+    const put = (rowId: string, etag = "") => stub.collectionWrite(as(name), {
+      collection: "board", row_id: rowId, body: LARGE, expected_etag: etag, private: false });
+    const made = await put("a") as { row: { etag: string } };
+    await stub.collectionDelete(as(name), { collection: "board", row_id: "a",
+                                            expected_etag: made.row.etag });
+    // Its chunk is garbage now; the sweep has begun deleting it.
+    expect(await sqlIn(stub, "SELECT state FROM file_chunks")).toEqual([{ state: "garbage" }]);
+    await sqlIn(stub, "UPDATE file_chunks SET state = 'deleting'");
+    const again = put("b");
+    // The delete lands while the write waits; the write then begins again and lands.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await sqlIn(stub, "DELETE FROM file_chunks WHERE state = 'deleting'");
+    expect(await again).toMatchObject({ row: { revision: 1 } });
+    expect((await stub.collectionGet(as(name), { collection: "board", row_id: "b" })).row!.body)
+      .toBe(LARGE);
+  });
 
   it("checks a post's room and resend before its body goes to R2", async () => {
     const r = await rig();

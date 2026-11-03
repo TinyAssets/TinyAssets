@@ -13,7 +13,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { verifyToken } from "../../doors/src/routing-mac";
 import { PLATFORM_CALLER } from "../src/admission";
 import type { ModelInfo } from "../src/connections";
-import { EGRESS_LIMITS, type EgressOpened, LOST_AFTER_S } from "../src/egress";
+import { EGRESS_BEAT_S, EGRESS_LIMITS, type EgressOpened, LOST_AFTER_S } from "../src/egress";
+import { EGRESS_DEADLINE_S } from "../src/network";
 import type { Binding } from "../src/owner-do";
 import { apiRules } from "../../gateway/src/api-rules";
 import { egressPrice, NO_SANDBOX, SANDBOX_DOORS, SANDBOX_ONLY, SYNC_FENCED } from "../src/owner-do";
@@ -174,6 +175,12 @@ async function ended(opened: EgressOpened, waitMs = 2000): Promise<boolean> {
 }
 
 const held = ({ lease_id, epoch }: Leased) => ({ lease_id, epoch });
+
+/** One reservation's state and outcome. */
+async function state(r: Gated, reservation: string) {
+  return (await r.sql("SELECT state, outcome FROM egress_reservations WHERE id = ?",
+                      reservation))[0];
+}
 
 async function rows(r: Gated) {
   return r.sql("SELECT state, code, ended, outcome, status, bytes, bytes_hint " +
@@ -993,6 +1000,37 @@ describe("the owner's erasure", () => {
 });
 
 describe("a reservation", () => {
+  it("beaten by its door stays open; with its beats stopped it is settled lost within " +
+     "minutes, and past the day's deadline whatever its beats", async () => {
+    const r = await gated();
+    const connection = await r.connect("sk-good");
+    const lease = await leased(r);
+    const opened = await admitted(r, lease, connection);
+    // Opened long ago, but beaten just now: its door still streams it.
+    await r.sql("UPDATE egress_reservations SET opened_at = opened_at - ?", 10 * LOST_AFTER_S);
+    expect(await r.stub.egressBeat(lease.as(), { reservation: opened.reservation }))
+      .toEqual({ beat: true });
+    await admitted(r, lease, connection);
+    expect((await state(r, opened.reservation)))
+      .toMatchObject({ state: "open" });
+    // Its beats stop (a doors restart): lost three beats on, its slot and charge let go.
+    await r.sql("UPDATE egress_reservations SET beat_at = beat_at - ? WHERE id = ?",
+                LOST_AFTER_S + 1, opened.reservation);
+    await admitted(r, lease, connection);
+    expect((await state(r, opened.reservation)))
+      .toMatchObject({ state: "settled", outcome: "lost" });
+    expect(await r.stub.egressBeat(lease.as(), { reservation: opened.reservation }))
+      .toEqual({ beat: false });
+    // A row beaten forever is still lost past the door's one-day deadline.
+    const forever = await admitted(r, lease, connection);
+    await r.sql("UPDATE egress_reservations SET opened_at = opened_at - ? WHERE id = ?",
+                EGRESS_DEADLINE_S + 2 * EGRESS_BEAT_S, forever.reservation);
+    await r.stub.egressBeat(lease.as(), { reservation: forever.reservation });
+    await admitted(r, lease, connection);
+    expect((await state(r, forever.reservation)))
+      .toMatchObject({ state: "settled", outcome: "lost" });
+  });
+
   it("never settled is settled lost past its door's deadline, its charge unknown", async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");

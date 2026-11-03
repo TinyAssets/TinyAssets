@@ -31,11 +31,12 @@ import { CHUNK_BYTES, PLACE_BYTES } from "./manifest";
 export { PLACE_BYTES } from "./manifest";
 
 /**
- * The most bytes a body takes: what one call moves through the object whole (`files.ts`'s
- * `WHOLE_BYTES`, four chunks), the isolate's 128 MB holding it with its copies. A technical
- * ceiling; a larger thing is a file, uploaded a chunk at a time.
+ * The most bytes a body takes: half of a request body's one ceiling (`network.ts`'s
+ * `EGRESS_BODY_MAX`, 16 MiB, the isolate's 128 MB), so the body with its JSON escapes fits
+ * the tool call that carries it; two chunks. A technical ceiling; a larger thing is a file,
+ * uploaded a chunk at a time.
  */
-export const BODY_BYTES_MAX = 4 * CHUNK_BYTES;
+export const BODY_BYTES_MAX = 2 * CHUNK_BYTES;
 
 /**
  * The most body bytes one page of a read returns: a pull, a history or a mailbox read stops
@@ -87,6 +88,13 @@ function chunked(bytes: Uint8Array): { sha256: string; bytes: Uint8Array }[] {
   return chunks;
 }
 
+/** Whether `place` is `body`'s own placed upload: its bytes and its chunks' hashes. */
+export function placedAs(place: Placed | null, body: string): boolean {
+  const bytes = bodyBytes(body);
+  return place !== null && place.bytes === bytes.byteLength
+    && place.chunks.join() === chunked(bytes).map((chunk) => chunk.sha256).join();
+}
+
 /**
  * In a unit: `name` run with the content id a row names for `body`, its placed upload
  * adopted and held to be that body's own; with null for a body its row keeps.
@@ -100,8 +108,7 @@ export function adopted<T>(body: string, place: Placed | null | undefined, write
   if (place === null || place === undefined || adopt === undefined) {
     throw new Error(`a body of more than ${PLACE_BYTES} bytes is placed before its write`);
   }
-  if (place.bytes !== bytes.byteLength
-      || place.chunks.join() !== chunked(bytes).map((chunk) => chunk.sha256).join()) {
+  if (!placedAs(place, body)) {
     throw new Error("a placed body is not the body written");
   }
   return adopt(place, writer, name);

@@ -165,10 +165,22 @@ export type Outcome = "complete" | "aborted" | "failed" | "deadline" | "ended";
  */
 export const EGRESS_DEADLINE_S = 86_400;
 /**
- * The largest model call the egress door reads, as the gateway's own bound (`BODY_MAX`): a
- * technical ceiling, the isolate's 128 MB, which holds the body and its decoded text while
- * the gateway meters it. Providers take more (Anthropic's Messages API, 128 MB), past what
- * an isolate holds at all.
+ * How often a streaming call's door beats its open reservation (`egressBeat`), in seconds:
+ * the object settles a reservation lost three missed beats on (`LOST_AFTER_S`).
+ */
+export const EGRESS_BEAT_S = 60;
+/**
+ * The most bytes one request body a Worker reads whole: the platform's one ceiling for it,
+ * the egress door's and the gateway's model call (`BODY_MAX`), the API's and the owner
+ * surface's tool calls (`API_BODY_MAX`, `APP_BODY_MAX`), a row's or a message's body at
+ * half of it (`BODY_BYTES_MAX`, room for its JSON escapes). A technical ceiling of the
+ * isolate's 128 MB (Cloudflare's Workers limits), shared by its concurrent requests: the
+ * text read (16 MiB, held at most twice that as UTF-16), its parsed copy (as much again)
+ * and its serialized copy to the next hop (16 MiB) come to 80 MiB at worst, leaving room
+ * for the rest. The live memory probe is owed to slice L. Streaming the bodies would lift
+ * it; it is not taken, since a tool call's arguments are parsed whole as JSON at the door
+ * and the gateway meters a model call's whole body, so neither path streams today.
+ * Providers take more (Anthropic's Messages API, 128 MB), past what an isolate holds.
  */
 export const EGRESS_BODY_MAX = 16 * 1024 * 1024;
 

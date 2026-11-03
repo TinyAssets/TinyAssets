@@ -135,9 +135,15 @@ export class Erasure extends LifecycleCapability {
     // before the mark has had its time to land (a failure rejects, and the retry deletes
     // again); then the owner wiped whole, Lifecycle's alarm disabled first so nothing is
     // written after; then the prefix deleted once more.
-    const wait = erasureStartedAt(storage) * 1000 + this.#parts.putGraceMs - Date.now();
-    if (wait > 0) {
-      await new Promise((resolve) => setTimeout(resolve, wait));
+    const due = erasureStartedAt(storage) * 1000 + this.#parts.putGraceMs;
+    if (due > Date.now()) {
+      // Not yet: the erasure's job wakes it when the grace is up (a day), held in storage,
+      // so no in-memory wait carries it and a restart loses nothing.
+      const jobs = this.lifecycle.jobs;
+      const [rearmed] = await write((): [Promise<unknown>] =>
+        [jobs.push({ id: ERASE_JOB, fn: ERASE_FN, time: due })]);
+      await rearmed;
+      return;
     }
     const ns = await blobs();
     await lifecycle.disableAlarms();

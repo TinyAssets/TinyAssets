@@ -9,9 +9,9 @@
  *    step is recorded done (`step` 2). The runs and sandbox slices (R, S) add the sandbox's
  *    kill and the engines' session files' purge to this step (ADR-034).
  * 3. **Delete every R2 copy**: every object under the owner's namespace prefix, its files'
- *    and its placed bodies' (ADR-035), once `PUT_GRACE_MS` has passed since the mark and
- *    every put this instance began has landed (no put begins under the mark); repeatable,
- *    and repeated after the wipe.
+ *    and its placed bodies' (ADR-035), once `PUT_GRACE_MS` (a day) has passed since the mark,
+ *    its job waking it then, and every put this instance began has landed (no put begins
+ *    under the mark); repeatable, and repeated after the wipe.
  * 4. **`deleteAll()` the owner**, Lifecycle's alarm disabled first, so nothing is written
  *    after it but the tombstone: the erased admission row (`admission.ts`), written into the
  *    empty database in the same synchronous turn (`WriteGate.wipe`); a killed turn can
@@ -70,11 +70,14 @@ export function erasureStartedAt(storage: OwnerStorage): number {
 }
 
 /**
- * How long a `FILES` put may take to land, at most, as the erasure waits for one begun
- * before its mark by an instance it cannot ask: a put moves at most two 4 MiB chunks
- * (`BATCH_BYTES`) [I: R2's put latency is not documented; to measure live].
+ * How long the erasure holds its mark before its R2 step and its wipe, so a put an earlier
+ * instance of the object began before the mark has landed by then: a day, since no request
+ * into the object outlives the longest one a door holds open, an egress stream's day
+ * (`EGRESS_DEADLINE_S`), whatever R2's put latency (not documented; to measure live). Under
+ * the mark every door refuses and no put begins; the erasure's own Lifecycle job wakes it
+ * when the day is up (review rvlim N5), so nothing rests on an in-memory wait.
  */
-export const PUT_GRACE_MS = 5 * 60_000;
+export const PUT_GRACE_MS = 24 * 60 * 60_000;
 
 /** In a unit: the erasure's step 2 done: every run ended. */
 export function runsEnded(storage: OwnerStorage): void {

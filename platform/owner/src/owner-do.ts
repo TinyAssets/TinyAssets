@@ -117,14 +117,14 @@ import { type Ask, CONVERSATION_BUSY, SIGNIN_REQUIRED, type LiveRun, type MailAn
          type PostedFrame, QUEUE_FULL, type RunReceipt, Runs, RUN_ENDED, type RunSchedule,
          scheduleAuthority, secretHash } from "./runs";
 import { ENGINE_SIGNINS, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS } from "./run-rows";
-import { EVENT_FRAMES_MAX, eventsBounded, FRAME_UNITS_MAX, PostGate } from "./run-events";
+import { EVENT_FRAMES_MAX, EVENTS_RACED, eventsBounded, FRAME_UNITS_MAX, PostGate } from "./run-events";
 import { SANDBOX_ABSENT, type SandboxService, started } from "./sandbox";
 import { TICKET_REFUSED } from "./socket-shape";
 import { Tickets } from "./tickets";
 import {
   keepTiers, keptTiers, PLATFORM_TIER_ONLY, TIER_RUNS, type TierName, tierNumbers,
 } from "./tier";
-import { Bodies, type Located, PLACE_BYTES, type Placed, type Placing } from "./bodies";
+import { Bodies, type Located, PLACE_BYTES, type Placed, placedAs, type Placing } from "./bodies";
 import {
   type Changed, type Changes, checkBody, Collections, Conflict, type History,
   type HistoryEntry, type Page, type Row,
@@ -135,7 +135,7 @@ import {
 } from "./connections";
 import { Invalid, Refused } from "./errors";
 import {
-  type Change as FileChange, CHUNK_BYTES, type ChunkRef, type ChunkStore, type Content,
+  type Change as FileChange, CHUNK_BYTES, CHUNK_DELETING, type ChunkRef, type ChunkStore, type Content,
   type Entry, FileConflict, Files, type Lease, OWNER_AUTHORITY, type SandboxLease, type SyncOp,
   type SyncOutcome, type Usage,
 } from "./files";
@@ -391,10 +391,11 @@ export type RowHead =
      & { readonly head: string; readonly body_chars: number })
   | Extract<Changed, { deleted: true }>;
 
-/** Rows changed past a digest's cursor, and the next cursor. */
+/** Rows changed past a digest's cursor, and the next cursor; `reset` as `Changes`'. */
 export interface Heads {
   readonly cursor: number;
   readonly rows: RowHead[];
+  readonly reset?: true;
 }
 
 /** One code mode script (`codeRun`). */
@@ -824,8 +825,9 @@ function filledChanges(changes: Changes, bodies: ReadonlyMap<string, string>): C
 }
 
 /** Changed rows as a digest shows them: each body cut to its first `chars` characters. */
-function heads(changes: { cursor: number; rows: Changed[] }, chars: number): Heads {
+function heads(changes: Changes, chars: number): Heads {
   return {
+    ...(changes.reset === true ? { reset: true } : {}),
     cursor: changes.cursor,
     rows: changes.rows.map((row): RowHead => {
       if (row.deleted) {
@@ -959,6 +961,8 @@ export const MAIN_AGENT = "main";
  * keeps only the mail's reference (ADR-035); the queue's rows bound it.
  */
 const MAIL_INPUT_BYTES = 0;
+/** How many times a placed body begins again past a chunk the sweep is deleting. */
+const PLACE_TRIES = 5;
 /** What only the owner does with a mail chain: read it (`mailChain`). */
 const CHAINS = "read its agents' mail chains";
 /** An agent's file, whose agent is a ledger identity while it exists (slice ID). */
@@ -2647,15 +2651,28 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const shown = options.shown;
     const located = (value: T) => ({ value, located: this.#bodies.locate(
       shown === undefined ? [] : shown.contents(value)) });
-    const first = await this.#door(():
-        { done: { value: T; located: Located } } | { placing: Placing } => {
-      const prepared = prepare();
-      if ("done" in prepared) {
-        return { done: located(prepared.done) };
+    // A body whose chunk the sweep is deleting this moment begins again once the delete
+    // lands (review rvlim L5), a few times, then the refusal stands.
+    let first: { done: { value: T; located: Located } } | { placing: Placing } | undefined;
+    for (let tries = 1; first === undefined; tries++) {
+      try {
+        first = await this.#door(():
+            { done: { value: T; located: Located } } | { placing: Placing } => {
+          const prepared = prepare();
+          if ("done" in prepared) {
+            return { done: located(prepared.done) };
+          }
+          const placing = this.#bodies.begin(prepared.body as string, prepared.writer);
+          return placing === null ? { done: located(act(null)) } : { placing };
+        });
+      } catch (error) {
+        if (!(error instanceof Refused) || error.message !== CHUNK_DELETING
+            || tries >= PLACE_TRIES) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100 * tries));
       }
-      const placing = this.#bodies.begin(prepared.body as string, prepared.writer);
-      return placing === null ? { done: located(act(null)) } : { placing };
-    });
+    }
     let done: { value: T; located: Located };
     if ("done" in first) {
       done = first.done;
@@ -3214,7 +3231,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         }
         const r = eventsRequest(request);
         const reply = this.#runs.answering(binding.run as string, lease, r.frames, r.end);
-        return reply === null ? null : this.#beginReply(reply);
+        return reply === null || utf8Bytes(reply.result) <= PLACE_BYTES ? null
+          : { placing: this.#beginReply(reply) };
       } catch (error) {
         this.#posts.leave();
         throw error;
@@ -3222,7 +3240,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
     let placed: Placed | null = null;
     try {
-      placed = placing === null ? null : await this.#bodies.send(placing);
+      placed = placing?.placing == null ? null : await this.#bodies.send(placing.placing);
       const done = await this.#door(() => {
         this.#bind(binding, "reduce", "run");
         const lease = this.#runner(binding);
@@ -3230,6 +3248,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           throw new Refused(RUN_ENDED);
         }
         const r = eventsRequest(request);
+        // Another batch landed between the units (a runner's retry): the reply this settle
+        // would post is not the one placed, so the batch is posted again, never dropped. A
+        // reply whose writer's files refused it (no placing) settles with a notice instead.
+        const reply = this.#runs.answering(binding.run as string, lease, r.frames, r.end);
+        if (reply !== null && utf8Bytes(reply.result) > PLACE_BYTES
+            && !placedAs(placed, reply.result)
+            && !(placing !== null && placing.placing === null)) {
+          throw new Refused(EVENTS_RACED);
+        }
         this.#replyPlaced = placed;
         try {
           return this.#runs.events(binding.run as string, lease, r.frames, r.end, clock());
@@ -3981,6 +4008,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * and the bytes it streamed; a blob the gateway resealed meanwhile is kept by the
    * connection's compare-and-swap.
    */
+  /**
+   * A streaming call's beat from its door (`EGRESS_BEAT_S`): the open reservation its egress
+   * token opened is still its door's, so it is not settled lost.
+   */
+  egressBeat(binding: Binding, request: { reservation: string }): Promise<{ beat: boolean }> {
+    return this.#door(() => {
+      this.#bind(binding, "reduce", "egress");
+      return { beat: this.#egress.beat(sandboxBinding(binding.sandbox), request?.reservation,
+                                       clock()) };
+    });
+  }
+
   egressSettle(binding: Binding, request: Record<string, unknown>):
       Promise<{ settled: boolean }> {
     return this.#door(() => {

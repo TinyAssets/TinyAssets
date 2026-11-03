@@ -7,6 +7,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BODY_BYTES_MAX } from "../../owner/src/bodies";
+import { EGRESS_BODY_MAX } from "../../owner/src/network";
 import { parseKey } from "../src/api-keys";
 import { mcpClient } from "../src/binder";
 import {
@@ -344,18 +345,18 @@ describe("L5: bounded bodies", () => {
     expect(response.status).toBe(413);
   });
 
-  it("refuses an /api body over 32 MiB 413, and a non-object 400", async () => {
+  it("refuses an /api body over 16 MiB 413, and a non-object 400", async () => {
     const { key } = await mintKeyFor(owner());
     const post = (body: string) => call(new Request(url("/api/tools/agents_list"), {
       method: "POST", headers: { Authorization: `Bearer ${key}`,
                                  "Content-Type": "application/json" }, body }));
-    expect(API_BODY_MAX).toBe(2 * BODY_BYTES_MAX);
+    expect([API_BODY_MAX, 2 * BODY_BYTES_MAX]).toEqual([EGRESS_BODY_MAX, EGRESS_BODY_MAX]);
     expect((await post(`{"p":"${"x".repeat(API_BODY_MAX)}"}`)).status).toBe(413);
     expect((await post("[1]")).status).toBe(400);
     expect((await post("{")).status).toBe(400);
   });
 
-  it("refuses an /app/api body over 32 MiB 413, and a non-object 400", async () => {
+  it("refuses an /app/api body over 16 MiB 413, and a non-object 400", async () => {
     const app = await signInApp({ owner: owner() });
     expect(APP_BODY_MAX).toBe(API_BODY_MAX);
     const big = await appPost("keys", app.access_token, app.session,

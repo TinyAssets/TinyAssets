@@ -474,7 +474,7 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     egress_reservations: { rows: E.receiptsKept + E.refusalsKept
                                   + E.openPerRun * RUNS_CEILING,
                            bytes: ROW + EGRESS_PATH_MAX + 32 + 32 + 64 + 64 + 9 + 64 + 10 + 7
-                             + 256 + 25 + 7 + 64 + 30 + 16 * 8 + RUN_ID_CHARS,
+                             + 256 + 25 + 7 + 64 + 30 + 17 * 8 + RUN_ID_CHARS,
                            by: "receiptsKept admitted, refusalsKept refused and openPerRun at " +
                              "once for each of the most runs a tier may give, " +
                              "each its path (visible ASCII, a byte a character), ids, source, " +

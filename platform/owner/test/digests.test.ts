@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import { changedSql } from "../src/collections";
 import type { Binding, OwnerDO, RowHead } from "../src/owner-do";
 import { MUSE, rig, type Rig } from "./ledger-support";
-import { failure, inObject } from "./support";
+import { failure, inObject, ownerObject } from "./support";
 
 type Live = Extract<RowHead, { deleted: false }>;
 
@@ -92,6 +92,38 @@ describe("the inbox digest", () => {
     await r.stub.grantRevoke(r.bind(null), { client: MUSE.client });
     expect((await failure(() => r.stub.inboxDigest(r.bind(MUSE), { limit: 1, after: 0 })))
       .message).toBe("outside client revoked");
+  });
+});
+
+describe("a digest past a pruned deletion (review rvlim N1)", () => {
+  it("R1: tells a reader behind a pruned tombstone to read again, never hides the delete",
+     async () => {
+    const { stub, name } = ownerObject();
+    await inObject(stub, { maxHistoryCharge: 64 * 1024 }, (store, state) => {
+      const made = store.write(name, name, "board", "gone", "x", "", false);
+      const cursor = store.changed(name, { collection: "board" }, 0, 100).cursor;
+      store.delete(name, "board", "gone", made.etag);
+      const tombstones = () => state.storage.sql.exec<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM collection_history WHERE key = 'gone'").one().n;
+      expect(tombstones()).toBe(1);
+      // A reader past the delete is told it while it is kept.
+      expect(store.changed(name, { collection: "board" }, cursor, 100).rows
+        .map((row) => [row.row_id, row.deleted])).toEqual([["gone", true]]);
+      for (let n = 0; tombstones() > 0 && n < 5000; n++) {
+        store.write(name, name, "other", `r${n}`, "y".repeat(1000), "", false);
+      }
+      expect(tombstones()).toBe(0);
+      const seen = store.changed(name, { collection: "board" }, cursor, 100);
+      expect(seen).toMatchObject({ rows: [], reset: true });
+      const top = state.storage.sql.exec<{ change: number }>(
+        "SELECT change FROM collection_clock").one().change;
+      expect(seen.cursor).toBe(top);
+      // From the cursor it was given, the feed goes on as before; a fresh reader is never
+      // reset: it holds no row to forget.
+      expect(store.changed(name, { collection: "board" }, seen.cursor, 100))
+        .toEqual({ cursor: top, rows: [] });
+      expect(store.changed(name, { collection: "board" }, 0, 100)).not.toHaveProperty("reset");
+    });
   });
 });
 

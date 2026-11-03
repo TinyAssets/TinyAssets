@@ -47,7 +47,7 @@ R2's read latency is not documented [I: a network round trip from the object, te
 
    The files plane keeps files of up to 4,096 bytes inline. Its rows hold only the file's bytes and a few ids, so its own threshold stays as it was.
 2. **Through the files plane's own path.**
-   - In its first unit, the write door begins a placement upload, and its chunks' rows are held before any byte is sent. A body is at most `BODY_BYTES_MAX` (16 MiB), four 4 MiB chunks, sent two to a `FILES` call.
+   - In its first unit, the write door begins a placement upload, and its chunks' rows are held before any byte is sent. A body is at most `BODY_BYTES_MAX` (8 MiB), two 4 MiB chunks, one `FILES` call. That is half of the platform's one request-body ceiling, 16 MiB (`EGRESS_BODY_MAX`; the API's and the owner surface's bodies and the gateway's are the same), so a body with its JSON escapes fits the tool call that carries it. The ceiling is the isolate's 128 MB: a body's text (at most twice its bytes as UTF-16), its parsed copy and its serialized copy come to 80 MiB at worst. Streaming would lift it, but a tool call's arguments are parsed whole as JSON at the door, so it is not taken.
    - The door puts the bytes to R2 through `FILES`, which verifies each SHA-256.
    - A second unit adopts the upload. It makes the content, and the row names it in the same transaction. Migration 14's triggers count each reference on the content, and each reference in its writer's files scope.
 
@@ -61,21 +61,23 @@ R2's read latency is not documented [I: a network round trip from the object, te
    - The placed bytes count in the files byte quota (`chunk_bytes`). That quota is the tier's storage figure from the control record: free 25 GB, paid 250 GB. The owner may set it lower, never higher. The collections' and the ledger's own byte caps are gone: the tier's storage is their bound.
    - At the quota, retention makes room before anything is refused, as the files plane's own history does: the oldest placed collection history entries, then the oldest acked messages with placed bodies, of the scope that is full, one at a time.
 6. **Rows counted as SQLite lays them out.** The collections' rows and history are bounded by what they take in the object, not by a count:
-   - each row is charged its record and its four index entries, laid out as the guard lays them (`ROW_CHARGE`), its collection's seq row with it;
+   - each row is charged its record and its five index entries (slice M's `collection_changes` among them), laid out as the guard lays them (`ROW_CHARGE`), its collection's seq row with it;
    - each history entry likewise (`HISTORY_CHARGE`), an erased key's last entry among them. The oldest entries are pruned first, never refused, and a pruned key goes on past its newest pruned revision, so no revision and no cursor repeats;
-   - triggers keep both charges, so no write path misses one.
+   - triggers keep both charges, so no write path misses one;
+   - a pruned delete's or clear's entry raises `erasure_floor`, and slice M's change feed answers a reader whose cursor is below it `reset: true`, so it reads its rows again rather than keep a row it was never told is gone.
 
    The guard costs every term at the widest name its validator allows, and a test checks that SQLite makes no index the guard does not count.
 7. **Reads.**
    - A get, a pull, a history read, a mailbox read, a mail chain, a digest (slice M) and a conflict answer the stored body through the same path. A door reads the placed bodies from R2 outside any unit, after its unit locates them.
    - A mail to one of the owner's own agents (slice ID) is bounded by the body bound alone. Its run reads the body from R2 as it starts. A run that waits for its conversation keeps only the mail's reference in its input row (the run's `mail`), and reads the mail again when its turn comes. The mail is held until the run settles, so its body stays.
-   - A mail run's reply past the threshold is placed in R2 before the settle's unit, read ahead from the same batch (`Runs.answering`), and the settle's unit posts it by reference. A crash before the settle leaves only an orphan upload, which expires and is swept; the runner's batch is posted again, and the reply with it. No reply is lost.
+   - A mail run's reply past the threshold is placed in R2 before the settle's unit, read ahead from the same batch (`Runs.answering`), and the settle's unit posts it by reference. If another batch of the run lands between the two units, the settle's unit refuses this one (`events_raced`, 503) and the runner posts it again. A crash before the settle leaves only an orphan upload, which expires and is swept; the runner's batch is posted again, and the reply with it. No reply is lost.
    - A delete's or clear's history entry (slice M) carries no body, so nothing of it is placed. Its change and private writer are counted in the history's charge with its `collection_erasures` entry, as a row's change is with its `collection_changes` entry.
    - A pull, a history read or a mailbox read returns at most `READ_PAGE_BYTES` (8 MiB) of bodies after its first item. A history read past one page answers `more` and a `before_revision` cursor.
 8. **Erasure leaves no orphan.**
    - Once the erasure's mark stands, every upload and every chunk put is refused.
-   - The erasure waits out the puts already in flight, and `PUT_GRACE_MS` (5 minutes) past its mark.
+   - The erasure waits out the puts already in flight, and `PUT_GRACE_MS` (a day) past its mark.
    - It then deletes every chunk under the owner's namespace by prefix (`FILES.deleteNamespace`). It does so again after it wipes the database, so a put the wait missed is deleted too.
+   - The grace is a day, held by the erasure's own Lifecycle job, which wakes it when the day is up, so nothing rests on an in-memory wait or a five-minute estimate: no request into the object outlives an egress stream's day. The owner stays marked, every door refusing, for that day. A tombstone keeps no namespace for a sweep after the wipe: every alarm is Lifecycle's (the alarm guard), and a wiped object has none.
    - The owner export (slice P) reads the same chunks.
 9. **Not every term dominated by a body is placed.** A connection's models list (640 KiB at most) is read inside every egress admission unit, once for each sandbox model call. Placing it would put an R2 round trip on every model call. It stays in its row, bounded by the connection count, and fits the guard.
 
@@ -90,6 +92,6 @@ R2's read latency is not documented [I: a network round trip from the object, te
 - A write of a large body takes two units and an R2 put. A read of a large body takes an R2 get. A small body costs what it cost before.
 - Owed live:
   - R2 read latency from an owner object;
-  - the put grace's fit: the longest a `FILES` put takes in flight, against `PUT_GRACE_MS`;
+  - the longest a `FILES` put takes in flight, against `PUT_GRACE_MS`'s day;
   - SSE-C on the placed chunks, the same probe the files plane owes;
-  - an isolate's memory with a 16 MiB body in flight (slice L's memory probe, with the 16 MiB egress body).
+  - an isolate's memory with a 16 MiB request body in flight (slice L's memory probe), the one ceiling for the API, the owner surface, the egress door and the gateway.

@@ -1189,7 +1189,7 @@ R, S, M and W.
   `platform/*/test` and `platform/*/guards` against the base.
 - [x] Limits (slice LIM, ADR-035): the placement rule (a body past 2,048 bytes, a
   collection row's, a history entry's or a message's, lives in R2 through the files plane,
-  up to 16 MiB in four chunks, written R2 first then its reference, a crashed placement's
+  up to 8 MiB in two chunks, written R2 first then its reference, a crashed placement's
   upload expiring in 10 minutes, charged to its writer's files scope within the tier's
   storage, retention making room first); the collection rows and history counted in
   laid-out bytes, tombstones among them; one recipient a message (the key); the
@@ -1203,11 +1203,17 @@ R, S, M and W.
   mail's reference); a long reply is placed before the settle's unit and posted in it by
   reference, so a crash leaves an orphan upload for the sweep, never a lost reply; the
   digests and a mail chain read placed bodies; slice M's change orders are counted in the
-  collections' charges.
+  collections' charges. Round 3: a pruned deletion resets a feed reader behind it
+  (`erasure_floor`, `reset`); an egress reservation is beaten by its door every minute and
+  lost three beats on, the day's deadline kept; one 16 MiB request-body ceiling (API, owner
+  surface, egress door, gateway) with bodies at half of it; a race between an events post's
+  units refuses the post (`events_raced`) so no reply is lost; the erasure holds its mark a
+  day before its R2 step and wipe, its Lifecycle job waking it (no in-memory wait); a conflict copy's free name in one range
+  read; a placed write past a chunk mid-delete begins again.
   Owed: the owner export (slice P) reads the placed bodies' chunks with the files'; SSE-C
   on them with the files' chunks; live, R2 read latency from an owner object and the
   longest put in flight against `PUT_GRACE_MS`; slice L's isolate memory probe, with a
-  16 MiB body and the 16 MiB egress body; a live check of `limits.subrequests` at
+  16 MiB request body; a live check of `limits.subrequests` at
   10,000,000.
 
 ## 6. Files and sandbox

@@ -49,8 +49,10 @@
  * provider's status, the bytes it streamed and the gateway's metered outcome, which settles
  * the charge once: `succeeded` at the cost pi-ai read and the catalog priced, `failed`
  * (nothing sent, or the provider refused before any output), or `unknown`, keeping the
- * whole charge. A reservation never settled (the door's invocation lost) is settled `lost`
- * past `LOST_AFTER_S`, its charge `unknown`.
+ * whole charge. While it streams, its door beats it every `EGRESS_BEAT_S`; a reservation
+ * whose beats stop (its door's invocation lost: a deploy, an isolate's restart) is settled
+ * `lost` past `LOST_AFTER_S` without one, its charge `unknown`, and any open one past its
+ * door's own deadline (`EGRESS_DEADLINE_S`) is too.
  *
  * Every row lives in `egress_reservations` (migration 11): at most `open` open, the newest
  * `receiptsKept` admitted and `refusalsKept` refused rows kept as receipts.
@@ -69,7 +71,7 @@ import { Invalid } from "./errors";
 import type { OwnerStorage } from "./gate";
 import type { SandboxLease } from "./files";
 import { costMicros, largestFitting, periods } from "./money";
-import { EGRESS_DEADLINE_S, type EgressCode, type Outcome, OUTCOMES } from "./network";
+import { EGRESS_BEAT_S, EGRESS_DEADLINE_S, type EgressCode, type Outcome, OUTCOMES } from "./network";
 
 export { EGRESS_DEADLINE_S, type EgressCode, type Outcome };
 
@@ -93,8 +95,13 @@ export const EGRESS_LIMITS: EgressLimits = Object.freeze({
   receiptsListed: 50,
 });
 
-/** An open reservation older than this was its door's lost invocation's. */
-export const LOST_AFTER_S = EGRESS_DEADLINE_S + 60;
+export { EGRESS_BEAT_S };
+/**
+ * An open reservation with no beat for this long was its door's lost invocation's: three
+ * beats missed, so a slow beat is never taken for a lost door. The one-day total stays the
+ * door's own deadline (`EGRESS_DEADLINE_S`), past which an open row is lost too.
+ */
+export const LOST_AFTER_S = 3 * EGRESS_BEAT_S;
 /** The longest path an egress request names, as its row keeps it: visible ASCII. */
 export const EGRESS_PATH_MAX = 2048;
 /** A path the door sends: URL-serialized, so visible ASCII only. */
@@ -696,11 +703,28 @@ export class Egress {
     live?.end.close().catch(() => undefined);  // a door that stopped reading is gone already
   }
 
-  /** Open rows past `LOST_AFTER_S`: their doors' invocations were lost; their spend unknown. */
+  /**
+   * In a unit: a streaming call's open reservation beaten by its door (`EGRESS_BEAT_S`), by
+   * the egress token that opened it; false for one settled, lost or another token's.
+   */
+  beat(sandbox: SandboxBinding, reservation: unknown, now: number): boolean {
+    if (typeof reservation !== "string" || sandbox.kind !== "egress") {
+      return false;
+    }
+    return this.#sql.exec("UPDATE egress_reservations SET beat_at = ? WHERE id = ? AND " +
+                            "state = 'open' AND token = ? RETURNING id", now, reservation,
+                          sandbox.token).toArray().length === 1;
+  }
+
+  /**
+   * Open rows with no beat for `LOST_AFTER_S`, or past their door's deadline: their doors'
+   * invocations were lost; their spend unknown.
+   */
   #recover(now: number): void {
     const lost = this.#sql.exec<{ id: string }>(
       "UPDATE egress_reservations SET state = 'settled', outcome = 'lost', settled_at = ? " +
-        "WHERE state = 'open' AND opened_at <= ? RETURNING id", now, now - LOST_AFTER_S)
+        "WHERE state = 'open' AND (coalesce(beat_at, opened_at) <= ? OR opened_at <= ?) " +
+        "RETURNING id", now, now - LOST_AFTER_S, now - EGRESS_DEADLINE_S - EGRESS_BEAT_S)
       .toArray();
     for (const { id } of lost) {
       // What it cost is unknown: it keeps its whole charge.

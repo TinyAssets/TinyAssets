@@ -299,8 +299,11 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TABLE collection_space (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "charge INTEGER NOT NULL CHECK (charge >= 0), " +
       "rows_charge INTEGER NOT NULL CHECK (rows_charge >= 0), " +
-      "revision_floor INTEGER NOT NULL, seq_floor INTEGER NOT NULL)",
-    "INSERT INTO collection_space VALUES (1, 0, 0, 0, 0)",
+      "revision_floor INTEGER NOT NULL, seq_floor INTEGER NOT NULL, " +
+      // The newest change of a delete's or clear's entry a prune let go (slice M's feed): a
+      // reader behind it is told to read again (`changed`'s `reset`), never left unaware.
+      "erasure_floor INTEGER NOT NULL)",
+    "INSERT INTO collection_space VALUES (1, 0, 0, 0, 0, 0)",
     "CREATE INDEX collection_history_by_age ON collection_history (at)",
     `CREATE TRIGGER collection_history_added AFTER INSERT ON collection_history BEGIN ${
       SPACE("charge", "+", HISTORY_CHARGE("NEW"))} END`,
@@ -1191,6 +1194,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "path NOT GLOB '*[^ -~]*'), " +
       "generation INTEGER NOT NULL, bytes_hint INTEGER CHECK (bytes_hint IS NULL OR " +
       "bytes_hint >= 0), opened_at REAL NOT NULL, " +
+      // Its door's last beat while it streams (`EGRESS_BEAT_S`): past three missed, lost.
+      "beat_at REAL, " +
       "state TEXT NOT NULL CHECK (state IN ('open', 'settled', 'refused')), " +
       "code TEXT CHECK (code IS NULL OR length(code) <= 64), " +
       "ended TEXT CHECK (ended IS NULL OR ended IN ('policy', 'lease', 'connection', " +

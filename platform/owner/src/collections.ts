@@ -160,10 +160,15 @@ export type Changed =
   | { readonly collection: string; readonly row_id: string; readonly change: number;
       readonly deleted: true; readonly op: string; readonly writer: string };
 
-/** Rows changed after an owner-wide cursor, and the next cursor. */
+/**
+ * Rows changed after an owner-wide cursor, and the next cursor; `reset` when a deletion past
+ * the cursor was pruned from the history (`erasure_floor`): the reader reads its rows again
+ * whole (a pull) and goes on from the cursor given.
+ */
 export interface Changes {
   readonly cursor: number;
   readonly rows: Changed[];
+  readonly reset?: true;
 }
 
 /** The expected etag is not the row's; `current` is the row as stored, or null. */
@@ -409,12 +414,17 @@ export class Collections {
     }
   }
 
-  /** One history entry let go, its revision kept as the floor. */
+  /**
+   * One history entry let go, its revision kept as the floor; a delete's or clear's entry
+   * its change too (`erasure_floor`), so a feed reader behind it is told to read again.
+   */
   #let(entry: { collection: string; key: string; revision: number }): void {
-    this.#sql.exec("DELETE FROM collection_history WHERE collection = ? AND key = ? " +
-                     "AND revision = ?", entry.collection, entry.key, entry.revision);
-    this.#sql.exec("UPDATE collection_space SET revision_floor = MAX(revision_floor, ?)",
-                   entry.revision);
+    const gone = this.#sql.exec<{ change: number | null }>(
+      "DELETE FROM collection_history WHERE collection = ? AND key = ? AND revision = ? " +
+        "RETURNING change", entry.collection, entry.key, entry.revision).toArray()[0];
+    this.#sql.exec("UPDATE collection_space SET revision_floor = MAX(revision_floor, ?), " +
+                     "erasure_floor = MAX(erasure_floor, ?)", entry.revision,
+                   gone?.change ?? 0);
   }
 
   /**
@@ -483,6 +493,15 @@ export class Collections {
     if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit <= 0
         || limit > this.#limits.maxPull) {
       throw new Invalid(`limit is 1 to ${this.#limits.maxPull}`);
+    }
+    const space = this.#sql.exec<{ erasure_floor: number }>(
+      "SELECT erasure_floor FROM collection_space").one();
+    if (after > 0 && after < space.erasure_floor) {
+      // A deletion this reader has not seen is gone from the history: it cannot be told,
+      // so it is told to read again, loudly, never left holding a deleted row.
+      const top = this.#sql.exec<{ change: number }>(
+        "SELECT change FROM collection_clock").one().change;
+      return { cursor: top, rows: [], reset: true };
     }
     // A prefix is the range from itself to the name just past every name it starts.
     const keys = "collection" in where ? [name(where.collection, "collection")]
