@@ -12,8 +12,8 @@
  * Under a client's stamp each check reads, synchronously, that the client's grant still
  * stands at the stamped generation (`Grants.standing`: not changed, not revoked, no revoke
  * after the sign-in) and, for a scoped grant, that it holds each capability where the work
- * acts. A full grant holds every capability, as at the doors, but the explicit ones
- * (`EXPLICIT`: code mode's `run_code`), which only a scoped grant that names them holds.
+ * acts. A full grant holds every capability, as at the doors. Code mode is no capability:
+ * the owner chooses it by the client's tool profile (`grants.ts`).
  * Every check is refused while the owner is not admitted, the owner's own too.
  *
  * The runs slice (R) mints a run's grant from this, and checks it at every call the run
@@ -24,14 +24,7 @@ import { codePoints, isPrintable } from "./text";
 
 /** The capabilities of a scoped grant that work needs (`grants.ts`'s `CAPABILITIES`). */
 export type ToolCapability = "read_files" | "write_files" | "propose_policy" | "converse"
-  | "run_graph" | "run_code";
-
-/**
- * The capabilities a client holds only where a scoped grant names them, never by a full
- * grant: code mode's (`run_code`), many tool calls in one call with no model round trip
- * between them.
- */
-export const EXPLICIT: readonly ToolCapability[] = Object.freeze(["run_code"] as const);
+  | "run_graph";
 
 /** The need of what only the owner itself may do, whatever grant a client holds. */
 export const OWNER_ONLY = "owner";
@@ -186,13 +179,8 @@ export class Authority {
     if (need === OWNER_ONLY) {
       throw new Refused(NOT_OWNER);
     }
-    const explicit = Array.isArray(need)
-      && need.some((capability) => EXPLICIT.includes(capability));
-    if (grant.mode === "full" && !explicit) {
-      return;
-    }
     if (grant.mode === "full") {
-      throw new Refused(NOT_GRANTED);  // a full grant names no triple, so no explicit one
+      return;
     }
     if (need === undefined || stamp.universe === null
         || !need.every((capability) => grant.holds({ universe: stamp.universe!,

@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { toolNamed } from "../../doors/src/tools";
+import { toolsNamed } from "../../doors/src/tools";
 import { AGENT_RETIRED, type Ledger, MAIL_HEADER_BYTES, mailInput, NO_AGENT, nativeId,
          RUN_NO_MAILBOX } from "../src/ledger";
 import type { Binding } from "../src/owner-do";
@@ -430,6 +430,9 @@ describe("a run and the mailbox (review H1)", () => {
       .toBe(RUN_NO_MAILBOX);
     expect((await failure(() => r.stub.mailboxAck(asRun, { through: 1 }))).message)
       .toBe(RUN_NO_MAILBOX);
+    // Nor its digest, whose mail part is a mailbox read (slice M on ID).
+    expect((await failure(() => r.stub.inboxDigest(asRun, { limit: 10, after: 0 }))).message)
+      .toBe(RUN_NO_MAILBOX);
     // An owner run reads none either: every run's mail is its input.
     await drainDue(r.stub);
     const ownersRun = await newest(r);
@@ -782,7 +785,7 @@ describe("the owner-mail schedules slice R stood in with", () => {
       expect((await failure(() => r.stub.agentRun(r.bind({ tiers: TIERS }), {
         agent: "main", input: "x", ...extra } as never))).message).toBe("invalid run request");
     }
-    const properties = Object.keys(toolNamed("run_graph")!.input["properties"] as object);
+    const properties = Object.keys(toolsNamed(["run_graph"])[0]!.input["properties"] as object);
     expect(properties.filter((name) => name.includes("mail"))).toEqual([]);
     expect((await r.sql("SELECT sql FROM sqlite_master WHERE name = 'run_schedules'"))[0]!["sql"])
       .not.toMatch(/mail/);

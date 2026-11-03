@@ -71,6 +71,13 @@
  * `#runAccount`), and its event door (`runEvents`), whose frames the object reads by the
  * engine's record and relays to the owner's app sockets subscribed to that conversation.
  *
+ * A main agent spends few calls (slice M): `inboxDigest` and `boardDigest` answer what
+ * changed for it since its cursor in one read, held to its grant; `codeRun` is code mode at
+ * the MCP door, one script calling the caller's other tools (`codemode.ts`), refused unless
+ * the owner's policy turns `hooks.codemode` on and the caller's profile holds `code`; and
+ * `toolProfile` answers the doors which tools a caller is served (`doors/profiles.json`:
+ * its grant's profile, or a run's).
+ *
  * Erasing the owner (`erasure.ts`, `erase.ts`) is an internal path, which no door reaches
  * until the erasure door (slice 10): once it marks the owner, every door refuses
  * (`ERASING`, in the binding check every door's first unit runs) and no lane runs; it ends
@@ -90,6 +97,9 @@ import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
 import { mintToken } from "../../doors/src/routing-mac";
+import {
+  type ProfileName, profileNames, refusal, takesRequest, type Tool, toolsNamed,
+} from "../../doors/src/tools";
 import {
   bundledSources, CREDENTIAL_KINDS, type CredentialKind, runEnv, SourceRecordError,
 } from "../../doors/src/sources";
@@ -112,7 +122,9 @@ import { SANDBOX_ABSENT, type SandboxService, started } from "./sandbox";
 import { TICKET_REFUSED } from "./socket-shape";
 import { Tickets } from "./tickets";
 import { PLATFORM_TIER_ONLY, TIER_RUNS, type TierName, tierNumbers } from "./tier";
-import { Collections, Conflict, type HistoryEntry, type Page, type Row } from "./collections";
+import {
+  type Changed, Collections, Conflict, type HistoryEntry, type Page, type Row,
+} from "./collections";
 import {
   CONNECTION_UNAVAILABLE, type ConnectionView, Connections, CREDENTIAL_EXPIRED,
   type GatewayService, type ModelInfo, type Prepared,
@@ -125,7 +137,9 @@ import {
 } from "./files";
 import { type OwnerStorage, type Write, WriteGate } from "./gate";
 import { type Capability, type Client, type Grant, Grants, holds, type Scope } from "./grants";
-import type { HooksService } from "./codemode";
+import {
+  CODEMODE_TIMEOUT_MS, type CodemodeBounds, codemodeSandbox, type HooksService,
+} from "./codemode";
 import {
   type Actor, type Agent, type ChainMail, clock, type Delivery, Ledger, type MailAuthority,
   type MailPage, RUN_NO_MAILBOX,
@@ -136,8 +150,8 @@ import { type Notice, Notices } from "./notices";
 import { Erasure } from "./erase";
 import { ERASE_RETRY_MS, ERASING, erasing, wiped } from "./erasure";
 import {
-  type Change, fileSettings, modelSettings, Policy, type PolicyDocument, type Projection,
-  type Receipt,
+  type Change, customTools, fileSettings, hookSettings, modelSettings, Policy,
+  type PolicyDocument, type Projection, type Receipt,
 } from "./policy";
 import { type Card, Registrations } from "./registrations";
 import { type Lane, Schedule } from "./schedule";
@@ -145,7 +159,8 @@ import { AGENTS_DIR, AGENTS_OWNER_ONLY, OWNER_TREES, ownersOnly, storedPath, wit
   from "./paths";
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
-import { principal } from "./text";
+import { CONTROL_FRESH_MS, ControlGate, type Gate } from "./control-gate";
+import { codePoints, principal } from "./text";
 import { priced, Usage as ModelUsage, type UsageReceipt } from "./usage";
 import {
   Egress, type EgressOpened, type EgressReceipt, type EgressRefusal, egressRequest,
@@ -315,6 +330,8 @@ export interface GrantRequest {
   readonly scopes: Scope[];
   readonly expected_revision: number;
   readonly name: string;
+  /** The tool profile (`directory` or `custom`); omitted, the grant keeps its own. */
+  readonly profile?: string;
 }
 
 export interface ClientRequest {
@@ -349,6 +366,70 @@ export interface AckRequest {
   readonly through: number;
 }
 
+/** What changed for a main agent: its unread mail, and its rooms' rows past `after`. */
+export interface InboxDigestRequest {
+  readonly limit: number;
+  readonly after: number;
+  readonly max_bytes?: number;
+  readonly head_chars?: number;
+}
+
+/** The board's rows changed past `after`. */
+export interface BoardDigestRequest {
+  readonly limit: number;
+  readonly after: number;
+  readonly head_chars?: number;
+}
+
+/** A row as a digest shows it, the head of its body and how long the body is; or its deletion. */
+export type RowHead =
+  | (Omit<Extract<Changed, { deleted: false }>, "body">
+     & { readonly head: string; readonly body_chars: number })
+  | Extract<Changed, { deleted: true }>;
+
+/** Rows changed past a digest's cursor, and the next cursor. */
+export interface Heads {
+  readonly cursor: number;
+  readonly rows: RowHead[];
+}
+
+/** One code mode script (`codeRun`). */
+export interface CodeRequest {
+  readonly script: string;
+}
+
+/**
+ * A script's end, as pi-codemode reports it: its value or its error, its output, how many
+ * tool calls ended each way, and which calls of tools that change something landed
+ * (`landed`, in order, a run of the same tool and outcome as one entry with its count), so
+ * an agent knows what a stopped script did. An answer past `CODE_ANSWER_MAX` is refused
+ * `answer_too_large`, its value and output dropped, its calls kept.
+ */
+export type CodeResult =
+  | { readonly ok: true; readonly value: JsonValue; readonly output: CodeOutput[];
+      readonly calls: CodeCalls; readonly landed: Landed[] }
+  | { readonly ok: false; readonly error: { readonly kind: string; readonly message: string };
+      readonly output: CodeOutput[]; readonly calls: CodeCalls; readonly landed: Landed[] };
+
+/** A run of one tool's calls with one outcome, in a script's order. */
+export interface Landed {
+  readonly name: string;
+  readonly status: "ok" | "error" | "cancelled";
+  readonly count: number;
+}
+
+/** A script's value: JSON, as pi-codemode hands it back (an object or array, untyped). */
+export type JsonValue = null | boolean | number | string | object;
+/** One item of a script's output: its text, or an image. */
+export type CodeOutput = { readonly type: "text"; readonly text: string; readonly console?: true }
+  | { readonly type: "image"; readonly data: string; readonly mimeType: string };
+/** A script's tool calls, counted by how each ended. */
+export interface CodeCalls {
+  readonly ok: number;
+  readonly error: number;
+  readonly cancelled: number;
+}
+
 export interface SubscriberRequest {
   readonly command_center_id: string;
   readonly agent_id: string;
@@ -371,6 +452,11 @@ export interface OwnerEnv {
   readonly FILES: ChunkStore;
   readonly GATEWAY: GatewayService;
   readonly HOOKS: HooksService;
+  /**
+   * The platform's control record alone (`c:control`, the doors' too), read by code mode's
+   * calls for the gates the door read (`control-gate.ts`); never written here.
+   */
+  readonly CONTROL: KVNamespace;
   /**
    * The routing key the sandbox tokens are MAC'd under (`doors/src/routing-mac.ts`), a
    * Worker secret the doors Worker holds too; a lease is never opened without it.
@@ -669,6 +755,73 @@ function ledgerFields(request: unknown, required: readonly string[],
   return fields(request, required, optional, "invalid ledger request");
 }
 
+/** The board (`collections.ts`), and every room's prefix: `room:<app>:<room>`. */
+const BOARD = "board";
+const ROOM_PREFIX = "room:";
+/** Code mode's tool (`doors/src/tools.ts`), and its refusals. */
+const CODE = "code";
+export const CODE_MODE_OFF = "code_mode_off: the owner's policy has code mode off";
+export const CODE_NOT_SERVED = "tool_not_served: not in this caller's tool profile";
+const CODE_TIMED_OUT = "the script is past its time";
+/**
+ * The most a script's answer may take as V8 serializes it (`serializedBytes`): Workers RPC's
+ * 32 MiB of serialized arguments or return value (its own error: "Serialized RPC arguments
+ * or return values are limited to 32MiB"), less 1 MiB for the RPC's own envelope.
+ */
+export const CODE_ANSWER_MAX = 31 * 1024 * 1024;
+export const CODE_ANSWER_TOO_LARGE = "answer_too_large: the script's value and output are " +
+  "past the 31 MiB an answer across the RPC carries; return less, or write it with a tool";
+/** A string V8 keeps one byte a unit: every unit Latin-1. */
+const ONE_BYTE = /^[\u0000-\u00ff]*$/;
+/** A value's per-item framing in V8's serialization, at most: a tag and a length or a number. */
+const FRAME_BYTES = 10;
+
+/**
+ * At least what V8's serializer takes for a JSON value: a string one byte a unit when every
+ * unit is Latin-1, else two bytes a unit (the whole string, however few units are wide), and
+ * each item's framing; an object's keys as strings.
+ */
+export function serializedBytes(value: unknown): number {
+  if (typeof value === "string") {
+    return FRAME_BYTES + (ONE_BYTE.test(value) ? 1 : 2) * value.length;
+  }
+  if (Array.isArray(value)) {
+    return value.reduce<number>((bytes, item) => bytes + serializedBytes(item), FRAME_BYTES);
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.entries(value).reduce<number>(
+      (bytes, [key, item]) => bytes + serializedBytes(key) + serializedBytes(item), FRAME_BYTES);
+  }
+  return FRAME_BYTES;
+}
+/** A digest's head of each body, in characters, unless the caller names another. */
+const HEAD_CHARS = 512;
+
+/** A digest's `head_chars`: a whole number of characters, `HEAD_CHARS` when omitted. */
+function headChars(value: unknown): number {
+  if (value === undefined) {
+    return HEAD_CHARS;
+  }
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Invalid("head_chars is a whole number of characters");
+  }
+  return value;
+}
+
+/** Changed rows as a digest shows them: each body cut to its first `chars` characters. */
+function heads(changes: { cursor: number; rows: Changed[] }, chars: number): Heads {
+  return {
+    cursor: changes.cursor,
+    rows: changes.rows.map((row): RowHead => {
+      if (row.deleted) {
+        return row;
+      }
+      const { body, ...rest } = row;
+      return { ...rest, head: [...body].slice(0, chars).join(""), body_chars: codePoints(body) };
+    }),
+  };
+}
+
 function policyFields(request: unknown, required: readonly string[],
                       optional: readonly string[] = []): Record<string, unknown> {
   return fields(request, required, optional, "invalid policy request");
@@ -904,6 +1057,10 @@ export interface Internals {
   readonly eraseRetryMs?: number;
   /** The sandbox's lease API, which the sandbox slice reaches in the object (`SandboxLeases`). */
   readonly sandbox?: (internal: SandboxLeases) => void;
+  /** Code mode's bounds, smaller in a test than production's (`codemode.ts`). */
+  readonly codemode?: CodemodeBounds;
+  /** How long a script's read of the control record serves its calls (`control-gate.ts`). */
+  readonly controlFreshMs?: number;
 }
 
 /** A model's cost record with its input at its dearest rate: what a token can cost at most. */
@@ -980,6 +1137,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #posts = new PostGate();
   /** Who waits on a run's settle, on this instance only: a door's bounded wait. */
   readonly #waiters = new Map<string, Set<() => void>>();
+  /** Code mode's bounds: production's, unless a test passed smaller. */
+  readonly #codemode: CodemodeBounds;
+  /** How long a script's read of the control record serves its calls. */
+  readonly #controlFreshMs: number;
   /** The owner this object is named by (`ctx.id.name`), refused when it has none. */
   readonly #ownerName: () => string;
   /** The sandbox's lease, owner-internal: the runs slice calls it in process. */
@@ -1170,6 +1331,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     internals.erasure?.(this.#erasure);
     this.#sandbox = this.#sandboxLeases();
     internals.sandbox?.(this.#sandbox);
+    this.#codemode = internals.codemode ?? {};
+    this.#controlFreshMs = internals.controlFreshMs ?? CONTROL_FRESH_MS;
     this.#lifecycle = lifecycle.use(this.#schedule).use(this.#erasure).use(this.#relay)
       .use(this.#relay.capability);
     void ctx.blockConcurrencyWhile(async () => {
@@ -1540,12 +1703,13 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * rename, ends nothing: every stamp of the client's still stands.
    */
   grantSet(binding: Binding, request: GrantRequest): Promise<
-      { client: string; mode: string; scopes: Scope[]; generation: number; revision: number }> {
+      { client: string; mode: string; scopes: Scope[]; profile: string; generation: number;
+        revision: number }> {
     return this.#synced(() => this.#widening(binding, "work", "outside_set", request,
                                              "change an outside client's grant",
                                              (_account, id) => {
       const r = policyFields(request, ["client", "source", "mode", "scopes",
-                                       "expected_revision", "name"]);
+                                       "expected_revision", "name"], ["profile"]);
       return this.#storage.transactionSync(() => {
         const { moved, ...set } = this.#grants.set(id, r as unknown as GrantRequest, clock());
         if (moved) {
@@ -1935,6 +2099,184 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       this.#scope(account, "write_graph");
       return this.#ledger.ack(account.origin, r["through"]);
     });
+  }
+
+  // -- DIGESTS and CODE MODE: a main agent's few calls (slice M) -------------------
+
+  /**
+   * What changed for this agent since its cursor, in one read: its unacknowledged mail
+   * (`mailboxRead`'s page, from its own acknowledged cursor) and the owner's rooms' rows
+   * (`room:<app>:<room>`) written past `after`, an owner-wide cursor, each as its head.
+   * Held to its grant as the mailbox and the collections are: `read_graph`, and a private
+   * row only to its writer. Its mail part is a mailbox read, so a run is refused it
+   * (`run_no_mailbox`, slice ID), as at `mailboxRead`; a run reads the board's digest.
+   */
+  inboxDigest(binding: Binding, request: InboxDigestRequest):
+      Promise<{ mail: MailPage; rooms: Heads }> {
+    return this.#door(() => {
+      const account = this.#account(binding, "read");
+      const r = ledgerFields(request, ["limit", "after"], ["max_bytes", "head_chars"]);
+      this.#noMailbox(account);
+      this.#scope(account, "read_graph");
+      const head = headChars(r["head_chars"]);
+      return {
+        mail: this.#ledger.read(account.origin, r["limit"], r["max_bytes"] ?? null, 0),
+        rooms: heads(this.#collections.changed(account.caller, { prefix: ROOM_PREFIX },
+                                               r["after"], r["limit"]), head),
+      };
+    });
+  }
+
+  /** The board's rows written past `after`, each as its head, held as `collectionPull` is. */
+  boardDigest(binding: Binding, request: BoardDigestRequest): Promise<Heads> {
+    return this.#door(() => {
+      const { caller } = this.#collector(binding, "read", "read_graph");
+      const r = fields(request, ["limit", "after"], ["head_chars"]);
+      return heads(this.#collections.changed(caller, { collection: BOARD }, r["after"],
+                                             r["limit"]), headChars(r["head_chars"]));
+    });
+  }
+
+  /**
+   * The tools this caller is served (the doors list and call no others): a run's, the `run`
+   * profile; an outside client's, its grant's (`custom`: the owner's policy's choice); the
+   * owner's own, `custom`. `code` only while the owner's policy turns code mode on.
+   */
+  toolProfile(binding: Binding): Promise<{ profile: ProfileName; tools: readonly string[] }> {
+    return this.#door(() => this.#profile(this.#account(binding, "read")));
+  }
+
+  #profile(account: Account): { profile: ProfileName; tools: readonly string[] } {
+    const { document } = this.#policy.read();
+    const profile: ProfileName = account.run !== null ? "run"
+      : account.grant?.profile ?? "custom";
+    const names = profile === "custom" ? customTools(document) : profileNames(profile);
+    return { profile, tools: hookSettings(document).codemode ? names
+                                                             : names.filter((n) => n !== CODE) };
+  }
+
+  /**
+   * Code mode at the MCP door: one script calling the caller's profile's other tools as
+   * `tools.<name>(args)`, its VM in the hooks Worker (`codemode.ts`), its wall time
+   * `CODEMODE_TIMEOUT_MS`. Refused unless the owner's policy has `hooks.codemode` on (its
+   * default) and the caller's profile holds `code`. Each call is the tool's own door with
+   * the caller's binding, admitted again (grant, run, admission), held to the caller's
+   * profile and the switch as they stand then, and to the platform's gates the door read
+   * (the control record's kill switch for an outside client, its maintenance gate for a
+   * run or the owner: `control-gate.ts`), so a revoke, a narrowed profile, the switch
+   * turned off or outside access switched off refuses the script's next call. A refusal
+   * reaches the script as an error with its reason; anything else as `internal error`,
+   * logged here in full.
+   */
+  async codeRun(binding: Binding, request: CodeRequest): Promise<CodeResult> {
+    const { owner, script, tools, gate } = await this.#door(() => {
+      const account = this.#account(binding, "work");
+      const r = fields(request, ["script"], [], "invalid code request");
+      if (typeof r["script"] !== "string" || r["script"].trim() === "") {
+        throw new Invalid("a script is text");
+      }
+      if (!hookSettings(this.#policy.read().document).codemode) {
+        throw new Refused(CODE_MODE_OFF);
+      }
+      const { tools: names } = this.#profile(account);
+      if (!names.includes(CODE)) {
+        throw new Refused(CODE_NOT_SERVED);
+      }
+      // The gate its door read: every `/mcp` and `/api` binding carries the client's origin,
+      // the owner's own MCP clients' too, so they take the outside gate; a run (the egress
+      // door) and the owner's app (no origin) the maintenance gate.
+      const gate: Gate = account.origin !== null && account.run === null ? "outside" : "owner";
+      return { owner: account.owner, script: r["script"],
+               tools: toolsNamed(names.filter((name) => name !== CODE)), gate };
+    });
+    const control = new ControlGate(this.env.CONTROL, this.#controlFreshMs);
+    const closed = await control.refusal(gate, owner);
+    if (closed !== null) {
+      throw new Refused(closed);
+    }
+    // The wall bound, held here too: pi-codemode's own deadline is a timer, which a script
+    // calling tools back to back starved in workerd, so each call checks the clock, which
+    // moves with every call's I/O, and ends the execution past it.
+    const timeoutMs = this.#codemode.timeoutMs ?? CODEMODE_TIMEOUT_MS;
+    const deadline = Date.now() + timeoutMs;
+    const late = new AbortController();
+    const sandbox = codemodeSandbox({
+      ...this.#codemode,
+      service: () => this.env.HOOKS,
+      owner: () => owner,
+      tools: tools.map((tool) => ({ name: tool.name, description: tool.description,
+                                    inputSchema: tool.input,
+                                    execute: (args: unknown) => {
+                                      if (Date.now() >= deadline) {
+                                        late.abort();
+                                        throw new Error(CODE_TIMED_OUT);
+                                      }
+                                      return this.#scripted(binding, tool, args,
+                                                            () => control.refusal(gate, owner));
+                                    } })),
+    });
+    try {
+      const result = await sandbox.execute(script, { signal: late.signal });
+      const calls = { ok: 0, error: 0, cancelled: 0 };
+      const landed: Landed[] = [];
+      const changes = new Set(tools.filter((tool) => !tool.readOnlyHint)
+        .map((tool) => tool.name));
+      for (const call of result.calls) {
+        calls[call.status] += 1;
+        const last = landed.at(-1);
+        if (!changes.has(call.name)) {
+          continue;
+        }
+        if (last?.name === call.name && last.status === call.status) {
+          landed[landed.length - 1] = { ...last, count: last.count + 1 };
+        } else {
+          landed.push({ name: call.name, status: call.status, count: 1 });
+        }
+      }
+      const error = late.signal.aborted && !result.ok
+        ? { kind: "timeout", message: `Execution timed out after ${timeoutMs} ms` }
+        : result.ok ? null : { kind: result.error.kind, message: result.error.message };
+      const answer: CodeResult = error === null
+        ? { ok: true, value: (result as { value: JsonValue }).value, output: result.output,
+            calls, landed }
+        : { ok: false, error, output: result.output, calls, landed };
+      // The answer crosses an RPC to the doors: past what one carries it is refused whole,
+      // its calls kept, so the caller learns what landed.
+      return serializedBytes(answer) <= CODE_ANSWER_MAX ? answer
+        : { ok: false, error: { kind: "answer_too_large", message: CODE_ANSWER_TOO_LARGE },
+            output: [], calls, landed };
+    } finally {
+      await sandbox.close();
+    }
+  }
+
+  /** One tool call of a script: rechecked as `codeRun` says, then the tool's own door. */
+  async #scripted(binding: Binding, tool: Tool, args: unknown,
+                  gate: () => Promise<string | null>): Promise<unknown> {
+    try {
+      const closed = await gate();
+      if (closed !== null) {
+        throw new Refused(closed);
+      }
+      await this.#door(() => {
+        const { tools } = this.#profile(this.#account(binding, "read"));
+        if (!hookSettings(this.#policy.read().document).codemode) {
+          throw new Refused(CODE_MODE_OFF);
+        }
+        if (!tools.includes(CODE) || !tools.includes(tool.name)) {
+          throw new Refused(CODE_NOT_SERVED);
+        }
+      });
+      const door = this[tool.door] as unknown as (...args: unknown[]) => Promise<unknown>;
+      return await Reflect.apply(door, this, takesRequest(tool) ? [binding, args] : [binding]);
+    } catch (error) {
+      const refused = refusal(error);
+      if (refused === null) {
+        console.error(`code mode's ${tool.name} call failed`, error);
+        throw new Error("internal error");
+      }
+      throw new Error(refused.message);
+    }
   }
 
   /**

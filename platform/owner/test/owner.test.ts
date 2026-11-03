@@ -25,7 +25,8 @@ const PULL = { collection: "board", after: 0, limit: 1 };
  * slice brings them back as run doors).
  */
 const RPC_METHODS = Object.freeze([
-  "admissionSet", "agentCancel", "agentRun", "agentStatus", "agentSubmit", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory",
+  "admissionSet", "agentCancel", "agentRun", "agentStatus", "agentSubmit", "boardDigest",
+  "codeRun", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory",
   "collectionPull",
   "collectionWrite", "connectionCommit", "connectionList", "connectionPrepare",
   "connectionRevoke", "deleteAgent", "disableAgent", "egressOpen", "egressReceipts",
@@ -34,13 +35,14 @@ const RPC_METHODS = Object.freeze([
   "fileRestore", "fileStat", "fileSyncCommit", "fileUploadAbort", "fileUploadBegin",
   "fileUploadChunks", "fileUploadCommit", "fileUsage", "fileWrite",
   "flowFinish", "grantForget",
-  "grantForgetRevoked", "grantList", "grantRevoke", "grantSet", "mailChain", "mailboxAck",
+  "grantForgetRevoked", "grantList", "grantRevoke", "grantSet", "inboxDigest", "mailChain",
+  "mailboxAck",
   "mailboxRead",
   "mailboxSubscriber", "noticeList", "outsideAgents", "policyProposal", "policyPropose",
   "policyRead", "policyReceipts", "policyWakeLimits", "policyWrite", "registerAgent",
   "registerProposal", "registerPropose", "roomPost", "runEvents", "sessionClose",
   "sessionCloseAll", "sessionExtend", "sessionOpen", "signinReport", "socketTicket",
-  "socketsEnd", "tierSet", "usageReceipts",
+  "socketsEnd", "tierSet", "toolProfile", "usageReceipts",
 ]);
 
 /** The runtime's reserved methods the object hands to Lifecycle: no RPC reaches them. */
@@ -116,7 +118,7 @@ describe("schema migration on wake", () => {
     const { stub } = ownerObject();
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       expect(() => state.storage.sql.exec(
-        "INSERT INTO collection_rows VALUES ('c', 'r', 1, 1, 'e', 'w', 0, ?, 0, 'w')",
+        "INSERT INTO collection_rows VALUES ('c', 'r', 1, 1, 'e', 'w', 0, ?, 0, 'w', 1)",
         "x".repeat(ceiling + 1))).toThrow(/CHECK/);
     });
   });

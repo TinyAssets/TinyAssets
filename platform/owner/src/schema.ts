@@ -198,6 +198,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "body TEXT NOT NULL CHECK (length(body) <= 65536), updated_at REAL NOT NULL, " +
       // Who created the row; a takeover never changes it (the row share counts it).
       "creator TEXT NOT NULL, " +
+      // The owner-wide change of its latest write (`collection_clock`, slice M).
+      "change INTEGER NOT NULL, " +
       "PRIMARY KEY (collection, row_id), UNIQUE (collection, seq))",
     // A clear by writer matches either.
     "CREATE INDEX collection_writers ON collection_rows (collection, writer)",
@@ -207,6 +209,11 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     "CREATE TABLE collection_history (" +
       "collection TEXT NOT NULL, key TEXT NOT NULL, revision INTEGER NOT NULL, " +
       "op TEXT NOT NULL, body_json TEXT NOT NULL, at REAL NOT NULL, writer TEXT NOT NULL, " +
+      // A delete's or clear's entry (slice M's digests): its owner-wide change, and the
+      // erased row's writer when the row was private, so only that writer is told.
+      "change INTEGER, private_writer TEXT, " +
+      "CHECK ((change IS NULL) = (op NOT IN ('delete', 'clear'))), " +
+      "CHECK (private_writer IS NULL OR change IS NOT NULL), " +
       "PRIMARY KEY (collection, key, revision))",
     // The bounds' counters: rows and payload bytes in the whole object (the owner's),
     // per collection, and per writer and per creator in a collection. Only the
@@ -236,6 +243,20 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "WHEN NEW.rows = 0 AND NEW.row_bytes = 0 AND NEW.history_bytes = 0 BEGIN " +
       "DELETE FROM collection_usage WHERE scope = NEW.scope AND collection = NEW.collection " +
       "AND who = NEW.who; END",
+    // The owner-wide change order (slice M's digests): every write, delete and clear takes
+    // the clock's next change for its row or its erase entry, so one cursor covers many
+    // collections. It only ever rises.
+    "CREATE TABLE collection_clock (only INTEGER PRIMARY KEY CHECK (only = 1), " +
+      "change INTEGER NOT NULL CHECK (change >= 0))",
+    "INSERT INTO collection_clock VALUES (1, 0)",
+    "CREATE TRIGGER collection_clock_rises BEFORE UPDATE ON collection_clock " +
+      "WHEN NEW.change < OLD.change OR NEW.only != OLD.only " +
+      "BEGIN SELECT RAISE(ABORT, 'the collection clock only ever rises'); END",
+    "CREATE TRIGGER collection_clock_kept BEFORE DELETE ON collection_clock " +
+      "BEGIN SELECT RAISE(ABORT, 'the collection clock only ever rises'); END",
+    // A digest reads only what changed past its cursor.
+    "CREATE INDEX collection_changes ON collection_rows (change)",
+    "CREATE INDEX collection_erasures ON collection_history (change) WHERE change IS NOT NULL",
   ]),
   // 2: the message ledger (S30, S3a, S3b), its bodies, and the W3 wake limits (ledger.ts).
   // The object is its owner, so no row carries an owner column. Every bound the ledger
@@ -491,8 +512,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "owner_set INTEGER NOT NULL DEFAULT 0 CHECK (owner_set IN (0, 1)), " +
       "agents INTEGER NOT NULL DEFAULT 0 CHECK (agents >= 0), " +
       "held INTEGER NOT NULL DEFAULT 0 CHECK (held >= 0), " +
+      // The tool profile it is served (slice M, `doors/profiles.json`).
+      "profile TEXT NOT NULL DEFAULT 'custom' CHECK (profile IN ('directory', 'custom')), " +
       "CHECK (owner_set = 1 OR (source = 'mcp' AND mode = 'full' AND generation = 1 " +
-      "AND revoked_at IS NULL AND scopes = '[]' AND name = '')))",
+      "AND revoked_at IS NULL AND scopes = '[]' AND name = '' AND profile = 'custom')))",
     "CREATE INDEX outside_clients_listed ON outside_clients (first_seen, client)",
     "CREATE INDEX outside_clients_free ON outside_clients (last_seen) " +
       "WHERE owner_set = 0 AND agents = 0 AND held = 0",
