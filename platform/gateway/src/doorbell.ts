@@ -30,7 +30,7 @@
  */
 import {
   callbackSecret, callbackUrl, kindNamed, type Push,
-} from "../../owner/src/wake-kinds";
+} from "../../owner/src/wake-records";
 import { Failure } from "./failure";
 import { binding, type KeyringEnv, openValue, type Resealed, sealValue, type Sealed } from "./keyring";
 

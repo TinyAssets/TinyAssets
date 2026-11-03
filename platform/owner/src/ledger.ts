@@ -95,7 +95,7 @@ import type { OwnerStorage } from "./gate";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
 import {
   admittedMethods, type Change, CHANGES, type Follows, follows, kindFor, ringingMethods,
-  SUBSCRIPTION_ID,
+  SUBSCRIPTION_ID, SUBSCRIPTIONS_PER_AGENT,
 } from "./wake-kinds";
 
 /**
@@ -455,6 +455,8 @@ export interface WakeTarget {
   readonly after: number;
   /** The first change's own time, in seconds: the event's timestamp. */
   readonly at: number;
+  /** How many changes folded into it since it opened: a subscription is owed each fold. */
+  readonly fold: number;
 }
 
 /** A live subscription, as the doorbell sends to it: its sealed blob and what it follows. */
@@ -468,6 +470,10 @@ export interface LiveCallback extends Follows {
   readonly version: number;
   /** The secret a refresh replaced, while it still signs beside the new one. */
   readonly previous: { readonly blob: string; readonly version: number } | null;
+  /** The wake (`<wake_id>.<fold>`) it was last sent, or null. */
+  readonly rung: string | null;
+  /** Its last answer's status, or null. */
+  readonly status: number | null;
 }
 
 /**
@@ -501,6 +507,8 @@ type CallbackRow = {
   previous_blob: string | null;
   previous_version: number | null;
   previous_until: number | null;
+  rung: string | null;
+  status: number | null;
   expires_at: number | null;
   delivery_method: string;
 };
@@ -515,12 +523,16 @@ export type Claim =
   | { readonly outcome: "held" }
   | { readonly outcome: "not_due" };
 
-/** A doorbell's answer. `retry_after` is a 429's, in seconds. */
+/**
+ * A doorbell's answer. `retry_after` is a 429's, in seconds; `accepted`, on a rate-limited
+ * wake, that another of its subscriptions took it, so its mail is woken.
+ */
 export interface Outcome {
   readonly state: "sent" | "rate_limited" | "failed" | "unknown" | "suppressed";
   readonly status?: number;
   readonly retry_after?: number | null;
   readonly reason?: string;
+  readonly accepted?: boolean;
 }
 
 type Settle = Outcome | { readonly state: "pending"; readonly reason?: string };
@@ -571,6 +583,7 @@ type StoredWake = {
   through_seq: number | null;
   changes: number;
   after: number;
+  fold: number;
   created_at: number;
 };
 
@@ -693,7 +706,8 @@ export function outcome(value: unknown): Outcome {
   const keys = Object.keys(o);
   const states = ["sent", "rate_limited", "failed", "unknown", "suppressed"];
   if (!states.includes(o["state"] as string)
-      || !keys.every((k) => ["state", "status", "retry_after", "reason"].includes(k))
+      || !keys.every((k) => ["state", "status", "retry_after", "reason", "accepted"].includes(k))
+      || ("accepted" in o && (typeof o["accepted"] !== "boolean" || o["state"] !== "rate_limited"))
       || ("status" in o && !count(o["status"], 100, 599))
       || ("retry_after" in o && o["retry_after"] !== null && typeof o["retry_after"] !== "number")
       || ("reason" in o && (typeof o["reason"] !== "string" || !REASON.test(o["reason"])))) {
@@ -704,11 +718,13 @@ export function outcome(value: unknown): Outcome {
 
 /**
  * How long a wake waits before it goes again, in seconds: a 429's `Retry-After` exactly as
- * the vendor sent it; with none it could read, the lease doubled for each attempt the wake
- * has made (exponential backoff from the lane's own smallest interval, never a constant).
+ * the vendor sent it; with none it could read, or none in the future (zero, or a past
+ * date, which would keep the object busy at the callback's word), the lease doubled for
+ * each attempt the wake has made (exponential backoff from the lane's own smallest
+ * interval, never a constant).
  */
 export function retryAfter(value: number | null | undefined, attempts: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value
     : WAKE_LEASE_S * 2 ** Math.max(0, attempts - 1);
 }
 
@@ -1591,8 +1607,9 @@ export class Ledger {
    * agent's own kind and one whose record has the owner hand it over. Keyed by the id the
    * binder derived (never the caller's): a repeat refreshes it (the blob replaced, the
    * replaced one signing beside it for the record's rotation window, its lifetime
-   * re-granted); another caller's id is refused. At most `SUBSCRIPTIONS_KEPT` across the
-   * owner (`subscription_limit`). The agent's id and the expiry granted.
+   * re-granted, its last answer forgotten); another caller's id is refused. At most
+   * `SUBSCRIPTIONS_PER_AGENT` an agent (`subscription_limit`), its lapsed ones let go first.
+   * The agent's id and the expiry granted.
    */
   subscribe(origin: Origin | null, request: Subscription, now: number = clock()):
       { agent_id: string; expires_at: number | null } {
@@ -1630,6 +1647,16 @@ export class Ledger {
       if (held !== undefined && (held.principal !== principal || held.agent_id !== agent.agent_id)) {
         throw new Refused("not this caller's subscription");
       }
+      // The agent's lapsed subscriptions are let go, so none holds a place it no longer uses.
+      sql.exec("DELETE FROM wake_callbacks WHERE agent_id = ? AND expires_at IS NOT NULL " +
+                 "AND expires_at <= ?", agent.agent_id, now);
+      // The schema's trigger holds the same bound; this answers it as a refusal.
+      if (held === undefined && sql.exec<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM wake_callbacks INDEXED BY wake_callbacks_by_agent " +
+          "WHERE agent_id = ?", agent.agent_id).one().n >= SUBSCRIPTIONS_PER_AGENT) {
+        throw new Refused(`subscription_limit: ${SUBSCRIPTIONS_PER_AGENT} doorbell ` +
+                          "subscriptions an agent; end one first");
+      }
       const grace = push.events?.rotation_grace_s ?? 0;
       const previous = held === undefined || grace === 0 ? [null, null, null]
         : [held.blob, held.version, now + grace];
@@ -1642,7 +1669,7 @@ export class Ledger {
           "version = excluded.version, previous_blob = excluded.previous_blob, " +
           "previous_version = excluded.previous_version, " +
           "previous_until = excluded.previous_until, expires_at = excluded.expires_at, " +
-          "refreshed_at = excluded.refreshed_at",
+          "refreshed_at = excluded.refreshed_at, status = NULL",
         request.subscription_id, agent.agent_id, principal, kind!.id, follow.board ? 1 : 0,
         JSON.stringify(follow.rooms), request.blob, request.kid, request.version,
         ...previous, expires, now, now,
@@ -1682,7 +1709,26 @@ export class Ledger {
       previous: row.previous_blob !== null && row.previous_until !== null
           && row.previous_until > now
         ? { blob: row.previous_blob, version: row.previous_version! } : null,
+      rung: row.rung, status: row.status,
     }));
+  }
+
+  /** These subscriptions are sent `wake` (`<wake_id>.<fold>`): marked before the byte. */
+  rung(subscriptionIds: readonly string[], wake: string): void {
+    for (const id of subscriptionIds) {
+      this.#sql.exec("UPDATE wake_callbacks SET rung = ? WHERE subscription_id = ?", wake, id);
+    }
+  }
+
+  /**
+   * A subscription's answer to `wake`, recorded as its own: a 429 leaves it owed the wake
+   * again (its mark cleared), anything else settles it for that wake.
+   */
+  answered(subscriptionId: string, wake: string, status: number): void {
+    this.#sql.exec(
+      "UPDATE wake_callbacks SET status = ?, rung = CASE WHEN ? = 429 AND rung = ? THEN NULL " +
+        "ELSE rung END WHERE subscription_id = ?", status, status, wake, subscriptionId,
+    );
   }
 
   /** A subscription's blob resealed under the gateway's active kid (`ringDoorbell`). */
@@ -1726,8 +1772,8 @@ export class Ledger {
     const sql = this.#sql;
     for (const agentId of agentIds) {
       if (sql.exec(
-        "UPDATE ledger_wakes SET changes = changes | ?, after = MIN(after, ?) " +
-          `WHERE agent_id = ? AND ${OPEN} RETURNING wake_id`, bit, after, agentId,
+        "UPDATE ledger_wakes SET changes = changes | ?, after = MIN(after, ?), " +
+          `fold = fold + 1 WHERE agent_id = ? AND ${OPEN} RETURNING wake_id`, bit, after, agentId,
       ).toArray().length) {
         continue;
       }
@@ -1871,7 +1917,7 @@ export class Ledger {
           command_center_id: agent.command_center_id, client: agent.outside_client,
           family: agent.outside_family, cursor, through,
           changes: CHANGES.filter((change) => (wake.changes & CHANGE_BIT[change]) !== 0),
-          after: wake.after, at: wake.created_at,
+          after: wake.after, at: wake.created_at, fold: wake.fold,
         },
       };
     });
@@ -1943,18 +1989,21 @@ export class Ledger {
       if ((state === "pending" || state === "rate_limited") && sql.exec(
         "UPDATE ledger_wakes SET due = MAX(due, ?), state = CASE WHEN ? = 'rate_limited' " +
           "THEN 'rate_limited' ELSE state END, changes = changes | ?, after = MIN(after, ?), " +
-          `created_at = MIN(created_at, ?) WHERE agent_id = ? AND ${OPEN} RETURNING wake_id`,
+          "fold = fold + 1, created_at = MIN(created_at, ?) " +
+          `WHERE agent_id = ? AND ${OPEN} RETURNING wake_id`,
         due, state, wake.changes, wake.after, wake.created_at, wake.agent_id,
       ).toArray().length) {
         state = "suppressed";
         detail = { ...detail, folded: true };
       }
       const settled = SETTLED.includes(state);
+      // Its mail is woken once any subscription took the wake, a rate-limited one's too.
+      const woke = state === "sent" || (answer.state === "rate_limited" && answer.accepted === true);
       sql.exec(
         "UPDATE ledger_wakes SET state = ?, due = ?, receipt_json = ?, settled_at = ? " +
           "WHERE wake_id = ?", state, due, canonical(detail), settled ? now : null, wakeId,
       );
-      if (state === "sent") {
+      if (woke) {
         sql.exec(
           "UPDATE ledger_recipients SET state = 'woken', changed_at = ? WHERE agent_id = ? " +
             "AND seq <= ? AND state IN ('queued', 'held_cap')",

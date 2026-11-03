@@ -185,16 +185,22 @@ export function wakeContent(target: WakeTarget, changes: readonly Change[]): Wak
            changes, cursor: target.cursor, after: target.after, read };
 }
 
-/** A 429's `Retry-After` as sent, in seconds (a delta, or an HTTP date); null unreadable. */
-function retryAfterOf(value: string | null, now: number): number | null {
+/**
+ * A 429's `Retry-After` as sent, in seconds (a delta, or an HTTP date); null when it is
+ * unreadable or names no time after now (zero, a past date), so the wake backs off instead.
+ */
+export function retryAfterOf(value: string | null, now: number): number | null {
   if (value === null) {
     return null;
   }
-  if (/^\d{1,15}$/.test(value.trim())) {
-    return Number(value.trim());
-  }
-  const at = Date.parse(value);
-  return Number.isNaN(at) ? null : Math.max(0, at / 1000 - now);
+  const wait = /^\d{1,15}$/.test(value.trim()) ? Number(value.trim())
+    : Date.parse(value) / 1000 - now;
+  return Number.isFinite(wait) && wait > 0 ? wait : null;
+}
+
+/** The mark a subscription is sent this wake under: its id and how many changes it holds. */
+function rungOf(target: WakeTarget): string {
+  return `${target.wake_id}.${target.fold}`;
 }
 
 /** One subscription's answer, as the wake's outcome ranks it. */
@@ -212,11 +218,13 @@ type Answered = { readonly status: number; readonly retry_after: number | null }
  * meanwhile wins, and nothing is sent. No subscription left, or a grant that no longer
  * stands or reads, is `suppressed`: the agent catches up through its digests on its own
  * schedule. Each subscription is rung through the gateway, its blob resealed there when its
- * kid retired. The wake is `unknown` if any send may have left without an answer, else
- * `sent` if any was accepted (2xx), else `rate_limited` for the longest 429's
- * `Retry-After`, else `failed` with the first status: a 410 or 413 keeps the subscription
- * (the MCP Events spec), and a status the record names `token_dead` leaves the owner a
- * notice that its pasted token no longer works.
+ * kid retired, and its outcome is its own: marked sent this wake before the byte, its answer
+ * recorded, a 429 leaving it owed the wake again. The wake is `rate_limited` while any
+ * subscription is owed it (for the longest 429's `Retry-After`; the next try rings only
+ * those), else `unknown` if any send may have left without an answer, else `sent` if any
+ * was accepted (2xx), else `failed` with the first status: a 410 or 413 keeps the
+ * subscription (the MCP Events spec), and a status the record names `token_dead` leaves the
+ * owner one notice that its pasted token no longer works, until it is pasted again.
  */
 export class Doorbell implements WakeSender {
   readonly #deps: DoorbellDeps;
@@ -242,7 +250,10 @@ export class Doorbell implements WakeSender {
           && this.#deps.touched(callback.rooms, target.after)));
   }
 
-  /** The subscriptions to ring now, or why none: the grant, its reach, or none follows. */
+  /**
+   * The subscriptions to ring now, or why none: the grant, its reach, or none follows that
+   * is still owed this wake.
+   */
   #live(target: WakeTarget): LiveCallback[] | "grant" | "scope" | "no_callback" {
     const { ledger, live, reads, clock } = this.#deps;
     if (!live(target.client)) {
@@ -252,7 +263,8 @@ export class Doorbell implements WakeSender {
       return "scope";
     }
     const callbacks = ledger.callbacks(target.agent_id, clock())
-      .filter((callback) => this.#follows(callback, target).length > 0);
+      .filter((callback) => callback.rung !== rungOf(target)
+              && this.#follows(callback, target).length > 0);
     return callbacks.length ? callbacks : "no_callback";
   }
 
@@ -285,12 +297,13 @@ export class Doorbell implements WakeSender {
       return { state: "failed", reason: "not_sent" };
     }
     const still = new Set(again.map((callback) => callback.subscription_id));
+    const sending = requests.filter(({ callback }) => still.has(callback.subscription_id));
+    const wake = rungOf(target);
+    const { ledger, write } = this.#deps;
+    await write(() => ledger.rung(sending.map(({ callback }) => callback.subscription_id), wake));
     const answers: Answered[] = [];
     let unknown = false;
-    for (const { callback, request } of requests) {
-      if (!still.has(callback.subscription_id)) {
-        continue;  // ended since: never sent to
-      }
+    for (const { callback, request } of sending) {
       let rung: RingAnswer;
       try {
         rung = await this.#deps.ring(callback.subscription_id, callback.version, callback.blob,
@@ -311,28 +324,30 @@ export class Doorbell implements WakeSender {
         await this.#deps.write(() => this.#deps.ledger.resealed(callback.subscription_id, blob,
                                                                  kid, version));
       }
-      answers.push({ status: rung.status,
-                     retry_after: retryAfterOf(rung.retry_after, this.#deps.clock()) });
+      const status = rung.status;
+      await write(() => ledger.answered(callback.subscription_id, wake, status));
+      answers.push({ status, retry_after: retryAfterOf(rung.retry_after, this.#deps.clock()) });
       const dead = kindNamed(callback.kind)?.push?.token_dead ?? [];
-      if (callback.principal === "owner" && dead.includes(rung.status)) {
+      if (callback.principal === "owner" && dead.includes(status)
+          && !dead.includes(callback.status ?? 0)) {
         await this.#deps.notice("doorbell_token_refused",
                                 `${target.agent_id}: ${callback.kind} answered ${rung.status}; ` +
                                 "paste the token the vendor shows now");
       }
     }
-    if (unknown) {
-      return { state: "unknown" };
-    }
     const accepted = answers.find((answer) => answer.status >= 200 && answer.status < 300);
-    if (accepted !== undefined) {
-      return { state: "sent", status: accepted.status };
-    }
     const limited = answers.filter((answer) => answer.status === 429);
     if (limited.length) {
       const waits = limited.map((answer) => answer.retry_after);
-      return { state: "rate_limited", status: 429,
+      return { state: "rate_limited", status: 429, accepted: accepted !== undefined,
                retry_after: waits.includes(null) ? null
                  : Math.max(...waits.map((wait) => wait ?? 0)) };
+    }
+    if (unknown) {
+      return { state: "unknown" };
+    }
+    if (accepted !== undefined) {
+      return { state: "sent", status: accepted.status };
     }
     const first = answers[0];
     return first === undefined ? { state: "failed", reason: "not_sent" }

@@ -100,6 +100,7 @@ describe("one open wake per ringing recipient", () => {
       wake_id: wake!["wake_id"], claim_id: target!.claim_id, agent_id: muse,
       command_center_id: "alpha", client: MUSE.client, family: MUSE.family, cursor: 0,
       through: 2, changes: ["mail"], after: 0, at: wake!["created_at"],
+      fold: 1,  // the burst's second message folded in
     });
     expect(await states(r)).toEqual(["sent"]);
     expect(new Set(await states(r, "ledger_recipients"))).toEqual(new Set(["woken"]));
@@ -198,7 +199,7 @@ describe("a wake is sent once and never replayed", () => {
     expect(wake!["state"]).toBe("rate_limited");
     expect(wake!["due"]).toBeCloseTo(now + 120, 6);
     await r.post(null, `dm:${muse}`, { body: "more", cmid: "c2" });  // extends; still waits
-    expect(await wakes(r)).toEqual([wake]);
+    expect(await wakes(r)).toEqual([{ ...wake, fold: (wake!["fold"] as number) + 1 }]);
     expect(new Set(await states(r, "ledger_recipients"))).toEqual(new Set(["queued"]));
     expect(await r.tick(now + 60)).toBe(0);
     expect(r.sender.sent).toHaveLength(1);
@@ -209,8 +210,10 @@ describe("a wake is sent once and never replayed", () => {
   });
 
   it("waits a Retry-After exactly as sent; one it could not read backs off by attempt", () => {
-    expect([0, 0.2, 120, 3 * 86_400, 10 ** 9].map((wait) => retryAfter(wait, 1)))
-      .toEqual([0, 0.2, 120, 3 * 86_400, 10 ** 9]);
+    expect([0.2, 120, 3 * 86_400, 10 ** 9].map((wait) => retryAfter(wait, 1)))
+      .toEqual([0.2, 120, 3 * 86_400, 10 ** 9]);
+    // Zero names no time to wait: a callback never keeps the object busy at its word.
+    expect([0, 0].map((wait, n) => retryAfter(wait, n + 1))).toEqual([60, 120]);
     expect([1, 2, 3, 4].map((attempts) => retryAfter(null, attempts)))
       .toEqual([WAKE_LEASE_S, 2 * WAKE_LEASE_S, 4 * WAKE_LEASE_S, 8 * WAKE_LEASE_S]);
     expect([undefined, Number.NaN, -5, Number.POSITIVE_INFINITY]
@@ -316,7 +319,8 @@ describe("a wake is sent once and never replayed", () => {
     }
     for (const target of r.sender.sent) {
       expect(Object.keys(target).sort()).toEqual(["after", "agent_id", "at", "changes",
-        "claim_id", "client", "command_center_id", "cursor", "family", "through", "wake_id"]);
+        "claim_id", "client", "command_center_id", "cursor", "family", "fold", "through",
+        "wake_id"]);
     }
   });
 });

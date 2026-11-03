@@ -21,12 +21,13 @@
  * unmodified engines, their sessions in the owner's files (ADR-034), so what the owner's
  * object holds is its own bounded rows only, whatever its agents do.
  *
- * The worst case is 41.9% of the limit (slice W on M and ID: 4,186,866,859.75 bytes), about
- * 813 MB under half; with every raise the limits audit proposes, 49.52% (4,952,053,721.75
- * bytes, `limits-proposed.test.ts`), 47.9 MB under half. Slice W added `wake_callbacks`
- * (2.8 MB: `SUBSCRIPTIONS_KEPT` doorbells, each its sealed blob, the one it replaced while
- * both sign, and its arguments) and took out `ledger_rings` and the revoke tombstones' rows
- * (a wake is now limited by the owner's own setting, off by default). Slice ID added `native_agents` (1.5 MB,
+ * The worst case is 42.2% of the limit (slice W on M and ID: 4,219,272,203.75 bytes), about
+ * 781 MB under half; with every raise the limits audit proposes, 49.88% (4,987,981,385.75
+ * bytes, `limits-proposed.test.ts`), 12.0 MB under half. Slice W added `wake_callbacks`
+ * (35.2 MB: `SUBSCRIPTIONS_PER_AGENT` doorbells for each of `maxAgents` enabled agents, each
+ * its sealed blob, the one it replaced while both sign, its arguments and its last answer)
+ * and took out `ledger_rings` and the revoke tombstones' rows (a wake is now limited by the
+ * owner's own setting, off by default). Slice ID added `native_agents` (1.5 MB,
  * the owner's own agents in the registry's rows); a mail's authority and attendance and a
  * run's mail fit within the pages their rows were already counted at, and it adds no index
  * (an identity and a mail thread's conversation are found by their keys, digests). Slice M
@@ -56,7 +57,7 @@ import {
 import { NOTICE_DETAIL, NOTICES_KEPT } from "../src/notices";
 import { SESSION_LIMITS } from "../src/sessions";
 import { USAGE_LIMITS } from "../src/usage";
-import { ARGUMENTS_CHARS, DOORBELL_BLOB_CHARS, SUBSCRIPTIONS_KEPT } from "../src/wake-kinds";
+import { ARGUMENTS_CHARS, DOORBELL_BLOB_CHARS, SUBSCRIPTIONS_PER_AGENT } from "../src/wake-kinds";
 import { PLATFORM } from "./sources";
 
 const SRC = join(PLATFORM, "owner", "src");
@@ -354,11 +355,12 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     ledger_wakes: { rows: L.maxAgentRows + L.maxSettledWakes,
                     bytes: ROW + 1 * KIB, by: "an open wake per agent, maxSettledWakes settled" },
     ledger_usage: { rows: L.maxAgentRows + 1, bytes: ROW, by: "one per agent" },
-    wake_callbacks: { rows: SUBSCRIPTIONS_KEPT,
-                      bytes: ROW + 2 * DOORBELL_BLOB_CHARS + ARGUMENTS_CHARS + 2 * 64,
-                      by: "SUBSCRIPTIONS_KEPT doorbell subscriptions (slice W), each its sealed " +
+    wake_callbacks: { rows: L.maxAgents * SUBSCRIPTIONS_PER_AGENT,
+                      bytes: ROW + 2 * DOORBELL_BLOB_CHARS + ARGUMENTS_CHARS + 3 * 64 + 8,
+                      by: "SUBSCRIPTIONS_PER_AGENT doorbell subscriptions an enabled agent " +
+                        "(slice W; only an enabled agent's, a schema trigger), each its sealed " +
                         "blob and the one a refresh replaced at DOORBELL_BLOB_CHARS, its " +
-                        "arguments at ARGUMENTS_CHARS, its id and principal" },
+                        "arguments at ARGUMENTS_CHARS, its id, principal, last wake and status" },
     collection_rows: { rows: C.maxOwnerRows, bytes: ROW + CHANGE_BYTES + C.maxOwnerBytes /
                                                                 C.maxOwnerRows,
                        by: "maxOwnerRows; rows and history bytes within maxOwnerBytes; its " +
@@ -600,7 +602,7 @@ describe("the owner's database bound", () => {
       rows: MAX_OPEN_INTENTS, bytes: 256 + 2 * 640_000 });
     expect(TERMS["model_reservations"]!.rows).toBe(USAGE_LIMITS.receiptsKept + 1000);
     expect(TERMS["model_spend"]!.rows).toBe(4300);
-    expect(TERMS["wake_callbacks"]!.rows).toBe(128);
+    expect(TERMS["wake_callbacks"]!.rows).toBe(LEDGER_LIMITS.maxAgents * 16);
     expect(TERMS["connection_secrets"]!.bytes).toBe(256 + 4 * 65_536);
     expect(TERMS["connections"]!.bytes).toBe(256 + 4 * 655_360 + 4 * 16_384);
     expect(TERMS["egress_reservations"]!.rows).toBe(2_000 + 500 + 64);

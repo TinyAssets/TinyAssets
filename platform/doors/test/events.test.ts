@@ -10,7 +10,7 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { OwnerDO } from "../../owner/src/owner-do";
-import { subscriptionId } from "../../owner/src/wake-kinds";
+import { SUBSCRIPTIONS_PER_AGENT, subscriptionId } from "../../owner/src/wake-kinds";
 import { mcpOrigin } from "../src/binder";
 import {
   appPost, call, connect, legacyPost, OPEN, rpcBody, registerClient, serveFirstPartyDocument, setControl,
@@ -154,12 +154,30 @@ describe("MCP Events at the MCP door", () => {
     }
     expect(await code(await subscribe(tokens, "echo/x", {
       arguments: { command_center_id: "alpha", extra: 1 } }))).toMatchObject({ code: -32602 });
+    // A lifetime no date can write is refused before anything is stored.
+    expect(await code(await subscribe(tokens, "echo/x", { ttlMs: 9_000_000_000_000_000 })))
+      .toMatchObject({ code: -32602 });
     expect(await sqlIn(alice, "SELECT 1 FROM wake_callbacks")).toEqual([]);
     // A client with no ringing agent there may verify nothing into place.
     const stranger = await connect(await registerClient(), { owner: alice });
     expect(await code(await subscribe(stranger, "echo/x")))
       .toMatchObject({ code: -32024 });
   });
+});
+
+describe("an agent's own subscriptions", () => {
+  it("are held to the agent's own bound, answered ResourceExhausted with its max", async () => {
+    const { alice, tokens } = await ringingClient();
+    for (let n = 0; n < SUBSCRIPTIONS_PER_AGENT; n++) {
+      expect((await subscribe(tokens, `echo/chat-${n}`))["result"]).toBeDefined();
+    }
+    expect((await subscribe(tokens, "echo/one-more"))["error"]).toMatchObject(
+      { code: -32025, data: { limit: "subscriptions", max: SUBSCRIPTIONS_PER_AGENT } });
+    // A refresh of one it holds is no new place.
+    expect((await subscribe(tokens, "echo/chat-0"))["result"]).toBeDefined();
+    expect(await sqlIn(alice, "SELECT 1 FROM wake_callbacks")).toHaveLength(
+      SUBSCRIPTIONS_PER_AGENT);
+  }, 60_000);
 });
 
 describe("the owner surface's doorbell", () => {

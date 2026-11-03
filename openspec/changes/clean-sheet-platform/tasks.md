@@ -1281,11 +1281,16 @@ R, S, M and W.
   and makes the send, with no redirect and no body read, dual-signing with the replaced
   secret for the record's rotation window. An agent holds several subscriptions (a dot and
   a Work chat), each by the id derived from its principal, URL, event and arguments, at
-  most `SUBSCRIPTIONS_KEPT` across the owner, counted in the schema. The send is marked
-  before its first byte and rechecked (subscriptions, grant, kill switch) just before it;
-  a late or failed send settles `unknown` and is never replayed. A `429` waits its
-  Retry-After as sent, an unreadable one an exponential backoff; a `410` or `413` keeps
-  the subscription; a record's dead-token status (Claude's `401`) notices the owner. A
+  most `SUBSCRIPTIONS_PER_AGENT` (16) an enabled agent, counted in the schema and priced in
+  the owner-bound guard, so no client fills another's room. The send is marked before its
+  first byte and rechecked (subscriptions, grant, kill switch) just before it; a late or
+  failed send settles `unknown` and is never replayed. Each subscription's outcome is its
+  own: a retry rings only the ones a `429` left owed, and one that took the wake wakes the
+  mail. A `429` waits its Retry-After as sent, an unreadable, zero or past one an
+  exponential backoff; a `410` or `413` keeps the subscription; a record's dead-token
+  status (Claude's `401`) notices the owner once, until a new token is pasted. The
+  records and callback checks are `wake-records.ts`, which imports nothing but the errors
+  and the records' file, and the gateway's isolation guard walks its whole import closure. A
   grant change erases a client's subscriptions only, never an owner-set token. The kill
   switch is the owner Worker's `CONTROL` read through `ControlGate`; admission is the
   object's own row (2). Callbacks to loopback, private, metadata, single-label or our own

@@ -205,17 +205,25 @@ A doorbell's callback URL, auth and secret (a `/fire` token, a Grok key, a `whse
 
 #### Scenario: A token the vendor no longer takes
 - **WHEN** a ring with an owner-set token is answered with a status its record lists as a dead token (Claude's `401`)
-- **THEN** the wake settles failed and the owner is sent a notice to paste a new one
+- **THEN** the wake settles failed and the owner is sent one notice to paste a new one, not one a wake, until a new token is pasted
 
 ### Requirement: An agent holds several subscriptions, each by its derived id
-An agent MAY hold several doorbell subscriptions (a ChatGPT dot and a Work chat), each following the board, rooms by name, or both, at most `SUBSCRIPTIONS_KEPT` across the owner, counted in the schema. Each SHALL be keyed by the id derived from its principal, callback URL, event name and arguments, never one a caller names; a repeat refreshes it, keeping the replaced blob signing beside it for the record's rotation window. A grant change SHALL never erase an owner-set subscription silently: it is kept, and the grant check before each ring decides whether it rings.
+An enabled agent MAY hold several doorbell subscriptions (a ChatGPT dot and a Work chat), each following the board, rooms by name, or both, at most `SUBSCRIPTIONS_PER_AGENT` an agent, counted in the schema, so no client fills another agent's room nor the owner's own; a lapsed one SHALL be let go before the count. Each SHALL be keyed by the id derived from its principal, callback URL, event name and arguments, never one a caller names; a repeat refreshes it, keeping the replaced blob signing beside it for the record's rotation window. A grant change SHALL never erase an owner-set subscription silently: it is kept, and the grant check before each ring decides whether it rings. Each subscription's outcome SHALL be its own: marked sent a wake before its byte, its answer recorded, a 429 leaving it alone owed that wake.
+
+#### Scenario: One subscription accepts and another is rate-limited
+- **WHEN** a wake's ring is answered 202 by one subscription and 429 by another
+- **THEN** the agent's mail is woken, the wake waits the 429's Retry-After, and its retry rings only the 429's subscription
+
+#### Scenario: A client fills its agent's subscriptions
+- **WHEN** a client holds `SUBSCRIPTIONS_PER_AGENT` subscriptions for its agent and subscribes another
+- **THEN** it is refused `subscription_limit`, and the owner's paste for another agent is stored
 
 #### Scenario: A callback that is gone for now
 - **WHEN** a ring is answered `410` or `413`
 - **THEN** the wake settles failed, it is not retried, and the subscription is kept
 
 ### Requirement: A send that may have left is never replayed
-The doorbell SHALL mark a wake before its first byte and recheck the agent's subscriptions and its client's grant immediately before it; a disable, unsubscribe or grant change that landed meanwhile SHALL send nothing. A transport failure after the mark SHALL settle `unknown`; a send past `WAKE_SEND_MS` SHALL be left to its lease and recover `unknown`; neither SHALL be sent again. A `429` SHALL wait the Retry-After as sent; an unreadable one, an exponential backoff from `WAKE_LEASE_S`.
+The doorbell SHALL mark a wake before its first byte and recheck the agent's subscriptions and its client's grant immediately before it; a disable, unsubscribe or grant change that landed meanwhile SHALL send nothing. A transport failure after the mark SHALL settle `unknown`; a send past `WAKE_SEND_MS` SHALL be left to its lease and recover `unknown`; neither SHALL be sent again. A `429` SHALL wait the Retry-After as sent; an unreadable one, or one naming no time after now (zero, a past date), an exponential backoff from `WAKE_LEASE_S`, so a callback never keeps the object busy.
 
 #### Scenario: A slow send
 - **WHEN** a callback never answers

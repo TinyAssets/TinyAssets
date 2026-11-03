@@ -25,7 +25,8 @@
 import { type McpServer, ProtocolError, type StandardSchemaV1 } from "@modelcontextprotocol/server";
 
 import {
-  callbackSecret, callbackUrl, eventKind, follows, subscriptionId, type WakeKind,
+  callbackSecret, callbackUrl, eventKind, follows, SUBSCRIPTIONS_PER_AGENT, subscriptionId,
+  type WakeKind,
 } from "../../owner/src/wake-kinds";
 
 import type { Bound } from "./binder";
@@ -144,7 +145,8 @@ function refused(error: unknown): never {
     throw error;
   }
   if (known.message.startsWith("subscription_limit")) {
-    throw new ProtocolError(EXHAUSTED, "ResourceExhausted", { limit: "subscriptions" });
+    throw new ProtocolError(EXHAUSTED, "ResourceExhausted",
+                            { limit: "subscriptions", max: SUBSCRIPTIONS_PER_AGENT });
   }
   if (known.status === 400) {
     throw invalid(known.message);
@@ -161,8 +163,9 @@ function grantedTtl(kind: WakeKind & { push: NonNullable<WakeKind["push"]> },
   if (value === undefined) {
     return kind.push.events!.default_ttl_ms;
   }
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
-    throw invalid("ttlMs is a positive whole number of milliseconds, or null");
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0
+      || Number.isNaN(new Date(Date.now() + value).getTime())) {
+    throw invalid("ttlMs is a positive whole number of milliseconds a date can reach, or null");
   }
   return value;
 }
@@ -213,6 +216,8 @@ export function serveEvents(mcp: McpServer, bound: Bound, env: DoorsEnv): void {
                               { reason: verified.reason });
     }
     const expiresAt = ttl === null ? null : (Date.now() + ttl) / 1000;
+    // Written before anything is stored, so an answer that cannot be written stores nothing.
+    const refreshBefore = expiresAt === null ? null : new Date(expiresAt * 1000).toISOString();
     try {
       await bound.stub.wakeSubscribe(bound.binding, {
         subscription_id: id, name: kind.push.events!.name,
@@ -223,8 +228,7 @@ export function serveEvents(mcp: McpServer, bound: Bound, env: DoorsEnv): void {
     } catch (error) {
       refused(error);
     }
-    return { id, refreshBefore: expiresAt === null ? null : new Date(expiresAt * 1000).toISOString(),
-             cursor: null, truncated: false } as never;
+    return { id, refreshBefore, cursor: null, truncated: false } as never;
   });
 
   mcp.server.setRequestHandler("events/unsubscribe", { params: PARAMS }, async (params) => {

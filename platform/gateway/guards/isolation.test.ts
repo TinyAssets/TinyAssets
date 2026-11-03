@@ -9,12 +9,15 @@
  * - No gateway source names `OWNER` or `getByName`: the gateway is handed the owner and
  *   never looks one up, and its config binds no namespace to look one up in.
  * - Imports, read from the AST and resolved as paths: a relative one must land in
- *   `gateway/src/` or be the owner grammar (`owner/src/text`) or the wake kinds'
- *   records and callback checks (`owner/src/wake-kinds`, which the doorbell applies again
- *   where it sends), however it is spelled
+ *   `gateway/src/` or be one of `OWNER_MODULES` (the owner grammar, its errors, and the
+ *   wake records with their callback checks, which the doorbell applies again where it
+ *   sends, and the records' file), however it is spelled
  *   (`./../../owner/...` included); a bare one must be pi-ai, `cloudflare:workers`, or
  *   `node:async_hooks` in `egress.ts` alone; absolute specifiers, dynamic `import()` and
  *   `require` are refused.
+ * - Every rule holds over the import closure: each module a gateway source reaches
+ *   through relative imports, however deep, is checked as a gateway source is, so an
+ *   allowed owner module cannot bring in a runtime module or another of the owner's.
  * - The platform's module-state and self-reach guards (`owner/guards/`) scan every
  *   Worker's `src/`; this checks every gateway source is in what they scan.
  *
@@ -32,8 +35,10 @@ import { parse, PLATFORM, reporter, workerSources } from "../../owner/guards/sou
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 const KEYRING_HOME = "gateway/src/keyring.ts";
-/** The modules outside the gateway its source may import, as resolved paths. */
-const OWNER_MODULES: readonly string[] = Object.freeze(["owner/src/text", "owner/src/wake-kinds"]);
+/** The modules outside the gateway its source may reach, as resolved paths. */
+const OWNER_MODULES: readonly string[] = Object.freeze([
+  "owner/src/text", "owner/src/errors", "owner/src/wake-records", "owner/wake-kinds.json",
+]);
 const PI_AI = "@earendil-works/pi-ai";
 /** The runtime modules a source may import, and where. */
 const RUNTIME: Readonly<Record<string, string | null>> = Object.freeze({
@@ -48,8 +53,7 @@ function importProblem(path: string, specifier: string): string | null {
     return `imports ${specifier}, an absolute specifier`;
   }
   if (specifier.startsWith("./") || specifier.startsWith("../")) {
-    const resolved = posix.normalize(posix.join(posix.dirname(path), specifier))
-      .replace(/\.(?:[cm]?[jt]s|tsx|jsx)$/, "");
+    const resolved = resolve(path, specifier);
     return resolved.startsWith("gateway/src/") || OWNER_MODULES.includes(resolved)
       ? null : `imports ${specifier} (${resolved}), outside the gateway`;
   }
@@ -116,14 +120,57 @@ export function isolationProblems(path: string, source: string): string[] {
   return problems;
 }
 
-function gatewaySources(): Map<string, string> {
-  return new Map([...workerSources()].filter(([path]) => path.startsWith("gateway/src/")));
+/** `specifier` from the source at `path`, as a path from `platform/` without its extension. */
+function resolve(path: string, specifier: string): string {
+  return posix.normalize(posix.join(posix.dirname(path), specifier))
+    .replace(/\.(?:[cm]?[jt]s|tsx|jsx)$/, "");
+}
+
+/** The relative specifiers `source` imports or re-exports. */
+function relativeImports(path: string, source: string): string[] {
+  const found: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+        && node.moduleSpecifier !== undefined && ts.isStringLiteralLike(node.moduleSpecifier)
+        && node.moduleSpecifier.text.startsWith(".")) {
+      found.push(node.moduleSpecifier.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(parse(path, source));
+  return found;
+}
+
+/**
+ * Every source the gateway's reach through relative imports, however deep, with the
+ * gateway's own: what its bundle holds of ours. A data file (`.json`) is checked by its
+ * import's path alone.
+ */
+export function gatewayClosure(all: Map<string, string> = workerSources()): Map<string, string> {
+  const reached = new Map<string, string>();
+  const queue = [...all.keys()].filter((path) => path.startsWith("gateway/src/"));
+  while (queue.length) {
+    const path = queue.pop()!;
+    const source = all.get(path);
+    if (reached.has(path) || source === undefined) {
+      continue;
+    }
+    reached.set(path, source);
+    for (const specifier of relativeImports(path, source)) {
+      const resolved = resolve(path, specifier);
+      queue.push(...[`${resolved}.ts`, `${resolved}/index.ts`].filter((next) => all.has(next)));
+    }
+  }
+  return reached;
 }
 
 describe("gateway isolation guards", () => {
-  it("finds the keyring named only in keyring.ts, and no OWNER or getByName", () => {
-    const sources = gatewaySources();
+  it("finds the keyring named only in keyring.ts, and no OWNER or getByName, over the " +
+     "whole import closure", () => {
+    const sources = gatewayClosure();
     expect([...sources.keys()]).toContain(KEYRING_HOME);
+    expect([...sources.keys()]).toEqual(expect.arrayContaining(
+      ["owner/src/wake-records.ts", "owner/src/text.ts", "owner/src/errors.ts"]));
     expect(sources.get(KEYRING_HOME)).toContain("GATEWAY_KEYRING");
     expect([...sources].flatMap(([path, source]) => isolationProblems(path, source))).toEqual([]);
   });
@@ -178,8 +225,27 @@ describe("gateway isolation guards", () => {
       .toEqual([]);
   });
 
+  it("walks the closure: a module an allowed one imports is checked as a gateway source",
+     () => {
+    const all = new Map([
+      ["gateway/src/probe.ts", "import { x } from '../../owner/src/wake-records';"],
+      ["owner/src/wake-records.ts",
+       "import { createHash } from 'node:crypto';\nimport { y } from './owner-do';"],
+      ["owner/src/owner-do.ts", "export const y = 1;"],
+    ]);
+    const reached = gatewayClosure(all);
+    expect([...reached.keys()].sort()).toEqual(
+      ["gateway/src/probe.ts", "owner/src/owner-do.ts", "owner/src/wake-records.ts"]);
+    expect([...reached].flatMap(([path, source]) => isolationProblems(path, source)))
+      .toEqual([
+        "owner/src/wake-records.ts:1: imports node:crypto, not a module the gateway may use",
+        "owner/src/wake-records.ts:2: imports ./owner-do (owner/src/owner-do), outside the gateway",
+      ]);
+  });
+
   it("are the platform's own module-state and self-reach guards, scanning every source", () => {
-    const scanned = [...gatewaySources().keys()].sort();
+    const scanned = [...workerSources().keys()].filter((path) => path.startsWith("gateway/src/"))
+      .sort();
     const sources = readdirSync(SRC, { recursive: true, encoding: "utf8" })
       .filter((path) => extname(path) !== "").map((path) => `gateway/src/${path}`).sort();
     expect(scanned).toEqual(sources);

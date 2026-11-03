@@ -29,7 +29,7 @@ import {
   RUN_ID_CHARS, SCHEDULE_ID_CHARS, SCHEDULES_KEPT, SIGNIN_LIST_CHARS, SIGNIN_MODELS_CHARS,
 } from "./run-rows";
 import { SOCKET_TICKETS } from "./socket-shape";
-import { ARGUMENTS_CHARS, DOORBELL_BLOB_CHARS, SUBSCRIPTIONS_KEPT } from "./wake-kinds";
+import { ARGUMENTS_CHARS, DOORBELL_BLOB_CHARS, SUBSCRIPTIONS_PER_AGENT } from "./wake-kinds";
 import { RUNS_CEILING } from "./tier";
 
 export type Migration = readonly string[];
@@ -358,6 +358,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       // `created_at` is the first change's own time, the event's timestamp.
       "changes INTEGER NOT NULL CHECK (changes BETWEEN 1 AND 7), " +
       "after INTEGER NOT NULL CHECK (after >= 0), " +
+      // Moves each time a change folds in, so each subscription is owed the wake again.
+      "fold INTEGER NOT NULL DEFAULT 0 CHECK (fold >= 0), " +
       "receipt_json TEXT, created_at REAL NOT NULL, settled_at REAL)",
     "CREATE UNIQUE INDEX one_open_wake ON ledger_wakes (agent_id) " +
       "WHERE state IN ('pending', 'rate_limited')",
@@ -372,9 +374,12 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // keyed by the id the server derives (principal, callback URL, event, arguments). The
     // secret and the URL are only inside `blob`, which the gateway sealed and alone opens;
     // `previous_*` is the secret a refresh replaced, signing beside the new one until
-    // `previous_until`. Every row goes in the transaction that disables, moves, deletes or
-    // revokes its agent. At most `SUBSCRIPTIONS_KEPT` across the owner (a technical
-    // ceiling, the owner-bound guard), the next refused `subscription_limit`.
+    // `previous_until`. `rung` is the wake (`<wake_id>.<fold>`) it was last sent, marked
+    // before the byte and cleared by a 429, and `status` its last answer, both its own, so a
+    // retry rings only the subscriptions still owed. Every row goes in the transaction that
+    // disables, moves, deletes or revokes its agent, and is only an enabled agent's. At most
+    // `SUBSCRIPTIONS_PER_AGENT` an agent (a technical ceiling, each enabled agent's share in
+    // the owner-bound guard), the next refused `subscription_limit`.
     "CREATE TABLE wake_callbacks (" +
       "subscription_id TEXT PRIMARY KEY CHECK (length(subscription_id) = 36 " +
       "AND subscription_id GLOB 'sub_*' AND substr(subscription_id, 5) NOT GLOB '*[^0-9a-f]*'), " +
@@ -389,14 +394,23 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "version INTEGER NOT NULL CHECK (version >= 1), " +
       `previous_blob TEXT CHECK (length(previous_blob) <= ${DOORBELL_BLOB_CHARS}), ` +
       "previous_version INTEGER, previous_until REAL, " +
+      "rung TEXT CHECK (length(rung) BETWEEN 1 AND 64), " +
+      "status INTEGER CHECK (status BETWEEN 100 AND 599), " +
       "expires_at REAL, created_at REAL NOT NULL, refreshed_at REAL NOT NULL, " +
       "CHECK ((previous_blob IS NULL) = (previous_version IS NULL) " +
       "AND (previous_blob IS NULL) = (previous_until IS NULL))) WITHOUT ROWID",
     "CREATE INDEX wake_callbacks_by_agent ON wake_callbacks (agent_id)",
+    // A refresh (the same id) is an update, never counted again.
     "CREATE TRIGGER wake_callbacks_full BEFORE INSERT ON wake_callbacks " +
-      `WHEN (SELECT COUNT(*) FROM wake_callbacks) >= ${SUBSCRIPTIONS_KEPT} BEGIN ` +
-      `SELECT RAISE(ABORT, 'subscription_limit: ${SUBSCRIPTIONS_KEPT} doorbell ` +
-      "subscriptions are kept; end one first'); END",
+      "WHEN NOT EXISTS (SELECT 1 FROM wake_callbacks WHERE subscription_id = " +
+      "NEW.subscription_id) AND (SELECT COUNT(*) FROM wake_callbacks INDEXED BY " +
+      `wake_callbacks_by_agent WHERE agent_id = NEW.agent_id) >= ${SUBSCRIPTIONS_PER_AGENT} ` +
+      `BEGIN SELECT RAISE(ABORT, 'subscription_limit: ${SUBSCRIPTIONS_PER_AGENT} doorbell ` +
+      "subscriptions an agent; end one first'); END",
+    "CREATE TRIGGER wake_callbacks_enabled BEFORE INSERT ON wake_callbacks " +
+      "WHEN NOT EXISTS (SELECT 1 FROM outside_agents WHERE agent_id = NEW.agent_id " +
+      "AND disabled_reason IS NULL) BEGIN SELECT RAISE(ABORT, " +
+      "'a doorbell subscription is an enabled agent''s'); END",
     "CREATE TABLE message_bodies (" +
       "message_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, " +
       "body TEXT NOT NULL CHECK (length(body) BETWEEN 1 AND 16384), created_at REAL NOT NULL)",
