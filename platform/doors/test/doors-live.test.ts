@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { ADMIN_CALLER } from "../../admin/src/caller";
 import { OWNER_ERASED, OWNER_UNADMITTED } from "../../owner/src/admission";
+import { ERASING } from "../../owner/src/erasure";
 import { BREAKER_FAILURES } from "../../owner/src/inbound";
 import { nativeId } from "../../owner/src/ledger";
 import type { Binding } from "../../owner/src/owner-do";
@@ -119,8 +120,8 @@ describe("the erasure", () => {
     const erased = await appPost("account/erase", app.access_token, app.session,
                                  { confirm: "erase my account" });
     expect(erased.status).toBe(200);
-    expect(await erased.json()).toMatchObject({ erasing: true, erased: true,
-                                               identity_deleted: true, keys: 1, routes: 1 });
+    expect(await erased.json()).toMatchObject({ erasing: true, identity_deleted: true,
+                                               keys: 1, routes: 1 });
     expect(erased.headers.getSetCookie().join()).toMatch(/__Host-ta-owner=;/);
     // The outside record, the directory's entries gone, the identity deleted.
     expect(await readOwner(doorsEnv, who)).toMatchObject({ s: "erased" });
@@ -141,9 +142,10 @@ describe("the erasure", () => {
     expect(new URL(again.back.headers.get("Location")!).searchParams.get("error"))
       .toBe("access_denied");
     expect(FORGOTTEN).toEqual([who, who]);  // the identity's deletion tried again
-    // The object holds the tombstone alone, and a stale getByName is refused, not remade.
-    expect((await failure(() => env.OWNER.getByName(who).grantList(ownerBinding(who)))).message).toMatch(OWNER_ERASED);
-    expect(await sqlIn(who, "SELECT state FROM owner_admission")).toEqual([{ state: "erased" }]);
+    // The object is under its erasure's mark (its R2 step and wipe wait out the put grace,
+    // then leave the tombstone), and refuses every door meanwhile.
+    expect((await failure(() => env.OWNER.getByName(who).grantList(ownerBinding(who)))).message)
+      .toMatch(new RegExp(`${ERASING}|${OWNER_ERASED}`));
   });
 
   it("closes the crash window: a wiped object that lost its tombstone is pending, never admitted",
@@ -444,8 +446,9 @@ describe("/hooks/inbound, a shared app (Slack's HMAC)", () => {
     await defineAgent(env.OWNER.getByName(who), ownerBinding(who), "main", SIGNED_IN);
     const team = `T${crypto.randomUUID().slice(0, 8)}`;
     await slackInstall(who, team);
-    expect((await call(slackRequest(slackEvent(team, "EvR")))).status).toBe(202);
-    const replay = await call(slackRequest(slackEvent(team, "EvR")));
+    const retried = slackEvent(team, "EvR");  // a retry carries the same envelope
+    expect((await call(slackRequest(retried))).status).toBe(202);
+    const replay = await call(slackRequest(retried));
     expect(await replay.json()).toMatchObject({ state: "admitted", deduped: true });
     expect(await mail(who)).toHaveLength(1);
     const stranger = await call(slackRequest(slackEvent("TNOBODY", "EvS")));

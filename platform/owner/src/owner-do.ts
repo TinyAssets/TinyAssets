@@ -2104,8 +2104,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       throw new Error("an erasure's widening returned without confirming it");
     }
     try {
+      // Resolves at the mark while the R2 step waits out its grace (`PUT_GRACE_MS`); the
+      // erasure's job finishes it.
       await this.#erasure.erase();
-      return { erasing: true, erased: true };
+      return { erasing: true, erased: this.#erasure.erased };
     } catch {
       console.error("the owner's erasure failed after its mark; it resumes");  // no ids
       return { erasing: true, erased: false };
