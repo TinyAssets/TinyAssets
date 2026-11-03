@@ -23,7 +23,9 @@ Worker's `E2B_TEMPLATE` names it (`sandbox/guards/template.test.ts` holds the tw
 Every build ends with two standing checks on throwaway sandboxes of the template just built:
 every record's sign-in up to its prompt (`check_logins`), and every keyed engine's first model
 request reaching the egress door's own path with nothing else leaving the VM
-(`route_probe`). Only once both pass is the template's tag printed, to be pinned.
+(`route_probe`). Only once both pass is the template's tag printed, to be pinned, and its
+record written to `passed.json` beside this script (each tag that passed, with what its checks
+found), which the template guard holds the pinned tag to (`sandbox/guards/template.test.ts`).
 """
 import hashlib
 import json
@@ -46,6 +48,7 @@ CPU = 2
 MEMORY_MB = 1024
 TIER = PLATFORM / "owner" / "src" / "tier.ts"
 NETWORK = PLATFORM / "owner" / "src" / "network.ts"
+PASSED = HERE / "passed.json"
 
 
 def runs_ceiling() -> int:
@@ -215,6 +218,7 @@ def check_logins(name):
     print(json.dumps({"logins": results}), flush=True)
     if not all(result["ok"] for result in results):
         raise SystemExit("a record's sign-in is not its record's shape on this template")
+    return results
 
 
 def route_probe(name):
@@ -253,6 +257,25 @@ def route_probe(name):
     if code != 0 or not results or not all(result["ok"] for result in results):
         raise SystemExit("a keyed engine's model requests do not reach the egress door alone "
                          "on this template")
+    return results
+
+
+def record_pass(name, logins, routes):
+    """The tag that passed both checks, with what they found, kept in `passed.json` (one entry
+    a tag, newest last): the record the template guard holds a pinned tag to."""
+    import datetime
+    passed = json.loads(PASSED.read_text()) if PASSED.exists() else []
+    tag_ = name.split(":", 1)[1]
+    passed = [entry for entry in passed if entry["tag"] != tag_]
+    passed.append({
+        "tag": tag_,
+        "passed_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "logins": [{"engine": r["engine"], "region": r["region"], "ok": r["ok"],
+                    "host": r.get("host")} for r in logins],
+        "routes": [{"engine": r["engine"], "provider": r["provider"], "ok": r["ok"],
+                    "turns": r.get("turns"), "compacted": r.get("compacted")} for r in routes],
+    })
+    PASSED.write_text(json.dumps(passed, indent=2) + "\n")
 
 
 def main():
@@ -272,9 +295,10 @@ def main():
         from e2b import Template
         info = Template.build(template(stage), name, cpu_count=CPU, memory_mb=MEMORY_MB,
                               on_build_logs=lambda entry: print(str(entry)[:2000], flush=True))
-        check_logins(name)
-        route_probe(name)
-        # Both standing checks passed: only now the tag, to be pinned.
+        logins = check_logins(name)
+        routes = route_probe(name)
+        # Both standing checks passed: only now the tag, to be pinned, and its record.
+        record_pass(name, logins, routes)
         print(json.dumps({"template": name, "template_id": getattr(info, "template_id", None),
                           "build_id": getattr(info, "build_id", None)}))
 

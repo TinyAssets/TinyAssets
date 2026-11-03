@@ -123,6 +123,25 @@ a fake sign-in seeded in each of the engine store's `secret_paths`.
 - 4 throwaway sandboxes in all (2 builds' sign-in checks and route probes), under 20
   sandbox-minutes; every sandbox killed, the account listing 0 running after.
 
+### Real turns (review round 3, template `sad436b51fe608258`)
+
+The capture server now answers each model request with a minimal valid reply in its sealed
+API's wire format, and the probe runs two turns per engine and provider: a new conversation,
+then its resume from a home made again from the store; Codex compacting first
+(`model_auto_compact_token_limit=1`, its record's `cli.compaction`). Every request of both
+turns is judged.
+
+- Two development runs on the earlier template with the new runner bundle put in place
+  (2 sandboxes, about 4 sandbox-minutes): all routes passed but Gemini CLI, whose model
+  router asks `gemini-3.5-flash-lite` for JSON by a schema and failed on plain text (exit 1,
+  four retries); the reply now gives a schema's smallest object. Then all eleven passed.
+- The build of `sad436b51fe608258`: all five logins ok; all eleven routes ok, each with both
+  turns exiting 0 with their final text, the second resumed; **Codex compacted** (its compact
+  prompt's request on the door), every request under the door's path with the run's key and
+  secret, no connect outside, no fake sign-in bytes. Its record is in
+  `sandbox/template/passed.json`, which the template guard holds the pin to.
+- Every sandbox killed; the account listed 0 running after.
+
 ## Real CLIs, not signed in (the runner live, an in-sandbox doors stand-in)
 
 The runner posted its sign-ins (`claude-code`, `codex`: `signed_in: false`), synced in, ran the

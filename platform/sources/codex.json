@@ -263,6 +263,13 @@
     "session_paths": [
       "{home}/.codex/sessions/"
     ],
+    "compaction": {
+      "argv": [
+        "-c",
+        "model_auto_compact_token_limit=1"
+      ],
+      "marker": "You are performing a CONTEXT CHECKPOINT COMPACTION"
+    },
     "hosts": {
       "registry": [
         "registry.npmjs.org"

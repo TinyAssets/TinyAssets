@@ -134,7 +134,9 @@ export interface FakeCli {
    */
   readonly requests?: readonly { readonly url: string; readonly method?: string;
                                  readonly headers?: Readonly<Record<string, string>>;
-                                 readonly body?: string }[];
+                                 readonly body?: string;
+                                 /** Made only when one of its arguments holds this. */
+                                 readonly if?: string }[];
   /**
    * A sign-in (its record's `login.argv`): `lines` printed at once (stdout, or stderr with
    * `stderr`); with `code`, one line read from stdin, then `writes` made and exit 0; without
@@ -178,6 +180,9 @@ const fill = (text) => text
     Object.values(process.env).find((value) => value.startsWith("ta_ph_")) ?? "");
 const request = async () => {
   for (const each of plan.requests || []) {
+    if (each.if !== undefined && !process.argv.some((arg) => arg.includes(each.if))) {
+      continue;
+    }
     try {
       await fetch(fill(each.url), { method: each.method || "POST",
         headers: Object.fromEntries(Object.entries(each.headers || {}).map(([name, value]) =>

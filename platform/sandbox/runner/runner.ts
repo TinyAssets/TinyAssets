@@ -73,7 +73,7 @@ import { remove, safeDirs, safeRead, safeWalk, safeWrite } from "./fsafe";
 import { ancestorEnvFile, heldSecret, homeEnvFile, projectEnvFile, projectEnvRefusal,
          secretAtoms } from "./guards";
 import { project } from "./project";
-import { type Captured, outsideConnects, routeVerdict } from "./route";
+import { type Captured, outsideConnects, reply, routeVerdict } from "./route";
 import { credentialShaped, loginArgv, onTerminal, plain, type Prompt, prompted,
          statesHold } from "./login";
 import { readMirror, SyncClient, SyncFenced, syncIn, syncOut } from "./sync";
@@ -1735,10 +1735,8 @@ async function loginProbe(engine: string, region: string | null): Promise<number
 
 // -- the route probe (codexurl_research.md Q4) ------------------------------------------
 
-/** How long one probe run may take to send its first model request. */
+/** How long one probe turn may take: a command's bound. */
 const ROUTE_PROBE_MS = COMMAND_MS;
-/** How long the probe keeps watching once the first model request came. */
-const ROUTE_GRACE_MS = 3_000;
 
 const hex = (bytes: number) => randomBytes(bytes).toString("hex");
 
@@ -1757,18 +1755,34 @@ function sealedScope(provider: string, engine: string): EgressScope {
            meter: null };
 }
 
+/** One probe turn's outcome: its exit, the session it named, whether it gave its final text. */
+interface ProbeTurn {
+  /** Its stderr's tail, named when it failed. */
+  readonly stderr: string;
+  readonly exit: number;
+  readonly session_id: string | null;
+  readonly answered: boolean;
+  readonly resumed: boolean;
+  readonly connects: string[];
+}
+
 /**
  * One keyed engine on one provider, run as a run runs it (the real `invocation`, `runEnv`
  * and `sandboxEnv`, `makeHome` for an API-key run, its own pool user), its egress door a
- * loopback capture server at the door's real path, under `strace` for its connects, with a
- * fake sign-in seeded in every one of its store's `secret_paths`; then judged
+ * loopback capture server at the door's real path answering each model request with a
+ * minimal valid reply in its sealed API's wire format, under `strace` for its connects, with
+ * a fake sign-in seeded in every one of its store's `secret_paths`. Two turns: a new
+ * conversation, then its resume (its home made again from the store, as the next run's is),
+ * that one compacting first where the record says how (`cli.compaction`). Each turn must exit
+ * 0 with its final text, the first name its session where the record resumes by one, the
+ * second resume it, a compaction be seen; and every request of both is judged
  * (`routeVerdict`).
  */
 async function probeRoute(rec: SourceRecord, provider: string,
                           resolvers: readonly string[]): Promise<Record<string, unknown>> {
   const cli = rec.cli!;
+  const egress = sealedScope(provider, rec.id);
   const requests: Captured[] = [];
-  let firstAt: number | null = null;
   const server = createHttpServer((request: IncomingMessage, response) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -1779,20 +1793,18 @@ async function probeRoute(rec: SourceRecord, provider: string,
       }
     });
     request.on("end", () => {
-      requests.push({ method: request.method ?? "", url: request.url ?? "",
-                      headers: Object.fromEntries(Object.entries(request.headers).map(
-                        ([name, value]) => [name, Array.isArray(value) ? value.join(", ")
-                          : value ?? ""])),
-                      body: Buffer.concat(chunks).toString("utf8") });
-      const mcp = (request.url ?? "").split("?")[0]!.endsWith("/mcp");
-      if (!mcp) {
-        firstAt ??= Date.now();
-      }
+      const captured: Captured = {
+        method: request.method ?? "", url: request.url ?? "",
+        headers: Object.fromEntries(Object.entries(request.headers).map(([name, value]) =>
+          [name, Array.isArray(value) ? value.join(", ") : value ?? ""])),
+        body: Buffer.concat(chunks).toString("utf8") };
+      requests.push(captured);
       // The MCP door answers none (404: no server, so no client starts an OAuth discovery
-      // of it); a model call is refused as the provider would, so the CLI stops.
-      response.writeHead(mcp ? 404 : 401, { "content-type": "application/json" });
-      response.end(JSON.stringify({ error: { type: "authentication_error",
-                                             message: "the route probe answers no call" } }));
+      // of it); a model request gets its API's minimal valid reply.
+      const answer = captured.url.split("?")[0]!.endsWith("/mcp")
+        ? { status: 404, type: "application/json", body: "{}" } : reply(egress.api, captured);
+      response.writeHead(answer.status, { "content-type": answer.type });
+      response.end(answer.body);
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -1803,7 +1815,6 @@ async function probeRoute(rec: SourceRecord, provider: string,
   const secret = hex(32);
   const connection = `c${hex(12)}`;
   const marker = `ta_fake_signin_${hex(16)}`;
-  const egress = sealedScope(provider, rec.id);
   const engine = runEnv(sources, rec.id, "api_key");
   const keyed = sandboxEnv([{ connection, provider, egress }], () => hex(16),
                            { ...engine, run, secret, connection });
@@ -1814,7 +1825,7 @@ async function probeRoute(rec: SourceRecord, provider: string,
     && names.base === "connection" ? null : egress, run, inPath)).pathname;
   const env = Object.fromEntries(Object.entries({ ...engine.env, ...keyed }).map(
     ([name, value]) => [name, local(value)]));
-  const start: StartDoc = {
+  const first: StartDoc = {
     run, agent: "route-probe", conversation: `cv_${hex(16)}`, engine: rec.id,
     credential: "api_key", model: null, session_id: null,
     prompt: "Reply with the word OK.", unattended: false, authority: "owner",
@@ -1825,6 +1836,9 @@ async function probeRoute(rec: SourceRecord, provider: string,
   // A fake sign-in in each of the store's secret paths: if any of it reaches a request, a
   // key run's home carried the sign-in.
   const store = `${STORE}/${rec.id}`;
+  // What the store held before the probe: only what the probe adds (its fake sign-in, its
+  // turns' sessions) goes at its end.
+  const had = new Set(existsSync(store) ? safeWalk(store) : []);
   const seeded: string[] = [];
   for (const rel of keptPaths(rec).secrets) {
     const concrete = rel.split("/").map((part) => part === "*" ? "probe" : part).join("/");
@@ -1839,103 +1853,177 @@ async function probeRoute(rec: SourceRecord, provider: string,
     }
   }
   const name = `route-${rec.id}-${process.pid}`;
-  const as = take(ROOT, STATE, name);
   const system = `${ROOT}${SYSTEM}/${name}`;
-  const agentDir = `${ROOT}${AGENTS_DIR}/${start.agent}`;
-  const trace = `${STATE}/route-${name}.trace`;
-  let home: string | null = null;
-  let reason: string | null = null;
-  let connects: string[] = [];
-  try {
-    home = await makeHome(name, rec, false);
-    const carried = safeWalk(home).filter((rel) => isKept(keptPaths(rec).secrets, rel));
-    if (carried.length > 0) {
-      throw new Error(`an API-key run's home carries the sign-in's ${carried.join(", ")}`);
-    }
-    safeDirs(TOP, `${ROOT}${SYSTEM}`, 0o755);
-    remove(system);
-    mkdirSync(system, { mode: 0o750 });
-    chownSync(system, 0, as.gid);
-    remove(agentDir);
-    safeDirs(TOP, agentDir, 0o755);
-    writeFileSync(`${agentDir}/agent.json`, JSON.stringify({ engine: rec.id, scopes: [] }));
-    writeFileSync(`${agentDir}/AGENTS.md`, "# Route probe\n\nReply with the word OK.\n");
-    giveTree(agentDir, as);
-    let conversationDir: string | undefined;
-    if (cli.engine.resume === "continue_in_cwd") {
-      conversationDir = `${CONVERSATIONS}/${rec.id}/${start.conversation}`;
-      safeDirs(TOP, conversationDir, 0o700);
-      lchownSync(conversationDir, as.uid, as.gid);
-    }
-    const call = invocation(rec, start, process.env, {
-      continued: false, root: ROOT, home, system,
-      ...(conversationDir === undefined ? {} : { conversationDir }) });
-    for (const [path, text] of call.files) {
-      const inSystem = path.startsWith(`${system}/`);
-      safeWrite(inSystem ? system : home, path, new TextEncoder().encode(text),
-                inSystem ? 0o640 : 0o644, undefined, inSystem ? 0o750 : 0o755);
-    }
-    giveTree(home, as);
-    configOwned(rec, home, system, call.files.keys(), as);
-    const strace = spawnSync("strace", ["-V"], { encoding: "utf8" });
-    if (strace.status !== 0) {
-      throw new Error("strace is not installed in the probe's sandbox");
-    }
-    const runHome = home;
-    await new Promise<void>((resolve) => {
-      const child = spawn("strace", ["-f", "-qq", "-e", "trace=connect", "-o", trace, "--",
-                                     ...asUser(as, [shared()], call.argv)], {
-        cwd: call.cwd, env: { ...call.env, TMPDIR: join(runHome, "tmp") }, detached: true,
-        stdio: [call.stdin === null ? "ignore" : "pipe", "ignore", "ignore"] });
-      if (call.stdin !== null) {
-        child.stdin!.on("error", () => undefined);
-        child.stdin!.end(call.stdin);
+  const agentDir = `${ROOT}${AGENTS_DIR}/${first.agent}`;
+  const conversationDir = cli.engine.resume === "continue_in_cwd"
+    ? `${CONVERSATIONS}/${rec.id}/${first.conversation}` : undefined;
+  const turns: ProbeTurn[] = [];
+
+  /** One turn, as one run runs: its own user and home, then its home kept and dropped. */
+  const turn = async (start: StartDoc, resumed: boolean,
+                      extra: readonly string[]): Promise<ProbeTurn> => {
+    const as = take(ROOT, STATE, name);
+    const trace = `${STATE}/route-${name}.trace`;
+    let home: string | null = null;
+    let exit = 1;
+    let session: string | null = null;
+    let answered = false;
+    let text = "";
+    let stderr = "";
+    try {
+      home = await makeHome(name, rec, false);
+      const carried = safeWalk(home).filter((rel) => isKept(keptPaths(rec).secrets, rel));
+      if (carried.length > 0) {
+        throw new Error(`an API-key run's home carries the sign-in's ${carried.join(", ")}`);
       }
-      const began = Date.now();
-      const watch = setInterval(() => {
-        if (Date.now() - began > ROUTE_PROBE_MS
-            || (firstAt !== null && Date.now() - firstAt > ROUTE_GRACE_MS)) {
+      remove(system);
+      mkdirSync(system, { mode: 0o750 });
+      chownSync(system, 0, as.gid);
+      giveTree(agentDir, as);
+      if (conversationDir !== undefined) {
+        safeDirs(TOP, conversationDir, 0o700);
+        giveTree(conversationDir, as);
+      }
+      const call = invocation(rec, start, process.env, {
+        continued: resumed, root: ROOT, home, system,
+        ...(conversationDir === undefined ? {} : { conversationDir }) });
+      if (call.resumed !== resumed) {
+        throw new Error(resumed ? "the second turn does not resume the first"
+          : "the first turn resumes nothing");
+      }
+      for (const [path, text] of call.files) {
+        const inSystem = path.startsWith(`${system}/`);
+        safeWrite(inSystem ? system : home, path, new TextEncoder().encode(text),
+                  inSystem ? 0o640 : 0o644, undefined, inSystem ? 0o750 : 0o755);
+      }
+      giveTree(home, as);
+      configOwned(rec, home, system, call.files.keys(), as);
+      const argv = [call.argv[0]!, ...extra, ...call.argv.slice(1)];
+      const runHome = home;
+      exit = await new Promise<number>((resolve) => {
+        const child = spawn("strace", ["-f", "-qq", "-e", "trace=connect", "-o", trace, "--",
+                                       ...asUser(as, [shared()], argv)], {
+          cwd: call.cwd, env: { ...call.env, TMPDIR: join(runHome, "tmp") }, detached: true,
+          stdio: [call.stdin === null ? "ignore" : "pipe", "pipe", "pipe"] });
+        child.stderr!.on("data", (data: Buffer) => {
+          stderr = (stderr + data.toString("utf8")).slice(-600);
+        });
+        if (call.stdin !== null) {
+          child.stdin!.on("error", () => undefined);
+          child.stdin!.end(call.stdin);
+        }
+        createInterface({ input: child.stdout! }).on("line", (line) => {
+          if (line.trim() === "") {
+            return;
+          }
+          const read = readEvent(cli.engine.events, lineEvent(line));
+          session = read.session_id ?? session;
+          if (read.text !== null) {
+            // Its final text, as the run reads it: deltas accumulated where the record says.
+            text = read.text.accumulate ? text + read.text.value : read.text.value;
+            answered ||= text.includes("OK");
+          }
+        });
+        const timer = setTimeout(() => {
           try {
             process.kill(-child.pid!, "SIGKILL");
           } catch {
             // gone already
           }
-        }
-      }, 100);
-      child.on("close", () => {
-        clearInterval(watch);
-        resolve();
+        }, ROUTE_PROBE_MS);
+        child.on("close", (code) => {
+          clearTimeout(timer);
+          resolve(code ?? 1);
+        });
+        child.on("error", () => {
+          clearTimeout(timer);
+          resolve(127);
+        });
       });
-      child.on("error", () => {
-        clearInterval(watch);
-        resolve();
-      });
-    });
-    killAll(as.uid);
-    connects = outsideConnects(existsSync(trace) ? readFileSync(trace, "utf8") : "", resolvers);
-    reason = routeVerdict(requests, connects, {
+      killAll(as.uid);
+      await keepHome(home, rec);
+      return { stderr, exit, session_id: session, answered, resumed: call.resumed,
+               connects: outsideConnects(existsSync(trace) ? readFileSync(trace, "utf8") : "",
+                                         resolvers) };
+    } finally {
+      killAll(as.uid);
+      if (home !== null) {
+        dropHome(home);
+      }
+      remove(trace);
+      give(STATE, as);
+    }
+  };
+
+  let reason: string | null = null;
+  let compacted: boolean | null = null;
+  try {
+    if (spawnSync("strace", ["-V"], { encoding: "utf8" }).status !== 0) {
+      throw new Error("strace is not installed in the probe's sandbox");
+    }
+    safeDirs(TOP, `${ROOT}${SYSTEM}`, 0o755);
+    remove(agentDir);
+    safeDirs(TOP, agentDir, 0o755);
+    writeFileSync(`${agentDir}/agent.json`, JSON.stringify({ engine: rec.id, scopes: [] }));
+    writeFileSync(`${agentDir}/AGENTS.md`, "# Route probe\n\nReply with the word OK.\n");
+    const one = await turn(first, false, []);
+    turns.push(one);
+    if (one.exit !== 0 || !one.answered) {
+      throw new Error(`the first turn did not complete (exit ${one.exit}${one.answered ? ""
+        : ", no final text"}): ${one.stderr.trim().slice(-300)}`);
+    }
+    if (cli.engine.resume === "session_id" && one.session_id === null) {
+      throw new Error("the first turn named no session to resume");
+    }
+    const before = requests.length;
+    const two = await turn({ ...first, session_id: one.session_id,
+                             prompt: "Reply with the word OK once more." }, true,
+                           cli.compaction?.argv ?? []);
+    turns.push(two);
+    if (two.exit !== 0 || !two.answered) {
+      throw new Error(`the resumed turn did not complete (exit ${two.exit}${two.answered ? ""
+        : ", no final text"}): ${two.stderr.trim().slice(-300)}`);
+    }
+    if (cli.compaction !== undefined) {
+      compacted = requests.slice(before).some((request) =>
+        request.body.includes(cli.compaction!.marker));
+      if (!compacted) {
+        throw new Error("the resumed turn made no compaction request");
+      }
+    }
+    reason = routeVerdict(requests, turns.flatMap((each) => each.connects), {
       prefix, placeholder, secret, marker, resolvers,
       mcp: [`/r/${run}/${secret}/mcp`, `/r/${run}/mcp`],
       secretInHeader: engine.secret_header !== undefined });
   } catch (error) {
     reason = String(error instanceof Error ? error.message : error);
+    // What the CLI did is judged too: a leak or an outside connect is named first.
+    reason = routeVerdict(requests, turns.flatMap((each) => each.connects), {
+      prefix, placeholder, secret, marker, resolvers,
+      mcp: [`/r/${run}/${secret}/mcp`, `/r/${run}/mcp`],
+      secretInHeader: engine.secret_header !== undefined }) ?? reason;
   } finally {
-    killAll(as.uid);
-    if (home !== null) {
-      dropHome(home);
-    }
     remove(system);
     remove(agentDir);
-    remove(trace);
+    if (conversationDir !== undefined) {
+      remove(conversationDir);
+    }
+    for (const rel of existsSync(store) ? safeWalk(store) : []) {
+      if (!had.has(rel)) {
+        remove(join(store, rel));  // the probe's own sessions and its fake sign-in
+      }
+    }
     for (const path of seeded) {
       remove(path);
     }
-    give(STATE, as);
     server.close();
   }
   return { engine: rec.id, provider, ok: reason === null, reason,
+           turns: turns.map((each) => ({ exit: each.exit, answered: each.answered,
+                                         resumed: each.resumed })),
+           compacted,
            requests: requests.map((request) => `${request.method} ${request.url.split("?")[0]}`),
-           connects };
+           connects: [...new Set(turns.flatMap((each) => each.connects))] };
 }
 
 /**

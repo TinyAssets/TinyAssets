@@ -1400,8 +1400,21 @@ R, S, M and W.
     keys, run as a run runs it with its door on a loopback capture server at the real path
     and a fake sign-in seeded in the store, passes only if the first model request reached
     the door's path with the run's key and secret, nothing connected outside (`strace`), and
-    no request carried the fake sign-in; the tag is printed only then. Left for later: the
-    run secret into a header (`env_http_headers`).
+    no request carried the fake sign-in; the tag is printed only then. Review round 3: the
+    capture server answers each model request with a minimal valid reply in its sealed
+    API's wire format (Messages, Responses, Chat Completions, Generative Language), so each
+    CLI completes a turn; the probe then resumes it (its home made again from the store) and,
+    where the record says how (`cli.compaction`: Codex's `model_auto_compact_token_limit=1`,
+    its compact prompt's marker), compacts first, and judges every request of both turns,
+    not only the first. A passing tag is recorded with its checks' results in
+    `sandbox/template/passed.json`; the template guard fails CI when the pinned tag has no
+    passing record covering every record's login and route. The endpoint rules name
+    `provider` and `proxy` too (a signed-in run's files and argvs; every run's variables:
+    `HTTPS_PROXY`, `ALL_PROXY`), and Codex's `--oss`. Left for later: the run secret into a
+    header (`env_http_headers`).
+  - Known gap (review round 3, L-c): the route probe traces `connect()` alone. An unconnected
+    UDP `sendto` or an io_uring connect would not show; none of the pinned CLIs uses either
+    today, and the probe's sandbox denies every outbound address but the resolver anyway.
 - [x] Code mode's VM in the hooks Worker (H0, narrowed by D): `Hooks.codemodeExecute(name,
   request, exchange)` runs one execution in its `CodemodeSandbox` (a
   `CodemodeSandboxDurableObject` subclass with its interrupt budget and memory), handing

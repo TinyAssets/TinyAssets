@@ -62,11 +62,48 @@ function tag(): string {
   }
 }
 
+function pinned(): string {
+  const config = ts.parseConfigFileTextToJson("wrangler.jsonc", readFileSync(
+    join(PLATFORM, "sandbox", "wrangler.jsonc"), "utf8")).config as {
+      vars: { E2B_TEMPLATE: string } };
+  return config.vars.E2B_TEMPLATE;
+}
+
+interface Passed {
+  readonly tag: string;
+  readonly logins: readonly { engine: string; region: string | null; ok: boolean }[];
+  readonly routes: readonly { engine: string; provider: string; ok: boolean;
+                              turns: readonly { exit: number; answered: boolean;
+                                                resumed: boolean }[] | null }[];
+}
+
 describe("the template", () => {
   it("is the one built from the runner and the records as they stand", () => {
-    const config = ts.parseConfigFileTextToJson("wrangler.jsonc", readFileSync(
-      join(PLATFORM, "sandbox", "wrangler.jsonc"), "utf8")).config as {
-        vars: { E2B_TEMPLATE: string } };
-    expect(config.vars.E2B_TEMPLATE).toBe(`tinyassets-sandbox:${tag()}`);
+    expect(pinned()).toBe(`tinyassets-sandbox:${tag()}`);
   }, 60_000);
+
+  it("is pinned only once it passed both standing checks, for every record (review L-b)",
+     () => {
+    const passed = JSON.parse(readFileSync(join(TEMPLATE, "passed.json"), "utf8")) as Passed[];
+    const entry = passed.find((each) => `tinyassets-sandbox:${each.tag}` === pinned());
+    expect(entry, "the pinned tag has no passing record in template/passed.json").toBeDefined();
+    const records = files(SOURCES).filter((path) => path.endsWith(".json")
+      && !path.includes("/locks/")).map((path) => JSON.parse(readFileSync(path, "utf8")) as {
+        id: string; unwired?: string; cli?: { credential: string[]; login?: unknown;
+                                              regions?: Record<string, unknown>;
+                                              api_key_env?: Record<string, unknown> } });
+    const logins = records.filter((rec) => rec.cli?.login !== undefined
+      && rec.unwired === undefined).flatMap((rec) =>
+      Object.keys(rec.cli!.regions ?? {}).length === 0 ? [`${rec.id}:`]
+        : Object.keys(rec.cli!.regions!).map((region) => `${rec.id}:${region}`)).sort();
+    const routes = records.filter((rec) => rec.cli?.credential.includes("api_key") === true
+      && rec.unwired === undefined).flatMap((rec) =>
+      Object.keys(rec.cli!.api_key_env!).map((provider) => `${rec.id}:${provider}`)).sort();
+    expect(entry!.logins.filter((each) => each.ok)
+      .map((each) => `${each.engine}:${each.region ?? ""}`).sort()).toEqual(logins);
+    expect(entry!.routes.filter((each) => each.ok && each.turns?.length === 2
+      && each.turns.every((one) => one.exit === 0 && one.answered)
+      && each.turns[1]!.resumed).map((each) => `${each.engine}:${each.provider}`).sort())
+      .toEqual(routes);
+  });
 });

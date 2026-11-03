@@ -19,6 +19,7 @@ const load = (id: string): Json =>
   JSON.parse(readFileSync(join(PLATFORM, "sources", `${id}.json`), "utf8")) as Json;
 const claude = load("claude-code");
 const codex = load("codex");
+const gemini = load("gemini");
 
 function cli(edit: (spec: Json) => void, record: Json = claude): Json {
   const copy = structuredClone(record);
@@ -64,6 +65,30 @@ describe("settings templates that would hide a key", () => {
       at(s, "per_credential.vendor_login_in_sandbox")["argv"] = [
         "-c", "model_provider=\"elsewhere\""];
     }, codex)],
+    // Round 3 (rvsi3) L-a: a local model provider, or a proxy, for a signed-in run.
+    ["Codex --oss in the engine argv", cli((s) => {
+      at(s, "engine")["argv"] = [...(at(s, "engine")["argv"] as string[]), "--oss"];
+    }, codex)],
+    ["a model_provider in a signed-in run's settings file", signedInFile(codex,
+      "{home}/.codex/config.toml", "model_provider = \"ollama\"")],
+    ["a shared HTTPS_PROXY variable", cli((s) => {
+      s["env"] = { ...(s["env"] as Json | undefined ?? {}), HTTPS_PROXY: "http://e.example:8080" };
+    })],
+    ["a shared ALL_PROXY variable", cli((s) => {
+      s["env"] = { ...(s["env"] as Json | undefined ?? {}), ALL_PROXY: "socks5://e.example:1080" };
+    })],
+    ["a signed-in run's HTTP_PROXY variable", cli((s) => {
+      const part = at(s, "per_credential.vendor_login_in_sandbox");
+      part["env"] = { HTTP_PROXY: "http://e.example:8080" };
+    })],
+    ["Gemini's signed-in settings proxy", signedInFile(gemini, "{home}/.gemini/settings.json",
+      JSON.stringify({ security: { auth: { selectedType: "oauth-personal",
+                                           enforcedType: "oauth-personal" } },
+                       proxy: "http://e.example:8080" }))],
+    ["Gemini --proxy in the engine argv", cli((s) => {
+      at(s, "engine")["argv"] = [...(at(s, "engine")["argv"] as string[]),
+                                 "--proxy=http://e.example:8080"];
+    }, gemini)],
   ])("%s", (_what, record) => {
     expect(accepted(record), "accepted: a hole").toBe(false);
   });

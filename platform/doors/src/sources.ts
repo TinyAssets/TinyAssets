@@ -231,6 +231,13 @@ export interface CliSpec {
    * value, `{run_secret}` in it. Absent, the base URL's path carries it (the fallback).
    */
   readonly run_secret_env?: { readonly env: string; readonly value: string };
+  /**
+   * How the route probe makes the CLI compact its context at its next turn (`argv`, put
+   * after its binary on a resumed turn), and the text its compaction request carries
+   * (`marker`, its compact prompt's): the probe holds a compaction's requests to the door's
+   * rules as a turn's. Absent for a CLI the probe does not compact.
+   */
+  readonly compaction?: { readonly argv: readonly string[]; readonly marker: string };
   readonly tools: { readonly allow?: ToolFilter; readonly deny?: ToolFilter };
   readonly unattended_argv: readonly string[];
   readonly home_env: Readonly<Record<string, string>>;
@@ -444,17 +451,21 @@ const FORBID = /^[A-Z][A-Z0-9_]{0,63}\*?$/;
  * own placeholder (`sandboxEnv`).
  */
 const CREDENTIAL_NAME =
-  /(?:^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTH|BASE_URL|ENDPOINT)(?:_|$)/;
+  /(?:^|_)(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTH|BASE_URL|ENDPOINT|PROXY)(?:_|$)/;
 /** A settings key shaped like a credential, a credential helper or an environment block. */
 const CREDENTIAL_KEY = /^(?:env|environment)$|api_?key|token|secret|password|credential|helper/i;
-/** A settings key that moves where a run's calls go: never in a signed-in run's files. */
-const ENDPOINT_KEY = /base_?url|endpoint/i;
 /**
- * An argument that moves where a run's calls go, or onto another model provider: never in an
- * argv a signed-in run gets (the argv twin of `ENDPOINT_KEY`), so no `-c openai_base_url=...`
- * sends a vendor sign-in's tokens elsewhere.
+ * A settings key that moves where a run's calls go, onto another model provider, or through
+ * a proxy: never in a signed-in run's files.
  */
-const ENDPOINT_ARG = /base_?url|endpoint|provider/i;
+const ENDPOINT_KEY = /base_?url|endpoint|provider|proxy/i;
+/**
+ * An argument that moves where a run's calls go, onto another model provider (Codex's
+ * `--oss` names its local ones) or through a proxy: never in an argv a signed-in run gets
+ * (the argv twin of `ENDPOINT_KEY`), so no `-c openai_base_url=...` sends a vendor sign-in's
+ * tokens elsewhere.
+ */
+const ENDPOINT_ARG = /base_?url|endpoint|provider|proxy|^--oss(?:=|$)/i;
 /**
  * The shapes `{base_url}` may take in an argv: joined to its key, as an option's value
  * (`--base-url={base_url}`) or a config override's quoted value (`a.b="{base_url}"`), never
@@ -592,7 +603,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     "install", "credential", "unattended", "engine", "instructions", "skills_paths", "mcp",
     "tools", "unattended_argv", "home_env", "no_update", "secret_paths", "session_paths",
     "hosts"], ["login", "regions", "api_key_env", "per_credential", "env", "files",
-               "run_secret_env"]);
+               "run_secret_env", "compaction"]);
   const argvs: [string, string[]][] = [];
   const argv = (item: unknown, what: string, max = 64): string[] => {
     const list = check.strings(item, what, ARG, max);
@@ -687,6 +698,14 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
                  "from, and the value x-ta-run: {run_secret}");
     }
     runSecretEnv = { env: header["env"] as string, value: header["value"] as string };
+  }
+  // How the route probe makes it compact at its next turn.
+  let compaction: { argv: readonly string[]; marker: string } | undefined;
+  if (fields["compaction"] !== undefined) {
+    const spec = check.keys(fields["compaction"], "cli.compaction", ["argv", "marker"]);
+    compaction = { argv: Object.freeze(argv(spec["argv"], "cli.compaction.argv", 16)),
+                   marker: check.text(spec["marker"], /^[^\p{Cc}]{8,256}$/u,
+                                      "cli.compaction.marker") };
   }
 
   // Its home, environment and files.
@@ -1005,6 +1024,7 @@ function cliSpec(check: ReturnType<typeof checker>, value: unknown): CliSpec {
     skills_paths: Object.freeze(skills),
     mcp,
     ...(runSecretEnv === undefined ? {} : { run_secret_env: Object.freeze(runSecretEnv) }),
+    ...(compaction === undefined ? {} : { compaction: Object.freeze(compaction) }),
     tools: Object.freeze(tools),
     unattended_argv: Object.freeze(unattendedArgv),
     home_env: Object.freeze(homeEnv),

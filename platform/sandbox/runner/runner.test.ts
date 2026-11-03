@@ -23,7 +23,7 @@ import { sandboxEnv } from "../../owner/src/network";
 import { readEvent } from "../../owner/src/run-events";
 
 import { invocation, type StartDoc } from "./engine";
-import { outsideConnects, routeVerdict, underPrefix } from "./route";
+import { fromSchema, outsideConnects, reply, routeVerdict, underPrefix } from "./route";
 import { processesOf } from "./users";
 import { Doors, POOL_UIDS, runnerBundle, Sandbox, startDoc, SYNC_UID, TA_GID } from "./harness";
 
@@ -907,33 +907,139 @@ describe("the route probe (codexurl_research.md Q4)", () => {
   });
 
   /** Each keyed engine's fake CLI calling its door the way its record hands it over. */
+  it("answers each sealed API's model request with a minimal valid reply, in its wire format",
+     () => {
+    const ask = (url: string, body: unknown = {}) => ({ method: "POST", url, headers: {},
+                                                       body: JSON.stringify(body) });
+    const events = (text: string) => text.split("\n\n").filter(Boolean).map((chunk) =>
+      chunk.split("\n").find((line) => line.startsWith("data: "))!.slice(6))
+      .filter((data) => data !== "[DONE]").map((data) => JSON.parse(data) as
+        Record<string, unknown>);
+    const claude = reply("anthropic-messages", ask("/x/v1/messages", { stream: true }));
+    expect(claude.type).toBe("text/event-stream");
+    expect(events(claude.body).map((event) => event["type"])).toEqual([
+      "message_start", "content_block_start", "content_block_delta", "content_block_stop",
+      "message_delta", "message_stop"]);
+    const codex = reply("openai-responses", ask("/x/v1/responses", { stream: true }));
+    expect(events(codex.body).at(-1)).toMatchObject({ type: "response.completed",
+                                                      response: { status: "completed" } });
+    expect(JSON.parse(reply("openai-completions", ask("/x/v1/chat/completions")).body))
+      .toMatchObject({ choices: [{ message: { content: "OK" }, finish_reason: "stop" }] });
+    expect(events(reply("mistral-conversations",
+                        ask("/x/v1/chat/completions", { stream: true })).body)[0])
+      .toMatchObject({ choices: [{ delta: { content: "OK" } }] });
+    expect(JSON.parse(reply("google-generative-ai",
+                            ask("/x/v1beta/models/m:generateContent")).body))
+      .toMatchObject({ candidates: [{ content: { parts: [{ text: "OK" }] } }] });
+    // A request for JSON by a schema (Gemini CLI's model router) gets its smallest object.
+    const routed = JSON.parse(reply("google-generative-ai", ask(
+      "/x/v1beta/models/m:generateContent", { generationConfig: {
+        responseMimeType: "application/json", responseJsonSchema: { type: "object",
+          properties: { reasoning: { type: "string" },
+                        model_choice: { type: "string", enum: ["flash", "pro"] } },
+          required: ["reasoning", "model_choice"] } } })).body) as
+      { candidates: { content: { parts: { text: string }[] } }[] };
+    expect(JSON.parse(routed.candidates[0]!.content.parts[0]!.text))
+      .toEqual({ reasoning: "OK", model_choice: "flash" });
+    expect(fromSchema({ type: "OBJECT", properties: { n: { type: "INTEGER" },
+                                                      a: { type: "ARRAY" } } }))
+      .toEqual({ n: 0, a: [] });
+    expect(reply("openai-responses", ask("/x/v1/elsewhere")).status).toBe(404);
+    expect(() => reply("no-such-api", ask("/x"))).toThrow(/no reply/);
+    // Every request is judged, not the first alone.
+    const expect_ = { prefix: "/r/run/sec/c/conn/v1", mcp: [], placeholder: "ta_ph_conn_1",
+                      secret: "sec", secretInHeader: false, marker: "m", resolvers: [] };
+    const ok = { method: "POST", url: "/r/run/sec/c/conn/v1/responses",
+                 headers: { authorization: "Bearer ta_ph_conn_1" }, body: "{}" };
+    expect(routeVerdict([ok, ok], [], expect_)).toBeNull();
+    expect(routeVerdict([ok, { ...ok, url: "/v1/responses" }], [], expect_)).toMatch(/not under/);
+  });
+
+  /** The record's own event lines for a completed turn, its final text "OK". */
+  const said = (engine: string) => JSON.parse(JSON.stringify(SHAPES[engine]!.lines)
+    .replaceAll("all done", "OK").replaceAll("\"all \"", "\"O\"")
+    .replaceAll("\"done\"", "\"K\"")) as unknown[];
+  const CODEX_COMPACT = sources.get("codex")!.cli!.compaction!;
+
+  /** Each keyed engine's fake CLI calling its door the way its record hands it over. */
   function honest(): void {
-    box.cli("claude-code", { lines: [], requests: [{
+    box.cli("claude-code", { lines: said("claude-code"), requests: [{
       url: "{env:ANTHROPIC_BASE_URL}/v1/messages",
       headers: { "x-api-key": "{env:ANTHROPIC_API_KEY}",
                  "x-ta-run": "{after:ANTHROPIC_CUSTOM_HEADERS}" } }] });
-    box.cli("codex", { lines: [], requests: [{
+    box.cli("codex", { lines: said("codex"), requests: [{
       url: "{argv:model_providers.tinyassets.base_url}/responses",
-      headers: { authorization: "Bearer {env:CODEX_API_KEY}" } }] });
-    box.cli("gemini", { lines: [], requests: [{
+      headers: { authorization: "Bearer {env:CODEX_API_KEY}" } }, {
+      // Told to compact (its record's `compaction.argv`), it sends its compact prompt first.
+      if: CODEX_COMPACT.argv.at(-1)!,
+      url: "{argv:model_providers.tinyassets.base_url}/responses",
+      headers: { authorization: "Bearer {env:CODEX_API_KEY}" },
+      body: JSON.stringify({ input: CODEX_COMPACT.marker }) }] });
+    box.cli("gemini", { lines: said("gemini"), requests: [{
       url: "{env:GOOGLE_GEMINI_BASE_URL}v1beta/models/m:generateContent",
       headers: { "x-goog-api-key": "{env:GEMINI_API_KEY}" } }] });
-    box.cli("pi", { lines: [], requests: [{
-      url: "{json:~/.pi/agent/models.json#providers.*.baseUrl}/chat",
+    box.cli("pi", { lines: said("pi"), requests: [{
+      url: "{json:~/.pi/agent/models.json#providers.*.baseUrl}/chat/completions",
       headers: { authorization: "Bearer {placeholder}" } }] });
   }
 
-  it("passes every keyed engine whose CLI calls the door, as a run runs it", () => {
-    honest();
+  type Probed = { engine: string; provider: string; ok: boolean; reason: string | null;
+                  turns: { exit: number; answered: boolean; resumed: boolean }[];
+                  compacted: boolean | null; requests: string[] };
+  const probe = () => {
     const probed = box.runner("route-probe", "1.1.1.1");
-    const lines = probed.out.trim().split("\n").map((line) => JSON.parse(line) as
-      { engine: string; provider: string; ok: boolean; reason: string | null });
+    return { code: probed.code, lines: probed.out.trim().split("\n").map((line) =>
+      JSON.parse(line) as Probed) };
+  };
+
+  it("passes every keyed engine whose CLI completes its turn, its resume and its " +
+     "compaction on the door, as a run runs it", () => {
+    honest();
+    const { code, lines } = probe();
     expect(lines.filter((line) => !line.ok)).toEqual([]);
-    expect(probed.code).toBe(0);
+    expect(code).toBe(0);
+    for (const line of lines) {
+      expect(line.turns, `${line.engine} ${line.provider}`).toEqual([
+        { exit: 0, answered: true, resumed: false }, { exit: 0, answered: true, resumed: true }]);
+    }
+    expect(lines.find((line) => line.engine === "codex")!.compacted).toBe(true);
     expect(new Set(lines.map((line) => line.engine))).toEqual(
       new Set(["claude-code", "codex", "gemini", "pi"]));
     // A fake sign-in was seeded in the stores and is gone again.
     expect(existsSync(box.path("/var/lib/ta/store/codex/.codex/auth.json"))).toBe(false);
+  }, 240_000);
+
+  it("judges every request: a resumed turn's call off the door fails, as a first's would",
+     () => {
+    honest();
+    box.cli("pi", { lines: said("pi"), requests: [{
+      url: "{json:~/.pi/agent/models.json#providers.*.baseUrl}/chat/completions",
+      headers: { authorization: "Bearer {placeholder}" } }, {
+      if: "--session", url: "{json:~/.pi/agent/models.json#providers.*.baseUrl}/chat/completions",
+      headers: {} }] });
+    const { code, lines } = probe();
+    expect(code).toBe(3);
+    // pi's resumed turn sent a call with no key: refused, for every provider.
+    for (const line of lines.filter((each) => each.engine === "pi")) {
+      expect(line.reason, line.provider).toMatch(/no placeholder key/);
+    }
+  }, 240_000);
+
+  it("fails a CLI that does not complete its turn, or does not compact when told", () => {
+    honest();
+    box.cli("claude-code", { lines: [], requests: [{
+      url: "{env:ANTHROPIC_BASE_URL}/v1/messages",
+      headers: { "x-api-key": "{env:ANTHROPIC_API_KEY}",
+                 "x-ta-run": "{after:ANTHROPIC_CUSTOM_HEADERS}" } }] });
+    box.cli("codex", { lines: said("codex"), requests: [{
+      url: "{argv:model_providers.tinyassets.base_url}/responses",
+      headers: { authorization: "Bearer {env:CODEX_API_KEY}" } }] });
+    const { code, lines } = probe();
+    expect(code).toBe(3);
+    expect(lines.find((line) => line.engine === "claude-code")!.reason)
+      .toMatch(/first turn did not complete/);
+    expect(lines.find((line) => line.engine === "codex")!.reason)
+      .toMatch(/no compaction request/);
   }, 240_000);
 
   it("fails loudly when a CLI ignores its channel and calls out instead", () => {
