@@ -101,8 +101,7 @@ const HEX64 = /^[0-9a-f]{64}$/;
 export interface GrantLimits {
   readonly maxFreeClients: number;
   readonly maxOwnerClients: number;
-  readonly maxScopes: number;
-  /** The scopes' JSON, in UTF-8 bytes, as the row keeps it. */
+  /** The scopes' JSON, in UTF-8 bytes, as the row keeps it: their only bound. */
   readonly maxScopesBytes: number;
   readonly seenIntervalS: number;
   readonly revokeClockMarginS: number;
@@ -111,7 +110,6 @@ export interface GrantLimits {
 export const GRANT_LIMITS: GrantLimits = Object.freeze({
   maxFreeClients: 1_000,
   maxOwnerClients: 1_000,
-  maxScopes: 256,
   // The scopes' JSON as the row keeps it, the schema's own ceiling on the column (the
   // owner-bound guard holds the two equal and counts a grant's scopes by it).
   maxScopesBytes: 64 * 1024,
@@ -174,7 +172,7 @@ function authority(mode: string, held: readonly Scope[]): string {
  * door checks (`CAPABILITIES`), so a grant never names one that nothing would hold.
  */
 export function scopes(value: unknown, limits: GrantLimits = GRANT_LIMITS): Scope[] {
-  if (!Array.isArray(value) || value.length > limits.maxScopes || value.some((scope) =>
+  if (!Array.isArray(value) || value.some((scope) =>
     !plain(scope) || Object.keys(scope).sort().join() !== "agent,capability,universe"
     || Object.values(scope).some((v) => typeof v !== "string" || !v || v === "*"
                                         || codePoints(v) > 512))) {

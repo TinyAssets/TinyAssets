@@ -114,15 +114,15 @@ describe("schema migration on wake", () => {
     const ceiling = Number(/length\(CAST\(body AS BLOB\)\) <= (\d+)/
       .exec(MIGRATIONS.flat().join(" "))?.[1]);
     expect(ceiling).toBe(PLACE_BYTES);
-    // One placed body is one chunk: the largest row body, at four bytes a character.
-    expect(4 * LIMITS.maxRow).toBeLessThanOrEqual(CHUNK_BYTES);
+    // A placed body is any size up to what one call moves whole, cut into chunks.
+    expect(LIMITS.maxRowBytes).toBe(4 * CHUNK_BYTES);
     const { stub } = ownerObject();
     await runInDurableObject(stub, (_instance: OwnerDO, state) => {
       const insert = (body: string, bytes: number, content: string | null) =>
         state.storage.sql.exec(
           "INSERT INTO collection_rows (collection, row_id, revision, seq, etag, writer, " +
-            "private, body, updated_at, creator, body_bytes, content_id) " +
-            "VALUES ('c', 'r', 1, 1, 'e', 'w', 0, ?, 0, 'w', ?, ?)", body, bytes, content);
+            "private, body, updated_at, creator, body_bytes, content_id, filer) " +
+            "VALUES ('c', 'r', 1, 1, 'e', 'w', 0, ?, 0, 'w', ?, ?, 'owner')", body, bytes, content);
       expect(() => insert("x".repeat(ceiling + 1), ceiling + 1, null)).toThrow(/CHECK/);
       // A placed body's row names its content and keeps no text; a small one is never placed.
       expect(() => insert("x", ceiling + 1, "c".repeat(64))).toThrow(/CHECK/);

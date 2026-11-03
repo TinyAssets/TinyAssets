@@ -42,3 +42,17 @@ export function chunkHash(sha256: unknown): string {
 export function chunkKey(ns: unknown, sha256: unknown): string {
   return `o/${namespace(ns)}/c/${chunkHash(sha256)}`;
 }
+
+/** The prefix every chunk key of one owner's namespace starts with: the erasure's list. */
+export function chunkPrefix(ns: unknown): string {
+  return `o/${namespace(ns)}/c/`;
+}
+
+/** The chunk hash a key listed under `chunkPrefix(ns)` names, or a loud failure. */
+export function listedChunk(ns: unknown, key: unknown): string {
+  const prefix = chunkPrefix(ns);
+  if (typeof key !== "string" || !key.startsWith(prefix)) {
+    throw new Error("a listed key is not under its namespace's prefix");
+  }
+  return chunkHash(key.slice(prefix.length));
+}

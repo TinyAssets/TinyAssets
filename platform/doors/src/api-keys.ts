@@ -37,7 +37,12 @@ import { deleteKey, type KeyEntry, putKey, readKey } from "./directory";
 
 export const PREFIX = "ta_key_";
 const KEY = /^ta_key_([0-9a-f]{16})_([A-Za-z0-9_-]{43})$/;
-export const MAX_KEYS_PER_OWNER = 200;
+/**
+ * The live keys an owner holds: each key's grant is an owner-set client, so the owner's own
+ * set clients' bound (`GRANT_LIMITS.maxOwnerClients`, the owner-bound guard's share) is
+ * theirs too; a test holds the two equal.
+ */
+export const MAX_KEYS_PER_OWNER = 1000;
 const MAX_NAME = 80;
 
 export class KeyRefused extends Error {

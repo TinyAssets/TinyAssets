@@ -1,7 +1,7 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 
-import { Collections, LIMITS, type Limits } from "../src/collections";
+import { Collections, LIMITS, type Limits, type Shares } from "../src/collections";
 import { type ChunkStore, type FileLimits, Files } from "../src/files";
 import { type OwnerStorage, type Write, WriteGate } from "../src/gate";
 import {
@@ -302,9 +302,11 @@ export async function failure(call: () => Promise<unknown>): Promise<Error> {
 
 /** The primitive on `stub`'s own storage, with some bounds lowered for the test. */
 export function inObject<R>(stub: Stub, limits: Partial<Limits>,
-                            act: (store: Collections, state: DurableObjectState) => R): Promise<R> {
+                            act: (store: Collections, state: DurableObjectState) => R,
+                            shares?: Shares): Promise<R> {
   return runInDurableObject(stub, (_instance: OwnerDO, state) =>
-    act(new Collections(state.storage, { ...LIMITS, ...limits }), state));
+    act(new Collections(state.storage, { ...LIMITS, ...limits }, undefined,
+                        shares === undefined ? undefined : () => shares), state));
 }
 
 export type RowTuple = [string, string, number, number, string, number, string];

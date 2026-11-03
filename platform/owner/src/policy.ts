@@ -180,7 +180,8 @@ export const FILE_DEFAULTS = Object.freeze({
   max_inline_bytes: 256 * 1024 ** 2,
   max_manifest_bytes: 512 * 1024 ** 2,
   max_entries: 30_000,
-  max_file_bytes: 5 * 1024 ** 3,
+  // Off by default: the most one upload holds (40 GiB); the owner may set it lower.
+  max_file_bytes: MAX_INTENT_CHUNKS * CHUNK_BYTES,
   max_history: 600_000,
   retention_days: 30,
   keep_versions: 10,

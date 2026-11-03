@@ -44,8 +44,6 @@ import { within } from "./egress";
 /** The model id and output cap the learning run asks with: neither is any real value. */
 const MODEL_MARK = "ta-meter-model-0e7f";
 const TOKENS_MARK = 4_321;
-/** How many of a source's models the verify-time learning asks before it gives up. */
-const LEARN_TRIES = 32;
 /** The context each run asks with: one short user message, made afresh for each run. */
 function context(): Context {
   return { messages: [{ role: "user", content: "x", timestamp: 0 }] } as unknown as Context;
@@ -105,8 +103,9 @@ export async function learnMeter(catalog: Catalog, upstream: Upstream, apiKey: s
   if (model !== undefined) {
     return learned(catalog, upstream, apiKey, model);
   }
-  // A model whose compatibility record lets pi-ai cap its output; the first few are asked.
-  for (const candidate of apiModels(catalog, upstream).slice(0, LEARN_TRIES)) {
+  // A model whose compatibility record lets pi-ai cap its output: each run is local, so
+  // every model of the API may be asked.
+  for (const candidate of apiModels(catalog, upstream)) {
     const meter = await learned(catalog, upstream, apiKey, candidate);
     if (meter !== null) {
       return meter;

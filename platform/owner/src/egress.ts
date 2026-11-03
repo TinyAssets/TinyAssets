@@ -27,8 +27,9 @@
  *   call as pi-ai makes it, which the gateway can meter (`meteredCall`), with a declared
  *   body length (`egress_unmetered`, `egress_length_required`): the run's caps are always
  *   set, so a call that cannot be metered is never sent;
- * - at most `openPerRun` at once and `perRunPerMinute` opened a minute for each of the tier's
- *   simultaneous runs (`egress_rate`; the tier's numbers as kept, `tier.ts`);
+ * - at most `openPerRun` open at once for each of the tier's simultaneous runs
+ *   (`egress_rate`; the tier's numbers as kept, `tier.ts`): each open call is a row the
+ *   owner-bound guard costs;
  * - and a model call's charge (`#reserve`), by `usage.ts`'s rules but on counters of its
  *   own: its run's requests, tokens and cost (on its `runs` row; the model policy's per-run
  *   limits are its caps), and the owner's and the source's day and month (shared with the
@@ -36,8 +37,7 @@
  *   at the largest context window, so the charge bounds the call's cost.
  *   Then one open row, the blob at its version, the output cap the charge leaves (the
  *   gateway clamps the request's own to it) and the stream's end signal. A refusal is kept
- *   as a receipt row, at most `refusalsPerMinute` a minute, so refused calls can neither
- *   flood the receipts nor write a row each.
+ *   as a receipt row, the newest `refusalsKept` of them.
  *
  * **Ending** (`end`): a policy write, a suspension, the owner's erasure, the connection's
  * revoke and the lease's close or replacement each end the in-flight streams they cover,
@@ -75,14 +75,12 @@ export { EGRESS_DEADLINE_S, type EgressCode, type Outcome };
 
 /**
  * How much egress one owner holds: for each of its tier's simultaneous runs, 16 calls open
- * at once (an engine's clients stream a few) and 120 opened a minute (free 80 and 600, paid
- * 160 and 1,200, at the founder's numbers); 60 refusals receipted a minute; and the newest
- * 2,000 admitted and 500 refused rows kept as receipts.
+ * at once (an engine's clients stream a few; free 80, paid 160, at the founder's numbers),
+ * each open call a row the owner-bound guard costs at the most runs a tier may give; and
+ * the newest 2,000 admitted and 500 refused rows kept as receipts.
  */
 export interface EgressLimits {
   readonly openPerRun: number;
-  readonly perRunPerMinute: number;
-  readonly refusalsPerMinute: number;
   readonly receiptsKept: number;
   readonly refusalsKept: number;
   readonly receiptsListed: number;
@@ -90,8 +88,6 @@ export interface EgressLimits {
 
 export const EGRESS_LIMITS: EgressLimits = Object.freeze({
   openPerRun: 16,
-  perRunPerMinute: 120,
-  refusalsPerMinute: 60,
   receiptsKept: 2_000,
   refusalsKept: 500,
   receiptsListed: 50,
@@ -435,7 +431,7 @@ export class Egress {
 
   /**
    * In the door's unit: the call admitted and reserved, an open row and its end signal; or
-   * refused, with its fixed code, kept as a receipt row within the minute's refusals.
+   * refused, with its fixed code, kept as a receipt row (the newest `refusalsKept`).
    */
   open(sandbox: SandboxBinding, request: EgressRequest, now: number):
       EgressOpened | EgressRefusal {
@@ -443,10 +439,6 @@ export class Egress {
     const lease = this.lease(sandbox, now);
     const generation = this.#deps.generation();
     const refuse = (code: EgressCode, rule?: string): EgressRefusal => {
-      if (this.#count("SELECT COUNT(*) AS n FROM egress_reservations WHERE state = 'refused' " +
-                        "AND opened_at > ?", now - 60) >= this.#limits.refusalsPerMinute) {
-        return { ok: false, code, receipt: null };
-      }
       return { ok: false, code,
                receipt: this.#record(sandbox, request, lease, generation, now,
                                      { code, ...(rule === undefined ? {} : { rule }) }) };
@@ -494,10 +486,7 @@ export class Egress {
     const runs = this.#deps.tierRuns();
     if (runs === null
         || this.#count("SELECT COUNT(*) AS n FROM egress_reservations WHERE state = 'open'")
-          >= this.#limits.openPerRun * runs
-        || this.#count("SELECT COUNT(*) AS n FROM egress_reservations WHERE opened_at > ? " +
-                         "AND state != 'refused'", now - 60)
-          >= this.#limits.perRunPerMinute * runs) {
+          >= this.#limits.openPerRun * runs) {
       return refuse("egress_rate");
     }
     let charge: Charged | null = null;

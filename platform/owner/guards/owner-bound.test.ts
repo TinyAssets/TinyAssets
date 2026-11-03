@@ -36,8 +36,9 @@ import { LIMITS as COLLECTIONS } from "../src/collections";
 import { LEDGER_LIMITS } from "../src/ledger";
 import {
   CHUNK_BYTES, INDEX_KEPT, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, PLACE_BYTES,
-  recordLayout, TABLE_KEPT, WORST_FILL,
+  RECORD_FIXED, recordLayout, TABLE_KEPT, WORST_FILL,
 } from "../src/manifest";
+import { AUTOINDEXES } from "./autoindexes";
 import { NOTICE_DETAIL, NOTICES_KEPT } from "../src/notices";
 import { SESSION_LIMITS } from "../src/sessions";
 import { USAGE_LIMITS } from "../src/usage";
@@ -134,7 +135,7 @@ const EGRESS_LIMITS = declared("egress", "EGRESS_LIMITS", "openPerRun", "receipt
                                "refusalsKept");
 const EGRESS_PATH_MAX = constant("egress", "EGRESS_PATH_MAX");
 const GRANT_LIMITS = declared("grants", "GRANT_LIMITS", "maxFreeClients", "maxOwnerClients",
-                              "maxScopes", "maxScopesBytes");
+                              "maxScopesBytes");
 const POLICY_LIMITS = declared("policy", "POLICY_LIMITS", "maxDocument", "maxChange",
                                "pendingProposals", "appliedProposals", "receiptsPerBucket");
 const FILE_SETTINGS = declared("policy", "FILE_SETTINGS", "max_manifest_bytes");
@@ -174,8 +175,27 @@ const SCOPE_FIELD = inline("grants", /codePoints\(v\) > ([0-9]+)/);
 const SCOPES_BYTES = inline("schema", /length\(CAST\(scopes AS BLOB\)\) <= ([0-9]+)/);
 /** A room id, in code points (`ledger.ts`), each up to four bytes. */
 const ROOM_CHARS = inline("ledger", /text\(roomId, ([0-9]+), "room_id"\)/);
+/** A client message id and a parent id, in code points (`ledger.ts`). */
+const CMID_CHARS = inline("ledger", /text\(clientMessageId, ([0-9]+), "client_message_id"\)/);
+const PARENT_CHARS = inline("ledger", /text\(parentId, ([0-9]+), "parent_id"\)/);
+/** An agent's universe (`command_center_id`) and its recipe id, in code points. */
+const UNIVERSE_CHARS = inline("ledger", /text\(request\.command_center_id, ([0-9]+), /);
+const RECIPE_CHARS = inline("ledger", /text\(request\.recipe_id, ([0-9]+), /);
+/** An agent's display name, in code points (`ledger.ts`'s `displayName`). */
+const AGENT_NAME_CHARS = 80;
+/** Ids the object mints: an agent's (`agent_` and 16 hex), a message's (`msg_` and 32). */
+const AGENT_ID = 22;
+const MESSAGE_ID = 36;
+/** A proposal's or card's id, in code points (`policy.ts`). */
+const PROPOSAL_ID_CHARS = inline("policy", /codePoints\(value\) <= ([0-9]+)/);
+const CONVERSATION_ID_CHARS = constant("run-rows", "CONVERSATION_ID_CHARS");
+const SCHEDULE_ID_CHARS = constant("run-rows", "SCHEDULE_ID_CHARS");
+/** An integer's or a real's most bytes in a record. */
+const NUMBER = 9;
 /** A content id: 64 hex (ADR-035's placed body, the files plane's content). */
 const CONTENT_ID = 64;
+/** A row's files scope: `owner`, or `client:` and 64 hex. */
+const FILER = 71;
 const CLIENT_NAME = inline("grants", /codePoints\(name\) > ([0-9]+)/);
 /** The most wakes an hour policy lets an agent take, the rings one hour keeps (`ledger.ts`). */
 const WAKES_AN_HOUR = inline("ledger", /maxWakesPerHour: Object\.freeze\(\{ low: [0-9]+, high: ([0-9]+) \}\)/);
@@ -200,6 +220,15 @@ export interface Term {
   readonly charged?: true;
   /** What bounds it. */
   readonly by: string;
+  /**
+   * Each index entry a row makes, by the index's name in `sqlite_master` (an explicit one, or
+   * SQLite's `sqlite_autoindex_<table>_<n>` for a key or a `UNIQUE`), and its key's widest
+   * bytes, the rowid (or a `WITHOUT ROWID` table's key) among them: each laid out as an
+   * index's record. A charged term names the indexes its charge already lays out, at 0.
+   */
+  readonly indexes?: Readonly<Record<string, number>>;
+  /** The tables a charged term covers, when not its own name alone. */
+  readonly tables?: readonly string[];
 }
 
 /**
@@ -241,10 +270,15 @@ export function termBytes(name: string, term: Term): number {
   if (term.charged === true) {
     return term.rows * term.bytes * WORST_FILL;
   }
-  const { inPlace, overflow } = recordLayout(term.bytes,
-                                             KEPT_AS_INDEX.has(name) ? INDEX_KEPT : TABLE_KEPT);
   // A record is on its page however thinned the page: it takes at most the whole page.
-  return term.rows * (Math.min(inPlace * WORST_FILL, PAGE_BYTES) + overflow);
+  const laid = (payload: number, kept: number) => {
+    const { inPlace, overflow } = recordLayout(payload, kept);
+    return Math.min(inPlace * WORST_FILL, PAGE_BYTES) + overflow;
+  };
+  const entries = Object.values(term.indexes ?? {})
+    .reduce((sum, key) => sum + laid(key + RECORD_FIXED, INDEX_KEPT), 0);
+  return term.rows * (laid(term.bytes, KEPT_AS_INDEX.has(name) ? INDEX_KEPT : TABLE_KEPT)
+                      + entries);
 }
 
 /** The bounds a term is made from, each module's own: what a proposed raise overrides. */
@@ -283,6 +317,8 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     by: "max_manifest_bytes (high) at WORST_FILL, charged by triggers to " +
       Object.keys(MANIFEST_TABLES).join(", "),
   });
+  /** An index of a rowid table: its key's bytes and the rowid. */
+  const key = (...bytes: number[]) => bytes.reduce((a, b) => a + b, NUMBER);
   /** An owner-set grant: its scopes, counted in bytes as the schema holds them, and its name. */
   const GRANT_BYTES = Math.min(G.maxScopesBytes, SCOPES_BYTES) + CLIENT_NAME * 4;
 
@@ -294,74 +330,125 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     file_intents: { rows: MAX_OPEN_INTENTS,
                     bytes: ROW + 2 * MAX_INTENT_CHUNKS * 64,
                     by: "MAX_OPEN_INTENTS open uploads, each at most MAX_INTENT_CHUNKS chunk " +
-                      "ids, and as many still to send" },
+                      "ids, and as many still to send",
+                    indexes: { file_intents_due: key(NUMBER, 32) } },
     owner_policy: { rows: 1, bytes: ROW + P.maxDocument * 4,
                     by: "one document of maxDocument code points" },
     policy_receipts: { rows: 3 * P.receiptsPerBucket, bytes: ROW + 1 * KIB,
-                       by: "receiptsPerBucket in each of three buckets" },
+                       by: "receiptsPerBucket in each of three buckets",
+                       indexes: { policy_receipts_by_bucket: key(7, NUMBER) } },
     policy_proposals: { rows: P.pendingProposals + P.appliedProposals,
-                        bytes: ROW + P.maxChange * 4,
-                        by: "pending and applied proposals of maxChange code points" },
+                        bytes: ROW + 4 * PROPOSAL_ID_CHARS + 64 + P.maxChange * 4,
+                        by: "pending and applied proposals of maxChange code points",
+                        indexes: { sqlite_autoindex_policy_proposals_1: key(4 * PROPOSAL_ID_CHARS),
+                                   proposals_by_age: key(NUMBER),
+                                   proposals_applied: key(NUMBER) } },
     proposal_shares: { rows: G.maxFreeClients + G.maxOwnerClients,
-                       bytes: ROW, by: "one per client" },
+                       bytes: ROW + 64, by: "one per client",
+                       indexes: { sqlite_autoindex_proposal_shares_1: key(64) } },
     policy_usage: { rows: 1, bytes: ROW, by: "one row" },
     outside_clients: { rows: G.maxFreeClients + G.maxOwnerClients,
                        bytes: ROW + 8 + GRANT_BYTES * G.maxOwnerClients
                          / (G.maxFreeClients + G.maxOwnerClients),
                        by: "free clients (no scopes, no name) and owner-set ones (their " +
                          "scopes' JSON at the schema's byte ceiling, and a name), each with " +
-                         "its revision (migration 9)" },
+                         "its revision (migration 9)",
+                       indexes: { sqlite_autoindex_outside_clients_1: key(64),
+                                  outside_clients_listed: key(NUMBER, 64),
+                                  outside_clients_free: key(NUMBER) } },
     grant_fences: { rows: 1, bytes: ROW, by: "one row" },
-    owner_sessions: { rows: S.maxSessions, bytes: ROW, by: "maxSessions" },
-    outside_agents: { rows: L.maxAgentRows, bytes: ROW + 1 * KIB,
-                      by: "maxAgentRows, every row: a tombstone a revoke holds too" },
-    ledger_messages: { rows: L.maxMessages, bytes: ROW + 1 * KIB,
-                       by: "maxMessages" },
+    owner_sessions: { rows: S.maxSessions, bytes: ROW + 64, by: "maxSessions",
+                      indexes: { sqlite_autoindex_owner_sessions_1: key(64),
+                                 sessions_by_expiry: key(NUMBER) } },
+    outside_agents: { rows: L.maxAgentRows,
+                      bytes: ROW + AGENT_ID + 4 * UNIVERSE_CHARS + 2 * 64 + 64
+                        + 4 * AGENT_NAME_CHARS + 4 * RECIPE_CHARS + 64,
+                      by: "maxAgentRows, every row: a tombstone a revoke holds too; each its " +
+                        "id, universe, client, family, source, name, recipe and reason at " +
+                        "the validators' widest",
+                      indexes: { sqlite_autoindex_outside_agents_1: key(AGENT_ID),
+                                 sqlite_autoindex_outside_agents_2: key(4 * UNIVERSE_CHARS,
+                                                                        64, 64),
+                                 outside_identities: key(64, 64) } },
+    ledger_messages: { rows: L.maxMessages,
+                       bytes: ROW + MESSAGE_ID + 4 * UNIVERSE_CHARS + 4 * ROOM_CHARS + AGENT_ID
+                         + 4 * CMID_CHARS + 64 + 4 * PARENT_CHARS + MESSAGE_ID + 7,
+                       by: "maxMessages, each its ids, universe, room, client message id, " +
+                         "body hash and parent at the validators' widest",
+                       indexes: { sqlite_autoindex_ledger_messages_1: key(MESSAGE_ID),
+                                  sqlite_autoindex_ledger_messages_2: key(AGENT_ID,
+                                                                          4 * CMID_CHARS),
+                                  messages_done: key(NUMBER) } },
     // A body past PLACE_BYTES is placed in R2 (ADR-035): the row keeps at most that much.
     message_bodies: { rows: L.maxMessages,
-                      bytes: ROW + 4 * ROOM_CHARS + PLACE_BYTES + CONTENT_ID + 9,
+                      bytes: ROW + MESSAGE_ID + 4 * ROOM_CHARS + PLACE_BYTES + CONTENT_ID
+                        + FILER,
                       by: "maxMessages, each its room and its body inline up to PLACE_BYTES " +
-                        "(a larger one placed in R2) or its content id" },
+                        "(a larger one placed in R2) or its content id, and its files scope",
+                      indexes: { sqlite_autoindex_message_bodies_1: key(MESSAGE_ID) } },
     // Its key holds a message to one recipient.
-    ledger_recipients: { rows: L.maxMessages, bytes: ROW,
-                         by: "one a message (the key: message_id)" },
-    ledger_readers: { rows: L.maxAgentRows, bytes: ROW, by: "one per agent" },
+    ledger_recipients: { rows: L.maxMessages, bytes: ROW + MESSAGE_ID + AGENT_ID,
+                         by: "one a message (the key: message_id)",
+                         indexes: { sqlite_autoindex_ledger_recipients_1: key(MESSAGE_ID),
+                                    recipients_by_seq: key(AGENT_ID, NUMBER),
+                                    recipients_unacked: key(AGENT_ID, NUMBER),
+                                    recipients_by_state: key(AGENT_ID, 8) } },
+    ledger_readers: { rows: L.maxAgentRows, bytes: ROW + AGENT_ID, by: "one per agent",
+                      indexes: { sqlite_autoindex_ledger_readers_1: key(AGENT_ID) } },
     ledger_receipts: { rows: L.maxReceipts, bytes: ROW + 1 * KIB,
-                       by: "maxReceipts" },
-    ledger_rings: { rows: L.maxAgentRows * WAKES_AN_HOUR, bytes: ROW,
-                    by: "an hour's wakes per agent, at the policy's most an hour" },
+                       by: "maxReceipts",
+                       indexes: { receipts_by_ref: key(13, 4 * PROPOSAL_ID_CHARS, AGENT_ID),
+                                  receipts_by_agent: key(AGENT_ID) } },
+    ledger_rings: { rows: L.maxAgentRows * WAKES_AN_HOUR, bytes: ROW + AGENT_ID,
+                    by: "an hour's wakes per agent, at the policy's most an hour",
+                    indexes: { rings_by_agent: key(AGENT_ID, NUMBER) } },
     ledger_wakes: { rows: L.maxAgentRows + L.maxSettledWakes,
-                    bytes: ROW + 1 * KIB, by: "an open wake per agent, maxSettledWakes settled" },
+                    bytes: ROW + 1 * KIB, by: "an open wake per agent, maxSettledWakes settled",
+                    indexes: { sqlite_autoindex_ledger_wakes_1: key(40),
+                               one_open_wake: key(AGENT_ID, 6), wakes_by_agent: key(AGENT_ID),
+                               wakes_open: key(NUMBER), wakes_sending: key(NUMBER),
+                               wakes_settled: key(NUMBER) } },
     ledger_usage: { rows: L.maxAgentRows + 1, bytes: ROW, by: "one per agent" },
-    // A body past PLACE_BYTES is placed in R2 (ADR-035): the row keeps at most that much.
-    collection_rows: { rows: C.maxOwnerRows,
-                       bytes: ROW + Math.min(PLACE_BYTES, C.maxOwnerBytes / C.maxOwnerRows)
-                         + CONTENT_ID + 9,
-                       by: "maxOwnerRows, each its body inline up to PLACE_BYTES (a larger " +
-                         "one placed in R2) or its content id" },
-    // The history in bytes, as SQLite lays its entries out (`HISTORY_CHARGE`), pruned at it.
+    // The rows in bytes, as SQLite lays them out with their four index entries, whatever
+    // their names (`ROW_CHARGE`), each collection's seq row and each writer's counter with
+    // them: refused past `maxRowsCharge`. A body past PLACE_BYTES is in R2 (ADR-035).
+    collection_rows: { rows: 1, bytes: C.maxRowsCharge, charged: true,
+                       by: "maxRowsCharge at WORST_FILL, charged by their triggers",
+                       tables: ["collection_rows", "collection_seqs", "collection_usage"],
+                       indexes: { sqlite_autoindex_collection_rows_1: 0,
+                                  sqlite_autoindex_collection_rows_2: 0,
+                                  collection_writers: 0, collection_creators: 0,
+                                  sqlite_autoindex_collection_seqs_1: 0 } },
+    // The history in bytes, as SQLite lays its entries out (`HISTORY_CHARGE`), erased keys'
+    // tombstones among them, pruned at it.
     collection_history: { rows: 1, bytes: C.maxHistoryCharge, charged: true,
-                          by: "maxHistoryCharge at WORST_FILL, charged by its triggers" },
-    collection_history_space: { rows: 1, bytes: ROW, by: "one row" },
-    collection_seqs: { rows: C.maxOwnerRows, bytes: ROW,
-                       by: "one per collection with rows (an emptied one goes)" },
-    collection_usage: { rows: 1 + 3 * C.maxOwnerRows, bytes: ROW,
-                        by: "the owner's, and each row's collection, writer and creator" },
-    agent_cards: { rows: K.maxPending, bytes: ROW + K.maxRequest,
-                   by: "maxPending cards of maxRequest" },
+                          by: "maxHistoryCharge at WORST_FILL, charged by its triggers",
+                          indexes: { sqlite_autoindex_collection_history_1: 0,
+                                     collection_history_by_age: 0 } },
+    collection_space: { rows: 1, bytes: ROW, by: "one row" },
+    agent_cards: { rows: K.maxPending, bytes: ROW + 37 + 64 + 64 + 64 + K.maxRequest + 64,
+                   by: "maxPending cards of maxRequest",
+                   indexes: { sqlite_autoindex_agent_cards_1: key(37),
+                              sqlite_autoindex_agent_cards_2: key(64, 64),
+                              agent_cards_by_age: key(NUMBER) } },
     owner_notices: { rows: N.kept, bytes: ROW + N.detail * 4, by: "N.kept" },
     connections: { rows: CN.maxConnections + CN.maxRevokedKept,
                    bytes: ROW + 4 * MODELS_CHARS + 4 * EGRESS_CHARS,
                    by: "connections and revoked kept, the schema's models and egress scope " +
-                     "ceilings each" },
+                     "ceilings each",
+                   indexes: { connections_pending: key(NUMBER, 25),
+                              connections_revokes: key(NUMBER, 25) } },
     connection_secrets: { rows: CN.maxConnections
                                 + CN.maxRevokedKept,
                           bytes: ROW + 4 * BLOB_CHARS,
                           by: "one sealed blob a connection, at the schema's ceiling" },
     connection_flows: { rows: CN.maxFlowRows, bytes: ROW + 4 * KIB,
-                        by: "maxFlowRows" },
+                        by: "maxFlowRows",
+                        indexes: { connection_flows_by_expiry: key(NUMBER, 64) } },
     model_reservations: { rows: U.receiptsKept + CALLS_OPEN, bytes: ROW + 1 * KIB,
-                          by: "receiptsKept settled, and CALLS_OPEN open at once" },
+                          by: "receiptsKept settled, and CALLS_OPEN open at once",
+                          indexes: { sqlite_autoindex_model_reservations_1: key(33),
+                                     model_reservations_open: key(10) } },
     model_spend: { rows: SPEND_KEPT, bytes: ROW, by: "SPEND_KEPT day and month counters" },
     // The sandbox's egress (G4): its lease is `file_space`'s one row; each request a row.
     egress_reservations: { rows: E.receiptsKept + E.refusalsKept
@@ -371,14 +458,21 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                            by: "receiptsKept admitted, refusalsKept refused and openPerRun at " +
                              "once for each of the most runs a tier may give, " +
                              "each its path (visible ASCII, a byte a character), ids, source, " +
-                             "charge, rule, periods, served model and numbers" },
+                             "charge, rule, periods, served model and numbers",
+                           indexes: { sqlite_autoindex_egress_reservations_1: key(32),
+                                      egress_reservations_by_state: key(8, NUMBER),
+                                      egress_reservations_by_time: key(NUMBER) } },
     // Runs (slice R): settled receipts kept and the live ones, each its widest; a live run's
     // grant; the conversations; the runs lane's schedules; the tier numbers kept; tickets.
     runs: { rows: RUNS_KEPT + RUNS_CEILING + QUEUE_ROWS,
             bytes: ROW + RESULT_BYTES + ERROR_BYTES + 4 * STAMP_CHARS + 256 + 512 + 32 + 16,
             by: "RUNS_KEPT settled receipts, RUNS_CEILING live and QUEUE_ROWS waiting, each " +
               "its result, error, stamp, model, ids, counters, lease and heartbeat at their " +
-              "widest" },
+              "widest",
+            indexes: { sqlite_autoindex_runs_1: key(RUN_ID_CHARS), runs_by_request: key(64),
+                       runs_live: key(9), runs_by_conversation: key(CONVERSATION_ID_CHARS,
+                                                                   NUMBER),
+                       runs_waiting: key(NUMBER), runs_settled: key(NUMBER, NUMBER) } },
     // The sandbox leases (review H-1): one an authority, opened only for a live run.
     sandbox_leases: { rows: RUNS_CEILING,
                       bytes: ROW + 64 + 32 + 8 + 128 + 16 + 3 * 64 + 8 + SIGNIN_LIST_CHARS
@@ -402,10 +496,12 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
                   by: "one a live run, its stamp, origin, scopes, connection and secret's " +
                     "hash" },
     conversations: { rows: CONVERSATIONS_KEPT, bytes: ROW + 128 + 64 + 64 + 256 + 128,
-                     by: "CONVERSATIONS_KEPT, each its agent, source, client and session id" },
+                     by: "CONVERSATIONS_KEPT, each its agent, source, client and session id",
+                     indexes: { conversations_by_age: key(NUMBER, CONVERSATION_ID_CHARS) } },
     run_schedules: { rows: SCHEDULES_KEPT,
                      bytes: ROW + INPUT_BYTES + 4 * STAMP_CHARS + ORIGIN_CHARS + 4 * 256 + 256,
-                     by: "SCHEDULES_KEPT, each its input, stamp, origin and last error" },
+                     by: "SCHEDULES_KEPT, each its input, stamp, origin and last error",
+                     indexes: { run_schedules_due: key(NUMBER, SCHEDULE_ID_CHARS) } },
     platform_tiers: { rows: 1, bytes: ROW + 4 * KIB, by: "one row" },
     socket_tickets: { rows: SOCKET_TICKETS, bytes: ROW + 64 + 35 + 4 * 128 + 16,
                       by: "SOCKET_TICKETS, each a hash, a conversation and a grant id" },
@@ -461,8 +557,25 @@ export function manifestIndexes(schema: string = source("schema")): string[] {
 
 /** The tables the terms cover: each term's own, and the manifest's. */
 export function covered(terms: Readonly<Record<string, Term>> = TERMS): string[] {
-  return [...Object.keys(terms).filter((name) => name !== "file_manifest"),
+  return [...Object.entries(terms).filter(([name]) => name !== "file_manifest")
+            .flatMap(([name, term]) => term.tables ?? [name]),
           ...(terms["file_manifest"] === undefined ? [] : Object.keys(MANIFEST_TABLES))];
+}
+
+/**
+ * Every index the owner's schema makes outside the manifest's (which its charge covers):
+ * each `CREATE INDEX` it spells, and each SQLite makes on its own (`AUTOINDEXES`).
+ */
+export function ownerIndexes(schema: string = source("schema")): string[] {
+  const spelled = [...schema.matchAll(
+    /CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([a-zA-Z_0-9]+) ON ([a-zA-Z_0-9]+)/g)]
+    .filter((match) => !Object.hasOwn(MANIFEST_TABLES, match[2]!)).map((match) => match[1]!);
+  return [...new Set([...spelled, ...AUTOINDEXES])].sort();
+}
+
+/** The indexes the terms charge, each term's own. */
+export function chargedIndexes(terms: Readonly<Record<string, Term>> = TERMS): string[] {
+  return Object.values(terms).flatMap((term) => Object.keys(term.indexes ?? {})).sort();
 }
 
 /**
@@ -510,6 +623,18 @@ describe("the owner's database bound", () => {
     expect(tables).not.toContain("scheduled_work");
     expect(tables).not.toContain("run_receipts");
     expect(tables).toContain("owner_admission");
+  });
+
+  it("charges every other index the schema makes, each once, at its key's widest", () => {
+    const indexes = ownerIndexes();
+    expect(indexes.length).toBeGreaterThan(50);
+    expect(chargedIndexes()).toEqual(indexes);
+    // An index added without a term's entry, or a term's entry for none, is seen.
+    expect(ownerIndexes(`${source("schema")} "CREATE INDEX runs_by_agent ON runs (agent)"`))
+      .toContain("runs_by_agent");
+    const { runs: _runs, ...fewer } = TERMS;
+    expect(indexes.filter((index) => !chargedIndexes(fewer).includes(index)))
+      .toContain("runs_by_request");
   });
 
   it("finds every manifest table charged by the schema's triggers, and every index charged",
@@ -566,11 +691,11 @@ describe("the owner's database bound", () => {
       .toEqual([10_000, 4 * 1024 ** 2, 1000]);
     expect([CALLS_OPEN, SPEND_KEPT, MODELS_CHARS, BLOB_CHARS])
       .toEqual([1000, 4300, 655_360, 65_536]);
-    expect([SCOPE_FIELD, CLIENT_NAME, WAKES_AN_HOUR, GRANT_LIMITS.maxScopes])
-      .toEqual([512, 80, 60, 256]);
+    expect([SCOPE_FIELD, CLIENT_NAME, WAKES_AN_HOUR]).toEqual([512, 80, 60]);
     // A grant's scopes are counted in bytes: the module's bound is the schema's ceiling.
     expect([GRANT_LIMITS.maxScopesBytes, SCOPES_BYTES]).toEqual([65_536, 65_536]);
-    expect([PLACE_BYTES, ROOM_CHARS]).toEqual([4096, 128]);
+    expect([PLACE_BYTES, ROOM_CHARS, UNIVERSE_CHARS, CMID_CHARS, PROPOSAL_ID_CHARS])
+      .toEqual([2048, 128, 512, 128, 128]);
     expect(TERMS["file_intents"]).toMatchObject({
       rows: MAX_OPEN_INTENTS, bytes: 256 + 2 * 640_000 });
     expect(TERMS["model_reservations"]!.rows).toBe(USAGE_LIMITS.receiptsKept + 1000);

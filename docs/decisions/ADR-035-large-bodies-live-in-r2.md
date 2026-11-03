@@ -25,47 +25,68 @@ Facts read on 2026-11-03 from Cloudflare's documentation:
   - storage at $0.015 a GB-month;
   - $4.50 a million puts and $0.36 a million gets;
   - objects up to 5 TiB.
+- **Workers** (`workers/platform/limits`): an isolate's 128 MB of memory.
 - **SQLite's page**, as the guard and the files manifest model it (`owner/src/manifest.ts`):
   - a 4,096-byte page;
-  - a rowid table keeps a record of up to 4,061 bytes in place;
+  - a rowid table keeps a record of up to 4,061 bytes in place (`TABLE_KEPT`);
   - past that, the rest of the record takes overflow pages of 4,092 bytes, each read with the row.
 
 R2's read latency is not documented [I: a network round trip from the object, tens of milliseconds; to measure live].
 
 ## Decision
 
-1. **The rule, with no switch.** A body of more than `PLACE_BYTES` (4,096) UTF-8 bytes is never stored in the object's SQLite. This covers:
+1. **The rule, with no switch.** A body of more than `PLACE_BYTES` (2,048) UTF-8 bytes is never stored in the object's SQLite. This covers:
    - a collection row's body;
    - a collection history entry's body;
    - a message's body.
 
-   Each lives in R2 as content of the files plane. Its row keeps an empty body and the content's id; its size is counted on the row. A body of 4,096 bytes or less stays in its row. The files plane already keeps files of up to 4,096 bytes inline, so the object has one threshold. Why 4,096:
-   - a body up to it keeps its row within one page, and adds no overflow page to every read of the row;
-   - past it, each 4,092 bytes is another page read with the row. Storing it costs 13 times R2's rate, so a put pays for itself within months for a body this size [I: by the prices above, a 4 KiB body kept about 6 months];
+   Each lives in R2 as content of the files plane. Its row keeps an empty body and the content's id; its size is counted on the row. A body of 2,048 bytes or less stays in its row. Why 2,048:
+   - the whole record must stay in the 4,061 bytes a rowid table keeps in place, or every read of the row reads overflow pages too. The body gets half of that room. The row's own names, ids and numbers take the other half: a collection row's collection, row id, writer, creator, etag, content id and files scope come to about 1,700 bytes at the names a caller usually picks;
+   - past it, keeping the body in SQLite costs 13 times R2's storage rate. An R2 put and get cost what about a year of SQLite storage costs a 2 KiB body, so a body past the threshold pays for its placement;
    - placing smaller bodies would turn one page read into many R2 round trips, at 6 connections at a time, for no room the guard needs.
-2. **Through the files plane's own path.**
-   - In its first unit, the write door begins an upload of one chunk, and the chunk's row is held before any byte is sent.
-   - The door then puts the bytes to R2 through `FILES`, which verifies the SHA-256.
-   - A second unit adopts the upload. It makes the content, and the row names it in the same transaction. Migration 13's triggers count each reference on the content.
 
-   Every write stays a gate unit. Nothing about the content is committed before R2 holds it.
-3. **Crash safety.** A crash between the put and the commit leaves an upload that no row names. Housekeeping releases it at its expiry, and the chunk becomes garbage. The sweep deletes the garbage from R2 after its grace. A read of a body that a later write let go still finds it within that grace.
-4. **Quota, erasure and export.**
-   - The placed bytes count in the files byte quota (`chunk_bytes`). That quota is now the tier's storage figure from the control record: free 25 GB, paid 250 GB. The owner may set it lower, never higher.
-   - The erasure deletes every chunk the owner's rows name before it wipes the database. That covers both files and placed bodies.
+   The files plane keeps files of up to 4,096 bytes inline. Its rows hold only the file's bytes and a few ids, so its own threshold stays as it was.
+2. **Through the files plane's own path.**
+   - In its first unit, the write door begins a placement upload, and its chunks' rows are held before any byte is sent. A body is at most `BODY_BYTES_MAX` (16 MiB), four 4 MiB chunks, sent two to a `FILES` call.
+   - The door puts the bytes to R2 through `FILES`, which verifies each SHA-256.
+   - A second unit adopts the upload. It makes the content, and the row names it in the same transaction. Migration 13's triggers count each reference on the content, and each reference in its writer's files scope.
+
+   Every write stays a gate unit. Nothing about the content is committed before R2 holds it. A post checks its room and its resend before the put, so a refused or repeated post sends no byte.
+3. **Crash safety.** A crash between the put and the commit leaves an upload that no row names. A placement upload expires in `PLACE_TTL_S` (10 minutes), not the 24 hours a file upload has, and housekeeping then releases it. Its chunks become garbage, and the sweep deletes them from R2 after its grace. A read of a body that a later write let go still finds it within that grace.
+4. **Charged to its writer.** A placed body is charged to the files scope of the writer whose row names it:
+   - the owner's own writes to the owner;
+   - an outside client's to that client, so the owner's `client_share` and `owner_reserve` hold for collections and mail as they do for files;
+   - a visiting owner's to a scope of its own (`client:` and a hash of the visitor), never the owner's.
+5. **Quota and retention.**
+   - The placed bytes count in the files byte quota (`chunk_bytes`). That quota is the tier's storage figure from the control record: free 25 GB, paid 250 GB. The owner may set it lower, never higher. The collections' and the ledger's own byte caps are gone: the tier's storage is their bound.
+   - At the quota, retention makes room before anything is refused, as the files plane's own history does: the oldest placed collection history entries, then the oldest acked messages with placed bodies, of the scope that is full, one at a time.
+6. **Rows counted as SQLite lays them out.** The collections' rows and history are bounded by what they take in the object, not by a count:
+   - each row is charged its record and its four index entries, laid out as the guard lays them (`ROW_CHARGE`), its collection's seq row with it;
+   - each history entry likewise (`HISTORY_CHARGE`), an erased key's last entry among them. The oldest entries are pruned first, never refused, and a pruned key goes on past its newest pruned revision, so no revision and no cursor repeats;
+   - triggers keep both charges, so no write path misses one.
+
+   The guard costs every term at the widest name its validator allows, and a test checks that SQLite makes no index the guard does not count.
+7. **Reads.**
+   - A get, a pull, a history read, a mailbox read and a conflict answer the stored body through the same path. A door reads the placed bodies from R2 outside any unit, after its unit locates them.
+   - A pull, a history read or a mailbox read returns at most `READ_PAGE_BYTES` (8 MiB) of bodies after its first item. A history read past one page answers `more` and a `before_revision` cursor.
+8. **Erasure leaves no orphan.**
+   - Once the erasure's mark stands, every upload and every chunk put is refused.
+   - The erasure waits out the puts already in flight, and `PUT_GRACE_MS` (5 minutes) past its mark.
+   - It then deletes every chunk under the owner's namespace by prefix (`FILES.deleteNamespace`). It does so again after it wipes the database, so a put the wait missed is deleted too.
    - The owner export (slice P) reads the same chunks.
-5. **Reads page by bytes.** A pull, a history read or a mailbox read returns at most `READ_PAGE_BYTES` (8 MiB) of bodies after its first item. A door reads the placed bodies from R2 outside any unit, after its unit locates them.
-6. **Not every term dominated by a body is placed.** A connection's models list (640 KiB at most) is read inside every egress admission unit, once for each sandbox model call. Placing it would put an R2 round trip on every model call. It stays in its row, bounded by the connection count, and fits the guard.
+9. **Not every term dominated by a body is placed.** A connection's models list (640 KiB at most) is read inside every egress admission unit, once for each sandbox model call. Placing it would put an R2 round trip on every model call. It stays in its row, bounded by the connection count, and fits the guard.
 
 ## Consequences
 
-- The ledger, the collections and their history no longer cost the object their bytes: only their rows. Their byte bounds become storage, counted against the tier.
-- With the audit's other structural changes, the audit's raises fit with 774.1 MB of margin, where they had 2.1 MB:
-  - collection history counted in bytes;
+- The ledger, the collections and their history no longer cost the object their bytes: only their rows. Their bodies are storage, counted against the tier and the writer's share.
+- With the audit's other structural changes, the worst case at the validators' widest names is 4,019,734,080.75 bytes, 40.20% of the 10 GB: 980.3 MB under half, where the raises had 2.1 MB. The other changes:
+  - collection rows and history counted in laid-out bytes;
   - one recipient a message;
-  - the mailbox caps within the ceilings;
+  - the mailboxes' caps within the ceilings;
   - grant scopes counted in bytes.
 - A write of a large body takes two units and an R2 put. A read of a large body takes an R2 get. A small body costs what it cost before.
 - Owed live:
   - R2 read latency from an owner object;
-  - SSE-C on the placed chunks, the same probe the files plane owes.
+  - the put grace's fit: the longest a `FILES` put takes in flight, against `PUT_GRACE_MS`;
+  - SSE-C on the placed chunks, the same probe the files plane owes;
+  - an isolate's memory with a 16 MiB body in flight (slice L's memory probe, with the 16 MiB egress body).

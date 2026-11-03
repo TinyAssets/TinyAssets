@@ -7,80 +7,80 @@
  * a reader pulls after a cursor, or gets one row by its key. The board is
  * `collection = "board"`; a Tier A app room is `collection = "room:<app>:<room>"`.
  * Payloads are stored and returned verbatim. A private row is visible to, and
- * writable by, its writer alone. Rows and payload bytes are bounded per writer (other
- * than the owner) in a collection, per collection and per owner; past a bound a write
- * is refused. Only the owner deletes a row, or clears a collection or one writer's
- * rows in it (the object enforces that at its RPC door).
+ * writable by, its writer alone. The rows are bounded by what they take in the object, laid
+ * out as SQLite lays them, names and index entries included (`maxRowsCharge`), and an
+ * outside writer (a client, or a visiting owner) by the owner's own share of it; past a
+ * bound a write is refused. Only the owner deletes a row, or clears a collection or one
+ * writer's rows in it (the object enforces that at its RPC door).
  *
  * `collection_history` is the primitive's own record: each write appends the revision
  * it committed (its writer, op and body), and a delete or clear appends one body-less
  * entry and drops the row's earlier bodies, so a row made again under that key goes on
- * from the next revision and never repeats one. A row keeps its last `maxRevisions`
- * entries. The history is bounded by what it takes, not by rows times revisions: its
- * entries as SQLite lays them out (`maxHistoryCharge`) and their bodies wherever placed
- * (`maxHistoryBytes`), the oldest pruned first past either; a key whose every entry was
- * pruned goes on past the newest revision a prune let go, so none repeats. It is a
- * retention, never refused.
+ * from the next revision and never repeats one. The history is bounded by what it takes,
+ * not by rows times revisions: its
+ * entries as SQLite lays them out (`maxHistoryCharge`), an erased key's last entry (its
+ * tombstone) among them, the oldest pruned first; a key whose every entry was pruned goes
+ * on past the newest revision a prune let go, so none repeats. It is a retention, never
+ * refused, and its placed bodies are the first room made at the files byte quota
+ * (`reclaim`).
  *
  * Where a body lives is the placement rule (ADR-035, `bodies.ts`): a body past
- * `PLACE_BYTES` is placed in R2 before its write (the door's `Bodies.place`), and the row
- * and its history entry name its content; the byte bounds count every body's bytes
- * wherever it lives.
+ * `PLACE_BYTES` is placed in R2 before its write (the door's `Bodies.begin`), and the row
+ * and its history entry name its content, counted in the writer's files scope; the tier's
+ * storage bounds those bytes.
  *
  * Every change runs in one `transactionSync`, so a refusal or a thrown error leaves
  * nothing behind.
  */
 import { createHash } from "node:crypto";
 
-import { type Adopt, adopted, type Placed, READ_PAGE_BYTES } from "./bodies";
+import { type Adopt, adopted, BODY_BYTES_MAX, type Placed, READ_PAGE_BYTES } from "./bodies";
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import { codePoints, name, utf8Bytes } from "./text";
 
 export interface Limits {
-  /** A row body, in characters (code points). */
-  readonly maxRow: number;
-  /** Rows a writer other than the owner may create in one collection. */
-  readonly maxWriterRows: number;
-  /** Payload bytes a writer other than the owner may hold in one collection. */
-  readonly maxWriterBytes: number;
-  readonly maxRows: number;
-  readonly maxCollectionBytes: number;
-  readonly maxOwnerRows: number;
-  readonly maxOwnerBytes: number;
+  /** A row body, in UTF-8 bytes: one call through the object whole (`BODY_BYTES_MAX`). */
+  readonly maxRowBytes: number;
+  /**
+   * The rows as SQLite lays them out (`ROW_CHARGE`): each row with its four index entries,
+   * each collection's seq row and each outside writer's counter, in bytes, whatever their
+   * names. The owner-bound guard's share of the 10 GB for them.
+   */
+  readonly maxRowsCharge: number;
+  /** Rows one pull, or history entries one history read, returns: a page. */
   readonly maxPull: number;
-  readonly maxRevisions: number;
   /** The history's entries, laid out as SQLite lays them (`HISTORY_CHARGE`), in bytes. */
   readonly maxHistoryCharge: number;
-  /** The history's bodies, wherever placed, in bytes. */
-  readonly maxHistoryBytes: number;
 }
 
 /**
- * Bounds on payload bytes and rows, each refused loudly. A writer other than the
- * owner gets a small share of one collection; one collection gets a slice of the
- * owner's total, so one room cannot starve another.
+ * The collections' bounds: the bytes their rows and their history take in the object, which
+ * the owner-bound guard holds within its half of the 10 GB, and a body's own size. Bodies
+ * past `PLACE_BYTES` are in R2, held by the tier's storage. An outside writer (a client, or
+ * a visiting owner) holds at most the owner's own `client_share` of the rows' bytes, and
+ * all of them together what `owner_reserve` leaves (`Shares`), as in the owner's files.
  */
 export const LIMITS: Limits = Object.freeze({
-  maxRow: 1024 * 1024,
-  maxWriterRows: 10_000,
-  maxWriterBytes: 1024 * 1024 * 1024,
-  maxRows: 100_000,
-  maxCollectionBytes: 4 * 1024 * 1024 * 1024,
-  maxOwnerRows: 100_000,
-  maxOwnerBytes: 16 * 1024 * 1024 * 1024,
+  maxRowBytes: BODY_BYTES_MAX,
+  maxRowsCharge: 256 * 1024 * 1024,
   maxPull: 100,
-  maxRevisions: 100,
   maxHistoryCharge: 128 * 1024 * 1024,
-  maxHistoryBytes: 16 * 1024 * 1024 * 1024,
 });
+
+/** The owner's own shares (its files policy's `client_share` and `owner_reserve`). */
+export interface Shares {
+  readonly client_share: number;
+  readonly owner_reserve: number;
+}
+
+/** The files policy's defaults, for a primitive built without the owner's policy. */
+const DEFAULT_SHARES: Shares = Object.freeze({ client_share: 25, owner_reserve: 25 });
+/** The owner's own files scope (`manifest.ts`'s `OWNER_SCOPE`). */
+export const OWNER_FILER = "owner";
 
 /** The history ops a write never names. */
 const ERASES: readonly string[] = Object.freeze(["delete", "clear"]);
-/** One scope's counters (`collection_usage`, kept by the schema's triggers). */
-const USAGE =
-  "SELECT rows, row_bytes AS bytes FROM collection_usage " +
-  "WHERE scope = ? AND collection = ? AND who = ?";
 /** Python's `str.isidentifier()`. */
 const IDENTIFIER = /^[\p{XID_Start}_]\p{XID_Continue}*$/u;
 const LONE_SURROGATE = /\p{Cs}/u;
@@ -107,24 +107,40 @@ export interface HistoryEntry {
   readonly content_id?: string;
 }
 
+/** A row's kept history, oldest first, and the cursor to read the older entries by. */
+export interface History {
+  readonly entries: HistoryEntry[];
+  /** Whether older entries are kept that this page did not return. */
+  readonly more: boolean;
+  /** The revision to read before (`before_revision`) for them; null when none are left. */
+  readonly before_revision: number | null;
+}
+
 export interface Page {
   readonly cursor: number;
   readonly rows: Row[];
 }
 
 /**
- * A row body as a write takes it, or refused: text of at most `maxRow` characters, and
+ * A row body as a write takes it, or refused: text of at most `maxRowBytes` UTF-8 bytes, and
  * well-formed. The door checks it before it places the body (ADR-035).
  */
 export function checkBody(body: unknown, limits: Limits = LIMITS): string {
-  if (typeof body !== "string" || codePoints(body) > limits.maxRow) {
-    throw new Invalid(`a row body is text of at most ${limits.maxRow} characters`);
+  if (typeof body !== "string" || utf8Bytes(body) > limits.maxRowBytes) {
+    throw new Invalid(`a row body is text of at most ${limits.maxRowBytes} bytes`);
   }
   if (LONE_SURROGATE.test(body)) {
     throw new Invalid("a row body is well-formed text");
   }
   return body;
 }
+
+/**
+ * The rows of the writers a files scope names: any (`*`), every outside writer
+ * (`client:*`), or one. Bound three times; no bound `GLOB` pattern (a Durable Object's
+ * SQLite takes one of at most 50 bytes, and a writer is 71).
+ */
+export const FILERS = "(? = '*' OR (? = 'client:*' AND filer GLOB 'client:*') OR filer = ?)";
 
 /** History entries one prune step reads, oldest first. */
 const PRUNE_BATCH = 64;
@@ -150,6 +166,7 @@ type StoredRow = {
   creator: string;
   body_bytes: number;
   content_id: string | null;
+  filer: string;
 };
 
 /** A page's rows: the first always, then each while the bodies fit `READ_PAGE_BYTES`. */
@@ -192,61 +209,52 @@ export class Collections {
   readonly #limits: Limits;
   /** How a writing unit adopts a placed body's content (`Bodies.adopt`); none, none placed. */
   readonly #adopt: Adopt | undefined;
+  /** The owner's shares, read at each write. */
+  readonly #shares: () => Shares;
 
-  constructor(storage: OwnerStorage, limits: Limits = LIMITS, adopt?: Adopt) {
+  constructor(storage: OwnerStorage, limits: Limits = LIMITS, adopt?: Adopt,
+              shares: () => Shares = () => DEFAULT_SHARES) {
     this.#storage = storage;
     this.#limits = limits;
     this.#adopt = adopt;
+    this.#shares = shares;
   }
 
   get #sql(): OwnerStorage["sql"] {
     return this.#storage.sql;
   }
 
-  /** A scope's rows and payload bytes (its rows' and its history's), read by key. */
-  #usage(scope: "owner" | "collection" | "writer" | "creator", collection: string,
-         who: string): { rows: number; bytes: number } {
-    return this.#sql.exec<{ rows: number; bytes: number }>(USAGE, scope, collection, who)
-      .toArray()[0] ?? { rows: 0, bytes: 0 };
+  /** The rows' charge in all, and an outside writer's own and all outside writers'. */
+  #charges(filer: string): { owner: number; mine: number; outside: number } {
+    const sql = this.#sql;
+    const usage = (who: string) => sql.exec<{ charge: number }>(
+      "SELECT charge FROM collection_usage WHERE who = ?", who).toArray()[0]?.charge ?? 0;
+    return { owner: sql.exec<{ rows_charge: number }>(
+               "SELECT rows_charge FROM collection_space").one().rows_charge,
+             mine: filer === OWNER_FILER ? 0 : usage(filer), outside: usage("*") };
   }
 
   /**
-   * Refuse a write that would take its writer, collection or owner past a bound.
-   *
-   * Bytes are the rows' bodies, wherever placed; the history is bounded on its own, and
-   * pruned rather than refused. Each bound reads its scope's counters, which the schema's
-   * triggers keep in this same transaction.
+   * Refuse a write that took the rows' charge past its bound, or an outside writer past its
+   * share of it or all outside writers past what the owner's reserve leaves. A write that
+   * leaves a charge no higher passes, so a writer over a lowered share can still shrink.
+   * The history is bounded on its own, pruned rather than refused.
    */
-  #bound(owner: string, caller: string, collection: string, row: StoredRow | undefined,
-         size: number): void {
-    const limits = this.#limits;
-    const old = row === undefined ? 0 : row.body_bytes;
-    const add = row === undefined ? 1 : 0;
-    type Check = [string, { rows: number; bytes: number }, number, number, number, number];
-    const checks: Check[] = [
-      ["the owner's collections are full", this.#usage("owner", "", ""), limits.maxOwnerRows,
-        limits.maxOwnerBytes, add, size - old],
-      ["the collection is full", this.#usage("collection", collection, ""), limits.maxRows,
-        limits.maxCollectionBytes, add, size - old],
-    ];
-    if (caller !== owner) {
-      // Rows count against their creator, whoever takes them over later, so neither a
-      // turn on a shared row nor a second account frees a share. Bytes count against
-      // the current writer: a takeover charges the row's size.
-      const mine = row !== undefined && row.writer === caller;
-      const share = "this writer's share of the collection is full";
-      checks.unshift(
-        [share, this.#usage("creator", collection, caller), limits.maxWriterRows,
-          limits.maxWriterBytes, add, 0],
-        [share, this.#usage("writer", collection, caller), limits.maxWriterRows,
-          limits.maxWriterBytes, 0, size - (mine ? old : 0)],
-      );
+  #bound(before: { owner: number; mine: number; outside: number }, filer: string): void {
+    const most = this.#limits.maxRowsCharge;
+    const after = this.#charges(filer);
+    const { client_share: share, owner_reserve: reserve } = this.#shares();
+    const over = (key: "owner" | "mine" | "outside", bound: number) =>
+      after[key] > before[key] && after[key] > bound;
+    if (over("owner", most)) {
+      throw new Refused("the owner's collections are full");
     }
-    for (const [reason, used, maxRows, maxBytes, moreRows, moreBytes] of checks) {
-      if ((moreRows && used.rows + moreRows > maxRows)
-          || (moreBytes > 0 && used.bytes + moreBytes > maxBytes)) {
-        throw new Refused(reason);
-      }
+    if (filer !== OWNER_FILER && over("mine", Math.floor(most * share / 100))) {
+      throw new Refused("this writer's share of the owner's collections is full");
+    }
+    if (filer !== OWNER_FILER && over("outside", Math.floor(most * (100 - reserve) / 100))) {
+      throw new Refused("outside writers' share of the owner's collections is full; the " +
+                        "rest is kept for the owner");
     }
   }
 
@@ -254,13 +262,14 @@ export class Collections {
    * Commit `body` only while `expectedEtag` is the row's; `""` creates the row.
    *
    * A mismatch throws {@link Conflict} with the row as stored and changes nothing.
-   * `historyOp` names the change in the row's history (the board's `claim`, say). A body
-   * past `PLACE_BYTES` comes `placed` (ADR-035): its content is adopted in this unit, as
-   * `writer`'s in the files plane, and the row and its entry name it.
+   * `historyOp` names the change in the row's history (the board's `claim`, say). `filer` is
+   * the writer's files scope (the owner's, or an outside writer's `client:<id>`): the row's
+   * bytes count in its share, and a body past `PLACE_BYTES` comes `placed` (ADR-035), its
+   * content adopted in this unit in that scope, the row and its entry naming it.
    */
   write(owner: string, caller: string, collection: string, rowId: string, body: unknown,
         expectedEtag: unknown, isPrivate: unknown, historyOp: unknown = "write",
-        placed: Placed | null = null, writer = "owner"): Row {
+        placed: Placed | null = null, filer = OWNER_FILER): Row {
     name(collection, "collection");
     name(rowId, "row_id");
     checkBody(body, this.#limits);
@@ -290,64 +299,59 @@ export class Collections {
       const revision = 1 + (row !== undefined ? row.revision : sql.exec<{ top: number }>(
         "SELECT COALESCE((SELECT MAX(revision) FROM collection_history " +
           "WHERE collection = ? AND key = ?), " +
-          "(SELECT revision_floor FROM collection_history_space)) AS top", collection, rowId,
+          "(SELECT revision_floor FROM collection_space)) AS top", collection, rowId,
       ).one().top);
-      sql.exec(
-        "DELETE FROM collection_history WHERE collection = ? AND key = ? AND revision <= ?",
-        collection, rowId, revision - this.#limits.maxRevisions,
-      );
       const bytes = utf8Bytes(body as string);
-      this.#bound(owner, caller, collection, row, bytes);
-      const contentId = adopted(body as string, placed, writer, this.#adopt);
-      const kept = contentId === null ? body : "";
-      const seq = this.top(collection) + 1;
-      sql.exec(
-        "INSERT INTO collection_seqs VALUES (?, ?) ON CONFLICT (collection) " +
-          "DO UPDATE SET seq = excluded.seq", collection, seq,
-      );
-      const at = now();
-      // An upsert on the row's key alone: a seq collision fails loudly on
-      // UNIQUE (collection, seq) instead of replacing another row.
-      sql.exec(
-        "INSERT INTO collection_rows (collection, row_id, revision, seq, etag, writer, " +
-          "private, body, updated_at, creator, body_bytes, content_id) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
-          "ON CONFLICT (collection, row_id) DO UPDATE SET " +
-          "revision = excluded.revision, seq = excluded.seq, etag = excluded.etag, " +
-          "writer = excluded.writer, private = excluded.private, body = excluded.body, " +
-          "updated_at = excluded.updated_at, body_bytes = excluded.body_bytes, " +
-          "content_id = excluded.content_id",
-        collection, rowId, revision, seq, digest(`${seq}:${body}`), caller,
-        isPrivate ? 1 : 0, kept, at, caller, bytes, contentId,
-      );
-      sql.exec(
-        "INSERT INTO collection_history (collection, key, revision, op, body_json, at, " +
-          "writer, body_bytes, content_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        collection, rowId, revision, historyOp, kept, at, caller, bytes, contentId,
-      );
-      this.#prune();
-      const stored = sql.exec<StoredRow>(
-        "SELECT * FROM collection_rows WHERE collection = ? AND row_id = ?", collection, rowId,
-      ).one();
-      // The writer has the body it wrote: shown whole, as an inline one is.
-      const { content_id: _placed, ...written } = shown(stored);
-      return { ...written, body: body as string };
+      const before = this.#charges(filer);
+      return adopted(body as string, placed, filer, this.#adopt, (contentId) => {
+        const kept = contentId === null ? body : "";
+        const seq = this.top(collection) + 1;
+        sql.exec(
+          "INSERT INTO collection_seqs VALUES (?, ?) ON CONFLICT (collection) " +
+            "DO UPDATE SET seq = excluded.seq", collection, seq,
+        );
+        const at = now();
+        // An upsert on the row's key alone: a seq collision fails loudly on
+        // UNIQUE (collection, seq) instead of replacing another row.
+        sql.exec(
+          "INSERT INTO collection_rows (collection, row_id, revision, seq, etag, writer, " +
+            "private, body, updated_at, creator, body_bytes, content_id, filer) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+            "ON CONFLICT (collection, row_id) DO UPDATE SET " +
+            "revision = excluded.revision, seq = excluded.seq, etag = excluded.etag, " +
+            "writer = excluded.writer, private = excluded.private, body = excluded.body, " +
+            "updated_at = excluded.updated_at, body_bytes = excluded.body_bytes, " +
+            "content_id = excluded.content_id, filer = excluded.filer",
+          collection, rowId, revision, seq, digest(`${seq}:${body}`), caller,
+          isPrivate ? 1 : 0, kept, at, caller, bytes, contentId, filer,
+        );
+        sql.exec(
+          "INSERT INTO collection_history (collection, key, revision, op, body_json, at, " +
+            "writer, body_bytes, content_id, filer) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          collection, rowId, revision, historyOp, kept, at, caller, bytes, contentId, filer,
+        );
+        this.#prune();
+        this.#bound(before, filer);
+        const stored = sql.exec<StoredRow>(
+          "SELECT * FROM collection_rows WHERE collection = ? AND row_id = ?", collection,
+          rowId,
+        ).one();
+        // The writer has the body it wrote: shown whole, as an inline one is.
+        const { content_id: _placed, ...written } = shown(stored);
+        return { ...written, body: body as string };
+      });
     });
   }
 
   /**
-   * The history within its bounds: past `maxHistoryCharge` or `maxHistoryBytes`, its oldest
-   * entries go, the newest revision they held kept as the floor a key with no entries left
-   * goes on past.
+   * The history within its bounds: past `maxHistoryCharge`, its oldest entries go,
+   * tombstones among them, the newest revision they held kept as the floor a key with no
+   * entries left goes on past.
    */
   #prune(): void {
     const sql = this.#sql;
-    const limits = this.#limits;
-    const over = () => {
-      const space = sql.exec<{ charge: number; bytes: number }>(
-        "SELECT charge, bytes FROM collection_history_space").one();
-      return space.charge > limits.maxHistoryCharge || space.bytes > limits.maxHistoryBytes;
-    };
+    const over = () => sql.exec<{ charge: number }>("SELECT charge FROM collection_space")
+      .one().charge > this.#limits.maxHistoryCharge;
     while (over()) {
       const oldest = sql.exec<{ collection: string; key: string; revision: number }>(
         "SELECT collection, key, revision FROM collection_history ORDER BY at, rowid LIMIT ?",
@@ -356,16 +360,39 @@ export class Collections {
         throw new Error("the collection history is over its bounds with nothing to prune");
       }
       for (const entry of oldest) {
-        sql.exec("DELETE FROM collection_history WHERE collection = ? AND key = ? " +
-                   "AND revision = ?", entry.collection, entry.key, entry.revision);
-        sql.exec("UPDATE collection_history_space SET revision_floor = " +
-                   "MAX(revision_floor, ?)", entry.revision);
+        this.#let(entry);
         if (!over()) {
           return;
         }
       }
     }
   }
+
+  /** One history entry let go, its revision kept as the floor. */
+  #let(entry: { collection: string; key: string; revision: number }): void {
+    this.#sql.exec("DELETE FROM collection_history WHERE collection = ? AND key = ? " +
+                     "AND revision = ?", entry.collection, entry.key, entry.revision);
+    this.#sql.exec("UPDATE collection_space SET revision_floor = MAX(revision_floor, ?)",
+                   entry.revision);
+  }
+
+  /**
+   * In a change at the files byte quota (`Files.#fit`, ADR-035): the oldest history entry
+   * of the writers `filer` names (`FILERS`) whose placed body no live row
+   * also names, let go, so its bytes can go; false when none is left.
+   */
+  readonly reclaim = (filer: string): boolean => {
+    const entry = this.#sql.exec<{ collection: string; key: string; revision: number }>(
+      "SELECT collection, key, revision FROM collection_history h WHERE content_id IS NOT " +
+        `NULL AND ${FILERS} AND NOT EXISTS (SELECT 1 FROM collection_rows r WHERE ` +
+        "r.collection = h.collection AND r.row_id = h.key AND r.content_id = h.content_id) " +
+        "ORDER BY at, rowid LIMIT 1", filer, filer, filer).toArray()[0];
+    if (entry === undefined) {
+      return false;
+    }
+    this.#let(entry);
+    return true;
+  };
 
   /**
    * Rows past `after` this caller may see, in `seq` order, and the next cursor.
@@ -415,26 +442,37 @@ export class Collections {
   }
 
   /**
-   * A row's kept history (at most `maxRevisions` entries), oldest first; none for a row
-   * `get` would not show.
+   * A row's kept history, oldest first, before `before_revision` when it is given; none for
+   * a row `get` would not show. A page holds the newest entries, at most `maxPull`, whose
+   * bodies fit `READ_PAGE_BYTES`, at least one; `more` and the cursor name the older ones it
+   * left.
    */
-  history(caller: string, collection: string, rowId: string): { entries: HistoryEntry[] } {
-    if (this.#visible(caller, collection, rowId) === undefined) {
-      return { entries: [] };
+  history(caller: string, collection: string, rowId: string, before: unknown = null):
+      History {
+    if (before !== null && (typeof before !== "number" || !Number.isSafeInteger(before)
+                            || before < 1)) {
+      throw new Invalid("before_revision is a revision");
     }
-    // The newest entries whose bodies fit a page, shown oldest first.
-    const entries = paged(this.#sql.exec<{ revision: number; op: string; writer: string;
-                                           at: number; body_json: string; body_bytes: number;
-                                           content_id: string | null }>(
+    if (this.#visible(caller, collection, rowId) === undefined) {
+      return { entries: [], more: false, before_revision: null };
+    }
+    const found = this.#sql.exec<{ revision: number; op: string; writer: string; at: number;
+                                   body_json: string; body_bytes: number;
+                                   content_id: string | null }>(
       "SELECT revision, op, writer, at, body_json, body_bytes, content_id FROM " +
-        "collection_history WHERE collection = ? AND key = ? ORDER BY revision DESC",
-      collection, rowId,
-    ).toArray()).reverse();
+        "collection_history WHERE collection = ? AND key = ? AND revision < ? " +
+        "ORDER BY revision DESC LIMIT ?", collection, rowId, before ?? Number.MAX_SAFE_INTEGER,
+      this.#limits.maxPull + 1,
+    ).toArray();
+    const page = paged(found.slice(0, this.#limits.maxPull));
+    const more = page.length < found.length;
     return {
-      entries: entries.map((e) => ({
+      entries: page.reverse().map((e) => ({
         revision: e.revision, op: e.op, writer: e.writer, at: e.at, body: e.body_json,
         ...(e.content_id === null ? {} : { content_id: e.content_id }),
       })),
+      more,
+      before_revision: more ? page[0]!.revision : null,
     };
   }
 
@@ -456,8 +494,8 @@ export class Collections {
       sql.exec("DELETE FROM collection_history WHERE collection = ? AND key = ?",
                collection, rowId);
       sql.exec("INSERT INTO collection_history (collection, key, revision, op, body_json, at, " +
-                 "writer, body_bytes) VALUES (?, ?, ?, ?, '', ?, ?, 0)",
-               collection, rowId, revision + 1, op, at, caller);
+                 "writer, body_bytes, filer) VALUES (?, ?, ?, ?, '', ?, ?, 0, ?)",
+               collection, rowId, revision + 1, op, at, caller, OWNER_FILER);
       sql.exec("DELETE FROM collection_rows WHERE collection = ? AND row_id = ?",
                collection, rowId);
     }
@@ -465,7 +503,7 @@ export class Collections {
     // are the collections with rows.
     if (sql.exec("SELECT 1 FROM collection_rows WHERE collection = ? LIMIT 1", collection)
           .toArray().length === 0) {
-      sql.exec("UPDATE collection_history_space SET seq_floor = MAX(seq_floor, ?)",
+      sql.exec("UPDATE collection_space SET seq_floor = MAX(seq_floor, ?)",
                this.top(collection));
       sql.exec("DELETE FROM collection_seqs WHERE collection = ?", collection);
     }
@@ -523,7 +561,7 @@ export class Collections {
   protected top(collection: string): number {
     return this.#sql.exec<{ top: number }>(
       "SELECT MAX(COALESCE((SELECT seq FROM collection_seqs WHERE collection = ?), " +
-        "(SELECT seq_floor FROM collection_history_space)), " +
+        "(SELECT seq_floor FROM collection_space)), " +
         "COALESCE((SELECT MAX(seq) FROM collection_rows WHERE collection = ?), 0)) AS top",
       collection, collection,
     ).one().top;

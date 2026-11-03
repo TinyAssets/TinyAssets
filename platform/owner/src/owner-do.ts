@@ -112,9 +112,9 @@ import { Tickets } from "./tickets";
 import {
   keepTiers, keptTiers, PLATFORM_TIER_ONLY, TIER_RUNS, type TierName, tierNumbers,
 } from "./tier";
-import { Bodies, type Placed, type Placing } from "./bodies";
+import { Bodies, type Located, type Placed, type Placing } from "./bodies";
 import {
-  checkBody, Collections, Conflict, type HistoryEntry, type Page, type Row,
+  checkBody, Collections, Conflict, type History, type HistoryEntry, type Page, type Row,
 } from "./collections";
 import {
   CONNECTION_UNAVAILABLE, type ConnectionView, Connections, CREDENTIAL_EXPIRED,
@@ -135,7 +135,7 @@ import {
 } from "./ledger";
 import { type Notice, Notices } from "./notices";
 import { Erasure } from "./erase";
-import { ERASE_RETRY_MS, ERASING, erasing, wiped } from "./erasure";
+import { ERASE_RETRY_MS, ERASING, erasing, PUT_GRACE_MS, wiped } from "./erasure";
 import {
   type Change, fileLimits, modelSettings, Policy, type PolicyDocument, type Projection,
   type Receipt,
@@ -579,6 +579,11 @@ export interface KeyRequest {
   readonly row_id: string;
 }
 
+/** A history read: a row's key, and the revision to read before for older entries. */
+export interface HistoryRequest extends KeyRequest {
+  readonly before_revision?: number;
+}
+
 export interface DeleteRequest {
   readonly collection: string;
   readonly row_id: string;
@@ -727,6 +732,38 @@ function filled<T extends { readonly body: string; readonly content_id?: string 
     throw new Error("a placed body its row names was not read");
   }
   return { ...rest, body } as T;
+}
+
+/**
+ * What a writing door's answer shows of placed bodies (ADR-035): the content ids it names,
+ * located in its unit, and the answer with them read in.
+ */
+interface Shown<T> {
+  readonly contents: (value: T) => readonly string[];
+  readonly fill: (value: T, bodies: ReadonlyMap<string, string>) => T;
+}
+
+/** A conflict's current row, read back whole, as `get` and `pull` show it. */
+function conflictShown<T extends object>(): Shown<T> {
+  return {
+    contents: (value) => "conflict" in value && value.conflict !== null
+      ? contentsOf([value.conflict as Row]) : [],
+    fill: (value, bodies) => "conflict" in value && value.conflict !== null
+      ? { ...value, conflict: filled(value.conflict as Row, bodies) } : value,
+  };
+}
+
+/**
+ * Whose files scope a door's rows count in (ADR-035): the owner's, an outside client's
+ * (`client:<id>`), or a visiting owner's own, `client:` and its principal's hash, so a
+ * visitor is held to the owner's `client_share` as a client is.
+ */
+function filerOf(account: Account): string {
+  if (account.origin !== null) {
+    return `client:${account.origin.client}`;
+  }
+  return account.caller === account.owner ? "owner"
+    : `client:${createHash("sha256").update(`visitor\n${account.caller}`, "utf8").digest("hex")}`;
 }
 
 /** Who a file change is by, in its history: the owner, or the outside client it came through. */
@@ -912,6 +949,8 @@ export function ownerLanes(deps: LaneDeps):
 export interface Internals {
   readonly erasure?: (internal: Erasure) => void;
   readonly eraseRetryMs?: number;
+  /** The erasure's wait for a put begun before its mark (`PUT_GRACE_MS`), for the tests. */
+  readonly putGraceMs?: number;
   /** The sandbox's lease API, which the sandbox slice reaches in the object (`SandboxLeases`). */
   readonly sandbox?: (internal: SandboxLeases) => void;
 }
@@ -1029,11 +1068,16 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const admitted = () => workRefusal(admission(storage)) === null;
     this.#policy = new Policy(storage);
     // The files byte quota is the tier's storage (ADR-034 decision 8), as last handed.
+    // Retention kept in R2 makes room first at the byte quota: the oldest placed history,
+    // then the oldest acked mail with a placed body (ADR-035).
     this.#files = new Files(storage, env.FILES, () => fileLimits(
       this.#policy.read().document,
-      keptTiers(storage)?.[ownerTier(storage)].storage_bytes ?? null), write);
+      keptTiers(storage)?.[ownerTier(storage)].storage_bytes ?? null), write,
+      (filer) => this.#collections.reclaim(filer) || this.#ledger.reclaim(filer));
     this.#bodies = new Bodies(this.#files, storage, write);
-    this.#collections = new Collections(storage, undefined, this.#bodies.adopt);
+    // An outside writer's share of the collections is the owner's own `client_share`.
+    this.#collections = new Collections(storage, undefined, this.#bodies.adopt,
+                                        () => fileLimits(this.#policy.read().document, null));
     this.#grants = new Grants(storage, this.#policy);
     this.#sessions = new Sessions(storage);
     this.#ledger = new Ledger(storage, this.#grants, undefined, admitted, this.#bodies.adopt);
@@ -1165,8 +1209,22 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         this.#cancelInSandbox(this.#runs.liveRuns());
       },
       // Every R2 copy of the owner's: files and placed bodies alike are the files plane's
-      // chunks (ADR-035), which the wipe would otherwise leave behind, named nowhere.
-      blobs: () => this.#files.eraseChunks(),
+      // chunks (ADR-035), deleted by the namespace's prefix once every put this instance
+      // began has landed (no new one begins under the mark), and again after the wipe.
+      blobs: async () => {
+        const ns = this.#files.storedNamespace();
+        await this.#files.settled();
+        if (ns !== null) {
+          await this.#files.eraseNamespace(ns);
+        }
+        return ns;
+      },
+      blobsAgain: async (ns) => {
+        if (ns !== null) {
+          await this.#files.eraseNamespace(ns);
+        }
+      },
+      putGraceMs: internals.putGraceMs ?? PUT_GRACE_MS,
       wipe: () => this.#gate.wipe(writeTombstone),
       retryMs: internals.eraseRetryMs ?? ERASE_RETRY_MS,
     });
@@ -1715,24 +1773,26 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   // -- ROOM_POST and MAILBOX_RECEIPT -------------------------------------------
 
   roomPost(binding: Binding, request: PostRequest): Promise<Posted> {
-    return this.#placing(() => {
+    return this.#placing((): { body: unknown; writer: string } | { done: Posted } => {
       const account = this.#account(binding, "work");
       const r = ledgerFields(request, ["room_id", "client_message_id", "body", "parent_id"]);
       this.#scope(account, "write_graph");
-      checkMessage(r["body"]);
-      return { body: r["body"], writer: fileWriter(account) };
+      // The room, the sender, the parent, the caps and a resend, before any byte is placed.
+      const resend = this.#ledger.prepare(account.origin, r["room_id"], r["client_message_id"],
+                                          r["body"], r["parent_id"]);
+      return resend !== null ? { done: resend } : { body: r["body"], writer: filerOf(account) };
     }, (placed) => {
       const account = this.#account(binding, "work");
       const r = ledgerFields(request, ["room_id", "client_message_id", "body", "parent_id"]);
       this.#scope(account, "write_graph");
       const posted = this.#ledger.post(account.origin, r["room_id"], r["client_message_id"],
                                        r["body"], r["parent_id"], clock(), placed,
-                                       fileWriter(account));
+                                       filerOf(account));
       if (posted.recipients.includes(OWNER)) {
         this.#runs.mailArrived(clock());  // the doorbell: the runs on the owner's mail
       }
       return posted;
-    }, true);
+    }, { synced: true });
   }
 
   // -- MODEL CONNECTIONS: sealed credentials, flows and spend (tasks 4 G2) ------------
@@ -2036,28 +2096,38 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * and written in a second unit, which checks the caller again and adopts it; its upload
    * is released after, whatever the unit did (none once adopted).
    */
-  async #placing<T>(prepare: () => { body: unknown; writer: string },
-                    act: (placed: Placed | null) => T, synced = false): Promise<T> {
-    const first = await this.#door((): { done: T } | { placing: Placing } => {
-      const { body, writer } = prepare();
-      const placing = this.#bodies.begin(body as string, writer);
-      return placing === null ? { done: act(null) } : { placing };
+  async #placing<T>(prepare: () => { body: unknown; writer: string } | { done: T },
+                    act: (placed: Placed | null) => T,
+                    options: { synced?: boolean; shown?: Shown<T> } = {}): Promise<T> {
+    const shown = options.shown;
+    const located = (value: T) => ({ value, located: this.#bodies.locate(
+      shown === undefined ? [] : shown.contents(value)) });
+    const first = await this.#door(():
+        { done: { value: T; located: Located } } | { placing: Placing } => {
+      const prepared = prepare();
+      if ("done" in prepared) {
+        return { done: located(prepared.done) };
+      }
+      const placing = this.#bodies.begin(prepared.body as string, prepared.writer);
+      return placing === null ? { done: located(act(null)) } : { placing };
     });
-    let done: T;
+    let done: { value: T; located: Located };
     if ("done" in first) {
       done = first.done;
     } else {
       const placed = await this.#bodies.send(first.placing);
       try {
-        done = await this.#door(() => act(placed));
+        done = await this.#door(() => located(act(placed)));
       } finally {
         await this.#bodies.release(placed);
       }
     }
-    if (synced) {
+    if (options.synced === true) {
       await this.#schedule.sync();
     }
-    return done;
+    // A conflict's current row, placed, is read back whole, as a read door reads it.
+    return shown === undefined || done.located.size === 0 ? done.value
+      : shown.fill(done.value, await this.#bodies.fetch(done.located));
   }
 
   /**
@@ -2099,7 +2169,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       const account = this.#collector(binding, "work", "write_graph");
       const r = fields(request, ["collection", "row_id", "body", "expected_etag", "private"],
                        ["history_op"]);
-      return { body: checkBody(r["body"]), writer: fileWriter(account) };
+      return { body: checkBody(r["body"]), writer: filerOf(account) };
     }, (placed) => {
       const account = this.#collector(binding, "work", "write_graph");
       const r = fields(request, ["collection", "row_id", "body", "expected_etag", "private"],
@@ -2108,9 +2178,9 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         row: this.#collections.write(account.owner, account.caller, r["collection"] as string,
                                      r["row_id"] as string, r["body"], r["expected_etag"],
                                      r["private"], "history_op" in r ? r["history_op"] : "write",
-                                     placed, fileWriter(account)),
+                                     placed, filerOf(account)),
       }));
-    });
+    }, { shown: conflictShown() });
   }
 
   collectionPull(binding: Binding, request: PullRequest): Promise<Page> {
@@ -2132,26 +2202,27 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }, (got, bodies) => ({ row: got.row === null ? null : filled(got.row, bodies) }));
   }
 
-  collectionHistory(binding: Binding, request: KeyRequest): Promise<{ entries: HistoryEntry[] }> {
+  collectionHistory(binding: Binding, request: HistoryRequest): Promise<History> {
     return this.#reading(() => {
       const { caller } = this.#collector(binding, "read", "read_graph");
-      const r = fields(request, ["collection", "row_id"]);
+      const r = fields(request, ["collection", "row_id"], ["before_revision"]);
       const kept = this.#collections.history(caller, r["collection"] as string,
-                                             r["row_id"] as string);
+                                             r["row_id"] as string, r["before_revision"] ?? null);
       return { value: kept, contents: contentsOf(kept.entries) };
-    }, (kept, bodies) => ({ entries: kept.entries.map((entry) => filled(entry, bodies)) }));
+    }, (kept, bodies) => ({ ...kept, entries: kept.entries.map((entry) => filled(entry, bodies)) }));
   }
 
   collectionDelete(binding: Binding, request: DeleteRequest):
       Promise<{ deleted: number } | Conflicted> {
-    return this.#door(() => {
+    return this.#reading(() => {
       const { owner, caller } = this.#collector(binding, "reduce", "write_graph");
       this.#ownerOnly(owner, caller, "delete");
       const r = fields(request, ["collection", "row_id", "expected_etag"]);
-      return conflicted(() => this.#collections.delete(
+      const value = conflicted(() => this.#collections.delete(
         caller, r["collection"] as string, r["row_id"] as string, r["expected_etag"],
       ));
-    });
+      return { value, contents: conflictShown<typeof value>().contents(value) };
+    }, conflictShown<{ deleted: number } | Conflicted>().fill);
   }
 
   collectionClear(binding: Binding, request: ClearRequest): Promise<{ deleted: number }> {

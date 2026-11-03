@@ -67,9 +67,16 @@ export const SIGN_IN_MAX_AGE_S = 600;
 export const CLOCK_MARGIN_S = 5;
 
 /** The largest body each door reads; past it, `413` before anything is parsed. */
+/** The consent form: its handle and decision, a few short fields. */
 export const AUTHORIZE_BODY_MAX = 4 * 1024;
-export const APP_BODY_MAX = 64 * 1024;
-export const API_BODY_MAX = 8 * 1024 * 1024;
+/**
+ * A tool call's arguments: a row or message body of the most bytes (`BODY_BYTES_MAX`,
+ * 16 MiB) as JSON with room for its escapes, twice its bytes, which an isolate's 128 MB
+ * holds with its parsed copy (Cloudflare's Workers limits); a test holds the two.
+ */
+export const API_BODY_MAX = 32 * 1024 * 1024;
+/** The owner surface's requests (a run's input among them): as a tool call's. */
+export const APP_BODY_MAX = API_BODY_MAX;
 
 /** `OWNER_ISSUER` until the AuthKit slice sets AuthKit's production issuer. */
 export const ISSUER_NOT_CONFIGURED = "not-configured";

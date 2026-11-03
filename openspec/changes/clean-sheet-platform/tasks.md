@@ -1056,16 +1056,22 @@ R, S, M and W.
   reported "tests added 0, removed 0" for a slice that removed 21 test files, so a lost
   test there is caught only by review. Follow-up for the gate: count `it(` cases under
   `platform/*/test` and `platform/*/guards` against the base.
-- [x] Limits (slice LIM, ADR-035): the placement rule (a body past 4,096 bytes, a
+- [x] Limits (slice LIM, ADR-035): the placement rule (a body past 2,048 bytes, a
   collection row's, a history entry's or a message's, lives in R2 through the files plane,
-  written R2 first then its reference, an orphan swept, erased with the owner, counted in
-  the tier's storage); the collection history counted in bytes; one recipient a message
-  (the key); the mailboxes' caps within the ceilings (`ledger_full` when only unread mail
-  is held); grant scopes counted in bytes; then every raise, the AFTER draft's included,
-  and the files' `max_bytes` the tier's storage. The erasure now deletes every R2 chunk
-  the owner's rows name before its wipe, files' too (it left them before). Owed: the owner
-  export (slice P) reads the placed bodies' chunks with the files'; SSE-C on them with the
-  files' chunks.
+  up to 16 MiB in four chunks, written R2 first then its reference, a crashed placement's
+  upload expiring in 10 minutes, charged to its writer's files scope within the tier's
+  storage, retention making room first); the collection rows and history counted in
+  laid-out bytes, tombstones among them; one recipient a message (the key); the
+  mailboxes' caps within the ceilings (`ledger_full` when only unread mail is held); grant
+  scopes counted in bytes; the collections' and ledger's byte caps and the egress
+  per-minute rates removed; then every raise, and the files' `max_bytes` the tier's
+  storage. The erasure refuses uploads and puts under its mark, waits out the puts in
+  flight, and deletes the owner's R2 namespace by prefix before and after its wipe.
+  Owed: the owner export (slice P) reads the placed bodies' chunks with the files'; SSE-C
+  on them with the files' chunks; live, R2 read latency from an owner object and the
+  longest put in flight against `PUT_GRACE_MS`; slice L's isolate memory probe, with a
+  16 MiB body and the 16 MiB egress body; a live check of `limits.subrequests` at
+  10,000,000.
 
 ## 6. Files and sandbox
 

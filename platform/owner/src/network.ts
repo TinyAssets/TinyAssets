@@ -157,13 +157,13 @@ export const OUTCOMES: readonly string[] = Object.freeze(["complete", "aborted",
 export type Outcome = "complete" | "aborted" | "failed" | "deadline" | "ended";
 
 /**
- * The longest one sandbox request may stream, in seconds: an hour, room for a long reasoning
- * answer (a Worker's subrequest has no time limit while its client stays connected,
- * Cloudflare's Workers limits). The gateway's own forward deadline (`FORWARD_DEADLINE_MS`,
- * a test holds the two equal), which the door keeps too, so a stream the gateway never ends
- * is still settled.
+ * The longest one sandbox request may stream, in seconds: a day, the sandbox's own most (an
+ * E2B Pro session runs at most 24 hours, `engines-replan.md` §3), since a Worker's
+ * subrequest has no time limit while its client stays connected (Cloudflare's Workers
+ * limits). The gateway's own forward deadline (`FORWARD_DEADLINE_MS`, a test holds the two
+ * equal), which the door keeps too, so a stream the gateway never ends is still settled.
  */
-export const EGRESS_DEADLINE_S = 3600;
+export const EGRESS_DEADLINE_S = 86_400;
 /**
  * The largest model call the egress door reads, as the gateway's own bound (`BODY_MAX`): a
  * technical ceiling, the isolate's 128 MB, which holds the body and its decoded text while

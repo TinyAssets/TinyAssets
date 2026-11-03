@@ -122,8 +122,10 @@ export function toolTable(): readonly Tool[] {
                     limit: int("At most this many rows") }) },
     { name: "collection_history", door: "collectionHistory", capability: "read_graph",
       title: "Collection row history", ...READ,
-      description: "Read the kept history of one collection row.",
-      input: args({ collection, row_id: row }) },
+      description: "Read the kept history of one collection row, newest first by page; " +
+        "pass before_revision for the older entries when the answer says more.",
+      input: args({ collection, row_id: row },
+                  { before_revision: int("Entries before this revision") }) },
     { name: "collection_write", door: "collectionWrite", capability: "write_graph",
       title: "Write collection row", ...CHANGE,
       description: "Write one collection row against its current etag.",

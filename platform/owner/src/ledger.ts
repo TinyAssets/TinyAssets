@@ -48,8 +48,8 @@
  * object's (`owner-do.ts`, `sessions.ts`, `policy.ts`), as the Python's router op ran
  * them around the ledger.
  */
-import { type Adopt, adopted, type Placed, READ_PAGE_BYTES } from "./bodies";
-import { digest } from "./collections";
+import { type Adopt, adopted, BODY_BYTES_MAX, type Placed, READ_PAGE_BYTES } from "./bodies";
+import { digest, FILERS } from "./collections";
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
 import { codePoints, isPrintable, utf8Bytes } from "./text";
@@ -67,10 +67,10 @@ const WAKING: readonly string[] = Object.freeze(["mcp_event"]);
 export const WAKE_LEASE_S = 60;
 export const HOUR_S = 3600;
 /**
- * A message body's most characters: four bytes each at most, one placed chunk (ADR-035), so
- * a body past `PLACE_BYTES` goes to R2 whole.
+ * A message body's most UTF-8 bytes: what one call moves through the object whole
+ * (`BODY_BYTES_MAX`); past `PLACE_BYTES` it is placed in R2 (ADR-035).
  */
-export const MAX_BODY = 1024 * 1024;
+export const MAX_BODY_BYTES = BODY_BYTES_MAX;
 const KIB = 1024;
 const MIB = 1024 * KIB;
 /** The open schedule rows: the `wakes_open` index's own predicate, so the planner uses it. */
@@ -111,10 +111,9 @@ export const RETRY_AFTER = Object.freeze({ low: 1, high: 86_400, unreadable: 60 
  * index range, never a scan.
  *
  * The mailboxes' caps are within the ceilings, not reserved out of them (`checkLimits`):
- * the owner's mailbox holds at most `maxOwnerUnacked` messages and `maxOwnerUnackedBytes`
- * unacked, each enabled agent's at most `maxAgentUnacked` and `maxAgentUnackedBytes`, one
- * agent's share of the owner's mailbox `maxSenderUnacked` and `maxSenderUnackedBytes`, and
- * each is at most the ceiling it is a part of. A post past its own mailbox's cap is refused;
+ * the owner's mailbox holds at most `maxOwnerUnacked` messages unacked, each enabled
+ * agent's at most `maxAgentUnacked`, one agent's share of the owner's mailbox
+ * `maxSenderUnacked`, and each is at most the ceiling it is a part of. A post past its own mailbox's cap is refused;
  * past a ceiling the oldest acked message is evicted, and when the ledger holds nothing
  * acked (every message held unread), the post is refused `ledger_full` until a reader
  * acks. Disabling an agent releases its unacked mail, and deleting one purges it.
@@ -134,17 +133,12 @@ export interface LedgerLimits {
   readonly maxAgentRows: number;
   /** Messages held; past it the oldest message no recipient holds is evicted. */
   readonly maxMessages: number;
-  /** Body bytes held, under the same eviction. */
-  readonly maxBodyBytes: number;
-  /** Messages, and their bytes, the owner has not acked. */
+  /** Messages the owner has not acked. */
   readonly maxOwnerUnacked: number;
-  readonly maxOwnerUnackedBytes: number;
-  /** Messages, and their bytes, one enabled agent has not acked. */
+  /** Messages one enabled agent has not acked. */
   readonly maxAgentUnacked: number;
-  readonly maxAgentUnackedBytes: number;
   /** One outside agent's share of the owner's mailbox. */
   readonly maxSenderUnacked: number;
-  readonly maxSenderUnackedBytes: number;
   /** Receipt rows kept, newest first. */
   readonly maxReceipts: number;
   /** How long a settled wake row is kept; its receipt is the record. */
@@ -158,13 +152,9 @@ export const LEDGER_LIMITS: LedgerLimits = Object.freeze({
   maxAgents: 1_000,
   maxAgentRows: 1_000,
   maxMessages: 50_000,
-  maxBodyBytes: 16 * 1024 * MIB,
   maxOwnerUnacked: 10_000,
-  maxOwnerUnackedBytes: 4 * 1024 * MIB,
   maxAgentUnacked: 1_000,
-  maxAgentUnackedBytes: 512 * MIB,
   maxSenderUnacked: 5_000,
-  maxSenderUnackedBytes: 2 * 1024 * MIB,
   maxReceipts: 50_000,
   settledWakeRetentionS: 7 * 24 * HOUR_S,
   maxSettledWakes: 1_000,
@@ -180,10 +170,6 @@ export function checkLimits(limits: LedgerLimits): LedgerLimits {
   if (Math.max(limits.maxAgentUnacked, limits.maxOwnerUnacked) > limits.maxMessages
       || limits.maxSenderUnacked > limits.maxOwnerUnacked) {
     problems.push("a mailbox's messages exceed its ceiling");
-  }
-  if (Math.max(limits.maxAgentUnackedBytes, limits.maxOwnerUnackedBytes) > limits.maxBodyBytes
-      || limits.maxSenderUnackedBytes > limits.maxOwnerUnackedBytes) {
-    problems.push("a mailbox's bytes exceed its ceiling");
   }
   if (limits.maxAgents > limits.maxAgentRows) {
     problems.push("maxAgents exceeds maxAgentRows");
@@ -202,8 +188,8 @@ export function checkMessage(body: unknown): asserts body is string {
   if (typeof body !== "string") {
     throw new Invalid("body is text");
   }
-  if (!body || codePoints(body) > MAX_BODY) {
-    throw new Invalid(`a message body is 1 to ${MAX_BODY} characters`);
+  if (!body || utf8Bytes(body) > MAX_BODY_BYTES) {
+    throw new Invalid(`a message body is 1 to ${MAX_BODY_BYTES} bytes`);
   }
   if (LONE_SURROGATE.test(body)) {
     throw new Invalid("a message body is well-formed text");
@@ -239,7 +225,6 @@ export type Agent = {
   readonly batch_window_s: number;
   /** Messages this agent sent that the owner has not acked yet, and their bytes. */
   readonly unacked_to_owner: number;
-  readonly unacked_to_owner_bytes: number;
   /** The newest subscription generation, and the newest one a revoke was scheduled for. */
   readonly subscription: number;
   readonly revoked_through: number;
@@ -341,7 +326,6 @@ type Usage = {
   agents: number;
   enabled_agents: number;
   messages: number;
-  body_bytes: number;
   settled_wakes: number;
   tombstones: number;
 };
@@ -534,7 +518,7 @@ export class Ledger {
   /** The owner-wide counters; only migration 2's triggers write them. */
   #usage(): Usage {
     return this.#sql.exec<Usage>(
-      "SELECT agents, enabled_agents, messages, body_bytes, settled_wakes, tombstones " +
+      "SELECT agents, enabled_agents, messages, settled_wakes, tombstones " +
         "FROM ledger_usage",
     ).one();
   }
@@ -768,70 +752,105 @@ export class Ledger {
   // -- ROOM_POST (the 1:1 subset) -------------------------------------------
 
   /**
-   * Post `body` in a dm room. A body past `PLACE_BYTES` comes `placed` (ADR-035, the
-   * door's `Bodies.place`): its content is adopted in this unit, as `writer`'s in the files
-   * plane, and the body's row names it. A resend's original is answered without it.
+   * Whether a post would be answered as a resend, its original returned, or refused, read
+   * before its body is placed (ADR-035): the room, the sender, the parent and the mailboxes'
+   * caps checked, nothing written, so no body goes to R2 for a post its write refuses or
+   * answers from what is held. Null for a new post.
    */
-  post(origin: Origin | null, roomId: unknown, clientMessageId: unknown, body: unknown,
-       parentId: unknown, now: number = clock(), placed: Placed | null = null,
-       writer = "owner"): Posted {
+  prepare(origin: Origin | null, roomId: unknown, clientMessageId: unknown, body: unknown,
+          parentId: unknown): Posted | null {
+    checkMessage(body);
+    const addressed = this.#addressed(origin, roomId, clientMessageId, body, parentId);
+    if ("resend" in addressed) {
+      return addressed.resend;
+    }
+    this.#capped(addressed.recipient,
+                 addressed.kind === "outside" ? addressed.agent : null);
+    return null;
+  }
+
+  /** A post's room, sender, recipient and parent, or its original when it is a resend. */
+  #addressed(origin: Origin | null, roomId: unknown, clientMessageId: unknown, body: string,
+             parentId: unknown):
+      { resend: Posted } | { room: string; cmid: string; parentKey: string | null; sha: string;
+                             agent: Agent; kind: string; sender: string; recipient: string;
+                             parent: StoredMessage | undefined } {
     const room = text(roomId, 128, "room_id");
     const cmid = text(clientMessageId, 128, "client_message_id");
     const parentKey = parentId === null ? null : text(parentId, 128, "parent_id");
-    checkMessage(body);
     const sha = digest(body);
     const sql = this.#sql;
-    return this.#storage.transactionSync(() => {
-      const agent = room.startsWith("dm:") ? sql.exec<Agent>(
-        "SELECT * FROM outside_agents WHERE agent_id = ? AND disabled_reason IS NULL",
-        room.slice(3),
-      ).toArray()[0] : undefined;
-      if (agent === undefined) {
-        throw new Refused("room is not an enabled agent's dm");
+    const agent = room.startsWith("dm:") ? sql.exec<Agent>(
+      "SELECT * FROM outside_agents WHERE agent_id = ? AND disabled_reason IS NULL",
+      room.slice(3),
+    ).toArray()[0] : undefined;
+    if (agent === undefined) {
+      throw new Refused("room is not an enabled agent's dm");
+    }
+    let kind: string;
+    let sender: string;
+    let recipient: string;
+    if (origin === null) {
+      [kind, sender, recipient] = [OWNER, OWNER, agent.agent_id];
+    } else if (origin.client === agent.outside_client
+               && origin.family === agent.outside_family) {
+      [kind, sender, recipient] = ["outside", agent.agent_id, OWNER];
+    } else {
+      throw new Refused("an outside agent posts only in its own dm room");
+    }
+    const same = sql.exec<StoredMessage>(
+      "SELECT * FROM ledger_messages WHERE sender_id = ? AND client_message_id = ?",
+      sender, cmid,
+    ).toArray()[0];
+    if (same !== undefined) {
+      if (same.body_sha256 !== sha || same.room_id !== room || same.parent_id !== parentKey) {
+        throw new Refused("conflict");
       }
-      let kind: string;
-      let sender: string;
-      let recipient: string;
-      if (origin === null) {
-        [kind, sender, recipient] = [OWNER, OWNER, agent.agent_id];
-      } else if (origin.client === agent.outside_client
-                 && origin.family === agent.outside_family) {
-        [kind, sender, recipient] = ["outside", agent.agent_id, OWNER];
-      } else {
-        throw new Refused("an outside agent posts only in its own dm room");
-      }
-      const same = sql.exec<StoredMessage>(
-        "SELECT * FROM ledger_messages WHERE sender_id = ? AND client_message_id = ?",
-        sender, cmid,
+      return { resend: {
+        message_id: same.message_id,
+        recipients: sql.exec<{ agent_id: string }>(
+          "SELECT agent_id FROM ledger_recipients WHERE message_id = ? ORDER BY agent_id",
+          same.message_id,
+        ).toArray().map((r) => r.agent_id),
+        held: false,
+        paused_reason: "",
+      } };
+    }
+    let parent: StoredMessage | undefined;
+    if (parentKey !== null) {
+      parent = sql.exec<StoredMessage>(
+        "SELECT m.* FROM ledger_messages m JOIN ledger_recipients r " +
+          "ON r.message_id = m.message_id AND r.agent_id = ? " +
+          "WHERE m.message_id = ? AND m.room_id = ?", sender, parentKey, room,
       ).toArray()[0];
-      if (same !== undefined) {
-        if (same.body_sha256 !== sha || same.room_id !== room || same.parent_id !== parentKey) {
-          throw new Refused("conflict");
-        }
-        return {
-          message_id: same.message_id,
-          recipients: sql.exec<{ agent_id: string }>(
-            "SELECT agent_id FROM ledger_recipients WHERE message_id = ? ORDER BY agent_id",
-            same.message_id,
-          ).toArray().map((r) => r.agent_id),
-          held: false,
-          paused_reason: "",
-        };
+      if (parent === undefined) {
+        throw new Refused("parent is not a message to this sender in this room");
       }
-      let parent: StoredMessage | undefined;
-      if (parentKey !== null) {
-        parent = sql.exec<StoredMessage>(
-          "SELECT m.* FROM ledger_messages m JOIN ledger_recipients r " +
-            "ON r.message_id = m.message_id AND r.agent_id = ? " +
-            "WHERE m.message_id = ? AND m.room_id = ?", sender, parentKey, room,
-        ).toArray()[0];
-        if (parent === undefined) {
-          throw new Refused("parent is not a message to this sender in this room");
-        }
+    }
+    return { room, cmid, parentKey, sha, agent, kind, sender, recipient, parent };
+  }
+
+  /**
+   * Post `body` in a dm room. A body past `PLACE_BYTES` comes `placed` (ADR-035, the
+   * door's `Bodies.begin`): its content is adopted in this unit, in the sender's files
+   * scope (`filer`: the owner's, or its outside client's), and the body's row names it. A
+   * resend's original is answered without it.
+   */
+  post(origin: Origin | null, roomId: unknown, clientMessageId: unknown, body: unknown,
+       parentId: unknown, now: number = clock(), placed: Placed | null = null,
+       filer = "owner"): Posted {
+    checkMessage(body);
+    const sql = this.#sql;
+    return this.#storage.transactionSync(() => {
+      const addressed = this.#addressed(origin, roomId, clientMessageId, body, parentId);
+      if ("resend" in addressed) {
+        return addressed.resend;
       }
+      const { room, cmid, parentKey, sha, agent, kind, sender, recipient, parent } = addressed;
       const size = utf8Bytes(body);
-      this.#makeRoom(recipient, kind === "outside" ? agent : null, size);
-      const contentId = adopted(body, placed, writer, this.#adopt);
+      this.#capped(recipient, kind === "outside" ? agent : null);
+      this.#makeRoom();
+      return adopted(body, placed, filer, this.#adopt, (contentId) => {
       const messageId = "msg_" + token(16);
       const depth = kind === OWNER ? 0 : (parent?.chain_depth ?? 0) + 1;
       const seq = sql.exec<{ seq: number }>(
@@ -842,8 +861,8 @@ export class Ledger {
         parent?.chain_root ?? messageId, depth, now, size,
       ).one().seq;
       sql.exec("INSERT INTO message_bodies (message_id, room_id, body, created_at, " +
-                 "body_bytes, content_id) VALUES (?, ?, ?, ?, ?, ?)", messageId, room,
-               contentId === null ? body : "", now, size, contentId);
+                 "body_bytes, content_id, filer) VALUES (?, ?, ?, ?, ?, ?, ?)", messageId, room,
+               contentId === null ? body : "", now, size, contentId, filer);
       sql.exec("INSERT INTO ledger_recipients (message_id, agent_id, seq, state, changed_at) " +
                  "VALUES (?, ?, ?, 'queued', ?)", messageId, recipient, seq, now);
       // One open wake per ringing recipient; never one for the message's own sender. A
@@ -871,6 +890,7 @@ export class Ledger {
         });
       }
       return { message_id: messageId, recipients: [recipient], held: false, paused_reason: "" };
+      });
     });
   }
 
@@ -882,43 +902,39 @@ export class Ledger {
     return this.#mailbox(OWNER).unacked;
   }
 
-  /** A reader's mailbox counters: its unacked messages and their bytes. */
-  #mailbox(reader: string): { unacked: number; unacked_bytes: number } {
-    return this.#sql.exec<{ unacked: number; unacked_bytes: number }>(
-      "SELECT unacked, unacked_bytes FROM ledger_readers WHERE reader = ?", reader,
-    ).toArray()[0] ?? { unacked: 0, unacked_bytes: 0 };
+  /** A reader's mailbox counter: its unacked messages. */
+  #mailbox(reader: string): { unacked: number } {
+    return this.#sql.exec<{ unacked: number }>(
+      "SELECT unacked FROM ledger_readers WHERE reader = ?", reader,
+    ).toArray()[0] ?? { unacked: 0 };
   }
 
   /**
-   * Refuse, or make room for, one more message of `size` body bytes to `recipient`.
-   *
-   * An outside sender is held to its share of the owner's mailbox, and every recipient
-   * to its own mailbox (see {@link LedgerLimits}). Past the owner-wide ceilings the
-   * oldest message no recipient holds is evicted with its body and recipients. The
-   * mailboxes fit inside the ceilings, so one is always there; none is a broken
-   * invariant, which fails loudly.
+   * Refuse one more message to `recipient` past its mailbox's cap, or an outside sender's
+   * past its share of the owner's mailbox (see {@link LedgerLimits}). Bytes are the tier's
+   * storage's to bound: a body past `PLACE_BYTES` is in R2.
    */
-  #makeRoom(recipient: string, outsideSender: Agent | null, size: number): void {
-    const sql = this.#sql;
+  #capped(recipient: string, outsideSender: Agent | null): void {
     const limits = this.#limits;
-    if (outsideSender !== null
-        && (outsideSender.unacked_to_owner + 1 > limits.maxSenderUnacked
-            || outsideSender.unacked_to_owner_bytes + size > limits.maxSenderUnackedBytes)) {
+    if (outsideSender !== null && outsideSender.unacked_to_owner + 1 > limits.maxSenderUnacked) {
       throw new Refused("this agent's unacked mail to the owner is full");
     }
-    const box = this.#mailbox(recipient);
-    const [most, mostBytes, full] = recipient === OWNER
-      ? [limits.maxOwnerUnacked, limits.maxOwnerUnackedBytes, "the owner's mailbox is full"]
-      : [limits.maxAgentUnacked, limits.maxAgentUnackedBytes, "this agent's mailbox is full"];
-    if (box.unacked + 1 > most || box.unacked_bytes + size > mostBytes) {
+    const [most, full] = recipient === OWNER
+      ? [limits.maxOwnerUnacked, "the owner's mailbox is full"]
+      : [limits.maxAgentUnacked, "this agent's mailbox is full"];
+    if (this.#mailbox(recipient).unacked + 1 > most) {
       throw new Refused(full);
     }
-    for (;;) {
-      const held = this.#usage();
-      if (held.messages + 1 <= limits.maxMessages
-          && held.body_bytes + size <= limits.maxBodyBytes) {
-        return;
-      }
+  }
+
+  /**
+   * Room for one more message under `maxMessages`: the oldest message no recipient holds is
+   * evicted with its body and recipients; when every held message is unread, the post is
+   * refused `ledger_full`.
+   */
+  #makeRoom(): void {
+    const sql = this.#sql;
+    while (this.#usage().messages + 1 > this.#limits.maxMessages) {
       const done = sql.exec<{ message_id: string }>(
         "SELECT message_id FROM ledger_messages WHERE unacked = 0 ORDER BY seq LIMIT 1",
       ).toArray()[0];
@@ -926,11 +942,34 @@ export class Ledger {
         throw new Refused(`${LEDGER_FULL}: every message the ledger holds is unread; a ` +
                           "reader acks to make room");
       }
-      for (const table of ["ledger_recipients", "message_bodies", "ledger_messages"]) {
-        sql.exec(`DELETE FROM ${table} WHERE message_id = ?`, done.message_id);
-      }
+      this.#evict(done.message_id);
     }
   }
+
+  /** One message gone, with its body (its placed content let go) and its recipient. */
+  #evict(messageId: string): void {
+    for (const table of ["ledger_recipients", "message_bodies", "ledger_messages"]) {
+      this.#sql.exec(`DELETE FROM ${table} WHERE message_id = ?`, messageId);
+    }
+  }
+
+  /**
+   * In a change at the files byte quota (`Files.#fit`, ADR-035): the oldest acked message
+   * whose placed body the writers `filer` names (`FILERS`) sent, evicted,
+   * so its bytes can go; false when none is left.
+   */
+  readonly reclaim = (filer: string): boolean => {
+    const done = this.#sql.exec<{ message_id: string }>(
+      "SELECT m.message_id FROM ledger_messages m JOIN message_bodies b ON b.message_id = " +
+        `m.message_id WHERE m.unacked = 0 AND b.content_id IS NOT NULL AND ${
+          FILERS.replaceAll("filer", "b.filer")} ORDER BY m.seq LIMIT 1`, filer, filer, filer)
+      .toArray()[0];
+    if (done === undefined) {
+      return false;
+    }
+    this.#evict(done.message_id);
+    return true;
+  };
 
   // -- MAILBOX_RECEIPT ------------------------------------------------------
 

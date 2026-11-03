@@ -10,7 +10,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  apiKeyOrigin, displayName, MAX_BODY, OWNER, WAKE_DEFAULTS,
+  apiKeyOrigin, displayName, MAX_BODY_BYTES, OWNER, WAKE_DEFAULTS,
 } from "../src/ledger";
 import { policyDigest } from "../src/policy";
 import { DOT, MCP, MUSE, origin, rig } from "./ledger-support";
@@ -120,8 +120,8 @@ describe("the sender is the verified identity", () => {
     const r = await rig();
     const muse = await r.register(MUSE);
     for (const [fields, reason] of [
-      [{ body: "" }, `a message body is 1 to ${MAX_BODY} characters`],
-      [{ body: "x".repeat(MAX_BODY + 1) }, `a message body is 1 to ${MAX_BODY} characters`],
+      [{ body: "" }, `a message body is 1 to ${MAX_BODY_BYTES} bytes`],
+      [{ body: "x".repeat(MAX_BODY_BYTES + 1) }, `a message body is 1 to ${MAX_BODY_BYTES} bytes`],
       [{ body: "a\uD800b" }, "a message body is well-formed text"],
       [{ cmid: "" }, "client_message_id is 1 to 128 printable characters"],
       [{ cmid: "a\nb" }, "client_message_id is 1 to 128 printable characters"],
@@ -523,7 +523,7 @@ describe("the ledger's binding", () => {
       expect(tables).toContain(table);
     }
     expect(await r.table("ledger_usage")).toEqual([
-      { only: 1, agents: 0, enabled_agents: 0, messages: 0, body_bytes: 0, settled_wakes: 0,
+      { only: 1, agents: 0, enabled_agents: 0, messages: 0, settled_wakes: 0,
         tombstones: 0 }]);
   });
 });

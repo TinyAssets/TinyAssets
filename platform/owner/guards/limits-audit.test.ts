@@ -1,25 +1,30 @@
 /**
  * The limits that ship (`openspec/changes/clean-sheet-platform/limits-audit.md`), costed by
- * the owner-bound guard's own terms (`termsFor`): the owner object's worst case, its margin
- * under half the 10 GB, and each term's share, printed for the audit. The structural changes
- * the audit's raises needed first (ADR-035) are what let them fit: large bodies placed in R2,
- * the collection history in bytes, one recipient a message, the mailboxes' caps within the
- * ceilings, grant scopes in bytes. Each is shown here to be what lifts its raise: without
- * it, the same raise would break the guard or the ledger's own check.
+ * the owner-bound guard's own terms (`termsFor`): the owner object's worst case at the
+ * validators' widest names, its margin under half the 10 GB, and each term's share, printed
+ * for the audit. The structural changes the raises needed first (ADR-035) are what let them
+ * fit: large bodies placed in R2, the collections' rows and history counted in the bytes
+ * they take, one recipient a message, the mailboxes' caps within the ceilings, grant scopes
+ * in bytes. Each is shown here to be what lifts its raise: without it, the guard breaks.
  */
 import { describe, expect, it } from "vitest";
 
+import { BODY_BYTES_MAX } from "../src/bodies";
 import { LIMITS as COLLECTIONS } from "../src/collections";
 import { checkLimits, LEDGER_LIMITS } from "../src/ledger";
 import { PLACE_BYTES } from "../src/manifest";
 import {
-  type Bounds, DATABASE_BYTES, RUNTIME, SHARE, type Term, termBytes, TERMS, termsFor, worstCase,
+  DATABASE_BYTES, RUNTIME, SHARE, type Term, termBytes, TERMS, worstCase,
 } from "./owner-bound.test";
 
 const HALF = SHARE * DATABASE_BYTES;
 /** The margin the shipped limits leave under the guard's half, at least: no thin margin. */
 const MARGIN = 500_000_000;
 const ROW = 256;
+/** History revisions a row kept, as rows times revisions were counted before. */
+const REVISIONS = 100;
+/** The rows the collections' charge holds at the narrowest names, as rows were counted. */
+const ROWS = Math.floor(COLLECTIONS.maxRowsCharge / 1024);
 const total = (terms: Readonly<Record<string, Term>>) => worstCase({ ...terms, ...RUNTIME });
 
 /**
@@ -28,21 +33,17 @@ const total = (terms: Readonly<Record<string, Term>>) => worstCase({ ...terms, .
  */
 const WITHOUT: Readonly<Record<string, () => Readonly<Record<string, Term>>>> = Object.freeze({
   "bodies placed in R2 past PLACE_BYTES": () => ({ ...TERMS,
-    message_bodies: { rows: LEDGER_LIMITS.maxMessages,
-                      bytes: ROW + LEDGER_LIMITS.maxBodyBytes / LEDGER_LIMITS.maxMessages,
-                      by: "every body in its row" },
-    collection_rows: { rows: COLLECTIONS.maxOwnerRows,
-                       bytes: ROW + COLLECTIONS.maxOwnerBytes / COLLECTIONS.maxOwnerRows,
-                       by: "every body in its row" } }),
+    message_bodies: { rows: LEDGER_LIMITS.maxMessages, bytes: ROW + BODY_BYTES_MAX,
+                      by: "every body in its row" } }),
   "collection history counted in bytes, not rows times revisions": () => ({ ...TERMS,
-    collection_history: { rows: COLLECTIONS.maxOwnerRows * COLLECTIONS.maxRevisions,
-                          bytes: ROW + PLACE_BYTES, by: "maxRevisions a row" } }),
+    collection_history: { rows: ROWS * REVISIONS, bytes: ROW + PLACE_BYTES,
+                          by: "a hundred revisions a row" } }),
   "the ledger's recipients bounded by their own count, not messages times agents": () => ({
     ...TERMS, ledger_recipients: { rows: LEDGER_LIMITS.maxMessages * LEDGER_LIMITS.maxAgents,
                                    bytes: ROW, by: "each message to each agent" } }),
   "grant scopes counted in bytes, not 512 code points of JSON each": () => ({ ...TERMS,
     outside_clients: { rows: 2_000, bytes: ROW + 8 + 1_000 * (256 * (3 * 512 * 6 + 64)) / 2_000,
-                       by: "maxScopes of three 512-point fields" } }),
+                       by: "256 scopes of three 512-point fields" } }),
 });
 
 describe("the limits that ship", () => {
@@ -51,14 +52,8 @@ describe("the limits that ship", () => {
     expect(HALF - worstCase()).toBeGreaterThan(MARGIN);
   });
 
-  it("pass the ledger's own load-time check, and nest the collections' bounds", () => {
+  it("pass the ledger's own load-time check", () => {
     expect(() => checkLimits(LEDGER_LIMITS)).not.toThrow();
-    const c = COLLECTIONS;
-    expect(4 * c.maxRow).toBeLessThanOrEqual(c.maxWriterBytes);
-    expect(c.maxWriterBytes).toBeLessThanOrEqual(c.maxCollectionBytes);
-    expect(c.maxCollectionBytes).toBeLessThanOrEqual(c.maxOwnerBytes);
-    expect(c.maxWriterRows).toBeLessThanOrEqual(c.maxRows);
-    expect(c.maxRows).toBeLessThanOrEqual(c.maxOwnerRows);
   });
 
   it("fit only with their structural changes: without each, the guard breaks", () => {
@@ -70,11 +65,12 @@ describe("the limits that ship", () => {
     expect(L.maxAgents * L.maxAgentUnacked + L.maxOwnerUnacked).toBeGreaterThan(L.maxMessages);
   });
 
-  it("move a term only where the guard counts them", () => {
-    const raised: Bounds = { collections: { maxRow: 2 * COLLECTIONS.maxRow },
-                             ledger: { maxBodyBytes: 2 * LEDGER_LIMITS.maxBodyBytes } };
-    // A body's own size, or the bytes held in R2, moves nothing in the object.
-    expect(total(termsFor(raised))).toBe(worstCase());
+  it("move no term for a body's own size, or for the bytes R2 holds", () => {
+    // The collections are costed by their charge, the messages' bodies at PLACE_BYTES.
+    expect(TERMS["collection_rows"]).toMatchObject({ charged: true,
+                                                     bytes: COLLECTIONS.maxRowsCharge });
+    expect(Object.keys(COLLECTIONS)).not.toContain("maxOwnerBytes");
+    expect(Object.keys(LEDGER_LIMITS)).not.toContain("maxBodyBytes");
   });
 
   it("prints the audit's figures", () => {

@@ -419,7 +419,7 @@ describe("an egress call", () => {
     expect(await version()).toBe(2);
   });
 
-  it("is held to the rate: open at once, and opened a minute, to its window's edge",
+  it("is held to the open calls the tier's runs give, and to no rate a minute",
      async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
@@ -435,7 +435,7 @@ describe("an egress call", () => {
     await admitted(r, lease, connection);
     await r.sql("UPDATE egress_reservations SET state = 'settled', outcome = 'complete', " +
                   "settled_at = opened_at WHERE state = 'open'");
-    // The minute's window: a row 59 s old counts, one 61 s old does not; refused ones never.
+    // Any number opened within the minute: only the open ones count.
     await r.sql("DELETE FROM egress_reservations");
     const now = Date.now() / 1000;
     const fill = (count: number, at: number, state: string) => r.sql(
@@ -446,27 +446,27 @@ describe("an egress call", () => {
         "SELECT i FROM n)", lease.lease_id, lease.run, lease.egress, connection, at, state,
       state === "refused" ? "egress_rate" : null, state === "settled" ? "complete" : null, at,
       count);
-    await fill(EGRESS_LIMITS.perRunPerMinute * TIERS.free.runs - 1, now - 59, "settled");
-    await fill(50, now - 61, "settled");
+    await fill(5_000, now - 10, "settled");
     await fill(30, now - 30, "refused");
     await admitted(r, lease, connection);
-    expect(await refusedWith(r, lease.as(), connection)).toBe("egress_rate");
   }, 120_000);
 
-  it("receipts at most the minute's refusals, apart from the admitted calls' receipts",
+  it("receipts every refusal, keeping the newest refusalsKept, apart from the admitted",
      async () => {
     const r = await gated();
     const connection = await r.connect("sk-good");
     const lease = await leased(r);
     const opened = await admitted(r, lease, connection);
     await r.stub.egressSettle(lease.as(), settle(opened.reservation));
-    for (let i = 0; i < EGRESS_LIMITS.refusalsPerMinute + 20; i++) {
+    expect(EGRESS_LIMITS.refusalsKept).toBe(500);
+    for (let i = 0; i < 8; i++) {
       await r.stub.egressOpen(lease.as(), request(connection, { path: `/v1/files/${i}` }));
     }
     const late = await r.stub.egressOpen(lease.as(), request(connection, { path: "/v1/x" }));
-    expect(late).toEqual({ ok: false, code: "egress_endpoint_refused", receipt: null });
+    expect(late).toMatchObject({ ok: false, code: "egress_endpoint_refused" });
+    expect((late as { receipt: unknown }).receipt).not.toBeNull();
     expect(await r.sql("SELECT COUNT(*) AS n FROM egress_reservations WHERE state = 'refused'"))
-      .toEqual([{ n: EGRESS_LIMITS.refusalsPerMinute }]);
+      .toEqual([{ n: 9 }]);
     expect(await r.sql("SELECT state FROM egress_reservations WHERE id = ?", opened.reservation))
       .toEqual([{ state: "settled" }]);
   }, 120_000);

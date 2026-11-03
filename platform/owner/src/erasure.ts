@@ -8,9 +8,10 @@
  * 2. **End every run**: the sandbox's in-flight egress streams end (`Egress.drop`), and the
  *    step is recorded done (`step` 2). The runs and sandbox slices (R, S) add the sandbox's
  *    kill and the engines' session files' purge to this step (ADR-034).
- * 3. **Delete every R2 copy**: each chunk the owner's rows name, its files' and its placed
- *    bodies' (ADR-035), while the rows still name them; repeatable, so a failed attempt
- *    deletes again.
+ * 3. **Delete every R2 copy**: every object under the owner's namespace prefix, its files'
+ *    and its placed bodies' (ADR-035), once `PUT_GRACE_MS` has passed since the mark and
+ *    every put this instance began has landed (no put begins under the mark); repeatable,
+ *    and repeated after the wipe.
  * 4. **`deleteAll()` the owner**, Lifecycle's alarm disabled first, so nothing is written
  *    after it but the tombstone: the erased admission row (`admission.ts`), written into the
  *    empty database in the same synchronous turn (`WriteGate.wipe`); a killed turn can
@@ -61,6 +62,19 @@ export function erasureStep(storage: OwnerStorage): 0 | 1 | 2 {
   return (storage.sql.exec<{ step: 1 | 2 }>("SELECT step FROM owner_erasure").toArray()[0]
     ?.step ?? 0);
 }
+
+/** When the owner was marked erasing, in seconds; a read, the mark standing. */
+export function erasureStartedAt(storage: OwnerStorage): number {
+  return storage.sql.exec<{ started_at: number }>("SELECT started_at FROM owner_erasure")
+    .one().started_at;
+}
+
+/**
+ * How long a `FILES` put may take to land, at most, as the erasure waits for one begun
+ * before its mark by an instance it cannot ask: a put moves at most two 4 MiB chunks
+ * (`BATCH_BYTES`) [I: R2's put latency is not documented; to measure live].
+ */
+export const PUT_GRACE_MS = 5 * 60_000;
 
 /** In a unit: the erasure's step 2 done: every run ended. */
 export function runsEnded(storage: OwnerStorage): void {

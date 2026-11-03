@@ -77,10 +77,9 @@ import { createHash, randomBytes } from "node:crypto";
 
 import { Invalid, Refused } from "./errors";
 import type { OwnerStorage, Write } from "./gate";
-import {
-  CHUNK_BYTES, CLIENT_WRITER, CLIENTS, HISTORY_BYTES, OWNER_SCOPE, PLACE_BYTES,
-} from "./manifest";
+import { CHUNK_BYTES, CLIENT_WRITER, CLIENTS, HISTORY_BYTES, OWNER_SCOPE } from "./manifest";
 import { inTime } from "./schedule";
+import { refuseErasing } from "./erasure";
 import { TIER_UNREAD } from "./tier";
 import {
   AGENTS_OWNER_ONLY, ancestors, isRoot, MAX_NAME_BYTES, MAX_PATH_BYTES, nameOf, ownersOnly,
@@ -106,10 +105,18 @@ export const BATCH_BYTES = 2 * CHUNK_BYTES;
  * calls); larger files go by upload, a chunk at a time.
  */
 export const WHOLE_BYTES = 4 * CHUNK_BYTES;
-/** Files this size or smaller are kept inline in the object: the placement rule's threshold. */
-export const INLINE_BYTES = PLACE_BYTES;
+/**
+ * Files this size or smaller are kept inline in the object, so reading `AGENTS.md` or a skill
+ * touches no bucket; a placed body's own threshold is `PLACE_BYTES` (ADR-035).
+ */
+export const INLINE_BYTES = 4096;
 /** An upload intent's life: past it, its uncommitted chunks become garbage. */
 export const INTENT_TTL_S = 86_400;
+/**
+ * A placed body's upload's life (ADR-035): its bytes go to R2 and its row commits in one
+ * door call, so a crashed placement holds its quota and its upload slot for minutes only.
+ */
+export const PLACE_TTL_S = 600;
 /** How long a garbage chunk waits before it is deleted (the schema's trigger sets it). */
 export const GC_GRACE_S = 86_400;
 /** When a failed chunk delete is tried again. */
@@ -144,8 +151,6 @@ export const MAX_HELD_CHUNKS = 20_000;
 export const MAX_SYNC_OPS = 1000;
 /** The most versions policy can keep of a path (`FILE_SETTINGS.keep_versions`). */
 export const KEEP_CEILING = 1000;
-/** Conflict copies of one path one epoch may make. */
-export const MAX_CONFLICT_COPIES = 1000;
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const HEX32 = /^[0-9a-f]{32}$/;
@@ -196,7 +201,18 @@ export interface ChunkStore {
   getChunks(ns: string, reads: { sha256: string; offset?: number; length?: number }[]):
     Promise<Uint8Array[]>;
   deleteChunks(ns: string, sha256s: string[]): Promise<{ deleted: number }>;
+  /** Every object under the namespace's prefix deleted: the erasure's alone. */
+  deleteNamespace(ns: string): Promise<{ deleted: number }>;
 }
+
+/**
+ * What retention frees when the files byte quota would refuse a change (ADR-035): the oldest
+ * placed collection history entry, or the oldest acked message with a placed body, of the
+ * writers `filer` names (any, `*`; every outside writer, `client:*`; or one), one at a time;
+ * false when none
+ * is left. Run in the change's own unit, before its quota is checked.
+ */
+export type Reclaim = (filer: string) => boolean;
 
 export type FileKind = "file" | "dir";
 
@@ -521,13 +537,18 @@ export class Files {
   readonly #limits: () => FileLimits;
   /** The object's write gate: the units the methods that cross to `FILES` write through. */
   readonly #write: Write;
+  /** What retention frees at the byte quota (the collections' history, acked mail). */
+  readonly #reclaim: Reclaim;
+  /** The `FILES` puts in flight on this instance, which the erasure waits for. */
+  readonly #puts = new Set<Promise<unknown>>();
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
-              write: Write) {
+              write: Write, reclaim: Reclaim = () => false) {
     this.#storage = storage;
     this.#store = store;
     this.#limits = limits;
     this.#write = write;
+    this.#reclaim = reclaim;
   }
 
   get #sql(): OwnerStorage["sql"] {
@@ -600,23 +621,24 @@ export class Files {
    */
   #scopes(before: Before, writer: string | null): {
     percent: number; before: Counters; now: () => Counters; refusal: (what: string) => string;
-    rows: string; args: SqlStorageValue[];
+    rows: string; args: SqlStorageValue[]; filer: string;
   }[] {
     const limits = this.#limits();
     const owner = { percent: 100, before: before.space, now: () => this.#space(),
                     refusal: (what: string) => `${FILE_QUOTA}: the owner's ${what} are at ` +
-                      "their quota", rows: "1 = 1", args: [] };
+                      "their quota", rows: "1 = 1", args: [], filer: "*" };
     if (!isClient(writer)) {
       return [owner];
     }
     return [
       { percent: limits.client_share, before: before.share, now: () => this.#share(writer),
         refusal: (what) => `${FILE_SHARE}: this client's ${what} are at its share of the ` +
-          "owner's quota", rows: "writer = ?", args: [writer] },
+          "owner's quota", rows: "writer = ?", args: [writer], filer: writer },
       { percent: 100 - limits.owner_reserve, before: before.clients,
         now: () => this.#share(CLIENTS),
         refusal: (what) => `${FILE_SHARE}: outside clients' ${what} are at their share; ` +
-          "the rest is kept for the owner", rows: "writer GLOB ?", args: [CLIENT_WRITER] },
+          "the rest is kept for the owner", rows: "writer GLOB ?", args: [CLIENT_WRITER],
+        filer: CLIENT_WRITER },
       owner,
     ];
   }
@@ -661,6 +683,14 @@ export class Files {
   #fit(before: Before, writer: string | null): void {
     const limits = this.#limits();
     for (const scope of this.#scopes(before, writer)) {
+      // Retention kept in R2 makes room first (ADR-035): past the byte quota, the scope's
+      // oldest placed history and acked mail go before the change is held to it.
+      const bytes = limits.max_bytes;
+      while (bytes !== null && scope.now().chunk_bytes > Math.max(
+               shareOf(bytes, scope.percent), scope.before.chunk_bytes)
+             && this.#reclaim(scope.filer)) {
+        // one entry or message a step, until the scope fits or nothing is left
+      }
       for (;;) {
         const now = scope.now();
         const rows = now.history - Math.max(shareOf(limits.max_history, scope.percent),
@@ -745,9 +775,11 @@ export class Files {
 
   #content(contentId: string, size: number): { inline?: Uint8Array; chunks?: ChunkRef[] } {
     if (size <= INLINE_BYTES) {
-      const row = this.#sql.exec<{ inline: ArrayBuffer }>(
+      const row = this.#sql.exec<{ inline: ArrayBuffer | null }>(
         "SELECT inline FROM file_contents WHERE content_id = ?", contentId).one();
-      return { inline: new Uint8Array(row.inline) };
+      if (row.inline !== null) {
+        return { inline: new Uint8Array(row.inline) };
+      }
     }
     const sizes = chunkPlan(size);
     const shas = this.#sql.exec<{ sha256: string }>(
@@ -1109,8 +1141,18 @@ export class Files {
    */
   async #put(chunks: readonly { sha256: string; bytes: Uint8Array }[], intentId: string):
       Promise<void> {
-    await this.#store.putChunks(await this.namespace(),
-                                chunks.map(({ sha256, bytes }) => ({ sha256, bytes })));
+    // No byte goes to R2 once the erasure's mark stands; one already sent is waited for.
+    const ns = await this.#write(() => {
+      refuseErasing(this.#storage);
+      return this.ns();
+    });
+    const put = this.#store.putChunks(ns, chunks.map(({ sha256, bytes }) => ({ sha256, bytes })));
+    this.#puts.add(put);
+    try {
+      await put;
+    } finally {
+      this.#puts.delete(put);
+    }
     await this.#write(() => this.#storage.transactionSync(() => {
       const sent = new Set(chunks.map(({ sha256 }) => sha256));
       for (const sha256 of sent) {
@@ -1183,10 +1225,12 @@ export class Files {
    * open uploads and the chunks they hold, all clients together at most what the owner's
    * reserve leaves. Every bound is checked here, before any byte is sent.
    */
-  begin(size: unknown, chunks: unknown, writer: string, readable: readonly string[] = []):
-      { intent_id: string; missing: string[]; expires_at: number } {
-    const bytes = count(size, "size", INLINE_BYTES + 1, Number.MAX_SAFE_INTEGER);
-    if (bytes > this.#limits().max_file_bytes) {
+  begin(size: unknown, chunks: unknown, writer: string, readable: readonly string[] = [],
+        placing = false): { intent_id: string; missing: string[]; expires_at: number } {
+    refuseErasing(this.#storage);
+    // A placed body (ADR-035) is no file: any size past its threshold, its own short life.
+    const bytes = count(size, "size", placing ? 1 : INLINE_BYTES + 1, Number.MAX_SAFE_INTEGER);
+    if (!placing && bytes > this.#limits().max_file_bytes) {
       throw new Refused(FILE_TOO_LARGE);
     }
     const plan = chunkPlan(bytes);
@@ -1239,7 +1283,7 @@ export class Files {
           missing.push(sha256);
         }
       }
-      const expiresAt = now + INTENT_TTL_S;
+      const expiresAt = now + (placing ? PLACE_TTL_S : INTENT_TTL_S);
       sql.exec("INSERT INTO file_intents (intent_id, size, chunks, expires_at, writer, " +
                  "pending) VALUES (?, ?, ?, ?, ?, ?)", intentId, bytes,
                (chunks as string[]).join(""), expiresAt, writer, missing.join(""));
@@ -1399,16 +1443,17 @@ export class Files {
 
   /**
    * In the caller's unit, a placed body's adoption (ADR-035, `bodies.ts`): the upload's
-   * content made (its chunk stored, made live), the intent ended, and the content's id
-   * returned for the caller's row to name, whose own trigger counts the reference. Held to
-   * every quota as any change is, in the same transaction as the row, so a refused or
-   * conflicting row leaves the content unmade and the intent open for its release.
+   * content made (its chunks stored, made live), the intent ended, and `name` run with the
+   * content's id, the caller's row naming it, whose own triggers count the reference, in
+   * its writer's scope too. Held to every quota as any change is, after the row, in the
+   * same transaction, so a refused or conflicting row leaves the content unmade and the
+   * intent open for its release.
    */
-  adopt(intentId: string, writer: string): string {
+  adopt<T>(intentId: string, writer: string, name: (contentId: string) => T): T {
     return this.#change(writer, (now) => {
       const { contentId } = this.#fromIntent(this.#intent(intentId, now));
       this.#release(intentId);
-      return contentId;
+      return name(contentId);
     });
   }
 
@@ -1869,7 +1914,8 @@ export class Files {
   #copyPath(path: string, epoch: number): string {
     const at = this.#blocked(path) ?? path;
     const rest = path.slice(at.length);
-    for (let n = 1; n <= MAX_CONFLICT_COPIES; n++) {
+    // Each copy is an entry, so the free name is within the entries quota's count.
+    for (let n = 1; n <= this.#limits().max_entries + 1; n++) {
       const copy = storedPath(`${parentOf(at)}/${conflictName(nameOf(at), epoch, n)}`);
       if (this.#entry(copy) === undefined) {
         if (utf8Bytes(copy + rest) > MAX_PATH_BYTES) {
@@ -2029,28 +2075,25 @@ export class Files {
     }));
   }
 
+  /** The owner's namespace, or null when nothing was ever stored. A read. */
+  storedNamespace(): string | null {
+    return this.#space().ns;
+  }
+
+  /** Once every `FILES` put this instance has in flight has landed or failed. */
+  async settled(): Promise<void> {
+    while (this.#puts.size > 0) {
+      await Promise.allSettled([...this.#puts]);
+    }
+  }
+
   /**
-   * The erasure's R2 step (`erase.ts`): every chunk the owner's rows name, in any state
-   * (a file's, a placed body's, garbage, one being uploaded), deleted from the bucket
-   * `DELETE_BATCH` at a time. It changes no row, so a failed attempt repeats it whole; the
-   * wipe after it removes the rows. A put a door began before the erasure's mark and that
-   * lands after this step is the window `tasks.md` names.
+   * The erasure's R2 step (`erase.ts`): every object under the owner's namespace deleted,
+   * by its prefix, not by its rows, so a chunk whose row was lost or whose put landed late
+   * goes too. Repeatable; it changes no row.
    */
-  async eraseChunks(): Promise<void> {
-    const ns = this.#space().ns;
-    if (ns === null) {
-      return;  // nothing was ever stored
-    }
-    for (let after = "";;) {
-      const batch = this.#sql.exec<{ sha256: string }>(
-        "SELECT sha256 FROM file_chunks WHERE sha256 > ? ORDER BY sha256 LIMIT ?", after,
-        DELETE_BATCH).toArray().map((row) => row.sha256);
-      if (batch.length === 0) {
-        return;
-      }
-      await this.#store.deleteChunks(ns, batch);
-      after = batch.at(-1)!;
-    }
+  async eraseNamespace(ns: string): Promise<void> {
+    await this.#store.deleteNamespace(ns);
   }
 
   /**

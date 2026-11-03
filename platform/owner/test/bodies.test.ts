@@ -12,10 +12,10 @@ import { describe, expect, it } from "vitest";
 
 import { Bodies, PLACE_BYTES, READ_PAGE_BYTES } from "../src/bodies";
 import { LIMITS } from "../src/collections";
-import { GC_GRACE_S, INTENT_TTL_S } from "../src/files";
+import { GC_GRACE_S, INLINE_BYTES, PLACE_TTL_S } from "../src/files";
 import { WriteGate } from "../src/gate";
 import { GRANT_LIMITS, scopes } from "../src/grants";
-import { MAX_BODY } from "../src/ledger";
+import { MAX_BODY_BYTES } from "../src/ledger";
 import type { Binding, OwnerDO } from "../src/owner-do";
 import { TIER_UNREAD } from "../src/tier";
 import { MUSE, rig } from "./ledger-support";
@@ -32,9 +32,9 @@ async function namespace(stub: DurableObjectStub<OwnerDO>): Promise<string> {
 }
 
 /** What R2 holds under a chunk's hash, as UTF-8, or the failure reading it. */
-async function inR2(ns: string, body: string): Promise<string> {
+async function inR2(ns: string, body: string, sha256 = sha(body)): Promise<string> {
   try {
-    const [bytes] = await env.FILES.getChunks(ns, [{ sha256: sha(body) }]);
+    const [bytes] = await env.FILES.getChunks(ns, [{ sha256 }]);
     return new TextDecoder().decode(bytes);
   } catch (error) {
     return `missing: ${(error as Error).message}`;
@@ -122,7 +122,9 @@ describe("the placement rule", () => {
       const gate = new WriteGate(state.storage);
       const files = filesOn(gate.storage, gate.write);
       const bodies = new Bodies(files, gate.storage, gate.write);
-      // The bytes reach R2 first; the object crashes before the row's unit.
+      // The bytes reach R2 first; the object crashes before the row's unit. The upload
+      // holds them minutes, not the day a file's upload may take.
+      expect(PLACE_TTL_S).toBe(600);
       const placing = (await gate.write(() => bodies.begin(LARGE, "owner")))!;
       await bodies.send(placing);
       const ns = files.ns();
@@ -138,7 +140,7 @@ describe("the placement rule", () => {
       await files.collect(now + 1);
       expect(sql.exec("SELECT state FROM file_chunks").toArray())
         .toEqual([{ state: "uploading" }]);  // not before the upload's expiry
-      await files.collect(now + INTENT_TTL_S + GC_GRACE_S + 60);
+      await files.collect(now + PLACE_TTL_S + GC_GRACE_S + 60);
       expect(sql.exec("SELECT COUNT(*) AS n FROM file_intents").toArray()).toEqual([{ n: 0 }]);
       expect(sql.exec("SELECT COUNT(*) AS n FROM file_chunks").toArray()).toEqual([{ n: 0 }]);
       expect(await inR2(ns, LARGE)).toMatch(/^missing: /);
@@ -172,7 +174,7 @@ describe("the placement rule", () => {
     const bind: Binding = { owner, caller: owner, origin: null, tiers: TIERS };
     await stub.collectionWrite(bind, { collection: "board", row_id: "t", body: LARGE,
                                        expected_etag: "", private: false });
-    const file = "f".repeat(PLACE_BYTES + 1);
+    const file = "f".repeat(INLINE_BYTES + 1);
     await stub.fileWrite(bind, { path: "/workspace/big", expected_etag: null,
                                  content: text(file) });
     const ns = await namespace(stub as unknown as DurableObjectStub<OwnerDO>);
@@ -188,21 +190,24 @@ describe("the placement rule", () => {
     const { stub, as, name } = ownerObject();
     const put = (rowId: string, body: string) => stub.collectionWrite(as(name), {
       collection: "board", row_id: rowId, body, expected_etag: "", private: false });
-    // A row of `maxRow` characters, placed: the largest a chunk holds at four bytes each.
-    expect(LIMITS.maxRow).toBe(1024 * 1024);
-    expect((await put("most", "x".repeat(LIMITS.maxRow))) as { row: { body: string } })
+    // A row of `maxRowBytes`, placed across four chunks: what one call moves whole.
+    expect(LIMITS.maxRowBytes).toBe(16 * 1024 * 1024);
+    const most = "x".repeat(LIMITS.maxRowBytes);
+    expect((await put("most", most)) as { row: { body: string } })
       .toMatchObject({ row: { revision: 1 } });
-    expect((await failure(() => put("past", "x".repeat(LIMITS.maxRow + 1)))).message)
-      .toBe(`a row body is text of at most ${LIMITS.maxRow} characters`);
+    expect(await sqlIn(stub, "SELECT COUNT(*) AS n FROM file_content_chunks"))
+      .toEqual([{ n: 4 }]);
+    expect((await stub.collectionGet(as("bob"), { collection: "board", row_id: "most" }))
+      .row!.body === most).toBe(true);
+    expect((await failure(() => put("past", "x".repeat(LIMITS.maxRowBytes + 1)))).message)
+      .toBe(`a row body is text of at most ${LIMITS.maxRowBytes} bytes`);
     const r = await rig();
     const muse = await r.register(MUSE);
-    await r.post(null, `dm:${muse}`, { body: "m".repeat(MAX_BODY) });
-    expect((await r.read(MUSE)).messages[0]!.body).toHaveLength(MAX_BODY);
-    // A grant's scopes: 256 of them, and their JSON counted in bytes, to the byte.
+    await r.post(null, `dm:${muse}`, { body: "m".repeat(MAX_BODY_BYTES) });
+    expect((await r.read(MUSE)).messages[0]!.body).toHaveLength(MAX_BODY_BYTES);
+    // A grant's scopes: as many as their JSON's bytes hold, counted to the byte.
     const scope = (n: number) => ({ universe: `u${n}`, agent: "main", capability: "read_graph" });
-    const most = Array.from({ length: GRANT_LIMITS.maxScopes }, (_, n) => scope(n));
-    expect(scopes(most)).toHaveLength(256);
-    expect(() => scopes([...most, scope(256)])).toThrow(/outside scopes/);
+    expect(scopes(Array.from({ length: 1000 }, (_, n) => scope(n)))).toHaveLength(1000);
     const bytesOf = (list: object[]) => new TextEncoder().encode(JSON.stringify(list)).byteLength;
     const exact: { universe: string; agent: string; capability: string }[] = [];
     for (let n = 0; bytesOf([...exact, scope(n)]) <= GRANT_LIMITS.maxScopesBytes; n++) {
@@ -219,4 +224,167 @@ describe("the placement rule", () => {
     expect(() => scopes(exact)).toThrow(`a grant's scopes are at most ${
       GRANT_LIMITS.maxScopesBytes} bytes of JSON`);
   });
+});
+
+/** A tier record whose free storage is `bytes`. */
+const tiers = (bytes: number) => ({ free: { runs: 5, storage_bytes: bytes },
+                                    paid: TIERS.paid });
+
+describe("the placement rule, held to the owner's own limits (review rvlim)", () => {
+  it("A1: a conflict on a placed row answers the stored body, as get and pull read it",
+     async () => {
+    const { stub, as, name } = ownerObject();
+    const put = (body: string, etag: string) => stub.collectionWrite(as(name), {
+      collection: "board", row_id: "r", body, expected_etag: etag, private: false });
+    await put(LARGE, "");
+    const stored = (await stub.collectionGet(as(name), { collection: "board", row_id: "r" }))
+      .row!;
+    expect(await put("mine", "stale")).toEqual({ conflict: stored });
+    expect(stored.body).toBe(LARGE);
+    expect(Object.keys(stored)).not.toContain("content_id");
+    expect(await stub.collectionDelete(as(name), { collection: "board", row_id: "r",
+                                                   expected_etag: "stale" }))
+      .toEqual({ conflict: stored });
+  });
+
+  it("A2: an outside client's placed bodies are its own, held to its share and the reserve",
+     async () => {
+    const r = await rig();
+    const { generation, policy } = await r.stub.policyRead(r.bind(null));
+    await r.stub.policyWrite(r.session(null), { expected_generation: generation, policy: {
+      ...policy, files: { max_bytes: 100_000, client_share: 10, owner_reserve: 50 } } as never });
+    const outcomes: string[] = [];
+    for (let n = 0; n < 10; n++) {
+      try {
+        await r.stub.collectionWrite(r.bind(MUSE), { collection: "c", row_id: `r${n}`,
+          body: `${n}`.padEnd(PLACE_BYTES + 1, "x"), expected_etag: "", private: false });
+        outcomes.push("taken");
+      } catch (error) {
+        outcomes.push((error as Error).message);
+      }
+    }
+    // A tenth of 100 kB: four bodies of 2 kB, then its share refuses it.
+    expect(outcomes.filter((outcome) => outcome === "taken").length).toBeLessThan(10);
+    expect(outcomes.find((outcome) => outcome !== "taken")).toMatch(/^file_share: this client/);
+    const [share] = await r.sql("SELECT chunk_bytes FROM file_shares WHERE who = ?",
+                                `client:${MUSE.client}`);
+    expect(share!["chunk_bytes"]).toBeLessThanOrEqual(10_000);
+    // The owner's own writes still land.
+    await r.stub.collectionWrite(r.bind(null), { collection: "c", row_id: "own",
+      body: "o".padEnd(PLACE_BYTES + 1, "x"), expected_etag: "", private: false });
+  });
+
+  it("A2: a visiting owner writes in a share of its own, never the owner's", async () => {
+    const { stub, as, name } = ownerObject();
+    await stub.collectionWrite(as("visitor-1"), { collection: "room:go:main", row_id: "v",
+      body: LARGE, expected_etag: "", private: false });
+    const [row] = await sqlIn(stub, "SELECT filer FROM collection_rows");
+    expect(row!["filer"]).toMatch(/^client:[0-9a-f]{64}$/);
+    expect(await sqlIn(stub, "SELECT who FROM file_shares WHERE chunk_bytes > 0 ORDER BY who"))
+      .toEqual([{ who: "*" }, { who: row!["filer"] }]);
+    expect((await stub.fileUsage(as(name))).share.chunk_bytes).toBe(0);
+  });
+
+  it("A3: placed history makes room at the tier's storage before a write is refused",
+     async () => {
+    const { stub, as, name } = ownerObject();
+    const bind = { ...as(name), tiers: tiers(6 * 2 * PLACE_BYTES) };
+    let etag = "";
+    for (let n = 0; n < 12; n++) {
+      const done = await stub.collectionWrite(bind, { collection: "board", row_id: "r",
+        body: `${n}`.padEnd(LARGE.length, "é"), expected_etag: etag, private: false }) as
+        { row: { etag: string } };
+      etag = done.row.etag;
+    }
+    const [kept] = await sqlIn(stub, "SELECT COUNT(*) AS n FROM collection_history");
+    expect(kept!["n"]).toBeLessThan(12);
+    expect((await stub.fileUsage(bind)).chunk_bytes).toBeLessThanOrEqual(6 * 2 * PLACE_BYTES);
+  });
+
+  it("A4: a read door with no tier numbers in the record drops the kept ones: fail closed",
+     async () => {
+    const { stub, as, name } = ownerObject();
+    await stub.collectionGet(as(name), { collection: "board", row_id: "r" });
+    expect(await sqlIn(stub, "SELECT COUNT(*) AS n FROM platform_tiers")).toEqual([{ n: 1 }]);
+    await stub.collectionGet({ ...as(name), tiers: null }, { collection: "board", row_id: "r" });
+    expect(await sqlIn(stub, "SELECT COUNT(*) AS n FROM platform_tiers")).toEqual([{ n: 0 }]);
+    expect((await failure(() => stub.collectionWrite({ ...as(name), tiers: undefined }, {
+      collection: "board", row_id: "r", body: LARGE, expected_etag: "", private: false })))
+      .message).toBe(TIER_UNREAD);
+  });
+
+  it("A5: acked placed mail makes room at the tier's storage before a post is refused",
+     async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE);
+    for (let n = 0; n < 8; n++) {
+      await r.stub.roomPost(r.bind(null, { tiers: tiers(4 * 2 * PLACE_BYTES) }), {
+        room_id: `dm:${muse}`, client_message_id: `c${n}`,
+        body: `${n}`.padEnd(LARGE.length, "é"), parent_id: null });
+      const page = await r.read(MUSE);
+      await r.ack(MUSE, page.messages.at(-1)!.seq);
+    }
+    const [held] = await r.sql("SELECT COUNT(*) AS n FROM ledger_messages");
+    expect(held!["n"]).toBeLessThan(8);
+  });
+
+  it("A6: a history read past one page says so, and its cursor reads the older entries",
+     async () => {
+    const { stub, as, name } = ownerObject();
+    const big = "𝄞".repeat(768 * 1024);  // 3 MiB
+    let etag = "";
+    for (const n of ["a", "b", "c", "d"]) {
+      const done = await stub.collectionWrite(as(name), { collection: "board", row_id: "r",
+        body: `${n}${big}`, expected_etag: etag, private: false }) as { row: { etag: string } };
+      etag = done.row.etag;
+    }
+    const first = await stub.collectionHistory(as(name), { collection: "board", row_id: "r" });
+    expect([first.entries.map((e) => e.revision), first.more, first.before_revision])
+      .toEqual([[3, 4], true, 3]);
+    const older = await stub.collectionHistory(as(name), { collection: "board", row_id: "r",
+                                                           before_revision: 3 });
+    expect([older.entries.map((e) => e.body[0]), older.more, older.before_revision])
+      .toEqual([["a", "b"], false, null]);
+  }, 60_000);
+
+  it("checks a post's room and resend before its body goes to R2", async () => {
+    const r = await rig();
+    const muse = await r.register(MUSE);
+    const chunks = async () => (await r.sql("SELECT COUNT(*) AS n FROM file_chunks"))[0]!["n"];
+    expect((await failure(() => r.post(null, "dm:agent_none", { body: LARGE }))).message)
+      .toBe("room is not an enabled agent's dm");
+    expect(await chunks()).toBe(0);
+    const posted = await r.post(null, `dm:${muse}`, { body: LARGE });
+    const after = await chunks();
+    // A resend is its original, answered before any upload begins.
+    expect(await r.post(null, `dm:${muse}`, { body: LARGE })).toEqual(posted);
+    expect(await chunks()).toBe(after);
+    expect(await r.sql("SELECT COUNT(*) AS n FROM file_intents")).toEqual([{ n: 0 }]);
+  });
+
+  it("adds no byte to R2 once the erasure's mark stands, and deletes what landed late",
+     async () => {
+    const owner = `owner-${crypto.randomUUID()}`;
+    const stub = env.AGENT.getByName(owner) as DurableObjectStub<FauxOwnerDO>;
+    const bind: Binding = { owner, caller: owner, origin: null, tiers: TIERS };
+    await stub.collectionWrite(bind, { collection: "board", row_id: "t", body: LARGE,
+                                       expected_etag: "", private: false });
+    const ns = await namespace(stub as unknown as DurableObjectStub<OwnerDO>);
+    // A put whose row is gone (an instance lost mid-put): only the prefix finds it.
+    const stray = new TextEncoder().encode("a stray chunk");
+    const straySha = createHash("sha256").update(stray).digest("hex");
+    await env.FILES.putChunks(ns, [{ sha256: straySha, bytes: stray }]);
+    await runInDurableObject(stub, async (_instance: FauxOwnerDO, state) => {
+      state.storage.sql.exec("INSERT INTO owner_erasure (only, started_at) VALUES (1, 1)");
+      const gate = new WriteGate(state.storage);
+      const files = filesOn(gate.storage, gate.write);
+      await expect(gate.write(() => files.begin(INLINE_BYTES + 1, ["b".repeat(64)], "owner")))
+        .rejects.toThrow("this owner is being erased");
+    });
+    await runInDurableObject(stub, async (instance: FauxOwnerDO) => {
+      await instance.erasure.erase();
+    });
+    expect(await inR2(ns, LARGE)).toMatch(/^missing: /);
+    expect(await inR2(ns, "", straySha)).toMatch(/^missing: /);
+  }, 30_000);
 });
