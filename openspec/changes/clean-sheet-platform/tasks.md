@@ -1462,6 +1462,22 @@ R, S, M and W.
   `sha256` (the precondition or the digest), since the Worker's recheck of an existing
   key reads either answer; the manifest tables in the nightly export; each droplet volume
   imported into the manifest and bucket in the cutover window (9).
+- [x] Slice STORE (founder, 2026-11-03: storage is the only wall):
+  - `storage_full`, one code and one set of words at the tier's figure, 507 at the doors;
+  - the agents' scratch on the sandbox disk (`/scratch/<agent>`), never synced or counted, kept as a cache, let go by `scratch_retention_days` and the least recently used under disk pressure;
+  - sync-out that streams, the sessions first, with the owner's `/workspace/.ta/sync-ignore`;
+  - a full disk that never loses the run.
+
+  Research: `/home/user/ta-work/store_research.md`. Probes:
+  - `latency-probe.md`: option A measured;
+  - `sandbox-probe.md`, "Scratch and the disk".
+- [ ] Owed by slice STORE:
+  - **Option B of the latency probe** (R2 get, put, list from an owner-shaped object) needs a token with Workers R2 Storage: Edit. The index decision (shards or R2 trees) waits on it, and the count caps stay until then.
+  - **Old versions, collection history and read mail moved to R2 segments** (mail never evicted silently), encrypted under slice P's per-owner key: after P lands. Its schema baseline and its key are the base.
+  - **Sync-in of the working set alone** (today it materializes the whole workspace), held for the scratch design.
+  - **The starter package's agent instructions** naming `$TA_SCRATCH` (the run door's MCP instructions carry it today).
+  - **`linux_oracle.py`** for the scratch modes and the reserve: no Docker daemon in the build session. The runner's root tests cover the modes.
+  - **The resume after hours** with 5–10 GB of scratch.
 
 ## 7. Wakes and outside agents
 
