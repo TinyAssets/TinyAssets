@@ -7,9 +7,10 @@
  * **Format `tinyassets-export`, version 1.** Newline-delimited JSON (one object a line,
  * UTF-8), in this order:
  * 1. `{"t":"header","format":"tinyassets-export","version":1,"schema":<n>,"owner":"<id>",
- *    "at":<ms>}`: once, first; `schema` is the owner schema's migration count, which says
- *    what each table's columns are (`schema.ts`). An export's header also names its
- *    `export_id` and `held_until` (below).
+ *    "at":<ms>,"clock":<n>}`: once, first; `schema` is the owner schema's migration count,
+ *    which says what each table's columns are (`schema.ts`); `clock` the owner's change
+ *    clock the stream is pinned to (below). An export's header also names its `export_id`
+ *    and `ends_at` (below).
  * 2. `{"t":"row","table":"<name>","row":{<column>:<value>,...}}`: every row of every table
  *    in {@link exported}, a table at a time in that order, each in its key's order. A value
  *    is JSON's number, string or null; bytes (a small file's inline content) are
@@ -25,15 +26,23 @@
  * (`idx` order) and section 3 their bytes. A row's or a message's placed body is a content
  * the same way.
  *
- * **Resumable.** The stream is read a page at a time (`ownerExport`), each page ending with
- * its cursor (`{"t":"cursor","cursor":"<opaque>"}`, the doors' line) unless it ended the
- * stream; asking with that cursor goes on from the next row. A cursor is the section and
- * the last key read, so it never skips or repeats a row that stands; each page is read in one
- * unit, and a row written between pages is read if its key is still ahead. Chunks are
- * immutable, and an open export holds every chunk from deletion (`owner_exports`,
- * `EXPORT_HOLD_S`) until it ends (`exportEnd`) or its hold lapses, so every hash its
- * manifest names can be fetched; past that, a chunk stays `GC_GRACE_S` (30 days, the
- * object's point-in-time recovery) after its last reference goes.
+ * **Resumable, and one snapshot.** The stream is read a page at a time (`ownerExport`), each
+ * page ending with its cursor (`{"t":"cursor","cursor":"<opaque>"}`, the doors' line) unless
+ * it ended the stream; asking with that cursor goes on from the next row. A cursor is the
+ * section and the last key read, so it never skips or repeats a row; each page is read in
+ * one unit. The stream is pinned to the owner's change clock (`owner_backup_state.clock`,
+ * which every unit that changes the owner moves: `backup.ts` `mark`), read when it opens and
+ * named in its header: a later page whose clock moved is refused (`EXPORT_CHANGED`), so a
+ * stream that ends is the owner as it stood at one moment, never a torn one (an entry naming
+ * a content the stream no longer carries). The nightly manifest is pinned the same way.
+ *
+ * **Its chunks.** An export lives `EXPORT_LIFE_S` from its first page (`owner_exports` names
+ * it; nothing holds chunks for it), under `GC_GRACE_S` (30 days, the object's point-in-time
+ * recovery): every chunk its pages name was live when they were read, and a chunk no
+ * content holds stays in the bucket for that grace, so every hash an export names can be
+ * fetched until it ends. The one exception is the owner's own churn: garbage past the
+ * tier's storage figure is collected early, oldest first (`files.ts` `collect`), and a
+ * chunk gone that way is refused by name (`CHUNK_GONE`): the export is begun again.
  *
  * **What it never holds** (ADR-018: credentials are never exported), each table kept out
  * with its reason in {@link NOT_EXPORTED}: sealed credentials and connect flows, session
@@ -82,8 +91,10 @@ export function exported(): Readonly<Record<string, ExportTable>> {
     owner_admission: t("only state reasons tier", "only"),
     owner_policy: t("only generation digest document egress_generation", "only"),
     policy_proposals: t("request_id digest document at applied_at proposer", "request_id"),
-    policy_receipts: t("seq bucket kind at session_id old_digest new_digest request_digest " +
-                       "generation rule decision outcome", "seq"),
+    policy_receipts: t("seq bucket kind at old_digest new_digest request_digest " +
+                       "generation rule decision outcome", "seq",
+                       { session_id: "the owner's session hash the change was made in, as " +
+                         "owner_sessions keeps it: a credential's hash, never exported" }),
     outside_clients: t("client source mode scopes generation revoked_at name first_seen " +
                        "last_seen owner_set agents held profile revision", "client"),
     agent_cards: t("card_id client family source_ref generation authenticated_at request " +
@@ -173,12 +184,12 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   owner_erasure: "an erasure in progress",
   schema_digests: "the applied migrations' digests, the start's own check",
   owner_backups: "the nightly manifest's own bookkeeping",
-  owner_exports: "the exports open, holding chunks",
-  owner_backup_state: "the nightly manifest's own bookkeeping",
+  owner_exports: "the exports open: each its id, its end and the clock it is pinned to",
+  owner_backup_state: "the owner's change clock and the nightly manifest's own bookkeeping",
   sandbox_meter: "the sandbox meter's cursor in the sandbox Worker's log",
   sandbox_spans: "the sandbox meter's open and recent spans",
   sandbox_days: "the platform's cost meter: sandbox seconds a day",
-  sandbox_billed: "the E2B events already counted, by id",
+  sandbox_billed: "the E2B executions already counted, by execution id",
 });
 
 /** The exported tables' names, in order. */
@@ -251,15 +262,22 @@ export interface Header {
   readonly schema: number;
   readonly owner: string;
   readonly at: number;
-  /** An export's: its id, and until when (s) it holds the chunks it names. */
+  /** The owner's change clock the stream is pinned to. */
+  readonly clock: number;
+  /** An export's: its id, and when (s) it ends. */
   readonly export_id?: string;
-  readonly held_until?: number;
+  readonly ends_at?: number;
 }
 
-/** How long an open export holds every chunk from deletion: a week to fetch them. */
-export const EXPORT_HOLD_S = 7 * 86_400;
+/**
+ * An export's life from its first page: a week to fetch every chunk, under `GC_GRACE_S`
+ * (the export test holds it there), so every chunk its pages name is still in the bucket.
+ */
+export const EXPORT_LIFE_S = 7 * 86_400;
 /** Exports open at once; past them the oldest is ended. */
 export const EXPORTS_OPEN = 16;
+/** What a later page answers once the owner changed since the export's first. */
+export const EXPORT_CHANGED = "changed since this export began: begin it again";
 
 /**
  * One page from `cursor`, read in the caller's unit: at most `EXPORT_PAGE_BYTES` of rows'

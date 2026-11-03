@@ -124,7 +124,10 @@ export const PLACE_TTL_S = 600;
  * How long a garbage chunk waits before it is deleted (the schema's trigger sets it): 30
  * days, the object's own point-in-time recovery window (Durable Objects restore "to any point
  * in the past 30 days"), so a restored object, or a manifest, never names a chunk the sweep
- * took. A garbage chunk counts in no owner's storage.
+ * took. A garbage chunk counts in no owner's storage (deleted files are kept 30 days for
+ * recovery and don't count); once an owner's garbage in its grace passes the tier's storage
+ * figure, the oldest is collected early (`collect`), so what the platform keeps uncounted for
+ * an owner is bounded by what it counts.
  */
 export const GC_GRACE_S = 30 * 86_400;
 /** When a failed chunk delete is tried again. */
@@ -213,7 +216,11 @@ export interface ChunkStore {
   getChunks(ns: string, key: string,
             reads: { sha256: string; offset?: number; length?: number }[]):
     Promise<Uint8Array[]>;
-  deleteChunks(ns: string, sha256s: string[]): Promise<{ deleted: number }>;
+  deleteChunks(ns: string, key: string, sha256s: string[]): Promise<{ deleted: number }>;
+  /** The wrapped key wrapped again under the ring's active kid (a rotation's sweep). */
+  rewrapKey(ns: string, key: string): Promise<{ key: string }>;
+  /** A manifest root's wrapped key wrapped again in place; null when there is no root. */
+  rewrapManifestRoot(ns: string, day: string): Promise<{ key: string } | null>;
   /** Every object under the namespace's prefix deleted: the erasure's alone. */
   deleteNamespace(ns: string): Promise<{ deleted: number }>;
   putManifestPart(ns: string, key: string, day: string, part: number, bytes: Uint8Array):
@@ -567,6 +574,8 @@ export function batches<T extends { size: number }>(items: readonly T[]): T[][] 
  * writer begins again once the delete lands (a placed body's door does so itself).
  */
 export const CHUNK_DELETING = "a chunk of this upload is being deleted; begin again";
+/** A chunk an export names that the owner no longer stores (or never did). */
+export const CHUNK_GONE = "no such chunk: it is gone from the bucket; begin the export again";
 
 export function conflictName(name: string, epoch: number, n: number): string {
   const suffix = `.ta-conflict-${epoch}${n > 1 ? `-${n}` : ""}`;
@@ -580,11 +589,6 @@ export function conflictName(name: string, epoch: number, n: number): string {
 export class Files {
   readonly #storage: OwnerStorage;
   readonly #store: ChunkStore;
-  /**
-   * Until when (seconds) an open export holds every chunk from deletion, or null: its
-   * manifest names chunks by hash, which the owner fetches after (`export.ts`).
-   */
-  readonly #held: () => number | null;
   readonly #limits: () => FileLimits;
   /** The object's write gate: the units the methods that cross to `FILES` write through. */
   readonly #write: Write;
@@ -601,10 +605,8 @@ export class Files {
 
   constructor(storage: OwnerStorage, store: ChunkStore, limits: () => FileLimits,
               write: Write, reclaim: Reclaim = () => false,
-              changed: (path: string, present: boolean, now: number) => void = () => {},
-              held: () => number | null = () => null) {
+              changed: (path: string, present: boolean, now: number) => void = () => {}) {
     this.#storage = storage;
-    this.#held = held;
     this.#store = store;
     this.#limits = limits;
     this.#write = write;
@@ -920,10 +922,11 @@ export class Files {
   }
 
   /**
-   * Of `sha256s`, each a chunk this owner's manifest names (stored, not being deleted), in
-   * order: what an export fetches by hash. Any other is refused. A read.
+   * Of `sha256s`, each a chunk this owner stores (put, and not being deleted: live, or
+   * garbage still in its grace), in order: what an export fetches by the hashes its pages
+   * named. Any other, never stored or gone since, is refused (`CHUNK_GONE`). A read.
    */
-  heldChunks(sha256s: readonly unknown[]): string[] {
+  storedChunks(sha256s: readonly unknown[]): string[] {
     return sha256s.map((sha256) => {
       if (typeof sha256 !== "string" || !HEX64.test(sha256)) {
         throw new Invalid("a chunk is named by its sha256");
@@ -931,10 +934,33 @@ export class Files {
       const found = this.#sql.exec("SELECT 1 FROM file_chunks WHERE sha256 = ? AND stored = 1 " +
                                      "AND state != 'deleting'", sha256).toArray().length > 0;
       if (!found) {
-        throw new FileFault("not_found", "no such chunk");
+        throw new FileFault("not_found", CHUNK_GONE);
       }
       return sha256;
     });
+  }
+
+  /**
+   * A key rotation's sweep for this owner (`files/src/datakey.ts`): its wrapped data key
+   * wrapped again under the ring's active kid and kept, then each manifest root of `days`
+   * wrapped again in place, so no copy of the key under a retiring kid outlives the sweep,
+   * an idle owner's included. Whether the object's copy changed, and the roots found.
+   */
+  async rewrap(days: readonly string[]): Promise<{ rewrapped: boolean; roots: number }> {
+    const { ns, data_key: held } = this.#space();
+    if (ns === null || held === null) {
+      return { rewrapped: false, roots: 0 };  // nothing was ever stored under a key
+    }
+    const { key } = await this.#store.rewrapKey(ns, held);
+    if (key !== held) {
+      await this.#write(() => this.#sql.exec(
+        "UPDATE file_space SET data_key = ? WHERE data_key = ?", key, held));
+    }
+    let roots = 0;
+    for (const day of days) {
+      roots += await this.#store.rewrapManifestRoot(ns, day) === null ? 0 : 1;
+    }
+    return { rewrapped: key !== held, roots };
   }
 
   /** Chunk bytes in order, fetched from `FILES` at most two chunks a call. */
@@ -2133,14 +2159,22 @@ export class Files {
     return space.retain_cursor !== null || this.#retentionChanged(space, limits);
   }
 
+  /** The garbage bytes past the tier's storage figure, collected early; 0 for none. */
+  #garbageOver(): number {
+    const max = this.#limits().max_bytes;
+    const garbage = this.#sql.exec<{ garbage_bytes: number }>(
+      "SELECT garbage_bytes FROM file_space").one().garbage_bytes;
+    return max === null ? 0 : Math.max(0, garbage - max);
+  }
+
   /**
    * When housekeeping is next due, never before `now`, or null: expired intents and
    * temporary directories, due history prunes, and due chunk deletes, each with
    * `HOUSEKEEPING_SLACK_S`, so one run takes an hour's work; and at once, a retention
-   * change still to apply.
+   * change still to apply, or garbage past the tier's storage figure.
    */
   nextAlarm(now: number): number | null {
-    if (this.#reretaining(this.#space(), this.#limits())) {
+    if (this.#reretaining(this.#space(), this.#limits()) || this.#garbageOver() > 0) {
       return now;
     }
     const times = [
@@ -2149,11 +2183,6 @@ export class Files {
       "SELECT MIN(prune_after) AS due FROM file_history WHERE prune_after IS NOT NULL",
       "SELECT MIN(gc_after) AS due FROM file_chunks WHERE gc_after IS NOT NULL",
     ].map((query) => this.#sql.exec<{ due: number | null }>(query).one().due)
-      .map((due, at) => {
-        const held = this.#held();
-        // A chunk's delete waits out an open export's hold.
-        return at === 3 && due !== null && held !== null ? Math.max(due, held) : due;
-      })
       .filter((due): due is number => due !== null);
     return times.length ? Math.max(Math.min(...times) + HOUSEKEEPING_SLACK_S, now) : null;
   }
@@ -2161,7 +2190,9 @@ export class Files {
   /**
    * One housekeeping pass, the system's own and never refused for a quota: apply a
    * retention change to kept rows, expire intents and temporary directories, prune due
-   * history, then delete due garbage chunks. A delete marks its chunks `deleting` (never
+   * history, then delete due garbage chunks, and, while the garbage in its grace is past the
+   * tier's storage figure, the oldest of it too (a technical ceiling: recovery against
+   * cost, `limits-audit.md`). A delete marks its chunks `deleting` (never
    * held again) before it asks `FILES`, and removes their rows only after; one that fails
    * stays in those rows, retried after `GC_RETRY_S`, and never fails the pass (the `files`
    * lane's contract: an outside call's failure is its rows', a throw is a bug). No delete
@@ -2187,16 +2218,26 @@ export class Files {
     if (until - Date.now() < DELETE_FLOOR_MS) {
       return;  // too little of this pass left: the chunks stay due for a later one
     }
-    const held = this.#held();
-    if (held !== null && held > now) {
-      return;  // an open export names chunks by hash: none is deleted until it ends
-    }
     // Read and marked in one unit: a chunk read due outside it could be held again (an
     // upload's begin) before the mark, and its bytes then deleted under a live file.
     const due = await this.#write(() => this.#storage.transactionSync(() => {
-      const found = sql.exec<{ sha256: string }>(
-        "SELECT sha256 FROM file_chunks WHERE gc_after IS NOT NULL AND gc_after <= ? " +
-          "ORDER BY gc_after LIMIT ?", now, DELETE_BATCH).toArray().map((row) => row.sha256);
+      const rows = sql.exec<{ sha256: string; size: number }>(
+        "SELECT sha256, size FROM file_chunks WHERE gc_after IS NOT NULL AND gc_after <= ? " +
+          "ORDER BY gc_after LIMIT ?", now, DELETE_BATCH).toArray();
+      const found = rows.map((row) => row.sha256);
+      // Garbage past the tier's figure, oldest first, as far as covers it: due now.
+      let over = this.#garbageOver() - rows.reduce((sum, row) => sum + row.size, 0);
+      if (over > 0 && found.length < DELETE_BATCH) {
+        for (const row of sql.exec<{ sha256: string; size: number }>(
+               "SELECT sha256, size FROM file_chunks WHERE state = 'garbage' AND gc_after > ? " +
+                 "ORDER BY gc_after LIMIT ?", now, DELETE_BATCH - found.length).toArray()) {
+          if (over <= 0) {
+            break;
+          }
+          found.push(row.sha256);
+          over -= row.size;
+        }
+      }
       for (const sha256 of found) {
         sql.exec("UPDATE file_chunks SET state = 'deleting', gc_after = ? WHERE sha256 = ?",
                  now + GC_RETRY_S, sha256);
@@ -2208,7 +2249,8 @@ export class Files {
     }
     try {
       // Bounded by the pass's budget: a late delete is tried again, as a failed one is.
-      if (await inTime(this.#store.deleteChunks(await this.namespace(), due),
+      const { ns, key } = await this.space();
+      if (await inTime(this.#store.deleteChunks(ns, key, due),
                        until - Date.now()) === "late") {
         throw new Error("the chunk delete ran past its pass");
       }

@@ -32,9 +32,16 @@
  * in flight past it) is then unreadable: no one holds the key it was put under, and R2
  * keeps none.
  *
- * Rotation: `unwrap` accepts every kid in the ring. A kid leaves the ring only after every
- * owner's key under it is wrapped again under the active one (the data key itself never
- * changes, so no chunk is rewritten); that sweep is owed with the first rotation.
+ * **Rotation** (`rewrap`): `unwrap` accepts every kid in the ring, and `rewrap` opens a wrapped
+ * key under its kid and wraps the same data key under the active one (the data key never
+ * changes, so no chunk or part is rewritten). Each owner's sweep re-wraps its object's copy
+ * and every manifest root's (`owner/src/files.ts` `rewrap`); a kid leaves the ring only
+ * after every owner's sweep has run (tasks.md).
+ *
+ * **Names.** A chunk's R2 name is HMAC-SHA256 of its hash under a key derived from the data
+ * key (`chunkName`), so listing the bucket cannot confirm that an owner holds a known file;
+ * the owner's object keeps the plain hash, and only this Worker, holding the data key for a
+ * call, turns one into the other.
  */
 import { Invalid, namespace } from "./keys";
 
@@ -49,7 +56,8 @@ const KEY_BYTES = 32;
 const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
 const KEYRING_MAX = 5 * 1024;
-const KIDS_MAX = 64;
+/** The most kids a ring holds: far past any rotation schedule, under the secret's 5 KiB. */
+export const KIDS_MAX = 64;
 /** A wrapped key's most characters: "v1." + a kid + a nonce + 48 bytes, base64url. */
 export const WRAPPED_MAX = 3 + 32 + 1 + 16 + 1 + 64;
 
@@ -130,18 +138,58 @@ async function wrapping(root: Uint8Array, ns: string): Promise<CryptoKey> {
     base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
 }
 
+/** `data` wrapped for `ns` under the ring's active kid, with a fresh nonce. */
+async function wrap(keys: Ring, ns: string, data: Uint8Array): Promise<string> {
+  const nonce = crypto.getRandomValues(new Uint8Array(NONCE_BYTES));
+  const sealed = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: nonce, additionalData: aad(ns, keys.active),
+      tagLength: TAG_BYTES * 8 },
+    await wrapping(keys.keys.get(keys.active)!, ns), data);
+  return `v1.${keys.active}.${base64url(nonce)}.${base64url(new Uint8Array(sealed))}`;
+}
+
 /** A new data key for `ns`, returned wrapped under the active kid: its only form outside. */
 export async function mint(secret: KeyringSecret, ns: unknown): Promise<string> {
   const space = namespace(ns);
   const keys = ring(secret);
-  const nonce = crypto.getRandomValues(new Uint8Array(NONCE_BYTES));
   const data = crypto.getRandomValues(new Uint8Array(KEY_BYTES));
-  const sealed = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv: nonce, additionalData: aad(space, keys.active),
-      tagLength: TAG_BYTES * 8 },
-    await wrapping(keys.keys.get(keys.active)!, space), data);
-  data.fill(0);
-  return `v1.${keys.active}.${base64url(nonce)}.${base64url(new Uint8Array(sealed))}`;
+  try {
+    return await wrap(keys, space, data);
+  } finally {
+    data.fill(0);
+  }
+}
+
+/**
+ * The data key `wrapped` holds for `ns`, wrapped again under the active kid; `wrapped` as it
+ * is when its kid is the active one already. Refused as `unwrap` refuses.
+ */
+export async function rewrap(secret: KeyringSecret, ns: unknown, wrapped: unknown):
+    Promise<string> {
+  const space = namespace(ns);
+  const keys = ring(secret);
+  const data = new Uint8Array(await unwrap(secret, space, wrapped));
+  try {
+    return (wrapped as string).split(".")[1] === keys.active ? wrapped as string
+      : await wrap(keys, space, data);
+  } finally {
+    data.fill(0);
+  }
+}
+
+/**
+ * A chunk's R2 name: HMAC-SHA256 of its hash under HKDF-SHA256(data key, salt, "name"), 64
+ * lowercase hex. The same chunk of one owner has one name; another owner's differs.
+ */
+export async function chunkName(dataKey: ArrayBuffer, sha256: string): Promise<string> {
+  const base = await crypto.subtle.importKey("raw", dataKey, "HKDF", false, ["deriveKey"]);
+  const naming = await crypto.subtle.deriveKey(
+    { name: "HKDF", hash: "SHA-256", salt: new TextEncoder().encode(SALT),
+      info: new TextEncoder().encode("name") },
+    base, { name: "HMAC", hash: "SHA-256", length: 256 }, false, ["sign"]);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", naming,
+                                                      new TextEncoder().encode(sha256)));
+  return [...mac].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /**

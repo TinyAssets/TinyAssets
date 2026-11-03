@@ -1,10 +1,11 @@
 /**
- * The one place an R2 key is built (ADR-032, plan §6): a chunk's `o/<ns>/c/<sha256>`, and a
+ * The one place an R2 key is built (ADR-032, plan §6): a chunk's `o/<ns>/c/<name>`, and a
  * nightly manifest's root `o/<ns>/m/<day>` and its parts `o/<ns>/m/<day>/<part>`.
  *
- * `ns` is an owner's random 128-bit namespace, held only in that owner's object; `sha256`
- * is a chunk's content hash. Both are lowercase hex, checked here, so no path, owner id
- * or other caller text ever reaches a key. A path never becomes a key because R2
+ * `ns` is an owner's random 128-bit namespace, held only in that owner's object; a chunk's
+ * `name` is the HMAC of its content hash under the owner's data key (`datakey.ts`
+ * `chunkName`), so the bucket's keys confirm no known file. Both are lowercase hex, checked
+ * here, so no path, owner id or other caller text ever reaches a key. A path never becomes a key because R2
  * NFC-normalizes keys, and uploads are verbatim (Fact 9): two names a sandbox can create
  * would meet in one object. The r2-keys guard keeps every other source from building one.
  */
@@ -24,8 +25,13 @@ const NS = /^[0-9a-f]{32}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 /** A manifest's day, `YYYYMMDD` in UTC. */
 const DAY = /^20[0-9]{2}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])$/;
-/** The most parts one manifest has: 4 MiB each, past any owner object's 10 GB. */
-export const MANIFEST_PARTS = 4096;
+/**
+ * The most parts one manifest has: 4 MiB each, 64 GiB. Past the worst case of the stream the
+ * owner's object can hold, escaping included (`owner/guards/owner-bound.test.ts`, "the
+ * nightly manifest's stream"), and its part list (`PART_ENTRY` each) fits a SQLite row's
+ * 2 MB. A stream past it is never retried: the owner is told (`owner/src/backup.ts`).
+ */
+export const MANIFEST_PARTS = 16_384;
 
 /** An owner namespace: 32 lowercase hex characters. */
 export function namespace(ns: unknown): string {
@@ -43,9 +49,9 @@ export function chunkHash(sha256: unknown): string {
   return sha256;
 }
 
-/** The R2 key of one owner's chunk. */
-export function chunkKey(ns: unknown, sha256: unknown): string {
-  return `o/${namespace(ns)}/c/${chunkHash(sha256)}`;
+/** The R2 key of one owner's chunk, by its name (64 lowercase hex, as a hash is). */
+export function chunkKey(ns: unknown, name: unknown): string {
+  return `o/${namespace(ns)}/c/${chunkHash(name)}`;
 }
 
 /** A manifest's day: `YYYYMMDD`. */
@@ -76,7 +82,7 @@ export function chunkPrefix(ns: unknown): string {
   return `o/${namespace(ns)}/c/`;
 }
 
-/** The chunk hash a key listed under `chunkPrefix(ns)` names, or a loud failure. */
+/** The chunk name a key listed under `chunkPrefix(ns)` holds, or a loud failure. */
 export function listedChunk(ns: unknown, key: unknown): string {
   const prefix = chunkPrefix(ns);
   if (typeof key !== "string" || !key.startsWith(prefix)) {

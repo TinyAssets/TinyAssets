@@ -166,8 +166,8 @@ import { AGENTS_DIR, AGENTS_OWNER_ONLY, OWNER_TREES, ownersOnly, storedPath, wit
   from "./paths";
 import { MIGRATIONS, migrate } from "./schema";
 import { chunkLine, decodeCursor, encodeCursor, END_LINE, readPage } from "./export";
-import { Backups } from "./backup";
-import { ExportHolds } from "./export-holds";
+import { Backups, changeClock } from "./backup";
+import { OpenExports } from "./open-exports";
 import { type BilledEvent, billedEvent, METER_BATCH, meterRead, SandboxTime } from "./sandbox-time";
 import { Sessions } from "./sessions";
 import { CONTROL_FRESH_MS, ControlGate, type Gate } from "./control-gate";
@@ -1283,8 +1283,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #files: Files;
   /** The nightly manifest (`backup.ts`). */
   readonly #backups: Backups;
-  /** The exports open, each holding the chunks its manifest names (`export-holds.ts`). */
-  readonly #exportHolds: ExportHolds;
+  /** The exports open, each named and pinned to the change clock (`open-exports.ts`). */
+  readonly #exports: OpenExports;
   /** Sandbox time, per run and per day (`sandbox-time.ts`). */
   readonly #sandboxTime: SandboxTime;
   /** Where large bodies live (ADR-035): placed in R2 through the files plane. */
@@ -1365,10 +1365,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
             this.#ledger.retire(agent, now);
           }
         }
-      },
-      // An open export holds every chunk its manifest names from deletion.
-      () => this.#exportHolds.heldUntil(clock()));
-    this.#exportHolds = new ExportHolds(storage);
+      });
+    this.#exports = new OpenExports(storage);
     this.#bodies = new Bodies(this.#files, storage, write);
     // An outside writer's share of the collections is the owner's own `client_share`.
     this.#collections = new Collections(storage, undefined, this.#bodies.adopt,
@@ -1378,10 +1376,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     this.#ledger = new Ledger(storage, this.#grants, undefined, admitted,
                               () => this.#collections.clock(), this.#bodies.adopt);
     this.#backups = new Backups({
-      storage, write, store: env.FILES, space: () => this.#files.space(),
+      storage, write: this.#gate.quiet, store: env.FILES, space: () => this.#files.space(),
       owner: () => this.ctx.id.name ?? "", schema: MIGRATIONS.length,
       serves: () => storage.sql.exec("SELECT 1 FROM object_owner").toArray().length > 0,
       halted: () => wiped(storage.sql) || erasing(storage),
+      notice: (type, detail) => this.#notices.add(type, detail, clock()),
     });
     this.#registrations = new Registrations(storage, this.#grants);
     this.#notices = new Notices(storage);
@@ -1577,7 +1576,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
         return;  // an erased owner: nothing is made here again
       }
       await write(() => migrate(storage));
-      // From here on, a unit that writes marks the owner changed for the nightly manifest.
+      // From here on, a unit that writes (not a quiet one) moves the owner's change clock and
+      // marks the owner changed for the nightly manifest.
       this.#gate.onChange((sql) => {
         if (this.#backups.mark(sql)) {
           // The first change since the last manifest: its job set again, once the unit is done.
@@ -1633,6 +1633,14 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   /** A door's synchronous body, as one unit of the write gate. */
   #door<T>(act: () => T): Promise<T> {
     return this.#gate.write(act);
+  }
+
+  /**
+   * A door's synchronous body as a quiet unit: it writes only what no export reads (an
+   * export's own row, a session's renewal), so it moves no change clock (`gate.ts`).
+   */
+  #quiet<T>(act: () => T): Promise<T> {
+    return this.#gate.quiet(act);
   }
 
   /** A door's unit, then the one schedule synced from the rows it changed. */
@@ -1813,7 +1821,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   sessionExtend(binding: Binding): Promise<{ expires_at: number }> {
-    return this.#door(() => {
+    // Quiet: a renewal changes nothing an export reads, so an export open across it stands.
+    return this.#quiet(() => {
       this.#owner(binding, "read", "renew its session");
       return this.#sessions.extend(binding.session, clock());
     });
@@ -1881,14 +1890,15 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    * One execution E2B billed, from its signed lifecycle event, which the doors verified and
    * routed here by its sealed route (`doors/src/e2b-hooks.ts`). It carries no binding, as the
    * line's ring does not (`sandboxRung`): it grants nothing, and only adds to the meter, once
-   * an event. An erased or erasing owner counts nothing.
+   * an execution, inside the window its event's time allows. An erased or erasing owner
+   * counts nothing.
    */
   async sandboxBilled(event: BilledEvent): Promise<{ counted: boolean }> {
     if (this.#tombstone || this.#erasure.erased || erasing(this.#storage)) {
       return { counted: false };
     }
     const checked = billedEvent(event);
-    return this.#door(() => ({ counted: this.#sandboxTime.billed(checked) }));
+    return this.#door(() => ({ counted: this.#sandboxTime.billed(checked, Date.now()) }));
   }
 
   /** The owner's sandbox seconds a day, newest first: the founder's cost view. */
@@ -1934,16 +1944,18 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   // -- OWNER_EXPORT: everything the owner holds (`export.ts`) --------------------
 
   /**
-   * One page of the owner's export from `cursor` (null: the start): its lines, then the
-   * bytes of the chunks it names, read outside the unit, and the next page's cursor, or
-   * null once the page ended the stream. The owner's alone, in its live session: no
-   * outside client, no run, and no request without the session cookie reaches it. A
-   * `read` door, so a billing suspension still lets the owner take its data.
+   * One page of the owner's export from `cursor` (null: the start, which opens the export,
+   * pinned to the owner's change clock): its lines, and the next page's cursor, or null once
+   * the page ended the stream. A later page is refused once the clock moved
+   * (`EXPORT_CHANGED`). The owner's alone, in its live session: no outside client, no run,
+   * and no request without the session cookie reaches it. A `read` door, so a billing
+   * suspension still lets the owner take its data; its one write (the export's own row) is
+   * quiet, so it moves no clock.
    */
   async ownerExport(binding: Binding,
                     request: { cursor?: string | null; export_id?: string }):
       Promise<{ export_id: string; lines: string[]; next: string | null }> {
-    return this.#door(() => {
+    return this.#quiet(() => {
       const { owner } = this.#owner(binding, "read", "export everything it holds");
       this.#sessions.live(binding.session, clock());
       if (typeof request !== "object" || request === null || Array.isArray(request)
@@ -1952,24 +1964,28 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       }
       const cursor = decodeCursor(request.cursor);
       const now = clock();
-      // Its first page opens it, holding every chunk; each later page names it.
-      const held = request.cursor === null || request.cursor === undefined
-        ? this.#exportHolds.open(now) : this.#exportHolds.standing(request.export_id, now);
+      // Its first page opens it, pinned to the clock; each later page names it, and is read
+      // only while the clock has not moved.
+      const ticks = changeClock(this.#storage.sql);
+      const open = request.cursor === null || request.cursor === undefined
+        ? this.#exports.open(now, ticks) : this.#exports.standing(request.export_id, now, ticks);
       const page = readPage(this.#storage.sql, cursor,
-                            { schema: MIGRATIONS.length, owner, at: Date.now(), ...held },
+                            { schema: MIGRATIONS.length, owner, at: Date.now(), ...open },
                             Number.MAX_SAFE_INTEGER);
       const lines = [...page.lines, ...page.chunks.map((chunk) => chunkLine(chunk))];
       if (page.next === null) {
         lines.push(END_LINE);
       }
-      return { export_id: held.export_id, lines,
+      return { export_id: open.export_id, lines,
                next: page.next === null ? null : encodeCursor(page.next) };
     });
   }
 
   /**
-   * Chunks an open export's manifest names, by hash: their bytes, at most two chunks a call
-   * (`BATCH_BYTES`), each checked against its hash by the files Worker. The owner's alone.
+   * Chunks an open export's pages named, by hash: their bytes, at most two chunks a call
+   * (`BATCH_BYTES`), each checked against its hash by the files Worker. Any chunk the owner
+   * still stores is served (live, or garbage in its grace), however the owner changed since;
+   * one gone from the bucket is refused (`CHUNK_GONE`). The owner's alone.
    */
   async exportChunks(binding: Binding, request: { export_id: string; sha256s: string[] }):
       Promise<{ chunks: { sha256: string; data: string }[] }> {
@@ -1982,20 +1998,38 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
           || request.sha256s.length > 2) {
         throw new Invalid("an export's chunks are its export_id and one or two sha256s");
       }
-      this.#exportHolds.standing(request.export_id, clock());
-      return this.#files.heldChunks(request.sha256s);
+      this.#exports.named(request.export_id, clock());
+      return this.#files.storedChunks(request.sha256s);
     });
     const bytes = await this.#files.fetch(wanted.map((sha256) => ({ sha256 })));
     return { chunks: wanted.map((sha256, at) => ({
       sha256, data: Buffer.from(bytes[at]!).toString("base64") })) };
   }
 
-  /** An export ended: its hold on the chunks let go. */
+  /** An export ended: its id names it no longer. */
   exportEnd(binding: Binding, request: { export_id: string }): Promise<{ ended: boolean }> {
-    return this.#door(() => {
+    return this.#quiet(() => {
       this.#owner(binding, "reduce", "end its export");
-      return { ended: this.#exportHolds.end(request?.export_id) };
+      return { ended: this.#exports.end(request?.export_id) };
     });
+  }
+
+  /**
+   * A key rotation's sweep for this owner (`files/src/datakey.ts`, tasks.md): its wrapped
+   * data key, and every nightly manifest root it keeps, wrapped again under the files
+   * keyring's active kid; an idle owner's too, since nothing else rewrites its root. The
+   * platform's alone (`PLATFORM_CALLER`), as `admissionSet` is.
+   */
+  async dataKeyRewrap(binding: Binding): Promise<{ rewrapped: boolean; roots: number }> {
+    const days = await this.#door(() => {
+      const { caller } = this.#bind(binding, "admission");
+      if (caller !== PLATFORM_CALLER || !("origin" in binding) || binding.origin !== null
+          || binding.session !== undefined || binding.source !== undefined) {
+        throw new Refused(PLATFORM_ONLY);
+      }
+      return this.#backups.manifests().map((manifest) => manifest.day);
+    });
+    return this.#files.rewrap(days);
   }
 
   // -- OWNER_POLICY ------------------------------------------------------------

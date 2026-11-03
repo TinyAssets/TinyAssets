@@ -11,13 +11,18 @@
  *    compared in constant time against `E2B_WEBHOOK_SECRET` (a Worker secret, set and
  *    registered with E2B by slice L's deploy kit); no secret, and every delivery is refused
  *    `503`. It is tamper evidence over E2B's own scheme, not an HMAC.
- * 2. **Parsed strictly.** The body is at most `HOOK_BODY_MAX`; only `sandbox.lifecycle.paused`
- *    and `.killed` carry `event_data.execution` (its start, vCPUs, memory and the
- *    milliseconds billed), and only those are delivered; every other event type answers
- *    `200`, so E2B does not retry it.
+ * 2. **Parsed strictly.** The body is read through a byte count that stops at
+ *    `HOOK_BODY_MAX`, whatever `Content-Length` says or omits (an unauthenticated path reads
+ *    no more); only `sandbox.lifecycle.paused` and `.killed` carry `event_data.execution`
+ *    (its start, vCPUs, memory and the milliseconds billed), and only those are delivered,
+ *    with the event's id, its signed `timestamp`, and the sandbox's and the execution's ids;
+ *    every other event type answers `200`, so E2B does not retry it.
  * 3. **Routed by the sealed route** E2B echoes from the sandbox's metadata (`ta_route`,
  *    `routing-mac.ts`): the owner's object (`sandboxBilled`, which grants nothing), which
- *    keeps each event once by its id. A sandbox with no route of ours answers `200`, logged.
+ *    counts each execution once by its execution id, and only while the event's own signed
+ *    time is inside its window (`BILLED_WINDOW_S`): the signature carries no time of its own,
+ *    so a delivery replayed later is refused by the time it signs, and one replayed sooner
+ *    by the execution it names. A sandbox with no route of ours answers `200`, logged.
  */
 import { createHash, timingSafeEqual } from "node:crypto";
 
@@ -31,7 +36,11 @@ export const HOOK_BODY_MAX = 64 * 1024;
 
 /** A billed execution, as the owner's object keeps it (`SandboxTime.billed`). */
 export interface Billed {
+  /** The event's id, the execution's, the sandbox's; and the event's signed time, ms. */
   readonly id: string;
+  readonly execution_id: string;
+  readonly sandbox_id: string;
+  readonly at: number;
   readonly authority: string;
   readonly kind: "paused" | "killed";
   /** When the execution started, and how long E2B billed it, in ms. */
@@ -70,8 +79,7 @@ function count(value: unknown, most: number): number | null {
  * for a type that carries no billing, or null for one out of shape.
  */
 export function lifecycleEvent(body: string):
-    { id: string; kind: Billed["kind"]; route: unknown; started_at: number;
-      execution_ms: number; vcpu: number; memory_mb: number } | "ignored" | null {
+    (Omit<Billed, "authority"> & { route: unknown }) | "ignored" | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
@@ -84,6 +92,13 @@ export function lifecycleEvent(body: string):
   }
   if (!TYPES.includes(parsed["type"])) {
     return "ignored";
+  }
+  const at = typeof parsed["timestamp"] === "string" ? Date.parse(parsed["timestamp"]) : NaN;
+  const execution_id = parsed["sandbox_execution_id"];
+  const sandbox_id = parsed["sandbox_id"];
+  if (!Number.isFinite(at) || at < 0 || typeof execution_id !== "string"
+      || !ID.test(execution_id) || typeof sandbox_id !== "string" || !ID.test(sandbox_id)) {
+    return null;
   }
   const data = parsed["event_data"];
   const execution = plain(data) ? data["execution"] : undefined;
@@ -99,9 +114,46 @@ export function lifecycleEvent(body: string):
       || memory === null) {
     return null;
   }
-  return { id: parsed["id"], kind: parsed["type"].endsWith("paused") ? "paused" : "killed",
+  return { id: parsed["id"], execution_id, sandbox_id, at,
+           kind: parsed["type"].endsWith("paused") ? "paused" : "killed",
            route: metadata["ta_route"], started_at: started, execution_ms: ms, vcpu,
            memory_mb: memory };
+}
+
+/**
+ * The request's body as text, read through a byte count that stops past `most`: null once
+ * it has more bytes than that, or bytes that are not UTF-8. Nothing past `most` is read.
+ */
+export async function cappedText(request: Request, most: number): Promise<string | null> {
+  if (request.body === null) {
+    return "";
+  }
+  const reader = request.body.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    size += value.byteLength;
+    if (size > most) {
+      await reader.cancel();
+      return null;
+    }
+    parts.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const part of parts) {
+    bytes.set(part, at);
+    at += part.byteLength;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return null;
+  }
 }
 
 function answer(status: number, body: unknown): Response {
@@ -122,8 +174,11 @@ export async function e2bLifecycle(request: Request, env: DoorsEnv): Promise<Res
   if (!Number.isFinite(length) || length > HOOK_BODY_MAX) {
     return answer(413, { error: "the event is too large" });
   }
-  const body = await request.text();
-  if (body.length > HOOK_BODY_MAX || !signed(secret, body, request.headers.get("e2b-signature"))) {
+  const body = await cappedText(request, HOOK_BODY_MAX);
+  if (body === null) {
+    return answer(413, { error: "the event is too large" });
+  }
+  if (!signed(secret, body, request.headers.get("e2b-signature"))) {
     return answer(401, { error: "the event's signature does not verify" });
   }
   const event = lifecycleEvent(body);

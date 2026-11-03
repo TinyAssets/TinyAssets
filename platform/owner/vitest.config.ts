@@ -178,9 +178,10 @@ const KEYRING = JSON.stringify({
   keys: { k1: randomBytes(32).toString("base64"), k2: randomBytes(32).toString("base64") },
 });
 
-/** The files Worker's data keys' ring, made fresh for each run. */
+/** The files Worker's data keys' ring, made fresh for each run: rotated, `k1` the older kid. */
 const FILES_RING = JSON.stringify({
-  active: "k1", keys: { k1: randomBytes(32).toString("base64") },
+  active: "k2",
+  keys: { k1: randomBytes(32).toString("base64"), k2: randomBytes(32).toString("base64") },
 });
 
 export default defineConfig({
@@ -193,7 +194,8 @@ export default defineConfig({
         // in reach, its gateway calls watched, code mode's bounds small, its control record
         // flipped (read at each call, or once a second). FILES, GATEWAY and HOOKS
         // are the config's own bindings, to the files, gateway and hooks Workers run beside it. TEST_KEYRING is the gateway's
-        // keyring, so a test can seal under an older kid; the tests' own fetches reach the
+        // keyring, so a test can seal under an older kid, and FILES_TEST_RING the files
+        // Worker's, so a test can wrap a data key under its older kid; the tests' own fetches reach the
         // fake. ROUTING_MAC_KEY is the config's one secret, the sandbox tokens' routing key.
         plugins: [
           cloudflareTest({
@@ -210,7 +212,8 @@ export default defineConfig({
                 SWITCHED: { className: "SwitchedOwnerDO", useSQLite: true },
                 CACHED: { className: "CachedOwnerDO", useSQLite: true },
               },
-              bindings: { TEST_KEYRING: KEYRING, ROUTING_MAC_KEY: ROUTING_KEY },
+              bindings: { TEST_KEYRING: KEYRING, FILES_TEST_RING: FILES_RING,
+                          ROUTING_MAC_KEY: ROUTING_KEY },
               serviceBindings: { CONNECT: { name: "tinyassets-gateway",
                                             entrypoint: "ConnectGateway" } },
               outboundService: "fake-upstream",

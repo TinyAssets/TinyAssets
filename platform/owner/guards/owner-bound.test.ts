@@ -44,6 +44,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { LIMITS as COLLECTIONS } from "../src/collections";
+import { exported } from "../src/export";
 import { LEDGER_LIMITS } from "../src/ledger";
 import {
   CHUNK_BYTES, INDEX_KEPT, MANIFEST_INDEXES, MANIFEST_TABLES, PAGE_BYTES, PLACE_BYTES,
@@ -553,19 +554,23 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     schema_digests: { rows: 1024, bytes: ROW + 8 + 64,
                       by: "one a migration; 1,024 past any list the code will hold" },
     // Slice P: the nightly manifest's bookkeeping, at most two manifests (`backup.ts`).
-    owner_backups: { rows: 2, bytes: ROW + CURSOR_CHARS + MANIFEST_PARTS * PART_ENTRY + 7 * 8,
+    owner_backups: { rows: 2, bytes: ROW + CURSOR_CHARS + MANIFEST_PARTS * PART_ENTRY + 8 * 8,
                      by: "the newest finished manifest and the one being written, each its " +
                        "cursor and its list of at most MANIFEST_PARTS parts" },
     // Slice P: the sandbox meter (`sandbox-time.ts`).
     sandbox_meter: { rows: 1, bytes: ROW + 3 * 8, by: "one row: the log's cursor" },
-    owner_backup_state: { rows: 1, bytes: ROW + 8, by: "one row: changed since the manifest" },
-    owner_exports: { rows: EXPORTS_OPEN, bytes: ROW + 32 + 16, by: "EXPORTS_OPEN" },
+    owner_backup_state: { rows: 1, bytes: ROW + 3 * 8,
+                          by: "one row: the change clock, changed since the manifest, told" },
+    owner_exports: { rows: EXPORTS_OPEN, bytes: ROW + 32 + 3 * 8,
+                     by: "EXPORTS_OPEN, each its id, opening, end and clock" },
     sandbox_spans: { rows: SPANS_KEPT + 1 + G.maxFreeClients + G.maxOwnerClients,
                      bytes: ROW + 64 + 2 * 8,
                      by: "SPANS_KEPT closed spans, and one open an authority (the owner's " +
                        "and each client's)" },
-    sandbox_billed: { rows: BILLED_KEPT, bytes: ROW + 128 + 8,
-                      by: "BILLED_KEPT E2B event ids, to count each once" },
+    sandbox_billed: { rows: BILLED_KEPT, bytes: ROW + 3 * 128 + 8,
+                      by: "BILLED_KEPT E2B executions inside the window, each its execution, " +
+                        "event and sandbox ids and the event's time",
+                      indexes: { sandbox_billed_by_age: key(128) } },
     sandbox_days: { rows: DAYS_KEPT, bytes: ROW + 8 + 4 * 8,
                     by: "DAYS_KEPT days of sandbox seconds" },
     // The owner's admission: one row, its reasons a short fixed list; after the erasure, the
@@ -672,6 +677,65 @@ export function worstCase(terms: Readonly<Record<string, Term>> = { ...TERMS, ..
     number {
   return Object.entries(terms).reduce((sum, [name, term]) => sum + termBytes(name, term), 0);
 }
+
+/**
+ * A row line's most text past its values' own (`export.ts`): its frame, each column's name
+ * and punctuation, and `JSON_VALUE` a value (a number's longest text, `null`, a string's
+ * quotes or the `$base64` wrapper), each value's bytes counted apart at `JSON_POINT`.
+ */
+const JSON_VALUE = 24;
+/** A chunk's line in the stream (`{"t":"chunk","sha256":...,"size":...}`), at its widest. */
+const CHUNK_LINE = 128;
+
+/**
+ * The nightly manifest's stream at its worst (`backup.ts`, review L7): every exported
+ * table's rows at their bound, each line its frame (`frameBytes`) plus its values' bytes
+ * escaped at JSON's worst (`JSON_POINT`, a control character's `\u00XX`; base64's 4/3 is
+ * less); a term charged in bytes (the file manifest, the collections) as its charge in rows
+ * of `RECORD_FIXED` each, the least any charged row costs, each at its tables' widest
+ * frame, and a chunk's line for each of the file manifest's.
+ */
+export function worstStream(terms: Readonly<Record<string, Term>> = TERMS): number {
+  const tables = exported();
+  const frameBytes = (table: string) => `{"t":"row","table":"${table}","row":{}}\n`.length
+    + tables[table]!.columns.reduce((sum, column) => sum + column.length + 4 + JSON_VALUE, 0);
+  let total = 0;
+  for (const [name, term] of Object.entries(terms)) {
+    const covers = name === "file_manifest" ? Object.keys(MANIFEST_TABLES)
+      : [name, ...(term.tables ?? [])];
+    const streamed = [...new Set(covers)].filter((table) => table in tables);
+    if (streamed.length === 0) {
+      continue;
+    }
+    if (term.charged === true) {
+      const rows = term.rows * term.bytes / RECORD_FIXED;
+      const widest = Math.max(...streamed.map(frameBytes))
+        + (name === "file_manifest" ? CHUNK_LINE : 0);
+      total += rows * widest + JSON_POINT * term.rows * term.bytes;
+    } else {
+      total += term.rows * (frameBytes(name) + JSON_POINT * term.bytes);
+    }
+  }
+  return total;
+}
+
+/** The exported tables no term covers: none, or the stream's worst case misses them. */
+function unstreamed(terms: Readonly<Record<string, Term>> = TERMS): string[] {
+  const covered = new Set(Object.entries(terms).flatMap(([name, term]) =>
+    name === "file_manifest" ? Object.keys(MANIFEST_TABLES) : [name, ...(term.tables ?? [])]));
+  return Object.keys(exported()).filter((table) => !covered.has(table));
+}
+
+describe("the nightly manifest's stream", () => {
+  it("fits MANIFEST_PARTS at its worst, JSON's escaping included", () => {
+    expect(unstreamed()).toEqual([]);
+    const worst = worstStream();
+    expect(worst).toBeGreaterThan(DATABASE_BYTES * SHARE);  // escaping is counted
+    expect(worst).toBeLessThan(MANIFEST_PARTS * CHUNK_BYTES);
+    // Its part list fits one SQLite row (2 MB, Durable Objects' limits).
+    expect(MANIFEST_PARTS * PART_ENTRY).toBeLessThan(2_000_000);
+  });
+});
 
 describe("the owner's database bound", () => {
   it("covers every table the owner's schema makes, with no exceptions", () => {

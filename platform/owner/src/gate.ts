@@ -18,8 +18,10 @@
  * refuses, loudly, any statement but a single `SELECT` (nothing after it) and any
  * `transactionSync` outside a unit (Fact 8: a write outside a unit is a crash, not a hope).
  * A unit inside another, and a unit that returns a promise, are refused the same way.
- * A unit that wrote anything is followed, in its own transaction, by `changed` (the
- * nightly manifest's mark that something changed since it last ran, `backup.ts`).
+ * A unit that wrote anything is followed, in its own transaction, by `changed`: the owner's
+ * change clock moves (`backup.ts` `mark`), which pins what an export and the nightly
+ * manifest read. A `quiet` unit is one that changes nothing they read: the export's and the
+ * manifest's own bookkeeping, and a session's renewal; it moves no clock.
  */
 
 /** What the object's modules use of its storage: SQL, and `transactionSync`. */
@@ -51,6 +53,8 @@ export class WriteGate {
   #holding = false;
   /** Whether the unit running has written: only a unit that did is marked `changed`. */
   #wrote = false;
+  /** Whether the unit running is `quiet`: it writes nothing the owner's change clock pins. */
+  #quiet = false;
   /** Run, in the unit's own transaction, after a unit that wrote. */
   #changed: (sql: Pick<SqlStorage, "exec">) => void = () => {};
   readonly #sql: SqlStorage;
@@ -130,7 +134,7 @@ export class WriteGate {
           return { error };  // committed as far as the unit wrote, then thrown below
         } finally {
           this.#holding = false;
-          if (this.#wrote) {
+          if (this.#wrote && !this.#quiet) {
             this.#changed(sql);
           }
         }
@@ -143,5 +147,21 @@ export class WriteGate {
       return Promise.reject(error);
     }
     return "error" in outcome ? Promise.reject(outcome.error) : Promise.resolve(outcome.value);
+  };
+
+  /**
+   * A unit, as `write` runs it, that moves no change clock: it writes only the export's or
+   * the manifest's own bookkeeping, or a session's renewal, none of which an export reads.
+   */
+  readonly quiet: Write = <T>(unit: () => T): Promise<T> => {
+    if (this.#holding) {
+      throw new Error(NESTED_UNIT);
+    }
+    this.#quiet = true;
+    try {
+      return this.write(unit);
+    } finally {
+      this.#quiet = false;
+    }
   };
 }

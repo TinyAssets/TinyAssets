@@ -6,7 +6,9 @@ import { describe, expect, it } from "vitest";
 import { LIMITS } from "../src/collections";
 import { CHUNK_BYTES, PLACE_BYTES } from "../src/manifest";
 import { OwnerDO } from "../src/owner-do";
-import { MIGRATION_CHANGED, MIGRATIONS, migrate, migrationDigest } from "../src/schema";
+import {
+  MIGRATION_CHANGED, MIGRATION_UNPINNED, MIGRATIONS, migrate, migrationDigest,
+} from "../src/schema";
 import { failure, ownerObject } from "./support";
 
 function version(state: DurableObjectState): number {
@@ -31,7 +33,7 @@ const RPC_METHODS = Object.freeze([
   "codeRun", "collectionClear", "collectionDelete", "collectionGet", "collectionHistory",
   "collectionPull",
   "collectionWrite", "connectionCommit", "connectionList", "connectionPrepare",
-  "connectionRevoke", "deleteAgent", "disableAgent", "egressBeat", "egressOpen", "egressReceipts",
+  "connectionRevoke", "dataKeyRewrap", "deleteAgent", "disableAgent", "egressBeat", "egressOpen", "egressReceipts",
   "egressSettle", "exportChunks", "exportEnd", "fileChanges", "fileHistory",
   "fileHistoryPurge", "fileList",
   "fileMkdir", "fileRead", "fileReadChunks", "fileRedact", "fileRemove", "fileRename",
@@ -118,6 +120,21 @@ describe("schema migration on wake", () => {
       // The code as applied still starts, and a new migration after it applies.
       expect(migrate(state.storage, [...MIGRATIONS, ["CREATE TABLE probe_next (n INTEGER)"]]))
         .toBe(MIGRATIONS.length + 1);
+    });
+  });
+
+  it("refuses to start once an applied migration's digest is gone, never passing by default " +
+     "(review M3)", async () => {
+    const { stub, as, name } = ownerObject();
+    await stub.collectionPull(as(name), PULL);
+    await runInDurableObject(stub, (_instance: OwnerDO, state) => {
+      // The review's attack: the digest row deleted, then an edited migration.
+      state.storage.sql.exec("DELETE FROM schema_digests");
+      const edited = [[...MIGRATIONS[0]!, "CREATE TABLE probe_unpinned (n INTEGER)"]];
+      expect(() => migrate(state.storage, edited)).toThrow(MIGRATION_UNPINNED);
+      expect(() => migrate(state.storage)).toThrow(MIGRATION_UNPINNED);
+      expect(state.storage.sql.exec(
+        "SELECT name FROM sqlite_master WHERE name = 'probe_unpinned'").toArray()).toEqual([]);
     });
   });
 

@@ -17,7 +17,9 @@ import {
   OWNER_ERASED, OWNER_SUSPENDED, PLATFORM_CALLER, PLATFORM_ONLY, PLATFORM_RESERVED,
   tombstoned, writeTombstone,
 } from "../src/admission";
-import { ERASE_RETRY_MS, ERASING, erasureAnswer, RECOVERY_WINDOW_S } from "../src/erasure";
+import {
+  ERASE_RETRY_MS, ERASING, erasureAnswer, PUT_GRACE_MS, RECOVERY_WINDOW_S,
+} from "../src/erasure";
 import { WriteGate } from "../src/gate";
 import { Grants } from "../src/grants";
 import { clock, Ledger } from "../src/ledger";
@@ -53,7 +55,7 @@ type Rig = Awaited<ReturnType<typeof rig>>;
 const doors = () => Object.getOwnPropertyNames(OwnerDO.prototype)
   .filter((door) => !["constructor", "alarm", "admissionSet", "tierSet", "fetch",
                       "webSocketMessage", "webSocketClose", "webSocketError",
-                      "sandboxRung", "sandboxBilled"].includes(door));
+                      "sandboxRung", "sandboxBilled", "dataKeyRewrap"].includes(door));
 const call = (r: Rig, door: string, binding: Binding) =>
   (r.stub() as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[door]!(
     binding, {});
@@ -423,8 +425,18 @@ describe("the erasure's tombstone", () => {
 });
 
 describe("the account-erase answer", () => {
-  it("names when erasure is complete: past the platform's 30-day point-in-time recovery", () => {
+  it("names when erasure is complete: the mark, its put grace, then 30 days of recovery",
+     () => {
     expect(RECOVERY_WINDOW_S).toBe(30 * 86_400);
-    expect(erasureAnswer(1_000)).toMatchObject({ erased: true, complete_at: 1_000 + 30 * 86_400 });
+    const grace = PUT_GRACE_MS / 1000;
+    // Answered at the mark, before the wipe: not erased yet, complete at its earliest.
+    expect(erasureAnswer(1_000, null)).toMatchObject({
+      erased: false, complete_at: 1_000 + grace + 30 * 86_400 });
+    // Wiped on time: the same moment.
+    expect(erasureAnswer(1_000, 1_000 + grace)).toMatchObject({
+      erased: true, complete_at: 1_000 + grace + 30 * 86_400 });
+    // A retry that wiped later: later.
+    expect(erasureAnswer(1_000, 1_000 + grace + 600).complete_at)
+      .toBe(1_000 + grace + 600 + 30 * 86_400);
   });
 });

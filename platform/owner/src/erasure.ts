@@ -45,14 +45,19 @@ import type { OwnerStorage } from "./gate";
 export const RECOVERY_WINDOW_S = 30 * 86_400;
 
 /**
- * What the account-erase door answers (slice 10 builds the door): erased now, every door
- * refusing, and complete, past the platform's own point-in-time recovery, at `complete_at`.
+ * What the account-erase door answers (slice L's door, which marks first and answers at
+ * the mark): `erased` once the wipe ran (`wipedAt`, s), and, either way, `complete_at`: the
+ * wipe's earliest time, the mark plus `PUT_GRACE_MS` (or the wipe itself, should a retry
+ * have run it later), plus the platform's own point-in-time recovery. The contract slice L's
+ * door answers with (tasks.md).
  */
-export function erasureAnswer(wipedAt: number): { erased: true; complete_at: number;
-                                                   note: string } {
-  return { erased: true, complete_at: wipedAt + RECOVERY_WINDOW_S,
-           note: "The owner's data is deleted. A platform recovery copy of the owner's " +
-             "database exists for 30 days after; past complete_at, nothing of it remains." };
+export function erasureAnswer(markedAt: number, wipedAt: number | null):
+    { erased: boolean; complete_at: number; note: string } {
+  const wipe = Math.max(markedAt + PUT_GRACE_MS / 1000, wipedAt ?? 0);
+  return { erased: wipedAt !== null, complete_at: wipe + RECOVERY_WINDOW_S,
+           note: "Every door is closed and the owner's data is being deleted. A platform " +
+             "recovery copy of the owner's database exists for 30 days after the deletion; " +
+             "past complete_at, nothing of it remains." };
 }
 
 /** What every door and lane answers while the owner is erased. */

@@ -4,10 +4,16 @@
  * `manifest` lane of the object's one schedule (`schedule.ts`): no platform cron looks at
  * every owner; each object's Lifecycle job wakes it once a night.
  *
- * - **Only on change.** Every write unit of the object but this lane's own marks the owner
- *   changed (`mark`, the write gate's `onChange`; one row written on the first change after a
- *   manifest, none after); a manifest begins by clearing it. With a finished manifest and no
- *   change since, the lane has no job: an idle owner's object is never woken for it.
+ * - **The change clock.** Every write unit of the object but a quiet one (this lane's own,
+ *   an export's bookkeeping, a session's renewal: `gate.ts`) moves the owner's change clock
+ *   and marks the owner changed (`mark`, the write gate's `onChange`); a manifest begins by
+ *   clearing the mark. With a finished manifest and no change since, the lane has no job: an
+ *   idle owner's object is never woken for it.
+ * - **One snapshot.** A manifest is pinned to the clock as it began. A pass reads pages in
+ *   bursts with no outside call between them (each page its own unit, and nothing else runs
+ *   in the object between units that await nothing), so no change lands inside a burst;
+ *   each burst first checks the clock, and once it moved the manifest begins again from its
+ *   first page, the parts it put deleted. A stream that ends is the owner at one moment.
  * - **When.** A manifest is due from its day's start in UTC plus the owner's own offset in
  *   the night (`MANIFEST_SPREAD_S`, from a hash of the owner id), so owners' writes spread
  *   over hours rather than meet at midnight. The first is due the night after the object
@@ -20,6 +26,10 @@
  *   records those parts (`owner_backups.part_list`, each `<sha256>:<size>`, comma-joined)
  *   and the next page's cursor.
  *   A crash or the pass's end between the two only writes those parts again.
+ * - **Its ceiling.** `MANIFEST_PARTS` parts, past the worst stream the object can hold
+ *   (the owner-bound guard measures it, JSON's escaping included). A stream past it is
+ *   never retried in a loop: its parts are deleted, the owner is told once (a notice,
+ *   `manifest_ceiling`), and the lane waits for the owner's next change.
  * - **Kept.** The newest finished manifest, and the one being written: once one finishes,
  *   every older one is deleted from R2, root first, and then its rows. A new one begins
  *   only once that is done, so the object never holds more than two manifests' rows.
@@ -33,7 +43,8 @@
  */
 import { createHash } from "node:crypto";
 
-import { chunkLine, decodeCursor, encodeCursor, END_LINE, readPage } from "./export";
+import { MANIFEST_PARTS } from "../../files/src/keys";
+import { chunkLine, decodeCursor, encodeCursor, END_LINE, type Page, readPage } from "./export";
 import { CHUNK_BYTES, type ChunkStore, type ChunkSpace } from "./files";
 import type { OwnerStorage, Write } from "./gate";
 
@@ -45,8 +56,19 @@ export const MANIFEST_SPREAD_S = 4 * 3600;
 export const MANIFEST_RETRY_S = 300;
 /** A part's entry in its manifest's list: its hash, a colon, its size, a comma. */
 export const PART_ENTRY = 64 + 1 + 7 + 1;
-/** The stream's bytes a pass gathers before it puts them as parts. */
-const GATHER_BYTES = CHUNK_BYTES;
+/**
+ * The stream's bytes one burst gathers, with no outside call, before it puts them as parts:
+ * two parts' worth, about 24 MiB of the isolate's 128 MB at its peak (the text as UTF-16,
+ * then its bytes).
+ */
+const GATHER_BYTES = 2 * CHUNK_BYTES;
+/** The notice an owner is given, once, when its manifest passes `MANIFEST_PARTS`. */
+export const MANIFEST_CEILING = "manifest_ceiling";
+
+/** The owner's change clock as it stands. A read. */
+export function changeClock(sql: Pick<SqlStorage, "exec">): number {
+  return sql.exec<{ clock: number }>("SELECT clock FROM owner_backup_state").one().clock;
+}
 const DAY_S = 86_400;
 
 /** The day `at` (seconds) falls in, UTC, as `YYYYMMDD`. */
@@ -75,11 +97,13 @@ type BackupRow = {
   started_at: number;
   finished_at: number | null;
   retry_at: number | null;
+  clock: number;
 };
 
 /** What the manifest lane runs on. */
 export interface BackupParts {
   readonly storage: OwnerStorage;
+  /** The write gate's quiet units: this lane's own writes move no change clock. */
   readonly write: Write;
   readonly store: ChunkStore;
   /** The owner's namespace and wrapped key, made on first use (`Files.space`). */
@@ -90,12 +114,12 @@ export interface BackupParts {
   readonly schema: number;
   /** Whether the owner is being erased: a pass under way stops before its next put. */
   readonly halted: () => boolean;
+  /** In a unit: the owner told something its work reports (`notices.ts`). */
+  readonly notice: (type: string, detail: string) => void;
 }
 
 export class Backups {
   readonly #parts: BackupParts;
-  /** True while this lane's own unit runs: its writes are no change of the owner's. */
-  #quiet = false;
 
   constructor(parts: BackupParts) {
     this.#parts = parts;
@@ -105,22 +129,19 @@ export class Backups {
     return this.#parts.storage.sql;
   }
 
-  /** One of this lane's units: it marks nothing changed (units run at once, synchronously). */
+  /** One of this lane's units: quiet, so it moves no change clock. */
   #write<T>(unit: () => T): Promise<T> {
-    this.#quiet = true;
-    try {
-      return this.#parts.write(unit);
-    } finally {
-      this.#quiet = false;
-    }
+    return this.#parts.write(unit);
   }
 
   /**
-   * In a unit that wrote (the write gate's `onChange`): the owner changed since the manifest.
-   * Whether this was the first change since, which sets the lane's job again.
+   * In a unit that wrote (the write gate's `onChange`, never a quiet unit): the owner's
+   * change clock moved, and the owner changed since the manifest. Whether this was the first
+   * change since, which sets the lane's job again.
    */
   mark(sql: Pick<SqlStorage, "exec">): boolean {
-    return !this.#quiet && sql.exec(
+    sql.exec("UPDATE owner_backup_state SET clock = clock + 1");
+    return sql.exec(
       "UPDATE owner_backup_state SET changed = 1 WHERE changed = 0 RETURNING changed")
       .toArray().length > 0;
   }
@@ -208,10 +229,43 @@ export class Backups {
       // What changes from here on is the next manifest's.
       this.#sql.exec("UPDATE owner_backup_state SET changed = 0");
       this.#sql.exec(
-        "INSERT INTO owner_backups (day, state, cursor, parts, part_list, bytes, started_at) " +
-          "VALUES (?, 'writing', NULL, 0, '', 0, ?) ON CONFLICT (day) DO NOTHING", day, now);
+        "INSERT INTO owner_backups (day, state, cursor, parts, part_list, bytes, started_at, " +
+          "clock) VALUES (?, 'writing', NULL, 0, '', 0, ?, ?) ON CONFLICT (day) DO NOTHING",
+        day, now, changeClock(this.#sql));
     }));
     return this.#rows().find((row) => row.day === day)!;
+  }
+
+  /**
+   * The manifest of `day` begun again from its first page, pinned to the clock as it stands:
+   * the owner changed since it began. The parts it put are deleted first.
+   */
+  async #restart(ns: string, day: string, parts: number): Promise<void> {
+    await this.#parts.store.deleteManifest(ns, day, parts);
+    await this.#write(() => this.#parts.storage.transactionSync(() => {
+      this.#sql.exec("UPDATE owner_backup_state SET changed = 0");
+      this.#sql.exec("UPDATE owner_backups SET cursor = NULL, parts = 0, part_list = '', " +
+                       "bytes = 0, retry_at = NULL, clock = ? WHERE day = ?",
+                     changeClock(this.#sql), day);
+    }));
+  }
+
+  /**
+   * The manifest of `day` given up past `MANIFEST_PARTS`: its parts deleted, its row gone,
+   * and the owner told once until a manifest is written again. The lane waits for a change.
+   */
+  async #abandon(ns: string, day: string, parts: number): Promise<void> {
+    console.error("the nightly manifest passed its ceiling; the owner is told");
+    await this.#parts.store.deleteManifest(ns, day, parts);
+    await this.#write(() => this.#parts.storage.transactionSync(() => {
+      this.#sql.exec("DELETE FROM owner_backups WHERE day = ?", day);
+      if (this.#sql.exec("UPDATE owner_backup_state SET told = 1 WHERE told = 0 RETURNING told")
+            .toArray().length > 0) {
+        this.#parts.notice(MANIFEST_CEILING, `The nightly recovery copy of your data passed ` +
+          `its ${MANIFEST_PARTS} parts and was not written. Your data is intact; export it ` +
+          "to keep a copy.");
+      }
+    }));
   }
 
   /** The manifest of `row` carried on from its cursor until it ends or the pass does. */
@@ -222,18 +276,25 @@ export class Backups {
     const { ns, key } = await this.#parts.space();
     let cursor = row.cursor;
     let part = row.parts;
+    let clock = row.clock;
     while (Date.now() < until && !this.#parts.halted()) {
-      // Whole pages, gathered to about a part's size, each read in a unit of its own.
+      // Whole pages, gathered to a burst's size, each read in a unit of its own, with no
+      // outside call between them: no other unit runs in the object meanwhile.
       const lines: string[] = [];
       let size = 0;
       let next: string | null = cursor;
       let ended = false;
+      let moved = false;
       while (size < GATHER_BYTES) {
         const at = next;
-        const page = await this.#write(() => readPage(
-          this.#sql, decodeCursor(at),
-          { schema: this.#parts.schema, owner: this.#parts.owner(), at: Date.now() },
-          Number.MAX_SAFE_INTEGER));
+        const page = await this.#write((): Page | null => changeClock(this.#sql) !== clock ? null
+          : readPage(this.#sql, decodeCursor(at),
+                     { schema: this.#parts.schema, owner: this.#parts.owner(), at: Date.now(),
+                       clock }, Number.MAX_SAFE_INTEGER));
+        if (page === null) {
+          moved = true;
+          break;
+        }
         const text = [...page.lines, ...page.chunks.map((chunk) => chunkLine(chunk)),
                       ...(page.next === null ? [END_LINE] : [])];
         for (const line of text) {
@@ -246,7 +307,19 @@ export class Backups {
         }
         next = encodeCursor(page.next);
       }
+      if (moved) {
+        // The owner changed since this manifest began: it begins again, pinned anew.
+        await this.#restart(ns, row.day, part);
+        cursor = null;
+        part = 0;
+        clock = changeClock(this.#sql);
+        continue;
+      }
       const bytes = new TextEncoder().encode(lines.map((line) => `${line}\n`).join(""));
+      if (part + Math.ceil(bytes.byteLength / CHUNK_BYTES) > MANIFEST_PARTS) {
+        await this.#abandon(ns, row.day, part);
+        return;
+      }
       const written: { sha256: string; size: number }[] = [];
       for (let at = 0; at < bytes.byteLength; at += CHUNK_BYTES) {
         if (this.#parts.halted()) {
@@ -275,9 +348,11 @@ export class Backups {
           return;  // the root carries the key: none is written once the erasure began
         }
         await this.#parts.store.putManifestRoot(ns, key, row.day, parts);
-        await this.#write(() => this.#sql.exec(
-          "UPDATE owner_backups SET state = 'done', finished_at = ? WHERE day = ?",
-          Date.now() / 1000, row.day));
+        await this.#write(() => this.#parts.storage.transactionSync(() => {
+          this.#sql.exec("UPDATE owner_backups SET state = 'done', finished_at = ? WHERE day = ?",
+                         Date.now() / 1000, row.day);
+          this.#sql.exec("UPDATE owner_backup_state SET told = 0");
+        }));
         await this.#prune(until);
         return;
       }

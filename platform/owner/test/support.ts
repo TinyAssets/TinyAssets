@@ -60,7 +60,9 @@ export function through(overrides: Partial<ChunkStore>): ChunkStore {
     mintKey: (ns) => files.mintKey(ns),
     putChunks: (ns, key, chunks) => files.putChunks(ns, key, chunks),
     getChunks: (ns, key, reads) => files.getChunks(ns, key, reads),
-    deleteChunks: (ns, sha256s) => files.deleteChunks(ns, sha256s),
+    deleteChunks: (ns, key, sha256s) => files.deleteChunks(ns, key, sha256s),
+    rewrapKey: (ns, key) => files.rewrapKey(ns, key),
+    rewrapManifestRoot: (ns, day) => files.rewrapManifestRoot(ns, day),
     deleteNamespace: (ns) => files.deleteNamespace(ns),
     putManifestPart: (ns, key, day, part, bytes) =>
       files.putManifestPart(ns, key, day, part, bytes),

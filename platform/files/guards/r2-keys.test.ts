@@ -10,7 +10,8 @@
  * - in the files Worker, the bucket is reached in exactly one form,
  *   `this.env.BLOBS.<put|get|head|delete>(key, ...)`, `this.env` is never read for
  *   anything else but the data keys' ring (`this.env.FILES_KEYRING`, handed straight to
- *   `datakey.ts`, the one module that reads it), and every key is a call of a key builder
+ *   `datakey.ts`'s `mint`, `unwrap` and `rewrap`, the one module that reads it), and every
+ *   key is a call of a key builder
  *   (`chunkKey`, `manifestKey`, or `listedManifest`, which rebuilds a listed manifest key
  *   through `manifestKey`; or a list of them mapped from a list), each the one imported
  *   from `./keys` and nothing shadowing it. No alias (`const b = this.env.BLOBS`,
@@ -35,7 +36,7 @@ const PREFIXES: ReadonlySet<string> = new Set(["chunkPrefix", "manifestPrefix"])
 const RING = "FILES_KEYRING";
 /** The cipher's choice, read only by `cipherOf`. */
 const CIPHER = "FILES_CIPHER";
-const RING_READERS: ReadonlySet<string> = new Set(["mint", "unwrap"]);
+const RING_READERS: ReadonlySet<string> = new Set(["mint", "unwrap", "rewrap"]);
 
 function thisEnv(node: ts.Node): boolean {
   return ts.isPropertyAccessExpression(node) && node.expression.kind === ts.SyntaxKind.ThisKeyword

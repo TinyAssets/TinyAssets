@@ -1,7 +1,8 @@
 /**
  * E2B's signed lifecycle webhook (slice P, `e2b-hooks.ts`): verified by E2B's own signature
- * scheme, parsed strictly, routed by the sealed route E2B echoes from the sandbox's metadata
- * to the owner's object, which counts each billed execution once.
+ * scheme, its body read no further than its bound, parsed strictly, routed by the sealed
+ * route E2B echoes from the sandbox's metadata to the owner's object, which counts each
+ * billed execution once, and only while the event's own signed time is inside its window.
  */
 import { createHash } from "node:crypto";
 
@@ -9,7 +10,8 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import type { DoorsEnv } from "../src/config";
-import { E2B_HOOK_PATH, lifecycleEvent, signed } from "../src/e2b-hooks";
+import { BILLED_WINDOW_S } from "../../owner/src/sandbox-time";
+import { E2B_HOOK_PATH, HOOK_BODY_MAX, lifecycleEvent, signed } from "../src/e2b-hooks";
 import { openRoute, sealRoute } from "../src/routing-mac";
 import { call, doorsEnv, url } from "./support";
 
@@ -27,7 +29,7 @@ function owner(): string {
 function event(who: string, over: Record<string, unknown> = {}) {
   return {
     id: crypto.randomUUID(), version: "v2", type: "sandbox.lifecycle.paused",
-    timestamp: "2026-11-03T10:00:00Z", event_category: "lifecycle", event_label: "pause",
+    timestamp: new Date().toISOString(), event_category: "lifecycle", event_label: "pause",
     event_data: {
       sandbox_metadata: { ta_route: sealRoute(env.ROUTING_MAC_KEY, { owner: who,
                                                                     authority: "owner" }) },
@@ -35,7 +37,7 @@ function event(who: string, over: Record<string, unknown> = {}) {
                    execution_time: 120_000 },
       pause_mode: "full",
     },
-    sandbox_id: "sbx", sandbox_execution_id: "x", sandbox_template_id: "t",
+    sandbox_id: "sbx", sandbox_execution_id: crypto.randomUUID(), sandbox_template_id: "t",
     sandbox_build_id: "b", sandbox_team_id: "team", events_ttl_days: 30, ...over,
   };
 }
@@ -65,6 +67,68 @@ describe("E2B's lifecycle webhook", () => {
       { day: "20261103", seconds: 0, billed_seconds: 60, vcpu_seconds: 120, gb_seconds: 60 },
       { day: "20261102", seconds: 0, billed_seconds: 60, vcpu_seconds: 120, gb_seconds: 60 },
     ]);
+  });
+
+  it("counts one execution once, though a pause and a later kill both carry it (review L1)",
+     async () => {
+    const who = owner();
+    const paused = event(who, { sandbox_execution_id: "exec-1" });
+    paused.event_data.execution.execution_time = 60_000;
+    const killed = { ...paused, id: crypto.randomUUID(), type: "sandbox.lifecycle.killed",
+                     event_label: "kill",
+                     event_data: { ...paused.event_data, kill_reason: "request" } };
+    expect(await (await deliver(JSON.stringify(paused))).json()).toEqual({ counted: true });
+    expect(await (await deliver(JSON.stringify(killed))).json()).toEqual({ counted: false });
+    const { days } = await env.OWNER.getByName(who).sandboxDays(
+      { owner: who, caller: who, origin: null }, {});
+    // 60 s ran; 60 s counted.
+    expect(days.reduce((sum, day) => sum + day.billed_seconds, 0)).toBe(60);
+  });
+
+  it("refuses an event older than its window, or ahead of the clock, by its signed time " +
+     "(review L2)", async () => {
+    const who = owner();
+    const old = event(who, { timestamp: new Date(Date.now() - BILLED_WINDOW_S * 1000 - 60_000)
+      .toISOString() });
+    expect(await (await deliver(JSON.stringify(old))).json()).toEqual({ counted: false });
+    const ahead = event(who, { timestamp: new Date(Date.now() + 3600_000).toISOString() });
+    expect(await (await deliver(JSON.stringify(ahead))).json()).toEqual({ counted: false });
+    // A delivery replayed inside the window is refused by the execution it names, however
+    // many others came between; the ids are kept by age, not by count.
+    const kept = JSON.stringify(event(who));
+    expect(await (await deliver(kept)).json()).toEqual({ counted: true });
+    for (let i = 0; i < 5; i++) {
+      expect(await (await deliver(JSON.stringify(event(who)))).json())
+        .toEqual({ counted: true });
+    }
+    expect(await (await deliver(kept)).json()).toEqual({ counted: false });
+    const { days } = await env.OWNER.getByName(who).sandboxDays(
+      { owner: who, caller: who, origin: null }, {});
+    expect(days.reduce((sum, day) => sum + day.billed_seconds, 0)).toBe(6 * 120);
+    // An event with no time, or no execution id, is out of shape.
+    const { timestamp: _t, ...untimed } = event(who);
+    expect(lifecycleEvent(JSON.stringify(untimed))).toBeNull();
+    const { sandbox_execution_id: _x, ...unnamed } = event(who);
+    expect(lifecycleEvent(JSON.stringify(unnamed))).toBeNull();
+  });
+
+  it("reads a body no further than its bound, with or without a length (review L3)",
+     async () => {
+    let pulled = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled++;
+        controller.enqueue(new Uint8Array(16 * 1024).fill(0x20));
+      },
+    });
+    const response = await call(new Request(url(E2B_HOOK_PATH), {
+      method: "POST", body: endless, headers: { "e2b-signature": "x" } }), doorsEnv);
+    expect(response.status).toBe(413);
+    // It stopped a chunk past its bound: never the whole of an endless body.
+    expect(pulled).toBeLessThanOrEqual(HOOK_BODY_MAX / (16 * 1024) + 3);
+    // Bytes, not UTF-16 units: a body of multi-byte characters past the bound is refused.
+    const wide = "\u00e9".repeat(HOOK_BODY_MAX / 2 + 1);
+    expect((await deliver(wide, signature(wide))).status).toBe(413);
   });
 
   it("refuses a delivery whose signature does not verify, or with no secret set", async () => {

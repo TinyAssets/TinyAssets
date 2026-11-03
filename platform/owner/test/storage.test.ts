@@ -6,10 +6,10 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { FILE_QUOTA } from "../src/files";
+import { FILE_QUOTA, GC_GRACE_S, INLINE_BYTES } from "../src/files";
 import type { Binding } from "../src/owner-do";
 import { MUSE, rig } from "./ledger-support";
-import { failure, sqlIn, TIERS } from "./support";
+import { drainDue, failure, sqlIn, TIERS } from "./support";
 
 const tiers = (bytes: number) => ({ free: { runs: 5, storage_bytes: bytes },
                                     paid: { runs: 10, storage_bytes: bytes } });
@@ -80,6 +80,36 @@ describe("the one storage number", () => {
     const usage = await r.stub.storageUsage(small);
     expect(usage.used_bytes).toBeLessThanOrEqual(8000);
     expect(usage.limit_bytes).toBe(8000);
+  });
+
+  it("lets deleted bytes go at once, and keeps no more garbage than the tier's figure, " +
+     "oldest collected first (review H1)", async () => {
+    const r = await rig();
+    const figure = 3 * (INLINE_BYTES + 1000);
+    const small = r.bind(null, { tiers: tiers(figure) });
+    const shas: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const path = `/workspace/g${i}.bin`;
+      await r.stub.fileWrite(small, { path, expected_etag: null,
+                                      content: new Uint8Array(INLINE_BYTES + 1000).fill(i + 1) });
+      const [row] = await sqlIn(r.stub, "SELECT c.sha256 FROM file_entries e JOIN " +
+        "file_content_chunks c ON c.content_id = e.content_id WHERE e.name = ?", `g${i}.bin`);
+      shas.push(row!["sha256"] as string);
+      await r.stub.fileRemove(small, { path, expected_etag: null, recursive: false });
+      await r.stub.fileHistoryPurge(small, { path });
+      // Deleted: out of the owner's number at once, kept 30 days for recovery uncounted.
+      expect((await r.stub.storageUsage(small)).used_bytes).toBe(0);
+    }
+    // In grace, none is due for 30 days; but four files' garbage passes the figure of three.
+    const due = await sqlIn(r.stub, "SELECT MIN(gc_after) AS due FROM file_chunks");
+    expect(due[0]!["due"] as number).toBeGreaterThan(Date.now() / 1000 + GC_GRACE_S - 3600);
+    await r.stub.fileMkdir(small, { path: "/workspace/x", expected_etag: null });
+    await drainDue(r.stub);
+    // The oldest goes early; the rest, within the figure, wait out their grace.
+    const left = await sqlIn(r.stub, "SELECT sha256, state FROM file_chunks ORDER BY gc_after");
+    expect(left).toEqual(shas.slice(1).map((sha256) => ({ sha256, state: "garbage" })));
+    expect(await sqlIn(r.stub, "SELECT garbage_bytes FROM file_space"))
+      .toEqual([{ garbage_bytes: figure }]);
   });
 
   it("holds mail to the same figure", async () => {

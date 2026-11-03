@@ -164,9 +164,13 @@ const SHARE = (row: string, sign: string) => sign === "+"
 
 /** The chunk states whose bytes count against the owner's quota. */
 const COUNTED = "('uploading', 'live')";
-/** Move `file_space.chunk_bytes` by a chunk row's size, when its state counts. */
+/**
+ * Move `file_space.chunk_bytes` by a chunk row's size when its state counts, and
+ * `garbage_bytes` when it does not (garbage in its grace, or being deleted).
+ */
 const CHUNK_USAGE = (sign: string, row: string) =>
-  `chunk_bytes = chunk_bytes ${sign} ${row}.size * (${row}.state IN ${COUNTED});`;
+  `chunk_bytes = chunk_bytes ${sign} ${row}.size * (${row}.state IN ${COUNTED}), ` +
+  `garbage_bytes = garbage_bytes ${sign} ${row}.size * (${row}.state NOT IN ${COUNTED});`;
 /** What a model reservation row holds against the ceilings, in µ$. */
 const HELD = (row: string) =>
   `(CASE WHEN ${row}.state IN ('reserved', 'dispatched', 'unknown') THEN ${row}.est_cost ` +
@@ -774,9 +778,10 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // that names it, in any root: one model, so no path, history or none, can drop
     // content an entry still names) and a chunk's `refs` (contents made of it). A content
     // nothing refers to goes, with its chunk list; a chunk no content refers to and no
-    // upload holds becomes garbage, deleted by housekeeping after `GC_GRACE_S` (24 h,
-    // SQLite's clock: the schedule compares it with the object's, and a day's grace does
-    // not mind which). So content any entry or kept row names is never garbage. A history
+    // upload holds becomes garbage, deleted by housekeeping after `GC_GRACE_S` (30 days, the
+    // object's point-in-time recovery; SQLite's clock: the schedule compares it with the
+    // object's, and a 30-day grace does not mind which), or sooner, oldest first, once the
+    // garbage passes the tier's storage (`garbage_bytes`, files.ts `collect`). So content any entry or kept row names is never garbage. A history
     // row never changes but for its prune time, its `released` mark and a redaction of
     // its content.
     "CREATE TABLE file_space (only INTEGER PRIMARY KEY CHECK (only = 1), " +
@@ -802,11 +807,14 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       // Everything the manifest takes in the object as SQLite stores it (part 7), and the
       // inline bodies of collection rows, their history and mail (part 15).
       "manifest_bytes INTEGER NOT NULL DEFAULT 0 CHECK (manifest_bytes >= 0), " +
-      "body_bytes INTEGER NOT NULL DEFAULT 0 CHECK (body_bytes >= 0))",
+      "body_bytes INTEGER NOT NULL DEFAULT 0 CHECK (body_bytes >= 0), " +
+      // The bytes of chunks no content holds, in their grace or being deleted: counted in no
+      // owner's storage, and held to the tier's figure by early collection.
+      "garbage_bytes INTEGER NOT NULL DEFAULT 0 CHECK (garbage_bytes >= 0))",
     // The manifest starts charged its two share rows (part 7).
     `INSERT INTO file_space VALUES (1, NULL, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, ${
       FILE_DEFAULTS.keep_versions}, ${FILE_DEFAULTS.keep_recent}, ${
-      FILE_DEFAULTS.retention_days}, NULL, ${2 * SHARE_BYTES}, 0)`,
+      FILE_DEFAULTS.retention_days}, NULL, ${2 * SHARE_BYTES}, 0, 0)`,
     "CREATE TRIGGER file_epoch_rises BEFORE UPDATE OF epoch ON file_space " +
       "WHEN NEW.epoch < OLD.epoch BEGIN SELECT RAISE(ABORT, 'the lease epoch only rises'); END",
     "CREATE TRIGGER file_seq_rises BEFORE UPDATE OF seq ON file_space " +
@@ -1501,7 +1509,8 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "BEGIN SELECT RAISE(ABORT, 'a message body is never changed'); END",
     // Part 15: before real data (slice P). The nightly manifest's bookkeeping (backup.ts): at most
     // two manifests, the newest finished and the one being written, each with its parts as
-    // R2 verified them (`<sha256>:<size>`, comma-joined, at most MANIFEST_PARTS). The sandbox
+    // R2 verified them (`<sha256>:<size>`, comma-joined, at most MANIFEST_PARTS) and the
+    // change clock its stream is pinned to. The sandbox
     // meter (sandbox-time.ts): the cursor of the sandbox Worker's log, each authority's
     // running spans a run not yet metered may overlap (one open at most), the seconds a UTC
     // day, and each run's own (`runs.sandbox_ms`).
@@ -1512,16 +1521,20 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       `parts INTEGER NOT NULL CHECK (parts BETWEEN 0 AND ${MANIFEST_PARTS}), ` +
       `part_list TEXT NOT NULL CHECK (length(part_list) <= ${MANIFEST_PARTS * PART_ENTRY}), ` +
       "bytes INTEGER NOT NULL CHECK (bytes >= 0), started_at REAL NOT NULL, " +
-      "finished_at REAL, retry_at REAL, " +
+      "finished_at REAL, retry_at REAL, clock INTEGER NOT NULL CHECK (clock >= 0), " +
       "CHECK ((state = 'done') = (finished_at IS NOT NULL))) WITHOUT ROWID",
-    // The exports open (export.ts): each holds every chunk from deletion until it ends.
+    // The exports open (export.ts): each its id, its end (under `GC_GRACE_S`) and the change
+    // clock its pages are pinned to.
     "CREATE TABLE owner_exports (export_id TEXT PRIMARY KEY CHECK (length(export_id) = 32 " +
       "AND export_id NOT GLOB '*[^0-9a-f]*'), opened_at REAL NOT NULL, " +
-      "held_until REAL NOT NULL) WITHOUT ROWID",
-    // Whether anything changed since the last manifest began (backup.ts `mark`).
+      "ends_at REAL NOT NULL, clock INTEGER NOT NULL CHECK (clock >= 0)) WITHOUT ROWID",
+    // The owner's change clock (backup.ts `mark`): whether anything changed since the last
+    // manifest began, how many units have changed the owner, and whether the owner was told
+    // its manifest passed its ceiling (told once, until one is written).
     "CREATE TABLE owner_backup_state (only INTEGER PRIMARY KEY CHECK (only = 1), " +
-      "changed INTEGER NOT NULL CHECK (changed IN (0, 1)))",
-    "INSERT INTO owner_backup_state VALUES (1, 1)",
+      "changed INTEGER NOT NULL CHECK (changed IN (0, 1)), " +
+      "clock INTEGER NOT NULL CHECK (clock >= 0), told INTEGER NOT NULL CHECK (told IN (0, 1)))",
+    "INSERT INTO owner_backup_state VALUES (1, 1, 0, 0)",
     "CREATE TABLE sandbox_meter (only INTEGER PRIMARY KEY CHECK (only = 1), " +
       "after INTEGER NOT NULL CHECK (after >= 0), read_at INTEGER NOT NULL, retry_at REAL)",
     "INSERT INTO sandbox_meter VALUES (1, 0, 0, NULL)",
@@ -1537,9 +1550,14 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       "billed_ms INTEGER NOT NULL DEFAULT 0 CHECK (billed_ms >= 0), " +
       "vcpu_ms INTEGER NOT NULL DEFAULT 0 CHECK (vcpu_ms >= 0), " +
       "mb_ms INTEGER NOT NULL DEFAULT 0 CHECK (mb_ms >= 0)) WITHOUT ROWID",
-    // E2B's lifecycle events already counted, by their id: each counted once.
-    "CREATE TABLE sandbox_billed (event_id TEXT PRIMARY KEY CHECK (length(event_id) " +
-      "BETWEEN 1 AND 128), at INTEGER NOT NULL) WITHOUT ROWID",
+    // E2B's executions already counted, by their execution id (each counted once, whichever
+    // of its events came first), with the event's id and the sandbox's, for reconciling, and
+    // the event's time: kept while an event that old is still taken (`BILLED_WINDOW_S`).
+    "CREATE TABLE sandbox_billed (execution_id TEXT PRIMARY KEY CHECK (length(execution_id) " +
+      "BETWEEN 1 AND 128), event_id TEXT NOT NULL CHECK (length(event_id) BETWEEN 1 AND 128), " +
+      "sandbox_id TEXT NOT NULL CHECK (length(sandbox_id) BETWEEN 1 AND 128), " +
+      "at INTEGER NOT NULL) WITHOUT ROWID",
+    "CREATE INDEX sandbox_billed_by_age ON sandbox_billed (at)",
     // The one storage number (founder, 2026-11-03): a body kept inline in its row is user
     // content too, counted in `body_bytes`, owner-wide and in its writer's files scope (its
     // `filer`), so the tier's storage holds every byte a user stores wherever it lives.
@@ -1578,6 +1596,8 @@ export function migrationDigest(migration: Migration): string {
 
 /** What a start answers when a migration it applied before reads differently now. */
 export const MIGRATION_CHANGED = "an applied migration's text changed since it ran; refusing to run";
+/** What a start answers when a migration it applied has no digest to check it against. */
+export const MIGRATION_UNPINNED = "an applied migration has no digest; refusing to run";
 
 /**
  * Apply every migration past the stored version; return the version now stored. Each
@@ -1585,7 +1605,7 @@ export const MIGRATION_CHANGED = "an applied migration's text changed since it r
  * checks the migrations it already applied against them first, as Flyway's `validate`
  * does: one whose text changed since it ran (a hotfix branch, a revert, a squash after the
  * first deploy) stops the object loudly before anything runs, whatever the repo's guard
- * missed.
+ * missed; so does one whose digest row is gone (Fact 8: the check never passes by default).
  */
 export function migrate(
   storage: OwnerStorage,
@@ -1610,7 +1630,10 @@ export function migrate(
     .map((row) => [row.version, row.sha256]));
   for (let version = 1; version <= current; version++) {
     const held = applied.get(version);
-    if (held !== undefined && held !== migrationDigest(migrations[version - 1]!)) {
+    if (held === undefined) {
+      throw new Error(`${MIGRATION_UNPINNED} (migration ${version})`);
+    }
+    if (held !== migrationDigest(migrations[version - 1]!)) {
       throw new Error(`${MIGRATION_CHANGED} (migration ${version})`);
     }
   }

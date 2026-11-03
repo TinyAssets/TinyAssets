@@ -496,7 +496,7 @@ describe("a chunk", () => {
     // A pass with less than DELETE_FLOOR_MS left, or none, begins no delete: FILES is not
     // asked, and the chunk waits in its row as it was.
     const asked: string[][] = [];
-    const recording: ChunkStore = { ...failing, deleteChunks: async (_ns, shas) => {
+    const recording: ChunkStore = { ...failing, deleteChunks: async (_ns, _key, shas) => {
       asked.push(shas);
       return { deleted: shas.length };
     } };
@@ -605,9 +605,9 @@ describe("a chunk between a pass's units", () => {
       await dueGarbage(r, piece);
       const deletes: string[][] = [];
       const recording: ChunkStore = through({
-        deleteChunks: async (space, shas) => {
+        deleteChunks: async (space, key, shas) => {
           deletes.push(shas);
-          return env.FILES.deleteChunks(space, shas);
+          return env.FILES.deleteChunks(space, key, shas);
         },
       });
       const failed = await runInDurableObject(r.stub, async (_instance: OwnerDO, storage) => {
