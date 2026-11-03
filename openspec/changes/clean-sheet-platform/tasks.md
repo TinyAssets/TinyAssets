@@ -1305,6 +1305,70 @@ R, S, M and W.
   longest put in flight against `PUT_GRACE_MS`; slice L's isolate memory probe, with a
   16 MiB request body; a live check of `limits.subrequests` at
   10,000,000.
+- [x] STARTER The default agent every new owner gets (the research: `starter_research.md`,
+  `ai_storage_research.md`, `okf_update_research.md`, `scratch_storage_research.md`; the
+  founder's answers of 2026-11-03), in workerd, nothing deployed:
+  - The v1 starter, one package of data (`platform/starter/`, version 1): `main`'s
+    `AGENTS.md`, `agent.json` (`engine` `auto`, every run scope, `run_graph` among them),
+    `SOUL.md` and `USER.md` (personal: seeded once, never updated), and the shared skills
+    `knowledge` (OKF 0.2's core in our words, the spec vendored byte for byte at
+    `GoogleCloudPlatform/open-knowledge-format@ad30107`, a provenance line first),
+    `schedule`, `rooms-and-board`, `onboarding` and `scratch` (`$TA_SCRATCH`,
+    `/scratch/<agent>`). `bundle.mjs` makes `starter.json`, which the owner's object
+    carries; the starter guard holds it to its sources and every file to every engine's
+    rules (Agent Skills frontmatter, `AGENTS.md` plain and under Codex's 32 KiB).
+  - Seeding and updates (`owner/src/starter.ts`, migration 15, the `starter` lane): an
+    admitted owner with nothing reconciled is seeded as the owner's own writes (history op
+    `starter`), a receipt a path, `agent.json` last; a newer carried version replaces
+    unedited managed files, writes `<file>.ta-new` beside edited ones with one notice,
+    never restores a deleted one, never touches a personal one, and delivers a widening
+    (more scopes, a script, a marked version) as a proposal beside its file; undo is the
+    file's own history. A failed pass keeps what it wrote, tells the owner once a version
+    and is tried again; `starterReceipts` is the owner's read. The tests' objects carry no
+    package unless they test it (`internals.starter`; `SEEDED` is production's).
+  - Self-scheduling: a run's MCP door serves `run_graph`, `run_status` and `run_cancel`
+    (the `run` profile but `converse`), an owner-started or scheduled run as the owner held
+    to its agent's `run_graph`, a client's run to that client's grant; what a run launches
+    runs unattended. A scheduled run's result posts to the owner's room with its agent
+    (`dm:<the agent's id>`, main's for main), once; an empty one posts nothing.
+  - The MCP door reads files: `file_read` (`fileText`, UTF-8 windows at a character),
+    `head_chars` on `file_list` (small files), and lexical, bounded `search` and `fetch` in
+    ChatGPT's deep research shape (`file-search.ts`; `SEARCH_SCAN` 5,000 entries a call,
+    loud `next_cursor`), held to `read_files`, in the directory, custom and run profiles. A
+    run's `file_list` is held to its grant (it went to the sync token's check).
+  - The OKF watcher (`.github/workflows/okf-watch.yml`, `platform/starter/okf-watch.ts`):
+    daily, a content diff of the canonical spec's blob, its README for a relocation
+    banner, new tags and hidden Unicode; one draft pull request a change, a cooldown of 7
+    days, then ready for the automated review, or the founder asked when hidden text could
+    widen what agents do; nothing merges on a version number or by the workflow.
+  - Claude Code's auto memory off (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in its record), which
+    moved the template's tag: rebuilt and pinned live, `tinyassets-sandbox:s86a98bb4c52cd951`.
+  - Live, in three throwaway sandboxes from it (about 7 sandbox-minutes, each killed and
+    gone): each engine's CLI, from `main`'s directory with the starter projected, against a
+    local capture server as its base URL with a dummy key. Claude Code 2.1.309, Codex
+    0.166.0, Gemini CLI 0.66.0 and pi 1.4.0 each put `AGENTS.md` and all five skills in the
+    request they built, with no `CLAUDE.md` fallback needed; Kimi Code 2.4.1 (no key
+    credential) read `AGENTS.md` before stopping at its sign-in.
+- [ ] Owed by the starter slice:
+  - **Codex ignores `OPENAI_BASE_URL`** (0.166.0, live above): with only the record's
+    variable its request went to api.openai.com; `-c openai_base_url="..."` reached the
+    capture server. Codex's API-key runs need that argument in its record (slice E's
+    checker takes base URLs as variables only), before any Codex key run.
+  - Kimi's skills were not read before its sign-in stage: check with a signed-in Kimi in
+    the founder's live test.
+  - Slice L's explicit admit (pending owners) must re-sync the schedule, so a new owner's
+    `starter` lane is armed the moment it is admitted.
+  - Merges: migration 15 here and slices P, L, SIGNIN and STORE's own new migrations are
+    numbered in landing order; `claude-code.json` and the other records changed on
+    SIGNIN/STORE move the template's tag again, so whichever lands last rebuilds and
+    pins it.
+  - The founder's live test (8): onboarding writes `SOUL.md` and `USER.md`; "remember X"
+    lands in knowledge and is recalled on another engine; the brief made by the agent
+    itself posts to `dm:main`; a main agent finds the knowledge with `search` and `fetch`
+    (ChatGPT deep research, `ui-test`).
+  - Later, by the research's order: the knowledge lint script; `sync-ignore` defaults; the
+    agent's own `mcp.json` merged into the run config, then a `browser` skill; the standing
+    comparison against the four main agents.
 
 ## 6. Files and sandbox
 

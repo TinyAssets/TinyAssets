@@ -106,6 +106,37 @@ describe("the MCP door's tool profiles", () => {
     await client.close();
   });
 
+  it("serves search, fetch and file_read in ChatGPT's shape to a directory client", async () => {
+    const o = await signedIn();
+    await o.stub.fileWrite(o.own, { path: "/workspace/plumber.md", expected_etag: null,
+                                    content: new TextEncoder().encode(
+                                      "---\ntype: Person\ntitle: Bo\n---\nBo fixes boilers.\n") });
+    const registered = await registerClient("Listed");
+    const tokens = await connect(registered, { owner: o.who });
+    const client = await mcpClient(tokens);
+    expect((await client.listTools()).tools.map((tool) => tool.name))
+      .toEqual(expect.arrayContaining(["file_read", "search", "fetch"]));
+    await o.profile((await mcpOrigin(registered.clientId, registered.redirectUri)).client,
+                    "directory");
+    const found = await client.callTool({ name: "search", arguments: { query: "boilers" } });
+    expect(found.structuredContent).toMatchObject({ next_cursor: null, results: [{
+      id: "/workspace/plumber.md", title: "Bo",
+      url: `https://tinyassets.io/app#data/${encodeURIComponent("/workspace")}` }] });
+    // The text copy is the same JSON, as ChatGPT's connectors read either.
+    expect(JSON.parse((found.content as { text: string }[])[0]!.text))
+      .toEqual(found.structuredContent);
+    const fetched = await client.callTool({ name: "fetch",
+                                            arguments: { id: "/workspace/plumber.md" } });
+    expect(fetched.structuredContent).toMatchObject({ id: "/workspace/plumber.md", title: "Bo",
+                                                      metadata: { type: "Person" } });
+    expect((fetched.structuredContent as { text: string }).text).toContain("Bo fixes boilers.");
+    const read = await client.callTool({ name: "file_read", arguments: {
+      path: "/workspace/plumber.md", offset: 4, max_bytes: 12 } });
+    expect(read.structuredContent).toMatchObject({ offset: 4, text: "type: Person",
+                                                   next_offset: 16 });
+    await client.close();
+  });
+
   it("runs one script of several tool calls in one code call", async () => {
     const o = await signedIn();
     const registered = await registerClient();

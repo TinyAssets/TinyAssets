@@ -199,13 +199,16 @@ describe("the owner's /app/api/agent/* routes", () => {
 });
 
 describe("a run's own doors on the egress host", () => {
-  it("serve its MCP tools but the run tools, held to its grant's scopes", async () => {
+  it("serve its MCP tools but converse, held to its grant's scopes", async () => {
     const { who, app } = await owned();
     await appPost("agent/submit", app.access_token, null, { message: "go", client_send_id: "e-1" });
     const [start] = await starts(who);
     const client = await engine(start!);
     const { tools } = await client.listTools();
-    expect(tools.filter((tool) => RUN_TOOLS.includes(tool.name))).toEqual([]);
+    // Work between agents is mail: no converse. Its own runs and schedules it makes, reads
+    // and cancels (the founder, 2026-11-03).
+    expect(tools.filter((tool) => RUN_TOOLS.includes(tool.name)).map((tool) => tool.name))
+      .toEqual(["run_graph", "run_status", "run_cancel"]);
     // Nor a mailbox tool (slice ID): the inbox digest's mail part is a mailbox read.
     expect(tools.some((tool) => ["mailbox_read", "mailbox_ack", "inbox_digest"]
       .includes(tool.name))).toBe(false);

@@ -62,7 +62,7 @@ Each external tool SHALL call exactly one owner door an outside client can reach
 - **THEN** the tool guard fails CI
 
 ### Requirement: No tool is open world, and the run tools are run doors
-Every tool SHALL be confined to the owner's account, `openWorldHint` false. The run tools (slice R) SHALL be run doors: `converse` (`agentSubmit`, `converse` held where its agent acts) and `run_graph` (`agentRun`, `run_graph`) start an engine run in the owner's sandbox, destructive and not idempotent; `run_status` (`agentStatus`) reads one of the caller's own runs or schedules, from the run's receipt; `run_cancel` (`agentCancel`) cancels one, destructive and idempotent. The owner's `/app/api/agent/{submit,run,status,cancel}` routes SHALL call the same doors. A run's own MCP door SHALL serve the `run` profile: the table but the run tools and the mailbox tools (`mailbox_read`, `mailbox_ack`, `inbox_digest`; slice ID).
+Every tool SHALL be confined to the owner's account, `openWorldHint` false. The run tools (slice R) SHALL be run doors: `converse` (`agentSubmit`, `converse` held where its agent acts) and `run_graph` (`agentRun`, `run_graph`) start an engine run in the owner's sandbox, destructive and not idempotent; `run_status` (`agentStatus`) reads one of the caller's own runs or schedules, from the run's receipt; `run_cancel` (`agentCancel`) cancels one, destructive and idempotent. The owner's `/app/api/agent/{submit,run,status,cancel}` routes SHALL call the same doors. A run's own MCP door SHALL serve the `run` profile: the table but `converse` (work between agents is mail) and the mailbox tools (`mailbox_read`, `mailbox_ack`, `inbox_digest`; slice ID); its `run_graph`, `run_status` and `run_cancel` are held to its grant (the founder, 2026-11-03).
 
 #### Scenario: A tool marked open world
 - **WHEN** a tool is marked open world
@@ -73,11 +73,15 @@ Every tool SHALL be confined to the owner's account, `openWorldHint` false. The 
 - **THEN** it is refused `no_run`, as for a run that does not exist
 
 ### Requirement: Each caller is served exactly its own tool profile
-A profile SHALL be data (`doors/profiles.json`) listing table tools in the table's order: `custom`, the owner's own choice (by default every tool), which every grant on `/mcp` and every API key names until the owner names another, since each is a custom connector; `directory`, every tool but `code`, a generic executor, as OpenAI's plugin guidelines require (each operation its own tool, no generic executor enabling operations not exposed for review), cited there, for a listing's own MCP resource once it is submitted; `run`, the table but the run tools. `/mcp`, a run's MCP door and `/api` SHALL serve a request only the tools the object answers for its caller (`toolProfile`), asked before any tool is listed; a caller the object refuses SHALL be answered that refusal (`403`) and no tool, and a tool outside the profile SHALL be unknown (`/api`: `404`).
+A profile SHALL be data (`doors/profiles.json`) listing table tools in the table's order: `custom`, the owner's own choice (by default every tool), which every grant on `/mcp` and every API key names until the owner names another, since each is a custom connector; `directory`, every tool but `code`, a generic executor, as OpenAI's plugin guidelines require (each operation its own tool, no generic executor enabling operations not exposed for review), cited there, for a listing's own MCP resource once it is submitted, `search` and `fetch` among them in the shape ChatGPT's deep research and company knowledge call; `run`, the table but `converse` and the mailbox tools. `/mcp`, a run's MCP door and `/api` SHALL serve a request only the tools the object answers for its caller (`toolProfile`), asked before any tool is listed; a caller the object refuses SHALL be answered that refusal (`403`) and no tool, and a tool outside the profile SHALL be unknown (`/api`: `404`).
 
 #### Scenario: Two clients of one owner
 - **WHEN** the owner names one client's profile `directory` and leaves another's
 - **THEN** the first lists exactly the directory's tools and the second the custom ones, `code` among them
+
+#### Scenario: A directory client searches the owner's files
+- **WHEN** a client served the directory profile calls `search` with a word in a file's text, then `fetch` with the id it answered
+- **THEN** `search` answers `{results: [{id, title, url}], next_cursor: null}` as structured content and the same JSON as text, and `fetch` the file's id, title, text, url and metadata
 
 #### Scenario: A revoked client lists its tools
 - **WHEN** a revoked client sends `tools/list`

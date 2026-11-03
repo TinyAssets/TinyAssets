@@ -9,10 +9,38 @@
  */
 import type { GatewayService, Resealed } from "../src/connections";
 import type { Erasure } from "../src/erase";
-import { type OwnerEnv, OwnerDO, type SandboxLeases } from "../src/owner-do";
+import {
+  type Internals, type OwnerEnv, OwnerDO as ProductionOwnerDO, type SandboxLeases,
+} from "../src/owner-do";
 import { RecordingSandbox } from "./sandbox-fake";
 
-export { OwnerDO } from "../src/owner-do";
+/**
+ * The owner object as production builds it but with no starter package, so the tests of
+ * everything but the starter start from an empty workspace (`internals.starter`); every
+ * class below is one of these.
+ */
+export class OwnerDO extends ProductionOwnerDO {
+  constructor(ctx: DurableObjectState, env: OwnerEnv, internals: Internals = {}) {
+    super(ctx, env, { starter: null, ...internals });
+  }
+}
+
+/**
+ * The owner object exactly as production builds it, starter package and all, with a
+ * recording fake behind its `SANDBOX` binding and its lease API in reach (`starter.test.ts`).
+ */
+export class SeededOwnerDO extends ProductionOwnerDO {
+  readonly sandbox: SandboxLeases;
+  readonly recorder: RecordingSandbox;
+
+  constructor(ctx: DurableObjectState, env: OwnerEnv) {
+    const made: { sandbox?: SandboxLeases } = {};
+    const recorder = new RecordingSandbox();
+    super(ctx, { ...env, SANDBOX: recorder }, { sandbox: (leases) => { made.sandbox = leases; } });
+    this.sandbox = made.sandbox!;
+    this.recorder = recorder;
+  }
+}
 
 /** The owner object, its erasure and its sandbox's lease API in the tests' reach. */
 export class FauxOwnerDO extends OwnerDO {

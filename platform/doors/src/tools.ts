@@ -18,6 +18,11 @@
  * receipt; `run_cancel` ends one (destructive, idempotent). An engine's own tools are its
  * vendor's, and are never served here.
  *
+ * The file readers (the starter slice, ai_storage_research.md §8.2), for a main agent that
+ * cannot walk the files itself: `file_read` (a file's text, a window at a time), heads on
+ * `file_list`, and `search` and `fetch` in the shape ChatGPT's deep research and company
+ * knowledge require, lexical and bounded (`owner/src/file-search.ts`).
+ *
  * Slice M's tools, so a main agent spends few calls: `inbox_digest` and `board_digest`
  * (what changed for the caller since its cursor, in one read) and `code` (code mode: one
  * script calls the caller's other tools, each held to its grant, its VM in the hooks
@@ -29,8 +34,9 @@
  * grant on the MCP door and every API key names: each is a custom connector; `directory`,
  * what a public connector directory allows, for the listing's own MCP resource once the
  * listing is submitted (the founder's call: a new door); `run`, a run's own MCP door on
- * the egress host, the table but the run tools (work between agents is mail, ADR-034
- * decision 11) and the mailbox tools, `inbox_digest` among them, since a run's mail is
+ * the egress host, the table but `converse` (work between agents is mail, ADR-034
+ * decision 11; a run may launch, schedule, read and cancel runs, the founder 2026-11-03) and
+ * the mailbox tools, `inbox_digest` among them, since a run's mail is
  * its input and its agent's mailbox holds every authority's mail (slice ID). The object
  * answers a caller's profile (`toolProfile`) and builds `code`'s
  * tools from it.
@@ -186,9 +192,32 @@ export function toolTable(): readonly Tool[] {
       title: "File info", ...READ, description: "Read one file's or directory's entry.",
       input: args({ path }) },
     { name: "file_list", door: "fileList", capability: "read_files",
-      title: "List directory", ...READ, description: "List a directory's entries by name.",
+      title: "List directory", ...READ,
+      description: "List a directory's entries by name. With head_chars, each small file " +
+        "also carries the start of its text, enough to read its title and description.",
       input: args({ dir: path, limit: int("At most this many entries") },
-                  { after: str("Entries after this name") }) },
+                  { after: str("Entries after this name"),
+                    head_chars: int("At most this many characters of each small file's text") }) },
+    { name: "file_read", door: "fileText", capability: "read_files",
+      title: "Read file", ...READ,
+      description: "Read a file's text: its UTF-8 bytes from offset (0 when omitted), at most " +
+        "max_bytes (65536 when omitted, up to 4194304), cut at a character. next_offset is " +
+        "where the next part starts, or null at the end.",
+      input: args({ path }, { offset: int("The byte to start at: 0, or a next_offset"),
+                              max_bytes: int("At most this many bytes of text") }) },
+    { name: "search", door: "fileSearch", capability: "read_files",
+      title: "Search files", ...READ,
+      description: "Search the owner's files by words: their paths, their titles, " +
+        "descriptions and tags, small files' text, and knowledge index lines. Answers the " +
+        "best results, each an id for fetch, a title and a url. When next_cursor is set, " +
+        "only part of the files were searched: search again with it for the rest.",
+      input: args({ query: str("The words to look for") },
+                  { cursor: str("A next_cursor a search answered") }) },
+    { name: "fetch", door: "fileFetch", capability: "read_files",
+      title: "Fetch file", ...READ,
+      description: "Fetch one of the owner's files by the id a search answered: its title, " +
+        "text, url and metadata.",
+      input: args({ id: str("The id a search answered: the file's path") }) },
     { name: "file_history", door: "fileHistory", capability: "read_files",
       title: "File history", ...READ, description: "List a path's kept versions, newest first.",
       input: args({ path, limit: int("At most this many versions") },

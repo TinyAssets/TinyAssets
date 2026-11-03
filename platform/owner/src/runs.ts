@@ -313,11 +313,15 @@ export interface RunGrant {
   readonly connection: string | null;
 }
 
-/** A mail's run's result: its agent's reply to that mail, under the run's authority. */
+/**
+ * A run's result posted for it: a mail's run's, its agent's reply to that mail; a scheduled
+ * run's (`mail` null), its agent's post in the owner's room with it, `dm:<its id>`, since no
+ * one is waiting on a scheduled run. Under the run's authority either way.
+ */
 export interface MailAnswer {
   readonly run: string;
   readonly agent: string;
-  readonly mail: string;
+  readonly mail: string | null;
   readonly result: string;
   readonly stamp: Stamped | null;
   readonly origin: { readonly client: string; readonly family: string } | null;
@@ -1135,10 +1139,14 @@ export class Runs {
       || row.cancel_requested === 1, result);
   }
 
-  /** The reply a settled run's result posts to the mail it answers, or null for none. */
+  /**
+   * The post a settled run's result makes: its reply to the mail it answers, or a scheduled
+   * run's to its owner's room with its agent; null for none (a failed run, an empty result).
+   */
   #answerOf(row: RunRow, failed: boolean, result: string | null): MailAnswer | null {
     const grant = this.#sql.exec<GrantRow>(`${GRANTS} WHERE g.run = ?`, row.id).toArray()[0];
-    if (failed || result === null || result === "" || row.mail === null || grant === undefined) {
+    if (failed || result === null || result === "" || grant === undefined
+        || (row.mail === null && row.initiator !== "schedule")) {
       return null;
     }
     const granted = grantOf(grant);

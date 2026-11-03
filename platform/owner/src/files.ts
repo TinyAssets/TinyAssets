@@ -778,6 +778,28 @@ export class Files {
              next: rows.length > most ? page.at(-1)!.name : null };
   }
 
+  /**
+   * The workspace's entries in (directory, name) order after the stored path `after` (null
+   * from the start), at most `limit` (a key range of the entries' own key), each file with
+   * its bytes when they are inline; and the next cursor, null at the end.
+   */
+  scan(after: string | null, limit: number):
+      { entries: (Entry & { inline: Uint8Array | null })[]; next: string | null } {
+    const [parent, name] = after === null ? [WORKSPACE, ""]
+      : [parentOf(storedPath(after)), nameOf(after)];
+    const rows = this.#sql.exec<StoredEntry & { inline: ArrayBuffer | null }>(
+      "SELECT e.*, c.inline FROM file_entries e LEFT JOIN file_contents c " +
+        "ON c.content_id = e.content_id WHERE (e.parent = ? OR (e.parent >= ? AND " +
+        "e.parent < ?)) AND (e.parent, e.name) > (?, ?) ORDER BY e.parent, e.name LIMIT ?",
+      WORKSPACE, `${WORKSPACE}/`, `${WORKSPACE}0`, parent, name, limit + 1).toArray();
+    const page = rows.slice(0, limit);
+    return {
+      entries: page.map((row) => ({
+        ...shown(row), inline: row.inline === null ? null : new Uint8Array(row.inline) })),
+      next: rows.length > limit ? pathOf(page.at(-1)!) : null,
+    };
+  }
+
   /** Every entry below `dir`, any depth (the subtree's parents are a key range). */
   #below(dir: string): StoredEntry[] {
     return [
@@ -1080,10 +1102,9 @@ export class Files {
 
   /** Write small content (at most 4 KiB) in one transaction. */
   #writeInline(path: string, bytes: Uint8Array, expected: string | null, mode: number | null,
-               writer: string, parents: boolean): Entry {
+               writer: string, parents: boolean, op: string): Entry {
     return this.#change(writer, (now) => this.#commit(
-      path, expected, this.#inline(bytes), bytes.byteLength, mode, writer, "write", parents,
-      now));
+      path, expected, this.#inline(bytes), bytes.byteLength, mode, writer, op, parents, now));
   }
 
   /**
@@ -1097,11 +1118,12 @@ export class Files {
    * put's record and the commit or abort) is a unit of its own, between the calls.
    * `authorize`, a door's check of the caller's authority, runs first in the inline
    * write's, the intent's and the commit's unit, so the authority holds where it is used,
-   * not only where the door first read it.
+   * not only where the door first read it. `op` names the change in the path's history
+   * (`write`, or `starter` for the starter package's own writes, `starter.ts`).
    */
   async write(path: unknown, bytes: unknown, options: { expected: unknown; mode?: unknown;
               writer: string; parents?: boolean; prefix?: readonly ChunkRef[];
-              authorize?: () => void }):
+              authorize?: () => void; op?: "write" | "starter" }):
       Promise<Entry> {
     const at = storedPath(path);
     if (!(bytes instanceof Uint8Array)) {
@@ -1119,10 +1141,11 @@ export class Files {
     }
     const size = prefix.length * CHUNK_BYTES + bytes.byteLength;
     const authorize = options.authorize ?? (() => undefined);
+    const op = options.op ?? "write";
     if (size <= INLINE_BYTES) {
       return this.#write(() => {
         authorize();
-        return this.#writeInline(at, bytes, expected, mode, options.writer, parents);
+        return this.#writeInline(at, bytes, expected, mode, options.writer, parents, op);
       });
     }
     const tail = cut(bytes);
@@ -1142,7 +1165,8 @@ export class Files {
       }
       return await this.#write(() => {
         authorize();
-        return this.commit(intent_id, at, { expected, mode, writer: options.writer, parents });
+        return this.commit(intent_id, at, { expected, mode, writer: options.writer, parents,
+                                            op });
       });
     } catch (error) {
       await this.#write(() => this.abort(intent_id));
@@ -1443,14 +1467,14 @@ export class Files {
 
   /** Commit an upload as `path`'s next version; the intent ends with it. */
   commit(intentId: unknown, path: unknown, request: { expected: unknown; mode?: unknown;
-         writer: string; parents?: boolean }): Entry {
+         writer: string; parents?: boolean; op?: "write" | "starter" }): Entry {
     const at = storedPath(path);
     const expected = expectedEtag(request.expected);
     const mode = modeOf(request.mode);
     return this.#change(request.writer, (now) => {
       const { contentId, size } = this.#fromIntent(this.#intent(intentId, now));
-      const entry = this.#commit(at, expected, contentId, size, mode, request.writer, "write",
-                                 request.parents ?? true, now);
+      const entry = this.#commit(at, expected, contentId, size, mode, request.writer,
+                                 request.op ?? "write", request.parents ?? true, now);
       this.#release(intentId as string);
       return entry;
     });

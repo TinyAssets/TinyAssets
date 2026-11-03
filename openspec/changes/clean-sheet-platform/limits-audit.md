@@ -37,9 +37,10 @@ in the bytes they take, a message has one recipient (the key holds it), the mail
 are within the ledger's ceilings rather than reserved out of them, and a grant's scopes are
 counted in bytes.
 
-**The worst case that ships is 4,449,862,167.75 bytes, 44.50% of the 10 GB: 550.1 MB under
-half**, slice ID's agent identities and mail authority, slice M's change orders and slice W's
-doorbell subscriptions (`wake_callbacks`, 423.6 MB at 1,000 agents and their widest) included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
+**The worst case that ships is 4,450,223,356.75 bytes, 44.50% of the 10 GB: 549.8 MB under
+half**, slice ID's agent identities and mail authority, slice M's change orders, slice W's
+doorbell subscriptions (`wake_callbacks`, 423.6 MB at 1,000 agents and their widest) and the
+starter slice's receipts (`starter_receipts` and `starter_state`, 361,189 bytes) included (`owner/guards/limits-audit.test.ts` prints each term; slice D's raises had left
 2.1 MB). Without each structural change, the same bounds would cost: bodies in their rows
 424.1 GB; history as rows times revisions 111.5 GB; recipients as messages times agents
 46.2 GB; scopes at 512 code points of JSON each 6.8 GB, each past the half.
@@ -201,6 +202,12 @@ reason; none refuses a write.
 | `owner/src/cron.ts` `CRON_MAX_ITEMS` | 60 | values in one cron field's list | a longer list refused | technical ceiling | A minute field's every value. |
 | `owner/src/cron.ts` `CRON_MAX_CHARS` | 256 characters | a cron expression | a longer expression refused | technical ceiling | The 10 GB: a schedule's row, costed at it in `run_schedules`. |
 | `owner/src/cron.ts` `CRON_HORIZON_DAYS` | 8 years | how far ahead an occurrence is searched | an expression with none in 8 years refused | technical ceiling | The Gregorian calendar: the longest gap between two 29 Februaries is 8 years, so an expression with no occurrence within it has none. |
+| `owner/src/starter.ts` `STARTER_FILES_MAX` | 64 | files in the starter package | a package past it fails its own check, at build | technical ceiling | The 10 GB: guard term `starter_receipts`, one receipt a path. The package holds 10. |
+| `owner/src/starter.ts` `STARTER_RETRY_S` | 300 s | when a failed seed or update is tried again | none: it is tried again | technical ceiling | A retry interval, as `LANE_RETRY_S`: the owner is told once a version. |
+| `owner/src/file-search.ts` `SEARCH_SCAN` | 5,000 entries | manifest entries one `search` reads | the answer's `next_cursor` continues, and says so | technical ceiling | The owner's object is one thread: a scan of every entry in one call would hold the object (ADR-034's reason for keeping compute out of it). Nothing is refused. |
+| `owner/src/file-search.ts` `SEARCH_RESULTS` | 20 | results one `search` answers | the best 20 of what it read | technical ceiling | One answer's size for a model's context; a narrower query or the cursor finds the rest. |
+| `owner/src/file-search.ts` `READ_DEFAULT_BYTES` | 64 KiB | a `file_read` window when none is asked | none: `max_bytes` asks up to a chunk | default | A size a model's context takes; the call may ask more. |
+| `owner/src/owner-do.ts` `file_read` and `fetch` window | 4 MiB | text one call answers | `next_offset` reads on | technical ceiling | One chunk, the files plane's own unit (`CHUNK_BYTES`), so one call holds at most one chunk in the object. |
 | `owner/src/notices.ts` `NOTICES_KEPT` | 1,000 | owner notices kept | the oldest let go | technical ceiling | The 10 GB: guard term `owner_notices`. |
 | `owner/src/notices.ts` `NOTICE_DETAIL` | 1,024 characters | a notice's detail | a longer detail cut | technical ceiling | Inside `owner_notices`; the full error stays in its source. |
 | `owner/src/run-rows.ts` `RUNS_KEPT` | 2,000 | settled runs kept as receipts | an older run's status is gone (its transcript stays) | technical ceiling | The 10 GB: guard term `runs`, 90.4 MB with the live and waiting runs. |

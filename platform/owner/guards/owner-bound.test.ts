@@ -24,7 +24,8 @@
  * files (ADR-034), so what the owner's object holds is its own bounded rows only.
  *
  * The worst case, with the limits that ship (`limits-audit.md`, `limits-audit.test.ts`), is
- * 44.50% of the limit (4,449,862,167.75 bytes), 550.1 MB under half. Slice S's columns
+ * 44.50% of the limit (4,450,223,356.75 bytes), 549.8 MB under half; the starter slice's
+ * receipts (`STARTER_FILES_MAX` paths) and its one state row take 361,189 of it. Slice S's columns
  * (a run's `sandbox_wait`, one byte in `runs`, in place of a recheck time) move no term
  * at its page share, and it adds no table: the sandbox Worker keeps its own. Slice W added
  * `wake_callbacks` (`SUBSCRIPTIONS_PER_AGENT` doorbells for each of `maxAgents` enabled
@@ -545,6 +546,12 @@ export function termsFor(bounds: Bounds = {}): Readonly<Record<string, Term>> {
     // The owner's admission: one row, its reasons a short fixed list; after the erasure, the
     // erased tombstone, alone in the database.
     owner_admission: { rows: 1, bytes: ROW + 64, by: "one row (the schema's CHECK)" },
+    // The starter package's receipts: one a path of the carried package, its path at its
+    // widest and two content ids; and the one row of the version reconciled.
+    starter_receipts: { rows: named("STARTER_FILES_MAX", "starter"),
+                        bytes: ROW + 4 * KIB + 2 * 64 + 2 * 16,
+                        by: "STARTER_FILES_MAX paths, each its path and two content ids" },
+    starter_state: { rows: 1, bytes: ROW, by: "one row" },
   });
 }
 

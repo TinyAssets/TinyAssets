@@ -824,7 +824,7 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
     // The version is the rowid: the feed reads a key range.
     "CREATE TABLE file_history (version INTEGER PRIMARY KEY, path TEXT NOT NULL, " +
       "op TEXT NOT NULL CHECK (op IN ('write', 'mkdir', 'delete', 'rename_from', " +
-      "'rename_to', 'restore', 'conflict')), " +
+      "'rename_to', 'restore', 'conflict', 'starter')), " +
       "kind TEXT CHECK (kind IS NULL OR kind IN ('file', 'dir')), content_id TEXT, " +
       "size INTEGER NOT NULL, mode INTEGER NOT NULL, writer TEXT NOT NULL, at REAL NOT NULL, " +
       // `released`: the path is gone, so retention has let the row go (it is always due);
@@ -1542,6 +1542,20 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
       `OLD.filer BEGIN ${PLACED("NEW", "+")} ${PLACED("OLD", "-")} END`,
     "CREATE TRIGGER message_bodies_kept BEFORE UPDATE ON message_bodies " +
       "BEGIN SELECT RAISE(ABORT, 'a message body is never changed'); END",
+  ]),
+  // 15: the starter package (starter.ts): a receipt for each path of the carried package
+  // (at most `STARTER_FILES_MAX`; a path the package dropped loses its receipt at the next
+  // pass), and the one row of the version last reconciled whole, its retry and the version
+  // whose failure the owner was told of.
+  Object.freeze([
+    "CREATE TABLE starter_receipts (path TEXT PRIMARY KEY CHECK (length(CAST(path AS BLOB)) " +
+      "<= 4096), version INTEGER NOT NULL CHECK (version >= 0), class TEXT NOT NULL CHECK " +
+      "(class IN ('managed', 'personal')), state TEXT NOT NULL CHECK (state IN ('installed', " +
+      "'edited', 'deleted', 'proposed')), installed TEXT CHECK (installed IS NULL OR " +
+      "length(installed) = 64), offered TEXT CHECK (offered IS NULL OR length(offered) = 64)) " +
+      "WITHOUT ROWID",
+    "CREATE TABLE starter_state (only INTEGER PRIMARY KEY CHECK (only = 1), version INTEGER " +
+      "NOT NULL CHECK (version >= 0), retry_at REAL, noticed INTEGER)",
   ]),
 ]);
 

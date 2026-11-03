@@ -1,0 +1,133 @@
+name: okf-watch
+
+# The OKF watcher (platform/starter/okf-watch.ts; okf_update_research.md section 5).
+#
+# The starter's `knowledge` skill vendors the Open Knowledge Format spec, pinned to one
+# commit of its canonical repository. Daily, `watch` compares that pin with the repository
+# by content: SPEC.md's blob, the README (the spec moved once already), and its tags; and
+# checks the new text for characters a reviewer cannot see. A change opens ONE draft pull
+# request with the new spec vendored, the pin moved and the starter's version raised.
+# A newer upstream closes the older proposal.
+#
+# `cooldown` waits about 7 days from the pull request's opening (Renovate's
+# minimumReleaseAge), so a bad upstream commit can be caught first. Then it marks the pull
+# request ready and asks for the automated review; a change that could widen what agents do
+# (hidden text, `needs-founder`) asks the founder instead and stays a draft.
+#
+# Nothing here merges. Drafts are not auto-enrolled (auto-enroll-merge.yml), and a ready
+# pull request merges only with the review receipt every pull request needs
+# (drain_review_gate.py). A version number never decides anything.
+
+on:
+  schedule:
+    - cron: '41 4 * * *'   # 04:41 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: write        # push the proposal's branch
+  pull-requests: write   # open, ready, close and comment on proposals
+  issues: write          # the labels
+
+concurrency:
+  group: okf-watch
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: https://github.com/GoogleCloudPlatform/open-knowledge-format.git
+  COOLDOWN_DAYS: '7'
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Clone the canonical OKF repository
+        run: git clone --quiet "$UPSTREAM" "$RUNNER_TEMP/okf"
+
+      - name: Compare it with the pin
+        id: check
+        run: |
+          set -euo pipefail
+          node platform/starter/okf-watch.ts check --upstream "$RUNNER_TEMP/okf" \
+            --out "$RUNNER_TEMP/report.json"
+          cat "$RUNNER_TEMP/report.json"
+          {
+            echo "changed=$(jq -r .changed "$RUNNER_TEMP/report.json")"
+            echo "widens=$(jq -r .widens "$RUNNER_TEMP/report.json")"
+            echo "commit=$(jq -r .commit "$RUNNER_TEMP/report.json")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open the draft proposal
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ steps.check.outputs.commit }}
+          WIDENS: ${{ steps.check.outputs.widens }}
+        run: |
+          set -euo pipefail
+          branch="okf-watch/${COMMIT:0:12}"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "The upstream at ${COMMIT:0:12} is already proposed."
+            exit 0
+          fi
+          git switch -c "$branch"
+          node platform/starter/okf-watch.ts apply --upstream "$RUNNER_TEMP/okf" \
+            --body "$RUNNER_TEMP/body.md"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add platform/starter
+          git commit -m "OKF watcher: the starter's vendored spec at upstream ${COMMIT:0:12}"
+          git push origin "$branch"
+          gh label create okf-watch --color 0e8a16 \
+            --description "The OKF watcher's proposals" --force
+          gh label create needs-founder --color d93f0b \
+            --description "Could widen what agents do: the founder reviews it" --force
+          labels="okf-watch"
+          if [ "$WIDENS" = "true" ]; then labels="okf-watch,needs-founder"; fi
+          for n in $(gh pr list --label okf-watch --state open --json number --jq '.[].number'); do
+            gh pr close "$n" --delete-branch \
+              --comment "Superseded: the upstream moved on to ${COMMIT:0:12}."
+          done
+          gh pr create --draft --base main --head "$branch" --label "$labels" \
+            --title "OKF watcher: the starter's vendored spec at upstream ${COMMIT:0:12}" \
+            --body-file "$RUNNER_TEMP/body.md"
+
+  cooldown:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ready the proposals past their cooldown
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          FOUNDER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          cutoff=$(date -u -d "-${COOLDOWN_DAYS} days" +%s)
+          gh label create okf-review-due --color fbca04 \
+            --description "Past its cooldown: the automated review is asked" --force
+          gh label create founder-asked --color d93f0b \
+            --description "The founder was asked to review" --force
+          gh pr list --label okf-watch --state open --json number,createdAt,isDraft,labels \
+            --jq '.[] | select(.isDraft) | [.number, .createdAt, ([.labels[].name] | join(","))] | @tsv' |
+          while IFS=$'\t' read -r number created labels; do
+            if [ "$(date -u -d "$created" +%s)" -gt "$cutoff" ]; then
+              continue
+            fi
+            case ",$labels," in
+              *,founder-asked,*) ;;
+              *,needs-founder,*)
+                gh pr edit "$number" --add-reviewer "$FOUNDER" --add-label founder-asked || \
+                  gh pr edit "$number" --add-label founder-asked
+                gh pr comment "$number" --body "The cooldown is over. This change carries text no reviewer can see, which could widen what every owner's agent does, so @$FOUNDER reviews it before it is marked ready." ;;
+              *)
+                gh pr ready "$number"
+                gh pr edit "$number" --add-label okf-review-due
+                gh pr comment "$number" --body "The cooldown is over: ready for the automated review. Read the spec diff, not the version line; the checks are in the description. It merges only with an approving review receipt." ;;
+            esac
+          done

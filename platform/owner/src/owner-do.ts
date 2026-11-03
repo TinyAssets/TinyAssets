@@ -98,6 +98,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { Lifecycle } from "agents/lifecycle";
 import { DurableObject } from "cloudflare:workers";
 
+import { APP_RESOURCE } from "../../doors/src/config";
 import { LEASE_LIVED, mintToken } from "../../doors/src/routing-mac";
 import {
   type ProfileName, profileNames, refusal, takesRequest, type Tool, toolsNamed,
@@ -138,7 +139,8 @@ import {
 import { Invalid, Refused } from "./errors";
 import {
   type Change as FileChange, CHUNK_BYTES, CHUNK_DELETING, type ChunkRef, type ChunkStore,
-  type Content, type Entry, FileConflict, FileFault, Files, type Lease, OWNER_AUTHORITY,
+  type Content, type Entry, FileConflict, FileFault, Files, INLINE_BYTES, type Lease,
+  OWNER_AUTHORITY,
   type SandboxLease, type SyncOp,
   type SyncOutcome, type Usage,
 } from "./files";
@@ -162,10 +164,17 @@ import {
 } from "./policy";
 import { type Card, Registrations } from "./registrations";
 import { type Lane, Schedule } from "./schedule";
-import { AGENTS_DIR, AGENTS_OWNER_ONLY, OWNER_TREES, ownersOnly, storedPath, within }
-  from "./paths";
+import {
+  AGENTS_DIR, AGENTS_OWNER_ONLY, nameOf, OWNER_TREES, ownersOnly, parentOf, storedPath, within,
+} from "./paths";
 import { migrate } from "./schema";
 import { Sessions } from "./sessions";
+import {
+  type Front, frontmatter, indexLines, READ_DEFAULT_BYTES, score, SEARCH_RESULTS, SEARCH_SCAN,
+  targets, textOf, titleOf, windowEnd, words,
+} from "./file-search";
+import { carried, type Receipt as StarterReceipt, Starter, type StarterPackage }
+  from "./starter";
 import { CONTROL_FRESH_MS, ControlGate, type Gate } from "./control-gate";
 import { codePoints, principal, utf8Bytes } from "./text";
 import { priced, Usage as ModelUsage, type UsageReceipt } from "./usage";
@@ -562,6 +571,65 @@ export interface FileListRequest {
   readonly dir: string;
   readonly after?: string;
   readonly limit: number;
+  /** At most this many characters of each small file's text (`file-search.ts`). */
+  readonly head_chars?: number;
+}
+
+/** A window of a file's text (`file_read`): from a byte offset, at most `max_bytes`. */
+export interface FileTextRequest {
+  readonly path: string;
+  readonly offset?: number;
+  readonly max_bytes?: number;
+}
+
+/** A search of the owner's files (`search`), from a cursor a search answered. */
+export interface FileSearchRequest {
+  readonly query: string;
+  readonly cursor?: string;
+}
+
+/** A file by the id a search answered (`fetch`): its stored path. */
+export interface FileFetchRequest {
+  readonly id: string;
+}
+
+/** A search's hit, in the shape ChatGPT's deep research and company knowledge read. */
+export interface SearchResult {
+  readonly id: string;
+  readonly title: string;
+  readonly url: string;
+}
+
+/** What `fetch` says of a file beside its text. */
+export interface FetchMetadata {
+  readonly path: string;
+  readonly size: number;
+  readonly version: number;
+  /** When it last changed, ISO 8601. */
+  readonly modified: string;
+  readonly writer: string;
+  readonly type?: string;
+  readonly description?: string;
+  readonly tags?: readonly string[];
+  /** Whether the text stops short of the file's end: `file_read` reads on from `next_offset`. */
+  readonly truncated: boolean;
+  readonly next_offset?: number;
+}
+
+/** The owner app's page of the folder holding `path`: where a citation of it points. */
+export function fileUrl(path: string): string {
+  return `${APP_RESOURCE}#data/${encodeURIComponent(parentOf(path))}`;
+}
+
+/** A non-negative whole number of a request, or its default. */
+function whole(value: unknown, what: string, fallback: number, high: number): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > high) {
+    throw new Invalid(`${what} is a whole number from 0 to ${high}`);
+  }
+  return value;
 }
 
 export interface FileReadRequest {
@@ -1021,8 +1089,13 @@ const CHAINS = "read its agents' mail chains";
 /** An agent's file, whose agent is a ledger identity while it exists (slice ID). */
 const AGENT_FILE = /^\/workspace\/agents\/([^/]+)\/agent\.json$/;
 
-/** A run's own MCP door reaches no run door: work between agents is mail (ADR-034 d11). */
-export const RUN_STARTS_NONE = "run_starts_none: a run starts, reads and cancels no run";
+/**
+ * A run's own MCP door never converses: work between agents is mail (ADR-034 decision 11).
+ * It may launch, schedule, read and cancel runs (the founder, 2026-11-03: every agent of an
+ * owner may do what any other of the owner's agents may), held to its grant.
+ */
+export const RUN_STARTS_NONE = "run_starts_none: a run talks to an agent by mail, never " +
+  "converse";
 /** The agent's file changed between its read and the admission: the caller tries again. */
 export const AGENT_CHANGED = "agent_changed: agent.json changed as the run was admitted";
 /**
@@ -1147,6 +1220,11 @@ export interface LaneDeps {
     next(now: number): number | null;
     run(now: number, until: number): Promise<void>;
   };
+  /** The starter package (`starter.ts`): seeded, then kept current, as its rows say. */
+  readonly starter: {
+    next(now: number): number | null;
+    run(now: number): Promise<void>;
+  };
   /** The doorbell (`wakes.ts`), or null for none: read at each use, never kept. */
   readonly sender: () => WakeSender | null;
   /** Whether the owner is admitted (`require_work`): read at each use. */
@@ -1165,7 +1243,7 @@ export interface LaneDeps {
  * Exported so the wiring is tested with recording passes; `OwnerDO` gives it the real ones.
  */
 export function ownerLanes(deps: LaneDeps):
-    Readonly<Record<"wakes" | "files" | "connections" | "runs", Lane>> {
+    Readonly<Record<"wakes" | "files" | "connections" | "runs" | "starter", Lane>> {
   return {
     // Lapsed claims, then due wakes and revokes; open rows count only with a doorbell, and
     // only while the owner is admitted (`require_work`): a suspended owner's wait.
@@ -1185,6 +1263,8 @@ export function ownerLanes(deps: LaneDeps):
     // Runs: a schedule due, or a live run's lease expiry; never a poll for work.
     runs: { next: (now) => deps.runs.next(now),
             run: (now, until) => deps.runs.run(now, until) },
+    // The starter package: an admitted owner's seed, then each newer version once.
+    starter: { next: (now) => deps.starter.next(now), run: (now) => deps.starter.run(now) },
   };
 }
 
@@ -1200,6 +1280,12 @@ export interface Internals {
   readonly codemode?: CodemodeBounds;
   /** How long a script's read of the control record serves its calls (`control-gate.ts`). */
   readonly controlFreshMs?: number;
+  /**
+   * The starter package the object seeds and keeps current (`starter.ts`): the one this code
+   * carries when omitted, as production builds it; another for a test of updates; null for
+   * none, the tests of everything else, which start from an empty workspace.
+   */
+  readonly starter?: StarterPackage | null;
 }
 
 /** A model's cost record with its input at its dearest rate: what a token can cost at most. */
@@ -1265,6 +1351,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   readonly #bodies: Bodies;
   readonly #registrations: Registrations;
   readonly #notices: Notices;
+  /** The starter package: the default agent's files, seeded and kept current (`starter.ts`). */
+  readonly #starter: Starter;
   readonly #connections: Connections;
   readonly #usage: ModelUsage;
   /** Sandbox egress: each request admitted at open and settled once it ends (`egress.ts`). */
@@ -1350,6 +1438,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                               () => this.#collections.clock(), this.#bodies.adopt);
     this.#registrations = new Registrations(storage, this.#grants);
     this.#notices = new Notices(storage);
+    this.#starter = new Starter({
+      storage, files: this.#files, write, admitted, clock,
+      notice: (type, detail) => this.#notices.add(type, detail, clock()),
+    }, internals.starter === undefined ? carried() : internals.starter);
     const owner = () => {
       const named = ctx.id.name;
       if (named === undefined) {
@@ -1489,7 +1581,7 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
       runs: { next: (now) => admitted() && this.#ledger.mailDue(
                 this.#runs.queueRoom(MAIL_INPUT_BYTES)) ? now : this.#runs.next(now, admitted()),
               run: (now, until) => this.#runsPass(now, until) },
-      sender: () => this.#sender, admitted, clock, write, runWakes,
+      starter: this.#starter, sender: () => this.#sender, admitted, clock, write, runWakes,
     }), clock, write, undefined, () => wiped(storage.sql) || erasing(storage));
     const lifecycle = new Lifecycle<OwnerEnv>(this);
     this.#erasure = new Erasure({
@@ -2299,6 +2391,20 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     });
   }
 
+  /**
+   * The starter package's receipts (`starter.ts`): each path it wrote, the version, and
+   * whether it stands as installed, edited, deleted or proposed; with the version the owner's
+   * files were last reconciled to and the version this code carries.
+   */
+  starterReceipts(binding: Binding):
+      Promise<{ version: number; carried: number; receipts: StarterReceipt[] }> {
+    return this.#door(() => {
+      this.#owner(binding, "read", "read its starter files' receipts");
+      return { version: this.#starter.version(), carried: this.#starter.carried(),
+               receipts: this.#starter.receipts() };
+    });
+  }
+
   // -- ADMISSION: the platform's word on the owner's account -------------------------
 
   /**
@@ -3079,7 +3185,8 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
    */
   #reader(binding: Binding, door: "read", capability: "read_files"):
       (path: string) => boolean {
-    if (binding.sandbox === undefined) {
+    // A run's own call carries its egress token as its sandbox: a file door's caller too.
+    if (binding.sandbox === undefined || binding.run !== undefined) {
       this.#filer(binding, door, capability);
       return () => true;
     }
@@ -3093,14 +3200,194 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     }
   }
 
+  /**
+   * A directory's entries by name; with `head_chars`, each small file's (inline, so no
+   * bucket is read) first characters of its text, enough for its frontmatter.
+   */
   fileList(binding: Binding, request: FileListRequest):
-      Promise<{ entries: Entry[]; next: string | null }> {
+      Promise<{ entries: (Entry & { head?: string })[]; next: string | null }> {
     return this.#door(() => {
       const visible = this.#reader(binding, "read", "read_files");
-      const r = fileFields(request, ["dir", "limit"], ["after"]);
+      const r = fileFields(request, ["dir", "limit"], ["after", "head_chars"]);
       const listed = this.#files.list(r["dir"], r["after"] ?? null, r["limit"]);
-      return { ...listed, entries: listed.entries.filter((entry) => visible(entry.path)) };
+      const entries = listed.entries.filter((entry) => visible(entry.path));
+      if (r["head_chars"] === undefined) {
+        return { ...listed, entries };
+      }
+      const chars = whole(r["head_chars"], "head_chars", 0, Number.MAX_SAFE_INTEGER);
+      return { ...listed, entries: entries.map((entry) => {
+        if (entry.kind !== "file" || entry.size > INLINE_BYTES) {
+          return entry;
+        }
+        const inline = this.#files.open(entry.path).inline;
+        const text = inline === undefined ? null : textOf(inline);
+        return text === null ? entry : { ...entry, head: [...text].slice(0, chars).join("") };
+      }) };
     });
+  }
+
+  /**
+   * A window of a file's text (`file_read`): its UTF-8 bytes from `offset`, at most
+   * `max_bytes` (`READ_DEFAULT_BYTES` when omitted; at most one chunk, the files plane's own
+   * unit, a technical ceiling), cut back to a character boundary, and where the next window
+   * starts (null at the end). A file that is not UTF-8 text is refused as such.
+   */
+  async fileText(binding: Binding, request: FileTextRequest):
+      Promise<{ entry: Entry; offset: number; text: string; next_offset: number | null }> {
+    const asked = await this.#door(() => {
+      this.#filer(binding, "read", "read_files");
+      const r = fileFields(request, ["path"], ["offset", "max_bytes"]);
+      const content = this.#files.open(r["path"]);
+      const offset = whole(r["offset"], "offset", 0, content.entry.size);
+      const max = whole(r["max_bytes"], "max_bytes", READ_DEFAULT_BYTES, CHUNK_BYTES);
+      if (max < 1) {
+        throw new Invalid("max_bytes is at least 1");
+      }
+      return { content, offset, max };
+    });
+    const { content, offset, max } = asked;
+    const read = await this.#window(content, offset, max);
+    return { entry: content.entry, offset, text: read.text, next_offset: read.next };
+  }
+
+  /**
+   * The text of `content` from `offset`, at most `max` bytes cut back to a character: its
+   * inline bytes, or the chunks the window spans (at most two reads).
+   */
+  async #window(content: Content, offset: number, max: number):
+      Promise<{ text: string; next: number | null }> {
+    const size = content.entry.size;
+    const want = Math.min(size, offset + max + 4);  // a character's tail past the window
+    let bytes: Uint8Array;
+    if (content.inline !== undefined) {
+      bytes = content.inline.subarray(offset, want);
+    } else {
+      const reads: { sha256: string; offset: number; length: number }[] = [];
+      let at = 0;
+      for (const chunk of content.chunks ?? []) {
+        const from = Math.max(offset, at);
+        const to = Math.min(want, at + chunk.size);
+        if (from < to) {
+          reads.push({ sha256: chunk.sha256, offset: from - at, length: to - from });
+        }
+        at += chunk.size;
+      }
+      const parts = await this.#files.fetch(reads);
+      bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
+      let put = 0;
+      for (const part of parts) {
+        bytes.set(part, put);
+        put += part.byteLength;
+      }
+    }
+    const end = windowEnd(bytes, 0, max);
+    if (end === null) {
+      throw new Invalid("offset is inside a character: start at a window's next_offset");
+    }
+    const text = textOf(bytes.subarray(0, end));
+    if (text === null) {
+      throw new Invalid(`${content.entry.path} is not UTF-8 text`);
+    }
+    return { text, next: offset + end < size ? offset + end : null };
+  }
+
+  /**
+   * A search of the owner's files (`search`; `file-search.ts`): the query's words against
+   * each file's path, and each small file's frontmatter, text and index lines, over at most
+   * `SEARCH_SCAN` entries from `cursor`; the best `SEARCH_RESULTS`, and `next_cursor` when
+   * it stopped short of the end.
+   */
+  fileSearch(binding: Binding, request: FileSearchRequest):
+      Promise<{ results: SearchResult[]; next_cursor: string | null; note?: string }> {
+    return this.#door(() => {
+      this.#filer(binding, "read", "read_files");
+      const r = fileFields(request, ["query"], ["cursor"]);
+      const query = r["query"];
+      if (typeof query !== "string" || [...query].length > 1024) {
+        throw new Invalid("a query is text of at most 1024 characters");
+      }
+      const terms = words(query);
+      if (terms.length === 0) {
+        throw new Invalid("a query has at least one word");
+      }
+      const cursor = r["cursor"] === undefined ? null : storedPath(r["cursor"]);
+      const page = this.#files.scan(cursor, SEARCH_SCAN);
+      const texts = new Map<string, string>();
+      const fronts = new Map<string, Front>();
+      const lines = new Map<string, string[]>();
+      for (const entry of page.entries) {
+        const text = entry.kind === "file" && entry.inline !== null ? textOf(entry.inline) : null;
+        if (text === null) {
+          continue;
+        }
+        texts.set(entry.path, text);
+        fronts.set(entry.path, frontmatter(text));
+        if (nameOf(entry.path) !== "index.md") {
+          continue;
+        }
+        for (const line of indexLines(text)) {
+          const found = targets(parentOf(entry.path), line.target)
+            .find((path) => this.#files.stat(path)?.kind === "file");
+          if (found !== undefined) {
+            lines.set(found, [...(lines.get(found) ?? []), line.text]);
+          }
+        }
+      }
+      const hits = page.entries.filter((entry) => entry.kind === "file").map((entry) => {
+        const front = fronts.get(entry.path) ?? null;
+        const text = texts.get(entry.path);
+        const fields = [{ text: entry.path, weight: 2 },
+                        ...(lines.get(entry.path) ?? []).map((line) => ({ text: line, weight: 3 }))];
+        if (front !== null) {
+          fields.push({ text: front.title ?? "", weight: 4 },
+                      { text: front.description ?? "", weight: 3 },
+                      { text: front.tags.join(" "), weight: 3 }, { text: front.type ?? "", weight: 1 });
+        }
+        if (text !== undefined) {
+          fields.push({ text, weight: 1 });
+        }
+        return { entry, front, score: score({ path: entry.path, fields }, terms) };
+      }).filter((hit) => hit.score[0] > 0)
+        .sort((a, b) => b.score[0] - a.score[0] || b.score[1] - a.score[1]
+                        || (a.entry.path < b.entry.path ? -1 : 1))
+        .slice(0, SEARCH_RESULTS);
+      const results = hits.map((hit) => ({ id: hit.entry.path,
+                                           title: titleOf(hit.entry.path, hit.front),
+                                           url: fileUrl(hit.entry.path) }));
+      return page.next === null ? { results, next_cursor: null }
+        : { results, next_cursor: page.next,
+            note: `only the first ${SEARCH_SCAN} entries from the cursor were searched: ` +
+              "search again with next_cursor for the rest" };
+    });
+  }
+
+  /**
+   * A file by a search's id, its stored path (`fetch`): its title, its text (at most one
+   * chunk's, the files plane's own unit; `file_read` reads past it), the app's url for a
+   * citation, and its metadata.
+   */
+  async fileFetch(binding: Binding, request: FileFetchRequest):
+      Promise<{ id: string; title: string; text: string; url: string;
+                metadata: FetchMetadata }> {
+    const content = await this.#door(() => {
+      this.#filer(binding, "read", "read_files");
+      const r = fileFields(request, ["id"]);
+      return this.#files.open(r["id"]);
+    });
+    const read = await this.#window(content, 0, CHUNK_BYTES);
+    const front = frontmatter(read.text);
+    const path = content.entry.path;
+    return {
+      id: path, title: titleOf(path, front), text: read.text, url: fileUrl(path),
+      metadata: { path, size: content.entry.size, version: content.entry.version,
+                  modified: new Date(content.entry.mtime_ms).toISOString(),
+                  writer: content.entry.writer,
+                  ...(front.type === undefined ? {} : { type: front.type }),
+                  ...(front.description === undefined ? {} : { description: front.description }),
+                  ...(front.tags.length === 0 ? {} : { tags: front.tags }),
+                  truncated: read.next !== null,
+                  ...(read.next === null ? {} : { next_offset: read.next }) },
+    };
   }
 
   /**
@@ -3332,7 +3619,10 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   // file read: the first checks the call and reads what it asks; then `agent.json` is read
   // (its bytes may cross to `FILES`); then one unit binds the call again and admits the run
   // whole (`#launch`), so nothing between the two can widen what the admission saw. A run's
-  // own MCP door reaches none of these (`RUN_STARTS_NONE`): work between agents is mail.
+  // own MCP door never converses (`RUN_STARTS_NONE`): work between agents is mail. It may
+  // launch and schedule its owner's agents, and read and cancel runs and schedules, as its
+  // initiator: an owner-started or scheduled run as the owner, a client's run as that client,
+  // held to that client's grant; whatever it launches runs unattended.
 
   /**
    * A message to one of the owner's agents (`converse`): a run in a new conversation, or in
@@ -3405,10 +3695,11 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
     const run = await this.#launch(read, () => {
       const account = this.#account(binding, "work");
       const universe = this.#runDoor(account, "run_graph", asked.agent);
+      // A run's own launch has no person at it: unattended, as a schedule's run is.
       return { ...this.#initiated(binding, account, universe, asked.agent),
                agent: asked.agent, conversation: null, request: null,
-               tiers: tierNumbers(this.#storage, binding.tiers, clock()), unattended: false,
-               prompt: asked.input, mail: null };
+               tiers: tierNumbers(this.#storage, binding.tiers, clock()),
+               unattended: account.run !== null, prompt: asked.input, mail: null };
     });
     return this.#settledWithin(run, 0, asked.client);
   }
@@ -3567,11 +3858,22 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
                 utf8Bytes(answer.result) > PLACE_BYTES ? this.#replyPlaced : null);
   }
 
-  /** A mail's reply posted in this unit, its body placed or not; a refusal a notice. */
+  /**
+   * A mail's reply posted in this unit, or a scheduled run's result in the owner's room with
+   * its agent (`dm:<agent's id>`, `dm:main`'s for main; the run's id its post's own, so it is
+   * posted once), its body
+   * placed or not; a refusal a notice.
+   */
   #reply(answer: MailAnswer, authority: MailAuthority | null, placed: Placed | null): void {
     try {
-      this.#ledger.answer({ native: answer.agent }, answer.mail, answer.run, answer.result,
-                          clock(), authority, placed);
+      if (answer.mail === null) {
+        this.#ledger.post({ native: answer.agent }, `dm:${nativeId(answer.agent)}`, answer.run,
+                          answer.result, null, clock(), authority, placed,
+                          authority === null ? "owner" : `client:${authority.client}`);
+      } else {
+        this.#ledger.answer({ native: answer.agent }, answer.mail, answer.run, answer.result,
+                            clock(), authority, placed);
+      }
     } catch (error) {
       if (!(error instanceof Refused || error instanceof Invalid)) {
         console.error("a mail's reply failed in the ledger; the run's settle stands");
@@ -3646,26 +3948,45 @@ export class OwnerDO extends DurableObject<OwnerEnv> {
   }
 
   /**
-   * In a unit: a run door's caller held: never a run's own call (a run starts none), and
-   * for a door that starts work, `need` held where it acts (a scoped client's agent); its
-   * universe.
+   * In a unit: a run door's caller held: a run's own call never converses, and for a door
+   * that starts work, `need` held where it acts (a scoped client's agent; a run's grant, and
+   * a client's run's stamped grant as well, for the agent it launches); its universe.
    */
   #runDoor(account: Account, need: "converse" | "run_graph" | null, agent: string | null):
       string | null {
-    if (account.run !== null) {
+    if (account.run !== null && need === "converse") {
       throw new Refused(RUN_STARTS_NONE);
     }
     if (need === null || agent === null) {
       return null;
     }
-    const universe = this.#universe(account);
-    this.#scope(account, need, universe, agent);
+    if (account.run === null) {
+      const universe = this.#universe(account);
+      this.#scope(account, need, universe, agent);
+      return universe;
+    }
+    this.#scope(account, need);
+    const universe = account.run.stamp?.universe ?? null;
+    if (account.grant?.mode === "scoped"
+        && (universe === null || !holds(account.grant, { universe, agent, capability: need }))) {
+      throw new Refused("outside client capability not granted");
+    }
     return universe;
   }
 
-  /** Who starts a run: the owner, or a client, with its stamp and origin. */
+  /**
+   * Who starts a run: the owner, or a client, with its stamp and origin. A run's own launch
+   * is its initiator's: the owner's for an owner-started or scheduled run, else the stamp
+   * its client's run holds, for the agent it launches.
+   */
   #initiated(binding: Binding, account: Account, universe: string | null, agent: string):
       { initiator: "owner" | "client"; stamp: Stamped | null; origin: Origin | null } {
+    if (account.run !== null) {
+      const stamp = account.run.stamp;
+      return stamp === null || account.origin === null
+        ? { initiator: "owner", stamp: null, origin: null }
+        : { initiator: "client", origin: account.origin, stamp: { ...stamp, universe, agent } };
+    }
     if (account.origin === null || account.grant === null) {
       return { initiator: "owner", stamp: null, origin: null };
     }
