@@ -1,0 +1,10 @@
+{
+  "chatgpt": {
+    "match": "exact",
+    "uri": "https://tinyassets.io/oauth/connect/callback/chatgpt"
+  },
+  "openrouter_user_models_v1": {
+    "match": "any_callback",
+    "uri": "https://tinyassets.io/oauth/connect/callback/openrouter_user_models_v1/{state}"
+  }
+}

@@ -146,6 +146,7 @@ describe("the authorization flow", () => {
         return sent.href;
       },
       finish: FAKE_UPSTREAM.finish,
+      forget: FAKE_UPSTREAM.forget,
     };
     const client = await registerClient();
     const jar = new Jar();

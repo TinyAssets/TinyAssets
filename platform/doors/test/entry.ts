@@ -11,6 +11,7 @@ import { bundledRecords, catalogOf } from "../src/sources";
 import { FAKE_UPSTREAM } from "./fake-upstream";
 
 import { type OwnerEnv, OwnerDO as RealOwnerDO, type SandboxLeases } from "../../owner/src/owner-do";
+import { RecordingErasures } from "../../owner/test/erasure-fake";
 import { RecordingSandbox } from "../../owner/test/sandbox-fake";
 
 /**
@@ -21,11 +22,16 @@ import { RecordingSandbox } from "../../owner/test/sandbox-fake";
 export class OwnerDO extends RealOwnerDO {
   readonly sandbox: SandboxLeases;
   readonly recorder: RecordingSandbox;
+  /** The erasure queue, recording only: the tests run the doors' consumer on what it sent. */
+  readonly erasures: RecordingErasures;
 
   constructor(ctx: DurableObjectState, env: OwnerEnv) {
     const made: { sandbox?: SandboxLeases } = {};
     const recorder = new RecordingSandbox();
-    super(ctx, { ...env, SANDBOX: recorder }, { sandbox: (leases) => { made.sandbox = leases; } });
+    const erasures = new RecordingErasures();
+    super(ctx, { ...env, SANDBOX: recorder, ERASURES: erasures },
+          { sandbox: (leases) => { made.sandbox = leases; }, putGraceMs: 0, eraseRetryMs: 500 });
+    this.erasures = erasures;
     this.sandbox = made.sandbox!;
     this.recorder = recorder;
   }

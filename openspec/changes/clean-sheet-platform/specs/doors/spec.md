@@ -41,7 +41,7 @@ An MCP grant's encrypted props SHALL hold the time of the interactive sign-in th
 - **THEN** the owner's object sees `authenticated_at` T
 
 ### Requirement: A revoke reaches the object first, then the provider
-The owner's revoke of an MCP client SHALL be made in the owner's object first, then SHALL revoke every provider grant of that client, so its next refresh is `invalid_grant`. A revoke the object refuses SHALL revoke nothing in the provider.
+The owner's revoke of an MCP client SHALL be made in the owner's object first, then SHALL revoke every provider grant of that client, so its next refresh is `invalid_grant`. A revoke the object refuses SHALL revoke nothing in the provider. The same revoke of an API key's client SHALL also delete the key's directory entry, after the grant's revoke, as the key's own revoke does.
 
 #### Scenario: A revoked client refreshes
 - **WHEN** the owner revokes an MCP client and the client refreshes
@@ -434,3 +434,42 @@ The MCP door SHALL advertise `events` in its `initialize` and `server/discover` 
 - **WHEN** the callback answers another challenge, or `404`
 - **THEN** the subscribe answers `-32015` with `challenge_failed` or `http_4xx`, and nothing is stored
 
+
+### Requirement: The owner's sign-in is the configured issuer's OpenID Connect flow
+The doors SHALL sign the owner in with the code flow and PKCE against `OWNER_ISSUER`, its endpoints and client the `UPSTREAM` record, both unset as checked in and filled at deploy from the issuer's discovery, which must name `OWNER_ISSUER` exactly. The ID token SHALL be RS256 under a key of the issuer's JWKS, its issuer, audience, nonce (the flow's challenge), times, subject and `auth_time` checked; a token without `auth_time` SHALL be refused, with no clock fallback.
+
+#### Scenario: A token without auth_time, or from another issuer
+- **WHEN** the issuer answers an ID token missing `auth_time`, or naming another issuer
+- **THEN** the sign-in fails and no owner is bound
+
+### Requirement: Sign-up is the platform's explicit admit, and erasure its outside record
+The sign-in callback SHALL admit an owner the directory has no `o:` record of (the object first, then the record), and refuse an owner whose record says erased or whose object is marked erasing. The erasure door SHALL only mark the object erasing, durable before it answers. The object's erasure job SHALL then put the owner on the erasure queue at its mark and at each attempt until the doors confirm, and the doors' consumer SHALL, each step safe to run again, write the owner's `o:` record erased, delete its `k:`, `h:` and `i:` entries, revoke its every OAuth grant and delete the identity at the issuer, then confirm; the object SHALL wipe only after that confirmation, so a half-done erasure always finishes.
+
+#### Scenario: An erasure interrupted after its mark
+- **WHEN** the request that marked an owner erasing is lost, or a consumer step fails
+- **THEN** the object's job sends the owner again until the doors confirm, and the erasure finishes
+
+#### Scenario: An erased owner's name
+- **WHEN** an erased owner's key, capability URL, refresh token or sign-in is presented, or a stale `getByName` reaches its wiped object
+- **THEN** each is refused, and the object refuses every door, never admitted again
+
+### Requirement: Inbound events are proved and routed by the binder
+`/hooks/inbound/<token>` SHALL exist only while the control record's `inbound` gate is on, take a body within the platform's one request ceiling, prove a shared app's request by the platform's signing secret its data record names (an HMAC over the timestamp and raw bytes within its skew) and route its single installation by the directory's `i:` entry, and route a capability URL by its token's hash (`h:`).
+
+#### Scenario: A bad HMAC, and a replay past the skew
+- **WHEN** a shared app's request carries a signature that does not verify, or a timestamp older than five minutes
+- **THEN** it is refused `401` and no object is reached
+
+### Requirement: No caller is rate-capped by the doors
+The doors SHALL count or cap no caller's requests, authenticated or not, and SHALL never refuse a valid credential because of what others sent from its address. A metadata document a `client_id` names SHALL be fetched only within the OAuth provider's own bounds (public URLs, 5 KiB, 10 s, one fetch a request). An owner object the runtime reports overloaded SHALL answer `429` with `Retry-After`.
+
+#### Scenario: A shared backend after many failures
+- **WHEN** an MCP host's backend address sends many expired bearers or failed refreshes
+- **THEN** a valid key and a live refresh from that address still succeed
+
+### Requirement: The binder streams an upload's bytes to FILES
+The owner surface's upload SHALL take one chunk a `PUT`, in any order and again after any failure, put it to `FILES` when the intent still needs it, refuse bytes that are not that declared chunk or a body shorter or longer than it, and answer the chunk's SHA-256 as `Content-Digest`; a file SHALL be bounded by the owner's policy, never by one request, and a refusal mid-upload SHALL answer its fixed code.
+
+#### Scenario: A tampered chunk
+- **WHEN** an upload's body differs from its declared chunk
+- **THEN** it is refused `400`, and nothing of that chunk is reported stored

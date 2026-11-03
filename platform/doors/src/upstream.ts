@@ -3,13 +3,14 @@
  *
  * The doors run the flow (`authorize.ts`): server-side PKCE, `prompt=login` on every
  * authorization, the browser-bound `state` of the provider's `beginUpstream`. An
- * upstream only builds its sign-in URL and verifies the callback. This slice has no
- * live one: `UNWIRED` refuses loudly, and the tests run a fake. The AuthKit slice
- * implements it (tasks 2): its authorize URL, the code exchange, and the ID token's
- * signature, issuer, audience and `auth_time` against its JWKS, refusing a token without
- * `auth_time` (there is no clock fallback). The binder names the owner from the issuer
- * and subject: AuthKit's (`OWNER_ISSUER`) subjects stay owner ids as they are, so no
- * identity migration is owed at cutover, and any later issuer's are namespaced.
+ * upstream only builds its sign-in URL, verifies the callback, and deletes a person's
+ * identity at the owner's erasure. The live one is `oidc.ts` (slice L): the code exchange
+ * and the ID token's signature, issuer, audience and `auth_time` against the issuer's
+ * JWKS, refusing a token without `auth_time` (there is no clock fallback). Until the
+ * deploy configures it, `UNWIRED` refuses loudly (`upstreamOf`), and the tests run a fake.
+ * The binder names the owner from the issuer and subject: AuthKit's (`OWNER_ISSUER`)
+ * subjects stay owner ids as they are, so no identity migration is owed at cutover, and
+ * any later issuer's are namespaced.
  */
 export interface SignIn {
   /** The verified ID token's issuer (`iss`). */
@@ -31,6 +32,8 @@ export interface Upstream {
   /** The verified sign-in a callback's code is, given the PKCE verifier. */
   finish(callback: { code: string; code_verifier: string; redirect_uri: string }):
     Promise<SignIn>;
+  /** The person's identity deleted at the issuer (the owner's erasure); gone already is done. */
+  forget(subject: string): Promise<void>;
 }
 
 export const UNWIRED_MESSAGE = "the upstream sign-in is not wired yet (tasks 2: AuthKit)";
@@ -41,4 +44,5 @@ export const UNWIRED: Upstream = Object.freeze({
     throw new Error(UNWIRED_MESSAGE);
   },
   finish: (): Promise<SignIn> => Promise.reject(new Error(UNWIRED_MESSAGE)),
+  forget: (): Promise<void> => Promise.reject(new Error(UNWIRED_MESSAGE)),
 });

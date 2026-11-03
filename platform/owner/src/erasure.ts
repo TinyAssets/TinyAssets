@@ -5,19 +5,27 @@
  * 1. **Mark the owner erasing** (`owner_erasure`), in one unit. From then on every door
  *    refuses (`OwnerDO`'s binding check) and no lane runs (the object's alarm resumes the
  *    erasure instead of driving Lifecycle).
- * 2. **End every run**: every sandbox of the owner killed, paused ones included, with the
+ * 2. **The outside record** (slice L): the owner Worker's erasure queue tells the doors,
+ *    which write the directory's erased record of the owner, delete its keys' and inbound
+ *    routes' entries, revoke its every OAuth grant and delete its identity at the issuer,
+ *    then confirm (`erasureOutsideDone`). Sent at the mark and again at each attempt until
+ *    confirmed; the wipe waits for the confirmation, since the doors read the names from
+ *    the object (`erasureOutside`). No outside step depends on the request that began the
+ *    erasure: a half-done erasure always finishes.
+ * 3. **End every run**: every sandbox of the owner killed, paused ones included, with the
  *    engines' sign-ins and session files inside them, and the sandbox Worker's own state of
  *    the owner deleted (`SandboxService.erase`, slice S); the sandbox's in-flight egress
  *    streams end (`Egress.drop`); and the step is recorded done (`step` 2).
- * 3. **Delete every R2 copy**: every object under the owner's namespace prefix, its files'
+ * 4. **Delete every R2 copy**: every object under the owner's namespace prefix, its files'
  *    and its placed bodies' (ADR-035), once `PUT_GRACE_MS` (a day) has passed since the mark,
  *    its job waking it then, and every put this instance began has landed (no put begins
  *    under the mark); repeatable, and repeated after the wipe.
- * 4. **`deleteAll()` the owner**, Lifecycle's alarm disabled first, so nothing is written
+ * 5. **`deleteAll()` the owner**, Lifecycle's alarm disabled first, so nothing is written
  *    after it but the tombstone: the erased admission row (`admission.ts`), written into the
- *    empty database in the same synchronous turn (`WriteGate.wipe`); a killed turn can
- *    lose it (the window `erase.ts` names, not measured in production; slice 10's to
- *    close).
+ *    empty database in the same synchronous turn (`WriteGate.wipe`). A killed turn can lose
+ *    the tombstone; the object a later `getByName` then makes is `pending` and refuses
+ *    everything, and the directory's erased record keeps the platform from ever admitting
+ *    the name again (`admission.ts`).
  *
  * Each step resumes after a crash, from the step the mark records: the erasure's job
  * resumes it on the object's alarm, every start of the object resumes it (so a crash after
@@ -27,7 +35,8 @@
  * After step 3 the instance answers nothing (its in-memory mark), and the database holds
  * the tombstone alone: an object a later `getByName` starts finds it before anything else,
  * migrates nothing, starts no Lifecycle and refuses every door (`OWNER_ERASED`), so
- * nothing ever makes owner state there again. The erasure door is slice 10's.
+ * nothing ever makes owner state there again. The erasure door is the owner's
+ * `ownerErase` (slice L), which marks the owner and leaves the rest to the job.
  */
 import { Refused } from "./errors";
 import type { OwnerStorage } from "./gate";
@@ -79,6 +88,17 @@ export function erasureStartedAt(storage: OwnerStorage): number {
  * when the day is up (review rvlim N5), so nothing rests on an in-memory wait.
  */
 export const PUT_GRACE_MS = 24 * 60 * 60_000;
+
+/** Whether the doors confirmed the erasure's outside record (step 2). A read. */
+export function outsideDone(storage: OwnerStorage): boolean {
+  return storage.sql.exec<{ outside: number }>("SELECT outside FROM owner_erasure")
+    .toArray()[0]?.outside === 1;
+}
+
+/** In a unit: the doors' confirmation of the outside record. */
+export function markOutside(storage: OwnerStorage): void {
+  storage.sql.exec("UPDATE owner_erasure SET outside = 1");
+}
 
 /** In a unit: the erasure's step 2 done: every run ended. */
 export function runsEnded(storage: OwnerStorage): void {

@@ -13,8 +13,14 @@
  *    rules alone.
  *
  * Routes, each a door or a binder sequence:
- * - `keys`, `keys/revoke`, `keys/delete`: `api-keys.ts`.
+ * - `keys`, `keys/list`, `keys/revoke`, `keys/delete`: `api-keys.ts` (the key store's mint
+ *   and list in the object).
  * - `grants/revoke`: an MCP client's revoke, object then provider (`revoke.ts`).
+ * - `account/erase`: the owner's erasure, in session and confirmed (`erase.ts`).
+ * - `hooks/create`, `hooks/list`, `hooks/set`, `hooks/revoke`: the owner's inbound
+ *   bindings and their directory entries (`inbound.ts`).
+ * - `files/upload/begin`, `PUT files/upload/<intent_id>`, `files/upload/commit`: an upload,
+ *   its bytes streamed to `FILES` by the binder (`file-bytes.ts`).
  * - `outside-agents`: the owner's browser registering an agent for an API key it holds.
  * - `session/extend`: the session's renewal.
  * - `session/close`: sign-out, the session closed and the presented token's grant revoked.
@@ -86,9 +92,14 @@ import {
 } from "./config";
 import { ownerGate, ownerRead, signinOn } from "./control";
 import {
-  deleteOwnKey, KeyRefused, looksLikeKey, mintKey, registeringEntry, revokeKey,
+  deleteOwnKey, KeyRefused, listKeys, looksLikeKey, mintKey, registeringEntry, revokeKey,
 } from "./api-keys";
 import { CONNECT_ROUTES, ConnectRefused, sealDoorbell } from "./connect";
+import { eraseOwner } from "./erase";
+import {
+  streamUpload, UPLOAD_ABORT, UPLOAD_BEGIN, UPLOAD_COMMIT, UPLOAD_PREFIX,
+} from "./file-bytes";
+import { HOOK_ROUTES } from "./inbound";
 import { revokeClient } from "./revoke";
 import { authorizationServer } from "./oauth";
 import { clearedCookie, mediaType, OWNER_SURFACE, sessionCookie, sessionOf } from "./session";
@@ -332,6 +343,23 @@ const ROUTES: Readonly<Record<string, Route>> = Object.freeze({
   "files/read": fileRead,
   "files/write": fileWrite,
   "keys": async (env, owner, request) => json(200, await mintKey(env, owner, request)),
+  "keys/list": async (_env, owner) => json(200, await listKeys(owner)),
+  "account/erase": async (_env, owner, request) =>
+    json(200, await eraseOwner(owner, request), { "Set-Cookie": clearedCookie() }),
+  "files/upload/begin": async (_env, { binding, stub }, request) =>
+    json(200, await stub.fileUploadBegin(binding, request as never)),
+  "files/upload/commit": async (_env, { binding, stub }, request) =>
+    json(200, await stub.fileUploadCommit(binding, request as never)),
+  "files/upload/abort": async (_env, { binding, stub }, request) =>
+    json(200, await stub.fileUploadAbort(binding, request as never)),
+  "hooks/create": async (env, owner, request) =>
+    json(200, await HOOK_ROUTES["hooks/create"]!(env, owner, request)),
+  "hooks/list": async (env, owner, request) =>
+    json(200, await HOOK_ROUTES["hooks/list"]!(env, owner, request)),
+  "hooks/set": async (env, owner, request) =>
+    json(200, await HOOK_ROUTES["hooks/set"]!(env, owner, request)),
+  "hooks/revoke": async (env, owner, request) =>
+    json(200, await HOOK_ROUTES["hooks/revoke"]!(env, owner, request)),
   "keys/revoke": async (env, owner, request) => json(200, await revokeKey(env, owner, request)),
   "keys/delete": async (env, owner, request) =>
     json(200, await deleteOwnKey(env, owner, request)),
@@ -454,6 +482,13 @@ async function surface(request: Request, env: DoorsEnv, sources: Sources):
   }
   const session = sessionOf(request);
   const path = new URL(request.url).pathname.slice(OWNER_SURFACE.length);
+  if (path.startsWith(UPLOAD_PREFIX) && path !== UPLOAD_BEGIN && path !== UPLOAD_COMMIT
+      && path !== UPLOAD_ABORT) {
+    // An upload's bytes: the owner's token, the maintenance gate, then the stream.
+    const owner = bindOwner(env, token, undefined);
+    const gated = await ownerGate(env, owner.binding.owner);
+    return gated ?? await streamUpload(request, env, owner, path.slice(UPLOAD_PREFIX.length));
+  }
   const registering = path === "outside-agents";
   const ticketing = path === TICKET_PATH;
   const listing = path === "sources";
